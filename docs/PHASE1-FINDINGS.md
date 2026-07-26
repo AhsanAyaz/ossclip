@@ -65,6 +65,52 @@ Because the video slot eases between layouts over `LAYOUT_TRANSITION_SEC`, the c
 
 Worth property-testing: for every layout, the resolved caption rect intersects neither the graphic rect nor the safe-area insets.
 
+---
+
+# Round 2 — after the fixes (fresh plan, real footage, 2026-07-27)
+
+*Same 68 s take, cache cleared so the new prompt and the deterministic demotion actually ran. All six items above verify as fixed on the render: captions visible on `video-top`, `blurred-behind` and full-bleed; every cue capped at 5.0 s; both StatCards on `video-top` with the face large; "861%" printed once; nothing textual below ~78% or in the right rail; no caption/graphic collisions in any sampled frame. The demotion logged itself honestly (`⚠ moment 6: demoted RuleCard to "none" (graphics cap 4)`).*
+
+**The tuning overcorrected.** Graphic coverage went 85% → **28%**.
+
+Planned cues:
+
+```
+ 0.2– 5.2s  StatCard            video-top
+10.3–15.3s  StatCard            video-top
+21.8–26.8s  StrikethroughReveal blurred-behind
+63.4–67.6s  ChatMock            blurred-behind
+        19.2s of 67.8s = 28% coverage
+```
+
+## 7. Two caps stack multiplicatively
+
+`normalizeBeatSheet` demotes to `floor(N/2)` graphics (`beats.ts:98`) **and** `MAX_SCENE_SEC = 5` clamps each survivor (`assemble.ts:14`). Together, 9 moments → 4 scenes → 19 s of graphics. Each limit is individually reasonable; multiplied they gut the video.
+
+Fix: make the cap target **coverage**, not moment count — aim for graphics on screen ~40–50% of runtime, and let the number of scenes fall out of that. With a 5 s cap and a 68 s take that is ~6–7 scenes, not 4.
+
+## 8. A 36-second graphic drought
+
+Between 26.8 s and 63.4 s nothing but talking head — more than half the video, failing the same "pattern interrupt every 3–6 s" rule (BRAINSTORM §4.5) that §3 set out to fix. The demotion drops *whichever moments come last in the overshoot list* (`beats.ts:100-105`), and here that removed moments 4 and 6 — exactly the middle.
+
+Fix: when demoting, keep the survivors **spread across the timeline**. Sort candidates by position and drop so the remaining graphics stay roughly evenly spaced (or explicitly protect the largest gap), instead of dropping by list order. The existing carve-outs for hook and payoff are right; the middle needs the same care.
+
+## 9. Same component twice in a row
+
+`StatCard` at 0.2 s and again at 10.3 s — the opening 15 s shows the same card treatment twice. Variety is part of the pattern interrupt; a repeat reads as a template.
+
+Fix: penalise consecutive identical `sceneKind` in the beat-sheet prompt, and/or de-duplicate deterministically in `normalizeBeatSheet` (demote or swap the second of an adjacent pair).
+
+## 10. Coverage gap: `FlowDiagram` and `TerminalMock` never ran on real content
+
+The two components that produced the worst (§1) and best frames last round were not exercised at all in this plan, so §1's fix is verified only against the golden fixture. Worth forcing one real run — e.g. a hand-authored `--scenes` file over this take using both — before calling §1 closed.
+
+## 11. `video-top` crops the top of the head
+
+`stage.ts:83` gives the video slot `h: 0.42` of the frame. Fed an already-portrait 1440×2560 source, that band is a horizontal slice through the middle of a 9:16 image, and the speaker's head is cut off at the top of frame (visible in the render at t≈3 s).
+
+Fix: the video slot needs a crop bias, not just a rect — bias the source crop upward (or fit-height with a blurred backdrop) so a face lands inside the band. This is the small, non-face-tracking version of BRAINSTORM §4.3's reframing note; full face detection stays Phase 4.
+
 ## Not defects, noted
 
 - **0 cuts on the test take is correct** — longest silence 0.44 s, below `standard`'s 0.7 s threshold.
