@@ -2,6 +2,7 @@ import type { Transcript } from "../schema";
 import type { Scene } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
+import { ClaudeCliProvider } from "./claude-cli";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 import { MockProvider } from "./mock";
 import { generateBeatSheet, type BeatSheet, type BeatsValidationIssue } from "./beats";
@@ -11,6 +12,7 @@ export * from "./provider";
 export * from "./beats";
 export * from "./scene-props";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
+export { ClaudeCliProvider } from "./claude-cli";
 export { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 export { MockProvider } from "./mock";
 
@@ -18,11 +20,23 @@ export function createProvider(name: ProviderName, model?: string): LlmProvider 
   switch (name) {
     case "claude":
       return new AnthropicProvider(model ?? DEFAULT_CLAUDE_MODEL);
+    case "claude-cli":
+      // Rides the Claude Code subscription (Pro/Max) — no API key involved.
+      return new ClaudeCliProvider(model);
     case "gemini":
       return new GeminiProvider(model ?? DEFAULT_GEMINI_MODEL);
     case "mock":
       return new MockProvider();
   }
+}
+
+/**
+ * Default provider when --llm isn't given: the metered API only if a key is
+ * actually configured, otherwise the Claude Code CLI (subscription auth) —
+ * so Pro/Max users never accidentally rack up API charges.
+ */
+export function defaultProviderName(env: NodeJS.ProcessEnv = process.env): ProviderName {
+  return env.ANTHROPIC_API_KEY ? "claude" : "claude-cli";
 }
 
 export interface ProduceScenesResult {

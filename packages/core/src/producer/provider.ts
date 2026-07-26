@@ -17,4 +17,4 @@ export interface LlmProvider {
   }): Promise<T>;
 }
 
-export type ProviderName = "claude" | "gemini" | "mock";
+export type ProviderName = "claude" | "claude-cli" | "gemini" | "mock";

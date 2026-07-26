@@ -31,13 +31,17 @@ program
   .option("--workdir <dir>", "cache/work directory (default: <input dir>/.ossclip)")
   .option("--produce", "run the LLM producer brain to plan title cards & graphics", false)
   .option("--intent <text>", "what the video should be ('educational video about agents…')")
-  .option("--llm <provider>", "claude | gemini | mock (default claude; keys via ANTHROPIC_API_KEY / GEMINI_API_KEY)")
+  .option(
+    "--llm <provider>",
+    "claude | claude-cli | gemini | mock. Default: claude if ANTHROPIC_API_KEY is set, " +
+      "else claude-cli (your logged-in Claude Code — Pro/Max subscription, no API charges)",
+  )
   .option("--llm-model <id>", "override the provider's default model")
   .option("--scenes <path>", "hand-authored scenes JSON (Scene[]) — no LLM in the loop")
   .action(async (input: string, opts) => {
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
     const provider = opts.llm
-      ? z.enum(["claude", "gemini", "mock"]).parse(opts.llm)
+      ? z.enum(["claude", "claude-cli", "gemini", "mock"]).parse(opts.llm)
       : undefined;
     await produce(input, {
       out: opts.out,

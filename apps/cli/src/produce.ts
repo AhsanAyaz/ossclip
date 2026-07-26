@@ -13,6 +13,7 @@ import {
   buildCaptionLines,
   buildCutlist,
   createProvider,
+  defaultProviderName,
   defaultTheme,
   detectSilences,
   extractAudio,
@@ -155,7 +156,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(resolve(opts.scenes), "utf8")));
     console.log(`▸ scenes injected from ${opts.scenes} (${scenes.length})`);
   } else if (opts.produce) {
-    const providerName = opts.provider ?? "claude";
+    const providerName = opts.provider ?? defaultProviderName();
+    if (!opts.provider) {
+      console.log(
+        providerName === "claude-cli"
+          ? "▸ no ANTHROPIC_API_KEY — using the Claude Code CLI (subscription auth)"
+          : "▸ ANTHROPIC_API_KEY found — using the Claude API",
+      );
+    }
     const cacheKey = createHash("sha1")
       .update(
         JSON.stringify([providerName, opts.llmModel, opts.intent, opts.cleanup, transcript.words.length]),
