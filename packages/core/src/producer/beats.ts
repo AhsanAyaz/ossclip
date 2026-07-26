@@ -2,6 +2,7 @@ import { z } from "zod/v4";
 import type { Transcript } from "../schema";
 import { SceneComponentIdSchema } from "../scene-schema";
 import { SCENE_REGISTRY } from "../scene-registry";
+import { MAX_SCENE_SEC } from "../assemble";
 import type { LlmProvider } from "./provider";
 
 /** Call 1 — the editorial call (PHASE1 §4): moments, copy, component picks. */
@@ -32,9 +33,9 @@ Virality grammar — follow these as hard policies:
 - Use contrast/negation beats (StrikethroughReveal, RuleCard with struck alternatives) when the speaker rejects an idea.
 - End with a payoff or takeaway moment.
 - Moments must be contiguous-ish spans of the transcript, 5-10 seconds of speech each, in transcript order, non-overlapping.
-- HARD CAP: with N moments, at most floor(N/2) may have a sceneKind other than "none". Count them before you answer; if over, demote the weakest graphics to "none". The speaker's face is the product.
-- Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.
-- Graphics punch in for a few seconds and hand the frame back; they never need to span their whole moment.`;
+- COVERAGE: graphics should be on screen for roughly 40-50% of the runtime. Each graphic holds at most ~5 seconds, then hands the frame back — so MOST moments can carry one. Spread them evenly: never leave a stretch longer than ~10 seconds with no graphic.
+- VARIETY: never the same component twice in a row — alternate treatments; a repeat reads as a template.
+- Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.`;
 
 export function buildBeatsUserPrompt(
   transcript: Transcript,
@@ -60,11 +61,28 @@ export interface BeatsValidationIssue {
   issue: string;
 }
 
+/** Fraction of the runtime that should show a graphic (FINDINGS §7). */
+export const GRAPHICS_COVERAGE_TARGET = 0.45;
+
+/** A moment's approximate seconds of speech, from the transcript word stamps. */
+function momentDuration(m: Moment, transcript: Transcript): number {
+  const first = transcript.words[m.startWord];
+  const last = transcript.words[m.endWord];
+  return first && last ? Math.max(0, last.end - first.start) : 0;
+}
+
+function momentMidpoint(m: Moment, transcript: Transcript): number {
+  const first = transcript.words[m.startWord];
+  const last = transcript.words[m.endWord];
+  return first && last ? (first.start + last.end) / 2 : 0;
+}
+
 /** Semantic validation beyond the schema; repairs what it can, reports the rest. */
 export function normalizeBeatSheet(
   sheet: BeatSheet,
-  wordCount: number,
+  transcript: Transcript,
 ): { sheet: BeatSheet; issues: BeatsValidationIssue[] } {
+  const wordCount = transcript.words.length;
   const issues: BeatsValidationIssue[] = [];
   const moments: Moment[] = [];
   const maxIndex = Math.max(0, wordCount - 1);
@@ -92,19 +110,70 @@ export function normalizeBeatSheet(
     moments.push(m);
   }
 
-  // Deterministic enforcement of the at-most-half graphics cap (FINDINGS §4):
-  // the prompt states it, but the model overshoots — demote the latest
-  // graphics to "none", sparing the hook (first) and the payoff (last).
-  const cap = Math.max(1, Math.floor(moments.length / 2));
-  const graphicIndices = moments.flatMap((m, i) => (m.sceneKind !== "none" ? [i] : []));
-  if (graphicIndices.length > cap) {
-    const protectedIdx = new Set([graphicIndices[0], graphicIndices[graphicIndices.length - 1]]);
-    const demotable = graphicIndices.filter((i) => !protectedIdx.has(i)).reverse();
-    for (const i of demotable) {
-      if (moments.filter((m) => m.sceneKind !== "none").length <= cap) break;
-      issues.push({ moment: i, issue: `demoted ${moments[i]!.sceneKind} to "none" (graphics cap ${cap})` });
-      moments[i] = { ...moments[i]!, sceneKind: "none" };
+  // ---- Graphics scheduling (FINDINGS §7/§8/§9) -----------------------------
+  // One coverage budget in SECONDS instead of a moment-count cap, so the
+  // per-scene time cap and the demotion can't stack multiplicatively (§7).
+  // Demotion order is by clustering + same-kind adjacency, so survivors stay
+  // spread across the timeline (§8) and varied (§9); hook and payoff are
+  // always spared.
+  const surviving = () => moments.flatMap((m, i) => (m.sceneKind !== "none" ? [i] : []));
+  const estShow = (i: number) =>
+    Math.min(momentDuration(moments[i]!, transcript), MAX_SCENE_SEC);
+  const runtime =
+    transcript.words.length > 0
+      ? transcript.words[transcript.words.length - 1]!.end - transcript.words[0]!.start
+      : 0;
+  const budget = GRAPHICS_COVERAGE_TARGET * runtime;
+
+  const demote = (i: number, why: string) => {
+    issues.push({ moment: i, issue: `demoted ${moments[i]!.sceneKind} to "none" (${why})` });
+    moments[i] = { ...moments[i]!, sceneKind: "none" };
+  };
+
+  for (;;) {
+    const graphics = surviving();
+    const shown = graphics.reduce((acc, i) => acc + estShow(i), 0);
+    if (shown <= budget + 1e-6) break;
+    // Hook and payoff stay. Among the rest, demote whichever removal opens
+    // the SMALLEST gap between its surviving neighbours — the survivors stay
+    // spread instead of the tail (or middle) getting hollowed out (§8).
+    // Same-kind neighbours make a candidate maximally demotable (§9).
+    const candidates = graphics.slice(1, -1);
+    if (candidates.length === 0) break;
+    let pick = candidates[0]!;
+    let pickCost = Infinity;
+    for (const i of candidates) {
+      const pos = graphics.indexOf(i);
+      const prev = moments[graphics[pos - 1]!]!;
+      const next = moments[graphics[pos + 1]!]!;
+      const openedGap =
+        momentMidpoint(next, transcript) - momentMidpoint(prev, transcript);
+      const sameKind =
+        prev.sceneKind === moments[i]!.sceneKind || next.sceneKind === moments[i]!.sceneKind;
+      const cost = openedGap - (sameKind ? 1e6 : 0);
+      if (cost < pickCost) {
+        pickCost = cost;
+        pick = i;
+      }
     }
+    demote(pick, `coverage ${(GRAPHICS_COVERAGE_TARGET * 100).toFixed(0)}%`);
+  }
+
+  // Variety pass independent of budget (§9): adjacent survivors must differ in
+  // kind — demote the later of a same-kind pair (the earlier if the later is
+  // the payoff; never the hook).
+  for (;;) {
+    const graphics = surviving();
+    const pair = graphics.findIndex(
+      (idx, p) => p > 0 && moments[idx]!.sceneKind === moments[graphics[p - 1]!]!.sceneKind,
+    );
+    if (pair === -1) break;
+    const later = graphics[pair]!;
+    const earlier = graphics[pair - 1]!;
+    const isPayoff = pair === graphics.length - 1;
+    const target = isPayoff ? (pair - 1 === 0 ? -1 : earlier) : later;
+    if (target === -1) break; // both hook and payoff — leave the repeat alone
+    demote(target, `duplicate adjacent ${moments[target]!.sceneKind}`);
   }
 
   return { sheet: { hook: sheet.hook, moments }, issues };
@@ -122,5 +191,5 @@ export async function generateBeatSheet(
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",
   });
-  return normalizeBeatSheet(raw, transcript.words.length);
+  return normalizeBeatSheet(raw, transcript);
 }

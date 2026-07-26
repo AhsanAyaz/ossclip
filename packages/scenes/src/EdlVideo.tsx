@@ -54,7 +54,13 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
                 src={src}
                 trimBefore={Math.round(sp.srcIn * fps)}
                 trimAfter={Math.round(sp.srcOut * fps)}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  // Vertical crop bias set by VideoStage per layout (§11).
+                  objectPosition: "50% var(--ossclip-obj-y, 50%)",
+                }}
                 volume={(f) =>
                   Math.max(
                     0,

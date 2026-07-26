@@ -16,6 +16,13 @@ export interface VideoSlotState {
   /** 0..1 black overlay on top of the video. */
   dim: number;
   opacity: number;
+  /**
+   * Vertical crop bias for object-position (0 = show the top of the source,
+   * 0.5 = center). Slots shorter than the portrait source slice through its
+   * middle and decapitate the speaker — bias the crop up so the face lands
+   * in the band (FINDINGS §11; the non-tracking version of BRAINSTORM §4.3).
+   */
+  objectPosY: number;
 }
 
 export interface StageSlots {
@@ -74,31 +81,38 @@ export function layoutSlots(layout: Layout): StageSlots {
   switch (layout) {
     case "full-bleed":
       return {
-        video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1 },
+        video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: 0.5 },
         graphic: null,
         captionAnchor: 0.7,
       };
     case "video-top":
       return {
-        video: { rect: { x: 0, y: 0, w: 1, h: 0.42 }, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1 },
+        video: {
+          rect: { x: 0, y: 0, w: 1, h: 0.42 },
+          cornerRadius: 0,
+          blurPx: 0,
+          dim: 0,
+          opacity: 1,
+          objectPosY: 0.12,
+        },
         graphic: { x: 0.04, y: 0.54, w: 0.8, h: 0.24 },
         captionAnchor: 0.48,
       };
     case "pip-bubble":
       return {
-        video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 1 },
+        video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 1, objectPosY: 0.22 },
         graphic: { x: 0.06, y: 0.14, w: 0.78, h: 0.42 },
         captionAnchor: 0.61,
       };
     case "graphic-only":
       return {
-        video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 0 },
+        video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 0, objectPosY: 0.22 },
         graphic: { x: 0.04, y: 0.14, w: 0.8, h: 0.54 },
         captionAnchor: 0.73,
       };
     case "blurred-behind":
       return {
-        video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1 },
+        video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1, objectPosY: 0.5 },
         graphic: { x: 0.07, y: 0.24, w: 0.77, h: 0.36 },
         captionAnchor: 0.69,
       };
@@ -130,6 +144,7 @@ function lerpVideo(a: VideoSlotState, b: VideoSlotState, p: number): VideoSlotSt
     blurPx: lerp(a.blurPx, b.blurPx, p),
     dim: lerp(a.dim, b.dim, p),
     opacity: lerp(a.opacity, b.opacity, p),
+    objectPosY: lerp(a.objectPosY, b.objectPosY, p),
   };
 }
 

@@ -41,7 +41,16 @@ export const VideoStage: React.FC<{
           boxShadow: slot.cornerRadius > 0.5 ? "0 18px 60px rgba(0,0,0,0.55)" : undefined,
         }}
       >
-        <div style={{ position: "absolute", inset: 0, filter: slot.blurPx > 0.5 ? `blur(${slot.blurPx}px)` : undefined }}>
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            filter: slot.blurPx > 0.5 ? `blur(${slot.blurPx}px)` : undefined,
+            // Crop bias consumed by EdlVideo's object-position (FINDINGS §11):
+            // short slots show the TOP of the portrait source, not its middle.
+            ["--ossclip-obj-y" as string]: `${slot.objectPosY * 100}%`,
+          }}
+        >
           {children}
         </div>
         <div style={{ position: "absolute", inset: 0, background: "black", opacity: slot.dim }} />

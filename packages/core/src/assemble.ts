@@ -10,8 +10,9 @@ const DROP_BELOW_SEC = 0.8;
  * A graphic punches in, makes its point, and hands the frame back to the
  * speaker — it does not have to span the moment that motivated it. Keeps the
  * §4.5 pattern-interrupt rhythm instead of 10s static cards (FINDINGS §3).
+ * Exported: the beat scheduler budgets coverage with this same number (§7).
  */
-const MAX_SCENE_SEC = 5;
+export const MAX_SCENE_SEC = 5;
 /** Breathing room enforced between consecutive scenes. */
 const SCENE_GAP_SEC = 0.05;
 

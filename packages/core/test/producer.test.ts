@@ -2,20 +2,21 @@ import { describe, expect, it } from "vitest";
 import type { z } from "zod/v4";
 import type { LlmProvider } from "../src/producer/provider";
 import { MockProvider } from "../src/producer/mock";
-import { BeatSheetSchema, normalizeBeatSheet } from "../src/producer/beats";
+import { BeatSheetSchema, GRAPHICS_COVERAGE_TARGET, normalizeBeatSheet } from "../src/producer/beats";
 import { generateScenes } from "../src/producer/scene-props";
 import { produceScenes } from "../src/producer/index";
 import type { Transcript } from "../src/schema";
 import type { Moment } from "../src/producer/beats";
 
-const transcript: Transcript = {
+const mkTranscript = (n: number): Transcript => ({
   language: "en",
-  words: Array.from({ length: 12 }, (_, i) => ({
+  words: Array.from({ length: n }, (_, i) => ({
     text: `word${i}`,
     start: i * 0.5,
     end: i * 0.5 + 0.4,
   })),
-};
+});
+const transcript = mkTranscript(12);
 
 const moment = (sceneKind: Moment["sceneKind"]): Moment => ({
   startWord: 0,
@@ -64,40 +65,64 @@ describe("producer brain", () => {
         { startWord: 90, endWord: 95, purpose: "c", onScreenCopy: "C", sceneKind: "none" }, // beyond
       ],
     });
-    const { sheet: fixed, issues } = normalizeBeatSheet(sheet, 12);
+    const { sheet: fixed, issues } = normalizeBeatSheet(sheet, mkTranscript(12));
     expect(fixed.moments).toHaveLength(2);
     expect(fixed.moments[1]!.startWord).toBe(6);
     expect(issues.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("demotes excess graphics to 'none', sparing the hook and the payoff (FINDINGS §4)", () => {
-    const mk = (i: number, kind: Moment["sceneKind"]): Moment => ({
-      startWord: i * 2,
-      endWord: i * 2 + 1,
-      purpose: `m${i}`,
-      onScreenCopy: `M${i}`,
-      sceneKind: kind,
-    });
+  it("budgets graphics by COVERAGE and keeps survivors spread (FINDINGS §7/§8)", () => {
+    // 120 words → ~60s runtime; 8 moments of 15 words (≈7.4s each, est show 5s).
+    // 8×5s = 40s of graphics vs a budget of 45% × 59.9s ≈ 27s → demote 3.
+    const t = mkTranscript(120);
+    const kinds = ["TitleCard", "StatCard", "FlowDiagram", "RuleCard", "ChatMock", "TerminalMock", "StrikethroughReveal", "ScreenshotFrame"] as const;
     const sheet = BeatSheetSchema.parse({
       hook: "h",
-      // 7 of 8 moments carry graphics — the real-footage overshoot.
+      moments: kinds.map((k, i) => ({
+        startWord: i * 15,
+        endWord: i * 15 + 14,
+        purpose: `m${i}`,
+        onScreenCopy: `M${i}`,
+        sceneKind: k,
+      })),
+    });
+    const { sheet: fixed, issues } = normalizeBeatSheet(sheet, t);
+    const survivors = fixed.moments.flatMap((m, i) => (m.sceneKind !== "none" ? [i] : []));
+    const runtime = t.words[t.words.length - 1]!.end - t.words[0]!.start;
+    const shown = survivors.length * 5;
+    expect(shown).toBeLessThanOrEqual(GRAPHICS_COVERAGE_TARGET * runtime + 1e-6);
+    // Hook and payoff spared.
+    expect(fixed.moments[0]!.sceneKind).toBe("TitleCard");
+    expect(fixed.moments[7]!.sceneKind).toBe("ScreenshotFrame");
+    // No drought: consecutive survivors never more than ~1/3 of runtime apart.
+    const mids = survivors.map((i) => {
+      const m = fixed.moments[i]!;
+      return (t.words[m.startWord]!.start + t.words[m.endWord]!.end) / 2;
+    });
+    for (let i = 1; i < mids.length; i++) {
+      expect(mids[i]! - mids[i - 1]!).toBeLessThanOrEqual(runtime / 3 + 1e-6);
+    }
+    expect(issues.some((i) => i.issue.includes("coverage"))).toBe(true);
+  });
+
+  it("demotes the later of adjacent same-kind graphics even within budget (FINDINGS §9)", () => {
+    // 40 words ≈ 20s runtime → budget ≈ 9s; three ~2s graphics sit WELL
+    // within it, so only the variety pass can be responsible for a demotion.
+    const t = mkTranscript(40);
+    const sheet = BeatSheetSchema.parse({
+      hook: "h",
       moments: [
-        mk(0, "TitleCard"),
-        mk(1, "StatCard"),
-        mk(2, "FlowDiagram"),
-        mk(3, "none"),
-        mk(4, "TerminalMock"),
-        mk(5, "ChatMock"),
-        mk(6, "RuleCard"),
-        mk(7, "StrikethroughReveal"),
+        { startWord: 0, endWord: 3, purpose: "a", onScreenCopy: "A", sceneKind: "StatCard" },
+        { startWord: 4, endWord: 7, purpose: "b", onScreenCopy: "B", sceneKind: "StatCard" },
+        { startWord: 8, endWord: 11, purpose: "c", onScreenCopy: "C", sceneKind: "none" },
+        { startWord: 36, endWord: 39, purpose: "d", onScreenCopy: "D", sceneKind: "RuleCard" },
       ],
     });
-    const { sheet: fixed, issues } = normalizeBeatSheet(sheet, 100);
-    const graphics = fixed.moments.filter((m) => m.sceneKind !== "none");
-    expect(graphics.length).toBe(4); // floor(8/2)
-    expect(fixed.moments[0]!.sceneKind).toBe("TitleCard"); // hook spared
-    expect(fixed.moments[7]!.sceneKind).toBe("StrikethroughReveal"); // payoff spared
-    expect(issues.some((i) => i.issue.includes("graphics cap"))).toBe(true);
+    const { sheet: fixed, issues } = normalizeBeatSheet(sheet, t);
+    expect(fixed.moments[0]!.sceneKind).toBe("StatCard"); // hook spared
+    expect(fixed.moments[1]!.sceneKind).toBe("none"); // duplicate demoted
+    expect(fixed.moments[3]!.sceneKind).toBe("RuleCard"); // payoff spared
+    expect(issues.some((i) => i.issue.includes("duplicate adjacent"))).toBe(true);
   });
 
   it("retries once on invalid props, then succeeds", async () => {
