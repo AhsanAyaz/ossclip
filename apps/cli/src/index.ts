@@ -21,7 +21,12 @@ program
   .option("--cleanup <level>", "exact | light | standard | aggressive", "standard")
   .option("--transcript <path>", "inject a transcript JSON instead of running whisper")
   .option("--no-render", "stop after writing production.json / render props")
-  .option("--mezzanine", "re-encode a dense-keyframe mezzanine before rendering", false)
+  .option(
+    "--no-mezzanine",
+    "render straight from the source instead of a dense-keyframe mezzanine " +
+      "(also makes the source's folder the render server's public dir)",
+  )
+  .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
   .option("--workdir <dir>", "cache/work directory (default: <input dir>/.ossclip)")
   .action(async (input: string, opts) => {
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
@@ -32,6 +37,7 @@ program
       render: opts.render,
       mezzanine: opts.mezzanine,
       workdir: opts.workdir,
+      noiseDb: opts.noiseDb,
     });
   });
 
@@ -41,6 +47,7 @@ program
   .argument("<input>", "input video file")
   .option("--cleanup <level>", "exact | light | standard | aggressive", "standard")
   .option("--transcript <path>", "inject a transcript JSON instead of running whisper")
+  .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
   .option("--workdir <dir>", "cache/work directory")
   .action(async (input: string, opts) => {
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
@@ -50,6 +57,7 @@ program
       render: false,
       mezzanine: false,
       workdir: opts.workdir,
+      noiseDb: opts.noiseDb,
     });
   });
 

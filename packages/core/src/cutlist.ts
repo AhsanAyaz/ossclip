@@ -21,6 +21,13 @@ const TAIL_KEEP = 0.35;
 const MIN_REMOVAL = 0.15;
 /** Padding kept between a filler cut and its neighbor words. */
 const FILLER_NEIGHBOR_PAD = 0.02;
+/**
+ * Minimum audio kept at each end of a silence-derived cut, so a word's release
+ * and the next word's attack survive a slightly over-eager detector. Pause
+ * tightening usually reserves more than this; these are floors, not additions.
+ */
+const SILENCE_PAD_IN = 0.06;
+const SILENCE_PAD_OUT = 0.1;
 /** Kept fragments shorter than this (holding no word) are folded into the cut. */
 const MIN_KEEP = 0.25;
 
@@ -29,6 +36,11 @@ interface Removal {
   end: number;
   reason: RemovalReason;
   confidence: number;
+  /**
+   * Acoustic removals sit inside verified silence, so their boundaries may land
+   * inside a (stretched) word stamp; transcript-derived ones must not.
+   */
+  source: "acoustic" | "transcript";
 }
 
 export interface BuildCutlistArgs {
@@ -49,33 +61,34 @@ export function buildCutlist({ transcript, analysis, duration, level }: BuildCut
 
   const removals: Removal[] = [];
 
-  for (const pause of analysis.agreedPauses) {
+  for (const pause of analysis.cuttable) {
     const isLead = first !== undefined && pause.end <= first.start + 1e-6;
     const isTail = last !== undefined && pause.start >= last.end - 1e-6;
     if (isLead) {
       // Trim dead air before the first word down to LEAD_KEEP (hook starts fast).
       const end = Math.min(pause.end, (first?.start ?? pause.end) - LEAD_KEEP);
       if (end - pause.start >= MIN_REMOVAL) {
-        removals.push({ start: pause.start, end, reason: "silence", confidence: 0.95 });
+        removals.push({ start: pause.start, end, reason: "silence", confidence: 0.95, source: "acoustic" });
       }
     } else if (isTail) {
       const start = Math.max(pause.start, (last?.end ?? pause.start) + TAIL_KEEP);
       if (pause.end - start >= MIN_REMOVAL) {
-        removals.push({ start, end: pause.end, reason: "silence", confidence: 0.95 });
+        removals.push({ start, end: pause.end, reason: "silence", confidence: 0.95, source: "acoustic" });
       }
     } else {
       const pauseDur = pause.end - pause.start;
       if (pauseDur <= policy.pauseMin) continue;
       // Keep 40% of the residual gap after the previous word (trailing energy),
-      // 60% before the next (breath pre-roll).
-      const start = pause.start + policy.tightenTo * 0.4;
-      const end = pause.end - policy.tightenTo * 0.6;
+      // 60% before the next (breath pre-roll) — never less than the safety pads.
+      const start = pause.start + Math.max(policy.tightenTo * 0.4, SILENCE_PAD_IN);
+      const end = pause.end - Math.max(policy.tightenTo * 0.6, SILENCE_PAD_OUT);
       if (end - start >= MIN_REMOVAL) {
         removals.push({
           start,
           end,
           reason: pauseDur > 1.0 ? "silence" : "pause",
           confidence: 0.9,
+          source: "acoustic",
         });
       }
     }
@@ -90,7 +103,7 @@ export function buildCutlist({ transcript, analysis, duration, level }: BuildCut
       if (prev) start = Math.max(start, prev.end + FILLER_NEIGHBOR_PAD);
       if (next) end = Math.min(end, next.start - FILLER_NEIGHBOR_PAD);
       if (end - start >= 0.05) {
-        removals.push({ start, end, reason: "filler", confidence: 0.8 });
+        removals.push({ start, end, reason: "filler", confidence: 0.8, source: "transcript" });
       }
     }
   }
@@ -101,9 +114,13 @@ export function buildCutlist({ transcript, analysis, duration, level }: BuildCut
   }
   removals.sort((a, b) => a.start - b.start);
 
-  // A boundary must never land inside a word we intend to keep.
+  // A transcript-derived boundary must never land inside a word we intend to
+  // keep. Acoustic boundaries are exempt: whisper's `-ml 1` stamps stretch a
+  // word's end all the way to the next word's start, so a pause *always* looks
+  // like it is "inside" a word — applying this rule to them cancels every cut.
   const protectedWords = words.filter((_, i) => !fillerIndices.has(i));
   for (const r of removals) {
+    if (r.source !== "transcript") continue;
     for (const w of protectedWords) {
       if (r.start > w.start && r.start < w.end) r.start = w.end + FILLER_NEIGHBOR_PAD;
       if (r.end > w.start && r.end < w.end) r.end = w.start - FILLER_NEIGHBOR_PAD;

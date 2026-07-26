@@ -14,11 +14,19 @@ Requirements: Node ≥ 22, pnpm, `ffmpeg`/`ffprobe` on PATH, [whisper.cpp](https
 pnpm install
 
 # Full pipeline: transcribe → analyze → cut → captions → render 9:16
-pnpm --filter @ossclip/cli exec ossclip produce input.mp4 --cleanup standard -o out.mp4
+pnpm ossclip produce input.mp4 --cleanup standard -o out.mp4
 
 # Inspect what would be cut and why, without rendering
-pnpm --filter @ossclip/cli exec ossclip produce input.mp4 --inspect --no-render
+pnpm ossclip produce input.mp4 --no-render
+
+# Silence detection adapts to the take's own levels; override it if needed
+pnpm ossclip produce input.mp4 --noise-db -30
 ```
+
+Rendering goes through a dense-keyframe mezzanine built in the work directory.
+`--no-mezzanine` renders straight from the source, which also makes the
+source's own folder the render server's public directory — avoid it for files
+sitting in a folder you would not want served.
 
 Configuration (binary/model paths): `~/.ossclip/config.json` — see `apps/cli`.
 

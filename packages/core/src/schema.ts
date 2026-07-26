@@ -45,8 +45,11 @@ export const AnalysisSchema = z.object({
   silences: z.array(SpanSchema),
   /** Inter-word transcript gaps, incl. leading/trailing dead air. */
   gaps: z.array(SpanSchema),
-  /** Regions where acoustic silence and a transcript gap agree — safe to tighten. */
-  agreedPauses: z.array(SpanSchema),
+  /**
+   * Regions containing no audible speech, after transcript veto — the
+   * candidate pool every silence/pause cut is drawn from.
+   */
+  cuttable: z.array(SpanSchema),
   /** Standalone filler interjections (um, uh, …). */
   fillers: z.array(
     z.object({

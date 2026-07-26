@@ -53,7 +53,7 @@ apps/studio          # agent-native app (dormant until Phase 1)
 - Known issue: whisper word boundaries jitter ±50–150 ms. Phase 0 mitigation is **policy, not alignment**: cut padding (below) absorbs it. Forced alignment (WhisperX-style) is a Phase 2+ upgrade behind the same interface.
 
 ### 3. Analyze
-- **Silence:** ffmpeg `silencedetect` (start at −35 dB / 0.35 s min), cross-checked against transcript inter-word gaps (both signals must agree to cut).
+- **Silence:** ffmpeg `silencedetect` at an **adaptive** threshold (speech level − 12 dB, measured per take from 100 ms RMS windows; `--noise-db` overrides), 0.35 s minimum. Acoustics decide what is cuttable; the transcript only vetoes — see "Signal fusion" below.
 - **Fillers:** standalone interjections only (`um`, `uh`, `erm`, `hmm`, `uh-huh` …). Deliberately **not** touching "like"/"you know" without an LLM — false positives are worse than fillers.
 - **Long pauses:** inter-word gap > 700 ms → tighten to 220 ms.
 - **Cleanup levels:** `exact` (nothing) · `light` (silences > 1.2 s only) · `standard` (silences + interjections + pause tightening) · `aggressive` (thresholds 500 ms → 180 ms). These map to the "how much should I clean up?" chips in the eventual UI.
@@ -100,6 +100,38 @@ apps/studio          # agent-native app (dormant until Phase 1)
 
 LLM anything · scene graphics · SFX/BGM · retake detection · reframing · editable layers · studio UI · Tauri packaging.
 
+## Signal fusion — corrected 2026-07-26 (first real-footage run)
+
+The original rule was "cut only where a transcript gap and an acoustic silence
+agree". **On real whisper output it can never fire.** With `-ml 1` the word
+stamps are contiguous — each word's `end` IS the next word's `start` — so a
+pause is absorbed into the preceding word's duration and no transcript gap
+exists to agree with. Measured on a 68 s take: 164/167 boundaries contiguous,
+every detected silence landing *inside* a word, **0 agreed pauses, 0 cuts**.
+
+Three defects had to be fixed before anything cut at all:
+
+1. **Fixed −35 dB threshold.** Silence detection now measures the take's own
+   levels (100 ms RMS windows → p10 floor, p90 speech) and sets the threshold
+   at speech − 12 dB, clamped to [−40, −20] with headroom either side. It is
+   anchored to *speech*, not to the noise floor: measured room tone averaged
+   −49 dB but **peaked at −28 dB**, and `silencedetect` needs a continuous run
+   below the threshold, so anything under ≈ −27 dB shattered a 3 s pause into
+   0.4 s fragments. Means describe room tone; peaks decide detection.
+2. **The agreement gate.** Inverted: a region below the silence threshold has
+   no audible speech by definition, so it is cuttable. The transcript only
+   vetoes the case where a whole non-filler word is claimed to sit inside that
+   silence — and that veto is itself overridden when the region's **median**
+   window level is ≥ 25 dB below speech (whisper stamps words over dead air,
+   which otherwise cancels every lead-in trim). Median, not energy mean: one
+   speech window straddling a silence's edge drags an energy average from
+   −51 dB to −26 dB.
+3. **Word-boundary protection in `cutlist`.** It pushed any cut boundary out of
+   any word — and since stretched stamps mean every pause is "inside" a word,
+   it cancelled every acoustic cut. It now applies to transcript-derived
+   (filler) removals only; acoustic boundaries sit inside verified silence and
+   are protected instead by fixed pads (60 ms in, 100 ms out).
+
 ## Status — 2026-07-26
 
 Built and end-to-end verified in the dev container:
@@ -112,6 +144,27 @@ Remaining before calling M0.4 fully done (needs a real machine — the dev conta
 1. **Live whisper.cpp run** on real footage (the `-oj -ml 1` parser is unit-tested against the real output shape, but hasn't seen a live model in-container).
 2. **Acceptance pass on 3 real clips** (click-free cuts on headphones, punch-in feel, caption drift).
 3. `ossclip studio` smoke test (interactive; untestable headless).
+
+### Update — first run on real footage (macOS, whisper.cpp `base.en`)
+
+Item 1 is done, and it invalidated the fixture-only verification above: the
+deterministic fixture uses per-word espeak-ng synthesis, which leaves *digital*
+silence between words, so both the transcript-gap rule and the fixed −35 dB
+threshold worked there and could never work on a real recording. See
+"Signal fusion" above for the three defects and their fixes.
+
+- 68 s portrait take (1440×2560 HEVC): cuttable regions **0 → 8** after the fix.
+  All ≤ 0.44 s, i.e. below `standard`'s 0.7 s pause threshold, so 0 cuts is the
+  correct result for that take — it is delivered tightly, with no filler words
+  and no pause over ~0.55 s even at −20 dB. Renders 1080×1920 with captions and
+  active-word highlight.
+- Same footage with real room tone spliced in (3 s lead-in, 2.1 s mid-take, cut
+  from the take's own quiet region): **2 cuts, 10.9 % removed**; the rendered
+  output's leading silence measures 0.42 s (was 3.0 s), duration 46.7 s → 41.7 s.
+
+Still open: headphone pass for click-free cuts, caption drift at 90 s, the
+punch-in feel, `ossclip studio`, and the ≤ 2× real-time target (unmeasured — the
+first run included a one-time 93 MB Chrome Headless Shell download).
 
 ## Phase-0-specific risks
 

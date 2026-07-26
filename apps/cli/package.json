@@ -6,6 +6,9 @@
   "bin": {
     "ossclip": "./src/index.ts"
   },
+  "scripts": {
+    "ossclip": "tsx src/index.ts"
+  },
   "dependencies": {
     "@ossclip/core": "workspace:*",
     "@ossclip/renderer": "workspace:*",

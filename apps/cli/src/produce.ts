@@ -15,6 +15,7 @@ import {
   loadConfig,
   loudnorm,
   makeMezzanine,
+  measureLevels,
   probe,
   run,
   runWhisper,
@@ -32,6 +33,8 @@ export interface ProduceOptions {
   mezzanine: boolean;
   workdir?: string;
   inspect?: boolean;
+  /** Override the measured silence threshold (dBFS). */
+  noiseDb?: number;
 }
 
 function sha1File(path: string): Promise<string> {
@@ -112,9 +115,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   }
   await writeFile(transcriptCache, JSON.stringify(transcript, null, 2));
 
+  const levels = await measureLevels({ ffmpegPath: cfg.ffmpegPath }, audioPath);
+  console.log(
+    `▸ levels: floor ${levels.floorDb.toFixed(1)} dB · speech ${levels.speechDb.toFixed(1)} dB ` +
+      `→ silence threshold ${levels.thresholdDb.toFixed(1)} dB`,
+  );
   console.log("▸ analyzing silences…");
-  const silences = await detectSilences({ ffmpegPath: cfg.ffmpegPath }, audioPath);
-  const analysis = analyze(transcript, silences, sourceProbe.duration);
+  const silences = await detectSilences(
+    { ffmpegPath: cfg.ffmpegPath, noiseDb: opts.noiseDb ?? levels.thresholdDb },
+    audioPath,
+  );
+  const analysis = analyze(transcript, silences, sourceProbe.duration, levels);
   const cutlist = buildCutlist({
     transcript,
     analysis,
