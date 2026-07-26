@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
-import { captionAnchorAt } from "./stage";
+import { SAFE_AREA, captionAnchorAt } from "./stage";
 
 export interface CaptionTrackProps {
   lines: CaptionLine[];
@@ -36,8 +36,9 @@ const LineView: React.FC<{
           justifyContent: "center",
           gap: "0.28em",
           flexWrap: "wrap",
-          paddingLeft: 60,
-          paddingRight: 60,
+          // Keep caption text clear of the platform's right-hand action rail.
+          paddingLeft: `${SAFE_AREA.left * 100}%`,
+          paddingRight: `${SAFE_AREA.right * 100}%`,
           fontFamily:
             "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
           fontWeight: 900,
@@ -88,7 +89,6 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
     <AbsoluteFill>
       {lines.map((line, i) => {
         const anchor = cues.length > 0 ? captionAnchorAt(cues, line.start) : verticalAnchor;
-        if (anchor === null) return null;
         const from = Math.round(line.start * fps);
         const durationInFrames = Math.max(1, Math.round((line.end - line.start) * fps));
         return (

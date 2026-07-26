@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { SceneCue } from "@ossclip/core";
 import {
+  CAPTION_HALF_BAND,
   LAYOUT_TRANSITION_SEC,
+  SAFE_AREA,
+  SAFE_RECT,
   backdropOpacityAt,
   captionAnchorAt,
   layoutSlots,
@@ -33,12 +36,44 @@ describe("layoutSlots", () => {
     }
   });
 
-  it("only full-bleed and video-top show captions", () => {
-    expect(layoutSlots("full-bleed").captionAnchor).not.toBeNull();
-    expect(layoutSlots("video-top").captionAnchor).not.toBeNull();
-    expect(layoutSlots("pip-bubble").captionAnchor).toBeNull();
-    expect(layoutSlots("graphic-only").captionAnchor).toBeNull();
-    expect(layoutSlots("blurred-behind").captionAnchor).toBeNull();
+  it("every graphic slot sits inside the platform safe area", () => {
+    for (const layout of LayoutSchema.options) {
+      const g = layoutSlots(layout).graphic;
+      if (!g) continue;
+      expect(g.x, layout).toBeGreaterThanOrEqual(SAFE_RECT.x - 1e-9);
+      expect(g.y, layout).toBeGreaterThanOrEqual(SAFE_RECT.y - 1e-9);
+      expect(g.x + g.w, layout).toBeLessThanOrEqual(SAFE_RECT.x + SAFE_RECT.w + 1e-9);
+      expect(g.y + g.h, layout).toBeLessThanOrEqual(SAFE_RECT.y + SAFE_RECT.h + 1e-9);
+    }
+  });
+
+  it("every layout shows captions, inside the safe area, clear of the graphic (FINDINGS §2/§6)", () => {
+    for (const layout of LayoutSchema.options) {
+      const slots = layoutSlots(layout);
+      const a = slots.captionAnchor;
+      const bandTop = a - CAPTION_HALF_BAND;
+      const bandBottom = a + CAPTION_HALF_BAND;
+      expect(bandTop, layout).toBeGreaterThanOrEqual(SAFE_AREA.top);
+      expect(bandBottom, layout).toBeLessThanOrEqual(1 - SAFE_AREA.bottom + 1e-9);
+      if (slots.graphic) {
+        const overlap =
+          Math.min(bandBottom, slots.graphic.y + slots.graphic.h) - Math.max(bandTop, slots.graphic.y);
+        expect(overlap, `captions overlap graphic in ${layout}`).toBeLessThanOrEqual(0);
+      }
+    }
+  });
+
+  it("captions never cover a sharp, visible face", () => {
+    // video-top: the face fills the top block — the caption band starts below it.
+    const vt = layoutSlots("video-top");
+    expect(vt.captionAnchor - CAPTION_HALF_BAND).toBeGreaterThanOrEqual(
+      vt.video.rect.y + vt.video.rect.h,
+    );
+    // pip-bubble: band ends above the bubble.
+    const pip = layoutSlots("pip-bubble");
+    expect(pip.captionAnchor + CAPTION_HALF_BAND).toBeLessThanOrEqual(pip.video.rect.y);
+    // full-bleed: face occupies the upper half — captions stay in the lower third.
+    expect(layoutSlots("full-bleed").captionAnchor).toBeGreaterThanOrEqual(0.6);
   });
 
   it("pip video slot is square in pixels (a true circle)", () => {
@@ -77,10 +112,10 @@ describe("videoSlotAt", () => {
 
 describe("caption + backdrop timelines", () => {
   const cues = [cue("graphic-only", 2, 6)];
-  it("captions hidden while the graphic owns the frame, visible otherwise", () => {
-    expect(captionAnchorAt(cues, 1)).not.toBeNull();
-    expect(captionAnchorAt(cues, 4)).toBeNull();
-    expect(captionAnchorAt(cues, 8)).not.toBeNull();
+  it("captions stay visible while a graphic owns the frame, in its reserved band", () => {
+    expect(captionAnchorAt(cues, 1)).toBe(layoutSlots("full-bleed").captionAnchor);
+    expect(captionAnchorAt(cues, 4)).toBe(layoutSlots("graphic-only").captionAnchor);
+    expect(captionAnchorAt(cues, 8)).toBe(layoutSlots("full-bleed").captionAnchor);
   });
   it("backdrop fades in and out around the cue", () => {
     expect(backdropOpacityAt(cues, 1)).toBe(0);

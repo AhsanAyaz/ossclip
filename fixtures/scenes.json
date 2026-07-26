@@ -1,45 +1,102 @@
 [
   {
     "id": "hook-title",
-    "anchor": { "startWord": 0, "endWord": 2 },
+    "anchor": {
+      "startWord": 0,
+      "endWord": 2
+    },
     "layout": "pip-bubble",
     "component": "TitleCard",
-    "props": { "eyebrow": "OSSCLIP", "title": "the raw take", "emphasis": "100%", "sub": "local. open. yours." },
+    "props": {
+      "eyebrow": "OSSCLIP",
+      "title": "the raw take",
+      "emphasis": "100%",
+      "sub": "local. open. yours."
+    },
     "overrides": {}
   },
   {
     "id": "stat",
-    "anchor": { "startWord": 3, "endWord": 5 },
-    "layout": "pip-bubble",
+    "anchor": {
+      "startWord": 3,
+      "endWord": 5
+    },
+    "layout": "video-top",
     "component": "StatCard",
-    "props": { "label": "FILLERS CUT", "value": "+100%", "caption": "MORE SIGNAL. LESS UM.", "inverted": true },
+    "props": {
+      "label": "FILLERS CUT",
+      "value": "+100%",
+      "caption": "MORE SIGNAL. LESS UM.",
+      "inverted": true
+    },
     "overrides": {}
   },
   {
     "id": "flow",
-    "anchor": { "startWord": 6, "endWord": 8 },
+    "anchor": {
+      "startWord": 6,
+      "endWord": 8
+    },
     "layout": "graphic-only",
     "component": "FlowDiagram",
-    "props": { "nodes": ["RAW TAKE", "CUT", "PRODUCED"], "emphasizeLast": true },
+    "props": {
+      "nodes": [
+        "1 AGENT",
+        "1 LANE",
+        "1 DOD",
+        "SHIP IT"
+      ],
+      "emphasizeLast": true
+    },
     "overrides": {}
   },
   {
     "id": "strike",
-    "anchor": { "startWord": 9, "endWord": 10 },
+    "anchor": {
+      "startWord": 9,
+      "endWord": 10
+    },
     "layout": "blurred-behind",
     "component": "StrikethroughReveal",
-    "props": { "lines": [ { "text": "MORE WORDS", "struck": true }, { "text": "MORE SIGNAL", "struck": false } ] },
+    "props": {
+      "lines": [
+        {
+          "text": "MORE WORDS",
+          "struck": true
+        },
+        {
+          "text": "MORE SIGNAL",
+          "struck": false
+        }
+      ]
+    },
     "overrides": {}
   },
   {
     "id": "terminal",
-    "anchor": { "startWord": 11, "endWord": 12 },
+    "anchor": {
+      "startWord": 11,
+      "endWord": 12
+    },
     "layout": "graphic-only",
     "component": "TerminalMock",
     "props": {
       "windows": [
-        { "title": "ossclip-01", "lines": ["$ ossclip produce raw.mp4", "▸ transcribing…", "▸ cutting…"] },
-        { "title": "ossclip-02", "lines": ["▸ rendering…", "✓ done"] }
+        {
+          "title": "ossclip-01",
+          "lines": [
+            "$ ossclip produce raw.mp4",
+            "▸ transcribing…",
+            "▸ cutting…"
+          ]
+        },
+        {
+          "title": "ossclip-02",
+          "lines": [
+            "▸ rendering…",
+            "✓ done"
+          ]
+        }
       ],
       "fanOut": "OUTPUT ×1"
     },
@@ -47,26 +104,55 @@
   },
   {
     "id": "chat",
-    "anchor": { "startWord": 14, "endWord": 15 },
+    "anchor": {
+      "startWord": 14,
+      "endWord": 15
+    },
     "layout": "blurred-behind",
     "component": "ChatMock",
-    "props": { "messages": [ { "from": "user", "text": "can it cut my ums?" }, { "from": "agent", "text": "already did." } ] },
+    "props": {
+      "messages": [
+        {
+          "from": "user",
+          "text": "can it cut my ums?"
+        },
+        {
+          "from": "agent",
+          "text": "already did."
+        }
+      ]
+    },
     "overrides": {}
   },
   {
     "id": "shot",
-    "anchor": { "startWord": 16, "endWord": 18 },
+    "anchor": {
+      "startWord": 16,
+      "endWord": 18
+    },
     "layout": "video-top",
     "component": "ScreenshotFrame",
-    "props": { "label": "REVIEW STATUS: TODAY", "kenBurns": true },
+    "props": {
+      "label": "REVIEW STATUS: TODAY",
+      "kenBurns": true
+    },
     "overrides": {}
   },
   {
     "id": "rule",
-    "anchor": { "startWord": 19, "endWord": 21 },
-    "layout": "pip-bubble",
+    "anchor": {
+      "startWord": 19,
+      "endWord": 21
+    },
+    "layout": "video-top",
     "component": "RuleCard",
-    "props": { "kicker": "PRODUCER RULE", "text": "SHOW, THEN TELL", "struck": "NOT: WALLS OF TEXT" },
-    "overrides": { "kicker": "OSSCLIP RULE" }
+    "props": {
+      "kicker": "PRODUCER RULE",
+      "text": "SHOW, THEN TELL",
+      "struck": "NOT: WALLS OF TEXT"
+    },
+    "overrides": {
+      "kicker": "OSSCLIP RULE"
+    }
   }
 ]

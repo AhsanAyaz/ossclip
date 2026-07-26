@@ -10,9 +10,17 @@ import { type Layout, type SceneComponentId } from "./scene-schema";
 
 export const TitleCardProps = z.object({
   eyebrow: z.string().max(28).optional(),
-  title: z.string().min(1).max(48),
+  title: z
+    .string()
+    .min(1)
+    .max(48)
+    .describe("the claim WITHOUT the emphasis token — never repeat the emphasis here"),
   /** A huge emphasized token — a number or 1–2 punch words ("861%"). */
-  emphasis: z.string().max(16).optional(),
+  emphasis: z
+    .string()
+    .max(16)
+    .optional()
+    .describe("the number/punch token pulled OUT of the title (e.g. '861%') — not a duplicate of it"),
   sub: z.string().max(64).optional(),
 });
 
@@ -93,16 +101,20 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     whenToUse:
       "The core claim or hook as big typography; use `emphasis` for a huge number or punch word.",
   },
+  // Layout mix policy (FINDINGS §4): the speaker's face is the product.
+  // Stat/Rule cards sit UNDER a big face (video-top, the reference's
+  // signature frame); only TitleCard demotes it to a bubble, and only the
+  // diagram/terminal mocks may take the frame alone — briefly.
   StatCard: {
     propsSchema: StatCardProps,
     defaultProps: { label: "METRIC", value: "+0%" },
-    defaultLayout: "pip-bubble",
+    defaultLayout: "video-top",
     whenToUse: "One striking metric (value like '+242%', '×3', '5s'); punchline in `caption`.",
   },
   RuleCard: {
     propsSchema: RuleCardProps,
     defaultProps: { kicker: "RULE", text: "DO THE THING" },
-    defaultLayout: "pip-bubble",
+    defaultLayout: "video-top",
     whenToUse:
       "A prescriptive takeaway ('CAPACITY RULE / CAP ACTIVE AGENTS'); `struck` shows the rejected alternative.",
   },

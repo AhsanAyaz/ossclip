@@ -225,7 +225,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   console.log(report);
   console.log("");
 
-  const captionLines = buildCaptionLines(transcript, map);
+  const captionLines = buildCaptionLines(transcript, map, {
+    breakpoints: sceneCues.flatMap((c) => [c.startSec, c.endSec]),
+  });
 
   let renderVideo = input;
   if (opts.mezzanine) {

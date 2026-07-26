@@ -21,9 +21,34 @@ export interface VideoSlotState {
 export interface StageSlots {
   video: VideoSlotState;
   graphic: Rect | null;
-  /** Vertical anchor (fraction of frame height) for captions; null = hidden. */
-  captionAnchor: number | null;
+  /**
+   * Vertical center (fraction of frame height) for captions. Captions are
+   * NEVER hidden ("muted-viewing complete", BRAINSTORM §4.5) — each layout
+   * reserves a free band clear of the graphic, the platform chrome, and the
+   * un-blurred face (FINDINGS §2, §6).
+   */
+  captionAnchor: number;
 }
+
+/**
+ * Platform chrome insets — the union of Reels/TikTok/Shorts UI overlays
+ * (top: status bar + tabs, bottom: username/caption/ticker, right: action
+ * rail). All TEXT and GRAPHICS must stay inside; the video slot may bleed
+ * full-frame — a face under the chrome is fine, text under it is not.
+ * (FINDINGS §6a.)
+ */
+export const SAFE_AREA = { top: 0.12, bottom: 0.22, right: 0.16, left: 0.04 };
+
+/** The rect everything textual must live in. */
+export const SAFE_RECT: Rect = {
+  x: SAFE_AREA.left,
+  y: SAFE_AREA.top,
+  w: 1 - SAFE_AREA.left - SAFE_AREA.right,
+  h: 1 - SAFE_AREA.top - SAFE_AREA.bottom,
+};
+
+/** Approximate half-height of a caption line block, for free-band math/tests. */
+export const CAPTION_HALF_BAND = 0.045;
 
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
 
@@ -36,38 +61,46 @@ const PIP_RECT: Rect = {
   h: (PIP_DIAMETER_W * 1080) / 1920,
 };
 
-/** The stage's slot arrangement per layout (PHASE1 §1 table). */
+/**
+ * The stage's slot arrangement per layout (PHASE1 §1 table, safe-area'd per
+ * FINDINGS §6). Caption anchors sit in the free band each layout reserves:
+ *   full-bleed     → lower third, below the face, above the bottom inset
+ *   video-top      → the gap between the video block and the graphic
+ *   pip-bubble     → between the graphic and the bubble
+ *   graphic-only   → below the graphic (the layout reserves the band)
+ *   blurred-behind → below the centred graphic (face is blurred — no clash)
+ */
 export function layoutSlots(layout: Layout): StageSlots {
   switch (layout) {
     case "full-bleed":
       return {
         video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1 },
         graphic: null,
-        captionAnchor: 0.76,
+        captionAnchor: 0.7,
       };
     case "video-top":
       return {
-        video: { rect: { x: 0, y: 0, w: 1, h: 0.45 }, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1 },
-        graphic: { x: 0.05, y: 0.48, w: 0.9, h: 0.44 },
-        captionAnchor: 0.38,
+        video: { rect: { x: 0, y: 0, w: 1, h: 0.42 }, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1 },
+        graphic: { x: 0.04, y: 0.54, w: 0.8, h: 0.24 },
+        captionAnchor: 0.48,
       };
     case "pip-bubble":
       return {
         video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 1 },
-        graphic: { x: 0.06, y: 0.1, w: 0.88, h: 0.52 },
-        captionAnchor: null,
+        graphic: { x: 0.06, y: 0.14, w: 0.78, h: 0.42 },
+        captionAnchor: 0.61,
       };
     case "graphic-only":
       return {
         video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 0 },
-        graphic: { x: 0.06, y: 0.1, w: 0.88, h: 0.8 },
-        captionAnchor: null,
+        graphic: { x: 0.04, y: 0.14, w: 0.8, h: 0.54 },
+        captionAnchor: 0.73,
       };
     case "blurred-behind":
       return {
         video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1 },
-        graphic: { x: 0.07, y: 0.3, w: 0.86, h: 0.4 },
-        captionAnchor: null,
+        graphic: { x: 0.07, y: 0.24, w: 0.77, h: 0.36 },
+        captionAnchor: 0.69,
       };
   }
 }
@@ -128,8 +161,11 @@ export function videoSlotAt(cues: readonly SceneCue[], tSec: number): VideoSlotS
   return target;
 }
 
-/** Caption anchor at time t (null = captions hidden while this cue owns the frame). */
-export function captionAnchorAt(cues: readonly SceneCue[], tSec: number): number | null {
+/**
+ * Caption anchor at time t. Resolved from the settled layout at the line's
+ * start (never animated — a caption sliding mid-word reads as a bug).
+ */
+export function captionAnchorAt(cues: readonly SceneCue[], tSec: number): number {
   const cue = activeCueAt(cues, tSec);
   return cue ? layoutSlots(cue.layout).captionAnchor : layoutSlots("full-bleed").captionAnchor;
 }

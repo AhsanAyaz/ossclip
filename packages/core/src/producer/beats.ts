@@ -32,7 +32,9 @@ Virality grammar — follow these as hard policies:
 - Use contrast/negation beats (StrikethroughReveal, RuleCard with struck alternatives) when the speaker rejects an idea.
 - End with a payoff or takeaway moment.
 - Moments must be contiguous-ish spans of the transcript, 5-10 seconds of speech each, in transcript order, non-overlapping.
-- Most videos need 4-8 moments; at most half should carry graphics — the speaker's face is the product.`;
+- HARD CAP: with N moments, at most floor(N/2) may have a sceneKind other than "none". Count them before you answer; if over, demote the weakest graphics to "none". The speaker's face is the product.
+- Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.
+- Graphics punch in for a few seconds and hand the frame back; they never need to span their whole moment.`;
 
 export function buildBeatsUserPrompt(
   transcript: Transcript,
@@ -89,6 +91,22 @@ export function normalizeBeatSheet(
     }
     moments.push(m);
   }
+
+  // Deterministic enforcement of the at-most-half graphics cap (FINDINGS §4):
+  // the prompt states it, but the model overshoots — demote the latest
+  // graphics to "none", sparing the hook (first) and the payoff (last).
+  const cap = Math.max(1, Math.floor(moments.length / 2));
+  const graphicIndices = moments.flatMap((m, i) => (m.sceneKind !== "none" ? [i] : []));
+  if (graphicIndices.length > cap) {
+    const protectedIdx = new Set([graphicIndices[0], graphicIndices[graphicIndices.length - 1]]);
+    const demotable = graphicIndices.filter((i) => !protectedIdx.has(i)).reverse();
+    for (const i of demotable) {
+      if (moments.filter((m) => m.sceneKind !== "none").length <= cap) break;
+      issues.push({ moment: i, issue: `demoted ${moments[i]!.sceneKind} to "none" (graphics cap ${cap})` });
+      moments[i] = { ...moments[i]!, sceneKind: "none" };
+    }
+  }
+
   return { sheet: { hook: sheet.hook, moments }, issues };
 }
 

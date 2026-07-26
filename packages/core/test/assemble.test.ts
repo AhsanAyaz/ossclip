@@ -65,6 +65,12 @@ describe("assembleScenes", () => {
     expect(b.startSec).toBeCloseTo(1.5, 5);
   });
 
+  it("caps scene duration so graphics hand the frame back (FINDINGS §3)", () => {
+    // Words 0..9 span the full 5s take — without the cap this cue would too.
+    const { cues } = assembleScenes([scene("long", 0, 9)], transcript, identity);
+    expect(cues[0]!.endSec - cues[0]!.startSec).toBeLessThanOrEqual(5 + 1e-9);
+  });
+
   it("keeps scenes exclusive and enforces minimum duration", () => {
     const { cues } = assembleScenes(
       [scene("one", 0, 1), scene("two", 1, 2), scene("three", 8, 9)],

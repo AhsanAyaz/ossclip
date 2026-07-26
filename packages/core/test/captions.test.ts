@@ -54,6 +54,20 @@ describe("buildCaptionLines", () => {
     expect(also.start).toBeCloseTo(1.2, 6); // 3.2 source − 2 s removed
   });
 
+  it("splits lines at scene boundaries and clamps holds to them (FINDINGS §6b)", () => {
+    const transcript: Transcript = {
+      language: "en",
+      words: [
+        { text: "before", start: 0.0, end: 0.4 },
+        { text: "after", start: 0.6, end: 1.0 }, // scene boundary at 0.5 sits between them
+      ],
+    };
+    const lines = buildCaptionLines(transcript, identity(3), { breakpoints: [0.5] });
+    expect(lines).toHaveLength(2); // would be one line without the boundary
+    expect(lines[0]!.end).toBeLessThanOrEqual(0.5 + 1e-9); // hold clamped at the boundary
+    expect(lines[1]!.start).toBeCloseTo(0.6, 6);
+  });
+
   it("never extends a line past the next line or the output end", () => {
     const transcript: Transcript = {
       language: "en",

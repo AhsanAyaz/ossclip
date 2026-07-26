@@ -70,6 +70,36 @@ describe("producer brain", () => {
     expect(issues.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("demotes excess graphics to 'none', sparing the hook and the payoff (FINDINGS §4)", () => {
+    const mk = (i: number, kind: Moment["sceneKind"]): Moment => ({
+      startWord: i * 2,
+      endWord: i * 2 + 1,
+      purpose: `m${i}`,
+      onScreenCopy: `M${i}`,
+      sceneKind: kind,
+    });
+    const sheet = BeatSheetSchema.parse({
+      hook: "h",
+      // 7 of 8 moments carry graphics — the real-footage overshoot.
+      moments: [
+        mk(0, "TitleCard"),
+        mk(1, "StatCard"),
+        mk(2, "FlowDiagram"),
+        mk(3, "none"),
+        mk(4, "TerminalMock"),
+        mk(5, "ChatMock"),
+        mk(6, "RuleCard"),
+        mk(7, "StrikethroughReveal"),
+      ],
+    });
+    const { sheet: fixed, issues } = normalizeBeatSheet(sheet, 100);
+    const graphics = fixed.moments.filter((m) => m.sceneKind !== "none");
+    expect(graphics.length).toBe(4); // floor(8/2)
+    expect(fixed.moments[0]!.sceneKind).toBe("TitleCard"); // hook spared
+    expect(fixed.moments[7]!.sceneKind).toBe("StrikethroughReveal"); // payoff spared
+    expect(issues.some((i) => i.issue.includes("graphics cap"))).toBe(true);
+  });
+
   it("retries once on invalid props, then succeeds", async () => {
     const provider = new ScriptedProvider([
       { title: "" }, // schema-invalid → thrown by schema.parse inside provider

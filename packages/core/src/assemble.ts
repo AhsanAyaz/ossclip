@@ -6,6 +6,12 @@ import type { TimeMap } from "./timemap";
 /** Scenes shorter than this on screen get extended; still shorter → dropped. */
 const MIN_SCENE_SEC = 1.2;
 const DROP_BELOW_SEC = 0.8;
+/**
+ * A graphic punches in, makes its point, and hands the frame back to the
+ * speaker — it does not have to span the moment that motivated it. Keeps the
+ * §4.5 pattern-interrupt rhythm instead of 10s static cards (FINDINGS §3).
+ */
+const MAX_SCENE_SEC = 5;
 /** Breathing room enforced between consecutive scenes. */
 const SCENE_GAP_SEC = 0.05;
 
@@ -69,7 +75,7 @@ export function assembleScenes(
     if (cue.endSec - cue.startSec < MIN_SCENE_SEC) {
       cue.endSec = cue.startSec + MIN_SCENE_SEC;
     }
-    cue.endSec = Math.min(cue.endSec, map.outputDuration);
+    cue.endSec = Math.min(cue.endSec, cue.startSec + MAX_SCENE_SEC, map.outputDuration);
     if (cue.endSec - cue.startSec < DROP_BELOW_SEC) {
       dropped.push({ id: cue.id, reason: "too short after clamping" });
       continue;

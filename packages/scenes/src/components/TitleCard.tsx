@@ -10,6 +10,11 @@ export const TitleCard: React.FC<{ props: z.infer<typeof TitleCardProps>; theme:
   const p0 = useEnter(0);
   const p1 = useEnter(5);
   const p2 = useEnter(10);
+  // The producer sometimes emits the same string for both fields; the huge
+  // emphasis wins and the redundant title is skipped (FINDINGS §5).
+  const emphasis = props.emphasis?.trim();
+  const titleIsRedundant =
+    !!emphasis && emphasis.toLowerCase().includes(props.title.trim().toLowerCase());
   return (
     <div
       style={{
@@ -37,23 +42,25 @@ export const TitleCard: React.FC<{ props: z.infer<typeof TitleCardProps>; theme:
           {props.eyebrow}
         </div>
       ) : null}
-      {props.emphasis ? (
+      {emphasis ? (
         <div style={{ ...rise(p1, 40), fontSize: 210, fontWeight: 900, lineHeight: 0.95 }}>
-          {props.emphasis}
+          {emphasis}
         </div>
       ) : null}
-      <div
-        style={{
-          ...rise(props.emphasis ? p2 : p1, 34),
-          fontSize: props.emphasis ? 64 : 96,
-          fontWeight: 900,
-          lineHeight: 1.05,
-          textTransform: "uppercase",
-          letterSpacing: "0.02em",
-        }}
-      >
-        {props.title}
-      </div>
+      {!titleIsRedundant ? (
+        <div
+          style={{
+            ...rise(emphasis ? p2 : p1, 34),
+            fontSize: emphasis ? 64 : 96,
+            fontWeight: 900,
+            lineHeight: 1.05,
+            textTransform: "uppercase",
+            letterSpacing: "0.02em",
+          }}
+        >
+          {props.title}
+        </div>
+      ) : null}
       {props.sub ? (
         <div style={{ ...rise(p2), fontSize: 40, fontWeight: 600, color: theme.muted }}>
           {props.sub}
