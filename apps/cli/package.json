@@ -1,0 +1,15 @@
+{
+  "name": "@ossclip/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ossclip": "./src/index.ts"
+  },
+  "dependencies": {
+    "@ossclip/core": "workspace:*",
+    "@ossclip/renderer": "workspace:*",
+    "commander": "^12.1.0",
+    "tsx": "^4.19.0"
+  }
+}

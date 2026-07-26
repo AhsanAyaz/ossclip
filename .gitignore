@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.ossclip/
+*.log
+.DS_Store
+fixtures/*.mp4
+fixtures/*.wav
+fixtures/work/

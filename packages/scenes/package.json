@@ -1,0 +1,21 @@
+{
+  "name": "@ossclip/scenes",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@ossclip/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.1",
+    "remotion": "^4.0.0"
+  }
+}

@@ -1,0 +1,93 @@
+import { z } from "zod";
+
+/** A single transcribed word, in SOURCE time (seconds). */
+export const WordSchema = z.object({
+  text: z.string(),
+  start: z.number().nonnegative(),
+  end: z.number().nonnegative(),
+  conf: z.number().min(0).max(1).optional(),
+});
+export type Word = z.infer<typeof WordSchema>;
+
+export const TranscriptSchema = z.object({
+  language: z.string().default("en"),
+  words: z.array(WordSchema),
+});
+export type Transcript = z.infer<typeof TranscriptSchema>;
+
+export const CleanupLevelSchema = z.enum(["exact", "light", "standard", "aggressive"]);
+export type CleanupLevel = z.infer<typeof CleanupLevelSchema>;
+
+export const RemovalReasonSchema = z.enum(["silence", "pause", "filler", "retake", "user"]);
+export type RemovalReason = z.infer<typeof RemovalReasonSchema>;
+
+/**
+ * One span of the source timeline. The cutlist is a full partition of
+ * [0, source duration]: every instant is either kept or removed, with a reason.
+ */
+export const SegmentSchema = z.object({
+  srcIn: z.number().nonnegative(),
+  srcOut: z.number().nonnegative(),
+  kind: z.enum(["keep", "remove"]),
+  reason: RemovalReasonSchema.optional(),
+  confidence: z.number().min(0).max(1).optional(),
+});
+export type Segment = z.infer<typeof SegmentSchema>;
+
+export const SpanSchema = z.object({
+  start: z.number(),
+  end: z.number(),
+});
+export type Span = z.infer<typeof SpanSchema>;
+
+export const AnalysisSchema = z.object({
+  /** Acoustic silences (ffmpeg silencedetect), source time. */
+  silences: z.array(SpanSchema),
+  /** Inter-word transcript gaps, incl. leading/trailing dead air. */
+  gaps: z.array(SpanSchema),
+  /** Regions where acoustic silence and a transcript gap agree — safe to tighten. */
+  agreedPauses: z.array(SpanSchema),
+  /** Standalone filler interjections (um, uh, …). */
+  fillers: z.array(
+    z.object({
+      wordIndex: z.number().int(),
+      text: z.string(),
+      start: z.number(),
+      end: z.number(),
+    }),
+  ),
+});
+export type Analysis = z.infer<typeof AnalysisSchema>;
+
+export const ProbeSchema = z.object({
+  duration: z.number().positive(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fps: z.number().positive(),
+  hasAudio: z.boolean(),
+});
+export type Probe = z.infer<typeof ProbeSchema>;
+
+export const RenderSettingsSchema = z.object({
+  width: z.number().int().positive().default(1080),
+  height: z.number().int().positive().default(1920),
+  fps: z.number().positive().default(30),
+});
+export type RenderSettings = z.infer<typeof RenderSettingsSchema>;
+
+/** The single source of truth for a production. Every pipeline stage is a pure function over this. */
+export const ProductionSchema = z.object({
+  version: z.literal(1),
+  source: z.object({
+    path: z.string(),
+    probe: ProbeSchema,
+    audioPath: z.string().optional(),
+    mezzaninePath: z.string().optional(),
+  }),
+  cleanup: CleanupLevelSchema,
+  transcript: TranscriptSchema.optional(),
+  analysis: AnalysisSchema.optional(),
+  cutlist: z.array(SegmentSchema).optional(),
+  render: RenderSettingsSchema,
+});
+export type Production = z.infer<typeof ProductionSchema>;

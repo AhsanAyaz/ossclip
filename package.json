@@ -1,0 +1,21 @@
+{
+  "name": "ossclip-monorepo",
+  "private": true,
+  "version": "0.0.1",
+  "description": "ossclip — open, local-first AI video producer",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --build --noEmit false --dry false 2>/dev/null || pnpm -r --parallel exec tsc --noEmit",
+    "fixture": "node scripts/make-fixture.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "fast-check": "^3.23.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
