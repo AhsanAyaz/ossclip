@@ -4,7 +4,7 @@
 
 Your footage never leaves your machine: transcription runs locally (whisper.cpp), rendering runs locally (Remotion), and the only network calls are LLM planning with your own Claude or Gemini API key.
 
-> Status: **Phase 0 — Prove the Cut.** See [`BRAINSTORM.md`](./BRAINSTORM.md) for the full design and [`docs/PHASE0.md`](./docs/PHASE0.md) for the current implementation plan.
+> Status: **Phase 0 — Prove the Cut** (cut, captions, punch-in, render). Scene graphics, title cards and the LLM producer are **not built yet** — that is [`docs/PHASE1.md`](./docs/PHASE1.md), the next plan to pick up. See [`BRAINSTORM.md`](./BRAINSTORM.md) for the full design and [`docs/PHASE0.md`](./docs/PHASE0.md) for what Phase 0 covers.
 
 ## Quick start (Phase 0)
 
