@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 
 /** A single transcribed word, in SOURCE time (seconds). */
 export const WordSchema = z.object({
@@ -78,6 +78,8 @@ export const RenderSettingsSchema = z.object({
 });
 export type RenderSettings = z.infer<typeof RenderSettingsSchema>;
 
+import { SceneSchema, ThemeSchema } from "./scene-schema";
+
 /** The single source of truth for a production. Every pipeline stage is a pure function over this. */
 export const ProductionSchema = z.object({
   version: z.literal(1),
@@ -88,9 +90,13 @@ export const ProductionSchema = z.object({
     mezzaninePath: z.string().optional(),
   }),
   cleanup: CleanupLevelSchema,
+  /** User intent for the producer brain ("educational video about agents…"). */
+  intent: z.string().optional(),
   transcript: TranscriptSchema.optional(),
   analysis: AnalysisSchema.optional(),
   cutlist: z.array(SegmentSchema).optional(),
+  scenes: z.array(SceneSchema).optional(),
+  theme: ThemeSchema.optional(),
   render: RenderSettingsSchema,
 });
 export type Production = z.infer<typeof ProductionSchema>;

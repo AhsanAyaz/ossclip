@@ -152,6 +152,20 @@ Remotion `<Player>` on the same composition, fed the same props JSON, in a minim
 | M1.4 | Producer brain | `--produce` on a real take yields a valid, watchable production; invalid scenes degrade gracefully |
 | M1.5 | Preview | `<Player>` page shows the produced composition; `ossclip studio` works with scenes |
 
+## Status — 2026-07-26
+
+Built and verified in the dev container (M1.1–M1.4; M1.5's `ossclip studio` path carries over unchanged, the `<Player>` page spike is still open):
+
+- **Stage + 5 layouts (M1.1):** `layoutSlots`/`videoSlotAt` pure math with eased morphs at cue boundaries; the EDL video stays mounted through every layout so the base audio is continuous (verified: full-length audio on an 8-scene render). Backdrop fade, circular pip mask, blur+dim all render.
+- **Scene library (M1.2):** all 8 components render from JSON with entrance springs and theme tokens; `fixtures/scenes.json` exercises every component and every layout; frame-extracted stills match the reference grammar (pip TitleCard, emphasized FlowDiagram chip, blurred StrikethroughReveal, video-top ScreenshotFrame with in-slot captions).
+- **Assembly + anchors (M1.3):** word-index anchors resolve through the TimeMap; cut anchors drop; exclusivity + min-duration enforced; overrides merge over props and survive re-plan (registry-level resolution order tested); cleanup-level regression test green.
+- **Producer brain (M1.4):** two-call pipeline (beat sheet → per-moment props) behind `LlmProvider`; Claude via SDK `messages.parse` + `zodOutputFormat` (refusal/truncation handled), Gemini via REST JSON-mode + client-side zod, deterministic `MockProvider`; retry-once-then-TitleCard-fallback tested (valid / invalid-then-valid / always-failing / truncated); semantic beat normalization (clamp, de-overlap) tested. `--produce --llm mock` runs the whole path offline through the CLI.
+- 59 tests green workspace-wide (23 new for Phase 1); typecheck clean.
+
+**Pending real hardware/keys:** a live `--produce --llm claude` (and `gemini`) run on real footage — no API keys in the dev container; the provider adapters are code-complete and the mock exercises the identical pipeline. Also pending: the `<Player>` preview page (M1.5 spike, allowed to slip per §6) and a visual QA pass on real footage.
+
+**Implementation note:** browser-bundled code must import from `@ossclip/core/browser` (scene schema/registry/types only) — importing the core barrel drags Node built-ins into the Remotion bundle and breaks webpack.
+
 ## Out of scope (resist)
 
 Direct manipulation / editable layers (Phase 2 — but the `overrides` field ships now so it is cheap later) · SFX & BGM · image-gen B-roll · retake detection · face-tracked reframing · freeform TSX escape hatch · the full agent-native studio shell · clipper mode.

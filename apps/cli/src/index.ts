@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
+import { z } from "zod/v4";
 import { CleanupLevelSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { produce } from "./produce";
@@ -28,8 +29,16 @@ program
   )
   .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
   .option("--workdir <dir>", "cache/work directory (default: <input dir>/.ossclip)")
+  .option("--produce", "run the LLM producer brain to plan title cards & graphics", false)
+  .option("--intent <text>", "what the video should be ('educational video about agents…')")
+  .option("--llm <provider>", "claude | gemini | mock (default claude; keys via ANTHROPIC_API_KEY / GEMINI_API_KEY)")
+  .option("--llm-model <id>", "override the provider's default model")
+  .option("--scenes <path>", "hand-authored scenes JSON (Scene[]) — no LLM in the loop")
   .action(async (input: string, opts) => {
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
+    const provider = opts.llm
+      ? z.enum(["claude", "gemini", "mock"]).parse(opts.llm)
+      : undefined;
     await produce(input, {
       out: opts.out,
       cleanup,
@@ -38,6 +47,11 @@ program
       mezzanine: opts.mezzanine,
       workdir: opts.workdir,
       noiseDb: opts.noiseDb,
+      produce: opts.produce,
+      intent: opts.intent,
+      provider,
+      llmModel: opts.llmModel,
+      scenes: opts.scenes,
     });
   });
 

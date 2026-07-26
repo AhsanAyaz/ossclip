@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 import { AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
-import type { KeptSpan } from "@ossclip/core";
+import type { KeptSpan } from "@ossclip/core/browser";
 
 export interface EdlVideoProps {
   src: string;

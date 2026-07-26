@@ -7,7 +7,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ossclip/core": "workspace:*"
+    "@ossclip/core": "workspace:*",
+    "zod": "^3.25.0"
   },
   "peerDependencies": {
     "react": ">=18",

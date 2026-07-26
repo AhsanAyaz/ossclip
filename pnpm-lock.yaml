@@ -38,11 +38,17 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.23.1
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
 
   packages/core:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.115.0
+        version: 0.115.0(zod@3.25.76)
       zod:
-        specifier: ^3.24.0
+        specifier: ^3.25.0
         version: 3.25.76
 
   packages/renderer:
@@ -84,6 +90,9 @@ importers:
       '@ossclip/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
     devDependencies:
       '@types/react':
         specifier: ^18.3.0
@@ -96,6 +105,15 @@ importers:
         version: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
 
 packages:
+
+  '@anthropic-ai/sdk@0.115.0':
+    resolution: {integrity: sha512-BJrFIVyjNuU8lfDyIJTvlRYzgQg+zEl78BxE7fq8esULsGz9IRQvGtW5spq3tydmtjQb/GFdooKGdGsetpx+lQ==}
+    hasBin: true
+    peerDependencies:
+      zod: ^3.25.0 || ^4.0.0
+    peerDependenciesMeta:
+      zod:
+        optional: true
 
   '@babel/code-frame@7.29.7':
     resolution: {integrity: sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==}
@@ -156,6 +174,10 @@ packages:
     resolution: {integrity: sha512-hnORnjP/1P/zFEndoeX+n+t1RwWRJiJpM/jO7FW32Kn9r5+sJB2JWOdYo4L6k78j15eCwY3Gm/7364B1EMwtNg==}
     engines: {node: '>=6.0.0'}
     hasBin: true
+
+  '@babel/runtime@7.29.7':
+    resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
+    engines: {node: '>=6.9.0'}
 
   '@babel/template@7.29.7':
     resolution: {integrity: sha512-puq+Gf35oI24FeN11LkoUQFqv9uwNeWpxXZi/Ji3rRIoKAzKnxRaZ+Gkj0vKS9ZCiTESfng1N9LyOyXvo+m+Gg==}
@@ -858,6 +880,9 @@ packages:
       webpack-hot-middleware:
         optional: true
 
+  '@stablelib/base64@1.0.1':
+    resolution: {integrity: sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ==}
+
   '@svgr/babel-plugin-add-jsx-attribute@8.0.0':
     resolution: {integrity: sha512-b9MIk7yhdS1pMCZM8VeNfUlSKVRhsHZNMl5O9SfaX0l0t5wjdgu4IDzGB8bpnGBBOjGST3rRFVsaaEtI4W6f7g==}
     engines: {node: '>=14'}
@@ -1266,6 +1291,9 @@ packages:
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
+  fast-sha256@1.3.0:
+    resolution: {integrity: sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ==}
+
   fast-uri@3.1.4:
     resolution: {integrity: sha512-8JnbkQ4juDyvYs4mgFGQqg4yCYtFDtUtmp2QIQq11ZZe5CFQ5wcqm1rqDgAh/QdMySuBnPzMUiJUNZG5N/AiQw==}
 
@@ -1349,6 +1377,10 @@ packages:
 
   json-parse-even-better-errors@2.3.1:
     resolution: {integrity: sha512-xyFwyhro/JEof6Ghe2iz2NcXoj2sloNsWr/XsERDK/oiPCfaNhl5ONfp+jQdAZRQQ0IJWNzH9zIZF7li91kh2w==}
+
+  json-schema-to-ts@3.1.1:
+    resolution: {integrity: sha512-+DWg8jCJG2TEnpy7kOm/7/AxaYoaRbjVB4LFZLySZlWn8exGs3A4OLJR966cVvU26N7X9TWxl+Jsw7dzAqKT6g==}
+    engines: {node: '>=16'}
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
@@ -1627,6 +1659,9 @@ packages:
   stackframe@1.3.4:
     resolution: {integrity: sha512-oeVtt7eWQS+Na6F//S4kJ2K2VbRlS9D43mAlMyVpVWovy9o+jfgH8O9agzANzaiLjclA0oYzUXEM4PurhSUChw==}
 
+  standardwebhooks@1.0.0:
+    resolution: {integrity: sha512-BbHGOQK9olHPMvQNHWul6MYlrRTAOKn03rOe4A8O3CLWhNf4YHBqq2HJKKC+sfqpxiBY52pNeesD6jIiLDz8jg==}
+
   std-env@3.10.0:
     resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
 
@@ -1726,6 +1761,9 @@ packages:
 
   tr46@1.0.1:
     resolution: {integrity: sha512-dTpowEjclQ7Kgx5SdBkqRzVhERQXov8/l9Ft9dVM9fmg0W0KQSVaXX9T4i6twCPNtYiZM53lpSSUAwJbFPOHxA==}
+
+  ts-algebra@2.0.0:
+    resolution: {integrity: sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw==}
 
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
@@ -1873,6 +1911,13 @@ packages:
 
 snapshots:
 
+  '@anthropic-ai/sdk@0.115.0(zod@3.25.76)':
+    dependencies:
+      json-schema-to-ts: 3.1.1
+      standardwebhooks: 1.0.0
+    optionalDependencies:
+      zod: 3.25.76
+
   '@babel/code-frame@7.29.7':
     dependencies:
       '@babel/helper-validator-identifier': 7.29.7
@@ -1953,6 +1998,8 @@ snapshots:
   '@babel/parser@7.29.7':
     dependencies:
       '@babel/types': 7.29.7
+
+  '@babel/runtime@7.29.7': {}
 
   '@babel/template@7.29.7':
     dependencies:
@@ -2581,6 +2628,8 @@ snapshots:
       html-entities: 2.6.0
       react-refresh: 0.18.0
 
+  '@stablelib/base64@1.0.1': {}
+
   '@svgr/babel-plugin-add-jsx-attribute@8.0.0(@babel/core@7.29.7)':
     dependencies:
       '@babel/core': 7.29.7
@@ -3046,6 +3095,8 @@ snapshots:
 
   fast-deep-equal@3.1.3: {}
 
+  fast-sha256@1.3.0: {}
+
   fast-uri@3.1.4: {}
 
   fs-monkey@1.0.3: {}
@@ -3103,6 +3154,11 @@ snapshots:
   jsesc@3.1.0: {}
 
   json-parse-even-better-errors@2.3.1: {}
+
+  json-schema-to-ts@3.1.1:
+    dependencies:
+      '@babel/runtime': 7.29.7
+      ts-algebra: 2.0.0
 
   json-schema-traverse@1.0.0: {}
 
@@ -3367,6 +3423,11 @@ snapshots:
 
   stackframe@1.3.4: {}
 
+  standardwebhooks@1.0.0:
+    dependencies:
+      '@stablelib/base64': 1.0.1
+      fast-sha256: 1.3.0
+
   std-env@3.10.0: {}
 
   strip-final-newline@2.0.0: {}
@@ -3418,6 +3479,8 @@ snapshots:
   tr46@1.0.1:
     dependencies:
       punycode: 2.3.1
+
+  ts-algebra@2.0.0: {}
 
   tslib@2.8.1: {}
 

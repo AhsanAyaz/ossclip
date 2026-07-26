@@ -3,12 +3,17 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { z } from "zod/v4";
 import {
+  SceneSchema,
   TimeMap,
   TranscriptSchema,
   analyze,
+  assembleScenes,
   buildCaptionLines,
   buildCutlist,
+  createProvider,
+  defaultTheme,
   detectSilences,
   extractAudio,
   formatCutReport,
@@ -17,10 +22,13 @@ import {
   makeMezzanine,
   measureLevels,
   probe,
+  produceScenes,
   run,
   runWhisper,
   type CleanupLevel,
   type Production,
+  type ProviderName,
+  type Scene,
   type Transcript,
 } from "@ossclip/core";
 import { renderProduction } from "@ossclip/renderer";
@@ -35,6 +43,13 @@ export interface ProduceOptions {
   inspect?: boolean;
   /** Override the measured silence threshold (dBFS). */
   noiseDb?: number;
+  /** Hand-authored scenes JSON (Scene[]) — skips the LLM entirely. */
+  scenes?: string;
+  /** Run the producer brain to plan scenes. */
+  produce?: boolean;
+  intent?: string;
+  provider?: ProviderName;
+  llmModel?: string;
 }
 
 function sha1File(path: string): Promise<string> {
@@ -134,13 +149,64 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   });
   const map = new TimeMap(cutlist);
 
+  // ---- Scenes: hand-authored file, or the producer brain (PHASE1 §4) ----
+  let scenes: Scene[] = [];
+  if (opts.scenes) {
+    scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(resolve(opts.scenes), "utf8")));
+    console.log(`▸ scenes injected from ${opts.scenes} (${scenes.length})`);
+  } else if (opts.produce) {
+    const providerName = opts.provider ?? "claude";
+    const cacheKey = createHash("sha1")
+      .update(
+        JSON.stringify([providerName, opts.llmModel, opts.intent, opts.cleanup, transcript.words.length]),
+      )
+      .digest("hex")
+      .slice(0, 8);
+    const sceneCache = join(work, `scenes-${cacheKey}.json`);
+    if (existsSync(sceneCache)) {
+      scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(sceneCache, "utf8")));
+      console.log(`▸ scenes cached (${scenes.length})`);
+    } else {
+      console.log(`▸ producing scenes (${providerName})…`);
+      const result = await produceScenes(createProvider(providerName, opts.llmModel), {
+        transcript,
+        outputDuration: map.outputDuration,
+        intent: opts.intent,
+      });
+      scenes = result.scenes;
+      console.log(`▸ hook: ${result.beatSheet.hook}`);
+      console.log(
+        `▸ planned ${result.beatSheet.moments.length} moments, ${scenes.length} scenes` +
+          (result.failures.length > 0 ? ` (${result.failures.length} fell back to TitleCard)` : ""),
+      );
+      for (const issue of result.beatIssues) {
+        console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
+      }
+      // Cache props only — overrides are user-owned and live in production.json.
+      await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
+    }
+  }
+
+  const theme = defaultTheme;
+  const { cues: sceneCues, dropped } = assembleScenes(scenes, transcript, map);
+  for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
+  if (sceneCues.length > 0) {
+    console.log(
+      `▸ ${sceneCues.length} scene(s) on stage: ` +
+        sceneCues.map((c) => `${c.component}@${c.startSec.toFixed(1)}s`).join(", "),
+    );
+  }
+
   const production: Production = {
     version: 1,
     source: { path: input, probe: sourceProbe, audioPath },
     cleanup: opts.cleanup,
+    intent: opts.intent,
     transcript,
     analysis,
     cutlist,
+    scenes: scenes.length > 0 ? scenes : undefined,
+    theme,
     render: { width: 1080, height: 1920, fps: 30 },
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
@@ -167,6 +233,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     videoFileName: basename(renderVideo),
     spans: [...map.spans],
     captionLines,
+    sceneCues,
+    theme,
     settings: production.render,
     outputDurationSec: map.outputDuration,
   };

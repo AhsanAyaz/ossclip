@@ -1,9 +1,12 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
-import type { CaptionLine } from "@ossclip/core";
+import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
+import { captionAnchorAt } from "./stage";
 
 export interface CaptionTrackProps {
   lines: CaptionLine[];
+  /** Scene cues, for layout-aware anchoring/visibility. Empty = always visible. */
+  cues?: SceneCue[];
   /** Vertical center of the caption block, as a fraction of frame height. */
   verticalAnchor?: number;
   fontSizePx?: number;
@@ -68,9 +71,14 @@ const LineView: React.FC<{
   );
 };
 
-/** Word-timed kinetic captions. All timings are OUTPUT time. */
+/**
+ * Word-timed kinetic captions. All timings are OUTPUT time. When scene cues
+ * are provided, each line is anchored per the active layout's caption slot
+ * and hidden entirely while a graphic owns the frame (PHASE1 §1).
+ */
 export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   lines,
+  cues = [],
   verticalAnchor = 0.76,
   fontSizePx = 64,
   activeColor = "#FFE14D",
@@ -79,13 +87,15 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   return (
     <AbsoluteFill>
       {lines.map((line, i) => {
+        const anchor = cues.length > 0 ? captionAnchorAt(cues, line.start) : verticalAnchor;
+        if (anchor === null) return null;
         const from = Math.round(line.start * fps);
         const durationInFrames = Math.max(1, Math.round((line.end - line.start) * fps));
         return (
           <Sequence key={i} from={from} durationInFrames={durationInFrames}>
             <LineView
               line={line}
-              verticalAnchor={verticalAnchor}
+              verticalAnchor={anchor}
               fontSizePx={fontSizePx}
               activeColor={activeColor}
             />
