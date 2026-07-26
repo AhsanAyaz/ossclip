@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { TimeMap } from "../src/timemap.js";
-import type { Segment } from "../src/schema.js";
+import { TimeMap } from "../src/timemap";
+import type { Segment } from "../src/schema";
 
 /** Random full partition of [0, D] into alternating keep/remove segments. */
 const partitionArb = fc

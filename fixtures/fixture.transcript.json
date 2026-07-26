@@ -1,0 +1,115 @@
+{
+  "language": "en",
+  "words": [
+    {
+      "text": "Hello",
+      "start": 2,
+      "end": 2.4483
+    },
+    {
+      "text": "everyone",
+      "start": 2.5283,
+      "end": 3.1405
+    },
+    {
+      "text": "welcome",
+      "start": 3.2205,
+      "end": 3.7728
+    },
+    {
+      "text": "back",
+      "start": 3.8528,
+      "end": 4.1894
+    },
+    {
+      "text": "um",
+      "start": 4.6394,
+      "end": 4.9727
+    },
+    {
+      "text": "today",
+      "start": 5.2727,
+      "end": 5.743
+    },
+    {
+      "text": "I",
+      "start": 5.823,
+      "end": 6.1228
+    },
+    {
+      "text": "want",
+      "start": 6.2028,
+      "end": 6.6478
+    },
+    {
+      "text": "to",
+      "start": 6.7278,
+      "end": 7.012
+    },
+    {
+      "text": "show",
+      "start": 7.092,
+      "end": 7.49
+    },
+    {
+      "text": "you",
+      "start": 7.57,
+      "end": 7.8954
+    },
+    {
+      "text": "something",
+      "start": 7.9754,
+      "end": 8.5681
+    },
+    {
+      "text": "cool",
+      "start": 8.6481,
+      "end": 8.9959
+    },
+    {
+      "text": "uh",
+      "start": 10.7959,
+      "end": 11.0311
+    },
+    {
+      "text": "this",
+      "start": 11.2811,
+      "end": 11.6446
+    },
+    {
+      "text": "raw",
+      "start": 11.7246,
+      "end": 12.088
+    },
+    {
+      "text": "take",
+      "start": 12.168,
+      "end": 12.5023
+    },
+    {
+      "text": "becomes",
+      "start": 12.5823,
+      "end": 13.2028
+    },
+    {
+      "text": "a",
+      "start": 13.2828,
+      "end": 13.5719
+    },
+    {
+      "text": "clean",
+      "start": 13.6519,
+      "end": 14.0895
+    },
+    {
+      "text": "edit",
+      "start": 14.1695,
+      "end": 14.5633
+    },
+    {
+      "text": "automatically",
+      "start": 14.6433,
+      "end": 15.3957
+    }
+  ]
+}

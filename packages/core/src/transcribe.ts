@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { run } from "./exec.js";
-import type { Transcript, Word } from "./schema.js";
+import { run } from "./exec";
+import type { Transcript, Word } from "./schema";
 
 /** Shape of whisper.cpp's `-oj` JSON output (the fields we consume). */
 export interface WhisperJson {

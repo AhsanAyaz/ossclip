@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { analyze } from "../src/analyze.js";
-import { buildCutlist } from "../src/cutlist.js";
-import { TimeMap } from "../src/timemap.js";
-import type { Span, Transcript, Word } from "../src/schema.js";
+import { analyze } from "../src/analyze";
+import { buildCutlist } from "../src/cutlist";
+import { TimeMap } from "../src/timemap";
+import type { Span, Transcript, Word } from "../src/schema";
 
 /** Build words back-to-back with given (text, duration, gapAfter) triples. */
 function makeWords(triples: Array<[string, number, number]>, leadIn = 0): Word[] {

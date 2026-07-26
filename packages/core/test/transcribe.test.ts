@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWhisperJson, type WhisperJson } from "../src/transcribe.js";
+import { parseWhisperJson, type WhisperJson } from "../src/transcribe";
 
 /** Trimmed sample of real whisper.cpp `-oj -ml 1` output structure. */
 const sample: WhisperJson = {

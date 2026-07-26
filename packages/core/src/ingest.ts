@@ -1,5 +1,5 @@
-import { run } from "./exec.js";
-import type { Probe } from "./schema.js";
+import { run } from "./exec";
+import type { Probe } from "./schema";
 
 export interface IngestTools {
   ffmpegPath: string;

@@ -1,4 +1,4 @@
-import type { Analysis, CleanupLevel, RemovalReason, Segment, Transcript } from "./schema.js";
+import type { Analysis, CleanupLevel, RemovalReason, Segment, Transcript } from "./schema";
 
 interface LevelPolicy {
   /** Only tighten agreed pauses longer than this (seconds). */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildCaptionLines } from "../src/captions.js";
-import { TimeMap } from "../src/timemap.js";
-import type { Segment, Transcript } from "../src/schema.js";
+import { buildCaptionLines } from "../src/captions";
+import { TimeMap } from "../src/timemap";
+import type { Segment, Transcript } from "../src/schema";
 
 describe("buildCaptionLines", () => {
   const identity = (duration: number): TimeMap =>

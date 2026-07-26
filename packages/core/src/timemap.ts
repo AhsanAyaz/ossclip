@@ -1,4 +1,4 @@
-import type { Segment, Word } from "./schema.js";
+import type { Segment, Word } from "./schema";
 
 export interface KeptSpan {
   srcIn: number;

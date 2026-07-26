@@ -1,5 +1,5 @@
-import type { Transcript, Word } from "./schema.js";
-import type { TimeMap } from "./timemap.js";
+import type { Transcript, Word } from "./schema";
+import type { TimeMap } from "./timemap";
 
 /** Caption timing lives in OUTPUT time — captions never know about cuts. */
 export interface CaptionWord {

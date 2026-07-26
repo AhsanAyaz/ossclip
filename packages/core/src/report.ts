@@ -1,5 +1,5 @@
-import type { Production } from "./schema.js";
-import { TimeMap } from "./timemap.js";
+import type { Production } from "./schema";
+import { TimeMap } from "./timemap";
 
 function fmt(t: number): string {
   const m = Math.floor(t / 60);

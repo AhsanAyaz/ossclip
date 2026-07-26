@@ -1,5 +1,5 @@
-import { run } from "./exec.js";
-import type { Analysis, Span, Transcript } from "./schema.js";
+import { run } from "./exec";
+import type { Analysis, Span, Transcript } from "./schema";
 
 /**
  * Standalone interjections only. Deliberately excludes "like"/"you know"/"ah"/"oh":
