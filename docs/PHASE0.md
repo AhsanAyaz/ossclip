@@ -100,6 +100,19 @@ apps/studio          # agent-native app (dormant until Phase 1)
 
 LLM anything · scene graphics · SFX/BGM · retake detection · reframing · editable layers · studio UI · Tauri packaging.
 
+## Status — 2026-07-26
+
+Built and end-to-end verified in the dev container:
+
+- **M0.1–M0.4 implemented.** 23 unit/property tests green; typecheck clean. The fast-check properties caught two real TimeMap boundary issues before any consumer existed (float-ulp edge overshoot; two-preimage semantics at exact cut boundaries).
+- **E2E on the deterministic fixture** (`pnpm fixture`, per-word espeak-ng synthesis → ground-truth transcript by construction): standard level produced 4 cuts — lead trim to 0.25 s, both fillers, 1.8 s pause tightened to ~0.22 s (merged cleanly with the adjacent filler), tail trim — 35.2 % removed. Rendered 1080×1920 H.264/AAC via headless Chromium; frame-extracted testsrc2 timecodes match the cut report **to the frame**; captions render with active-word highlight; loudnorm applied.
+
+Remaining before calling M0.4 fully done (needs a real machine — the dev container's network policy blocks model downloads):
+
+1. **Live whisper.cpp run** on real footage (the `-oj -ml 1` parser is unit-tested against the real output shape, but hasn't seen a live model in-container).
+2. **Acceptance pass on 3 real clips** (click-free cuts on headphones, punch-in feel, caption drift).
+3. `ossclip studio` smoke test (interactive; untestable headless).
+
 ## Phase-0-specific risks
 
 | Risk | Mitigation |
