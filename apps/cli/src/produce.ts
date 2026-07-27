@@ -71,6 +71,8 @@ export interface ProduceOptions {
   llmModel?: string;
   /** Model for mechanical calls; "same" sends everything to the main model. */
   llmFastModel?: string;
+  /** Who is on camera — steers repair and exempts their name from grounding. */
+  speaker?: string;
   /** Repair ASR mishearings before captions/producer/grounding (default on). */
   repair?: boolean;
   /** Override the whisper model for this run (A/B base.en vs small.en). */
@@ -226,6 +228,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           providerName,
           opts.llmModel,
           opts.llmFastModel ?? cfg.fastModel,
+          opts.speaker ?? cfg.speaker,
           rawTranscript.words.map((w) => w.text),
         ]),
       )
@@ -241,6 +244,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       console.log(`▸ repairs cached (${repairs.filter((r) => r.applied).length})`);
     } else {
       const result = await repairTranscript(provider, rawTranscript, {
+        speaker: opts.speaker ?? cfg.speaker,
         // A repair may not merge words across a cut.
         isCut: (startSec, endSec) =>
           cutlist.some(
@@ -302,6 +306,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         transcript,
         outputDuration: map.outputDuration,
         intent: opts.intent,
+        speaker: opts.speaker ?? cfg.speaker,
         forceComponent: opts.forceComponent,
       });
       scenes = result.scenes;
@@ -406,7 +411,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
 
   // Grounding post-check (FINDINGS §14a): flags label tokens the take never
   // says — a hallucinated hook label is visible here without watching the video.
-  const groundingIssues = checkGrounding(scenes, transcript);
+  const groundingIssues = checkGrounding(scenes, transcript, opts.speaker ?? cfg.speaker);
   for (const g of groundingIssues) {
     console.log(`  ⚠ grounding: ${g.component} ${g.sceneId} ${g.field} "${g.token}" — not in the take`);
   }

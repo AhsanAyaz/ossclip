@@ -232,10 +232,13 @@ export async function generateBeatSheet(
   transcript: Transcript,
   duration: number,
   intent: string | undefined,
+  speaker?: string,
 ): Promise<{ sheet: BeatSheet; issues: BeatsValidationIssue[] }> {
   const raw = await provider.complete({
     system: PRODUCER_SYSTEM,
-    user: buildBeatsUserPrompt(transcript, duration, intent),
+    user:
+      (speaker ? `The speaker: ${speaker}\n\n` : "") +
+      buildBeatsUserPrompt(transcript, duration, intent),
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",
   });

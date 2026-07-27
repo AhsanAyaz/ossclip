@@ -91,3 +91,27 @@ describe("checkGrounding (FINDINGS §14a)", () => {
     expect(issues.map((i) => i.token)).toEqual(["monetization"]);
   });
 });
+
+describe("speaker vocabulary (FINDINGS §39)", () => {
+  const transcript = { language: "en", words: [{ text: "agents", start: 0, end: 0.4 }] };
+  const scene = (props: Record<string, unknown>) => ({
+    id: "s", anchor: { startWord: 0, endWord: 0 }, layout: "video-top" as const,
+    component: "TitleCard" as const, props, overrides: {},
+  });
+
+  it("does not flag the speaker's own name or brand", () => {
+    // The recognizer mangles it in the audio, so it is never in the transcript
+    // — flagging it would put the check back at war with the repair pass.
+    const issues = checkGrounding(
+      [scene({ title: "CODE WITH AHSAN" })],
+      transcript,
+      "Ahsan, host of the Code with Ahsan channel",
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it("still flags an invented noun when a speaker is given", () => {
+    const issues = checkGrounding([scene({ title: "REVENUE" })], transcript, "Ahsan");
+    expect(issues.map((i) => i.token)).toContain("revenue");
+  });
+});

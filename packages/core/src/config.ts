@@ -15,6 +15,12 @@ export interface OssclipConfig {
    * sheet always uses the main model. "same" disables tiering (FINDINGS §37).
    */
   fastModel?: string;
+  /**
+   * Who is in the video — "Ahsan, host of the Code with Ahsan channel".
+   * Lets the repair pass recognise a mangled proper noun instead of inventing
+   * a plausible one, and stops grounding flagging the speaker's own name.
+   */
+  speaker?: string;
   browserExecutable?: string;
   /**
    * USD per million tokens, keyed by model id or family substring — overrides
@@ -53,6 +59,7 @@ export function loadConfig(): OssclipConfig {
     modelDir: process.env.OSSCLIP_MODEL_DIR ?? fileCfg.modelDir ?? DEFAULTS.modelDir,
     model: process.env.OSSCLIP_MODEL ?? fileCfg.model ?? DEFAULTS.model,
     fastModel: process.env.OSSCLIP_FAST_MODEL ?? fileCfg.fastModel,
+    speaker: process.env.OSSCLIP_SPEAKER ?? fileCfg.speaker,
     browserExecutable: process.env.OSSCLIP_BROWSER ?? fileCfg.browserExecutable,
     pricing: fileCfg.pricing,
   };

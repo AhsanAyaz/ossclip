@@ -73,12 +73,22 @@ export function createTieredProvider(
 }
 
 /**
- * Default provider when --llm isn't given: the metered API only if a key is
- * actually configured, otherwise the Claude Code CLI (subscription auth) —
- * so Pro/Max users never accidentally rack up API charges.
+ * Default provider when --llm isn't given, in preference order.
+ *
+ * Gemini leads on measured evidence, not vendor preference: on the same clip
+ * it ran 3,540 input tokens against the Claude CLI's 83,378 — the CLI re-sends
+ * its whole harness prefix per invocation — for ~$0.05 against ~$0.85 and 27s
+ * against 171s, with editorial output that held up. Both models recovered the
+ * mishearing that matters ("coach and" → "code churn"); Claude is stronger only
+ * at recovering a mangled PROPER NOUN, which `--speaker` addresses directly.
+ *
+ * Falling back to the Claude Code CLI last keeps the no-keys-configured path
+ * working on a Pro/Max subscription rather than failing.
  */
 export function defaultProviderName(env: NodeJS.ProcessEnv = process.env): ProviderName {
-  return env.ANTHROPIC_API_KEY ? "claude" : "claude-cli";
+  if (env.GEMINI_API_KEY) return "gemini";
+  if (env.ANTHROPIC_API_KEY) return "claude";
+  return "claude-cli";
 }
 
 export interface ProduceScenesResult {
@@ -95,6 +105,8 @@ export async function produceScenes(
     transcript: Transcript;
     outputDuration: number;
     intent?: string;
+    /** Who is on camera — see `--speaker`. */
+    speaker?: string;
     /**
      * Debug: render every graphic moment with this component instead of the
      * one the producer picked. Exists because a component the producer never
@@ -109,6 +121,7 @@ export async function produceScenes(
     args.transcript,
     args.outputDuration,
     args.intent,
+    args.speaker,
   );
   // Applied AFTER normalization: the coverage budget and variety passes may
   // demote moments to "none", and forcing before them can leave nothing to

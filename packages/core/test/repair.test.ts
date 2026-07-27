@@ -4,6 +4,7 @@ import type { LlmProvider } from "../src/producer/provider";
 import {
   TranscriptRepairSchema,
   applyRepairs,
+  buildRepairUserPrompt,
   reconcileCopy,
   repairTranscript,
 } from "../src/producer/repair";
@@ -319,5 +320,84 @@ describe("reconcileCopy — the overlay and the captions must agree (§21)", () 
       expect(captionWords, `caption must contain "${token}"`).toContain(token);
     }
     expect(captionWords).not.toContain("text");
+  });
+});
+
+describe("speaker hint (FINDINGS §39)", () => {
+  const t = { language: "en", words: [{ text: "code", start: 0, end: 0.3 }] };
+
+  it("names the speaker in the prompt when given", () => {
+    const p = buildRepairUserPrompt(t, "Ahsan, host of Code with Ahsan");
+    expect(p).toContain("Ahsan, host of Code with Ahsan");
+    expect(p).toContain("never to introduce facts");
+  });
+
+  it("says nothing about a speaker when none is given", () => {
+    expect(buildRepairUserPrompt(t)).not.toContain("speaker");
+  });
+});
+
+describe("locating a repair by its quoted text (FINDINGS §39)", () => {
+  const words = "code with SM which is the channel".split(" ").map((text, i) => ({
+    text, start: i * 0.4, end: i * 0.4 + 0.3,
+  }));
+  const transcript = { language: "en", words };
+
+  it("uses the quote's own width when the claimed span is too wide", () => {
+    // Reproduces the real refusal: the model quoted one word but claimed a
+    // two-word span, so a width-trusting search never tested "SM" alone.
+    const { applied } = applyRepairs(
+      transcript,
+      [{ startWord: 2, endWord: 3, heard: "SM", correction: "Ahsan" }],
+      { speaker: "Ahsan, host of Code with Ahsan" },
+    );
+    expect(applied[0]!.applied).toBe(true);
+    expect(applied[0]!.startWord).toBe(2);
+    expect(applied[0]!.endWord).toBe(2);
+  });
+
+  it("still refuses a quote that appears nowhere near the claim", () => {
+    const { applied } = applyRepairs(transcript, [
+      { startWord: 2, endWord: 2, heard: "totally absent", correction: "nope" },
+    ]);
+    expect(applied[0]!.applied).toBe(false);
+    expect(applied[0]!.rejected).toMatch(/no span/);
+  });
+});
+
+describe("speaker-vouched corrections (FINDINGS §39)", () => {
+  const words = "code with SM which is the channel".split(" ").map((text, i) => ({
+    text, start: i * 0.4, end: i * 0.4 + 0.3,
+  }));
+  const transcript = { language: "en", words };
+  const speaker = "Ahsan, host of Code with Ahsan";
+
+  it("refuses a name the phonetic gate rejects when no speaker vouched for it", () => {
+    const { applied } = applyRepairs(transcript, [
+      { startWord: 2, endWord: 2, heard: "SM", correction: "Ahsan" },
+    ]);
+    expect(applied[0]!.applied).toBe(false);
+    expect(applied[0]!.rejected).toMatch(/does not sound like/);
+  });
+
+  it("allows it when every word came from the speaker hint", () => {
+    const { applied, transcript: out } = applyRepairs(
+      transcript,
+      [{ startWord: 2, endWord: 2, heard: "SM", correction: "Ahsan" }],
+      { speaker },
+    );
+    expect(applied[0]!.applied).toBe(true);
+    expect(out.words[2]!.text).toBe("Ahsan");
+  });
+
+  it("does not license a rewrite that merely mentions the speaker", () => {
+    // "loop" is not in the hint, so the correction is not vouched for and the
+    // phonetic gate still governs.
+    const { applied } = applyRepairs(
+      transcript,
+      [{ startWord: 2, endWord: 2, heard: "SM", correction: "Ahsan loop" }],
+      { speaker },
+    );
+    expect(applied[0]!.applied).toBe(false);
   });
 });

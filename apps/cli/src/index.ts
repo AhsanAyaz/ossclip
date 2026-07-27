@@ -41,6 +41,10 @@ program
     "--llm-fast-model <id>",
     "model for mechanical calls (repair, scene props); 'same' disables tiering",
   )
+  .option(
+    "--speaker <who>",
+    'who is on camera, e.g. "Ahsan, host of Code with Ahsan" — helps repair recognise mangled names',
+  )
   .option("--scenes <path>", "hand-authored scenes JSON (Scene[]) — no LLM in the loop")
   .option(
     "--no-repair",
@@ -78,6 +82,7 @@ program
       provider,
       llmModel: opts.llmModel,
       llmFastModel: opts.llmFastModel,
+      speaker: opts.speaker,
       scenes: opts.scenes,
       repair: opts.repair,
       whisperModel: opts.whisperModel,

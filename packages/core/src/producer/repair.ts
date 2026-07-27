@@ -43,6 +43,8 @@ export const TranscriptRepairSchema = z.object({
 const MAX_SPAN_WORDS = 4;
 const MAX_TOKEN_DELTA = 1;
 const MAX_LENGTH_RATIO = 2;
+/** …but ratios are meaningless at 2-3 characters, so allow a small absolute gap. */
+const MAX_LENGTH_DELTA = 3;
 /** Words shorter than this get dropped by TimeMap.mapWord — never emit them. */
 const MIN_WORD_SEC = 0.04;
 /** How far from the claimed index to look for the quoted text. */
@@ -74,9 +76,19 @@ A correction must sound essentially identical to what was heard. If a span is no
 
 For each fix give the word-index span, the exact text you are replacing (\`heard\`), and the corrected text.`;
 
-export function buildRepairUserPrompt(transcript: Transcript): string {
+export function buildRepairUserPrompt(transcript: Transcript, speaker?: string): string {
   const words = transcript.words.map((w, i) => `[${i}]${w.text}`).join(" ");
   return (
+    (speaker
+      ? // The failure class a hint fixes: recovering a proper noun needs to
+        // know WHO is talking, not what the phonemes were. Measured on a real
+        // reel, "code with SM" became "Code with Ahsan" (the speaker's own
+        // channel) with one model and the invented name "Sam" with another —
+        // and "Sam" genuinely does sound like "SM", so no phonetic gate can
+        // catch it. Naming the speaker turns a guess into a lookup.
+        `About the speaker (use this to recognise names the recognizer mangled, ` +
+        `never to introduce facts): ${speaker}\n\n`
+      : "") +
     `Word-indexed transcript (indices refer to THIS list):\n${words}\n\n` +
     `Report only spans that are clearly mishearings.`
   );
@@ -137,6 +149,11 @@ function tooShort(tokens: string[], originals: readonly Word[]): boolean {
   return span / tokens.length < MIN_WORD_SEC;
 }
 
+export interface RepairOptions extends ApplyRepairsOptions {
+  /** Who is speaking — lets the model recognise mangled proper nouns. */
+  speaker?: string;
+}
+
 /**
  * Apply proposed repairs, refusing anything that isn't demonstrably a
  * mishearing of the span it claims to fix. Pure — the LLM is only a source of
@@ -148,6 +165,12 @@ export interface ApplyRepairsOptions {
    * a removal would merge words across the cut, so it is refused.
    */
   isCut?: (startSec: number, endSec: number) => boolean;
+  /**
+   * The `--speaker` hint. Words the USER supplied are vouched-for evidence,
+   * not model invention, so a correction made entirely of them may pass the
+   * phonetic gate. Everything else about it is still checked.
+   */
+  speaker?: string;
 }
 
 export function applyRepairs(
@@ -156,6 +179,20 @@ export function applyRepairs(
   opts: ApplyRepairsOptions = {},
 ): { transcript: Transcript; applied: AppliedRepair[] } {
   const maxIndex = transcript.words.length - 1;
+  /**
+   * Names the user vouched for via `--speaker`. A recognizer that turned
+   * "Ahsan" into the initialism "SM" produces a correction no phonetic
+   * measure will accept — and refusing it leaves the wrong name in the
+   * captions, which is the failure the hint exists to prevent. So a correction
+   * built ENTIRELY from words the user supplied is exempt from that one gate.
+   * Every other guard still applies, and the exemption can only ever
+   * substitute text the user typed themselves.
+   */
+  const speakerWords = new Set(norm(opts.speaker ?? "").split(" ").filter(Boolean));
+  const speakerVouched = (correction: string): boolean => {
+    const tokens = norm(correction).split(" ").filter(Boolean);
+    return tokens.length > 0 && tokens.every((t) => speakerWords.has(t));
+  };
   const results: AppliedRepair[] = [];
   const accepted: Array<{ startWord: number; endWord: number; tokens: string[] }> = [];
   const claimed: Array<[number, number]> = [];
@@ -168,12 +205,24 @@ export function applyRepairs(
    */
   const locate = (r: TranscriptRepair): { startWord: number; endWord: number } | null => {
     const want = norm(r.heard);
-    const width = r.endWord - r.startWord;
-    for (let delta = 0; delta <= INDEX_SEARCH_RADIUS; delta++) {
-      for (const start of delta === 0 ? [r.startWord] : [r.startWord - delta, r.startWord + delta]) {
-        const end = start + width;
-        if (start < 0 || end > maxIndex) continue;
-        if (norm(spanText(transcript, start, end)) === want) return { startWord: start, endWord: end };
+    // Widths to try, in order of trust. The QUOTED TEXT is the reliable part
+    // of a proposal, so its own token count leads; the claimed span is a
+    // fallback for a quote whose normalisation splits differently. Trusting
+    // only the claimed width used to reject correct repairs outright: a model
+    // proposed `"SM" → "Ahsan"` at 64-65, so the search only ever tested the
+    // two-word span "SM which" and never the one word it had quoted.
+    const widths = [...new Set([want.split(" ").length - 1, r.endWord - r.startWord])];
+    for (const width of widths) {
+      if (width < 0) continue;
+      for (let delta = 0; delta <= INDEX_SEARCH_RADIUS; delta++) {
+        const starts = delta === 0 ? [r.startWord] : [r.startWord - delta, r.startWord + delta];
+        for (const start of starts) {
+          const end = start + width;
+          if (start < 0 || end > maxIndex) continue;
+          if (norm(spanText(transcript, start, end)) === want) {
+            return { startWord: start, endWord: end };
+          }
+        }
       }
     }
     return null;
@@ -225,12 +274,18 @@ export function applyRepairs(
       record(`${originals.length} words → ${tokens.length} restructures the sentence`);
       continue;
     }
+    // A ratio is a poor measure at small magnitudes: "SM" → "Ahsan" is 2.5x
+    // by ratio but three characters, and an initialism the recognizer coined
+    // out of a real name is exactly the case the speaker hint exists to fix.
+    // So allow a small ABSOLUTE difference regardless of ratio — the phonetic
+    // gate below is what actually separates a repair from a rewrite.
     const ratio = r.correction.length / Math.max(1, actual.length);
-    if (ratio > MAX_LENGTH_RATIO || ratio < 1 / MAX_LENGTH_RATIO) {
+    const absDelta = Math.abs(r.correction.length - actual.length);
+    if (absDelta > MAX_LENGTH_DELTA && (ratio > MAX_LENGTH_RATIO || ratio < 1 / MAX_LENGTH_RATIO)) {
       record(`"${r.correction}" is too different in length from "${actual}"`);
       continue;
     }
-    if (!soundsSimilar(actual, r.correction)) {
+    if (!soundsSimilar(actual, r.correction) && !speakerVouched(r.correction)) {
       // The gate that keeps this a repair pass and not a rewrite pass.
       record(`"${r.correction}" does not sound like "${actual}" — rewrite, not a repair`);
       continue;
@@ -269,13 +324,13 @@ export function applyRepairs(
 export async function repairTranscript(
   provider: LlmProvider,
   transcript: Transcript,
-  opts: ApplyRepairsOptions = {},
+  opts: RepairOptions = {},
 ): Promise<{ transcript: Transcript; applied: AppliedRepair[]; error?: string }> {
   if (transcript.words.length === 0) return { transcript, applied: [] };
   try {
     const result = await provider.complete({
       system: REPAIR_SYSTEM,
-      user: buildRepairUserPrompt(transcript),
+      user: buildRepairUserPrompt(transcript, opts.speaker),
       schema: TranscriptRepairSchema,
       schemaName: "transcript_repair",
       // EDITORIAL on purpose, despite looking mechanical. Measured on the real

@@ -95,8 +95,18 @@ function stringsOf(value: unknown): string[] {
 export function checkGrounding(
   scenes: readonly Scene[],
   transcript: Transcript,
+  /**
+   * Who the speaker is (`--speaker`). Their own name and brand are legitimate
+   * on screen even when the recognizer mangled every utterance of them, so the
+   * hint counts as spoken vocabulary — otherwise the check fights the repair
+   * pass, which is the §17 mistake in a new place.
+   */
+  speaker?: string,
 ): GroundingIssue[] {
-  const spoken = new Set(transcript.words.flatMap((w) => tokenize(w.text)));
+  const spoken = new Set([
+    ...transcript.words.flatMap((w) => tokenize(w.text)),
+    ...(speaker ? tokenize(speaker) : []),
+  ]);
   const supported = (token: string): boolean =>
     spoken.has(token) ||
     spoken.has(`${token}s`) ||

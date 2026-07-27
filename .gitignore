@@ -6,3 +6,8 @@ dist/
 fixtures/*.mp4
 fixtures/*.wav
 fixtures/work/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
