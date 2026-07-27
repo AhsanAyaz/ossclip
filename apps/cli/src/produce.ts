@@ -20,6 +20,8 @@ import {
   coverHeadline,
   cropFilter,
   detectContentRect,
+  letterboxedSeconds,
+  type ContentRect,
   createFaceDetector,
   createProvider,
   createTieredProvider,
@@ -148,13 +150,39 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // picture — bars baked into the pixels wasted most of the video slot on one
   // real clip. Measured once, before anything geometric; every downstream
   // pass crops to the content rect so the bars stop existing.
-  const contentRect = await detectContentRect(tools, input, sourceProbe, { cacheDir: work });
-  const cropVf = cropFilter(contentRect);
-  if (!contentRect.full) {
+  const detection = await detectContentRect(tools, input, sourceProbe, { cacheDir: work });
+  const contentTimeline = detection.timeline;
+  /**
+   * PLAN Task C: only a source with UNIFORM framing can be baked. A mixed
+   * source alternates framings, so there is no single crop to apply — and its
+   * letterboxed stretches hold a LANDSCAPE picture, which cannot become a
+   * portrait frame by cropping alone. Those are cropped at render time, where
+   * the stage already cover-crops a landscape source with the face bias.
+   */
+  const contentRect: ContentRect = detection.uniform ?? {
+    x: 0, y: 0, w: sourceProbe.width, h: sourceProbe.height, full: true,
+  };
+  const cropVf = cropFilter(detection.uniform);
+  if (detection.uniform && !detection.uniform.full) {
     console.log(
       `▸ source is letterboxed: content ${contentRect.w}×${contentRect.h} at ` +
         `x ${contentRect.x}, y ${contentRect.y} (bars trimmed everywhere downstream)`,
     );
+  } else if (!detection.uniform) {
+    const boxed = letterboxedSeconds(contentTimeline);
+    console.log(
+      `▸ source framing CHANGES mid-take: ${contentTimeline.length} segments, ` +
+        `${boxed.toFixed(1)}s of ${sourceProbe.duration.toFixed(1)}s letterboxed ` +
+        `(cropped per segment at render time, not baked)`,
+    );
+    for (const seg of contentTimeline) {
+      console.log(
+        `  · ${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s ` +
+          (seg.rect.full
+            ? "full frame"
+            : `content ${seg.rect.w}×${seg.rect.h} at x ${seg.rect.x}, y ${seg.rect.y}`),
+      );
+    }
   }
   /** The picture's dimensions — what every geometric consumer reasons about. */
   const content = { width: contentRect.w, height: contentRect.h };
@@ -648,6 +676,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     ctaKeyword,
     ctaWindow,
     sourceTextRegions: textRegions,
+    // PLAN Task C. Sent ONLY for a mixed-framing source: a uniform one already
+    // had its bars cropped into the mezzanine, and cropping to the same rect
+    // again at render time would eat the picture twice.
+    ...(detection.uniform
+      ? {}
+      : {
+          contentTimeline,
+          sourceSize: { width: sourceProbe.width, height: sourceProbe.height },
+        }),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 

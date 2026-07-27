@@ -14,6 +14,7 @@ export * from "./zoom";
 export * from "./grounding";
 export * from "./cta";
 export * from "./content-rect";
+export * from "./content-rect-detect";
 export * from "./face";
 export * from "./cover";
 export * from "./source-text";

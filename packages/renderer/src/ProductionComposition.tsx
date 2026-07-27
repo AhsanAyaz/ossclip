@@ -4,6 +4,7 @@ import { CaptionTrack, EdlVideo, SceneLayer, VideoStage } from "@ossclip/scenes"
 import {
   defaultTheme,
   type CaptionLine,
+  type ContentRectSegment,
   type FaceCrop,
   type KeptSpan,
   type RenderSettings,
@@ -41,6 +42,14 @@ export interface ProductionCompProps {
    * crop refuses to slice one in half (FINDINGS §36).
    */
   sourceTextRegions?: Array<{ y: number; h: number; startSec: number; endSec: number }>;
+  /**
+   * The source's framing over SOURCE time (PLAN Task C). Set only when the
+   * framing CHANGES mid-take; a uniformly letterboxed source is already
+   * cropped into the mezzanine and must not be cropped again here.
+   */
+  contentTimeline?: ContentRectSegment[];
+  /** The source's own pixel dimensions, which the timeline is measured in. */
+  sourceSize?: { width: number; height: number };
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -66,6 +75,8 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   ctaKeyword,
   ctaWindow,
   sourceTextRegions,
+  contentTimeline,
+  sourceSize,
 }) => {
   if (!videoFileName) {
     return (
@@ -92,6 +103,9 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         face={face}
         zoomPlan={zoomPlan}
         sourceTextRegions={sourceTextRegions}
+        contentTimeline={contentTimeline}
+        spans={spans}
+        sourceSize={sourceSize}
       >
         <EdlVideo src={src} spans={spans} />
       </VideoStage>

@@ -1,14 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { cropFilter, parseCropdetect, stableContentRect } from "../src/content-rect";
+import {
+  contentRectAt,
+  contentRectTimeline,
+  cropFilter,
+  parseCropdetect,
+  stableContentRect,
+} from "../src/content-rect";
 
 const CROPDETECT_LINE =
   "[Parsed_cropdetect_1 @ 0x55e] x1:0 x2:1439 y1:874 y2:1683 w:1440 h:810 x:0 y:874 " +
   "pts:2 t:1.000000 limit:24.000000 crop=1440:810:0:874";
 
 describe("parseCropdetect", () => {
-  it("reads crop=W:H:X:Y lines out of ffmpeg stderr", () => {
+  it("reads crop=W:H:X:Y lines out of ffmpeg stderr, with their timestamps", () => {
+    // The timestamp is what makes a TIMELINE possible: a source whose framing
+    // changes mid-take needs to know WHEN, not just that two rects were seen.
     expect(parseCropdetect(`noise\n${CROPDETECT_LINE}\nframe= 12 fps=…`)).toEqual([
-      { w: 1440, h: 810, x: 0, y: 874 },
+      { w: 1440, h: 810, x: 0, y: 874, tSec: 1 },
     ]);
   });
 
@@ -82,6 +90,125 @@ describe("stableContentRect (PLAN Task 7)", () => {
     // Outward: the rounded rect still contains every content pixel.
     expect(rect.y).toBeLessThanOrEqual(875);
     expect(rect.y + rect.h).toBeGreaterThanOrEqual(875 + 809);
+  });
+});
+
+/**
+ * Task C (2026-07-28). Task 7 assumed a source is uniformly letterboxed. The
+ * author's own clip is not: 24.0s of 63.5s is a landscape strip and the rest is
+ * full-bleed portrait, alternating five times. `stableContentRect`'s union
+ * correctly refused to crop it — a bar has to be black in EVERY sample — so the
+ * bars rendered as bars, and the hook frame carried a 13% black band.
+ *
+ * The fix is to stop modelling framing as one constant per source.
+ */
+describe("contentRectTimeline (PLAN Task C — mixed framing)", () => {
+  const W = 1440;
+  const H = 2560;
+  const BOX = { x: 0, y: 876, w: W, h: 808 };
+  const FULL = { x: 0, y: 0, w: W, h: H };
+
+  /** Samples every `step` seconds, from a list of per-sample rects. */
+  const at = (rects: Array<{ x: number; y: number; w: number; h: number }>, step = 1) =>
+    rects.map((r, i) => ({ ...r, tSec: i * step }));
+
+  it("splits a source whose framing changes mid-take", () => {
+    const timeline = contentRectTimeline(
+      at([BOX, BOX, BOX, FULL, FULL, FULL, BOX, BOX, BOX]),
+      W,
+      H,
+      9,
+    );
+    expect(timeline).toHaveLength(3);
+    expect(timeline[0]!.rect.full).toBe(false);
+    expect(timeline[1]!.rect.full).toBe(true);
+    expect(timeline[2]!.rect.full).toBe(false);
+    // Contiguous cover of the whole source, no gaps to fall through.
+    expect(timeline[0]!.startSec).toBe(0);
+    expect(timeline[2]!.endSec).toBeCloseTo(9, 6);
+    for (let i = 1; i < timeline.length; i++) {
+      expect(timeline[i]!.startSec).toBeCloseTo(timeline[i - 1]!.endSec, 6);
+    }
+  });
+
+  it("a uniformly letterboxed source is still ONE segment — Task 7 unregressed", () => {
+    const timeline = contentRectTimeline(at([BOX, BOX, BOX, BOX, BOX]), W, H, 5);
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.rect).toMatchObject({ y: 876, h: 808, full: false });
+  });
+
+  it("a uniformly full-bleed source is one full segment", () => {
+    const timeline = contentRectTimeline(at([FULL, FULL, FULL, FULL]), W, H, 4);
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.rect.full).toBe(true);
+  });
+
+  it("one anomalous dark sample does not become its own crop segment", () => {
+    // THE risk this design reintroduces. `stableContentRect` unions precisely
+    // because a dim frame can 'detect' a false crop; per-segment detection
+    // would let a single such frame carve a bogus segment out of a good run.
+    const timeline = contentRectTimeline(
+      at([FULL, FULL, FULL, BOX, FULL, FULL, FULL]),
+      W,
+      H,
+      7,
+    );
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.rect.full).toBe(true);
+  });
+
+  it("a run too short in WALL TIME is absorbed even with enough samples", () => {
+    // Densely sampled: three samples spanning 0.3s is not a framing change.
+    const dense = at([FULL, FULL, FULL, BOX, BOX, BOX, FULL, FULL, FULL], 0.1);
+    const timeline = contentRectTimeline(dense, W, H, 0.9);
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.rect.full).toBe(true);
+  });
+
+  it("no samples means one full-frame segment, never an empty timeline", () => {
+    const timeline = contentRectTimeline([], W, H, 30);
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.rect.full).toBe(true);
+    expect(timeline[0]!.endSec).toBe(30);
+  });
+
+  it("boundaries land between the samples that disagree, not on top of one", () => {
+    const timeline = contentRectTimeline(
+      at([BOX, BOX, BOX, FULL, FULL, FULL]),
+      W,
+      H,
+      6,
+    );
+    // Last BOX at t=2, first FULL at t=3 → the change is somewhere in (2,3).
+    expect(timeline[0]!.endSec).toBeGreaterThan(2);
+    expect(timeline[0]!.endSec).toBeLessThan(3);
+  });
+});
+
+describe("contentRectAt", () => {
+  const W = 1440;
+  const H = 2560;
+  const timeline = [
+    { startSec: 0, endSec: 10, rect: { x: 0, y: 876, w: W, h: 808, full: false } },
+    { startSec: 10, endSec: 20, rect: { x: 0, y: 0, w: W, h: H, full: true } },
+  ];
+
+  it("returns the rect active at a source time", () => {
+    expect(contentRectAt(timeline, 5).full).toBe(false);
+    expect(contentRectAt(timeline, 15).full).toBe(true);
+  });
+
+  it("is half-open, so a boundary belongs to the segment starting there", () => {
+    expect(contentRectAt(timeline, 10).full).toBe(true);
+  });
+
+  it("clamps outside the timeline rather than inventing a full frame", () => {
+    expect(contentRectAt(timeline, -5).full).toBe(false);
+    expect(contentRectAt(timeline, 999).full).toBe(true);
+  });
+
+  it("an empty timeline is the full frame", () => {
+    expect(contentRectAt([], 3, { width: W, height: H }).full).toBe(true);
   });
 });
 
