@@ -2,6 +2,10 @@ import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+// Set by `playwright.config.ts`, which copies the committed fixture workdir
+// into a fresh OS temp directory before either webServer starts and points
+// both this env var and the edit server at that same copy — so this test
+// can never pass on a leftover `overrides.json` from a previous run.
 const WORKDIR = process.env.OSSCLIP_E2E_WORKDIR!;
 
 test("drag an element, save, and the patch lands on disk", async ({ page }) => {
@@ -10,24 +14,62 @@ test("drag an element, save, and the patch lands on disk", async ({ page }) => {
   // productions rarely open on an exact-zero timestamp) and the Player
   // never advances on its own without pressing play — seek to the first
   // scene explicitly so its `data-edit-id` leaves are guaranteed to exist.
+  // This also leaves the whole SCENE selected (no element) — the natural
+  // state a user is in right after picking a scene off the timeline — which
+  // is deliberate: it's the exact situation the click-through-a-scene-box
+  // fix below needs to prove out, with no `Escape` workaround in between.
   await page.locator('[data-testid^="timeline-block-"]').first().click();
   await page.waitForSelector("[data-edit-id]");
-  // That click also leaves the whole SCENE selected (no element), and the
-  // selection box it draws covers the full slot — a subsequent mousedown
-  // inside it would be read as "keep dragging the current selection"
-  // instead of a fresh hit-test, silently patching nothing on mouseup.
-  // Escape clears the selection without losing the seek.
-  await page.keyboard.press("Escape");
+
   const el = page.locator("[data-edit-id]").first();
   const box = (await el.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  const dx = 40;
+  const dy = 10;
+  // One natural mousedown-drag-mouseup on the element, straight after the
+  // scene-level selection above — no `Escape`, no extra click. Before the
+  // Overlay fix, the scene's selection box covers this entire slot, so this
+  // mousedown would have been read as "keep dragging the scene selection"
+  // (which isn't draggable at all) instead of re-hit-testing and picking up
+  // this specific element; the drag would have silently patched nothing.
+  await page.mouse.move(startX, startY);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 10);
+  await page.mouse.move(startX + dx, startY + dy);
   await page.mouse.up();
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
 
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
-  const scene = Object.values(doc.scenes)[0] as any;
-  expect(Object.values(scene.elements)[0]).toMatchObject({ dx: expect.any(Number) });
+  const scene = Object.values(doc.scenes)[0] as { elements: Record<string, { dx: number; dy: number }> };
+  const patch = Object.values(scene.elements)[0];
+
+  // Guard against the smoke test passing while the drag path is broken: a
+  // stale `overrides.json` satisfies `expect.any(Number)` even when this
+  // run's drag did nothing (the isolation above already rules out a stale
+  // FILE, but not a stale-shaped ASSERTION). Check the recorded delta
+  // actually corresponds to the mouse movement just performed — sign and
+  // rough magnitude — rather than exact page-pixel equality: the Player
+  // renders its composition at a fixed native resolution (from
+  // `render-props.json`'s `settings.width/height`) and scales it down to
+  // fit the on-screen stage, so a page-pixel mouse delta and the
+  // composition-space delta this drag records need not be numerically
+  // identical.
+  const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
+  const stageBox = (await page.getByTestId("stage").boundingBox())!;
+  const scaleX = renderProps.settings.width / stageBox.width;
+  const scaleY = renderProps.settings.height / stageBox.height;
+  const expectedDx = dx * scaleX;
+  const expectedDy = dy * scaleY;
+
+  expect(Math.sign(patch.dx)).toBe(Math.sign(expectedDx));
+  expect(Math.sign(patch.dy)).toBe(Math.sign(expectedDy));
+  // A generous band (0.2x–5x) rather than an exact formula: it still fails
+  // on a zero/near-zero delta (the broken-drag case this guards against) or
+  // on a wildly unrelated leftover value, without hard-coding an exact
+  // page-pixel-to-composition-pixel ratio that's an implementation detail.
+  expect(Math.abs(patch.dx)).toBeGreaterThan(Math.abs(expectedDx) * 0.2);
+  expect(Math.abs(patch.dx)).toBeLessThan(Math.abs(expectedDx) * 5);
+  expect(Math.abs(patch.dy)).toBeGreaterThan(Math.abs(expectedDy) * 0.2);
+  expect(Math.abs(patch.dy)).toBeLessThan(Math.abs(expectedDy) * 5);
 });

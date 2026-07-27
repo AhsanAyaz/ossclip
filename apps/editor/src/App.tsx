@@ -105,7 +105,11 @@ export const App: React.FC = () => {
       </div>
       <div style={mainRow}>
         <div style={stageArea}>
-          <div ref={stageRef} style={{ position: "relative", display: "inline-block" }}>
+          <div
+            ref={stageRef}
+            data-testid="stage"
+            style={{ position: "relative", display: "inline-block" }}
+          >
             <Player<AnyZodObject, PlayerProductionProps>
               ref={playerRef}
               component={ProductionComposition}

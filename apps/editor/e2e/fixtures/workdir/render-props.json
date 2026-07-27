@@ -1,0 +1,1060 @@
+{
+  "videoFileName": "mezzanine.mp4",
+  "spans": [
+    {
+      "srcIn": 0,
+      "srcOut": 31.92458,
+      "outIn": 0,
+      "outOut": 31.92458
+    }
+  ],
+  "captionLines": [
+    {
+      "words": [
+        {
+          "text": "Claude",
+          "start": 0.09,
+          "end": 0.47
+        },
+        {
+          "text": "gave",
+          "start": 0.47,
+          "end": 0.78
+        },
+        {
+          "text": "me",
+          "start": 0.78,
+          "end": 0.94
+        }
+      ],
+      "start": 0.09,
+      "end": 0.94
+    },
+    {
+      "words": [
+        {
+          "text": "six",
+          "start": 0.94,
+          "end": 1.18
+        },
+        {
+          "text": "months",
+          "start": 1.18,
+          "end": 1.65
+        },
+        {
+          "text": "of",
+          "start": 1.65,
+          "end": 1.81
+        }
+      ],
+      "start": 0.94,
+      "end": 1.81
+    },
+    {
+      "words": [
+        {
+          "text": "the",
+          "start": 1.81,
+          "end": 2.05
+        },
+        {
+          "text": "max",
+          "start": 2.05,
+          "end": 2.42
+        },
+        {
+          "text": "plan",
+          "start": 2.42,
+          "end": 2.73
+        }
+      ],
+      "start": 1.81,
+      "end": 2.73
+    },
+    {
+      "words": [
+        {
+          "text": "for",
+          "start": 2.73,
+          "end": 2.84
+        },
+        {
+          "text": "free",
+          "start": 2.84,
+          "end": 3.12
+        },
+        {
+          "text": "and",
+          "start": 3.12,
+          "end": 3.28
+        }
+      ],
+      "start": 2.73,
+      "end": 3.28
+    },
+    {
+      "words": [
+        {
+          "text": "it's",
+          "start": 3.28,
+          "end": 3.52
+        },
+        {
+          "text": "not",
+          "start": 3.52,
+          "end": 4.19
+        },
+        {
+          "text": "why",
+          "start": 4.19,
+          "end": 4.36
+        }
+      ],
+      "start": 3.28,
+      "end": 4.36
+    },
+    {
+      "words": [
+        {
+          "text": "you",
+          "start": 4.36,
+          "end": 4.56
+        },
+        {
+          "text": "think",
+          "start": 4.56,
+          "end": 4.8
+        },
+        {
+          "text": "it",
+          "start": 4.8,
+          "end": 4.91
+        }
+      ],
+      "start": 4.36,
+      "end": 4.91
+    },
+    {
+      "words": [
+        {
+          "text": "is.",
+          "start": 4.91,
+          "end": 5.12
+        }
+      ],
+      "start": 4.91,
+      "end": 5.12
+    },
+    {
+      "words": [
+        {
+          "text": "Most",
+          "start": 5.12,
+          "end": 5.46
+        },
+        {
+          "text": "people",
+          "start": 5.46,
+          "end": 5.97
+        },
+        {
+          "text": "use",
+          "start": 5.97,
+          "end": 6.22
+        }
+      ],
+      "start": 5.12,
+      "end": 6.22
+    },
+    {
+      "words": [
+        {
+          "text": "AI",
+          "start": 6.22,
+          "end": 6.49
+        },
+        {
+          "text": "very",
+          "start": 6.49,
+          "end": 6.73
+        }
+      ],
+      "start": 6.22,
+      "end": 6.73
+    },
+    {
+      "words": [
+        {
+          "text": "regularly.",
+          "start": 6.73,
+          "end": 7.85
+        }
+      ],
+      "start": 6.73,
+      "end": 7.85
+    },
+    {
+      "words": [
+        {
+          "text": "They",
+          "start": 7.85,
+          "end": 8.09
+        },
+        {
+          "text": "give",
+          "start": 8.09,
+          "end": 8.24
+        },
+        {
+          "text": "a",
+          "start": 8.24,
+          "end": 8.33
+        }
+      ],
+      "start": 7.85,
+      "end": 8.33
+    },
+    {
+      "words": [
+        {
+          "text": "prompt",
+          "start": 8.33,
+          "end": 8.67
+        },
+        {
+          "text": "and",
+          "start": 8.67,
+          "end": 8.85
+        },
+        {
+          "text": "then",
+          "start": 8.85,
+          "end": 9.31
+        }
+      ],
+      "start": 8.33,
+      "end": 9.31
+    },
+    {
+      "words": [
+        {
+          "text": "expect",
+          "start": 9.31,
+          "end": 9.68
+        },
+        {
+          "text": "an",
+          "start": 9.68,
+          "end": 10.04
+        }
+      ],
+      "start": 9.31,
+      "end": 10.04
+    },
+    {
+      "words": [
+        {
+          "text": "outcome",
+          "start": 10.04,
+          "end": 10.64
+        },
+        {
+          "text": "which",
+          "start": 10.64,
+          "end": 10.88
+        },
+        {
+          "text": "is",
+          "start": 10.88,
+          "end": 11.04
+        }
+      ],
+      "start": 10.04,
+      "end": 11.04
+    },
+    {
+      "words": [
+        {
+          "text": "not",
+          "start": 11.04,
+          "end": 11.24
+        },
+        {
+          "text": "always",
+          "start": 11.24,
+          "end": 11.64
+        },
+        {
+          "text": "the",
+          "start": 11.64,
+          "end": 11.84
+        }
+      ],
+      "start": 11.04,
+      "end": 11.84
+    },
+    {
+      "words": [
+        {
+          "text": "best",
+          "start": 11.84,
+          "end": 12.1
+        }
+      ],
+      "start": 11.84,
+      "end": 12.1
+    },
+    {
+      "words": [
+        {
+          "text": "way",
+          "start": 12.1,
+          "end": 12.41
+        },
+        {
+          "text": "to",
+          "start": 12.41,
+          "end": 12.43
+        },
+        {
+          "text": "go.",
+          "start": 12.43,
+          "end": 12.8
+        }
+      ],
+      "start": 12.1,
+      "end": 12.8
+    },
+    {
+      "words": [
+        {
+          "text": "And",
+          "start": 12.8,
+          "end": 12.96
+        },
+        {
+          "text": "I",
+          "start": 12.96,
+          "end": 13.02
+        },
+        {
+          "text": "run",
+          "start": 13.02,
+          "end": 13.22
+        }
+      ],
+      "start": 12.8,
+      "end": 13.22
+    },
+    {
+      "words": [
+        {
+          "text": "agentic",
+          "start": 13.22,
+          "end": 13.77
+        },
+        {
+          "text": "loops",
+          "start": 13.77,
+          "end": 14.01
+        },
+        {
+          "text": "and",
+          "start": 14.01,
+          "end": 14.25
+        }
+      ],
+      "start": 13.22,
+      "end": 14.25
+    },
+    {
+      "words": [
+        {
+          "text": "one",
+          "start": 14.25,
+          "end": 14.41
+        },
+        {
+          "text": "of",
+          "start": 14.41,
+          "end": 14.54
+        },
+        {
+          "text": "the",
+          "start": 14.54,
+          "end": 14.74
+        }
+      ],
+      "start": 14.25,
+      "end": 14.74
+    },
+    {
+      "words": [
+        {
+          "text": "reasons",
+          "start": 14.74,
+          "end": 15.28
+        },
+        {
+          "text": "why",
+          "start": 15.28,
+          "end": 15.52
+        },
+        {
+          "text": "my",
+          "start": 15.52,
+          "end": 15.71
+        }
+      ],
+      "start": 14.74,
+      "end": 15.71
+    },
+    {
+      "words": [
+        {
+          "text": "application",
+          "start": 15.71,
+          "end": 16.08
+        },
+        {
+          "text": "got",
+          "start": 16.08,
+          "end": 16.26
+        },
+        {
+          "text": "approved",
+          "start": 16.26,
+          "end": 16.71
+        }
+      ],
+      "start": 15.71,
+      "end": 16.71
+    },
+    {
+      "words": [
+        {
+          "text": "was",
+          "start": 16.71,
+          "end": 16.88
+        }
+      ],
+      "start": 16.71,
+      "end": 16.88
+    },
+    {
+      "words": [
+        {
+          "text": "this",
+          "start": 16.88,
+          "end": 17.11
+        },
+        {
+          "text": "platform",
+          "start": 17.11,
+          "end": 17.61
+        },
+        {
+          "text": "called",
+          "start": 17.61,
+          "end": 17.92
+        }
+      ],
+      "start": 16.88,
+      "end": 17.92
+    },
+    {
+      "words": [
+        {
+          "text": "Code",
+          "start": 17.92,
+          "end": 18.15
+        },
+        {
+          "text": "with",
+          "start": 18.15,
+          "end": 18.49
+        },
+        {
+          "text": "Ahsan",
+          "start": 18.49,
+          "end": 18.5
+        }
+      ],
+      "start": 17.92,
+      "end": 18.5
+    },
+    {
+      "words": [
+        {
+          "text": "which",
+          "start": 18.5,
+          "end": 18.81
+        },
+        {
+          "text": "is",
+          "start": 18.81,
+          "end": 18.89
+        },
+        {
+          "text": "my",
+          "start": 18.89,
+          "end": 19.05
+        }
+      ],
+      "start": 18.5,
+      "end": 19.05
+    },
+    {
+      "words": [
+        {
+          "text": "community",
+          "start": 19.05,
+          "end": 19.58
+        }
+      ],
+      "start": 19.05,
+      "end": 19.58
+    },
+    {
+      "words": [
+        {
+          "text": "platform.",
+          "start": 19.58,
+          "end": 20.27
+        },
+        {
+          "text": "It's",
+          "start": 20.27,
+          "end": 20.48
+        }
+      ],
+      "start": 19.58,
+      "end": 20.48
+    },
+    {
+      "words": [
+        {
+          "text": "serving",
+          "start": 20.48,
+          "end": 21.04
+        }
+      ],
+      "start": 20.48,
+      "end": 21.04
+    },
+    {
+      "words": [
+        {
+          "text": "5000",
+          "start": 21.04,
+          "end": 21.89
+        }
+      ],
+      "start": 21.04,
+      "end": 21.89
+    },
+    {
+      "words": [
+        {
+          "text": "plus",
+          "start": 21.89,
+          "end": 22.17
+        },
+        {
+          "text": "developers",
+          "start": 22.17,
+          "end": 22.88
+        },
+        {
+          "text": "and",
+          "start": 22.88,
+          "end": 23.09
+        }
+      ],
+      "start": 21.89,
+      "end": 23.09
+    },
+    {
+      "words": [
+        {
+          "text": "there's",
+          "start": 23.09,
+          "end": 23.58
+        },
+        {
+          "text": "a",
+          "start": 23.58,
+          "end": 23.65
+        },
+        {
+          "text": "loop",
+          "start": 23.65,
+          "end": 24.01
+        }
+      ],
+      "start": 23.09,
+      "end": 24.01
+    },
+    {
+      "words": [
+        {
+          "text": "and",
+          "start": 24.01,
+          "end": 24.14
+        },
+        {
+          "text": "now",
+          "start": 24.14,
+          "end": 24.35
+        },
+        {
+          "text": "I'm",
+          "start": 24.35,
+          "end": 24.56
+        }
+      ],
+      "start": 24.01,
+      "end": 24.56
+    },
+    {
+      "words": [
+        {
+          "text": "giving",
+          "start": 24.56,
+          "end": 25.12
+        },
+        {
+          "text": "my",
+          "start": 25.12,
+          "end": 25.23
+        },
+        {
+          "text": "agent",
+          "start": 25.23,
+          "end": 25.47
+        }
+      ],
+      "start": 24.56,
+      "end": 25.47
+    },
+    {
+      "words": [
+        {
+          "text": "loop",
+          "start": 25.47,
+          "end": 25.74
+        },
+        {
+          "text": "playbook",
+          "start": 25.74,
+          "end": 26.4
+        },
+        {
+          "text": "to",
+          "start": 26.4,
+          "end": 26.56
+        }
+      ],
+      "start": 25.47,
+      "end": 26.56
+    },
+    {
+      "words": [
+        {
+          "text": "you",
+          "start": 26.56,
+          "end": 26.8
+        },
+        {
+          "text": "for",
+          "start": 26.8,
+          "end": 27.03
+        },
+        {
+          "text": "free.",
+          "start": 27.03,
+          "end": 27.52
+        }
+      ],
+      "start": 26.56,
+      "end": 27.61
+    },
+    {
+      "words": [
+        {
+          "text": "just",
+          "start": 27.61,
+          "end": 28.07
+        }
+      ],
+      "start": 27.61,
+      "end": 28.07
+    },
+    {
+      "words": [
+        {
+          "text": "follow",
+          "start": 28.07,
+          "end": 28.9
+        },
+        {
+          "text": "me",
+          "start": 28.9,
+          "end": 29.17
+        }
+      ],
+      "start": 28.07,
+      "end": 29.17
+    },
+    {
+      "words": [
+        {
+          "text": "and",
+          "start": 29.17,
+          "end": 29.58
+        },
+        {
+          "text": "then",
+          "start": 29.58,
+          "end": 30.13
+        }
+      ],
+      "start": 29.17,
+      "end": 30.13
+    },
+    {
+      "words": [
+        {
+          "text": "comment",
+          "start": 30.13,
+          "end": 31.12
+        },
+        {
+          "text": "agents",
+          "start": 31.12,
+          "end": 31.2
+        },
+        {
+          "text": "and",
+          "start": 31.2,
+          "end": 31.24
+        }
+      ],
+      "start": 30.13,
+      "end": 31.24
+    },
+    {
+      "words": [
+        {
+          "text": "you'll",
+          "start": 31.24,
+          "end": 31.32
+        },
+        {
+          "text": "get",
+          "start": 31.32,
+          "end": 31.4
+        },
+        {
+          "text": "the",
+          "start": 31.4,
+          "end": 31.45
+        }
+      ],
+      "start": 31.24,
+      "end": 31.45
+    },
+    {
+      "words": [
+        {
+          "text": "link",
+          "start": 31.45,
+          "end": 31.48
+        },
+        {
+          "text": "in",
+          "start": 31.48,
+          "end": 31.49
+        },
+        {
+          "text": "the",
+          "start": 31.49,
+          "end": 31.6
+        }
+      ],
+      "start": 31.45,
+      "end": 31.6
+    },
+    {
+      "words": [
+        {
+          "text": "DM.",
+          "start": 31.6,
+          "end": 31.650000000000002
+        }
+      ],
+      "start": 31.6,
+      "end": 31.650000000000002
+    }
+  ],
+  "sceneCues": [
+    {
+      "id": "scene-0",
+      "layout": "video-top",
+      "component": "StatCard",
+      "props": {
+        "label": "CLAUDE MAX",
+        "value": "6 MONTHS",
+        "inverted": false
+      },
+      "startSec": 0.09,
+      "endSec": 5.09
+    },
+    {
+      "id": "scene-2",
+      "layout": "blurred-behind",
+      "component": "StrikethroughReveal",
+      "props": {
+        "lines": [
+          {
+            "text": "PROMPT",
+            "struck": true
+          },
+          {
+            "text": "RUN AGENTIC LOOPS",
+            "struck": false
+          }
+        ]
+      },
+      "startSec": 12.1,
+      "endSec": 16.71
+    },
+    {
+      "id": "scene-3",
+      "layout": "video-top",
+      "component": "ScreenshotFrame",
+      "props": {
+        "label": "CODE WITH AHSAN — 5,000+ DEVS",
+        "kenBurns": true
+      },
+      "startSec": 16.76,
+      "endSec": 21.76,
+      "graphicRect": {
+        "x": 0.04,
+        "y": 0.5,
+        "w": 0.8,
+        "h": 0.20833333333333337
+      }
+    },
+    {
+      "id": "scene-5",
+      "layout": "blurred-behind",
+      "component": "ChatMock",
+      "props": {
+        "messages": [
+          {
+            "from": "user",
+            "text": "AGENTS"
+          },
+          {
+            "from": "agent",
+            "text": "Link sent in DM"
+          }
+        ],
+        "keyword": "AGENTS"
+      },
+      "startSec": 27.61,
+      "endSec": 31.650000000000002
+    }
+  ],
+  "theme": {
+    "bg": "#0B0B0E",
+    "fg": "#FFFFFF",
+    "accent": "#FFE14D",
+    "muted": "#9A9AA3",
+    "cardBg": "#15151B",
+    "cardBorder": "#2A2A33",
+    "danger": "#FF5C5C",
+    "radiusPx": 24,
+    "fontDisplay": "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
+    "fontMono": "'SF Mono', 'Cascadia Code', Consolas, monospace"
+  },
+  "settings": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30
+  },
+  "outputDurationSec": 31.92458,
+  "face": {
+    "centerYFrac": 0.35746527777777776,
+    "centerXFrac": 0.5192460317460317,
+    "sizeFrac": 0.38197223317750706,
+    "sourceAspect": 0.5625
+  },
+  "zoomPlan": [
+    {
+      "startSec": 0,
+      "endSec": 4.050000000000001,
+      "from": 1,
+      "to": 1.08
+    },
+    {
+      "startSec": 4.050000000000001,
+      "endSec": 6.9,
+      "from": 1.08,
+      "to": 1
+    },
+    {
+      "startSec": 6.9,
+      "endSec": 9.3,
+      "from": 1,
+      "to": 1.08
+    },
+    {
+      "startSec": 9.3,
+      "endSec": 12.65,
+      "from": 1.08,
+      "to": 1
+    },
+    {
+      "startSec": 12.65,
+      "endSec": 14.74,
+      "from": 1,
+      "to": 1.08
+    },
+    {
+      "startSec": 14.74,
+      "endSec": 17.35,
+      "from": 1.08,
+      "to": 1
+    },
+    {
+      "startSec": 17.35,
+      "endSec": 20.25,
+      "from": 1,
+      "to": 1.08
+    },
+    {
+      "startSec": 20.25,
+      "endSec": 22.8,
+      "from": 1.08,
+      "to": 1
+    },
+    {
+      "startSec": 22.8,
+      "endSec": 26.35,
+      "from": 1,
+      "to": 1.08
+    },
+    {
+      "startSec": 26.35,
+      "endSec": 29.050000000000004,
+      "from": 1.08,
+      "to": 1
+    },
+    {
+      "startSec": 29.050000000000004,
+      "endSec": 31.92458,
+      "from": 1,
+      "to": 1.08
+    }
+  ],
+  "ctaKeyword": "AGENTS",
+  "ctaWindow": {
+    "startSec": 27.61,
+    "endSec": 31.650000000000002
+  },
+  "sourceTextRegions": [
+    {
+      "x": 0,
+      "y": 0,
+      "w": 1,
+      "h": 0.125,
+      "startSec": 21.283053333333335,
+      "endSec": 22.803271428571428,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.041666666666666664,
+      "w": 1,
+      "h": 0.125,
+      "startSec": 18.242617142857146,
+      "endSec": 19.76283523809524,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.125,
+      "w": 1,
+      "h": 0.16666666666666669,
+      "startSec": 0,
+      "endSec": 3.0404361904761905,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.20833333333333334,
+      "w": 1,
+      "h": 0.16666666666666666,
+      "startSec": 18.242617142857146,
+      "endSec": 21.28305333333333,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.3333333333333333,
+      "w": 1,
+      "h": 0.16666666666666669,
+      "startSec": 19.76283523809524,
+      "endSec": 22.803271428571428,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.6666666666666667,
+      "w": 1,
+      "h": 0.12499999999999989,
+      "startSec": 27.363925714285717,
+      "endSec": 31.92458,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.7083333333333334,
+      "w": 1,
+      "h": 0.12499999999999989,
+      "startSec": 21.283053333333335,
+      "endSec": 22.803271428571428,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.7083333333333334,
+      "w": 1,
+      "h": 0.12499999999999989,
+      "startSec": 27.363925714285717,
+      "endSec": 31.92458,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.8333333333333334,
+      "w": 1,
+      "h": 0.12499999999999989,
+      "startSec": 13.681962857142857,
+      "endSec": 15.202180952380953,
+      "confidence": 1
+    },
+    {
+      "x": 0,
+      "y": 0.8333333333333334,
+      "w": 1,
+      "h": 0.12499999999999989,
+      "startSec": 19.76283523809524,
+      "endSec": 21.28305333333333,
+      "confidence": 1
+    }
+  ]
+}

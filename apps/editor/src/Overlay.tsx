@@ -127,10 +127,19 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
       // not react to unrelated clicks.
       if (!stage.contains(e.target as Node)) return;
       // A mousedown that landed on the selection box itself continues
-      // manipulating the CURRENT selection — resolving via `elementFromPoint`
-      // here would just find the box (it explicitly keeps pointer events so
-      // it's draggable), not what's under it, and wrongly clear the selection.
-      if (selectionRef.current && boxRef.current?.contains(e.target as Node)) {
+      // manipulating the CURRENT selection — but only when that selection is
+      // an actual ELEMENT. An element's box exactly overlays that one
+      // element, so any click inside it really is "drag this again". A
+      // SCENE-level selection's box (`elementId: null`) instead covers the
+      // entire slot — every element inside the scene visually sits under it
+      // — so treating any click there as "continue the scene drag" would
+      // silently swallow clicks meant for elements inside the scene (the
+      // scene selection isn't draggable at all: `mouseup` bails out on
+      // `!sel?.elementId`). Falling through to the `elementBelow` hit-test
+      // below re-resolves what's actually under the cursor instead —
+      // `elementBelow` already walks through arbitrary pointer-events:auto
+      // layers (including this very box) to find the real tagged leaf.
+      if (selectionRef.current?.elementId && boxRef.current?.contains(e.target as Node)) {
         dragRef.current = { x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
         setDragOffset({ dx: 0, dy: 0 });
         return;
