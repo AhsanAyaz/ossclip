@@ -116,6 +116,89 @@ The two components that produced the worst (§1) and best frames last round were
 
 Fix: the video slot needs a crop bias, not just a rect — bias the source crop upward (or fit-height with a blurred backdrop) so a face lands inside the band. This is the small, non-face-tracking version of BRAINSTORM §4.3's reframing note; full face detection stays Phase 4.
 
+---
+
+# Round 3 — after the tuning fixes (fresh plan, real footage, 2026-07-27)
+
+*Same 68 s take, cache cleared. The scheduling work landed:*
+
+```
+ 0.2– 5.2s  StatCard            video-top
+12.8–17.8s  TitleCard           pip-bubble
+21.8–26.8s  StrikethroughReveal blurred-behind
+39.1–44.1s  FlowDiagram         graphic-only
+50.0–55.0s  RuleCard            video-top
+63.4–67.6s  ChatMock            blurred-behind
+        29.2s / 67.8s = 43% coverage · longest gap 12.4s · 0 adjacent repeats
+```
+
+| | v2 | v3 |
+|---|---|---|
+| Coverage | 28% | **43%** |
+| Scenes | 4 | **6** |
+| Longest drought | 36 s | **12.4 s** |
+| Adjacent repeats | 1 | **0** |
+| Distinct components | 3 | **6** |
+
+§7–§9 are closed. `RuleCard` on `video-top` now reads like the reference. What follows is what the real footage still exposes, plus two additions to the reel grammar.
+
+## 12. §1 is only half fixed — `FlowDiagram` still wraps on real copy
+
+Rendered at t≈41 s: "1 AGENT → 1 DIR" on row one, "→ 1 DONE BAR" on row two. The arrow+chip grouping **did** work (no dangling arrow any more), but fit-to-width did not — the font hits its floor before the row fits, and it wraps anyway.
+
+The golden fixture passed because its chip labels are short. Real LLM copy is longer, so **the fixture is not a hard enough test** — §10's "call §1 closed" was premature. Add a fixture case with deliberately long labels (3–4 nodes × ~12 chars), and when the row cannot fit even at the font floor, switch to the vertical stack with downward arrows rather than wrapping.
+
+## 13. `video-top` crop bias overshot — the face is now cut at the chin
+
+Was cutting the top of the head at bias 0; at `objectPosY = 0.12` it cuts the **mouth and chin** — the band shows forehead-to-nose (see the user-supplied frame at t≈52 s: eyes and glasses fill the block, the mouth is gone). Chopping the top of the head is bad; chopping the mouth on a talking-head video is worse, because the mouth is what makes it read as speech.
+
+A constant cannot solve this — it trades one crop for the other depending on how the person framed themselves. **The system has to know where the face is.** Options in increasing order of effort:
+
+1. Sample N frames, run a face detector (MediaPipe / OpenCV Haar via a small sidecar, or `ffmpeg`'s `facedetect` where available), take the median face box, and derive `objectPosY` so the box's **center sits ~40% down the video slot** — chin included, headroom above.
+2. Fall back to the current constant when no face is found, and log which path ran.
+3. Cache the measured face box in the workdir alongside the transcript — it is a property of the source, not of a render.
+
+This is the "v0 shortcut" version of BRAINSTORM §4.3's reframing note: one static crop offset per source, measured rather than guessed. Full per-frame tracking stays Phase 4. Until it exists, bias ~0.05–0.08 is a less-bad constant than 0.12 for this framing.
+
+## 14. Copy is not grounded in the transcript — and it inherits ASR errors
+
+The hook StatCard rendered **"CODECHUN REVENUE · 861%"**. Two separate faults:
+
+**a) Invented label.** The take says 861% is what happened to **code churn** when teams went all-in on agents. It is not a revenue figure. The scene-props call invented a noun the transcript slice does not contain, and it landed on the hook — the first thing a viewer reads. (v1 got this right with "AI AGENT ADOPTION".) `FlowDiagram`'s "1 DONE BAR" is the same weakness, lower stakes (probably a mangling of "1 DoD").
+
+Fix: constrain the props prompt — **every label must reuse nouns present in the transcript slice**; if no supporting noun exists, use the number alone or fall back to the moment's `onScreenCopy`. Worth a cheap post-check: label tokens that are not in the slice (minus a stopword list) get flagged in the report, so bad grounding is visible without watching the video.
+
+**b) ASR error propagated.** "code churn" was transcribed as "CodeChun" by whisper `base.en` — the speaker's accent, not a pipeline bug. But that error then appeared in the captions **and** was treated by the producer as a company name. Two mitigations, independent:
+
+- Default to a larger model (`small.en` is a big accuracy step for accented English at modest cost) and make `--model` prominent in the README.
+- Give the producer a transcript-repair pass, or at minimum tell it in the system prompt that the transcript is ASR output that may contain mishearings, and that an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity. It should prefer the common-sense reading ("code churn") over inventing a brand.
+
+Caption text should be corrected too, since a wrong word on screen is worse than a wrong word in audio — the viewer can hear what was actually said.
+
+## 15. NEW — micro zoom punches inside a take (pattern interrupt without cuts)
+
+`EdlVideo`'s punch-in only toggles **at cuts** (`punchThresholdSec`, removed gap ≥ 150 ms). This take has **zero cuts**, so the punch system never fires and the talking-head stretches are visually static for 8–12 s at a time.
+
+Add an independent driver: a slow, subtle zoom that changes direction at speech-phrase boundaries — roughly every half-sentence.
+
+- Scale range ~1.00 ↔ 1.08, eased (never linear), transition ~0.4–0.6 s.
+- Trigger points from data we already have: caption line boundaries, or inter-word gaps above ~250 ms — a natural phrase break. Alternate in/out so it breathes rather than creeping one way.
+- Suppress while a graphic owns the frame in `graphic-only`, and keep it gentle on `pip-bubble` (a zooming bubble reads as a wobble).
+- Must compose with the existing cut-driven punch-in rather than fight it: one scale value per frame, whichever driver is active.
+
+Rationale: it is the cheapest pattern interrupt there is, it costs no LLM call, and it is what makes a single-take clip feel edited.
+
+## 16. NEW — the CTA keyword needs quote-and-caps treatment
+
+The reference frames render the comment keyword as a chat bubble reading `"agents"` — quoted, visually isolated. Ours renders whatever the producer wrote, unstyled.
+
+Rule: whenever a scene carries the comment/CTA keyword (`ChatMock` messages today, and any future CTA card), wrap it in **double quotes** and **capitalize** it — `"AGENTS"`. Two parts:
+
+- The producer should mark which token is the CTA keyword (a `keyword` field on the relevant props, not a guess at render time).
+- The component applies the treatment, so styling stays in the library and the LLM never writes formatting.
+
+Also applies to the caption track when the speaker says the keyword in the payoff line — quoting it there reinforces the ask for muted viewers.
+
 ## Not defects, noted
 
 - **0 cuts on the test take is correct** — longest silence 0.44 s, below `standard`'s 0.7 s threshold.
