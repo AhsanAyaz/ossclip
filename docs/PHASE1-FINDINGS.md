@@ -336,6 +336,79 @@ Fix: give components a fill contract — scale type and padding to consume the s
 
 Per the §19 work: at `h: 0.42` a typical selfie head does not fit, so the rule reduces to keeping the chin and losing crown. That is the right call, but it is worth deciding deliberately rather than inheriting it — either accept the tight crop as the house style, or make `video-top`'s band taller (~0.50) and shrink the graphic slot to match, which the safe area can still accommodate.
 
+---
+
+# Round 6 — second source clip (720×1280, 31.9 s, pre-edited reel, 2026-07-27)
+
+*A different take entirely: different speaker framing, different room, different audio, and — importantly — **already an edited reel with burned-in text**.*
+
+```
+ 0.1– 5.1s  StatCard            video-top
+10.6–12.8s  StrikethroughReveal blurred-behind
+27.6–31.7s  ChatMock            blurred-behind
+        35% coverage · face 7/9 frames · zoom: acoustic (9 boundaries, 11 segments)
+```
+
+**§22 verified on new footage** — CTA window 27.6–31.7 s, keyword plain everywhere else. **The best repair so far:** `▸ repaired "code with SM" → "Code with Ahsan"` — it recovered the speaker's channel name from a mangled span on a clip it had never seen. Levels re-derived per source (−29.0 dB here vs −26.3 dB on the other take), face found at 36 % down.
+
+## 26. Pre-edited sources: ossclip stacks its layer on top of an existing one
+
+The source already carries a burned-in title ("I got Claude Max(20x) for 6 months for free") in its top band. `video-top` cropped through it, and ossclip's own StatCard then said much the same thing in different words directly beneath — **two competing titles, one of them clipped**.
+
+ossclip assumes raw footage. Fed a finished reel it has no idea anything is already on screen.
+
+**Required behaviour (product decision):** when the source already has burned-in graphics, **captions still go in** — they are the accessibility layer and must always be present. But ossclip's own text, overlays and animations must **not overlap existing on-screen elements**: place them in genuinely free regions, or skip that scene entirely for the affected moment.
+
+Implementation sketch:
+
+- Detect burned-in text: sample frames, run edge/MSER text-region detection (or a light OCR pass) → occupancy rects with their time ranges. Cache in the workdir next to `face.json`, since it is a property of the source.
+- Feed those rects into the same free-space model the caption band already uses, so graphics and captions both route around them.
+- When no free region can hold a scene's graphic, demote that moment to `none` and log it (`⚠ moment N: source already has on-screen text here — skipped`).
+- Consider a `--source-is-edited` hint so the user can force conservative mode without waiting on detection.
+
+## 27. `StrikethroughReveal` breaks on wrapped lines
+
+At t≈12 s: "PROMPT → OUTCOME" wrapped to two lines, the arrow stranded at the end of line one, and the strike rule drawn **between** the two lines rather than through either. Same class as §12's dangling arrow, different component — the fit contract scales but does not solve inline glyphs plus wrapping.
+
+Fix: treat the line as an unbreakable unit like `FlowDiagram`'s row — scale to fit, and if it cannot fit at the floor, break at the arrow with the arrow leading the second line (never trailing the first). The strike rule must be drawn per rendered line, not per logical line.
+
+## 28. The CTA bubble text bleeds outside its bubble — and the second bubble should not exist
+
+Two things in the same frame (user-supplied, t≈29 s):
+
+**a) Bleed.** `"AGENTS"` fills its white bubble edge to edge with the quotes touching the boundary, and the dark bubble beneath renders "link sent 🔗" overflowing its rounded rect. The fit work bounded the *slot*; it did not bound text inside a component's own bubble geometry. Bubbles need internal padding as a hard constraint — text box = bubble minus padding, and the type scales to that, not to the slot.
+
+**b) The second bubble is noise.** When the ask is *comment "X" to get the link*, the screen should show **just `"X"`** — a single bubble with the keyword. The "link sent 🔗" reply is invented reassurance for something that has not happened, it competes with the keyword for attention, and it is not in the reference. Change `ChatMock`'s CTA usage to a single-bubble form (keyword only); keep the multi-message form available for non-CTA conversational scenes.
+
+## 29. Short clips get proportionally starved
+
+35 % coverage from 3 scenes on a 32 s take, one of them only 2.2 s. The coverage budget is a percentage, so a short take yields few graphics *and* the `MIN_SCENE_SEC`/gap rules eat into what is left. Short-form is exactly where density matters most.
+
+Fix: a floor for short takes — e.g. target `max(45 % of runtime, 4 scenes)` under ~45 s, and do not let a surviving scene fall below ~3 s.
+
+## 30. Grounding flags stopwords
+
+`⚠ grounding: StatCard scene-0 caption "but" — not in the take`. "but" is a stopword and should never be checked. Extend the stopword list; the check's value is entirely in its precision.
+
+## 31. NEW FEATURE — cover image (thumbnail) for Instagram/Facebook
+
+Publishing needs a cover. Reference grid (user-supplied): each tile is a **video frame with a short high-contrast text banner over it** — white box with dark text, or dark box with white text, 4–9 words, consistently placed.
+
+**Recommendation: generate a separate cover image file, not a burned-in intro.** Reasoning:
+
+- Instagram and Facebook both accept a **custom uploaded cover**; nothing has to be pickable from the video's own frames.
+- Burning a 2–3 s title card into the head of the reel spends the most valuable seconds in the video on something the platform already shows as a static tile — it directly fights the "hook in the first ~2 s" policy (BRAINSTORM §4.5).
+- A separate file can be regenerated or restyled without re-rendering 30–70 s of video.
+
+Spec:
+
+- Output `<out>.cover.jpg` (1080×1920) alongside the video, plus `--cover <path>` and `--no-cover`.
+- **Frame choice:** pick from the take automatically — prefer a frame inside the first ~20 %, with a detected face, eyes open, good sharpness (variance of Laplacian) and no motion blur. Fall back to the first face frame.
+- **Text:** the beat sheet's `hook`, shortened to ≤ 9 words by the producer (it already writes the hook; add a `coverText` field rather than a new LLM call).
+- **Styling:** reuse the existing theme tokens and the `TitleCard` banner treatment so the cover and the video look like one system.
+- **Critical geometry:** the Instagram *grid* crops covers to a centre square/4:5. Text must sit inside the **central square** of the 1080×1920 frame or it is cut off in the profile grid — this is a different safe area from `SAFE_AREA`, and both apply.
+- Offer `--cover-in-video` as an opt-in for anyone who does want a 2 s burned-in card, but default it off.
+
 ## Not defects, noted
 
 - **0 cuts on the test take is correct** — longest silence 0.44 s, below `standard`'s 0.7 s threshold.
