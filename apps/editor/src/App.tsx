@@ -96,7 +96,10 @@ export const App: React.FC = () => {
             Save
           </button>
         </div>
-        <span style={{ ...statusText, color: edits.dirty ? "#FFE14D" : "#5FBF77" }}>
+        <span
+          style={{ ...statusText, color: edits.dirty ? "#FFE14D" : "#5FBF77" }}
+          {...(edits.dirty ? { "data-testid": "dirty" } : {})}
+        >
           {edits.dirty ? "● Unsaved changes" : "✓ Saved"}
         </span>
       </div>

@@ -6,6 +6,9 @@ dist/
 fixtures/*.mp4
 fixtures/*.wav
 fixtures/work/
+.playwright-mcp/
+apps/editor/test-results/
+apps/editor/playwright-report/
 
 # Secrets — never commit
 .env

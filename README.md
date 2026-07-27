@@ -66,6 +66,14 @@ Prices are a built-in per-family assumption. Override them for your account:
 
 Configuration (binary/model paths, pricing): `~/.ossclip/config.json` — see `apps/cli`.
 
+### Editing a produced video
+
+    pnpm ossclip edit <workdir>
+
+Click any element to select it, drag to move, double-click to retype, `⌘S` to
+save. Edits are written to `<workdir>/overrides.json` — a file the producer
+never touches, so re-running `produce` re-plans the video and keeps your edits.
+
 ## Repo layout
 
 ```
@@ -73,6 +81,7 @@ packages/core      framework-free pipeline: schema, ingest, transcribe, analyze,
 packages/scenes    React components shared by preview & render (EdlVideo, CaptionTrack)
 packages/renderer  Remotion composition + programmatic render entry
 apps/cli           the ossclip CLI
+apps/editor        direct-manipulation editing page over a produced workdir (`ossclip edit`)
 apps/studio        (dormant) agent-native studio app — Phase 1
 ```
 
