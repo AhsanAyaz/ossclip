@@ -278,6 +278,56 @@ Fix: expand the measured box upward by ~0.3–0.4 × its height (a head extends 
 
 `FlowDiagram` was not picked again, so §12's fix remains **fixture-verified only** — the third consecutive run where the component that failed on real copy has not been re-tested on real copy. Worth forcing it once via `--scenes` over this take rather than waiting for the producer to choose it.
 
+---
+
+# Round 5 — after §17–§20 (clean run, repair pass live, 2026-07-27)
+
+*Workdir deleted, `small.en`, repair on, fresh plan.*
+
+```
+ 0.2– 5.2s  StatCard            video-top
+13.0–18.0s  TitleCard           pip-bubble
+21.7–26.7s  StrikethroughReveal blurred-behind
+39.1–44.1s  TerminalMock        graphic-only
+50.1–55.1s  FlowDiagram         graphic-only
+63.1–67.6s  ChatMock            blurred-behind
+        44% coverage · 6 distinct components · face 9/9
+```
+
+**§17 is solved, visibly.** The hook card reads **"CODE CHURN · 861%"** — correct, in the speaker's own words. Five repairs landed and the one rewrite was refused with a reason:
+
+```
+▸ repaired "coach and" → "code churn"      ▸ repaired "task shift" → "task shipped"
+▸ repaired "incidence" → "incidents"       ▸ repaired "text," → "tax,"  (×2)
+⚠ repair refused: "especially" → "a specialty" (rewrite, not a repair)
+```
+
+Grounding warnings fell 5 → 3 and the survivors ("hidden", "cost", "build") are genuine editorialising, so the check is informative instead of noise. **§18 is fixed** — `zoom: acoustic (26 phrase boundaries, 28 segments)`, segments irregular (2.1 / 2.6 / 2.1 / 3.2 s) instead of the uniform 4.235 s metronome. **§12 finally ran on real copy** — FlowDiagram was picked naturally and rendered "LOOP → BUILD → VERIFY" as one clean row, arrows between chips, no wrap. **§19 improved**: chin and mouth in, the clip has moved up to the hair.
+
+## 22. The CTA keyword is quoted everywhere it is spoken, not where it is asked for
+
+`ctaDisplay` (`packages/scenes/src/CaptionTrack.tsx:23-26`) matches the keyword by **text, anywhere in the video**. "agents" occurs 9 times in this take's captions — at 6.3 s, 30.3 s, 34.8 s, 44.9 s, 59.1 s, 65.3 s the speaker is simply using the word — and every one of them renders as `"AGENTS"`.
+
+That inverts the meaning. Quoting marks *the thing you type in the comments*; applying it to ordinary speech makes the video look like it is shouting a brand name, and it devalues the one moment that matters. In the reference the treatment appears **only** at the call-to-action.
+
+Fix: scope the treatment by **time, not text**. The keyword is styled only inside the CTA moment's window — the cue that carries the CTA (`ChatMock` today, any future CTA card) — and everywhere else the caption renders the word plainly. The producer already marks the keyword; it should also mark *which moment is the ask*, or the CTA cue's own `startSec`/`endSec` can define the window. Inside the `ChatMock` component itself the quoting is correct and should stay.
+
+## 23. `graphic-only` (and the graphic slot generally) wastes most of the frame
+
+FlowDiagram at t≈52 s is a thin strip floating in black: roughly 40% of the frame empty above it and 30% below. Same for TerminalMock, and for the StatCards in earlier rounds. The slot is `h: 0.54` of the frame, but components render at their **natural size and centre inside it** rather than scaling to fill.
+
+The reference frames fill their space — that is a large part of why they read as designed rather than sparse. This is a component-sizing concern, not a layout one: the slot geometry is already right.
+
+Fix: give components a fill contract — scale type and padding to consume the slot's height (within sane min/max), or have the stage scale the rendered graphic to fit its slot. A `FlowDiagram` of 3 chips should be visibly bigger than one of 6, not the same size with more air.
+
+## 24. FlowDiagram's long-copy path is still untested
+
+§12's real risk was long labels; this run's copy ("LOOP", "BUILD", "VERIFY") is short and takes the easy path. The vertical-stack fallback below the font floor has still never rendered from producer output — only from the fixture. Not urgent, but §12 should not be considered closed on the strength of this frame.
+
+## 25. `video-top`'s band cannot fit a head — decide the trade explicitly
+
+Per the §19 work: at `h: 0.42` a typical selfie head does not fit, so the rule reduces to keeping the chin and losing crown. That is the right call, but it is worth deciding deliberately rather than inheriting it — either accept the tight crop as the house style, or make `video-top`'s band taller (~0.50) and shrink the graphic slot to match, which the safe area can still accommodate.
+
 ## Not defects, noted
 
 - **0 cuts on the test take is correct** — longest silence 0.44 s, below `standard`'s 0.7 s threshold.
