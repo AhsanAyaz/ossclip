@@ -206,6 +206,68 @@ Rule: whenever a scene carries the comment/CTA keyword (`ChatMock` messages toda
 
 Also applies to the caption track when the speaker says the keyword in the payoff line — quoting it there reinforces the ask for muted viewers.
 
+---
+
+# Round 4 — after §12–§16 (clean run: `small.en` re-transcribe, face measured, fresh plan, 2026-07-27)
+
+*Whole workdir deleted first, so nothing was cached: new model, new face measurement, new plan.*
+
+```
+ 0.2– 5.2s  StatCard            video-top
+21.7–26.7s  StrikethroughReveal blurred-behind   << 16.5s gap
+34.2–39.1s  RuleCard            video-top
+44.4–49.4s  TerminalMock        graphic-only
+50.1–55.1s  RuleCard            video-top
+63.1–67.6s  ChatMock            blurred-behind
+        43% coverage · face 9/9 frames, center 37.7% down · zoomPlan 16 segments
+```
+
+**Confirmed working:** §16 renders `"AGENTS"` quoted and capitalized. §15 is visibly live — frames at 10 s and 16 s are clearly different framings, so talking-head stretches breathe. §13's detector ran (9/9 frames) and put the mouth back in shot, which was the serious half of the regression. Grounding warnings surface in both the log and `report.txt`.
+
+## 17. The grounding check now punishes the model for repairing ASR — §14a and §14b are in conflict
+
+`small.en` transcribed "code churn" as **"coach and"** — *further from the truth than `base.en`'s "CodeChun"*. The producer nevertheless inferred the right phrase from context and wrote a correct label. `checkGrounding` then flagged it:
+
+```
+⚠ grounding: StatCard scene-0 label "code" — not in the take
+⚠ grounding: StatCard scene-0 label "churn" — not in the take
+```
+
+The two §14 mitigations pull in opposite directions: the prompt tells the model to treat unfamiliar tokens as mishearings and repair them, and the check then reports the repair as an invention. As built, the pressure is back toward parroting "coach and" onto the screen — the exact failure §14 existed to prevent. Five warnings fired this run and **at least two are false positives**; a check that cries wolf gets ignored.
+
+Fix, in rough order of preference:
+
+1. **Ground against a repaired transcript, not the raw one.** If a transcript-repair pass exists (still open from §14b), the check compares against its output and the conflict disappears — repair becomes the single source of truth for both captions and grounding.
+2. **Phonetic tolerance.** A flagged token that is a near-homophone of transcript text (Soundex/Metaphone/edit-distance on the surrounding window) is a *repair*, not an invention — report it as `repaired:` at most, not a warning. "churn" vs "and"/"chun" and "code" vs "coach" both land there.
+3. Failing both, have the producer emit the transcript span it grounded each label in, and check *that* rather than guessing by token membership.
+
+Separately: **the `small.en` bump did not deliver.** It is worth re-testing `base.en` vs `small.en` vs `medium.en` on this one clip and keeping whichever actually gets the phrase right, rather than assuming bigger is better. A model that produces "coach and" is not an improvement over one that produces "CodeChun" — both are wrong, but the second at least preserves the consonants a repair pass could work from.
+
+## 18. §15 is running the metronome fallback — phrase detection never fires
+
+Every zoom segment is exactly **4.2354166875 s** (= 67.77 / 16). That is the uniform fallback, not phrase-driven pacing.
+
+Root cause is a bug we have already diagnosed once: whisper's `-ml 1` word stamps are **contiguous** (Phase 0, `docs/PHASE0.md` "Signal fusion" — 164/167 boundaries had `word[i].end === word[i+1].start`). Inter-word gaps ≥ 250 ms therefore essentially do not exist, so the trigger finds nothing every time. The same false assumption that broke the cut engine has now broken the zoom driver.
+
+Fix: drive phrase boundaries from data that actually exists in this pipeline —
+
+- **caption line boundaries** (75 of them this run; they are already grouped at ≤3 words / ≤1.2 s, which *is* a phrase), or
+- **`analysis.cuttable`** — acoustically measured, already computed, and independent of whisper's stamp behaviour.
+
+Worth a guard so this cannot regress silently: if the metronome fallback is chosen, log it (`▸ zoom: metronome fallback (no phrase boundaries found)`). A silent fallback is why this looked fine in the fixture.
+
+## 19. §13 crop clips the crown — the detected box is not the head
+
+The mouth is in shot now, but the top of the head is cut mid-forehead (`video-top` at t≈36 s). pico's box bounds the **face** — eyes, nose, mouth — and excludes hair and skull, so centring *that box* at 42 % of the band seats the whole head too low.
+
+Fix: expand the measured box upward by ~0.3–0.4 × its height (a head extends roughly that far above the face box) before deriving `objectPosY`, or equivalently target the *expanded* box's center rather than the face box's. This is a one-line adjustment to a measured number, not a return to hand-tuned constants.
+
+## 20. Minor — `RuleCard` twice, and `FlowDiagram` still unexercised
+
+`RuleCard` appears at 34.2 s and 50.1 s. Not adjacent, so §9's rule correctly passes, but two identical card treatments in a six-scene video still reads as a template. Consider extending the variety pass from "no adjacent repeats" to "no component more than once unless the library is exhausted".
+
+`FlowDiagram` was not picked again, so §12's fix remains **fixture-verified only** — the third consecutive run where the component that failed on real copy has not been re-tested on real copy. Worth forcing it once via `--scenes` over this take rather than waiting for the producer to choose it.
+
 ## Not defects, noted
 
 - **0 cuts on the test take is correct** — longest silence 0.44 s, below `standard`'s 0.7 s threshold.
