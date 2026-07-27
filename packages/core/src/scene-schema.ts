@@ -68,6 +68,14 @@ export const SceneCueSchema = z.object({
       h: z.number(),
     })
     .optional(),
+  /** Per-element nudges from the user's edit layer, by `data-edit-id`. */
+  elements: z.record(z.string(), z.object({
+    dx: z.number().optional(),
+    dy: z.number().optional(),
+    scale: z.number().positive().optional(),
+  })).optional(),
+  /** True when the user set an absolute time, detaching this cue from its words. */
+  pinned: z.boolean().optional(),
 });
 export type SceneCue = z.infer<typeof SceneCueSchema>;
 
