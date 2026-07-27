@@ -2,7 +2,7 @@ import { z } from "zod/v4";
 import type { LlmProvider } from "./provider";
 import { estimateTokens, type LlmUsage } from "./usage";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
 
 /**
  * Gemini via the generateContent REST API in JSON mode. The schema is stated

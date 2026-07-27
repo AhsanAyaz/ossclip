@@ -44,7 +44,7 @@ export function createProvider(name: ProviderName, model?: string): LlmProvider 
 export const DEFAULT_FAST_MODEL: Partial<Record<ProviderName, string>> = {
   claude: "claude-haiku-4-5-20251001",
   "claude-cli": "claude-haiku-4-5-20251001",
-  gemini: "gemini-2.5-flash",
+  gemini: "gemini-3.5-flash-lite",
 };
 
 export interface TieringOptions {

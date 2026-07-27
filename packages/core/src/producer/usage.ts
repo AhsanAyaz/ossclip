@@ -66,6 +66,8 @@ export const DEFAULT_PRICING: Record<string, ModelPrice> = {
   haiku: { inputPerMTok: 1, outputPerMTok: 5 },
   "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },
   "gemini-2.5-flash": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+  "gemini-3.6-flash": { inputPerMTok: 1.5, outputPerMTok: 7.5 },
+  "gemini-3.5-flash-lite": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
 };
 
 /** Resolve a price for a model id: exact override, override family, then default family. */
