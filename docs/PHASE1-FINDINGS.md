@@ -419,6 +419,58 @@ Spec:
 - **Critical geometry:** the Instagram *grid* crops covers to a centre square/4:5. Text must sit inside the **central square** of the 1080×1920 frame or it is cut off in the profile grid — this is a different safe area from `SAFE_AREA`, and both apply.
 - Offer `--cover-in-video` as an opt-in for anyone who does want a 2 s burned-in card, but default it off.
 
+---
+
+# Round 7 — §26–§31 on the pre-edited reel (2026-07-27)
+
+*Same 720×1280 clip with the burned-in title, clean workdir.*
+
+**Improved:** §29's floor gave 4 scenes instead of 3 on this 32 s take, grounding warnings dropped to zero, and the repair caught "code with SM" → "Code with Ahsan" again. §31's cover pipeline produced a file: `cover from 0.3s (face, sharpness 835)`, banner inside the centre-square crop zone, themed correctly.
+
+## 32. §26's routing works; its detection does not fire at all
+
+`source-text.json` after a clean run on the clip §26 was built for:
+
+```json
+{ "regions": [], "framesSampled": 12, "assumed": false }
+```
+
+Zero regions — on footage whose title is **white text in a solid black box**, i.e. the highest-contrast, most bimodal case that exists. The rendered frame at t≈2 s is unchanged from before §26: the source's title clipped by the `video-top` band, ossclip's StatCard restating the same claim beneath it.
+
+The routing half is fine. Forcing it proves the machinery works end to end:
+
+```
+▸ --source-is-edited: assuming burned-in text in the title and caption bands
+  ▸ scene scene-0: graphic moved into the free band at 32-55%   (all 4 scenes)
+```
+
+So the defect is **detection sensitivity only**. The bimodality discriminator added to kill the golden-fixture false positive appears to have been tuned past the point where real text survives — the fixture's colour bars and a white-on-black title box are both bimodal, so that discriminator cannot separate them on its own.
+
+Suggested direction:
+
+- Debug against this clip specifically: log per-band edge density and bimodality scores so the thresholds can be set from real numbers rather than guessed. The clip is the ideal fixture — obvious text, known location, and a known false-positive source to keep failing.
+- Separate the two signals rather than AND-ing them at fixed thresholds: text is *locally* bimodal in a **horizontally continuous band with sharp vertical stroke edges and interior gaps*, colour bars are bimodal but have no stroke structure. Stroke-width variance is the classic discriminator (SWT) and is cheap on a downscaled frame.
+- Failing that, prefer a light OCR pass over hand-rolled heuristics; the cost is one pass over ~12 sampled frames, cached like `face.json`.
+- Until it fires, consider defaulting `--source-is-edited` **on** when the source resolution/bitrate suggests a downloaded reel rather than camera output — or at minimum print a hint when zero regions are found, so silence isn't mistaken for "no text".
+
+## 33. The cover's banner sits across the face
+
+The generated cover puts the text box over the subject's mouth and beard. `face.json` is already measured (36 % down, 38 % tall) and the cover renderer knows it — the banner just isn't routed around it. Reference covers put the banner clear of the face, in the frame's dead space.
+
+Fix: subtract the face box from the cover's usable area, the same way §26's routing subtracts text regions from the slot; pick the taller of the free bands above/below the face, still intersected with the centre-square crop zone.
+
+## 34. The cover repeats the source's own burned-in title
+
+Source says "I got Claude Max(20x) for 6 months for free"; the cover says "CLAUDE GAVE ME SIX MONTHS OF MAX PLAN FOR FREE — AND NOT FOR THE REASON YOU THINK". Same claim, twice, in one image.
+
+This is §26 applied to the cover surface: once source-text detection works, the cover should honour it too — either place the banner clear of the existing title (it currently overlaps nothing, but duplicates), or, when the source already carries a title, **skip the banner entirely** and ship the frame as-is. A cover with one title beats a cover with two.
+
+## 35. `coverText` is too long — it inherited the full hook
+
+13 words across 5 lines. §31 specified ≤ 9 words, and the reference grid runs 4–9 words over 1–3 lines. The producer appears to be reusing `hook` verbatim rather than writing a distinct short `coverText`.
+
+Fix: make `coverText` its own field with a hard word cap stated in the schema `.describe()` and enforced in code (truncate at a word boundary, or fall back to the first clause before the em-dash). A cover banner is a headline, not a sentence.
+
 ## Not defects, noted
 
 - **0 cuts on the test take is correct** — longest silence 0.44 s, below `standard`'s 0.7 s threshold.
