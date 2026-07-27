@@ -10,6 +10,11 @@ export interface OssclipConfig {
   whisperPath: string;
   modelDir: string;
   model: string;
+  /**
+   * Model for mechanical LLM calls (repair, scene props) — the editorial beat
+   * sheet always uses the main model. "same" disables tiering (FINDINGS §37).
+   */
+  fastModel?: string;
   browserExecutable?: string;
   /**
    * USD per million tokens, keyed by model id or family substring — overrides
@@ -47,6 +52,7 @@ export function loadConfig(): OssclipConfig {
     whisperPath: process.env.OSSCLIP_WHISPER ?? fileCfg.whisperPath ?? DEFAULTS.whisperPath,
     modelDir: process.env.OSSCLIP_MODEL_DIR ?? fileCfg.modelDir ?? DEFAULTS.modelDir,
     model: process.env.OSSCLIP_MODEL ?? fileCfg.model ?? DEFAULTS.model,
+    fastModel: process.env.OSSCLIP_FAST_MODEL ?? fileCfg.fastModel,
     browserExecutable: process.env.OSSCLIP_BROWSER ?? fileCfg.browserExecutable,
     pricing: fileCfg.pricing,
   };

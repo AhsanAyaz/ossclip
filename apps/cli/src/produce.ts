@@ -18,6 +18,7 @@ import {
   coverHeadline,
   createFaceDetector,
   createProvider,
+  createTieredProvider,
   defaultProviderName,
   defaultTheme,
   detectSilences,
@@ -68,6 +69,8 @@ export interface ProduceOptions {
   intent?: string;
   provider?: ProviderName;
   llmModel?: string;
+  /** Model for mechanical calls; "same" sends everything to the main model. */
+  llmFastModel?: string;
   /** Repair ASR mishearings before captions/producer/grounding (default on). */
   repair?: boolean;
   /** Override the whisper model for this run (A/B base.en vs small.en). */
@@ -208,14 +211,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           : "▸ ANTHROPIC_API_KEY found — using the Claude API",
       );
     }
-    provider = createProvider(providerName, opts.llmModel);
+    provider = createTieredProvider(providerName, {
+      model: opts.llmModel,
+      fastModel: opts.llmFastModel ?? cfg.fastModel,
+    });
   }
 
   const rawTranscript = transcript;
   let repairs: AppliedRepair[] = [];
   if (provider && opts.repair !== false) {
     const rawKey = createHash("sha1")
-      .update(JSON.stringify([providerName, opts.llmModel, rawTranscript.words.map((w) => w.text)]))
+      .update(
+        JSON.stringify([
+          providerName,
+          opts.llmModel,
+          opts.llmFastModel ?? cfg.fastModel,
+          rawTranscript.words.map((w) => w.text),
+        ]),
+      )
       .digest("hex")
       .slice(0, 8);
     const repairCache = join(work, `repairs-${rawKey}.json`);

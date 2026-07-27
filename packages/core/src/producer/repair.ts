@@ -278,6 +278,12 @@ export async function repairTranscript(
       user: buildRepairUserPrompt(transcript),
       schema: TranscriptRepairSchema,
       schemaName: "transcript_repair",
+      // EDITORIAL on purpose, despite looking mechanical. Measured on the real
+      // reel: the small model returned zero repairs where the large one
+      // recovers "code with SM" → "Code with Ahsan" every time. Deciding what
+      // a person actually said is semantic work, and it is the gate that keeps
+      // a mishearing off the screen (§17) — the wrong place to save $0.20.
+      tier: "editorial",
       maxTokens: 4000,
     });
     return applyRepairs(transcript, result.repairs, opts);

@@ -74,6 +74,9 @@ async function generateScenePropsBatch(
         blocks.join("\n\n"),
       schema,
       schemaName: "scene_props_batch",
+      // Mechanical: filling a schema from a transcript slice, with every
+      // field validated on the way out.
+      tier: "mechanical",
     });
   } catch {
     return out; // the per-moment path takes over
@@ -143,6 +146,7 @@ export async function generateScenes(
           user,
           schema,
           schemaName: `${component}_props`,
+          tier: "mechanical",
         });
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);

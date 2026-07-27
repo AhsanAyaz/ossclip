@@ -37,6 +37,10 @@ program
       "else claude-cli (your logged-in Claude Code — Pro/Max subscription, no API charges)",
   )
   .option("--llm-model <id>", "override the provider's default model")
+  .option(
+    "--llm-fast-model <id>",
+    "model for mechanical calls (repair, scene props); 'same' disables tiering",
+  )
   .option("--scenes <path>", "hand-authored scenes JSON (Scene[]) — no LLM in the loop")
   .option(
     "--no-repair",
@@ -73,6 +77,7 @@ program
       intent: opts.intent,
       provider,
       llmModel: opts.llmModel,
+      llmFastModel: opts.llmFastModel,
       scenes: opts.scenes,
       repair: opts.repair,
       whisperModel: opts.whisperModel,

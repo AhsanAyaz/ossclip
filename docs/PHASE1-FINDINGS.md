@@ -536,7 +536,23 @@ after:  3 calls · 137,664 in (100% cached prefix) / 1,023 out · ~$0.91 · 25s
 
 The usage line now names the cached share, because a bare "270k in" reads like a runaway prompt when the real story is call count.
 
-**Still open:** model tiering. The mechanical calls (repair, props) do not need the top model — Haiku is ~7× cheaper per call — while the beat sheet is the one genuinely editorial call. `--llm-model` already exists; what is missing is a per-call-type default.
+## 38. Model tiering — and the call it turned out NOT to apply to
+
+Each call now declares a `tier` (`editorial` | `mechanical`) and a `TieredProvider` routes it. A wrapper rather than a flag inside each provider, so providers stay dumb about policy and two of *different* kinds compose — which is what would let a subscription CLI do the editorial call while a metered flash model does the rest. `--llm-fast-model` overrides the per-provider default; `same` opts out. The fast defaults are same-family siblings (`claude-haiku-4-5`, `gemini-2.5-flash`), so tiering changes cost without also changing who you are talking to.
+
+**Then measuring it moved one call back.** With repair on the small model, the repair pass returned **zero repairs** on the reel where the large model recovers `"code with SM" → "Code with Ahsan"` every single run. Deciding what a person actually said is semantic work, not schema-filling, and it is the gate that keeps a mishearing off the screen (§17) — the wrong place to save $0.20. Repair is tagged `editorial` with that reasoning in the code, so nobody "optimises" it back.
+
+Scene props stay mechanical: the schema validates every field on the way out, and a bad entry already falls back to its own call.
+
+```
+untiered                3 calls · ~$0.91 · 1 grounding warning · repair ✓
+all-mechanical (haiku)  3 calls · ~$0.66 · 3 grounding warnings · repair ✗ EMPTY
+final (repair=editorial) 3 calls · ~$0.85 · 1 grounding warning · repair ✓
+```
+
+Cumulative against where §37 started: **6 calls / $1.71 → 3 calls / $0.85.**
+
+**Next provider to exercise: Gemini via Antigravity.** The seam is ready — `--llm gemini --llm-model <id> --llm-fast-model <id>` — and `DEFAULT_FAST_MODEL.gemini` is `gemini-2.5-flash` only because that is a model id this code can verify. A newer flash id should be passed explicitly rather than assumed here; if Antigravity is to be driven as a *CLI* (the way `claude-cli` rides the Claude subscription) that is a new provider implementing the same three-method seam, and `ClaudeCliProvider` is the template — envelope parse, one self-repair retry, usage recorded per attempt.
 
 ## Not defects, noted
 
