@@ -1,18 +1,23 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Player } from "@remotion/player";
-import { ProductionComposition } from "@ossclip/renderer/composition";
+import type { AnyZodObject } from "remotion";
+import { ProductionComposition, type ProductionCompProps } from "@ossclip/renderer/composition";
 import { applyOverrides, resolveTheme, defaultTheme } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
 
-// The Player's prop-generic inference fights any concrete interface here
-// (it wants either a zod `schema` or a `defaultProps` matching exactly), so
-// the fetched render props are kept loose — same as the brief's own sketch.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyRenderProps = any;
+/**
+ * `<Player>`'s generics require `Props extends Record<string, unknown>`, and
+ * a plain `interface` (like `ProductionCompProps`) has no index signature, so
+ * TS's generic-constraint check rejects it outright ("Index signature for
+ * type 'string' is missing") even though every property IS a string key.
+ * Intersecting with `Record<string, unknown>` gives the type checker an
+ * actual index signature to see, without changing the runtime shape.
+ */
+type PlayerProductionProps = ProductionCompProps & Record<string, unknown>;
 
 export const App: React.FC = () => {
   const edits = useEdits();
-  const [renderProps, setRenderProps] = useState<AnyRenderProps>(null);
+  const [renderProps, setRenderProps] = useState<PlayerProductionProps | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,7 +36,7 @@ export const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const live = useMemo<AnyRenderProps>(() => {
+  const live = useMemo<PlayerProductionProps | null>(() => {
     if (!renderProps) return null;
     const { cues } = applyOverrides(renderProps.sceneCues ?? [], edits.doc);
     return {
@@ -67,7 +72,7 @@ export const App: React.FC = () => {
         </button>
         <span>{edits.dirty ? "Unsaved changes" : "Saved"}</span>
       </div>
-      <Player
+      <Player<AnyZodObject, PlayerProductionProps>
         component={ProductionComposition}
         inputProps={live}
         durationInFrames={Math.max(1, Math.round(live.outputDurationSec * live.settings.fps))}
