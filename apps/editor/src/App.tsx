@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Player } from "@remotion/player";
+import { Player, type PlayerRef } from "@remotion/player";
 import type { AnyZodObject } from "remotion";
 import { ProductionComposition, type ProductionCompProps } from "@ossclip/renderer/composition";
 import { applyOverrides, resolveTheme, defaultTheme } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
 import { Overlay, type Selection } from "./Overlay";
 import { Inspector } from "./Inspector";
+import { Timeline } from "./Timeline";
 
 /**
  * `<Player>`'s generics require `Props extends Record<string, unknown>`, and
@@ -23,6 +24,7 @@ export const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const stageRef = useRef<HTMLDivElement>(null!);
+  const playerRef = useRef<PlayerRef>(null);
 
   useEffect(() => {
     void (async () => {
@@ -102,6 +104,7 @@ export const App: React.FC = () => {
         <div style={stageArea}>
           <div ref={stageRef} style={{ position: "relative", display: "inline-block" }}>
             <Player<AnyZodObject, PlayerProductionProps>
+              ref={playerRef}
               component={ProductionComposition}
               inputProps={live}
               durationInFrames={Math.max(1, Math.round(live.outputDurationSec * live.settings.fps))}
@@ -124,6 +127,15 @@ export const App: React.FC = () => {
           <Inspector selection={selection} cue={selectedCue} edits={edits} />
         </div>
       </div>
+      <Timeline
+        cues={live.sceneCues}
+        durationSec={live.outputDurationSec}
+        fps={live.settings.fps}
+        playerRef={playerRef}
+        selection={selection}
+        onSelect={setSelection}
+        edits={edits}
+      />
     </div>
   );
 };

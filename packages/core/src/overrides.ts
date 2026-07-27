@@ -103,3 +103,15 @@ export function clearElementTransform(
   const { [elementId]: _removed, ...rest } = scene.elements;
   return { ...doc, scenes: { ...doc.scenes, [sceneId]: { ...scene, elements: rest } } };
 }
+
+/**
+ * Un-pin: DELETE the `timing` override so the scene goes back to tracking its
+ * word anchors. Distinct from setting a timing that happens to match the
+ * derived one — this removes the override entirely.
+ */
+export function clearTiming(doc: OverrideDoc, sceneId: string): OverrideDoc {
+  const scene = doc.scenes[sceneId];
+  if (!scene || !scene.timing) return doc;
+  const { timing: _removed, ...rest } = scene;
+  return { ...doc, scenes: { ...doc.scenes, [sceneId]: rest } };
+}

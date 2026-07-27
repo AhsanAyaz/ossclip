@@ -189,6 +189,11 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits }) =
               ? `Pinned ${cue.startSec.toFixed(2)}s – ${cue.endSec.toFixed(2)}s`
               : "Tracking transcript"}
           </div>
+          {cue.pinned ? (
+            <button style={button} onClick={() => edits.clearTiming(selection.sceneId)}>
+              Un-pin (re-anchor to words)
+            </button>
+          ) : null}
         </div>
       </div>
     );

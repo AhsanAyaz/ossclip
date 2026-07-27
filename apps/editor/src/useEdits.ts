@@ -2,6 +2,7 @@ import { useReducer } from "react";
 import {
   OverrideDocSchema,
   clearElementTransform,
+  clearTiming,
   emptyOverrideDoc,
   setElementTransform,
   type ElementTransform,
@@ -23,6 +24,7 @@ export type EditAction =
   | { type: "patchElement"; sceneId: string; elementId: string; patch: ElementTransform }
   | { type: "clearElement"; sceneId: string; elementId: string }
   | { type: "patchTiming"; sceneId: string; startSec: number; endSec: number }
+  | { type: "clearTiming"; sceneId: string }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "saved" };
@@ -77,6 +79,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         },
       });
     }
+    case "clearTiming":
+      return commit(clearTiming(state.doc, action.sceneId));
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -126,6 +130,7 @@ export function useEdits() {
       dispatch({ type: "clearElement", sceneId, elementId }),
     patchTiming: (sceneId: string, startSec: number, endSec: number) =>
       dispatch({ type: "patchTiming", sceneId, startSec, endSec }),
+    clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
     OverrideDocSchema,
   };
