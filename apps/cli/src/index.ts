@@ -133,6 +133,22 @@ program
     child.on("exit", (code) => process.exit(code ?? 0));
   });
 
+program
+  .command("edit")
+  .description("open the editing page on a produced workdir")
+  .argument("<workdir>", "a work directory containing render-props.json")
+  .option("--port <n>", "port to listen on", (v) => Number.parseInt(v, 10), 5174)
+  .option("--no-open", "do not open a browser")
+  .action(async (workdir: string, opts) => {
+    const { startEditServer } = await import("./edit");
+    const { fileURLToPath } = await import("node:url");
+    const { dirname, join } = await import("node:path");
+    const pageDir = join(dirname(fileURLToPath(import.meta.url)), "../../editor/dist");
+    const server = await startEditServer(workdir, { port: opts.port, pageDir });
+    console.log(`▸ editor at ${server.url}`);
+    if (opts.open) spawn("open", [server.url], { stdio: "ignore" });
+  });
+
 program.parseAsync().catch((err) => {
   console.error(`\n✗ ${err instanceof Error ? err.message : err}`);
   process.exit(1);
