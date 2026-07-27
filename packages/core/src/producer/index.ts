@@ -1,5 +1,5 @@
 import type { Transcript } from "../schema";
-import type { Scene } from "../scene-schema";
+import type { Scene, SceneComponentId } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
 import { ClaudeCliProvider } from "./claude-cli";
@@ -11,6 +11,7 @@ import { generateScenes, type ScenePropsFailure } from "./scene-props";
 export * from "./provider";
 export * from "./beats";
 export * from "./scene-props";
+export * from "./repair";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
 export { ClaudeCliProvider } from "./claude-cli";
 export { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
@@ -49,7 +50,18 @@ export interface ProduceScenesResult {
 /** The full producer-brain pipeline: beat sheet → per-moment scene props. */
 export async function produceScenes(
   provider: LlmProvider,
-  args: { transcript: Transcript; outputDuration: number; intent?: string },
+  args: {
+    transcript: Transcript;
+    outputDuration: number;
+    intent?: string;
+    /**
+     * Debug: render every graphic moment with this component instead of the
+     * one the producer picked. Exists because a component the producer never
+     * chooses is a component never tested on real copy — FlowDiagram went
+     * three rounds unexercised (FINDINGS §20).
+     */
+    forceComponent?: SceneComponentId;
+  },
 ): Promise<ProduceScenesResult> {
   const { sheet, issues } = await generateBeatSheet(
     provider,
@@ -57,6 +69,14 @@ export async function produceScenes(
     args.outputDuration,
     args.intent,
   );
-  const { scenes, failures } = await generateScenes(provider, sheet.moments, args.transcript);
-  return { beatSheet: sheet, beatIssues: issues, scenes, failures };
+  // Applied AFTER normalization: the coverage budget and variety passes may
+  // demote moments to "none", and forcing before them can leave nothing to
+  // render — the flag would appear to work and produce no scenes at all.
+  const moments = args.forceComponent
+    ? sheet.moments.map((m) =>
+        m.sceneKind === "none" ? m : { ...m, sceneKind: args.forceComponent! },
+      )
+    : sheet.moments;
+  const { scenes, failures } = await generateScenes(provider, moments, args.transcript);
+  return { beatSheet: { ...sheet, moments }, beatIssues: issues, scenes, failures };
 }

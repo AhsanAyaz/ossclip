@@ -3,16 +3,18 @@ import type { SceneCue } from "@ossclip/core";
 import {
   CAPTION_HALF_BAND,
   DEFAULT_FACE,
+  HEAD_ABOVE_FACE,
   LAYOUT_TRANSITION_SEC,
   SAFE_AREA,
   SAFE_RECT,
   backdropOpacityAt,
   captionAnchorAt,
+  headFitsSlot,
   layoutSlots,
   objectPosYFor,
   videoSlotAt,
 } from "../src/stage";
-import { LayoutSchema } from "@ossclip/core";
+import { LayoutSchema, SCENE_REGISTRY, SceneComponentIdSchema, ZOOM_MAX_SCALE } from "@ossclip/core";
 
 const cue = (layout: SceneCue["layout"], startSec: number, endSec: number): SceneCue => ({
   id: `${layout}-${startSec}`,
@@ -82,30 +84,88 @@ describe("layoutSlots", () => {
     const { rect } = layoutSlots("pip-bubble").video;
     expect(rect.w * 1080).toBeCloseTo(rect.h * 1920, 3);
   });
+
+  it("every alternate layout has a graphic slot at least as tall as the default's", () => {
+    // FINDINGS §20 variety must not re-open §1/§12: components size their type
+    // against their DEFAULT slot, so a shorter alternate would overflow.
+    for (const id of SceneComponentIdSchema.options) {
+      const meta = SCENE_REGISTRY[id];
+      const base = layoutSlots(meta.defaultLayout).graphic;
+      for (const alt of meta.altLayouts) {
+        const slot = layoutSlots(alt).graphic;
+        // full-bleed has no graphic slot — a scene assigned there renders nothing.
+        expect(slot, `${id} alternate ${alt} has no graphic slot`).not.toBeNull();
+        expect(slot!.h, `${id}: ${alt} is shorter than ${meta.defaultLayout}`).toBeGreaterThanOrEqual(
+          base!.h,
+        );
+        expect(alt, `${id} lists its own default as an alternate`).not.toBe(meta.defaultLayout);
+      }
+    }
+  });
 });
 
-describe("face-aware crop bias (FINDINGS §13)", () => {
+describe("face-aware crop bias (FINDINGS §13/§19)", () => {
   const vtRect = layoutSlots("video-top").video.rect;
 
-  /** Where the face center lands inside the slot, as a fraction of slot height. */
-  const faceInSlot = (rect: typeof vtRect, centerYFrac: number): number => {
-    const slotW = rect.w * 1080;
+  /**
+   * Where the head box lands inside the band, as fractions of slot height.
+   * 0 is the top of the band, 1 the bottom — so `crown >= 0` means the top of
+   * the head is visible and `chin <= 1` means the mouth is.
+   */
+  const headInSlot = (rect: typeof vtRect, face: { centerYFrac: number; sizeFrac?: number }) => {
     const slotH = rect.h * 1920;
-    const displayedH = (slotW * 1920) / 1080;
-    const offset = objectPosYFor(rect, { centerYFrac }) * (displayedH - slotH);
-    return (centerYFrac * displayedH - offset) / slotH;
+    const displayedH = ((rect.w * 1080) * 1920) / 1080;
+    const offset = objectPosYFor(rect, face) * (displayedH - slotH);
+    const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
+    const crownFrac = face.centerYFrac - size / 2 - HEAD_ABOVE_FACE * size;
+    return {
+      crown: (crownFrac * displayedH - offset) / slotH,
+      chin: ((face.centerYFrac + size / 2) * displayedH - offset) / slotH,
+      headFits: headFitsSlot(rect, face),
+    };
   };
 
   it("a full-height slot needs no bias", () => {
     expect(objectPosYFor({ x: 0, y: 0, w: 1, h: 1 }, DEFAULT_FACE)).toBe(0.5);
   });
 
-  it("puts the measured face center ~40% down the band — chin in, headroom above", () => {
-    // The §13 evidence: mouth cut at objectPosY=0.12 with a face ~40% down
-    // the source. Wherever the face is (unclamped range), the band holds it.
-    for (const centerYFrac of [0.3, 0.38, 0.45]) {
-      expect(faceInSlot(vtRect, centerYFrac)).toBeCloseTo(0.42, 5);
+  it("never returns NaN when sizeFrac is absent (it is optional on the schema)", () => {
+    for (const layout of LayoutSchema.options) {
+      const p = objectPosYFor(layoutSlots(layout).video.rect, { centerYFrac: 0.38 });
+      expect(Number.isFinite(p), layout).toBe(true);
     }
+  });
+
+  it("keeps the mouth in shot for every plausible framing", () => {
+    // The §13 regression was a cut chin. It must be impossible, whether or
+    // not the whole head fits.
+    for (const centerYFrac of [0.25, 0.3, 0.38, 0.45, 0.55]) {
+      for (const sizeFrac of [0.15, 0.22, 0.3, 0.4]) {
+        const { chin } = headInSlot(vtRect, { centerYFrac, sizeFrac });
+        expect(chin, `centre ${centerYFrac} size ${sizeFrac}`).toBeLessThanOrEqual(1 + 1e-9);
+      }
+    }
+  });
+
+  it("keeps the crown in shot whenever the head geometrically fits", () => {
+    for (const centerYFrac of [0.25, 0.3, 0.38, 0.45, 0.55]) {
+      for (const sizeFrac of [0.15, 0.22, 0.3, 0.4]) {
+        const { crown, headFits } = headInSlot(vtRect, { centerYFrac, sizeFrac });
+        if (headFits) {
+          expect(crown, `centre ${centerYFrac} size ${sizeFrac}`).toBeGreaterThanOrEqual(-1e-9);
+        }
+      }
+    }
+  });
+
+  it("shows more headroom than centring the face box did (the §19 fix)", () => {
+    // Reproduces the reported measurement: face centre 37.7% down the source.
+    // The old formula seated the face centre at 0.42 of the band.
+    const face = { centerYFrac: 0.377, sizeFrac: 0.2 };
+    const slotH = vtRect.h * 1920;
+    const displayedH = 1920;
+    const previous = (face.centerYFrac * displayedH - 0.42 * slotH) / (displayedH - slotH);
+    expect(objectPosYFor(vtRect, face)).toBeLessThan(previous);
   });
 
   it("is monotonic in the face position and clamped at the source edges", () => {
@@ -114,6 +174,16 @@ describe("face-aware crop bias (FINDINGS §13)", () => {
     );
     expect(objectPosYFor(vtRect, { centerYFrac: 0.02 })).toBe(0);
     expect(objectPosYFor(vtRect, { centerYFrac: 0.98 })).toBe(1);
+  });
+
+  it("leaves room for the zoom to breathe without clipping the mouth", () => {
+    // §15 scales slot content by up to ZOOM_MAX_SCALE about 50% 40%, eating
+    // 0.6·(1−1/s) off the bottom of the band at its peak.
+    const bite = 0.6 * (1 - 1 / ZOOM_MAX_SCALE);
+    for (const sizeFrac of [0.15, 0.22]) {
+      const { chin } = headInSlot(vtRect, { centerYFrac: 0.38, sizeFrac });
+      expect(chin).toBeLessThanOrEqual(1 - bite + 1e-9);
+    }
   });
 
   it("threads the measured face through videoSlotAt", () => {

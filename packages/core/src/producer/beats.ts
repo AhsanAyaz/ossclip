@@ -34,7 +34,7 @@ Virality grammar — follow these as hard policies:
 - End with a payoff or takeaway moment.
 - Moments must be contiguous-ish spans of the transcript, 5-10 seconds of speech each, in transcript order, non-overlapping.
 - COVERAGE: graphics should be on screen for roughly 40-50% of the runtime. Each graphic holds at most ~5 seconds, then hands the frame back — so MOST moments can carry one. Spread them evenly: never leave a stretch longer than ~10 seconds with no graphic.
-- VARIETY: never the same component twice in a row — alternate treatments; a repeat reads as a template.
+- VARIETY: never the same component twice in a row, and prefer a component you have NOT used yet in this video — reuse a treatment only when the beat genuinely calls for it. A repeat reads as a template.
 - Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.
 - The transcript is ASR output and may contain mishearings: an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity — write on-screen copy with the common-sense reading, never a suspected mishearing.`;
 

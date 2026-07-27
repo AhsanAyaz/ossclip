@@ -6,7 +6,7 @@
  */
 export * from "./scene-schema";
 export * from "./scene-registry";
-export { zoomScaleAt, type ZoomSegment } from "./zoom";
+export { ZOOM_MAX_SCALE, zoomScaleAt, type ZoomSegment } from "./zoom";
 export type { CaptionLine, CaptionWord } from "./captions";
 export type { KeptSpan } from "./timemap";
 export type { Probe, Production, RenderSettings, Segment, Transcript, Word } from "./schema";

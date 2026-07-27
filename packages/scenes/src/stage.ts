@@ -1,4 +1,4 @@
-import type { FaceCrop, Layout, SceneCue } from "@ossclip/core/browser";
+import { ZOOM_MAX_SCALE, type FaceCrop, type Layout, type SceneCue } from "@ossclip/core/browser";
 
 /** Fractions of the 1080×1920 frame. */
 export interface Rect {
@@ -31,25 +31,64 @@ const FRAME_H = 1920;
 
 /**
  * Assumed face when none was measured (screen recording, detector miss):
- * an arm's-length selfie puts the face center ~38% down the frame. A guess
- * either way lands closer than the old per-layout constants — 0.12 traded
- * the cut forehead for a cut mouth (FINDINGS §13).
+ * an arm's-length selfie puts the face center ~38% down the frame, with the
+ * detector's box about a fifth of the frame height. A guess either way lands
+ * closer than the old per-layout constants — 0.12 traded the cut forehead for
+ * a cut mouth (FINDINGS §13).
  */
-export const DEFAULT_FACE: FaceCrop = { centerYFrac: 0.38, sizeFrac: 0.35 };
+export const DEFAULT_FACE: Required<FaceCrop> = { centerYFrac: 0.38, sizeFrac: 0.22 };
 
 /**
- * Where the face center should sit inside a cropping slot, as a fraction of
- * slot height: ~40% down keeps headroom above AND the chin in — the mouth is
- * what makes a talking head read as speech.
+ * How far a head extends ABOVE the detector's box, as a multiple of that
+ * box's height. pico bounds the face — eyes, nose, mouth — and excludes hair
+ * and skull, so centring the box seats the head too low and the crown is cut
+ * mid-forehead (FINDINGS §19).
  */
-const FACE_ANCHOR_IN_SLOT = 0.42;
+export const HEAD_ABOVE_FACE = 0.35;
+
+/** Preferred position of the head's centre within the slot. */
+const HEAD_ANCHOR_IN_SLOT = 0.45;
 
 /**
- * Vertical object-position for a slot, placing the measured face center at
- * FACE_ANCHOR_IN_SLOT of the slot. Assumes the source shares the frame's
- * portrait aspect (the v1 target is phone footage), so with object-fit:
- * cover every slot is width-constrained and shows the source at
- * slot-width-proportional height.
+ * Clearance kept above the crown and below the chin, as fractions of slot
+ * height. Floored by what the §15 zoom eats: it scales slot content by up to
+ * ZOOM_MAX_SCALE about `50% 40%`, so at peak zoom the band loses
+ * `0.4·(1−1/s)` off the top and `0.6·(1−1/s)` off the bottom. Hard-coding
+ * smaller margins would let the zoom undo this fix at its peaks while the
+ * geometry tests still passed.
+ */
+const ZOOM_BITE = 1 - 1 / ZOOM_MAX_SCALE;
+export const HEAD_TOP_MARGIN = 0.4 * ZOOM_BITE;
+export const CHIN_BOTTOM_MARGIN = 0.6 * ZOOM_BITE;
+
+/**
+ * Whether a slot can hold this whole head — box, margins and all — and
+ * whether the crown was in the source to begin with. When this is false the
+ * crop is a choice about which end to lose, not a solvable placement.
+ */
+export function headFitsSlot(rect: Rect, face: FaceCrop): boolean {
+  const slotH = rect.h * FRAME_H;
+  const displayedH = ((rect.w * FRAME_W) * FRAME_H) / FRAME_W;
+  const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
+  const crownFrac = face.centerYFrac - size / 2 - HEAD_ABOVE_FACE * size;
+  const needed =
+    (1 + HEAD_ABOVE_FACE) * size * displayedH + (HEAD_TOP_MARGIN + CHIN_BOTTOM_MARGIN) * slotH;
+  return crownFrac >= 0 && needed <= slotH;
+}
+
+/**
+ * Vertical object-position for a slot: where to window the portrait source so
+ * the speaker's whole head lands in the band.
+ *
+ * Expressed as a feasible interval rather than one tuned constant — the crown
+ * gives an upper bound on the offset, the chin a lower one. Inside the
+ * interval we take the preferred anchor; when the band is too short to hold a
+ * whole head the interval is empty and we keep the CHIN, because a talking
+ * head without a mouth stops reading as speech (FINDINGS §13).
+ *
+ * Assumes the source shares the frame's portrait aspect (the v1 target is
+ * phone footage), so with `object-fit: cover` every slot is width-constrained
+ * and shows the source at slot-width-proportional height.
  */
 export function objectPosYFor(rect: Rect, face: FaceCrop): number {
   const slotW = rect.w * FRAME_W;
@@ -57,8 +96,22 @@ export function objectPosYFor(rect: Rect, face: FaceCrop): number {
   const displayedH = (slotW * FRAME_H) / FRAME_W;
   const overflow = displayedH - slotH;
   if (overflow <= 1) return 0.5; // slot shows the full source height — no bias to apply
-  const y = (face.centerYFrac * displayedH - FACE_ANCHOR_IN_SLOT * slotH) / overflow;
-  return Math.min(1, Math.max(0, y));
+
+  // sizeFrac is optional on the schema; without it there is no head to model,
+  // so fall back to the assumed framing rather than propagating NaN into CSS.
+  const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
+  const crown = (face.centerYFrac - size / 2 - HEAD_ABOVE_FACE * size) * displayedH;
+  const chin = (face.centerYFrac + size / 2) * displayedH;
+
+  const preferred = (crown + chin) / 2 - HEAD_ANCHOR_IN_SLOT * slotH;
+  const crownVisible = crown - HEAD_TOP_MARGIN * slotH;
+  const chinVisible = chin + CHIN_BOTTOM_MARGIN * slotH - slotH;
+  const offset =
+    chinVisible <= crownVisible
+      ? Math.min(Math.max(preferred, chinVisible), crownVisible)
+      : chinVisible;
+
+  return Math.min(1, Math.max(0, offset / overflow));
 }
 
 export interface StageSlots {

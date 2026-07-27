@@ -254,5 +254,46 @@ export function analyze(
   }
   cuttable.sort((a, b) => a.start - b.start);
 
-  return { silences: bounded, gaps, cuttable, fillers };
+  return { silences: bounded, gaps, cuttable, breaths: detectBreaths(levels, duration), fillers };
+}
+
+/** A dip must last at least this long to be a breath and not a plosive gap. */
+const MIN_BREATH_SEC = 0.12;
+/** Dips this quiet are pauses; the silencedetect threshold is stricter still. */
+const BREATH_DROP = 10;
+
+/**
+ * Sub-silence pauses — where a speaker draws breath between phrases.
+ *
+ * `silences` cannot serve this purpose: `silencedetect` runs with a 0.35 s
+ * minimum (see `detectSilences`), while real inter-phrase breaths are
+ * 120–300 ms. On the reference take that floor left 8 silences across 68 s,
+ * which is why anything driven off them degenerates to uniform pacing.
+ *
+ * The 100 ms RMS series is already measured for threshold derivation, so this
+ * costs no extra ffmpeg pass: a run of windows sitting `BREATH_DROP` below
+ * the take's own speech level is a pause, whatever the transcript claims.
+ * These are phrase boundaries the word stamps cannot provide — whisper `-ml 1`
+ * emits contiguous stamps, so inter-word gaps do not exist (PHASE0 "Signal
+ * fusion", FINDINGS §18).
+ */
+export function detectBreaths(
+  levels: Pick<LevelStats, "windowsDb" | "windowSec" | "speechDb"> | undefined,
+  duration: number,
+): Span[] {
+  if (!levels || levels.windowsDb.length === 0) return [];
+  const threshold = levels.speechDb - BREATH_DROP;
+  const breaths: Span[] = [];
+  let runStart: number | null = null;
+  for (let i = 0; i <= levels.windowsDb.length; i++) {
+    const quiet = i < levels.windowsDb.length && levels.windowsDb[i]! <= threshold;
+    if (quiet && runStart === null) runStart = i;
+    if (!quiet && runStart !== null) {
+      const start = runStart * levels.windowSec;
+      const end = Math.min(i * levels.windowSec, duration);
+      if (end - start >= MIN_BREATH_SEC) breaths.push({ start, end });
+      runStart = null;
+    }
+  }
+  return breaths;
 }

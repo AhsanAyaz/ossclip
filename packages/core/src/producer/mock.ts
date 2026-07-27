@@ -20,6 +20,11 @@ export class MockProvider implements LlmProvider {
     if (req.schemaName === "beat_sheet") {
       return this.beatSheet(req.user, req.schema);
     }
+    if (req.schemaName === "transcript_repair") {
+      // A deterministic no-op: the offline path must exercise the repair call
+      // without inventing corrections a real provider would have to justify.
+      return req.schema.parse({ repairs: [] });
+    }
     return this.sceneProps(req.user, req.schema, req.schemaName);
   }
 

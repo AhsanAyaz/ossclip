@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 import type { Transcript } from "../schema";
-import type { Scene, SceneComponentId } from "../scene-schema";
+import type { Layout, Scene, SceneComponentId } from "../scene-schema";
 import { SCENE_REGISTRY } from "../scene-registry";
 import type { LlmProvider } from "./provider";
 import type { Moment } from "./beats";
@@ -44,6 +44,20 @@ export async function generateScenes(
 ): Promise<{ scenes: Scene[]; failures: ScenePropsFailure[] }> {
   const scenes: Scene[] = [];
   const failures: ScenePropsFailure[] = [];
+  /**
+   * Repeats of a component get an alternate layout (FINDINGS §20): two
+   * identical card treatments in one video read as a template even when
+   * they're far apart, and re-framing is the variety that costs nothing —
+   * no coverage lost, no editorial judgement made on the LLM's behalf.
+   */
+  const seen = new Map<SceneComponentId, number>();
+  const layoutFor = (component: SceneComponentId): Layout => {
+    const meta = SCENE_REGISTRY[component];
+    const n = seen.get(component) ?? 0;
+    seen.set(component, n + 1);
+    if (n === 0 || meta.altLayouts.length === 0) return meta.defaultLayout;
+    return meta.altLayouts[(n - 1) % meta.altLayouts.length]!;
+  };
 
   for (let i = 0; i < moments.length; i++) {
     const moment = moments[i]!;
@@ -51,6 +65,7 @@ export async function generateScenes(
     const component = moment.sceneKind;
     const meta = SCENE_REGISTRY[component];
     const schema = meta.propsSchema as z.ZodType<Record<string, unknown>>;
+    const layout = layoutFor(component);
 
     let props: Record<string, unknown> | null = null;
     let lastError = "";
@@ -91,7 +106,7 @@ export async function generateScenes(
     scenes.push({
       id: `scene-${i}`,
       anchor: { startWord: moment.startWord, endWord: moment.endWord },
-      layout: meta.defaultLayout,
+      layout,
       component,
       props,
       overrides: {},

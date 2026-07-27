@@ -29,6 +29,32 @@ describe("checkGrounding (FINDINGS §14a)", () => {
     expect(tokens).toEqual(["codechun", "revenue"]);
   });
 
+  it("stops fighting the repair pass once the transcript is repaired (§17)", () => {
+    // §17 was this check calling a correct repair a fabrication: the take was
+    // transcribed as "coach and", the producer wrote "code churn", and both
+    // its words were flagged. Repairing the transcript first — rather than
+    // teaching this check to guess — removes the conflict at its source.
+    const raw: Transcript = {
+      language: "en",
+      words: "our coach and went up 861 percent".split(" ").map((text, i) => ({
+        text,
+        start: i * 0.5,
+        end: i * 0.5 + 0.4,
+      })),
+    };
+    const repaired: Transcript = {
+      language: "en",
+      words: "our code churn went up 861 percent".split(" ").map((text, i) => ({
+        text,
+        start: i * 0.5,
+        end: i * 0.5 + 0.4,
+      })),
+    };
+    const label = scene("StatCard", { label: "CODE CHURN", value: "861%" });
+    expect(checkGrounding([label], raw).map((i) => i.token).sort()).toEqual(["churn", "code"]);
+    expect(checkGrounding([label], repaired)).toEqual([]);
+  });
+
   it("passes labels that reuse the take's own nouns (numbers/stopwords exempt)", () => {
     const issues = checkGrounding(
       [scene("StatCard", { label: "CODE CHURN", value: "+861%", caption: "ALL IN ON AGENTS" })],

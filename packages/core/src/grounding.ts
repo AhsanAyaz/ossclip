@@ -1,5 +1,6 @@
 import type { Scene } from "./scene-schema";
 import type { Transcript } from "./schema";
+import { soundsSimilar } from "./phonetics";
 
 /**
  * Copy-grounding post-check (FINDINGS §14a): label-ish props must reuse
@@ -8,6 +9,16 @@ import type { Transcript } from "./schema";
  * only when it appears NOWHERE in the transcript — so what it does flag is a
  * high-confidence hallucination ("REVENUE" on a code-churn stat), visible in
  * the report without watching the video.
+ *
+ * Run this against the REPAIRED transcript, never the raw one. §17 was this
+ * check fighting the mishearing mitigation: the producer correctly wrote
+ * "code churn" for a take transcribed as "coach and", and the check reported
+ * the repair as an invention. Repairing once, up front, removes the conflict
+ * at its source — which is why no phonetic tolerance lives here. Tolerance
+ * was tried and rejected: matching copy against the take by sound absolves
+ * real hallucinations too ("CODECHUN REVENUE" reads as a repair of "code
+ * churn"), and a second mitigation pulling against the first is exactly what
+ * produced §17.
  */
 
 export interface GroundingIssue {

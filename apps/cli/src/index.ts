@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import { z } from "zod/v4";
-import { CleanupLevelSchema } from "@ossclip/core";
+import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { produce } from "./produce";
 
@@ -38,10 +38,22 @@ program
   )
   .option("--llm-model <id>", "override the provider's default model")
   .option("--scenes <path>", "hand-authored scenes JSON (Scene[]) — no LLM in the loop")
+  .option(
+    "--no-repair",
+    "skip the ASR mishearing repair pass (captions then show the raw transcription)",
+  )
+  .option("--whisper-model <name>", "transcription model for this run, e.g. base.en | small.en | medium.en")
+  .option(
+    "--force-component <id>",
+    "debug: render every graphic with this component (e.g. FlowDiagram) to exercise it on real copy",
+  )
   .action(async (input: string, opts) => {
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
     const provider = opts.llm
       ? z.enum(["claude", "claude-cli", "gemini", "mock"]).parse(opts.llm)
+      : undefined;
+    const forceComponent = opts.forceComponent
+      ? SceneComponentIdSchema.parse(opts.forceComponent)
       : undefined;
     await produce(input, {
       out: opts.out,
@@ -56,6 +68,9 @@ program
       provider,
       llmModel: opts.llmModel,
       scenes: opts.scenes,
+      repair: opts.repair,
+      whisperModel: opts.whisperModel,
+      forceComponent,
     });
   });
 
@@ -67,6 +82,7 @@ program
   .option("--transcript <path>", "inject a transcript JSON instead of running whisper")
   .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
   .option("--workdir <dir>", "cache/work directory")
+  .option("--whisper-model <name>", "transcription model for this run, e.g. base.en | small.en | medium.en")
   .action(async (input: string, opts) => {
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
     await produce(input, {
@@ -76,6 +92,7 @@ program
       mezzanine: false,
       workdir: opts.workdir,
       noiseDb: opts.noiseDb,
+      whisperModel: opts.whisperModel,
     });
   });
 

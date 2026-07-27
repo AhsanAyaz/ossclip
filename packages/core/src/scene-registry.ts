@@ -99,6 +99,20 @@ export interface SceneComponentMeta {
   propsSchema: z.ZodTypeAny;
   defaultProps: Record<string, unknown>;
   defaultLayout: Layout;
+  /**
+   * Layouts a REPEAT of this component may use instead, so the same card
+   * treatment twice in one video doesn't read as a template (FINDINGS §20).
+   * Varying the layout is safe where swapping the component is not — layout
+   * is presentation, while a component swap is an editorial judgement that
+   * can demand props the beat has no material for (a StatCard needs a number).
+   *
+   * Invariant, property-tested: an alternate's graphic slot is never SHORTER
+   * than the default's. Components size their type against their default slot
+   * — FlowDiagram literally budgets against `graphic-only` — so moving one
+   * into a smaller slot would re-open the overflow bug of §1/§12. Components
+   * that already sit in the tallest slot therefore have no alternate.
+   */
+  altLayouts: Layout[];
   /** One-liner the producer prompt uses to pick components. */
   whenToUse: string;
 }
@@ -108,6 +122,7 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     propsSchema: TitleCardProps,
     defaultProps: { title: "TITLE" },
     defaultLayout: "pip-bubble",
+    altLayouts: [],
     whenToUse:
       "The core claim or hook as big typography; use `emphasis` for a huge number or punch word.",
   },
@@ -119,12 +134,14 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     propsSchema: StatCardProps,
     defaultProps: { label: "METRIC", value: "+0%" },
     defaultLayout: "video-top",
+    altLayouts: ["blurred-behind"],
     whenToUse: "One striking metric (value like '+242%', '×3', '5s'); punchline in `caption`.",
   },
   RuleCard: {
     propsSchema: RuleCardProps,
     defaultProps: { kicker: "RULE", text: "DO THE THING" },
     defaultLayout: "video-top",
+    altLayouts: ["blurred-behind"],
     whenToUse:
       "A prescriptive takeaway ('CAPACITY RULE / CAP ACTIVE AGENTS'); `struck` shows the rejected alternative.",
   },
@@ -132,24 +149,28 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     propsSchema: StrikethroughRevealProps,
     defaultProps: { lines: [{ text: "NOT THIS", struck: true }] },
     defaultLayout: "blurred-behind",
+    altLayouts: ["graphic-only"],
     whenToUse: "Negation/contrast beat — big words over the blurred speaker, some struck through.",
   },
   FlowDiagram: {
     propsSchema: FlowDiagramProps,
     defaultProps: { nodes: ["A", "B"] },
     defaultLayout: "graphic-only",
+    altLayouts: [],
     whenToUse: "A causal chain or pipeline as chips with arrows (TEAM → AI AGENTS → CHURN).",
   },
   TerminalMock: {
     propsSchema: TerminalMockProps,
     defaultProps: { windows: [{ title: "terminal-01", lines: ["$ run"] }] },
     defaultLayout: "graphic-only",
+    altLayouts: [],
     whenToUse: "Anything about running code/processes/agents — stylized terminal windows.",
   },
   ChatMock: {
     propsSchema: ChatMockProps,
     defaultProps: { messages: [{ from: "user", text: "hello" }] },
     defaultLayout: "blurred-behind",
+    altLayouts: ["graphic-only"],
     whenToUse:
       "A quoted phrase or exchange as chat bubbles over the blurred speaker; for a comment-CTA beat, set `keyword` to the word viewers should type.",
   },
@@ -157,6 +178,7 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     propsSchema: ScreenshotFrameProps,
     defaultProps: {},
     defaultLayout: "video-top",
+    altLayouts: ["blurred-behind"],
     whenToUse: "Reference to a document/PR/review — a framed screenshot look with a label chip.",
   },
 };

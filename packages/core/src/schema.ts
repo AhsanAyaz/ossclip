@@ -50,6 +50,13 @@ export const AnalysisSchema = z.object({
    * candidate pool every silence/pause cut is drawn from.
    */
   cuttable: z.array(SpanSchema),
+  /**
+   * Sub-silence pauses from the RMS series (≥120 ms, below speech − 10 dB):
+   * too short to cut, but they are where phrases actually break. `silences`
+   * has a 0.35 s floor and `gaps` is empty on `-ml 1` output, so this is the
+   * only dense phrase signal the pipeline has (FINDINGS §18).
+   */
+  breaths: z.array(SpanSchema).default([]),
   /** Standalone filler interjections (um, uh, …). */
   fillers: z.array(
     z.object({
@@ -103,7 +110,30 @@ export const ProductionSchema = z.object({
   cleanup: CleanupLevelSchema,
   /** User intent for the producer brain ("educational video about agents…"). */
   intent: z.string().optional(),
+  /**
+   * The RAW ASR transcript. `analysis` and `cutlist` index into this array,
+   * so it must stay the untouched one — see `repairs` for the corrections
+   * applied downstream (FINDINGS §17).
+   */
   transcript: TranscriptSchema.optional(),
+  /**
+   * Mishearing corrections applied before captions, scene copy and grounding.
+   * Kept as a diff rather than a second transcript so the production stays
+   * reproducible: `applyRepairs(transcript, repairs.filter(r => r.applied))`
+   * reconstructs exactly what was rendered.
+   */
+  repairs: z
+    .array(
+      z.object({
+        startWord: z.number().int(),
+        endWord: z.number().int(),
+        heard: z.string(),
+        correction: z.string(),
+        applied: z.boolean(),
+        rejected: z.string().optional(),
+      }),
+    )
+    .optional(),
   analysis: AnalysisSchema.optional(),
   cutlist: z.array(SegmentSchema).optional(),
   scenes: z.array(SceneSchema).optional(),
