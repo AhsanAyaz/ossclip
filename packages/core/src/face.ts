@@ -144,10 +144,10 @@ function clusterDetections(dets: Detection[], iouThreshold: number): Detection[]
 
 // ---- frame sampling + measurement ------------------------------------------
 
-/** Detection frame size: exact 9:16 like the target output; the vertical
- * fraction is what matters and survives any horizontal squeeze. */
+/** Detection frame width; the HEIGHT follows the (cropped) source's aspect —
+ * the cascade is trained on undistorted faces, so no squeeze into a fixed
+ * box. Fractions are of the analyzed frame either way. */
 const DET_W = 360;
-const DET_H = 640;
 /** Clustered-score floor for a believable face. picojs demos use ~50, but
  * that is summed over a 5-frame memory; a SINGLE frame at this resolution
  * clears ~5-10 on a real face. Robustness against a lucky wall-poster hit
@@ -188,6 +188,14 @@ export interface MeasureFaceOptions {
   samples?: number;
   /** Directory for the cached measurement + temp frames (the workdir). */
   cacheDir?: string;
+  /**
+   * ffmpeg filter trimming the source to its content rect (PLAN Task 7),
+   * prepended before the detection scale. Measuring inside the picture rather
+   * than the letterboxed canvas matters twice over: the returned fractions
+   * then describe the frame that actually renders, and the face is a large
+   * enough share of the searched area for the cascade's scale sweep to find.
+   */
+  cropVf?: string;
 }
 
 function median(xs: number[]): number {
@@ -210,8 +218,13 @@ export async function measureFace(
   const samples = opts.samples ?? 9;
   const cachePath = opts.cacheDir ? join(opts.cacheDir, "face.json") : null;
   if (cachePath && existsSync(cachePath)) {
-    const cached = JSON.parse(await readFile(cachePath, "utf8")) as { face: FaceBox | null };
-    return cached.face;
+    const cached = JSON.parse(await readFile(cachePath, "utf8")) as {
+      face: FaceBox | null;
+      cropVf?: string;
+    };
+    // A measurement made against a different geometry (pre-Task-7 cache, or a
+    // changed content rect) describes a frame that no longer renders.
+    if ((cached.cropVf ?? "") === (opts.cropVf ?? "")) return cached.face;
   }
 
   const cascadeBytes = new Uint8Array(
@@ -231,28 +244,35 @@ export async function measureFace(
       "-ss", t.toFixed(3),
       "-i", videoPath,
       "-frames:v", "1",
-      "-vf", `scale=${DET_W}:${DET_H}`,
+      // Aspect follows the (cropped) source rather than a fixed 9:16 box: the
+      // cascade is trained on undistorted faces, and squeezing a landscape
+      // content rect into a portrait frame stretches every face past what it
+      // can match. -2 keeps the height even.
+      "-vf", `${opts.cropVf ? `${opts.cropVf},` : ""}scale=${DET_W}:-2`,
       "-pix_fmt", "gray",
       "-f", "rawvideo",
       "-y", framePath,
     ]);
     const pixels = new Uint8Array(await readFile(framePath));
     await unlink(framePath).catch(() => {});
-    if (pixels.length < DET_W * DET_H) continue;
+    const detH = Math.floor(pixels.length / DET_W);
+    if (detH < 32) continue;
     const dets = clusterDetections(
-      runCascade(pixels, DET_H, DET_W, classify, {
+      runCascade(pixels, detH, DET_W, classify, {
         shiftfactor: 0.1,
-        minsize: 60,
-        maxsize: DET_H,
+        // The old fixed floor (60px of a 640-tall frame, ~9%) expressed as a
+        // ratio, so a shorter landscape frame still sweeps small enough.
+        minsize: Math.max(24, Math.round(detH * 0.094)),
+        maxsize: detH,
         scalefactor: 1.1,
       }),
       0.2,
     ).filter((d) => d[3] >= MIN_CLUSTER_SCORE);
     if (dets.length === 0) continue;
     const best = dets.reduce((a, b) => (b[3] > a[3] ? b : a));
-    centersY.push(best[0] / DET_H);
+    centersY.push(best[0] / detH);
     centersX.push(best[1] / DET_W);
-    sizes.push(best[2] / DET_H);
+    sizes.push(best[2] / detH);
   }
 
   // One lucky hit could be a poster in the background; demand a majority-ish.
@@ -267,6 +287,8 @@ export async function measureFace(
         }
       : null;
 
-  if (cachePath) await writeFile(cachePath, JSON.stringify({ face }, null, 2));
+  if (cachePath) {
+    await writeFile(cachePath, JSON.stringify({ face, cropVf: opts.cropVf ?? "" }, null, 2));
+  }
   return face;
 }

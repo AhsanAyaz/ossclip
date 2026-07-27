@@ -96,7 +96,11 @@ describe("edit server", () => {
     expect(body).not.toContain("TOP SECRET HYPHEN SIBLING");
   });
 
-  it("turns a mid-stream read failure into a 500 instead of crashing", async () => {
+  // chmod 000 does not stop root — the read succeeds and the 500 path never
+  // fires. Skipped rather than left red in containered CI running as root.
+  it.skipIf(typeof process.getuid === "function" && process.getuid() === 0)(
+    "turns a mid-stream read failure into a 500 instead of crashing",
+  async () => {
     const dir = await fixtureWorkdir();
     // Passes the existsSync check but fails when the stream actually opens.
     await chmod(join(dir, "clip.mp4"), 0o000);

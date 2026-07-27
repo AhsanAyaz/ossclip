@@ -159,3 +159,19 @@ sh("ffmpeg", [
   landscapePath,
 ]);
 console.log(`landscape: ${landscapePath} (8s, 16:9)`);
+
+/**
+ * The letterboxed source (PLAN 2026-07-28 Task 7): the golden fixture's own
+ * picture (audio and all) baked into a landscape strip with black bars above
+ * and below. The file probes 1080×1920 but the picture is 1080×606 — the shape
+ * of the real clip that wasted two-thirds of every video slot.
+ */
+const letterboxedPath = join(OUT_DIR, "letterboxed.mp4");
+sh("ffmpeg", [
+  "-y", "-i", fixturePath,
+  "-vf", "scale=1080:606,pad=1080:1920:0:657",
+  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+  "-c:a", "copy",
+  letterboxedPath,
+]);
+console.log(`letterboxed: ${letterboxedPath} (content 1080x606 at y 657)`);

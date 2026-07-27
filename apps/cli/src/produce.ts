@@ -17,6 +17,8 @@ import {
   buildZoomPlan,
   checkGrounding,
   coverHeadline,
+  cropFilter,
+  detectContentRect,
   createFaceDetector,
   createProvider,
   createTieredProvider,
@@ -141,15 +143,38 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     await extractAudio(tools, input, audioPath);
   }
 
+  // Letterbox detection (PLAN Task 7): a file's frame is not always its
+  // picture — bars baked into the pixels wasted most of the video slot on one
+  // real clip. Measured once, before anything geometric; every downstream
+  // pass crops to the content rect so the bars stop existing.
+  const contentRect = await detectContentRect(tools, input, sourceProbe, { cacheDir: work });
+  const cropVf = cropFilter(contentRect);
+  if (!contentRect.full) {
+    console.log(
+      `▸ source is letterboxed: content ${contentRect.w}×${contentRect.h} at ` +
+        `x ${contentRect.x}, y ${contentRect.y} (bars trimmed everywhere downstream)`,
+    );
+  }
+  /** The picture's dimensions — what every geometric consumer reasons about. */
+  const content = { width: contentRect.w, height: contentRect.h };
+
   // Face measurement (FINDINGS §13): one static crop offset per source,
   // measured rather than guessed; cached in the workdir like the transcript.
-  const faceBox = await measureFace(tools, input, sourceProbe.duration, { cacheDir: work });
+  const faceSamples = 9;
+  const faceBox = await measureFace(tools, input, sourceProbe.duration, {
+    cacheDir: work,
+    cropVf,
+    samples: faceSamples,
+  });
   console.log(
     faceBox
       ? `▸ face at ${(faceBox.centerYFrac * 100).toFixed(0)}% down the frame, ` +
           `${(faceBox.sizeFrac * 100).toFixed(0)}% tall ` +
           `(${faceBox.framesDetected}/${faceBox.framesSampled} frames)`
-      : "▸ no face detected — using the default crop bias",
+      : // A miss must be LOUD (PLAN Task 8): the silent fallback to the
+        // assumed selfie framing is how a wrong crop shipped unnoticed.
+        `▸ no face detected in ${faceSamples} sampled frames — using the ASSUMED framing; ` +
+          "the crop may be wrong, check the output",
   );
 
   let transcript: Transcript;
@@ -377,6 +402,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   const sourceText = await scanSourceText(tools, input, sourceProbe.duration, {
     cacheDir: work,
     assumeEdited: opts.sourceIsEdited,
+    cropVf,
   });
   if (sourceText.regions.length > 0) {
     console.log(
@@ -529,11 +555,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   );
 
   let renderVideo = input;
-  if (opts.mezzanine) {
-    const mezz = join(work, "mezzanine.mp4");
+  // A letterboxed source MUST go through the re-encode even under
+  // --no-mezzanine: the bars are pixels in the file, and cropping them here is
+  // what lets every layout and zoom downstream treat the picture as the frame.
+  // The cropped file gets its own name so a pre-crop cache is never reused.
+  if (opts.mezzanine || !contentRect.full) {
+    const mezz = join(work, contentRect.full ? "mezzanine.mp4" : "mezzanine-content.mp4");
     if (!existsSync(mezz)) {
-      console.log("▸ building mezzanine (dense keyframes)…");
-      await makeMezzanine(tools, input, mezz);
+      console.log(
+        contentRect.full
+          ? "▸ building mezzanine (dense keyframes)…"
+          : "▸ building mezzanine (dense keyframes, letterbox bars trimmed)…",
+      );
+      await makeMezzanine(tools, input, mezz, { cropVf: cropVf || undefined });
     }
     renderVideo = mezz;
   }
@@ -584,7 +618,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           centerYFrac: faceBox.centerYFrac,
           centerXFrac: faceBox.centerXFrac,
           sizeFrac: faceBox.sizeFrac,
-          sourceAspect: sourceProbe.height > 0 ? sourceProbe.width / sourceProbe.height : undefined,
+          // The CONTENT's shape, not the container's — with bars trimmed the
+          // rendered video IS the content rect (PLAN Task 7).
+          sourceAspect: content.height > 0 ? content.width / content.height : undefined,
         }
       : null,
     zoomPlan: zoom.segments,
@@ -634,6 +670,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       const detector = await createFaceDetector();
       const pick = await pickCoverFrame(tools, input, sourceProbe.duration, {
         cacheDir: work,
+        cropVf,
         detectFace: (pixels, w, h) => {
           const d = detector(pixels, w, h);
           // pico returns [row, col, size, score] in detection-frame pixels,
@@ -651,7 +688,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           "-ss", pick.timeSec.toFixed(3),
           "-i", input,
           "-frames:v", "1",
-          "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+          "-vf", `${cropVf ? `${cropVf},` : ""}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920`,
           "-y", join(work, frameName),
         ]);
         const coverPath = resolve(

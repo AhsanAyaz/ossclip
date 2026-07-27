@@ -51,11 +51,20 @@ export async function extractAudio(tools: IngestTools, src: string, outWav: stri
 
 /**
  * Re-encode with dense keyframes so EDL playback (<OffthreadVideo> with many
- * small trims) seeks fast. Optional — most sources play fine untouched.
+ * small trims) seeks fast. Optional — most sources play fine untouched —
+ * EXCEPT when the source is letterboxed: then this pass also trims the baked
+ * bars (`crop`), so everything downstream sees the picture, not picture+bars
+ * (PLAN Task 7), and the pass stops being optional.
  */
-export async function makeMezzanine(tools: IngestTools, src: string, out: string): Promise<void> {
+export async function makeMezzanine(
+  tools: IngestTools,
+  src: string,
+  out: string,
+  opts: { cropVf?: string } = {},
+): Promise<void> {
   await run(tools.ffmpegPath, [
     "-y", "-i", src,
+    ...(opts.cropVf ? ["-vf", opts.cropVf] : []),
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "30", "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "192k",
     out,

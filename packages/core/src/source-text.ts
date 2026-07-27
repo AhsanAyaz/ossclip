@@ -252,6 +252,13 @@ export interface ScanSourceTextOptions {
   cacheDir?: string;
   /** Skip detection and assume the conservative regions above. */
   assumeEdited?: boolean;
+  /**
+   * ffmpeg filter trimming the source to its content rect (PLAN Task 7).
+   * Letterbox bars are hard black edges — exactly what the density signal
+   * fires on — and regions must be fractions of the frame that RENDERS, which
+   * is the cropped one.
+   */
+  cropVf?: string;
 }
 
 /** Cache format version — bump to invalidate stale scans after a rebuild. */
@@ -275,8 +282,13 @@ export async function scanSourceText(
   if (cachePath && existsSync(cachePath)) {
     const cached = JSON.parse(await readFile(cachePath, "utf8")) as SourceTextScan & {
       version?: number;
+      cropVf?: string;
     };
-    if (cached.version === SCAN_VERSION) return cached;
+    // Regions are fractions of the analyzed frame, so a scan made against a
+    // different crop describes geometry that no longer renders.
+    if (cached.version === SCAN_VERSION && (cached.cropVf ?? "") === (opts.cropVf ?? "")) {
+      return cached;
+    }
   }
 
   // A title can be short; sample densely enough to catch a ~2s one.
@@ -294,7 +306,7 @@ export async function scanSourceText(
       "-i", videoPath,
       "-frames:v", "1",
       // -2: height follows the source aspect, rounded to an even number.
-      "-vf", `scale=${DET_W}:-2`,
+      "-vf", `${opts.cropVf ? `${opts.cropVf},` : ""}scale=${DET_W}:-2`,
       "-pix_fmt", "gray",
       "-f", "rawvideo",
       "-y", framePath,
@@ -315,7 +327,10 @@ export async function scanSourceText(
     debug,
   };
   if (cachePath) {
-    await writeFile(cachePath, JSON.stringify({ version: SCAN_VERSION, ...scan }, null, 2));
+    await writeFile(
+      cachePath,
+      JSON.stringify({ version: SCAN_VERSION, cropVf: opts.cropVf ?? "", ...scan }, null, 2),
+    );
   }
   return scan;
 }

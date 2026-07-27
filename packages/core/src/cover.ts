@@ -145,6 +145,12 @@ export interface PickCoverOptions {
    * frame whose geometry is certainly the cover's.
    */
   detectFace?: (pixels: Uint8Array, w: number, h: number) => CoverFace | null;
+  /**
+   * ffmpeg filter trimming the source to its content rect (PLAN Task 7),
+   * applied BEFORE the cover's own centre crop — otherwise the cover frames a
+   * canvas that is two-thirds baked-in black bar.
+   */
+  cropVf?: string;
 }
 
 /**
@@ -180,7 +186,7 @@ export async function pickCoverFrame(
       "-ss", t.toFixed(3),
       "-i", videoPath,
       "-frames:v", "1",
-      "-vf", COVER_CROP_VF,
+      "-vf", `${opts.cropVf ? `${opts.cropVf},` : ""}${COVER_CROP_VF}`,
       "-pix_fmt", "gray",
       "-f", "rawvideo",
       "-y", framePath,
