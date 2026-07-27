@@ -14,6 +14,7 @@ import {
   LAYOUT_TRANSITION_SEC,
   SAFE_AREA,
   SAFE_RECT,
+  avoidSlicingText,
   backdropOpacityAt,
   captionAnchorAt,
   headFitsSlot,
@@ -402,5 +403,72 @@ describe("non-portrait sources (generalization)", () => {
     const rect = { x: 0, y: 0, w: 1, h: 0.42 };
     const face = { centerYFrac: 0.38, sizeFrac: 0.22 };
     expect(objectPosYFor(rect, face)).toBe(objectPosYFor(rect, { ...face, sourceAspect: 1080 / 1920 }));
+  });
+});
+
+describe("crop avoids slicing burned-in text (FINDINGS §36)", () => {
+  const VIDEO_TOP = { x: 0, y: 0, w: 1, h: 0.42 };
+  const FACE = { centerYFrac: 0.36, sizeFrac: 0.38, sourceAspect: 720 / 1280 };
+  /** The real reel's title: a black box at 13-24% of the source. */
+  const TITLE = { y: 0.13, h: 0.11 };
+
+  /** Where the crop window sits in the source, as fractions of source height. */
+  function window(posY: number, rect: { h: number }, face: typeof FACE) {
+    const slotH = rect.h * 1920;
+    const displayedH = Math.max(slotH, (1 * 1080) / face.sourceAspect);
+    const winH = slotH / displayedH;
+    const top = posY * (1 - winH);
+    return { top, bottom: top + winH };
+  }
+
+  function slices(posY: number, band: { y: number; h: number }) {
+    const { top, bottom } = window(posY, VIDEO_TOP, FACE);
+    const cutsTop = band.y < top && top < band.y + band.h;
+    const cutsBottom = band.y < bottom && bottom < band.y + band.h;
+    return cutsTop || cutsBottom;
+  }
+
+  it("the unadjusted crop does slice the real clip's title", () => {
+    // Guards the premise: without this the fix would be untestable.
+    expect(slices(objectPosYFor(VIDEO_TOP, FACE), TITLE)).toBe(true);
+  });
+
+  it("adjusts so the title is either whole or absent, never cut", () => {
+    const posY = avoidSlicingText(objectPosYFor(VIDEO_TOP, FACE), VIDEO_TOP, FACE, [TITLE]);
+    expect(slices(posY, TITLE)).toBe(false);
+  });
+
+  it("moves as little as it can", () => {
+    const before = objectPosYFor(VIDEO_TOP, FACE);
+    const after = avoidSlicingText(before, VIDEO_TOP, FACE, [TITLE]);
+    expect(Math.abs(after - before)).toBeLessThan(0.35);
+  });
+
+  it("is a no-op without bands, and when the whole source is visible", () => {
+    const before = objectPosYFor(VIDEO_TOP, FACE);
+    expect(avoidSlicingText(before, VIDEO_TOP, FACE, [])).toBe(before);
+    const full = { x: 0, y: 0, w: 1, h: 1 };
+    const posY = objectPosYFor(full, DEFAULT_FACE);
+    expect(avoidSlicingText(posY, full, DEFAULT_FACE, [TITLE])).toBe(posY);
+  });
+
+  it("keeps the original when no shift can resolve the band", () => {
+    // A band taller than the window can neither be excluded nor included.
+    const huge = { y: 0.05, h: 0.9 };
+    const before = objectPosYFor(VIDEO_TOP, FACE);
+    expect(avoidSlicingText(before, VIDEO_TOP, FACE, [huge])).toBe(before);
+  });
+
+  it("layoutSlots applies it, and videoSlotAt only while the text is up", () => {
+    const plain = layoutSlots("video-top", FACE).video.objectPosY;
+    const avoided = layoutSlots("video-top", FACE, [TITLE]).video.objectPosY;
+    expect(avoided).not.toBe(plain);
+
+    const cues: SceneCue[] = [
+      { id: "a", layout: "video-top", component: "StatCard", props: {}, startSec: 0, endSec: 8 },
+    ];
+    const regions = [{ ...TITLE, startSec: 0, endSec: 3 }];
+    expect(videoSlotAt(cues, 1.5, FACE, regions).objectPosY).toBeCloseTo(avoided, 6);
+    expect(videoSlotAt(cues, 5, FACE, regions).objectPosY).toBeCloseTo(plain, 6);
   });
 });

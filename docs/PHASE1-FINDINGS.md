@@ -495,6 +495,49 @@ This is §26 applied to the cover surface: once source-text detection works, the
 
 Fix: make `coverText` its own field with a hard word cap stated in the schema `.describe()` and enforced in code (truncate at a word boundary, or fall back to the first clause before the em-dash). A cover banner is a headline, not a sentence.
 
+---
+
+# Round 8 — the crop slice and the call count (fixed 2026-07-27)
+
+## 36. The crop sliced the source's title — and the earlier diagnosis was wrong
+
+**Correction first:** Round 7 reported that detection "fires on scenery and misses the title". That was wrong, and the mistake was mine — I read the title's position off the *rendered* frame, where `video-top` crops from ~12% and pushes it to the top edge. In the SOURCE it sits at y 13–24%, and the detector reported y 17–25% @ 0–3s. **Detection was right all along.**
+
+The real defect was downstream: `objectPosYFor` positioned the crop window purely from the face, so nothing stopped its edge landing halfway through the source's own title box. The window ran 14.9–56.9% of the source while the title box started at ~12.5% — sliced along its top edge, exactly as rendered.
+
+Two fixes, both measured rather than guessed:
+
+- **`avoidSlicingText` in `stage.ts`.** A window that would cut a text band is nudged to either exclude the band or contain it whole, whichever moves the framing less — and **any shift that would push the chin out of frame is discarded**, so this cannot quietly re-open §13. `layoutSlots` and `videoSlotAt` thread the bands through, time-scoped, so the constraint only applies while the text is actually up.
+- **Regions are padded by one band.** Detection localises *glyphs*; the plate behind them runs past the last row of type, and it is the plate a crop visibly slices (glyphs at 17–25%, box from ~12.5%). One band is the detector's own resolution, so this claims no more precision than the measurement has. Padding happens **after** merging, or it would fuse regions the evidence kept apart.
+
+Result on the real reel: the source title is now excluded from the video slot entirely and ossclip's StatCard owns the messaging, with the face framing unchanged. A test pins the premise (the unadjusted crop *does* slice that clip's title) so the fix cannot silently rot.
+
+Also fixed while in there: regions were produced in **source** time and consumed as **output** time — identical only while nothing is cut. They are now mapped through the TimeMap, and a region whose window is entirely removed drops with it.
+
+## 37. 45,000 tokens per call was the harness, not the prompt
+
+`llm: 6 calls · 269,818 in / 3,884 out · ~$1.71` on a 32 s clip — ~45k input per call against a ~600-word transcript. Measured directly with `claude -p`:
+
+| what | cache_write | cache_read | cost |
+|---|---|---|---|
+| trivial prompt, default flags | 28,562 | 15,185 | $0.29 |
+| `--system-prompt` + `--strict-mcp-config` | 25,668 | 0 | $0.26 |
+| identical prefix, immediately repeated | 0 | 40,098 | **$0.02** |
+| Sonnet / Haiku, same trivial prompt | — | — | $0.20 / **$0.04** |
+
+So it is the Claude Code harness prefix — system prompt, tool definitions, project context — re-sent per invocation, with ossclip's own prompt a rounding error. Prompt trimming does nothing (`--allowed-tools ""` made it *worse*); a separate CLI invocation cannot reuse the previous one's cache. **The levers are call count and model tier.**
+
+Fixed by batching: one `scene_props_batch` call covers every graphic moment, each entry validated separately on the way out so a malformed one simply isn't returned and that moment alone falls back to its own call. Isolation is unchanged — the batch is a fast path, never a new failure mode — and a single graphic moment skips batching entirely.
+
+```
+before: 6 calls · 269,818 in / 3,884 out · ~$1.71 · 37s
+after:  3 calls · 137,664 in (100% cached prefix) / 1,023 out · ~$0.91 · 25s
+```
+
+The usage line now names the cached share, because a bare "270k in" reads like a runaway prompt when the real story is call count.
+
+**Still open:** model tiering. The mechanical calls (repair, props) do not need the top model — Haiku is ~7× cheaper per call — while the beat sheet is the one genuinely editorial call. `--llm-model` already exists; what is missing is a per-call-type default.
+
 ## Not defects, noted
 
 - **0 cuts on the test take is correct** — longest silence 0.44 s, below `standard`'s 0.7 s threshold.

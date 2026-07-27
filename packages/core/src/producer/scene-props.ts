@@ -32,10 +32,69 @@ function buildPropsPrompt(moment: Moment, transcript: Transcript): string {
 }
 
 /**
- * Call 2 — per-moment scene props (PHASE1 §4). Batched per moment so one bad
- * scene can't poison the rest. Validation loop: schema parse → one retry with
- * the error appended → TitleCard fallback with the moment's onScreenCopy.
- * Bounded retries, accepted residuals — the Opus-log policy.
+ * One call for ALL the graphic moments, returning props keyed by moment index.
+ *
+ * Call count is the only cost lever that matters here. Measured against the
+ * Claude Code CLI: every invocation carries ~25-45k tokens of harness prefix
+ * before ossclip's own prompt (~1-2k) is even considered, and that prefix is
+ * re-sent per call rather than reused across separate CLI sessions. A 32s clip
+ * spent 6 calls / 270k tokens, of which the content was a rounding error.
+ *
+ * Isolation is preserved by validating each item SEPARATELY on the way out:
+ * anything malformed simply isn't returned, and the caller retries that moment
+ * on its own. So the batch is a fast path, never a new failure mode.
+ */
+async function generateScenePropsBatch(
+  provider: LlmProvider,
+  moments: readonly Moment[],
+  indices: readonly number[],
+  transcript: Transcript,
+): Promise<Map<number, Record<string, unknown>>> {
+  const out = new Map<number, Record<string, unknown>>();
+  if (indices.length < 2) return out; // nothing to amortise
+  const schema = z.object({
+    scenes: z.array(z.object({ index: z.number().int(), props: z.record(z.string(), z.unknown()) })),
+  });
+  const blocks = indices.map((i) => {
+    const moment = moments[i]!;
+    const meta = SCENE_REGISTRY[moment.sceneKind as SceneComponentId];
+    return (
+      `--- moment ${i} ---\n` +
+      `${buildPropsPrompt(moment, transcript)}\n` +
+      `Props schema: ${JSON.stringify(z.toJSONSchema(meta.propsSchema as z.ZodType))}`
+    );
+  });
+  let raw: z.infer<typeof schema>;
+  try {
+    raw = await provider.complete({
+      system: PROPS_SYSTEM,
+      user:
+        `Fill the props for EACH moment below. Reply with one entry per moment, ` +
+        `echoing its index. Each entry's props must satisfy that moment's own schema.\n\n` +
+        blocks.join("\n\n"),
+      schema,
+      schemaName: "scene_props_batch",
+    });
+  } catch {
+    return out; // the per-moment path takes over
+  }
+  for (const entry of raw.scenes) {
+    const moment = moments[entry.index];
+    if (!moment || !indices.includes(entry.index)) continue;
+    const meta = SCENE_REGISTRY[moment.sceneKind as SceneComponentId];
+    const parsed = (meta.propsSchema as z.ZodType<Record<string, unknown>>).safeParse(entry.props);
+    if (parsed.success) out.set(entry.index, parsed.data);
+  }
+  return out;
+}
+
+/**
+ * Call 2 — scene props (PHASE1 §4). One batched call covers the moments that
+ * behave; anything it fails to produce falls back to a per-moment call, so one
+ * bad scene still can't poison the rest. Validation loop per moment: schema
+ * parse → one retry with the error appended → TitleCard fallback with the
+ * moment's onScreenCopy. Bounded retries, accepted residuals — the Opus-log
+ * policy.
  */
 export async function generateScenes(
   provider: LlmProvider,
@@ -59,6 +118,9 @@ export async function generateScenes(
     return meta.altLayouts[(n - 1) % meta.altLayouts.length]!;
   };
 
+  const graphicIndices = moments.flatMap((m, i) => (m.sceneKind === "none" ? [] : [i]));
+  const batched = await generateScenePropsBatch(provider, moments, graphicIndices, transcript);
+
   for (let i = 0; i < moments.length; i++) {
     const moment = moments[i]!;
     if (moment.sceneKind === "none") continue;
@@ -67,7 +129,7 @@ export async function generateScenes(
     const schema = meta.propsSchema as z.ZodType<Record<string, unknown>>;
     const layout = layoutFor(component);
 
-    let props: Record<string, unknown> | null = null;
+    let props: Record<string, unknown> | null = batched.get(i) ?? null;
     let lastError = "";
     const basePrompt = buildPropsPrompt(moment, transcript);
     for (let attempt = 0; attempt < 2 && props === null; attempt++) {

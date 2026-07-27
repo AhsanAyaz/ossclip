@@ -159,3 +159,72 @@ describe("producer brain", () => {
     expect(provider.calls).toBe(0);
   });
 });
+
+describe("batched scene props (FINDINGS §37)", () => {
+  /** Records what each call was asked for, so call COUNT is assertable. */
+  class RecordingProvider implements LlmProvider {
+    readonly name = "recording";
+    readonly usage = [];
+    readonly seen: string[] = [];
+    constructor(private handler: (schemaName: string, n: number) => unknown) {}
+    async complete<T>(req: { schema: z.ZodType<T>; schemaName: string }): Promise<T> {
+      this.seen.push(req.schemaName);
+      const out = this.handler(req.schemaName, this.seen.length - 1);
+      if (out instanceof Error) throw out;
+      return req.schema.parse(out);
+    }
+  }
+
+  const three: Moment[] = [moment("TitleCard"), moment("StatCard"), moment("RuleCard")];
+  const goodProps: Record<string, Record<string, unknown>> = {
+    TitleCard: { title: "A" },
+    StatCard: { label: "L", value: "1" },
+    RuleCard: { kicker: "K", text: "T" },
+  };
+
+  it("fills every scene in ONE call when the batch validates", async () => {
+    const provider = new RecordingProvider(() => ({
+      scenes: three.map((m, i) => ({ index: i, props: goodProps[m.sceneKind]! })),
+    }));
+    const { scenes, failures } = await generateScenes(provider, three, transcript);
+    expect(scenes).toHaveLength(3);
+    expect(failures).toHaveLength(0);
+    expect(provider.seen).toEqual(["scene_props_batch"]);
+  });
+
+  it("retries only the moments the batch got wrong", async () => {
+    // The batch returns a valid entry for moment 0 and junk for moment 1.
+    const provider = new RecordingProvider((schemaName) =>
+      schemaName === "scene_props_batch"
+        ? {
+            scenes: [
+              { index: 0, props: goodProps.TitleCard! },
+              { index: 1, props: { nonsense: true } },
+              { index: 2, props: goodProps.RuleCard! },
+            ],
+          }
+        : goodProps.StatCard!,
+    );
+    const { scenes, failures } = await generateScenes(provider, three, transcript);
+    expect(scenes).toHaveLength(3);
+    expect(failures).toHaveLength(0);
+    // One batch + exactly one repair, not three individual calls.
+    expect(provider.seen).toEqual(["scene_props_batch", "StatCard_props"]);
+  });
+
+  it("falls back to per-moment calls when the batch call itself fails", async () => {
+    const provider = new RecordingProvider((schemaName, i) =>
+      i === 0 ? new Error("batch unavailable") : goodProps[three[Math.floor((i - 1) / 1)]!.sceneKind]!,
+    );
+    const { scenes } = await generateScenes(provider, three, transcript);
+    expect(scenes).toHaveLength(3);
+    expect(provider.seen[0]).toBe("scene_props_batch");
+    expect(provider.seen.slice(1)).toEqual(["TitleCard_props", "StatCard_props", "RuleCard_props"]);
+  });
+
+  it("does not batch a single graphic moment — there is nothing to amortise", async () => {
+    const provider = new RecordingProvider(() => goodProps.TitleCard!);
+    await generateScenes(provider, [moment("TitleCard")], transcript);
+    expect(provider.seen).toEqual(["TitleCard_props"]);
+  });
+});

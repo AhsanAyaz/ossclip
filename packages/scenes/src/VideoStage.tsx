@@ -17,12 +17,17 @@ export const VideoStage: React.FC<{
   face?: FaceCrop | null;
   /** Micro zoom punches (FINDINGS §15), precomputed from phrase boundaries. */
   zoomPlan?: ZoomSegment[];
+  /**
+   * Burned-in text in the source, in OUTPUT time. The crop window is nudged so
+   * it never slices one of these bands in half (FINDINGS §36).
+   */
+  sourceTextRegions?: Array<{ y: number; h: number; startSec: number; endSec: number }>;
   children: React.ReactNode;
-}> = ({ cues, theme, face, zoomPlan, children }) => {
+}> = ({ cues, theme, face, zoomPlan, sourceTextRegions, children }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const t = frame / fps;
-  const slot = videoSlotAt(cues, t, face ?? undefined);
+  const slot = videoSlotAt(cues, t, face ?? undefined, sourceTextRegions ?? []);
   const backdrop = backdropOpacityAt(cues, t);
 
   const wPx = slot.rect.w * width;

@@ -35,8 +35,12 @@ export interface ProductionCompProps {
   ctaKeyword?: string;
   /** When the ask is on screen; without it the keyword is never styled (§22). */
   ctaWindow?: { startSec: number; endSec: number };
-  /** Bands where the SOURCE already has text burned in (FINDINGS §26). */
-  sourceTextRegions?: Array<{ y: number; h: number }>;
+  /**
+   * Bands where the SOURCE already has text burned in (FINDINGS §26), in
+   * OUTPUT time. Consumed twice: captions route around them, and the video
+   * crop refuses to slice one in half (FINDINGS §36).
+   */
+  sourceTextRegions?: Array<{ y: number; h: number; startSec: number; endSec: number }>;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -82,7 +86,13 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   const src = /^https?:\/\//.test(videoFileName) ? videoFileName : staticFile(videoFileName);
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
-      <VideoStage cues={sceneCues} theme={theme} face={face} zoomPlan={zoomPlan}>
+      <VideoStage
+        cues={sceneCues}
+        theme={theme}
+        face={face}
+        zoomPlan={zoomPlan}
+        sourceTextRegions={sourceTextRegions}
+      >
         <EdlVideo src={src} spans={spans} />
       </VideoStage>
       <SceneLayer cues={sceneCues} theme={theme} />

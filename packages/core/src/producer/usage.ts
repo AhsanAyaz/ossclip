@@ -206,10 +206,15 @@ export function formatUsageLine(
 ): string {
   const t = summarizeUsage(records, pricing);
   if (t.calls === 0) return "▸ llm: no calls";
-  const parts = [
-    `${t.calls} calls`,
-    `${n(t.inputTokens)} in / ${n(t.outputTokens)} out tokens`,
-  ];
+  // A bare input total invites the wrong conclusion. On the CLI path ~99% of
+  // it is the harness prefix re-sent per call, not anything ossclip wrote —
+  // "270k in" reads like a runaway prompt when the real lever is call count.
+  const cachedShare = t.inputTokens > 0 ? t.cachedInputTokens / t.inputTokens : 0;
+  const inPart =
+    cachedShare >= 0.5
+      ? `${n(t.inputTokens)} in (${Math.round(cachedShare * 100)}% cached prefix) / ${n(t.outputTokens)} out tokens`
+      : `${n(t.inputTokens)} in / ${n(t.outputTokens)} out tokens`;
+  const parts = [`${t.calls} calls`, inPart];
   if (t.equivalentUsd === null) {
     parts.push(
       `cost unknown for ${t.unpricedModels.join(", ")} — set \`pricing\` in ~/.ossclip/config.json`,

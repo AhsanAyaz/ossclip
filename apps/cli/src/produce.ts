@@ -362,7 +362,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
             `(${sourceText.framesSampled} frames sampled)`,
     );
   }
-  const routed = routeAroundSourceText(assembled, sourceText.regions);
+  // Detection reports SOURCE time; everything downstream — cues, captions, the
+  // crop — is output time. Identical only while nothing is cut, so convert
+  // rather than let a cut silently slide every region out of place. Regions
+  // whose window is entirely removed drop out with it.
+  const textRegions = sourceText.regions.flatMap((r) => {
+    if (!Number.isFinite(r.endSec)) return [{ ...r, startSec: 0, endSec: map.outputDuration }];
+    const startSec = map.toOutputClamped(r.startSec);
+    const endSec = map.toOutputClamped(r.endSec);
+    return endSec > startSec ? [{ ...r, startSec, endSec }] : [];
+  });
+  const routed = routeAroundSourceText(assembled, textRegions);
   for (const r of routed.relayouts) {
     console.log(`  ▸ scene ${r.id}: ${r.from} → ${r.to} (source text in the way)`);
   }
@@ -509,7 +519,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     zoomPlan: zoom.segments,
     ctaKeyword,
     ctaWindow,
-    sourceTextRegions: sourceText.regions,
+    sourceTextRegions: textRegions,
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 

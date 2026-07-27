@@ -139,6 +139,81 @@ export function objectPosYFor(rect: Rect, face: FaceCrop): number {
   return Math.min(1, Math.max(0, offset / overflow));
 }
 
+/** A band of the SOURCE frame, as fractions of source height. */
+export interface SourceBand {
+  y: number;
+  h: number;
+}
+
+/**
+ * Nudge a crop so its window never cuts through burned-in text.
+ *
+ * A slot shorter than the source shows a window of it, and nothing stopped
+ * that window's edge landing halfway through the source's own title — which
+ * is exactly what happened on a real reel: the title's box was sliced along
+ * its top edge while ossclip printed a competing title underneath
+ * (FINDINGS §36).
+ *
+ * Either answer is defensible, so we take whichever moves the framing least:
+ * EXCLUDE the band (start the window below it, ossclip owns the messaging) or
+ * INCLUDE it whole (the source's title reads as intended). When neither fits —
+ * the band is taller than the window, or the shift would run off the source —
+ * the original position stands: a decapitated speaker is worse than a clipped
+ * title, and §13 already decided that trade.
+ */
+export function avoidSlicingText(
+  posY: number,
+  rect: Rect,
+  face: FaceCrop,
+  bands: readonly SourceBand[],
+): number {
+  if (bands.length === 0) return posY;
+  const slotH = rect.h * FRAME_H;
+  const displayedH = displayedHeight(rect, face);
+  const overflow = displayedH - slotH;
+  if (overflow <= 1) return posY; // whole source visible — nothing to slice
+
+  const winH = slotH / displayedH; // window height, as a fraction of the source
+  const travel = 1 - winH; // how far the window's top may move
+  if (travel <= 0) return posY;
+
+  let top = posY * travel;
+  // Resolve the worst offender first, then re-check: moving the window can
+  // slide a different band across an edge.
+  for (let pass = 0; pass < bands.length + 1; pass++) {
+    const sliced = bands.find((b) => {
+      const bTop = b.y;
+      const bBot = b.y + b.h;
+      const bottom = top + winH;
+      const cutsTop = bTop < top && top < bBot;
+      const cutsBottom = bTop < bottom && bottom < bBot;
+      return cutsTop || cutsBottom;
+    });
+    if (!sliced) break;
+
+    const candidates: number[] = [];
+    const exclude = sliced.y + sliced.h; // window starts below the band
+    if (exclude <= travel) candidates.push(exclude);
+    const excludeAbove = sliced.y - winH; // window ends above the band
+    if (excludeAbove >= 0) candidates.push(excludeAbove);
+    if (sliced.h <= winH) {
+      // Include it whole: the window's top must sit in this interval.
+      const lo = Math.max(0, sliced.y + sliced.h - winH);
+      const hi = Math.min(travel, sliced.y);
+      if (lo <= hi) candidates.push(Math.min(Math.max(top, lo), hi));
+    }
+    // A title is never worth a mouth. §13 settled that trade; this must not
+    // quietly re-open it, so any shift that pushes the chin out of the window
+    // is discarded even though it would resolve the slice.
+    const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
+    const chin = face.centerYFrac + size / 2;
+    const viable = candidates.filter((c) => c + winH >= chin);
+    if (viable.length === 0) return posY;
+    top = viable.reduce((best, c) => (Math.abs(c - top) < Math.abs(best - top) ? c : best));
+  }
+  return Math.min(1, Math.max(0, top / travel));
+}
+
 /**
  * Horizontal object-position: keep the speaker in frame when the source is
  * wider than the slot.
@@ -322,8 +397,13 @@ const PIP_RECT: Rect = {
  *   graphic-only   → below the graphic (the layout reserves the band)
  *   blurred-behind → below the centred graphic (face is blurred — no clash)
  */
-export function layoutSlots(layout: Layout, face: FaceCrop = DEFAULT_FACE): StageSlots {
-  const posY = (rect: Rect) => objectPosYFor(rect, face);
+export function layoutSlots(
+  layout: Layout,
+  face: FaceCrop = DEFAULT_FACE,
+  /** Burned-in text bands visible right now — the crop must not slice them. */
+  textBands: readonly SourceBand[] = [],
+): StageSlots {
+  const posY = (rect: Rect) => avoidSlicingText(objectPosYFor(rect, face), rect, face, textBands);
   const posX = (rect: Rect) => objectPosXFor(rect, face);
   switch (layout) {
     case "full-bleed":
@@ -418,19 +498,22 @@ export function videoSlotAt(
   cues: readonly SceneCue[],
   tSec: number,
   face: FaceCrop = DEFAULT_FACE,
+  /** Text regions in OUTPUT time; only those on screen now constrain the crop. */
+  textRegions: readonly (SourceBand & { startSec: number; endSec: number })[] = [],
 ): VideoSlotState {
-  const base = layoutSlots("full-bleed", face).video;
+  const bands = textRegions.filter((r) => tSec >= r.startSec && tSec < r.endSec);
+  const base = layoutSlots("full-bleed", face, bands).video;
   const cue = activeCueAt(cues, tSec);
   if (!cue) return base;
-  const target = layoutSlots(cue.layout, face).video;
+  const target = layoutSlots(cue.layout, face, bands).video;
   const T = Math.min(LAYOUT_TRANSITION_SEC, (cue.endSec - cue.startSec) / 2);
   const sinceStart = tSec - cue.startSec;
   const untilEnd = cue.endSec - tSec;
 
   const prev = activeCueAt(cues, cue.startSec - 1e-3);
   const next = activeCueAt(cues, cue.endSec + 1e-3);
-  const from = prev ? layoutSlots(prev.layout, face).video : base;
-  const to = next ? layoutSlots(next.layout, face).video : base;
+  const from = prev ? layoutSlots(prev.layout, face, bands).video : base;
+  const to = next ? layoutSlots(next.layout, face, bands).video : base;
 
   if (sinceStart < T) return lerpVideo(from, target, easeInOut(sinceStart / T));
   if (untilEnd < T) return lerpVideo(target, to, easeInOut(1 - untilEnd / T));

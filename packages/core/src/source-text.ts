@@ -217,6 +217,21 @@ export function regionsFromSamples(
       merged.push({ ...r });
     }
   }
+
+  // Pad each merged region by one band. Detection localizes GLYPHS, but the
+  // graphic behind them — the rounded plate a title sits on — reaches past the
+  // last row of type, and it is the PLATE a crop visibly slices. Measured on
+  // the real reel: glyphs at 17-25% of the source, the black box from ~12.5%,
+  // and the rendered crop cut the box while clearing the text. One band is the
+  // detector's own resolution, so this claims no more precision than the
+  // measurement has. Padding happens after merging so it cannot fuse regions
+  // that the evidence kept apart.
+  const pad = 1 / BANDS;
+  for (const r of merged) {
+    const top = Math.max(0, r.y - pad);
+    r.h = Math.min(1, r.y + r.h + pad) - top;
+    r.y = top;
+  }
   return merged;
 }
 

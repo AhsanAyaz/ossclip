@@ -86,16 +86,32 @@ describe("time-scoped regions (FINDINGS §32)", () => {
     expect(regions[0]!.endSec).toBeCloseTo(6, 6);
   });
 
-  it("reports the band the text actually occupies", () => {
+  it("reports the band the text occupies, padded to the graphic behind it", () => {
+    // The glyph rows are what the detector sees; the plate they sit on runs
+    // past them, and a crop slices the PLATE (FINDINGS §36). One band of
+    // padding each way — the detector's own resolution, no finer.
     const r = regionsFromSamples([{ timeSec: 1, busy: busyAt([4]) }], 0.5)[0]!;
-    expect(r.y).toBeCloseTo(4 / BANDS, 6);
-    expect(r.h).toBeCloseTo(1 / BANDS, 6);
+    expect(r.y).toBeCloseTo(3 / BANDS, 6);
+    expect(r.h).toBeCloseTo(3 / BANDS, 6);
   });
 
   it("merges vertically adjacent bands into one block", () => {
     const regions = regionsFromSamples([{ timeSec: 1, busy: busyAt([4, 5, 6]) }], 0.5);
     expect(regions).toHaveLength(1);
-    expect(regions[0]!.h).toBeCloseTo(3 / BANDS, 6);
+    // 3 busy bands + a band of padding either side.
+    expect(regions[0]!.h).toBeCloseTo(5 / BANDS, 6);
+  });
+
+  it("pads after merging, so separated bands stay separate", () => {
+    // Padding before the merge would fuse regions the evidence kept apart.
+    const regions = regionsFromSamples([{ timeSec: 1, busy: busyAt([4, 8]) }], 0.5);
+    expect(regions).toHaveLength(2);
+  });
+
+  it("clamps padding at the frame edges", () => {
+    const r = regionsFromSamples([{ timeSec: 1, busy: busyAt([0]) }], 0.5)[0]!;
+    expect(r.y).toBe(0);
+    expect(r.y + r.h).toBeLessThanOrEqual(1);
   });
 
   it("keeps two separated bands apart", () => {
