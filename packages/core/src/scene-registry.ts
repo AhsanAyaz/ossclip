@@ -77,15 +77,24 @@ export const ChatMockProps = z.object({
     .min(1)
     .max(4),
   /**
-   * The comment-CTA word the viewer is asked to type. The COMPONENT renders
-   * it quoted and capitalized ('"AGENTS"') wherever it appears in a message —
-   * formatting never lives in LLM output (FINDINGS §16).
+   * The comment-CTA word the viewer is asked to type, plain and unformatted —
+   * the render quotes and capitalizes it ('"AGENTS"'), because formatting never
+   * lives in LLM output (FINDINGS §16). Setting it also collapses the scene to
+   * that ONE bubble (FINDINGS §28b), so it is only correct when the ask really
+   * is "comment <word>". A "reply with a number / which one" ask has no word to
+   * type and must leave this unset — `rejectCtaKeyword` drops it if it slips
+   * through, and the exchange in `messages` renders instead.
    */
   keyword: z
     .string()
     .max(16)
     .optional()
-    .describe("the single comment/CTA word the viewer should type, plain and unformatted"),
+    .describe(
+      "ONLY for a 'comment <word>' ask: the single distinctive word the viewer types, " +
+        "plain and unformatted. Leave unset for any other CTA — especially " +
+        "'reply with a number/which one', where there is no word to type. Never a " +
+        "referential filler like 'number', 'answer', 'comment' or 'below'.",
+    ),
 });
 
 export const ScreenshotFrameProps = z.object({

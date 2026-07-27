@@ -16,6 +16,7 @@ import {
   buildCutlist,
   buildZoomPlan,
   checkGrounding,
+  rejectCtaKeyword,
   coverHeadline,
   cropFilter,
   detectContentRect,
@@ -485,6 +486,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   const groundingIssues = checkGrounding(scenes, transcript, opts.speaker ?? cfg.speaker);
   for (const g of groundingIssues) {
     console.log(`  ⚠ grounding: ${g.component} ${g.sceneId} ${g.field} "${g.token}" — not in the take`);
+  }
+
+  // CTA-keyword post-check: the keyword mechanic renders ONE shape of ask, and
+  // a "reply with a number" prompt is not it. Dropping the prop here — before
+  // the cue, the scene file and the caption track ever read it — is what makes
+  // ChatMock fall back to rendering the exchange the producer actually planned
+  // (`chatBubbles` collapses to a single bubble only while a keyword is set).
+  const ctaRejections: Array<{ sceneId: string; keyword: string; reason: string }> = [];
+  for (const holder of [...scenes, ...sceneCues]) {
+    const kw = holder.props.keyword;
+    if (typeof kw !== "string" || kw.length === 0) continue;
+    const reason = rejectCtaKeyword(kw);
+    if (!reason) continue;
+    delete (holder.props as Record<string, unknown>).keyword;
+    ctaRejections.push({ sceneId: holder.id, keyword: kw, reason });
+  }
+  // Scenes and cues carry the same resolved props, so each rejection is seen
+  // twice; report the word once.
+  for (const r of [...new Map(ctaRejections.map((r) => [r.keyword, r])).values()]) {
+    console.log(`  ⚠ CTA keyword dropped — ${r.reason}`);
   }
 
   const production: Production = {

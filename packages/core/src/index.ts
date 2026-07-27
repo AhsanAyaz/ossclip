@@ -12,6 +12,7 @@ export * from "./cutlist";
 export * from "./captions";
 export * from "./zoom";
 export * from "./grounding";
+export * from "./cta";
 export * from "./content-rect";
 export * from "./face";
 export * from "./cover";
