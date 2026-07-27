@@ -5,11 +5,22 @@ import {
   defaultProductionProps,
   type ProductionCompProps,
 } from "./ProductionComposition";
+import { COVER_ID, CoverComposition, defaultCoverProps } from "./CoverComposition";
 
 export const COMPOSITION_ID = "production";
 
 export const RemotionRoot: React.FC = () => {
   return (
+    <>
+    <Composition
+      id={COVER_ID}
+      component={CoverComposition as unknown as React.FC<Record<string, unknown>>}
+      defaultProps={defaultCoverProps as unknown as Record<string, unknown>}
+      width={1080}
+      height={1920}
+      fps={30}
+      durationInFrames={1}
+    />
     <Composition
       id={COMPOSITION_ID}
       component={ProductionComposition as unknown as React.FC<Record<string, unknown>>}
@@ -28,5 +39,6 @@ export const RemotionRoot: React.FC = () => {
         };
       }}
     />
+    </>
   );
 };

@@ -135,6 +135,27 @@ export interface StageSlots {
  */
 export const SAFE_AREA = { top: 0.12, bottom: 0.22, right: 0.16, left: 0.04 };
 
+/**
+ * Cover-image safe area (FINDINGS §31) — a DIFFERENT constraint from
+ * `SAFE_AREA`, and both apply to cover text.
+ *
+ * `SAFE_AREA` keeps text clear of the player's chrome. This keeps it inside
+ * what the Instagram profile GRID will still show: the grid crops a cover to
+ * a centre square, so a 1080×1920 cover keeps only y ∈ [420, 1500] — the
+ * middle 56% of its height. Text outside that is simply gone from the grid,
+ * which is the one place a cover is meant to work.
+ */
+
+export const COVER_GRID_SAFE = { top: 0.24, bottom: 0.24, left: 0.06, right: 0.06 };
+
+/** The rect the grid crop leaves visible. */
+export const COVER_GRID_RECT: Rect = {
+  x: COVER_GRID_SAFE.left,
+  y: COVER_GRID_SAFE.top,
+  w: 1 - COVER_GRID_SAFE.left - COVER_GRID_SAFE.right,
+  h: 1 - COVER_GRID_SAFE.top - COVER_GRID_SAFE.bottom,
+};
+
 /** The rect everything textual must live in. */
 export const SAFE_RECT: Rect = {
   x: SAFE_AREA.left,
@@ -142,6 +163,21 @@ export const SAFE_RECT: Rect = {
   w: 1 - SAFE_AREA.left - SAFE_AREA.right,
   h: 1 - SAFE_AREA.top - SAFE_AREA.bottom,
 };
+
+/**
+ * Where cover TEXT may actually go: the intersection of the two constraints.
+ *
+ * Neither rect contains the other — the grid crop is tighter top and bottom,
+ * while the player's action rail eats the right side that a grid tile does
+ * not have. A cover is seen in both places, so text has to satisfy both.
+ */
+export const COVER_TEXT_RECT: Rect = (() => {
+  const x = Math.max(COVER_GRID_RECT.x, SAFE_RECT.x);
+  const y = Math.max(COVER_GRID_RECT.y, SAFE_RECT.y);
+  const right = Math.min(COVER_GRID_RECT.x + COVER_GRID_RECT.w, SAFE_RECT.x + SAFE_RECT.w);
+  const bottom = Math.min(COVER_GRID_RECT.y + COVER_GRID_RECT.h, SAFE_RECT.y + SAFE_RECT.h);
+  return { x, y, w: right - x, h: bottom - y };
+})();
 
 /** Approximate half-height of a caption line block, for free-band math/tests. */
 export const CAPTION_HALF_BAND = 0.045;

@@ -3,9 +3,14 @@ import { SCENE_REGISTRY, SceneComponentIdSchema, type SceneComponentId } from "@
 import {
   FILL_TARGET,
   MAX_SCALE,
+  chatBubbles,
+  chatMetrics,
   estimateHeightPx,
   estimateMinWidthPx,
   fitScale,
+  isSelfFitting,
+  revealMetrics,
+  revealRows,
 } from "../src/fit";
 import { layoutSlots } from "../src/stage";
 
@@ -108,6 +113,7 @@ describe("fill contract (FINDINGS §23)", () => {
     // may legitimately stop a graphic short: the taste ceiling, and content
     // that cannot reflow (a nowrap stat value, a pre-formatted terminal line).
     for (const id of SceneComponentIdSchema.options) {
+      if (isSelfFitting(id)) continue; // width-bound; covered by their own tests
       const { height, slotH, scale } = fittedHeight(id, SPARSE[id]);
       const filled = height / slotH;
       const clamped = Math.abs(scale - MAX_SCALE) < 1e-6 || isWidthCapped(id, SPARSE[id], scale);
@@ -120,7 +126,10 @@ describe("fill contract (FINDINGS §23)", () => {
 
   it("the thin-strip cases gain real size", () => {
     // The components §23 called out: each rendered at 8-15% of its slot.
-    for (const id of ["TitleCard", "StrikethroughReveal", "ChatMock", "TerminalMock"] as const) {
+    // FlowDiagram and StrikethroughReveal solve their own type against the
+    // slot, so there is no "unscaled" baseline for them — flow.test.ts and the
+    // reveal tests below cover their fill directly.
+    for (const id of ["TitleCard", "ChatMock", "TerminalMock"] as const) {
       const slot = slotOf(id);
       const natural = estimateHeightPx(id, SPARSE[id], slot.widthPx, slot.heightPx);
       const { height } = fittedHeight(id, SPARSE[id]);
@@ -135,9 +144,7 @@ describe("fill contract (FINDINGS §23)", () => {
     // the largest that does not push a line over into another row.
     let unclamped = 0;
     for (const id of SceneComponentIdSchema.options) {
-      // FlowDiagram solves its own type against the slot and is bounded by
-      // legibility caps rather than this target — see flow.test.ts.
-      if (id === "FlowDiagram") continue;
+      if (isSelfFitting(id)) continue; // bounded by their own solver, not this target
       for (const set of [SPARSE, DENSE]) {
         const slot = slotOf(id);
         const scale = fitScale(id, set[id], slot);
@@ -209,5 +216,101 @@ describe("fill contract (FINDINGS §23)", () => {
         expect(k, id).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("StrikethroughReveal rows (FINDINGS §27)", () => {
+  const SLOT_W = 0.77 * 1080;
+  const SLOT_H = 0.36 * 1920;
+
+  it("keeps a line on one row by scaling, rather than wrapping it", () => {
+    // t≈12s: "PROMPT → OUTCOME" wrapped, stranding the arrow at the end of
+    // row one and drawing the strike rule between the two rows.
+    const lines = ["PROMPT → OUTCOME"];
+    const font = revealMetrics(lines, SLOT_W, SLOT_H);
+    expect(revealRows(lines[0]!, font, SLOT_W)).toEqual(lines);
+  });
+
+  it("breaks at the arrow with the arrow LEADING the next row, never trailing", () => {
+    // The whole line does not fit, but each half does — so it breaks, and the
+    // arrow travels with the phrase it points into (the §12 rule, applied to
+    // a different component).
+    const text = "A VERY LONG FIRST HALF → AN EQUALLY LONG SECOND HALF";
+    const rows = revealRows(text, 30, 700);
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[0]!.endsWith("→")).toBe(false);
+    expect(rows[1]!.startsWith("→")).toBe(true);
+  });
+
+  it("never breaks a line that has no arrow to break at", () => {
+    expect(revealRows("ONE UNBREAKABLE STATEMENT", 92, 200)).toHaveLength(1);
+  });
+
+  it("every row fits the width it was measured against", () => {
+    for (const text of ["SHORT", "PROMPT → OUTCOME", "MORE WORDS → MORE SIGNAL → LESS NOISE"]) {
+      const font = revealMetrics([text], SLOT_W, SLOT_H);
+      for (const row of revealRows(text, font, SLOT_W)) {
+        expect(row.length * font * 0.72, `"${row}" overflows`).toBeLessThanOrEqual(SLOT_W + 1);
+      }
+    }
+  });
+
+  it("grows to the slot until its own width stops it, and never past it", () => {
+    // Like a FlowDiagram row, a reveal line is WIDTH-bound: it can only grow
+    // until the longest line reaches the slot edge. That is the honest ceiling
+    // — filling more would mean overflowing.
+    const lines = ["MORE WORDS", "MORE SIGNAL", "LESS NOISE"];
+    const font = revealMetrics(lines, SLOT_W, SLOT_H);
+    const longest = Math.max(...lines.map((l) => l.length));
+    expect(font).toBe(Math.floor(SLOT_W / (longest * 0.72))); // width is the binding constraint
+    const height = lines.length * font * 1.08 + font * 0.2 * (lines.length - 1);
+    expect(height).toBeLessThanOrEqual(SLOT_H + 1);
+    expect(height / SLOT_H).toBeGreaterThan(0.5); // vs ~14% before the fill work
+  });
+
+  it("a tall block is bounded by height, not width", () => {
+    const lines = Array.from({ length: 4 }, () => "THIRTY TWO CHARACTERS OF COPY!!!");
+    const font = revealMetrics(lines, SLOT_W, SLOT_H);
+    const height = lines.length * font * 1.08 + font * 0.2 * (lines.length - 1);
+    expect(height).toBeLessThanOrEqual(SLOT_H + 1);
+  });
+});
+
+describe("ChatMock bubbles (FINDINGS §28)", () => {
+  const SLOT_W = 0.77 * 1080;
+
+  it("a CTA scene renders exactly one bubble, carrying only the keyword", () => {
+    // The "link sent 🔗" reply is invented reassurance, competes with the
+    // word the viewer must type, and is not in the reference.
+    const bubbles = chatBubbles({
+      keyword: "agents",
+      messages: [
+        { from: "user", text: "comment agents" },
+        { from: "agent", text: "link sent 🔗" },
+      ],
+    });
+    expect(bubbles).toEqual([{ from: "user", text: '"AGENTS"' }]);
+  });
+
+  it("a conversational scene keeps its full exchange", () => {
+    const messages = [
+      { from: "user", text: "can it cut my ums?" },
+      { from: "agent", text: "already did." },
+    ];
+    expect(chatBubbles({ messages })).toEqual(messages);
+  });
+
+  it("shrinks the type so the longest WORD fits inside bubble-minus-padding", () => {
+    // A single unbreakable word has no wrap opportunity, so only the type size
+    // can keep it inside the rounded rect (§28a).
+    const long = ['"ABSOLUTELYENORMOUSKEYWORD"'];
+    const font = chatMetrics(long, SLOT_W);
+    const inner = SLOT_W - 80;
+    const bubbleWidth = font * (long[0]!.length * 0.58 + 2 * 0.85);
+    expect(bubbleWidth).toBeLessThanOrEqual(inner * 0.82 + 1);
+  });
+
+  it("never exceeds the authored type size for ordinary copy", () => {
+    expect(chatMetrics(['"AGENTS"'], SLOT_W)).toBe(40);
   });
 });

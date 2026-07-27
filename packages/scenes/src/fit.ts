@@ -24,7 +24,18 @@ import type { SceneComponentId } from "@ossclip/core/browser";
 /** Fraction of the slot height a fitted graphic aims to occupy. */
 export const FILL_TARGET = 0.94;
 /** Components that solve their own type against the slot, needing no scale. */
-const SELF_FITTING = new Set<SceneComponentId>(["FlowDiagram"]);
+const SELF_FITTING = new Set<SceneComponentId>(["FlowDiagram", "StrikethroughReveal"]);
+
+/**
+ * Components whose type is solved against the slot directly, so the stage's
+ * uniform scale would only cancel out. Both are WIDTH-bound — a row of chips
+ * or a line of big words can only grow until it hits the slot's edge — which
+ * means neither can fill a tall slot by scaling, and how much they do fill is
+ * a property of their own solver rather than of `fitScale`.
+ */
+export function isSelfFitting(component: SceneComponentId): boolean {
+  return SELF_FITTING.has(component);
+}
 /**
  * Never blow a small card up past this. A one-line terminal window stretched
  * to fill the tallest slot would need ~7×, giving it a 200px title bar — the
@@ -113,17 +124,10 @@ export function estimateHeightPx(
       return h;
     }
     case "StrikethroughReveal": {
-      const lines = arr(props.lines);
-      const each = lines.map((l) =>
-        textHeight(
-          str((l as Record<string, unknown>)?.text).length,
-          92,
-          widthPx,
-          1.08,
-          CHAR_W_UPPER,
-        ),
-      );
-      return each.reduce((a, b) => a + b, 0) + 18 * Math.max(0, lines.length - 1);
+      const lines = arr(props.lines).map((l) => str((l as Record<string, unknown>)?.text));
+      const font = revealMetrics(lines, widthPx, heightPx);
+      const rows = lines.reduce((n, l) => n + revealRows(l, font, widthPx).length, 0);
+      return rows * font * 1.08 + font * 0.2 * Math.max(0, rows - 1);
     }
     case "FlowDiagram": {
       // Self-fitting: flowMetrics already solves against both budgets.
@@ -146,14 +150,14 @@ export function estimateHeightPx(
       return h;
     }
     case "ChatMock": {
-      const messages = arr(props.messages);
-      const bubbleWidth = (widthPx - 80) * 0.82;
+      const bubbles = chatBubbles(props);
+      const font = chatMetrics(bubbles.map((b) => b.text), widthPx);
+      const inner = (widthPx - 80) * BUBBLE_MAX_WIDTH - 2 * font * BUBBLE_PAD_X;
       let h = 0;
-      for (const m of messages) {
-        const text = str((m as Record<string, unknown>)?.text);
-        h += textHeight(text.length, 40, bubbleWidth - 68, 1.2, CHAR_W_BOLD) + 48 + 4;
+      for (const b of bubbles) {
+        h += textHeight(b.text.length, font, inner, 1.2, CHAR_W_BOLD) + font * 1.2 + 4;
       }
-      return h + 20 * Math.max(0, messages.length - 1);
+      return h + font * 0.5 * Math.max(0, bubbles.length - 1);
     }
     case "ScreenshotFrame": {
       // The placeholder is a fixed 420px block; a real image is unbounded and
@@ -207,6 +211,112 @@ export function estimateMinWidthPx(
     default:
       return 0;
   }
+}
+
+/** Base type size a reveal line is authored at, its floor, and its ceiling. */
+const REVEAL_FONT = 92;
+const REVEAL_MIN_FONT = 44;
+const REVEAL_MAX_FONT = 150;
+/** Arrow-ish glyphs a reveal line may be broken at, longest first. */
+const REVEAL_BREAKS = [" → ", " -> ", " → ", " > "];
+
+/**
+ * Break a reveal line into the rows it will actually render as.
+ *
+ * A wrapped line strands its arrow at the end of a row and — worse — leaves
+ * the strike rule drawn *between* the rows instead of through either, because
+ * the rule is positioned against the whole block (FINDINGS §27). So the line
+ * is treated as an unbreakable unit like FlowDiagram's row: it scales to fit,
+ * and only when it cannot fit at the legibility floor is it broken — at the
+ * arrow, with the arrow LEADING the next row, never trailing the previous
+ * one. Each returned row is struck independently.
+ */
+export function revealRows(text: string, fontSizePx: number, widthPx: number): string[] {
+  const fits = (s: string) => s.length * fontSizePx * CHAR_W_UPPER <= widthPx;
+  if (fits(text)) return [text];
+  for (const sep of REVEAL_BREAKS) {
+    if (!text.includes(sep)) continue;
+    const parts = text.split(sep);
+    const rows = parts.map((part, i) => (i === 0 ? part : `${sep.trim()} ${part}`.trim()));
+    if (rows.every(fits)) return rows;
+  }
+  return [text];
+}
+
+/**
+ * Type size for a StrikethroughReveal, sized so its longest line fits one row
+ * AND the block fills its slot. Falls to the floor and lets `revealRows` break
+ * at an arrow beyond that.
+ *
+ * Width-bound like FlowDiagram's row, so the stage's uniform scale cancels out
+ * against it — this solves both budgets directly instead (FINDINGS §23/§27).
+ */
+export function revealMetrics(
+  lines: readonly string[],
+  widthPx = 831,
+  heightPx = Infinity,
+): number {
+  const longest = lines.reduce((max, l) => Math.max(max, l.length), 0);
+  if (longest === 0) return REVEAL_FONT;
+  const widthFit = widthPx / (longest * CHAR_W_UPPER);
+  const heightFit = heightPx / (Math.max(1, lines.length) * 1.28);
+  return Math.max(
+    REVEAL_MIN_FONT,
+    Math.min(REVEAL_MAX_FONT, Math.floor(Math.min(widthFit, heightFit))),
+  );
+}
+
+/** Base type size a chat bubble is authored at, and its legibility floor. */
+const CHAT_FONT = 40;
+const CHAT_MIN_FONT = 22;
+/** Bubble geometry as multiples of the font size — see ChatMock's Bubble. */
+const BUBBLE_PAD_X = 0.85;
+const BUBBLE_MAX_WIDTH = 0.82;
+
+/**
+ * The bubbles a ChatMock actually renders.
+ *
+ * A CTA scene shows ONE bubble carrying the keyword and nothing else
+ * (FINDINGS §28b). The model likes to add a reply — "link sent 🔗" — which is
+ * reassurance for something that has not happened, competes with the word the
+ * viewer is supposed to type, and appears nowhere in the reference. The ask is
+ * the whole message, so it gets the whole frame. Conversational scenes with no
+ * keyword keep the full exchange.
+ *
+ * Lives here rather than in the component because it decides how many boxes
+ * are laid out, which the height model must agree with exactly.
+ */
+export function chatBubbles(
+  props: Record<string, unknown>,
+): Array<{ from: "user" | "agent"; text: string }> {
+  const keyword = str(props.keyword);
+  if (keyword) return [{ from: "user", text: `"${keyword.toUpperCase()}"` }];
+  return arr(props.messages).map((m) => {
+    const msg = (m ?? {}) as Record<string, unknown>;
+    return { from: msg.from === "agent" ? "agent" : "user", text: str(msg.text) };
+  });
+}
+
+/**
+ * Type size for chat bubbles, bounded by the bubble's OWN box rather than the
+ * slot (FINDINGS §28a).
+ *
+ * The fill work bounded the slot, which is not the same constraint: a bubble
+ * is capped at 82% of the container and carries its own padding, so a single
+ * unbreakable word — `"AGENTS"`, or an emoji-bearing reply — renders edge to
+ * edge and spills through the rounded rect. Wrapping cannot save it, because
+ * one word has no break opportunity. So the type shrinks until the longest
+ * WORD fits inside bubble-minus-padding.
+ */
+export function chatMetrics(texts: readonly string[], widthPx = 831): number {
+  const inner = widthPx - 80; // root padding "0 40px"
+  const longestWord = texts
+    .flatMap((t) => t.split(/\s+/))
+    .reduce((max, w) => Math.max(max, w.length), 0);
+  if (longestWord === 0) return CHAT_FONT;
+  // bubbleWidth = font·(chars·CHAR_W + 2·PAD_X) ≤ inner·MAX_WIDTH
+  const fit = (inner * BUBBLE_MAX_WIDTH) / (longestWord * CHAR_W_BOLD + 2 * BUBBLE_PAD_X);
+  return Math.max(CHAT_MIN_FONT, Math.min(CHAT_FONT, Math.floor(fit)));
 }
 
 /** Below this the chips stop reading on a phone — switch shape, don't shrink. */

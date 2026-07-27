@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { SceneCue } from "@ossclip/core";
 import {
   CAPTION_HALF_BAND,
+  COVER_GRID_RECT,
+  COVER_TEXT_RECT,
+  COVER_GRID_SAFE,
   DEFAULT_FACE,
   HEAD_ABOVE_FACE,
   LAYOUT_TRANSITION_SEC,
@@ -236,5 +239,37 @@ describe("caption + backdrop timelines", () => {
     expect(entering).toBeGreaterThan(0.2);
     expect(entering).toBeLessThan(0.8);
     expect(backdropOpacityAt(cues, 6.5)).toBe(0);
+  });
+});
+
+describe("cover geometry (FINDINGS §31)", () => {
+  it("the grid-safe band is inside the centre square the profile grid keeps", () => {
+    // A 1080×1920 cover cropped to a centre square keeps the middle 56.25%;
+    // text outside that is simply gone from the profile grid.
+    const squareTop = (1 - 1080 / 1920) / 2;
+    expect(COVER_GRID_SAFE.top).toBeGreaterThanOrEqual(squareTop);
+    expect(1 - COVER_GRID_SAFE.bottom).toBeLessThanOrEqual(1 - squareTop);
+  });
+
+  it("is a DIFFERENT constraint from the player safe area — neither contains the other", () => {
+    // The grid crop is tighter top and bottom; the player's action rail eats a
+    // right edge the grid tile does not have. That is why cover text uses the
+    // INTERSECTION rather than either one.
+    expect(COVER_GRID_RECT.y).toBeGreaterThan(SAFE_RECT.y);
+    expect(COVER_GRID_RECT.x + COVER_GRID_RECT.w).toBeGreaterThan(SAFE_RECT.x + SAFE_RECT.w);
+  });
+
+  it("cover text sits inside BOTH constraints", () => {
+    for (const r of [COVER_GRID_RECT, SAFE_RECT]) {
+      expect(COVER_TEXT_RECT.x).toBeGreaterThanOrEqual(r.x - 1e-9);
+      expect(COVER_TEXT_RECT.y).toBeGreaterThanOrEqual(r.y - 1e-9);
+      expect(COVER_TEXT_RECT.x + COVER_TEXT_RECT.w).toBeLessThanOrEqual(r.x + r.w + 1e-9);
+      expect(COVER_TEXT_RECT.y + COVER_TEXT_RECT.h).toBeLessThanOrEqual(r.y + r.h + 1e-9);
+    }
+  });
+
+  it("leaves a usable band for a banner", () => {
+    expect(COVER_TEXT_RECT.h).toBeGreaterThan(0.4);
+    expect(COVER_TEXT_RECT.w).toBeGreaterThan(0.7);
   });
 });

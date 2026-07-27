@@ -155,6 +155,34 @@ const DET_H = 640;
  * this per-frame floor. */
 const MIN_CLUSTER_SCORE = 5;
 
+/**
+ * A reusable detector over raw grayscale frames — the cascade is unpacked
+ * once and the closure reused, so callers that score many frames (cover
+ * selection, source-text scanning) don't pay for it per frame.
+ */
+export async function createFaceDetector(): Promise<
+  (pixels: Uint8Array, width: number, height: number) => Detection | null
+> {
+  const cascadeBytes = new Uint8Array(
+    await readFile(new URL("../assets/facefinder", import.meta.url)),
+  );
+  const classify = unpackCascade(cascadeBytes);
+  return (pixels, width, height) => {
+    if (pixels.length < width * height) return null;
+    const dets = clusterDetections(
+      runCascade(pixels, height, width, classify, {
+        shiftfactor: 0.1,
+        minsize: 60,
+        maxsize: height,
+        scalefactor: 1.1,
+      }),
+      0.2,
+    ).filter((d) => d[3] >= MIN_CLUSTER_SCORE);
+    if (dets.length === 0) return null;
+    return dets.reduce((a, b) => (b[3] > a[3] ? b : a));
+  };
+}
+
 export interface MeasureFaceOptions {
   /** Frames to sample, spread across the middle of the take. */
   samples?: number;

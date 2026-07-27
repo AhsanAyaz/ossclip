@@ -20,6 +20,16 @@ export type Moment = z.infer<typeof MomentSchema>;
 
 export const BeatSheetSchema = z.object({
   hook: z.string().max(120),
+  /**
+   * Banner text for the cover image (FINDINGS §31). Written here rather than
+   * by a second LLM call, because the producer is already choosing the hook —
+   * this is the same editorial judgement, shortened for a thumbnail.
+   */
+  coverText: z
+    .string()
+    .max(60)
+    .optional()
+    .describe("cover banner: at most 9 words, the hook compressed to a thumbnail headline"),
   moments: z.array(MomentSchema).min(1).max(12),
 });
 export type BeatSheet = z.infer<typeof BeatSheetSchema>;
@@ -36,7 +46,8 @@ Virality grammar — follow these as hard policies:
 - COVERAGE: graphics should be on screen for roughly 40-50% of the runtime. Each graphic holds at most ~5 seconds, then hands the frame back — so MOST moments can carry one. Spread them evenly: never leave a stretch longer than ~10 seconds with no graphic.
 - VARIETY: never the same component twice in a row, and prefer a component you have NOT used yet in this video — reuse a treatment only when the beat genuinely calls for it. A repeat reads as a template.
 - Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.
-- The transcript is ASR output and may contain mishearings: an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity — write on-screen copy with the common-sense reading, never a suspected mishearing.`;
+- The transcript is ASR output and may contain mishearings: an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity — write on-screen copy with the common-sense reading, never a suspected mishearing.
+- COVER: also write \`coverText\` — the hook compressed to a thumbnail headline, AT MOST 9 WORDS. It is read at a glance in a profile grid, so it must stand alone without the video: the claim or the number, no lead-in, no ellipsis.`;
 
 export function buildBeatsUserPrompt(
   transcript: Transcript,
@@ -64,6 +75,14 @@ export interface BeatsValidationIssue {
 
 /** Fraction of the runtime that should show a graphic (FINDINGS §7). */
 export const GRAPHICS_COVERAGE_TARGET = 0.45;
+/**
+ * Below this runtime the percentage budget starves the video (FINDINGS §29):
+ * 45% of a 32s take is 14s, which at the 5s per-scene cap buys only three
+ * graphics — and short-form is exactly where density matters most. Under this
+ * threshold the scene COUNT floor wins over the percentage.
+ */
+export const SHORT_TAKE_SEC = 45;
+export const SHORT_TAKE_MIN_GRAPHICS = 4;
 
 /** A moment's approximate seconds of speech, from the transcript word stamps. */
 function momentDuration(m: Moment, transcript: Transcript): number {
@@ -131,10 +150,23 @@ export function normalizeBeatSheet(
     moments[i] = { ...moments[i]!, sceneKind: "none" };
   };
 
+  // On a short take the count floor outranks the percentage — never demote
+  // below it, whatever the coverage budget says (§29).
+  const minGraphics = runtime < SHORT_TAKE_SEC ? SHORT_TAKE_MIN_GRAPHICS : 0;
+
   for (;;) {
     const graphics = surviving();
     const shown = graphics.reduce((acc, i) => acc + estShow(i), 0);
     if (shown <= budget + 1e-6) break;
+    if (graphics.length <= minGraphics) {
+      issues.push({
+        moment: 0,
+        issue:
+          `short take (${runtime.toFixed(0)}s): keeping ${graphics.length} graphics ` +
+          `over the ${(GRAPHICS_COVERAGE_TARGET * 100).toFixed(0)}% budget`,
+      });
+      break;
+    }
     // Hook and payoff stay. Among the rest, demote whichever removal opens
     // the SMALLEST gap between its surviving neighbours — the survivors stay
     // spread instead of the tail (or middle) getting hollowed out (§8).
@@ -165,6 +197,7 @@ export function normalizeBeatSheet(
   // the payoff; never the hook).
   for (;;) {
     const graphics = surviving();
+    if (graphics.length <= minGraphics) break; // §29 floor outranks variety too
     const pair = graphics.findIndex(
       (idx, p) => p > 0 && moments[idx]!.sceneKind === moments[graphics[p - 1]!]!.sceneKind,
     );

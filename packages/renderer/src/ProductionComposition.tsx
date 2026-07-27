@@ -35,6 +35,8 @@ export interface ProductionCompProps {
   ctaKeyword?: string;
   /** When the ask is on screen; without it the keyword is never styled (§22). */
   ctaWindow?: { startSec: number; endSec: number };
+  /** Bands where the SOURCE already has text burned in (FINDINGS §26). */
+  sourceTextRegions?: Array<{ y: number; h: number }>;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -59,6 +61,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   zoomPlan,
   ctaKeyword,
   ctaWindow,
+  sourceTextRegions,
 }) => {
   if (!videoFileName) {
     return (
@@ -89,6 +92,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         activeColor={theme.accent}
         ctaKeyword={ctaKeyword}
         ctaWindow={ctaWindow}
+        sourceTextRegions={sourceTextRegions}
       />
     </AbsoluteFill>
   );

@@ -1,7 +1,8 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
-import { SAFE_AREA, captionAnchorAt } from "./stage";
+import { SAFE_AREA, activeCueAt, captionAnchorAt } from "./stage";
+import { captionAnchorAvoiding, type OccupiedRegion } from "./source-fit";
 
 export interface CaptionTrackProps {
   lines: CaptionLine[];
@@ -24,6 +25,12 @@ export interface CaptionTrackProps {
    * one take) inverts the meaning and devalues the real ask (FINDINGS §22).
    */
   ctaWindow?: { startSec: number; endSec: number };
+  /**
+   * Bands where the SOURCE already has burned-in text. Captions relocate to
+   * clear them but are NEVER hidden — they are the accessibility layer, so a
+   * crowded caption still beats a missing one (FINDINGS §26).
+   */
+  sourceTextRegions?: OccupiedRegion[];
 }
 
 /**
@@ -130,12 +137,23 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   activeColor = "#FFE14D",
   ctaKeyword,
   ctaWindow,
+  sourceTextRegions = [],
 }) => {
   const { fps } = useVideoConfig();
   return (
     <AbsoluteFill>
       {lines.map((line, i) => {
-        const anchor = cues.length > 0 ? captionAnchorAt(cues, line.start) : verticalAnchor;
+        const active = cues.length > 0 ? activeCueAt(cues, line.start) : null;
+        const anchor =
+          sourceTextRegions.length > 0
+            ? captionAnchorAvoiding(
+                active?.layout ?? "full-bleed",
+                sourceTextRegions,
+                active?.graphicRect,
+              )
+            : cues.length > 0
+              ? captionAnchorAt(cues, line.start)
+              : verticalAnchor;
         const from = Math.round(line.start * fps);
         const durationInFrames = Math.max(1, Math.round((line.end - line.start) * fps));
         return (

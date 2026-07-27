@@ -54,6 +54,20 @@ export const SceneCueSchema = z.object({
   props: z.record(z.string(), z.unknown()),
   startSec: z.number().nonnegative(),
   endSec: z.number().nonnegative(),
+  /**
+   * Overrides the layout's graphic slot for this cue only. Set when the
+   * source already has text where the layout would have drawn, so the graphic
+   * is moved into a genuinely free band instead of being skipped
+   * (FINDINGS §26). Fractions of the frame, like every other rect.
+   */
+  graphicRect: z
+    .object({
+      x: z.number(),
+      y: z.number(),
+      w: z.number(),
+      h: z.number(),
+    })
+    .optional(),
 });
 export type SceneCue = z.infer<typeof SceneCueSchema>;
 

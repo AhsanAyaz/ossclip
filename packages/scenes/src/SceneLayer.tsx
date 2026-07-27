@@ -33,7 +33,9 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       {cues.map((cue) => {
-        const slot = layoutSlots(cue.layout).graphic;
+        // A cue may carry its own rect when the source's burned-in text made
+        // the layout's slot unusable (FINDINGS §26).
+        const slot = cue.graphicRect ?? layoutSlots(cue.layout).graphic;
         if (!slot) return null;
         const Component = COMPONENTS[cue.component];
         const from = Math.round(cue.startSec * fps);

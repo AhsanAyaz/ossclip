@@ -12,6 +12,8 @@ export * from "./captions";
 export * from "./zoom";
 export * from "./grounding";
 export * from "./face";
+export * from "./cover";
+export * from "./source-text";
 export * from "./report";
 export * from "./config";
 export { run } from "./exec";

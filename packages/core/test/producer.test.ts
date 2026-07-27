@@ -106,16 +106,17 @@ describe("producer brain", () => {
   });
 
   it("demotes the later of adjacent same-kind graphics even within budget (FINDINGS §9)", () => {
-    // 40 words ≈ 20s runtime → budget ≈ 9s; three ~2s graphics sit WELL
-    // within it, so only the variety pass can be responsible for a demotion.
-    const t = mkTranscript(40);
+    // 100 words ≈ 50s runtime — long enough that the §29 short-take floor does
+    // not apply — and a budget of ~22s against three ~2s graphics, so only the
+    // variety pass can be responsible for a demotion.
+    const t = mkTranscript(100);
     const sheet = BeatSheetSchema.parse({
       hook: "h",
       moments: [
         { startWord: 0, endWord: 3, purpose: "a", onScreenCopy: "A", sceneKind: "StatCard" },
         { startWord: 4, endWord: 7, purpose: "b", onScreenCopy: "B", sceneKind: "StatCard" },
         { startWord: 8, endWord: 11, purpose: "c", onScreenCopy: "C", sceneKind: "none" },
-        { startWord: 36, endWord: 39, purpose: "d", onScreenCopy: "D", sceneKind: "RuleCard" },
+        { startWord: 96, endWord: 99, purpose: "d", onScreenCopy: "D", sceneKind: "RuleCard" },
       ],
     });
     const { sheet: fixed, issues } = normalizeBeatSheet(sheet, t);

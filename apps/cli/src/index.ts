@@ -47,6 +47,12 @@ program
     "--force-component <id>",
     "debug: render every graphic with this component (e.g. FlowDiagram) to exercise it on real copy",
   )
+  .option(
+    "--source-is-edited",
+    "the source is already an edited reel with burned-in text — keep ossclip's graphics off it without waiting on detection",
+  )
+  .option("--no-cover", "skip the cover image written beside the video")
+  .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
   .action(async (input: string, opts) => {
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
     const provider = opts.llm
@@ -71,6 +77,11 @@ program
       repair: opts.repair,
       whisperModel: opts.whisperModel,
       forceComponent,
+      // commander gives `--no-cover` as cover:false and `--cover <path>` as a
+      // string on the same key.
+      sourceIsEdited: opts.sourceIsEdited === true,
+      cover: opts.cover !== false,
+      coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
     });
   });
 

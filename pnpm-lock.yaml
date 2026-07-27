@@ -32,6 +32,9 @@ importers:
       '@ossclip/renderer':
         specifier: workspace:*
         version: link:../../packages/renderer
+      '@ossclip/scenes':
+        specifier: workspace:*
+        version: link:../../packages/scenes
       commander:
         specifier: ^12.1.0
         version: 12.1.0

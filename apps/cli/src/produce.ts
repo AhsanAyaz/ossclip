@@ -15,6 +15,7 @@ import {
   buildCutlist,
   buildZoomPlan,
   checkGrounding,
+  createFaceDetector,
   createProvider,
   defaultProviderName,
   defaultTheme,
@@ -25,6 +26,7 @@ import {
   loudnorm,
   makeMezzanine,
   measureFace,
+  pickCoverFrame,
   measureLevels,
   probe,
   produceScenes,
@@ -32,6 +34,7 @@ import {
   repairTranscript,
   run,
   runWhisper,
+  scanSourceText,
   type AppliedRepair,
   type CleanupLevel,
   type LlmProvider,
@@ -41,7 +44,8 @@ import {
   type SceneComponentId,
   type Transcript,
 } from "@ossclip/core";
-import { renderProduction } from "@ossclip/renderer";
+import { renderCover, renderProduction } from "@ossclip/renderer";
+import { routeAroundSourceText } from "@ossclip/scenes/geometry";
 
 export interface ProduceOptions {
   out?: string;
@@ -66,6 +70,12 @@ export interface ProduceOptions {
   whisperModel?: string;
   /** Debug: force every graphic moment to this component. */
   forceComponent?: SceneComponentId;
+  /** Write a cover image beside the video (default on). */
+  cover?: boolean;
+  /** Explicit cover output path, overriding <out>.cover.jpg. */
+  coverPath?: string;
+  /** Treat the source as an already-edited reel with burned-in graphics. */
+  sourceIsEdited?: boolean;
 }
 
 function sha1File(path: string): Promise<string> {
@@ -236,6 +246,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
 
   // ---- Scenes: hand-authored file, or the producer brain (PHASE1 §4) ----
   let scenes: Scene[] = [];
+  /** Editorial output kept for the cover (§31): hook + its thumbnail form. */
+  let beatSheet: { hook: string; coverText?: string } | undefined;
   if (opts.scenes) {
     scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(resolve(opts.scenes), "utf8")));
     console.log(`▸ scenes injected from ${opts.scenes} (${scenes.length})`);
@@ -257,9 +269,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       .digest("hex")
       .slice(0, 8);
     const sceneCache = join(work, `scenes-${cacheKey}.json`);
+    // The cover needs the editorial copy, which is not in the scene list — a
+    // cached run must still be able to write one.
+    const beatCache = join(work, `beatsheet-${cacheKey}.json`);
     if (existsSync(sceneCache)) {
       scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(sceneCache, "utf8")));
       console.log(`▸ scenes cached (${scenes.length})`);
+      if (existsSync(beatCache)) {
+        beatSheet = JSON.parse(await readFile(beatCache, "utf8")) as typeof beatSheet;
+      }
     } else {
       console.log(`▸ producing scenes (${providerName})…`);
       if (opts.forceComponent) console.log(`▸ forcing every graphic to ${opts.forceComponent}`);
@@ -270,6 +288,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         forceComponent: opts.forceComponent,
       });
       scenes = result.scenes;
+      beatSheet = { hook: result.beatSheet.hook, coverText: result.beatSheet.coverText };
       console.log(`▸ hook: ${result.beatSheet.hook}`);
       console.log(
         `▸ planned ${result.beatSheet.moments.length} moments, ${scenes.length} scenes` +
@@ -280,6 +299,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       }
       // Cache props only — overrides are user-owned and live in production.json.
       await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
+      await writeFile(beatCache, JSON.stringify(beatSheet, null, 2));
     }
   }
 
@@ -298,8 +318,38 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   }
 
   const theme = defaultTheme;
-  const { cues: sceneCues, dropped } = assembleScenes(scenes, transcript, map);
+  const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
+
+  // ---- Route around the source's own burned-in text (FINDINGS §26) --------
+  // Fed a finished reel, ossclip would otherwise stack its layer on an
+  // existing one — cropping through the source's title and then restating it
+  // underneath. Graphics move to a clear slot or are skipped; captions never
+  // are, they just relocate.
+  const sourceText = await scanSourceText(tools, input, sourceProbe.duration, {
+    cacheDir: work,
+    assumeEdited: opts.sourceIsEdited,
+  });
+  if (sourceText.regions.length > 0) {
+    console.log(
+      sourceText.assumed
+        ? "▸ --source-is-edited: assuming burned-in text in the title and caption bands"
+        : `▸ source already has on-screen text in ${sourceText.regions.length} band(s) ` +
+            `(${sourceText.framesSampled} frames sampled)`,
+    );
+  }
+  const routed = routeAroundSourceText(assembled, sourceText.regions);
+  for (const r of routed.relayouts) {
+    console.log(`  ▸ scene ${r.id}: ${r.from} → ${r.to} (source text in the way)`);
+  }
+  for (const m of routed.moved) {
+    console.log(
+      `  ▸ scene ${m.id}: graphic moved into the free band at ` +
+        `${(m.y * 100).toFixed(0)}-${((m.y + m.h) * 100).toFixed(0)}%`,
+    );
+  }
+  for (const s of routed.skipped) console.log(`  ⚠ scene ${s.id} skipped: ${s.reason}`);
+  const sceneCues = routed.cues;
   if (sceneCues.length > 0) {
     console.log(
       `▸ ${sceneCues.length} scene(s) on stage: ` +
@@ -423,6 +473,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     zoomPlan: zoom.segments,
     ctaKeyword,
     ctaWindow,
+    sourceTextRegions: sourceText.regions,
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 
@@ -451,5 +502,47 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   const normPath = join(work, "render-norm.mp4");
   await loudnorm(tools, rawPath, normPath);
   await rename(normPath, outPath);
+
+  // ---- Cover image (FINDINGS §31) -----------------------------------------
+  // A separate file, not a burned-in intro: both platforms accept a custom
+  // cover, so nothing has to be pickable from the video — and spending the
+  // opening seconds on a title card fights the hook-in-2s policy directly.
+  if (opts.cover !== false) {
+    const coverText = beatSheet?.coverText ?? beatSheet?.hook;
+    if (!coverText) {
+      console.log("▸ no cover text (run --produce for one) — skipping cover");
+    } else {
+      const detector = await createFaceDetector();
+      const pick = await pickCoverFrame(tools, input, sourceProbe.duration, {
+        cacheDir: work,
+        hasFace: (pixels, w, h) => detector(pixels, w, h) !== null,
+      });
+      if (!pick) {
+        console.log("▸ no usable cover frame found — skipping cover");
+      } else {
+        const frameName = "cover-frame.png";
+        await run(cfg.ffmpegPath, [
+          "-v", "error",
+          "-ss", pick.timeSec.toFixed(3),
+          "-i", input,
+          "-frames:v", "1",
+          "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+          "-y", join(work, frameName),
+        ]);
+        const coverPath = resolve(
+          opts.coverPath ?? outPath.replace(/(\.[^.]+)?$/, ".cover.jpg"),
+        );
+        console.log(
+          `▸ cover from ${pick.timeSec.toFixed(1)}s ` +
+            `(${pick.hasFace ? "face" : "no face"}, sharpness ${pick.sharpness.toFixed(0)})…`,
+        );
+        await renderCover(
+          { frameFileName: frameName, text: coverText, theme },
+          { publicDir: work, outPath: coverPath, browserExecutable: cfg.browserExecutable },
+        );
+        console.log(`✓ cover → ${coverPath}`);
+      }
+    }
+  }
   console.log(`✓ done → ${outPath}`);
 }

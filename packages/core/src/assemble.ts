@@ -7,6 +7,12 @@ import type { TimeMap } from "./timemap";
 const MIN_SCENE_SEC = 1.2;
 const DROP_BELOW_SEC = 0.8;
 /**
+ * On a short take a 2s graphic reads as a flicker, and there is no later beat
+ * to make up for it — hold every surviving scene longer (FINDINGS §29).
+ */
+const SHORT_TAKE_SEC = 45;
+const SHORT_TAKE_MIN_SCENE_SEC = 3;
+/**
  * A graphic punches in, makes its point, and hands the frame back to the
  * speaker — it does not have to span the moment that motivated it. Keeps the
  * §4.5 pattern-interrupt rhythm instead of 10s static cards (FINDINGS §3).
@@ -66,6 +72,13 @@ export function assembleScenes(
 
   resolved.sort((a, b) => a.startSec - b.startSec);
 
+  // Never let the floor eat the video: a 3s minimum is right on a 30s take and
+  // absurd on a 6s one, so it is also capped at a share of the runtime.
+  const minScene =
+    map.outputDuration < SHORT_TAKE_SEC
+      ? Math.max(MIN_SCENE_SEC, Math.min(SHORT_TAKE_MIN_SCENE_SEC, map.outputDuration * 0.15))
+      : MIN_SCENE_SEC;
+
   // Scenes are exclusive — one stage state at a time.
   const cues: SceneCue[] = [];
   for (const cue of resolved) {
@@ -73,8 +86,8 @@ export function assembleScenes(
     if (prev && cue.startSec < prev.endSec + SCENE_GAP_SEC) {
       cue.startSec = prev.endSec + SCENE_GAP_SEC;
     }
-    if (cue.endSec - cue.startSec < MIN_SCENE_SEC) {
-      cue.endSec = cue.startSec + MIN_SCENE_SEC;
+    if (cue.endSec - cue.startSec < minScene) {
+      cue.endSec = cue.startSec + minScene;
     }
     cue.endSec = Math.min(cue.endSec, cue.startSec + MAX_SCENE_SEC, map.outputDuration);
     if (cue.endSec - cue.startSec < DROP_BELOW_SEC) {
