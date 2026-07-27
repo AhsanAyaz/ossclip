@@ -108,6 +108,14 @@ This is the largest task and it changes a value that most of the geometry depend
 
 ---
 
+## What is not done
+
+Deliberately left, with the reason:
+
+- **C5 — per-segment face measurement.** `measureFace` samples nine frames across the take and averages them. On a mixed source some of those frames are letterboxed and some are not, so the averaged `centerYFrac`/`sizeFrac` describes neither framing. Doing it properly means measuring the face **relative to the active content rect** (a common space — "position within the picture") and carrying a per-segment `sourceAspect`, since the stage uses that to decide whether `cover` spills vertically or horizontally. That is a second substantial change and it should be measured, not guessed: the render is already correct enough that the remaining error is a bias in WHERE the landscape strip is cropped, not whether bars show.
+- **C7 — producer awareness.** The beat sheet still places `video-top`/`blurred-behind` scenes without knowing which windows are letterboxed. Those scenes now render correctly, but a landscape strip cover-cropped into a tall slot is a much tighter crop than a full-bleed portrait frame, so the producer could reasonably prefer other windows or other layouts there. Needs the render in front of you to decide.
+- **C8 — mixed-framing fixture.** `make-fixture.mjs` has a uniformly letterboxed fixture but not an alternating one, so this whole class is currently covered by unit tests plus the author's private clip rather than by an automated end-to-end run.
+
 ## Verification owed to the author
 
 - The hook frame (0–2.5s) with no black band.
