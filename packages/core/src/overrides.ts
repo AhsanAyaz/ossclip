@@ -1,5 +1,13 @@
 import { z } from "zod/v4";
-import { ThemeSchema, type SceneCue, type Theme } from "./scene-schema";
+import {
+  LayoutSchema,
+  SceneComponentIdSchema,
+  ThemeSchema,
+  type SceneCue,
+  type SceneComponentId,
+  type Theme,
+} from "./scene-schema";
+import { resolveSceneProps } from "./scene-registry";
 
 /**
  * The user's edit layer (SPEC: direct manipulation).
@@ -27,6 +35,14 @@ export const SceneOverrideSchema = z.object({
    * words it was anchored to, which is why the UI has to say so out loud.
    */
   timing: z.object({ startSec: z.number().nonnegative(), endSec: z.number().nonnegative() }).optional(),
+  /**
+   * Component/layout swaps (design spec Scope: v1 in-scope). Optional — most
+   * scenes never touch these — and validated against the same enums the
+   * producer itself is constrained to, so an override can't name a component
+   * or layout that doesn't exist in the registry.
+   */
+  component: SceneComponentIdSchema.optional(),
+  layout: LayoutSchema.optional(),
 });
 export type SceneOverride = z.infer<typeof SceneOverrideSchema>;
 
@@ -52,15 +68,51 @@ export interface AppliedOverrides {
  * pointing at scenes that no longer exist are the user's lost work, and
  * silence would make it look like the editor forgot them.
  */
+/**
+ * Props for a scene whose COMPONENT the user just swapped.
+ *
+ * The producer's `cue.props` were written for the OLD component and are not
+ * merged in here at all — they were shaped for a different schema (a
+ * `StatCard`'s `value`/`label` mean nothing to a `FlowDiagram`) and passing
+ * them through would either fail validation or silently satisfy it with
+ * garbage. Falling back to the NEW component's `defaultProps` — same base
+ * `resolveSceneProps` always starts from — renders something coherent
+ * instead. `resolveSceneProps` returning null (an override value that fits
+ * no schema at all) still can't drop the scene: the registry's own
+ * `defaultProps` are the floor every component is built to satisfy on their
+ * own, so that's the guaranteed-valid fallback.
+ */
+function resolveSwappedProps(
+  component: SceneComponentId,
+  propsOverride: Record<string, unknown>,
+): Record<string, unknown> {
+  return (
+    resolveSceneProps(component, {}, propsOverride) ??
+    // The override didn't fit the new schema at all — fall back to the
+    // registry's OWN defaults with nothing layered on top, run back through
+    // `resolveSceneProps` (rather than the raw `defaultProps` object) so
+    // zod-defaulted fields (e.g. `emphasizeLast`) are filled in the same way
+    // every other resolved cue's props are. `defaultProps` is guaranteed to
+    // validate on its own — every component in the registry is built on that
+    // invariant — so this can never itself return null.
+    resolveSceneProps(component, {}, {})!
+  );
+}
+
 export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): AppliedOverrides {
   const ids = new Set(cues.map((c) => c.id));
   const orphans = Object.keys(doc.scenes).filter((id) => !ids.has(id));
   const out = cues.map((cue) => {
     const o = doc.scenes[cue.id];
     if (!o) return cue;
+    const swapped = o.component !== undefined && o.component !== cue.component;
+    const component = o.component ?? cue.component;
+    const props = swapped ? resolveSwappedProps(component, o.props) : { ...cue.props, ...o.props };
     return {
       ...cue,
-      props: { ...cue.props, ...o.props },
+      component,
+      layout: o.layout ?? cue.layout,
+      props,
       ...(Object.keys(o.elements).length > 0 ? { elements: o.elements } : {}),
       ...(o.timing ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true } : {}),
     };

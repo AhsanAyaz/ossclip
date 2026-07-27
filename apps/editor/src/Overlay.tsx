@@ -66,6 +66,16 @@ function buildArrayPatch(
   if (!m || m[1] === "window") return null;
   const kind = m[1] as "line" | "node" | "message";
   const idx = Number(m[2]);
+  // ChatMock's CTA mode (props.keyword set) renders exactly ONE synthetic
+  // bubble showing the keyword and ignores `props.messages` entirely
+  // (FINDINGS §28b, `chatBubbles` in packages/scenes/src/fit.ts) — patching
+  // `messages[0]` here would silently no-op the retype. The rendered text is
+  // `"${keyword.toUpperCase()}"` (quote-wrapped, uppercased), so map it back
+  // to a plain keyword instead of writing the decorated form into the prop.
+  if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
+    const mapped = text.trim().replace(/^"(.*)"$/, "$1");
+    return mapped ? { keyword: mapped } : null;
+  }
   const field = kind === "line" ? "lines" : kind === "node" ? "nodes" : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;

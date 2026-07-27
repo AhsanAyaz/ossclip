@@ -5,7 +5,9 @@ import {
   emptyOverrideDoc,
   setElementTransform,
   type ElementTransform,
+  type Layout,
   type OverrideDoc,
+  type SceneComponentId,
 } from "@ossclip/core/browser";
 
 export interface EditState {
@@ -24,6 +26,8 @@ export type EditAction =
   | { type: "clearElement"; sceneId: string; elementId: string }
   | { type: "patchTiming"; sceneId: string; startSec: number; endSec: number }
   | { type: "clearTiming"; sceneId: string }
+  | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
+  | { type: "patchLayout"; sceneId: string; layout: Layout }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "saved" };
@@ -80,6 +84,20 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     }
     case "clearTiming":
       return commit(clearTiming(state.doc, action.sceneId));
+    case "patchComponent": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, component: action.component } },
+      });
+    }
+    case "patchLayout": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, layout: action.layout } },
+      });
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -129,6 +147,9 @@ export function useEdits() {
     patchTiming: (sceneId: string, startSec: number, endSec: number) =>
       dispatch({ type: "patchTiming", sceneId, startSec, endSec }),
     clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),
+    patchComponent: (sceneId: string, component: SceneComponentId) =>
+      dispatch({ type: "patchComponent", sceneId, component }),
+    patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

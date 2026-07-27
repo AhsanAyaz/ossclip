@@ -1,5 +1,5 @@
 import React from "react";
-import type { SceneCue, Theme } from "@ossclip/core/browser";
+import { LayoutSchema, SceneComponentIdSchema, type SceneCue, type Theme } from "@ossclip/core/browser";
 import type { useEdits } from "./useEdits";
 import type { Selection } from "./Overlay";
 
@@ -176,17 +176,37 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
         <div style={section}>
           <div style={row}>
             <span style={label}>Component</span>
-            {/* Component/layout swaps aren't wired to the override doc yet —
-                shown as read-only so the panel isn't lying about what a
-                change here would do. */}
-            <select style={numberInput} value={cue.component} disabled>
-              <option value={cue.component}>{cue.component}</option>
+            {/* Swapping the component re-resolves props against the NEW
+                component's defaults (see `applyOverrides`) — the producer's
+                old props were shaped for a different schema and don't carry
+                over, so the swap renders something coherent instead of an
+                invalid scene. */}
+            <select
+              style={numberInput}
+              value={cue.component}
+              onChange={(e) =>
+                edits.patchComponent(selection.sceneId, e.target.value as SceneCue["component"])
+              }
+            >
+              {SceneComponentIdSchema.options.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
             </select>
           </div>
           <div style={row}>
             <span style={label}>Layout</span>
-            <select style={numberInput} value={cue.layout} disabled>
-              <option value={cue.layout}>{cue.layout}</option>
+            <select
+              style={numberInput}
+              value={cue.layout}
+              onChange={(e) => edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"])}
+            >
+              {LayoutSchema.options.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
             </select>
           </div>
         </div>

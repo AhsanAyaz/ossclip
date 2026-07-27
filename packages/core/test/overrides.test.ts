@@ -106,6 +106,54 @@ describe("override document", () => {
     // A scene with no override at all is left alone rather than throwing.
     expect(clearTiming(OverrideDocSchema.parse({}), "scene-9")).toEqual(OverrideDocSchema.parse({}));
   });
+
+  it("swaps a scene's component and yields valid props for the NEW component", () => {
+    // The base cue is a StatCard (label/value/inverted) — none of those mean
+    // anything to a FlowDiagram, so a swap must not pass them through.
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { component: "FlowDiagram" } },
+    });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.component).toBe("FlowDiagram");
+    // Falls back to the new component's defaults rather than carrying over
+    // StatCard's incompatible props.
+    expect(cues[0]!.props).toEqual({ nodes: ["A", "B"], emphasizeLast: true });
+  });
+
+  it("applies a component swap's own prop overrides on top of the new defaults", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: {
+        "scene-0": { component: "FlowDiagram", props: { nodes: ["ONE", "TWO", "THREE"] } },
+      },
+    });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.props.nodes).toEqual(["ONE", "TWO", "THREE"]);
+  });
+
+  it("swaps a scene's layout", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { layout: "full-bleed" } },
+    });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.layout).toBe("full-bleed");
+    // Untouched — a layout swap doesn't imply a component swap.
+    expect(cues[0]!.component).toBe("StatCard");
+  });
+
+  it("never drops a scene on a component swap, even with garbage prop overrides", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: {
+        // `nodes` requires 2-5 strings min length 1 — this satisfies neither,
+        // so `resolveSceneProps` returns null and the fallback must kick in.
+        "scene-0": { component: "FlowDiagram", props: { nodes: "not-an-array" } },
+      },
+    });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues).toHaveLength(1);
+    expect(cues[0]!.component).toBe("FlowDiagram");
+    // Guaranteed-valid fallback: the registry's own defaults for the new component.
+    expect(cues[0]!.props).toEqual({ nodes: ["A", "B"], emphasizeLast: true });
+  });
 });
 
 describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
