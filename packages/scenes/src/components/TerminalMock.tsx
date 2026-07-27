@@ -2,16 +2,20 @@ import React from "react";
 import { z } from "zod/v4";
 import { TerminalMockProps, type Theme } from "@ossclip/core/browser";
 import { pop, rise, useEnter } from "../anim";
+import { editStyle, type ElementEdits } from "../editable";
 
 const Window: React.FC<{
   title: string;
   lines: string[];
   delay: number;
   theme: Theme;
-}> = ({ title, lines, delay, theme }) => {
+  editId: string;
+  edits?: ElementEdits;
+}> = ({ title, lines, delay, theme, editId, edits }) => {
   const p = useEnter(delay);
   return (
     <div
+      data-edit-id={editId}
       style={{
         ...pop(p),
         background: theme.cardBg,
@@ -20,6 +24,7 @@ const Window: React.FC<{
         overflow: "hidden",
         width: "100%",
         fontFamily: theme.fontMono,
+        ...editStyle(edits, editId),
       }}
     >
       <div
@@ -47,10 +52,11 @@ const Window: React.FC<{
   );
 };
 
-export const TerminalMock: React.FC<{ props: z.infer<typeof TerminalMockProps>; theme: Theme }> = ({
-  props,
-  theme,
-}) => {
+export const TerminalMock: React.FC<{
+  props: z.infer<typeof TerminalMockProps>;
+  theme: Theme;
+  edits?: ElementEdits;
+}> = ({ props, theme, edits }) => {
   const tail = useEnter(props.windows.length * 6 + 4);
   return (
     <div
@@ -64,7 +70,15 @@ export const TerminalMock: React.FC<{ props: z.infer<typeof TerminalMockProps>; 
       }}
     >
       {props.windows.map((w, i) => (
-        <Window key={i} title={w.title} lines={w.lines} delay={i * 6} theme={theme} />
+        <Window
+          key={i}
+          title={w.title}
+          lines={w.lines}
+          delay={i * 6}
+          theme={theme}
+          editId={`window-${i}`}
+          edits={edits}
+        />
       ))}
       {props.fanOut ? (
         <div

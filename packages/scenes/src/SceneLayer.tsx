@@ -11,11 +11,12 @@ import { FlowDiagram } from "./components/FlowDiagram";
 import { TerminalMock } from "./components/TerminalMock";
 import { ChatMock } from "./components/ChatMock";
 import { ScreenshotFrame } from "./components/ScreenshotFrame";
+import type { ElementEdits } from "./editable";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- props are registry-validated upstream */
 const COMPONENTS: Record<
   SceneCue["component"],
-  React.FC<{ props: any; theme: Theme; widthPx?: number; heightPx?: number }>
+  React.FC<{ props: any; theme: Theme; widthPx?: number; heightPx?: number; edits?: ElementEdits }>
 > = {
   TitleCard,
   StatCard,
@@ -70,6 +71,7 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                   theme={theme}
                   widthPx={slotW / scale}
                   heightPx={slotH / scale}
+                  edits={cue.elements}
                 />
               </div>
             </div>

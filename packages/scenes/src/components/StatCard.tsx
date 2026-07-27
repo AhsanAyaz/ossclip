@@ -2,11 +2,13 @@ import React from "react";
 import { z } from "zod/v4";
 import { StatCardProps, type Theme } from "@ossclip/core/browser";
 import { pop, rise, useEnter } from "../anim";
+import { editStyle, type ElementEdits } from "../editable";
 
-export const StatCard: React.FC<{ props: z.infer<typeof StatCardProps>; theme: Theme }> = ({
-  props,
-  theme,
-}) => {
+export const StatCard: React.FC<{
+  props: z.infer<typeof StatCardProps>;
+  theme: Theme;
+  edits?: ElementEdits;
+}> = ({ props, theme, edits }) => {
   const p0 = useEnter(0);
   const p1 = useEnter(6);
   const inverted = props.inverted;
@@ -38,6 +40,7 @@ export const StatCard: React.FC<{ props: z.infer<typeof StatCardProps>; theme: T
         }}
       >
         <div
+          data-edit-id="label"
           style={{
             fontSize: 42,
             fontWeight: 800,
@@ -45,14 +48,26 @@ export const StatCard: React.FC<{ props: z.infer<typeof StatCardProps>; theme: T
             letterSpacing: "0.06em",
             lineHeight: 1.15,
             maxWidth: "55%",
+            ...editStyle(edits, "label"),
           }}
         >
           {props.label}
         </div>
-        <div style={{ fontSize: 110, fontWeight: 900, whiteSpace: "nowrap" }}>{props.value}</div>
+        <div
+          data-edit-id="value"
+          style={{
+            fontSize: 110,
+            fontWeight: 900,
+            whiteSpace: "nowrap",
+            ...editStyle(edits, "value"),
+          }}
+        >
+          {props.value}
+        </div>
       </div>
       {props.caption ? (
         <div
+          data-edit-id="caption"
           style={{
             ...rise(p1),
             fontSize: 38,
@@ -64,6 +79,7 @@ export const StatCard: React.FC<{ props: z.infer<typeof StatCardProps>; theme: T
             padding: "16px 30px",
             textTransform: "uppercase",
             letterSpacing: "0.08em",
+            ...editStyle(edits, "caption"),
           }}
         >
           {props.caption}

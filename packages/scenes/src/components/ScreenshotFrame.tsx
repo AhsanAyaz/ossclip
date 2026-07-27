@@ -3,11 +3,13 @@ import { z } from "zod/v4";
 import { Img, interpolate, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { ScreenshotFrameProps, type Theme } from "@ossclip/core/browser";
 import { pop, useEnter } from "../anim";
+import { editStyle, type ElementEdits } from "../editable";
 
 export const ScreenshotFrame: React.FC<{
   props: z.infer<typeof ScreenshotFrameProps>;
   theme: Theme;
-}> = ({ props, theme }) => {
+  edits?: ElementEdits;
+}> = ({ props, theme, edits }) => {
   const p = useEnter(0);
   const labelP = useEnter(8);
   const frame = useCurrentFrame();
@@ -21,7 +23,10 @@ export const ScreenshotFrame: React.FC<{
       : staticFile(props.src)
     : null;
   return (
-    <div style={{ ...pop(p), position: "relative", width: "94%" }}>
+    <div
+      data-edit-id="image"
+      style={{ ...pop(p), position: "relative", width: "94%", ...editStyle(edits, "image") }}
+    >
       <div
         style={{
           overflow: "hidden",
@@ -63,6 +68,7 @@ export const ScreenshotFrame: React.FC<{
       </div>
       {props.label ? (
         <div
+          data-edit-id="label"
           style={{
             ...pop(labelP),
             position: "absolute",
@@ -77,6 +83,7 @@ export const ScreenshotFrame: React.FC<{
             padding: "12px 22px",
             borderRadius: 10,
             textTransform: "uppercase",
+            ...editStyle(edits, "label"),
           }}
         >
           {props.label}

@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 import { FlowDiagramProps, type Theme } from "@ossclip/core/browser";
 import { pop, useEnter } from "../anim";
 import { flowMetrics } from "../fit";
+import { editStyle, type ElementEdits } from "../editable";
 
 const Chip: React.FC<{
   text: string;
@@ -10,10 +11,13 @@ const Chip: React.FC<{
   delay: number;
   fontSize: number;
   theme: Theme;
-}> = ({ text, emphasized, delay, fontSize, theme }) => {
+  editId: string;
+  edits?: ElementEdits;
+}> = ({ text, emphasized, delay, fontSize, theme, editId, edits }) => {
   const p = useEnter(delay);
   return (
     <div
+      data-edit-id={editId}
       style={{
         ...pop(p),
         background: emphasized ? theme.fg : theme.cardBg,
@@ -27,6 +31,7 @@ const Chip: React.FC<{
         letterSpacing: "0.04em",
         whiteSpace: "nowrap",
         fontFamily: theme.fontDisplay,
+        ...editStyle(edits, editId),
       }}
     >
       {text}
@@ -86,7 +91,8 @@ export const FlowDiagram: React.FC<{
   /** The slot this component must fill — see flowMetrics (FINDINGS §23). */
   widthPx?: number;
   heightPx?: number;
-}> = ({ props, theme, widthPx, heightPx }) => {
+  edits?: ElementEdits;
+}> = ({ props, theme, widthPx, heightPx, edits }) => {
   // The stage hands down the budget; no measurement needed because the slot
   // geometry is known up front.
   const { mode, fontSize } = flowLayout(props.nodes, widthPx, heightPx);
@@ -122,6 +128,8 @@ export const FlowDiagram: React.FC<{
             delay={i * 6}
             fontSize={fontSize}
             theme={theme}
+            editId={`node-${i}`}
+            edits={edits}
           />
         </div>
       ))}

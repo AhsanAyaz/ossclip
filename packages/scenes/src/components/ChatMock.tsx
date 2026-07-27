@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 import { ChatMockProps, type Theme } from "@ossclip/core/browser";
 import { pop, useEnter } from "../anim";
 import { chatBubbles, chatMetrics } from "../fit";
+import { editStyle, type ElementEdits } from "../editable";
 
 const Bubble: React.FC<{
   from: "user" | "agent";
@@ -10,11 +11,14 @@ const Bubble: React.FC<{
   delay: number;
   fontSize: number;
   theme: Theme;
-}> = ({ from, text, delay, fontSize, theme }) => {
+  editId: string;
+  edits?: ElementEdits;
+}> = ({ from, text, delay, fontSize, theme, editId, edits }) => {
   const p = useEnter(delay);
   const mine = from === "user";
   return (
     <div
+      data-edit-id={editId}
       style={{
         ...pop(p),
         alignSelf: mine ? "flex-end" : "flex-start",
@@ -32,6 +36,7 @@ const Bubble: React.FC<{
         fontWeight: 700,
         maxWidth: "82%",
         fontFamily: theme.fontDisplay,
+        ...editStyle(edits, editId),
       }}
     >
       {text}
@@ -57,7 +62,8 @@ export const ChatMock: React.FC<{
   props: z.infer<typeof ChatMockProps>;
   theme: Theme;
   widthPx?: number;
-}> = ({ props, theme, widthPx }) => {
+  edits?: ElementEdits;
+}> = ({ props, theme, widthPx, edits }) => {
   const bubbles = chatBubbles(props);
   const fontSize = chatMetrics(bubbles.map((b) => b.text), widthPx);
   return (
@@ -78,6 +84,8 @@ export const ChatMock: React.FC<{
           delay={i * 8}
           fontSize={fontSize}
           theme={theme}
+          editId={`message-${i}`}
+          edits={edits}
         />
       ))}
     </div>

@@ -2,11 +2,13 @@ import React from "react";
 import { z } from "zod/v4";
 import { TitleCardProps, type Theme } from "@ossclip/core/browser";
 import { rise, useEnter } from "../anim";
+import { editStyle, type ElementEdits } from "../editable";
 
-export const TitleCard: React.FC<{ props: z.infer<typeof TitleCardProps>; theme: Theme }> = ({
-  props,
-  theme,
-}) => {
+export const TitleCard: React.FC<{
+  props: z.infer<typeof TitleCardProps>;
+  theme: Theme;
+  edits?: ElementEdits;
+}> = ({ props, theme, edits }) => {
   const p0 = useEnter(0);
   const p1 = useEnter(5);
   const p2 = useEnter(10);
@@ -30,6 +32,7 @@ export const TitleCard: React.FC<{ props: z.infer<typeof TitleCardProps>; theme:
     >
       {props.eyebrow ? (
         <div
+          data-edit-id="eyebrow"
           style={{
             ...rise(p0),
             fontSize: 34,
@@ -37,18 +40,29 @@ export const TitleCard: React.FC<{ props: z.infer<typeof TitleCardProps>; theme:
             letterSpacing: "0.35em",
             color: theme.muted,
             textTransform: "uppercase",
+            ...editStyle(edits, "eyebrow"),
           }}
         >
           {props.eyebrow}
         </div>
       ) : null}
       {emphasis ? (
-        <div style={{ ...rise(p1, 40), fontSize: 210, fontWeight: 900, lineHeight: 0.95 }}>
+        <div
+          data-edit-id="emphasis"
+          style={{
+            ...rise(p1, 40),
+            fontSize: 210,
+            fontWeight: 900,
+            lineHeight: 0.95,
+            ...editStyle(edits, "emphasis"),
+          }}
+        >
           {emphasis}
         </div>
       ) : null}
       {!titleIsRedundant ? (
         <div
+          data-edit-id="title"
           style={{
             ...rise(emphasis ? p2 : p1, 34),
             fontSize: emphasis ? 64 : 96,
@@ -56,13 +70,23 @@ export const TitleCard: React.FC<{ props: z.infer<typeof TitleCardProps>; theme:
             lineHeight: 1.05,
             textTransform: "uppercase",
             letterSpacing: "0.02em",
+            ...editStyle(edits, "title"),
           }}
         >
           {props.title}
         </div>
       ) : null}
       {props.sub ? (
-        <div style={{ ...rise(p2), fontSize: 40, fontWeight: 600, color: theme.muted }}>
+        <div
+          data-edit-id="sub"
+          style={{
+            ...rise(p2),
+            fontSize: 40,
+            fontWeight: 600,
+            color: theme.muted,
+            ...editStyle(edits, "sub"),
+          }}
+        >
           {props.sub}
         </div>
       ) : null}

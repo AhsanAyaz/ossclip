@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 import { StrikethroughRevealProps, type Theme } from "@ossclip/core/browser";
 import { rise, useEnter } from "../anim";
 import { revealMetrics, revealRows } from "../fit";
+import { editStyle, type ElementEdits } from "../editable";
 
 /**
  * One RENDERED row, with its own strike rule.
@@ -10,6 +11,11 @@ import { revealMetrics, revealRows } from "../fit";
  * The rule must be per rendered row, not per logical line: when a line wrapped,
  * the absolutely-positioned bar sat at 50% of the whole two-line block and so
  * struck the gap between the rows rather than either of them (FINDINGS §27).
+ *
+ * `editId` is keyed by the LOGICAL line (props.lines index), not the rendered
+ * row: a wrapped line produces multiple rows here, and all of them share the
+ * same id/edits so a user's nudge moves every row of that line together
+ * rather than only the first fragment.
  */
 const Row: React.FC<{
   text: string;
@@ -17,11 +23,16 @@ const Row: React.FC<{
   delay: number;
   fontSize: number;
   theme: Theme;
-}> = ({ text, struck, delay, fontSize, theme }) => {
+  editId: string;
+  edits?: ElementEdits;
+}> = ({ text, struck, delay, fontSize, theme, editId, edits }) => {
   const p = useEnter(delay);
   const strike = useEnter(delay + 8);
   return (
-    <div style={{ ...rise(p, 30), position: "relative", display: "inline-block" }}>
+    <div
+      data-edit-id={editId}
+      style={{ ...rise(p, 30), position: "relative", display: "inline-block", ...editStyle(edits, editId) }}
+    >
       <span
         style={{
           fontSize,
@@ -57,15 +68,18 @@ export const StrikethroughReveal: React.FC<{
   theme: Theme;
   widthPx?: number;
   heightPx?: number;
-}> = ({ props, theme, widthPx, heightPx }) => {
+  edits?: ElementEdits;
+}> = ({ props, theme, widthPx, heightPx, edits }) => {
   const texts = props.lines.map((l) => l.text);
   const fontSize = revealMetrics(texts, widthPx, heightPx);
   // Each logical line becomes one or more rows; a line only breaks at an
-  // arrow, and the arrow leads the row it points into.
-  const rows = props.lines.flatMap((line) =>
+  // arrow, and the arrow leads the row it points into. lineIndex is kept
+  // alongside so every row can carry its logical line's data-edit-id.
+  const rows = props.lines.flatMap((line, lineIndex) =>
     revealRows(line.text, fontSize, widthPx ?? 831).map((text) => ({
       text,
       struck: line.struck,
+      lineIndex,
     })),
   );
   return (
@@ -87,6 +101,8 @@ export const StrikethroughReveal: React.FC<{
           delay={i * 6}
           fontSize={fontSize}
           theme={theme}
+          editId={`line-${row.lineIndex}`}
+          edits={edits}
         />
       ))}
     </div>
