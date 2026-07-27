@@ -1,6 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
-import type { SceneCue, Theme } from "@ossclip/core/browser";
+import type { FaceCrop, SceneCue, Theme, ZoomSegment } from "@ossclip/core/browser";
+import { zoomScaleAt } from "@ossclip/core/browser";
 import { backdropOpacityAt, videoSlotAt } from "./stage";
 
 /**
@@ -12,17 +13,30 @@ import { backdropOpacityAt, videoSlotAt } from "./stage";
 export const VideoStage: React.FC<{
   cues: SceneCue[];
   theme: Theme;
+  /** Measured face box; null/undefined falls back to the assumed selfie framing. */
+  face?: FaceCrop | null;
+  /** Micro zoom punches (FINDINGS §15), precomputed from phrase boundaries. */
+  zoomPlan?: ZoomSegment[];
   children: React.ReactNode;
-}> = ({ cues, theme, children }) => {
+}> = ({ cues, theme, face, zoomPlan, children }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const t = frame / fps;
-  const slot = videoSlotAt(cues, t);
+  const slot = videoSlotAt(cues, t, face ?? undefined);
   const backdrop = backdropOpacityAt(cues, t);
 
   const wPx = slot.rect.w * width;
   const hPx = slot.rect.h * height;
   const radiusPx = (slot.cornerRadius * Math.min(wPx, hPx)) / 2;
+
+  // §15: the idle zoom fades with the slot (graphic-only suppresses it) and
+  // is damped on the bubble — a zooming bubble reads as a wobble. Both fall
+  // out of the already-lerped slot state, so the damping stays continuous
+  // through layout transitions. It composes with EdlVideo's cut-driven
+  // punch-in multiplicatively (nested transforms).
+  const zoomRaw = zoomPlan && zoomPlan.length > 0 ? zoomScaleAt(zoomPlan, t) : 1;
+  const zoomDamp = Math.max(0, slot.opacity * (1 - 0.6 * slot.cornerRadius));
+  const zoom = 1 + (zoomRaw - 1) * zoomDamp;
 
   return (
     <AbsoluteFill>
@@ -46,8 +60,11 @@ export const VideoStage: React.FC<{
             position: "absolute",
             inset: 0,
             filter: slot.blurPx > 0.5 ? `blur(${slot.blurPx}px)` : undefined,
-            // Crop bias consumed by EdlVideo's object-position (FINDINGS §11):
-            // short slots show the TOP of the portrait source, not its middle.
+            transform: zoom !== 1 ? `scale(${zoom})` : undefined,
+            // Zoom toward the face, which the crop bias keeps in the upper part.
+            transformOrigin: "50% 40%",
+            // Crop bias consumed by EdlVideo's object-position (FINDINGS §11/§13):
+            // derived from the measured face so the head lands in the band.
             ["--ossclip-obj-y" as string]: `${slot.objectPosY * 100}%`,
           }}
         >

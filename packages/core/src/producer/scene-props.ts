@@ -12,7 +12,11 @@ export interface ScenePropsFailure {
   fellBackTo: "TitleCard" | "dropped";
 }
 
-const PROPS_SYSTEM = `You fill the props for ONE scene component of a short-form video, from the transcript slice it accompanies. Copy is SHORT and punchy: numbers over adjectives, ALL-CAPS reads fine for labels/kickers, never full sentences. Output only what the schema asks for.`;
+const PROPS_SYSTEM = `You fill the props for ONE scene component of a short-form video, from the transcript slice it accompanies. Copy is SHORT and punchy: numbers over adjectives, ALL-CAPS reads fine for labels/kickers, never full sentences. Output only what the schema asks for.
+
+GROUNDING — hard rules:
+- Every label, noun and claim must be supported by the transcript slice. NEVER introduce an entity, metric name or brand the slice does not contain — a number gets the noun the speaker attached to it, not a plausible-sounding one. If the slice offers no supporting noun, use the number alone or fall back to the suggested copy verbatim.
+- The transcript is automatic speech recognition output and may contain mishearings. An unfamiliar proper noun is more likely a mistranscription of a common phrase than a real company or product — prefer the common-sense reading ("code churn", not "CodeChun") and never promote a suspected mishearing into a name or label.`;
 
 function buildPropsPrompt(moment: Moment, transcript: Transcript): string {
   const slice = transcript.words

@@ -1,4 +1,4 @@
-import type { Layout, SceneCue } from "@ossclip/core/browser";
+import type { FaceCrop, Layout, SceneCue } from "@ossclip/core/browser";
 
 /** Fractions of the 1080×1920 frame. */
 export interface Rect {
@@ -18,11 +18,47 @@ export interface VideoSlotState {
   opacity: number;
   /**
    * Vertical crop bias for object-position (0 = show the top of the source,
-   * 0.5 = center). Slots shorter than the portrait source slice through its
-   * middle and decapitate the speaker — bias the crop up so the face lands
-   * in the band (FINDINGS §11; the non-tracking version of BRAINSTORM §4.3).
+   * 0.5 = center). Slots shorter than the portrait source slice through it
+   * and can decapitate the speaker — derived from the measured face so the
+   * whole head, chin included, lands in the band (FINDINGS §11/§13).
    */
   objectPosY: number;
+}
+
+/** The frame the stage lays out for — all rect fractions refer to this. */
+const FRAME_W = 1080;
+const FRAME_H = 1920;
+
+/**
+ * Assumed face when none was measured (screen recording, detector miss):
+ * an arm's-length selfie puts the face center ~38% down the frame. A guess
+ * either way lands closer than the old per-layout constants — 0.12 traded
+ * the cut forehead for a cut mouth (FINDINGS §13).
+ */
+export const DEFAULT_FACE: FaceCrop = { centerYFrac: 0.38, sizeFrac: 0.35 };
+
+/**
+ * Where the face center should sit inside a cropping slot, as a fraction of
+ * slot height: ~40% down keeps headroom above AND the chin in — the mouth is
+ * what makes a talking head read as speech.
+ */
+const FACE_ANCHOR_IN_SLOT = 0.42;
+
+/**
+ * Vertical object-position for a slot, placing the measured face center at
+ * FACE_ANCHOR_IN_SLOT of the slot. Assumes the source shares the frame's
+ * portrait aspect (the v1 target is phone footage), so with object-fit:
+ * cover every slot is width-constrained and shows the source at
+ * slot-width-proportional height.
+ */
+export function objectPosYFor(rect: Rect, face: FaceCrop): number {
+  const slotW = rect.w * FRAME_W;
+  const slotH = rect.h * FRAME_H;
+  const displayedH = (slotW * FRAME_H) / FRAME_W;
+  const overflow = displayedH - slotH;
+  if (overflow <= 1) return 0.5; // slot shows the full source height — no bias to apply
+  const y = (face.centerYFrac * displayedH - FACE_ANCHOR_IN_SLOT * slotH) / overflow;
+  return Math.min(1, Math.max(0, y));
 }
 
 export interface StageSlots {
@@ -77,42 +113,52 @@ const PIP_RECT: Rect = {
  *   graphic-only   → below the graphic (the layout reserves the band)
  *   blurred-behind → below the centred graphic (face is blurred — no clash)
  */
-export function layoutSlots(layout: Layout): StageSlots {
+export function layoutSlots(layout: Layout, face: FaceCrop = DEFAULT_FACE): StageSlots {
+  const posY = (rect: Rect) => objectPosYFor(rect, face);
   switch (layout) {
     case "full-bleed":
       return {
-        video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: 0.5 },
+        video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(FULL) },
         graphic: null,
         captionAnchor: 0.7,
       };
-    case "video-top":
+    case "video-top": {
+      const rect: Rect = { x: 0, y: 0, w: 1, h: 0.42 };
       return {
-        video: {
-          rect: { x: 0, y: 0, w: 1, h: 0.42 },
-          cornerRadius: 0,
-          blurPx: 0,
-          dim: 0,
-          opacity: 1,
-          objectPosY: 0.12,
-        },
+        video: { rect, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(rect) },
         graphic: { x: 0.04, y: 0.54, w: 0.8, h: 0.24 },
         captionAnchor: 0.48,
       };
+    }
     case "pip-bubble":
       return {
-        video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 1, objectPosY: 0.22 },
+        video: {
+          rect: PIP_RECT,
+          cornerRadius: 1,
+          blurPx: 0,
+          dim: 0,
+          opacity: 1,
+          objectPosY: posY(PIP_RECT),
+        },
         graphic: { x: 0.06, y: 0.14, w: 0.78, h: 0.42 },
         captionAnchor: 0.61,
       };
     case "graphic-only":
       return {
-        video: { rect: PIP_RECT, cornerRadius: 1, blurPx: 0, dim: 0, opacity: 0, objectPosY: 0.22 },
+        video: {
+          rect: PIP_RECT,
+          cornerRadius: 1,
+          blurPx: 0,
+          dim: 0,
+          opacity: 0,
+          objectPosY: posY(PIP_RECT),
+        },
         graphic: { x: 0.04, y: 0.14, w: 0.8, h: 0.54 },
         captionAnchor: 0.73,
       };
     case "blurred-behind":
       return {
-        video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1, objectPosY: 0.5 },
+        video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1, objectPosY: posY(FULL) },
         graphic: { x: 0.07, y: 0.24, w: 0.77, h: 0.36 },
         captionAnchor: 0.69,
       };
@@ -157,19 +203,23 @@ function easeInOut(p: number): number {
  * boundaries. The morph runs INSIDE the cue's own window (start → start+T,
  * end-T → end) so neighbouring cues never fight over the slot.
  */
-export function videoSlotAt(cues: readonly SceneCue[], tSec: number): VideoSlotState {
-  const base = layoutSlots("full-bleed").video;
+export function videoSlotAt(
+  cues: readonly SceneCue[],
+  tSec: number,
+  face: FaceCrop = DEFAULT_FACE,
+): VideoSlotState {
+  const base = layoutSlots("full-bleed", face).video;
   const cue = activeCueAt(cues, tSec);
   if (!cue) return base;
-  const target = layoutSlots(cue.layout).video;
+  const target = layoutSlots(cue.layout, face).video;
   const T = Math.min(LAYOUT_TRANSITION_SEC, (cue.endSec - cue.startSec) / 2);
   const sinceStart = tSec - cue.startSec;
   const untilEnd = cue.endSec - tSec;
 
   const prev = activeCueAt(cues, cue.startSec - 1e-3);
   const next = activeCueAt(cues, cue.endSec + 1e-3);
-  const from = prev ? layoutSlots(prev.layout).video : base;
-  const to = next ? layoutSlots(next.layout).video : base;
+  const from = prev ? layoutSlots(prev.layout, face).video : base;
+  const to = next ? layoutSlots(next.layout, face).video : base;
 
   if (sinceStart < T) return lerpVideo(from, target, easeInOut(sinceStart / T));
   if (untilEnd < T) return lerpVideo(target, to, easeInOut(1 - untilEnd / T));

@@ -10,6 +10,16 @@ Your footage never leaves your machine: transcription runs locally (whisper.cpp)
 
 Requirements: Node ≥ 22, pnpm, `ffmpeg`/`ffprobe` on PATH, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli`) + a ggml model.
 
+The default transcription model is **`small.en`** — a real accuracy step over
+`base.en` for accented English, and worth it: a mistranscribed word here ends
+up in your captions and on-screen labels. Set `OSSCLIP_MODEL` (or `model` in
+`~/.ossclip/config.json`) to trade accuracy for speed:
+
+```sh
+curl -L -o ~/.ossclip/models/ggml-small.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+```
+
 ```sh
 pnpm install
 

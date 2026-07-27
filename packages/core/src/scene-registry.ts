@@ -76,6 +76,16 @@ export const ChatMockProps = z.object({
     )
     .min(1)
     .max(4),
+  /**
+   * The comment-CTA word the viewer is asked to type. The COMPONENT renders
+   * it quoted and capitalized ('"AGENTS"') wherever it appears in a message —
+   * formatting never lives in LLM output (FINDINGS §16).
+   */
+  keyword: z
+    .string()
+    .max(16)
+    .optional()
+    .describe("the single comment/CTA word the viewer should type, plain and unformatted"),
 });
 
 export const ScreenshotFrameProps = z.object({
@@ -140,7 +150,8 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     propsSchema: ChatMockProps,
     defaultProps: { messages: [{ from: "user", text: "hello" }] },
     defaultLayout: "blurred-behind",
-    whenToUse: "A quoted phrase or exchange as chat bubbles over the blurred speaker.",
+    whenToUse:
+      "A quoted phrase or exchange as chat bubbles over the blurred speaker; for a comment-CTA beat, set `keyword` to the word viewers should type.",
   },
   ScreenshotFrame: {
     propsSchema: ScreenshotFrameProps,

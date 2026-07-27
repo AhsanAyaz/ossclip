@@ -16,7 +16,10 @@ const DEFAULTS: OssclipConfig = {
   ffprobePath: "ffprobe",
   whisperPath: "whisper-cli",
   modelDir: join(homedir(), ".ossclip", "models"),
-  model: "base.en",
+  // small.en over base.en: a large accuracy step for accented English at
+  // modest cost — base.en turned "code churn" into a company name that then
+  // reached the captions and a hook label (FINDINGS §14b).
+  model: "small.en",
 };
 
 /**

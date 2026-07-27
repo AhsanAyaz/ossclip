@@ -4,10 +4,12 @@ import { CaptionTrack, EdlVideo, SceneLayer, VideoStage } from "@ossclip/scenes"
 import {
   defaultTheme,
   type CaptionLine,
+  type FaceCrop,
   type KeptSpan,
   type RenderSettings,
   type SceneCue,
   type Theme,
+  type ZoomSegment,
 } from "@ossclip/core/browser";
 
 /**
@@ -25,6 +27,12 @@ export interface ProductionCompProps {
   theme: Theme;
   settings: RenderSettings;
   outputDurationSec: number;
+  /** Measured face box (FINDINGS §13); null = fall back to assumed framing. */
+  face?: FaceCrop | null;
+  /** Micro zoom punches from phrase boundaries (FINDINGS §15). */
+  zoomPlan?: ZoomSegment[];
+  /** Comment-CTA word — quoted+capitalized in captions when spoken (FINDINGS §16). */
+  ctaKeyword?: string;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -35,6 +43,8 @@ export const defaultProductionProps: ProductionCompProps = {
   theme: defaultTheme,
   settings: { width: 1080, height: 1920, fps: 30 },
   outputDurationSec: 1,
+  face: null,
+  zoomPlan: [],
 };
 
 export const ProductionComposition: React.FC<ProductionCompProps> = ({
@@ -43,6 +53,9 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   captionLines,
   sceneCues,
   theme,
+  face,
+  zoomPlan,
+  ctaKeyword,
 }) => {
   if (!videoFileName) {
     return (
@@ -63,11 +76,16 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   const src = /^https?:\/\//.test(videoFileName) ? videoFileName : staticFile(videoFileName);
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
-      <VideoStage cues={sceneCues} theme={theme}>
+      <VideoStage cues={sceneCues} theme={theme} face={face} zoomPlan={zoomPlan}>
         <EdlVideo src={src} spans={spans} />
       </VideoStage>
       <SceneLayer cues={sceneCues} theme={theme} />
-      <CaptionTrack lines={captionLines} cues={sceneCues} activeColor={theme.accent} />
+      <CaptionTrack
+        lines={captionLines}
+        cues={sceneCues}
+        activeColor={theme.accent}
+        ctaKeyword={ctaKeyword}
+      />
     </AbsoluteFill>
   );
 };

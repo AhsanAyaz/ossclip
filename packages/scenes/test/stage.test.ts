@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { SceneCue } from "@ossclip/core";
 import {
   CAPTION_HALF_BAND,
+  DEFAULT_FACE,
   LAYOUT_TRANSITION_SEC,
   SAFE_AREA,
   SAFE_RECT,
   backdropOpacityAt,
   captionAnchorAt,
   layoutSlots,
+  objectPosYFor,
   videoSlotAt,
 } from "../src/stage";
 import { LayoutSchema } from "@ossclip/core";
@@ -79,6 +81,46 @@ describe("layoutSlots", () => {
   it("pip video slot is square in pixels (a true circle)", () => {
     const { rect } = layoutSlots("pip-bubble").video;
     expect(rect.w * 1080).toBeCloseTo(rect.h * 1920, 3);
+  });
+});
+
+describe("face-aware crop bias (FINDINGS §13)", () => {
+  const vtRect = layoutSlots("video-top").video.rect;
+
+  /** Where the face center lands inside the slot, as a fraction of slot height. */
+  const faceInSlot = (rect: typeof vtRect, centerYFrac: number): number => {
+    const slotW = rect.w * 1080;
+    const slotH = rect.h * 1920;
+    const displayedH = (slotW * 1920) / 1080;
+    const offset = objectPosYFor(rect, { centerYFrac }) * (displayedH - slotH);
+    return (centerYFrac * displayedH - offset) / slotH;
+  };
+
+  it("a full-height slot needs no bias", () => {
+    expect(objectPosYFor({ x: 0, y: 0, w: 1, h: 1 }, DEFAULT_FACE)).toBe(0.5);
+  });
+
+  it("puts the measured face center ~40% down the band — chin in, headroom above", () => {
+    // The §13 evidence: mouth cut at objectPosY=0.12 with a face ~40% down
+    // the source. Wherever the face is (unclamped range), the band holds it.
+    for (const centerYFrac of [0.3, 0.38, 0.45]) {
+      expect(faceInSlot(vtRect, centerYFrac)).toBeCloseTo(0.42, 5);
+    }
+  });
+
+  it("is monotonic in the face position and clamped at the source edges", () => {
+    expect(objectPosYFor(vtRect, { centerYFrac: 0.45 })).toBeGreaterThan(
+      objectPosYFor(vtRect, { centerYFrac: 0.3 }),
+    );
+    expect(objectPosYFor(vtRect, { centerYFrac: 0.02 })).toBe(0);
+    expect(objectPosYFor(vtRect, { centerYFrac: 0.98 })).toBe(1);
+  });
+
+  it("threads the measured face through videoSlotAt", () => {
+    const cues = [cue("video-top", 2, 6)];
+    const low = videoSlotAt(cues, 4, { centerYFrac: 0.45 });
+    const high = videoSlotAt(cues, 4, { centerYFrac: 0.3 });
+    expect(low.objectPosY).toBeGreaterThan(high.objectPosY);
   });
 });
 

@@ -33,6 +33,18 @@ const Bubble: React.FC<{
   );
 };
 
+/**
+ * The comment-CTA keyword gets the reference's quote-and-caps treatment —
+ * `"AGENTS"` — wherever it appears in a message. The producer only marks the
+ * word (props.keyword); formatting lives here, never in LLM output
+ * (FINDINGS §16). Quotes the LLM already added are absorbed, not doubled.
+ */
+export function applyCtaKeyword(text: string, keyword: string | undefined): string {
+  if (!keyword) return text;
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`"?\\b${escaped}\\b"?`, "gi"), `"${keyword.toUpperCase()}"`);
+}
+
 export const ChatMock: React.FC<{ props: z.infer<typeof ChatMockProps>; theme: Theme }> = ({
   props,
   theme,
@@ -47,7 +59,13 @@ export const ChatMock: React.FC<{ props: z.infer<typeof ChatMockProps>; theme: T
     }}
   >
     {props.messages.map((m, i) => (
-      <Bubble key={i} from={m.from} text={m.text} delay={i * 8} theme={theme} />
+      <Bubble
+        key={i}
+        from={m.from}
+        text={applyCtaKeyword(m.text, props.keyword)}
+        delay={i * 8}
+        theme={theme}
+      />
     ))}
   </div>
 );

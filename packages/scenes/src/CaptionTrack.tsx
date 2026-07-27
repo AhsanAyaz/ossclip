@@ -11,6 +11,20 @@ export interface CaptionTrackProps {
   verticalAnchor?: number;
   fontSizePx?: number;
   activeColor?: string;
+  /**
+   * The comment-CTA word: when the speaker says it, the caption word renders
+   * quoted and capitalized — reinforcing the ask for muted viewers
+   * (FINDINGS §16).
+   */
+  ctaKeyword?: string;
+}
+
+/** `agents.` → `"AGENTS".` — quote-and-caps the word, punctuation kept outside. */
+function ctaDisplay(text: string, keyword: string | undefined): string {
+  if (!keyword) return text;
+  const core = text.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
+  if (core.toLowerCase() !== keyword.toLowerCase()) return text;
+  return text.replace(core, `"${core.toUpperCase()}"`);
 }
 
 const LineView: React.FC<{
@@ -18,7 +32,8 @@ const LineView: React.FC<{
   verticalAnchor: number;
   fontSizePx: number;
   activeColor: string;
-}> = ({ line, verticalAnchor, fontSizePx, activeColor }) => {
+  ctaKeyword?: string;
+}> = ({ line, verticalAnchor, fontSizePx, activeColor, ctaKeyword }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   // The parent <Sequence> starts at line.start, so local frame 0 === line.start.
@@ -63,7 +78,7 @@ const LineView: React.FC<{
                 transition: "transform 60ms linear",
               }}
             >
-              {w.text}
+              {ctaDisplay(w.text, ctaKeyword)}
             </span>
           );
         })}
@@ -83,6 +98,7 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   verticalAnchor = 0.76,
   fontSizePx = 64,
   activeColor = "#FFE14D",
+  ctaKeyword,
 }) => {
   const { fps } = useVideoConfig();
   return (
@@ -98,6 +114,7 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
               verticalAnchor={anchor}
               fontSizePx={fontSizePx}
               activeColor={activeColor}
+              ctaKeyword={ctaKeyword}
             />
           </Sequence>
         );

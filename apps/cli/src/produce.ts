@@ -12,6 +12,8 @@ import {
   assembleScenes,
   buildCaptionLines,
   buildCutlist,
+  buildZoomPlan,
+  checkGrounding,
   createProvider,
   defaultProviderName,
   defaultTheme,
@@ -21,6 +23,7 @@ import {
   loadConfig,
   loudnorm,
   makeMezzanine,
+  measureFace,
   measureLevels,
   probe,
   produceScenes,
@@ -101,6 +104,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     console.log("▸ extracting audio…");
     await extractAudio(tools, input, audioPath);
   }
+
+  // Face measurement (FINDINGS §13): one static crop offset per source,
+  // measured rather than guessed; cached in the workdir like the transcript.
+  const faceBox = await measureFace(tools, input, sourceProbe.duration, { cacheDir: work });
+  console.log(
+    faceBox
+      ? `▸ face at ${(faceBox.centerYFrac * 100).toFixed(0)}% down the frame ` +
+          `(${faceBox.framesDetected}/${faceBox.framesSampled} frames)`
+      : "▸ no face detected — using the default crop bias",
+  );
 
   let transcript: Transcript;
   const transcriptCache = join(work, "transcript.json");
@@ -205,9 +218,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     );
   }
 
+  // Grounding post-check (FINDINGS §14a): flags label tokens the take never
+  // says — a hallucinated hook label is visible here without watching the video.
+  const groundingIssues = checkGrounding(scenes, transcript);
+  for (const g of groundingIssues) {
+    console.log(`  ⚠ grounding: ${g.component} ${g.sceneId} ${g.field} "${g.token}" — not in the take`);
+  }
+
   const production: Production = {
     version: 1,
-    source: { path: input, probe: sourceProbe, audioPath },
+    source: { path: input, probe: sourceProbe, audioPath, face: faceBox },
     cleanup: opts.cleanup,
     intent: opts.intent,
     transcript,
@@ -219,7 +239,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
-  const report = formatCutReport(production);
+  let report = formatCutReport(production);
+  if (groundingIssues.length > 0) {
+    report +=
+      "\ngrounding warnings (labels the take never says — FINDINGS §14):\n" +
+      groundingIssues
+        .map((g) => `  ${g.component} ${g.sceneId} ${g.field}: "${g.token}"`)
+        .join("\n") +
+      "\n";
+  }
   await writeFile(join(work, "report.txt"), report);
   console.log("");
   console.log(report);
@@ -239,6 +267,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     renderVideo = mezz;
   }
 
+  // Comment-CTA keyword (FINDINGS §16): the producer marks it on ChatMock
+  // props; the caption track quote-and-caps it when the speaker says it.
+  const ctaKeyword = scenes
+    .map((s) => ({ ...s.props, ...s.overrides }.keyword))
+    .filter((k): k is string => typeof k === "string" && k.length > 0)
+    .at(-1);
+
   const props = {
     videoFileName: basename(renderVideo),
     spans: [...map.spans],
@@ -247,6 +282,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     theme,
     settings: production.render,
     outputDurationSec: map.outputDuration,
+    face: faceBox ? { centerYFrac: faceBox.centerYFrac, sizeFrac: faceBox.sizeFrac } : null,
+    // Micro zoom punches (FINDINGS §15) from phrase boundaries in the captions.
+    zoomPlan: buildZoomPlan(captionLines, map.outputDuration),
+    ctaKeyword,
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 

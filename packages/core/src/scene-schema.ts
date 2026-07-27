@@ -57,6 +57,19 @@ export const SceneCueSchema = z.object({
 });
 export type SceneCue = z.infer<typeof SceneCueSchema>;
 
+/**
+ * Where the speaker's face sits in the SOURCE frame, measured once per source
+ * (FINDINGS §13). The stage derives each layout's vertical crop bias from
+ * this instead of guessing with a constant.
+ */
+export const FaceCropSchema = z.object({
+  /** Vertical center of the face, 0..1 of source height. */
+  centerYFrac: z.number().min(0).max(1),
+  /** Face height as a fraction of source height (informational for now). */
+  sizeFrac: z.number().min(0).max(1).optional(),
+});
+export type FaceCrop = z.infer<typeof FaceCropSchema>;
+
 /** Design tokens. Components read ONLY these — no hardcoded colors/fonts. */
 export const ThemeSchema = z.object({
   bg: z.string().default("#0B0B0E"),

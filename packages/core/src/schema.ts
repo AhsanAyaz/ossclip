@@ -88,6 +88,17 @@ export const ProductionSchema = z.object({
     probe: ProbeSchema,
     audioPath: z.string().optional(),
     mezzaninePath: z.string().optional(),
+    /** Measured face box (FINDINGS §13) — a property of the source; null = no face found. */
+    face: z
+      .object({
+        centerXFrac: z.number(),
+        centerYFrac: z.number(),
+        sizeFrac: z.number(),
+        framesSampled: z.number().int(),
+        framesDetected: z.number().int(),
+      })
+      .nullable()
+      .optional(),
   }),
   cleanup: CleanupLevelSchema,
   /** User intent for the producer brain ("educational video about agents…"). */
