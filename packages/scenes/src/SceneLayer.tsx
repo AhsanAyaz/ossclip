@@ -50,6 +50,7 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         return (
           <Sequence key={cue.id} from={from} durationInFrames={durationInFrames}>
             <div
+              data-edit-scene={cue.id}
               style={{
                 position: "absolute",
                 left: `${slot.x * 100}%`,
@@ -59,6 +60,12 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
+                // The parent AbsoluteFill is `pointer-events: none` so
+                // scrubbing/other player controls pass through the graphic
+                // layer everywhere else; re-enable it just for this cue's
+                // box so the editor's `elementFromPoint` hit-test can reach
+                // its `data-edit-id` leaves at all.
+                pointerEvents: "auto",
                 // Content that cannot fit even at MIN_SCALE is clipped here
                 // rather than bleeding outside the platform safe area, which
                 // is what it did silently before (§6a).
