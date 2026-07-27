@@ -29,6 +29,7 @@ const moment = (sceneKind: Moment["sceneKind"]): Moment => ({
 /** Provider scripted per-call: throws or returns each queued behavior in order. */
 class ScriptedProvider implements LlmProvider {
   readonly name = "scripted";
+  readonly usage = [];
   calls = 0;
   constructor(private script: Array<unknown | Error>) {}
   async complete<T>(req: { schema: z.ZodType<T> }): Promise<T> {

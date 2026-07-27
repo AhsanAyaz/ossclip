@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 import type { LlmProvider } from "./provider";
+import { estimateTokens, type LlmUsage } from "./usage";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro";
 
@@ -11,6 +12,7 @@ export const DEFAULT_GEMINI_MODEL = "gemini-2.5-pro";
  */
 export class GeminiProvider implements LlmProvider {
   readonly name = "gemini";
+  readonly usage: LlmUsage[] = [];
 
   constructor(
     private model: string = DEFAULT_GEMINI_MODEL,
@@ -47,6 +49,7 @@ export class GeminiProvider implements LlmProvider {
         maxOutputTokens: req.maxTokens ?? 16000,
       },
     };
+    const started = Date.now();
     const res = await fetch(
       `${this.baseUrl}/models/${this.model}:generateContent?key=${this.apiKey}`,
       { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
@@ -56,8 +59,30 @@ export class GeminiProvider implements LlmProvider {
     }
     const data = (await res.json()) as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      usageMetadata?: {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        cachedContentTokenCount?: number;
+        // Thinking tokens are billed as output but reported apart from it.
+        thoughtsTokenCount?: number;
+      };
     };
     const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("");
+    const meta = data.usageMetadata;
+    this.usage.push({
+      provider: this.name,
+      model: this.model,
+      schemaName: req.schemaName,
+      inputTokens: meta?.promptTokenCount ?? estimateTokens(`${req.system}${req.user}`),
+      outputTokens:
+        meta?.candidatesTokenCount === undefined
+          ? estimateTokens(text ?? "")
+          : meta.candidatesTokenCount + (meta.thoughtsTokenCount ?? 0),
+      cachedInputTokens: meta?.cachedContentTokenCount,
+      exact: meta?.promptTokenCount !== undefined,
+      billed: true,
+      ms: Date.now() - started,
+    });
     if (!text) throw new Error("gemini returned no text candidate");
     return req.schema.parse(JSON.parse(text));
   }

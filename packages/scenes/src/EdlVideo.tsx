@@ -58,8 +58,9 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
                   width: "100%",
                   height: "100%",
                   objectFit: "cover",
-                  // Vertical crop bias set by VideoStage per layout (§11).
-                  objectPosition: "50% var(--ossclip-obj-y, 50%)",
+                  // Crop bias set by VideoStage per layout (§11) — vertical
+                  // for a portrait source, horizontal for a landscape one.
+                  objectPosition: "var(--ossclip-obj-x, 50%) var(--ossclip-obj-y, 50%)",
                 }}
                 volume={(f) =>
                   Math.max(

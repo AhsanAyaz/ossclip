@@ -177,6 +177,7 @@ describe("repairTranscript", () => {
   it("is fail-soft: a throwing provider yields the raw transcript, not an error", async () => {
     const boom: LlmProvider = {
       name: "boom",
+      usage: [],
       async complete<T>(): Promise<T> {
         throw new Error("provider exploded");
       },
@@ -197,6 +198,7 @@ describe("repairTranscript", () => {
   it("drives a scripted provider end to end", async () => {
     const provider: LlmProvider = {
       name: "scripted",
+      usage: [],
       async complete<T>(req: { schema: z.ZodType<T> }): Promise<T> {
         return req.schema.parse({
           repairs: [{ startWord: 1, endWord: 2, heard: "coach and", correction: "code churn" }],
@@ -211,6 +213,7 @@ describe("repairTranscript", () => {
     let calls = 0;
     const provider: LlmProvider = {
       name: "counting",
+      usage: [],
       async complete<T>(req: { schema: z.ZodType<T> }): Promise<T> {
         calls++;
         return req.schema.parse({ repairs: [] });

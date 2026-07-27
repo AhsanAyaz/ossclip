@@ -23,6 +23,12 @@ export interface VideoSlotState {
    * whole head, chin included, lands in the band (FINDINGS §11/§13).
    */
   objectPosY: number;
+  /**
+   * Horizontal crop bias, same convention. Only moves off 0.5 when the source
+   * is wider than the slot — a landscape take in a vertical slot loses most of
+   * its width, and centring it can crop the speaker out (0.5 = center).
+   */
+  objectPosX: number;
 }
 
 /** The frame the stage lays out for — all rect fractions refer to this. */
@@ -36,7 +42,13 @@ const FRAME_H = 1920;
  * closer than the old per-layout constants — 0.12 traded the cut forehead for
  * a cut mouth (FINDINGS §13).
  */
-export const DEFAULT_FACE: Required<FaceCrop> = { centerYFrac: 0.38, sizeFrac: 0.22 };
+export const DEFAULT_FACE: FaceCrop & { sizeFrac: number } = {
+  centerYFrac: 0.38,
+  sizeFrac: 0.22,
+  // No centerXFrac and no sourceAspect on purpose: an unmeasured face has no
+  // horizontal position worth asserting, and a source that never said what
+  // shape it is gets assumed to be the frame's own 9:16.
+};
 
 /**
  * How far a head extends ABOVE the detector's box, as a multiple of that
@@ -68,7 +80,7 @@ export const CHIN_BOTTOM_MARGIN = 0.6 * ZOOM_BITE;
  */
 export function headFitsSlot(rect: Rect, face: FaceCrop): boolean {
   const slotH = rect.h * FRAME_H;
-  const displayedH = ((rect.w * FRAME_W) * FRAME_H) / FRAME_W;
+  const displayedH = displayedHeight(rect, face);
   const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
   const crownFrac = face.centerYFrac - size / 2 - HEAD_ABOVE_FACE * size;
   const needed =
@@ -76,24 +88,37 @@ export function headFitsSlot(rect: Rect, face: FaceCrop): boolean {
   return crownFrac >= 0 && needed <= slotH;
 }
 
+/** The frame's own aspect — the assumption when a source doesn't state one. */
+const FRAME_ASPECT = FRAME_W / FRAME_H;
+
 /**
- * Vertical object-position for a slot: where to window the portrait source so
- * the speaker's whole head lands in the band.
+ * Displayed height of the source inside a slot under `object-fit: cover`.
+ *
+ * `cover` scales by whichever axis needs the larger factor. A 9:16 source in
+ * any of our slots is width-constrained and spills vertically — which is the
+ * only case the crop math used to handle. A landscape source is
+ * HEIGHT-constrained: it fills the slot's height exactly and spills sideways,
+ * so there is no vertical bias to apply and `objectPosXFor` takes over.
+ */
+function displayedHeight(rect: Rect, face: FaceCrop): number {
+  const slotW = rect.w * FRAME_W;
+  const slotH = rect.h * FRAME_H;
+  return Math.max(slotH, slotW / (face.sourceAspect ?? FRAME_ASPECT));
+}
+
+/**
+ * Vertical object-position for a slot: where to window the source so the
+ * speaker's whole head lands in the band.
  *
  * Expressed as a feasible interval rather than one tuned constant — the crown
  * gives an upper bound on the offset, the chin a lower one. Inside the
  * interval we take the preferred anchor; when the band is too short to hold a
  * whole head the interval is empty and we keep the CHIN, because a talking
  * head without a mouth stops reading as speech (FINDINGS §13).
- *
- * Assumes the source shares the frame's portrait aspect (the v1 target is
- * phone footage), so with `object-fit: cover` every slot is width-constrained
- * and shows the source at slot-width-proportional height.
  */
 export function objectPosYFor(rect: Rect, face: FaceCrop): number {
-  const slotW = rect.w * FRAME_W;
   const slotH = rect.h * FRAME_H;
-  const displayedH = (slotW * FRAME_H) / FRAME_W;
+  const displayedH = displayedHeight(rect, face);
   const overflow = displayedH - slotH;
   if (overflow <= 1) return 0.5; // slot shows the full source height — no bias to apply
 
@@ -111,6 +136,27 @@ export function objectPosYFor(rect: Rect, face: FaceCrop): number {
       ? Math.min(Math.max(preferred, chinVisible), crownVisible)
       : chinVisible;
 
+  return Math.min(1, Math.max(0, offset / overflow));
+}
+
+/**
+ * Horizontal object-position: keep the speaker in frame when the source is
+ * wider than the slot.
+ *
+ * A 9:16 take never triggers this — its width matches the slot's and the
+ * overflow is vertical. A 16:9 webcam or screen recording in a vertical slot
+ * loses about 70% of its width, and centring that blindly crops out a speaker
+ * who was sitting to one side. Unmeasured X falls back to centre, which is
+ * exactly the old behaviour.
+ */
+export function objectPosXFor(rect: Rect, face: FaceCrop): number {
+  const slotW = rect.w * FRAME_W;
+  const slotH = rect.h * FRAME_H;
+  const displayedW = Math.max(slotW, slotH * (face.sourceAspect ?? FRAME_ASPECT));
+  const overflow = displayedW - slotW;
+  if (overflow <= 1 || face.centerXFrac === undefined) return 0.5;
+  // Centre the face in the slot, then clamp to what the source actually has.
+  const offset = face.centerXFrac * displayedW - slotW / 2;
   return Math.min(1, Math.max(0, offset / overflow));
 }
 
@@ -182,6 +228,80 @@ export const COVER_TEXT_RECT: Rect = (() => {
 /** Approximate half-height of a caption line block, for free-band math/tests. */
 export const CAPTION_HALF_BAND = 0.045;
 
+/** A vertical interval in frame fractions. */
+export interface Band {
+  start: number;
+  end: number;
+}
+
+/**
+ * The vertical gaps `blocked` leaves inside `[start, end]`, tallest first.
+ *
+ * One implementation for every "put this somewhere nothing else is" problem
+ * on the stage — routing a graphic around the source's burned-in text (§26),
+ * and placing the cover banner clear of the face (§33). They are the same
+ * question about different occupants, and were worth solving once.
+ */
+export function freeBands(
+  range: Band,
+  blocked: ReadonlyArray<{ y: number; h: number }>,
+): Band[] {
+  const clipped = blocked
+    .map((r) => ({ start: Math.max(range.start, r.y), end: Math.min(range.end, r.y + r.h) }))
+    .filter((r) => r.end > r.start)
+    .sort((a, b) => a.start - b.start);
+
+  const free: Band[] = [];
+  let cursor = range.start;
+  for (const b of clipped) {
+    if (b.start > cursor) free.push({ start: cursor, end: b.start });
+    cursor = Math.max(cursor, b.end);
+  }
+  if (cursor < range.end) free.push({ start: cursor, end: range.end });
+  return free.sort((a, b) => b.end - b.start - (a.end - a.start));
+}
+
+/**
+ * How far a head extends BELOW the detector's box. Smaller than
+ * `HEAD_ABOVE_FACE` because pico's box already includes the mouth — what sits
+ * under it is a chin and some neck, not a whole skull.
+ */
+const HEAD_BELOW_FACE = 0.2;
+
+/**
+ * The head's extent from a face box, in frame fractions — the §19 expansion,
+ * reused. pico bounds the FACE, so anything routing around a head has to grow
+ * the box or it lands on hair.
+ */
+export function headBand(face: { centerYFrac: number; sizeFrac: number }): Band {
+  return {
+    start: face.centerYFrac - face.sizeFrac * (0.5 + HEAD_ABOVE_FACE),
+    end: face.centerYFrac + face.sizeFrac * (0.5 + HEAD_BELOW_FACE),
+  };
+}
+
+/** Below this a banner band is too short to hold a headline at cover sizes. */
+const MIN_COVER_BAND_H = 0.13;
+
+/**
+ * Where the cover banner goes: inside `COVER_TEXT_RECT`, clear of the face
+ * (FINDINGS §33).
+ *
+ * The reference covers all put the banner in the frame's dead space, never
+ * across the speaker — a face with a box over its mouth reads as a mistake.
+ * When the face leaves no band tall enough (a tight close-up fills the whole
+ * grid-safe strip), the full rect comes back: a banner over the face still
+ * beats a cover with no headline, and the caller logs that it happened.
+ */
+export function coverTextRect(face?: { centerYFrac: number; sizeFrac: number } | null): Rect {
+  if (!face) return COVER_TEXT_RECT;
+  const range = { start: COVER_TEXT_RECT.y, end: COVER_TEXT_RECT.y + COVER_TEXT_RECT.h };
+  const head = headBand(face);
+  const [tallest] = freeBands(range, [{ y: head.start, h: head.end - head.start }]);
+  if (!tallest || tallest.end - tallest.start < MIN_COVER_BAND_H) return COVER_TEXT_RECT;
+  return { ...COVER_TEXT_RECT, y: tallest.start, h: tallest.end - tallest.start };
+}
+
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
 
 /** PIP circle: Ø 0.30 of frame width, sitting in the lower third. */
@@ -204,17 +324,18 @@ const PIP_RECT: Rect = {
  */
 export function layoutSlots(layout: Layout, face: FaceCrop = DEFAULT_FACE): StageSlots {
   const posY = (rect: Rect) => objectPosYFor(rect, face);
+  const posX = (rect: Rect) => objectPosXFor(rect, face);
   switch (layout) {
     case "full-bleed":
       return {
-        video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(FULL) },
+        video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(FULL), objectPosX: posX(FULL) },
         graphic: null,
         captionAnchor: 0.7,
       };
     case "video-top": {
       const rect: Rect = { x: 0, y: 0, w: 1, h: 0.42 };
       return {
-        video: { rect, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(rect) },
+        video: { rect, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(rect), objectPosX: posX(rect) },
         graphic: { x: 0.04, y: 0.54, w: 0.8, h: 0.24 },
         captionAnchor: 0.48,
       };
@@ -227,7 +348,7 @@ export function layoutSlots(layout: Layout, face: FaceCrop = DEFAULT_FACE): Stag
           blurPx: 0,
           dim: 0,
           opacity: 1,
-          objectPosY: posY(PIP_RECT),
+          objectPosY: posY(PIP_RECT), objectPosX: posX(PIP_RECT),
         },
         graphic: { x: 0.06, y: 0.14, w: 0.78, h: 0.42 },
         captionAnchor: 0.61,
@@ -240,14 +361,14 @@ export function layoutSlots(layout: Layout, face: FaceCrop = DEFAULT_FACE): Stag
           blurPx: 0,
           dim: 0,
           opacity: 0,
-          objectPosY: posY(PIP_RECT),
+          objectPosY: posY(PIP_RECT), objectPosX: posX(PIP_RECT),
         },
         graphic: { x: 0.04, y: 0.14, w: 0.8, h: 0.54 },
         captionAnchor: 0.73,
       };
     case "blurred-behind":
       return {
-        video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1, objectPosY: posY(FULL) },
+        video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1, objectPosY: posY(FULL), objectPosX: posX(FULL) },
         graphic: { x: 0.07, y: 0.24, w: 0.77, h: 0.36 },
         captionAnchor: 0.69,
       };
@@ -280,6 +401,7 @@ function lerpVideo(a: VideoSlotState, b: VideoSlotState, p: number): VideoSlotSt
     dim: lerp(a.dim, b.dim, p),
     opacity: lerp(a.opacity, b.opacity, p),
     objectPosY: lerp(a.objectPosY, b.objectPosY, p),
+    objectPosX: lerp(a.objectPosX, b.objectPosX, p),
   };
 }
 

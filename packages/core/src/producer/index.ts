@@ -9,6 +9,7 @@ import { generateBeatSheet, type BeatSheet, type BeatsValidationIssue } from "./
 import { generateScenes, type ScenePropsFailure } from "./scene-props";
 
 export * from "./provider";
+export * from "./usage";
 export * from "./beats";
 export * from "./scene-props";
 export * from "./repair";

@@ -15,6 +15,7 @@ import {
   buildCutlist,
   buildZoomPlan,
   checkGrounding,
+  coverHeadline,
   createFaceDetector,
   createProvider,
   defaultProviderName,
@@ -22,6 +23,8 @@ import {
   detectSilences,
   extractAudio,
   formatCutReport,
+  formatUsageLine,
+  formatUsageReport,
   loadConfig,
   loudnorm,
   makeMezzanine,
@@ -35,6 +38,7 @@ import {
   run,
   runWhisper,
   scanSourceText,
+  summarizeUsage,
   type AppliedRepair,
   type CleanupLevel,
   type LlmProvider,
@@ -45,7 +49,7 @@ import {
   type Transcript,
 } from "@ossclip/core";
 import { renderCover, renderProduction } from "@ossclip/renderer";
-import { routeAroundSourceText } from "@ossclip/scenes/geometry";
+import { coverTextRect, regionsDuring, routeAroundSourceText } from "@ossclip/scenes/geometry";
 
 export interface ProduceOptions {
   out?: string;
@@ -303,6 +307,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     }
   }
 
+  // Every LLM call is behind us — repair, beat sheet, one per scene — so this
+  // is where a run can finally answer "what did that cost" (FINDINGS §36).
+  // A cached run legitimately spends nothing, and says so rather than
+  // reporting a zero that looks like a bug.
+  if (provider) {
+    console.log(
+      provider.usage.length === 0
+        ? "▸ llm: no calls — repairs and scenes came from the workdir cache"
+        : formatUsageLine(provider.usage, cfg.pricing),
+    );
+    await writeFile(
+      join(work, "usage.json"),
+      JSON.stringify(
+        { records: provider.usage, totals: summarizeUsage(provider.usage, cfg.pricing) },
+        null,
+        2,
+      ),
+    );
+  }
+
   // The overlay and the caption under it must spell the same word (§21).
   // The repair pass runs before the producer, so they normally already agree;
   // this catches the residue where the producer read through a mishearing the
@@ -406,6 +430,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         .join("\n") +
       "\n";
   }
+  if (provider) report += formatUsageReport(provider.usage, cfg.pricing);
   await writeFile(join(work, "report.txt"), report);
   console.log("");
   console.log(report);
@@ -469,7 +494,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     theme,
     settings: production.render,
     outputDurationSec: map.outputDuration,
-    face: faceBox ? { centerYFrac: faceBox.centerYFrac, sizeFrac: faceBox.sizeFrac } : null,
+    // The aspect travels with the measurement because the crop math needs it:
+    // `object-fit: cover` spills vertically for a portrait source and
+    // HORIZONTALLY for a landscape one, and the stage cannot tell which
+    // without being told what shape the source is.
+    face: faceBox
+      ? {
+          centerYFrac: faceBox.centerYFrac,
+          centerXFrac: faceBox.centerXFrac,
+          sizeFrac: faceBox.sizeFrac,
+          sourceAspect: sourceProbe.height > 0 ? sourceProbe.width / sourceProbe.height : undefined,
+        }
+      : null,
     zoomPlan: zoom.segments,
     ctaKeyword,
     ctaWindow,
@@ -508,14 +544,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // cover, so nothing has to be pickable from the video — and spending the
   // opening seconds on a title card fights the hook-in-2s policy directly.
   if (opts.cover !== false) {
-    const coverText = beatSheet?.coverText ?? beatSheet?.hook;
+    // §35's cap applies here too: a cached beat sheet from before the fix, or
+    // the hook fallback, must not slip a 13-word paragraph onto a thumbnail.
+    const coverText = coverHeadline(beatSheet?.coverText ?? beatSheet?.hook ?? "");
     if (!coverText) {
       console.log("▸ no cover text (run --produce for one) — skipping cover");
     } else {
       const detector = await createFaceDetector();
       const pick = await pickCoverFrame(tools, input, sourceProbe.duration, {
         cacheDir: work,
-        hasFace: (pixels, w, h) => detector(pixels, w, h) !== null,
+        detectFace: (pixels, w, h) => {
+          const d = detector(pixels, w, h);
+          // pico returns [row, col, size, score] in detection-frame pixels,
+          // and that frame is cropped exactly like the cover — so these
+          // fractions are the cover's own geometry, not the source's.
+          return d ? { centerXFrac: d[1] / w, centerYFrac: d[0] / h, sizeFrac: d[2] / h } : null;
+        },
       });
       if (!pick) {
         console.log("▸ no usable cover frame found — skipping cover");
@@ -532,12 +576,34 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         const coverPath = resolve(
           opts.coverPath ?? outPath.replace(/(\.[^.]+)?$/, ".cover.jpg"),
         );
+        // §34: if the source's own title is up at this instant, the frame
+        // already has a headline. Adding ours states the same claim twice in
+        // one image — a cover with one title beats a cover with two.
+        const sourceTitled = regionsDuring(
+          sourceText.regions,
+          pick.timeSec - 0.5,
+          pick.timeSec + 0.5,
+        ).length > 0;
         console.log(
           `▸ cover from ${pick.timeSec.toFixed(1)}s ` +
             `(${pick.hasFace ? "face" : "no face"}, sharpness ${pick.sharpness.toFixed(0)})…`,
         );
+        if (sourceTitled) {
+          console.log("  ▸ source already has a title in this frame — shipping it without a banner");
+        } else if (pick.face) {
+          const band = coverTextRect(pick.face);
+          console.log(
+            `  ▸ banner in the ${band.y + band.h / 2 < pick.face.centerYFrac ? "band above" : "band below"} ` +
+              `the face (${(band.y * 100).toFixed(0)}-${((band.y + band.h) * 100).toFixed(0)}%)`,
+          );
+        }
         await renderCover(
-          { frameFileName: frameName, text: coverText, theme },
+          {
+            frameFileName: frameName,
+            text: sourceTitled ? "" : coverText,
+            theme,
+            face: pick.face,
+          },
           { publicDir: work, outPath: coverPath, browserExecutable: cfg.browserExecutable },
         );
         console.log(`✓ cover → ${coverPath}`);

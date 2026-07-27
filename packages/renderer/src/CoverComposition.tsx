@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Img, staticFile } from "remotion";
 import { defaultTheme, type Theme } from "@ossclip/core/browser";
-import { COVER_TEXT_RECT } from "@ossclip/scenes";
+import { coverTextRect } from "@ossclip/scenes";
 
 /**
  * The cover image (FINDINGS §31): a frame from the take with a short,
@@ -15,10 +15,20 @@ import { COVER_TEXT_RECT } from "@ossclip/scenes";
 export interface CoverCompProps {
   /** Frame image in the render's public dir. */
   frameFileName: string;
+  /**
+   * Banner headline. EMPTY means ship the frame with no banner at all — the
+   * §34 case, where the source already carries its own burned-in title and a
+   * second one would just say the same thing twice.
+   */
   text: string;
   theme: Theme;
   /** Handle/byline under the banner; omitted when not known. */
   byline?: string;
+  /**
+   * Where the face is in this frame, in its own fractions. The banner routes
+   * around it (FINDINGS §33) — reference covers keep the box off the speaker.
+   */
+  face?: { centerYFrac: number; sizeFrac: number };
 }
 
 export const defaultCoverProps: CoverCompProps = {
@@ -34,23 +44,35 @@ export const CoverComposition: React.FC<CoverCompProps> = ({
   text,
   theme,
   byline,
+  face,
 }) => {
   // The profile grid crops to a centre square, so the banner must sit inside
   // COVER_GRID_SAFE or it is simply cut off in the grid — a different
-  // constraint from the player's SAFE_AREA, and both have to hold.
+  // constraint from the player's SAFE_AREA, and both have to hold. Within
+  // that, it takes whichever band the head leaves free.
   const words = text.trim().split(/\s+/).filter(Boolean);
   // Long headlines get smaller type rather than more lines: three lines of
   // banner in a grid tile is unreadable at thumbnail size.
   const fontSize = words.length <= 4 ? 96 : words.length <= 6 ? 78 : 64;
+  const rect = coverTextRect(face && face.sizeFrac > 0 ? face : null);
+
+  const frame = frameFileName ? (
+    <Img
+      src={/^https?:\/\//.test(frameFileName) ? frameFileName : staticFile(frameFileName)}
+      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+    />
+  ) : null;
+
+  // §34: no banner means the frame IS the cover. The scrim goes too — it only
+  // ever existed to keep type legible, and darkening a bare photo for nothing
+  // makes it look like a mistake.
+  if (words.length === 0) {
+    return <AbsoluteFill style={{ backgroundColor: theme.bg }}>{frame}</AbsoluteFill>;
+  }
 
   return (
     <AbsoluteFill style={{ backgroundColor: theme.bg }}>
-      {frameFileName ? (
-        <Img
-          src={/^https?:\/\//.test(frameFileName) ? frameFileName : staticFile(frameFileName)}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      ) : null}
+      {frame}
       {/* A scrim keeps the banner legible over any frame. */}
       <AbsoluteFill
         style={{
@@ -59,10 +81,10 @@ export const CoverComposition: React.FC<CoverCompProps> = ({
       />
       <AbsoluteFill
         style={{
-          paddingTop: `${COVER_TEXT_RECT.y * 100}%`,
-          paddingBottom: `${(1 - COVER_TEXT_RECT.y - COVER_TEXT_RECT.h) * 100}%`,
-          paddingLeft: `${COVER_TEXT_RECT.x * 100}%`,
-          paddingRight: `${(1 - COVER_TEXT_RECT.x - COVER_TEXT_RECT.w) * 100}%`,
+          paddingTop: `${rect.y * 100}%`,
+          paddingBottom: `${(1 - rect.y - rect.h) * 100}%`,
+          paddingLeft: `${rect.x * 100}%`,
+          paddingRight: `${(1 - rect.x - rect.w) * 100}%`,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",

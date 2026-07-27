@@ -81,6 +81,20 @@ export const FaceCropSchema = z.object({
   centerYFrac: z.number().min(0).max(1),
   /** Face height as a fraction of source height (informational for now). */
   sizeFrac: z.number().min(0).max(1).optional(),
+  /**
+   * Horizontal center, 0..1 of source width. Only matters when the source is
+   * WIDER than the slot it fills — a portrait take is cropped vertically and
+   * the speaker's horizontal position is whatever the source framed. A
+   * landscape take in a vertical slot is cropped horizontally instead, and
+   * centring it blindly can crop the speaker out of their own video.
+   */
+  centerXFrac: z.number().min(0).max(1).optional(),
+  /**
+   * The source's width/height. Absent means "the same 9:16 the frame is",
+   * which is what every crop calculation used to assume outright — true for
+   * phone footage, wrong for a webcam recording or a screen capture.
+   */
+  sourceAspect: z.number().positive().optional(),
 });
 export type FaceCrop = z.infer<typeof FaceCropSchema>;
 

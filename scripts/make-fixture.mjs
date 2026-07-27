@@ -5,6 +5,10 @@
  * Emits:
  *   fixtures/fixture.mp4              — 1080x1920 testsrc2 video + speech audio
  *   fixtures/fixture.transcript.json  — ground-truth transcript (schema-valid)
+ *   fixtures/edited-reel.mp4          — a PRE-EDITED reel: a burned-in title
+ *                                       over the first half (FINDINGS §26/§32)
+ *   fixtures/landscape.mp4            — a 16:9 source, for the crop math that
+ *                                       used to assume 9:16 outright
  *
  * The fixture contains everything the cutlist must handle: leading dead air,
  * a short sentence pause (must survive), fillers (um/uh), a long mid-take
@@ -112,3 +116,46 @@ writeFileSync(
 
 console.log(`fixture: ${fixturePath} (${totalDur.toFixed(2)}s, ${words.length} words)`);
 console.log(`transcript: ${join(OUT_DIR, "fixture.transcript.json")}`);
+
+/**
+ * The pre-edited reel (FINDINGS §26/§32/§34).
+ *
+ * White type in a solid black box over the first half — the highest-contrast
+ * burned-in title that exists, and TRANSIENT, which is what the first detector
+ * got wrong: it demanded a band be busy in half of all sampled frames and so
+ * voted out a title that ran a third of the clip. The background is testsrc2's
+ * colour bars, which are every bit as bimodal as white-on-black type and were
+ * the original false positive. One clip, both failure modes.
+ */
+const TITLE_SEC = 6;
+const REEL_SEC = 12;
+const reelPath = join(OUT_DIR, "edited-reel.mp4");
+sh("ffmpeg", [
+  "-y",
+  "-f", "lavfi", "-i", `testsrc2=size=720x1280:rate=30:duration=${REEL_SEC}`,
+  "-f", "lavfi", "-i", `sine=frequency=220:duration=${REEL_SEC}`,
+  "-vf",
+  `drawbox=x=0:y=200:w=720:h=110:color=black@1:t=fill:enable='lt(t,${TITLE_SEC})',` +
+    `drawtext=text='I got Claude Max for free':fontcolor=white:fontsize=42:` +
+    `x=(w-text_w)/2:y=232:enable='lt(t,${TITLE_SEC})'`,
+  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+  "-c:a", "aac", "-b:a", "96k", "-shortest",
+  reelPath,
+]);
+console.log(`edited reel: ${reelPath} (${REEL_SEC}s, title 0-${TITLE_SEC}s)`);
+
+/**
+ * A 16:9 source. Every crop calculation used to assume the source shared the
+ * frame's 9:16 aspect — true for phone footage, wrong for a webcam or a screen
+ * recording, where `object-fit: cover` spills HORIZONTALLY instead.
+ */
+const landscapePath = join(OUT_DIR, "landscape.mp4");
+sh("ffmpeg", [
+  "-y",
+  "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=8",
+  "-f", "lavfi", "-i", "sine=frequency=220:duration=8",
+  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+  "-c:a", "aac", "-b:a", "96k", "-shortest",
+  landscapePath,
+]);
+console.log(`landscape: ${landscapePath} (8s, 16:9)`);

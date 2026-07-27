@@ -41,7 +41,30 @@ Rendering goes through a dense-keyframe mezzanine built in the work directory.
 source's own folder the render server's public directory — avoid it for files
 sitting in a folder you would not want served.
 
-Configuration (binary/model paths): `~/.ossclip/config.json` — see `apps/cli`.
+### What each run costs
+
+`--produce` makes several LLM calls (a transcript repair, a beat sheet, one per
+scene), so every run reports what it spent:
+
+```
+▸ llm: 9 calls · 41,203 in / 3,884 out tokens · ~$0.91 · 78s
+```
+
+A per-call-type breakdown lands in `report.txt` and the raw records in
+`usage.json`, both in the work directory. Two rules the output holds to: token
+counts a provider actually reports are exact and anything derived from text
+length is marked `(est)`, and a model with no known price is reported with its
+tokens and **no cost guess**. On the Claude Code CLI path the figure is what the
+same tokens would cost at API rates — your plan pays, so nothing is charged, but
+the number still says how much work the generation was.
+
+Prices are a built-in per-family assumption. Override them for your account:
+
+```json
+{ "pricing": { "claude-opus-5": { "inputPerMTok": 15, "outputPerMTok": 75 } } }
+```
+
+Configuration (binary/model paths, pricing): `~/.ossclip/config.json` — see `apps/cli`.
 
 ## Repo layout
 

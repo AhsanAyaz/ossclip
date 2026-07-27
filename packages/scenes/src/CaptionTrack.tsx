@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
 import { SAFE_AREA, activeCueAt, captionAnchorAt } from "./stage";
-import { captionAnchorAvoiding, type OccupiedRegion } from "./source-fit";
+import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
 
 export interface CaptionTrackProps {
   lines: CaptionLine[];
@@ -148,7 +148,7 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
           sourceTextRegions.length > 0
             ? captionAnchorAvoiding(
                 active?.layout ?? "full-bleed",
-                sourceTextRegions,
+                regionsDuring(sourceTextRegions, line.start, line.end),
                 active?.graphicRect,
               )
             : cues.length > 0

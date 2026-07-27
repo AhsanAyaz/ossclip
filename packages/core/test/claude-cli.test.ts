@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
-import { ClaudeCliProvider, extractJsonObject, unwrapCliEnvelope } from "../src/producer/claude-cli";
+import {
+  ClaudeCliProvider,
+  extractJsonObject,
+  parseCliEnvelope,
+  unwrapCliEnvelope,
+} from "../src/producer/claude-cli";
 
 const schema = z.object({ title: z.string().min(1) });
 
@@ -68,5 +73,65 @@ describe("ClaudeCliProvider", () => {
 
   it("extractJsonObject rejects reply with no object", () => {
     expect(() => extractJsonObject("no braces here")).toThrow(/no JSON object/);
+  });
+
+  it("records tokens and the CLI's own cost as unbilled subscription usage", async () => {
+    // What a Claude Max run actually looks like: the plan pays, but the tokens
+    // still say how much work the generation was (FINDINGS §36).
+    const bin = stubClaude(
+      JSON.stringify({
+        type: "result",
+        is_error: false,
+        result: '{"title": "PAID BY THE PLAN"}',
+        total_cost_usd: 0.1234,
+        usage: {
+          input_tokens: 900,
+          cache_read_input_tokens: 100,
+          cache_creation_input_tokens: 0,
+          output_tokens: 220,
+        },
+        modelUsage: { "claude-opus-5-20260101": {} },
+      }),
+    );
+    const provider = new ClaudeCliProvider(undefined, bin);
+    await provider.complete({ system: "s", user: "u", schema, schemaName: "beat_sheet" });
+    expect(provider.usage).toHaveLength(1);
+    expect(provider.usage[0]).toMatchObject({
+      schemaName: "beat_sheet",
+      model: "claude-opus-5-20260101",
+      inputTokens: 1000, // cached tokens folded in, and reported separately
+      cachedInputTokens: 100,
+      outputTokens: 220,
+      reportedCostUsd: 0.1234,
+      exact: true,
+      billed: false,
+    });
+  });
+
+  it("counts a self-repair retry as a second call — the tokens were spent", async () => {
+    const bin = stubClaude(envelope('{"title": ""}'), envelope('{"title": "FIXED"}'));
+    const provider = new ClaudeCliProvider(undefined, bin);
+    await provider.complete({ system: "s", user: "u", schema, schemaName: "t" });
+    expect(provider.usage).toHaveLength(2);
+  });
+
+  it("estimates tokens when the envelope reports none, and says so", async () => {
+    const bin = stubClaude(envelope('{"title": "NO USAGE BLOCK"}'));
+    const provider = new ClaudeCliProvider(undefined, bin);
+    await provider.complete({ system: "s", user: "u", schema, schemaName: "t" });
+    expect(provider.usage[0]!.exact).toBe(false);
+    expect(provider.usage[0]!.inputTokens).toBeGreaterThan(0);
+  });
+
+  it("parseCliEnvelope never throws on a shape it does not recognise", () => {
+    expect(parseCliEnvelope("not json")).toEqual({});
+    expect(parseCliEnvelope("[]")).toEqual({
+      result: undefined,
+      model: undefined,
+      inputTokens: undefined,
+      outputTokens: undefined,
+      cachedInputTokens: undefined,
+      costUsd: undefined,
+    });
   });
 });

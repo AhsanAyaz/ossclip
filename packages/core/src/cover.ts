@@ -15,17 +15,80 @@ import { run } from "./exec";
  * This module picks WHICH frame. The banner is drawn by the renderer.
  */
 
+/**
+ * A cover banner is a headline, not a sentence (FINDINGS §35). The producer
+ * shipped 13 words across five lines by reusing the video's hook verbatim; at
+ * grid-tile size that is unreadable. The reference covers run 4-9 words.
+ *
+ * Stated in the schema AND enforced here, because a `.describe()` is a request
+ * and this is a constraint — the same reason `normalizeBeatSheet` exists.
+ */
+export const COVER_MAX_WORDS = 9;
+
+/** Trailing words that cannot end a headline — the truncation reads as broken. */
+const DANGLING = new Set([
+  "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "is", "it",
+  "of", "on", "or", "the", "to", "with", "that", "this", "my", "your", "so",
+]);
+
+/**
+ * Cut a headline down to `maxWords`, preferring a natural break.
+ *
+ * A dash or colon usually separates a complete claim from its elaboration, so
+ * the first clause is a real headline rather than a sentence with its end
+ * lopped off. Only when that is still too long does this truncate — and then
+ * it refuses to stop on a preposition or article, which is what makes a
+ * truncation look like a bug instead of an edit.
+ */
+export function coverHeadline(text: string, maxWords = COVER_MAX_WORDS): string {
+  const clean = text.trim().replace(/\s+/g, " ");
+  if (!clean) return clean;
+  const words = (s: string): string[] => s.split(" ").filter(Boolean);
+  if (words(clean).length <= maxWords) return clean;
+
+  // First clause, if it stands on its own — never a two-word fragment. Even
+  // when the clause is itself too long it is the better thing to cut down,
+  // since truncating it can never wander past the dash into the elaboration.
+  const clause = clean.split(/\s*[—–:]\s*|\s+-\s+/)[0]!.trim();
+  const base = words(clause).length >= 3 ? clause : clean;
+  const out = words(base).slice(0, maxWords);
+  while (out.length > 3 && DANGLING.has(out[out.length - 1]!.toLowerCase().replace(/\W/g, ""))) {
+    out.pop();
+  }
+  // A clause that ended on its own punctuation keeps it; a cut does not.
+  return out.join(" ").replace(/[,;:—–-]+$/, "");
+}
+
+/** Where the face sits in the COVER frame, as fractions of it. */
+export interface CoverFace {
+  centerXFrac: number;
+  centerYFrac: number;
+  sizeFrac: number;
+}
+
 export interface CoverCandidate {
   timeSec: number;
   /** Variance of the Laplacian — higher is sharper, lower is motion-blurred. */
   sharpness: number;
   hasFace: boolean;
+  /** The box, when one was found — the banner routes around it (FINDINGS §33). */
+  face?: CoverFace;
   score: number;
 }
 
-/** Detection frame size, matching face.ts so the two agree on geometry. */
+/**
+ * Detection frame: the 9:16 cover frame at analysis size.
+ *
+ * Deliberately NOT face.ts's plain `scale`. That one measures the SOURCE, and
+ * its fractions feed the video crop math. This one measures the COVER, which
+ * is a centre crop to 1080×1920 — so it applies the identical crop first.
+ * Without that, a face box measured on a stretched 16:9 source would place the
+ * cover banner against geometry the cover does not have.
+ */
 const DET_W = 360;
 const DET_H = 640;
+export const COVER_CROP_VF =
+  `scale=${DET_W}:${DET_H}:force_original_aspect_ratio=increase,crop=${DET_W}:${DET_H}`;
 
 /**
  * Variance of the Laplacian over a grayscale frame — the standard cheap
@@ -75,8 +138,13 @@ export interface PickCoverOptions {
   /** Fraction of the take to search — the cover should match the opening. */
   searchFraction?: number;
   cacheDir?: string;
-  /** Reports whether a face is present in a sampled frame. */
-  hasFace?: (pixels: Uint8Array, w: number, h: number) => boolean;
+  /**
+   * Locates the face in a sampled frame, in that frame's own fractions.
+   * Returns the box rather than a boolean because the banner has to route
+   * around it (FINDINGS §33), and the frame it was measured on is the only
+   * frame whose geometry is certainly the cover's.
+   */
+  detectFace?: (pixels: Uint8Array, w: number, h: number) => CoverFace | null;
 }
 
 /**
@@ -97,7 +165,12 @@ export async function pickCoverFrame(
   const searchFraction = opts.searchFraction ?? 0.2;
   const window = Math.max(1, durationSec * searchFraction);
   const candidates: CoverCandidate[] = [];
-  const raw: Array<{ timeSec: number; sharpness: number; hasFace: boolean }> = [];
+  const raw: Array<{
+    timeSec: number;
+    sharpness: number;
+    hasFace: boolean;
+    face?: CoverFace;
+  }> = [];
 
   for (let i = 0; i < samples; i++) {
     const t = (window * (i + 0.5)) / samples;
@@ -107,7 +180,7 @@ export async function pickCoverFrame(
       "-ss", t.toFixed(3),
       "-i", videoPath,
       "-frames:v", "1",
-      "-vf", `scale=${DET_W}:${DET_H}`,
+      "-vf", COVER_CROP_VF,
       "-pix_fmt", "gray",
       "-f", "rawvideo",
       "-y", framePath,
@@ -115,10 +188,12 @@ export async function pickCoverFrame(
     const pixels = new Uint8Array(await readFile(framePath));
     await unlink(framePath).catch(() => {});
     if (pixels.length < DET_W * DET_H) continue;
+    const face = opts.detectFace?.(pixels, DET_W, DET_H) ?? undefined;
     raw.push({
       timeSec: t,
       sharpness: laplacianVariance(pixels, DET_W, DET_H),
-      hasFace: opts.hasFace ? opts.hasFace(pixels, DET_W, DET_H) : false,
+      hasFace: face !== undefined,
+      face,
     });
   }
   if (raw.length === 0) return null;

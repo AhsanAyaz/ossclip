@@ -1,10 +1,31 @@
 import { SCENE_REGISTRY, type Layout, type SceneCue } from "@ossclip/core/browser";
-import { CAPTION_HALF_BAND, SAFE_AREA, layoutSlots } from "./stage";
+import { CAPTION_HALF_BAND, SAFE_AREA, freeBands, layoutSlots } from "./stage";
 
 /** Occupancy rect reported by the source-text scan (core's `TextRegion`). */
 export interface OccupiedRegion {
   y: number;
   h: number;
+  /**
+   * When the region is on screen, in SOURCE seconds. Burned-in titles are
+   * transient — treating them as permanent was what made the first detector
+   * reject them outright (FINDINGS §32) — so a region only conflicts with
+   * scenes that share its window. Absent means "always" (assumed regions).
+   */
+  startSec?: number;
+  endSec?: number;
+}
+
+/** The regions actually on screen during [startSec, endSec]. */
+export function regionsDuring(
+  regions: readonly OccupiedRegion[],
+  startSec: number,
+  endSec: number,
+): OccupiedRegion[] {
+  return regions.filter(
+    (r) =>
+      (r.startSec ?? Number.NEGATIVE_INFINITY) < endSec &&
+      (r.endSec ?? Number.POSITIVE_INFINITY) > startSec,
+  );
 }
 
 /**
@@ -43,22 +64,7 @@ export function placeInFreeBand(
   rect: { x: number; y: number; w: number; h: number },
   regions: readonly OccupiedRegion[],
 ): { x: number; y: number; w: number; h: number } | null {
-  const top = SAFE_AREA.top;
-  const bottom = 1 - SAFE_AREA.bottom;
-  const blocked = [...regions]
-    .map((r) => ({ start: Math.max(top, r.y), end: Math.min(bottom, r.y + r.h) }))
-    .filter((r) => r.end > r.start)
-    .sort((a, b) => a.start - b.start);
-
-  const free: Array<{ start: number; end: number }> = [];
-  let cursor = top;
-  for (const b of blocked) {
-    if (b.start > cursor) free.push({ start: cursor, end: b.start });
-    cursor = Math.max(cursor, b.end);
-  }
-  if (cursor < bottom) free.push({ start: cursor, end: bottom });
-
-  const tallest = free.sort((a, b) => b.end - b.start - (a.end - a.start))[0];
+  const [tallest] = freeBands({ start: SAFE_AREA.top, end: 1 - SAFE_AREA.bottom }, regions);
   if (!tallest) return null;
   const bandHeight = tallest.end - tallest.start;
   if (bandHeight < MIN_ROUTED_SLOT_H) return null;
@@ -109,6 +115,12 @@ export function routeAroundSourceText(
   const skipped: SourceTextPlan["skipped"] = [];
 
   for (const cue of cues) {
+    // Only the text actually up while this scene is on screen can conflict.
+    const active = regionsDuring(regions, cue.startSec, cue.endSec);
+    if (active.length === 0) {
+      out.push(cue);
+      continue;
+    }
     const meta = SCENE_REGISTRY[cue.component];
     // The cue's own layout first (§20's variety pass may have moved it off the
     // default), then the default, then the alternates — every placement the
@@ -122,7 +134,7 @@ export function routeAroundSourceText(
     for (const layout of candidates) {
       const slot = layoutSlots(layout).graphic;
       if (!slot) continue;
-      if (overlapFraction(slot, regions) <= MAX_GRAPHIC_OVERLAP) {
+      if (overlapFraction(slot, active) <= MAX_GRAPHIC_OVERLAP) {
         placed = layout;
         break;
       }
@@ -137,7 +149,7 @@ export function routeAroundSourceText(
     // the scene. "Route around them, or skip" is the rule, and routing comes
     // first: the graphic keeps its size and slides into the largest free band.
     const base = layoutSlots(cue.layout).graphic ?? layoutSlots(meta.defaultLayout).graphic;
-    const shifted = base ? placeInFreeBand(base, regions) : null;
+    const shifted = base ? placeInFreeBand(base, active) : null;
     if (shifted) {
       moved.push({ id: cue.id, y: shifted.y, h: shifted.h });
       out.push({ ...cue, graphicRect: shifted });

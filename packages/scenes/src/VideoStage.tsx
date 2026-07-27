@@ -66,6 +66,9 @@ export const VideoStage: React.FC<{
             // Crop bias consumed by EdlVideo's object-position (FINDINGS §11/§13):
             // derived from the measured face so the head lands in the band.
             ["--ossclip-obj-y" as string]: `${slot.objectPosY * 100}%`,
+            // …and the horizontal one, which only leaves centre for a source
+            // wider than the slot (a landscape take in a vertical frame).
+            ["--ossclip-obj-x" as string]: `${slot.objectPosX * 100}%`,
           }}
         >
           {children}

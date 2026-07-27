@@ -6,6 +6,10 @@ import {
   COVER_TEXT_RECT,
   COVER_GRID_SAFE,
   DEFAULT_FACE,
+  coverTextRect,
+  freeBands,
+  headBand,
+  objectPosXFor,
   HEAD_ABOVE_FACE,
   LAYOUT_TRANSITION_SEC,
   SAFE_AREA,
@@ -271,5 +275,132 @@ describe("cover geometry (FINDINGS §31)", () => {
   it("leaves a usable band for a banner", () => {
     expect(COVER_TEXT_RECT.h).toBeGreaterThan(0.4);
     expect(COVER_TEXT_RECT.w).toBeGreaterThan(0.7);
+  });
+});
+
+describe("cover banner placement (FINDINGS §33)", () => {
+  // The reported measurement from the shipped cover: face 36% down, 38% tall.
+  const face = { centerYFrac: 0.36, sizeFrac: 0.38 };
+
+  const clearOfHead = (r: { y: number; h: number }) => {
+    const head = headBand(face);
+    return Math.min(r.y + r.h, head.end) - Math.max(r.y, head.start) <= 1e-9;
+  };
+
+  it("keeps the banner off the face — the §33 defect", () => {
+    expect(clearOfHead(COVER_TEXT_RECT)).toBe(false); // the shipped behaviour
+    expect(clearOfHead(coverTextRect(face))).toBe(true);
+  });
+
+  it("stays inside the grid-safe band it started from", () => {
+    const r = coverTextRect(face);
+    expect(r.y).toBeGreaterThanOrEqual(COVER_TEXT_RECT.y - 1e-9);
+    expect(r.y + r.h).toBeLessThanOrEqual(COVER_TEXT_RECT.y + COVER_TEXT_RECT.h + 1e-9);
+    expect(r.x).toBe(COVER_TEXT_RECT.x);
+  });
+
+  it("takes the TALLER free band, not simply the one below", () => {
+    // Face low in the frame ⇒ the room is above it.
+    const low = { centerYFrac: 0.72, sizeFrac: 0.3 };
+    const r = coverTextRect(low);
+    expect(r.y + r.h).toBeLessThanOrEqual(headBand(low).start + 1e-9);
+  });
+
+  it("expands the box to a HEAD — a banner on the hair is still on the subject", () => {
+    const head = headBand(face);
+    expect(head.start).toBeLessThan(face.centerYFrac - face.sizeFrac / 2);
+    expect(head.end).toBeGreaterThan(face.centerYFrac + face.sizeFrac / 2);
+  });
+
+  it("falls back to the full rect when a close-up leaves no usable band", () => {
+    // A banner over the face beats a cover with no headline at all.
+    expect(coverTextRect({ centerYFrac: 0.5, sizeFrac: 0.9 })).toEqual(COVER_TEXT_RECT);
+  });
+
+  it("no face measured means no constraint", () => {
+    expect(coverTextRect(null)).toEqual(COVER_TEXT_RECT);
+    expect(coverTextRect(undefined)).toEqual(COVER_TEXT_RECT);
+  });
+});
+
+describe("freeBands", () => {
+  const range = { start: 0, end: 1 };
+
+  it("returns the whole range when nothing blocks it", () => {
+    expect(freeBands(range, [])).toEqual([{ start: 0, end: 1 }]);
+  });
+
+  it("orders bands tallest first, which is what every caller wants", () => {
+    const bands = freeBands(range, [{ y: 0.2, h: 0.1 }]);
+    expect(bands[0]!.start).toBeCloseTo(0.3, 9);
+    expect(bands[0]!.end).toBe(1);
+    expect(bands[1]).toEqual({ start: 0, end: 0.2 });
+  });
+
+  it("merges overlapping blockers instead of emitting a phantom gap", () => {
+    const bands = freeBands(range, [{ y: 0.2, h: 0.3 }, { y: 0.3, h: 0.3 }]);
+    expect(bands).toHaveLength(2);
+    expect(bands[0]!.start).toBeCloseTo(0.6, 9);
+    expect(bands[1]!.end).toBeCloseTo(0.2, 9);
+  });
+
+  it("clips blockers to the range and drops ones entirely outside it", () => {
+    expect(freeBands({ start: 0.4, end: 0.8 }, [{ y: 0, h: 0.1 }])).toEqual([
+      { start: 0.4, end: 0.8 },
+    ]);
+  });
+
+  it("a fully blocked range has no free band at all", () => {
+    expect(freeBands(range, [{ y: -0.5, h: 2 }])).toEqual([]);
+  });
+});
+
+describe("non-portrait sources (generalization)", () => {
+  const full = { x: 0, y: 0, w: 1, h: 1 };
+  const LANDSCAPE = 16 / 9;
+  const TALL_PHONE = 1080 / 2340; // 19.5:9, what a modern phone actually shoots
+
+  it("a landscape source has no vertical overflow to bias", () => {
+    // `cover` scales it to the slot's HEIGHT, so the whole source height shows
+    // and there is nothing to slide. The old math assumed 9:16 outright and
+    // would have computed a bias against a height the element never has.
+    const face = { centerYFrac: 0.3, sizeFrac: 0.3, sourceAspect: LANDSCAPE };
+    expect(objectPosYFor(full, face)).toBe(0.5);
+  });
+
+  it("…and is biased HORIZONTALLY instead, toward the measured face", () => {
+    const left = { centerYFrac: 0.3, centerXFrac: 0.2, sourceAspect: LANDSCAPE };
+    const right = { centerYFrac: 0.3, centerXFrac: 0.8, sourceAspect: LANDSCAPE };
+    expect(objectPosXFor(full, left)).toBeLessThan(objectPosXFor(full, right));
+    // A face against the source's own edge clamps — there is nothing further
+    // out to show, and sliding past it would letterbox the slot.
+    expect(objectPosXFor(full, { ...left, centerXFrac: 0.02 })).toBe(0);
+    expect(objectPosXFor(full, { ...right, centerXFrac: 0.98 })).toBe(1);
+  });
+
+  it("a portrait source is never biased horizontally", () => {
+    // The 9:16 case must be untouched by any of this.
+    expect(objectPosXFor(full, { centerYFrac: 0.38, centerXFrac: 0.2 })).toBe(0.5);
+    expect(objectPosXFor(full, DEFAULT_FACE)).toBe(0.5);
+  });
+
+  it("an unmeasured horizontal position stays centred rather than guessing", () => {
+    expect(objectPosXFor(full, { centerYFrac: 0.3, sourceAspect: LANDSCAPE })).toBe(0.5);
+  });
+
+  it("a taller-than-9:16 phone source still keeps the chin in a short band", () => {
+    const rect = { x: 0, y: 0, w: 1, h: 0.42 }; // video-top
+    const face = { centerYFrac: 0.38, sizeFrac: 0.22, sourceAspect: TALL_PHONE };
+    const slotH = 0.42 * 1920;
+    const displayedH = 1080 / TALL_PHONE;
+    const offset = objectPosYFor(rect, face) * (displayedH - slotH);
+    const chin = (face.centerYFrac + face.sizeFrac / 2) * displayedH;
+    expect(chin - offset).toBeLessThanOrEqual(slotH);
+  });
+
+  it("omitting sourceAspect reproduces the old portrait-only behaviour exactly", () => {
+    const rect = { x: 0, y: 0, w: 1, h: 0.42 };
+    const face = { centerYFrac: 0.38, sizeFrac: 0.22 };
+    expect(objectPosYFor(rect, face)).toBe(objectPosYFor(rect, { ...face, sourceAspect: 1080 / 1920 }));
   });
 });

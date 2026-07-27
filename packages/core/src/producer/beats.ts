@@ -3,6 +3,7 @@ import type { Transcript } from "../schema";
 import { SceneComponentIdSchema } from "../scene-schema";
 import { SCENE_REGISTRY } from "../scene-registry";
 import { MAX_SCENE_SEC } from "../assemble";
+import { COVER_MAX_WORDS, coverHeadline } from "../cover";
 import type { LlmProvider } from "./provider";
 
 /** Call 1 — the editorial call (PHASE1 §4): moments, copy, component picks. */
@@ -29,7 +30,9 @@ export const BeatSheetSchema = z.object({
     .string()
     .max(60)
     .optional()
-    .describe("cover banner: at most 9 words, the hook compressed to a thumbnail headline"),
+    .describe(
+      `cover banner: at most ${COVER_MAX_WORDS} words, the hook compressed to a thumbnail headline`,
+    ),
   moments: z.array(MomentSchema).min(1).max(12),
 });
 export type BeatSheet = z.infer<typeof BeatSheetSchema>;
@@ -47,7 +50,7 @@ Virality grammar — follow these as hard policies:
 - VARIETY: never the same component twice in a row, and prefer a component you have NOT used yet in this video — reuse a treatment only when the beat genuinely calls for it. A repeat reads as a template.
 - Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.
 - The transcript is ASR output and may contain mishearings: an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity — write on-screen copy with the common-sense reading, never a suspected mishearing.
-- COVER: also write \`coverText\` — the hook compressed to a thumbnail headline, AT MOST 9 WORDS. It is read at a glance in a profile grid, so it must stand alone without the video: the claim or the number, no lead-in, no ellipsis.`;
+- COVER: also write \`coverText\` — the hook compressed to a thumbnail headline, AT MOST ${COVER_MAX_WORDS} WORDS. It is read at a glance in a profile grid, so it must stand alone without the video: the claim or the number, no lead-in, no ellipsis.`;
 
 export function buildBeatsUserPrompt(
   transcript: Transcript,
@@ -69,6 +72,7 @@ export function buildBeatsUserPrompt(
 }
 
 export interface BeatsValidationIssue {
+  /** Index of the offending moment, or -1 for a sheet-wide issue. */
   moment: number;
   issue: string;
 }
@@ -210,7 +214,17 @@ export function normalizeBeatSheet(
     demote(target, `duplicate adjacent ${moments[target]!.sceneKind}`);
   }
 
-  return { sheet: { hook: sheet.hook, moments }, issues };
+  // The cover banner (FINDINGS §35). Two things went wrong at once: this
+  // function used to drop `coverText` on the floor, so the CLI fell back to
+  // the full hook — and nothing enforced the nine-word cap the prompt asks
+  // for. Both are fixed here, where every path to a beat sheet passes.
+  const requested = sheet.coverText?.trim() || sheet.hook;
+  const coverText = coverHeadline(requested);
+  if (coverText !== requested) {
+    issues.push({ moment: -1, issue: `coverText shortened to "${coverText}"` });
+  }
+
+  return { sheet: { hook: sheet.hook, coverText, moments }, issues };
 }
 
 export async function generateBeatSheet(

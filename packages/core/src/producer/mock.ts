@@ -1,5 +1,6 @@
 import type { z } from "zod/v4";
 import type { LlmProvider } from "./provider";
+import { estimateTokens, type LlmUsage } from "./usage";
 import { BeatSheetSchema } from "./beats";
 
 /**
@@ -10,6 +11,7 @@ import { BeatSheetSchema } from "./beats";
  */
 export class MockProvider implements LlmProvider {
   readonly name = "mock";
+  readonly usage: LlmUsage[] = [];
 
   async complete<T>(req: {
     system: string;
@@ -17,15 +19,28 @@ export class MockProvider implements LlmProvider {
     schema: z.ZodType<T>;
     schemaName: string;
   }): Promise<T> {
-    if (req.schemaName === "beat_sheet") {
-      return this.beatSheet(req.user, req.schema);
-    }
-    if (req.schemaName === "transcript_repair") {
-      // A deterministic no-op: the offline path must exercise the repair call
-      // without inventing corrections a real provider would have to justify.
-      return req.schema.parse({ repairs: [] });
-    }
-    return this.sceneProps(req.user, req.schema, req.schemaName);
+    const result =
+      req.schemaName === "beat_sheet"
+        ? this.beatSheet(req.user, req.schema)
+        : req.schemaName === "transcript_repair"
+          ? // A deterministic no-op: the offline path must exercise the repair
+            // call without inventing corrections a real provider would justify.
+            req.schema.parse({ repairs: [] })
+          : this.sceneProps(req.user, req.schema, req.schemaName);
+    // Estimated, and costing exactly nothing — but recorded, because the
+    // offline path is first-class and "how big are the prompts this pipeline
+    // sends" is worth answering without spending anything to find out.
+    this.usage.push({
+      provider: this.name,
+      schemaName: req.schemaName,
+      inputTokens: estimateTokens(`${req.system}\n${req.user}`),
+      outputTokens: estimateTokens(JSON.stringify(result)),
+      reportedCostUsd: 0,
+      exact: false,
+      billed: false,
+      ms: 0,
+    });
+    return result;
   }
 
   private beatSheet<T>(user: string, schema: z.ZodType<T>): T {

@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import type { ModelPrice } from "./producer/usage";
+
 export interface OssclipConfig {
   ffmpegPath: string;
   ffprobePath: string;
@@ -9,6 +11,12 @@ export interface OssclipConfig {
   modelDir: string;
   model: string;
   browserExecutable?: string;
+  /**
+   * USD per million tokens, keyed by model id or family substring — overrides
+   * the built-in assumptions in `producer/usage.ts` so a run's cost line
+   * reflects the account's actual rates instead of ours.
+   */
+  pricing?: Record<string, ModelPrice>;
 }
 
 const DEFAULTS: OssclipConfig = {
@@ -40,5 +48,6 @@ export function loadConfig(): OssclipConfig {
     modelDir: process.env.OSSCLIP_MODEL_DIR ?? fileCfg.modelDir ?? DEFAULTS.modelDir,
     model: process.env.OSSCLIP_MODEL ?? fileCfg.model ?? DEFAULTS.model,
     browserExecutable: process.env.OSSCLIP_BROWSER ?? fileCfg.browserExecutable,
+    pricing: fileCfg.pricing,
   };
 }
