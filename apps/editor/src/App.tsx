@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Player, type PlayerRef } from "@remotion/player";
 import type { AnyZodObject } from "remotion";
 import { ProductionComposition, type ProductionCompProps } from "@ossclip/renderer/composition";
-import { applyOverrides, resolveTheme, defaultTheme } from "@ossclip/core/browser";
+import {
+  applyOverrides,
+  resolveTheme,
+  defaultTheme,
+  type OverrideDoc,
+  type SceneCue,
+  type Theme,
+} from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
 import { Overlay, type Selection } from "./Overlay";
 import { Inspector } from "./Inspector";
@@ -18,9 +25,28 @@ import { Timeline } from "./Timeline";
  */
 type PlayerProductionProps = ProductionCompProps & Record<string, unknown>;
 
+/**
+ * The raw `render-props.json` shape the server hands back. `sceneCues` and
+ * `theme` there are already override-applied (`produce` bakes the CURRENT
+ * `overrides.json` into them before writing, so the actual render matches
+ * what was on screen when it ran) — but that means using them as the base
+ * for a SECOND round of `applyOverrides` merges the user's edits onto their
+ * own already-merged output, which is add-only: a reset/un-pin/undo has
+ * nothing to fall back TO and renders as if it never happened. `produce`
+ * additionally writes the PRISTINE, pre-override cues/theme under these two
+ * keys so the editor always has a clean base to re-apply the CURRENT
+ * override doc to, however it's changed since the last `produce` run.
+ * Optional so older workdirs (produced before this existed) still load —
+ * they just fall back to the old (occasionally-lying) behaviour.
+ */
+type RawRenderProps = PlayerProductionProps & {
+  baseSceneCues?: SceneCue[];
+  baseTheme?: Theme;
+};
+
 export const App: React.FC = () => {
   const edits = useEdits();
-  const [renderProps, setRenderProps] = useState<PlayerProductionProps | null>(null);
+  const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const stageRef = useRef<HTMLDivElement>(null!);
@@ -31,7 +57,7 @@ export const App: React.FC = () => {
       try {
         const res = await fetch("/api/production");
         if (!res.ok) throw new Error(`GET /api/production failed: ${res.status}`);
-        const body = await res.json();
+        const body = (await res.json()) as { renderProps: RawRenderProps; overrides: OverrideDoc };
         setRenderProps(body.renderProps);
         edits.load(body.overrides);
       } catch (err) {
@@ -44,11 +70,18 @@ export const App: React.FC = () => {
 
   const live = useMemo<PlayerProductionProps | null>(() => {
     if (!renderProps) return null;
-    const { cues } = applyOverrides(renderProps.sceneCues ?? [], edits.doc);
+    // Always merge onto the PRISTINE base, never onto `renderProps.sceneCues`/
+    // `theme` themselves — those are what `produce` actually rendered (its
+    // own override-applied output), and merging the CURRENT override doc
+    // onto an already-merged base can only ever add, never take back
+    // something the user just reset/un-pinned/undid.
+    const baseCues = renderProps.baseSceneCues ?? renderProps.sceneCues ?? [];
+    const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
+    const { cues } = applyOverrides(baseCues, edits.doc);
     return {
       ...renderProps,
       sceneCues: cues,
-      theme: resolveTheme(renderProps.theme ?? defaultTheme, edits.doc),
+      theme: resolveTheme(baseTheme, edits.doc),
       videoFileName: `/media/${renderProps.videoFileName}`,
     };
   }, [renderProps, edits.doc]);
@@ -127,11 +160,13 @@ export const App: React.FC = () => {
               onSelect={setSelection}
               edits={edits}
               onSave={onSave}
+              settings={live.settings}
+              cue={selectedCue}
             />
           </div>
         </div>
         <div style={sidebar}>
-          <Inspector selection={selection} cue={selectedCue} edits={edits} />
+          <Inspector selection={selection} cue={selectedCue} edits={edits} resolvedTheme={live.theme} />
         </div>
       </div>
       <Timeline

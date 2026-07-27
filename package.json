@@ -7,7 +7,8 @@
     "test": "vitest run",
     "ossclip": "pnpm --filter @ossclip/cli exec tsx src/index.ts",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit",
-    "fixture": "node scripts/make-fixture.mjs"
+    "fixture": "node scripts/make-fixture.mjs",
+    "build": "pnpm --filter @ossclip/editor build"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

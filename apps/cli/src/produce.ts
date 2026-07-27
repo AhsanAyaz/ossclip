@@ -36,6 +36,7 @@ import {
   measureLevels,
   probe,
   produceScenes,
+  reclampPinnedTiming,
   reconcileCopy,
   repairTranscript,
   resolveTheme,
@@ -323,7 +324,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       for (const issue of result.beatIssues) {
         console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
       }
-      // Cache props only — overrides are user-owned and live in production.json.
+      // Cache props only — overrides are user-owned and live in overrides.json,
+      // never in production.json (that file is derived and every `produce`
+      // run overwrites it, per the merge rule in `overrides.ts`).
       await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
       await writeFile(beatCache, JSON.stringify(beatSheet, null, 2));
     }
@@ -430,7 +433,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   }
   const theme = resolveTheme(defaultTheme, overrideDoc);
 
-  const sceneCues = editedCues;
+  // A pin freezes a scene's ABSOLUTE time against whatever its neighbours'
+  // timing was when it was set. This same plan may since have re-anchored
+  // those neighbours (a `--cleanup` level change, new source material), so
+  // the pin can now overlap one of them or leave the array out of time
+  // order — re-clamp it here, the same way the editor clamps a pinned nudge
+  // at drag time, rather than letting an overlap reach `SceneLayer`/
+  // `buildCaptionLines`.
+  const { cues: reclamped, adjusted } = reclampPinnedTiming(editedCues);
+  for (const id of adjusted) {
+    console.log(`  ⚠ pinned timing for ${id} overlapped a re-planned neighbour — clamped back in bounds`);
+  }
+
+  const sceneCues = reclamped;
   if (sceneCues.length > 0) {
     console.log(
       `▸ ${sceneCues.length} scene(s) on stage: ` +
@@ -549,6 +564,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     captionLines,
     sceneCues,
     theme,
+    // The PRISTINE, pre-override cues/theme — everything above this line
+    // already has the CURRENT `overrides.json` baked in (so `sceneCues`/
+    // `theme` are exactly what got rendered). The editor needs an unmerged
+    // base to re-apply overrides onto instead: merging the live doc onto an
+    // already-merged base is add-only, so a reset/un-pin/undo in a second
+    // editing session would have nothing to fall back to and render as if
+    // it never happened, even though `overrides.json` on disk is correct.
+    baseSceneCues: routed.cues,
+    baseTheme: defaultTheme,
     settings: production.render,
     outputDurationSec: map.outputDuration,
     // The aspect travels with the measurement because the crop math needs it:

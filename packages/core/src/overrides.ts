@@ -115,3 +115,53 @@ export function clearTiming(doc: OverrideDoc, sceneId: string): OverrideDoc {
   const { timing: _removed, ...rest } = scene;
   return { ...doc, scenes: { ...doc.scenes, [sceneId]: rest } };
 }
+
+/** Same floor `assembleScenes` enforces — a pinned scene re-clamped past this
+ * would be as unrenderable as one the assembler produced. */
+const MIN_PINNED_SCENE_SEC = 1.2;
+const PINNED_GAP_SEC = 0.05;
+
+export interface ReclampResult {
+  cues: SceneCue[];
+  /** Ids whose pinned timing had to move to stop overlapping a neighbour. */
+  adjusted: string[];
+}
+
+/**
+ * Re-clamp every PINNED cue's absolute timing against its current neighbours
+ * in the array, in order.
+ *
+ * A pin freezes a scene's timing at whatever the neighbours' timing was the
+ * moment it was set — but a re-plan (a `--cleanup` level change, a re-run
+ * after new source material) can move those neighbours, leaving the pinned
+ * cue's frozen window overlapping one of them or the whole array out of
+ * time order. That reaches `SceneLayer` and `buildCaptionLines`'
+ * `breakpoints`, both of which assume non-overlapping, increasing windows.
+ * The editor already clamps a pinned nudge against its neighbours at DRAG
+ * time (`apps/editor/src/timing.ts`'s `clampTiming`) — this is the same
+ * clamp, re-run here because a re-plan can invalidate a clamp that was
+ * correct when it was made without the user touching anything.
+ */
+export function reclampPinnedTiming(cues: readonly SceneCue[]): ReclampResult {
+  const out = cues.map((c) => ({ ...c }));
+  const adjusted: string[] = [];
+  for (let i = 0; i < out.length; i++) {
+    const cue = out[i]!;
+    if (!cue.pinned) continue;
+    const prev = out[i - 1];
+    const next = out[i + 1];
+    const lo = prev ? prev.endSec + PINNED_GAP_SEC : 0;
+    const hi = next ? next.startSec - PINNED_GAP_SEC : Number.POSITIVE_INFINITY;
+    let s = Math.min(Math.max(cue.startSec, lo), Math.max(lo, hi - MIN_PINNED_SCENE_SEC));
+    let e = Math.max(Math.min(cue.endSec, hi), s + MIN_PINNED_SCENE_SEC);
+    if (e > hi) {
+      e = hi;
+      s = Math.max(lo, e - MIN_PINNED_SCENE_SEC);
+    }
+    if (s !== cue.startSec || e !== cue.endSec) {
+      out[i] = { ...cue, startSec: s, endSec: e };
+      adjusted.push(cue.id);
+    }
+  }
+  return { cues: out, adjusted };
+}

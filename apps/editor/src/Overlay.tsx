@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import type { SceneCue } from "@ossclip/core/browser";
 import { findEditableFrom, rectOf } from "./hitTest";
 import type { useEdits } from "./useEdits";
 
@@ -19,9 +20,66 @@ interface OverlayProps {
    * visible as a failed button click.
    */
   onSave: () => void;
+  /**
+   * The composition's native pixel size (`render-props.json`'s
+   * `settings.width/height`). The `<Player>` is displayed at a fixed CSS
+   * width (currently 380px in `App.tsx`) and scaled down from this native
+   * size — mouse deltas arrive in PAGE pixels, but a dragged element's
+   * `dx`/`dy` renders in COMPOSITION pixels, so drags must be rescaled by
+   * `settings.width / stageRect.width` before they're dispatched.
+   */
+  settings: { width: number; height: number };
+  /** The currently-selected scene's LIVE (override-applied) cue, so a
+   * double-click retype on an array-backed element (a FlowDiagram node, a
+   * ChatMock message, …) can rewrite that element's entry in place instead
+   * of writing a bogus top-level prop nothing reads. */
+  cue: SceneCue | null;
 }
 
 const HANDLE = 9;
+
+/**
+ * Ids the scene library hands out for elements that live INSIDE an array
+ * prop rather than as their own top-level prop key (`packages/scenes`'
+ * `line-N`/`node-N`/`message-N`/`window-N`). A plain `patchProps(sceneId, {
+ * [elementId]: text })` — which works for `TitleCard`/`StatCard`/`RuleCard`/
+ * `ScreenshotFrame`, where `data-edit-id` names an actual top-level prop —
+ * writes into one of these ids as a prop key nothing ever reads, silently
+ * losing the retype.
+ */
+const DYNAMIC_ID = /^(line|node|message|window)-(\d+)$/;
+
+/**
+ * Map a `line-N`/`node-N`/`message-N` id back to the array field it actually
+ * lives in and return the prop PATCH that rewrites just that entry —
+ * `null` if the id doesn't decompose this way, the cue has no matching
+ * array, or the index is out of range. `window-N` (a `TerminalMock` window:
+ * a title PLUS several lines) has no single string to retype into and is
+ * intentionally left unhandled here — callers must refuse it instead.
+ */
+function buildArrayPatch(
+  elementId: string,
+  props: Record<string, unknown>,
+  text: string,
+): Record<string, unknown> | null {
+  const m = DYNAMIC_ID.exec(elementId);
+  if (!m || m[1] === "window") return null;
+  const kind = m[1] as "line" | "node" | "message";
+  const idx = Number(m[2]);
+  const field = kind === "line" ? "lines" : kind === "node" ? "nodes" : "messages";
+  const arr = props[field];
+  if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
+  const next = arr.slice();
+  const item = next[idx];
+  if (kind === "node") {
+    // FlowDiagram's `nodes` is a plain string[] — the whole entry IS the text.
+    next[idx] = text;
+  } else {
+    if (typeof item !== "object" || item === null) return null;
+    next[idx] = { ...(item as Record<string, unknown>), text };
+  }
+  return { [field]: next };
+}
 
 /**
  * A transparent layer above the `<Player>` that turns clicks into a
@@ -30,12 +88,20 @@ const HANDLE = 9;
  * box and its edit input accept pointer events, everything else passes
  * clicks straight through to `elementFromPoint`.
  */
-export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect, edits, onSave }) => {
+export const Overlay: React.FC<OverlayProps> = ({
+  stageRef,
+  selection,
+  onSelect,
+  edits,
+  onSave,
+  settings,
+  cue,
+}) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [editingText, setEditingText] = useState<string | null>(null);
+  const [editRefusal, setEditRefusal] = useState<string | null>(null);
   const dragRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
   const [dragOffset, setDragOffset] = useState({ dx: 0, dy: 0 });
-  const hitLayerRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   // The mouseup handler needs the CURRENT selection, but it's attached in an
   // effect whose closure only refreshes after a render commits — a fast
@@ -180,11 +246,20 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
         return;
       }
       if (drag.dx !== 0 || drag.dy !== 0) {
+        // The mouse moved in PAGE pixels, but `dx`/`dy` render inside the
+        // composition (the Player displays a `settings.width`-wide
+        // composition at a much smaller CSS width — see `App.tsx`), so a
+        // page-pixel delta has to be rescaled into composition pixels
+        // before it's stored, or the element lands well short of the
+        // cursor and the box visibly snaps back on mouseup.
+        const stageRect = stageRef.current?.getBoundingClientRect();
+        const scaleX = stageRect && stageRect.width > 0 ? settings.width / stageRect.width : 1;
+        const scaleY = stageRect && stageRect.height > 0 ? settings.height / stageRect.height : 1;
         const scene = edits.doc.scenes[sel.sceneId];
         const prior = scene?.elements[sel.elementId];
         edits.patchElement(sel.sceneId, sel.elementId, {
-          dx: (prior?.dx ?? 0) + drag.dx,
-          dy: (prior?.dy ?? 0) + drag.dy,
+          dx: (prior?.dx ?? 0) + drag.dx * scaleX,
+          dy: (prior?.dy ?? 0) + drag.dy * scaleY,
         });
       }
       dragRef.current = null;
@@ -196,12 +271,22 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [edits]);
+  }, [edits, stageRef, settings]);
 
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (!selection?.elementId) return;
       e.preventDefault();
+      // `window-N` (a TerminalMock window) wraps a title PLUS several lines
+      // — there is no single string to retype it into. Refuse up front,
+      // visibly, rather than opening an input that can only silently lose
+      // whatever gets typed into it.
+      const m = DYNAMIC_ID.exec(selection.elementId);
+      if (m && m[1] === "window") {
+        setEditRefusal("Can't retype a terminal window inline — edit its lines from the Inspector.");
+        return;
+      }
+      setEditRefusal(null);
       // Seed from the rendered DOM, not `edits.doc.scenes[...].props` — the
       // override doc only holds the user's DELTA over the producer's props,
       // so an untouched element has no entry there at all and this would
@@ -217,10 +302,39 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
 
   const commitText = useCallback(() => {
     if (selection?.elementId && editingText !== null) {
-      edits.patchProps(selection.sceneId, { [selection.elementId]: editingText });
+      const elementId = selection.elementId;
+      const isDynamic = DYNAMIC_ID.test(elementId);
+      // `data-edit-id` names a top-level prop for TitleCard/StatCard/
+      // RuleCard/ScreenshotFrame — those can be patched directly. The
+      // dynamic `line-N`/`node-N`/`message-N` ids instead name an entry
+      // INSIDE an array prop (`packages/scenes`' `lines`/`nodes`/
+      // `messages`) and need `buildArrayPatch` to rewrite the right index;
+      // a plain `{ [elementId]: text }` there would write a prop key
+      // nothing reads (FINDINGS: silently-lost retype).
+      const patch = isDynamic
+        ? cue
+          ? buildArrayPatch(elementId, cue.props, editingText)
+          : null
+        : { [elementId]: editingText };
+      if (patch) {
+        edits.patchProps(selection.sceneId, patch);
+      } else if (isDynamic) {
+        setEditRefusal(`Can't retype "${elementId}" inline — edit it from the Inspector instead.`);
+      }
     }
     setEditingText(null);
-  }, [selection, editingText, edits]);
+  }, [selection, editingText, edits, cue]);
+
+  // Refusal messages are transient — don't let a stale one from a previous
+  // selection linger once the user has moved on.
+  useEffect(() => {
+    setEditRefusal(null);
+  }, [selection]);
+  useEffect(() => {
+    if (!editRefusal) return;
+    const t = setTimeout(() => setEditRefusal(null), 3000);
+    return () => clearTimeout(t);
+  }, [editRefusal]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -245,7 +359,6 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
 
   return (
     <div
-      ref={hitLayerRef}
       style={{
         position: "absolute",
         inset: 0,
@@ -263,6 +376,7 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
       {rect && selection ? (
         <div
           ref={boxRef}
+          data-testid="overlay-box"
           onDoubleClick={handleDoubleClick}
           style={{
             position: "fixed",
@@ -332,6 +446,27 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
             zIndex: 10,
           }}
         />
+      ) : null}
+      {editRefusal && rect ? (
+        <div
+          data-testid="edit-refusal"
+          style={{
+            position: "fixed",
+            pointerEvents: "none",
+            left: rect.left,
+            top: rect.top + rect.height + 6,
+            maxWidth: 260,
+            fontSize: 11,
+            fontFamily: "'Inter', system-ui, sans-serif",
+            color: "#0B0B0E",
+            background: "#FF5C5C",
+            padding: "4px 8px",
+            borderRadius: 4,
+            zIndex: 10,
+          }}
+        >
+          {editRefusal}
+        </div>
       ) : null}
     </div>
   );

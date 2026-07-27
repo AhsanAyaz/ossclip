@@ -64,12 +64,17 @@ test("drag an element, save, and the patch lands on disk", async ({ page }) => {
 
   expect(Math.sign(patch.dx)).toBe(Math.sign(expectedDx));
   expect(Math.sign(patch.dy)).toBe(Math.sign(expectedDy));
-  // A generous band (0.2x–5x) rather than an exact formula: it still fails
-  // on a zero/near-zero delta (the broken-drag case this guards against) or
-  // on a wildly unrelated leftover value, without hard-coding an exact
-  // page-pixel-to-composition-pixel ratio that's an implementation detail.
-  expect(Math.abs(patch.dx)).toBeGreaterThan(Math.abs(expectedDx) * 0.2);
-  expect(Math.abs(patch.dx)).toBeLessThan(Math.abs(expectedDx) * 5);
-  expect(Math.abs(patch.dy)).toBeGreaterThan(Math.abs(expectedDy) * 0.2);
-  expect(Math.abs(patch.dy)).toBeLessThan(Math.abs(expectedDy) * 5);
+  // A tight band (±20%) around the composition-space delta, not an exact
+  // formula: `stageBox` is measured with sub-pixel rounding, so an exact
+  // equality would be flaky. But it must be tight enough to actually catch
+  // the scaling regression this guards against — the Overlay dispatching
+  // the RAW page-pixel delta instead of rescaling it by
+  // `settings.width / stageRect.width` (Overlay.tsx). At this fixture's
+  // ~2.8x page-to-composition ratio, an unscaled page-pixel delta would
+  // land nowhere near this band, which a loose 0.2x–5x band could not
+  // reliably tell apart from a correctly-scaled one.
+  expect(Math.abs(patch.dx)).toBeGreaterThan(Math.abs(expectedDx) * 0.8);
+  expect(Math.abs(patch.dx)).toBeLessThan(Math.abs(expectedDx) * 1.2);
+  expect(Math.abs(patch.dy)).toBeGreaterThan(Math.abs(expectedDy) * 0.8);
+  expect(Math.abs(patch.dy)).toBeLessThan(Math.abs(expectedDy) * 1.2);
 });

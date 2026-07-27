@@ -1,5 +1,5 @@
 import React from "react";
-import type { SceneCue } from "@ossclip/core/browser";
+import type { SceneCue, Theme } from "@ossclip/core/browser";
 import type { useEdits } from "./useEdits";
 import type { Selection } from "./Overlay";
 
@@ -8,6 +8,14 @@ interface InspectorProps {
   /** The currently-selected scene's resolved cue, or null when nothing is selected. */
   cue: SceneCue | null;
   edits: ReturnType<typeof useEdits>;
+  /**
+   * The theme actually on screen right now (defaults merged with the
+   * override doc) — the fallback a theme field shows when the user hasn't
+   * overridden that token. Hardcoding a fallback here instead (as before)
+   * would show the wrong swatch for anyone whose production resolved to a
+   * theme other than `defaultTheme`.
+   */
+  resolvedTheme: Theme;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -105,7 +113,7 @@ const ThemeField: React.FC<{
  * imprecise; typing a value (including `0`, to cleanly undo a nudge) goes
  * straight to `patchElement`/`patchTheme` rather than waiting on a blur.
  */
-export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits }) => {
+export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, resolvedTheme }) => {
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
     const transform = cue.elements?.[elementId] ?? {};
@@ -208,13 +216,13 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits }) =
         <div style={{ fontSize: 12, color: "#9A9AA3" }}>Nothing selected — global tokens.</div>
       </div>
       <div style={section}>
-        <ThemeField id="accent" value={theme.accent ?? "#FFE14D"} isColor onCommit={(v) => patch("accent", v)} />
-        <ThemeField id="bg" value={theme.bg ?? "#0B0B0E"} isColor onCommit={(v) => patch("bg", v)} />
-        <ThemeField id="fg" value={theme.fg ?? "#FFFFFF"} isColor onCommit={(v) => patch("fg", v)} />
-        <NumberField id="radiusPx" value={theme.radiusPx ?? 24} onCommit={(v) => patch("radiusPx", v)} />
+        <ThemeField id="accent" value={theme.accent ?? resolvedTheme.accent} isColor onCommit={(v) => patch("accent", v)} />
+        <ThemeField id="bg" value={theme.bg ?? resolvedTheme.bg} isColor onCommit={(v) => patch("bg", v)} />
+        <ThemeField id="fg" value={theme.fg ?? resolvedTheme.fg} isColor onCommit={(v) => patch("fg", v)} />
+        <NumberField id="radiusPx" value={theme.radiusPx ?? resolvedTheme.radiusPx} onCommit={(v) => patch("radiusPx", v)} />
         <ThemeField
           id="fontDisplay"
-          value={theme.fontDisplay ?? ""}
+          value={theme.fontDisplay ?? resolvedTheme.fontDisplay}
           isColor={false}
           onCommit={(v) => patch("fontDisplay", v)}
         />

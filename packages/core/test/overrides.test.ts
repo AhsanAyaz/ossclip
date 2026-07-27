@@ -3,6 +3,8 @@ import {
   OverrideDocSchema,
   applyOverrides,
   clearElementTransform,
+  clearTiming,
+  reclampPinnedTiming,
   resolveTheme,
   setElementTransform,
 } from "../src/overrides";
@@ -90,6 +92,20 @@ describe("override document", () => {
     doc = setElementTransform(doc, "scene-0", "value", { dy: -3 });
     expect(doc.scenes["scene-0"]!.elements!.value).toEqual({ dx: 5, dy: -3 });
   });
+
+  it("sets and clears a timing override, and clearing REMOVES the entry", () => {
+    // Same distinction as `clearElementTransform`: un-pinning must go back to
+    // tracking words, not merely happen to land on the same numbers, so the
+    // override has to be deleted rather than left in place.
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { timing: { startSec: 2, endSec: 6 } } },
+    });
+    expect(doc.scenes["scene-0"]!.timing).toEqual({ startSec: 2, endSec: 6 });
+    const cleared = clearTiming(doc, "scene-0");
+    expect(cleared.scenes["scene-0"]?.timing).toBeUndefined();
+    // A scene with no override at all is left alone rather than throwing.
+    expect(clearTiming(OverrideDocSchema.parse({}), "scene-9")).toEqual(OverrideDocSchema.parse({}));
+  });
 });
 
 describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
@@ -102,5 +118,67 @@ describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
     const { cues } = applyOverrides([replanned], doc);
     expect(cues[0]!.props.label).toBe("NEW LABEL"); // producer's new copy lands
     expect(cues[0]!.props.value).toBe("999%");      // the user's edit wins
+  });
+
+  // "the most likely thing to break": a pin freezes ABSOLUTE time precisely
+  // so a `--cleanup` level change (which re-derives every unpinned cue's
+  // timing from scratch) can't silently drag a pinned scene along with it —
+  // that's the entire point of pinning. An unpinned scene has no such
+  // promise: it's SUPPOSED to track wherever the new cut places its words.
+  it("keeps a pinned scene at its absolute time across a --cleanup change, while an unpinned one re-anchors", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { timing: { startSec: 10, endSec: 14 } } },
+    });
+    // "Before": a `standard`-cleanup run assembled these two cues.
+    const before = [cue("scene-0"), { ...cue("scene-1"), startSec: 5, endSec: 9 }];
+    const { cues: beforeCues } = applyOverrides(before, doc);
+    expect(beforeCues[0]!.startSec).toBe(10);
+    expect(beforeCues[0]!.pinned).toBe(true);
+
+    // "After": re-running with `--cleanup aggressive` cut more silence, so
+    // the assembler derives an entirely different (earlier) window for the
+    // UNPINNED scene — same scene ids, new timing, exactly what a re-plan
+    // produces.
+    const after = [cue("scene-0"), { ...cue("scene-1"), startSec: 3, endSec: 6 }];
+    const { cues: afterCues } = applyOverrides(after, doc);
+    // The pinned scene didn't move a millisecond...
+    expect(afterCues[0]!.startSec).toBe(10);
+    expect(afterCues[0]!.endSec).toBe(14);
+    expect(afterCues[0]!.pinned).toBe(true);
+    // ...but the unpinned one tracked the re-plan's new derived timing.
+    expect(afterCues[1]!.startSec).toBe(3);
+    expect(afterCues[1]!.endSec).toBe(6);
+    expect(afterCues[1]!.pinned).toBeFalsy();
+  });
+});
+
+describe("reclampPinnedTiming (produce-side re-clamp after a re-plan)", () => {
+  it("leaves a pinned cue alone when it still fits between its neighbours", () => {
+    const cues: SceneCue[] = [
+      { ...cue("scene-0"), startSec: 0, endSec: 4 },
+      { ...cue("scene-1"), startSec: 5, endSec: 9, pinned: true },
+      { ...cue("scene-2"), startSec: 10, endSec: 14 },
+    ];
+    const { cues: out, adjusted } = reclampPinnedTiming(cues);
+    expect(adjusted).toEqual([]);
+    expect(out[1]).toEqual(cues[1]);
+  });
+
+  it("clamps a pinned cue that now overlaps a re-planned neighbour", () => {
+    // scene-1 was pinned to 5–9s against neighbours that have since moved:
+    // the previous scene now runs until 7s, so 5–9 overlaps it.
+    const cues: SceneCue[] = [
+      { ...cue("scene-0"), startSec: 0, endSec: 7 },
+      { ...cue("scene-1"), startSec: 5, endSec: 9, pinned: true },
+      { ...cue("scene-2"), startSec: 9.2, endSec: 13 },
+    ];
+    const { cues: out, adjusted } = reclampPinnedTiming(cues);
+    expect(adjusted).toEqual(["scene-1"]);
+    expect(out[1]!.startSec).toBeGreaterThanOrEqual(7.05);
+    expect(out[1]!.endSec).toBeLessThanOrEqual(9.2 - 0.05);
+    expect(out[1]!.endSec).toBeGreaterThan(out[1]!.startSec);
+    // Neighbours themselves are untouched.
+    expect(out[0]).toEqual(cues[0]);
+    expect(out[2]).toEqual(cues[2]);
   });
 });

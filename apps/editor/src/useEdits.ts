@@ -1,6 +1,5 @@
 import { useReducer } from "react";
 import {
-  OverrideDocSchema,
   clearElementTransform,
   clearTiming,
   emptyOverrideDoc,
@@ -118,7 +117,6 @@ export function useEdits() {
     doc: state.doc,
     dirty: state.dirty,
     canUndo: state.past.length > 0,
-    dispatch,
     load: (doc: OverrideDoc) => dispatch({ type: "load", doc }),
     undo: () => dispatch({ type: "undo" }),
     save,
@@ -132,6 +130,5 @@ export function useEdits() {
       dispatch({ type: "patchTiming", sceneId, startSec, endSec }),
     clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
-    OverrideDocSchema,
   };
 }

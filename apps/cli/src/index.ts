@@ -143,7 +143,19 @@ program
     const { startEditServer } = await import("./edit");
     const { fileURLToPath } = await import("node:url");
     const { dirname, join } = await import("node:path");
+    const { existsSync } = await import("node:fs");
     const pageDir = join(dirname(fileURLToPath(import.meta.url)), "../../editor/dist");
+    // `apps/editor` is a Vite app — nothing builds it as part of installing
+    // or running the CLI, so a user who never ran `vite build` gets a
+    // server that starts fine but 404s on every request for the page
+    // itself. Fail loudly with the fix instead of leaving them staring at
+    // `{"error":"not found"}` in the browser.
+    if (!existsSync(pageDir)) {
+      throw new Error(
+        `editor UI isn't built yet (looked in ${pageDir}) — run \`pnpm build\` ` +
+          `(or \`pnpm --filter @ossclip/editor build\`) once, then re-run \`ossclip edit\`.`,
+      );
+    }
     const server = await startEditServer(workdir, { port: opts.port, pageDir });
     console.log(`▸ editor at ${server.url}`);
     if (opts.open) spawn("open", [server.url], { stdio: "ignore" });
