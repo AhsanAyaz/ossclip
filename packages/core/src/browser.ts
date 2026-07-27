@@ -6,6 +6,7 @@
  */
 export * from "./scene-schema";
 export * from "./scene-registry";
+export * from "./overrides";
 export { ZOOM_MAX_SCALE, zoomScaleAt, type ZoomSegment } from "./zoom";
 export type { CaptionLine, CaptionWord } from "./captions";
 export type { KeptSpan } from "./timemap";
