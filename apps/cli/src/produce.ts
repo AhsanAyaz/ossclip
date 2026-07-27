@@ -9,6 +9,7 @@ import {
   TimeMap,
   TranscriptSchema,
   analyze,
+  applyOverrides,
   applyRepairs,
   assembleScenes,
   buildCaptionLines,
@@ -22,6 +23,7 @@ import {
   defaultProviderName,
   defaultTheme,
   detectSilences,
+  emptyOverrideDoc,
   extractAudio,
   formatCutReport,
   formatUsageLine,
@@ -36,10 +38,12 @@ import {
   produceScenes,
   reconcileCopy,
   repairTranscript,
+  resolveTheme,
   run,
   runWhisper,
   scanSourceText,
   summarizeUsage,
+  OverrideDocSchema,
   type AppliedRepair,
   type CleanupLevel,
   type LlmProvider,
@@ -359,7 +363,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     }
   }
 
-  const theme = defaultTheme;
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
 
@@ -401,7 +404,33 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     );
   }
   for (const s of routed.skipped) console.log(`  ⚠ scene ${s.id} skipped: ${s.reason}`);
-  const sceneCues = routed.cues;
+
+  // ---- The user's edit layer (SPEC: direct manipulation) -------------------
+  // Read AFTER assembly so hand edits sit on top of whatever the producer just
+  // planned, and never in production.json — that file is ours to overwrite.
+  const overridesPath = join(work, "overrides.json");
+  let overrideDoc = emptyOverrideDoc();
+  if (existsSync(overridesPath)) {
+    const parsed = OverrideDocSchema.safeParse(
+      JSON.parse(await readFile(overridesPath, "utf8")),
+    );
+    if (!parsed.success) {
+      // Hand-editable user data: refuse rather than silently resetting it.
+      throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
+    }
+    overrideDoc = parsed.data;
+  }
+  const { cues: editedCues, orphans } = applyOverrides(routed.cues, overrideDoc);
+  const editedCount = Object.keys(overrideDoc.scenes).length;
+  if (editedCount > 0) {
+    console.log(`▸ applied your edits to ${editedCount - orphans.length} scene(s)`);
+  }
+  for (const id of orphans) {
+    console.log(`  ⚠ edit for ${id} dropped — the plan no longer has that scene`);
+  }
+  const theme = resolveTheme(defaultTheme, overrideDoc);
+
+  const sceneCues = editedCues;
   if (sceneCues.length > 0) {
     console.log(
       `▸ ${sceneCues.length} scene(s) on stage: ` +

@@ -91,3 +91,16 @@ describe("override document", () => {
     expect(doc.scenes["scene-0"]!.elements!.value).toEqual({ dx: 5, dy: -3 });
   });
 });
+
+describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
+  it("keeps hand edits when the producer re-rolls props", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { props: { value: "999%" } } },
+    });
+    // The producer re-plans and returns entirely new copy for the same scene.
+    const replanned: SceneCue = { ...cue("scene-0"), props: { label: "NEW LABEL", value: "12%", inverted: false } };
+    const { cues } = applyOverrides([replanned], doc);
+    expect(cues[0]!.props.label).toBe("NEW LABEL"); // producer's new copy lands
+    expect(cues[0]!.props.value).toBe("999%");      // the user's edit wins
+  });
+});
