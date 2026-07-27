@@ -11,7 +11,7 @@ import { FlowDiagram } from "./components/FlowDiagram";
 import { TerminalMock } from "./components/TerminalMock";
 import { ChatMock } from "./components/ChatMock";
 import { ScreenshotFrame } from "./components/ScreenshotFrame";
-import type { ElementEdits } from "./editable";
+import { compensateEdits, type ElementEdits } from "./editable";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- props are registry-validated upstream */
 const COMPONENTS: Record<
@@ -78,7 +78,10 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                   theme={theme}
                   widthPx={slotW / scale}
                   heightPx={slotH / scale}
-                  edits={cue.elements}
+                  // Stored nudges are composition px; this wrapper scales by
+                  // `scale`, so they are counter-divided here or a drag lands
+                  // `scale`× past where it was dropped (PLAN Task 1).
+                  edits={compensateEdits(cue.elements, scale)}
                 />
               </div>
             </div>

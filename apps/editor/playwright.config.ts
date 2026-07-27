@@ -51,7 +51,28 @@ process.env.OSSCLIP_E2E_WORKDIR = WORKDIR;
 
 export default defineConfig({
   testDir: "./e2e",
-  use: { baseURL: "http://127.0.0.1:5173" },
+  use: {
+    baseURL: "http://127.0.0.1:5173",
+    // Tall enough that the stage (≈676px) AND the timeline below it are both
+    // inside the viewport: several specs drive raw `page.mouse` events at
+    // measured coordinates, and raw mouse — unlike locator.click() — never
+    // auto-scrolls its target into view. At the default 720p the timeline
+    // sits below the fold and every aimed click lands on <html>.
+    viewport: { width: 1280, height: 1000 },
+    // Containers/CI images often pre-install one Chromium rather than the
+    // exact revision this @playwright/test version pins — point at it instead
+    // of downloading. Unset locally, only the autoplay arg applies.
+    launchOptions: {
+      ...(process.env.OSSCLIP_E2E_CHROMIUM
+        ? { executablePath: process.env.OSSCLIP_E2E_CHROMIUM }
+        : {}),
+      // The Task-5 SPACE test starts playback with no prior pointer input;
+      // headless Chromium's autoplay policy would otherwise reject the
+      // keyboard-initiated play() and the test would fail for a reason that
+      // has nothing to do with the shortcut.
+      args: ["--autoplay-policy=no-user-gesture-required"],
+    },
+  },
   webServer: [
     {
       // `pnpm ossclip` is a root-level script (apps/editor has no such

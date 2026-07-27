@@ -49,8 +49,29 @@ export const App: React.FC = () => {
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [playing, setPlaying] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null!);
   const playerRef = useRef<PlayerRef>(null);
+
+  // Mirror the Player's transport state onto the stage as `data-playing`.
+  // This is the PLAYER's intent, straight from its own play/pause events —
+  // the honest observable for "did that click/keystroke toggle playback",
+  // independent of whether the environment's browser can even decode the
+  // preview media (the e2e's headless Chromium ships no H.264).
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    player.addEventListener("play", onPlay);
+    player.addEventListener("pause", onPause);
+    return () => {
+      player.removeEventListener("play", onPlay);
+      player.removeEventListener("pause", onPause);
+    };
+    // Re-attach once the Player has mounted (playerRef fills after the first
+    // render that has props).
+  });
 
   useEffect(() => {
     void (async () => {
@@ -141,6 +162,7 @@ export const App: React.FC = () => {
           <div
             ref={stageRef}
             data-testid="stage"
+            data-playing={playing ? "true" : "false"}
             style={{ position: "relative", display: "inline-block" }}
           >
             <Player<AnyZodObject, PlayerProductionProps>
@@ -161,6 +183,7 @@ export const App: React.FC = () => {
               edits={edits}
               onSave={onSave}
               settings={live.settings}
+              playerRef={playerRef}
               cue={selectedCue}
             />
           </div>

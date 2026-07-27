@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
 import { findEditableFrom, rectOf } from "./hitTest";
 import type { useEdits } from "./useEdits";
@@ -29,6 +30,15 @@ interface OverlayProps {
    * `settings.width / stageRect.width` before they're dispatched.
    */
   settings: { width: number; height: number };
+  /**
+   * The Player itself, for `getScale()` — the AUTHORITATIVE page-px-per-
+   * composition-px factor. The stage div's rect is not it: the Player
+   * letterboxes its canvas inside whatever box the layout hands it (a
+   * height-capped viewport shrinks the canvas below the stage's 380px), and
+   * a scale derived from the wrong box misplaces every drag by the
+   * letterbox ratio (PLAN Task 1 — measured at exactly ×0.9 in the e2e).
+   */
+  playerRef: React.RefObject<PlayerRef>;
   /** The currently-selected scene's LIVE (override-applied) cue, so a
    * double-click retype on an array-backed element (a FlowDiagram node, a
    * ChatMock message, …) can rewrite that element's entry in place instead
@@ -113,6 +123,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   edits,
   onSave,
   settings,
+  playerRef,
   cue,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -194,14 +205,46 @@ export const Overlay: React.FC<OverlayProps> = ({
     return () => cancelAnimationFrame(raf);
   }, [stageRef, selection]);
 
+  // The SELECTIVE swallow (PLAN Task 2). The Player treats any press on its
+  // surface as click-to-toggle-playback, wired to `pointerdown` on its outer
+  // div. The overlay's hit layer is deliberately `pointer-events: none` (so
+  // the transport bar keeps working — the previous fix), which means every
+  // press reaches the Player, including presses on editable elements: click
+  // a label, the video plays. The rule wanted is selective, and the split
+  // is: a press that lands on an editable ELEMENT (or the selection box over
+  // one) belongs to the editor — stop it before the Player's React root sees
+  // it; a press anywhere else (video background, transport controls) is the
+  // Player's, untouched.
+  //
+  // Capture phase on `window`, because the Player's handler is a React
+  // `onPointerDown` — stopping propagation during capture keeps the event
+  // from ever reaching React's root listener. Only `stopPropagation`, never
+  // `preventDefault`: per the pointer-events spec, cancelling `pointerdown`
+  // suppresses the compatibility mouse events, and the selection/drag logic
+  // below runs on exactly those.
+  useEffect(() => {
+    const onPointerDownCapture = (e: PointerEvent) => {
+      const stage = stageRef.current;
+      if (!stage || editingText !== null) return;
+      if (!stage.contains(e.target as Node)) return;
+      const editorOwnsIt =
+        (selectionRef.current?.elementId && boxRef.current?.contains(e.target as Node)) ||
+        findEditableFrom(elementBelow(e.clientX, e.clientY)) !== null;
+      if (editorOwnsIt) e.stopPropagation();
+    };
+    window.addEventListener("pointerdown", onPointerDownCapture, true);
+    return () => window.removeEventListener("pointerdown", onPointerDownCapture, true);
+  }, [stageRef, editingText]);
+
   // The hit layer itself is `pointer-events: none` (see the returned JSX)
   // so it never blocks the Player's own controls: a click on play/pause or
   // the scrub bar lands on the Player's real DOM, not on this overlay, and
   // therefore never bubbles through a handler attached to the overlay's own
   // node. So selection is driven by a `window`-level `mousedown` listener
   // instead, which inspects `e.target`/coordinates but never calls
-  // `preventDefault`/`stopPropagation` — the native click underneath still
-  // fires normally, whether that's a Player control or a tagged element.
+  // `preventDefault`/`stopPropagation` on the mouse events — the native
+  // click underneath still fires normally for everything the capture
+  // listener above chose not to swallow.
   useEffect(() => {
     const onWindowMouseDown = (e: MouseEvent) => {
       const stage = stageRef.current;
@@ -265,19 +308,26 @@ export const Overlay: React.FC<OverlayProps> = ({
       }
       if (drag.dx !== 0 || drag.dy !== 0) {
         // The mouse moved in PAGE pixels, but `dx`/`dy` render inside the
-        // composition (the Player displays a `settings.width`-wide
-        // composition at a much smaller CSS width — see `App.tsx`), so a
-        // page-pixel delta has to be rescaled into composition pixels
-        // before it's stored, or the element lands well short of the
-        // cursor and the box visibly snaps back on mouseup.
+        // composition, so the delta is rescaled into composition pixels
+        // before it's stored. The factor comes from the Player's own
+        // `getScale()` — the stage div's rect is subtly wrong: the Player
+        // letterboxes its canvas inside the box the layout hands it, so a
+        // height-capped viewport leaves the stage wider than the canvas and
+        // every drag lands short by that ratio. One factor for both axes —
+        // the Player scales uniformly.
+        const playerScale = playerRef.current?.getScale();
         const stageRect = stageRef.current?.getBoundingClientRect();
-        const scaleX = stageRect && stageRect.width > 0 ? settings.width / stageRect.width : 1;
-        const scaleY = stageRect && stageRect.height > 0 ? settings.height / stageRect.height : 1;
+        const scale =
+          playerScale && playerScale > 0
+            ? 1 / playerScale
+            : stageRect && stageRect.width > 0
+              ? settings.width / stageRect.width
+              : 1;
         const scene = edits.doc.scenes[sel.sceneId];
         const prior = scene?.elements[sel.elementId];
         edits.patchElement(sel.sceneId, sel.elementId, {
-          dx: (prior?.dx ?? 0) + drag.dx * scaleX,
-          dy: (prior?.dy ?? 0) + drag.dy * scaleY,
+          dx: (prior?.dx ?? 0) + drag.dx * scale,
+          dy: (prior?.dy ?? 0) + drag.dy * scale,
         });
       }
       dragRef.current = null;
@@ -289,7 +339,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [edits, stageRef, settings]);
+  }, [edits, stageRef, settings, playerRef]);
 
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -369,11 +419,35 @@ export const Overlay: React.FC<OverlayProps> = ({
         // keyboard save surfaces in the error banner instead of vanishing
         // into an unhandled promise rejection.
         onSave();
+      } else if (e.key === " " && !mod) {
+        // SPACE toggles playback globally (PLAN Task 5) — with two guards.
+        // Typing contexts win: a space in an inline edit (the early return
+        // above) or an inspector field must insert a space, not toggle.
+        const active = document.activeElement;
+        const typing =
+          active instanceof HTMLInputElement ||
+          active instanceof HTMLTextAreaElement ||
+          active instanceof HTMLSelectElement ||
+          (active instanceof HTMLElement && active.isContentEditable);
+        if (typing) return;
+        // And the Player's own space handling wins: with focus on a button
+        // inside the stage (its play button — the Player focuses it for
+        // exactly this), the native button activation already toggles, and
+        // firing here too would toggle twice for a net no-op.
+        if (
+          active instanceof HTMLElement &&
+          active.tagName === "BUTTON" &&
+          stageRef.current?.contains(active)
+        ) {
+          return;
+        }
+        e.preventDefault();
+        playerRef.current?.toggle();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, editingText, onSave]);
+  }, [select, edits, editingText, onSave, playerRef, stageRef]);
 
   return (
     <div

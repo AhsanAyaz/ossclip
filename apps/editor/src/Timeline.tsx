@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
-import { clampTiming } from "./timing";
+import { clampTiming, moveTiming, timeAtX } from "./timing";
 import type { useEdits } from "./useEdits";
 import type { Selection } from "./Overlay";
 
@@ -25,9 +25,25 @@ interface DragState {
   trackWidth: number;
 }
 
+/**
+ * A press on a block body, before we know whether it is a click or a drag.
+ * Below `MOVE_THRESHOLD_PX` of travel it stays a click (select + seek to the
+ * CLICKED time — Task 4); past it, it becomes a move drag that shifts the
+ * whole block (Task 6). The threshold is what keeps a click that wobbles a
+ * pixel from silently writing a `timing` override and pinning the scene.
+ */
+interface BlockPress {
+  sceneId: string;
+  startX: number;
+  moved: boolean;
+}
+
 /** Pixel width of the invisible hit zone at each block edge — wider than the
  * visible handle so a slightly-off grab still finds it. */
 const EDGE_HIT = 10;
+
+/** Travel before a block press commits to being a move drag. */
+const MOVE_THRESHOLD_PX = 4;
 
 const fmt = (sec: number): string => {
   const s = Math.max(0, sec);
@@ -56,6 +72,8 @@ export const Timeline: React.FC<TimelineProps> = ({
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const scrubbingRef = useRef(false);
+  const blockPressRef = useRef<BlockPress | null>(null);
   const [frame, setFrame] = useState(0);
   const [dragPreview, setDragPreview] = useState<{
     sceneId: string;
@@ -76,21 +94,12 @@ export const Timeline: React.FC<TimelineProps> = ({
     return () => player.removeEventListener("frameupdate", onFrame);
   }, [playerRef]);
 
-  const seekAndSelect = useCallback(
-    (cue: SceneCue) => {
-      playerRef.current?.seekTo(Math.round(cue.startSec * fps));
-      onSelect({ sceneId: cue.id, elementId: null });
-    },
-    [playerRef, fps, onSelect],
-  );
-
   const seekTrack = useCallback(
     (clientX: number) => {
       const track = trackRef.current;
       if (!track || durationSec <= 0) return;
       const r = track.getBoundingClientRect();
-      const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
-      playerRef.current?.seekTo(Math.round(frac * durationSec * fps));
+      playerRef.current?.seekTo(Math.round(timeAtX(clientX, r.left, r.width, durationSec) * fps));
     },
     [playerRef, durationSec, fps],
   );
@@ -116,6 +125,24 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
+      // A track scrub follows the pointer continuously (Task 3) — like any
+      // video player's seek bar, not click-only.
+      if (scrubbingRef.current) {
+        seekTrack(e.clientX);
+        return;
+      }
+      const press = blockPressRef.current;
+      if (press && durationSec > 0) {
+        if (!press.moved && Math.abs(e.clientX - press.startX) < MOVE_THRESHOLD_PX) return;
+        press.moved = true;
+        const track = trackRef.current;
+        const deltaSec = track
+          ? ((e.clientX - press.startX) / track.getBoundingClientRect().width) * durationSec
+          : 0;
+        const shifted = moveTiming(cues, press.sceneId, deltaSec, durationSec);
+        if (shifted) setDragPreview({ sceneId: press.sceneId, ...shifted });
+        return;
+      }
       const drag = dragRef.current;
       if (!drag || durationSec <= 0) return;
       const deltaSec = ((e.clientX - drag.startX) / drag.trackWidth) * durationSec;
@@ -124,7 +151,28 @@ export const Timeline: React.FC<TimelineProps> = ({
       const clamped = clampTiming(cues, drag.sceneId, wantStart, wantEnd, durationSec);
       setDragPreview({ sceneId: drag.sceneId, ...clamped });
     };
-    const onUp = () => {
+    const onUp = (e: MouseEvent) => {
+      scrubbingRef.current = false;
+      const press = blockPressRef.current;
+      if (press) {
+        blockPressRef.current = null;
+        if (press.moved) {
+          // The drag became a move (Task 6): commit it. Like an edge drag,
+          // this writes `timing` and pins the scene — the badge appears via
+          // the same patch path.
+          setDragPreview((preview) => {
+            if (preview && preview.sceneId === press.sceneId) {
+              edits.patchTiming(press.sceneId, preview.startSec, preview.endSec);
+            }
+            return null;
+          });
+        } else {
+          // It stayed a click: seek to the CLICKED time, not the scene's
+          // start (Task 4) — a plain click never writes a timing override.
+          seekTrack(e.clientX);
+        }
+        return;
+      }
       const drag = dragRef.current;
       if (!drag) return;
       setDragPreview((preview) => {
@@ -149,7 +197,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [cues, durationSec, edits]);
+  }, [cues, durationSec, edits, seekTrack]);
 
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 
@@ -163,11 +211,14 @@ export const Timeline: React.FC<TimelineProps> = ({
         ref={trackRef}
         style={track}
         onMouseDown={(e) => {
-          // A click that lands on a block or its edge handles is dealt with
-          // by that block's own handler (which stops propagation); this
-          // fires only for the bare track background, i.e. a gap or the
-          // margin around blocks — still worth honouring as a scrub.
+          // A press on a block or its edge handles is dealt with by that
+          // block's own handler (which stops propagation); this fires only
+          // for the bare track background. Seek immediately AND begin a
+          // scrub, so press-and-drag follows the pointer like any player's
+          // seek bar (Task 3).
+          e.preventDefault();
           seekTrack(e.clientX);
+          scrubbingRef.current = true;
         }}
       >
         {cues.map((cue) => {
@@ -183,7 +234,12 @@ export const Timeline: React.FC<TimelineProps> = ({
               data-testid={`timeline-block-${cue.id}`}
               onMouseDown={(e) => {
                 e.stopPropagation();
-                seekAndSelect(cue);
+                e.preventDefault();
+                // Select right away for feedback; whether this press seeks
+                // (click) or moves the block (drag) is decided by travel —
+                // see the window mousemove/mouseup pair above.
+                onSelect({ sceneId: cue.id, elementId: null });
+                blockPressRef.current = { sceneId: cue.id, startX: e.clientX, moved: false };
               }}
               style={{
                 ...block,
@@ -206,7 +262,22 @@ export const Timeline: React.FC<TimelineProps> = ({
             </div>
           );
         })}
-        <div style={{ ...playhead, left: `${playheadPct}%` }} />
+        <div data-testid="playhead" style={{ ...playhead, left: `${playheadPct}%` }}>
+          {/* The playhead itself is grabbable (Task 3): pressing it starts
+              the same scrub as the track, WITHOUT the initial jump-seek —
+              grabbing the needle shouldn't move it until the hand does. The
+              hit zone is wider than the 2px needle so it's actually
+              catchable. */}
+          <div
+            data-testid="playhead-grab"
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              scrubbingRef.current = true;
+            }}
+            style={playheadGrab}
+          />
+        </div>
       </div>
     </div>
   );
@@ -296,5 +367,16 @@ const playhead: React.CSSProperties = {
   bottom: -4,
   width: 2,
   background: "#FFE14D",
+  // The needle paints but doesn't intercept; its grab zone (child) does.
   pointerEvents: "none",
+};
+
+const playheadGrab: React.CSSProperties = {
+  position: "absolute",
+  top: 0,
+  bottom: 0,
+  left: -4,
+  width: 10,
+  pointerEvents: "auto",
+  cursor: "ew-resize",
 };

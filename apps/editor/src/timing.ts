@@ -4,6 +4,47 @@ import type { SceneCue } from "@ossclip/core/browser";
 const MIN_SCENE_SEC = 1.2;
 const GAP = 0.05;
 
+/**
+ * Map a pointer x-position on the track to a seek time, clamped to the clip.
+ * One mapping for every seek gesture — a bare-track press, a scrub move, and
+ * a click inside a scene block (PLAN Tasks 3+4) — so they cannot drift apart.
+ */
+export function timeAtX(
+  clientX: number,
+  trackLeft: number,
+  trackWidth: number,
+  durationSec: number,
+): number {
+  if (trackWidth <= 0 || durationSec <= 0) return 0;
+  const frac = Math.min(1, Math.max(0, (clientX - trackLeft) / trackWidth));
+  return frac * durationSec;
+}
+
+/**
+ * Shift a cue in time WITHOUT changing its duration (PLAN Task 6) — the
+ * body-drag gesture. Distinct from `clampTiming`, which clamps each edge
+ * independently and therefore changes duration: moving must slide the whole
+ * block until it rests against a neighbour (or the clip bounds) and stop,
+ * never squash it.
+ */
+export function moveTiming(
+  cues: readonly SceneCue[],
+  sceneId: string,
+  deltaSec: number,
+  duration: number,
+): { startSec: number; endSec: number } | null {
+  const i = cues.findIndex((c) => c.id === sceneId);
+  const cue = cues[i];
+  if (!cue) return null;
+  const len = cue.endSec - cue.startSec;
+  const prev = i > 0 ? cues[i - 1] : undefined;
+  const next = i < cues.length - 1 ? cues[i + 1] : undefined;
+  const lo = prev ? prev.endSec + GAP : 0;
+  const hi = next ? next.startSec - GAP : duration;
+  const start = Math.min(Math.max(cue.startSec + deltaSec, lo), Math.max(lo, hi - len));
+  return { startSec: start, endSec: start + len };
+}
+
 export function clampTiming(
   cues: readonly SceneCue[],
   sceneId: string,

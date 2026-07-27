@@ -37,6 +37,31 @@ test("drag an element, save, and the patch lands on disk", async ({ page }) => {
   await page.mouse.down();
   await page.mouse.move(startX + dx, startY + dy);
   await page.mouse.up();
+
+  // THE Task-1 assertion: the element's on-screen rect moved by the dragged
+  // amount (±5%), not merely "a patch was written". The previous version of
+  // this test only checked the stored delta — which was correct — while the
+  // RENDER multiplied it by the scene's fill scale, so every drag overshot
+  // proportionally to distance and the suite stayed green. Storage and render
+  // must both hold, and only the on-screen position proves the second half.
+  await expect
+    .poll(
+      async () => {
+        const after = (await el.boundingBox())!;
+        // Within 5% of the drag distance on each axis (a floor of 1px keeps
+        // the short axis from demanding sub-pixel layout).
+        const ok = (moved: number, intended: number) =>
+          Math.abs(moved - intended) <= Math.max(1, Math.abs(intended) * 0.05);
+        const movedX = after.x - box.x;
+        const movedY = after.y - box.y;
+        return ok(movedX, dx) && ok(movedY, dy)
+          ? "landed"
+          : `moved ${movedX.toFixed(1)},${movedY.toFixed(1)} wanted ${dx},${dy}`;
+      },
+      { message: "element should land where it was dropped (±5%)" },
+    )
+    .toBe("landed");
+
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
 
