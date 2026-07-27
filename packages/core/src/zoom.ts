@@ -1,18 +1,40 @@
-import type { CaptionLine } from "./captions";
-
 /**
- * Micro zoom punches (FINDINGS §15): the cut-driven punch-in only fires at
- * cuts, so a clean take sits visually static for 8–12 s at a time. This is
- * the independent driver — a slow, subtle zoom that reverses direction at
- * speech-phrase boundaries, precomputed by the pipeline (browser-safe, pure).
- * It composes with the cut punch multiplicatively: with zero cuts the cut
- * punch is 1 and this is the only motion; at a cut the step dwarfs the drift.
+ * Idle camera movement (FINDINGS §15): the cut-driven punch-in only fires at
+ * cuts, so a clean take sits visually static for 8–12 s at a time. This is the
+ * independent driver.
  *
- * Finding the boundaries is the whole problem (FINDINGS §18). The first
- * version looked for inter-word gaps, which whisper `-ml 1` never produces —
- * its stamps are contiguous — so every take silently fell through to uniform
- * pacing. Boundaries now come from measured audio, with caption lines as the
- * subdivision grid and the metronome only as a reported last resort.
+ * ## Why this was rewritten (2026-07-28)
+ *
+ * The first version reversed direction at every speech-phrase boundary, on the
+ * theory that a phrase break is a natural place for the camera to turn around.
+ * On the author's own 64s take that found 24 boundaries and duly produced 24
+ * reversals, and the verdict was immediate: "the weird constant zooming in and
+ * zooming out". Reversing at a boundary is defensible ONCE; doing it every two
+ * seconds for a minute reads as a wobble, not as camera work. The bug was the
+ * contract, not the boundary detection — so the boundary machinery is gone
+ * rather than tuned.
+ *
+ * ## What it does now
+ *
+ * Within one cut-free CLIP the zoom moves in exactly one direction: a cosine
+ * ease from 1 to `maxScale` over `rampSec`, then a HOLD at `maxScale` for the
+ * rest of the clip. A cut resets it to 1, which is the one place a step is
+ * already justified — `EdlVideo`'s punch-in steps there too, and the frame
+ * changes anyway.
+ *
+ * Holding after the ramp is what keeps the move readable. Stretching 1 → 1.08
+ * across a 64s take is ~0.12%/s, which is indistinguishable from no motion; a
+ * bounded ramp followed by a hold is a slow push that arrives somewhere and
+ * stays — the author's "zoomed-out to zoomed-in, then keep that perspective
+ * consistent", composed from their own two options.
+ *
+ * A clip shorter than `rampSec` gets a PARTIAL push at the same rate rather
+ * than a compressed full one, so a 2s clip and a 20s clip move at the same
+ * speed. Making short clips complete the push would make them zoom visibly
+ * faster, which is the oscillation problem in a new costume.
+ *
+ * `maxScale: 1` disables the driver outright (the author's "no zoom" option)
+ * without needing a separate flag.
  */
 
 export interface ZoomSegment {
@@ -22,127 +44,104 @@ export interface ZoomSegment {
   to: number;
 }
 
-/** Which signal actually produced the boundaries — logged, never silent. */
-export type ZoomSource = "acoustic" | "captions" | "metronome";
-
 export interface ZoomPlan {
   segments: ZoomSegment[];
-  source: ZoomSource;
-  /** Real phrase boundaries found (excluding the two endpoints). */
-  boundaries: number;
+  /** How many cut-free clips the plan covers — logged, never inferred. */
+  clips: number;
+  /** The ramp actually used, so the log can't drift from the behaviour. */
+  rampSec: number;
 }
 
 export interface ZoomPlanOptions {
-  /** Zoomed-in extreme; the other extreme is 1. */
+  /** Zoomed-in extreme; the other extreme is 1. `1` disables the zoom. */
   maxScale?: number;
   /**
-   * Measured pauses in OUTPUT time — `analysis.breaths` mapped through the
-   * TimeMap. The primary phrase signal.
+   * Clip starts in OUTPUT time — the kept spans' `outIn`, i.e. every point the
+   * source jumps. A missing or empty list means the take is one clip, which is
+   * the correct reading of a cutlist that removed nothing.
    */
-  pauses?: Array<{ start: number; end: number }>;
-  /** Boundaries closer than this are merged — no twitching. */
-  minPhraseSec?: number;
-  /** A stretch with no natural break still reverses at least this often. */
-  maxPhraseSec?: number;
+  clipStarts?: readonly number[];
+  /** Seconds the push takes to arrive before it holds. */
+  rampSec?: number;
 }
 
 /** Zoom amplitude, exported so the stage can budget crop margins against it. */
 export const ZOOM_MAX_SCALE = 1.08;
 
 /**
- * Merge boundaries that sit closer together than `minPhrase`, keeping the
- * first of each cluster. Also guarantees strictly increasing times, which
- * matters because a fully-cut pause maps to a single output instant on both
- * ends and would otherwise emit a zero-length segment (an instant jump in
- * scale rather than a glide).
+ * How long the push takes. Long enough that the movement is never noticed as
+ * movement, short enough that it has arrived while the viewer is still on the
+ * hook — and, deliberately, far shorter than a typical clip so most of a clip
+ * is the settled perspective rather than a drift.
  */
-function merge(times: readonly number[], minPhrase: number, duration: number): number[] {
-  const out: number[] = [];
-  for (const t of [...times].sort((a, b) => a - b)) {
-    if (t <= 0 || t >= duration) continue;
-    const prev = out[out.length - 1] ?? 0;
-    if (t - prev >= minPhrase) out.push(t);
+export const ZOOM_RAMP_SEC = 8;
+
+/** Clip starts, cleaned: in range, unique, sorted, and always including 0. */
+function clipBoundaries(starts: readonly number[] | undefined, duration: number): number[] {
+  const seen = new Set<number>([0]);
+  for (const t of starts ?? []) {
+    if (Number.isFinite(t) && t > 0 && t < duration) seen.add(t);
   }
-  // Never strand a final sliver shorter than a phrase.
-  while (out.length > 0 && duration - out[out.length - 1]! < minPhrase) out.pop();
-  return out;
+  return [...seen].sort((a, b) => a - b);
 }
 
 export function buildZoomPlan(
-  lines: readonly CaptionLine[],
   outputDurationSec: number,
   opts: ZoomPlanOptions = {},
 ): ZoomPlan {
   const maxScale = opts.maxScale ?? ZOOM_MAX_SCALE;
-  const minPhrase = opts.minPhraseSec ?? 1.6;
-  const maxPhrase = opts.maxPhraseSec ?? 4.5;
-  if (outputDurationSec <= 0) return { segments: [], source: "metronome", boundaries: 0 };
+  const rampSec = opts.rampSec ?? ZOOM_RAMP_SEC;
+  if (outputDurationSec <= 0) return { segments: [], clips: 0, rampSec };
 
-  // A pause's MIDPOINT, not its edges: the reversal should happen inside the
-  // silence, where the eased curve is momentarily still, rather than at the
-  // instant speech stops.
-  const acoustic = (opts.pauses ?? [])
-    .map((p) => (p.start + p.end) / 2)
-    .filter((t) => t > 0 && t < outputDurationSec);
-  // Caption lines break at ≤3 words / ≤1.2 s, which is roughly a phrase —
-  // dense, always available, and independent of whisper's stamp behaviour.
-  const lineStarts = lines.map((l) => l.start).filter((t) => t > 0 && t < outputDurationSec);
-
-  let boundaries = merge(acoustic, minPhrase, outputDurationSec);
-  let source: ZoomSource = boundaries.length > 0 ? "acoustic" : "metronome";
-  if (boundaries.length === 0) {
-    boundaries = merge(lineStarts, minPhrase, outputDurationSec);
-    if (boundaries.length > 0) source = "captions";
-  }
-  const found = boundaries.length;
-
-  // Subdivide anything still longer than maxPhrase, snapping to a caption
-  // line start when one is available so even filler reversals land on a word.
-  const withEnds = [0, ...boundaries, outputDurationSec];
-  const times: number[] = [0];
-  for (let i = 0; i < withEnds.length - 1; i++) {
-    const a = withEnds[i]!;
-    const b = withEnds[i + 1]!;
-    const pieces = Math.ceil((b - a) / maxPhrase);
-    for (let p = 1; p < pieces; p++) {
-      const ideal = a + ((b - a) * p) / pieces;
-      const snapped = lineStarts
-        .filter((t) => t > times[times.length - 1]! + 1e-6 && t < b - 1e-6)
-        .reduce<number | null>(
-          (best, t) => (best === null || Math.abs(t - ideal) < Math.abs(best - ideal) ? t : best),
-          null,
-        );
-      times.push(snapped ?? ideal);
-    }
-    times.push(b);
-  }
-
+  const starts = clipBoundaries(opts.clipStarts, outputDurationSec);
   const segments: ZoomSegment[] = [];
-  for (let i = 0; i < times.length - 1; i++) {
-    if (times[i + 1]! - times[i]! <= 1e-6) continue; // never a zero-length segment
-    segments.push({
-      startSec: times[i]!,
-      endSec: times[i + 1]!,
-      from: segments.length % 2 === 0 ? 1 : maxScale,
-      to: segments.length % 2 === 0 ? maxScale : 1,
-    });
+
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i]!;
+    const end = i + 1 < starts.length ? starts[i + 1]! : outputDurationSec;
+    const length = end - start;
+    if (length <= 1e-9) continue;
+
+    const rampEnd = Math.min(start + rampSec, end);
+    // Same rate for every clip: a short clip stops partway up rather than
+    // racing to the top.
+    const reached = 1 + (maxScale - 1) * Math.min(1, (rampEnd - start) / Math.max(rampSec, 1e-9));
+
+    segments.push({ startSec: start, endSec: rampEnd, from: 1, to: reached });
+    if (end - rampEnd > 1e-9) {
+      segments.push({ startSec: rampEnd, endSec: end, from: reached, to: reached });
+    }
   }
-  return { segments, source, boundaries: found };
+
+  return { segments, clips: starts.length, rampSec };
 }
 
 /**
- * Scale at output time t — cosine-eased across each segment (never linear),
- * continuous at boundaries because segments alternate between shared
- * extremes. 1 outside the plan.
+ * Scale at output time t — cosine-eased across each segment (never linear), so
+ * the push starts and settles gently. 1 outside the plan.
+ *
+ * A hold segment has `from === to`, which the same easing renders as a
+ * constant; no special case is needed and none should be added, because the
+ * ramp/hold boundary must not be a place where two code paths could disagree.
+ *
+ * Segments are matched HALF-OPEN, `[start, end)`. Under the old oscillating
+ * contract this was academic — neighbouring segments shared a value at every
+ * boundary — but a cut is a boundary where they deliberately disagree: the
+ * previous clip holds at `maxScale` and the next starts at 1. Closed matching
+ * let the earlier segment win, so the first frame of a new clip rendered the
+ * PREVIOUS clip's zoom and the reset appeared one frame late. The final instant
+ * of the plan has no following segment and so is served by the last one.
  */
 export function zoomScaleAt(plan: readonly ZoomSegment[], tSec: number): number {
   for (const seg of plan) {
-    if (tSec >= seg.startSec && tSec <= seg.endSec) {
+    if (tSec >= seg.startSec && tSec < seg.endSec) {
       const span = seg.endSec - seg.startSec;
       const p = span > 0 ? (tSec - seg.startSec) / span : 1;
       const eased = 0.5 - 0.5 * Math.cos(Math.PI * p);
       return seg.from + (seg.to - seg.from) * eased;
     }
   }
+  const last = plan[plan.length - 1];
+  if (last && tSec === last.endSec) return last.to;
   return 1;
 }

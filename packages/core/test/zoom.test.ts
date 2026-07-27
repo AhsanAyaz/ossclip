@@ -1,127 +1,111 @@
 import { describe, expect, it } from "vitest";
-import type { CaptionLine } from "../src/captions";
-import { ZOOM_MAX_SCALE, buildZoomPlan, zoomScaleAt } from "../src/zoom";
+import { ZOOM_MAX_SCALE, ZOOM_RAMP_SEC, buildZoomPlan, zoomScaleAt } from "../src/zoom";
 
 /**
- * Caption lines as the pipeline really produces them: ≤3 words, ≤1.2 s, and
- * CONTIGUOUS word stamps — whisper `-ml 1` never leaves inter-word gaps, which
- * is the whole reason §18 existed. Any test built on gapped words would pass
- * against a driver that ships broken.
+ * The contract this file guards changed on 2026-07-28, on the author's report:
+ * "the weird constant zooming in and zooming out".
+ *
+ * The old driver reversed direction at every speech-phrase boundary. On a real
+ * 64s take that found 24 boundaries and produced 24 reversals — the camera
+ * breathed in and out for the whole video. The replacement moves in ONE
+ * direction per cut-free clip: ramp 1 → maxScale, then HOLD. A cut resets it,
+ * where the existing punch-in already justifies a step.
+ *
+ * The tests below are therefore mostly about what must NEVER happen again
+ * (a reversal inside a clip), not about where boundaries land.
  */
-function contiguousLines(duration: number, wordsPerLine = 3, wordSec = 0.4): CaptionLine[] {
-  const lines: CaptionLine[] = [];
-  let t = 0;
-  while (t < duration) {
-    const words = [];
-    for (let i = 0; i < wordsPerLine && t < duration; i++) {
-      const end = Math.min(t + wordSec, duration);
-      words.push({ text: `w${lines.length}-${i}`, start: t, end });
-      t = end; // contiguous: this word's end IS the next word's start
-    }
-    if (words.length > 0) {
-      lines.push({ words, start: words[0]!.start, end: words[words.length - 1]!.end });
-    }
-  }
-  return lines;
+
+const DURATION = 64;
+
+/** Sample the plan densely — a reversal narrower than this would be a twitch. */
+function samples(segments: Parameters<typeof zoomScaleAt>[0], duration: number, step = 0.05) {
+  const out: Array<{ t: number; s: number }> = [];
+  for (let t = 0; t <= duration + 1e-9; t += step) out.push({ t, s: zoomScaleAt(segments, t) });
+  return out;
 }
 
-const DURATION = 60;
-
-describe("zoom boundaries (FINDINGS §18)", () => {
-  it("uses measured pauses when they exist, and says so", () => {
-    const pauses = [4, 11, 19, 26, 34, 41, 49].map((s) => ({ start: s, end: s + 0.2 }));
-    const plan = buildZoomPlan(contiguousLines(DURATION), DURATION, { pauses });
-    expect(plan.source).toBe("acoustic");
-    expect(plan.boundaries).toBe(7);
+describe("one intentional move per clip", () => {
+  it("never reverses inside a clip — the whole point of the rework", () => {
+    // A single cut-free take, exactly the author's case (0 cuts).
+    const plan = buildZoomPlan(DURATION, { clipStarts: [0] });
+    const seq = samples(plan.segments, DURATION);
+    for (let i = 1; i < seq.length; i++) {
+      expect(seq[i]!.s).toBeGreaterThanOrEqual(seq[i - 1]!.s - 1e-9);
+    }
   });
 
-  it("reverses at the MIDDLE of a pause, not where speech stops", () => {
-    const plan = buildZoomPlan([], 20, { pauses: [{ start: 9, end: 11 }] });
-    const edges = plan.segments.map((s) => s.endSec);
-    // The pause spans 9–11; the reversal belongs at 10, where the eased curve
-    // is momentarily still — not at 9 (speech stops) or 11 (speech resumes).
-    expect(edges.some((e) => Math.abs(e - 10) < 1e-6)).toBe(true);
-    expect(edges.some((e) => Math.abs(e - 9) < 1e-6)).toBe(false);
+  it("reaches full scale by the ramp and then holds it", () => {
+    const plan = buildZoomPlan(DURATION, { clipStarts: [0] });
+    expect(zoomScaleAt(plan.segments, ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+    // Held, not drifting, for the rest of the clip.
+    for (const t of [ZOOM_RAMP_SEC + 1, DURATION / 2, DURATION - 0.01]) {
+      expect(zoomScaleAt(plan.segments, t)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+    }
   });
 
-  it("falls back to caption lines when no pause was measured", () => {
-    const plan = buildZoomPlan(contiguousLines(DURATION), DURATION, { pauses: [] });
-    expect(plan.source).toBe("captions");
-    expect(plan.boundaries).toBeGreaterThan(0);
+  it("starts at the original perspective, not already pushed in", () => {
+    const plan = buildZoomPlan(DURATION, { clipStarts: [0] });
+    expect(zoomScaleAt(plan.segments, 0)).toBeCloseTo(1, 6);
   });
 
-  it("reports the metronome instead of hiding it — the §18 regression guard", () => {
-    const plan = buildZoomPlan([], DURATION);
-    expect(plan.source).toBe("metronome");
-    expect(plan.boundaries).toBe(0);
-    expect(plan.segments.length).toBeGreaterThan(1); // still breathes
+  it("a cut resets to 1 and the next clip ramps again", () => {
+    const plan = buildZoomPlan(40, { clipStarts: [0, 20] });
+    expect(zoomScaleAt(plan.segments, 20)).toBeCloseTo(1, 6);
+    expect(zoomScaleAt(plan.segments, 20 + ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+    // Each clip is independently monotonic. The clip is half-open: t === 20
+    // belongs to the SECOND clip, so sampling it here would read the reset as
+    // a decrease inside the first.
+    for (const [a, b] of [[0, 20], [20, 40]] as const) {
+      const seq: number[] = [];
+      for (let t = a; t < b - 1e-9; t += 0.05) seq.push(zoomScaleAt(plan.segments, t));
+      for (let i = 1; i < seq.length; i++) {
+        expect(seq[i]!).toBeGreaterThanOrEqual(seq[i - 1]! - 1e-9);
+      }
+    }
   });
 
-  it("contiguous word stamps no longer starve the driver", () => {
-    // The exact failing condition: real ASR output, no inter-word gaps.
-    const lines = contiguousLines(DURATION);
-    const everyGap = lines
-      .flatMap((l) => l.words)
-      .every((w, i, all) => i === 0 || Math.abs(w.start - all[i - 1]!.end) < 1e-9);
-    expect(everyGap).toBe(true);
-    const plan = buildZoomPlan(lines, DURATION, {
-      pauses: [10, 22, 35, 47].map((s) => ({ start: s, end: s + 0.25 })),
-    });
-    expect(plan.source).toBe("acoustic");
-    // Uniform pacing would make every segment the same length — this must not.
-    const lengths = plan.segments.map((s) => +(s.endSec - s.startSec).toFixed(4));
-    expect(new Set(lengths).size).toBeGreaterThan(1);
+  it("a clip shorter than the ramp keeps the same RATE rather than rushing", () => {
+    // Two clips: 2s and 20s. The short one must not complete a full push in 2s
+    // — that would make short clips zoom visibly faster than long ones.
+    const plan = buildZoomPlan(22, { clipStarts: [0, 2] });
+    const shortEnd = zoomScaleAt(plan.segments, 2 - 1e-4);
+    expect(shortEnd).toBeGreaterThan(1);
+    expect(shortEnd).toBeLessThan(ZOOM_MAX_SCALE - 1e-6);
   });
 });
 
 describe("zoom plan invariants", () => {
-  const plan = buildZoomPlan(contiguousLines(DURATION), DURATION, {
-    pauses: [7, 16, 28, 39, 50].map((s) => ({ start: s, end: s + 0.3 })),
-  });
+  const plan = buildZoomPlan(DURATION, { clipStarts: [0, 25, 41] });
 
   it("covers the whole output contiguously with strictly increasing times", () => {
     expect(plan.segments[0]!.startSec).toBe(0);
     expect(plan.segments[plan.segments.length - 1]!.endSec).toBeCloseTo(DURATION, 6);
-    for (const seg of plan.segments) {
-      expect(seg.endSec).toBeGreaterThan(seg.startSec); // no zero-length segment
-    }
+    for (const seg of plan.segments) expect(seg.endSec).toBeGreaterThan(seg.startSec);
     for (let i = 1; i < plan.segments.length; i++) {
       expect(plan.segments[i]!.startSec).toBeCloseTo(plan.segments[i - 1]!.endSec, 6);
-      expect(plan.segments[i]!.from).toBeCloseTo(plan.segments[i - 1]!.to, 6);
     }
   });
 
-  it("a fully-cut pause cannot create an instant jump in scale", () => {
-    // Both ends of a removed span map to the same output instant.
-    const collapsed = [{ start: 12, end: 12 }, { start: 12, end: 12 }];
-    const p = buildZoomPlan(contiguousLines(30), 30, { pauses: collapsed });
-    for (const seg of p.segments) expect(seg.endSec - seg.startSec).toBeGreaterThan(0.5);
-  });
-
-  it("scale stays within [1, maxScale] and is continuous at boundaries", () => {
-    for (let t = 0; t <= DURATION; t += 0.05) {
-      const s = zoomScaleAt(plan.segments, t);
+  it("scale stays within [1, maxScale]", () => {
+    for (const { s } of samples(plan.segments, DURATION)) {
       expect(s).toBeGreaterThanOrEqual(1 - 1e-9);
       expect(s).toBeLessThanOrEqual(ZOOM_MAX_SCALE + 1e-9);
     }
+  });
+
+  it("is continuous everywhere except at a cut, where the reset is deliberate", () => {
+    const cuts = new Set([25, 41]);
     for (const seg of plan.segments) {
+      if (cuts.has(seg.startSec)) continue;
       const before = zoomScaleAt(plan.segments, Math.max(0, seg.startSec - 1e-4));
       const after = zoomScaleAt(plan.segments, Math.min(DURATION, seg.startSec + 1e-4));
       expect(Math.abs(after - before)).toBeLessThan(0.002);
     }
   });
 
-  it("no segment outlasts maxPhraseSec — long stretches still breathe", () => {
-    const p = buildZoomPlan([], 40, { maxPhraseSec: 4.5 });
-    for (const seg of p.segments) {
-      expect(seg.endSec - seg.startSec).toBeLessThanOrEqual(4.5 + 1e-6);
-    }
-  });
-
-  it("no segment is shorter than a phrase", () => {
-    for (const seg of plan.segments) {
-      expect(seg.endSec - seg.startSec).toBeGreaterThan(0.5);
-    }
+  it("reports the clips it planned, so the CLI log can't claim something else", () => {
+    expect(plan.clips).toBe(3);
+    expect(plan.rampSec).toBe(ZOOM_RAMP_SEC);
   });
 
   it("outside the plan the scale is exactly 1", () => {
@@ -130,6 +114,25 @@ describe("zoom plan invariants", () => {
   });
 
   it("a zero-length output produces no plan at all", () => {
-    expect(buildZoomPlan([], 0).segments).toEqual([]);
+    expect(buildZoomPlan(0, { clipStarts: [0] }).segments).toEqual([]);
+  });
+
+  it("no clip starts are given — the take is still treated as one clip", () => {
+    const p = buildZoomPlan(30, {});
+    expect(p.clips).toBe(1);
+    expect(zoomScaleAt(p.segments, 0)).toBeCloseTo(1, 6);
+    expect(zoomScaleAt(p.segments, ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+  });
+
+  it("clip starts out of order or out of range don't corrupt the plan", () => {
+    const p = buildZoomPlan(30, { clipStarts: [20, -5, 0, 99, 10] });
+    expect(p.clips).toBe(3); // 0, 10, 20
+    expect(p.segments[0]!.startSec).toBe(0);
+    expect(p.segments[p.segments.length - 1]!.endSec).toBeCloseTo(30, 6);
+  });
+
+  it("zoom can be disabled outright — the author's 'no zoom' option", () => {
+    const p = buildZoomPlan(30, { clipStarts: [0], maxScale: 1 });
+    for (const { s } of samples(p.segments, 30)) expect(s).toBeCloseTo(1, 9);
   });
 });

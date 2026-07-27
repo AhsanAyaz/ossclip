@@ -564,16 +564,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // Breaths are source-time; TimeMap has no span mapper, so both ends go
   // through toOutputClamped — a pause that was cut collapses to one instant,
   // which is still a boundary (a jump cut is a phrase break too).
-  const zoom = buildZoomPlan(captionLines, map.outputDuration, {
-    pauses: analysis.breaths.map((b) => ({
-      start: map.toOutputClamped(b.start),
-      end: map.toOutputClamped(b.end),
-    })),
+  // One move per cut-free clip: ramp in, then hold. The clip starts ARE the
+  // cuts — every point the source jumps — so a take that removed nothing is
+  // one clip and gets exactly one slow push.
+  const zoom = buildZoomPlan(map.outputDuration, {
+    clipStarts: map.spans.map((s) => s.outIn),
   });
   console.log(
-    zoom.source === "metronome"
-      ? `▸ zoom: metronome fallback (no phrase boundaries found), ${zoom.segments.length} segments`
-      : `▸ zoom: ${zoom.source} (${zoom.boundaries} phrase boundaries, ${zoom.segments.length} segments)`,
+    `▸ zoom: ${zoom.clips} clip(s), ${zoom.rampSec}s push then hold ` +
+      `(${zoom.segments.length} segments)`,
   );
 
   let renderVideo = input;
