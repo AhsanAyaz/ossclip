@@ -27,6 +27,8 @@ export interface FaceBox {
   sizeFrac: number;
   framesSampled: number;
   framesDetected: number;
+  /** Frames only the tilt sweep found (PLAN Task 8) — absent when none. */
+  framesRotated?: number;
 }
 
 // ---- pico runtime (ported from picojs, MIT) --------------------------------
@@ -142,6 +144,115 @@ function clusterDetections(dets: Detection[], iouThreshold: number): Detection[]
   return clusters;
 }
 
+// ---- rotation sweep (PLAN Task 8) ------------------------------------------
+
+/**
+ * Angles tried, in order, when the upright pass finds nothing. The cascade is
+ * frontal AND upright: a head tilted past ~±20° falls outside what it was
+ * trained on, and one real clip lost all nine samples that way. Rotating the
+ * FRAME back to upright (cheap nearest-neighbour remap at detection size)
+ * recovers in-plane tilt without any new model asset.
+ *
+ * What this does NOT recover, stated plainly: a true profile — the head
+ * TURNED sideways rather than tilted — is out-of-plane and no image rotation
+ * makes it frontal. If the loud-miss log still fires on such footage, the
+ * next step is a profile cascade, not more angles here.
+ */
+export const ROTATION_SWEEP_DEG = [-20, 20, -40, 40];
+
+/**
+ * The frame rotated by `deg` about its centre; out-of-frame samples are 0.
+ * Nearest-neighbour is plenty — the cascade reads coarse luminance relations,
+ * not edges — and keeps this allocation-cheap at detection size.
+ */
+export function rotateGray(pixels: Uint8Array, w: number, h: number, deg: number): Uint8Array {
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = (w - 1) / 2;
+  const cy = (h - 1) / 2;
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Sample the source at the inverse rotation of this output position.
+      const dx = x - cx;
+      const dy = y - cy;
+      const sx = Math.round(cx + cos * dx + sin * dy);
+      const sy = Math.round(cy - sin * dx + cos * dy);
+      if (sx >= 0 && sx < w && sy >= 0 && sy < h) out[y * w + x] = pixels[sy * w + sx]!;
+    }
+  }
+  return out;
+}
+
+/**
+ * Map a detection centre found in the ROTATED frame back to the original.
+ * Exactly the sampling transform `rotateGray` applies — a rotated-frame
+ * position corresponds to the source pixel that was sampled into it.
+ */
+export function rotatePointBack(
+  r: number,
+  c: number,
+  w: number,
+  h: number,
+  deg: number,
+): { r: number; c: number } {
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = (w - 1) / 2;
+  const cy = (h - 1) / 2;
+  const dx = c - cx;
+  const dy = r - cy;
+  return { c: cx + cos * dx + sin * dy, r: cy - sin * dx + cos * dy };
+}
+
+interface CascadeParams {
+  shiftfactor: number;
+  minsize: number;
+  maxsize: number;
+  scalefactor: number;
+}
+
+/** Best clustered detection above the score floor, or null. */
+function bestDetection(
+  pixels: Uint8Array,
+  h: number,
+  w: number,
+  classify: ClassifyFn,
+  params: CascadeParams,
+): Detection | null {
+  const dets = clusterDetections(runCascade(pixels, h, w, classify, params), 0.2).filter(
+    (d) => d[3] >= MIN_CLUSTER_SCORE,
+  );
+  if (dets.length === 0) return null;
+  return dets.reduce((a, b) => (b[3] > a[3] ? b : a));
+}
+
+/**
+ * Upright pass first; on a miss, the rotation sweep. The returned detection is
+ * in ORIGINAL frame coordinates whichever pass found it (size is preserved —
+ * in-plane rotation does not change scale).
+ */
+export function bestDetectionWithSweep(
+  pixels: Uint8Array,
+  h: number,
+  w: number,
+  classify: ClassifyFn,
+  params: CascadeParams,
+  sweepDeg: readonly number[] = ROTATION_SWEEP_DEG,
+): { det: Detection; angleDeg: number } | null {
+  const upright = bestDetection(pixels, h, w, classify, params);
+  if (upright) return { det: upright, angleDeg: 0 };
+  for (const deg of sweepDeg) {
+    const hit = bestDetection(rotateGray(pixels, w, h, deg), h, w, classify, params);
+    if (!hit) continue;
+    const { r, c } = rotatePointBack(hit[0], hit[1], w, h, deg);
+    return { det: [r, c, hit[2], hit[3]], angleDeg: deg };
+  }
+  return null;
+}
+
 // ---- frame sampling + measurement ------------------------------------------
 
 /** Detection frame width; the HEIGHT follows the (cropped) source's aspect —
@@ -169,17 +280,13 @@ export async function createFaceDetector(): Promise<
   const classify = unpackCascade(cascadeBytes);
   return (pixels, width, height) => {
     if (pixels.length < width * height) return null;
-    const dets = clusterDetections(
-      runCascade(pixels, height, width, classify, {
-        shiftfactor: 0.1,
-        minsize: 60,
-        maxsize: height,
-        scalefactor: 1.1,
-      }),
-      0.2,
-    ).filter((d) => d[3] >= MIN_CLUSTER_SCORE);
-    if (dets.length === 0) return null;
-    return dets.reduce((a, b) => (b[3] > a[3] ? b : a));
+    const hit = bestDetectionWithSweep(pixels, height, width, classify, {
+      shiftfactor: 0.1,
+      minsize: 60,
+      maxsize: height,
+      scalefactor: 1.1,
+    });
+    return hit ? hit.det : null;
   };
 }
 
@@ -235,6 +342,7 @@ export async function measureFace(
   const centersX: number[] = [];
   const centersY: number[] = [];
   const sizes: number[] = [];
+  let rotated = 0;
   for (let i = 0; i < samples; i++) {
     // Middle 80% — intros/outros are where people lean off-frame.
     const t = durationSec * (0.1 + (0.8 * i) / Math.max(1, samples - 1));
@@ -257,22 +365,19 @@ export async function measureFace(
     await unlink(framePath).catch(() => {});
     const detH = Math.floor(pixels.length / DET_W);
     if (detH < 32) continue;
-    const dets = clusterDetections(
-      runCascade(pixels, detH, DET_W, classify, {
-        shiftfactor: 0.1,
-        // The old fixed floor (60px of a 640-tall frame, ~9%) expressed as a
-        // ratio, so a shorter landscape frame still sweeps small enough.
-        minsize: Math.max(24, Math.round(detH * 0.094)),
-        maxsize: detH,
-        scalefactor: 1.1,
-      }),
-      0.2,
-    ).filter((d) => d[3] >= MIN_CLUSTER_SCORE);
-    if (dets.length === 0) continue;
-    const best = dets.reduce((a, b) => (b[3] > a[3] ? b : a));
-    centersY.push(best[0] / detH);
-    centersX.push(best[1] / DET_W);
-    sizes.push(best[2] / detH);
+    const hit = bestDetectionWithSweep(pixels, detH, DET_W, classify, {
+      shiftfactor: 0.1,
+      // The old fixed floor (60px of a 640-tall frame, ~9%) expressed as a
+      // ratio, so a shorter landscape frame still sweeps small enough.
+      minsize: Math.max(24, Math.round(detH * 0.094)),
+      maxsize: detH,
+      scalefactor: 1.1,
+    });
+    if (!hit) continue;
+    if (hit.angleDeg !== 0) rotated++;
+    centersY.push(hit.det[0] / detH);
+    centersX.push(hit.det[1] / DET_W);
+    sizes.push(hit.det[2] / detH);
   }
 
   // One lucky hit could be a poster in the background; demand a majority-ish.
@@ -284,6 +389,7 @@ export async function measureFace(
           sizeFrac: median(sizes),
           framesSampled: samples,
           framesDetected: centersY.length,
+          framesRotated: rotated > 0 ? rotated : undefined,
         }
       : null;
 

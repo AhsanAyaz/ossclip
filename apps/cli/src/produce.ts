@@ -170,7 +170,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     faceBox
       ? `▸ face at ${(faceBox.centerYFrac * 100).toFixed(0)}% down the frame, ` +
           `${(faceBox.sizeFrac * 100).toFixed(0)}% tall ` +
-          `(${faceBox.framesDetected}/${faceBox.framesSampled} frames)`
+          `(${faceBox.framesDetected}/${faceBox.framesSampled} frames` +
+          `${faceBox.framesRotated ? `, ${faceBox.framesRotated} recovered by tilt sweep` : ""})`
       : // A miss must be LOUD (PLAN Task 8): the silent fallback to the
         // assumed selfie framing is how a wrong crop shipped unnoticed.
         `▸ no face detected in ${faceSamples} sampled frames — using the ASSUMED framing; ` +
