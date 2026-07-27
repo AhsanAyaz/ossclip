@@ -12,19 +12,46 @@ export interface CaptionTrackProps {
   fontSizePx?: number;
   activeColor?: string;
   /**
-   * The comment-CTA word: when the speaker says it, the caption word renders
-   * quoted and capitalized — reinforcing the ask for muted viewers
+   * The comment-CTA word: at the moment it is ASKED FOR, the caption word
+   * renders quoted and capitalized — reinforcing the ask for muted viewers
    * (FINDINGS §16).
    */
   ctaKeyword?: string;
+  /**
+   * When the ask is on screen, in output seconds — the CTA cue's own window.
+   * Required for the treatment to apply at all: quoting marks *the word you
+   * type in the comments*, so styling every ordinary use of it (nine times in
+   * one take) inverts the meaning and devalues the real ask (FINDINGS §22).
+   */
+  ctaWindow?: { startSec: number; endSec: number };
 }
 
+/**
+ * A caption word may sit slightly outside the cue that carries the ask — the
+ * cue starts at its anchor's first word, and speech runs on either side. The
+ * window is narrow enough that a near miss is glaring and the next occurrence
+ * of the word is seconds away, so a small pad is free insurance.
+ */
+const CTA_WINDOW_PAD_SEC = 0.4;
+
 /** `agents.` → `"AGENTS".` — quote-and-caps the word, punctuation kept outside. */
-function ctaDisplay(text: string, keyword: string | undefined): string {
+export function ctaDisplay(text: string, keyword: string | undefined): string {
   if (!keyword) return text;
   const core = text.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
   if (core.toLowerCase() !== keyword.toLowerCase()) return text;
   return text.replace(core, `"${core.toUpperCase()}"`);
+}
+
+/** Is this caption word inside the CTA moment? No window ⇒ no treatment. */
+export function inCtaWindow(
+  startSec: number,
+  window: { startSec: number; endSec: number } | undefined,
+): boolean {
+  if (!window) return false;
+  return (
+    startSec >= window.startSec - CTA_WINDOW_PAD_SEC &&
+    startSec <= window.endSec + CTA_WINDOW_PAD_SEC
+  );
 }
 
 const LineView: React.FC<{
@@ -33,7 +60,8 @@ const LineView: React.FC<{
   fontSizePx: number;
   activeColor: string;
   ctaKeyword?: string;
-}> = ({ line, verticalAnchor, fontSizePx, activeColor, ctaKeyword }) => {
+  ctaWindow?: { startSec: number; endSec: number };
+}> = ({ line, verticalAnchor, fontSizePx, activeColor, ctaKeyword, ctaWindow }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   // The parent <Sequence> starts at line.start, so local frame 0 === line.start.
@@ -78,7 +106,9 @@ const LineView: React.FC<{
                 transition: "transform 60ms linear",
               }}
             >
-              {ctaDisplay(w.text, ctaKeyword)}
+              {/* Per WORD, not per line: a line straddling the cue boundary
+                  styles only the word actually inside the ask. */}
+              {ctaDisplay(w.text, inCtaWindow(w.start, ctaWindow) ? ctaKeyword : undefined)}
             </span>
           );
         })}
@@ -99,6 +129,7 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   fontSizePx = 64,
   activeColor = "#FFE14D",
   ctaKeyword,
+  ctaWindow,
 }) => {
   const { fps } = useVideoConfig();
   return (
@@ -115,6 +146,7 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
               fontSizePx={fontSizePx}
               activeColor={activeColor}
               ctaKeyword={ctaKeyword}
+              ctaWindow={ctaWindow}
             />
           </Sequence>
         );

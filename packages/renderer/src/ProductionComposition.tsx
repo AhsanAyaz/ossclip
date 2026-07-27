@@ -31,8 +31,10 @@ export interface ProductionCompProps {
   face?: FaceCrop | null;
   /** Micro zoom punches from phrase boundaries (FINDINGS §15). */
   zoomPlan?: ZoomSegment[];
-  /** Comment-CTA word — quoted+capitalized in captions when spoken (FINDINGS §16). */
+  /** Comment-CTA word — quoted+capitalized in captions at the ask (FINDINGS §16). */
   ctaKeyword?: string;
+  /** When the ask is on screen; without it the keyword is never styled (§22). */
+  ctaWindow?: { startSec: number; endSec: number };
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -56,6 +58,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   face,
   zoomPlan,
   ctaKeyword,
+  ctaWindow,
 }) => {
   if (!videoFileName) {
     return (
@@ -85,6 +88,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         cues={sceneCues}
         activeColor={theme.accent}
         ctaKeyword={ctaKeyword}
+        ctaWindow={ctaWindow}
       />
     </AbsoluteFill>
   );

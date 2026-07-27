@@ -391,12 +391,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     renderVideo = mezz;
   }
 
-  // Comment-CTA keyword (FINDINGS §16): the producer marks it on ChatMock
-  // props; the caption track quote-and-caps it when the speaker says it.
-  const ctaKeyword = scenes
-    .map((s) => ({ ...s.props, ...s.overrides }.keyword))
-    .filter((k): k is string => typeof k === "string" && k.length > 0)
-    .at(-1);
+  // Comment-CTA keyword (FINDINGS §16), scoped to the ask (FINDINGS §22).
+  // Read off the timed CUE, not the untimed scene: the cue carries the same
+  // resolved props AND the window, so the keyword can never come from a scene
+  // that assembleScenes dropped, and the caption track knows exactly when the
+  // ask is on screen. Quoting marks the word you type in the comments — every
+  // other time the speaker merely says it, it must render plainly.
+  const ctaCue = [...sceneCues]
+    .reverse()
+    .find((c) => typeof c.props.keyword === "string" && (c.props.keyword as string).length > 0);
+  const ctaKeyword = ctaCue ? (ctaCue.props.keyword as string) : undefined;
+  const ctaWindow = ctaCue
+    ? { startSec: ctaCue.startSec, endSec: ctaCue.endSec }
+    : undefined;
+  if (ctaKeyword) {
+    console.log(
+      `▸ CTA keyword "${ctaKeyword}" styled only at ` +
+        `${ctaWindow!.startSec.toFixed(1)}–${ctaWindow!.endSec.toFixed(1)}s`,
+    );
+  }
 
   const props = {
     videoFileName: basename(renderVideo),
@@ -409,6 +422,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     face: faceBox ? { centerYFrac: faceBox.centerYFrac, sizeFrac: faceBox.sizeFrac } : null,
     zoomPlan: zoom.segments,
     ctaKeyword,
+    ctaWindow,
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 

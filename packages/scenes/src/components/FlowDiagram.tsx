@@ -2,6 +2,7 @@ import React from "react";
 import { z } from "zod/v4";
 import { FlowDiagramProps, type Theme } from "@ossclip/core/browser";
 import { pop, useEnter } from "../anim";
+import { flowMetrics } from "../fit";
 
 const Chip: React.FC<{
   text: string;
@@ -56,52 +57,39 @@ const Arrow: React.FC<{ delay: number; fontSize: number; theme: Theme; down?: bo
   );
 };
 
-/** Width budget inside the safe area; height budget of the graphic-only slot. */
-const ROW_WIDTH_PX = 820;
-const STACK_HEIGHT_PX = 900;
-/** Below this the chips stop reading on a phone — switch shape, don't shrink. */
-const MIN_ROW_FONT = 26;
-
 /**
  * Row vs stack, decided from content (FINDINGS §1/§12): fit-to-width scales
  * the type down for a single row, and when real copy can't fit even at the
  * font floor — the golden fixture's short labels hid this — the diagram
  * becomes a vertical stack with downward arrows instead of ever wrapping.
+ *
+ * The width budget is the container's, not a constant: the stage now scales
+ * every graphic to fill its slot (§23), so the diagram is laid out at a width
+ * derived from that scale rather than against a hardcoded 820px that no longer
+ * corresponds to any slot. The old row/stack font caps are gone with it —
+ * capping the type here is exactly what left the diagram an 8%-tall strip.
  */
-export function flowLayout(nodes: readonly string[]): {
-  mode: "row" | "stack";
-  fontSize: number;
-} {
-  const chars = nodes.reduce((acc, n) => acc + n.length, 0);
-  const n = nodes.length;
-  // Conservative width model, all ∝ fontSize. Uppercase 900-weight runs
-  // ~0.74em/char + 0.04em letter-spacing; chip padding 2×0.8em; arrow =
-  // pad 0.55 + glyph ~0.7 + gap 0.55. The old 0.62em/char model was what
-  // let real copy wrap at a font the math said fit (FINDINGS §12) —
-  // overestimating costs a couple of font px, underestimating breaks layout.
-  const CHAR_W = 0.78;
-  const CHIP_PAD = 1.6;
-  const ARROW_W = 1.8;
-  const rowWidthPerFontPx = CHAR_W * chars + CHIP_PAD * n + ARROW_W * (n - 1);
-  const rowFont = ROW_WIDTH_PX / rowWidthPerFontPx;
-  if (rowFont >= MIN_ROW_FONT) {
-    return { mode: "row", fontSize: Math.min(44, Math.floor(rowFont)) };
-  }
-  const longest = Math.max(...nodes.map((node) => node.length));
-  const widthBound = ROW_WIDTH_PX / (CHAR_W * longest + CHIP_PAD);
-  // chip ≈ 2.1em tall (text + padding), arrow row ≈ 1.15em glyph + 2×0.45em gaps
-  const heightBound = STACK_HEIGHT_PX / (2.1 * n + 2.05 * (n - 1));
-  return {
-    mode: "stack",
-    fontSize: Math.max(22, Math.min(40, Math.floor(Math.min(widthBound, heightBound)))),
-  };
+export function flowLayout(
+  nodes: readonly string[],
+  widthPx = DEFAULT_FLOW_WIDTH_PX,
+  heightPx?: number,
+): { mode: "row" | "stack"; fontSize: number } {
+  return flowMetrics(nodes, widthPx, heightPx);
 }
 
-export const FlowDiagram: React.FC<{ props: z.infer<typeof FlowDiagramProps>; theme: Theme }> = ({
-  props,
-  theme,
-}) => {
-  const { mode, fontSize } = flowLayout(props.nodes);
+/** Fallback when the stage isn't supplying a budget (tests, direct use). */
+const DEFAULT_FLOW_WIDTH_PX = 864;
+
+export const FlowDiagram: React.FC<{
+  props: z.infer<typeof FlowDiagramProps>;
+  theme: Theme;
+  /** The slot this component must fill — see flowMetrics (FINDINGS §23). */
+  widthPx?: number;
+  heightPx?: number;
+}> = ({ props, theme, widthPx, heightPx }) => {
+  // The stage hands down the budget; no measurement needed because the slot
+  // geometry is known up front.
+  const { mode, fontSize } = flowLayout(props.nodes, widthPx, heightPx);
   const row = mode === "row";
   return (
     <div
