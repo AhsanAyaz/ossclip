@@ -22,23 +22,6 @@ export function findEditableFrom(node: Element | null): EditableHit | null {
 }
 
 /**
- * Convenience wrapper for mouse events: resolves the element under a client
- * point, then walks it the same way `findEditableFrom` does.
- */
-export function findEditable(
-  root: HTMLElement,
-  clientX: number,
-  clientY: number,
-): (EditableHit & { rect: DOMRect }) | null {
-  const node = document.elementFromPoint(clientX, clientY);
-  const hit = findEditableFrom(node);
-  if (!hit) return null;
-  const rect = rectOf(root, hit.sceneId, hit.elementId);
-  if (!rect) return null;
-  return { ...hit, rect };
-}
-
-/**
  * A logical line can render as MULTIPLE wrapped rows that all share one
  * `data-edit-id` (StrikethroughReveal, FINDINGS: shared-id fragments) — union
  * every match's rect so a nudge moves the whole logical line, not just its

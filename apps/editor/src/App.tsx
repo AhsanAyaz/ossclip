@@ -111,7 +111,13 @@ export const App: React.FC = () => {
               style={{ width: 380 }}
               controls
             />
-            <Overlay stageRef={stageRef} selection={selection} onSelect={setSelection} edits={edits} />
+            <Overlay
+              stageRef={stageRef}
+              selection={selection}
+              onSelect={setSelection}
+              edits={edits}
+              onSave={onSave}
+            />
           </div>
         </div>
         <div style={sidebar}>

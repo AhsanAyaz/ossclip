@@ -61,7 +61,15 @@ const NumberField: React.FC<{
       type="number"
       style={numberInput}
       value={Number.isFinite(value) ? value : 0}
-      onChange={(e) => onCommit(Number(e.target.value))}
+      onChange={(e) => {
+        // An in-progress value like "-" or "" parses to NaN (or, for some
+        // browsers, an empty string parses to 0 which is fine) — only
+        // dispatch once the field holds a real number, so a still-typing
+        // input never JSON.stringifies to `null` and corrupts the stored
+        // transform.
+        const parsed = Number(e.target.value);
+        if (Number.isFinite(parsed)) onCommit(parsed);
+      }}
     />
   </div>
 );

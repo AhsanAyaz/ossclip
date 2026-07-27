@@ -13,6 +13,12 @@ interface OverlayProps {
   selection: Selection | null;
   onSelect: (selection: Selection | null) => void;
   edits: ReturnType<typeof useEdits>;
+  /**
+   * Same handler the Save button uses (wraps `edits.save()` and routes
+   * failures to the error banner) — so a failed keyboard save is just as
+   * visible as a failed button click.
+   */
+  onSave: () => void;
 }
 
 const HANDLE = 9;
@@ -24,7 +30,7 @@ const HANDLE = 9;
  * box and its edit input accept pointer events, everything else passes
  * clicks straight through to `elementFromPoint`.
  */
-export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect, edits }) => {
+export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect, edits, onSave }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [editingText, setEditingText] = useState<string | null>(null);
   const dragRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
@@ -80,19 +86,23 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
   };
 
   // Re-measure whenever the selection changes or the frame advances — the
-  // Player re-renders on every frame, so the box must track it live.
+  // Player re-renders on every frame, so the box must track it live. Gated on
+  // `selection` so the rAF loop doesn't spin every frame with nothing to
+  // measure.
   useEffect(() => {
+    if (!selection) {
+      setRect(null);
+      return;
+    }
     let raf: number;
     const tick = () => {
       const stage = stageRef.current;
-      if (stage && selection) {
+      if (stage) {
         const r = selection.elementId
           ? rectOf(stage, selection.sceneId, selection.elementId)
           : stage.querySelector<HTMLElement>(`[data-edit-scene="${selection.sceneId}"]`)
               ?.getBoundingClientRect() ?? null;
         setRect(r);
-      } else {
-        setRect(null);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -100,10 +110,22 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
     return () => cancelAnimationFrame(raf);
   }, [stageRef, selection]);
 
-  const handleStageMouseDown = useCallback(
-    (e: React.MouseEvent) => {
+  // The hit layer itself is `pointer-events: none` (see the returned JSX)
+  // so it never blocks the Player's own controls: a click on play/pause or
+  // the scrub bar lands on the Player's real DOM, not on this overlay, and
+  // therefore never bubbles through a handler attached to the overlay's own
+  // node. So selection is driven by a `window`-level `mousedown` listener
+  // instead, which inspects `e.target`/coordinates but never calls
+  // `preventDefault`/`stopPropagation` — the native click underneath still
+  // fires normally, whether that's a Player control or a tagged element.
+  useEffect(() => {
+    const onWindowMouseDown = (e: MouseEvent) => {
       const stage = stageRef.current;
       if (!stage || editingText !== null) return;
+      // Ignore clicks outside the stage entirely (topbar, sidebar, etc.) —
+      // this listener is global precisely so pass-through works, but it must
+      // not react to unrelated clicks.
+      if (!stage.contains(e.target as Node)) return;
       // A mousedown that landed on the selection box itself continues
       // manipulating the CURRENT selection — resolving via `elementFromPoint`
       // here would just find the box (it explicitly keeps pointer events so
@@ -119,6 +141,8 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
         // Missed every tagged leaf — still select the scene itself if the
         // click landed inside one, so the Inspector can offer scene-level
         // controls instead of going straight back to the theme panel.
+        // Otherwise (blank stage area, or a Player control) clear the
+        // selection, same as before this listener moved to `window`.
         const scene = el?.closest<HTMLElement>("[data-edit-scene]");
         select(scene ? { sceneId: scene.dataset.editScene!, elementId: null } : null);
         return;
@@ -126,9 +150,10 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
       select({ sceneId: hit.sceneId, elementId: hit.elementId });
       dragRef.current = { x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
       setDragOffset({ dx: 0, dy: 0 });
-    },
-    [stageRef, select, editingText],
-  );
+    };
+    window.addEventListener("mousedown", onWindowMouseDown);
+    return () => window.removeEventListener("mousedown", onWindowMouseDown);
+  }, [stageRef, select, editingText]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -199,21 +224,31 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
         edits.undo();
       } else if (mod && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        void edits.save();
+        // Route through the same handler the Save button uses, so a failed
+        // keyboard save surfaces in the error banner instead of vanishing
+        // into an unhandled promise rejection.
+        onSave();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, editingText]);
+  }, [select, edits, editingText, onSave]);
 
   return (
     <div
       ref={hitLayerRef}
-      onMouseDown={handleStageMouseDown}
       style={{
         position: "absolute",
         inset: 0,
-        cursor: selection?.elementId ? "grab" : "default",
+        // The whole point of this fix: `none` here means this layer is
+        // invisible to hit-testing everywhere except its own explicitly
+        // `auto` descendants (the box, below, and the edit input) — so a
+        // click that misses both lands on whatever is actually underneath
+        // (the Player's controls, or a scene element), not on this div. The
+        // `window` mousedown listener above still runs for every click and
+        // does the selection/hit-test bookkeeping, but never blocks the
+        // native click from also reaching its real target.
+        pointerEvents: "none",
       }}
     >
       {rect && selection ? (
@@ -268,6 +303,10 @@ export const Overlay: React.FC<OverlayProps> = ({ stageRef, selection, onSelect,
           }}
           style={{
             position: "fixed",
+            // `pointer-events` is inherited, and the hit layer above is now
+            // `none` — without this override the input would be unfocusable
+            // and unclickable.
+            pointerEvents: "auto",
             left: rect.left,
             top: rect.top,
             width: Math.max(rect.width, 80),
