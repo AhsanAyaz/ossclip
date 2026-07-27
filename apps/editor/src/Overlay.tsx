@@ -57,7 +57,7 @@ const DYNAMIC_ID = /^(line|node|message|window)-(\d+)$/;
  * a title PLUS several lines) has no single string to retype into and is
  * intentionally left unhandled here — callers must refuse it instead.
  */
-function buildArrayPatch(
+export function buildArrayPatch(
   elementId: string,
   props: Record<string, unknown>,
   text: string,
@@ -72,8 +72,16 @@ function buildArrayPatch(
   // `messages[0]` here would silently no-op the retype. The rendered text is
   // `"${keyword.toUpperCase()}"` (quote-wrapped, uppercased), so map it back
   // to a plain keyword instead of writing the decorated form into the prop.
+  // The seed for an in-place edit (as opposed to a full retype) is the LIVE
+  // decorated `textContent` (see the double-click handler below), so an edit
+  // that only tweaks a letter or two — rather than replacing the whole
+  // string — still carries the quotes and uppercasing through to here.
+  // Lowercasing unconditionally (in addition to stripping the quotes) is the
+  // simplest rule that closes that off: the keyword is uppercased again at
+  // render time regardless, and it's matched case-insensitively against the
+  // caption track, so no information is lost either way.
   if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
-    const mapped = text.trim().replace(/^"(.*)"$/, "$1");
+    const mapped = text.trim().replace(/^"(.*)"$/, "$1").toLowerCase();
     return mapped ? { keyword: mapped } : null;
   }
   const field = kind === "line" ? "lines" : kind === "node" ? "nodes" : "messages";
