@@ -669,3 +669,17 @@ The same independence bug existed one layer down: a base cue can carry a `graphi
 After Render, the log tail shows `0%` and climbs in 10% steps that can be minutes apart — nothing moves in between, so it reads as hung. Asked for: a loading indicator, elapsed time, tokens and generation cost, the provider.
 
 Everything asked for was already IN the stream — `produce` prints `▸ producing scenes (<provider>)…`, `formatUsageLine`'s `▸ llm: N calls · tokens · ~$` summary, and the render's own percentage steps; the panel just showed the last six raw lines. The fix is parsing, not plumbing: the server stamps the spawn time (server-side, so a mid-render page reload keeps an honest clock), and the panel shows a spinner that animates without new lines, elapsed `m:ss` off the 1s poll, a progress bar from the latest bare `NN%` line, and the provider/cost lines pinned above the scrolling tail. Honest by construction: a fully cached replay prints no `▸ llm:` cost line, and the panel pins nothing rather than fabricating one.
+
+# Round 14 — asked-for features: timeline zoom, and the bubble's shape (2026-07-28)
+
+*Status (remote session, same date): both shipped. §52 — a per-scene `pip` override (roundness 0–1, x/y placement) resolved inside `videoSlotAt` so the morph eases toward the bubble the user placed; Inspector grows a PiP section when the resolved layout is `pip-bubble`. §53 — the timeline zooms 1–16× (buttons + ctrl/cmd-wheel about the cursor) inside a horizontal scroller; every existing gesture self-calibrates because the drag math always divided by the track's own width. 525 unit tests, 21 e2e green.*
+
+*Feature requests, not defects — asked for directly, with the author's own scope guard: the product is solid, don't overengineer.*
+
+## 52. NEW FEATURE — pip bubble roundness and placement
+
+Asked for: set the roundness of the pip mask, "maybe even placement". Shipped as a per-scene `pip` override — `cornerRadius` 0 (square card) to 1 (the stock circle), and the slot's x/y in frame fractions, clamped on-frame. Scoped to the `pip-bubble` layout at RENDER time, the same trap §50 closed for the graphic rect: a bubble property must not bend a full-frame layout, and because other layouts simply ignore it, the override survives a layout round-trip instead of needing to be cleared. Size stays the layout's own — placement and roundness were the ask. The morph machinery resolves each neighbour through its OWN override, so easing into a repositioned bubble heads where that bubble actually is.
+
+## 53. NEW FEATURE — timeline zoom with horizontal scroll
+
+Asked for: the usual video-editor zoom, horizontal scroll, easier dragging. The track now widens to `zoom × viewport` inside a scroller — and that is nearly the whole implementation, because every timeline gesture already divided by the track's OWN bounding width, so seek, scrub, edge-drag, and block-move all get proportionally finer without touching their math. Zoom is 1–16×: −/+/fit buttons (anchored about the viewport centre), ctrl/cmd+wheel about the cursor (native non-passive listener — a passive one cannot preventDefault the browser's own pinch-zoom), bare wheel pans while zoomed. The anchoring invariant — the moment under the cursor stays put through a scale change — is a pure function (`zoomedScrollLeft`) with its own tests, applied in a layout effect once the wider track has actually rendered, because setting scrollLeft before that clamps against the old width.
