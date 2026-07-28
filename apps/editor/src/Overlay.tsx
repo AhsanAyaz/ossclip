@@ -2,13 +2,30 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
 import { SAFE_AREA } from "@ossclip/renderer/composition";
-import { findEditableFrom, rectOf } from "./hitTest";
+import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import type { useEdits } from "./useEdits";
 
 export interface Selection {
   sceneId: string;
   elementId: string | null;
 }
+
+/** A live, uncommitted framing tweak (PLAN 2026-07-30 Task B): applied onto
+ * the matching cue at the END of App's live memo so the Player previews the
+ * drag/slider in real time, cleared when the real patch lands. */
+export interface VideoPreview {
+  sceneId: string;
+  patch: { scale?: number; dx?: number; dy?: number };
+}
+
+/**
+ * The Player's transport strip (seek bar + buttons) keeps pointer events even
+ * while faded to invisible, and its DOM carries no stable class or role to
+ * hit-test against — so the bottom strip of the stage is reserved for it and
+ * never starts a video grab. Matches what the Player already does with
+ * presses there: its own seek bar owns them.
+ */
+const PLAYER_CONTROLS_STRIP_PX = 64;
 
 interface OverlayProps {
   /** The DOM node the Player mounted into — the coordinate space to hit-test. */
@@ -42,6 +59,8 @@ interface OverlayProps {
   playerRef: React.RefObject<PlayerRef>;
   /** J/K/L transport dispatch — the reducer and its side effects live in App. */
   onTransport: (key: "J" | "K" | "L") => void;
+  /** Live framing preview — owned by App, applied at the end of its live memo. */
+  onVideoPreview: (preview: VideoPreview | null) => void;
   /** The currently-selected scene's LIVE (override-applied) cue, so a
    * double-click retype on an array-backed element (a FlowDiagram node, a
    * ChatMock message, …) can rewrite that element's entry in place instead
@@ -128,10 +147,23 @@ export const Overlay: React.FC<OverlayProps> = ({
   settings,
   playerRef,
   onTransport,
+  onVideoPreview,
   cue,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [editingText, setEditingText] = useState<string | null>(null);
+  /** An in-progress drag-to-pan on the video slot (PLAN Task B). `base` is
+   * the override's dx/dy at mousedown, so the drag ADDS to it. */
+  const videoDragRef = useRef<{
+    sceneId: string;
+    x: number;
+    y: number;
+    dx: number;
+    dy: number;
+    baseDx: number;
+    baseDy: number;
+  } | null>(null);
+  const videoRafRef = useRef(0);
   /** An in-progress caption word retype (PLAN Task 7, scope (a)). */
   const [captionEdit, setCaptionEdit] = useState<{
     index: number;
@@ -188,7 +220,14 @@ export const Overlay: React.FC<OverlayProps> = ({
       if (
         el.hasAttribute("data-edit-id") ||
         el.hasAttribute("data-edit-scene") ||
-        el.hasAttribute("data-caption-word")
+        el.hasAttribute("data-caption-word") ||
+        // Inside the video slot (any descendant — the deepest hit is usually
+        // the <video> itself): stop, `findVideoFrom` walks up to the tag.
+        el.closest("[data-edit-video]") !== null ||
+        // A real control (the Player's buttons, the rate chip): the press is
+        // its — stop the descent so it can never be mistaken for the video
+        // slot underneath it.
+        ["BUTTON", "INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)
       ) {
         break;
       }
@@ -299,10 +338,33 @@ export const Overlay: React.FC<OverlayProps> = ({
         // Missed every tagged leaf — still select the scene itself if the
         // click landed inside one, so the Inspector can offer scene-level
         // controls instead of going straight back to the theme panel.
-        // Otherwise (blank stage area, or a Player control) clear the
-        // selection, same as before this listener moved to `window`.
         const scene = el?.closest<HTMLElement>("[data-edit-scene]");
-        select(scene ? { sceneId: scene.dataset.editScene!, elementId: null } : null);
+        if (scene) {
+          select({ sceneId: scene.dataset.editScene!, elementId: null });
+          return;
+        }
+        // No element, no scene box — the picture itself. Grab it (PLAN Task
+        // B): select the active cue and arm a drag-to-pan of its framing.
+        // The bottom strip stays the Player's (its transport lives there).
+        const videoSceneId = findVideoFrom(el);
+        const stageBottom = stage.getBoundingClientRect().bottom;
+        if (videoSceneId && e.clientY < stageBottom - PLAYER_CONTROLS_STRIP_PX) {
+          select({ sceneId: videoSceneId, elementId: null });
+          const prior = edits.doc.scenes[videoSceneId]?.video;
+          videoDragRef.current = {
+            sceneId: videoSceneId,
+            x: e.clientX,
+            y: e.clientY,
+            dx: 0,
+            dy: 0,
+            baseDx: prior?.dx ?? 0,
+            baseDy: prior?.dy ?? 0,
+          };
+          return;
+        }
+        // Blank stage area or a Player control: clear the selection, same as
+        // before this listener moved to `window`.
+        select(null);
         return;
       }
       select({ sceneId: hit.sceneId, elementId: hit.elementId });
@@ -311,10 +373,73 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("mousedown", onWindowMouseDown);
     return () => window.removeEventListener("mousedown", onWindowMouseDown);
-  }, [stageRef, select, editingText]);
+  }, [stageRef, select, editingText, edits]);
 
   useEffect(() => {
+    // Page px → composition px. The factor comes from the Player's own
+    // `getScale()` — the stage div's rect is subtly wrong: the Player
+    // letterboxes its canvas inside the box the layout hands it, so a
+    // height-capped viewport leaves the stage wider than the canvas and
+    // every drag lands short by that ratio. One factor for both axes —
+    // the Player scales uniformly.
+    const pageToComposition = (): number => {
+      const playerScale = playerRef.current?.getScale();
+      const stageRect = stageRef.current?.getBoundingClientRect();
+      return playerScale && playerScale > 0
+        ? 1 / playerScale
+        : stageRect && stageRect.width > 0
+          ? settings.width / stageRect.width
+          : 1;
+    };
     const onMove = (e: MouseEvent) => {
+      // Cursor affordance (PLAN Task B2.5): grab over the bare picture,
+      // grabbing mid-pan. Cheap — the topmost target plus a closest() —
+      // never the style-juggling hit walk, which is for presses only.
+      const stage = stageRef.current;
+      if (stage) {
+        if (videoDragRef.current) {
+          stage.style.cursor = "grabbing";
+        } else {
+          const t = e.target instanceof Element ? e.target : null;
+          const overVideo =
+            t !== null &&
+            stage.contains(t) &&
+            !t.closest(
+              "button, input, select, textarea, [data-edit-id], [data-edit-scene], [data-caption-word]",
+            ) &&
+            e.clientY < stage.getBoundingClientRect().bottom - PLAYER_CONTROLS_STRIP_PX;
+          stage.style.cursor = overVideo ? "grab" : "";
+        }
+      }
+      const videoDrag = videoDragRef.current;
+      if (videoDrag) {
+        videoDrag.dx = e.clientX - videoDrag.x;
+        videoDrag.dy = e.clientY - videoDrag.y;
+        // rAF-throttled: the preview re-renders the whole Player frame, and
+        // mousemove outruns paint.
+        if (!videoRafRef.current) {
+          videoRafRef.current = requestAnimationFrame(() => {
+            videoRafRef.current = 0;
+            const drag = videoDragRef.current;
+            if (!drag) return;
+            const scale = pageToComposition();
+            // NO compensateEdits division, deliberately — the asymmetry with
+            // element drags is real: a graphic's stored nudges render inside
+            // a wrapper that `fitScale` scales, so they're counter-divided;
+            // the video slot has no scaled wrapper (`cue.video.dx/dy` apply
+            // via a plain translate), so dividing here would land every pan
+            // short by the fit factor. Do not "fix" this into that bug.
+            onVideoPreview({
+              sceneId: drag.sceneId,
+              patch: {
+                dx: drag.baseDx + drag.dx * scale,
+                dy: drag.baseDy + drag.dy * scale,
+              },
+            });
+          });
+        }
+        return;
+      }
       const drag = dragRef.current;
       if (!drag) return;
       drag.dx = e.clientX - drag.x;
@@ -322,6 +447,24 @@ export const Overlay: React.FC<OverlayProps> = ({
       setDragOffset({ dx: drag.dx, dy: drag.dy });
     };
     const onUp = () => {
+      const videoDrag = videoDragRef.current;
+      if (videoDrag) {
+        videoDragRef.current = null;
+        if (videoRafRef.current) {
+          cancelAnimationFrame(videoRafRef.current);
+          videoRafRef.current = 0;
+        }
+        if (videoDrag.dx !== 0 || videoDrag.dy !== 0) {
+          const scale = pageToComposition();
+          // ONE patch per gesture — one undo step (PLAN Task B2.4).
+          edits.patchVideo(videoDrag.sceneId, {
+            dx: videoDrag.baseDx + videoDrag.dx * scale,
+            dy: videoDrag.baseDy + videoDrag.dy * scale,
+          });
+        }
+        onVideoPreview(null);
+        return;
+      }
       const drag = dragRef.current;
       const sel = selectionRef.current;
       if (!drag || !sel?.elementId) {
@@ -329,22 +472,11 @@ export const Overlay: React.FC<OverlayProps> = ({
         return;
       }
       if (drag.dx !== 0 || drag.dy !== 0) {
-        // The mouse moved in PAGE pixels, but `dx`/`dy` render inside the
-        // composition, so the delta is rescaled into composition pixels
-        // before it's stored. The factor comes from the Player's own
-        // `getScale()` — the stage div's rect is subtly wrong: the Player
-        // letterboxes its canvas inside the box the layout hands it, so a
-        // height-capped viewport leaves the stage wider than the canvas and
-        // every drag lands short by that ratio. One factor for both axes —
-        // the Player scales uniformly.
-        const playerScale = playerRef.current?.getScale();
-        const stageRect = stageRef.current?.getBoundingClientRect();
-        const scale =
-          playerScale && playerScale > 0
-            ? 1 / playerScale
-            : stageRect && stageRect.width > 0
-              ? settings.width / stageRect.width
-              : 1;
+        // Same page-px → composition-px rescale as the video pan above; the
+        // difference is `compensateEdits` DOWNSTREAM (SceneLayer divides the
+        // stored value by the fit scale, because element nudges render
+        // inside the scaled wrapper).
+        const scale = pageToComposition();
         const scene = edits.doc.scenes[sel.sceneId];
         const prior = scene?.elements[sel.elementId];
         edits.patchElement(sel.sceneId, sel.elementId, {
@@ -361,7 +493,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [edits, stageRef, settings, playerRef]);
+  }, [edits, stageRef, settings, playerRef, onVideoPreview]);
 
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {

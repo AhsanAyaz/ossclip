@@ -17,15 +17,37 @@ export interface EditState {
   dirty: boolean;
   /** History length at the last save, so undoing past it re-marks dirty. */
   savedAt: number;
+  /** The last commit's coalesce key + time — see COALESCE_MS. */
+  lastCoalesce: { key: string; at: number } | null;
 }
+
+/**
+ * Commits carrying the SAME coalesce key within this window collapse into
+ * one undo step (PLAN 2026-07-30 Task B5): typing "0.62" into a number field
+ * or scrubbing the zoom slider is one gesture, not four. Drags pass no key —
+ * each drag is its own step — and two gestures separated by more than this
+ * never merge, however identical their keys.
+ */
+export const COALESCE_MS = 600;
 
 export type EditAction =
   | { type: "load"; doc: OverrideDoc }
   | { type: "patchProps"; sceneId: string; patch: Record<string, unknown> }
-  | { type: "patchElement"; sceneId: string; elementId: string; patch: ElementTransform }
+  | {
+      type: "patchElement";
+      sceneId: string;
+      elementId: string;
+      patch: ElementTransform;
+      coalesce?: string;
+    }
   | { type: "clearElement"; sceneId: string; elementId: string }
   | { type: "patchTiming"; sceneId: string; startSec: number; endSec: number }
-  | { type: "patchVideo"; sceneId: string; patch: { scale?: number; dy?: number; dx?: number } }
+  | {
+      type: "patchVideo";
+      sceneId: string;
+      patch: { scale?: number; dy?: number; dx?: number; autoZoom?: boolean };
+      coalesce?: string;
+    }
   | { type: "clearVideo"; sceneId: string }
   | { type: "clearTiming"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
@@ -40,22 +62,35 @@ export const initialEditState = (): EditState => ({
   past: [],
   dirty: false,
   savedAt: 0,
+  lastCoalesce: null,
 });
 
 const withScene = (doc: OverrideDoc, id: string) =>
   doc.scenes[id] ?? { props: {}, elements: {} };
 
 export function editReducer(state: EditState, action: EditAction): EditState {
-  const commit = (doc: OverrideDoc): EditState => ({
-    doc,
-    past: [...state.past, state.doc],
-    dirty: true,
-    savedAt: state.savedAt,
-  });
+  const commit = (doc: OverrideDoc, coalesce?: string): EditState => {
+    const now = Date.now();
+    // Same key, still inside the window → REPLACE the top of history rather
+    // than pushing: the burst's first commit already snapshotted the
+    // pre-gesture doc, which is exactly where one undo should land.
+    const merge =
+      coalesce !== undefined &&
+      state.lastCoalesce !== null &&
+      state.lastCoalesce.key === coalesce &&
+      now - state.lastCoalesce.at < COALESCE_MS;
+    return {
+      doc,
+      past: merge ? state.past : [...state.past, state.doc],
+      dirty: true,
+      savedAt: state.savedAt,
+      lastCoalesce: coalesce !== undefined ? { key: coalesce, at: now } : null,
+    };
+  };
 
   switch (action.type) {
     case "load":
-      return { doc: action.doc, past: [], dirty: false, savedAt: 0 };
+      return { doc: action.doc, past: [], dirty: false, savedAt: 0, lastCoalesce: null };
     case "patchProps": {
       const scene = withScene(state.doc, action.sceneId);
       return commit({
@@ -69,6 +104,7 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     case "patchElement":
       return commit(
         setElementTransform(state.doc, action.sceneId, action.elementId, action.patch),
+        action.coalesce,
       );
     case "clearElement":
       return commit(clearElementTransform(state.doc, action.sceneId, action.elementId));
@@ -89,13 +125,16 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       return commit(clearTiming(state.doc, action.sceneId));
     case "patchVideo": {
       const scene = withScene(state.doc, action.sceneId);
-      return commit({
-        ...state.doc,
-        scenes: {
-          ...state.doc.scenes,
-          [action.sceneId]: { ...scene, video: { ...scene.video, ...action.patch } },
+      return commit(
+        {
+          ...state.doc,
+          scenes: {
+            ...state.doc.scenes,
+            [action.sceneId]: { ...scene, video: { ...scene.video, ...action.patch } },
+          },
         },
-      });
+        action.coalesce,
+      );
     }
     case "clearVideo": {
       const scene = state.doc.scenes[action.sceneId];
@@ -143,7 +182,14 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       if (state.past.length === 0) return state;
       const doc = state.past[state.past.length - 1]!;
       const past = state.past.slice(0, -1);
-      return { doc, past, savedAt: state.savedAt, dirty: past.length !== state.savedAt };
+      // A commit after an undo must never merge into the burst it undid.
+      return {
+        doc,
+        past,
+        savedAt: state.savedAt,
+        dirty: past.length !== state.savedAt,
+        lastCoalesce: null,
+      };
     }
     case "saved":
       return { ...state, dirty: false, savedAt: state.past.length };
@@ -179,15 +225,18 @@ export function useEdits() {
     save,
     patchProps: (sceneId: string, patch: Record<string, unknown>) =>
       dispatch({ type: "patchProps", sceneId, patch }),
-    patchElement: (sceneId: string, elementId: string, patch: ElementTransform) =>
-      dispatch({ type: "patchElement", sceneId, elementId, patch }),
+    patchElement: (sceneId: string, elementId: string, patch: ElementTransform, coalesce?: string) =>
+      dispatch({ type: "patchElement", sceneId, elementId, patch, coalesce }),
     clearElement: (sceneId: string, elementId: string) =>
       dispatch({ type: "clearElement", sceneId, elementId }),
     patchTiming: (sceneId: string, startSec: number, endSec: number) =>
       dispatch({ type: "patchTiming", sceneId, startSec, endSec }),
     clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),
-    patchVideo: (sceneId: string, patch: { scale?: number; dy?: number; dx?: number }) =>
-      dispatch({ type: "patchVideo", sceneId, patch }),
+    patchVideo: (
+      sceneId: string,
+      patch: { scale?: number; dy?: number; dx?: number; autoZoom?: boolean },
+      coalesce?: string,
+    ) => dispatch({ type: "patchVideo", sceneId, patch, coalesce }),
     clearVideo: (sceneId: string) => dispatch({ type: "clearVideo", sceneId }),
     patchComponent: (sceneId: string, component: SceneComponentId) =>
       dispatch({ type: "patchComponent", sceneId, component }),

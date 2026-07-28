@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { editReducer, initialEditState } from "../src/useEdits";
+import { describe, expect, it, vi } from "vitest";
+import { COALESCE_MS, editReducer, initialEditState } from "../src/useEdits";
 
 describe("edit state", () => {
   it("starts clean", () => {
@@ -40,5 +40,56 @@ describe("edit state", () => {
       type: "patchTiming", sceneId: "scene-0", startSec: 2, endSec: 6,
     });
     expect(s.doc.scenes["scene-0"]!.timing).toEqual({ startSec: 2, endSec: 6 });
+  });
+});
+
+describe("undo coalescing (PLAN 2026-07-30 Task B5)", () => {
+  const patch = (scale: number, coalesce?: string) =>
+    ({ type: "patchVideo", sceneId: "scene-0", patch: { scale }, coalesce }) as const;
+
+  it("collapses a same-key burst into ONE undo step", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    let s = editReducer(initialEditState(), patch(0.6, "video:scene-0:scale"));
+    s = editReducer(s, patch(0.62, "video:scene-0:scale"));
+    s = editReducer(s, patch(0.625, "video:scene-0:scale"));
+    expect(s.doc.scenes["scene-0"]!.video!.scale).toBe(0.625);
+    expect(s.past).toHaveLength(1);
+    // One undo lands BEFORE the burst, not mid-keystroke.
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["scene-0"]?.video).toBeUndefined();
+    vi.restoreAllMocks();
+  });
+
+  it("never merges two gestures separated by more than the window", () => {
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(1000);
+    let s = editReducer(initialEditState(), patch(0.6, "video:scene-0:scale"));
+    now.mockReturnValue(1000 + COALESCE_MS + 1);
+    s = editReducer(s, patch(0.7, "video:scene-0:scale"));
+    expect(s.past).toHaveLength(2);
+    vi.restoreAllMocks();
+  });
+
+  it("never merges different keys, or keyless commits (drags)", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    let s = editReducer(initialEditState(), patch(0.6, "video:scene-0:scale"));
+    s = editReducer(s, {
+      type: "patchVideo", sceneId: "scene-0", patch: { dx: 5 }, coalesce: "video:scene-0:dx",
+    });
+    expect(s.past).toHaveLength(2);
+    s = editReducer(s, patch(1.1));
+    s = editReducer(s, patch(1.2));
+    expect(s.past).toHaveLength(4);
+    vi.restoreAllMocks();
+  });
+
+  it("a commit after an undo starts fresh instead of merging into the undone burst", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    let s = editReducer(initialEditState(), patch(0.6, "video:scene-0:scale"));
+    s = editReducer(s, { type: "undo" });
+    s = editReducer(s, patch(0.9, "video:scene-0:scale"));
+    expect(s.past).toHaveLength(1);
+    expect(s.doc.scenes["scene-0"]!.video!.scale).toBe(0.9);
+    vi.restoreAllMocks();
   });
 });

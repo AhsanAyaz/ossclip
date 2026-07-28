@@ -1,7 +1,7 @@
 import React from "react";
 import { LayoutSchema, SceneComponentIdSchema, type SceneCue, type Theme } from "@ossclip/core/browser";
 import type { useEdits } from "./useEdits";
-import type { Selection } from "./Overlay";
+import type { Selection, VideoPreview } from "./Overlay";
 
 interface InspectorProps {
   selection: Selection | null;
@@ -18,6 +18,9 @@ interface InspectorProps {
   resolvedTheme: Theme;
   /** The caption words under the cue's window — what "tracking" tracks. */
   anchorText?: string;
+  /** Live framing preview (PLAN Task B) — the zoom slider writes it while
+   * scrubbing, the release commits the real patch and clears it. */
+  onVideoPreview: (preview: VideoPreview | null) => void;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -132,7 +135,14 @@ const ThemeField: React.FC<{
  * imprecise; typing a value (including `0`, to cleanly undo a nudge) goes
  * straight to `patchElement`/`patchTheme` rather than waiting on a blur.
  */
-export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, resolvedTheme, anchorText }) => {
+export const Inspector: React.FC<InspectorProps> = ({
+  selection,
+  cue,
+  edits,
+  resolvedTheme,
+  anchorText,
+  onVideoPreview,
+}) => {
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
     const transform = cue.elements?.[elementId] ?? {};
@@ -160,22 +170,30 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
           </div>
         ) : null}
         <div style={section}>
+          {/* Typing "120" is one gesture, not three edits — the coalesce key
+              collapses the keystroke burst into a single undo step (B5). */}
           <NumberField
             id="x"
             value={transform.dx ?? 0}
-            onCommit={(v) => edits.patchElement(selection.sceneId, elementId, { dx: v })}
+            onCommit={(v) =>
+              edits.patchElement(selection.sceneId, elementId, { dx: v }, `element:${selection.sceneId}:${elementId}:dx`)
+            }
           />
           <NumberField
             id="y"
             value={transform.dy ?? 0}
-            onCommit={(v) => edits.patchElement(selection.sceneId, elementId, { dy: v })}
+            onCommit={(v) =>
+              edits.patchElement(selection.sceneId, elementId, { dy: v }, `element:${selection.sceneId}:${elementId}:dy`)
+            }
           />
           <NumberField
             id="scale"
             value={transform.scale ?? 1}
             min={0.05}
             max={4}
-            onCommit={(v) => edits.patchElement(selection.sceneId, elementId, { scale: v })}
+            onCommit={(v) =>
+              edits.patchElement(selection.sceneId, elementId, { scale: v }, `element:${selection.sceneId}:${elementId}:scale`)
+            }
           />
         </div>
         <div style={section}>
@@ -246,27 +264,91 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
           </div>
         </div>
         <div style={section}>
-          {/* The escape hatch for a crop the automatic pass cannot fix: a
-              round pip mask fed a portrait canvas puts the head at ~120% of
-              the bubble, and that ratio does not change with bubble size, so
-              no constant fixes it. Scale under 1 shows more of the source. */}
+          {/* Direct manipulation first (PLAN Task B4): a zoom slider with a
+              live preview, pan by dragging the picture on the stage. The
+              number fields stay as the precision fallback — and keep
+              step="any", which the R9-5 e2e pins. Scale under 1 zooms OUT:
+              more of the source, backdrop showing where it no longer
+              covers. */}
           <span style={label}>Video framing</span>
+          <div style={row}>
+            <span style={label}>
+              zoom{"  "}
+              <span style={{ color: "#EDEDF2" }}>
+                {(cue.video?.scale ?? 1).toFixed(2)}×
+              </span>
+            </span>
+            <input
+              type="range"
+              data-testid="zoom-slider"
+              min={0.5}
+              max={3}
+              step={0.01}
+              value={cue.video?.scale ?? 1}
+              // Scrub = live preview only; the REAL patch lands once, on
+              // release, so one slider gesture is one undo step.
+              onChange={(e) =>
+                onVideoPreview({
+                  sceneId: selection.sceneId,
+                  patch: { scale: Number(e.target.value) },
+                })
+              }
+              onPointerUp={(e) => {
+                const v = Number((e.target as HTMLInputElement).value);
+                edits.patchVideo(selection.sceneId, { scale: v }, `video:${selection.sceneId}:scale`);
+                onVideoPreview(null);
+              }}
+              onKeyUp={(e) => {
+                // Only keys that actually move a range input commit — a
+                // stray keyup (the "s" of Cmd+S, a modifier) must not
+                // re-commit the current value and un-save the document.
+                const moves = [
+                  "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+                  "Home", "End", "PageUp", "PageDown",
+                ];
+                if (!moves.includes(e.key)) return;
+                const v = Number((e.target as HTMLInputElement).value);
+                edits.patchVideo(selection.sceneId, { scale: v }, `video:${selection.sceneId}:scale`);
+                onVideoPreview(null);
+              }}
+            />
+          </div>
+          <label
+            style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, color: "#9A9AA3", cursor: "pointer" }}
+          >
+            <input
+              type="checkbox"
+              data-testid="auto-zoom"
+              checked={cue.video?.autoZoom !== false}
+              onChange={(e) => edits.patchVideo(selection.sceneId, { autoZoom: e.target.checked })}
+            />
+            auto zoom (the slow push composes on top of your zoom)
+          </label>
+          <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+            Pan: drag the picture on the stage.
+          </div>
           <NumberField
             id="scale"
             value={cue.video?.scale ?? 1}
             min={0.05}
             max={4}
-            onCommit={(v) => edits.patchVideo(selection.sceneId, { scale: v })}
+            onCommit={(v) =>
+              edits.patchVideo(selection.sceneId, { scale: v }, `video:${selection.sceneId}:scale`)
+            }
           />
           <NumberField
             id="dx"
             value={cue.video?.dx ?? 0}
-            onCommit={(v) => edits.patchVideo(selection.sceneId, { dx: v })}
+            onCommit={(v) =>
+              edits.patchVideo(selection.sceneId, { dx: v }, `video:${selection.sceneId}:dx`)
+            }
           />
           <NumberField
             id="dy"
             value={cue.video?.dy ?? 0}
-            onCommit={(v) => edits.patchVideo(selection.sceneId, { dy: v })}
+            onCommit={(v) =>
+              edits.patchVideo(selection.sceneId, { dy: v }, `video:${selection.sceneId}:dy`)
+            }
           />
           {cue.video ? (
             <button style={button} onClick={() => edits.clearVideo(selection.sceneId)}>

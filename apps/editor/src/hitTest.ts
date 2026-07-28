@@ -22,6 +22,17 @@ export function findEditableFrom(node: Element | null): EditableHit | null {
 }
 
 /**
+ * Walk up to the video slot's tag (PLAN 2026-07-30 Task B) — the scene whose
+ * framing a grab on the picture edits. Returns that scene's id, or null when
+ * the node isn't inside the slot (or no cue is active, in which case the
+ * renderer omits the attribute entirely).
+ */
+export function findVideoFrom(node: Element | null): string | null {
+  const el = node?.closest<HTMLElement>("[data-edit-video]");
+  return el?.dataset.editVideo || null;
+}
+
+/**
  * A logical line can render as MULTIPLE wrapped rows that all share one
  * `data-edit-id` (StrikethroughReveal, FINDINGS: shared-id fragments) — union
  * every match's rect so a nudge moves the whole logical line, not just its

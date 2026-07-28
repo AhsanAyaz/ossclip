@@ -318,3 +318,57 @@ test("plain take blocks fill the timeline, select, and hold a framing override (
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   expect(doc.scenes["take-0"].video.scale).toBe(1.3);
 });
+
+test("drag the picture to pan its framing; the zoom slider commits one undo step (Task B)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  // Park inside take-0 and select it — the click seeks into the take, so the
+  // video slot on stage is tagged with its id.
+  await page.getByTestId("timeline-block-take-0").click();
+  await expect(page.getByTestId("zoom-slider")).toBeVisible();
+
+  // Drag the PICTURE, well above the strip reserved for the Player's own
+  // transport and clear of captions/graphics.
+  const stage = (await page.getByTestId("stage").boundingBox())!;
+  const cx = stage.x + stage.width * 0.5;
+  const cy = stage.y + stage.height * 0.3;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + 60, cy + 25, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  const video = doc.scenes["take-0"].video;
+  const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
+  // Same ±20% band edit.spec.ts uses to catch an un-rescaled delta — the
+  // stage box and the Player's letterboxed canvas differ by ~10%.
+  const expected = 60 * (renderProps.settings.width / stage.width);
+  expect(video.dx).toBeGreaterThan(expected * 0.8);
+  expect(video.dx).toBeLessThan(expected * 1.2);
+  expect(video.dy).toBeGreaterThan(0);
+
+  // Slider: a three-arrow burst commits with one coalesce key, so ONE undo
+  // erases the whole burst — and leaves the drag above intact. Relative
+  // assertions: earlier tests may already have left a scale on this take.
+  const slider = page.getByTestId("zoom-slider");
+  const before = Number(await slider.inputValue());
+  await slider.focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc2 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc2.scenes["take-0"].video.scale).toBeCloseTo(before + 0.03, 6);
+  // Blur first: Meta+z's keyup on a focused slider would re-commit its value.
+  await slider.evaluate((el) => (el as HTMLElement).blur());
+  await page.keyboard.press("Meta+z");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc3 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc3.scenes["take-0"].video.scale ?? before).toBeCloseTo(before, 6);
+  expect(doc3.scenes["take-0"].video.dx).toBeCloseTo(video.dx, 6);
+});

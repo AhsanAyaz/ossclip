@@ -74,7 +74,8 @@ export const VideoStage: React.FC<{
   // nudged still breathes; NOT lerped across the layout transition, because a
   // correction belongs to one scene and interpolating it into its neighbour
   // would drag the neighbour's crop with it.
-  const userVideo = activeCueAt(cues, t)?.video;
+  const activeCue = activeCueAt(cues, t);
+  const userVideo = activeCue?.video;
 
   // §15: the idle zoom fades with the slot (graphic-only suppresses it) and
   // is damped on the bubble — a zooming bubble reads as a wobble. Both fall
@@ -103,6 +104,11 @@ export const VideoStage: React.FC<{
     <AbsoluteFill>
       <AbsoluteFill style={{ background: theme.bg, opacity: backdrop }} />
       <div
+        // Which scene's framing a grab on the picture edits (PLAN 2026-07-30
+        // Task B). ATTRIBUTE ONLY — no cursor, no pointerEvents here: editor
+        // affordances stay in the editor; the renderer just states whose
+        // video this is right now.
+        data-edit-video={activeCue?.id}
         style={{
           position: "absolute",
           left: `${slot.rect.x * 100}%`,

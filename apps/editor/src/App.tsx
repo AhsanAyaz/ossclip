@@ -14,7 +14,7 @@ import {
   type Theme,
 } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
-import { Overlay, type Selection } from "./Overlay";
+import { Overlay, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector } from "./Inspector";
 import { Timeline } from "./Timeline";
 
@@ -58,6 +58,10 @@ export const App: React.FC = () => {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
+  // A live, uncommitted framing tweak (PLAN Task B3): the stage drag and the
+  // Inspector's zoom slider both write it, the live memo applies it last, and
+  // it clears the moment the real patch lands in the edit layer.
+  const [videoPreview, setVideoPreview] = useState<VideoPreview | null>(null);
   const stageRef = useRef<HTMLDivElement>(null!);
   const playerRef = useRef<PlayerRef>(null);
 
@@ -139,15 +143,24 @@ export const App: React.FC = () => {
       clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
     });
     const { cues } = applyOverrides(filled, edits.doc);
+    // The framing preview applies LAST, onto the fully-merged cue, so what
+    // the Player shows mid-gesture is exactly what committing would store.
+    const previewed = videoPreview
+      ? cues.map((c) =>
+          c.id === videoPreview.sceneId
+            ? { ...c, video: { ...c.video, ...videoPreview.patch } }
+            : c,
+        )
+      : cues;
     const baseCaptions = renderProps.baseCaptionLines ?? renderProps.captionLines ?? [];
     return {
       ...renderProps,
-      sceneCues: cues,
+      sceneCues: previewed,
       captionLines: applyCaptionEdits(baseCaptions, edits.doc.captions).lines,
       theme: resolveTheme(baseTheme, edits.doc),
       videoFileName: `/media/${renderProps.videoFileName}`,
     };
-  }, [renderProps, edits.doc]);
+  }, [renderProps, edits.doc, videoPreview]);
 
   const onSave = (): void => {
     void edits.save().catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -252,6 +265,7 @@ export const App: React.FC = () => {
               playerRef={playerRef}
               cue={selectedCue}
               onTransport={onTransport}
+              onVideoPreview={setVideoPreview}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
                 only reachable by keyboard is a rate users lose track of.
@@ -273,6 +287,7 @@ export const App: React.FC = () => {
             edits={edits}
             resolvedTheme={live.theme}
             anchorText={anchorText}
+            onVideoPreview={setVideoPreview}
           />
         </div>
       </div>
