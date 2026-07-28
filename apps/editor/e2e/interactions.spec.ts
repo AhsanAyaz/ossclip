@@ -849,6 +849,96 @@ test("transcript view: search, retype 1:1 through the caption layer, jump (R15 �
   });
 });
 
+test("the keybinds reference opens with ? and the top-bar button, closes with esc (R16 §63)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  // Select FIRST — the modal's backdrop owns clicks while it is open.
+  await page.getByTestId("timeline-block-scene-0").click();
+  await expect(page.getByTestId("overlay-box")).toBeVisible();
+  await page.keyboard.press("?");
+  const modal = page.getByTestId("shortcuts-modal");
+  await expect(modal).toBeVisible();
+  // It documents the bindings this suite exercises — a stale list fails here.
+  await expect(modal).toContainText("split the scene at the playhead");
+  await expect(modal).toContainText("select previous / next scene");
+  await expect(modal).toContainText("play / pause");
+  // Esc closes the MODAL without also clearing the selection through the
+  // Overlay's own Esc handler.
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect(page.getByTestId("overlay-box")).toBeVisible();
+  // The top-bar button is the discoverable path to the same reference.
+  await page.getByTestId("shortcuts-button").click();
+  await expect(page.getByTestId("shortcuts-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+});
+
+test("⌘B splits the scene at the playhead; undo heals it (R16 §61)", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  const blocks = page.locator('[data-testid^="timeline-block-"]');
+  const before = await blocks.count();
+  // Click mid-block: selects scene-0 AND seeks to the clicked time (~2.6s),
+  // comfortably clear of both edges.
+  await page.getByTestId("timeline-block-scene-0").click();
+  await page.keyboard.press("Meta+b");
+  await expect(blocks).toHaveCount(before + 1);
+  // The second half is a real, selectable scene named by its start time.
+  const half = page.locator('[data-testid^="timeline-block-scene-0\\@"]');
+  await expect(half).toHaveCount(1);
+  await half.click();
+  await expect(page.getByTestId("timing-range")).toBeVisible();
+  // One undo takes the cut back — it is an edit like any other.
+  await page.keyboard.press("Meta+z");
+  await expect(blocks).toHaveCount(before);
+});
+
+test("⌥+arrows select the neighbour scene; ⌘+arrows jump to scene starts (R16 §62)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-0").click();
+  // ⌥→ moves the SELECTION to the next block (the take after scene-0) —
+  // the Inspector heading flips from Scene to Take.
+  await expect(page.locator("text=Scene").first()).toBeVisible();
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(page.locator("text=Take").first()).toBeVisible();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(page.locator("text=Scene").first()).toBeVisible();
+  // …and the playhead has not moved off the click position (select ≠ seek).
+  const fracBefore = await playheadFrac(page);
+  expect(fracBefore).toBeGreaterThan(0.02);
+
+  // ⌘→ jumps the PLAYHEAD to the next scene's beginning; ⌘← back to the
+  // previous one's.
+  await page.keyboard.press("Meta+ArrowRight");
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(5.0 / 31.92458 - 0.01);
+  await page.keyboard.press("Meta+ArrowLeft");
+  await expect.poll(() => playheadFrac(page)).toBeLessThan(0.02);
+});
+
+test("caption scale is a per-scene control like every other scale (R16 §64)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-0").click();
+  const word = page.locator("[data-caption-word]").first();
+  await expect(word).toBeVisible();
+  const sizeBefore = await word.evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize));
+
+  const slider = page.getByTestId("caption-scale-slider");
+  await slider.focus();
+  await page.keyboard.press("End"); // 3× — the top of the range
+  await expect
+    .poll(() => word.evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize)))
+    .toBeGreaterThan(sizeBefore * 2.5);
+  // In-memory only — reloading elsewhere discards it; nothing was saved.
+});
+
 test("pip bubble: roundness and placement are per-scene edits (R14 §52)", async ({ page }) => {
   await page.goto("/");
   await settle(page);

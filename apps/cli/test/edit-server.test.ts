@@ -28,7 +28,7 @@ describe("edit server", () => {
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body.renderProps.videoFileName).toBe("clip.mp4");
-    expect(body.overrides).toEqual({ theme: {}, scenes: {}, captions: {} });
+    expect(body.overrides).toEqual({ theme: {}, scenes: {}, captions: {}, splits: [] });
   });
 
   it("saves overrides to disk", async () => {
@@ -158,6 +158,37 @@ describe("edit server", () => {
     // The production doc now reports the button usable.
     const prod = await (await fetch(`${server.url}/api/production`)).json();
     expect(prod.canRender).toBe(true);
+  });
+
+  it("cancel kills the child and the status says CANCELLED, not failed (R16 §60)", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: "-e",
+        args: ["setTimeout(() => {}, 10000)"],
+        cwd: dir,
+      }),
+    );
+    const server = await startEditServer(dir, { port: 0 });
+    close = server.close;
+    // Nothing to cancel yet — 409, not a silent ok.
+    expect((await fetch(`${server.url}/api/render/cancel`, { method: "POST" })).status).toBe(409);
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    expect((await fetch(`${server.url}/api/render/cancel`, { method: "POST" })).status).toBe(202);
+    let status = { running: true, exitCode: null as number | null, cancelled: false };
+    for (let i = 0; i < 50 && (status.running || status.exitCode === null); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      status = await (await fetch(`${server.url}/api/render/status`)).json();
+    }
+    expect(status.running).toBe(false);
+    expect(status.cancelled).toBe(true);
+    // A NEW render resets the flag — the last run's cancel is not this run's.
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    const fresh = await (await fetch(`${server.url}/api/render/status`)).json();
+    expect(fresh.cancelled).toBe(false);
   });
 
   it("409 while a render is already running; server close kills the child", async () => {

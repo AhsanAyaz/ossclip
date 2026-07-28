@@ -34,6 +34,7 @@ import {
   emptyOverrideDoc,
   extractAudio,
   fillPlainCues,
+  splitCues,
   landscapeLayout,
   formatCutReport,
   formatUsageLine,
@@ -694,7 +695,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     outputDurationSec: map.outputDuration,
     clipStarts: map.spans.map((s) => s.outIn),
   });
-  const { cues: sceneCues, orphans: rawOrphans } = applyOverrides(filled, overrideDoc);
+  // User splits (R16 §61) — after the fill so takes split like scenes, and
+  // before the final override pass so edits on the `id@ms` halves land.
+  const split = splitCues(filled, overrideDoc.splits);
+  if (overrideDoc.splits.length > 0) {
+    console.log(`▸ ${overrideDoc.splits.length} scene split(s) from the edit layer`);
+  }
+  const { cues: mergedCues, orphans: rawOrphans } = applyOverrides(split, overrideDoc);
+  // Halves the user deleted AFTER splitting: their hidden override targets an
+  // `id@ms` id that only exists post-split, so the first drop above never saw
+  // it. Same order as the editor's live memo.
+  const { cues: sceneCues, hidden: hiddenHalves } = dropHiddenCues(mergedCues, overrideDoc);
+  if (hiddenHalves.length > 0) {
+    console.log(`▸ ${hiddenHalves.length} split half(s) hidden by the edit layer`);
+  }
   // A hidden scene's id is absent from the filled list by construction —
   // that's a deletion doing its job, not a lost edit.
   const orphans = rawOrphans.filter((id) => !hiddenIds.includes(id));

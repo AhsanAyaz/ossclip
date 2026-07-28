@@ -547,11 +547,14 @@ export const Inspector: React.FC<InspectorProps> = ({
           );
         })()}
         {(() => {
-          // Caption position (R15 §56) — per scene, with the bulk fan-out the
-          // author actually asked for ("the captions are too low for this
-          // whole video"). Shown for takes too: captions run over them.
+          // Caption position (R15 §56) and size (R16 §64) — per scene, with
+          // the bulk fan-out the author actually asked for ("the captions
+          // are too low for this whole video"). Shown for takes too:
+          // captions run over them.
           const autoAnchor = layoutSlots(cue.layout, undefined, [], frame).captionAnchor;
           const effY = cue.captionY ?? autoAnchor;
+          const effScale = cue.captionScale ?? 1;
+          const sceneDoc = edits.doc.scenes[selection.sceneId];
           return (
             <div style={section}>
               <span style={label}>Captions</span>
@@ -576,21 +579,55 @@ export const Inspector: React.FC<InspectorProps> = ({
                   }
                 />
               </div>
+              {/* Same shape as every other scale control (R12 §47): a
+                  slider committing per tick under one coalesce key. */}
+              <div style={row}>
+                <span style={label}>
+                  scale{"  "}
+                  <span style={{ color: "#EDEDF2" }}>{effScale.toFixed(2)}×</span>
+                </span>
+                <input
+                  type="range"
+                  data-testid="caption-scale-slider"
+                  min={0.2}
+                  max={3}
+                  step={0.01}
+                  value={effScale}
+                  onChange={(e) =>
+                    edits.patchCaptionScale(
+                      selection.sceneId,
+                      Number(e.target.value),
+                      `captionScale:${selection.sceneId}`,
+                    )
+                  }
+                />
+              </div>
+              <NumberField
+                id="caption-scale"
+                value={effScale}
+                min={0.2}
+                max={3}
+                onCommit={(v) =>
+                  edits.patchCaptionScale(selection.sceneId, v, `captionScale:${selection.sceneId}`)
+                }
+              />
               <button
                 data-testid="caption-y-all"
                 style={{ ...button, color: "#EDEDF2", border: "1px solid #2A2A33" }}
-                title="Write this scene's caption position to every scene — one undo step"
-                onClick={() => edits.patchCaptionYAll(allSceneIds, effY)}
+                title="Write this scene's caption position and scale to every scene — one undo step"
+                onClick={() =>
+                  edits.patchCaptionStyleAll(allSceneIds, { y: effY, scale: effScale })
+                }
               >
                 Apply to all scenes
               </button>
-              {edits.doc.scenes[selection.sceneId]?.captionY !== undefined ? (
+              {sceneDoc?.captionY !== undefined || sceneDoc?.captionScale !== undefined ? (
                 <button
                   data-testid="reset-caption-y"
                   style={button}
-                  onClick={() => edits.clearCaptionY(selection.sceneId)}
+                  onClick={() => edits.clearCaptionStyle(selection.sceneId)}
                 >
-                  Reset position
+                  Reset captions
                 </button>
               ) : null}
             </div>

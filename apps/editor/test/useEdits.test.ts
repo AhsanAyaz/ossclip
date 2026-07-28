@@ -144,35 +144,57 @@ describe("graphic box editing (PLAN 2026-07-31 Task 2)", () => {
   });
 });
 
-describe("caption position (R15 §56)", () => {
-  it("patchCaptionY stores the anchor; clearCaptionY DELETES the key", () => {
+describe("caption position and size (R15 §56 / R16 §64)", () => {
+  it("patchCaptionY / patchCaptionScale store; clearCaptionStyle DELETES both keys", () => {
     let s = editReducer(initialEditState(), { type: "patchCaptionY", sceneId: "scene-0", y: 0.3 });
+    s = editReducer(s, { type: "patchCaptionScale", sceneId: "scene-0", scale: 1.4 });
     expect(s.doc.scenes["scene-0"]!.captionY).toBe(0.3);
-    s = editReducer(s, { type: "clearCaptionY", sceneId: "scene-0" });
+    expect(s.doc.scenes["scene-0"]!.captionScale).toBe(1.4);
+    s = editReducer(s, { type: "clearCaptionStyle", sceneId: "scene-0" });
     expect("captionY" in s.doc.scenes["scene-0"]!).toBe(false);
-    expect(editReducer(s, { type: "clearCaptionY", sceneId: "scene-0" }).doc).toBe(s.doc);
+    expect("captionScale" in s.doc.scenes["scene-0"]!).toBe(false);
+    expect(editReducer(s, { type: "clearCaptionStyle", sceneId: "scene-0" }).doc).toBe(s.doc);
   });
 
-  it("patchCaptionYAll writes every scene in ONE commit — one undo step", () => {
+  it("patchCaptionStyleAll writes every scene in ONE commit — one undo step", () => {
     let s = editReducer(initialEditState(), {
-      type: "patchCaptionYAll",
+      type: "patchCaptionStyleAll",
       sceneIds: ["scene-0", "scene-2", "take-0"],
       y: 0.85,
+      scale: 1.3,
     });
-    expect(s.doc.scenes["scene-0"]!.captionY).toBe(0.85);
-    expect(s.doc.scenes["scene-2"]!.captionY).toBe(0.85);
-    expect(s.doc.scenes["take-0"]!.captionY).toBe(0.85);
+    for (const id of ["scene-0", "scene-2", "take-0"]) {
+      expect(s.doc.scenes[id]!.captionY).toBe(0.85);
+      expect(s.doc.scenes[id]!.captionScale).toBe(1.3);
+    }
     expect(s.past).toHaveLength(1);
     s = editReducer(s, { type: "undo" });
     expect(s.doc.scenes).toEqual({});
   });
 
-  it("keeps a scene's other edits when fanning out", () => {
+  it("keeps a scene's other edits when fanning out, and skips absent fields", () => {
     let s = editReducer(initialEditState(), {
       type: "patchVideo", sceneId: "scene-0", patch: { scale: 0.8 },
     });
-    s = editReducer(s, { type: "patchCaptionYAll", sceneIds: ["scene-0"], y: 0.2 });
+    s = editReducer(s, { type: "patchCaptionStyleAll", sceneIds: ["scene-0"], y: 0.2 });
     expect(s.doc.scenes["scene-0"]!.video!.scale).toBe(0.8);
+    expect("captionScale" in s.doc.scenes["scene-0"]!).toBe(false);
+  });
+});
+
+describe("scene splits (R16 §61)", () => {
+  it("addSplit stores sorted, dedupes within a millisecond", () => {
+    let s = editReducer(initialEditState(), { type: "addSplit", t: 7.5 });
+    s = editReducer(s, { type: "addSplit", t: 2.25 });
+    expect(s.doc.splits).toEqual([2.25, 7.5]);
+    // A repeated ⌘B on the same paused frame is one decision.
+    expect(editReducer(s, { type: "addSplit", t: 7.5004 })).toBe(s);
+  });
+
+  it("splits undo like any other edit", () => {
+    let s = editReducer(initialEditState(), { type: "addSplit", t: 7.5 });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.splits).toEqual([]);
   });
 });
 

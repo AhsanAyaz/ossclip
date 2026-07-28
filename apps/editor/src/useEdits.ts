@@ -67,10 +67,14 @@ export type EditAction =
     }
   | { type: "clearPip"; sceneId: string }
   | { type: "patchCaptionY"; sceneId: string; y: number; coalesce?: string }
-  | { type: "clearCaptionY"; sceneId: string }
-  /** §56b's cheap bulk: ONE commit (one undo step) writing the same anchor
-   * to every listed scene — "the captions are too low for this whole video". */
-  | { type: "patchCaptionYAll"; sceneIds: string[]; y: number }
+  | { type: "patchCaptionScale"; sceneId: string; scale: number; coalesce?: string }
+  /** Clears BOTH caption style keys (position and scale) — one Reset. */
+  | { type: "clearCaptionStyle"; sceneId: string }
+  /** §56b's cheap bulk: ONE commit (one undo step) writing the same caption
+   * style to every listed scene — "the captions are too low for this whole
+   * video". R16 §64 rides along: scale fans out with position. */
+  | { type: "patchCaptionStyleAll"; sceneIds: string[]; y?: number; scale?: number }
+  | { type: "addSplit"; t: number }
   | { type: "clearTiming"; sceneId: string }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
@@ -211,22 +215,48 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         action.coalesce,
       );
     }
-    case "clearCaptionY": {
+    case "patchCaptionScale": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit(
+        {
+          ...state.doc,
+          scenes: {
+            ...state.doc.scenes,
+            [action.sceneId]: { ...scene, captionScale: action.scale },
+          },
+        },
+        action.coalesce,
+      );
+    }
+    case "clearCaptionStyle": {
       const scene = state.doc.scenes[action.sceneId];
-      if (scene?.captionY === undefined) return state;
-      const { captionY: _dropped, ...rest } = scene;
+      if (scene?.captionY === undefined && scene?.captionScale === undefined) return state;
+      const { captionY: _y, captionScale: _s, ...rest } = scene;
       return commit({
         ...state.doc,
         scenes: { ...state.doc.scenes, [action.sceneId]: rest },
       });
     }
-    case "patchCaptionYAll": {
+    case "patchCaptionStyleAll": {
       const scenes = { ...state.doc.scenes };
       for (const id of action.sceneIds) {
         const scene = scenes[id] ?? { props: {}, elements: {} };
-        scenes[id] = { ...scene, captionY: action.y };
+        scenes[id] = {
+          ...scene,
+          ...(action.y !== undefined ? { captionY: action.y } : {}),
+          ...(action.scale !== undefined ? { captionScale: action.scale } : {}),
+        };
       }
       return commit({ ...state.doc, scenes });
+    }
+    case "addSplit": {
+      // Dedupe within a millisecond: a repeated Cmd+B on the same paused
+      // frame is one decision, not a stack of coincident cuts.
+      if (state.doc.splits.some((s) => Math.abs(s - action.t) < 0.001)) return state;
+      return commit({
+        ...state.doc,
+        splits: [...state.doc.splits, action.t].sort((a, b) => a - b),
+      });
     }
     case "hideScene": {
       const scene = withScene(state.doc, action.sceneId);
@@ -365,9 +395,12 @@ export function useEdits() {
     clearPip: (sceneId: string) => dispatch({ type: "clearPip", sceneId }),
     patchCaptionY: (sceneId: string, y: number, coalesce?: string) =>
       dispatch({ type: "patchCaptionY", sceneId, y, coalesce }),
-    clearCaptionY: (sceneId: string) => dispatch({ type: "clearCaptionY", sceneId }),
-    patchCaptionYAll: (sceneIds: string[], y: number) =>
-      dispatch({ type: "patchCaptionYAll", sceneIds, y }),
+    patchCaptionScale: (sceneId: string, scale: number, coalesce?: string) =>
+      dispatch({ type: "patchCaptionScale", sceneId, scale, coalesce }),
+    clearCaptionStyle: (sceneId: string) => dispatch({ type: "clearCaptionStyle", sceneId }),
+    patchCaptionStyleAll: (sceneIds: string[], style: { y?: number; scale?: number }) =>
+      dispatch({ type: "patchCaptionStyleAll", sceneIds, ...style }),
+    addSplit: (t: number) => dispatch({ type: "addSplit", t }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
     patchGraphicRect: (sceneId: string, rect: GraphicRect, coalesce?: string) =>

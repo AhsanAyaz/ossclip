@@ -57,8 +57,11 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /landscape\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
+    // Writes a command.json into the shared workdir (the main project's
+    // R11 test asserts its ABSENCE), so it runs last, serialized.
+    { name: "renderflow", testMatch: /renderflow\.spec\.ts/, dependencies: ["landscape"] },
   ],
   use: {
     baseURL: "http://127.0.0.1:5173",

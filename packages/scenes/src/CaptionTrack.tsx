@@ -194,7 +194,9 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
               line={line}
               wordOffset={offsets[i]!}
               verticalAnchor={anchor}
-              fontSizePx={fontSizePx}
+              // Per-scene size multiplier (R16 §64) — resolved per line like
+              // the anchor, from the cue the line starts under.
+              fontSizePx={fontSizePx * (active?.captionScale ?? 1)}
               activeColor={activeColor}
               ctaKeyword={ctaKeyword}
               ctaWindow={ctaWindow}

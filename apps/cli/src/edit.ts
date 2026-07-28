@@ -146,6 +146,10 @@ export async function startEditServer(
   // so a page reload mid-render still shows honest elapsed time rather than
   // restarting from zero.
   let renderStartedAt: number | null = null;
+  // Whether the CURRENT run's end was a user cancel (R16 §60) — the child's
+  // exit code alone can't say, and "render failed (exit 1)" after a
+  // deliberate cancel reads as a bug.
+  let renderCancelled = false;
   const pushLines = (chunk: Buffer): void => {
     for (const line of chunk.toString().split("\n")) {
       if (!line.trim()) continue;
@@ -197,6 +201,7 @@ export async function startEditServer(
           renderLines = [];
           renderExit = null;
           renderStartedAt = Date.now();
+          renderCancelled = false;
           const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...cmd.args], {
             cwd: cmd.cwd,
             stdio: ["ignore", "pipe", "pipe"],
@@ -216,12 +221,23 @@ export async function startEditServer(
           return send(202, { ok: true });
         }
 
+        if (url.pathname === "/api/render/cancel" && req.method === "POST") {
+          // Kill the replayed child (R16 §60). The exit handler above still
+          // runs and clears `renderChild`; the flag lets the status say
+          // "cancelled" instead of dressing a deliberate stop as a failure.
+          if (!renderChild) return send(409, { error: "no render is running" });
+          renderCancelled = true;
+          renderChild.kill();
+          return send(202, { ok: true });
+        }
+
         if (url.pathname === "/api/render/status" && req.method === "GET") {
           return send(200, {
             running: renderChild !== null,
             exitCode: renderExit,
             lines: renderLines,
             startedAt: renderStartedAt,
+            cancelled: renderCancelled,
           });
         }
 

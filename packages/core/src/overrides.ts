@@ -89,6 +89,9 @@ export const SceneOverrideSchema = z.object({
    * timeline selection can address it and "apply to all" can fan it out.
    */
   captionY: z.number().min(0).max(1).optional(),
+  /** Caption size multiplier (R16 §64) — same per-scene, fan-out-able shape
+   * as `captionY`, and the same reasoning for living on the scene. */
+  captionScale: z.number().min(0.2).max(3).optional(),
   /**
    * The graphic slot, reshaped by hand (PLAN 2026-07-31 Task 2) — frame
    * fractions like every other rect. Validated HERE even though
@@ -158,6 +161,14 @@ export const OverrideDocSchema = z.object({
   scenes: z.record(z.string(), SceneOverrideSchema).default({}),
   /** Retyped caption words, keyed by caption-stream word index. */
   captions: z.record(z.string(), CaptionEditSchema).default({}),
+  /**
+   * Scene split points in ABSOLUTE output seconds (R16 §61 — Cmd/Ctrl+B at
+   * the playhead). Time-anchored rather than scene-anchored on purpose: a
+   * re-plan can rename or move scenes, and a split is a decision about a
+   * MOMENT of the output. Applied by `splitCues` after the plain fill, so a
+   * split lands on graphic cues and takes alike.
+   */
+  splits: z.array(z.number().nonnegative()).default([]),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 
@@ -236,6 +247,7 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       ...(o.video ? { video: o.video } : {}),
       ...(o.pip ? { pip: o.pip } : {}),
       ...(o.captionY !== undefined ? { captionY: o.captionY } : {}),
+      ...(o.captionScale !== undefined ? { captionScale: o.captionScale } : {}),
       // After ...cue, so a hand-set rect WINS over one routeAroundSourceText
       // baked into the base cues.
       ...(o.graphicRect ? { graphicRect: o.graphicRect } : {}),
@@ -243,6 +255,50 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     };
   });
   return { cues: out, orphans };
+}
+
+/**
+ * A split half shorter than this is a slip, not an edit — the split is
+ * ignored rather than minting an unusably thin cue. Exported so the editor
+ * can refuse the keystroke up front instead of silently no-opping.
+ */
+export const SPLIT_MIN_PIECE_SEC = 0.3;
+
+/**
+ * Cut cues at the stored split points (R16 §61).
+ *
+ * Both halves keep everything but their window; the half STARTING at the
+ * split takes the id `${id}@${ms}` — named by its start time, so edits on it
+ * stay attached while the split exists, survive further splits of the same
+ * original cue, and are reported as orphans (never misapplied) if the split
+ * is removed. Runs AFTER `fillPlainCues` so takes split like scenes do, and
+ * BEFORE the final override pass so the halves' own edits (framing, timing,
+ * elements) land on them. A split that misses every cue — after a re-plan
+ * moved the material — is skipped; the time stays in the doc, harmless.
+ * NOTE for graphic halves: the second half re-enters through its component's
+ * intro animation (a Sequence restarts at its own frame 0) — acceptable for
+ * the feature's real use, cutting takes and re-timing halves.
+ */
+export function splitCues(cues: readonly SceneCue[], times: readonly number[]): SceneCue[] {
+  const out = [...cues];
+  for (const t of [...times].sort((a, b) => a - b)) {
+    const i = out.findIndex(
+      (c) => t >= c.startSec + SPLIT_MIN_PIECE_SEC && t <= c.endSec - SPLIT_MIN_PIECE_SEC,
+    );
+    if (i === -1) continue;
+    const cue = out[i]!;
+    // Derive from the ROOT id, not the (possibly already-split) cue id:
+    // `take-0@6000`, never `take-0@3000@6000` — so a half's id depends only
+    // on the original cue and its own start time, and adding an EARLIER
+    // split cannot rename later halves out from under their edits.
+    out.splice(
+      i,
+      1,
+      { ...cue, endSec: t },
+      { ...cue, id: `${cue.id.split("@")[0]}@${Math.round(t * 1000)}`, startSec: t },
+    );
+  }
+  return out;
 }
 
 export interface DropHiddenResult {

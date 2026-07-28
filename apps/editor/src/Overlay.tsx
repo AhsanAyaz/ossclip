@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import type { SceneCue } from "@ossclip/core/browser";
+import { SPLIT_MIN_PIECE_SEC, type SceneCue } from "@ossclip/core/browser";
 import { clampGraphicRect, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import type { GraphicRect, useEdits } from "./useEdits";
@@ -79,7 +79,12 @@ interface OverlayProps {
    * `dx`/`dy` renders in COMPOSITION pixels, so drags must be rescaled by
    * `settings.width / stageRect.width` before they're dispatched.
    */
-  settings: { width: number; height: number };
+  settings: { width: number; height: number; fps: number };
+  /** The LIVE cue list in time order — sibling selection (⌥+arrows), scene
+   * jumps (⌘+arrows) and the playhead split (⌘B) all resolve against it. */
+  cues: readonly SceneCue[];
+  /** Toggle the keybinds reference (R16 §63) — bound to "?". */
+  onToggleHelp: () => void;
   /**
    * The Player itself, for `getScale()` — the AUTHORITATIVE page-px-per-
    * composition-px factor. The stage div's rect is not it: the Player
@@ -266,6 +271,8 @@ export const Overlay: React.FC<OverlayProps> = ({
   onVideoPreview,
   onGraphicPreview,
   cue,
+  cues,
+  onToggleHelp,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   /** An in-progress drag-to-pan on the video slot (PLAN Task B). `base` is
@@ -894,6 +901,52 @@ export const Overlay: React.FC<OverlayProps> = ({
         if (isTypingContext()) return;
         e.preventDefault();
         onTransport(e.key.toUpperCase() as "J" | "K" | "L");
+      } else if (mod && e.key.toLowerCase() === "b") {
+        // Split the scene under the playhead (R16 §61) — the editor's ⌘B.
+        // Stored as an absolute output time in the override doc, applied
+        // after the plain fill, so scenes and takes split alike and undo
+        // takes it back like any other edit.
+        if (isTypingContext()) return;
+        e.preventDefault();
+        const player = playerRef.current;
+        if (!player) return;
+        const t = player.getCurrentFrame() / settings.fps;
+        const target = cues.find(
+          (c) => t >= c.startSec + SPLIT_MIN_PIECE_SEC && t <= c.endSec - SPLIT_MIN_PIECE_SEC,
+        );
+        // Too close to an edge (or on no cue at all): refuse rather than
+        // mint an unusably thin half.
+        if (!target) return;
+        edits.addSplit(Math.round(t * 1000) / 1000);
+      } else if (!mod && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        // ⌥+arrows move the SELECTION to the neighbouring scene (R16 §62) —
+        // the playhead stays put; this is "select", not "navigate".
+        if (isTypingContext()) return;
+        const sel = selectionRef.current;
+        if (!sel) return;
+        const idx = cues.findIndex((c) => c.id === sel.sceneId);
+        const next = idx === -1 ? undefined : cues[idx + (e.key === "ArrowRight" ? 1 : -1)];
+        if (!next) return;
+        e.preventDefault();
+        select({ sceneId: next.id, elementId: null });
+      } else if (mod && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        // ⌘+arrows move the PLAYHEAD to the neighbouring scene's start (R16
+        // §62) — as asked: the beginning of the previous / next scene.
+        // preventDefault also keeps the browser's ⌘← history-back away.
+        if (isTypingContext()) return;
+        e.preventDefault();
+        const player = playerRef.current;
+        if (!player) return;
+        const t = player.getCurrentFrame() / settings.fps;
+        const idx = cues.findIndex((c) => t >= c.startSec && t < c.endSec);
+        const target = cues[(idx === -1 ? 0 : idx) + (e.key === "ArrowRight" ? 1 : -1)];
+        if (!target) return;
+        player.seekTo(Math.round(target.startSec * settings.fps));
+      } else if (!mod && !e.altKey && e.key === "?") {
+        // The keybinds reference (R16 §63).
+        if (isTypingContext()) return;
+        e.preventDefault();
+        onToggleHelp();
       } else if (!mod && (e.key === "Delete" || e.key === "Backspace")) {
         // Soft-delete the selected GRAPHIC scene (PLAN Task C6). Scene-level
         // selection only: with an element selected, Backspace is far more
@@ -912,7 +965,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue]);
+  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp]);
 
   return (
     <div

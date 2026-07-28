@@ -687,3 +687,27 @@ Asked for: the usual video-editor zoom, horizontal scroll, easier dragging. The 
 # Round 15 — landscape layouts, a preview worth looking at, and caption editing that works (2026-07-28)
 
 *Status (remote session, same date): all six items of `docs/superpowers/plans/2026-08-01-editor-round-15-landscape-layouts-and-caption-editing.md` shipped — see that document for the requirements and per-item diagnosis; its checkboxes are ticked with implementation notes. Summary: §54 — `lower-third` and `split-left`/`split-right`, frame-aware in BOTH aspects (the split axis follows the frame's long edge), `landscapeLayout` remapping the vertical splits to `split-left`; verified by frame-extracting a real render of all three. §57 — the caption double-click resolved through the `elementBelow` walk instead of a bare `elementFromPoint`; mechanism confirmed by reverting the fix and watching the new small-preview landscape e2e fail (the Player's transport strip owns the caption band on a short preview). §55 — the preview sizes from the container (the 380px constant is gone), and view zoom works by resizing the Player inside the scrolling stage area, so `getScale()` stays authoritative and a view gesture (ctrl/cmd-wheel, Alt/middle-drag) can never write an override. §56 — `captionY` per scene, hand-set wins over the avoidance chain, with the cheap §56b: one "Apply to all scenes" fan-out in one undo step. §58 — the timeline pages by a viewport width when a live gesture reaches the scroller's edge; block/edge drags were converted to content-space deltas so the drag continues across the page. §59 — a transcript panel (search, click-to-jump, double-click 1:1 retype through the existing caption override), plus a latent bug fixed on the way: re-editing an already-edited word stored the live text as the `was` guard and the merge dropped the edit — `captionEditWas` keeps the guard anchored to the base. 544 unit tests, 28 e2e (a landscape project runs serialized after main against the same server, its workdir re-shaped per request).*
+
+# Round 16 — the render you can walk away from, and an editor that answers the keyboard (2026-07-28)
+
+*Status (remote session, same date): all six asks shipped. 553 unit tests, 33 e2e.*
+
+## 60. A refresh orphaned a running render
+
+Reported: start a render, refresh, and the logs are gone — no progress, no way to stop the run, while the child keeps rendering server-side. Fixed at both ends: the editor asks `/api/render/status` on mount and resumes the panel (progress, pinned cost lines, elapsed from the server's spawn stamp — never restarting at 0:00), and a new `POST /api/render/cancel` kills the replayed child, with the status carrying a `cancelled` flag so a deliberate stop reads as "render cancelled", not a dressed-up failure. The e2e plants a slow fake command.json, refreshes mid-run, and cancels.
+
+## 61. NEW FEATURE — split a scene at the playhead (⌘/ctrl+B)
+
+Splits stored as ABSOLUTE output times in the override doc (`splits`), applied by `splitCues` after the plain fill — so graphic scenes and takes split alike — and before the final override pass, so the halves' own edits land. The half starting at the cut is named `${rootId}@${ms}`: derived from the ROOT id and its own start time, so adding an EARLIER split can never rename later halves out from under their edits. Undo takes a split back like any edit; a cut that would mint a half under 0.3s is refused. Known trade: a split graphic's second half re-enters through its component's intro animation.
+
+## 62. Keyboard selection and navigation
+
+⌥+←/→ move the SELECTION to the neighbouring scene (the playhead stays — select, not navigate); ⌘/ctrl+←/→ move the PLAYHEAD to the previous/next scene's beginning, exactly as asked, with preventDefault keeping the browser's ⌘← history-back away. Backspace/Delete already deleted the selected scene restorably (R10 Task C) — verified, unchanged.
+
+## 63. NEW FEATURE — the keybinds reference
+
+"?" (or the top-bar `?` button) opens a modal in the style of the reference screenshot: grouped commands, key chips, `esc close`. The list is static data maintained beside the handlers it documents, and the e2e greps it for the bindings the suite itself exercises, so a stale row fails loudly. The modal's Escape closes on the capture phase so it cannot also clear the selection.
+
+## 64. Caption scale
+
+`captionScale` per scene (0.2–3×), the same shape as `captionY`: a slider plus precision field in the Captions section, resolved per line from the cue the line starts under, multiplying the track's base size. "Apply to all scenes" now fans out position AND scale in one undo step; Reset clears both.

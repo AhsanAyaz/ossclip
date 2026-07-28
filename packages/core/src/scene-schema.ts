@@ -137,6 +137,9 @@ export const SceneCueSchema = z
    * renderer and the preview agree.
    */
   captionY: z.number().min(0).max(1).optional(),
+  /** Caption size multiplier for this scene (R16 §64) — scales the track's
+   * base font size, same convention as every other scale control. */
+  captionScale: z.number().min(0.2).max(3).optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
   })

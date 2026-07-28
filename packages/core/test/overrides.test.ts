@@ -4,6 +4,7 @@ import {
   applyOverrides,
   captionEditWas,
   clearGraphicRect,
+  splitCues,
   dropHiddenCues,
   clearElementTransform,
   clearTiming,
@@ -408,6 +409,72 @@ describe("caption position override (R15 §56)", () => {
   it("rejects an off-frame anchor — hand-editable data is validated", () => {
     expect(OverrideDocSchema.safeParse({ scenes: { s: { captionY: 1.5 } } }).success).toBe(false);
     expect(OverrideDocSchema.safeParse({ scenes: { s: { captionY: -0.1 } } }).success).toBe(false);
+  });
+});
+
+describe("caption scale override (R16 §64)", () => {
+  it("captionScale lands on the cue and is bounds-validated", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { captionScale: 1.5 } } });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.captionScale).toBe(1.5);
+    expect(OverrideDocSchema.safeParse({ scenes: { s: { captionScale: 5 } } }).success).toBe(false);
+    expect(OverrideDocSchema.safeParse({ scenes: { s: { captionScale: 0.05 } } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
+  const take = (id: string, startSec: number, endSec: number): SceneCue => ({
+    id,
+    kind: "plain",
+    layout: "full-bleed",
+    startSec,
+    endSec,
+  });
+
+  it("cuts a cue into two halves; the second is named by its start time", () => {
+    const out = splitCues([cue("scene-0")], [2]);
+    expect(out.map((c) => [c.id, c.startSec, c.endSec])).toEqual([
+      ["scene-0", 0, 2],
+      ["scene-0@2000", 2, 5],
+    ]);
+    // Everything but the window carries over — the halves stay the scene.
+    expect(out[1]!.component).toBe("StatCard");
+  });
+
+  it("splits takes exactly like scenes — the feature's real use", () => {
+    const out = splitCues([take("take-0", 0, 10)], [4]);
+    expect(out.map((c) => c.id)).toEqual(["take-0", "take-0@4000"]);
+    expect(out.every((c) => c.kind === "plain")).toBe(true);
+  });
+
+  it("a second split of the same cue keeps the first half's ids stable", () => {
+    const twice = splitCues([take("take-0", 0, 10)], [6, 3]);
+    expect(twice.map((c) => [c.id, c.startSec, c.endSec])).toEqual([
+      ["take-0", 0, 3],
+      ["take-0@3000", 3, 6],
+      ["take-0@6000", 6, 10],
+    ]);
+  });
+
+  it("refuses a cut that would mint an unusably thin half", () => {
+    expect(splitCues([cue("scene-0")], [0.1])).toHaveLength(1);
+    expect(splitCues([cue("scene-0")], [5 - 0.1])).toHaveLength(1);
+    // …and one that lands on no cue at all (a re-plan moved the material).
+    expect(splitCues([cue("scene-0")], [99])).toHaveLength(1);
+  });
+
+  it("overrides land on the half ids through the normal pass", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0@2000": { video: { scale: 0.8 } } },
+      splits: [2],
+    });
+    const halves = splitCues([cue("scene-0")], doc.splits);
+    const { cues } = applyOverrides(halves, doc);
+    expect(cues[1]!.video?.scale).toBe(0.8);
+    // The first half is untouched — the halves are independent scenes now.
+    expect(cues[0]!.video).toBeUndefined();
   });
 });
 

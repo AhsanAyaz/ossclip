@@ -8,6 +8,7 @@ import {
   applyOverrides,
   dropHiddenCues,
   fillPlainCues,
+  splitCues,
   resolveTheme,
   defaultTheme,
   type OverrideDoc,
@@ -19,6 +20,7 @@ import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from 
 import { Inspector } from "./Inspector";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
+import { ShortcutsModal } from "./ShortcutsModal";
 import { formatElapsed, pinnedInfoLines, renderProgress } from "./renderStatus";
 
 /**
@@ -74,6 +76,8 @@ export const App: React.FC = () => {
     failed?: number;
     /** Server-side spawn time — the elapsed clock's origin (R13). */
     startedAt?: number | null;
+    /** The run ended because the user cancelled it — not a failure (R16). */
+    cancelled?: boolean;
   } | null>(null);
   const renderPollRef = useRef<number | null>(null);
   useEffect(
@@ -194,6 +198,8 @@ export const App: React.FC = () => {
   }, []);
   // The transcript view (R15 §59) — a panel, toggled from the top bar.
   const [showTranscript, setShowTranscript] = useState(false);
+  // The keybinds reference (R16 §63) — "?" or the top-bar button.
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   // J/K/L transport (PLAN Task 2): the reducer owns the ladder; this owns the
   // side effects. `playing` is the Player's own event-mirrored state, so the
@@ -230,6 +236,57 @@ export const App: React.FC = () => {
     // render that has props).
   });
 
+  // The poll loop, shared by the Render button and the mount-time resume
+  // (R16 §60): one interval, guarded so a double start can't stack two.
+  const beginRenderPoll = useCallback(() => {
+    if (renderPollRef.current !== null) return;
+    const poll = window.setInterval(() => {
+      void (async () => {
+        try {
+          const s = await fetch("/api/render/status");
+          const body = (await s.json()) as {
+            running: boolean;
+            exitCode: number | null;
+            lines?: string[];
+            startedAt?: number | null;
+            cancelled?: boolean;
+          };
+          if (body.running || body.exitCode === null) {
+            // The server's spawn stamp wins — it survives a page reload,
+            // where an optimistic Date.now() would restart at 0:00.
+            setRender((prev) => ({
+              running: body.running,
+              lines: body.lines ?? [],
+              startedAt: body.startedAt ?? prev?.startedAt,
+            }));
+            return;
+          }
+          if (renderPollRef.current !== null) {
+            window.clearInterval(renderPollRef.current);
+            renderPollRef.current = null;
+          }
+          if (body.exitCode === 0) {
+            const p = await fetch("/api/production");
+            const prod = (await p.json()) as { renderProps: RawRenderProps; canRender?: boolean };
+            setRenderProps(prod.renderProps);
+            setCanRender(Boolean(prod.canRender));
+            setRender(null);
+          } else {
+            setRender({
+              running: false,
+              lines: body.lines ?? [],
+              failed: body.exitCode,
+              cancelled: body.cancelled,
+            });
+          }
+        } catch {
+          // Transient poll failure — keep polling; the interval survives.
+        }
+      })();
+    }, 1000);
+    renderPollRef.current = poll;
+  }, []);
+
   useEffect(() => {
     void (async () => {
       try {
@@ -243,6 +300,23 @@ export const App: React.FC = () => {
         setRenderProps(body.renderProps);
         setCanRender(Boolean(body.canRender));
         edits.load(body.overrides);
+        // Resume a render already in flight (R16 §60): a refresh used to
+        // orphan the panel — the child kept rendering server-side with no
+        // progress, no logs, and no way to cancel it from the UI.
+        const s = await fetch("/api/render/status");
+        const status = (await s.json()) as {
+          running: boolean;
+          lines?: string[];
+          startedAt?: number | null;
+        };
+        if (status.running) {
+          setRender({
+            running: true,
+            lines: status.lines ?? [],
+            startedAt: status.startedAt,
+          });
+          beginRenderPoll();
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -279,7 +353,13 @@ export const App: React.FC = () => {
       outputDurationSec: renderProps.outputDurationSec,
       clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
     });
-    const { cues } = applyOverrides(filled, edits.doc);
+    // User splits (R16 §61) — after the fill so takes split like scenes,
+    // before the final pass so edits on the `id@ms` halves land. The extra
+    // dropHiddenCues catches halves the user deleted, whose hidden override
+    // did not exist yet when the first drop ran.
+    const splitted = splitCues(filled, edits.doc.splits);
+    const { cues: mergedCues } = applyOverrides(splitted, edits.doc);
+    const { cues } = dropHiddenCues(mergedCues, edits.doc);
     // The framing preview applies LAST, onto the fully-merged cue, so what
     // the Player shows mid-gesture is exactly what committing would store.
     let previewed = videoPreview
@@ -322,47 +402,11 @@ export const App: React.FC = () => {
         throw new Error(body.error ?? `render failed to start: ${res.status}`);
       }
       setRender({ running: true, lines: [], startedAt: Date.now() });
-      const poll = window.setInterval(() => {
-        void (async () => {
-          try {
-            const s = await fetch("/api/render/status");
-            const body = (await s.json()) as {
-              running: boolean;
-              exitCode: number | null;
-              lines?: string[];
-              startedAt?: number | null;
-            };
-            if (body.running || body.exitCode === null) {
-              // The server's spawn stamp wins — it survives a page reload,
-              // where the optimistic Date.now() above would restart at 0:00.
-              setRender((prev) => ({
-                running: body.running,
-                lines: body.lines ?? [],
-                startedAt: body.startedAt ?? prev?.startedAt,
-              }));
-              return;
-            }
-            window.clearInterval(poll);
-            renderPollRef.current = null;
-            if (body.exitCode === 0) {
-              const p = await fetch("/api/production");
-              const prod = (await p.json()) as { renderProps: RawRenderProps; canRender?: boolean };
-              setRenderProps(prod.renderProps);
-              setCanRender(Boolean(prod.canRender));
-              setRender(null);
-            } else {
-              setRender({ running: false, lines: body.lines ?? [], failed: body.exitCode });
-            }
-          } catch {
-            // Transient poll failure — keep polling; the interval survives.
-          }
-        })();
-      }, 1000);
-      renderPollRef.current = poll;
+      beginRenderPoll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [edits]);
+  }, [edits, beginRenderPoll]);
 
   // Deleted scenes, at their override-applied timing — the Timeline draws
   // them as restorable ghosts (PLAN Task C5), and selecting one resolves to
@@ -478,7 +522,16 @@ export const App: React.FC = () => {
         >
           {edits.dirty ? "● Unsaved changes" : "✓ Saved"}
         </span>
+        <button
+          data-testid="shortcuts-button"
+          style={{ ...ghostButton, padding: "7px 10px" }}
+          onClick={() => setShowShortcuts((v) => !v)}
+          title="Keyboard shortcuts (?)"
+        >
+          ?
+        </button>
       </div>
+      {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
       {render ? (
         <div
           data-testid="render-log"
@@ -488,8 +541,14 @@ export const App: React.FC = () => {
           }}
         >
           {render.failed !== undefined ? (
-            <div style={{ color: "#FF5C5C", marginBottom: 4 }}>
-              render failed (exit {render.failed})
+            <div
+              style={{
+                color: render.cancelled ? "#9A9AA3" : "#FF5C5C",
+                marginBottom: 4,
+              }}
+              data-testid={render.cancelled ? "render-cancelled" : "render-failed"}
+            >
+              {render.cancelled ? "render cancelled" : `render failed (exit ${render.failed})`}
               <button
                 style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
                 onClick={() => setRender(null)}
@@ -524,6 +583,16 @@ export const App: React.FC = () => {
                   />
                 </div>
               ) : null}
+              {/* The way out (R16 §60): kill the replayed child. The poll
+                  sees the exit and the panel reports "cancelled", not a
+                  dressed-up failure. */}
+              <button
+                data-testid="render-cancel"
+                style={{ ...ghostButton, padding: "2px 8px" }}
+                onClick={() => void fetch("/api/render/cancel", { method: "POST" })}
+              >
+                Cancel
+              </button>
             </div>
           ) : null}
           {/* Provider + token/cost lines pinned above the tail (R13): they
@@ -606,11 +675,13 @@ export const App: React.FC = () => {
               edits={edits}
               onSave={onSave}
               settings={live.settings}
+              cues={live.sceneCues}
               playerRef={playerRef}
               cue={selectedCue}
               onTransport={onTransport}
               onVideoPreview={setVideoPreview}
               onGraphicPreview={setGraphicPreview}
+              onToggleHelp={() => setShowShortcuts((v) => !v)}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
                 only reachable by keyboard is a rate users lose track of.
