@@ -294,7 +294,16 @@ export async function createFaceDetector(): Promise<
 export interface WindowFace {
   centerXFrac: number;
   centerYFrac: number;
+  /** Median face height — what the segment looks like most of the time. */
   sizeFrac: number;
+  /**
+   * The LARGEST face seen in the window (p90, so one bad detection cannot set
+   * it). Framing must be sized against this, not the median: a speaker leans
+   * in and out, and on the author's clip the face ran 29%-48% of the frame
+   * inside a single 12s stretch. A window sized on the median put the head
+   * past the frame edge at the moment they leaned in.
+   */
+  sizeFracMax: number;
   framesDetected: number;
   framesSampled: number;
 }
@@ -327,8 +336,13 @@ export async function measureFaceInWindows(
 
   for (const [wi, w] of windows.entries()) {
     const dur = Math.max(0, w.endSec - w.startSec);
-    // Short segments still get two looks; long ones don't need more than four.
-    const samples = Math.min(opts.samplesPerWindow ?? 4, Math.max(2, Math.floor(dur)));
+    // Roughly one look per 1.5s: the window is sized against the biggest face
+    // in the stretch, so under-sampling a long one hides exactly the moment
+    // that matters. Bounded so a 60s segment stays cheap.
+    const samples = Math.min(
+      opts.samplesPerWindow ?? 12,
+      Math.max(3, Math.round(dur / 1.5)),
+    );
     const centersX: number[] = [];
     const centersY: number[] = [];
     const sizes: number[] = [];
@@ -362,12 +376,14 @@ export async function measureFaceInWindows(
       centersX.push(hit.det[1] / DET_W);
       sizes.push(hit.det[2] / detH);
     }
+    const sorted = [...sizes].sort((a, b) => a - b);
     out.push(
       centersY.length >= 2
         ? {
             centerXFrac: median(centersX),
             centerYFrac: median(centersY),
             sizeFrac: median(sizes),
+            sizeFracMax: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))]!,
             framesDetected: centersY.length,
             framesSampled: samples,
           }

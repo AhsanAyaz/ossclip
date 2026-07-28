@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_FACE_FRACTION,
   MAX_NORMALIZE_UPSCALE,
   normalizationFilterGraph,
   planNormalization,
 } from "../src/normalize";
+import { ZOOM_MAX_SCALE } from "../src/zoom";
 import { pickTransition, type ContentRectSegment } from "../src/content-rect";
 import type { WindowFace } from "../src/face";
 
@@ -27,6 +29,7 @@ const face = (centerYFrac: number, centerXFrac = 0.5): WindowFace => ({
   centerXFrac,
   centerYFrac,
   sizeFrac: 0.4,
+  sizeFracMax: 0.4,
   framesDetected: 3,
   framesSampled: 4,
 });
@@ -59,6 +62,7 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
     centerXFrac: 0.5,
     centerYFrac: 0.4,
     sizeFrac,
+    sizeFracMax: sizeFrac,
     framesDetected: 3,
     framesSampled: 4,
   });
@@ -80,19 +84,73 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
     const faces = [sized(0.57), sized(0.34), sized(0.57)];
     const plan = planNormalization(timeline, faces, OUT);
     const subject = subjectOnCanvas(plan, faces);
-    expect(Math.max(...subject) / Math.min(...subject)).toBeLessThan(1.02);
+    // Not exactly equal any more, and deliberately so: the strips sit above
+    // the safety ceiling and are left alone rather than cropped to match.
+    // What matters is that the 1.7x gap is gone.
+    expect(Math.max(...subject) / Math.min(...subject)).toBeLessThan(1.1);
   });
 
   it("sizes the window by the face: a smaller face crops in, a larger one out", () => {
     const faces = [sized(0.57), sized(0.34), sized(0.57)];
     const plan = planNormalization(timeline, faces, OUT);
-    // The strip's face already matches the target, so its window is its rect.
+    // The strip is already past the ceiling, so its window is its whole rect.
     expect(plan.segments[0]!.window.h).toBe(808);
-    // The full-bleed face is 0.34 of 2560 = 870px and must occupy the same
-    // 0.57 of its window, so the window grows to ~1527 rather than staying
-    // at the strip's 808 (which is what cropped the head out of frame).
-    expect(plan.segments[1]!.window.h).toBeGreaterThan(1400);
-    expect(plan.segments[1]!.window.h).toBeLessThan(1600);
+    // The full-bleed face is 0.34 of 2560 = 870px and must occupy the ceiling
+    // fraction of its window, so the window grows well past the strip's 808
+    // (staying at 808 is what cropped the head out of frame).
+    expect(plan.segments[1]!.window.h).toBeGreaterThan(1500);
+    expect(plan.segments[1]!.window.h).toBeLessThanOrEqual(2560);
+  });
+
+  it("never crops tighter than the safety ceiling, however small the faces", () => {
+    // Every segment wide open: equalizing "up" to a big common fraction would
+    // crop everything to a close-up. The ceiling forbids it.
+    const faces = [sized(0.2), sized(0.18), sized(0.22)];
+    const plan = planNormalization(timeline, faces, OUT);
+    for (const s of subjectOnCanvas(plan, faces)) {
+      expect(s).toBeLessThanOrEqual(MAX_FACE_FRACTION + 1e-9);
+    }
+  });
+
+  it("the ceiling leaves the head inside the frame under the idle zoom", () => {
+    // The contract the number is derived from: head is ~1.55x the face box,
+    // and the zoom scales what is already there.
+    expect(1.55 * MAX_FACE_FRACTION * ZOOM_MAX_SCALE).toBeLessThan(1);
+  });
+
+  it("sizes on the segment's LARGEST face, not its median", () => {
+    // The author's clip ran 29%-48% inside one 12s stretch. Sizing on the
+    // median put the head past the edge at the moment they leaned in.
+    const moving: WindowFace = { ...sized(0.34), sizeFracMax: 0.48 };
+    const still = [sized(0.5), moving, sized(0.5)];
+    const plan = planNormalization(timeline, still, OUT);
+    const w = plan.segments[1]!.window;
+    // Sized against 0.48 x 2560 = 1229px, not 0.34 x 2560 = 870px.
+    expect((0.48 * 2560) / w.h).toBeLessThanOrEqual(MAX_FACE_FRACTION + 1e-9);
+  });
+
+  it("keeps crown and chin inside the window at the segment's largest face", () => {
+    // Head = 0.85x face above the box centre and 0.7x below (stage.ts §19).
+    const faces = [
+      { ...sized(0.3), centerYFrac: 0.2, sizeFracMax: 0.45 },
+      { ...sized(0.3), centerYFrac: 0.8, sizeFracMax: 0.4 },
+      sized(0.4),
+    ];
+    const plan = planNormalization(timeline, faces, OUT);
+    plan.segments.forEach((s, i) => {
+      const r = timeline[i]!.rect;
+      const f = faces[i]!;
+      const faceY = r.y + f.centerYFrac * r.h;
+      const maxFace = f.sizeFracMax * r.h;
+      const headTop = faceY - 0.85 * maxFace;
+      const headBottom = faceY + 0.7 * maxFace;
+      // Inside the window, unless the head runs past the SOURCE's own edge —
+      // there is nothing to slide toward then.
+      if (headTop >= r.y && headBottom <= r.y + r.h && headBottom - headTop <= s.window.h) {
+        expect(s.window.y).toBeLessThanOrEqual(headTop + 2);
+        expect(s.window.y + s.window.h).toBeGreaterThanOrEqual(headBottom - 2);
+      }
+    });
   });
 
   it("clamps at the rect rather than inventing pixels to zoom out into", () => {

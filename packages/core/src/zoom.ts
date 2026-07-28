@@ -65,8 +65,15 @@ export interface ZoomPlanOptions {
   rampSec?: number;
 }
 
-/** Zoom amplitude, exported so the stage can budget crop margins against it. */
-export const ZOOM_MAX_SCALE = 1.08;
+/**
+ * Zoom amplitude, exported so the stage can budget crop margins against it.
+ *
+ * 5%, not 8%: at 8% the push was eating enough of an already-tight frame to
+ * clip a forehead on a close-up, and the amount a viewer should register is
+ * "the camera is alive", not "the camera moved". Every crop budget that cites
+ * this constant tightens with it rather than needing its own edit.
+ */
+export const ZOOM_MAX_SCALE = 1.05;
 
 /**
  * How long the push takes. Long enough that the movement is never noticed as

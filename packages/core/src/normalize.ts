@@ -56,6 +56,29 @@ export interface NormalizePlan {
  */
 export const MAX_NORMALIZE_UPSCALE = 2.6;
 
+/**
+ * A head is about 1.55x the detector's face box tall — the box bounds eyes,
+ * nose and mouth, and `stage.ts` models the crown at 0.35x above it and the
+ * chin at 0.2x below (FINDINGS §19).
+ */
+const HEAD_PER_FACE = 1.55;
+const HEAD_ABOVE = 0.85;
+const HEAD_BELOW = 0.7;
+
+/**
+ * The tightest the framing may ever get, as face-box height over frame height.
+ *
+ * Derived, not tuned: the head must survive the idle zoom with margin left, so
+ * `HEAD_PER_FACE x F x ZOOM_MAX_SCALE <= 1 - 2 x margin`. At a 6% margin top
+ * and bottom that is `1.55 x F x 1.05 <= 0.88`, i.e. F <= 0.54.
+ *
+ * This is a CEILING on cropping in, never a target to reach. A segment whose
+ * face is already larger than this is left at its own framing rather than
+ * cropped further — there is no version of "consistent framing" worth cutting
+ * someone's forehead off for, which is exactly what the previous round did.
+ */
+export const MAX_FACE_FRACTION = 0.54;
+
 const even = (v: number): number => 2 * Math.floor(v / 2);
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi);
 
@@ -100,14 +123,21 @@ export function planNormalization(
     return { canvas: { width: 0, height: 0 }, segments: [], coverUpscale: Infinity, ok: false };
   }
 
-  /** Face height as a fraction of its own segment's rect, where measured. */
-  const measured = timeline.map((_, i) => faces[i]?.sizeFrac ?? null);
+  /**
+   * The LARGEST face fraction in each segment, not the median. A window sized
+   * on the median is correct only at the median moment: the author's clip
+   * moves 29%-48% inside one 12s stretch, and sizing on 34% put the head past
+   * the frame edge whenever they leaned in — which is precisely the frame they
+   * flagged. Sizing on the maximum makes the tightest moment the safe one and
+   * every other moment merely roomier.
+   */
+  const measured = timeline.map((_, i) => faces[i]?.sizeFracMax ?? faces[i]?.sizeFrac ?? null);
   const known = measured.filter((v): v is number => v !== null);
 
   // ---- Window heights ------------------------------------------------------
   // Without a single measurement there is no subject to hold constant, so the
   // rect-shaped fallback stands: the tightest field of view, uniformly.
-  const target = known.length > 0 ? median(known) : null;
+  const target = known.length > 0 ? Math.min(median(known), MAX_FACE_FRACTION) : null;
   const rectShapedHeights = (): number[] => {
     const canvasRect = boxed.reduce((a, b) => (b.rect.h < a.rect.h ? b : a)).rect;
     const a = canvasRect.w / canvasRect.h;
@@ -166,8 +196,31 @@ export function planNormalization(
     const faceX = r.x + (f ? f.centerXFrac : 0.5) * r.w;
     const faceY = r.y + (f ? f.centerYFrac : 0.5) * r.h;
     const x = even(clamp(faceX - targetX * wW, r.x, r.x + r.w - wW));
-    const y = even(clamp(faceY - targetY * wH, r.y, r.y + r.h - wH));
-    return { startSec: seg.startSec, endSec: seg.endSec, window: { x, y, w: wW, h: wH } };
+
+    let y = clamp(faceY - targetY * wH, r.y, r.y + r.h - wH);
+    // Then slide — never resize — so the whole HEAD is inside the window at
+    // the segment's largest face, since the aesthetic anchor above is about
+    // where the face sits, and this is about not amputating it. Bounded by
+    // the rect: if the head genuinely runs past the source's own edge there
+    // is nothing to slide toward, and the clamp leaves it where it was.
+    if (f) {
+      const maxFace = (f.sizeFracMax ?? f.sizeFrac) * r.h;
+      const headTop = faceY - HEAD_ABOVE * maxFace;
+      const headBottom = faceY + HEAD_BELOW * maxFace;
+      if (headBottom - headTop <= wH) {
+        y = clamp(y, headBottom - wH, headTop);
+      } else {
+        // Head taller than the window: centre it, so what is lost is shared
+        // between crown and chin instead of taking the whole bite off one end.
+        y = (headTop + headBottom) / 2 - wH / 2;
+      }
+      y = clamp(y, r.y, r.y + r.h - wH);
+    }
+    return {
+      startSec: seg.startSec,
+      endSec: seg.endSec,
+      window: { x, y: even(y), w: wW, h: wH },
+    };
   });
 
   // Cover the output with the canvas: for a canvas wider than the output's
