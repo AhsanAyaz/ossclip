@@ -649,3 +649,23 @@ To investigate before removing anything: the panel's TEXT field only covers prop
 - **`contain` leaves the layout slots where they were.** Graphics still sit over the picture and the dead space above and below it goes unused, because every layout's geometry assumes the video fills the frame. A top-aligned "band" variant — picture at the top, graphics and captions in the freed space — is the podcast-clip look and is the obvious follow-up if the contain output is worth keeping.
 - Gemini as the producer: repairs were strong (`cloud code` → `Claude Code`, `Revind` → `Rewind`, `cloud code incense` → `Claude Code instance`) and the strict gate refused a genuinely wrong rewrite of an unfamiliar product name twice on length. One longer span of the same rewrite DID land in an earlier run, which is the §17 heuristic ("unfamiliar proper nouns are usually mishearings") turning a correct new name into a wrong old one. A guard on names the speaker uses consistently, or that appear in `--speaker`/`--intent`, is worth considering.
 - 0.1% removed from 741s. Nothing is wrong with the cut engine — it tightens pauses and drops fillers, and this take has neither to spare. It does mean a 12-minute source yields a 12-minute vertical: **there is no highlight selection anywhere in the pipeline**, and for long-form input that is a bigger gap than framing.
+
+# Round 13 — the layout dropdown and the silent render (`Agents in 2026`, 2026-07-28)
+
+*Status (remote session, same date): §50 and §51 fixed. §50 — `graphicSlotFor` is the one slot resolver (SceneLayer and the Inspector both draw from it); full-bleed falls back to `FULL_BLEED_GRAPHIC_SLOT`, and a layout override drops a rect `routeAroundSourceText` baked for the OLD layout. A sweep e2e switches a ChatMock through every layout and asserts the graphic keeps a footprint. §51 — the status endpoint stamps `startedAt`; the panel grew a spinner, an elapsed clock, a progress bar parsed from the render's own `NN%` lines, and pinned provider/cost lines. 509 unit tests, 19 e2e green.*
+
+*Two reports from the author's session editing the `Agents in 2026` contain workdir by hand, sent with screenshots rather than logged as a round.*
+
+## 50. Switching a scene's layout away from blurred-behind hides the graphic
+
+A ChatMock scene on `blurred-behind`: pick anything else in the LAYOUT dropdown and the chat box, its text, and the selection box all disappear. The author's principle, stated with the report: **the component and the layout should work independent of each other.**
+
+Root cause is checkable: `layoutSlots("full-bleed")` returns `graphic: null` — full-bleed was designed as "talking head only" back when only the planner assigned layouts — and `SceneLayer` returns null for a cue whose layout has no slot. So full-bleed is the one layout that silently DELETES a graphic instead of placing it; every other layout has an unconditional slot. The fix follows the author's principle: layout decides where the VIDEO sits, and a cue that has a graphic always renders it — full-bleed graphics float in a dedicated band (blurred-behind's geometry, minus the blur). Deliberately not added to the slot table itself: plain cues must not make captions dodge an empty band.
+
+The same independence bug existed one layer down: a base cue can carry a `graphicRect` that `routeAroundSourceText` computed FOR its original layout, and under a layout override that stale rect kept winning over the new layout's slot. `applyOverrides` now drops it when the layout override differs — the mirror of what `patchLayout` already did to the override rect.
+
+## 51. The render panel reads as stuck
+
+After Render, the log tail shows `0%` and climbs in 10% steps that can be minutes apart — nothing moves in between, so it reads as hung. Asked for: a loading indicator, elapsed time, tokens and generation cost, the provider.
+
+Everything asked for was already IN the stream — `produce` prints `▸ producing scenes (<provider>)…`, `formatUsageLine`'s `▸ llm: N calls · tokens · ~$` summary, and the render's own percentage steps; the panel just showed the last six raw lines. The fix is parsing, not plumbing: the server stamps the spawn time (server-side, so a mid-render page reload keeps an honest clock), and the panel shows a spinner that animates without new lines, elapsed `m:ss` off the 1s poll, a progress bar from the latest bare `NN%` line, and the provider/cost lines pinned above the scrolling tail. Honest by construction: a fully cached replay prints no `▸ llm:` cost line, and the panel pins nothing rather than fabricating one.
