@@ -8,6 +8,7 @@ import { MockProvider } from "./mock";
 import { TieredProvider } from "./tiered";
 import { generateBeatSheet, type BeatSheet, type BeatsValidationIssue } from "./beats";
 import { generateScenes, type ScenePropsFailure } from "./scene-props";
+import { buildFramingBrief, repairMomentLayouts, type FramingContext } from "../framing";
 
 export * from "./provider";
 export * from "./usage";
@@ -114,23 +115,44 @@ export async function produceScenes(
      * three rounds unexercised (FINDINGS §20).
      */
     forceComponent?: SceneComponentId;
+    /**
+     * Camera-framing constraints (PLAN Tasks A+B), present when the source
+     * went through normalization. Feeds the beat-sheet prompt (the brief) AND
+     * the repair pass that enforces it — ship both, trust neither alone.
+     */
+    framing?: FramingContext;
   },
 ): Promise<ProduceScenesResult> {
+  const framingBrief = args.framing
+    ? buildFramingBrief(args.framing, args.transcript)
+    : undefined;
   const { sheet, issues } = await generateBeatSheet(
     provider,
     args.transcript,
     args.outputDuration,
     args.intent,
     args.speaker,
+    framingBrief || undefined,
   );
   // Applied AFTER normalization: the coverage budget and variety passes may
   // demote moments to "none", and forcing before them can leave nothing to
   // render — the flag would appear to work and produce no scenes at all.
-  const moments = args.forceComponent
+  // The forced component drops the producer's layout too: it was chosen for
+  // a different component and may not even be in the forced one's repertoire.
+  let moments = args.forceComponent
     ? sheet.moments.map((m) =>
-        m.sceneKind === "none" ? m : { ...m, sceneKind: args.forceComponent! },
+        m.sceneKind === "none" ? m : { ...m, sceneKind: args.forceComponent!, layout: undefined },
       )
     : sheet.moments;
-  const { scenes, failures } = await generateScenes(provider, moments, args.transcript);
+  // The safety net (Task B): whatever the prompt did, no moment leaves here
+  // with a layout that would crop the head at its own moment's framing.
+  if (args.framing) {
+    const repaired = repairMomentLayouts(moments, args.transcript, args.framing);
+    moments = repaired.moments;
+    issues.push(...repaired.issues);
+  }
+  const { scenes, failures } = await generateScenes(provider, moments, args.transcript, {
+    framing: args.framing,
+  });
   return { beatSheet: { ...sheet, moments }, beatIssues: issues, scenes, failures };
 }

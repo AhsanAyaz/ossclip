@@ -228,3 +228,77 @@ describe("batched scene props (FINDINGS §37)", () => {
     expect(provider.seen).toEqual(["TitleCard_props"]);
   });
 });
+
+describe("producer framing awareness (PLAN Tasks A+B)", () => {
+  const closeFraming = {
+    // The whole take is a close shot: video-top is infeasible everywhere.
+    windows: [{ startSec: 0, endSec: 60, faceFracOfCanvas: 0.44 }],
+    canvasAspect: 450 / 800,
+    layouts: [
+      { layout: "full-bleed" as const, slotAspect: 1080 / 1920, primary: true },
+      { layout: "video-top" as const, slotAspect: 1080 / 806, primary: true },
+      { layout: "pip-bubble" as const, slotAspect: 1, primary: false },
+      { layout: "graphic-only" as const, slotAspect: 1, primary: false },
+      { layout: "blurred-behind" as const, slotAspect: 1080 / 1920, primary: true },
+    ],
+    zoom: 1.05,
+  };
+
+  it("the framing brief reaches the beat-sheet prompt (Task A)", async () => {
+    let seenUser = "";
+    const spy: LlmProvider = {
+      name: "spy",
+      usage: [],
+      async complete<T>(req: { user: string; schema: z.ZodType<T>; schemaName: string }): Promise<T> {
+        if (req.schemaName === "beat_sheet") seenUser = req.user;
+        return new MockProvider().complete(req as never);
+      },
+    };
+    await produceScenes(spy, {
+      transcript: mkTranscript(40),
+      outputDuration: 20,
+      framing: closeFraming,
+    });
+    expect(seenUser).toContain("Camera framing");
+    expect(seenUser).toContain("UNAVAILABLE");
+    // The brief precedes the transcript, so the constraint is read first.
+    expect(seenUser.indexOf("Camera framing")).toBeLessThan(seenUser.indexOf("[0]word0"));
+  });
+
+  it("no scene leaves the pipeline with a layout that trims the head (Task B)", async () => {
+    // The mock's beat sheet asks for StatCard (default video-top) with no
+    // explicit layout — the repair pass must land every PRIMARY-slot scene on
+    // a feasible layout even though the "producer" ignored the brief.
+    const result = await produceScenes(new MockProvider(), {
+      transcript: mkTranscript(40),
+      outputDuration: 20,
+      framing: closeFraming,
+    });
+    expect(result.scenes.length).toBeGreaterThan(0);
+    for (const s of result.scenes) {
+      expect(s.layout, `${s.component} got ${s.layout}`).not.toBe("video-top");
+    }
+    // …and the rewrites are on the record, not silent.
+    expect(result.beatIssues.some((i) => i.issue.includes("video-top"))).toBe(true);
+  });
+
+  it("an explicit feasible producer layout is honoured by generateScenes", async () => {
+    const { scenes } = await generateScenes(
+      new MockProvider(),
+      [{ ...moment("StatCard"), layout: "blurred-behind" }],
+      transcript,
+      { framing: closeFraming },
+    );
+    expect(scenes[0]!.layout).toBe("blurred-behind");
+  });
+
+  it("without framing context nothing changes — the §20 rotation stands", async () => {
+    const { scenes } = await generateScenes(
+      new MockProvider(),
+      [moment("StatCard"), moment("StatCard")],
+      transcript,
+    );
+    expect(scenes[0]!.layout).toBe("video-top");
+    expect(scenes[1]!.layout).toBe("blurred-behind");
+  });
+});

@@ -4,6 +4,12 @@ import type { Layout, Scene, SceneComponentId } from "../scene-schema";
 import { SCENE_REGISTRY } from "../scene-registry";
 import type { LlmProvider } from "./provider";
 import type { Moment } from "./beats";
+import {
+  layoutFeasible,
+  momentSourceWindow,
+  worstFaceFrac,
+  type FramingContext,
+} from "../framing";
 
 export interface ScenePropsFailure {
   momentIndex: number;
@@ -103,22 +109,44 @@ export async function generateScenes(
   provider: LlmProvider,
   moments: readonly Moment[],
   transcript: Transcript,
+  opts: { framing?: FramingContext } = {},
 ): Promise<{ scenes: Scene[]; failures: ScenePropsFailure[] }> {
   const scenes: Scene[] = [];
   const failures: ScenePropsFailure[] = [];
   /**
-   * Repeats of a component get an alternate layout (FINDINGS §20): two
-   * identical card treatments in one video read as a template even when
-   * they're far apart, and re-framing is the variety that costs nothing —
-   * no coverage lost, no editorial judgement made on the LLM's behalf.
+   * Layout resolution, in priority order (PLAN Task B):
+   *
+   *   1. The PRODUCER's explicit choice — that is the point of Task B, and it
+   *      arrives already checked by `repairMomentLayouts`.
+   *   2. The §20 variety rotation: repeats of a component get an alternate
+   *      layout, because two identical card treatments read as a template.
+   *   3. Feasibility outranks variety (Task B4): a rotation candidate that
+   *      would crop the head at this moment's framing is skipped for the
+   *      next feasible candidate — variety picks among what is left, and
+   *      with nothing left the least-bad candidate stands (the same verdict
+   *      `repairMomentLayouts` would reach).
    */
   const seen = new Map<SceneComponentId, number>();
-  const layoutFor = (component: SceneComponentId): Layout => {
+  const layoutFor = (component: SceneComponentId, moment: Moment): Layout => {
     const meta = SCENE_REGISTRY[component];
     const n = seen.get(component) ?? 0;
     seen.set(component, n + 1);
-    if (n === 0 || meta.altLayouts.length === 0) return meta.defaultLayout;
-    return meta.altLayouts[(n - 1) % meta.altLayouts.length]!;
+    if (moment.layout) return moment.layout;
+    const rotation =
+      n === 0 || meta.altLayouts.length === 0
+        ? [meta.defaultLayout, ...meta.altLayouts]
+        : [
+            meta.altLayouts[(n - 1) % meta.altLayouts.length]!,
+            meta.defaultLayout,
+            ...meta.altLayouts,
+          ];
+    const framing = opts.framing;
+    if (!framing) return rotation[0]!;
+    const window = momentSourceWindow(transcript, moment.startWord, moment.endWord);
+    const faceFrac = window
+      ? worstFaceFrac(framing.windows, window.startSec, window.endSec)
+      : 0;
+    return rotation.find((l) => layoutFeasible(framing, l, faceFrac)) ?? rotation[0]!;
   };
 
   const graphicIndices = moments.flatMap((m, i) => (m.sceneKind === "none" ? [] : [i]));
@@ -130,7 +158,7 @@ export async function generateScenes(
     const component = moment.sceneKind;
     const meta = SCENE_REGISTRY[component];
     const schema = meta.propsSchema as z.ZodType<Record<string, unknown>>;
-    const layout = layoutFor(component);
+    const layout = layoutFor(component, moment);
 
     let props: Record<string, unknown> | null = batched.get(i) ?? null;
     let lastError = "";

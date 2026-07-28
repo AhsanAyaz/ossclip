@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 import type { Transcript } from "../schema";
-import { SceneComponentIdSchema } from "../scene-schema";
+import { LayoutSchema, SceneComponentIdSchema } from "../scene-schema";
 import { SCENE_REGISTRY } from "../scene-registry";
 import { MAX_SCENE_SEC } from "../assemble";
 import { COVER_MAX_WORDS, coverHeadline } from "../cover";
@@ -15,6 +15,15 @@ export const MomentSchema = z.object({
   onScreenCopy: z.string().max(60),
   /** "none" = plain talking head with captions; otherwise a library component. */
   sceneKind: z.union([SceneComponentIdSchema, z.literal("none")]),
+  /**
+   * Stage layout for this scene (PLAN Task B). Optional so an older cached
+   * beat sheet still parses; omitted means the component's registry default.
+   * Feasibility is enforced by `repairMomentLayouts` either way — the schema
+   * carries the request, the repair pass is the constraint (§35's lesson).
+   */
+  layout: LayoutSchema.optional().describe(
+    "stage layout for this scene; omit for the component default. NEVER a layout the framing brief marks UNAVAILABLE for these words",
+  ),
   rationale: z.string().max(120).optional(),
 });
 export type Moment = z.infer<typeof MomentSchema>;
@@ -50,12 +59,14 @@ Virality grammar — follow these as hard policies:
 - VARIETY: never the same component twice in a row, and prefer a component you have NOT used yet in this video — reuse a treatment only when the beat genuinely calls for it. A repeat reads as a template.
 - Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.
 - The transcript is ASR output and may contain mishearings: an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity — write on-screen copy with the common-sense reading, never a suspected mishearing.
+- FRAMING: when the prompt carries a "Camera framing" brief, it is measured from the footage and is a HARD constraint: on words marked CLOSE, never choose a layout listed as UNAVAILABLE there — pick a \`layout\` that keeps the whole head in frame (pip-bubble, graphic-only, full-bleed) or leave the moment as "none". You may set \`layout\` on any moment; omit it to accept the component's default.
 - COVER: also write \`coverText\` — the hook compressed to a thumbnail headline, AT MOST ${COVER_MAX_WORDS} WORDS. It is read at a glance in a profile grid, so it must stand alone without the video: the claim or the number, no lead-in, no ellipsis.`;
 
 export function buildBeatsUserPrompt(
   transcript: Transcript,
   duration: number,
   intent: string | undefined,
+  framingBrief?: string,
 ): string {
   const words = transcript.words
     .map((w, i) => `[${i}]${w.text}`)
@@ -67,6 +78,9 @@ export function buildBeatsUserPrompt(
     `Intent: ${intent ?? "make this clear, punchy and viral-worthy"}\n` +
     `Output duration after the cut: ${duration.toFixed(1)}s\n\n` +
     `Scene components available (sceneKind values; "none" = talking head only):\n${menu}\n\n` +
+    // The framing brief sits ABOVE the transcript so the constraint is read
+    // before the content it constrains (Task A).
+    (framingBrief ? `${framingBrief}\n\n` : "") +
     `Word-indexed transcript (word indices refer to THIS list):\n${words}`
   );
 }
@@ -233,12 +247,13 @@ export async function generateBeatSheet(
   duration: number,
   intent: string | undefined,
   speaker?: string,
+  framingBrief?: string,
 ): Promise<{ sheet: BeatSheet; issues: BeatsValidationIssue[] }> {
   const raw = await provider.complete({
     system: PRODUCER_SYSTEM,
     user:
       (speaker ? `The speaker: ${speaker}\n\n` : "") +
-      buildBeatsUserPrompt(transcript, duration, intent),
+      buildBeatsUserPrompt(transcript, duration, intent, framingBrief),
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",
   });

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
+  LayoutSchema,
   SceneSchema,
   TimeMap,
   TranscriptSchema,
@@ -297,6 +298,48 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     }
   }
 
+  // ---- Framing measurement (PLAN Tasks A+B) --------------------------------
+  /**
+   * Mixed framing (option (a), decided with the author 2026-07-28): a source
+   * that alternates framings is NORMALIZED — every segment cropped to the
+   * tightest field of view the take ever shows, placed on that segment's own
+   * measured face, and baked into one uniform file. The PLAN is computed here,
+   * before the producer, because the producer needs the framing brief: which
+   * word ranges are close shots, and which layouts those rule out. The BAKE
+   * itself runs after the scenes exist.
+   */
+  let framingPlan: NormalizePlan | null = null;
+  if (!detection.uniform) {
+    const boxed = letterboxedSeconds(contentTimeline);
+    console.log(
+      `▸ source framing CHANGES mid-take: ${contentTimeline.length} segments, ` +
+        `${boxed.toFixed(1)}s of ${sourceProbe.duration.toFixed(1)}s letterboxed`,
+    );
+    for (const seg of contentTimeline) {
+      console.log(
+        `  · ${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s ` +
+          (seg.rect.full
+            ? "full frame"
+            : `content ${seg.rect.w}×${seg.rect.h} at x ${seg.rect.x}, y ${seg.rect.y}`),
+      );
+    }
+    // Each segment's face, measured inside ITS OWN rect — a single median
+    // across mixed framings averages two coordinate systems and points the
+    // crop at neither (the old C5 gap; it put the eyes at the top of the
+    // frame on the motivating clip).
+    const segmentFaces = await measureFaceInWindows(
+      tools,
+      input,
+      contentTimeline.map((seg) => ({
+        startSec: seg.startSec,
+        endSec: seg.endSec,
+        cropVf: cropFilter(seg.rect),
+      })),
+      { workDir: work },
+    );
+    framingPlan = planNormalization(contentTimeline, segmentFaces, { width: 1080, height: 1920 });
+  }
+
   // ---- Scenes: hand-authored file, or the producer brain (PHASE1 §4) ----
   let scenes: Scene[] = [];
   /** Editorial output kept for the cover (§31): hook + its thumbnail form. */
@@ -308,6 +351,30 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     // Keyed on the repaired transcript's TEXT, not its word count: a repair
     // that swaps "coach and" for "code churn" leaves the count identical, and
     // a count-keyed cache would silently replan from the stale wording.
+    // Camera-framing constraints for the producer (PLAN Tasks A+B): windows
+    // and canvas from the normalization plan, slot shapes from the stage —
+    // injected here because core must stay scenes-free. Only primary slots
+    // (video is the subject) are subject to the head-fits rule; a pip bubble
+    // is MEANT to be a tight head shot.
+    const framingCtx = framingPlan
+      ? {
+          windows: framingPlan.segments.map((s, i) => ({
+            startSec: s.startSec,
+            endSec: s.endSec,
+            faceFracOfCanvas: framingPlan.faceFracOfCanvas[i] ?? 0,
+          })),
+          canvasAspect: framingPlan.canvas.width / framingPlan.canvas.height,
+          layouts: LayoutSchema.options.map((layout) => {
+            const v = layoutSlots(layout).video;
+            return {
+              layout,
+              slotAspect: (v.rect.w * 1080) / (v.rect.h * 1920),
+              primary: v.opacity > 0 && v.rect.w * v.rect.h >= PRIMARY_VIDEO_SLOT_AREA,
+            };
+          }),
+          zoom: ZOOM_MAX_SCALE,
+        }
+      : undefined;
     const cacheKey = createHash("sha1")
       .update(
         JSON.stringify([
@@ -316,6 +383,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           opts.intent,
           opts.cleanup,
           opts.forceComponent ?? null,
+          // The framing constraints steer layout choice, so a change in the
+          // measured framing must invalidate the cached plan.
+          framingCtx ?? null,
           transcript.words.map((w) => w.text),
         ]),
       )
@@ -340,6 +410,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         intent: opts.intent,
         speaker: opts.speaker ?? cfg.speaker,
         forceComponent: opts.forceComponent,
+        framing: framingCtx,
       });
       scenes = result.scenes;
       beatSheet = { hook: result.beatSheet.hook, coverText: result.beatSheet.coverText };
@@ -396,60 +467,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
 
-  // ---- Framing (plan step C) --------------------------------------------
-  // Deliberately AFTER the scenes exist. Framing used to be decided before
-  // the producer had run, which meant the one field of view baked for the
-  // whole video was chosen without knowing that a moment would be a tiny
-  // pip bubble and the next a full-bleed close-up. The cut is still computed
-  // on raw ASR above, so moving this changes no edit decision.
-  /**
-   * Mixed framing (option (a), decided with the author 2026-07-28): a source
-   * that alternates framings is NORMALIZED — every segment cropped to the
-   * tightest field of view the take ever shows, placed on that segment's own
-   * measured face, and baked into one uniform file. Everything downstream then
-   * runs the ordinary uniform-source path against the baked file; the render-
-   * time per-segment cover (which produced a ~3× apparent zoom jump at every
-   * boundary) is gone. When the strip is too small to cover the output without
-   * visible softening, normalization refuses and the render falls back to
-   * FIT — the strip inset at natural size (option (b)) — with a loud warning.
-   */
-  /** The bake plan, kept so per-scene framing can be assessed against it. */
-  let framingPlan: NormalizePlan | null = null;
+  // ---- Framing bake (plan step C / option (a)) ----------------------------
+  // The MEASUREMENT ran before the producer (Tasks A+B need it in the beat-
+  // sheet prompt); the BAKE stays here, after the scenes exist, so a future
+  // scene-aware bake has the cues in scope. Moving measurement up changes no
+  // edit decision — the cut is still computed on raw ASR above.
   let analysisInput = input;
   let analysisProbe = sourceProbe;
   let analysisCropVf = cropVf;
   let cacheTag = "";
   let fitFallback = false;
-  if (!detection.uniform) {
-    const boxed = letterboxedSeconds(contentTimeline);
-    console.log(
-      `▸ source framing CHANGES mid-take: ${contentTimeline.length} segments, ` +
-        `${boxed.toFixed(1)}s of ${sourceProbe.duration.toFixed(1)}s letterboxed`,
-    );
-    for (const seg of contentTimeline) {
-      console.log(
-        `  · ${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s ` +
-          (seg.rect.full
-            ? "full frame"
-            : `content ${seg.rect.w}×${seg.rect.h} at x ${seg.rect.x}, y ${seg.rect.y}`),
-      );
-    }
-    // Each segment's face, measured inside ITS OWN rect — a single median
-    // across mixed framings averages two coordinate systems and points the
-    // crop at neither (the old C5 gap; it put the eyes at the top of the
-    // frame on the motivating clip).
-    const segmentFaces = await measureFaceInWindows(
-      tools,
-      input,
-      contentTimeline.map((seg) => ({
-        startSec: seg.startSec,
-        endSec: seg.endSec,
-        cropVf: cropFilter(seg.rect),
-      })),
-      { workDir: work },
-    );
-    const plan = planNormalization(contentTimeline, segmentFaces, { width: 1080, height: 1920 });
-    framingPlan = plan;
+  if (framingPlan) {
+    const plan = framingPlan;
     if (plan.ok) {
       const planHash = createHash("sha1").update(JSON.stringify(plan)).digest("hex").slice(0, 8);
       const baked = join(work, `content-${planHash}.mp4`);

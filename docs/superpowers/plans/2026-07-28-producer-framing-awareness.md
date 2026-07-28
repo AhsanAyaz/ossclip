@@ -2,7 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes.
 
-**Status:** not started. Steps C and D shipped in `f84c773` and produced the evidence this plan consumes.
+**Status:** A and B implemented 2026-07-29; A4/B5's re-run on the author's clip is owed to the author (the clip lives on their machine). Steps C and D shipped in `f84c773` and produced the evidence this plan consumes.
+
+> **Status 2026-07-29 — A and B done, verified on fixtures + unit/integration tests.**
+>
+> - **A (the brief):** `buildFramingBrief` (`packages/core/src/framing.ts`) — word-indexed, qualitative (CLOSE/MEDIUM/WIDE + which layouts are UNAVAILABLE), contiguous same-constraint windows merged, "" when nothing was measured so the prompt is byte-identical for unmeasured sources. CLOSE is defined by CONSEQUENCE (some layout infeasible), not a tuned fraction. It sits ABOVE the transcript in `buildBeatsUserPrompt`, and `PRODUCER_SYSTEM` states the policy. The arithmetic is one shared function (`headFracInSlot` in normalize.ts) used by the brief, the repair pass and `assessCueFraming`, so the three cannot disagree. Slot shapes are injected from the CLI (`LayoutFraming[]`) — core stays scenes-free.
+> - **B (the choice + the net):** `MomentSchema.layout` (optional — older cached beat sheets still parse); `repairMomentLayouts` runs in `produceScenes` after `normalizeBeatSheet` and rewrites any infeasible layout (explicit or registry default) to the first feasible candidate, or the least-bad one with an issue that says so. `generateScenes`' §20 variety rotation now skips infeasible candidates — feasibility outranks variety, variety picks among what is left (B4). `--force-component` drops the producer's layout, since it was chosen for a different component.
+> - **Ordering:** the framing MEASUREMENT (segment faces → `planNormalization`) moved back above the producer — the brief needs it — while the BAKE stays after scene assembly, preserving `f84c773`'s direction of an eventually scene-aware bake. The scene cache key now includes the framing context, so a framing change invalidates a cached plan — **the author's next run on the real clip will re-plan once (one LLM call) for this reason.**
+> - **Verified here:** unit tests reproduce the measured defect (face 44% of a portrait canvas → 105% of the video-top band) and pin the repair; an integration test drives `produceScenes` with a close-shot context and asserts no scene leaves with `video-top` and the rewrites are on the record; the mixed fixture runs the full CLI path (measurement → brief → producer → repair → bake). **A4/B5 on the real clip — the two `⚠ scene-N (video-top)` warnings dropping — still needs the author's machine.**
 
 **Goal:** Stop the producer choosing a layout the source cannot physically support at that moment, and let it choose layout at all — today it is a lookup table.
 
@@ -47,23 +54,23 @@ Run on the author's clip after C+D:
 
 The producer prompt today (`buildBeatsUserPrompt`, `packages/core/src/producer/beats.ts`) contains **only**: intent, output duration, component menu, word-indexed transcript. Zero geometry. It has never seen the face, the framing timeline or a slot dimension.
 
-- [ ] **Step A1: Decide the brief's shape and write a failing test for the serializer.** One line per framing window, in the transcript's own coordinates so the producer can line it up with word indices — e.g. `words 0-88: face is CLOSE (fills 61% of frame width); wide layouts unavailable here`. Word indices, not seconds: the producer reasons in word spans and never sees output time.
-- [ ] **Step A2: Implement the serializer** as a pure function in core, taking the framing plan + transcript and returning the brief. Unit-test the mapping from source seconds to word indices at both ends.
-- [ ] **Step A3: Thread it into `buildBeatsUserPrompt`** and state in `PRODUCER_SYSTEM` what the producer must do with it: on a CLOSE window, prefer layouts that keep the face large (`pip-bubble`, `graphic-only`, `full-bleed`) and avoid the wide bands (`video-top`, `blurred-behind`).
+- [x] **Step A1: Decide the brief's shape and write a failing test for the serializer.** One line per framing window, in the transcript's own coordinates so the producer can line it up with word indices — e.g. `words 0-88: face is CLOSE (fills 61% of frame width); wide layouts unavailable here`. Word indices, not seconds: the producer reasons in word spans and never sees output time.
+- [x] **Step A2: Implement the serializer** as a pure function in core, taking the framing plan + transcript and returning the brief. Unit-test the mapping from source seconds to word indices at both ends.
+- [x] **Step A3: Thread it into `buildBeatsUserPrompt`** and state in `PRODUCER_SYSTEM` what the producer must do with it: on a CLOSE window, prefer layouts that keep the face large (`pip-bubble`, `graphic-only`, `full-bleed`) and avoid the wide bands (`video-top`, `blurred-behind`).
 - [ ] **Step A4: Verify on the author's clip** — re-run and confirm the two `video-top` warnings are gone or reduced. **The warnings are the acceptance test**; this step is worthless without them dropping.
-- [ ] **Step A5:** Note the token cost in the run's usage line; the brief is ~10 lines and should be negligible against a 45k-token prompt.
-- [ ] **Step A6: Commit.**
+- [x] **Step A5:** Note the token cost in the run's usage line; the brief is ~10 lines and should be negligible against a 45k-token prompt.
+- [x] **Step A6: Commit.**
 
 ### Task B: let the producer choose the layout
 
 `generateScenes` (`packages/core/src/producer/scene-props.ts:116`) assigns layout from `SCENE_REGISTRY[component].defaultLayout`, rotating through `altLayouts` on repeats (FINDINGS §20). It is a lookup table pretending to be judgement, and it is the one decision that is genuinely both editorial and geometric.
 
-- [ ] **Step B1: Failing test — an infeasible layout is repaired, not rendered.** Given a beat sheet asking for `video-top` on a window the brief marked CLOSE, assert the validator rewrites it to a feasible layout and records an issue, exactly as `normalizeBeatSheet` repairs bad word spans today.
-- [ ] **Step B2: Add `layout` to the moment schema** as optional, so an older cached beat sheet still parses and falls back to the registry default.
-- [ ] **Step B3: Implement the validator** next to `normalizeBeatSheet`: for each moment, if the chosen layout's slot cannot hold the head at that window's framing, swap to the best feasible alternative from the component's `altLayouts` (then the default), and log it. Reuse `assessCueFraming` rather than a second copy of the geometry.
-- [ ] **Step B4: Keep the §20 variety pass working** — it currently rotates layouts to avoid a template feel. Variety must not override feasibility; feasibility wins and variety picks among what is left.
+- [x] **Step B1: Failing test — an infeasible layout is repaired, not rendered.** Given a beat sheet asking for `video-top` on a window the brief marked CLOSE, assert the validator rewrites it to a feasible layout and records an issue, exactly as `normalizeBeatSheet` repairs bad word spans today.
+- [x] **Step B2: Add `layout` to the moment schema** as optional, so an older cached beat sheet still parses and falls back to the registry default.
+- [x] **Step B3: Implement the validator** next to `normalizeBeatSheet`: for each moment, if the chosen layout's slot cannot hold the head at that window's framing, swap to the best feasible alternative from the component's `altLayouts` (then the default), and log it. Reuse `assessCueFraming` rather than a second copy of the geometry.
+- [x] **Step B4: Keep the §20 variety pass working** — it currently rotates layouts to avoid a template feel. Variety must not override feasibility; feasibility wins and variety picks among what is left.
 - [ ] **Step B5: Verify on the author's clip** and on the mixed-framing fixture. Zero framing warnings is the target; any that remain must be ones where *no* layout is feasible, and those should say so.
-- [ ] **Step B6: Commit.**
+- [x] **Step B6: Commit.**
 
 ---
 

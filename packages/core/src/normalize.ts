@@ -295,6 +295,35 @@ export interface FramingIssue {
  * close-up. It is fixable by not putting a wide band on that moment — which is
  * a producer decision, and this is the evidence it needs.
  */
+/**
+ * Face height over a SLOT's height, once cover crops the canvas into it.
+ *
+ * A slot WIDER than the canvas is cover-cropped vertically and shows only
+ * `canvasAspect / slotAspect` of the canvas height, so the face grows by the
+ * inverse; a slot no wider than the canvas crops width, and the face's height
+ * fraction is unchanged. THE arithmetic behind every framing judgement —
+ * per-cue assessment, the producer's brief, and the layout repair pass all
+ * call this one function, so they cannot disagree.
+ */
+export function faceFracInSlot(
+  faceFracOfCanvas: number,
+  canvasAspect: number,
+  slotAspect: number,
+): number {
+  if (canvasAspect <= 0 || slotAspect <= 0) return faceFracOfCanvas;
+  return faceFracOfCanvas / Math.min(1, canvasAspect / slotAspect);
+}
+
+/** The whole head, under the idle zoom — above 1 the crop trims it. */
+export function headFracInSlot(
+  faceFracOfCanvas: number,
+  canvasAspect: number,
+  slotAspect: number,
+  zoom: number,
+): number {
+  return HEAD_PER_FACE * faceFracInSlot(faceFracOfCanvas, canvasAspect, slotAspect) * zoom;
+}
+
 export function assessCueFraming(
   cues: readonly CueSlot[],
   segments: ReadonlyArray<{ startSec: number; endSec: number }>,
@@ -316,15 +345,11 @@ export function assessCueFraming(
     });
     if (frac <= 0 || cue.slot.width <= 0 || cue.slot.height <= 0) continue;
     const slotAspect = cue.slot.width / cue.slot.height;
-    // Cover shows this share of the canvas height; 1 when the slot is no
-    // wider than the canvas, since then the width is what gets cropped.
-    const visible = Math.min(1, canvasAspect / slotAspect);
-    const faceFracOfSlot = frac / visible;
     out.push({
       cueId: cue.id,
       layout: cue.layout,
-      faceFracOfSlot,
-      headFracOfSlot: HEAD_PER_FACE * faceFracOfSlot * zoom,
+      faceFracOfSlot: faceFracInSlot(frac, canvasAspect, slotAspect),
+      headFracOfSlot: headFracInSlot(frac, canvasAspect, slotAspect, zoom),
     });
   }
   return out;
