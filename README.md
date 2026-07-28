@@ -120,7 +120,7 @@ Prices are a built-in per-family assumption. Override for your account in `~/.os
 Provider keys are read from the environment, and ossclip loads `.env` files before it picks a provider — first hit wins per key, and a real environment variable always beats a file:
 
 ```
-$OSSCLIP_ENV_FILE   →   <cwd>/.env   →   ~/.ossclip/.env
+$OSSCLIP_ENV_FILE   →   .env, walking up from the cwd   →   ~/.ossclip/.env
 ```
 
 ```sh

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -55,6 +55,28 @@ describe("loadEnvFiles (R16 §77)", () => {
     const dir = dirWithEnv("OSSCLIP_TEST_A=a=b=c\n");
     loadEnvFiles(dir);
     expect(process.env.OSSCLIP_TEST_A).toBe("a=b=c");
+  });
+
+  it("walks UP to find a repo-root .env", () => {
+    // `pnpm --filter @ossclip/cli exec …` runs with the cwd at apps/cli, so a
+    // repo-root .env is invisible without this — which is exactly how the
+    // first §77 run still failed with 'GEMINI_API_KEY is not set'.
+    delete process.env.OSSCLIP_TEST_A;
+    const root = dirWithEnv("OSSCLIP_TEST_A=from-root\n");
+    const nested = join(root, "apps", "cli");
+    mkdirSync(nested, { recursive: true });
+    expect(loadEnvFiles(nested)).toEqual([join(root, ".env")]);
+    expect(process.env.OSSCLIP_TEST_A).toBe("from-root");
+  });
+
+  it("the NEAREST .env wins over one further up", () => {
+    delete process.env.OSSCLIP_TEST_A;
+    const root = dirWithEnv("OSSCLIP_TEST_A=from-root\n");
+    const nested = join(root, "apps", "cli");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, ".env"), "OSSCLIP_TEST_A=from-nested\n");
+    loadEnvFiles(nested);
+    expect(process.env.OSSCLIP_TEST_A).toBe("from-nested");
   });
 
   it("a missing file is not an error", () => {

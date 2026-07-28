@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * Load `.env` files into `process.env` (R16 §77).
@@ -16,17 +16,29 @@ import { join, resolve } from "node:path";
  * always beats a file — an explicit `GEMINI_API_KEY=… ossclip produce` must
  * not be overridden by a stale `.env`:
  *   1. `$OSSCLIP_ENV_FILE`, when set
- *   2. `<cwd>/.env`
+ *   2. `.env` walking UP from the cwd, nearest first
  *   3. `~/.ossclip/.env`
+ *
+ * The upward walk is not a flourish: `pnpm --filter @ossclip/cli exec …` runs
+ * with the cwd set to `apps/cli`, so a repo-root `.env` — the only place
+ * anyone puts one — is invisible to a plain `<cwd>/.env` lookup. Same reason
+ * every JS toolchain walks up for its config.
  *
  * Parsing is deliberately small: `KEY=value`, `#` comments, blank lines, an
  * optional `export ` prefix, and surrounding quotes stripped. Anything fancier
  * belongs in a shell, not in a secrets file.
  */
 export function loadEnvFiles(cwd: string = process.cwd()): string[] {
+  const upward: string[] = [];
+  for (let dir = resolve(cwd); ; ) {
+    upward.push(join(dir, ".env"));
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
   const candidates = [
     process.env.OSSCLIP_ENV_FILE ? resolve(process.env.OSSCLIP_ENV_FILE) : null,
-    join(cwd, ".env"),
+    ...upward,
     join(homedir(), ".ossclip", ".env"),
   ].filter((p): p is string => Boolean(p));
 
