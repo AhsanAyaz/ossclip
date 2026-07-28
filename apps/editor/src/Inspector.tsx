@@ -180,6 +180,32 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         ) : null}
         <div style={section}>
+          {/* Every scale is a slider at minimum (R12 §47) — the number
+              fields stay as the precision fallback. Commits per tick with a
+              coalesce key, so one scrub is one undo step and the element
+              follows live (its render is driven straight from the doc). */}
+          <div style={row}>
+            <span style={label}>
+              scale{"  "}
+              <span style={{ color: "#EDEDF2" }}>{(transform.scale ?? 1).toFixed(2)}×</span>
+            </span>
+            <input
+              type="range"
+              data-testid="el-scale-slider"
+              min={0.1}
+              max={3}
+              step={0.01}
+              value={transform.scale ?? 1}
+              onChange={(e) =>
+                edits.patchElement(
+                  selection.sceneId,
+                  elementId,
+                  { scale: Number(e.target.value) },
+                  `element:${selection.sceneId}:${elementId}:scale`,
+                )
+              }
+            />
+          </div>
           {/* Typing "120" is one gesture, not three edits — the coalesce key
               collapses the keystroke burst into a single undo step (B5). */}
           <NumberField

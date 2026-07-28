@@ -134,6 +134,13 @@ const HANDLE_POS: Record<Exclude<BoxHandle, "move">, React.CSSProperties> = {
   w: { left: 0, top: "50%", transform: "translate(-50%,-50%)", cursor: "ew-resize" },
 };
 
+/** Element resize handles (R12 §47) — the element's yellow, so they read as
+ * belonging to the dashed element box rather than the blue scene box. */
+const elHandleBase: React.CSSProperties = {
+  ...boxHandleBase,
+  background: "#ffe14d",
+};
+
 /** The move grip: a titlebar-style strip along the box's top edge, inset
  * clear of the corner handles. The body below it must stay click-through. */
 const moveStrip: React.CSSProperties = {
@@ -256,6 +263,19 @@ export const Overlay: React.FC<OverlayProps> = ({
   const rectRafRef = useRef(0);
   /** State (not just the ref) so the safe-area guide re-renders during it. */
   const [rectDragging, setRectDragging] = useState(false);
+  /** An in-progress corner-resize of an ELEMENT (R12 §47): radial from the
+   * element's centre, committed as ONE uniform-scale patch on mouseup. */
+  const elResizeRef = useRef<{
+    sceneId: string;
+    elementId: string;
+    cx: number;
+    cy: number;
+    startDist: number;
+    prior: number;
+    factor: number;
+  } | null>(null);
+  /** Mirrors the ref's factor so the box outline previews the resize live. */
+  const [elResizeFactor, setElResizeFactor] = useState<number | null>(null);
   /** An in-progress caption word retype (PLAN Task 7, scope (a)). */
   const [captionEdit, setCaptionEdit] = useState<{
     index: number;
@@ -437,6 +457,34 @@ export const Overlay: React.FC<OverlayProps> = ({
       // below re-resolves what's actually under the cursor instead —
       // `elementBelow` already walks through arbitrary pointer-events:auto
       // layers (including this very box) to find the real tagged leaf.
+      // A press on an ELEMENT corner handle (R12 §47) resizes rather than
+      // moves — checked before the box-body branch below, which would read
+      // any press inside the box as the start of a move drag.
+      const elHandle =
+        e.target instanceof Element ? e.target.closest<HTMLElement>("[data-el-handle]") : null;
+      const elSel = selectionRef.current;
+      if (elHandle && elSel?.elementId) {
+        const r = rectOf(stage, elSel.sceneId, elSel.elementId);
+        if (r) {
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
+          if (startDist > 2) {
+            const prior = edits.doc.scenes[elSel.sceneId]?.elements[elSel.elementId]?.scale ?? 1;
+            elResizeRef.current = {
+              sceneId: elSel.sceneId,
+              elementId: elSel.elementId,
+              cx,
+              cy,
+              startDist,
+              prior,
+              factor: 1,
+            };
+            setElResizeFactor(1);
+          }
+        }
+        return;
+      }
       if (selectionRef.current?.elementId && boxRef.current?.contains(e.target as Node)) {
         dragRef.current = { x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
         setDragOffset({ dx: 0, dy: 0 });
@@ -540,7 +588,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       // never the style-juggling hit walk, which is for presses only.
       const stage = stageRef.current;
       if (stage) {
-        if (rectDragRef.current) {
+        if (rectDragRef.current || elResizeRef.current) {
           // A handle drag: the handle's own cursor is right; leave it be.
         } else if (videoDragRef.current) {
           stage.style.cursor = "grabbing";
@@ -555,6 +603,17 @@ export const Overlay: React.FC<OverlayProps> = ({
             e.clientY < stage.getBoundingClientRect().bottom - PLAYER_CONTROLS_STRIP_PX;
           stage.style.cursor = overVideo ? "grab" : "";
         }
+      }
+      const elResize = elResizeRef.current;
+      if (elResize) {
+        // Radial: the factor is the ratio of the pointer's distance from the
+        // element's centre — dragging a corner outward grows it, inward
+        // shrinks. Clamped so the committed scale stays inside the schema.
+        const d = Math.hypot(e.clientX - elResize.cx, e.clientY - elResize.cy);
+        const raw = d / elResize.startDist;
+        elResize.factor = Math.min(4 / elResize.prior, Math.max(0.05 / elResize.prior, raw));
+        setElResizeFactor(elResize.factor);
+        return;
       }
       const rectDrag = rectDragRef.current;
       if (rectDrag) {
@@ -613,6 +672,18 @@ export const Overlay: React.FC<OverlayProps> = ({
       setDragOffset({ dx: drag.dx, dy: drag.dy });
     };
     const onUp = () => {
+      const elResize = elResizeRef.current;
+      if (elResize) {
+        elResizeRef.current = null;
+        setElResizeFactor(null);
+        if (Math.abs(elResize.factor - 1) > 1e-3) {
+          // ONE patch per gesture — one undo step, rounded per §48.
+          edits.patchElement(elResize.sceneId, elResize.elementId, {
+            scale: Math.round(elResize.prior * elResize.factor * 1000) / 1000,
+          });
+        }
+        return;
+      }
       const rectDrag = rectDragRef.current;
       if (rectDrag) {
         rectDragRef.current = null;
@@ -895,10 +966,21 @@ export const Overlay: React.FC<OverlayProps> = ({
           style={{
             position: "fixed",
             pointerEvents: editingText !== null ? "none" : "auto",
-            left: rect.left + dragOffset.dx - HANDLE / 2,
-            top: rect.top + dragOffset.dy - HANDLE / 2,
-            width: rect.width + HANDLE,
-            height: rect.height + HANDLE,
+            // A corner resize previews on the OUTLINE, centre-anchored (R12
+            // §47) — the element itself re-renders once the patch commits,
+            // same contract as the move drag.
+            left:
+              rect.left +
+              dragOffset.dx -
+              HANDLE / 2 +
+              (rect.width * (1 - (elResizeFactor ?? 1))) / 2,
+            top:
+              rect.top +
+              dragOffset.dy -
+              HANDLE / 2 +
+              (rect.height * (1 - (elResizeFactor ?? 1))) / 2,
+            width: rect.width * (elResizeFactor ?? 1) + HANDLE,
+            height: rect.height * (elResizeFactor ?? 1) + HANDLE,
             border: selection.elementId ? "2px dashed #ffe14d" : "2px dashed #5b8cff",
             borderRadius: 4,
             boxShadow: "0 0 0 1px rgba(0,0,0,0.35)",
@@ -926,6 +1008,19 @@ export const Overlay: React.FC<OverlayProps> = ({
               {selection.elementId}
             </div>
           ) : null}
+          {/* Element corner handles (R12 §47): position was already direct
+              manipulation (drag to move) while size was numbers-only — the
+              half-state the findings flagged. Radial drag = uniform scale. */}
+          {selection.elementId && editingText === null
+            ? (["nw", "ne", "se", "sw"] as const).map((h) => (
+                <div
+                  key={h}
+                  data-el-handle={h}
+                  data-testid={`el-handle-${h}`}
+                  style={{ ...elHandleBase, ...HANDLE_POS[h] }}
+                />
+              ))
+            : null}
           {/* Transform handles (R11 Task 2): scene-level selection of a cue
               that actually DRAWS a graphic — the box is measured off its
               `data-edit-scene` node, which SceneLayer only renders when the

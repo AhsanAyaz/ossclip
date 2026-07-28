@@ -521,3 +521,42 @@ test("Render is present but honestly disabled without a recorded command (R11 Ta
   await expect(btn).toBeDisabled();
   await expect(btn).toHaveAttribute("title", /command\.json/);
 });
+
+test("element corner handles resize by drag; the slider drives scale too (R12 §47)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await page.waitForSelector("[data-edit-id]");
+  const el = (await page.locator("[data-edit-id]").first().boundingBox())!;
+  await page.mouse.click(el.x + el.width / 2, el.y + el.height / 2);
+  await expect(page.getByTestId("overlay-box")).toBeVisible();
+
+  // Position was already direct manipulation; size now is too: drag the SE
+  // corner OUTWARD (away from the element's centre) to grow it.
+  const handle = (await page.getByTestId("el-handle-se").boundingBox())!;
+  const hx = handle.x + handle.width / 2;
+  const hy = handle.y + handle.height / 2;
+  await page.mouse.move(hx, hy);
+  await page.mouse.down();
+  await page.mouse.move(hx + 40, hy + 25, { steps: 5 });
+  await page.mouse.up();
+
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
+  const elements = doc.scenes[renderProps.baseSceneCues[0].id].elements as Record<
+    string,
+    { scale?: number }
+  >;
+  const scaled = Object.values(elements).find((t) => t.scale !== undefined);
+  expect(scaled).toBeTruthy();
+  expect(scaled!.scale!).toBeGreaterThan(1);
+  // §48: the committed value is rounded, not float dust.
+  expect(String(scaled!.scale).replace(/^-?\d+\.?/, "").length).toBeLessThanOrEqual(3);
+
+  // And the scale slider exists as the coarse control for the same value.
+  await expect(page.getByTestId("el-scale-slider")).toBeVisible();
+});
