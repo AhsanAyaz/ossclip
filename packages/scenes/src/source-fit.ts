@@ -115,6 +115,11 @@ export function routeAroundSourceText(
   const skipped: SourceTextPlan["skipped"] = [];
 
   for (const cue of cues) {
+    // A cue with no graphic (a plain take) has nothing to route.
+    if (cue.component === undefined) {
+      out.push(cue);
+      continue;
+    }
     // Only the text actually up while this scene is on screen can conflict.
     const active = regionsDuring(regions, cue.startSec, cue.endSec);
     if (active.length === 0) {

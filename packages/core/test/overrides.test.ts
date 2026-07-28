@@ -31,9 +31,9 @@ describe("override document", () => {
       scenes: { "scene-0": { props: { value: "999%" } } },
     });
     const { cues } = applyOverrides([cue("scene-0")], doc);
-    expect(cues[0]!.props.value).toBe("999%");
+    expect(cues[0]!.props!.value).toBe("999%");
     // Untouched props survive — this is a merge, not a replacement.
-    expect(cues[0]!.props.label).toBe("CODE CHURN");
+    expect(cues[0]!.props!.label).toBe("CODE CHURN");
   });
 
   it("reports overrides whose scene no longer exists instead of dropping them silently", () => {
@@ -42,7 +42,7 @@ describe("override document", () => {
     });
     const { cues, orphans } = applyOverrides([cue("scene-0")], doc);
     expect(orphans).toEqual(["scene-7"]);
-    expect(cues[0]!.props.value).toBe("861%");
+    expect(cues[0]!.props!.value).toBe("861%");
   });
 
   it("carries element transforms onto the cue", () => {
@@ -127,7 +127,7 @@ describe("override document", () => {
       },
     });
     const { cues } = applyOverrides([cue("scene-0")], doc);
-    expect(cues[0]!.props.nodes).toEqual(["ONE", "TWO", "THREE"]);
+    expect(cues[0]!.props!.nodes).toEqual(["ONE", "TWO", "THREE"]);
   });
 
   it("swaps a scene's layout", () => {
@@ -164,8 +164,8 @@ describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
     // The producer re-plans and returns entirely new copy for the same scene.
     const replanned: SceneCue = { ...cue("scene-0"), props: { label: "NEW LABEL", value: "12%", inverted: false } };
     const { cues } = applyOverrides([replanned], doc);
-    expect(cues[0]!.props.label).toBe("NEW LABEL"); // producer's new copy lands
-    expect(cues[0]!.props.value).toBe("999%");      // the user's edit wins
+    expect(cues[0]!.props!.label).toBe("NEW LABEL"); // producer's new copy lands
+    expect(cues[0]!.props!.value).toBe("999%");      // the user's edit wins
   });
 
   // "the most likely thing to break": a pin freezes ABSOLUTE time precisely

@@ -3,6 +3,7 @@ export * from "./scene-schema";
 export * from "./overrides";
 export * from "./scene-registry";
 export * from "./assemble";
+export * from "./fill";
 export * from "./producer/index";
 export * from "./timemap";
 export * from "./ingest";

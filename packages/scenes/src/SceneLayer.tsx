@@ -15,7 +15,7 @@ import { compensateEdits, type ElementEdits } from "./editable";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- props are registry-validated upstream */
 const COMPONENTS: Record<
-  SceneCue["component"],
+  NonNullable<SceneCue["component"]>,
   React.FC<{ props: any; theme: Theme; widthPx?: number; heightPx?: number; edits?: ElementEdits }>
 > = {
   TitleCard,
@@ -34,6 +34,10 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       {cues.map((cue) => {
+        // Plain cues (derived timeline filler) carry no graphic and no
+        // `data-edit-scene` — the talking head IS the scene. The component/
+        // props guards double as the type narrowing their optionality forces.
+        if (cue.kind === "plain" || !cue.component || !cue.props) return null;
         // A cue may carry its own rect when the source's burned-in text made
         // the layout's slot unusable (FINDINGS §26).
         const slot = cue.graphicRect ?? layoutSlots(cue.layout).graphic;

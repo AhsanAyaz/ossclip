@@ -75,3 +75,29 @@ describe("moveTiming (PLAN Task 6 — drag a block to move it)", () => {
     expect(moveTiming(cues, "zzz", 1, 30)).toBeNull();
   });
 });
+
+describe("plain takes never clamp a drag (PLAN 2026-07-30 Task A)", () => {
+  // The fill butts a derived take flush against every graphic block; if the
+  // clamp saw it as a neighbour, lo === the cue's own start and no drag
+  // could ever move a scene again. Takes re-derive around wherever the
+  // graphic lands, so only STORED (graphic) windows constrain it.
+  const withTakes = [
+    { id: "a", startSec: 0, endSec: 5 },
+    { id: "take-0", kind: "plain", layout: "full-bleed", startSec: 5, endSec: 12 },
+    { id: "b", startSec: 12, endSec: 16 },
+  ] as SceneCue[];
+
+  it("moveTiming slides through a flush plain neighbour", () => {
+    const t = moveTiming(withTakes, "b", -4, 30)!;
+    expect(t.startSec).toBeCloseTo(8, 9); // straight through take-0's window
+    expect(t.endSec - t.startSec).toBeCloseTo(4, 9);
+    // …and still stops against the GRAPHIC neighbour beyond it.
+    const far = moveTiming(withTakes, "b", -8, 30)!;
+    expect(far.startSec).toBeCloseTo(5.05, 9);
+  });
+
+  it("clampTiming likewise ignores the take", () => {
+    const t = clampTiming(withTakes, "b", 8, 16, 30);
+    expect(t.startSec).toBeCloseTo(8, 9);
+  });
+});

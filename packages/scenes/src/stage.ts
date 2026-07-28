@@ -490,17 +490,34 @@ function easeInOut(p: number): number {
 }
 
 /**
+ * A full-bleed plain cue IS the base stage state — it exists so the timeline
+ * shows a block and framing overrides have an id to land on, not to change
+ * what renders. It must therefore be INVISIBLE to the morph machinery: a
+ * plain cue butts flush against its graphic neighbour (no assembler gap), so
+ * the ±1e-3 neighbour probes would see it where today they see a gap, and the
+ * slot would complete its end-of-scene morph to base and then snap back to
+ * the graphic layout to morph a second time. Filtering keeps graphic↔plain
+ * transitions byte-identical to today's cue↔gap. A plain cue whose LAYOUT the
+ * user overrode away from full-bleed stays morphable — that's a real staging
+ * decision, not filler.
+ */
+function morphCues(cues: readonly SceneCue[]): readonly SceneCue[] {
+  return cues.filter((c) => !(c.kind === "plain" && c.layout === "full-bleed"));
+}
+
+/**
  * The video slot's state at output time t, easing between layouts around cue
  * boundaries. The morph runs INSIDE the cue's own window (start → start+T,
  * end-T → end) so neighbouring cues never fight over the slot.
  */
 export function videoSlotAt(
-  cues: readonly SceneCue[],
+  allCues: readonly SceneCue[],
   tSec: number,
   face: FaceCrop = DEFAULT_FACE,
   /** Text regions in OUTPUT time; only those on screen now constrain the crop. */
   textRegions: readonly (SourceBand & { startSec: number; endSec: number })[] = [],
 ): VideoSlotState {
+  const cues = morphCues(allCues);
   const bands = textRegions.filter((r) => tSec >= r.startSec && tSec < r.endSec);
   const base = layoutSlots("full-bleed", face, bands).video;
   const cue = activeCueAt(cues, tSec);
@@ -534,7 +551,8 @@ function backdropTarget(layout: Layout): number {
 }
 
 /** Opacity of the solid stage backdrop (theme.bg) behind the demoted video slot. */
-export function backdropOpacityAt(cues: readonly SceneCue[], tSec: number): number {
+export function backdropOpacityAt(allCues: readonly SceneCue[], tSec: number): number {
+  const cues = morphCues(allCues);
   const cue = activeCueAt(cues, tSec);
   if (!cue) return 0;
   const target = backdropTarget(cue.layout);

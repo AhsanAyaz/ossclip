@@ -136,7 +136,9 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
     const transform = cue.elements?.[elementId] ?? {};
-    const text = cue.props[elementId];
+    // Optional-chained for the type only: an element selection implies a
+    // graphic cue — plain cues render no `data-edit-id` leaves to select.
+    const text = cue.props?.[elementId];
     return (
       <div>
         <div style={section}>
@@ -186,36 +188,48 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
   }
 
   if (selection && cue) {
+    const isPlain = cue.kind === "plain";
     return (
       <div>
         <div style={section}>
-          <span style={label}>Scene</span>
+          <span style={label}>{isPlain ? "Take" : "Scene"}</span>
           <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
             {selection.sceneId}
           </div>
+          {isPlain ? (
+            <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+              A continuous stretch of the talking head — no graphic. Frame it
+              below; its window follows the cut.
+            </div>
+          ) : null}
         </div>
         <div style={section}>
-          <div style={row}>
-            <span style={label}>Component</span>
-            {/* Swapping the component re-resolves props against the NEW
-                component's defaults (see `applyOverrides`) — the producer's
-                old props were shaped for a different schema and don't carry
-                over, so the swap renders something coherent instead of an
-                invalid scene. */}
-            <select
-              style={numberInput}
-              value={cue.component}
-              onChange={(e) =>
-                edits.patchComponent(selection.sceneId, e.target.value as SceneCue["component"])
-              }
-            >
-              {SceneComponentIdSchema.options.map((id) => (
-                <option key={id} value={id}>
-                  {id}
-                </option>
-              ))}
-            </select>
-          </div>
+          {!isPlain && cue.component ? (
+            <div style={row}>
+              <span style={label}>Component</span>
+              {/* Swapping the component re-resolves props against the NEW
+                  component's defaults (see `applyOverrides`) — the producer's
+                  old props were shaped for a different schema and don't carry
+                  over, so the swap renders something coherent instead of an
+                  invalid scene. */}
+              <select
+                style={numberInput}
+                value={cue.component}
+                onChange={(e) =>
+                  edits.patchComponent(
+                    selection.sceneId,
+                    e.target.value as NonNullable<SceneCue["component"]>,
+                  )
+                }
+              >
+                {SceneComponentIdSchema.options.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <div style={row}>
             <span style={label}>Layout</span>
             <select
@@ -276,7 +290,11 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
             </span>
           </div>
           <div style={{ fontSize: 12, color: cue.pinned ? "#FFE14D" : "#9A9AA3" }}>
-            {cue.pinned ? "Pinned to these times" : "Tracking transcript"}
+            {isPlain
+              ? "Derived from the cut — not movable"
+              : cue.pinned
+                ? "Pinned to these times"
+                : "Tracking transcript"}
           </div>
           {!cue.pinned && anchorText ? (
             <div style={{ fontSize: 12, color: "#9A9AA3", fontStyle: "italic" }}>

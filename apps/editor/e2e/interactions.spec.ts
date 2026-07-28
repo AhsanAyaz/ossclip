@@ -153,7 +153,10 @@ test("decimal scale commits, and the timing section states the window (R9-5+6)",
   await expect(page.getByTestId("dirty")).toHaveCount(0);
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
-  expect(doc.scenes[renderProps.sceneCues[0].id].video.scale).toBe(0.62);
+  // `baseSceneCues`, not `sceneCues`: the rendered list now interleaves
+  // derived `take-*` cues between the graphics (Task A), so positional
+  // indexing into it names a different cue than the block that was clicked.
+  expect(doc.scenes[renderProps.baseSceneCues[0].id].video.scale).toBe(0.62);
 });
 
 test("the timeline scrubs on press-and-drag, and a click inside a block seeks to that point (Tasks 3+4)", async ({
@@ -163,9 +166,11 @@ test("the timeline scrubs on press-and-drag, and a click inside a block seeks to
   await settle(page);
   const track = (await page.locator("[data-testid='playhead']").locator("..").boundingBox())!;
 
-  // Task 4: click INSIDE the second block, off-centre — the playhead must
-  // land at the CLICKED fraction, not snap to the block's start.
-  const block = (await page.locator('[data-testid^="timeline-block-"]').nth(1).boundingBox())!;
+  // Task 4: click INSIDE a graphic block, off-centre — the playhead must
+  // land at the CLICKED fraction, not snap to the block's start. By id, not
+  // nth(): derived `take-*` blocks now fill the gaps (Task A), so ordinal
+  // positions name different blocks than they used to.
+  const block = (await page.getByTestId("timeline-block-scene-2").boundingBox())!;
   const clickX = block.x + block.width * 0.7;
   await page.mouse.click(clickX, block.y + block.height / 2);
   const clickedFrac = (clickX - track.x) / track.width;
@@ -174,9 +179,12 @@ test("the timeline scrubs on press-and-drag, and a click inside a block seeks to
     .toBeGreaterThan(clickedFrac - 0.02);
   expect(await playheadFrac(page)).toBeLessThan(clickedFrac + 0.02);
 
-  // Task 3: press on the BARE track (the 16%-38% stretch is a real gap in
-  // this fixture — pressing inside a block would start a block move, Task 6)
-  // and drag: the playhead follows the pointer continuously, both ways.
+  // Task 3: press-and-drag seeking. The 16%-38% stretch used to be a bare
+  // gap; it is now the `take-0` PLAIN block (Task A) — which scrubs exactly
+  // like the bare track did, deliberately: a plain block's window is derived,
+  // so it has no move-drag to start, and the takes cover most of the track
+  // now — losing press-and-drag seeking over them would regress this very
+  // gesture. The playhead follows the pointer continuously, both ways.
   const y = track.y + track.height / 2;
   await page.mouse.move(track.x + track.width * 0.25, y);
   await page.mouse.down();
@@ -216,10 +224,11 @@ test("dragging a block body moves the scene in time, keeping its duration; a cli
   await page.goto("/");
   await settle(page);
 
-  // The fixture's second scene (12.10–16.71s) has ~7s of clear room to its
-  // left and almost none to its right — drag LEFT so the clamp cannot mask a
-  // broken move.
-  const blockSel = page.locator('[data-testid^="timeline-block-"]').nth(1);
+  // The fixture's second graphic scene (12.10–16.71s) has ~7s of clear room
+  // to its left and almost none to its right — drag LEFT so the clamp cannot
+  // mask a broken move. By id: derived `take-*` blocks fill the ordinal
+  // positions now (Task A), and they deliberately do not move.
+  const blockSel = page.getByTestId("timeline-block-scene-2");
   const before = (await blockSel.boundingBox())!;
   await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
   await page.mouse.down();
@@ -242,7 +251,7 @@ test("dragging a block body moves the scene in time, keeping its duration; a cli
   await expect(page.getByTestId("dirty")).toHaveCount(0);
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
-  const cue = renderProps.sceneCues[1];
+  const cue = renderProps.baseSceneCues.find((c: { id: string }) => c.id === "scene-2");
   const timing = doc.scenes[cue.id].timing;
   expect(timing.startSec).toBeLessThan(cue.startSec);
   expect(timing.endSec - timing.startSec).toBeCloseTo(cue.endSec - cue.startSec, 3);
@@ -252,7 +261,7 @@ test("dragging a block body moves the scene in time, keeping its duration; a cli
   await page.locator('[data-testid^="timeline-block-"]').first().click();
   await page.keyboard.press("Meta+s");
   const doc2 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
-  expect(doc2.scenes[renderProps.sceneCues[0].id]?.timing).toBeUndefined();
+  expect(doc2.scenes[renderProps.baseSceneCues[0].id]?.timing).toBeUndefined();
 });
 
 test("double-click retypes a caption word in place; the edit lands in overrides.json (Task 7a)", async ({
@@ -285,4 +294,27 @@ test("double-click retypes a caption word in place; the edit lands in overrides.
   await expect(page.getByTestId("dirty")).toHaveCount(0);
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   expect(doc.captions[wordIndex!]).toEqual({ text: "RETYPED", was });
+});
+
+test("plain take blocks fill the timeline, select, and hold a framing override (Task A)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  // The fixture's 5.09–12.10s gap is now the `take-0` block, derived live by
+  // the same fillPlainCues the pipeline runs.
+  const take = page.getByTestId("timeline-block-take-0");
+  await expect(take).toBeVisible();
+  await take.click();
+
+  // Selecting it opens the Take inspector: a timing readout (derived, not
+  // movable) and the framing fields — the whole point of the fill is that
+  // framing works HERE, where no graphic scene exists.
+  await expect(page.getByTestId("timing-range")).toContainText("5.09s");
+  await expect(page.getByTestId("field-scale")).toBeVisible();
+  await page.getByTestId("field-scale").fill("1.3");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc.scenes["take-0"].video.scale).toBe(1.3);
 });

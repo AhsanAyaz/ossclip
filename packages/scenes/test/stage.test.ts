@@ -472,3 +472,33 @@ describe("crop avoids slicing burned-in text (FINDINGS §36)", () => {
     expect(videoSlotAt(cues, 5, FACE, regions).objectPosY).toBeCloseTo(plain, 6);
   });
 });
+
+describe("plain cues are invisible to the stage morph (PLAN 2026-07-30 Task A)", () => {
+  // A full-bleed plain cue butts FLUSH against its graphic neighbour (the
+  // fill leaves no assembler gap), so without the morph filter the ±1e-3
+  // neighbour probes would see it where they used to see a gap — and the
+  // slot would finish its end-of-scene morph to base, snap back to the
+  // graphic layout, and morph a second time. This is the no-regression pin
+  // for the whole task: unedited plain must be indistinguishable from a gap.
+  const graphic = cue("video-top", 2, 5);
+  const plain: SceneCue = { id: "take-0", kind: "plain", layout: "full-bleed", startSec: 5, endSec: 12 };
+
+  it("videoSlotAt with a flush plain neighbour matches today's cue↔gap everywhere", () => {
+    for (let t = 0; t <= 12; t += 0.05) {
+      expect(videoSlotAt([graphic, plain], t), `t=${t}`).toEqual(videoSlotAt([graphic], t));
+    }
+  });
+
+  it("backdropOpacityAt likewise", () => {
+    for (let t = 0; t <= 12; t += 0.05) {
+      expect(backdropOpacityAt([graphic, plain], t), `t=${t}`).toBe(backdropOpacityAt([graphic], t));
+    }
+  });
+
+  it("a plain cue whose layout was overridden away from full-bleed DOES stage", () => {
+    const asPip: SceneCue = { ...plain, layout: "pip-bubble" };
+    const graphicPip = cue("pip-bubble", 5, 12);
+    expect(videoSlotAt([asPip], 8)).toEqual(videoSlotAt([graphicPip], 8));
+    expect(backdropOpacityAt([asPip], 8)).toBe(backdropOpacityAt([graphicPip], 8));
+  });
+});

@@ -234,6 +234,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         }}
       >
         {cues.map((cue) => {
+          const isPlain = cue.kind === "plain";
           const isDragging = dragPreview?.sceneId === cue.id;
           const startSec = isDragging ? dragPreview.startSec : cue.startSec;
           const endSec = isDragging ? dragPreview.endSec : cue.endSec;
@@ -247,30 +248,49 @@ export const Timeline: React.FC<TimelineProps> = ({
               onMouseDown={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                // Select right away for feedback; whether this press seeks
-                // (click) or moves the block (drag) is decided by travel —
-                // see the window mousemove/mouseup pair above.
+                // Select right away for feedback. A GRAPHIC block then waits
+                // on travel to decide click-seek vs move-drag (see the window
+                // mousemove/mouseup pair above). A PLAIN block's window is
+                // derived, not stored — it can't move, so its press seeks
+                // immediately and drags as a scrub: the takes now cover most
+                // of the track, and losing press-and-drag seeking over them
+                // would regress the very gesture the track was given.
                 onSelect({ sceneId: cue.id, elementId: null });
+                if (isPlain) {
+                  seekTrack(e.clientX);
+                  scrubbingRef.current = true;
+                  return;
+                }
                 blockPressRef.current = { sceneId: cue.id, startX: e.clientX, moved: false };
               }}
               style={{
                 ...block,
                 left: `${left}%`,
                 width: `${width}%`,
-                border: isSelected ? "2px solid #5b8cff" : "1px solid #2A2A33",
-                background: isSelected ? "#1c2333" : "#1A1A21",
+                border: isSelected
+                  ? "2px solid #5b8cff"
+                  : isPlain
+                    ? "1px solid #22222a"
+                    : "1px solid #2A2A33",
+                background: isSelected ? "#1c2333" : isPlain ? "#131318" : "#1A1A21",
               }}
             >
-              <span style={blockLabel}>{cue.id}</span>
-              {cue.pinned ? <span style={pinBadge}>PIN</span> : null}
-              <div
-                onMouseDown={beginEdgeDrag(cue, "start")}
-                style={{ ...edgeHandle, left: 0, cursor: "ew-resize" }}
-              />
-              <div
-                onMouseDown={beginEdgeDrag(cue, "end")}
-                style={{ ...edgeHandle, right: 0, cursor: "ew-resize" }}
-              />
+              <span style={isPlain ? { ...blockLabel, color: "#55555f" } : blockLabel}>
+                {cue.id}
+              </span>
+              {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
+              {!isPlain ? (
+                <>
+                  <div
+                    onMouseDown={beginEdgeDrag(cue, "start")}
+                    style={{ ...edgeHandle, left: 0, cursor: "ew-resize" }}
+                  />
+                  <div
+                    onMouseDown={beginEdgeDrag(cue, "end")}
+                    style={{ ...edgeHandle, right: 0, cursor: "ew-resize" }}
+                  />
+                </>
+              ) : null}
             </div>
           );
         })}

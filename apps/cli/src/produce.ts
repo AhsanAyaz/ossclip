@@ -32,6 +32,7 @@ import {
   detectSilences,
   emptyOverrideDoc,
   extractAudio,
+  fillPlainCues,
   formatCutReport,
   formatUsageLine,
   formatUsageReport,
@@ -588,14 +589,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     }
     overrideDoc = parsed.data;
   }
-  const { cues: editedCues, orphans } = applyOverrides(routed.cues, overrideDoc);
-  const editedCount = Object.keys(overrideDoc.scenes).length;
-  if (editedCount > 0) {
-    console.log(`▸ applied your edits to ${editedCount - orphans.length} scene(s)`);
-  }
-  for (const id of orphans) {
-    console.log(`  ⚠ edit for ${id} dropped — the plan no longer has that scene`);
-  }
+  const { cues: editedCues } = applyOverrides(routed.cues, overrideDoc);
   const theme = resolveTheme(defaultTheme, overrideDoc);
 
   // A pin freezes a scene's ABSOLUTE time against whatever its neighbours'
@@ -610,11 +604,34 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     console.log(`  ⚠ pinned timing for ${id} overlapped a re-planned neighbour — clamped back in bounds`);
   }
 
-  const sceneCues = reclamped;
-  if (sceneCues.length > 0) {
+  // Fill the timeline (PLAN 2026-07-30 Task A): every gap between graphic
+  // cues becomes a plain take, split at the cuts so a block never straddles
+  // one. Then a SECOND override pass, because the user's framing edits on
+  // `take-*` ids target cues that only exist after the fill. That pass is a
+  // no-op on the graphic cues it already touched — same component ⇒ no swap
+  // ⇒ the prop merge is idempotent — so do not "simplify" it away. Orphans
+  // are reported from THIS pass: only now does the id universe include the
+  // takes, so a `take-2-1` edit whose take merged away reports here instead
+  // of every take id reporting on the first pass.
+  const filled = fillPlainCues(reclamped, {
+    outputDurationSec: map.outputDuration,
+    clipStarts: map.spans.map((s) => s.outIn),
+  });
+  const { cues: sceneCues, orphans } = applyOverrides(filled, overrideDoc);
+  const editedCount = Object.keys(overrideDoc.scenes).length;
+  if (editedCount > 0) {
+    console.log(`▸ applied your edits to ${editedCount - orphans.length} scene(s)`);
+  }
+  for (const id of orphans) {
+    console.log(`  ⚠ edit for ${id} dropped — the plan no longer has that scene`);
+  }
+
+  const graphicCues = sceneCues.filter((c) => c.kind !== "plain");
+  if (graphicCues.length > 0) {
     console.log(
-      `▸ ${sceneCues.length} scene(s) on stage: ` +
-        sceneCues.map((c) => `${c.component}@${c.startSec.toFixed(1)}s`).join(", "),
+      `▸ ${graphicCues.length} scene(s) on stage, ` +
+        `${sceneCues.length - graphicCues.length} plain take(s) filling the gaps: ` +
+        graphicCues.map((c) => `${c.component ?? c.id}@${c.startSec.toFixed(1)}s`).join(", "),
     );
   }
 
@@ -631,8 +648,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // ChatMock fall back to rendering the exchange the producer actually planned
   // (`chatBubbles` collapses to a single bubble only while a keyword is set).
   const ctaRejections: Array<{ sceneId: string; keyword: string; reason: string }> = [];
-  for (const holder of [...scenes, ...sceneCues]) {
-    const kw = holder.props.keyword;
+  for (const holder of [...scenes, ...graphicCues]) {
+    const kw = holder.props?.keyword;
     if (typeof kw !== "string" || kw.length === 0) continue;
     const reason = rejectCtaKeyword(kw);
     if (!reason) continue;
@@ -694,7 +711,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   console.log("");
 
   const baseCaptionLines = buildCaptionLines(transcript, map, {
-    breakpoints: sceneCues.flatMap((c) => [c.startSec, c.endSec]),
+    // GRAPHIC cues only: a plain take is presentationally a gap, and letting
+    // the fill's derived boundaries re-split caption lines would change
+    // caption output for zero visual reason (PLAN Task A4.4).
+    breakpoints: graphicCues.flatMap((c) => [c.startSec, c.endSec]),
   });
   // The user's retyped caption words (editor, PLAN 2026-07-29 Task 7 scope
   // (a)). Guarded per word: a stale edit — the pipeline re-derived a
@@ -748,7 +768,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     // a tight head-shot is what a bubble is FOR, so judging it against the
     // same head-fits rule would report a defect for working as designed.
     const issues = assessCueFraming(
-      sceneCues.flatMap((c) => {
+      graphicCues.flatMap((c) => {
         const v = layoutSlots(c.layout).video;
         if (v.opacity <= 0 || v.rect.w * v.rect.h < PRIMARY_VIDEO_SLOT_AREA) return [];
         return [{
@@ -808,10 +828,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // that assembleScenes dropped, and the caption track knows exactly when the
   // ask is on screen. Quoting marks the word you type in the comments — every
   // other time the speaker merely says it, it must render plainly.
-  const ctaCue = [...sceneCues]
+  const ctaCue = [...graphicCues]
     .reverse()
-    .find((c) => typeof c.props.keyword === "string" && (c.props.keyword as string).length > 0);
-  const ctaKeyword = ctaCue ? (ctaCue.props.keyword as string) : undefined;
+    .find((c) => typeof c.props?.keyword === "string" && (c.props.keyword as string).length > 0);
+  const ctaKeyword = ctaCue ? (ctaCue.props!.keyword as string) : undefined;
   const ctaWindow = ctaCue
     ? { startSec: ctaCue.startSec, endSec: ctaCue.endSec }
     : undefined;

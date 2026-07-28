@@ -47,11 +47,30 @@ export const SceneSchema = z.object({
 export type Scene = z.infer<typeof SceneSchema>;
 
 /** A resolved, output-timed scene — what the composition actually renders. */
-export const SceneCueSchema = z.object({
+export const SceneCueSchema = z
+  .object({
   id: z.string(),
+  /**
+   * "graphic" cues come from the producer; "plain" cues are derived filler
+   * (`fillPlainCues`) — one per continuous take, so every second of the
+   * timeline is a selectable block whose framing can be edited. OPTIONAL
+   * rather than defaulted, deliberately: `render-props.json` reaches the
+   * editor as plain JSON with no schema parse, so cues written before this
+   * field existed carry no `kind` at runtime — absence means "graphic", and
+   * a defaulted (required-in-type) field would let code read `.kind` as
+   * always-present when it isn't. Always test `kind === "plain"`, never
+   * `=== "graphic"`.
+   */
+  kind: z.enum(["graphic", "plain"]).optional(),
   layout: LayoutSchema,
-  component: SceneComponentIdSchema,
-  props: z.record(z.string(), z.unknown()),
+  /**
+   * Required for graphic cues (the superRefine below enforces it), absent on
+   * plain ones. The optionality is the consumer checklist: TS strict forces
+   * every `cue.component`/`cue.props` reader to state what it does with a
+   * plain cue.
+   */
+  component: SceneComponentIdSchema.optional(),
+  props: z.record(z.string(), z.unknown()).optional(),
   startSec: z.number().nonnegative(),
   endSec: z.number().nonnegative(),
   /**
@@ -84,11 +103,21 @@ export const SceneCueSchema = z.object({
       scale: z.number().positive().max(4).optional(),
       dy: z.number().optional(),
       dx: z.number().optional(),
+      /** `false` switches the automatic idle-zoom layer off for this scene. */
+      autoZoom: z.boolean().optional(),
     })
     .optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
-});
+  })
+  .superRefine((cue, ctx) => {
+    if (cue.kind !== "plain" && (cue.component === undefined || cue.props === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a graphic cue requires component and props; only kind: \"plain\" may omit them",
+      });
+    }
+  });
 export type SceneCue = z.infer<typeof SceneCueSchema>;
 
 /**

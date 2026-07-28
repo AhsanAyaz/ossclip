@@ -64,6 +64,8 @@ export const SceneOverrideSchema = z.object({
       scale: z.number().positive().max(4).optional(),
       dy: z.number().optional(),
       dx: z.number().optional(),
+      /** `false` switches the automatic idle-zoom layer off for this scene. */
+      autoZoom: z.boolean().optional(),
     })
     .optional(),
 });
@@ -151,7 +153,10 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     if (!o) return cue;
     const swapped = o.component !== undefined && o.component !== cue.component;
     const component = o.component ?? cue.component;
-    const props = swapped ? resolveSwappedProps(component, o.props) : { ...cue.props, ...o.props };
+    const props =
+      o.component !== undefined && swapped
+        ? resolveSwappedProps(o.component, o.props)
+        : { ...cue.props, ...o.props };
     return {
       ...cue,
       component,

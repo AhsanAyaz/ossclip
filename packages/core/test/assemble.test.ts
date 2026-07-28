@@ -90,7 +90,7 @@ describe("assembleScenes", () => {
     const bad = scene("b", 5, 8, { props: { title: "" } });
     const { cues, dropped } = assembleScenes([good, bad], transcript, identity);
     expect(cues).toHaveLength(1);
-    expect(cues[0]!.props.title).toBe("OVERRIDDEN");
+    expect(cues[0]!.props!.title).toBe("OVERRIDDEN");
     expect(dropped[0]).toMatchObject({ id: "b" });
   });
 });

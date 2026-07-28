@@ -1056,5 +1056,75 @@
       "endSec": 21.28305333333333,
       "confidence": 1
     }
+  ],
+  "baseSceneCues": [
+    {
+      "id": "scene-0",
+      "layout": "video-top",
+      "component": "StatCard",
+      "props": {
+        "label": "CLAUDE MAX",
+        "value": "6 MONTHS",
+        "inverted": false
+      },
+      "startSec": 0.09,
+      "endSec": 5.09
+    },
+    {
+      "id": "scene-2",
+      "layout": "blurred-behind",
+      "component": "StrikethroughReveal",
+      "props": {
+        "lines": [
+          {
+            "text": "PROMPT",
+            "struck": true
+          },
+          {
+            "text": "RUN AGENTIC LOOPS",
+            "struck": false
+          }
+        ]
+      },
+      "startSec": 12.1,
+      "endSec": 16.71
+    },
+    {
+      "id": "scene-3",
+      "layout": "video-top",
+      "component": "ScreenshotFrame",
+      "props": {
+        "label": "CODE WITH AHSAN — 5,000+ DEVS",
+        "kenBurns": true
+      },
+      "startSec": 16.76,
+      "endSec": 21.76,
+      "graphicRect": {
+        "x": 0.04,
+        "y": 0.5,
+        "w": 0.8,
+        "h": 0.20833333333333337
+      }
+    },
+    {
+      "id": "scene-5",
+      "layout": "blurred-behind",
+      "component": "ChatMock",
+      "props": {
+        "messages": [
+          {
+            "from": "user",
+            "text": "AGENTS"
+          },
+          {
+            "from": "agent",
+            "text": "Link sent in DM"
+          }
+        ],
+        "keyword": "AGENTS"
+      },
+      "startSec": 27.61,
+      "endSec": 31.650000000000002
+    }
   ]
 }

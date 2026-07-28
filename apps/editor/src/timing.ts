@@ -21,6 +21,16 @@ export function timeAtX(
 }
 
 /**
+ * Timing clamps only against GRAPHIC neighbours. The plain takes that fill
+ * the gaps (Task A) are derived filler: they butt flush against every
+ * graphic block and RE-DERIVE around wherever it lands, so clamping against
+ * them would pin every scene exactly where it already is — no drag could
+ * ever move.
+ */
+const stored = (cues: readonly SceneCue[]): SceneCue[] =>
+  cues.filter((c) => c.kind !== "plain");
+
+/**
  * Shift a cue in time WITHOUT changing its duration (PLAN Task 6) — the
  * body-drag gesture. Distinct from `clampTiming`, which clamps each edge
  * independently and therefore changes duration: moving must slide the whole
@@ -28,11 +38,12 @@ export function timeAtX(
  * never squash it.
  */
 export function moveTiming(
-  cues: readonly SceneCue[],
+  allCues: readonly SceneCue[],
   sceneId: string,
   deltaSec: number,
   duration: number,
 ): { startSec: number; endSec: number } | null {
+  const cues = stored(allCues);
   const i = cues.findIndex((c) => c.id === sceneId);
   const cue = cues[i];
   if (!cue) return null;
@@ -46,12 +57,13 @@ export function moveTiming(
 }
 
 export function clampTiming(
-  cues: readonly SceneCue[],
+  allCues: readonly SceneCue[],
   sceneId: string,
   startSec: number,
   endSec: number,
   duration: number,
 ): { startSec: number; endSec: number } {
+  const cues = stored(allCues);
   const i = cues.findIndex((c) => c.id === sceneId);
   const prev = i > 0 ? cues[i - 1] : undefined;
   const next = i >= 0 && i < cues.length - 1 ? cues[i + 1] : undefined;

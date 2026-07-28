@@ -402,7 +402,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       // a plain `{ [elementId]: text }` there would write a prop key
       // nothing reads (FINDINGS: silently-lost retype).
       const patch = isDynamic
-        ? cue
+        ? cue?.props
           ? buildArrayPatch(elementId, cue.props, editingText)
           : null
         : { [elementId]: editingText };

@@ -69,21 +69,25 @@ export const VideoStage: React.FC<{
   const hPx = slot.rect.h * height;
   const radiusPx = (slot.cornerRadius * Math.min(wPx, hPx)) / 2;
 
-  // §15: the idle zoom fades with the slot (graphic-only suppresses it) and
-  // is damped on the bubble — a zooming bubble reads as a wobble. Both fall
-  // out of the already-lerped slot state, so the damping stays continuous
-  // through layout transitions. It composes with EdlVideo's cut-driven
-  // punch-in multiplicatively (nested transforms).
-  const zoomRaw = zoomPlan && zoomPlan.length > 0 ? zoomScaleAt(zoomPlan, t) : 1;
-  const zoomDamp = Math.max(0, slot.opacity * (1 - 0.6 * slot.cornerRadius));
-  const zoom = 1 + (zoomRaw - 1) * zoomDamp;
-
   // The user's per-scene crop correction (`overrides.json` -> cue.video).
   // Composed with the idle zoom rather than replacing it, so a scene that was
   // nudged still breathes; NOT lerped across the layout transition, because a
   // correction belongs to one scene and interpolating it into its neighbour
   // would drag the neighbour's crop with it.
   const userVideo = activeCueAt(cues, t)?.video;
+
+  // §15: the idle zoom fades with the slot (graphic-only suppresses it) and
+  // is damped on the bubble — a zooming bubble reads as a wobble. Both fall
+  // out of the already-lerped slot state, so the damping stays continuous
+  // through layout transitions. It composes with EdlVideo's cut-driven
+  // punch-in multiplicatively (nested transforms). Per scene the AUTOMATIC
+  // layer is switchable (`autoZoom: false` — PLAN 2026-07-30 Task A3):
+  // "adjust the zoomed part" = switch it off and dial your own scale, or
+  // leave it on and correct multiplicatively on top.
+  const zoomRaw = zoomPlan && zoomPlan.length > 0 ? zoomScaleAt(zoomPlan, t) : 1;
+  const zoomDamp = Math.max(0, slot.opacity * (1 - 0.6 * slot.cornerRadius));
+  const autoZoom = userVideo?.autoZoom !== false;
+  const zoom = autoZoom ? 1 + (zoomRaw - 1) * zoomDamp : 1;
   const userScale = userVideo?.scale ?? 1;
   const userDx = userVideo?.dx ?? 0;
   const userDy = userVideo?.dy ?? 0;

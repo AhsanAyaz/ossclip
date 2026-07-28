@@ -6,6 +6,7 @@ import { ProductionComposition, type ProductionCompProps } from "@ossclip/render
 import {
   applyCaptionEdits,
   applyOverrides,
+  fillPlainCues,
   resolveTheme,
   defaultTheme,
   type OverrideDoc,
@@ -118,9 +119,26 @@ export const App: React.FC = () => {
     // own override-applied output), and merging the CURRENT override doc
     // onto an already-merged base can only ever add, never take back
     // something the user just reset/un-pinned/undid.
-    const baseCues = renderProps.baseSceneCues ?? renderProps.sceneCues ?? [];
+    // The base MUST be graphic-only (`baseSceneCues` is written that way):
+    // the fill below derives the plain takes fresh each render, and feeding
+    // an already-filled list back in would treat the old takes as occupied
+    // windows. Old workdirs' `sceneCues` fallback predates the fill, so it
+    // is graphic-only too.
+    const baseCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
+      (c) => c.kind !== "plain",
+    );
     const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
-    const { cues } = applyOverrides(baseCues, edits.doc);
+    const { cues: graphicCues } = applyOverrides(baseCues, edits.doc);
+    // Same sequence as `produce.ts`: fill the gaps with plain takes, then a
+    // SECOND override pass so framing edits on `take-*` ids land on the cues
+    // the fill just created. The second pass is a no-op on graphic cues
+    // (same component ⇒ no swap ⇒ the prop merge is idempotent) — do not
+    // "simplify" it away.
+    const filled = fillPlainCues(graphicCues, {
+      outputDurationSec: renderProps.outputDurationSec,
+      clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
+    });
+    const { cues } = applyOverrides(filled, edits.doc);
     const baseCaptions = renderProps.baseCaptionLines ?? renderProps.captionLines ?? [];
     return {
       ...renderProps,
