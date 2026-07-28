@@ -31,7 +31,13 @@ import {
   videoSlotAt,
 } from "../src/stage";
 import { captionAnchorAvoiding } from "../src/source-fit";
-import { LayoutSchema, SCENE_REGISTRY, SceneComponentIdSchema, ZOOM_MAX_SCALE } from "@ossclip/core";
+import {
+  LANDSCAPE_LAYOUTS,
+  LayoutSchema,
+  SCENE_REGISTRY,
+  SceneComponentIdSchema,
+  ZOOM_MAX_SCALE,
+} from "@ossclip/core";
 
 const cue = (layout: SceneCue["layout"], startSec: number, endSec: number): SceneCue => ({
   id: `${layout}-${startSec}`,
@@ -57,30 +63,78 @@ describe("layoutSlots", () => {
     }
   });
 
-  it("every graphic slot sits inside the platform safe area", () => {
-    for (const layout of LayoutSchema.options) {
-      const g = layoutSlots(layout).graphic;
-      if (!g) continue;
-      expect(g.x, layout).toBeGreaterThanOrEqual(SAFE_RECT.x - 1e-9);
-      expect(g.y, layout).toBeGreaterThanOrEqual(SAFE_RECT.y - 1e-9);
-      expect(g.x + g.w, layout).toBeLessThanOrEqual(SAFE_RECT.x + SAFE_RECT.w + 1e-9);
-      expect(g.y + g.h, layout).toBeLessThanOrEqual(SAFE_RECT.y + SAFE_RECT.h + 1e-9);
+  // Frame-aware loops (R15 §54): the invariants hold per FRAME, not per
+  // layout in the abstract. Portrait checks every layout (all are reachable
+  // from the editor's layout switch in a 9:16 project); landscape checks the
+  // layouts landscape actually stages (LANDSCAPE_LAYOUTS — produce remaps
+  // everything else away), against the landscape safe margins.
+  const FRAME_CASES = [
+    { name: "portrait", frame: PORTRAIT_FRAME, layouts: LayoutSchema.options },
+    { name: "landscape", frame: LANDSCAPE_FRAME, layouts: LANDSCAPE_LAYOUTS },
+  ] as const;
+
+  it("every graphic slot sits inside its frame's safe area", () => {
+    for (const { name, frame, layouts } of FRAME_CASES) {
+      const safe = safeRectFor(frame);
+      for (const layout of layouts) {
+        const g = layoutSlots(layout, DEFAULT_FACE, [], frame).graphic;
+        if (!g) continue;
+        const tag = `${layout} (${name})`;
+        expect(g.x, tag).toBeGreaterThanOrEqual(safe.x - 1e-9);
+        expect(g.y, tag).toBeGreaterThanOrEqual(safe.y - 1e-9);
+        expect(g.x + g.w, tag).toBeLessThanOrEqual(safe.x + safe.w + 1e-9);
+        expect(g.y + g.h, tag).toBeLessThanOrEqual(safe.y + safe.h + 1e-9);
+      }
     }
   });
 
-  it("every layout shows captions, inside the safe area, clear of the graphic (FINDINGS §2/§6)", () => {
-    for (const layout of LayoutSchema.options) {
-      const slots = layoutSlots(layout);
-      const a = slots.captionAnchor;
-      const bandTop = a - CAPTION_HALF_BAND;
-      const bandBottom = a + CAPTION_HALF_BAND;
-      expect(bandTop, layout).toBeGreaterThanOrEqual(SAFE_AREA.top);
-      expect(bandBottom, layout).toBeLessThanOrEqual(1 - SAFE_AREA.bottom + 1e-9);
-      if (slots.graphic) {
-        const overlap =
-          Math.min(bandBottom, slots.graphic.y + slots.graphic.h) - Math.max(bandTop, slots.graphic.y);
-        expect(overlap, `captions overlap graphic in ${layout}`).toBeLessThanOrEqual(0);
+  it("every layout shows captions, inside its frame's safe area, clear of the graphic (§2/§6)", () => {
+    for (const { name, frame, layouts } of FRAME_CASES) {
+      const safe = safeAreaFor(frame);
+      for (const layout of layouts) {
+        const slots = layoutSlots(layout, DEFAULT_FACE, [], frame);
+        const a = slots.captionAnchor;
+        const bandTop = a - CAPTION_HALF_BAND;
+        const bandBottom = a + CAPTION_HALF_BAND;
+        const tag = `${layout} (${name})`;
+        expect(bandTop, tag).toBeGreaterThanOrEqual(safe.top);
+        expect(bandBottom, tag).toBeLessThanOrEqual(1 - safe.bottom + 1e-9);
+        if (slots.graphic) {
+          const overlap =
+            Math.min(bandBottom, slots.graphic.y + slots.graphic.h) -
+            Math.max(bandTop, slots.graphic.y);
+          expect(overlap, `captions overlap graphic in ${tag}`).toBeLessThanOrEqual(0);
+        }
       }
+    }
+  });
+
+  it("the split layouts split along the frame's LONG edge (§54)", () => {
+    // Landscape: side-by-side halves, mirrored — the side is the point.
+    const left = layoutSlots("split-left", DEFAULT_FACE, [], LANDSCAPE_FRAME);
+    const right = layoutSlots("split-right", DEFAULT_FACE, [], LANDSCAPE_FRAME);
+    expect(left.video.rect).toEqual({ x: 0, y: 0, w: 0.5, h: 1 });
+    expect(right.video.rect).toEqual({ x: 0.5, y: 0, w: 0.5, h: 1 });
+    expect(left.graphic!.x).toBeGreaterThan(0.5);
+    expect(right.graphic!.x + right.graphic!.w).toBeLessThan(0.5 + 1e-9);
+    // Portrait: the same idea stacks — a literal half-width slot in 9:16
+    // would be a sliver, so both sides share one stacked geometry.
+    for (const l of ["split-left", "split-right"] as const) {
+      const p = layoutSlots(l, DEFAULT_FACE, [], PORTRAIT_FRAME);
+      expect(p.video.rect, l).toEqual({ x: 0, y: 0, w: 1, h: 0.5 });
+      expect(p.graphic!.y, l).toBeGreaterThan(0.5);
+    }
+  });
+
+  it("lower-third keeps the picture whole and the card in the bottom band (§54)", () => {
+    for (const frame of [LANDSCAPE_FRAME, PORTRAIT_FRAME]) {
+      const slots = layoutSlots("lower-third", DEFAULT_FACE, [], frame);
+      expect(slots.video.rect).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+      expect(slots.video.blurPx).toBe(0);
+      // The band sits in the frame's lower half and above the safe floor.
+      expect(slots.graphic!.y).toBeGreaterThan(0.5);
+      // Captions clear the band from above.
+      expect(slots.captionAnchor + CAPTION_HALF_BAND).toBeLessThanOrEqual(slots.graphic!.y);
     }
   });
 

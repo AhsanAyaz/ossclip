@@ -152,7 +152,8 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   ctaWindow,
   sourceTextRegions = [],
 }) => {
-  const { fps } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
+  const frame = { width, height };
   // Each line's first-word index in the whole stream, so a word's id is
   // stable regardless of which line the layout put it on.
   const offsets: number[] = [];
@@ -171,14 +172,20 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
         // silently sat on top of the captions on a clean source, the common
         // case. With no regions and no moved rect this resolves to exactly
         // the layout anchor the old branch returned.
+        // A hand-set per-scene anchor (R15 §56) wins over the automatic
+        // chain outright — like every other hand edit, the user's placement
+        // is a decision, not an input to the avoidance search.
         const anchor =
-          cues.length > 0 || sourceTextRegions.length > 0
-            ? captionAnchorAvoiding(
-                active?.layout ?? "full-bleed",
-                regionsDuring(sourceTextRegions, line.start, line.end),
-                active?.graphicRect,
-              )
-            : verticalAnchor;
+          active?.captionY !== undefined
+            ? active.captionY
+            : cues.length > 0 || sourceTextRegions.length > 0
+              ? captionAnchorAvoiding(
+                  active?.layout ?? "full-bleed",
+                  regionsDuring(sourceTextRegions, line.start, line.end),
+                  active?.graphicRect,
+                  frame,
+                )
+              : verticalAnchor;
         const from = Math.round(line.start * fps);
         const durationInFrames = Math.max(1, Math.round((line.end - line.start) * fps));
         return (

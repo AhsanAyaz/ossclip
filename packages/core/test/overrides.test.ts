@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   OverrideDocSchema,
   applyOverrides,
+  captionEditWas,
   clearGraphicRect,
   dropHiddenCues,
   clearElementTransform,
@@ -394,6 +395,41 @@ describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
     const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "video-top" } } });
     const { cues } = applyOverrides([routed], doc);
     expect(cues[0]!.graphicRect).toEqual(routed.graphicRect);
+  });
+});
+
+describe("caption position override (R15 §56)", () => {
+  it("captionY lands on the cue, like every other scene override", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { captionY: 0.3 } } });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.captionY).toBe(0.3);
+  });
+
+  it("rejects an off-frame anchor — hand-editable data is validated", () => {
+    expect(OverrideDocSchema.safeParse({ scenes: { s: { captionY: 1.5 } } }).success).toBe(false);
+    expect(OverrideDocSchema.safeParse({ scenes: { s: { captionY: -0.1 } } }).success).toBe(false);
+  });
+});
+
+describe("captionEditWas (R15 §59 — re-edit keeps the base guard)", () => {
+  it("first edit stores what the caller saw; a re-edit keeps the ORIGINAL was", () => {
+    expect(captionEditWas({}, 4, "helo")).toBe("helo");
+    // The second editor session sees the LIVE (already-edited) text — storing
+    // it as `was` would trip applyCaptionEdits' stale-guard against the base.
+    expect(captionEditWas({ "4": { text: "hello", was: "helo" } }, 4, "hello")).toBe("helo");
+  });
+
+  it("a re-edit round-trips through applyCaptionEdits instead of being dropped", () => {
+    const base = [
+      { start: 0, end: 1, words: [{ text: "helo", start: 0, end: 1 }] },
+    ];
+    const first = { "0": { text: "hello", was: captionEditWas({}, 0, "helo") } };
+    const second = {
+      "0": { text: "hullo", was: captionEditWas(first, 0, "hello") },
+    };
+    const { lines, dropped } = applyCaptionEdits(base, second);
+    expect(dropped).toEqual([]);
+    expect(lines[0]!.words[0]!.text).toBe("hullo");
   });
 });
 

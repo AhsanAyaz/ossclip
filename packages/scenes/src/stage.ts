@@ -474,6 +474,15 @@ const PIP_RECT: Rect = {
  *   pip-bubble     → between the graphic and the bubble
  *   graphic-only   → below the graphic (the layout reserves the band)
  *   blurred-behind → below the centred graphic (face is blurred — no clash)
+ *   lower-third    → above the band (landscape) / between face and band (portrait)
+ *   split-left/right → the frame's remaining lower margin, below the graphic
+ *
+ * The three R15 §54 layouts are landscape-native but defined for BOTH frames
+ * (R13's rule: a layout the editor can select must always render): the split
+ * axis follows the frame's long edge — video and graphic sit side-by-side in
+ * 16:9 and stack in 9:16, where a literal half-width slot would be a sliver.
+ * The two portrait splits therefore share one stacked geometry; the side
+ * only exists when there are sides.
  */
 export function layoutSlots(
   layout: Layout,
@@ -485,6 +494,7 @@ export function layoutSlots(
   const posY = (rect: Rect) =>
     avoidSlicingText(objectPosYFor(rect, face, frame), rect, face, textBands, frame);
   const posX = (rect: Rect) => objectPosXFor(rect, face, frame);
+  const landscape = frame.width > frame.height;
   switch (layout) {
     case "full-bleed":
       return {
@@ -492,6 +502,41 @@ export function layoutSlots(
         graphic: null,
         captionAnchor: 0.7,
       };
+    case "lower-third": {
+      // Broadcast lower third: the picture stays whole; the card sits in the
+      // least valuable band. Landscape keeps it off-centre (left-aligned,
+      // clear of the speaker's usual desk-right) with captions above the
+      // band; portrait pushes the band to the safe-area floor with captions
+      // in the gap under the face.
+      const graphic = landscape
+        ? { x: 0.05, y: 0.7, w: 0.62, h: 0.18 }
+        : { x: 0.04, y: 0.56, w: 0.8, h: 0.22 };
+      return {
+        video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(FULL), objectPosX: posX(FULL) },
+        graphic,
+        captionAnchor: landscape ? 0.62 : 0.49,
+      };
+    }
+    case "split-left":
+    case "split-right": {
+      if (landscape) {
+        const left = layout === "split-left";
+        const rect: Rect = { x: left ? 0 : 0.5, y: 0, w: 0.5, h: 1 };
+        return {
+          video: { rect, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(rect), objectPosX: posX(rect) },
+          graphic: left
+            ? { x: 0.55, y: 0.2, w: 0.4, h: 0.56 }
+            : { x: 0.05, y: 0.2, w: 0.4, h: 0.56 },
+          captionAnchor: 0.82,
+        };
+      }
+      const rect: Rect = { x: 0, y: 0, w: 1, h: 0.5 };
+      return {
+        video: { rect, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(rect), objectPosX: posX(rect) },
+        graphic: { x: 0.04, y: 0.58, w: 0.8, h: 0.2 },
+        captionAnchor: 0.53,
+      };
+    }
     case "video-top": {
       const rect: Rect = { x: 0, y: 0, w: 1, h: 0.42 };
       return {

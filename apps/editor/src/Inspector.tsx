@@ -8,6 +8,10 @@ interface InspectorProps {
   selection: Selection | null;
   /** The currently-selected scene's resolved cue, or null when nothing is selected. */
   cue: SceneCue | null;
+  /** The output frame (`settings.width/height`) — slot geometry follows it (R15). */
+  frame: { width: number; height: number };
+  /** Every live cue id, in time order — the §56b "apply to all" fan-out list. */
+  allSceneIds: string[];
   edits: ReturnType<typeof useEdits>;
   /**
    * The theme actually on screen right now (defaults merged with the
@@ -148,6 +152,8 @@ const ThemeField: React.FC<{
 export const Inspector: React.FC<InspectorProps> = ({
   selection,
   cue,
+  frame,
+  allSceneIds,
   edits,
   resolvedTheme,
   anchorText,
@@ -444,7 +450,7 @@ export const Inspector: React.FC<InspectorProps> = ({
               // plain take switched there gets the same bubble. Defaults come
               // from the layout's own slot, so the fields always state what
               // is actually on screen.
-              const slot = layoutSlots("pip-bubble").video;
+              const slot = layoutSlots("pip-bubble", undefined, [], frame).video;
               const pip = cue.pip ?? {};
               const roundness = pip.cornerRadius ?? slot.cornerRadius;
               return (
@@ -511,11 +517,11 @@ export const Inspector: React.FC<InspectorProps> = ({
           // full-bleed fallback band (R13) — the same resolver SceneLayer
           // draws from, so this box is always the one on screen.
           if (isPlain) return null;
-          const eff = graphicSlotFor(cue);
+          const eff = graphicSlotFor(cue, frame);
           const boxPatch = (key: "x" | "y" | "w" | "h") => (v: number) =>
             edits.patchGraphicRect(
               selection.sceneId,
-              clampGraphicRect({ ...eff, [key]: v }),
+              clampGraphicRect({ ...eff, [key]: v }, frame),
               `box:${selection.sceneId}:${key}`,
             );
           return (
@@ -535,6 +541,56 @@ export const Inspector: React.FC<InspectorProps> = ({
                   onClick={() => edits.clearGraphicRect(selection.sceneId)}
                 >
                   Reset box
+                </button>
+              ) : null}
+            </div>
+          );
+        })()}
+        {(() => {
+          // Caption position (R15 §56) — per scene, with the bulk fan-out the
+          // author actually asked for ("the captions are too low for this
+          // whole video"). Shown for takes too: captions run over them.
+          const autoAnchor = layoutSlots(cue.layout, undefined, [], frame).captionAnchor;
+          const effY = cue.captionY ?? autoAnchor;
+          return (
+            <div style={section}>
+              <span style={label}>Captions</span>
+              <div style={row}>
+                <span style={label}>
+                  position{"  "}
+                  <span style={{ color: "#EDEDF2" }}>{effY.toFixed(2)}</span>
+                </span>
+                <input
+                  type="range"
+                  data-testid="caption-y-slider"
+                  min={0.05}
+                  max={0.95}
+                  step={0.01}
+                  value={effY}
+                  onChange={(e) =>
+                    edits.patchCaptionY(
+                      selection.sceneId,
+                      Number(e.target.value),
+                      `captionY:${selection.sceneId}`,
+                    )
+                  }
+                />
+              </div>
+              <button
+                data-testid="caption-y-all"
+                style={{ ...button, color: "#EDEDF2", border: "1px solid #2A2A33" }}
+                title="Write this scene's caption position to every scene — one undo step"
+                onClick={() => edits.patchCaptionYAll(allSceneIds, effY)}
+              >
+                Apply to all scenes
+              </button>
+              {edits.doc.scenes[selection.sceneId]?.captionY !== undefined ? (
+                <button
+                  data-testid="reset-caption-y"
+                  style={button}
+                  onClick={() => edits.clearCaptionY(selection.sceneId)}
+                >
+                  Reset position
                 </button>
               ) : null}
             </div>

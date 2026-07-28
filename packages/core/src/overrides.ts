@@ -83,6 +83,13 @@ export const SceneOverrideSchema = z.object({
     })
     .optional(),
   /**
+   * Vertical centre for this scene's captions (R15 §56). NOT part of the
+   * top-level `captions` key — that one is the caption TEXT retype map,
+   * keyed by word index; position is a property of the SCENE, where the
+   * timeline selection can address it and "apply to all" can fan it out.
+   */
+  captionY: z.number().min(0).max(1).optional(),
+  /**
    * The graphic slot, reshaped by hand (PLAN 2026-07-31 Task 2) — frame
    * fractions like every other rect. Validated HERE even though
    * `SceneCueSchema.graphicRect` is not: this one is hand-editable user
@@ -127,6 +134,23 @@ export const CaptionEditSchema = z.object({
   was: z.string(),
 });
 export type CaptionEdit = z.infer<typeof CaptionEditSchema>;
+
+/**
+ * The `was` a caption edit should store (R15 §59). The FIRST edit's `was` is
+ * the base truth (the word as transcribed); every later re-edit of the same
+ * index sees the LIVE (already-edited) text, and storing that as `was` would
+ * make `applyCaptionEdits`' stale-guard drop the edit against the base lines.
+ * Preserving the existing entry's `was` keeps the guard anchored to the base
+ * — and makes "retyped back to the original" detectable, which is when the
+ * override should clear entirely.
+ */
+export function captionEditWas(
+  captions: Record<string, CaptionEdit>,
+  index: number,
+  seen: string,
+): string {
+  return captions[String(index)]?.was ?? seen;
+}
 
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */
@@ -211,6 +235,7 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       ...(Object.keys(o.elements).length > 0 ? { elements: o.elements } : {}),
       ...(o.video ? { video: o.video } : {}),
       ...(o.pip ? { pip: o.pip } : {}),
+      ...(o.captionY !== undefined ? { captionY: o.captionY } : {}),
       // After ...cue, so a hand-set rect WINS over one routeAroundSourceText
       // baked into the base cues.
       ...(o.graphicRect ? { graphicRect: o.graphicRect } : {}),

@@ -51,6 +51,15 @@ process.env.OSSCLIP_E2E_WORKDIR = WORKDIR;
 
 export default defineConfig({
   testDir: "./e2e",
+  // The landscape spec REWRITES the shared workdir's render-props.json to a
+  // 16:9 frame for its own tests (the server reads the file per request, so
+  // no second server is needed) — but that swap must never race the portrait
+  // specs running in a parallel worker. A dependent project serializes it:
+  // `landscape` starts only after `main` has fully finished.
+  projects: [
+    { name: "main", testIgnore: /landscape\.spec\.ts/ },
+    { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
+  ],
   use: {
     baseURL: "http://127.0.0.1:5173",
     // Tall enough that the stage (≈676px) AND the timeline below it are both

@@ -248,18 +248,30 @@ export function repairMomentLayouts(
  * `video-top`, `pip-bubble` and `graphic-only` are vertical-format ideas: they
  * exist to split a tall frame between a face and a card, or to demote the
  * speaker to an inset because a 9:16 frame cannot show both at a readable
- * size. A 16:9 export has the opposite problem — the source already fills the
- * frame exactly, so carving a 0.42-tall band out of it crops a 16:9 picture
- * into a 4.2:1 letterbox and shrinks the speaker for nothing.
- *
- * Landscape therefore keeps the two layouts that read as one picture: the
- * speaker full-frame, and the speaker dimmed behind a card.
+ * size. A 16:9 export has room the vertical frame never had, and §54 gives it
+ * layouts that USE that room instead of blurring it away: a broadcast
+ * `lower-third` (picture whole, card in the bottom band) and `split-left`/
+ * `split-right` (speaker fills one half, graphic the other — two layouts
+ * because the side matters: eyeline and the room's contents differ left vs
+ * right, and the producer or the editor should be able to pick).
  */
-export const LANDSCAPE_LAYOUTS: readonly Layout[] = ["full-bleed", "blurred-behind"];
+export const LANDSCAPE_LAYOUTS: readonly Layout[] = [
+  "full-bleed",
+  "blurred-behind",
+  "lower-third",
+  "split-left",
+  "split-right",
+];
 
-/** Nearest landscape-appropriate layout. Identity for the two that already
- * qualify; everything else becomes `blurred-behind`, which is the closest
- * thing to "a graphic over the speaker" that does not split the frame. */
+/**
+ * Nearest landscape-appropriate layout. Identity for the five that qualify;
+ * the vertical splits map to their landscape analog — `video-top` and
+ * `pip-bubble` both mean "face and graphic share the frame", which in 16:9 is
+ * a side-by-side split, not a blur — and `graphic-only` (the graphic IS the
+ * subject) keeps `blurred-behind`, the layout that lets a card own the frame
+ * without discarding the picture.
+ */
 export function landscapeLayout(layout: Layout): Layout {
-  return LANDSCAPE_LAYOUTS.includes(layout) ? layout : "blurred-behind";
+  if (LANDSCAPE_LAYOUTS.includes(layout)) return layout;
+  return layout === "graphic-only" ? "blurred-behind" : "split-left";
 }

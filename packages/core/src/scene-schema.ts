@@ -1,12 +1,22 @@
 import { z } from "zod/v4";
 
-/** How the stage is arranged while a scene is active (BRAINSTORM §4.6, PHASE1 §1). */
+/**
+ * How the stage is arranged while a scene is active (BRAINSTORM §4.6, PHASE1
+ * §1). `lower-third` and the two `split-*` layouts are landscape-native
+ * additions (R15 §54) — the frame-aware slot table gives every layout
+ * geometry in BOTH aspects (the split axis follows the frame's long edge:
+ * side-by-side in 16:9, stacked in 9:16), so the editor's layout switch can
+ * never render nothing.
+ */
 export const LayoutSchema = z.enum([
   "full-bleed",
   "video-top",
   "pip-bubble",
   "graphic-only",
   "blurred-behind",
+  "lower-third",
+  "split-left",
+  "split-right",
 ]);
 export type Layout = z.infer<typeof LayoutSchema>;
 
@@ -120,6 +130,13 @@ export const SceneCueSchema = z
       y: z.number().min(0).max(1).optional(),
     })
     .optional(),
+  /**
+   * Vertical centre for this scene's captions, frame fraction (R15 §56) —
+   * a hand-set anchor that wins over the layout's `captionAnchor` and the
+   * automatic avoidance. Set from the editor; travels on the cue so the
+   * renderer and the preview agree.
+   */
+  captionY: z.number().min(0).max(1).optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
   })

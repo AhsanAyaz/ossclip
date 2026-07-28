@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
-import { SAFE_AREA, clampGraphicRect } from "@ossclip/renderer/composition";
+import { clampGraphicRect, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import type { GraphicRect, useEdits } from "./useEdits";
 
@@ -448,6 +448,11 @@ export const Overlay: React.FC<OverlayProps> = ({
       const stage = stageRef.current;
       if (!stage) return;
       if (!stage.contains(e.target as Node)) return;
+      // An Alt-press or a middle-button press is a VIEW gesture (§55b —
+      // pan the magnified preview), never an edit. Leaving it alone here
+      // keeps the split unambiguous: plain drag edits, Alt-drag moves the
+      // camera, and neither can be mistaken for the other.
+      if (e.altKey || e.button !== 0) return;
       const editorOwnsIt =
         (selectionRef.current?.elementId && boxRef.current?.contains(e.target as Node)) ||
         findEditableFrom(elementBelow(e.clientX, e.clientY)) !== null;
@@ -474,6 +479,10 @@ export const Overlay: React.FC<OverlayProps> = ({
       // this listener is global precisely so pass-through works, but it must
       // not react to unrelated clicks.
       if (!stage.contains(e.target as Node)) return;
+      // View gestures (§55b): Alt-drag and middle-drag pan the magnified
+      // preview — App owns them. They must not select, deselect, or arm any
+      // edit drag here.
+      if (e.altKey || e.button !== 0) return;
       // A mousedown that landed on the selection box itself continues
       // manipulating the CURRENT selection — but only when that selection is
       // an actual ELEMENT. An element's box exactly overlays that one
@@ -660,6 +669,7 @@ export const Overlay: React.FC<OverlayProps> = ({
             // lives outside the fit-scaled wrapper.
             const next = clampGraphicRect(
               applyBoxHandle(drag.start, drag.handle, drag.dx / canvas.w, drag.dy / canvas.h),
+              settings,
             );
             onGraphicPreview({ sceneId: drag.sceneId, rect: next });
           });
@@ -733,6 +743,7 @@ export const Overlay: React.FC<OverlayProps> = ({
                 rectDrag.dx / canvas.w,
                 rectDrag.dy / canvas.h,
               ),
+              settings,
             );
             edits.patchGraphicRect(rectDrag.sceneId, {
               x: round4(final.x),
@@ -805,16 +816,21 @@ export const Overlay: React.FC<OverlayProps> = ({
 
   // Double-click on a caption word opens an in-place retype (PLAN Task 7,
   // scope (a): 1:1 text swap, timing untouched). Window-level because the
-  // caption spans live inside the Player's DOM, not the overlay's; they are
-  // individually hit-testable (pointer-events: auto) and topmost, so a plain
-  // elementFromPoint finds them without the layer walk.
+  // caption spans live inside the Player's DOM, not the overlay's. Resolved
+  // through the `elementBelow` WALK, not a bare elementFromPoint (R15 §57):
+  // the Player's transport strip keeps pointer events even while faded out,
+  // and in a short preview (landscape at the old fixed width) it covered the
+  // exact band captions sit in — the bare hit returned the transport's div
+  // and the retype never opened. The walk drills through pointer-eating
+  // layers but STOPS at real controls (buttons, inputs), so a double-click
+  // on the transport's own buttons stays the Player's (§57b).
   useEffect(() => {
     const onDoubleClick = (e: MouseEvent) => {
       const stage = stageRef.current;
       if (!stage || !stage.contains(e.target as Node)) return;
-      const word = document
-        .elementFromPoint(e.clientX, e.clientY)
-        ?.closest<HTMLElement>("[data-caption-word]");
+      const word = elementBelow(e.clientX, e.clientY)?.closest<HTMLElement>(
+        "[data-caption-word]",
+      );
       if (!word) return;
       e.preventDefault();
       const index = Number(word.dataset.captionWord);
@@ -925,10 +941,13 @@ export const Overlay: React.FC<OverlayProps> = ({
           data-testid="safe-area-guide"
           style={{
             position: "absolute",
-            left: `${SAFE_AREA.left * 100}%`,
-            top: `${SAFE_AREA.top * 100}%`,
-            right: `${SAFE_AREA.right * 100}%`,
-            bottom: `${SAFE_AREA.bottom * 100}%`,
+            // The frame's OWN insets (R15): landscape has no platform chrome,
+            // and drawing the portrait rails on it would annotate a
+            // constraint the geometry no longer enforces.
+            left: `${safeAreaFor(settings).left * 100}%`,
+            top: `${safeAreaFor(settings).top * 100}%`,
+            right: `${safeAreaFor(settings).right * 100}%`,
+            bottom: `${safeAreaFor(settings).bottom * 100}%`,
             border: "1px dashed rgba(255, 225, 77, 0.45)",
             boxShadow: "0 0 0 9999px rgba(0, 0, 0, 0.18)",
             pointerEvents: "none",

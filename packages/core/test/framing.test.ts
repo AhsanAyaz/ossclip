@@ -211,12 +211,15 @@ describe("repairMomentLayouts (Task B — the safety net)", () => {
 });
 
 describe("landscape layouts (R15)", () => {
-  it("keeps the two that read as one picture, remaps the split-screen ones", () => {
-    expect(landscapeLayout("full-bleed")).toBe("full-bleed");
-    expect(landscapeLayout("blurred-behind")).toBe("blurred-behind");
-    for (const l of ["video-top", "pip-bubble", "graphic-only"] as const) {
-      expect(landscapeLayout(l)).toBe("blurred-behind");
+  it("keeps the landscape-native five, remaps the vertical splits to their analogs (§54)", () => {
+    for (const l of ["full-bleed", "blurred-behind", "lower-third", "split-left", "split-right"] as const) {
+      expect(landscapeLayout(l)).toBe(l);
     }
+    // "Face and graphic share the frame" is a side-by-side split in 16:9…
+    expect(landscapeLayout("video-top")).toBe("split-left");
+    expect(landscapeLayout("pip-bubble")).toBe("split-left");
+    // …while "the graphic IS the subject" keeps the card-over-picture layout.
+    expect(landscapeLayout("graphic-only")).toBe("blurred-behind");
   });
 
   it("is idempotent — remapping an already-landscape plan changes nothing", () => {

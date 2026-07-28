@@ -21,10 +21,15 @@ interface TimelineProps {
 interface DragState {
   sceneId: string;
   edge: "start" | "end";
-  startX: number;
+  /**
+   * The pointer's start position in CONTENT space (clientX minus the track's
+   * live left edge), not viewport space (R15 §58): edge paging scrolls the
+   * track under a stationary pointer, and a viewport-space delta would read
+   * that as "no movement" — the page would advance the view but not the drag.
+   */
+  startContentX: number;
   origStart: number;
   origEnd: number;
-  trackWidth: number;
 }
 
 /**
@@ -36,7 +41,10 @@ interface DragState {
  */
 interface BlockPress {
   sceneId: string;
+  /** Viewport-space start, for the click-vs-drag travel threshold only. */
   startX: number;
+  /** Content-space start — the delta the move actually uses (see DragState). */
+  startContentX: number;
   moved: boolean;
 }
 
@@ -46,6 +54,14 @@ const EDGE_HIT = 10;
 
 /** Travel before a block press commits to being a move drag. */
 const MOVE_THRESHOLD_PX = 4;
+
+/** Edge paging (R15 §58): a live gesture within this many px of the
+ * scroller's bound pages the view by one viewport width in that direction. */
+const PAGE_EDGE_PX = 8;
+
+/** Floor between pages, so hovering at the bound doesn't machine-gun the
+ * scroll — one page per deliberate return to the edge. */
+const PAGE_COOLDOWN_MS = 300;
 
 const fmt = (sec: number): string => {
   const s = Math.max(0, sec);
@@ -183,18 +199,42 @@ export const Timeline: React.FC<TimelineProps> = ({
       dragRef.current = {
         sceneId: cue.id,
         edge,
-        startX: e.clientX,
+        startContentX: e.clientX - track.getBoundingClientRect().left,
         origStart: cue.startSec,
         origEnd: cue.endSec,
-        trackWidth: track.getBoundingClientRect().width,
       };
       setDragPreview({ sceneId: cue.id, startSec: cue.startSec, endSec: cue.endSec });
     },
     [],
   );
 
+  const lastPageRef = useRef(0);
   useEffect(() => {
+    // Edge paging (R15 §58): while a gesture is live and the pointer reaches
+    // the scroller's bound, advance by one viewport width — the content that
+    // was at the bound becomes the new starting edge, both directions. The
+    // gesture math survives because everything below reads the track's LIVE
+    // bounding rect: paging shifts that rect, so the same clientX maps to
+    // later content, which is exactly what "the drag continues" means.
+    const pageAtEdge = (clientX: number): void => {
+      const scroller = scrollerRef.current;
+      if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return;
+      const now = Date.now();
+      if (now - lastPageRef.current < PAGE_COOLDOWN_MS) return;
+      const r = scroller.getBoundingClientRect();
+      const max = scroller.scrollWidth - scroller.clientWidth;
+      if (clientX >= r.right - PAGE_EDGE_PX && scroller.scrollLeft < max) {
+        scroller.scrollLeft = Math.min(max, scroller.scrollLeft + scroller.clientWidth);
+        lastPageRef.current = now;
+      } else if (clientX <= r.left + PAGE_EDGE_PX && scroller.scrollLeft > 0) {
+        scroller.scrollLeft = Math.max(0, scroller.scrollLeft - scroller.clientWidth);
+        lastPageRef.current = now;
+      }
+    };
     const onMove = (e: MouseEvent) => {
+      const gestureLive =
+        scrubbingRef.current || blockPressRef.current?.moved === true || dragRef.current !== null;
+      if (gestureLive) pageAtEdge(e.clientX);
       // A track scrub follows the pointer continuously (Task 3) — like any
       // video player's seek bar, not click-only.
       if (scrubbingRef.current) {
@@ -206,8 +246,12 @@ export const Timeline: React.FC<TimelineProps> = ({
         if (!press.moved && Math.abs(e.clientX - press.startX) < MOVE_THRESHOLD_PX) return;
         press.moved = true;
         const track = trackRef.current;
-        const deltaSec = track
-          ? ((e.clientX - press.startX) / track.getBoundingClientRect().width) * durationSec
+        const r = track?.getBoundingClientRect();
+        // CONTENT-space delta (see DragState.startContentX): after a page,
+        // the same pointer position is over later content and the block
+        // follows it there.
+        const deltaSec = r
+          ? ((e.clientX - r.left - press.startContentX) / r.width) * durationSec
           : 0;
         const shifted = moveTiming(cues, press.sceneId, deltaSec, durationSec);
         if (shifted) setDragPreview({ sceneId: press.sceneId, ...shifted });
@@ -215,7 +259,10 @@ export const Timeline: React.FC<TimelineProps> = ({
       }
       const drag = dragRef.current;
       if (!drag || durationSec <= 0) return;
-      const deltaSec = ((e.clientX - drag.startX) / drag.trackWidth) * durationSec;
+      const track = trackRef.current;
+      if (!track) return;
+      const r = track.getBoundingClientRect();
+      const deltaSec = ((e.clientX - r.left - drag.startContentX) / r.width) * durationSec;
       const wantStart = drag.edge === "start" ? drag.origStart + deltaSec : drag.origStart;
       const wantEnd = drag.edge === "end" ? drag.origEnd + deltaSec : drag.origEnd;
       const clamped = clampTiming(cues, drag.sceneId, wantStart, wantEnd, durationSec);
@@ -369,7 +416,13 @@ export const Timeline: React.FC<TimelineProps> = ({
                       scrubbingRef.current = true;
                       return;
                     }
-                    blockPressRef.current = { sceneId: cue.id, startX: e.clientX, moved: false };
+                    blockPressRef.current = {
+                  sceneId: cue.id,
+                  startX: e.clientX,
+                  startContentX:
+                    e.clientX - (trackRef.current?.getBoundingClientRect().left ?? 0),
+                  moved: false,
+                };
                   }}
                   style={{
                     ...block,

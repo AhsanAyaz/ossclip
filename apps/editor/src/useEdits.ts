@@ -1,5 +1,6 @@
 import { useReducer } from "react";
 import {
+  captionEditWas,
   clearElementTransform,
   clearGraphicRect,
   clearTiming,
@@ -65,6 +66,11 @@ export type EditAction =
       coalesce?: string;
     }
   | { type: "clearPip"; sceneId: string }
+  | { type: "patchCaptionY"; sceneId: string; y: number; coalesce?: string }
+  | { type: "clearCaptionY"; sceneId: string }
+  /** §56b's cheap bulk: ONE commit (one undo step) writing the same anchor
+   * to every listed scene — "the captions are too low for this whole video". */
+  | { type: "patchCaptionYAll"; sceneIds: string[]; y: number }
   | { type: "clearTiming"; sceneId: string }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
@@ -195,6 +201,33 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         scenes: { ...state.doc.scenes, [action.sceneId]: rest },
       });
     }
+    case "patchCaptionY": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit(
+        {
+          ...state.doc,
+          scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, captionY: action.y } },
+        },
+        action.coalesce,
+      );
+    }
+    case "clearCaptionY": {
+      const scene = state.doc.scenes[action.sceneId];
+      if (scene?.captionY === undefined) return state;
+      const { captionY: _dropped, ...rest } = scene;
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: rest },
+      });
+    }
+    case "patchCaptionYAll": {
+      const scenes = { ...state.doc.scenes };
+      for (const id of action.sceneIds) {
+        const scene = scenes[id] ?? { props: {}, elements: {} };
+        scenes[id] = { ...scene, captionY: action.y };
+      }
+      return commit({ ...state.doc, scenes });
+    }
     case "hideScene": {
       const scene = withScene(state.doc, action.sceneId);
       return commit({
@@ -246,14 +279,20 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // Retyping a word back to its original CLEARS the override — same rule
       // as clearVideo: an override that matches the base is still an
       // override, and would shadow a future re-produce's repaired text.
+      // "Original" means the BASE text: a re-edit's caller sees the LIVE
+      // (already-edited) word, and `captionEditWas` keeps the stored guard
+      // anchored to the truth `applyCaptionEdits` will compare against —
+      // without it, editing the same word twice stored the first edit as
+      // `was` and the guard dropped the whole edit on the next merge (R15).
       const key = String(action.index);
-      if (action.text === action.was) {
+      const was = captionEditWas(state.doc.captions, action.index, action.was);
+      if (action.text === was) {
         const { [key]: _dropped, ...rest } = state.doc.captions;
         return commit({ ...state.doc, captions: rest });
       }
       return commit({
         ...state.doc,
-        captions: { ...state.doc.captions, [key]: { text: action.text, was: action.was } },
+        captions: { ...state.doc.captions, [key]: { text: action.text, was } },
       });
     }
     case "patchTheme":
@@ -324,6 +363,11 @@ export function useEdits() {
       coalesce?: string,
     ) => dispatch({ type: "patchPip", sceneId, patch, coalesce }),
     clearPip: (sceneId: string) => dispatch({ type: "clearPip", sceneId }),
+    patchCaptionY: (sceneId: string, y: number, coalesce?: string) =>
+      dispatch({ type: "patchCaptionY", sceneId, y, coalesce }),
+    clearCaptionY: (sceneId: string) => dispatch({ type: "clearCaptionY", sceneId }),
+    patchCaptionYAll: (sceneIds: string[], y: number) =>
+      dispatch({ type: "patchCaptionYAll", sceneIds, y }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
     patchGraphicRect: (sceneId: string, rect: GraphicRect, coalesce?: string) =>

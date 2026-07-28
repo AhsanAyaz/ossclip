@@ -144,6 +144,58 @@ describe("graphic box editing (PLAN 2026-07-31 Task 2)", () => {
   });
 });
 
+describe("caption position (R15 §56)", () => {
+  it("patchCaptionY stores the anchor; clearCaptionY DELETES the key", () => {
+    let s = editReducer(initialEditState(), { type: "patchCaptionY", sceneId: "scene-0", y: 0.3 });
+    expect(s.doc.scenes["scene-0"]!.captionY).toBe(0.3);
+    s = editReducer(s, { type: "clearCaptionY", sceneId: "scene-0" });
+    expect("captionY" in s.doc.scenes["scene-0"]!).toBe(false);
+    expect(editReducer(s, { type: "clearCaptionY", sceneId: "scene-0" }).doc).toBe(s.doc);
+  });
+
+  it("patchCaptionYAll writes every scene in ONE commit — one undo step", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaptionYAll",
+      sceneIds: ["scene-0", "scene-2", "take-0"],
+      y: 0.85,
+    });
+    expect(s.doc.scenes["scene-0"]!.captionY).toBe(0.85);
+    expect(s.doc.scenes["scene-2"]!.captionY).toBe(0.85);
+    expect(s.doc.scenes["take-0"]!.captionY).toBe(0.85);
+    expect(s.past).toHaveLength(1);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes).toEqual({});
+  });
+
+  it("keeps a scene's other edits when fanning out", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchVideo", sceneId: "scene-0", patch: { scale: 0.8 },
+    });
+    s = editReducer(s, { type: "patchCaptionYAll", sceneIds: ["scene-0"], y: 0.2 });
+    expect(s.doc.scenes["scene-0"]!.video!.scale).toBe(0.8);
+  });
+});
+
+describe("caption retype re-edit (R15 §59)", () => {
+  it("a second edit of the same word keeps the BASE was, so the guard holds", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaption", index: 4, text: "hello", was: "helo",
+    });
+    // The re-editor sees the LIVE text ("hello") — the stored guard must
+    // stay anchored to the base ("helo") or applyCaptionEdits drops it.
+    s = editReducer(s, { type: "patchCaption", index: 4, text: "hullo", was: "hello" });
+    expect(s.doc.captions["4"]).toEqual({ text: "hullo", was: "helo" });
+  });
+
+  it("retyping back to the BASE text clears the override, even via the live text", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaption", index: 4, text: "hello", was: "helo",
+    });
+    s = editReducer(s, { type: "patchCaption", index: 4, text: "helo", was: "hello" });
+    expect("4" in s.doc.captions).toBe(false);
+  });
+});
+
 describe("pip bubble editing (R14 §52)", () => {
   it("patchPip merges field by field, like patchVideo", () => {
     let s = editReducer(initialEditState(), {

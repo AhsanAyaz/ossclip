@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes. This document is REQUIREMENTS, not a design — the diagnosis under each item is what has been verified; the approach is yours to settle, and several items name a decision the author still has to make.
 
-**Status:** requirements captured 2026-08-01 from the author's first landscape run (`Agents in 2026_landscape.mp4` → `Agents-2026.landscape.mp4`, 1920×1080, 12:20, Gemini, $0.002). Not started. Items are independent except §55 (blocked on §57's decision) — do them in any order that suits.
+**Status:** requirements captured 2026-08-01 from the author's first landscape run (`Agents in 2026_landscape.mp4` → `Agents-2026.landscape.mp4`, 1920×1080, 12:20, Gemini, $0.002). **Executed (remote session, 2026-07-28): all items shipped** — §57 first (mechanism confirmed by reverting the fix and watching the new landscape e2e fail), then §55, §54, §56, §58, §59. §56b took the cheap option (apply-to-all, no general multi-select); §59 shipped 1:1 retype with the scope stated in the panel; §59c untouched. Frame renders of all three §54 layouts extracted and inspected; the real `Agents-2026.landscape.mp4` workdir only exists on the author's machine — re-verify there.
 
 **Context:** R15 shipped `--aspect 16:9` (frame-aware geometry, landscape safe area, layouts restricted to `full-bleed` + `blurred-behind`). The output is correct but conservative, and the editor turns out to be portrait-shaped in ways nobody noticed while every clip was 9:16.
 
@@ -14,8 +14,8 @@
 
 **Wanted:** two new landscape-native layouts.
 
-- [ ] **54a. `lower-third`** — video full-frame, graphic in a band across the bottom (broadcast lower-third). Picture stays whole; the card sits in the least valuable part of the frame.
-- [ ] **54b. `split-left` / `split-right`** — video fills one half, graphic the other. Two layouts, not one with a flag: the side matters (the speaker's eyeline and the room's contents differ left vs right), and the producer should be able to pick.
+- [x] **54a. `lower-third`** — video full-frame, graphic in a band across the bottom (broadcast lower-third). Picture stays whole; the card sits in the least valuable part of the frame.
+- [x] **54b. `split-left` / `split-right`** — video fills one half, graphic the other. Two layouts, not one with a flag: the side matters (the speaker's eyeline and the room's contents differ left vs right), and the producer should be able to pick.
 
 **What the implementer needs to know:**
 
@@ -33,8 +33,8 @@
 
 **Root cause, verified:** `apps/editor/src/App.tsx` passes `style={{ width: 380 }}` to `<Player>` — a fixed pixel width, chosen when the preview was a 9:16 sliver beside a sidebar.
 
-- [ ] **55a.** The preview fills the available stage area: sized from the container, aspect-preserving, responsive to window resize and to the sidebar's width. Both 9:16 and 16:9 must look deliberate — one should not be sized to suit the other.
-- [ ] **55b. View-level zoom and pan on the preview** — magnify to inspect a caption or a graphic edge, drag to move around while magnified.
+- [x] **55a.** The preview fills the available stage area: sized from the container, aspect-preserving, responsive to window resize and to the sidebar's width. Both 9:16 and 16:9 must look deliberate — one should not be sized to suit the other.
+- [x] **55b. View-level zoom and pan on the preview** — magnify to inspect a caption or a graphic edge, drag to move around while magnified.
 
 **The trap in 55b, stated up front:** the stage ALREADY has a drag-to-pan and a zoom, and they mean something completely different — they EDIT `cue.video` (the framing override, R10 Task B) and they write to `overrides.json`. A view zoom must never write an override. Two gestures on one surface need an unambiguous split (a modifier, an explicit mode toggle, a separate scroll-to-zoom-vs-drag rule) and whatever is chosen has to be discoverable — the author must never be unsure whether a drag just moved the camera or edited the video. Note also that `Overlay`'s hit-testing maps page pixels to composition pixels through `playerRef.getScale()`; a view transform on top of the player changes that mapping and every drag/handle in the editor depends on it.
 
@@ -46,8 +46,8 @@
 
 **Wanted:**
 
-- [ ] **56a. Per-scene caption position** — move the caption box for a scene, from the editor, and have it persist through a re-render.
-- [ ] **56b. Multi-select on the timeline**, then move ALL selected scenes' caption boxes together. Including "select all" — the common case is "the captions are too low for this whole video", not "this one scene".
+- [x] **56a. Per-scene caption position** — move the caption box for a scene, from the editor, and have it persist through a re-render.
+- [x] **56b. Multi-select on the timeline**, then move ALL selected scenes' caption boxes together. Including "select all" — the common case is "the captions are too low for this whole video", not "this one scene".
 
 **What the implementer needs to know:**
 
@@ -66,8 +66,8 @@
 
 If that is the cause, note it is a ratio bug, not a landscape bug: the strip is an absolute pixel constant applied to a preview whose height varies. §55a (a bigger preview) will mask it without fixing it. Fix the cause.
 
-- [ ] **57a.** Confirm the mechanism first (a caption word's `elementFromPoint` hit in a 16:9 project, with the strip's bounds logged), then fix so caption editing works in every aspect and at every preview size.
-- [ ] **57b.** Whatever replaces the constant must still keep the Player's transport clickable — that is what it was protecting.
+- [x] **57a.** Confirm the mechanism first (a caption word's `elementFromPoint` hit in a 16:9 project, with the strip's bounds logged), then fix so caption editing works in every aspect and at every preview size.
+- [x] **57b.** Whatever replaces the constant must still keep the Player's transport clickable — that is what it was protecting.
 
 ---
 
@@ -75,8 +75,8 @@ If that is the cause, note it is a ratio bug, not a landscape bug: the strip is 
 
 **Observed (screenshot 3):** zoomed to 16×, dragging a block or scrubbing toward the right edge of the viewport simply stops at the edge. Every real editor scrolls the timeline when the pointer reaches the bound and lets the drag continue.
 
-- [ ] **58a.** While a drag/scrub is live and the pointer is at (or past) the scroller's edge, page the timeline in that direction and keep the gesture going. Author's stated semantics: advance by the viewport width so the content that was at the bound becomes the new starting edge — forward and backward alike.
-- [ ] **58b.** Applies to every timeline gesture that can run off-screen: track scrub, block move, edge-resize drag.
+- [x] **58a.** While a drag/scrub is live and the pointer is at (or past) the scroller's edge, page the timeline in that direction and keep the gesture going. Author's stated semantics: advance by the viewport width so the content that was at the bound becomes the new starting edge — forward and backward alike.
+- [x] **58b.** Applies to every timeline gesture that can run off-screen: track scrub, block move, edge-resize drag.
 
 **What the implementer needs to know:** `Timeline.tsx` owns `scrollerRef` and the zoom state (R14 §53); the drag handlers are the window-level `mousemove`/`mouseup` pair. All the timing math divides by the track's own bounding width and so is already zoom-calibrated — paging changes `scrollLeft`, which the existing math reads through `getBoundingClientRect`, so the drag arithmetic should not need to change. Verify that assumption rather than trusting it; a stale `trackWidth` captured at drag start (as `DragState` does) is exactly the kind of thing that breaks under scroll.
 
@@ -93,9 +93,9 @@ If that is the cause, note it is a ratio bug, not a landscape bug: the strip is 
 
 **So the work is mostly the view:** a scrollable word list with search/jump, showing the current (possibly edited) text, writing 1:1 retypes through the existing override, and keeping the preview and the timeline in sync with wherever the user is reading.
 
-- [ ] **59a.** Find + edit + jump-to-time, updating the preview live.
-- [ ] **59b.** Decide the scope boundary and say it in the UI. R11 Task 7 settled on **1:1 retype only** for a hard reason: cues anchor to word INDICES, so inserting or deleting words shifts every downstream anchor, and word timings drive the kinetic highlight. A transcript view invites split/merge/delete — if those are wanted, they are a re-timing project (`applyRepairs` already solves the proportional-split shape and should be reused, not reinvented), not a text box. Ship 1:1 first unless the author decides otherwise.
-- [ ] **59c.** Deleting a sentence from the transcript and having the VIDEO lose it is a third thing again (it drives the cut, not the captions). Explicitly out of scope unless asked for.
+- [x] **59a.** Find + edit + jump-to-time, updating the preview live.
+- [x] **59b.** Decide the scope boundary and say it in the UI. R11 Task 7 settled on **1:1 retype only** for a hard reason: cues anchor to word INDICES, so inserting or deleting words shifts every downstream anchor, and word timings drive the kinetic highlight. A transcript view invites split/merge/delete — if those are wanted, they are a re-timing project (`applyRepairs` already solves the proportional-split shape and should be reused, not reinvented), not a text box. Ship 1:1 first unless the author decides otherwise.
+- [x] **59c.** Deleting a sentence from the transcript and having the VIDEO lose it is a third thing again (it drives the cut, not the captions). Explicitly out of scope unless asked for.
 
 ---
 

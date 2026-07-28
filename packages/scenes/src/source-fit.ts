@@ -1,5 +1,13 @@
 import { SCENE_REGISTRY, type Layout, type SceneCue } from "@ossclip/core/browser";
-import { CAPTION_HALF_BAND, SAFE_AREA, freeBands, layoutSlots } from "./stage";
+import {
+  CAPTION_HALF_BAND,
+  PORTRAIT_FRAME,
+  SAFE_AREA,
+  freeBands,
+  layoutSlots,
+  safeAreaFor,
+  type FrameSize,
+} from "./stage";
 
 /** Occupancy rect reported by the source-text scan (core's `TextRegion`). */
 export interface OccupiedRegion {
@@ -179,8 +187,11 @@ export function captionAnchorAvoiding(
   regions: readonly OccupiedRegion[],
   /** The cue's actual graphic rect, which routing may have moved (§26). */
   graphic?: { y: number; h: number } | null,
+  /** The output frame — anchors and safe margins follow its shape (R15). */
+  frame: FrameSize = PORTRAIT_FRAME,
 ): number {
-  const slots = layoutSlots(layout);
+  const slots = layoutSlots(layout, undefined, [], frame);
+  const safe = safeAreaFor(frame);
   const base = slots.captionAnchor;
   // NO empty-regions early-out (R11 Task 2b): a hand-moved graphic rect must
   // be able to move the anchor on a CLEAN source too. When the rect equals
@@ -190,7 +201,7 @@ export function captionAnchorAvoiding(
 
   const clear = (anchor: number): boolean => {
     const band = { y: anchor - CAPTION_HALF_BAND, h: CAPTION_HALF_BAND * 2 };
-    if (band.y < SAFE_AREA.top || band.y + band.h > 1 - SAFE_AREA.bottom) return false;
+    if (band.y < safe.top || band.y + band.h > 1 - safe.bottom) return false;
     if (overlapFraction(band, regions) > 0) return false;
     const g = graphic ?? slots.graphic;
     if (g && Math.min(band.y + band.h, g.y + g.h) - Math.max(band.y, g.y) > 0) return false;

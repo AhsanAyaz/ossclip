@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Player, type PlayerRef } from "@remotion/player";
 import { transportReduce, type TransportKey } from "./transport";
 import type { AnyZodObject } from "remotion";
@@ -18,6 +18,7 @@ import { useEdits } from "./useEdits";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector } from "./Inspector";
 import { Timeline } from "./Timeline";
+import { TranscriptPanel } from "./TranscriptPanel";
 import { formatElapsed, pinnedInfoLines, renderProgress } from "./renderStatus";
 
 /**
@@ -85,6 +86,114 @@ export const App: React.FC = () => {
   const [graphicPreview, setGraphicPreview] = useState<GraphicPreview | null>(null);
   const stageRef = useRef<HTMLDivElement>(null!);
   const playerRef = useRef<PlayerRef>(null);
+  // The preview fills the stage area (R15 §55a): its size derives from the
+  // container, not a constant — 380px was chosen when every clip was a 9:16
+  // sliver, and left a landscape preview 214px tall on a 2000px window.
+  const stageAreaRef = useRef<HTMLDivElement | null>(null);
+  const stageResizeObsRef = useRef<ResizeObserver | null>(null);
+  const [stageAvail, setStageAvail] = useState<{ w: number; h: number } | null>(null);
+  // A CALLBACK ref, not a mount effect: the stage area does not exist until
+  // the production has loaded (the loading/error returns render without it),
+  // and an empty-deps effect would run once against null and never attach —
+  // leaving the 380px fallback in charge forever.
+  const stageAreaRefCb = useCallback((el: HTMLDivElement | null) => {
+    stageAreaRef.current = el;
+    stageResizeObsRef.current?.disconnect();
+    stageResizeObsRef.current = null;
+    if (!el) return;
+    const measure = () =>
+      setStageAvail({
+        w: Math.max(0, el.clientWidth - STAGE_PAD * 2),
+        h: Math.max(0, el.clientHeight - STAGE_PAD * 2),
+      });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    stageResizeObsRef.current = ro;
+  }, []);
+  // View zoom (§55b) — a LOOKING control, never an EDIT: it changes the
+  // Player's actual rendered width inside the scrolling stage area, so the
+  // Player's own getScale() stays the one true page-px-per-composition-px
+  // factor and every drag/handle keeps landing where it is dropped. (A CSS
+  // transform on top of the Player would silently break that mapping.)
+  const [viewZoom, setViewZoom] = useState(1);
+  const viewZoomRef = useRef(viewZoom);
+  viewZoomRef.current = viewZoom;
+  const viewAnchorRef = useRef<{
+    prev: number;
+    ax: number;
+    ay: number;
+    sl: number;
+    st: number;
+  } | null>(null);
+  const applyViewZoom = useCallback((next: number, anchor?: { x: number; y: number }) => {
+    const el = stageAreaRef.current;
+    const clamped = Math.min(8, Math.max(1, next));
+    const prev = viewZoomRef.current;
+    if (el && clamped !== prev) {
+      const r = el.getBoundingClientRect();
+      viewAnchorRef.current = {
+        prev,
+        ax: (anchor?.x ?? r.left + r.width / 2) - r.left,
+        ay: (anchor?.y ?? r.top + r.height / 2) - r.top,
+        sl: el.scrollLeft,
+        st: el.scrollTop,
+      };
+    }
+    setViewZoom(clamped);
+  }, []);
+  // Applied AFTER the wider player has rendered — scrollLeft set before that
+  // clamps against the old content size (the R14 §53 lesson, same shape).
+  useLayoutEffect(() => {
+    const el = stageAreaRef.current;
+    const a = viewAnchorRef.current;
+    if (!el || !a) return;
+    viewAnchorRef.current = null;
+    const ratio = viewZoom / a.prev;
+    el.scrollLeft = (a.sl + a.ax) * ratio - a.ax;
+    el.scrollTop = (a.st + a.ay) * ratio - a.ay;
+  }, [viewZoom]);
+  // Ctrl/cmd+wheel zooms the VIEW about the cursor — the same gesture the
+  // timeline already owns, and native+non-passive for the same reason (a
+  // passive listener cannot preventDefault the browser's pinch-zoom).
+  useEffect(() => {
+    const el = stageAreaRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      applyViewZoom(viewZoomRef.current * Math.exp(-e.deltaY * 0.01), {
+        x: e.clientX,
+        y: e.clientY,
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [applyViewZoom]);
+  // Alt-drag (or middle-drag) pans the magnified view. The Overlay ignores
+  // Alt/middle presses entirely, so the split with EDIT drags is a modifier,
+  // not a guess — a plain drag still edits, and only a plain drag does.
+  const viewPanRef = useRef<{ x: number; y: number; sl: number; st: number } | null>(null);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const pan = viewPanRef.current;
+      const el = stageAreaRef.current;
+      if (!pan || !el) return;
+      el.scrollLeft = pan.sl - (e.clientX - pan.x);
+      el.scrollTop = pan.st - (e.clientY - pan.y);
+    };
+    const onUp = () => {
+      viewPanRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+  // The transcript view (R15 §59) — a panel, toggled from the top bar.
+  const [showTranscript, setShowTranscript] = useState(false);
 
   // J/K/L transport (PLAN Task 2): the reducer owns the ladder; this owns the
   // side effects. `playing` is the Player's own event-mirrored state, so the
@@ -311,6 +420,15 @@ export const App: React.FC = () => {
     );
   }
 
+  const aspect = live.settings.width / live.settings.height;
+  // Fit to the available box, aspect-preserving, then magnified by the view
+  // zoom. The floor keeps the preview usable while the window is being
+  // dragged around; before the first measurement the old constant stands in.
+  const fitW = stageAvail
+    ? Math.max(220, Math.min(stageAvail.w, stageAvail.h * aspect))
+    : 380;
+  const playerW = Math.round(fitW * viewZoom);
+
   return (
     <div style={shell}>
       <div style={topBar}>
@@ -318,6 +436,14 @@ export const App: React.FC = () => {
         <div style={{ display: "flex", gap: 8 }}>
           <button style={ghostButton} onClick={() => edits.undo()} disabled={!edits.canUndo}>
             Undo
+          </button>
+          <button
+            data-testid="transcript-toggle"
+            style={{ ...ghostButton, ...(showTranscript ? { borderColor: "#5b8cff" } : {}) }}
+            onClick={() => setShowTranscript((v) => !v)}
+            title="Find and retype caption words across the whole transcript"
+          >
+            Transcript
           </button>
           <button
             style={{ ...ghostButton, ...(edits.dirty ? primaryButton : {}) }}
@@ -415,7 +541,38 @@ export const App: React.FC = () => {
         </div>
       ) : null}
       <div style={mainRow}>
-        <div style={stageArea}>
+        {showTranscript ? (
+          <TranscriptPanel
+            baseLines={renderProps?.baseCaptionLines ?? renderProps?.captionLines ?? []}
+            liveLines={live.captionLines}
+            fps={live.settings.fps}
+            playerRef={playerRef}
+            edits={edits}
+          />
+        ) : null}
+        <div style={stageWrap}>
+          <div
+            ref={stageAreaRefCb}
+            style={stageArea}
+            onMouseDown={(e) => {
+              // View pan (§55b): Alt-drag or middle-drag moves the camera.
+              // preventDefault kills the browser's middle-click autoscroll;
+              // the Overlay ignores these presses, so no edit can start.
+              if (e.altKey || e.button === 1) {
+                e.preventDefault();
+                const el = stageAreaRef.current;
+                if (el) {
+                  viewPanRef.current = {
+                    x: e.clientX,
+                    y: e.clientY,
+                    sl: el.scrollLeft,
+                    st: el.scrollTop,
+                  };
+                }
+              }
+            }}
+          >
+            <div style={{ margin: "auto", padding: STAGE_PAD }}>
           <div
             ref={stageRef}
             data-testid="stage"
@@ -431,7 +588,7 @@ export const App: React.FC = () => {
               fps={live.settings.fps}
               compositionWidth={live.settings.width}
               compositionHeight={live.settings.height}
-              style={{ width: 380 }}
+              style={{ width: playerW }}
               controls
               // The frame is a canvas, not a play button (PLAN Task 1).
               // Remotion defaults clickToPlay to `controls`, which is right
@@ -467,11 +624,50 @@ export const App: React.FC = () => {
               {rate < 0 ? `◂◂ ${Math.abs(rate)}×` : `${rate}×`}
             </button>
           </div>
+            </div>
+          </div>
+          {/* View zoom (§55b) — pinned to the stage AREA, not the scrolled
+              content, so it stays reachable while magnified. */}
+          <div style={viewZoomBar}>
+            <button
+              data-testid="view-zoom-out"
+              style={viewZoomButton}
+              onClick={() => applyViewZoom(viewZoom / 2)}
+              disabled={viewZoom <= 1}
+              title="Zoom the preview out (ctrl/cmd+scroll on the preview)"
+            >
+              −
+            </button>
+            <span data-testid="view-zoom-level" style={viewZoomLabel}>
+              {Math.round(viewZoom * 100)}%
+            </span>
+            <button
+              data-testid="view-zoom-in"
+              style={viewZoomButton}
+              onClick={() => applyViewZoom(viewZoom * 2)}
+              disabled={viewZoom >= 8}
+              title="Zoom the preview in — a viewing magnifier, it never edits the video"
+            >
+              +
+            </button>
+            <button
+              data-testid="view-zoom-fit"
+              style={{ ...viewZoomButton, width: "auto", padding: "0 8px" }}
+              onClick={() => applyViewZoom(1)}
+              disabled={viewZoom <= 1}
+              title="Fit the preview to the window"
+            >
+              fit
+            </button>
+            <span style={viewZoomHint}>⌥-drag pans</span>
+          </div>
         </div>
         <div style={sidebar}>
           <Inspector
             selection={selection}
             cue={selectedCue}
+            frame={{ width: live.settings.width, height: live.settings.height }}
+            allSceneIds={live.sceneCues.map((c) => c.id)}
             edits={edits}
             resolvedTheme={live.theme}
             anchorText={anchorText}
@@ -554,13 +750,68 @@ const mainRow: React.CSSProperties = {
   minHeight: 0,
 };
 
-const stageArea: React.CSSProperties = {
+/** Breathing room around the preview; the fit math subtracts it per side. */
+const STAGE_PAD = 32;
+
+const stageWrap: React.CSSProperties = {
+  position: "relative",
   flex: 1,
+  minWidth: 0,
+};
+
+/**
+ * The preview's scroll viewport (§55b). Centering comes from the inner
+ * wrapper's `margin: auto`, NOT from justify/align center — a centred flex
+ * child that overflows its scroller puts its start edge outside the
+ * scrollable range, which is exactly the part a magnified inspection needs
+ * to reach.
+ */
+const stageArea: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  display: "flex",
+  overflow: "auto",
+};
+
+const viewZoomBar: React.CSSProperties = {
+  position: "absolute",
+  top: 10,
+  left: 10,
+  zIndex: 6,
   display: "flex",
   alignItems: "center",
-  justifyContent: "center",
-  padding: 32,
-  overflow: "auto",
+  gap: 6,
+  padding: "4px 6px",
+  background: "rgba(17,17,22,0.85)",
+  border: "1px solid #2A2A33",
+  borderRadius: 6,
+};
+
+const viewZoomButton: React.CSSProperties = {
+  width: 22,
+  height: 18,
+  fontSize: 12,
+  lineHeight: 1,
+  color: "#EDEDF2",
+  background: "#1A1A21",
+  border: "1px solid #2A2A33",
+  borderRadius: 4,
+  cursor: "pointer",
+  padding: 0,
+};
+
+const viewZoomLabel: React.CSSProperties = {
+  fontSize: 10,
+  fontFamily: "ui-monospace, 'SF Mono', monospace",
+  color: "#9A9AA3",
+  minWidth: 34,
+  textAlign: "center",
+};
+
+const viewZoomHint: React.CSSProperties = {
+  fontSize: 10,
+  color: "#55555f",
+  userSelect: "none",
 };
 
 const sidebar: React.CSSProperties = {

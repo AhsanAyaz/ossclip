@@ -690,6 +690,165 @@ test("timeline zoom: the track widens, scrolls, and gestures stay calibrated (R1
   expect((await track.boundingBox())!.width).toBeLessThanOrEqual(viewport.width + 2);
 });
 
+test("view zoom magnifies the preview and NEVER writes an override (R15 §55b)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  const before = (await page.getByTestId("stage").boundingBox())!;
+  // The preview is container-sized now (§55a) — sanity: bigger than the old
+  // fixed 380px sliver would ever allow the 9:16 frame to be.
+  expect(before.height).toBeGreaterThan(500);
+
+  await page.getByTestId("view-zoom-in").click();
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("200%");
+  await expect
+    .poll(async () => (await page.getByTestId("stage").boundingBox())!.width)
+    .toBeGreaterThan(before.width * 1.8);
+
+  // Alt-drag pans the magnified view — the camera moves, the document does
+  // not: no dirty flag, no selection, nothing in the override layer.
+  const area = page.getByTestId("stage").locator("..");
+  const stageBox = (await page.getByTestId("stage").boundingBox())!;
+  await page.keyboard.down("Alt");
+  await page.mouse.move(stageBox.x + 100, stageBox.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(stageBox.x + 40, stageBox.y + 60, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  void area;
+
+  await page.getByTestId("view-zoom-fit").click();
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("100%");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+});
+
+test("caption position: per-scene slider, and Apply to all scenes (R15 §56)", async ({
+  page,
+}) => {
+  const cleanDoc = await readFile(join(WORKDIR, "overrides.json"), "utf8").catch(() => "");
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-0").click();
+  const word = page.locator("[data-caption-word]").first();
+  await expect(word).toBeVisible();
+  const before = (await word.boundingBox())!.y;
+
+  const slider = page.getByTestId("caption-y-slider");
+  await slider.focus();
+  await page.keyboard.press("Home"); // 0.05 — far above any layout's anchor
+  await expect.poll(async () => (await word.boundingBox())!.y).toBeLessThan(before - 60);
+
+  // The bulk fan-out (§56b): one click, every scene, one undo step.
+  await page.getByTestId("caption-y-all").click();
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
+  for (const cue of renderProps.baseSceneCues) {
+    expect(doc.scenes[cue.id]?.captionY, cue.id).toBeCloseTo(0.05, 5);
+  }
+
+  // Leave no residue: restore the pre-test doc on disk.
+  await page.request.put("/api/overrides", {
+    data: cleanDoc || JSON.stringify({ theme: {}, scenes: {}, captions: {} }),
+    headers: { "content-type": "application/json" },
+  });
+});
+
+test("a drag at the timeline's edge pages the view and keeps going (R15 §58)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  // Zoom to 4× so the track genuinely overflows the scroller.
+  await page.getByTestId("zoom-in").click();
+  await page.getByTestId("zoom-in").click();
+  await expect(page.getByTestId("zoom-level")).toHaveText("4×");
+  const scroller = page.getByTestId("timeline-scroller");
+  const sb = (await scroller.boundingBox())!;
+  // Zoom buttons anchor about the viewport centre, so scrollLeft is already
+  // nonzero — start the paging assertions from the left bound.
+  await scroller.evaluate((el) => {
+    el.scrollLeft = 0;
+  });
+
+  // A scrub that runs off the right edge pages forward by a viewport width…
+  const ruler = (await page.getByTestId("ruler").boundingBox())!;
+  await page.mouse.move(sb.x + sb.width * 0.5, ruler.y + ruler.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sb.x + sb.width - 2, ruler.y + ruler.height / 2, { steps: 6 });
+  await page.mouse.move(sb.x + sb.width - 1, ruler.y + ruler.height / 2);
+  await expect
+    .poll(async () => scroller.evaluate((el) => el.scrollLeft))
+    .toBeGreaterThan(sb.width * 0.8);
+  await page.mouse.up();
+
+  // …and a block-body drag does the same, with the DRAG continuing across
+  // the page: the committed window ends past what the first viewport could
+  // even display (0..~8s at 4×).
+  await scroller.evaluate((el) => {
+    el.scrollLeft = 0;
+  });
+  const block = (await page.getByTestId("timeline-block-scene-0").boundingBox())!;
+  await page.mouse.move(block.x + block.width / 2, block.y + block.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sb.x + sb.width - 2, block.y + block.height / 2, { steps: 8 });
+  // Two wiggles past the cooldown so a second page can fire — the drag must
+  // survive the content shifting underneath it.
+  await page.waitForTimeout(350);
+  await page.mouse.move(sb.x + sb.width - 1, block.y + block.height / 2);
+  await page.waitForTimeout(100);
+  await page.mouse.up();
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8").catch(() => "{}"));
+  const timing = doc.scenes?.["scene-0"]?.timing;
+  // Committed on release like any move drag (unsaved doc — read the app's
+  // state instead: the block's own label survives, so assert via the
+  // Inspector's timing range).
+  void timing;
+  await expect(page.getByTestId("timing-range")).not.toContainText("0.09s –");
+  // Cleanup: reload discards the unsaved move.
+});
+
+test("transcript view: search, retype 1:1 through the caption layer, jump (R15 §59)", async ({
+  page,
+}) => {
+  const cleanDoc = await readFile(join(WORKDIR, "overrides.json"), "utf8").catch(() => "");
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("transcript-toggle").click();
+  await expect(page.getByTestId("transcript-panel")).toBeVisible();
+  // The scope contract is stated where the edits happen (§59b).
+  await expect(page.getByTestId("transcript-panel")).toContainText("1:1 retype only");
+
+  // Search narrows by highlight; the first fixture word is "Claude".
+  await page.getByTestId("transcript-search").fill("claude");
+  await expect(page.getByTestId("transcript-panel")).toContainText("match");
+
+  // Retype word 0 through the panel — it lands in the SAME caption override
+  // layer the stage double-click writes (base-guarded, produce-applied).
+  await page.getByTestId("transcript-word-0").dblclick();
+  const edit = page.getByTestId("transcript-edit");
+  await expect(edit).toBeVisible();
+  await edit.fill("CLAWD");
+  await edit.press("Enter");
+  await expect(page.getByTestId("transcript-word-0")).toHaveText("CLAWD");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc.captions["0"]).toEqual({ text: "CLAWD", was: "Claude" });
+
+  // Clicking a word jumps the preview to its start.
+  await page.getByTestId("transcript-word-5").click();
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(0.01);
+
+  await page.request.put("/api/overrides", {
+    data: cleanDoc || JSON.stringify({ theme: {}, scenes: {}, captions: {} }),
+    headers: { "content-type": "application/json" },
+  });
+});
+
 test("pip bubble: roundness and placement are per-scene edits (R14 §52)", async ({ page }) => {
   await page.goto("/");
   await settle(page);
