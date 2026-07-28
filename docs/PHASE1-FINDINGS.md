@@ -743,3 +743,15 @@ A freshly-scrubbed slider (or a select, checkbox) kept focus and swallowed SPACE
 ## 72. The view follows the cursor — a general principle
 
 The author's rule, applied everywhere it can matter: whenever the playhead leaves the timeline's visible window (playback at zoom, a ⌘-arrow jump, a frame step) the view scrolls to it; a block selected from the keyboard scrolls into view; the transcript's highlighted word follows playback (`nearest`, so reading elsewhere is only interrupted when playback truly moved on). And ⌘+arrows now SELECT the scene they jump to — cursor there, scene selected, play starts from that point.
+
+## 73. ⌘+scroll on the preview never worked — not once
+
+Reported with the keybinds modal open: the documented view-zoom gesture was dead. The wheel listener attached in a mount-time effect — which ran during the LOADING screen, against a stage area that did not exist yet, and never re-ran. The §55a ResizeObserver had hit the same trap and been fixed with a callback ref; the wheel listener was the second tenant of the same bug. The stage area node is React state now, and everything attaching to it re-runs when it actually mounts. The regression test dispatches a REAL ctrl-wheel at the stage — the zoom buttons could never have caught a listener that was simply absent.
+
+## 74. NEW — a documentation page
+
+`docs/site/index.html`: a single-page, self-contained reference in ossclip's own palette (the herdr.dev shape — hero, install, quick start, concepts, keybinds, component/layout/flag reference, config). No build step, no dependencies; open it locally or serve it via GitHub Pages. The keybinds section mirrors the in-app `?` modal.
+
+## 75. Re-render pinned to the original configuration
+
+Asked to double-check that the editor's Render uses the same configuration as the initial run. Flags always replayed verbatim (`command.json` records the argv) — but a provider AUTO-DETECTED from the produce shell's environment was re-detected in the EDIT SERVER's environment at replay, which could silently pick a different provider if the key wasn't exported there. The resolved provider is now pinned into the recorded args (`--llm <name>` — never the key itself; secrets stay out of the workdir): the replay uses the same provider or fails loudly asking for its credentials.

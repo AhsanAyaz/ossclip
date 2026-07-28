@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ossclip — open, local-first AI video producer</title>
+<meta name="description" content="Raw talking-head footage in → a polished, virality-optimized short out. Local transcription, local rendering, LLM-planned graphics, a direct-manipulation editor." />
+<style>
+  :root {
+    --bg: #0B0B0E; --panel: #111116; --panel2: #0F0F14;
+    --border: #1E1E24; --border2: #2A2A33;
+    --fg: #EDEDF2; --muted: #9A9AA3; --dim: #6a6a75;
+    --accent: #FFE14D; --blue: #8ab4f8; --purple: #c5a3ff;
+    --green: #5FBF77; --red: #FF5C5C;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    --sans: "Inter", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.6; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, kbd { font-family: var(--mono); }
+  code { background: var(--panel2); border: 1px solid var(--border2); border-radius: 4px; padding: 1px 6px; font-size: 0.9em; }
+  pre { background: var(--panel2); border: 1px solid var(--border2); border-radius: 8px; padding: 14px 18px; overflow-x: auto; font-size: 13px; line-height: 1.7; }
+  pre code { background: none; border: none; padding: 0; }
+  .layout { display: flex; max-width: 1180px; margin: 0 auto; }
+  nav.side {
+    position: sticky; top: 0; align-self: flex-start; flex-shrink: 0;
+    width: 220px; height: 100vh; overflow-y: auto;
+    padding: 28px 18px; border-right: 1px solid var(--border);
+  }
+  nav.side .brand { font-family: var(--mono); font-weight: 800; font-size: 18px; color: var(--accent); margin-bottom: 4px; }
+  nav.side .tag { font-size: 11px; color: var(--dim); margin-bottom: 18px; }
+  nav.side a { display: block; padding: 4px 8px; margin: 1px 0; border-radius: 5px; font-size: 13px; color: var(--muted); }
+  nav.side a:hover { color: var(--fg); background: var(--panel); text-decoration: none; }
+  nav.side .group { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin: 16px 0 4px 8px; }
+  main { flex: 1; min-width: 0; padding: 34px 44px 90px; }
+  h1, h2, h3 { font-family: var(--mono); line-height: 1.25; }
+  h1 { font-size: 34px; margin: 10px 0 4px; }
+  h1 .dot { color: var(--accent); }
+  h2 { font-size: 20px; color: var(--blue); margin: 56px 0 12px; padding-top: 18px; border-top: 1px solid var(--border); }
+  h3 { font-size: 15px; color: var(--fg); margin: 26px 0 8px; }
+  p, li { color: var(--muted); font-size: 14.5px; }
+  p strong, li strong { color: var(--fg); }
+  .lede { font-size: 17px; color: var(--fg); max-width: 640px; }
+  .status { display: inline-block; font-family: var(--mono); font-size: 11px; color: var(--bg); background: var(--accent); border-radius: 4px; padding: 2px 8px; margin: 10px 0 0; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); padding: 6px 12px; border-bottom: 1px solid var(--border2); }
+  td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--muted); vertical-align: top; }
+  td:first-child { font-family: var(--mono); color: var(--purple); white-space: nowrap; font-size: 13px; }
+  td em { color: var(--fg); font-style: normal; }
+  kbd { display: inline-block; background: var(--panel); border: 1px solid var(--border2); border-bottom-width: 2px; border-radius: 5px; padding: 0 7px; font-size: 12px; color: var(--purple); }
+  .pipeline { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 16px 0; font-family: var(--mono); font-size: 12.5px; }
+  .pipeline .step { background: var(--panel); border: 1px solid var(--border2); border-radius: 6px; padding: 5px 11px; color: var(--fg); }
+  .pipeline .arrow { color: var(--dim); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card b { font-family: var(--mono); font-size: 13px; color: var(--fg); display: block; margin-bottom: 4px; }
+  .card span { font-size: 12.5px; color: var(--muted); }
+  .note { border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 8px 8px 0; padding: 10px 16px; margin: 16px 0; font-size: 13.5px; }
+  .foot { margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--dim); }
+  @media (max-width: 860px) {
+    nav.side { display: none; }
+    main { padding: 24px 20px 60px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="side">
+  <div class="brand">ossclip</div>
+  <div class="tag">open, local-first AI video producer</div>
+  <div class="group">start</div>
+  <a href="#install">Install</a>
+  <a href="#quickstart">Quick start</a>
+  <div class="group">concepts</div>
+  <a href="#pipeline">How it works</a>
+  <a href="#workdir">The work directory</a>
+  <a href="#providers">Models &amp; cost</a>
+  <div class="group">the editor</div>
+  <a href="#editor">Editing</a>
+  <a href="#keybinds">Keybinds</a>
+  <div class="group">reference</div>
+  <a href="#components">Scene components</a>
+  <a href="#layouts">Layouts</a>
+  <a href="#flags">produce flags</a>
+  <a href="#config">Configuration</a>
+</nav>
+<main>
+
+<h1>ossclip<span class="dot">.</span></h1>
+<p class="lede">Raw talking-head footage in → a polished, virality-optimized short out: filler words and dead air removed, word-timed kinetic captions, face-aware framing, and title cards / stat cards / diagrams planned by an LLM producer against a hand-built scene library — plus a cover image for the profile grid.</p>
+<p><strong>Your footage never leaves your machine.</strong> Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones — on your own API key, or on your existing Claude Code subscription.</p>
+<span class="status">working end to end · pre-1.0</span>
+
+<h2 id="install">Install</h2>
+<p>Requirements: Node ≥ 22 with pnpm, <code>ffmpeg</code>/<code>ffprobe</code> on PATH, <a href="https://github.com/ggml-org/whisper.cpp">whisper.cpp</a> (<code>whisper-cli</code>) with a ggml model, and — for <code>--produce</code> — a logged-in Claude Code, an <code>ANTHROPIC_API_KEY</code>, or a <code>GEMINI_API_KEY</code>.</p>
+<pre><code>pnpm install
+pnpm build            # builds the editor page; needed once before `ossclip edit`
+
+mkdir -p ~/.ossclip/models
+curl -L -o ~/.ossclip/models/ggml-small.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin</code></pre>
+<p><code>small.en</code> is the default. A mistranscribed word ends up in your captions <em>and</em> on a graphic, so accuracy beats speed here — and <code>--produce</code> runs a repair pass over the transcript before anything is drawn.</p>
+
+<h2 id="quickstart">Quick start</h2>
+<pre><code># The whole thing: cut + captions + LLM-planned graphics + cover
+pnpm ossclip produce input.mp4 --produce -o out.mp4
+
+# Just the cut and captions — no LLM, no network
+pnpm ossclip produce input.mp4 -o out.mp4
+
+# See what would be cut and why, without rendering
+pnpm ossclip produce input.mp4 --no-render
+
+# Open the editor over what a run produced
+pnpm ossclip edit "&lt;work directory&gt;"
+
+# Landscape (YouTube/desktop) instead of the 9:16 default
+pnpm ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
+
+<h2 id="pipeline">How it works</h2>
+<div class="pipeline">
+  <span class="step">transcribe</span><span class="arrow">→</span>
+  <span class="step">repair</span><span class="arrow">→</span>
+  <span class="step">analyze</span><span class="arrow">→</span>
+  <span class="step">cut</span><span class="arrow">→</span>
+  <span class="step">captions</span><span class="arrow">→</span>
+  <span class="step">produce scenes</span><span class="arrow">→</span>
+  <span class="step">route &amp; verify</span><span class="arrow">→</span>
+  <span class="step">render (+ cover)</span>
+</div>
+<ul>
+  <li><strong>Transcribe &amp; repair</strong> — whisper.cpp locally, then an LLM pass that fixes mishearings (<code>cloud code</code> → <code>Claude Code</code>) under a strict gate: a rewrite is refused, a mishearing is fixed, and every repair is logged with what was heard.</li>
+  <li><strong>Cut</strong> — silences and fillers go by measured thresholds (<code>--cleanup exact…aggressive</code>); the report says what was cut and why.</li>
+  <li><strong>Captions</strong> — word-timed kinetic captions with an active-word highlight, routed around the platform's safe areas, the active graphic, and any text burned into the source.</li>
+  <li><strong>Producer</strong> — the LLM plans a beat sheet and scenes against the component library, steered by a measured framing brief (a wide band never lands on a close-up), grounded against the transcript so a stat it prints is a stat that was said.</li>
+  <li><strong>Verify</strong> — layouts that would crop the head are repaired, graphics route around the source's own on-screen text, on-screen copy is reconciled with the captions.</li>
+  <li><strong>Render</strong> — Remotion, locally, plus a cover JPEG framed for the profile grid.</li>
+</ul>
+
+<h2 id="workdir">The work directory</h2>
+<p>Every run writes <code>&lt;input dir&gt;/.ossclip/&lt;name&gt;-&lt;hash&gt;/</code>: the transcript, the analysis, <code>production.json</code>, <code>render-props.json</code>, <code>report.txt</code>, <code>usage.json</code>, the cached LLM plan, and <code>command.json</code> — the recorded invocation the editor's Render button replays. It is a cache: delete it to force a clean run; keep it and re-runs are near-instant.</p>
+<div class="note"><strong>Edits survive re-runs.</strong> Everything you change in the editor lands in <code>overrides.json</code> — a file the producer never writes. Re-running <code>produce</code> re-plans the video and keeps your edits. Re-rendering from the editor replays the <em>same configuration</em> as the recorded run — flags, aspect, and provider (the resolved provider is pinned into <code>command.json</code>, so an env-detected choice can't drift).</div>
+
+<h2 id="providers">Models &amp; cost</h2>
+<p>Without <code>--llm</code>, ossclip picks: <code>GEMINI_API_KEY</code> → <code>ANTHROPIC_API_KEY</code> → the Claude Code CLI (your Pro/Max subscription — plan usage, not API credits). Calls are tiered: editorial judgement (the beat sheet, transcript repair) goes to the main model; mechanical calls go to a smaller sibling.</p>
+<pre><code>▸ llm: 3 calls · 130,749 in / 8,321 out tokens · ~$0.72 of API-rate work, covered by the subscription · 92s</code></pre>
+<p>Reported token counts are exact where the provider reports them and marked <code>(est)</code> where derived; a model with no known price gets tokens and <strong>no cost guess</strong>. Per-call breakdown in <code>report.txt</code>, raw records in <code>usage.json</code>.</p>
+
+<h2 id="editor">Editing</h2>
+<pre><code>pnpm ossclip edit "&lt;work directory&gt;"     # opens http://127.0.0.1:5174</code></pre>
+<div class="cards">
+  <div class="card"><b>Direct manipulation</b><span>Click to select, drag to move, corner handles to resize, panel fields for precision. Graphic boxes, elements, video framing, pip bubble — all grabbable.</span></div>
+  <div class="card"><b>Timeline</b><span>Zoom 1–16×, scrub, drag blocks in time, resize edges, split at the playhead (⌘B), soft-delete with a way back. The view follows the cursor.</span></div>
+  <div class="card"><b>Captions</b><span>Double-click a word to retype it (1:1 — timings stay). Position and scale per scene, or applied to every scene at once.</span></div>
+  <div class="card"><b>Transcript view</b><span>The whole transcript, searchable; click a word to jump the preview, double-click to fix it. Same override layer as the stage.</span></div>
+  <div class="card"><b>Render from the editor</b><span>Replays the recorded produce invocation — same flags, same provider — with live progress, elapsed time, token/cost lines, cancel, and a panel that survives a refresh.</span></div>
+  <div class="card"><b>Preview</b><span>Fills the window in either aspect; ⌘+scroll magnifies as a view-only zoom (never an edit), ⌥-drag pans.</span></div>
+</div>
+
+<h2 id="keybinds">Keybinds</h2>
+<p>Press <kbd>?</kbd> in the editor for this list in-app.</p>
+<h3>transport</h3>
+<table>
+  <tr><td>space</td><td>play / pause</td></tr>
+  <tr><td>J / K / L</td><td>reverse · pause · forward (tap again to speed up)</td></tr>
+  <tr><td>← / →</td><td>step one frame back / forward</td></tr>
+  <tr><td>⌘/ctrl + ← / →</td><td>jump to and select the previous / next scene</td></tr>
+</table>
+<h3>selection</h3>
+<table>
+  <tr><td>click</td><td>select scene or element</td></tr>
+  <tr><td>⌥ + ← / →</td><td>select previous / next scene</td></tr>
+  <tr><td>esc</td><td>clear selection · close dialogs</td></tr>
+</table>
+<h3>editing</h3>
+<table>
+  <tr><td>⌘/ctrl + B</td><td>split the scene at the playhead</td></tr>
+  <tr><td>delete / backspace</td><td>delete the selected scene (restorable)</td></tr>
+  <tr><td>⌘/ctrl + Z</td><td>undo</td></tr>
+  <tr><td>⌘/ctrl + S</td><td>save</td></tr>
+  <tr><td>double-click caption word</td><td>retype it in place</td></tr>
+  <tr><td>drag element / corner handles</td><td>move · resize</td></tr>
+  <tr><td>drag picture</td><td>pan the video framing</td></tr>
+</table>
+<h3>view</h3>
+<table>
+  <tr><td>⌘/ctrl + scroll on preview</td><td>zoom the view (never edits)</td></tr>
+  <tr><td>⌥-drag / middle-drag</td><td>pan the zoomed view</td></tr>
+  <tr><td>⌘/ctrl + scroll on timeline</td><td>zoom the timeline</td></tr>
+  <tr><td>?</td><td>the in-app reference</td></tr>
+</table>
+
+<h2 id="components">Scene components</h2>
+<div class="cards">
+  <div class="card"><b>TitleCard</b><span>The headline moment — eyebrow, title, an emphasized stat, subtitle.</span></div>
+  <div class="card"><b>StatCard</b><span>One number that matters: label | value, optional caption.</span></div>
+  <div class="card"><b>RuleCard</b><span>A kicker and a rule to live by, optionally with a struck counter-line.</span></div>
+  <div class="card"><b>StrikethroughReveal</b><span>Negation/contrast — big words, struck lines, or ✗/✓ verdict marks per line.</span></div>
+  <div class="card"><b>BulletList</b><span>An enumeration — one bullet per listed item, optional kicker title.</span></div>
+  <div class="card"><b>FlowDiagram</b><span>A causal chain as chips with arrows (TEAM → AI AGENTS → CHURN).</span></div>
+  <div class="card"><b>TerminalMock</b><span>Stylized terminal windows for anything about running code or agents.</span></div>
+  <div class="card"><b>ChatMock</b><span>A chat exchange, or the single comment-CTA bubble.</span></div>
+  <div class="card"><b>ScreenshotFrame</b><span>A framed screenshot look with a label chip.</span></div>
+</div>
+<p>Every component sizes its type to the slot it is given (nothing overflows the platform-safe area), animates in with a staggered rise, and leaves through a uniform exit fade. All text on them is editable in place.</p>
+
+<h2 id="layouts">Layouts</h2>
+<p>Layout places the <em>video</em>; the component always renders. Portrait (9:16) and landscape (16:9) each get frame-appropriate geometry — the split axis follows the frame's long edge.</p>
+<table>
+  <tr><th>layout</th><th>arrangement</th></tr>
+  <tr><td>full-bleed</td><td>the talking head, full frame</td></tr>
+  <tr><td>blurred-behind</td><td>speaker blurred and dimmed behind a centred graphic</td></tr>
+  <tr><td>video-top</td><td>video band on top, graphic below <em>(portrait)</em></td></tr>
+  <tr><td>pip-bubble</td><td>big graphic + the speaker in a round bubble (roundness and placement editable per scene)</td></tr>
+  <tr><td>graphic-only</td><td>the graphic owns the frame</td></tr>
+  <tr><td>lower-third</td><td>picture whole, card in the bottom band <em>(broadcast lower third)</em></td></tr>
+  <tr><td>split-left / split-right</td><td>speaker fills one half, graphic the other <em>(landscape; stacks in portrait)</em></td></tr>
+</table>
+
+<h2 id="flags">produce flags</h2>
+<table>
+  <tr><td>--produce</td><td>run the LLM producer brain. Without it: cut + captions only</td></tr>
+  <tr><td>--intent "&lt;text&gt;"</td><td>what the video should be — steers the producer's editorial choices</td></tr>
+  <tr><td>--speaker "&lt;who&gt;"</td><td>who is on camera — helps repair recognise a mangled name</td></tr>
+  <tr><td>--cleanup &lt;level&gt;</td><td><em>exact | light | standard | aggressive</em> — how hard to cut silence and fillers</td></tr>
+  <tr><td>--aspect &lt;ratio&gt;</td><td><em>9:16</em> (default) or <em>16:9</em> — landscape export with landscape-native layouts</td></tr>
+  <tr><td>--source-fit &lt;mode&gt;</td><td><em>cover</em> crops to fill; <em>contain</em> shows the whole frame inset — the landscape-source escape hatch</td></tr>
+  <tr><td>--llm &lt;provider&gt;</td><td><em>claude | claude-cli | gemini | mock</em></td></tr>
+  <tr><td>--llm-model / --llm-fast-model</td><td>override the editorial / mechanical model (<em>same</em> disables tiering)</td></tr>
+  <tr><td>--whisper-model &lt;name&gt;</td><td>transcription model for this run (<em>base.en | small.en | medium.en</em>)</td></tr>
+  <tr><td>--no-repair</td><td>skip the ASR mishearing repair</td></tr>
+  <tr><td>--scenes &lt;path&gt;</td><td>hand-authored scenes JSON — no LLM in the loop</td></tr>
+  <tr><td>--source-is-edited</td><td>the source already has burned-in graphics — keep ossclip's off them</td></tr>
+  <tr><td>--no-cover / --cover &lt;path&gt;</td><td>skip, or redirect, the cover image</td></tr>
+  <tr><td>--no-render</td><td>stop after writing the props</td></tr>
+  <tr><td>--workdir &lt;dir&gt;</td><td>where the cache lives</td></tr>
+</table>
+
+<h2 id="config">Configuration</h2>
+<p><code>~/.ossclip/config.json</code> — all optional:</p>
+<pre><code>{
+  "model": "small.en",
+  "speaker": "Ahsan, host of the Code with Ahsan channel",
+  "fastModel": "claude-haiku-4-5-20251001",
+  "ffmpegPath": "ffmpeg",
+  "whisperPath": "whisper-cli",
+  "modelDir": "~/.ossclip/models",
+  "browserExecutable": "/path/to/chrome",
+  "pricing": { "claude-opus-5": { "inputPerMTok": 15, "outputPerMTok": 75 } }
+}</code></pre>
+<p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>.</p>
+
+<div class="foot">
+  ossclip is built findings-first: every fix traces to a numbered defect from a real render — the running log lives in <code>docs/PHASE1-FINDINGS.md</code>. This page: <code>docs/site/index.html</code>, self-contained, ready for GitHub Pages.
+</div>
+
+</main>
+</div>
+</body>
+</html>

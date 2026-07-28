@@ -6,6 +6,8 @@ Your footage never leaves your machine. Transcription is local (whisper.cpp), re
 
 > **Status: working end to end, pre-1.0.** Cut, captions, zoom, scene graphics, the LLM producer, cover images and a direct-manipulation editor are all built and exercised on real footage. Interfaces still move between rounds. See [`docs/PHASE1-FINDINGS.md`](./docs/PHASE1-FINDINGS.md) for the running defect log — every fix in this repo traces to a numbered finding from a real render.
 
+**Docs:** a single-page reference — install, concepts, keybinds, flags — lives at [`docs/site/index.html`](./docs/site/index.html) (self-contained; open it locally or serve it via GitHub Pages).
+
 ## Requirements
 
 - Node ≥ 22, pnpm

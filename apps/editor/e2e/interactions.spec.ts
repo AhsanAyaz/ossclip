@@ -922,6 +922,26 @@ test("⌥+arrows select the neighbour scene; ⌘+arrows jump to scene starts (R1
   await expect(page.locator("text=Scene").first()).toBeVisible();
 });
 
+test("ctrl/cmd+scroll on the preview zooms the view (R16 §73)", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  // The listener attached during the LOADING screen — to a node that did not
+  // exist yet — so the documented shortcut was dead in every session. A real
+  // ctrl-wheel dispatched at the stage is the regression test the buttons
+  // could never be.
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("100%");
+  await page.getByTestId("stage").evaluate((el) => {
+    el.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: -240, ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+  });
+  await expect
+    .poll(async () => page.getByTestId("view-zoom-level").textContent())
+    .not.toBe("100%");
+  await page.getByTestId("view-zoom-fit").click();
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("100%");
+});
+
 test("the view follows the cursor out of the viewport (R16 §72)", async ({ page }) => {
   await page.goto("/");
   await settle(page);

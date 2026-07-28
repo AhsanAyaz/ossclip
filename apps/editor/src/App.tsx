@@ -96,12 +96,16 @@ export const App: React.FC = () => {
   const stageAreaRef = useRef<HTMLDivElement | null>(null);
   const stageResizeObsRef = useRef<ResizeObserver | null>(null);
   const [stageAvail, setStageAvail] = useState<{ w: number; h: number } | null>(null);
-  // A CALLBACK ref, not a mount effect: the stage area does not exist until
+  // The stage area node, as STATE (R16 §73): the area does not exist until
   // the production has loaded (the loading/error returns render without it),
-  // and an empty-deps effect would run once against null and never attach —
-  // leaving the 380px fallback in charge forever.
+  // so anything attaching to it must re-run when it actually mounts. The
+  // §55a ResizeObserver learned this through a callback ref; the view-zoom
+  // wheel listener below still hung off a mount-time effect that ran against
+  // null — which is why ⌘+scroll on the preview NEVER worked.
+  const [stageAreaEl, setStageAreaEl] = useState<HTMLDivElement | null>(null);
   const stageAreaRefCb = useCallback((el: HTMLDivElement | null) => {
     stageAreaRef.current = el;
+    setStageAreaEl(el);
     stageResizeObsRef.current?.disconnect();
     stageResizeObsRef.current = null;
     if (!el) return;
@@ -160,8 +164,11 @@ export const App: React.FC = () => {
   // Ctrl/cmd+wheel zooms the VIEW about the cursor — the same gesture the
   // timeline already owns, and native+non-passive for the same reason (a
   // passive listener cannot preventDefault the browser's pinch-zoom).
+  // Depends on the ELEMENT STATE, not the ref (§73): keyed on the ref, this
+  // ran once during the loading screen, attached to nothing, and the
+  // shortcut was dead in every session.
   useEffect(() => {
-    const el = stageAreaRef.current;
+    const el = stageAreaEl;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -173,7 +180,7 @@ export const App: React.FC = () => {
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [applyViewZoom]);
+  }, [stageAreaEl, applyViewZoom]);
   // Alt-drag (or middle-drag) pans the magnified view. The Overlay ignores
   // Alt/middle presses entirely, so the split with EDIT drags is a modifier,
   // not a guess — a plain drag still edits, and only a plain drag does.

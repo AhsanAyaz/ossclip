@@ -1099,6 +1099,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // flags — and guessing would silently render a different video than the
   // one on screen. execArgv carries the module loader (tsx in dev), so the
   // replay works from source and from a compiled build alike.
+  // The provider may have been AUTO-DETECTED from this shell's environment
+  // (a GEMINI_/ANTHROPIC_ key exported here). The editor's Render replays
+  // this argv from the EDIT SERVER's environment, which may not have that
+  // key — and the auto-detection would then silently pick a DIFFERENT
+  // provider (R16 §75). Pin the RESOLVED choice into the recorded args —
+  // never the key itself; secrets stay out of the workdir — so a replay
+  // uses the same configuration or fails loudly asking for it.
+  const recordedArgs = process.argv.slice(2);
+  if (provider && !recordedArgs.includes("--llm")) {
+    recordedArgs.push("--llm", providerName);
+  }
   await writeFile(
     join(work, "command.json"),
     JSON.stringify(
@@ -1106,7 +1117,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         execPath: process.execPath,
         execArgv: process.execArgv,
         script: process.argv[1],
-        args: process.argv.slice(2),
+        args: recordedArgs,
         cwd: process.cwd(),
         out: outPath,
       },
