@@ -1000,5 +1000,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       }
     }
   }
+  // Record THIS invocation so the editor's Render button can replay it (R11
+  // Task 4). Nothing else can reconstruct it — production.json has the
+  // source path, cleanup and intent, but not --produce, --out or the LLM
+  // flags — and guessing would silently render a different video than the
+  // one on screen. execArgv carries the module loader (tsx in dev), so the
+  // replay works from source and from a compiled build alike.
+  await writeFile(
+    join(work, "command.json"),
+    JSON.stringify(
+      {
+        execPath: process.execPath,
+        execArgv: process.execArgv,
+        script: process.argv[1],
+        args: process.argv.slice(2),
+        cwd: process.cwd(),
+        out: outPath,
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`✓ done → ${outPath}`);
 }

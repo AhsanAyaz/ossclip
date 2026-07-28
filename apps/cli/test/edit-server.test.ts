@@ -111,6 +111,73 @@ describe("edit server", () => {
     await chmod(join(dir, "clip.mp4"), 0o644);
   });
 
+  it("412 without command.json, and the production doc says the button can't work", async () => {
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, { port: 0 });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/render`, { method: "POST" });
+    expect(res.status).toBe(412);
+    const prod = await (await fetch(`${server.url}/api/production`)).json();
+    expect(prod.canRender).toBe(false);
+  });
+
+  it("replays ONLY the recorded argv, capturing output — the request body is never executed", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: "-e",
+        args: ["console.log('hi from the recorded command')"],
+        cwd: dir,
+      }),
+    );
+    const server = await startEditServer(dir, { port: 0 });
+    close = server.close;
+    // A client-supplied command in the body must be IGNORED outright — a
+    // locally-bound server that ran it would still be a browser-reachable
+    // shell.
+    const res = await fetch(`${server.url}/api/render`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ execPath: "/bin/sh", script: "-c", args: ["echo pwned"] }),
+    });
+    expect(res.status).toBe(202);
+    let status = { running: true, exitCode: null as number | null, lines: [] as string[] };
+    for (let i = 0; i < 50 && (status.running || status.exitCode === null); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      status = await (await fetch(`${server.url}/api/render/status`)).json();
+    }
+    expect(status.exitCode).toBe(0);
+    expect(status.lines.join("\n")).toContain("hi from the recorded command");
+    expect(status.lines.join("\n")).not.toContain("pwned");
+    // The production doc now reports the button usable.
+    const prod = await (await fetch(`${server.url}/api/production`)).json();
+    expect(prod.canRender).toBe(true);
+  });
+
+  it("409 while a render is already running; server close kills the child", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: "-e",
+        args: ["setTimeout(() => {}, 10000)"],
+        cwd: dir,
+      }),
+    );
+    const server = await startEditServer(dir, { port: 0 });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(409);
+    const status = await (await fetch(`${server.url}/api/render/status`)).json();
+    expect(status.running).toBe(true);
+    // afterEach's close() kills the child — the suite must not hang on it.
+  });
+
   it("honours a Range request with a 206 and Content-Range", async () => {
     const dir = await fixtureWorkdir();
     const server = await startEditServer(dir, { port: 0 });

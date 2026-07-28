@@ -2,7 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes.
 
-**Status:** planned 2026-07-31 from the author's third editing session, on the round-10 build (`25434d3`); not started. Task order 1 → 2 → 3 → 4; 2 and 3 are coupled (see Task 3's rationale).
+**Status:** implemented 2026-07-31 (remote session), in order 1 → 2 → 3 → 4, one commit each.
+
+> **Status 2026-07-31 — Tasks 1–4 done.** 481 unit tests, typecheck, editor build, 15 Playwright e2e green. Deviations and discoveries:
+>
+> - **Task 1:** as planned; the e2e uses the fixture's `scene-2`/`take-0` (the plan's `scene-8`/`take-0-3` are the author's real clip) and asserts topmost-at-overlap during a live start-edge drag.
+> - **Task 2:** as planned, plus one real bug the e2e caught: the app shell used `minHeight: 100vh`, so the new (taller) Inspector panel stretched the PAGE and pushed the timeline below the 1000px viewport — every raw-mouse seek silently missed. The shell is `height: 100vh` now; the sidebar scrolls internally as its `overflowY: auto` always intended. `clampGraphicRect` is epsilon-tolerant (SAFE_RECT's bounds are float sums; an exactly-0.8-wide layout slot must clamp to itself). The editor derives drag fractions from the Player's letterboxed canvas box (container centre ± half the scaled composition; `getScale()` is the size authority). 2b shipped as planned — one rect-aware caption-anchor path for every line.
+> - **Task 3:** the plan's "~22-char measure" and "widening strictly increases characters per line" pull against each other if the font simply scales with the slot — reconciled with a split ceiling: a WRAPPING exchange caps at caption-sized `CHAT_WRAP_FONT` (44), which is what makes a wider box rewrap instead of magnify, while a single short line (the CTA word) may grow to `CHAT_MAX_FONT` (96 = the old 40 × 2.4, stated directly). §28a stays the hard bound; the height fit runs through the same `chatStackHeightPx` model `estimateHeightPx` uses. Fixture-rendered: the CTA bubble reads full-size, glyphs inside the rect.
+> - **Task 4:** `command.json` records `execPath`/`execArgv`/`script`/`args`/`cwd` (`execArgv` carries tsx's loader so the replay works from source or a build). The server validates it with zod on read, replays ONLY that argv (a body-supplied command is ignored — pinned by test), 409s a second run, kills the child on close. Render failures show in the log panel with the tail rather than replacing the whole app with the fatal error screen.
+> - **Author's run still owed:** re-produce the real clip, drag `scene-11`'s box wider and watch the text rewrap live, hit Render, confirm `v10` matches the preview.
 
 **Evidence this was planned from:** a `v9` run of `5 ClaudeCode.mp4` (5 graphic scenes + 5 plain takes, framing clean at 93% of band) plus three screenshots from the author — a selected `scene-8` block clipped by `take-0-3`, and `scene-11`'s ChatMock rendering "Which one didn't you know?" as five one-word lines inside a box with no resize affordance.
 

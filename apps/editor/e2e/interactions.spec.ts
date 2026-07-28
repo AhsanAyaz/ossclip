@@ -500,3 +500,16 @@ test("drag a corner handle to reshape the graphic box; body clicks still reach e
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
 });
+
+test("Render is present but honestly disabled without a recorded command (R11 Task 4)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  // The fixture workdir has no command.json — the button must exist, be
+  // disabled, and SAY WHY, rather than firing a replay that cannot work.
+  const btn = page.getByTestId("render-button");
+  await expect(btn).toBeVisible();
+  await expect(btn).toBeDisabled();
+  await expect(btn).toHaveAttribute("title", /command\.json/);
+});

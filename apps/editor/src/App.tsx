@@ -63,6 +63,21 @@ export const App: React.FC = () => {
   // Inspector's zoom slider both write it, the live memo applies it last, and
   // it clears the moment the real patch lands in the edit layer.
   const [videoPreview, setVideoPreview] = useState<VideoPreview | null>(null);
+  // Render-from-the-editor (R11 Task 4): whether the server has a recorded
+  // invocation to replay, and the in-flight run's state while it does.
+  const [canRender, setCanRender] = useState(false);
+  const [render, setRender] = useState<{
+    running: boolean;
+    lines: string[];
+    failed?: number;
+  } | null>(null);
+  const renderPollRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (renderPollRef.current !== null) window.clearInterval(renderPollRef.current);
+    },
+    [],
+  );
   // Same lifecycle for the graphic-box transform (R11 Task 2).
   const [graphicPreview, setGraphicPreview] = useState<GraphicPreview | null>(null);
   const stageRef = useRef<HTMLDivElement>(null!);
@@ -108,8 +123,13 @@ export const App: React.FC = () => {
       try {
         const res = await fetch("/api/production");
         if (!res.ok) throw new Error(`GET /api/production failed: ${res.status}`);
-        const body = (await res.json()) as { renderProps: RawRenderProps; overrides: OverrideDoc };
+        const body = (await res.json()) as {
+          renderProps: RawRenderProps;
+          overrides: OverrideDoc;
+          canRender?: boolean;
+        };
         setRenderProps(body.renderProps);
+        setCanRender(Boolean(body.canRender));
         edits.load(body.overrides);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -175,6 +195,55 @@ export const App: React.FC = () => {
   const onSave = (): void => {
     void edits.save().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
+
+  // Render (R11 Task 4.4): save first when dirty — a render of unsaved edits
+  // is the trap worth designing out — then POST and poll. On success the new
+  // renderProps swap in while the CURRENT override doc, undo history and
+  // selection are all KEPT (no edits.load — the server's doc is exactly what
+  // was just saved). On failure the log panel stays up with the tail.
+  const onRender = useCallback(async (): Promise<void> => {
+    try {
+      if (edits.dirty) await edits.save();
+      const res = await fetch("/api/render", { method: "POST" });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `render failed to start: ${res.status}`);
+      }
+      setRender({ running: true, lines: [] });
+      const poll = window.setInterval(() => {
+        void (async () => {
+          try {
+            const s = await fetch("/api/render/status");
+            const body = (await s.json()) as {
+              running: boolean;
+              exitCode: number | null;
+              lines?: string[];
+            };
+            if (body.running || body.exitCode === null) {
+              setRender({ running: body.running, lines: body.lines ?? [] });
+              return;
+            }
+            window.clearInterval(poll);
+            renderPollRef.current = null;
+            if (body.exitCode === 0) {
+              const p = await fetch("/api/production");
+              const prod = (await p.json()) as { renderProps: RawRenderProps; canRender?: boolean };
+              setRenderProps(prod.renderProps);
+              setCanRender(Boolean(prod.canRender));
+              setRender(null);
+            } else {
+              setRender({ running: false, lines: body.lines ?? [], failed: body.exitCode });
+            }
+          } catch {
+            // Transient poll failure — keep polling; the interval survives.
+          }
+        })();
+      }, 1000);
+      renderPollRef.current = poll;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [edits]);
 
   // Deleted scenes, at their override-applied timing — the Timeline draws
   // them as restorable ghosts (PLAN Task C5), and selecting one resolves to
@@ -247,6 +316,20 @@ export const App: React.FC = () => {
           >
             Save
           </button>
+          <button
+            data-testid="render-button"
+            style={ghostButton}
+            onClick={() => void onRender()}
+            disabled={!canRender || render?.running === true}
+            title={
+              canRender
+                ? "Save if needed, then re-run the recorded produce command"
+                : "No command.json in this workdir — run `ossclip produce` once in a " +
+                  "terminal; it records the invocation and Render replays it"
+            }
+          >
+            {render?.running ? "Rendering…" : "Render"}
+          </button>
         </div>
         <span
           style={{ ...statusText, color: edits.dirty ? "#FFE14D" : "#5FBF77" }}
@@ -255,6 +338,30 @@ export const App: React.FC = () => {
           {edits.dirty ? "● Unsaved changes" : "✓ Saved"}
         </span>
       </div>
+      {render ? (
+        <div
+          data-testid="render-log"
+          style={{
+            ...renderLog,
+            borderColor: render.failed !== undefined ? "#FF5C5C" : "#2A2A33",
+          }}
+        >
+          {render.failed !== undefined ? (
+            <div style={{ color: "#FF5C5C", marginBottom: 4 }}>
+              render failed (exit {render.failed})
+              <button
+                style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+                onClick={() => setRender(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+          {render.lines.slice(-6).map((l, i) => (
+            <div key={i}>{l}</div>
+          ))}
+        </div>
+      ) : null}
       <div style={mainRow}>
         <div style={stageArea}>
           <div
@@ -410,6 +517,19 @@ const sidebar: React.CSSProperties = {
   borderLeft: "1px solid #1E1E24",
   background: "#111116",
   overflowY: "auto",
+};
+
+const renderLog: React.CSSProperties = {
+  fontSize: 11,
+  fontFamily: "ui-monospace, 'SF Mono', monospace",
+  color: "#9A9AA3",
+  background: "#0F0F14",
+  borderBottom: "1px solid #2A2A33",
+  padding: "6px 20px",
+  maxHeight: 110,
+  overflowY: "auto",
+  whiteSpace: "pre-wrap",
+  flexShrink: 0,
 };
 
 const rateChip: React.CSSProperties = {

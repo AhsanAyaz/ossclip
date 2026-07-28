@@ -1,14 +1,35 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { z } from "zod/v4";
 import { OverrideDocSchema, emptyOverrideDoc } from "@ossclip/core";
 
 /**
- * The editor's backend: three endpoints and a static file server, deliberately
- * dependency-free. It reads the workdir a `produce` run left behind and owns
- * exactly one file — `overrides.json`.
+ * The editor's backend: a handful of endpoints and a static file server,
+ * deliberately dependency-free. It reads the workdir a `produce` run left
+ * behind and owns exactly one file — `overrides.json`. The render endpoint
+ * replays the invocation `produce` recorded, never anything a client sent.
  */
+
+/**
+ * The invocation `produce` recorded into the workdir (R11 Task 4.1).
+ * Validated on read — it's a file on disk like any other user data — and the
+ * ONLY thing `/api/render` will ever spawn: this server binds locally, but
+ * accepting a client-supplied command would make it a remote shell.
+ */
+const CommandSchema = z.object({
+  execPath: z.string(),
+  execArgv: z.array(z.string()).default([]),
+  script: z.string(),
+  args: z.array(z.string()),
+  cwd: z.string(),
+  out: z.string().optional(),
+});
+
+/** Ring-buffer cap for captured render output. */
+const RENDER_LOG_LINES = 200;
 export interface EditServer {
   url: string;
   close: () => void;
@@ -114,6 +135,20 @@ export async function startEditServer(
     throw new Error(`no render-props.json in ${workdir} — run \`ossclip produce\` there first`);
   }
   const overridesPath = join(workdir, "overrides.json");
+  const commandPath = join(workdir, "command.json");
+
+  // One render at a time (R11 Task 4.2). The child is killed on server
+  // close so a Ctrl-C on the edit server never orphans an ffmpeg.
+  let renderChild: ChildProcess | null = null;
+  let renderLines: string[] = [];
+  let renderExit: number | null = null;
+  const pushLines = (chunk: Buffer): void => {
+    for (const line of chunk.toString().split("\n")) {
+      if (!line.trim()) continue;
+      renderLines.push(line);
+      if (renderLines.length > RENDER_LOG_LINES) renderLines.shift();
+    }
+  };
 
   const server = createServer((req, res) => {
     const send = (code: number, body: unknown): void => {
@@ -130,7 +165,58 @@ export async function startEditServer(
           const overrides = existsSync(overridesPath)
             ? OverrideDocSchema.parse(JSON.parse(await readFile(overridesPath, "utf8")))
             : emptyOverrideDoc();
-          return send(200, { renderProps, overrides, videoFileName: renderProps.videoFileName });
+          return send(200, {
+            renderProps,
+            overrides,
+            videoFileName: renderProps.videoFileName,
+            // Whether the Render button has a recorded invocation to replay.
+            canRender: existsSync(commandPath),
+          });
+        }
+
+        if (url.pathname === "/api/render" && req.method === "POST") {
+          // Replays ONLY the argv `produce` recorded — the request body is
+          // never read, let alone executed.
+          if (renderChild) return send(409, { error: "a render is already running" });
+          if (!existsSync(commandPath)) {
+            return send(412, {
+              error:
+                "no command.json in this workdir — run `ossclip produce` once from " +
+                "the terminal so the invocation is recorded, then Render can replay it",
+            });
+          }
+          const parsed = CommandSchema.safeParse(
+            JSON.parse(await readFile(commandPath, "utf8")),
+          );
+          if (!parsed.success) return send(500, { error: `command.json is not valid: ${parsed.error.message}` });
+          const cmd = parsed.data;
+          renderLines = [];
+          renderExit = null;
+          const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...cmd.args], {
+            cwd: cmd.cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          renderChild = child;
+          child.stdout?.on("data", pushLines);
+          child.stderr?.on("data", pushLines);
+          child.on("error", (err) => {
+            renderLines.push(`spawn failed: ${err.message}`);
+            renderExit = 1;
+            renderChild = null;
+          });
+          child.on("exit", (code) => {
+            renderExit = code ?? 1;
+            renderChild = null;
+          });
+          return send(202, { ok: true });
+        }
+
+        if (url.pathname === "/api/render/status" && req.method === "GET") {
+          return send(200, {
+            running: renderChild !== null,
+            exitCode: renderExit,
+            lines: renderLines,
+          });
         }
 
         if (url.pathname === "/api/overrides" && req.method === "PUT") {
@@ -173,5 +259,11 @@ export async function startEditServer(
   await new Promise<void>((r) => server.listen(opts.port ?? 5174, "127.0.0.1", r));
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : (opts.port ?? 5174);
-  return { url: `http://127.0.0.1:${port}`, close: () => server.close() };
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => {
+      renderChild?.kill();
+      server.close();
+    },
+  };
 }
