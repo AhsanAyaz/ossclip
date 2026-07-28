@@ -152,6 +152,9 @@ describe("edit server", () => {
     expect(status.exitCode).toBe(0);
     expect(status.lines.join("\n")).toContain("hi from the recorded command");
     expect(status.lines.join("\n")).not.toContain("pwned");
+    // The spawn stamp rides along (R13) — the panel's elapsed clock derives
+    // from the SERVER's time so a page reload mid-render stays honest.
+    expect(typeof (status as { startedAt?: number }).startedAt).toBe("number");
     // The production doc now reports the button usable.
     const prod = await (await fetch(`${server.url}/api/production`)).json();
     expect(prod.canRender).toBe(true);

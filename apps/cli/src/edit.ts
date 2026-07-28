@@ -142,6 +142,10 @@ export async function startEditServer(
   let renderChild: ChildProcess | null = null;
   let renderLines: string[] = [];
   let renderExit: number | null = null;
+  // Spawn time, SERVER-side: the client derives its elapsed clock from this,
+  // so a page reload mid-render still shows honest elapsed time rather than
+  // restarting from zero.
+  let renderStartedAt: number | null = null;
   const pushLines = (chunk: Buffer): void => {
     for (const line of chunk.toString().split("\n")) {
       if (!line.trim()) continue;
@@ -192,6 +196,7 @@ export async function startEditServer(
           const cmd = parsed.data;
           renderLines = [];
           renderExit = null;
+          renderStartedAt = Date.now();
           const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...cmd.args], {
             cwd: cmd.cwd,
             stdio: ["ignore", "pipe", "pipe"],
@@ -216,6 +221,7 @@ export async function startEditServer(
             running: renderChild !== null,
             exitCode: renderExit,
             lines: renderLines,
+            startedAt: renderStartedAt,
           });
         }
 

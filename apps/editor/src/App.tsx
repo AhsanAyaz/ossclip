@@ -18,6 +18,7 @@ import { useEdits } from "./useEdits";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector } from "./Inspector";
 import { Timeline } from "./Timeline";
+import { formatElapsed, pinnedInfoLines, renderProgress } from "./renderStatus";
 
 /**
  * `<Player>`'s generics require `Props extends Record<string, unknown>`, and
@@ -70,6 +71,8 @@ export const App: React.FC = () => {
     running: boolean;
     lines: string[];
     failed?: number;
+    /** Server-side spawn time — the elapsed clock's origin (R13). */
+    startedAt?: number | null;
   } | null>(null);
   const renderPollRef = useRef<number | null>(null);
   useEffect(
@@ -209,7 +212,7 @@ export const App: React.FC = () => {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `render failed to start: ${res.status}`);
       }
-      setRender({ running: true, lines: [] });
+      setRender({ running: true, lines: [], startedAt: Date.now() });
       const poll = window.setInterval(() => {
         void (async () => {
           try {
@@ -218,9 +221,16 @@ export const App: React.FC = () => {
               running: boolean;
               exitCode: number | null;
               lines?: string[];
+              startedAt?: number | null;
             };
             if (body.running || body.exitCode === null) {
-              setRender({ running: body.running, lines: body.lines ?? [] });
+              // The server's spawn stamp wins — it survives a page reload,
+              // where the optimistic Date.now() above would restart at 0:00.
+              setRender((prev) => ({
+                running: body.running,
+                lines: body.lines ?? [],
+                startedAt: body.startedAt ?? prev?.startedAt,
+              }));
               return;
             }
             window.clearInterval(poll);
@@ -362,6 +372,43 @@ export const App: React.FC = () => {
               </button>
             </div>
           ) : null}
+          {render.running ? (
+            // Liveness that doesn't depend on new log lines arriving (R13):
+            // the render's 10% steps can be minutes apart, and a panel that
+            // only moves when they land reads as stuck. The spinner animates
+            // regardless; elapsed ticks with the 1s poll; the bar appears
+            // once the render phase starts printing percentages.
+            <div data-testid="render-status" style={renderStatusRow}>
+              <style>{"@keyframes ossclip-spin { to { transform: rotate(360deg) } }"}</style>
+              <span style={spinner} aria-hidden />
+              <span style={{ color: "#EDEDF2" }}>
+                rendering
+                {render.startedAt != null
+                  ? ` · ${formatElapsed(render.startedAt, Date.now())}`
+                  : ""}
+                {renderProgress(render.lines) !== null
+                  ? ` · ${renderProgress(render.lines)}%`
+                  : ""}
+              </span>
+              {renderProgress(render.lines) !== null ? (
+                <div style={progressOuter}>
+                  <div
+                    data-testid="render-progress-bar"
+                    style={{ ...progressInner, width: `${renderProgress(render.lines)}%` }}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {/* Provider + token/cost lines pinned above the tail (R13): they
+              print early and would scroll away long before anyone wonders
+              what this run cost. Only lines the run actually printed — a
+              cached replay has no cost to report. */}
+          {pinnedInfoLines(render.lines).map((l) => (
+            <div key={l} data-testid="render-pinned" style={{ color: "#C9C9D4" }}>
+              {l}
+            </div>
+          ))}
           {render.lines.slice(-6).map((l, i) => (
             <div key={i}>{l}</div>
           ))}
@@ -535,6 +582,39 @@ const renderLog: React.CSSProperties = {
   overflowY: "auto",
   whiteSpace: "pre-wrap",
   flexShrink: 0,
+};
+
+const renderStatusRow: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  marginBottom: 4,
+};
+
+const spinner: React.CSSProperties = {
+  width: 12,
+  height: 12,
+  flexShrink: 0,
+  border: "2px solid #2A2A33",
+  borderTopColor: "#FFE14D",
+  borderRadius: "50%",
+  animation: "ossclip-spin 0.8s linear infinite",
+};
+
+const progressOuter: React.CSSProperties = {
+  flex: 1,
+  maxWidth: 260,
+  height: 4,
+  background: "#1E1E24",
+  borderRadius: 2,
+  overflow: "hidden",
+};
+
+const progressInner: React.CSSProperties = {
+  height: "100%",
+  background: "#FFE14D",
+  borderRadius: 2,
+  transition: "width 0.6s ease",
 };
 
 const rateChip: React.CSSProperties = {
