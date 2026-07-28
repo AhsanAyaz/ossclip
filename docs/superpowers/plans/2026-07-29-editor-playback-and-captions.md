@@ -2,7 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes.
 
-**Status:** not started. Logged 2026-07-29 from the author's first real editing session on `5 ClaudeCode.v8` (workdir `~/Downloads/.ossclip/5 ClaudeCode-07fbd090`).
+**Status:** Tasks 1–6 implemented 2026-07-29 (remote session); Task 7 remains gated on the scope decision in 7.1. Logged 2026-07-29 from the author's first real editing session on `5 ClaudeCode.v8` (workdir `~/Downloads/.ossclip/5 ClaudeCode-07fbd090`).
+
+> **Status 2026-07-30 — Tasks 1–6 done.** 438 unit tests, typecheck, editor build and 8 Playwright e2e green.
+>
+> - **Task 1:** `clickToPlay={false}`; playback is explicit (transport bar, SPACE, J/K/L). The capture-phase swallow was KEPT — it still owns element-press semantics and defends against any future `clickToPlay`. The Task-2 e2e's background-click assertion was inverted in the same commit, per the plan.
+> - **Task 2:** measured first — this Remotion version's `calculate-next-frame.js` has an explicit reverse branch, so J is a genuine negative `playbackRate`, no seek loop. The ladder (1 → 1.5 → 2 → 4, hold at top; J mirrors negative; K stop/play always landing at 1×) is a pure reducer in `transport.ts` with its own unit tests; App owns the side effects; the same typing guards as SPACE apply. The rate is visible and mouse-reachable as a chip on the stage (click = L), mirrored as `data-rate` for the e2e.
+> - **Task 3:** the ruler seeks with the same press-and-drag scrub as the track (same `timeAtX`), never touches the selection, has height/cursor affordance, and the playhead now extends up across it. The e2e's selection oracle is the Inspector's timing section, not the overlay box — the box legitimately disappears when the playhead leaves the selected scene's window (its `<Sequence>` unmounts).
+> - **Task 4:** a dashed safe-area guide with a faint outside-dim renders only while a drag is in progress, drawn from the exported `SAFE_AREA` (re-exported through `@ossclip/renderer/composition` to respect the editor's import surface), `pointer-events: none`. Screenshot-verified mid-drag and asserted gone on mouseup. 4.2 decided: ONE guide; the cover grid rect would double the lines for a constraint that only matters to the cover.
+> - **Task 5:** `NumberField` gains `step` (default `"any"` — the defect was HTML's default step=1 rejecting 0.62), `min`/`max` clamped at commit so the UI and the schema's `positive().max(4)` agree, and `data-testid`. All call sites audited: both scale fields bounded 0.05–4, `radiusPx` floored at 0. e2e proves 0.62 lands in `overrides.json`.
+> - **Task 6:** the timing section always states the resolved `start – end (duration)`; pinned/tracking is a label on it; an unpinned cue also shows the caption words under its window ("tracking transcript" as a checkable fact). Derived from `captionLines` in output time — no new plumbing.
+> - **Task 7:** untouched, deliberately — 7.1's scope decision (a/b/c) belongs to the author.
 
 **Goal:** Make the editor's playback behave like an editor's playback — explicit transport, J/K/L, a seekable ruler — and close three concrete defects the session surfaced, then take the one large feature (caption editing) seriously rather than bolting it on.
 
@@ -24,11 +34,11 @@
 
 **Diagnosis (confirmed):** `App.tsx` passes `controls` to `<Player>` but never `clickToPlay`. Remotion defaults `clickToPlay` to `controls`, so the whole player surface is a play/pause target. The earlier §Task-2 work made the swallow *selective* — clicks on editable elements are the editor's, everything else falls through to the Player — which was the right fix for that bug and is the wrong policy now: in an editor, the frame is a canvas, not a play button.
 
-- [ ] **Step 1.1:** Pass `clickToPlay={false}`. One prop.
-- [ ] **Step 1.2: Re-examine the Overlay's capture-phase `pointerdown` swallow.** With `clickToPlay` off it is no longer load-bearing for playback, but it may still matter for other Player affordances. Decide with the behaviour in front of you: keep it (harmless, defends against a future `clickToPlay`) or delete it and simplify. Do NOT delete blind — the e2e "clicking an element selects it without toggling playback" asserts the first half and must keep passing.
-- [ ] **Step 1.3: Update that e2e's second half.** It currently asserts clicking the video background *does* toggle. That assertion inverts: background clicks must now do nothing. The test is the specification — change it deliberately, in the same commit.
-- [ ] **Step 1.4:** Verify by hand: clicking anywhere on the frame never toggles; the transport bar's own play/pause still works; SPACE still works.
-- [ ] **Step 1.5: Commit.**
+- [x] **Step 1.1:** Pass `clickToPlay={false}`. One prop.
+- [x] **Step 1.2: Re-examine the Overlay's capture-phase `pointerdown` swallow.** With `clickToPlay` off it is no longer load-bearing for playback, but it may still matter for other Player affordances. Decide with the behaviour in front of you: keep it (harmless, defends against a future `clickToPlay`) or delete it and simplify. Do NOT delete blind — the e2e "clicking an element selects it without toggling playback" asserts the first half and must keep passing.
+- [x] **Step 1.3: Update that e2e's second half.** It currently asserts clicking the video background *does* toggle. That assertion inverts: background clicks must now do nothing. The test is the specification — change it deliberately, in the same commit.
+- [x] **Step 1.4:** Verify by hand: clicking anywhere on the frame never toggles; the transport bar's own play/pause still works; SPACE still works.
+- [x] **Step 1.5: Commit.**
 
 ### Task 2: speed control and J/K/L transport
 
@@ -45,12 +55,12 @@ Requested semantics, verbatim:
 
 This is the YouTube/Premiere J-K-L convention. `SPACE` already works (§Task 5 of the usability plan) and must keep its guards (inline edits, inspector fields, the Player's own focused play button).
 
-- [ ] **Step 2.1: Verify Remotion's reverse-playback support before designing around it.** `<Player>` takes `playbackRate`; confirm on THIS version whether a negative rate actually plays backwards, or whether J must be implemented as a seek loop (`seekTo(frame - step)` on an interval). The answer changes the whole task — measure it, do not assume. Record the finding in the report.
-- [ ] **Step 2.2: Model the transport as a pure reducer** — `(state, key) => {rate, playing}` — and unit-test it. The ladder (1→2→4… on repeated L, mirrored on J), K resetting to 1×, and SPACE toggling without touching the rate are all logic, not UI, and belong in a testable function. Pick the ladder stops explicitly (suggest 1, 1.5, 2, 4) and write them where they can be read.
-- [ ] **Step 2.3: Wire it** to `playerRef` + `playbackRate`, alongside the existing shortcut handler in `Overlay.tsx`, with the same typing guards.
-- [ ] **Step 2.4: Surface the rate in the UI** — a small readout/control near the transport, so the state is visible and mouse-reachable. A rate that is only reachable by keyboard is a rate users lose track of.
-- [ ] **Step 2.5:** e2e: press L twice, assert the rate rises; K, assert 1× and playing; SPACE, assert paused. Use the `data-playing` mirror on the stage (the container's headless Chromium has no H.264 decoder, so `<video>.paused` is not a usable oracle — see the usability plan's status block) and add a `data-rate` mirror the same way.
-- [ ] **Step 2.6: Commit.**
+- [x] **Step 2.1: Verify Remotion's reverse-playback support before designing around it.** `<Player>` takes `playbackRate`; confirm on THIS version whether a negative rate actually plays backwards, or whether J must be implemented as a seek loop (`seekTo(frame - step)` on an interval). The answer changes the whole task — measure it, do not assume. Record the finding in the report.
+- [x] **Step 2.2: Model the transport as a pure reducer** — `(state, key) => {rate, playing}` — and unit-test it. The ladder (1→2→4… on repeated L, mirrored on J), K resetting to 1×, and SPACE toggling without touching the rate are all logic, not UI, and belong in a testable function. Pick the ladder stops explicitly (suggest 1, 1.5, 2, 4) and write them where they can be read.
+- [x] **Step 2.3: Wire it** to `playerRef` + `playbackRate`, alongside the existing shortcut handler in `Overlay.tsx`, with the same typing guards.
+- [x] **Step 2.4: Surface the rate in the UI** — a small readout/control near the transport, so the state is visible and mouse-reachable. A rate that is only reachable by keyboard is a rate users lose track of.
+- [x] **Step 2.5:** e2e: press L twice, assert the rate rises; K, assert 1× and playing; SPACE, assert paused. Use the `data-playing` mirror on the stage (the container's headless Chromium has no H.264 decoder, so `<video>.paused` is not a usable oracle — see the usability plan's status block) and add a `data-rate` mirror the same way.
+- [x] **Step 2.6: Commit.**
 
 ### Task 3: the ruler seeks
 
@@ -58,11 +68,11 @@ This is the YouTube/Premiere J-K-L convention. `SPACE` already works (§Task 5 o
 
 **Diagnosis (confirmed):** `Timeline.tsx`'s `ruler` is two `<span>` labels in a flex row with no handler. All seeking lives on the scene track below it, so seeking near a scene boundary means aiming at a block — which also selects that scene, a side effect the user does not want when they are only navigating.
 
-- [ ] **Step 3.1:** Give the ruler the same press-and-drag scrub the track has, reusing `timeAtX` — one mapping for every seek gesture, which is already the rule (§Tasks 3+4).
-- [ ] **Step 3.2: Seeking on the ruler must NOT change the selection.** That is the whole point of the request.
-- [ ] **Step 3.3:** Make it look seekable: give the ruler height/hit-area, show the playhead against it, cursor affordance.
-- [ ] **Step 3.4:** e2e: drag on the ruler, assert the playhead follows and `overlay-box` selection is unchanged.
-- [ ] **Step 3.5: Commit.**
+- [x] **Step 3.1:** Give the ruler the same press-and-drag scrub the track has, reusing `timeAtX` — one mapping for every seek gesture, which is already the rule (§Tasks 3+4).
+- [x] **Step 3.2: Seeking on the ruler must NOT change the selection.** That is the whole point of the request.
+- [x] **Step 3.3:** Make it look seekable: give the ruler height/hit-area, show the playhead against it, cursor affordance.
+- [x] **Step 3.4:** e2e: drag on the ruler, assert the playhead follows and `overlay-box` selection is unchanged.
+- [x] **Step 3.5: Commit.**
 
 ### Task 4: show the safe area while dragging
 
@@ -70,11 +80,11 @@ This is the YouTube/Premiere J-K-L convention. `SPACE` already works (§Task 5 o
 
 The platform chrome insets (`SAFE_AREA` in `packages/scenes/src/stage.ts` — top 12%, bottom 22%, right 16%, left 4%) are invisible, so an element dragged under them looks like it simply vanished.
 
-- [ ] **Step 4.1:** Render a faint safe-area rectangle in `Overlay.tsx` **only while a drag is in progress**, from the exported `SAFE_AREA` — never a hardcoded copy, or it will drift from the geometry it claims to show.
-- [ ] **Step 4.2:** Consider also outlining the cover grid-safe rect (`COVER_GRID_RECT`) — decide with it on screen; two overlapping guides may be worse than one.
-- [ ] **Step 4.3:** Keep it non-interactive (`pointer-events: none`) so it cannot swallow the drag it is annotating.
-- [ ] **Step 4.4:** Verify by hand at both ends of a drag.
-- [ ] **Step 4.5: Commit.**
+- [x] **Step 4.1:** Render a faint safe-area rectangle in `Overlay.tsx` **only while a drag is in progress**, from the exported `SAFE_AREA` — never a hardcoded copy, or it will drift from the geometry it claims to show.
+- [x] **Step 4.2:** Consider also outlining the cover grid-safe rect (`COVER_GRID_RECT`) — decide with it on screen; two overlapping guides may be worse than one.
+- [x] **Step 4.3:** Keep it non-interactive (`pointer-events: none`) so it cannot swallow the drag it is annotating.
+- [x] **Step 4.4:** Verify by hand at both ends of a drag.
+- [x] **Step 4.5: Commit.**
 
 ### Task 5: the scale field rejects decimals
 
@@ -82,10 +92,10 @@ The platform chrome insets (`SAFE_AREA` in `packages/scenes/src/stage.ts` — to
 
 **Diagnosis (confirmed):** `Inspector.tsx`'s `NumberField` renders `<input type="number">` with no `step`. HTML's default step is `1`, so the browser marks `0.62` invalid and the value never commits. Every numeric inspector field has this — the video-framing `scale` is just where it bites hardest, since its entire useful range is 0–1.
 
-- [ ] **Step 5.1:** Add a `step` prop to `NumberField`; `any` (or `0.01`) for scale, `1` for pixel offsets. While there, check `min`/`max` so the schema's `positive().max(4)` and the UI agree instead of failing at the store.
-- [ ] **Step 5.2: Audit every other `NumberField` call site** for the same defect — theme `radiusPx`, element `dx`/`dy`/`scale`. The element `scale` has exactly the same problem and was shipped weeks ago.
-- [ ] **Step 5.3:** Unit-test or e2e that typing `0.62` commits `0.62`.
-- [ ] **Step 5.4: Commit.**
+- [x] **Step 5.1:** Add a `step` prop to `NumberField`; `any` (or `0.01`) for scale, `1` for pixel offsets. While there, check `min`/`max` so the schema's `positive().max(4)` and the UI agree instead of failing at the store.
+- [x] **Step 5.2: Audit every other `NumberField` call site** for the same defect — theme `radiusPx`, element `dx`/`dy`/`scale`. The element `scale` has exactly the same problem and was shipped weeks ago.
+- [x] **Step 5.3:** Unit-test or e2e that typing `0.62` commits `0.62`.
+- [x] **Step 5.4: Commit.**
 
 ### Task 6: the Timing section says nothing
 
@@ -93,9 +103,9 @@ The platform chrome insets (`SAFE_AREA` in `packages/scenes/src/stage.ts` — to
 
 **Diagnosis:** the section renders the pinned time range only when `cue.pinned`; an unpinned cue gets the bare string. But an unpinned cue still HAS a resolved `startSec`/`endSec` — the user is looking at a scene on screen and being told nothing about when it is.
 
-- [ ] **Step 6.1:** Always show the resolved `startSec – endSec` and the duration. The pinned/tracking distinction becomes a label on that, not a replacement for it.
-- [ ] **Step 6.2:** Show what it is tracking — the anchor word range, and ideally the anchor text, so "tracking transcript" is a fact the user can check rather than a claim.
-- [ ] **Step 6.3: Commit.**
+- [x] **Step 6.1:** Always show the resolved `startSec – endSec` and the duration. The pinned/tracking distinction becomes a label on that, not a replacement for it.
+- [x] **Step 6.2:** Show what it is tracking — the anchor word range, and ideally the anchor text, so "tracking transcript" is a fact the user can check rather than a claim.
+- [x] **Step 6.3: Commit.**
 
 ### Task 7: caption editing
 

@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Player, type PlayerRef } from "@remotion/player";
+import { transportReduce, type TransportKey } from "./transport";
 import type { AnyZodObject } from "remotion";
 import { ProductionComposition, type ProductionCompProps } from "@ossclip/renderer/composition";
 import {
@@ -50,8 +51,24 @@ export const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [rate, setRate] = useState(1);
   const stageRef = useRef<HTMLDivElement>(null!);
   const playerRef = useRef<PlayerRef>(null);
+
+  // J/K/L transport (PLAN Task 2): the reducer owns the ladder; this owns the
+  // side effects. `playing` is the Player's own event-mirrored state, so the
+  // reducer always sees the transport as it actually is.
+  const onTransport = useCallback(
+    (key: TransportKey) => {
+      const next = transportReduce({ rate, playing }, key);
+      setRate(next.rate);
+      const player = playerRef.current;
+      if (!player) return;
+      if (next.playing && !playing) player.play();
+      if (!next.playing && playing) player.pause();
+    },
+    [rate, playing],
+  );
 
   // Mirror the Player's transport state onto the stage as `data-playing`.
   // This is the PLAYER's intent, straight from its own play/pause events —
@@ -116,6 +133,21 @@ export const App: React.FC = () => {
     [live, selection],
   );
 
+  // The words the selected cue is on screen FOR — "tracking transcript" as a
+  // checkable fact rather than a claim (PLAN Task 6). Captions are the words
+  // in output time, so the cue's window selects exactly its anchor text.
+  const anchorText = useMemo(() => {
+    if (!selectedCue || !live) return undefined;
+    const words = live.captionLines
+      .filter((l) => l.start < selectedCue.endSec && l.end > selectedCue.startSec)
+      .flatMap((l) => l.words)
+      .filter((w) => w.start < selectedCue.endSec && w.end > selectedCue.startSec)
+      .map((w) => w.text);
+    if (words.length === 0) return undefined;
+    const joined = words.join(" ");
+    return joined.length > 90 ? `${joined.slice(0, 90)}…` : joined;
+  }, [selectedCue, live]);
+
   if (error) {
     return (
       <div style={shell}>
@@ -163,6 +195,7 @@ export const App: React.FC = () => {
             ref={stageRef}
             data-testid="stage"
             data-playing={playing ? "true" : "false"}
+            data-rate={rate}
             style={{ position: "relative", display: "inline-block" }}
           >
             <Player<AnyZodObject, PlayerProductionProps>
@@ -175,6 +208,14 @@ export const App: React.FC = () => {
               compositionHeight={live.settings.height}
               style={{ width: 380 }}
               controls
+              // The frame is a canvas, not a play button (PLAN Task 1).
+              // Remotion defaults clickToPlay to `controls`, which is right
+              // for a viewer and wrong for an editor: playback is explicit —
+              // the transport bar, SPACE, or J/K/L.
+              clickToPlay={false}
+              // Signed rate; negative genuinely plays backwards on this
+              // Remotion version (measured — see transport.ts).
+              playbackRate={rate}
             />
             <Overlay
               stageRef={stageRef}
@@ -185,11 +226,29 @@ export const App: React.FC = () => {
               settings={live.settings}
               playerRef={playerRef}
               cue={selectedCue}
+              onTransport={onTransport}
             />
+            {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
+                only reachable by keyboard is a rate users lose track of.
+                Clicking cycles the forward ladder; J/K/L drive it too. */}
+            <button
+              data-testid="rate-chip"
+              onClick={() => onTransport("L")}
+              title="Playback rate — click to speed up (J/K/L on the keyboard)"
+              style={rateChip}
+            >
+              {rate < 0 ? `◂◂ ${Math.abs(rate)}×` : `${rate}×`}
+            </button>
           </div>
         </div>
         <div style={sidebar}>
-          <Inspector selection={selection} cue={selectedCue} edits={edits} resolvedTheme={live.theme} />
+          <Inspector
+            selection={selection}
+            cue={selectedCue}
+            edits={edits}
+            resolvedTheme={live.theme}
+            anchorText={anchorText}
+          />
         </div>
       </div>
       <Timeline
@@ -275,4 +334,20 @@ const sidebar: React.CSSProperties = {
   borderLeft: "1px solid #1E1E24",
   background: "#111116",
   overflowY: "auto",
+};
+
+const rateChip: React.CSSProperties = {
+  position: "absolute",
+  top: 8,
+  right: 8,
+  zIndex: 5,
+  fontSize: 11,
+  fontWeight: 700,
+  fontFamily: "ui-monospace, 'SF Mono', monospace",
+  color: "#FFE14D",
+  background: "rgba(11,11,14,0.75)",
+  border: "1px solid #2A2A33",
+  borderRadius: 6,
+  padding: "3px 8px",
+  cursor: "pointer",
 };

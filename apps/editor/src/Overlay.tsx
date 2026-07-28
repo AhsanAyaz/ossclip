@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
+import { SAFE_AREA } from "@ossclip/renderer/composition";
 import { findEditableFrom, rectOf } from "./hitTest";
 import type { useEdits } from "./useEdits";
 
@@ -39,6 +40,8 @@ interface OverlayProps {
    * letterbox ratio (PLAN Task 1 — measured at exactly ×0.9 in the e2e).
    */
   playerRef: React.RefObject<PlayerRef>;
+  /** J/K/L transport dispatch — the reducer and its side effects live in App. */
+  onTransport: (key: "J" | "K" | "L") => void;
   /** The currently-selected scene's LIVE (override-applied) cue, so a
    * double-click retype on an array-backed element (a FlowDiagram node, a
    * ChatMock message, …) can rewrite that element's entry in place instead
@@ -124,6 +127,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   onSave,
   settings,
   playerRef,
+  onTransport,
   cue,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -405,6 +409,16 @@ export const Overlay: React.FC<OverlayProps> = ({
   }, [editRefusal]);
 
   useEffect(() => {
+    /** A keystroke belongs to a field, not the transport. */
+    const isTypingContext = (): boolean => {
+      const active = document.activeElement;
+      return (
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLSelectElement ||
+        (active instanceof HTMLElement && active.isContentEditable)
+      );
+    };
     const onKeyDown = (e: KeyboardEvent) => {
       if (editingText !== null) return;
       const mod = e.metaKey || e.ctrlKey;
@@ -423,17 +437,12 @@ export const Overlay: React.FC<OverlayProps> = ({
         // SPACE toggles playback globally (PLAN Task 5) — with two guards.
         // Typing contexts win: a space in an inline edit (the early return
         // above) or an inspector field must insert a space, not toggle.
-        const active = document.activeElement;
-        const typing =
-          active instanceof HTMLInputElement ||
-          active instanceof HTMLTextAreaElement ||
-          active instanceof HTMLSelectElement ||
-          (active instanceof HTMLElement && active.isContentEditable);
-        if (typing) return;
+        if (isTypingContext()) return;
         // And the Player's own space handling wins: with focus on a button
         // inside the stage (its play button — the Player focuses it for
         // exactly this), the native button activation already toggles, and
         // firing here too would toggle twice for a net no-op.
+        const active = document.activeElement;
         if (
           active instanceof HTMLElement &&
           active.tagName === "BUTTON" &&
@@ -443,11 +452,17 @@ export const Overlay: React.FC<OverlayProps> = ({
         }
         e.preventDefault();
         playerRef.current?.toggle();
+      } else if (!mod && ["j", "k", "l"].includes(e.key.toLowerCase())) {
+        // J/K/L transport (PLAN Task 2), same typing guards as SPACE. The
+        // ladder itself lives in transport.ts; App owns the side effects.
+        if (isTypingContext()) return;
+        e.preventDefault();
+        onTransport(e.key.toUpperCase() as "J" | "K" | "L");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, editingText, onSave, playerRef, stageRef]);
+  }, [select, edits, editingText, onSave, playerRef, stageRef, onTransport]);
 
   return (
     <div
@@ -465,6 +480,27 @@ export const Overlay: React.FC<OverlayProps> = ({
         pointerEvents: "none",
       }}
     >
+      {dragOffset.dx !== 0 || dragOffset.dy !== 0 ? (
+        // The platform chrome insets, shown ONLY while a drag is in progress
+        // (PLAN Task 4): an element dragged under the invisible safe area
+        // looks like it simply vanished. Drawn from the exported SAFE_AREA —
+        // never a hardcoded copy, or the guide drifts from the geometry it
+        // claims to show. Non-interactive so it cannot swallow the drag it
+        // is annotating.
+        <div
+          data-testid="safe-area-guide"
+          style={{
+            position: "absolute",
+            left: `${SAFE_AREA.left * 100}%`,
+            top: `${SAFE_AREA.top * 100}%`,
+            right: `${SAFE_AREA.right * 100}%`,
+            bottom: `${SAFE_AREA.bottom * 100}%`,
+            border: "1px dashed rgba(255, 225, 77, 0.45)",
+            boxShadow: "0 0 0 9999px rgba(0, 0, 0, 0.18)",
+            pointerEvents: "none",
+          }}
+        />
+      ) : null}
       {rect && selection ? (
         <div
           ref={boxRef}

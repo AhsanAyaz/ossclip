@@ -39,7 +39,7 @@ const settle = async (page: Page) => {
     .toBe(true);
 };
 
-test("clicking an element selects it without toggling playback; the background still toggles (Task 2)", async ({
+test("clicks never toggle playback: elements select, the background does nothing (Tasks 2 + R9-1)", async ({
   page,
 }) => {
   await page.goto("/");
@@ -48,23 +48,112 @@ test("clicking an element selects it without toggling playback; the background s
   await page.waitForSelector("[data-edit-id]");
   expect(await isPlaying(page)).toBe(false);
 
-  // Half one: a press on an editable element is the editor's — selection
-  // appears, playback stays paused. Raw mouse, because Playwright's
-  // actionability check refuses to click through Remotion's stacked
-  // pointer-events wrappers that the app's own hit-testing sees through.
+  // A press on an editable element is the editor's — selection appears,
+  // playback stays paused. Raw mouse, because Playwright's actionability
+  // check refuses to click through Remotion's stacked pointer-events
+  // wrappers that the app's own hit-testing sees through.
   const elBox = (await page.locator("[data-edit-id]").first().boundingBox())!;
   await page.mouse.click(elBox.x + elBox.width / 2, elBox.y + elBox.height / 2);
   await expect(page.getByTestId("overlay-box")).toBeVisible();
   expect(await isPlaying(page)).toBe(false);
 
-  // Half two: a press on the bare video (top of the frame, no editable
-  // element there in this fixture's layouts) is the Player's — playback
-  // toggles like any reel player.
+  // DELIBERATE INVERSION (round 9, Task 1): this half used to assert a
+  // background click toggles playback — the right behaviour for a viewer and
+  // the wrong one for an editor, where the frame is a canvas, not a play
+  // button. clickToPlay is now off; playback is explicit (transport bar,
+  // SPACE, J/K/L). A background click must do NOTHING to the transport.
   const stage = (await page.getByTestId("stage").boundingBox())!;
   await page.mouse.click(stage.x + stage.width * 0.5, stage.y + stage.height * 0.06);
+  await page.waitForTimeout(200);
+  expect(await isPlaying(page)).toBe(false);
+  // …and SPACE still starts playback, so the explicit path works.
+  await page.keyboard.press("Space");
   await expect.poll(() => isPlaying(page)).toBe(true);
-  await page.mouse.click(stage.x + stage.width * 0.5, stage.y + stage.height * 0.06);
+  await page.keyboard.press("Space");
   await expect.poll(() => isPlaying(page)).toBe(false);
+});
+
+test("J/K/L transport: ladder up, reverse, settle at 1x (R9-2)", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  const rate = () => page.getByTestId("stage").getAttribute("data-rate");
+
+  await page.keyboard.press("l");
+  await expect.poll(() => isPlaying(page)).toBe(true);
+  expect(await rate()).toBe("1");
+  await page.keyboard.press("l");
+  await expect.poll(rate).toBe("1.5");
+  await page.keyboard.press("l");
+  await expect.poll(rate).toBe("2");
+
+  // J reverses from a forward sprint: straight to -1, then down the ladder.
+  await page.keyboard.press("j");
+  await expect.poll(rate).toBe("-1");
+  await page.keyboard.press("j");
+  await expect.poll(rate).toBe("-1.5");
+
+  // K stops and resets to 1x; K again plays at 1x.
+  await page.keyboard.press("k");
+  await expect.poll(() => isPlaying(page)).toBe(false);
+  expect(await rate()).toBe("1");
+  await page.keyboard.press("k");
+  await expect.poll(() => isPlaying(page)).toBe(true);
+  expect(await rate()).toBe("1");
+  await page.keyboard.press("Space");
+  await expect.poll(() => isPlaying(page)).toBe(false);
+
+  // The rate is visible and mouse-reachable, not keyboard-only.
+  await expect(page.getByTestId("rate-chip")).toHaveText("1×");
+  await page.getByTestId("rate-chip").click();
+  await expect.poll(rate).toBe("1");
+  await expect.poll(() => isPlaying(page)).toBe(true);
+  await page.keyboard.press("k");
+});
+
+test("the ruler seeks without touching the selection (R9-3)", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  // Select a scene first — the point of the ruler is navigating WITHOUT
+  // losing (or changing) this selection.
+  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await expect(page.getByTestId("overlay-box")).toBeVisible();
+
+  const ruler = (await page.getByTestId("ruler").boundingBox())!;
+  const y = ruler.y + ruler.height / 2;
+  await page.mouse.move(ruler.x + ruler.width * 0.6, y);
+  await page.mouse.down();
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(0.55);
+  await page.mouse.move(ruler.x + ruler.width * 0.35, y, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => playheadFrac(page)).toBeLessThan(0.45);
+
+  // The SELECTION survived the whole scrub — asserted via the Inspector's
+  // timing section, which renders only for a selected scene. (The overlay
+  // box is the wrong oracle here: it needs the selected scene's DOM, and the
+  // scrub deliberately parked the playhead OUTSIDE that scene's window, so
+  // its <Sequence> is unmounted and the box has nothing to measure.)
+  await expect(page.getByTestId("timing-range")).toBeVisible();
+});
+
+test("decimal scale commits, and the timing section states the window (R9-5+6)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.locator('[data-testid^="timeline-block-"]').first().click();
+
+  // Task 6: the resolved window shows for an UNPINNED cue — "tracking
+  // transcript" is a label on the times now, not a replacement for them.
+  await expect(page.getByTestId("timing-range")).toContainText("s –");
+
+  // Task 5: 0.62 into the video-framing scale — HTML's default step=1 used
+  // to mark this INVALID and silently never commit it.
+  await page.getByTestId("field-scale").fill("0.62");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
+  expect(doc.scenes[renderProps.sceneCues[0].id].video.scale).toBe(0.62);
 });
 
 test("the timeline scrubs on press-and-drag, and a click inside a block seeks to that point (Tasks 3+4)", async ({

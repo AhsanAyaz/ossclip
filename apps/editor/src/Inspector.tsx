@@ -16,6 +16,8 @@ interface InspectorProps {
    * theme other than `defaultTheme`.
    */
   resolvedTheme: Theme;
+  /** The caption words under the cue's window — what "tracking" tracks. */
+  anchorText?: string;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -62,21 +64,38 @@ const NumberField: React.FC<{
   id: string;
   value: number;
   onCommit: (v: number) => void;
-}> = ({ id, value, onCommit }) => (
+  /**
+   * HTML's default step is 1, which silently marks 0.62 INVALID and refuses
+   * to commit it — that made the 0–1 video-framing scale useless and has
+   * quietly afflicted every numeric field since they shipped (FINDINGS §43).
+   * "any" accepts decimals; pass a number only to genuinely quantise.
+   */
+  step?: number | "any";
+  min?: number;
+  max?: number;
+}> = ({ id, value, onCommit, step = "any", min, max }) => (
   <div style={row}>
     <span style={label}>{id}</span>
     <input
       type="number"
+      data-testid={`field-${id}`}
       style={numberInput}
+      step={step}
+      min={min}
+      max={max}
       value={Number.isFinite(value) ? value : 0}
       onChange={(e) => {
         // An in-progress value like "-" or "" parses to NaN (or, for some
         // browsers, an empty string parses to 0 which is fine) — only
         // dispatch once the field holds a real number, so a still-typing
         // input never JSON.stringifies to `null` and corrupts the stored
-        // transform.
+        // transform. Clamp to the declared range so the schema's own bounds
+        // (`positive().max(4)`) reject nothing the UI accepted.
         const parsed = Number(e.target.value);
-        if (Number.isFinite(parsed)) onCommit(parsed);
+        if (!Number.isFinite(parsed)) return;
+        const lo = min ?? -Infinity;
+        const hi = max ?? Infinity;
+        onCommit(Math.min(hi, Math.max(lo, parsed)));
       }}
     />
   </div>
@@ -113,7 +132,7 @@ const ThemeField: React.FC<{
  * imprecise; typing a value (including `0`, to cleanly undo a nudge) goes
  * straight to `patchElement`/`patchTheme` rather than waiting on a blur.
  */
-export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, resolvedTheme }) => {
+export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, resolvedTheme, anchorText }) => {
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
     const transform = cue.elements?.[elementId] ?? {};
@@ -152,6 +171,8 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
           <NumberField
             id="scale"
             value={transform.scale ?? 1}
+            min={0.05}
+            max={4}
             onCommit={(v) => edits.patchElement(selection.sceneId, elementId, { scale: v })}
           />
         </div>
@@ -219,6 +240,8 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
           <NumberField
             id="scale"
             value={cue.video?.scale ?? 1}
+            min={0.05}
+            max={4}
             onCommit={(v) => edits.patchVideo(selection.sceneId, { scale: v })}
           />
           <NumberField
@@ -239,11 +262,27 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
         </div>
         <div style={section}>
           <span style={label}>Timing</span>
-          <div style={{ fontSize: 13, color: cue.pinned ? "#FFE14D" : "#9A9AA3" }}>
-            {cue.pinned
-              ? `Pinned ${cue.startSec.toFixed(2)}s – ${cue.endSec.toFixed(2)}s`
-              : "Tracking transcript"}
+          {/* The resolved window ALWAYS shows (FINDINGS §44) — an unpinned cue
+              still has one, and "tracking transcript" with no times told the
+              user nothing about the scene they were looking at. Pinned vs
+              tracking is a label on the times, not a replacement for them. */}
+          <div
+            data-testid="timing-range"
+            style={{ fontSize: 13, fontFamily: "ui-monospace, 'SF Mono', monospace" }}
+          >
+            {cue.startSec.toFixed(2)}s – {cue.endSec.toFixed(2)}s
+            <span style={{ color: "#9A9AA3" }}>
+              {"  "}({(cue.endSec - cue.startSec).toFixed(2)}s)
+            </span>
           </div>
+          <div style={{ fontSize: 12, color: cue.pinned ? "#FFE14D" : "#9A9AA3" }}>
+            {cue.pinned ? "Pinned to these times" : "Tracking transcript"}
+          </div>
+          {!cue.pinned && anchorText ? (
+            <div style={{ fontSize: 12, color: "#9A9AA3", fontStyle: "italic" }}>
+              “{anchorText}”
+            </div>
+          ) : null}
           {cue.pinned ? (
             <button style={button} onClick={() => edits.clearTiming(selection.sceneId)}>
               Un-pin (re-anchor to words)
@@ -266,7 +305,7 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
         <ThemeField id="accent" value={theme.accent ?? resolvedTheme.accent} isColor onCommit={(v) => patch("accent", v)} />
         <ThemeField id="bg" value={theme.bg ?? resolvedTheme.bg} isColor onCommit={(v) => patch("bg", v)} />
         <ThemeField id="fg" value={theme.fg ?? resolvedTheme.fg} isColor onCommit={(v) => patch("fg", v)} />
-        <NumberField id="radiusPx" value={theme.radiusPx ?? resolvedTheme.radiusPx} onCommit={(v) => patch("radiusPx", v)} />
+        <NumberField id="radiusPx" value={theme.radiusPx ?? resolvedTheme.radiusPx} min={0} onCommit={(v) => patch("radiusPx", v)} />
         <ThemeField
           id="fontDisplay"
           value={theme.fontDisplay ?? resolvedTheme.fontDisplay}

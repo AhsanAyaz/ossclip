@@ -19,6 +19,14 @@ import {
  * Stage order (PHASE1 §1): backdrop+video slot → scene graphics → captions.
  * The EDL video (and its audio) is mounted continuously across every scene.
  */
+/**
+ * Re-exported for the editor, whose import surface is this module plus
+ * `@ossclip/core/browser`: the safe-area guide it draws while dragging must
+ * come from the SAME constant the stage lays out against, or the guide
+ * drifts from the geometry it claims to show.
+ */
+export { SAFE_AREA } from "@ossclip/scenes";
+
 export interface ProductionCompProps {
   /** File name inside the render's public dir (or an absolute http(s) URL). */
   videoFileName: string;

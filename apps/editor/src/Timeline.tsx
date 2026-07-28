@@ -203,7 +203,19 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   return (
     <div style={strip}>
-      <div style={ruler}>
+      <div
+        data-testid="ruler"
+        style={ruler}
+        onMouseDown={(e) => {
+          // The ruler seeks (PLAN Task 3) with the same press-and-drag scrub
+          // as the track — one `timeAtX` mapping for every seek gesture — and
+          // NEVER changes the selection: seeking near a scene boundary should
+          // not require aiming at (and thereby selecting) a block.
+          e.preventDefault();
+          seekTrack(e.clientX);
+          scrubbingRef.current = true;
+        }}
+      >
         <span style={rulerLabel}>0:00</span>
         <span style={rulerLabel}>{fmt(durationSec)}</span>
       </div>
@@ -293,7 +305,15 @@ const strip: React.CSSProperties = {
 const ruler: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
+  alignItems: "center",
+  // Tall enough to press, and visibly a surface rather than two floating
+  // labels — it seeks now, and it should look like it does.
+  height: 18,
+  padding: "0 2px",
   marginBottom: 4,
+  borderBottom: "1px solid #1E1E24",
+  cursor: "ew-resize",
+  userSelect: "none",
 };
 
 const rulerLabel: React.CSSProperties = {
@@ -363,7 +383,9 @@ const edgeHandle: React.CSSProperties = {
 
 const playhead: React.CSSProperties = {
   position: "absolute",
-  top: -4,
+  // Reaches up across the ruler (18px + its 4px gap): the ruler is a seek
+  // surface now, so the playhead must be visible against it.
+  top: -26,
   bottom: -4,
   width: 2,
   background: "#FFE14D",
