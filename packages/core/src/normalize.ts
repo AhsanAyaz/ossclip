@@ -59,14 +59,35 @@ export const MAX_NORMALIZE_UPSCALE = 2.6;
 const even = (v: number): number => 2 * Math.floor(v / 2);
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi);
 
+const median = (xs: number[]): number => {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
+};
+
 /**
  * Decide the canvas and each segment's crop window.
  *
  * `faces` is parallel to `timeline` — each face in ITS segment rect's own
- * fractions (`measureFaceInWindows`), which is what makes cross-segment
- * placement meaningful: the windows are positioned so the face sits at the
- * same relative height everywhere, so a framing boundary in the bake is a
- * non-event on screen.
+ * fractions (`measureFaceInWindows`).
+ *
+ * The window is sized by the FACE, not by a constant rect. Equalizing the
+ * canvas alone is not enough, and the author's clip proved it: its two
+ * framings are the same camera shot presented differently — the letterboxed
+ * strip is the whole landscape frame, the full-bleed stretches are a zoomed
+ * crop of it. So the face measures 0.28-0.44 of the frame in one state and
+ * 0.48-0.57 in the other, and cropping both to a constant-height window put
+ * the face at 108% of output height in the full-bleed stretches (head taller
+ * than the frame) against 57% in the strips. Same subject, wildly different
+ * size, at every boundary.
+ *
+ * Sizing each window as `faceHeight / targetFraction` makes the SUBJECT the
+ * constant instead, which is what "one consistent framing" has to mean. The
+ * target is the MEDIAN measured fraction: a segment whose face is smaller
+ * than the target crops in to match, and one whose face is larger can only
+ * zoom out as far as its own rect — clamping there rather than inventing
+ * pixels. The median (not the max) is what keeps that clamping rare and the
+ * upscale inside the quality gate.
  */
 export function planNormalization(
   timeline: readonly ContentRectSegment[],
@@ -79,23 +100,56 @@ export function planNormalization(
     return { canvas: { width: 0, height: 0 }, segments: [], coverUpscale: Infinity, ok: false };
   }
 
-  // The canvas is the TIGHTEST field of view in the take — those stretches
-  // have nothing more to give, so everything else meets them there.
-  const canvasRect = boxed.reduce((a, b) => (b.rect.h < a.rect.h ? b : a)).rect;
-  const canvas = { width: even(canvasRect.w), height: even(canvasRect.h) };
-  const aspect = canvas.width / canvas.height;
+  /** Face height as a fraction of its own segment's rect, where measured. */
+  const measured = timeline.map((_, i) => faces[i]?.sizeFrac ?? null);
+  const known = measured.filter((v): v is number => v !== null);
 
-  // Where the face sits WITHIN the canvas-framed stretches — the target every
-  // other segment's window reproduces. Duration-weighted so a 2s stretch
-  // cannot outvote a 20s one; 0.5/0.45 (centre, face slightly high) when the
-  // detector found nothing to measure.
+  // ---- Window heights ------------------------------------------------------
+  // Without a single measurement there is no subject to hold constant, so the
+  // rect-shaped fallback stands: the tightest field of view, uniformly.
+  const target = known.length > 0 ? median(known) : null;
+  const rectShapedHeights = (): number[] => {
+    const canvasRect = boxed.reduce((a, b) => (b.rect.h < a.rect.h ? b : a)).rect;
+    const a = canvasRect.w / canvasRect.h;
+    return timeline.map((s) => even(Math.min(s.rect.w, s.rect.h * a) / a));
+  };
+  const windowHeights =
+    target === null
+      ? rectShapedHeights()
+      : timeline.map((s, i) => {
+          // An unmeasured segment inherits the median fraction of the segments
+          // framed like it (same rect height), so it is sized in ITS OWN class
+          // rather than averaged across two different shots.
+          const sameClass = timeline.flatMap((o, j) =>
+            measured[j] !== null && Math.abs(o.rect.h - s.rect.h) <= 2 ? [measured[j]!] : [],
+          );
+          const frac = measured[i] ?? (sameClass.length > 0 ? median(sameClass) : median(known));
+          return even(clamp((frac * s.rect.h) / target, 16, s.rect.h));
+        });
+
+  // ---- Canvas --------------------------------------------------------------
+  // The widest aspect every window can actually hold. Wider than the output's
+  // own aspect leaves the stage some horizontal freedom for the face bias;
+  // narrower simply means the output crops height, which cover already does.
+  const aspect = timeline.reduce(
+    (a, s, i) => Math.min(a, s.rect.w / windowHeights[i]!),
+    Number.POSITIVE_INFINITY,
+  );
+  // The smallest window, so baking never upscales — the tightest segment sets
+  // the resolution and every other one is downscaled into it.
+  const canvasHeight = even(Math.min(...windowHeights));
+  const canvas = { width: even(canvasHeight * aspect), height: canvasHeight };
+
+  // ---- Face placement inside the window ------------------------------------
+  // Taken from the segments whose window IS their rect: their framing is the
+  // author's own and survives untouched, so it is the one to reproduce.
   let wx = 0;
   let wy = 0;
   let weight = 0;
   timeline.forEach((seg, i) => {
     const f = faces[i];
-    if (!f || seg.rect.h > canvasRect.h + 2) return;
-    const dur = seg.endSec - seg.startSec;
+    if (!f || windowHeights[i]! < seg.rect.h - 2) return;
+    const dur = Math.max(1e-6, seg.endSec - seg.startSec);
     wx += f.centerXFrac * dur;
     wy += f.centerYFrac * dur;
     weight += dur;
@@ -105,9 +159,8 @@ export function planNormalization(
 
   const segments: NormalizeSegment[] = timeline.map((seg, i) => {
     const r = seg.rect;
-    // The largest canvas-shaped window that fits inside this segment's rect.
-    const wW = even(Math.min(r.w, r.h * aspect));
-    const wH = even(wW / aspect);
+    const wH = windowHeights[i]!;
+    const wW = even(Math.min(r.w, wH * aspect));
     const f = faces[i];
     // Face position in source px; the rect centre when nothing was measured.
     const faceX = r.x + (f ? f.centerXFrac : 0.5) * r.w;
@@ -120,7 +173,7 @@ export function planNormalization(
   // Cover the output with the canvas: for a canvas wider than the output's
   // aspect the height binds, otherwise the width does.
   const coverUpscale =
-    aspect > output.width / output.height
+    canvas.width / canvas.height > output.width / output.height
       ? output.height / canvas.height
       : output.width / canvas.width;
 

@@ -54,15 +54,66 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
     expect(plan.segments[2]!.window).toMatchObject({ x: 0, y: 876, w: 1440, h: 808 });
   });
 
-  it("places a full-bleed segment's window so the face lands where it does in the strip", () => {
-    // Strip face at 55% of strip height; full-bleed face centre at y=1000px
-    // (0.39 of the full frame). The full segment's 808-tall window must put
-    // its face at the SAME 55% — i.e. y0 = 1000 - 0.55*808 ≈ 556.
-    const faces = [face(0.55), face(1000 / H), face(0.55)];
+  /** A face of `sizeFrac` height, centred, in its segment's own fractions. */
+  const sized = (sizeFrac: number): WindowFace => ({
+    centerXFrac: 0.5,
+    centerYFrac: 0.4,
+    sizeFrac,
+    framesDetected: 3,
+    framesSampled: 4,
+  });
+
+  /** Face height as a fraction of the CANVAS, per segment — the thing a
+   * viewer actually reads as "how far away is the camera". */
+  const subjectOnCanvas = (plan: ReturnType<typeof planNormalization>, fs: WindowFace[]) =>
+    plan.segments.map(
+      (s, i) => (fs[i]!.sizeFrac * timeline[i]!.rect.h) / s.window.h,
+    );
+
+  it("equalizes SUBJECT size, not canvas size — the defect the render exposed", () => {
+    // Measured on the author's clip: the same camera shot appears as a whole
+    // landscape frame in the strips (face 0.57 of their height) and as a
+    // ZOOMED CROP of it in the full-bleed stretches (face 0.34 of theirs).
+    // Sizing every window to a constant height therefore put the face at 108%
+    // of output height in full-bleed — head taller than the frame — against
+    // 57% in the strips. Same subject, two sizes, at every boundary.
+    const faces = [sized(0.57), sized(0.34), sized(0.57)];
     const plan = planNormalization(timeline, faces, OUT);
-    const w = plan.segments[1]!.window;
-    expect(w.h).toBe(808);
-    expect(Math.abs(w.y - (1000 - 0.55 * 808))).toBeLessThanOrEqual(2);
+    const subject = subjectOnCanvas(plan, faces);
+    expect(Math.max(...subject) / Math.min(...subject)).toBeLessThan(1.02);
+  });
+
+  it("sizes the window by the face: a smaller face crops in, a larger one out", () => {
+    const faces = [sized(0.57), sized(0.34), sized(0.57)];
+    const plan = planNormalization(timeline, faces, OUT);
+    // The strip's face already matches the target, so its window is its rect.
+    expect(plan.segments[0]!.window.h).toBe(808);
+    // The full-bleed face is 0.34 of 2560 = 870px and must occupy the same
+    // 0.57 of its window, so the window grows to ~1527 rather than staying
+    // at the strip's 808 (which is what cropped the head out of frame).
+    expect(plan.segments[1]!.window.h).toBeGreaterThan(1400);
+    expect(plan.segments[1]!.window.h).toBeLessThan(1600);
+  });
+
+  it("clamps at the rect rather than inventing pixels to zoom out into", () => {
+    // A face far larger than the target would need a window taller than its
+    // own rect. There is nothing there to show, so the window stops at the
+    // rect and that segment stays a little tighter than the rest.
+    const faces = [sized(0.3), sized(0.95), sized(0.3)];
+    const plan = planNormalization(timeline, faces, OUT);
+    for (const [i, s] of plan.segments.entries()) {
+      expect(s.window.h).toBeLessThanOrEqual(timeline[i]!.rect.h);
+      expect(s.window.w).toBeLessThanOrEqual(timeline[i]!.rect.w);
+    }
+  });
+
+  it("still passes the quality gate on the author's own measurements", () => {
+    // The whole fix is worthless if equalizing pushes the upscale past the
+    // gate and silently drops to the fit fallback.
+    const faces = [sized(0.57), sized(0.34), sized(0.51)];
+    const plan = planNormalization(timeline, faces, OUT);
+    expect(plan.ok).toBe(true);
+    expect(plan.coverUpscale).toBeLessThanOrEqual(MAX_NORMALIZE_UPSCALE);
   });
 
   it("clamps the window inside the frame for a face near the edge", () => {
