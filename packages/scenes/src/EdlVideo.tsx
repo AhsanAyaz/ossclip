@@ -12,6 +12,14 @@ export interface EdlVideoProps {
   punchThresholdSec?: number;
   /** Audio micro-fade at each cut boundary, in seconds. */
   audioFadeSec?: number;
+  /**
+   * What shows where the video doesn't reach. Black by default — with a
+   * cover-cropped source it never shows at all. Under `--source-fit contain`
+   * the picture is INSET in its slot, so this backing would paint black bars
+   * over the stage's own backdrop; the composition passes `transparent` there
+   * and lets the backdrop through.
+   */
+  background?: string;
 }
 
 /**
@@ -25,6 +33,7 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
   punchInScale = 1.07,
   punchThresholdSec = 0.15,
   audioFadeSec = 0.01,
+  background = "black",
 }) => {
   const { fps } = useVideoConfig();
 
@@ -43,7 +52,7 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
   const fadeFrames = Math.max(1, Math.round(audioFadeSec * fps));
 
   return (
-    <AbsoluteFill style={{ backgroundColor: "black" }}>
+    <AbsoluteFill style={{ backgroundColor: background }}>
       {spans.map((sp, i) => {
         const from = Math.round(sp.outIn * fps);
         const durationInFrames = Math.max(1, Math.round((sp.outOut - sp.outIn) * fps));

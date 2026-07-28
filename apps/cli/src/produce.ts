@@ -111,6 +111,13 @@ export interface ProduceOptions {
   coverPath?: string;
   /** Treat the source as an already-edited reel with burned-in graphics. */
   sourceIsEdited?: boolean;
+  /**
+   * How the source meets the vertical frame. `cover` (default) crops it to
+   * fill; `contain` shows the WHOLE frame inset against the backdrop, which is
+   * the answer for a landscape take whose content matters beyond the speaker's
+   * face.
+   */
+  sourceFit?: "cover" | "contain";
 }
 
 function sha1File(path: string): Promise<string> {
@@ -534,6 +541,23 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           "the crop may be wrong, check the output",
   );
 
+  // A landscape source loses most of its width to the vertical frame, and how
+  // much is arithmetic, not opinion: cover-cropping displays the picture at
+  // `height × aspect` and keeps only the frame's width of it. Said out loud
+  // because the result LOOKS deliberate — a tight talking head — and nothing
+  // else in the run would mention that the desk, the screen and the second
+  // person are simply gone.
+  if (opts.sourceFit !== "contain" && content.height > 0) {
+    const displayedW = 1920 * (content.width / content.height);
+    if (displayedW > 1080 * 1.05) {
+      console.log(
+        `▸ source is ${(content.width / content.height).toFixed(2)}:1 — a full-frame crop keeps ` +
+          `${((1080 / displayedW) * 100).toFixed(0)}% of its width. ` +
+          "Use --source-fit contain to show the whole frame instead.",
+      );
+    }
+  }
+
   // ---- Route around the source's own burned-in text (FINDINGS §26) --------
   // Fed a finished reel, ossclip would otherwise stack its layer on an
   // existing one — cropping through the source's title and then restating it
@@ -898,6 +922,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           sourceSize: { width: sourceProbe.width, height: sourceProbe.height },
           contentCropMode: "fit" as const,
         }
+      : {}),
+    // `--source-fit contain`: show the whole frame instead of cropping it.
+    // The size sent is the PICTURE's, not the container's — with bars trimmed
+    // into the mezzanine the rendered video IS the content rect, and fitting
+    // against the container's shape would inset a frame that no longer exists.
+    // Listed after the fit fallback so it wins on a source that is both mixed
+    // and asked to be shown whole.
+    ...(opts.sourceFit === "contain"
+      ? { sourceFit: "contain" as const, sourceSize: content }
       : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));

@@ -3,6 +3,7 @@ import {
   contentCoverBox,
   contentRectAtOutput,
   sourceTimeAt,
+  sourceFitBox,
 } from "../src/content-crop";
 
 const SOURCE = { width: 1440, height: 2560 };
@@ -148,5 +149,45 @@ describe("contentFitBox (option (b) — the inset fallback)", () => {
     expect(fit).toEqual(contentFitBox(source, strip, slot));
     const cover = contentBox("cover", source, strip, slot, 0.1, 0.9);
     expect(cover).not.toEqual(fit);
+  });
+});
+
+describe("sourceFitBox (--source-fit contain)", () => {
+  const slot = { width: 1080, height: 1920 };
+
+  it("shows a 16:9 source whole: full width, centred, nothing cropped", () => {
+    const box = sourceFitBox({ width: 1920, height: 1080 }, slot);
+    // Width-bound against a portrait slot: the picture spans the full width…
+    expect(box.width).toBeCloseTo(1080, 6);
+    expect(box.height).toBeCloseTo(607.5, 6);
+    // …and is centred, so the inset margins are equal.
+    expect(box.left).toBeCloseTo(0, 6);
+    expect(box.top).toBeCloseTo((1920 - 607.5) / 2, 6);
+    // Every pixel of the source is inside the slot — that IS "don't crop it".
+    expect(box.width).toBeLessThanOrEqual(slot.width + 1e-6);
+    expect(box.height).toBeLessThanOrEqual(slot.height + 1e-6);
+  });
+
+  it("keeps the source's aspect, so the video's own cover has nothing left to crop", () => {
+    for (const source of [
+      { width: 1920, height: 1080 },
+      { width: 1080, height: 1920 },
+      { width: 1440, height: 1080 },
+    ]) {
+      const box = sourceFitBox(source, slot);
+      expect(box.width / box.height).toBeCloseTo(source.width / source.height, 6);
+    }
+  });
+
+  it("is a no-op shape for a source already the slot's aspect", () => {
+    const box = sourceFitBox({ width: 1080, height: 1920 }, slot);
+    expect(box).toEqual({ width: 1080, height: 1920, left: 0, top: 0 });
+  });
+
+  it("agrees with contentFitBox given a full-frame rect — one geometry, two names", () => {
+    const source = { width: 1920, height: 1080 };
+    expect(sourceFitBox(source, slot)).toEqual(
+      contentFitBox(source, { x: 0, y: 0, w: source.width, h: source.height }, slot),
+    );
   });
 });

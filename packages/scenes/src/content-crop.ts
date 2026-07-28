@@ -88,6 +88,38 @@ export function contentFitBox(
 
 export type ContentCropMode = "cover" | "fit";
 
+/**
+ * How the SOURCE meets the video slot — a different question from
+ * `ContentCropMode`, which is about letterbox strips inside a source whose
+ * framing changes mid-take. This one is about the source's own shape:
+ *
+ *   cover    fill the slot, cropping whatever doesn't fit (the default, and
+ *            the right answer for a portrait selfie take)
+ *   contain  show the WHOLE frame, inset against the stage backdrop
+ *
+ * `contain` exists for LANDSCAPE sources. A 1920×1080 take cover-cropped into
+ * a 1080×1920 frame displays at 3413px wide and keeps 1080 of them — 31.6% of
+ * the picture, with the speaker's head filling the frame top to bottom. When
+ * what's on screen matters (a desk, a monitor, two people, a demo), that crop
+ * throws the shot away; `contain` keeps it exactly as recorded.
+ */
+export type SourceFit = "cover" | "contain";
+
+/**
+ * The box that shows the WHOLE source frame inside a slot, centred.
+ *
+ * `contentFitBox` with a full-frame rect — spelled out as its own function
+ * because the two callers mean different things (that one insets a measured
+ * content strip; this one insets the source itself) and a future change to one
+ * must not silently retune the other.
+ */
+export function sourceFitBox(
+  source: { width: number; height: number },
+  slot: { width: number; height: number },
+): CoverBox {
+  return contentFitBox(source, { x: 0, y: 0, w: source.width, h: source.height }, slot);
+}
+
 /** A kept span, as the TimeMap emits it — output and source in one record. */
 export interface SpanLike {
   outIn: number;

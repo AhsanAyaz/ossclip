@@ -60,6 +60,13 @@ export interface ProductionCompProps {
   sourceSize?: { width: number; height: number };
   /** How letterboxed stretches render: cover (default) or fit (option (b)). */
   contentCropMode?: "cover" | "fit";
+  /**
+   * How the SOURCE meets the slot (`--source-fit`): `cover` crops it to fill,
+   * `contain` shows the whole frame inset against the backdrop. The landscape
+   * escape hatch — a 16:9 take cover-cropped into 9:16 keeps 32% of its width.
+   * Requires `sourceSize`; without it there is nothing to fit.
+   */
+  sourceFit?: "cover" | "contain";
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -88,6 +95,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   contentTimeline,
   sourceSize,
   contentCropMode,
+  sourceFit,
 }) => {
   if (!videoFileName) {
     return (
@@ -118,8 +126,18 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         spans={spans}
         sourceSize={sourceSize}
         contentCropMode={contentCropMode}
+        sourceFit={sourceFit}
       >
-        <EdlVideo src={src} spans={spans} />
+        {/* Under `contain` the cut punch-in would scale an exactly-fitted
+            picture and crop it back, and the video's own black backing would
+            paint over the stage backdrop in the inset margins — so both are
+            neutralised here rather than inside EdlVideo, which has no idea
+            what shape its slot is. */}
+        <EdlVideo
+          src={src}
+          spans={spans}
+          {...(sourceFit === "contain" ? { punchInScale: 1, background: "transparent" } : {})}
+        />
       </VideoStage>
       <SceneLayer cues={sceneCues} theme={theme} />
       <CaptionTrack

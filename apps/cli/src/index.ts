@@ -56,6 +56,13 @@ program
     "debug: render every graphic with this component (e.g. FlowDiagram) to exercise it on real copy",
   )
   .option(
+    "--source-fit <mode>",
+    "cover | contain. cover (default) crops the source to fill the vertical " +
+      "frame; contain shows the WHOLE frame inset against the backdrop — the " +
+      "answer for a landscape take whose content matters beyond the speaker",
+    "cover",
+  )
+  .option(
     "--source-is-edited",
     "the source is already an edited reel with burned-in text — keep ossclip's graphics off it without waiting on detection",
   )
@@ -69,6 +76,9 @@ program
     const forceComponent = opts.forceComponent
       ? SceneComponentIdSchema.parse(opts.forceComponent)
       : undefined;
+    // Parsed, not coerced: a typo'd `--source-fit containn` silently falling
+    // back to cover is exactly the crop the flag exists to prevent.
+    const sourceFit = z.enum(["cover", "contain"]).parse(opts.sourceFit);
     await produce(input, {
       out: opts.out,
       cleanup,
@@ -90,6 +100,7 @@ program
       // commander gives `--no-cover` as cover:false and `--cover <path>` as a
       // string on the same key.
       sourceIsEdited: opts.sourceIsEdited === true,
+      sourceFit,
       cover: opts.cover !== false,
       coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
     });

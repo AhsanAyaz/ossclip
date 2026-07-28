@@ -9,7 +9,14 @@ import type {
 } from "@ossclip/core/browser";
 import { zoomScaleAt } from "@ossclip/core/browser";
 import { activeCueAt, backdropOpacityAt, videoSlotAt } from "./stage";
-import { contentBox, contentRectAtOutput, type ContentCropMode, type SpanLike } from "./content-crop";
+import {
+  contentBox,
+  contentRectAtOutput,
+  sourceFitBox,
+  type ContentCropMode,
+  type SourceFit,
+  type SpanLike,
+} from "./content-crop";
 
 /**
  * The stage (PHASE1 §1): a solid backdrop that fades in when a scene demotes
@@ -46,6 +53,13 @@ export const VideoStage: React.FC<{
    * strip is too small to cover without visible softening (option (b)).
    */
   contentCropMode?: ContentCropMode;
+  /**
+   * How the SOURCE meets the slot (`--source-fit`). `contain` shows the whole
+   * frame inset against the backdrop instead of cover-cropping it — the
+   * landscape escape hatch. Needs `sourceSize` to know the frame's shape;
+   * without it there is nothing to fit and this falls back to cover.
+   */
+  sourceFit?: SourceFit;
   children: React.ReactNode;
 }> = ({
   cues,
@@ -57,6 +71,7 @@ export const VideoStage: React.FC<{
   spans,
   sourceSize,
   contentCropMode = "cover",
+  sourceFit = "cover",
   children,
 }) => {
   const frame = useCurrentFrame();
@@ -88,7 +103,13 @@ export const VideoStage: React.FC<{
   const zoomRaw = zoomPlan && zoomPlan.length > 0 ? zoomScaleAt(zoomPlan, t) : 1;
   const zoomDamp = Math.max(0, slot.opacity * (1 - 0.6 * slot.cornerRadius));
   const autoZoom = userVideo?.autoZoom !== false;
-  const zoom = autoZoom ? 1 + (zoomRaw - 1) * zoomDamp : 1;
+  // `contain` promises the WHOLE frame; the idle push would immediately crop
+  // it back — a 1.08 scale on an exactly-fitted picture trims 8% off every
+  // edge. So the automatic layer is off in that mode by construction, not by
+  // asking the user to remember to switch it off per scene. An explicit
+  // `cue.video.scale` still applies: that one is a decision, not a default.
+  const fitContain = sourceFit === "contain" && sourceSize !== undefined;
+  const zoom = autoZoom && !fitContain ? 1 + (zoomRaw - 1) * zoomDamp : 1;
   const userScale = userVideo?.scale ?? 1;
   const userDx = userVideo?.dx ?? 0;
   const userDy = userVideo?.dy ?? 0;
@@ -118,6 +139,12 @@ export const VideoStage: React.FC<{
           borderRadius: radiusPx,
           overflow: "hidden",
           opacity: slot.opacity,
+          // Under `contain` the picture no longer reaches the slot's edges.
+          // Paint the theme's own backdrop behind it so the inset reads as a
+          // deliberate frame rather than as black bars: the root fill is
+          // black, and every layout except pip/graphic-only leaves the stage
+          // backdrop at opacity 0, so without this the gap would be black.
+          backgroundColor: fitContain ? theme.bg : undefined,
           // Slightly lift the bubble off the backdrop like the reference.
           boxShadow: slot.cornerRadius > 0.5 ? "0 18px 60px rgba(0,0,0,0.55)" : undefined,
         }}
@@ -138,22 +165,50 @@ export const VideoStage: React.FC<{
             ["--ossclip-obj-x" as string]: `${slot.objectPosX * 100}%`,
           }}
         >
-          <ContentCrop
-            timeline={contentTimeline}
-            spans={spans}
-            sourceSize={sourceSize}
-            mode={contentCropMode}
-            tSec={t}
-            slot={{ width: wPx, height: hPx }}
-            posX={slot.objectPosX}
-            posY={slot.objectPosY}
-          >
-            {children}
-          </ContentCrop>
+          {fitContain ? (
+            // The whole frame, inset and centred. The box carries the SOURCE's
+            // aspect, so EdlVideo's `object-fit: cover` has no overflow left to
+            // crop and its object-position bias becomes a no-op — the same
+            // property the mixed-framing fit path relies on. Takes precedence
+            // over the content-rect path below: `contain` means "exactly as
+            // recorded", bars in the source included.
+            <FitBox source={sourceSize!} slot={{ width: wPx, height: hPx }}>
+              {children}
+            </FitBox>
+          ) : (
+            <ContentCrop
+              timeline={contentTimeline}
+              spans={spans}
+              sourceSize={sourceSize}
+              mode={contentCropMode}
+              tSec={t}
+              slot={{ width: wPx, height: hPx }}
+              posX={slot.objectPosX}
+              posY={slot.objectPosY}
+            >
+              {children}
+            </ContentCrop>
+          )}
         </div>
         <div style={{ position: "absolute", inset: 0, background: "black", opacity: slot.dim }} />
       </div>
     </AbsoluteFill>
+  );
+};
+
+/** Shows the whole source frame, centred inside the slot (`--source-fit contain`). */
+const FitBox: React.FC<{
+  source: { width: number; height: number };
+  slot: { width: number; height: number };
+  children: React.ReactNode;
+}> = ({ source, slot, children }) => {
+  const box = sourceFitBox(source, slot);
+  return (
+    <div
+      style={{ position: "absolute", width: box.width, height: box.height, left: box.left, top: box.top }}
+    >
+      {children}
+    </div>
   );
 };
 
