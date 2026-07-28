@@ -230,3 +230,31 @@ describe("reclampPinnedTiming (produce-side re-clamp after a re-plan)", () => {
     expect(out[2]).toEqual(cues[2]);
   });
 });
+
+describe("per-scene video framing override", () => {
+  const cue = {
+    id: "s1",
+    layout: "pip-bubble" as const,
+    component: "TitleCard" as const,
+    props: { title: "X" },
+    startSec: 0,
+    endSec: 5,
+  };
+
+  it("reaches the cue so the stage can zoom the bubble out", () => {
+    // The pip case: head at ~120% of a round mask, unfixable by any constant.
+    const doc = OverrideDocSchema.parse({ scenes: { s1: { video: { scale: 0.62, dy: -18 } } } });
+    const { cues } = applyOverrides([cue], doc);
+    expect(cues[0]!.video).toEqual({ scale: 0.62, dy: -18 });
+  });
+
+  it("is absent when untouched, so an unedited scene carries no transform", () => {
+    const { cues } = applyOverrides([cue], OverrideDocSchema.parse({}));
+    expect(cues[0]!.video).toBeUndefined();
+  });
+
+  it("refuses a non-positive or absurd scale rather than rendering a blank frame", () => {
+    expect(() => OverrideDocSchema.parse({ scenes: { s1: { video: { scale: 0 } } } })).toThrow();
+    expect(() => OverrideDocSchema.parse({ scenes: { s1: { video: { scale: 99 } } } })).toThrow();
+  });
+});

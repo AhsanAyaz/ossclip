@@ -211,6 +211,33 @@ export const Inspector: React.FC<InspectorProps> = ({ selection, cue, edits, res
           </div>
         </div>
         <div style={section}>
+          {/* The escape hatch for a crop the automatic pass cannot fix: a
+              round pip mask fed a portrait canvas puts the head at ~120% of
+              the bubble, and that ratio does not change with bubble size, so
+              no constant fixes it. Scale under 1 shows more of the source. */}
+          <span style={label}>Video framing</span>
+          <NumberField
+            id="scale"
+            value={cue.video?.scale ?? 1}
+            onCommit={(v) => edits.patchVideo(selection.sceneId, { scale: v })}
+          />
+          <NumberField
+            id="dx"
+            value={cue.video?.dx ?? 0}
+            onCommit={(v) => edits.patchVideo(selection.sceneId, { dx: v })}
+          />
+          <NumberField
+            id="dy"
+            value={cue.video?.dy ?? 0}
+            onCommit={(v) => edits.patchVideo(selection.sceneId, { dy: v })}
+          />
+          {cue.video ? (
+            <button style={button} onClick={() => edits.clearVideo(selection.sceneId)}>
+              Reset framing
+            </button>
+          ) : null}
+        </div>
+        <div style={section}>
           <span style={label}>Timing</span>
           <div style={{ fontSize: 13, color: cue.pinned ? "#FFE14D" : "#9A9AA3" }}>
             {cue.pinned

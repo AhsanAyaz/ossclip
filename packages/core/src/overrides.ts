@@ -43,6 +43,28 @@ export const SceneOverrideSchema = z.object({
    */
   component: SceneComponentIdSchema.optional(),
   layout: LayoutSchema.optional(),
+  /**
+   * How the VIDEO sits inside this scene's slot, when the automatic
+   * face-aware crop gets it wrong.
+   *
+   * The motivating case: a `pip-bubble` fed a portrait canvas is cover-cropped
+   * width-first, which puts the head at ~120% of the circle's diameter — and
+   * that ratio is fixed no matter how large the bubble is, so no constant can
+   * fix it. Zooming out inside a round mask would leave crescent gaps, so the
+   * automatic path leaves it and this is the escape hatch: `scale` below 1
+   * shows more of the source (the gap fills with the stage backdrop), `dy`
+   * nudges the crop up or down.
+   *
+   * Deliberately per SCENE, not global: it is a property of one layout meeting
+   * one moment's framing, which is exactly what the editor is for.
+   */
+  video: z
+    .object({
+      scale: z.number().positive().max(4).optional(),
+      dy: z.number().optional(),
+      dx: z.number().optional(),
+    })
+    .optional(),
 });
 export type SceneOverride = z.infer<typeof SceneOverrideSchema>;
 
@@ -114,6 +136,7 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       layout: o.layout ?? cue.layout,
       props,
       ...(Object.keys(o.elements).length > 0 ? { elements: o.elements } : {}),
+      ...(o.video ? { video: o.video } : {}),
       ...(o.timing ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true } : {}),
     };
   });

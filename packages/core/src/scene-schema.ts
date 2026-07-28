@@ -74,6 +74,18 @@ export const SceneCueSchema = z.object({
     dy: z.number().optional(),
     scale: z.number().positive().optional(),
   })).optional(),
+  /**
+   * How the video sits in this scene's slot, when the automatic face-aware
+   * crop needs a hand (see `SceneOverrideSchema.video`). `scale` under 1 zooms
+   * OUT — more of the source, backdrop showing where it no longer covers.
+   */
+  video: z
+    .object({
+      scale: z.number().positive().max(4).optional(),
+      dy: z.number().optional(),
+      dx: z.number().optional(),
+    })
+    .optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
 });

@@ -8,7 +8,7 @@ import type {
   ZoomSegment,
 } from "@ossclip/core/browser";
 import { zoomScaleAt } from "@ossclip/core/browser";
-import { backdropOpacityAt, videoSlotAt } from "./stage";
+import { activeCueAt, backdropOpacityAt, videoSlotAt } from "./stage";
 import { contentBox, contentRectAtOutput, type ContentCropMode, type SpanLike } from "./content-crop";
 
 /**
@@ -78,6 +78,23 @@ export const VideoStage: React.FC<{
   const zoomDamp = Math.max(0, slot.opacity * (1 - 0.6 * slot.cornerRadius));
   const zoom = 1 + (zoomRaw - 1) * zoomDamp;
 
+  // The user's per-scene crop correction (`overrides.json` -> cue.video).
+  // Composed with the idle zoom rather than replacing it, so a scene that was
+  // nudged still breathes; NOT lerped across the layout transition, because a
+  // correction belongs to one scene and interpolating it into its neighbour
+  // would drag the neighbour's crop with it.
+  const userVideo = activeCueAt(cues, t)?.video;
+  const userScale = userVideo?.scale ?? 1;
+  const userDx = userVideo?.dx ?? 0;
+  const userDy = userVideo?.dy ?? 0;
+  const contentTransform =
+    [
+      userDx !== 0 || userDy !== 0 ? `translate(${userDx}px, ${userDy}px)` : "",
+      zoom * userScale !== 1 ? `scale(${zoom * userScale})` : "",
+    ]
+      .filter(Boolean)
+      .join(" ") || undefined;
+
   return (
     <AbsoluteFill>
       <AbsoluteFill style={{ background: theme.bg, opacity: backdrop }} />
@@ -100,7 +117,7 @@ export const VideoStage: React.FC<{
             position: "absolute",
             inset: 0,
             filter: slot.blurPx > 0.5 ? `blur(${slot.blurPx}px)` : undefined,
-            transform: zoom !== 1 ? `scale(${zoom})` : undefined,
+            transform: contentTransform,
             // Zoom toward the face, which the crop bias keeps in the upper part.
             transformOrigin: "50% 40%",
             // Crop bias consumed by EdlVideo's object-position (FINDINGS §11/§13):

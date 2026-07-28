@@ -25,6 +25,8 @@ export type EditAction =
   | { type: "patchElement"; sceneId: string; elementId: string; patch: ElementTransform }
   | { type: "clearElement"; sceneId: string; elementId: string }
   | { type: "patchTiming"; sceneId: string; startSec: number; endSec: number }
+  | { type: "patchVideo"; sceneId: string; patch: { scale?: number; dy?: number; dx?: number } }
+  | { type: "clearVideo"; sceneId: string }
   | { type: "clearTiming"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
   | { type: "patchLayout"; sceneId: string; layout: Layout }
@@ -84,6 +86,28 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     }
     case "clearTiming":
       return commit(clearTiming(state.doc, action.sceneId));
+    case "patchVideo": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit({
+        ...state.doc,
+        scenes: {
+          ...state.doc.scenes,
+          [action.sceneId]: { ...scene, video: { ...scene.video, ...action.patch } },
+        },
+      });
+    }
+    case "clearVideo": {
+      const scene = state.doc.scenes[action.sceneId];
+      if (!scene?.video) return state;
+      // DELETE rather than reset to 1: an explicit scale of 1 is still an
+      // override, and would keep overriding after a re-produce changed the
+      // framing underneath it.
+      const { video: _dropped, ...rest } = scene;
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: rest },
+      });
+    }
     case "patchComponent": {
       const scene = withScene(state.doc, action.sceneId);
       return commit({
@@ -147,6 +171,9 @@ export function useEdits() {
     patchTiming: (sceneId: string, startSec: number, endSec: number) =>
       dispatch({ type: "patchTiming", sceneId, startSec, endSec }),
     clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),
+    patchVideo: (sceneId: string, patch: { scale?: number; dy?: number; dx?: number }) =>
+      dispatch({ type: "patchVideo", sceneId, patch }),
+    clearVideo: (sceneId: string) => dispatch({ type: "clearVideo", sceneId }),
     patchComponent: (sceneId: string, component: SceneComponentId) =>
       dispatch({ type: "patchComponent", sceneId, component }),
     patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),
