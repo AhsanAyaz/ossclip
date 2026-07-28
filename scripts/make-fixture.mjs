@@ -18,6 +18,22 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+/**
+ * Not every ffmpeg build ships `drawtext` — it needs libfreetype, and several
+ * common Homebrew/distro builds omit it. Only the burned-in-title fixture
+ * needs it, so that one is skipped with an explanation rather than taking the
+ * whole generator (and every other fixture after it) down with it.
+ */
+const hasDrawtext = (() => {
+  try {
+    return /^ .. drawtext/m.test(
+      execFileSync("ffmpeg", ["-hide_banner", "-filters"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }),
+    );
+  } catch {
+    return false;
+  }
+})();
+
 const RATE = 22050;
 const WORD_GAP = 0.08;
 const OUT_DIR = new URL("../fixtures/", import.meta.url).pathname;
@@ -130,6 +146,13 @@ console.log(`transcript: ${join(OUT_DIR, "fixture.transcript.json")}`);
 const TITLE_SEC = 6;
 const REEL_SEC = 12;
 const reelPath = join(OUT_DIR, "edited-reel.mp4");
+if (!hasDrawtext) {
+  console.log(
+    `edited reel: SKIPPED — this ffmpeg has no drawtext filter (needs libfreetype).\n` +
+      `  The burned-in-text detector's tests are pure functions and still run;\n` +
+      `  only the end-to-end check on ${reelPath} is unavailable here.`,
+  );
+} else {
 sh("ffmpeg", [
   "-y",
   "-f", "lavfi", "-i", `testsrc2=size=720x1280:rate=30:duration=${REEL_SEC}`,
@@ -143,6 +166,7 @@ sh("ffmpeg", [
   reelPath,
 ]);
 console.log(`edited reel: ${reelPath} (${REEL_SEC}s, title 0-${TITLE_SEC}s)`);
+}
 
 /**
  * A 16:9 source. Every crop calculation used to assume the source shared the
