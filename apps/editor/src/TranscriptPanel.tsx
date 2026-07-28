@@ -24,7 +24,9 @@ export const TranscriptPanel: React.FC<{
   fps: number;
   playerRef: React.RefObject<PlayerRef | null>;
   edits: ReturnType<typeof useEdits>;
-}> = ({ baseLines, liveLines, fps, playerRef, edits }) => {
+  /** Pane width in px — owned by App, dragged via the divider (R16 §65). */
+  width: number;
+}> = ({ baseLines, liveLines, fps, playerRef, edits, width }) => {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<{ index: number; draft: string } | null>(null);
   // The word under the playhead, so reading follows playback. Index only —
@@ -91,7 +93,7 @@ export const TranscriptPanel: React.FC<{
   };
 
   return (
-    <div data-testid="transcript-panel" style={panel}>
+    <div data-testid="transcript-panel" style={{ ...panel, width }}>
       <div style={header}>
         <span style={title}>Transcript</span>
         <div style={scopeNote}>
@@ -112,55 +114,59 @@ export const TranscriptPanel: React.FC<{
           </div>
         ) : null}
       </div>
-      <div style={body}>
-        {words.map((w) =>
-          editing?.index === w.index ? (
-            <input
-              key={w.index}
-              autoFocus
-              data-testid="transcript-edit"
-              style={editInput}
-              value={editing.draft}
-              onChange={(e) => setEditing({ index: w.index, draft: e.target.value })}
-              onBlur={() => commit(w.index, w.base, editing.draft)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                if (e.key === "Escape") setEditing(null);
-              }}
-            />
-          ) : (
-            <span
-              key={w.index}
-              data-testid={`transcript-word-${w.index}`}
-              onClick={() => playerRef.current?.seekTo(Math.round(w.start * fps))}
-              onDoubleClick={() => setEditing({ index: w.index, draft: w.live })}
-              title={
-                w.live !== w.base
-                  ? `edited (was “${w.base}”) — double-click to retype`
-                  : "click to jump · double-click to retype"
-              }
-              style={{
-                ...word,
-                ...(matches?.has(w.index) ? matchStyle : {}),
-                ...(w.live !== w.base ? editedStyle : {}),
-                ...(currentIndex === w.index ? currentStyle : {}),
-              }}
-            >
-              {w.live}
-            </span>
-          ),
-        )}
+      <div style={body} data-testid="transcript-body">
+        {words.map((w, i) => (
+          <React.Fragment key={w.index}>
+            {/* A REAL space between word spans, not a margin: margins are
+                not line-break opportunities, and without whitespace the
+                browser treated each caption line as one unbreakable inline
+                run — wrapping only at in-text hyphens while everything else
+                ran off the pane's right edge (the §65 report). */}
+            {i > 0 ? " " : null}
+            {editing?.index === w.index ? (
+              <input
+                autoFocus
+                data-testid="transcript-edit"
+                style={editInput}
+                value={editing.draft}
+                onChange={(e) => setEditing({ index: w.index, draft: e.target.value })}
+                onBlur={() => commit(w.index, w.base, editing.draft)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") setEditing(null);
+                }}
+              />
+            ) : (
+              <span
+                data-testid={`transcript-word-${w.index}`}
+                onClick={() => playerRef.current?.seekTo(Math.round(w.start * fps))}
+                onDoubleClick={() => setEditing({ index: w.index, draft: w.live })}
+                title={
+                  w.live !== w.base
+                    ? `edited (was “${w.base}”) — double-click to retype`
+                    : "click to jump · double-click to retype"
+                }
+                style={{
+                  ...word,
+                  ...(matches?.has(w.index) ? matchStyle : {}),
+                  ...(w.live !== w.base ? editedStyle : {}),
+                  ...(currentIndex === w.index ? currentStyle : {}),
+                }}
+              >
+                {w.live}
+              </span>
+            )}
+          </React.Fragment>
+        ))}
       </div>
     </div>
   );
 };
 
 const panel: React.CSSProperties = {
-  width: 300,
   flexShrink: 0,
   display: "flex",
   flexDirection: "column",
-  borderRight: "1px solid #1E1E24",
   background: "#111116",
   minHeight: 0,
 };
@@ -200,6 +206,11 @@ const search: React.CSSProperties = {
 const body: React.CSSProperties = {
   flex: 1,
   overflowY: "auto",
+  // Never a horizontal scrollbar (overflow-y: auto alone computes the x
+  // axis to auto too); a pathological unbreakable token breaks mid-word
+  // rather than widening the pane.
+  overflowX: "hidden",
+  overflowWrap: "break-word",
   padding: "10px 14px 16px",
   fontSize: 13,
   lineHeight: 2,
@@ -210,7 +221,6 @@ const word: React.CSSProperties = {
   cursor: "pointer",
   borderRadius: 3,
   padding: "1px 2px",
-  marginRight: 2,
 };
 
 const matchStyle: React.CSSProperties = {

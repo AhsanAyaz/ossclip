@@ -176,6 +176,48 @@ export const Inspector: React.FC<InspectorProps> = ({
             {elementId}
           </div>
         </div>
+        {(() => {
+          // Line style for a StrikethroughReveal line (R16 §66) — the strike
+          // was producer-set with no way to correct it from the editor, which
+          // is how "implement software / ARCHITECTURE" shipped with only its
+          // tail struck. One select per line: plain, struck, ✗ wrong, ✓ right.
+          const m = /^line-(\d+)$/.exec(elementId);
+          const lines = cue.props?.lines;
+          if (cue.component !== "StrikethroughReveal" || !m || !Array.isArray(lines)) return null;
+          const idx = Number(m[1]);
+          const line = lines[idx] as
+            | { text: string; struck?: boolean; mark?: string }
+            | undefined;
+          if (!line) return null;
+          const value = line.struck ? "struck" : (line.mark ?? "none") !== "none" ? line.mark! : "plain";
+          return (
+            <div style={section}>
+              <div style={row}>
+                <span style={label}>Line style</span>
+                <select
+                  data-testid="line-style"
+                  style={numberInput}
+                  value={value}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const next = lines.slice() as Array<Record<string, unknown>>;
+                    next[idx] = {
+                      ...(next[idx] as Record<string, unknown>),
+                      struck: v === "struck",
+                      mark: v === "cross" || v === "check" ? v : "none",
+                    };
+                    edits.patchProps(selection.sceneId, { lines: next });
+                  }}
+                >
+                  <option value="plain">plain</option>
+                  <option value="struck">struck through</option>
+                  <option value="cross">✗ wrong</option>
+                  <option value="check">✓ right</option>
+                </select>
+              </div>
+            </div>
+          );
+        })()}
         {text !== null ? (
           <div style={section}>
             <div style={row}>
@@ -189,7 +231,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                   // Top-level string props patch directly; array-backed ids
                   // need buildArrayPatch to rewrite the right entry — a bare
                   // { [elementId]: text } there writes a key nothing reads.
-                  const patch = /^(line|node|message|window)-\d+$/.test(elementId)
+                  const patch = /^(line|node|message|window|item)-\d+$/.test(elementId)
                     ? buildArrayPatch(elementId, props, e.target.value)
                     : { [elementId]: e.target.value };
                   if (patch) {

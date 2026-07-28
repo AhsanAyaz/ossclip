@@ -939,6 +939,123 @@ test("caption scale is a per-scene control like every other scale (R16 §64)", a
   // In-memory only — reloading elsewhere discards it; nothing was saved.
 });
 
+test("a strikethrough line's style is editable: struck, ✗ wrong, ✓ right (R16 §66)", async ({
+  page,
+}) => {
+  const cleanDoc = await readFile(join(WORKDIR, "overrides.json"), "utf8").catch(() => "");
+  await page.goto("/");
+  await settle(page);
+  // scene-2 is the fixture's StrikethroughReveal: "PROMPT" struck, "RUN
+  // AGENTIC LOOPS" plain. Select the PLAIN line.
+  await page.getByTestId("timeline-block-scene-2").click();
+  await page.waitForSelector('[data-edit-id="line-1"]');
+  const el = (await page.locator('[data-edit-id="line-1"]').boundingBox())!;
+  await page.mouse.click(el.x + el.width / 2, el.y + el.height / 2);
+  const style = page.getByTestId("line-style");
+  await expect(style).toBeVisible();
+  await expect(style).toHaveValue("plain");
+
+  // ✓ right: the verdict glyph appears in the rendered scene.
+  await style.selectOption("check");
+  await expect(page.locator('[data-edit-scene="scene-2"]')).toContainText("✓");
+  // struck: the whole-phrase fix the §66 report asked for — ANY line can be
+  // struck from the editor now, not just the ones the producer chose.
+  await style.selectOption("struck");
+  await expect(page.locator('[data-edit-scene="scene-2"]')).not.toContainText("✓");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  const lines = doc.scenes["scene-2"].props.lines;
+  expect(lines[1].struck).toBe(true);
+  expect(lines[0].struck).toBe(true); // untouched neighbour keeps its strike
+
+  await page.request.put("/api/overrides", {
+    data: cleanDoc || JSON.stringify({ theme: {}, scenes: {}, captions: {} }),
+    headers: { "content-type": "application/json" },
+  });
+});
+
+test("BulletList: an enumeration component, items editable from the panel (R16 §67)", async ({
+  page,
+}) => {
+  const cleanDoc = await readFile(join(WORKDIR, "overrides.json"), "utf8").catch(() => "");
+  await page.goto("/");
+  await settle(page);
+  // Swap scene-2 to the new component via the R13 component select — the
+  // registry defaults render immediately.
+  await page.getByTestId("timeline-block-scene-2").click();
+  await page.locator("select").first().selectOption("BulletList");
+  await page.waitForSelector('[data-edit-id="item-0"]');
+  await expect(page.locator('[data-edit-scene="scene-2"]')).toContainText("▸");
+
+  // Items are first-class editable elements: select one, retype in the panel.
+  const el = (await page.locator('[data-edit-id="item-0"]').boundingBox())!;
+  await page.mouse.click(el.x + el.width / 2, el.y + el.height / 2);
+  await expect(page.getByTestId("element-text")).toBeVisible();
+  await page.getByTestId("element-text").fill("AI HARNESS");
+  await expect(page.locator('[data-edit-id="item-0"]')).toContainText("AI HARNESS");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc.scenes["scene-2"].component).toBe("BulletList");
+  expect(doc.scenes["scene-2"].props.items[0]).toBe("AI HARNESS");
+
+  await page.request.put("/api/overrides", {
+    data: cleanDoc || JSON.stringify({ theme: {}, scenes: {}, captions: {} }),
+    headers: { "content-type": "application/json" },
+  });
+});
+
+test("transcript wraps in place, and the pane is drag-resizable (R16 §65)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("transcript-toggle").click();
+  const body = page.getByTestId("transcript-body");
+  await expect(body).toBeVisible();
+  // The §65 report: caption lines rendered as unbreakable inline runs (no
+  // whitespace between the word spans) and ran off the pane's right edge
+  // behind a horizontal scrollbar. With real spaces they wrap in place.
+  expect(
+    await body.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    "transcript must wrap, not scroll sideways",
+  ).toBe(true);
+
+  // Drag the divider right: the pane widens, the preview refits.
+  const panel = page.getByTestId("transcript-panel");
+  const before = (await panel.boundingBox())!;
+  const stageBefore = (await page.getByTestId("stage").boundingBox())!;
+  const divider = (await page.getByTestId("transcript-divider").boundingBox())!;
+  await page.mouse.move(divider.x + divider.width / 2, divider.y + divider.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(divider.x + divider.width / 2 + 150, divider.y + 200, { steps: 5 });
+  await page.mouse.up();
+  const after = (await panel.boundingBox())!;
+  expect(after.width).toBeGreaterThan(before.width + 120);
+  // The stage yields the room: at this viewport the 9:16 preview is
+  // height-bound, so its WIDTH holds while it shifts right; had it been
+  // width-bound it would shrink. Either way it never overlaps the pane.
+  await expect
+    .poll(async () => (await page.getByTestId("stage").boundingBox())!.x)
+    .toBeGreaterThan(stageBefore.x + 30);
+  expect((await page.getByTestId("stage").boundingBox())!.width).toBeLessThanOrEqual(
+    stageBefore.width + 1,
+  );
+  // …and still wrapping at the new width.
+  expect(await body.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+
+  // The width is remembered across a reload.
+  await page.reload();
+  await settle(page);
+  await page.getByTestId("transcript-toggle").click();
+  const reloaded = (await panel.boundingBox())!;
+  expect(Math.abs(reloaded.width - after.width)).toBeLessThan(4);
+
+  // Leave no residue for other tests' geometry.
+  await page.evaluate(() => window.localStorage.removeItem("ossclip.transcriptWidth"));
+});
+
 test("pip bubble: roundness and placement are per-scene edits (R14 §52)", async ({ page }) => {
   await page.goto("/");
   await settle(page);

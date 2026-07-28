@@ -20,12 +20,14 @@ import { editStyle, type ElementEdits } from "../editable";
 const Row: React.FC<{
   text: string;
   struck: boolean;
+  /** Verdict glyph (R16 §66) — ✗/✓ leading the row, none for plain lines. */
+  mark: "none" | "cross" | "check";
   delay: number;
   fontSize: number;
   theme: Theme;
   editId: string;
   edits?: ElementEdits;
-}> = ({ text, struck, delay, fontSize, theme, editId, edits }) => {
+}> = ({ text, struck, mark, delay, fontSize, theme, editId, edits }) => {
   const p = useEnter(delay);
   const strike = useEnter(delay + 8);
   return (
@@ -43,6 +45,16 @@ const Row: React.FC<{
           color: struck ? theme.muted : theme.fg,
         }}
       >
+        {mark !== "none" ? (
+          <span
+            style={{
+              color: mark === "cross" ? theme.danger : theme.success,
+              marginRight: "0.3em",
+            }}
+          >
+            {mark === "cross" ? "✗" : "✓"}
+          </span>
+        ) : null}
         {text}
       </span>
       {struck ? (
@@ -70,15 +82,22 @@ export const StrikethroughReveal: React.FC<{
   heightPx?: number;
   edits?: ElementEdits;
 }> = ({ props, theme, widthPx, heightPx, edits }) => {
-  const texts = props.lines.map((l) => l.text);
+  // The verdict glyph rides in the width estimate ("✗ " ≈ its real footprint)
+  // so a marked line shrinks with its glyph instead of overflowing. `mark` is
+  // read defensively: baked render-props from before §66 carry no key.
+  const texts = props.lines.map((l) =>
+    (l.mark ?? "none") !== "none" ? `✗ ${l.text}` : l.text,
+  );
   const fontSize = revealMetrics(texts, widthPx, heightPx);
   // Each logical line becomes one or more rows; a line only breaks at an
   // arrow, and the arrow leads the row it points into. lineIndex is kept
-  // alongside so every row can carry its logical line's data-edit-id.
+  // alongside so every row can carry its logical line's data-edit-id. The
+  // glyph marks only the FIRST row of a wrapped line — one verdict per line.
   const rows = props.lines.flatMap((line, lineIndex) =>
-    revealRows(line.text, fontSize, widthPx ?? 831).map((text) => ({
+    revealRows(line.text, fontSize, widthPx ?? 831).map((text, rowIdx) => ({
       text,
       struck: line.struck,
+      mark: rowIdx === 0 ? (line.mark ?? "none") : ("none" as const),
       lineIndex,
     })),
   );
@@ -98,6 +117,7 @@ export const StrikethroughReveal: React.FC<{
           key={i}
           text={row.text}
           struck={row.struck}
+          mark={row.mark}
           delay={i * 6}
           fontSize={fontSize}
           theme={theme}

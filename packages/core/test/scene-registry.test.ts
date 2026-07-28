@@ -17,6 +17,25 @@ describe("scene registry", () => {
     expect(props).toMatchObject({ label: "SPEED", value: "2x", inverted: false });
   });
 
+  it("strikethrough lines take a verdict mark, defaulting to none (R16 §66)", () => {
+    // Pre-§66 props (no mark key) resolve unchanged — every existing
+    // production renders byte-identically.
+    const legacy = resolveSceneProps("StrikethroughReveal", {
+      lines: [{ text: "PROMPT", struck: true }],
+    }) as { lines: Array<{ mark: string }> };
+    expect(legacy.lines[0]!.mark).toBe("none");
+    const marked = resolveSceneProps("StrikethroughReveal", {
+      lines: [
+        { text: "GUESSING", mark: "cross" },
+        { text: "MEASURING", mark: "check" },
+      ],
+    }) as { lines: Array<{ mark: string; struck: boolean }> };
+    expect(marked.lines.map((l) => l.mark)).toEqual(["cross", "check"]);
+    expect(
+      resolveSceneProps("StrikethroughReveal", { lines: [{ text: "X", mark: "tick" }] }),
+    ).toBeNull();
+  });
+
   it("rejects invalid props", () => {
     expect(resolveSceneProps("TitleCard", { title: "" })).toBeNull();
     expect(resolveSceneProps("FlowDiagram", { nodes: ["only-one"] })).toBeNull();

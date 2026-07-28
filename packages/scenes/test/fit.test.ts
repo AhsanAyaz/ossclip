@@ -3,6 +3,8 @@ import { SCENE_REGISTRY, SceneComponentIdSchema, type SceneComponentId } from "@
 import {
   FILL_TARGET,
   MAX_SCALE,
+  bulletMetrics,
+  bulletStackHeightPx,
   chatBubbles,
   chatMetrics,
   estimateHeightPx,
@@ -55,6 +57,7 @@ const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   TerminalMock: { windows: [{ title: "ossclip", lines: ["$ run"] }] },
   ChatMock: { messages: [{ from: "user", text: "can it cut my ums?" }] },
   ScreenshotFrame: { label: "REVIEW" },
+  BulletList: { items: ["AI HARNESS", "CONTEXT ENGINEERING"] },
 };
 
 /** Schema maxima — the cases that silently overflowed the safe area. */
@@ -93,6 +96,10 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
     })),
   },
   ScreenshotFrame: { src: "shot.png", label: "A THIRTY TWO CHARACTER LABEL OK!" },
+  BulletList: {
+    title: "TWENTY EIGHT CHARACTERS OKAY",
+    items: Array.from({ length: 5 }, () => "THIRTY SIX CHARACTERS OF BULLET COPY"),
+  },
 };
 
 describe("fill contract (FINDINGS §23)", () => {
@@ -225,6 +232,40 @@ describe("fill contract (FINDINGS §23)", () => {
         expect(k, id).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("BulletList metrics (R16 §67)", () => {
+  const SLOT = { w: 831, h: 690 };
+
+  it("the longest item fits one row at the solved font — bullets never wrap", () => {
+    const items = ["AI HARNESS", "CONTEXT ENGINEERING", "PROMPT ENGINEERING"];
+    const font = bulletMetrics(items, SLOT.w, SLOT.h);
+    const longest = Math.max(...items.map((i) => i.length));
+    // Same width model the metric solves against: glyph column + uppercase run.
+    expect((longest * 0.72 + 1.1) * font).toBeLessThanOrEqual(SLOT.w + 1);
+    expect(font).toBeGreaterThanOrEqual(36);
+  });
+
+  it("the stack fits the height budget, title included", () => {
+    const items = ["ONE", "TWO", "THREE", "FOUR", "FIVE"];
+    const font = bulletMetrics(items, SLOT.w, 400, true);
+    expect(bulletStackHeightPx(items.length, font, true)).toBeLessThanOrEqual(400 * 0.94 + font);
+  });
+
+  it("fewer items render bigger — the §23 fill property", () => {
+    expect(bulletMetrics(["AA", "BB"], SLOT.w, SLOT.h)).toBeGreaterThan(
+      bulletMetrics(["AA", "BB", "CC", "DD", "EE"], SLOT.w, SLOT.h),
+    );
+  });
+
+  it("estimateHeightPx and bulletMetrics share one model", () => {
+    const props = { items: ["AI HARNESS", "CONTEXT ENGINEERING"], title: "WHAT YOU NEED" };
+    const font = bulletMetrics(props.items, SLOT.w, SLOT.h, true);
+    expect(estimateHeightPx("BulletList", props, SLOT.w, SLOT.h)).toBeCloseTo(
+      bulletStackHeightPx(2, font, true),
+      5,
+    );
   });
 });
 

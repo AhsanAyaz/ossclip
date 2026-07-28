@@ -29,6 +29,7 @@ export const SceneComponentIdSchema = z.enum([
   "TerminalMock",
   "ChatMock",
   "ScreenshotFrame",
+  "BulletList",
 ]);
 export type SceneComponentId = z.infer<typeof SceneComponentIdSchema>;
 
@@ -186,6 +187,9 @@ export const ThemeSchema = z.object({
   fg: z.string().default("#FFFFFF"),
   accent: z.string().default("#FFE14D"),
   muted: z.string().default("#9A9AA3"),
+  /** Affirmative green — the ✓ of §66's verdict lines; the editor's own
+   * "Saved" green, so the system stays one palette. */
+  success: z.string().default("#5FBF77"),
   cardBg: z.string().default("#15151B"),
   cardBorder: z.string().default("#2A2A33"),
   danger: z.string().default("#FF5C5C"),

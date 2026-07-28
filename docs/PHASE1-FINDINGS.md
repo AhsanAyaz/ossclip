@@ -711,3 +711,15 @@ Splits stored as ABSOLUTE output times in the override doc (`splits`), applied b
 ## 64. Caption scale
 
 `captionScale` per scene (0.2–3×), the same shape as `captionY`: a slider plus precision field in the Captions section, resolved per line from the cue the line starts under, multiplying the track's base size. "Apply to all scenes" now fans out position AND scale in one undo step; Reset clears both.
+
+## 65. The transcript pane scrolled sideways, and its width was fixed
+
+Reported with a screenshot: caption lines ran off the pane's right edge behind a horizontal scrollbar. Root cause was subtle: the word spans were emitted with NO whitespace between them — a CSS margin is not a line-break opportunity — so each caption line was one unbreakable inline run, wrapping only at in-text hyphens (exactly the `in-` / `picture` break in the screenshot). Real spaces between the spans fix the wrap; `overflow-x: hidden` + `overflow-wrap: break-word` close off the pathological cases. And the pane ↔ stage boundary is now a drag divider (220–640px, remembered in localStorage); the stage's ResizeObserver refits the preview as it moves.
+
+## 66. Only "ARCHITECTURE" was struck when the whole phrase was negated
+
+Audio: "they can't really implement software architecture" — the producer struck only the last line. The component always supported striking EVERY line (per-line `struck`), so this was a content miss with no way to correct it from the editor. Three fixes: a Line style select on any selected reveal line (plain / struck / ✗ wrong / ✓ right) writing through the normal props override; per-line `mark: cross|check` on the schema (✗ in danger red, ✓ in a new `success` theme token — the editor's own "Saved" green), defaulting to none so existing productions render byte-identically; and the registry's `whenToUse` now tells the producer to strike EVERY line of a negated phrase — a half-struck claim reads as a typo.
+
+## 67. NEW COMPONENT — BulletList, because enumerations kept getting miscast
+
+Audio: "what you need is AI harness, … context engineering, … prompt engineering" — a three-item list bent into a title-plus-strike card that struck a thing the speaker RECOMMENDED. No component said "list", so the producer improvised one badly. `BulletList`: 2–5 nowrap bullet rows with an optional kicker title, accent ▸ glyphs, staggered entrance; self-fitting like the reveal (`bulletMetrics` solves type against both slot budgets — the §46/§23 lessons applied from birth, pinned by the fill-contract tests at sparse and schema-max content). Items are first-class editable elements (`item-N` joins the array-backed id family), and the registry steers the producer: use this for enumerations instead of bending TitleCard or StrikethroughReveal around them. Verified with a real render frame.

@@ -28,6 +28,7 @@ const SELF_FITTING = new Set<SceneComponentId>([
   "FlowDiagram",
   "StrikethroughReveal",
   "ChatMock",
+  "BulletList",
 ]);
 
 /**
@@ -170,6 +171,13 @@ export function estimateHeightPx(
       const body = str(props.src) ? (frame * 9) / 16 : 420 + 60;
       return body + 4;
     }
+    case "BulletList": {
+      // Self-fitting like the reveal: rows of nowrap uppercase text. Same
+      // model bulletMetrics solves against — the two cannot disagree.
+      const items = arr(props.items).map((i) => str(i));
+      const font = bulletMetrics(items, widthPx, heightPx, Boolean(str(props.title)));
+      return bulletStackHeightPx(items.length, font, Boolean(str(props.title)));
+    }
   }
 }
 
@@ -242,6 +250,43 @@ export function estimateMinWidthPx(
     default:
       return 0;
   }
+}
+
+/** Bullet list typography (R16 §67), reveal-style bounds. */
+const BULLET_MIN_FONT = 36;
+const BULLET_MAX_FONT = 120;
+/** Row: 1.15 line-height + 0.45em gap; the kicker title ≈ one smaller row. */
+const BULLET_ROW_H = 1.6;
+const BULLET_TITLE_H = 1.1;
+/** Glyph column: the ▸ plus its gap, in ems. */
+const BULLET_GLYPH_W = 1.1;
+
+/** Height of the whole list at a font — ONE model, two callers. */
+export function bulletStackHeightPx(rows: number, font: number, hasTitle: boolean): number {
+  return (Math.max(1, rows) * BULLET_ROW_H + (hasTitle ? BULLET_TITLE_H : 0)) * font;
+}
+
+/**
+ * Type size for a BulletList, solved against the real slot like the reveal:
+ * the longest item must fit one row (they are nowrap — a wrapped bullet stops
+ * reading as a list), and the stack must fit the height budget.
+ */
+export function bulletMetrics(
+  items: readonly string[],
+  widthPx = 831,
+  heightPx = Infinity,
+  hasTitle = false,
+): number {
+  const longest = items.reduce((max, t) => Math.max(max, t.length), 0);
+  if (longest === 0) return BULLET_MIN_FONT;
+  const widthFit = widthPx / (longest * CHAR_W_UPPER + BULLET_GLYPH_W);
+  const heightFit =
+    (heightPx * FILL_TARGET) /
+    (Math.max(1, items.length) * BULLET_ROW_H + (hasTitle ? BULLET_TITLE_H : 0));
+  return Math.max(
+    BULLET_MIN_FONT,
+    Math.min(BULLET_MAX_FONT, Math.floor(Math.min(widthFit, heightFit))),
+  );
 }
 
 /** Base type size a reveal line is authored at, its floor, and its ceiling. */

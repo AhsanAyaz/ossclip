@@ -196,8 +196,36 @@ export const App: React.FC = () => {
       window.removeEventListener("mouseup", onUp);
     };
   }, []);
-  // The transcript view (R15 §59) — a panel, toggled from the top bar.
+  // The transcript view (R15 §59) — a panel, toggled from the top bar. Its
+  // width is draggable via the divider (R16 §65) and remembered across
+  // sessions; the stage's ResizeObserver refits the preview as it moves.
   const [showTranscript, setShowTranscript] = useState(false);
+  const [transcriptWidth, setTranscriptWidth] = useState(() => {
+    const stored = Number(window.localStorage.getItem(TRANSCRIPT_WIDTH_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampTranscriptWidth(stored) : 300;
+  });
+  const dividerDragRef = useRef<{ startX: number; startW: number } | null>(null);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const drag = dividerDragRef.current;
+      if (!drag) return;
+      setTranscriptWidth(clampTranscriptWidth(drag.startW + (e.clientX - drag.startX)));
+    };
+    const onUp = () => {
+      if (!dividerDragRef.current) return;
+      dividerDragRef.current = null;
+      setTranscriptWidth((w) => {
+        window.localStorage.setItem(TRANSCRIPT_WIDTH_KEY, String(w));
+        return w;
+      });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
   // The keybinds reference (R16 §63) — "?" or the top-bar button.
   const [showShortcuts, setShowShortcuts] = useState(false);
 
@@ -611,13 +639,27 @@ export const App: React.FC = () => {
       ) : null}
       <div style={mainRow}>
         {showTranscript ? (
-          <TranscriptPanel
-            baseLines={renderProps?.baseCaptionLines ?? renderProps?.captionLines ?? []}
-            liveLines={live.captionLines}
-            fps={live.settings.fps}
-            playerRef={playerRef}
-            edits={edits}
-          />
+          <>
+            <TranscriptPanel
+              baseLines={renderProps?.baseCaptionLines ?? renderProps?.captionLines ?? []}
+              liveLines={live.captionLines}
+              fps={live.settings.fps}
+              playerRef={playerRef}
+              edits={edits}
+              width={transcriptWidth}
+            />
+            {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
+                press from starting a text selection across the transcript. */}
+            <div
+              data-testid="transcript-divider"
+              style={divider}
+              title="Drag to resize the transcript pane"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                dividerDragRef.current = { startX: e.clientX, startW: transcriptWidth };
+              }}
+            />
+          </>
         ) : null}
         <div style={stageWrap}>
           <div
@@ -823,6 +865,20 @@ const mainRow: React.CSSProperties = {
 
 /** Breathing room around the preview; the fit math subtracts it per side. */
 const STAGE_PAD = 32;
+
+/** Transcript pane width bounds and its cross-session memory (R16 §65). */
+const TRANSCRIPT_WIDTH_KEY = "ossclip.transcriptWidth";
+const clampTranscriptWidth = (w: number): number => Math.min(640, Math.max(220, w));
+
+const divider: React.CSSProperties = {
+  width: 5,
+  flexShrink: 0,
+  cursor: "col-resize",
+  background: "#1E1E24",
+  // A slim but honest grab target — the border look stays, the hit area is
+  // the full 5px strip.
+  borderLeft: "1px solid #2A2A33",
+};
 
 const stageWrap: React.CSSProperties = {
   position: "relative",

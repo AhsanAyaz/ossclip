@@ -29,6 +29,20 @@ describe("buildArrayPatch — ChatMock CTA keyword mapping", () => {
   });
 });
 
+describe("BulletList items — the item-N id family (R16 §67)", () => {
+  it("patches an item in place — items is a plain string[], like nodes", () => {
+    expect(buildArrayPatch("item-1", { items: ["A", "B", "C"] }, "REPLACED")).toEqual({
+      items: ["A", "REPLACED", "C"],
+    });
+    expect(buildArrayPatch("item-9", { items: ["A"] }, "X")).toBeNull();
+  });
+
+  it("reads an item back for the panel's text field", () => {
+    expect(elementTextOf("item-2", { items: ["A", "B", "C"] })).toBe("C");
+    expect(elementTextOf("item-0", {})).toBeNull();
+  });
+});
+
 describe("elementTextOf — the panel's read direction (R12 §49)", () => {
   it("reads top-level string props directly, and refuses non-strings", () => {
     expect(elementTextOf("title", { title: "SHIP IT" })).toBe("SHIP IT");

@@ -11,6 +11,7 @@ import { FlowDiagram } from "./components/FlowDiagram";
 import { TerminalMock } from "./components/TerminalMock";
 import { ChatMock } from "./components/ChatMock";
 import { ScreenshotFrame } from "./components/ScreenshotFrame";
+import { BulletList } from "./components/BulletList";
 import { compensateEdits, type ElementEdits } from "./editable";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- props are registry-validated upstream */
@@ -26,6 +27,7 @@ const COMPONENTS: Record<
   TerminalMock,
   ChatMock,
   ScreenshotFrame,
+  BulletList,
 };
 
 /** Renders each cue's graphic into its layout's graphic slot, scene-local time. */

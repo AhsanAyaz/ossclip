@@ -168,7 +168,7 @@ const moveStrip: React.CSSProperties = {
  * writes into one of these ids as a prop key nothing ever reads, silently
  * losing the retype.
  */
-const DYNAMIC_ID = /^(line|node|message|window)-(\d+)$/;
+const DYNAMIC_ID = /^(line|node|message|window|item)-(\d+)$/;
 
 /**
  * Map a `line-N`/`node-N`/`message-N` id back to the array field it actually
@@ -185,7 +185,7 @@ export function buildArrayPatch(
 ): Record<string, unknown> | null {
   const m = DYNAMIC_ID.exec(elementId);
   if (!m || m[1] === "window") return null;
-  const kind = m[1] as "line" | "node" | "message";
+  const kind = m[1] as "line" | "node" | "message" | "item";
   const idx = Number(m[2]);
   // ChatMock's CTA mode (props.keyword set) renders exactly ONE synthetic
   // bubble showing the keyword and ignores `props.messages` entirely
@@ -205,13 +205,15 @@ export function buildArrayPatch(
     const mapped = text.trim().replace(/^"(.*)"$/, "$1").toLowerCase();
     return mapped ? { keyword: mapped } : null;
   }
-  const field = kind === "line" ? "lines" : kind === "node" ? "nodes" : "messages";
+  const field =
+    kind === "line" ? "lines" : kind === "node" ? "nodes" : kind === "item" ? "items" : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const next = arr.slice();
   const item = next[idx];
-  if (kind === "node") {
-    // FlowDiagram's `nodes` is a plain string[] — the whole entry IS the text.
+  if (kind === "node" || kind === "item") {
+    // FlowDiagram's `nodes` and BulletList's `items` are plain string[] —
+    // the whole entry IS the text.
     next[idx] = text;
   } else {
     if (typeof item !== "object" || item === null) return null;
@@ -238,16 +240,17 @@ export function elementTextOf(
     return typeof v === "string" ? v : null;
   }
   if (m[1] === "window") return null;
-  const kind = m[1] as "line" | "node" | "message";
+  const kind = m[1] as "line" | "node" | "message" | "item";
   const idx = Number(m[2]);
   if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
     return props.keyword;
   }
-  const field = kind === "line" ? "lines" : kind === "node" ? "nodes" : "messages";
+  const field =
+    kind === "line" ? "lines" : kind === "node" ? "nodes" : kind === "item" ? "items" : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const item = arr[idx];
-  if (kind === "node") return typeof item === "string" ? item : null;
+  if (kind === "node" || kind === "item") return typeof item === "string" ? item : null;
   const text = (item as Record<string, unknown> | null)?.text;
   return typeof text === "string" ? text : null;
 }

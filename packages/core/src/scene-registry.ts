@@ -41,9 +41,34 @@ export const RuleCardProps = z.object({
 
 export const StrikethroughRevealProps = z.object({
   lines: z
-    .array(z.object({ text: z.string().min(1).max(32), struck: z.boolean().default(false) }))
+    .array(
+      z.object({
+        text: z.string().min(1).max(32),
+        struck: z.boolean().default(false),
+        /**
+         * Verdict glyph before the line (R16 §66): `cross` renders ✗ in the
+         * danger color, `check` ✓ in the success color — the wrong-vs-right
+         * list variant. Defaults to none, so every existing production
+         * renders byte-identically.
+         */
+        mark: z.enum(["none", "cross", "check"]).default("none"),
+      }),
+    )
     .min(1)
     .max(4),
+});
+
+/**
+ * An enumeration (R16 §67): the speaker lists parallel things and each gets a
+ * bullet row. Born from a real miss — "what you need is AI harness, context
+ * engineering, prompt engineering" was bent into a title-plus-strike card
+ * that struck a thing the speaker RECOMMENDED, because no component said
+ * "list".
+ */
+export const BulletListProps = z.object({
+  /** Small kicker above the list ("WHAT YOU NEED"). */
+  title: z.string().max(28).optional(),
+  items: z.array(z.string().min(1).max(36)).min(2).max(5),
 });
 
 export const FlowDiagramProps = z.object({
@@ -159,7 +184,10 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     defaultProps: { lines: [{ text: "NOT THIS", struck: true }] },
     defaultLayout: "blurred-behind",
     altLayouts: ["graphic-only"],
-    whenToUse: "Negation/contrast beat — big words over the blurred speaker, some struck through.",
+    whenToUse:
+      "Negation/contrast beat — big words over the blurred speaker. Strike EVERY line of the " +
+      "phrase the speaker negates, not just its tail — a half-struck claim reads as a typo. " +
+      'For wrong-vs-right lists, set mark: "cross"/"check" (✗/✓) per line instead.',
   },
   FlowDiagram: {
     propsSchema: FlowDiagramProps,
@@ -189,6 +217,16 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     defaultLayout: "video-top",
     altLayouts: ["blurred-behind"],
     whenToUse: "Reference to a document/PR/review — a framed screenshot look with a label chip.",
+  },
+  BulletList: {
+    propsSchema: BulletListProps,
+    defaultProps: { items: ["FIRST", "SECOND"] },
+    defaultLayout: "blurred-behind",
+    altLayouts: ["graphic-only"],
+    whenToUse:
+      "An ENUMERATION — the speaker lists two or more parallel things " +
+      "('what you need is X, Y, Z'). One bullet per item, optional kicker title. " +
+      "Use this for lists instead of bending TitleCard or StrikethroughReveal around them.",
   },
 };
 
