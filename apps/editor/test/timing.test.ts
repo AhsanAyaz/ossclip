@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampTiming, moveTiming, timeAtX } from "../src/timing";
+import { clampTiming, clampZoom, moveTiming, timeAtX, zoomedScrollLeft } from "../src/timing";
 import type { SceneCue } from "@ossclip/core/browser";
 
 const cues = [
@@ -73,6 +73,38 @@ describe("moveTiming (PLAN Task 6 — drag a block to move it)", () => {
 
   it("returns null for an unknown scene", () => {
     expect(moveTiming(cues, "zzz", 1, 30)).toBeNull();
+  });
+});
+
+describe("timeline zoom (R14 §53)", () => {
+  it("clampZoom bounds the factor to [1, 16]", () => {
+    expect(clampZoom(0.3)).toBe(1);
+    expect(clampZoom(4)).toBe(4);
+    expect(clampZoom(64)).toBe(16);
+  });
+
+  it("keeps the content under the anchor stationary through a zoom-in", () => {
+    // Viewport 1000px, zoom 1→2, cursor at x=400: the content point at 400
+    // maps to 800 in the doubled track, so scrollLeft must become 400 for it
+    // to stay under the cursor.
+    expect(zoomedScrollLeft(1, 2, 1000, 0, 400)).toBe(400);
+  });
+
+  it("inverts cleanly: zooming back out returns to the original scroll", () => {
+    const inScroll = zoomedScrollLeft(1, 4, 1000, 0, 600);
+    expect(zoomedScrollLeft(4, 1, 1000, inScroll, 600)).toBe(0);
+  });
+
+  it("clamps to the scrollable range at the NEW zoom", () => {
+    // Fully scrolled right at 4×, zooming out to 2× must not leave scrollLeft
+    // beyond the 2× track's maximum (1000px viewport → max 1000).
+    expect(zoomedScrollLeft(4, 2, 1000, 3000, 500)).toBe(1000);
+    // …and never negative.
+    expect(zoomedScrollLeft(2, 1, 1000, 0, 0)).toBe(0);
+  });
+
+  it("is safe on a zero-width viewport", () => {
+    expect(zoomedScrollLeft(1, 2, 0, 0, 0)).toBe(0);
   });
 });
 

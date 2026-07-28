@@ -20,6 +20,35 @@ export function timeAtX(
   return frac * durationSec;
 }
 
+/** Timeline zoom bounds (R14 §53). 1 = the whole clip fits the viewport. */
+export const TIMELINE_ZOOM_MAX = 16;
+
+export const clampZoom = (z: number): number =>
+  Math.min(TIMELINE_ZOOM_MAX, Math.max(1, z));
+
+/**
+ * The scrollLeft that keeps the content under `anchorX` stationary through a
+ * zoom change — the gesture every editor's timeline zoom is judged by: the
+ * moment under the cursor (or the viewport centre) must not slide away when
+ * the scale changes. Pure so the anchoring math is testable without a DOM.
+ *
+ * `anchorX` is viewport-relative (clientX minus the scroller's left edge);
+ * the result is clamped to the scrollable range at the NEW zoom.
+ */
+export function zoomedScrollLeft(
+  prevZoom: number,
+  nextZoom: number,
+  viewportWidth: number,
+  scrollLeft: number,
+  anchorX: number,
+): number {
+  if (prevZoom <= 0 || viewportWidth <= 0) return 0;
+  const content = scrollLeft + anchorX;
+  const scaled = content * (nextZoom / prevZoom);
+  const max = Math.max(0, nextZoom * viewportWidth - viewportWidth);
+  return Math.min(max, Math.max(0, scaled - anchorX));
+}
+
 /**
  * Timing clamps only against GRAPHIC neighbours. The plain takes that fill
  * the gaps (Task A) are derived filler: they butt flush against every

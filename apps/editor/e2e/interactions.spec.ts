@@ -649,3 +649,82 @@ test("a layout swap re-slots a graphic the pipeline had routed elsewhere (R13)",
     })
     .toBe(true);
 });
+
+test("timeline zoom: the track widens, scrolls, and gestures stay calibrated (R14 §53)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  const scroller = page.getByTestId("timeline-scroller");
+  const viewport = (await scroller.boundingBox())!;
+  const track = page.getByTestId("playhead").locator("..");
+  // Fit (the default): the track spans the viewport, no scroll, zoom-out
+  // honestly disabled.
+  expect((await track.boundingBox())!.width).toBeLessThanOrEqual(viewport.width + 2);
+  await expect(page.getByTestId("zoom-out")).toBeDisabled();
+
+  await page.getByTestId("zoom-in").click();
+  await page.getByTestId("zoom-in").click();
+  await expect(page.getByTestId("zoom-level")).toHaveText("4×");
+  expect((await track.boundingBox())!.width).toBeGreaterThan(viewport.width * 3.5);
+
+  // The widened track scrolls horizontally.
+  const scrolled = await scroller.evaluate((el) => {
+    el.scrollLeft = el.scrollWidth;
+    return el.scrollLeft;
+  });
+  expect(scrolled).toBeGreaterThan(viewport.width * 2);
+
+  // Gestures stay calibrated on the wide, scrolled track: a click inside a
+  // late block still selects it AND seeks inside ITS window — the same
+  // invariant Tasks 3+4 pinned at zoom 1.
+  await page.getByTestId("timeline-block-scene-5").click();
+  await expect(page.getByTestId("timing-range")).toContainText("27.61s");
+  const frac = await playheadFrac(page);
+  expect(frac).toBeGreaterThan(27.61 / 31.92458 - 0.01);
+  expect(frac).toBeLessThan(31.65 / 31.92458 + 0.01);
+
+  // Fit returns to the whole clip in view.
+  await page.getByTestId("zoom-fit").click();
+  await expect(page.getByTestId("zoom-level")).toHaveText("1×");
+  expect((await track.boundingBox())!.width).toBeLessThanOrEqual(viewport.width + 2);
+});
+
+test("pip bubble: roundness and placement are per-scene edits (R14 §52)", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-5").click();
+  await page.getByTestId("layout-select").selectOption("pip-bubble");
+
+  // The PiP section appears with the layout switch, and the slot on stage is
+  // the default circle.
+  const slider = page.getByTestId("pip-roundness");
+  await expect(slider).toBeVisible();
+  const video = page.locator("[data-edit-video]");
+  const radius = () =>
+    video.evaluate((el) => Number.parseFloat(getComputedStyle(el).borderRadius));
+  await expect.poll(radius).toBeGreaterThan(40);
+
+  // Roundness to the minimum squares the mask off.
+  await slider.focus();
+  await page.keyboard.press("Home");
+  await expect.poll(radius).toBeLessThan(1);
+
+  // Placement: a smaller pip-y lifts the bubble.
+  const topBefore = (await video.boundingBox())!.y;
+  await page.getByTestId("field-pip-y").fill("0.2");
+  await expect.poll(async () => (await video.boundingBox())!.y).toBeLessThan(topBefore - 20);
+
+  // On disk: one pip object under the scene, exactly what the panel showed.
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc.scenes["scene-5"].pip).toEqual({ cornerRadius: 0, y: 0.2 });
+
+  // Leave no residue for later tests: reset the bubble, restore the layout,
+  // save the clean doc back.
+  await page.getByTestId("reset-pip").click();
+  await page.getByTestId("layout-select").selectOption("blurred-behind");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+});

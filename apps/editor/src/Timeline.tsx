@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
-import { clampTiming, moveTiming, timeAtX } from "./timing";
+import { clampTiming, clampZoom, moveTiming, timeAtX, zoomedScrollLeft } from "./timing";
 import type { useEdits } from "./useEdits";
 import type { Selection } from "./Overlay";
 
@@ -83,6 +83,73 @@ export const Timeline: React.FC<TimelineProps> = ({
     startSec: number;
     endSec: number;
   } | null>(null);
+  // Timeline zoom (R14 §53): 1 = the clip fits the viewport; above it the
+  // track widens inside the scroller and gestures get proportionally finer —
+  // the existing drag math divides by the track's OWN bounding width, so it
+  // calibrates itself. The anchor ref carries "keep this viewport x still"
+  // from the gesture to the layout effect that runs once the wider track has
+  // actually rendered — setting scrollLeft before that would clamp against
+  // the old width.
+  const [zoom, setZoom] = useState(1);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const zoomAnchorRef = useRef<{ prevZoom: number; anchorX: number } | null>(null);
+
+  const applyZoom = useCallback((next: number, anchorClientX?: number) => {
+    const scroller = scrollerRef.current;
+    setZoom((prev) => {
+      const clamped = clampZoom(next);
+      if (clamped === prev || !scroller) return clamped;
+      const r = scroller.getBoundingClientRect();
+      zoomAnchorRef.current = {
+        prevZoom: prev,
+        anchorX: anchorClientX !== undefined ? anchorClientX - r.left : r.width / 2,
+      };
+      return clamped;
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    const anchor = zoomAnchorRef.current;
+    if (!scroller || !anchor) return;
+    zoomAnchorRef.current = null;
+    scroller.scrollLeft = zoomedScrollLeft(
+      anchor.prevZoom,
+      zoom,
+      scroller.clientWidth,
+      scroller.scrollLeft,
+      anchor.anchorX,
+    );
+  }, [zoom]);
+
+  // The wheel listener below is attached once; it reads the live zoom
+  // through this ref instead of re-attaching on every zoom change.
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  // Ctrl/Cmd+wheel zooms about the cursor (the standard editor gesture, and
+  // the same modifier the stage will never claim); a bare wheel PANS while
+  // zoomed, because the strip has no vertical scroll to give the wheel to.
+  // A NATIVE non-passive listener, not React's onWheel: browsers register
+  // wheel listeners passively by default, and a passive listener cannot
+  // preventDefault the browser's own pinch-zoom.
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        // Multiplicative, so trackpad pinches (many small deltas) glide and
+        // discrete wheel notches step visibly.
+        applyZoom(zoomRef.current * Math.exp(-e.deltaY * 0.01), e.clientX);
+      } else if (scroller.scrollWidth > scroller.clientWidth) {
+        e.preventDefault();
+        scroller.scrollLeft += e.deltaY + e.deltaX;
+      }
+    };
+    scroller.addEventListener("wheel", onWheel, { passive: false });
+    return () => scroller.removeEventListener("wheel", onWheel);
+  }, [applyZoom]);
 
   // The Player emits `frameupdate` on every frame it renders (play, pause,
   // scrub, or a programmatic seekTo) — subscribing to that keeps the
@@ -206,154 +273,194 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   return (
     <div style={strip}>
-      <div
-        data-testid="ruler"
-        style={ruler}
-        onMouseDown={(e) => {
-          // The ruler seeks (PLAN Task 3) with the same press-and-drag scrub
-          // as the track — one `timeAtX` mapping for every seek gesture — and
-          // NEVER changes the selection: seeking near a scene boundary should
-          // not require aiming at (and thereby selecting) a block.
-          e.preventDefault();
-          seekTrack(e.clientX);
-          scrubbingRef.current = true;
-        }}
-      >
-        <span style={rulerLabel}>0:00</span>
-        <span style={rulerLabel}>{fmt(durationSec)}</span>
+      <div style={zoomBar}>
+        {/* Zoom controls (R14 §53), always visible so the feature is
+            discoverable — buttons anchor about the viewport centre,
+            ctrl/cmd+wheel about the cursor. */}
+        <span style={zoomHint}>ctrl+scroll to zoom</span>
+        <button
+          data-testid="zoom-out"
+          style={zoomButton}
+          onClick={() => applyZoom(zoom / 2)}
+          disabled={zoom <= 1}
+          title="Zoom out (ctrl/cmd + scroll on the timeline)"
+        >
+          −
+        </button>
+        <span data-testid="zoom-level" style={zoomLabel}>
+          {Math.round(zoom * 10) / 10}×
+        </span>
+        <button
+          data-testid="zoom-in"
+          style={zoomButton}
+          onClick={() => applyZoom(zoom * 2)}
+          disabled={zoom >= 16}
+          title="Zoom in (ctrl/cmd + scroll on the timeline)"
+        >
+          +
+        </button>
+        <button
+          data-testid="zoom-fit"
+          style={{ ...zoomButton, width: "auto", padding: "0 8px" }}
+          onClick={() => applyZoom(1)}
+          disabled={zoom <= 1}
+          title="Fit the whole clip in view"
+        >
+          fit
+        </button>
       </div>
-      <div
-        ref={trackRef}
-        style={track}
-        onMouseDown={(e) => {
-          // A press on a block or its edge handles is dealt with by that
-          // block's own handler (which stops propagation); this fires only
-          // for the bare track background. Seek immediately AND begin a
-          // scrub, so press-and-drag follows the pointer like any player's
-          // seek bar (Task 3).
-          e.preventDefault();
-          seekTrack(e.clientX);
-          scrubbingRef.current = true;
-        }}
-      >
-        {cues.map((cue) => {
-          const isPlain = cue.kind === "plain";
-          const isDragging = dragPreview?.sceneId === cue.id;
-          const startSec = isDragging ? dragPreview.startSec : cue.startSec;
-          const endSec = isDragging ? dragPreview.endSec : cue.endSec;
-          const left = durationSec > 0 ? (startSec / durationSec) * 100 : 0;
-          const width = durationSec > 0 ? Math.max(0, ((endSec - startSec) / durationSec) * 100) : 0;
-          const isSelected = selection?.sceneId === cue.id;
-          return (
-            <div
-              key={cue.id}
-              data-testid={`timeline-block-${cue.id}`}
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                // Select right away for feedback. A GRAPHIC block then waits
-                // on travel to decide click-seek vs move-drag (see the window
-                // mousemove/mouseup pair above). A PLAIN block's window is
-                // derived, not stored — it can't move, so its press seeks
-                // immediately and drags as a scrub: the takes now cover most
-                // of the track, and losing press-and-drag seeking over them
-                // would regress the very gesture the track was given.
-                onSelect({ sceneId: cue.id, elementId: null });
-                if (isPlain) {
-                  seekTrack(e.clientX);
-                  scrubbingRef.current = true;
-                  return;
-                }
-                blockPressRef.current = { sceneId: cue.id, startX: e.clientX, moved: false };
-              }}
-              style={{
-                ...block,
-                left: `${left}%`,
-                width: `${width}%`,
-                // Explicit stacking (PLAN R11 Task 1) — paint order used to
-                // be DOM order, which is time order, so a later take always
-                // clipped the selected block's border and an end-edge drag
-                // grew UNDERNEATH its neighbour. Levels: block 1, ghost 2,
-                // selected 3, dragging 4, playhead 5.
-                zIndex: isDragging ? 4 : isSelected ? 3 : 1,
-                border: isSelected
-                  ? "2px solid #5b8cff"
-                  : isPlain
-                    ? "1px solid #22222a"
-                    : "1px solid #2A2A33",
-                background: isSelected ? "#1c2333" : isPlain ? "#131318" : "#1A1A21",
-              }}
-            >
-              <span style={isPlain ? { ...blockLabel, color: "#55555f" } : blockLabel}>
-                {cue.id}
-              </span>
-              {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
-              {!isPlain ? (
-                <>
-                  <div
-                    onMouseDown={beginEdgeDrag(cue, "start")}
-                    style={{ ...edgeHandle, left: 0, cursor: "ew-resize" }}
-                  />
-                  <div
-                    onMouseDown={beginEdgeDrag(cue, "end")}
-                    style={{ ...edgeHandle, right: 0, cursor: "ew-resize" }}
-                  />
-                </>
-              ) : null}
-            </div>
-          );
-        })}
-        {ghosts.map((cue) => {
-          // A deleted scene (PLAN Task C5): dashed, hollow, painted ABOVE the
-          // plain take that took over its window (DOM order stacks it later).
-          // Same testid shape as a live block so selection — and the e2e —
-          // keep working; clicking it is how the Inspector offers Restore.
-          const left = durationSec > 0 ? (cue.startSec / durationSec) * 100 : 0;
-          const width =
-            durationSec > 0 ? Math.max(0, ((cue.endSec - cue.startSec) / durationSec) * 100) : 0;
-          const isSelected = selection?.sceneId === cue.id;
-          return (
-            <div
-              key={`ghost-${cue.id}`}
-              data-testid={`timeline-block-${cue.id}`}
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                onSelect({ sceneId: cue.id, elementId: null });
-              }}
-              style={{
-                ...block,
-                left: `${left}%`,
-                width: `${width}%`,
-                // Level 2: "the ghost paints above the take that took over
-                // its window" is now a stated rule, not an accident of DOM
-                // order (PLAN R11 Task 1). Selected ghosts join level 3.
-                zIndex: isSelected ? 3 : 2,
-                border: isSelected ? "2px dashed #5b8cff" : "1px dashed #6a6a75",
-                background: "transparent",
-              }}
-            >
-              <span style={{ ...blockLabel, color: "#6a6a75", textDecoration: "line-through" }}>
-                {cue.id}
-              </span>
-            </div>
-          );
-        })}
-        <div data-testid="playhead" style={{ ...playhead, left: `${playheadPct}%` }}>
-          {/* The playhead itself is grabbable (Task 3): pressing it starts
-              the same scrub as the track, WITHOUT the initial jump-seek —
-              grabbing the needle shouldn't move it until the hand does. The
-              hit zone is wider than the 2px needle so it's actually
-              catchable. */}
+      <div ref={scrollerRef} data-testid="timeline-scroller" style={scroller}>
+        <div style={{ width: `${zoom * 100}%`, minWidth: "100%", paddingBottom: 6 }}>
           <div
-            data-testid="playhead-grab"
+            data-testid="ruler"
+            style={ruler}
             onMouseDown={(e) => {
-              e.stopPropagation();
+              // The ruler seeks (PLAN Task 3) with the same press-and-drag scrub
+              // as the track — one `timeAtX` mapping for every seek gesture — and
+              // NEVER changes the selection: seeking near a scene boundary should
+              // not require aiming at (and thereby selecting) a block.
               e.preventDefault();
+              seekTrack(e.clientX);
               scrubbingRef.current = true;
             }}
-            style={playheadGrab}
-          />
+          >
+            <span style={rulerLabel}>0:00</span>
+            <span style={rulerLabel}>{fmt(durationSec)}</span>
+          </div>
+          <div
+            ref={trackRef}
+            style={track}
+            onMouseDown={(e) => {
+              // A press on a block or its edge handles is dealt with by that
+              // block's own handler (which stops propagation); this fires only
+              // for the bare track background. Seek immediately AND begin a
+              // scrub, so press-and-drag follows the pointer like any player's
+              // seek bar (Task 3).
+              e.preventDefault();
+              seekTrack(e.clientX);
+              scrubbingRef.current = true;
+            }}
+          >
+            {cues.map((cue) => {
+              const isPlain = cue.kind === "plain";
+              const isDragging = dragPreview?.sceneId === cue.id;
+              const startSec = isDragging ? dragPreview.startSec : cue.startSec;
+              const endSec = isDragging ? dragPreview.endSec : cue.endSec;
+              const left = durationSec > 0 ? (startSec / durationSec) * 100 : 0;
+              const width = durationSec > 0 ? Math.max(0, ((endSec - startSec) / durationSec) * 100) : 0;
+              const isSelected = selection?.sceneId === cue.id;
+              return (
+                <div
+                  key={cue.id}
+                  data-testid={`timeline-block-${cue.id}`}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    // Select right away for feedback. A GRAPHIC block then waits
+                    // on travel to decide click-seek vs move-drag (see the window
+                    // mousemove/mouseup pair above). A PLAIN block's window is
+                    // derived, not stored — it can't move, so its press seeks
+                    // immediately and drags as a scrub: the takes now cover most
+                    // of the track, and losing press-and-drag seeking over them
+                    // would regress the very gesture the track was given.
+                    onSelect({ sceneId: cue.id, elementId: null });
+                    if (isPlain) {
+                      seekTrack(e.clientX);
+                      scrubbingRef.current = true;
+                      return;
+                    }
+                    blockPressRef.current = { sceneId: cue.id, startX: e.clientX, moved: false };
+                  }}
+                  style={{
+                    ...block,
+                    left: `${left}%`,
+                    width: `${width}%`,
+                    // Explicit stacking (PLAN R11 Task 1) — paint order used to
+                    // be DOM order, which is time order, so a later take always
+                    // clipped the selected block's border and an end-edge drag
+                    // grew UNDERNEATH its neighbour. Levels: block 1, ghost 2,
+                    // selected 3, dragging 4, playhead 5.
+                    zIndex: isDragging ? 4 : isSelected ? 3 : 1,
+                    border: isSelected
+                      ? "2px solid #5b8cff"
+                      : isPlain
+                        ? "1px solid #22222a"
+                        : "1px solid #2A2A33",
+                    background: isSelected ? "#1c2333" : isPlain ? "#131318" : "#1A1A21",
+                  }}
+                >
+                  <span style={isPlain ? { ...blockLabel, color: "#55555f" } : blockLabel}>
+                    {cue.id}
+                  </span>
+                  {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
+                  {!isPlain ? (
+                    <>
+                      <div
+                        onMouseDown={beginEdgeDrag(cue, "start")}
+                        style={{ ...edgeHandle, left: 0, cursor: "ew-resize" }}
+                      />
+                      <div
+                        onMouseDown={beginEdgeDrag(cue, "end")}
+                        style={{ ...edgeHandle, right: 0, cursor: "ew-resize" }}
+                      />
+                    </>
+                  ) : null}
+                </div>
+              );
+            })}
+            {ghosts.map((cue) => {
+              // A deleted scene (PLAN Task C5): dashed, hollow, painted ABOVE the
+              // plain take that took over its window (DOM order stacks it later).
+              // Same testid shape as a live block so selection — and the e2e —
+              // keep working; clicking it is how the Inspector offers Restore.
+              const left = durationSec > 0 ? (cue.startSec / durationSec) * 100 : 0;
+              const width =
+                durationSec > 0 ? Math.max(0, ((cue.endSec - cue.startSec) / durationSec) * 100) : 0;
+              const isSelected = selection?.sceneId === cue.id;
+              return (
+                <div
+                  key={`ghost-${cue.id}`}
+                  data-testid={`timeline-block-${cue.id}`}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    onSelect({ sceneId: cue.id, elementId: null });
+                  }}
+                  style={{
+                    ...block,
+                    left: `${left}%`,
+                    width: `${width}%`,
+                    // Level 2: "the ghost paints above the take that took over
+                    // its window" is now a stated rule, not an accident of DOM
+                    // order (PLAN R11 Task 1). Selected ghosts join level 3.
+                    zIndex: isSelected ? 3 : 2,
+                    border: isSelected ? "2px dashed #5b8cff" : "1px dashed #6a6a75",
+                    background: "transparent",
+                  }}
+                >
+                  <span style={{ ...blockLabel, color: "#6a6a75", textDecoration: "line-through" }}>
+                    {cue.id}
+                  </span>
+                </div>
+              );
+            })}
+            <div data-testid="playhead" style={{ ...playhead, left: `${playheadPct}%` }}>
+              {/* The playhead itself is grabbable (Task 3): pressing it starts
+                  the same scrub as the track, WITHOUT the initial jump-seek —
+                  grabbing the needle shouldn't move it until the hand does. The
+                  hit zone is wider than the 2px needle so it's actually
+                  catchable. */}
+              <div
+                data-testid="playhead-grab"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  scrubbingRef.current = true;
+                }}
+                style={playheadGrab}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -364,7 +471,49 @@ const strip: React.CSSProperties = {
   flexShrink: 0,
   borderTop: "1px solid #1E1E24",
   background: "#111116",
-  padding: "10px 20px 14px",
+  padding: "6px 20px 8px",
+};
+
+const zoomBar: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-end",
+  alignItems: "center",
+  gap: 6,
+  marginBottom: 4,
+};
+
+const zoomButton: React.CSSProperties = {
+  width: 22,
+  height: 18,
+  fontSize: 12,
+  lineHeight: 1,
+  color: "#EDEDF2",
+  background: "#1A1A21",
+  border: "1px solid #2A2A33",
+  borderRadius: 4,
+  cursor: "pointer",
+  padding: 0,
+};
+
+const zoomLabel: React.CSSProperties = {
+  fontSize: 10,
+  fontFamily: "ui-monospace, 'SF Mono', monospace",
+  color: "#9A9AA3",
+  minWidth: 26,
+  textAlign: "center",
+};
+
+const zoomHint: React.CSSProperties = {
+  fontSize: 10,
+  color: "#55555f",
+  marginRight: 4,
+  userSelect: "none",
+};
+
+/** The zoomed track lives inside this; at zoom 1 it is invisible plumbing. */
+const scroller: React.CSSProperties = {
+  overflowX: "auto",
+  overflowY: "hidden",
 };
 
 const ruler: React.CSSProperties = {
