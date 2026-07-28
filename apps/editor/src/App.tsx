@@ -323,7 +323,12 @@ export const App: React.FC = () => {
             disabled={!canRender || render?.running === true}
             title={
               canRender
-                ? "Save if needed, then re-run the recorded produce command"
+                ? // R12: say what this actually does — it REPLAYS the last
+                  // completed produce (command.json), so pipeline-level flags
+                  // (source fit, cleanup, provider) come from that run; your
+                  // saved edits are re-applied on top.
+                  "Saves if needed, then replays the last completed produce command — " +
+                  "pipeline flags come from that run; your saved edits apply on top"
                 : "No command.json in this workdir — run `ossclip produce` once in a " +
                   "terminal; it records the invocation and Render replays it"
             }

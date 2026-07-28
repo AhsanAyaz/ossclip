@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildArrayPatch } from "../src/Overlay";
+import { buildArrayPatch, elementTextOf } from "../src/Overlay";
 
 describe("buildArrayPatch — ChatMock CTA keyword mapping", () => {
   const props = { keyword: "agents" };
@@ -26,5 +26,27 @@ describe("buildArrayPatch — ChatMock CTA keyword mapping", () => {
 
   it("returns null for an empty mapped keyword", () => {
     expect(buildArrayPatch("message-0", props, '""')).toBeNull();
+  });
+});
+
+describe("elementTextOf — the panel's read direction (R12 §49)", () => {
+  it("reads top-level string props directly, and refuses non-strings", () => {
+    expect(elementTextOf("title", { title: "SHIP IT" })).toBe("SHIP IT");
+    expect(elementTextOf("value", { value: 42 })).toBeNull();
+  });
+
+  it("reads array-backed ids out of their arrays — what the double-click alone could reach", () => {
+    expect(elementTextOf("node-1", { nodes: ["A", "B"] })).toBe("B");
+    expect(elementTextOf("line-0", { lines: [{ text: "RULE", struck: false }] })).toBe("RULE");
+    expect(elementTextOf("message-1", { messages: [{ text: "hi" }, { text: "there" }] })).toBe("there");
+  });
+
+  it("reads the CTA keyword for message-0 in keyword mode — matching what a patch there writes", () => {
+    expect(elementTextOf("message-0", { keyword: "agents", messages: [{ text: "x" }] })).toBe("agents");
+  });
+
+  it("returns null for a window (its lines carry their own ids) and out-of-range indices", () => {
+    expect(elementTextOf("window-0", { windows: [] })).toBeNull();
+    expect(elementTextOf("node-5", { nodes: ["A"] })).toBeNull();
   });
 });

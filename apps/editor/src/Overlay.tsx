@@ -216,6 +216,38 @@ export function buildArrayPatch(
 }
 
 /**
+ * The current text an element id names — `buildArrayPatch`'s read direction
+ * (R12 §49). Top-level string props read directly; the array-backed
+ * `line-N`/`node-N`/`message-N` ids read out of their arrays; a CTA-mode
+ * `message-0` reads the keyword (which is what a patch there writes); a
+ * `window-N` (a title plus several lines) has no single string and returns
+ * null — its lines carry their own ids. Null means "no text control".
+ */
+export function elementTextOf(
+  elementId: string,
+  props: Record<string, unknown>,
+): string | null {
+  const m = DYNAMIC_ID.exec(elementId);
+  if (!m) {
+    const v = props[elementId];
+    return typeof v === "string" ? v : null;
+  }
+  if (m[1] === "window") return null;
+  const kind = m[1] as "line" | "node" | "message";
+  const idx = Number(m[2]);
+  if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
+    return props.keyword;
+  }
+  const field = kind === "line" ? "lines" : kind === "node" ? "nodes" : "messages";
+  const arr = props[field];
+  if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
+  const item = arr[idx];
+  if (kind === "node") return typeof item === "string" ? item : null;
+  const text = (item as Record<string, unknown> | null)?.text;
+  return typeof text === "string" ? text : null;
+}
+
+/**
  * A transparent layer above the `<Player>` that turns clicks into a
  * selection, drags into `patchElement` nudges, and a double-click into
  * inline text editing. It never blocks the player's own controls: only the
@@ -236,7 +268,6 @@ export const Overlay: React.FC<OverlayProps> = ({
   cue,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
-  const [editingText, setEditingText] = useState<string | null>(null);
   /** An in-progress drag-to-pan on the video slot (PLAN Task B). `base` is
    * the override's dx/dy at mousedown, so the drag ADDS to it. */
   const videoDragRef = useRef<{
@@ -283,7 +314,6 @@ export const Overlay: React.FC<OverlayProps> = ({
     draft: string;
     rect: DOMRect;
   } | null>(null);
-  const [editRefusal, setEditRefusal] = useState<string | null>(null);
   const dragRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
   const [dragOffset, setDragOffset] = useState({ dx: 0, dy: 0 });
   const boxRef = useRef<HTMLDivElement>(null);
@@ -416,7 +446,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   useEffect(() => {
     const onPointerDownCapture = (e: PointerEvent) => {
       const stage = stageRef.current;
-      if (!stage || editingText !== null) return;
+      if (!stage) return;
       if (!stage.contains(e.target as Node)) return;
       const editorOwnsIt =
         (selectionRef.current?.elementId && boxRef.current?.contains(e.target as Node)) ||
@@ -425,7 +455,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("pointerdown", onPointerDownCapture, true);
     return () => window.removeEventListener("pointerdown", onPointerDownCapture, true);
-  }, [stageRef, editingText]);
+  }, [stageRef]);
 
   // The hit layer itself is `pointer-events: none` (see the returned JSX)
   // so it never blocks the Player's own controls: a click on play/pause or
@@ -439,7 +469,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   useEffect(() => {
     const onWindowMouseDown = (e: MouseEvent) => {
       const stage = stageRef.current;
-      if (!stage || editingText !== null) return;
+      if (!stage) return;
       // Ignore clicks outside the stage entirely (topbar, sidebar, etc.) —
       // this listener is global precisely so pass-through works, but it must
       // not react to unrelated clicks.
@@ -564,7 +594,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("mousedown", onWindowMouseDown);
     return () => window.removeEventListener("mousedown", onWindowMouseDown);
-  }, [stageRef, select, editingText, edits, canvasBox]);
+  }, [stageRef, select, edits, canvasBox]);
 
   useEffect(() => {
     // Page px → composition px. The factor comes from the Player's own
@@ -763,68 +793,15 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
   }, [edits, stageRef, settings, playerRef, onVideoPreview, onGraphicPreview, canvasBox]);
 
-  const handleDoubleClick = useCallback(
-    (e: React.MouseEvent) => {
-      if (!selection?.elementId) return;
-      e.preventDefault();
-      // `window-N` (a TerminalMock window) wraps a title PLUS several lines
-      // — there is no single string to retype it into. Refuse up front,
-      // visibly, rather than opening an input that can only silently lose
-      // whatever gets typed into it.
-      const m = DYNAMIC_ID.exec(selection.elementId);
-      if (m && m[1] === "window") {
-        setEditRefusal("Can't retype a terminal window inline — edit its lines from the Inspector.");
-        return;
-      }
-      setEditRefusal(null);
-      // Seed from the rendered DOM, not `edits.doc.scenes[...].props` — the
-      // override doc only holds the user's DELTA over the producer's props,
-      // so an untouched element has no entry there at all and this would
-      // start the input blank instead of showing what's actually on screen.
-      const stage = stageRef.current;
-      const node = stage?.querySelector<HTMLElement>(
-        `[data-edit-scene="${selection.sceneId}"] [data-edit-id="${selection.elementId}"]`,
-      );
-      setEditingText(node?.textContent ?? "");
-    },
-    [selection, stageRef],
-  );
-
-  const commitText = useCallback(() => {
-    if (selection?.elementId && editingText !== null) {
-      const elementId = selection.elementId;
-      const isDynamic = DYNAMIC_ID.test(elementId);
-      // `data-edit-id` names a top-level prop for TitleCard/StatCard/
-      // RuleCard/ScreenshotFrame — those can be patched directly. The
-      // dynamic `line-N`/`node-N`/`message-N` ids instead name an entry
-      // INSIDE an array prop (`packages/scenes`' `lines`/`nodes`/
-      // `messages`) and need `buildArrayPatch` to rewrite the right index;
-      // a plain `{ [elementId]: text }` there would write a prop key
-      // nothing reads (FINDINGS: silently-lost retype).
-      const patch = isDynamic
-        ? cue?.props
-          ? buildArrayPatch(elementId, cue.props, editingText)
-          : null
-        : { [elementId]: editingText };
-      if (patch) {
-        edits.patchProps(selection.sceneId, patch);
-      } else if (isDynamic) {
-        setEditRefusal(`Can't retype "${elementId}" inline — edit it from the Inspector instead.`);
-      }
-    }
-    setEditingText(null);
-  }, [selection, editingText, edits, cue]);
-
-  // Refusal messages are transient — don't let a stale one from a previous
-  // selection linger once the user has moved on.
-  useEffect(() => {
-    setEditRefusal(null);
-  }, [selection]);
-  useEffect(() => {
-    if (!editRefusal) return;
-    const t = setTimeout(() => setEditRefusal(null), 3000);
-    return () => clearTimeout(t);
-  }, [editRefusal]);
+  // Element INLINE editing is gone (R12 §49, the author's call): the
+  // floating input painted over the element while the un-edited render was
+  // still visible behind it, so you judged a mixture of old pixels and new
+  // value. Text edits live in the Inspector's panel now — which also covers
+  // the array-backed line-N/node-N/message-N ids via buildArrayPatch, so
+  // nothing the double-click could reach was lost. Caption words keep THEIR
+  // double-click below: that flow edits a different document (the caption
+  // stream), positions beside the word rather than over a graphic, and §49
+  // explicitly left it as its own decision.
 
   // Double-click on a caption word opens an in-place retype (PLAN Task 7,
   // scope (a): 1:1 text swap, timing untouched). Window-level because the
@@ -863,7 +840,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       );
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (editingText !== null || captionEdit !== null) return;
+      if (captionEdit !== null) return;
       const mod = e.metaKey || e.ctrlKey;
       if (e.key === "Escape") {
         select(null);
@@ -919,7 +896,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, editingText, captionEdit, onSave, playerRef, stageRef, onTransport, cue]);
+  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue]);
 
   return (
     <div
@@ -962,10 +939,9 @@ export const Overlay: React.FC<OverlayProps> = ({
         <div
           ref={boxRef}
           data-testid="overlay-box"
-          onDoubleClick={handleDoubleClick}
           style={{
             position: "fixed",
-            pointerEvents: editingText !== null ? "none" : "auto",
+            pointerEvents: "auto",
             // A corner resize previews on the OUTLINE, centre-anchored (R12
             // §47) — the element itself re-renders once the patch commits,
             // same contract as the move drag.
@@ -1011,7 +987,7 @@ export const Overlay: React.FC<OverlayProps> = ({
           {/* Element corner handles (R12 §47): position was already direct
               manipulation (drag to move) while size was numbers-only — the
               half-state the findings flagged. Radial drag = uniform scale. */}
-          {selection.elementId && editingText === null
+          {selection.elementId
             ? (["nw", "ne", "se", "sw"] as const).map((h) => (
                 <div
                   key={h}
@@ -1029,7 +1005,7 @@ export const Overlay: React.FC<OverlayProps> = ({
               The box BODY stays click-through (the hit walk sees through
               it), or element selection inside the box breaks — so moving is
               a titlebar-style strip along the top edge, not the whole body. */}
-          {!selection.elementId && cue && cue.kind !== "plain" && editingText === null ? (
+          {!selection.elementId && cue && cue.kind !== "plain" ? (
             <>
               <div data-box-handle="move" data-testid="box-handle-move" style={moveStrip} />
               {(["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const).map((h) => (
@@ -1082,60 +1058,6 @@ export const Overlay: React.FC<OverlayProps> = ({
             zIndex: 11,
           }}
         />
-      ) : null}
-      {editingText !== null && rect ? (
-        <input
-          autoFocus
-          value={editingText}
-          onChange={(e) => setEditingText(e.target.value)}
-          onBlur={commitText}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            if (e.key === "Escape") setEditingText(null);
-          }}
-          style={{
-            position: "fixed",
-            // `pointer-events` is inherited, and the hit layer above is now
-            // `none` — without this override the input would be unfocusable
-            // and unclickable.
-            pointerEvents: "auto",
-            left: rect.left,
-            top: rect.top,
-            width: Math.max(rect.width, 80),
-            height: rect.height,
-            fontSize: Math.max(14, Math.min(rect.height * 0.6, 32)),
-            fontFamily: "'Inter', system-ui, sans-serif",
-            fontWeight: 700,
-            border: "2px solid #ffe14d",
-            borderRadius: 4,
-            padding: "0 4px",
-            background: "#0B0B0E",
-            color: "#fff",
-            outline: "none",
-            zIndex: 10,
-          }}
-        />
-      ) : null}
-      {editRefusal && rect ? (
-        <div
-          data-testid="edit-refusal"
-          style={{
-            position: "fixed",
-            pointerEvents: "none",
-            left: rect.left,
-            top: rect.top + rect.height + 6,
-            maxWidth: 260,
-            fontSize: 11,
-            fontFamily: "'Inter', system-ui, sans-serif",
-            color: "#0B0B0E",
-            background: "#FF5C5C",
-            padding: "4px 8px",
-            borderRadius: 4,
-            zIndex: 10,
-          }}
-        >
-          {editRefusal}
-        </div>
       ) : null}
     </div>
   );

@@ -2,7 +2,7 @@ import React from "react";
 import { LayoutSchema, SceneComponentIdSchema, type SceneCue, type Theme } from "@ossclip/core/browser";
 import { clampGraphicRect, layoutSlots } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
-import type { Selection, VideoPreview } from "./Overlay";
+import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
 interface InspectorProps {
   selection: Selection | null;
@@ -156,9 +156,12 @@ export const Inspector: React.FC<InspectorProps> = ({
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
     const transform = cue.elements?.[elementId] ?? {};
-    // Optional-chained for the type only: an element selection implies a
-    // graphic cue — plain cues render no `data-edit-id` leaves to select.
-    const text = cue.props?.[elementId];
+    // The panel is where text editing LIVES now (R12 §49) — the inline
+    // double-click input painted over the element it edited. `elementTextOf`
+    // also reads the array-backed line-N/node-N/message-N ids, so the panel
+    // covers everything the overlay input could reach (a window-N returns
+    // null — its lines carry their own ids).
+    const text = cue.props ? elementTextOf(elementId, cue.props) : null;
     return (
       <div>
         <div style={section}>
@@ -167,14 +170,30 @@ export const Inspector: React.FC<InspectorProps> = ({
             {elementId}
           </div>
         </div>
-        {typeof text === "string" ? (
+        {text !== null ? (
           <div style={section}>
             <div style={row}>
               <span style={label}>Text</span>
               <input
                 style={textInput}
+                data-testid="element-text"
                 value={text}
-                onChange={(e) => edits.patchProps(selection.sceneId, { [elementId]: e.target.value })}
+                onChange={(e) => {
+                  const props = cue.props ?? {};
+                  // Top-level string props patch directly; array-backed ids
+                  // need buildArrayPatch to rewrite the right entry — a bare
+                  // { [elementId]: text } there writes a key nothing reads.
+                  const patch = /^(line|node|message|window)-\d+$/.test(elementId)
+                    ? buildArrayPatch(elementId, props, e.target.value)
+                    : { [elementId]: e.target.value };
+                  if (patch) {
+                    edits.patchProps(
+                      selection.sceneId,
+                      patch,
+                      `text:${selection.sceneId}:${elementId}`,
+                    );
+                  }
+                }}
               />
             </div>
           </div>

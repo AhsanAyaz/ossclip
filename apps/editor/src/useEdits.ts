@@ -41,7 +41,7 @@ export const COALESCE_MS = 600;
 
 export type EditAction =
   | { type: "load"; doc: OverrideDoc }
-  | { type: "patchProps"; sceneId: string; patch: Record<string, unknown> }
+  | { type: "patchProps"; sceneId: string; patch: Record<string, unknown>; coalesce?: string }
   | {
       type: "patchElement";
       sceneId: string;
@@ -106,13 +106,16 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       return { doc: action.doc, past: [], dirty: false, savedAt: 0, lastCoalesce: null };
     case "patchProps": {
       const scene = withScene(state.doc, action.sceneId);
-      return commit({
-        ...state.doc,
-        scenes: {
-          ...state.doc.scenes,
-          [action.sceneId]: { ...scene, props: { ...scene.props, ...action.patch } },
+      return commit(
+        {
+          ...state.doc,
+          scenes: {
+            ...state.doc.scenes,
+            [action.sceneId]: { ...scene, props: { ...scene.props, ...action.patch } },
+          },
         },
-      });
+        action.coalesce,
+      );
     }
     case "patchElement":
       return commit(
@@ -269,8 +272,8 @@ export function useEdits() {
     load: (doc: OverrideDoc) => dispatch({ type: "load", doc }),
     undo: () => dispatch({ type: "undo" }),
     save,
-    patchProps: (sceneId: string, patch: Record<string, unknown>) =>
-      dispatch({ type: "patchProps", sceneId, patch }),
+    patchProps: (sceneId: string, patch: Record<string, unknown>, coalesce?: string) =>
+      dispatch({ type: "patchProps", sceneId, patch, coalesce }),
     patchElement: (sceneId: string, elementId: string, patch: ElementTransform, coalesce?: string) =>
       dispatch({ type: "patchElement", sceneId, elementId, patch, coalesce }),
     clearElement: (sceneId: string, elementId: string) =>

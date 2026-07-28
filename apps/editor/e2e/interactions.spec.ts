@@ -560,3 +560,34 @@ test("element corner handles resize by drag; the slider drives scale too (R12 §
   // And the scale slider exists as the coarse control for the same value.
   await expect(page.getByTestId("el-scale-slider")).toBeVisible();
 });
+
+test("element text edits live in the panel; the inline double-click input is gone (R12 §49)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await page.waitForSelector("[data-edit-id]");
+  const el = page.locator("[data-edit-id]").first();
+  const elBox = (await el.boundingBox())!;
+  await page.mouse.click(elBox.x + elBox.width / 2, elBox.y + elBox.height / 2);
+  await expect(page.getByTestId("element-text")).toBeVisible();
+
+  // The floating input used to open here, painting over the element while
+  // the un-edited render showed behind it. Gone: a double-click adds no
+  // input anywhere.
+  const inputsBefore = await page.locator("input").count();
+  await page.mouse.dblclick(elBox.x + elBox.width / 2, elBox.y + elBox.height / 2);
+  await page.waitForTimeout(150);
+  expect(await page.locator("input").count()).toBe(inputsBefore);
+
+  // The panel edits the element and the stage follows live.
+  await page.getByTestId("element-text").fill("REPLACED BY PANEL");
+  await expect(el).toHaveText(/REPLACED BY PANEL/);
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
+  const props = doc.scenes[renderProps.baseSceneCues[0].id].props;
+  expect(JSON.stringify(props)).toContain("REPLACED BY PANEL");
+});

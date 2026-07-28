@@ -607,6 +607,8 @@ Captions are DERIVED (`buildCaptionLines` over the repaired transcript through t
 
 # Round 12 — a landscape source, and text that does not fit (`Agents in 2026`, 2026-07-31)
 
+*Status (remote session, same date): §46–§49 fixed. §46 — `estimateMinWidthPx` gains RuleCard and TitleCard longest-word cases, so `fitScale`'s width cap binds (pinned on the real scene-4 props). §47 — element boxes grew four corner handles (radial drag = uniform scale, one rounded patch per gesture) and the panel a scale slider; number fields stay as the precision fallback. §48 — fields are `type=text inputMode=decimal`: comma decimals commit, display rounds to 3 decimals, and every drag commit rounds at the source. §49 — the element inline input is deleted; the panel's TEXT field covers the array-backed ids via `buildArrayPatch`/`elementTextOf`, caption double-click kept. The Render button's title now states it replays the last completed produce. 491 unit tests, 17 e2e green.*
+
 *First run against a LANDSCAPE source: 1920×1080, 12m21s, 2396 words, Gemini as the producer (~$0.10 for beats + props). Two full runs of the same take, one cover and one contain, plus the author editing the workdir by hand while the second rendered.*
 
 **Shipped this round:** `--source-fit contain` — a landscape source rendered whole instead of cover-cropped. Measured reason: cover-cropping 16:9 into 9:16 displays the picture 3413px wide and keeps 1080 of them, **32% of the width**, with the head filling the frame top to bottom. Round 10 had quietly made that worse — plain takes are `full-bleed` and takes cover most of the timeline, so a landscape source spent most of its runtime in the one layout that ruins it.
