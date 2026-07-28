@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
-import { SAFE_AREA, activeCueAt, captionAnchorAt } from "./stage";
+import { SAFE_AREA, activeCueAt } from "./stage";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
 
 export interface CaptionTrackProps {
@@ -164,16 +164,20 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
     <AbsoluteFill>
       {lines.map((line, i) => {
         const active = cues.length > 0 ? activeCueAt(cues, line.start) : null;
+        // ONE rect-aware path for every line (R11 Task 2b). The old split —
+        // `captionAnchorAvoiding` only when the source had burned-in text,
+        // the pure layout anchor otherwise — meant a hand-moved graphic box
+        // silently sat on top of the captions on a clean source, the common
+        // case. With no regions and no moved rect this resolves to exactly
+        // the layout anchor the old branch returned.
         const anchor =
-          sourceTextRegions.length > 0
+          cues.length > 0 || sourceTextRegions.length > 0
             ? captionAnchorAvoiding(
                 active?.layout ?? "full-bleed",
                 regionsDuring(sourceTextRegions, line.start, line.end),
                 active?.graphicRect,
               )
-            : cues.length > 0
-              ? captionAnchorAt(cues, line.start)
-              : verticalAnchor;
+            : verticalAnchor;
         const from = Math.round(line.start * fps);
         const durationInFrames = Math.max(1, Math.round((line.end - line.start) * fps));
         return (

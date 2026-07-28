@@ -1,6 +1,7 @@
 import { useReducer } from "react";
 import {
   clearElementTransform,
+  clearGraphicRect,
   clearTiming,
   emptyOverrideDoc,
   setElementTransform,
@@ -9,6 +10,14 @@ import {
   type OverrideDoc,
   type SceneComponentId,
 } from "@ossclip/core/browser";
+
+/** A hand-set graphic slot, frame fractions (R11 Task 2). */
+export interface GraphicRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export interface EditState {
   doc: OverrideDoc;
@@ -52,6 +61,8 @@ export type EditAction =
   | { type: "clearTiming"; sceneId: string }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
+  | { type: "patchGraphicRect"; sceneId: string; rect: GraphicRect; coalesce?: string }
+  | { type: "clearGraphicRect"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
   | { type: "patchLayout"; sceneId: string; layout: Layout }
   | { type: "patchCaption"; index: number; text: string; was: string }
@@ -176,12 +187,27 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       });
     }
     case "patchLayout": {
-      const scene = withScene(state.doc, action.sceneId);
+      // A layout swap picks a NEW slot — a stale hand-set rect would
+      // silently keep winning over it at render time, so it goes with the
+      // old layout.
+      const { graphicRect: _stale, ...scene } = withScene(state.doc, action.sceneId);
       return commit({
         ...state.doc,
         scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, layout: action.layout } },
       });
     }
+    case "patchGraphicRect": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit(
+        {
+          ...state.doc,
+          scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, graphicRect: action.rect } },
+        },
+        action.coalesce,
+      );
+    }
+    case "clearGraphicRect":
+      return commit(clearGraphicRect(state.doc, action.sceneId));
     case "patchCaption": {
       // Retyping a word back to its original CLEARS the override — same rule
       // as clearVideo: an override that matches the base is still an
@@ -260,6 +286,9 @@ export function useEdits() {
     clearVideo: (sceneId: string) => dispatch({ type: "clearVideo", sceneId }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
+    patchGraphicRect: (sceneId: string, rect: GraphicRect, coalesce?: string) =>
+      dispatch({ type: "patchGraphicRect", sceneId, rect, coalesce }),
+    clearGraphicRect: (sceneId: string) => dispatch({ type: "clearGraphicRect", sceneId }),
     patchComponent: (sceneId: string, component: SceneComponentId) =>
       dispatch({ type: "patchComponent", sceneId, component }),
     patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),

@@ -452,3 +452,51 @@ test("the selected block paints above its take neighbours, including mid-resize 
   // The edge drag pinned scene-2 — undo so this test leaves no residue.
   await page.keyboard.press("Meta+z");
 });
+
+test("drag a corner handle to reshape the graphic box; body clicks still reach elements (R11 Task 2)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-3").click();
+  await expect(page.getByTestId("overlay-box")).toBeVisible();
+  const handle = page.getByTestId("box-handle-se");
+  await expect(handle).toBeVisible();
+
+  // Drag the SE corner inward — the box on screen follows the preview.
+  const before = (await page.getByTestId("overlay-box").boundingBox())!;
+  const hb = (await handle.boundingBox())!;
+  await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(hb.x + hb.width / 2 - 50, hb.y + hb.height / 2 - 30, { steps: 5 });
+  await page.mouse.up();
+  await expect
+    .poll(async () => (await page.getByTestId("overlay-box").boundingBox())!.width)
+    .toBeLessThan(before.width - 30);
+
+  // On disk: the committed fractions match what is on screen, inside the
+  // same ±20% band edit.spec.ts uses for rescaled deltas.
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  const rect = doc.scenes["scene-3"].graphicRect;
+  const stage = (await page.getByTestId("stage").boundingBox())!;
+  const after = (await page.getByTestId("overlay-box").boundingBox())!;
+  const seenW = (after.width - 9) / stage.width; // minus the box's HANDLE pad
+  expect(rect.w).toBeGreaterThan(seenW * 0.8);
+  expect(rect.w).toBeLessThan(seenW * 1.2);
+
+  // The regression this feature most threatens: a click INSIDE the box must
+  // still fall through to the element underneath it.
+  await page.getByTestId("timeline-block-scene-0").click();
+  await page.waitForSelector("[data-edit-id]");
+  const el = (await page.locator("[data-edit-id]").first().boundingBox())!;
+  await page.mouse.click(el.x + el.width / 2, el.y + el.height / 2);
+  await expect(page.getByText("Reset element")).toBeVisible();
+
+  // Leave no residue for later tests: reset the box and save.
+  await page.getByTestId("timeline-block-scene-3").click();
+  await page.getByTestId("reset-box").click();
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+});

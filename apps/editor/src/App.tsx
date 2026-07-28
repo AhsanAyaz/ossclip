@@ -15,7 +15,7 @@ import {
   type Theme,
 } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
-import { Overlay, type Selection, type VideoPreview } from "./Overlay";
+import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector } from "./Inspector";
 import { Timeline } from "./Timeline";
 
@@ -63,6 +63,8 @@ export const App: React.FC = () => {
   // Inspector's zoom slider both write it, the live memo applies it last, and
   // it clears the moment the real patch lands in the edit layer.
   const [videoPreview, setVideoPreview] = useState<VideoPreview | null>(null);
+  // Same lifecycle for the graphic-box transform (R11 Task 2).
+  const [graphicPreview, setGraphicPreview] = useState<GraphicPreview | null>(null);
   const stageRef = useRef<HTMLDivElement>(null!);
   const playerRef = useRef<PlayerRef>(null);
 
@@ -148,13 +150,18 @@ export const App: React.FC = () => {
     const { cues } = applyOverrides(filled, edits.doc);
     // The framing preview applies LAST, onto the fully-merged cue, so what
     // the Player shows mid-gesture is exactly what committing would store.
-    const previewed = videoPreview
+    let previewed = videoPreview
       ? cues.map((c) =>
           c.id === videoPreview.sceneId
             ? { ...c, video: { ...c.video, ...videoPreview.patch } }
             : c,
         )
       : cues;
+    if (graphicPreview) {
+      previewed = previewed.map((c) =>
+        c.id === graphicPreview.sceneId ? { ...c, graphicRect: graphicPreview.rect } : c,
+      );
+    }
     const baseCaptions = renderProps.baseCaptionLines ?? renderProps.captionLines ?? [];
     return {
       ...renderProps,
@@ -163,7 +170,7 @@ export const App: React.FC = () => {
       theme: resolveTheme(baseTheme, edits.doc),
       videoFileName: `/media/${renderProps.videoFileName}`,
     };
-  }, [renderProps, edits.doc, videoPreview]);
+  }, [renderProps, edits.doc, videoPreview, graphicPreview]);
 
   const onSave = (): void => {
     void edits.save().catch((err) => setError(err instanceof Error ? err.message : String(err)));
@@ -287,6 +294,7 @@ export const App: React.FC = () => {
               cue={selectedCue}
               onTransport={onTransport}
               onVideoPreview={setVideoPreview}
+              onGraphicPreview={setGraphicPreview}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
                 only reachable by keyboard is a rate users lose track of.
@@ -330,7 +338,13 @@ const shell: React.CSSProperties = {
   fontFamily: "'Inter', system-ui, sans-serif",
   background: "#0B0B0E",
   color: "#EDEDF2",
-  minHeight: "100vh",
+  // HEIGHT, not minHeight: the editor is an app frame, not a document. With
+  // minHeight, a tall Inspector panel stretched the whole page and pushed
+  // the timeline below the fold — the sidebar's own overflowY:auto only
+  // scrolls when this row is actually height-capped (found when R11 Task
+  // 2's Graphic-box section made the scene panel taller than the viewport).
+  height: "100vh",
+  overflow: "hidden",
   display: "flex",
   flexDirection: "column",
 };

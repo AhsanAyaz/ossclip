@@ -182,7 +182,11 @@ export function captionAnchorAvoiding(
 ): number {
   const slots = layoutSlots(layout);
   const base = slots.captionAnchor;
-  if (regions.length === 0) return base;
+  // NO empty-regions early-out (R11 Task 2b): a hand-moved graphic rect must
+  // be able to move the anchor on a CLEAN source too. When the rect equals
+  // the layout default this stays the base anchor — every layout's default
+  // anchor is clear of its own slot (the stage.test.ts invariant) — so the
+  // behaviour change is confined to rects that actually moved.
 
   const clear = (anchor: number): boolean => {
     const band = { y: anchor - CAPTION_HALF_BAND, h: CAPTION_HALF_BAND * 2 };

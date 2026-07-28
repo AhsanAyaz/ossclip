@@ -69,6 +69,21 @@ export const SceneOverrideSchema = z.object({
     })
     .optional(),
   /**
+   * The graphic slot, reshaped by hand (PLAN 2026-07-31 Task 2) — frame
+   * fractions like every other rect. Validated HERE even though
+   * `SceneCueSchema.graphicRect` is not: this one is hand-editable user
+   * data, and §35's lesson is that validators are the constraint. The
+   * renderer additionally clamps into the platform-safe area at draw time.
+   */
+  graphicRect: z
+    .object({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      w: z.number().min(0.08).max(1),
+      h: z.number().min(0.05).max(1),
+    })
+    .optional(),
+  /**
    * The scene is deleted — SOFTLY (PLAN 2026-07-30 Task C): the cue drops
    * from the render (`dropHiddenCues`) and its window becomes a plain take,
    * but the plan still has the scene and the timeline shows a restorable
@@ -173,6 +188,9 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       props,
       ...(Object.keys(o.elements).length > 0 ? { elements: o.elements } : {}),
       ...(o.video ? { video: o.video } : {}),
+      // After ...cue, so a hand-set rect WINS over one routeAroundSourceText
+      // baked into the base cues.
+      ...(o.graphicRect ? { graphicRect: o.graphicRect } : {}),
       ...(o.timing ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true } : {}),
     };
   });
@@ -282,6 +300,18 @@ export function clearTiming(doc: OverrideDoc, sceneId: string): OverrideDoc {
   const scene = doc.scenes[sceneId];
   if (!scene || !scene.timing) return doc;
   const { timing: _removed, ...rest } = scene;
+  return { ...doc, scenes: { ...doc.scenes, [sceneId]: rest } };
+}
+
+/**
+ * Reset the hand-set graphic box: DELETE the key so the cue falls back to
+ * its layout slot (or the routed rect), distinct from a rect that happens
+ * to equal the default.
+ */
+export function clearGraphicRect(doc: OverrideDoc, sceneId: string): OverrideDoc {
+  const scene = doc.scenes[sceneId];
+  if (!scene || !scene.graphicRect) return doc;
+  const { graphicRect: _removed, ...rest } = scene;
   return { ...doc, scenes: { ...doc.scenes, [sceneId]: rest } };
 }
 

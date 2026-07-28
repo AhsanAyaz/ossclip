@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
-import { SAFE_AREA } from "@ossclip/renderer/composition";
+import { SAFE_AREA, clampGraphicRect } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
-import type { useEdits } from "./useEdits";
+import type { GraphicRect, useEdits } from "./useEdits";
 
 export interface Selection {
   sceneId: string;
@@ -16,6 +16,38 @@ export interface Selection {
 export interface VideoPreview {
   sceneId: string;
   patch: { scale?: number; dx?: number; dy?: number };
+}
+
+/** A live, uncommitted graphic-box transform (R11 Task 2) — same lifecycle
+ * as VideoPreview: applied at the end of App's live memo, cleared on commit. */
+export interface GraphicPreview {
+  sceneId: string;
+  rect: GraphicRect;
+}
+
+/** Which part of the box a handle drags. Compass points resize; "move" is
+ * the titlebar-style grip along the top edge. */
+type BoxHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "move";
+
+/** One resize/move step, in frame fractions. */
+function applyBoxHandle(start: GraphicRect, handle: BoxHandle, fdx: number, fdy: number): GraphicRect {
+  const r = { ...start };
+  if (handle === "move") {
+    r.x += fdx;
+    r.y += fdy;
+    return r;
+  }
+  if (handle.includes("w")) {
+    r.x += fdx;
+    r.w -= fdx;
+  }
+  if (handle.includes("e")) r.w += fdx;
+  if (handle.includes("n")) {
+    r.y += fdy;
+    r.h -= fdy;
+  }
+  if (handle.includes("s")) r.h += fdy;
+  return r;
 }
 
 /**
@@ -61,6 +93,8 @@ interface OverlayProps {
   onTransport: (key: "J" | "K" | "L") => void;
   /** Live framing preview — owned by App, applied at the end of its live memo. */
   onVideoPreview: (preview: VideoPreview | null) => void;
+  /** Live graphic-box preview (R11 Task 2) — same ownership as above. */
+  onGraphicPreview: (preview: GraphicPreview | null) => void;
   /** The currently-selected scene's LIVE (override-applied) cue, so a
    * double-click retype on an array-backed element (a FlowDiagram node, a
    * ChatMock message, …) can rewrite that element's entry in place instead
@@ -69,6 +103,42 @@ interface OverlayProps {
 }
 
 const HANDLE = 9;
+
+/** Box transform handle chrome (R11 Task 2). */
+const boxHandleBase: React.CSSProperties = {
+  position: "absolute",
+  width: 10,
+  height: 10,
+  background: "#5b8cff",
+  border: "1px solid #0B0B0E",
+  borderRadius: 2,
+  pointerEvents: "auto",
+  zIndex: 6,
+};
+
+const HANDLE_POS: Record<Exclude<BoxHandle, "move">, React.CSSProperties> = {
+  nw: { left: 0, top: 0, transform: "translate(-50%,-50%)", cursor: "nwse-resize" },
+  n: { left: "50%", top: 0, transform: "translate(-50%,-50%)", cursor: "ns-resize" },
+  ne: { right: 0, top: 0, transform: "translate(50%,-50%)", cursor: "nesw-resize" },
+  e: { right: 0, top: "50%", transform: "translate(50%,-50%)", cursor: "ew-resize" },
+  se: { right: 0, bottom: 0, transform: "translate(50%,50%)", cursor: "nwse-resize" },
+  s: { left: "50%", bottom: 0, transform: "translate(-50%,50%)", cursor: "ns-resize" },
+  sw: { left: 0, bottom: 0, transform: "translate(-50%,50%)", cursor: "nesw-resize" },
+  w: { left: 0, top: "50%", transform: "translate(-50%,-50%)", cursor: "ew-resize" },
+};
+
+/** The move grip: a titlebar-style strip along the box's top edge, inset
+ * clear of the corner handles. The body below it must stay click-through. */
+const moveStrip: React.CSSProperties = {
+  position: "absolute",
+  top: 0,
+  left: 14,
+  right: 14,
+  height: 10,
+  cursor: "move",
+  pointerEvents: "auto",
+  zIndex: 5,
+};
 
 /**
  * Ids the scene library hands out for elements that live INSIDE an array
@@ -148,6 +218,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   playerRef,
   onTransport,
   onVideoPreview,
+  onGraphicPreview,
   cue,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -164,6 +235,20 @@ export const Overlay: React.FC<OverlayProps> = ({
     baseDy: number;
   } | null>(null);
   const videoRafRef = useRef(0);
+  /** An in-progress transform of the graphic box (R11 Task 2). `start` is
+   * the box in frame fractions at mousedown, measured off the DOM. */
+  const rectDragRef = useRef<{
+    sceneId: string;
+    handle: BoxHandle;
+    x: number;
+    y: number;
+    dx: number;
+    dy: number;
+    start: GraphicRect;
+  } | null>(null);
+  const rectRafRef = useRef(0);
+  /** State (not just the ref) so the safe-area guide re-renders during it. */
+  const [rectDragging, setRectDragging] = useState(false);
   /** An in-progress caption word retype (PLAN Task 7, scope (a)). */
   const [captionEdit, setCaptionEdit] = useState<{
     index: number;
@@ -240,6 +325,24 @@ export const Overlay: React.FC<OverlayProps> = ({
     });
     return result;
   };
+
+  /**
+   * The canvas's page-px box. The Player letterboxes its canvas centred
+   * inside its container, so the origin is the container centre minus half
+   * the scaled composition; `getScale()` is the authoritative size factor
+   * (the same reasoning as `pageToComposition` below).
+   */
+  const canvasBox = useCallback(() => {
+    const stage = stageRef.current;
+    const scale = playerRef.current?.getScale();
+    const host =
+      stage?.querySelector(".__remotion-player")?.getBoundingClientRect() ??
+      stage?.getBoundingClientRect();
+    if (!host || !scale || scale <= 0) return null;
+    const w = settings.width * scale;
+    const h = settings.height * scale;
+    return { left: host.left + (host.width - w) / 2, top: host.top + (host.height - h) / 2, w, h };
+  }, [stageRef, playerRef, settings]);
 
   // Re-measure whenever the selection changes or the frame advances — the
   // Player re-renders on every frame, so the box must track it live. Gated on
@@ -332,6 +435,39 @@ export const Overlay: React.FC<OverlayProps> = ({
         setDragOffset({ dx: 0, dy: 0 });
         return;
       }
+      // A press on a BOX HANDLE (R11 Task 2) transforms the graphic slot.
+      // Checked on the raw topmost target, before the hit walk — the walk
+      // would disable the handle and drill straight past it. The handles
+      // only render for a scene-level selection of a graphic cue, so the
+      // guard here is just "is one under the pointer".
+      const handleEl =
+        e.target instanceof Element ? e.target.closest<HTMLElement>("[data-box-handle]") : null;
+      const handleSel = selectionRef.current;
+      if (handleEl && handleSel && !handleSel.elementId) {
+        const node = stage.querySelector<HTMLElement>(
+          `[data-edit-scene="${handleSel.sceneId}"]`,
+        );
+        const canvas = canvasBox();
+        if (node && canvas) {
+          const r = node.getBoundingClientRect();
+          rectDragRef.current = {
+            sceneId: handleSel.sceneId,
+            handle: handleEl.dataset.boxHandle as BoxHandle,
+            x: e.clientX,
+            y: e.clientY,
+            dx: 0,
+            dy: 0,
+            start: {
+              x: (r.left - canvas.left) / canvas.w,
+              y: (r.top - canvas.top) / canvas.h,
+              w: r.width / canvas.w,
+              h: r.height / canvas.h,
+            },
+          };
+          setRectDragging(true);
+        }
+        return;
+      }
       const el = elementBelow(e.clientX, e.clientY);
       const hit = findEditableFrom(el);
       if (!hit) {
@@ -373,7 +509,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("mousedown", onWindowMouseDown);
     return () => window.removeEventListener("mousedown", onWindowMouseDown);
-  }, [stageRef, select, editingText, edits]);
+  }, [stageRef, select, editingText, edits, canvasBox]);
 
   useEffect(() => {
     // Page px → composition px. The factor comes from the Player's own
@@ -397,7 +533,9 @@ export const Overlay: React.FC<OverlayProps> = ({
       // never the style-juggling hit walk, which is for presses only.
       const stage = stageRef.current;
       if (stage) {
-        if (videoDragRef.current) {
+        if (rectDragRef.current) {
+          // A handle drag: the handle's own cursor is right; leave it be.
+        } else if (videoDragRef.current) {
           stage.style.cursor = "grabbing";
         } else {
           const t = e.target instanceof Element ? e.target : null;
@@ -410,6 +548,27 @@ export const Overlay: React.FC<OverlayProps> = ({
             e.clientY < stage.getBoundingClientRect().bottom - PLAYER_CONTROLS_STRIP_PX;
           stage.style.cursor = overVideo ? "grab" : "";
         }
+      }
+      const rectDrag = rectDragRef.current;
+      if (rectDrag) {
+        rectDrag.dx = e.clientX - rectDrag.x;
+        rectDrag.dy = e.clientY - rectDrag.y;
+        if (!rectRafRef.current) {
+          rectRafRef.current = requestAnimationFrame(() => {
+            rectRafRef.current = 0;
+            const drag = rectDragRef.current;
+            const canvas = canvasBox();
+            if (!drag || !canvas) return;
+            // Page px → frame FRACTIONS (the rect's own unit). Like the
+            // video pan there is NO compensateEdits division — the slot
+            // lives outside the fit-scaled wrapper.
+            const next = clampGraphicRect(
+              applyBoxHandle(drag.start, drag.handle, drag.dx / canvas.w, drag.dy / canvas.h),
+            );
+            onGraphicPreview({ sceneId: drag.sceneId, rect: next });
+          });
+        }
+        return;
       }
       const videoDrag = videoDragRef.current;
       if (videoDrag) {
@@ -447,6 +606,34 @@ export const Overlay: React.FC<OverlayProps> = ({
       setDragOffset({ dx: drag.dx, dy: drag.dy });
     };
     const onUp = () => {
+      const rectDrag = rectDragRef.current;
+      if (rectDrag) {
+        rectDragRef.current = null;
+        setRectDragging(false);
+        if (rectRafRef.current) {
+          cancelAnimationFrame(rectRafRef.current);
+          rectRafRef.current = 0;
+        }
+        if (rectDrag.dx !== 0 || rectDrag.dy !== 0) {
+          const canvas = canvasBox();
+          if (canvas) {
+            // ONE patch per gesture — one undo step, like every other drag.
+            edits.patchGraphicRect(
+              rectDrag.sceneId,
+              clampGraphicRect(
+                applyBoxHandle(
+                  rectDrag.start,
+                  rectDrag.handle,
+                  rectDrag.dx / canvas.w,
+                  rectDrag.dy / canvas.h,
+                ),
+              ),
+            );
+          }
+        }
+        onGraphicPreview(null);
+        return;
+      }
       const videoDrag = videoDragRef.current;
       if (videoDrag) {
         videoDragRef.current = null;
@@ -493,7 +680,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [edits, stageRef, settings, playerRef, onVideoPreview]);
+  }, [edits, stageRef, settings, playerRef, onVideoPreview, onGraphicPreview, canvasBox]);
 
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -669,7 +856,7 @@ export const Overlay: React.FC<OverlayProps> = ({
         pointerEvents: "none",
       }}
     >
-      {dragOffset.dx !== 0 || dragOffset.dy !== 0 ? (
+      {dragOffset.dx !== 0 || dragOffset.dy !== 0 || rectDragging ? (
         // The platform chrome insets, shown ONLY while a drag is in progress
         // (PLAN Task 4): an element dragged under the invisible safe area
         // looks like it simply vanished. Drawn from the exported SAFE_AREA —
@@ -728,6 +915,27 @@ export const Overlay: React.FC<OverlayProps> = ({
             >
               {selection.elementId}
             </div>
+          ) : null}
+          {/* Transform handles (R11 Task 2): scene-level selection of a cue
+              that actually DRAWS a graphic — the box is measured off its
+              `data-edit-scene` node, which SceneLayer only renders when the
+              layout has a slot, so full-bleed cues and plain takes (which
+              draw no graphic) never grow handles the feature can't honour.
+              The box BODY stays click-through (the hit walk sees through
+              it), or element selection inside the box breaks — so moving is
+              a titlebar-style strip along the top edge, not the whole body. */}
+          {!selection.elementId && cue && cue.kind !== "plain" && editingText === null ? (
+            <>
+              <div data-box-handle="move" data-testid="box-handle-move" style={moveStrip} />
+              {(["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const).map((h) => (
+                <div
+                  key={h}
+                  data-box-handle={h}
+                  data-testid={`box-handle-${h}`}
+                  style={{ ...boxHandleBase, ...HANDLE_POS[h] }}
+                />
+              ))}
+            </>
           ) : null}
         </div>
       ) : null}

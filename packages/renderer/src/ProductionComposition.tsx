@@ -25,7 +25,7 @@ import {
  * come from the SAME constant the stage lays out against, or the guide
  * drifts from the geometry it claims to show.
  */
-export { SAFE_AREA } from "@ossclip/scenes";
+export { SAFE_AREA, clampGraphicRect, layoutSlots } from "@ossclip/scenes";
 
 export interface ProductionCompProps {
   /** File name inside the render's public dir (or an absolute http(s) URL). */

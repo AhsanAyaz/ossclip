@@ -285,6 +285,31 @@ export const SAFE_RECT: Rect = {
   h: 1 - SAFE_AREA.top - SAFE_AREA.bottom,
 };
 
+/** Floors for a hand-set graphic box — match `SceneOverrideSchema.graphicRect`. */
+const GRAPHIC_RECT_MIN_W = 0.08;
+const GRAPHIC_RECT_MIN_H = 0.05;
+
+/**
+ * Clamp a hand-set graphic rect into `SAFE_RECT` with the minimum size
+ * enforced (PLAN 2026-07-31 Task 2). Used in BOTH places: the editor while a
+ * handle drag previews, and `SceneLayer` defensively at draw time — so a
+ * hand-edited `overrides.json` can't push a graphic under the platform
+ * chrome. Same invariant `stage.test.ts` pins for every layout's own slot.
+ */
+export function clampGraphicRect(rect: Rect): Rect {
+  // Epsilon-tolerant: SAFE_RECT's bounds are float sums (1 - 0.04 - 0.16 =
+  // 0.79999…), and a layout slot that is EXACTLY 0.8 wide must clamp to
+  // itself, not to the representation noise.
+  const EPS = 1e-9;
+  const clamp = (v: number, lo: number, hi: number): number =>
+    v < lo - EPS ? lo : v > hi + EPS ? hi : v;
+  const w = clamp(rect.w, GRAPHIC_RECT_MIN_W, SAFE_RECT.w);
+  const h = clamp(rect.h, GRAPHIC_RECT_MIN_H, SAFE_RECT.h);
+  const x = clamp(rect.x, SAFE_RECT.x, SAFE_RECT.x + SAFE_RECT.w - w);
+  const y = clamp(rect.y, SAFE_RECT.y, SAFE_RECT.y + SAFE_RECT.h - h);
+  return { x, y, w, h };
+}
+
 /**
  * Where cover TEXT may actually go: the intersection of the two constraints.
  *

@@ -121,3 +121,25 @@ describe("delete a scene with a way back (PLAN 2026-07-30 Task C)", () => {
     expect(editReducer(s, { type: "restoreScene", sceneId: "scene-3" })).toBe(s);
   });
 });
+
+describe("graphic box editing (PLAN 2026-07-31 Task 2)", () => {
+  it("patchGraphicRect stores the rect; a layout swap clears it", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchGraphicRect", sceneId: "scene-0", rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.3 },
+    });
+    expect(s.doc.scenes["scene-0"]!.graphicRect).toEqual({ x: 0.1, y: 0.2, w: 0.5, h: 0.3 });
+    // The rect belongs to the OLD layout's slot — a swap must not let it
+    // silently keep winning over the new layout at render time.
+    s = editReducer(s, { type: "patchLayout", sceneId: "scene-0", layout: "graphic-only" });
+    expect(s.doc.scenes["scene-0"]!.graphicRect).toBeUndefined();
+    expect(s.doc.scenes["scene-0"]!.layout).toBe("graphic-only");
+  });
+
+  it("clearGraphicRect deletes the key via the reducer", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchGraphicRect", sceneId: "scene-0", rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.3 },
+    });
+    s = editReducer(s, { type: "clearGraphicRect", sceneId: "scene-0" });
+    expect("graphicRect" in s.doc.scenes["scene-0"]!).toBe(false);
+  });
+});

@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useVideoConfig } from "remotion";
 import type { SceneCue, Theme } from "@ossclip/core/browser";
-import { layoutSlots } from "./stage";
+import { clampGraphicRect, layoutSlots } from "./stage";
 import { fitScale } from "./fit";
 import { TitleCard } from "./components/TitleCard";
 import { StatCard } from "./components/StatCard";
@@ -38,9 +38,13 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         // `data-edit-scene` — the talking head IS the scene. The component/
         // props guards double as the type narrowing their optionality forces.
         if (cue.kind === "plain" || !cue.component || !cue.props) return null;
-        // A cue may carry its own rect when the source's burned-in text made
-        // the layout's slot unusable (FINDINGS §26).
-        const slot = cue.graphicRect ?? layoutSlots(cue.layout).graphic;
+        // A cue may carry its own rect — routed there by source-text
+        // avoidance (FINDINGS §26) or set by hand in the editor (R11 Task
+        // 2). Clamped defensively: a hand-edited overrides.json must not be
+        // able to push a graphic under the platform chrome.
+        const slot = cue.graphicRect
+          ? clampGraphicRect(cue.graphicRect)
+          : layoutSlots(cue.layout).graphic;
         if (!slot) return null;
         const Component = COMPONENTS[cue.component];
         const from = Math.round(cue.startSec * fps);

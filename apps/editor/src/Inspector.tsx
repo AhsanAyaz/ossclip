@@ -1,5 +1,6 @@
 import React from "react";
 import { LayoutSchema, SceneComponentIdSchema, type SceneCue, type Theme } from "@ossclip/core/browser";
+import { clampGraphicRect, layoutSlots } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
 import type { Selection, VideoPreview } from "./Overlay";
 
@@ -381,6 +382,42 @@ export const Inspector: React.FC<InspectorProps> = ({
             </button>
           ) : null}
         </div>
+        {(() => {
+          // Graphic box (R11 Task 2.10) — the precision fallback to the
+          // stage handles. The effective rect is the hand-set override, the
+          // routed rect the cue carries, or the layout's own slot; layouts
+          // with no slot (full-bleed) have no box to edit.
+          if (isPlain) return null;
+          const eff = cue.graphicRect ?? layoutSlots(cue.layout).graphic;
+          if (!eff) return null;
+          const boxPatch = (key: "x" | "y" | "w" | "h") => (v: number) =>
+            edits.patchGraphicRect(
+              selection.sceneId,
+              clampGraphicRect({ ...eff, [key]: v }),
+              `box:${selection.sceneId}:${key}`,
+            );
+          return (
+            <div style={section}>
+              <span style={label}>Graphic box</span>
+              <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+                Frame fractions — or drag the handles on the stage.
+              </div>
+              <NumberField id="box-x" value={eff.x} min={0} max={1} onCommit={boxPatch("x")} />
+              <NumberField id="box-y" value={eff.y} min={0} max={1} onCommit={boxPatch("y")} />
+              <NumberField id="box-w" value={eff.w} min={0.08} max={1} onCommit={boxPatch("w")} />
+              <NumberField id="box-h" value={eff.h} min={0.05} max={1} onCommit={boxPatch("h")} />
+              {edits.doc.scenes[selection.sceneId]?.graphicRect ? (
+                <button
+                  data-testid="reset-box"
+                  style={button}
+                  onClick={() => edits.clearGraphicRect(selection.sceneId)}
+                >
+                  Reset box
+                </button>
+              ) : null}
+            </div>
+          );
+        })()}
         <div style={section}>
           <span style={label}>Timing</span>
           {/* The resolved window ALWAYS shows (FINDINGS §44) — an unpinned cue

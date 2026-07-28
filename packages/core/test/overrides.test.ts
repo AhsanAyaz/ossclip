@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   OverrideDocSchema,
   applyOverrides,
+  clearGraphicRect,
   dropHiddenCues,
   clearElementTransform,
   clearTiming,
@@ -326,5 +327,43 @@ describe("dropHiddenCues (PLAN 2026-07-30 Task C)", () => {
     // hiding never silently eats the entry.
     const { orphans } = applyOverrides([], doc);
     expect(orphans).toEqual(["scene-3"]);
+  });
+});
+
+describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
+  it("round-trips through the schema and lands on the cue", () => {
+    const rect = { x: 0.1, y: 0.2, w: 0.5, h: 0.3 };
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { graphicRect: rect } } });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.graphicRect).toEqual(rect);
+  });
+
+  it("WINS over a rect routing baked into the base cue", () => {
+    const routed = { ...cue("scene-0"), graphicRect: { x: 0.05, y: 0.6, w: 0.7, h: 0.2 } };
+    const hand = { x: 0.1, y: 0.15, w: 0.6, h: 0.4 };
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { graphicRect: hand } } });
+    const { cues } = applyOverrides([routed], doc);
+    expect(cues[0]!.graphicRect).toEqual(hand);
+  });
+
+  it("rejects an off-frame or sub-minimum rect — hand-editable data is validated", () => {
+    expect(
+      OverrideDocSchema.safeParse({ scenes: { s: { graphicRect: { x: -0.1, y: 0, w: 0.5, h: 0.3 } } } })
+        .success,
+    ).toBe(false);
+    expect(
+      OverrideDocSchema.safeParse({ scenes: { s: { graphicRect: { x: 0, y: 0, w: 0.01, h: 0.3 } } } })
+        .success,
+    ).toBe(false);
+  });
+
+  it("clearGraphicRect DELETES the key", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { graphicRect: { x: 0.1, y: 0.2, w: 0.5, h: 0.3 } } },
+    });
+    const cleared = clearGraphicRect(doc, "scene-0");
+    expect("graphicRect" in cleared.scenes["scene-0"]!).toBe(false);
+    // Idempotent on a scene without one.
+    expect(clearGraphicRect(cleared, "scene-0")).toBe(cleared);
   });
 });

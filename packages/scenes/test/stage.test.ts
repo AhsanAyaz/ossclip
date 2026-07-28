@@ -17,11 +17,13 @@ import {
   avoidSlicingText,
   backdropOpacityAt,
   captionAnchorAt,
+  clampGraphicRect,
   headFitsSlot,
   layoutSlots,
   objectPosYFor,
   videoSlotAt,
 } from "../src/stage";
+import { captionAnchorAvoiding } from "../src/source-fit";
 import { LayoutSchema, SCENE_REGISTRY, SceneComponentIdSchema, ZOOM_MAX_SCALE } from "@ossclip/core";
 
 const cue = (layout: SceneCue["layout"], startSec: number, endSec: number): SceneCue => ({
@@ -500,5 +502,44 @@ describe("plain cues are invisible to the stage morph (PLAN 2026-07-30 Task A)",
     const graphicPip = cue("pip-bubble", 5, 12);
     expect(videoSlotAt([asPip], 8)).toEqual(videoSlotAt([graphicPip], 8));
     expect(backdropOpacityAt([asPip], 8)).toBe(backdropOpacityAt([graphicPip], 8));
+  });
+});
+
+describe("clampGraphicRect (PLAN 2026-07-31 Task 2)", () => {
+  it("keeps a hand-set rect inside SAFE_RECT with the minimum size enforced", () => {
+    const wild = clampGraphicRect({ x: -0.5, y: 1.2, w: 3, h: 0.001 });
+    expect(wild.x).toBeGreaterThanOrEqual(SAFE_RECT.x);
+    expect(wild.y).toBeGreaterThanOrEqual(SAFE_RECT.y);
+    expect(wild.x + wild.w).toBeLessThanOrEqual(SAFE_RECT.x + SAFE_RECT.w + 1e-9);
+    expect(wild.y + wild.h).toBeLessThanOrEqual(SAFE_RECT.y + SAFE_RECT.h + 1e-9);
+    expect(wild.w).toBeGreaterThanOrEqual(0.08);
+    expect(wild.h).toBeGreaterThanOrEqual(0.05);
+  });
+
+  it("is the identity on a rect already inside — every layout's own slot", () => {
+    for (const layout of ["video-top", "pip-bubble", "graphic-only", "blurred-behind"] as const) {
+      const slot = layoutSlots(layout).graphic;
+      if (!slot) continue;
+      expect(clampGraphicRect(slot)).toEqual(slot);
+    }
+  });
+});
+
+describe("caption anchor honours a hand-moved rect on a CLEAN source (R11 Task 2b)", () => {
+  it("returns the layout anchor when the rect is the default and there are no regions", () => {
+    expect(captionAnchorAvoiding("video-top", [])).toBe(layoutSlots("video-top").captionAnchor);
+    expect(captionAnchorAvoiding("blurred-behind", [], layoutSlots("blurred-behind").graphic)).toBe(
+      layoutSlots("blurred-behind").captionAnchor,
+    );
+  });
+
+  it("moves the anchor off a rect dragged onto it, with zero source-text regions", () => {
+    const base = layoutSlots("blurred-behind").captionAnchor;
+    // Park the graphic squarely on the default caption anchor.
+    const onTop = { x: 0.1, y: base - 0.1, w: 0.7, h: 0.2 };
+    const moved = captionAnchorAvoiding("blurred-behind", [], onTop);
+    expect(moved).not.toBe(base);
+    // The moved anchor's band is clear of the rect.
+    expect(moved < onTop.y || moved > onTop.y + onTop.h).toBe(true);
   });
 });
