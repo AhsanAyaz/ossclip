@@ -117,6 +117,17 @@ Prices are a built-in per-family assumption. Override for your account in `~/.os
 }
 ```
 
+Provider keys are read from the environment, and ossclip loads `.env` files before it picks a provider — first hit wins per key, and a real environment variable always beats a file:
+
+```
+$OSSCLIP_ENV_FILE   →   <cwd>/.env   →   ~/.ossclip/.env
+```
+
+```sh
+# .env  (gitignored)
+GEMINI_API_KEY=…
+```
+
 Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`.
 
 ## What it does to your footage

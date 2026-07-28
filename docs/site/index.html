@@ -251,6 +251,7 @@ pnpm ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
   "browserExecutable": "/path/to/chrome",
   "pricing": { "claude-opus-5": { "inputPerMTok": 15, "outputPerMTok": 75 } }
 }</code></pre>
+<p><strong>Provider keys</strong> come from the environment, and ossclip loads <code>.env</code> files before choosing a provider — first hit wins per key, a real environment variable always beats a file: <code>$OSSCLIP_ENV_FILE</code> → <code>&lt;cwd&gt;/.env</code> → <code>~/.ossclip/.env</code>.</p>
 <p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>.</p>
 
 <div class="foot">

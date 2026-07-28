@@ -5,7 +5,12 @@ import { Command } from "commander";
 import { z } from "zod/v4";
 import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
+import { loadEnvFiles } from "./env";
 import { produce } from "./produce";
+
+// Before anything reads a provider key (R16 §77) — including the auto-detect
+// order in `defaultProviderName`, which decides which model runs.
+const envFiles = loadEnvFiles();
 
 const program = new Command();
 
@@ -74,6 +79,9 @@ program
   .option("--no-cover", "skip the cover image written beside the video")
   .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
   .action(async (input: string, opts) => {
+    // Say which keys came from a file — never the keys themselves. A run that
+    // picks a provider from a `.env` should say where that came from.
+    if (envFiles.length > 0) console.log(`▸ env: ${envFiles.join(", ")}`);
     const cleanup = CleanupLevelSchema.parse(opts.cleanup);
     const provider = opts.llm
       ? z.enum(["claude", "claude-cli", "gemini", "mock"]).parse(opts.llm)
