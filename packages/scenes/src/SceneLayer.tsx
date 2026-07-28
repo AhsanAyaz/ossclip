@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Sequence, useVideoConfig } from "remotion";
+import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { SceneCue, Theme } from "@ossclip/core/browser";
 import { graphicSlotFor } from "./stage";
 import { fitScale } from "./fit";
@@ -28,6 +28,44 @@ const COMPONENTS: Record<
   ChatMock,
   ScreenshotFrame,
   BulletList,
+};
+
+/** Seconds a graphic spends leaving. Matches LAYOUT_TRANSITION_SEC's order of
+ * magnitude so the graphic departs WITH the video slot's morph — the reported
+ * failure was the split view closing first and the card then blinking out. */
+const EXIT_SEC = 0.3;
+
+/**
+ * Uniform exit for every graphic (R16 §69). Components own their ENTRANCES
+ * (staggered rises, per element); the exit lives here at the layer because it
+ * is the cue's END doing the animating, and every component leaving the same
+ * way is what makes the cut read as designed. Inside the cue's Sequence, so
+ * frame 0 is the cue's own start.
+ */
+const ExitFade: React.FC<{ durationInFrames: number; children: React.ReactNode }> = ({
+  durationInFrames,
+  children,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const remaining = (durationInFrames - frame) / fps;
+  const p = Math.min(1, Math.max(0, remaining / EXIT_SEC));
+  const ease = p * (2 - p);
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: ease,
+        transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
+      }}
+    >
+      {children}
+    </div>
+  );
 };
 
 /** Renders each cue's graphic into its layout's graphic slot, scene-local time. */
@@ -81,18 +119,20 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                 overflow: "hidden",
               }}
             >
-              <div style={{ width: slotW / scale, transform: `scale(${scale})` }}>
-                <Component
-                  props={cue.props}
-                  theme={theme}
-                  widthPx={slotW / scale}
-                  heightPx={slotH / scale}
-                  // Stored nudges are composition px; this wrapper scales by
-                  // `scale`, so they are counter-divided here or a drag lands
-                  // `scale`× past where it was dropped (PLAN Task 1).
-                  edits={compensateEdits(cue.elements, scale)}
-                />
-              </div>
+              <ExitFade durationInFrames={durationInFrames}>
+                <div style={{ width: slotW / scale, transform: `scale(${scale})` }}>
+                  <Component
+                    props={cue.props}
+                    theme={theme}
+                    widthPx={slotW / scale}
+                    heightPx={slotH / scale}
+                    // Stored nudges are composition px; this wrapper scales by
+                    // `scale`, so they are counter-divided here or a drag lands
+                    // `scale`× past where it was dropped (PLAN Task 1).
+                    edits={compensateEdits(cue.elements, scale)}
+                  />
+                </div>
+              </ExitFade>
             </div>
           </Sequence>
         );

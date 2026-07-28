@@ -865,6 +865,28 @@ export const Overlay: React.FC<OverlayProps> = ({
         (active instanceof HTMLElement && active.isContentEditable)
       );
     };
+    /**
+     * Only TEXT ENTRY holds onto playback keys (R16 §70). A slider you just
+     * scrubbed, a select, a checkbox — none of them "wants" a space, but
+     * they kept focus and swallowed it, so play/pause went dead until you
+     * clicked away. Those controls now YIELD: the key blurs them and drives
+     * the transport. A text field keeps every key — a space there is a
+     * space. (Plain arrows still respect ALL inputs: arrows on a focused
+     * slider adjust the slider, which is what sliders are for.)
+     */
+    const isTextEntry = (): boolean => {
+      const active = document.activeElement;
+      if (active instanceof HTMLTextAreaElement) return true;
+      if (active instanceof HTMLElement && active.isContentEditable) return true;
+      return (
+        active instanceof HTMLInputElement &&
+        !["range", "checkbox", "radio", "button"].includes(active.type)
+      );
+    };
+    const yieldFocus = (): void => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && !isTextEntry()) active.blur();
+    };
     const onKeyDown = (e: KeyboardEvent) => {
       if (captionEdit !== null) return;
       const mod = e.metaKey || e.ctrlKey;
@@ -881,9 +903,10 @@ export const Overlay: React.FC<OverlayProps> = ({
         onSave();
       } else if (e.key === " " && !mod) {
         // SPACE toggles playback globally (PLAN Task 5) — with two guards.
-        // Typing contexts win: a space in an inline edit (the early return
-        // above) or an inspector field must insert a space, not toggle.
-        if (isTypingContext()) return;
+        // TEXT ENTRY wins: a space in an inline edit (the early return
+        // above) or an inspector text field must insert a space. Everything
+        // else — a slider, a select — yields (§70): blur, then toggle.
+        if (isTextEntry()) return;
         // And the Player's own space handling wins: with focus on a button
         // inside the stage (its play button — the Player focuses it for
         // exactly this), the native button activation already toggles, and
@@ -896,20 +919,33 @@ export const Overlay: React.FC<OverlayProps> = ({
         ) {
           return;
         }
+        yieldFocus();
         e.preventDefault();
         playerRef.current?.toggle();
       } else if (!mod && ["j", "k", "l"].includes(e.key.toLowerCase())) {
-        // J/K/L transport (PLAN Task 2), same typing guards as SPACE. The
+        // J/K/L transport (PLAN Task 2), same yield rule as SPACE (§70). The
         // ladder itself lives in transport.ts; App owns the side effects.
-        if (isTypingContext()) return;
+        if (isTextEntry()) return;
+        yieldFocus();
         e.preventDefault();
         onTransport(e.key.toUpperCase() as "J" | "K" | "L");
+      } else if (!mod && !e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        // Plain arrows step ONE FRAME (R16 §71), selection or no selection —
+        // ⌥+arrows select scenes and ⌘+arrows jump scene starts; the bare
+        // key is the fine-grained playhead nudge every editor has. Sliders
+        // keep their arrows: adjusting a focused range input is what arrows
+        // are FOR there, so the full typing guard applies here.
+        if (isTypingContext()) return;
+        e.preventDefault();
+        const player = playerRef.current;
+        if (!player) return;
+        player.seekTo(Math.max(0, player.getCurrentFrame() + (e.key === "ArrowRight" ? 1 : -1)));
       } else if (mod && e.key.toLowerCase() === "b") {
         // Split the scene under the playhead (R16 §61) — the editor's ⌘B.
         // Stored as an absolute output time in the override doc, applied
         // after the plain fill, so scenes and takes split alike and undo
         // takes it back like any other edit.
-        if (isTypingContext()) return;
+        if (isTextEntry()) return;
         e.preventDefault();
         const player = playerRef.current;
         if (!player) return;
@@ -924,7 +960,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       } else if (!mod && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         // ⌥+arrows move the SELECTION to the neighbouring scene (R16 §62) —
         // the playhead stays put; this is "select", not "navigate".
-        if (isTypingContext()) return;
+        if (isTextEntry()) return;
         const sel = selectionRef.current;
         if (!sel) return;
         const idx = cues.findIndex((c) => c.id === sel.sceneId);
@@ -934,9 +970,11 @@ export const Overlay: React.FC<OverlayProps> = ({
         select({ sceneId: next.id, elementId: null });
       } else if (mod && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         // ⌘+arrows move the PLAYHEAD to the neighbouring scene's start (R16
-        // §62) — as asked: the beginning of the previous / next scene.
-        // preventDefault also keeps the browser's ⌘← history-back away.
-        if (isTypingContext()) return;
+        // §62) — as asked: the beginning of the previous / next scene — AND
+        // select it (§72): the cursor is there, the scene is selected, and
+        // play starts from exactly that point. preventDefault also keeps
+        // the browser's ⌘← history-back away.
+        if (isTextEntry()) return;
         e.preventDefault();
         const player = playerRef.current;
         if (!player) return;
@@ -945,6 +983,7 @@ export const Overlay: React.FC<OverlayProps> = ({
         const target = cues[(idx === -1 ? 0 : idx) + (e.key === "ArrowRight" ? 1 : -1)];
         if (!target) return;
         player.seekTo(Math.round(target.startSec * settings.fps));
+        select({ sceneId: target.id, elementId: null });
       } else if (!mod && !e.altKey && e.key === "?") {
         // The keybinds reference (R16 §63).
         if (isTypingContext()) return;

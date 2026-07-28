@@ -723,3 +723,23 @@ Audio: "they can't really implement software architecture" — the producer stru
 ## 67. NEW COMPONENT — BulletList, because enumerations kept getting miscast
 
 Audio: "what you need is AI harness, … context engineering, … prompt engineering" — a three-item list bent into a title-plus-strike card that struck a thing the speaker RECOMMENDED. No component said "list", so the producer improvised one badly. `BulletList`: 2–5 nowrap bullet rows with an optional kicker title, accent ▸ glyphs, staggered entrance; self-fitting like the reveal (`bulletMetrics` solves type against both slot budgets — the §46/§23 lessons applied from birth, pinned by the fill-contract tests at sparse and schema-max content). Items are first-class editable elements (`item-N` joins the array-backed id family), and the registry steers the producer: use this for enumerations instead of bending TitleCard or StrikethroughReveal around them. Verified with a real render frame.
+
+## 68. A split half fell back to default caption style
+
+Reported: split a take whose captions were scaled down — the right half rendered at the default placement and scale. Root cause: halves get their overrides by ID, and the right half's `id@ms` has no entry; a take's edits only land in the post-split override pass, so they never reached it. Fixed in `applyOverrides` itself with `effectiveOverride`: a half resolves its own entry LAYERED OVER its split root's — everything inherits except `timing` and `hidden`, which describe the whole original scene, not a piece of it; the half's own keys win field-wise (nudging one field keeps the rest inherited). Two latent timing bugs fell to the same pass: the post-split pass used to re-apply a pinned scene's ORIGINAL window to its first half (undoing the cut), and to undo `reclampPinnedTiming`'s adjustments — `timing` now only applies to a cue that isn't already pinned.
+
+## 69. Graphics exited abruptly
+
+Entrances were designed (staggered rises); exits were a hard unmount — the split view would morph closed and the card then blink out. Every graphic now leaves through a uniform 0.3s fade-and-settle (`ExitFade`, at the SceneLayer so all components exit the same way), timed to the layout morph so the card departs WITH the slot instead of after it.
+
+## 70. Playback keys died after touching a control
+
+A freshly-scrubbed slider (or a select, checkbox) kept focus and swallowed SPACE/J/K/L. Now only TEXT ENTRY holds onto keys; every other control YIELDS — the key blurs it and drives the transport. Plain arrows still respect all inputs (arrows on a focused slider adjust the slider — that is what they are for).
+
+## 71. Plain arrows step one frame
+
+←/→ nudge the playhead a frame at a time, selection or none — ⌥+arrows select scenes, ⌘+arrows jump scene starts, the bare key is the fine-grained scrub every editor has.
+
+## 72. The view follows the cursor — a general principle
+
+The author's rule, applied everywhere it can matter: whenever the playhead leaves the timeline's visible window (playback at zoom, a ⌘-arrow jump, a frame step) the view scrolls to it; a block selected from the keyboard scrolls into view; the transcript's highlighted word follows playback (`nearest`, so reading elsewhere is only interrupted when playback truly moved on). And ⌘+arrows now SELECT the scene they jump to — cursor there, scene selected, play starts from that point.

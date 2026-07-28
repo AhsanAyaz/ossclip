@@ -13,7 +13,8 @@ const SECTIONS: Array<{ title: string; rows: Array<[keys: string, action: string
     rows: [
       ["space", "play / pause"],
       ["J / K / L", "reverse · pause · forward (tap again to speed up)"],
-      ["⌘/ctrl + ← / →", "jump to previous / next scene start"],
+      ["← / →", "step one frame back / forward"],
+      ["⌘/ctrl + ← / →", "jump to and select the previous / next scene"],
     ],
   },
   {

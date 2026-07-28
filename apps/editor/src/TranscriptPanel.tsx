@@ -33,6 +33,7 @@ export const TranscriptPanel: React.FC<{
   // recomputed on frameupdate but committed to state solely when it changes,
   // or the panel would re-render at the frame rate.
   const [currentIndex, setCurrentIndex] = useState<number | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
 
   // Flatten once per lines change: global word index → texts + timing.
   const words = useMemo(() => {
@@ -79,6 +80,17 @@ export const TranscriptPanel: React.FC<{
     return () => player.removeEventListener("frameupdate", onFrame);
   }, [playerRef, fps, words]);
 
+  // The view follows the cursor (R16 §72): while playback reads through the
+  // transcript, the highlighted word stays in view. `nearest` scrolls only
+  // when it actually left the pane, so reading elsewhere isn't yanked around
+  // unless playback truly moved on.
+  useEffect(() => {
+    if (currentIndex === null) return;
+    bodyRef.current
+      ?.querySelector<HTMLElement>(`[data-testid="transcript-word-${currentIndex}"]`)
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [currentIndex]);
+
   const q = query.trim().toLowerCase();
   const matches = useMemo(
     () => (q ? new Set(words.filter((w) => w.live.toLowerCase().includes(q)).map((w) => w.index)) : null),
@@ -114,7 +126,7 @@ export const TranscriptPanel: React.FC<{
           </div>
         ) : null}
       </div>
-      <div style={body} data-testid="transcript-body">
+      <div style={body} data-testid="transcript-body" ref={bodyRef}>
         {words.map((w, i) => (
           <React.Fragment key={w.index}>
             {/* A REAL space between word spans, not a margin: margins are

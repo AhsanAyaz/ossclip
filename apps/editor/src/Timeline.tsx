@@ -180,6 +180,36 @@ export const Timeline: React.FC<TimelineProps> = ({
     return () => player.removeEventListener("frameupdate", onFrame);
   }, [playerRef]);
 
+  // The view follows the cursor (R16 §72) — the author's stated GENERAL
+  // principle: whenever the playhead leaves the visible window (playback at
+  // zoom, a ⌘-arrow jump, a frame step), the timeline scrolls to it. Landing
+  // at 10% from the left edge keeps what's coming next on screen. Gestures
+  // that move the view under a stationary pointer (edge paging) re-seek to
+  // the pointer, so the playhead is back in view before this could fight.
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || durationSec <= 0) return;
+    if (scroller.scrollWidth <= scroller.clientWidth) return;
+    const x = (frame / fps / durationSec) * scroller.scrollWidth;
+    const { scrollLeft, clientWidth } = scroller;
+    if (x < scrollLeft || x > scrollLeft + clientWidth) {
+      scroller.scrollLeft = Math.max(
+        0,
+        Math.min(scroller.scrollWidth - clientWidth, x - clientWidth * 0.1),
+      );
+    }
+  }, [frame, fps, durationSec]);
+
+  // Same principle for SELECTION: a block selected from the keyboard
+  // (⌥/⌘+arrows) may live outside the zoomed view — bring it in, minimally.
+  useEffect(() => {
+    if (!selection) return;
+    const block = scrollerRef.current?.querySelector<HTMLElement>(
+      `[data-testid="timeline-block-${selection.sceneId}"]`,
+    );
+    block?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+  }, [selection]);
+
   const seekTrack = useCallback(
     (clientX: number) => {
       const track = trackRef.current;

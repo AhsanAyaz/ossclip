@@ -912,12 +912,34 @@ test("⌥+arrows select the neighbour scene; ⌘+arrows jump to scene starts (R1
   const fracBefore = await playheadFrac(page);
   expect(fracBefore).toBeGreaterThan(0.02);
 
-  // ⌘→ jumps the PLAYHEAD to the next scene's beginning; ⌘← back to the
-  // previous one's.
+  // ⌘→ jumps the PLAYHEAD to the next scene's beginning AND selects it
+  // (§72) — cursor there, scene selected, play starts from that point.
   await page.keyboard.press("Meta+ArrowRight");
   await expect.poll(() => playheadFrac(page)).toBeGreaterThan(5.0 / 31.92458 - 0.01);
+  await expect(page.locator("text=Take").first()).toBeVisible();
   await page.keyboard.press("Meta+ArrowLeft");
   await expect.poll(() => playheadFrac(page)).toBeLessThan(0.02);
+  await expect(page.locator("text=Scene").first()).toBeVisible();
+});
+
+test("the view follows the cursor out of the viewport (R16 §72)", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  // Zoom to 4× and park at the far left, then drive the cursor rightward by
+  // keyboard alone — the timeline must scroll to keep it in view.
+  await page.getByTestId("zoom-in").click();
+  await page.getByTestId("zoom-in").click();
+  const scroller = page.getByTestId("timeline-scroller");
+  await scroller.evaluate((el) => {
+    el.scrollLeft = 0;
+  });
+  await page.getByTestId("timeline-block-scene-0").click();
+  for (let i = 0; i < 3; i++) await page.keyboard.press("Meta+ArrowRight");
+  await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+  const sb = (await scroller.boundingBox())!;
+  const head = (await page.getByTestId("playhead").boundingBox())!;
+  expect(head.x).toBeGreaterThanOrEqual(sb.x - 2);
+  expect(head.x).toBeLessThanOrEqual(sb.x + sb.width + 2);
 });
 
 test("caption scale is a per-scene control like every other scale (R16 §64)", async ({
@@ -1004,6 +1026,78 @@ test("BulletList: an enumeration component, items editable from the panel (R16 �
     data: cleanDoc || JSON.stringify({ theme: {}, scenes: {}, captions: {} }),
     headers: { "content-type": "application/json" },
   });
+});
+
+test("a split half inherits the original scene's edits (R16 §68)", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  // The reported flow: style a take's captions, split it, and the RIGHT half
+  // used to fall back to default caption placement and scale. nth(1): the
+  // FIRST take is the 0.09s sliver before scene-0 — too thin to split and
+  // sitting under the parked playhead's grab zone.
+  await page.locator('[data-testid^="timeline-block-take-"]').nth(1).click();
+  const scaleSlider = page.getByTestId("caption-scale-slider");
+  await scaleSlider.focus();
+  await page.keyboard.press("End"); // 3×
+  const ySlider = page.getByTestId("caption-y-slider");
+  await ySlider.focus();
+  await page.keyboard.press("Home"); // 0.05
+
+  // ⌘B works with the slider still focused (§70's yield rule) — the
+  // playhead is already parked mid-take from the block click above.
+  const blocks = page.locator('[data-testid^="timeline-block-"]');
+  const before = await blocks.count();
+  await page.keyboard.press("Meta+b");
+  await expect(blocks).toHaveCount(before + 1);
+
+  // Select the RIGHT half (the @ms id) — its panel shows the inherited
+  // style, not the defaults.
+  await page.locator('[data-testid^="timeline-block-take-"][data-testid*="\\@"]').first().click();
+  await expect(page.getByTestId("caption-scale-slider")).toHaveValue("3");
+  await expect(page.getByTestId("caption-y-slider")).toHaveValue("0.05");
+  // Unsaved throughout — reloading elsewhere discards the experiment.
+});
+
+test("playback keys yield from controls, arrows step frames, graphics exit softly (R16 §69-71)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-0").click();
+
+  // §71: plain arrows nudge the playhead one frame — even with a scene
+  // selected (⌥/⌘+arrows own the bigger jumps).
+  const frac0 = await playheadFrac(page);
+  for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(frac0 + 0.003);
+  for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowLeft");
+  await expect.poll(async () => Math.abs((await playheadFrac(page)) - frac0)).toBeLessThan(0.002);
+
+  // §70: a freshly-scrubbed slider used to swallow SPACE. Now the key blurs
+  // the control and drives the transport.
+  await page.getByTestId("zoom-slider").focus();
+  await page.keyboard.press("Space");
+  await expect.poll(() => isPlaying(page)).toBe(true);
+  await page.keyboard.press("Space");
+  await expect.poll(() => isPlaying(page)).toBe(false);
+
+  // §69: near its end the graphic is mid-exit — faded, not blinking out
+  // after the layout has already moved on. Seek via the RULER: the scene's
+  // final 0.3s sits under the block's own resize handle, which swallows a
+  // block click there.
+  const ruler = (await page.getByTestId("ruler").boundingBox())!;
+  const seekTo = (t: number) =>
+    page.mouse.click(ruler.x + (t / 31.92458) * ruler.width, ruler.y + ruler.height / 2);
+  await seekTo(4.95); // scene-0 ends at 5.09 — inside the exit window
+  const fade = page.locator('[data-edit-scene="scene-0"] > div').first();
+  await expect
+    .poll(() => fade.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity)))
+    .toBeLessThan(0.85);
+  // …and mid-scene it is fully present.
+  await seekTo(2.5);
+  await expect
+    .poll(() => fade.evaluate((el) => Number.parseFloat(getComputedStyle(el).opacity)))
+    .toBeGreaterThan(0.99);
 });
 
 test("transcript wraps in place, and the pane is drag-resizable (R16 §65)", async ({
