@@ -478,6 +478,77 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
   });
 });
 
+describe("split halves inherit the original scene's edits (R16 §68)", () => {
+  const take = (id: string, startSec: number, endSec: number): SceneCue => ({
+    id,
+    kind: "plain",
+    layout: "full-bleed",
+    startSec,
+    endSec,
+  });
+
+  it("the reported case: a take's caption style reaches the RIGHT half", () => {
+    // Caption scale/position on a take only land in the post-split override
+    // pass — the right half's `id@ms` had no entry there, so it rendered at
+    // the defaults while the left half kept the user's style.
+    const doc = OverrideDocSchema.parse({
+      scenes: { "take-0": { captionScale: 0.5, captionY: 0.2, video: { scale: 0.8 } } },
+      splits: [4],
+    });
+    const halves = splitCues([take("take-0", 0, 10)], doc.splits);
+    const { cues } = applyOverrides(halves, doc);
+    for (const half of cues) {
+      expect(half.captionScale, half.id).toBe(0.5);
+      expect(half.captionY, half.id).toBe(0.2);
+      expect(half.video?.scale, half.id).toBe(0.8);
+    }
+  });
+
+  it("a half's OWN edits win key by key; the rest keeps inheriting", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: {
+        "take-0": { captionScale: 0.5, captionY: 0.2, video: { scale: 0.8 } },
+        "take-0@4000": { captionY: 0.85, video: { dy: 12 } },
+      },
+      splits: [4],
+    });
+    const { cues } = applyOverrides(splitCues([take("take-0", 0, 10)], doc.splits), doc);
+    const right = cues[1]!;
+    expect(right.captionY).toBe(0.85); // own
+    expect(right.captionScale).toBe(0.5); // inherited
+    // Record-shaped keys merge FIELD-wise: nudging dy must not drop the
+    // inherited zoom.
+    expect(right.video).toEqual({ scale: 0.8, dy: 12 });
+  });
+
+  it("timing and hidden are NOT inherited — they describe the whole scene", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "take-0": { timing: { startSec: 0, endSec: 10 }, hidden: true } },
+      splits: [4],
+    });
+    const { cues } = applyOverrides(splitCues([take("take-0", 0, 10)], doc.splits), doc);
+    const right = cues[1]!;
+    expect(right.startSec).toBe(4);
+    expect(right.pinned).toBeFalsy();
+    expect(dropHiddenCues([right], doc).hidden).toEqual([]);
+  });
+
+  it("splitting a PINNED scene: the second pass must not restore the full window", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { timing: { startSec: 0, endSec: 5 } } },
+      splits: [2],
+    });
+    // First pass pins, split cuts, second pass re-applies — and used to put
+    // the original endSec back on the first half, overlapping the second.
+    const { cues: pinned } = applyOverrides([cue("scene-0")], doc);
+    const halves = splitCues(pinned, doc.splits);
+    const { cues } = applyOverrides(halves, doc);
+    expect(cues[0]!.endSec).toBe(2);
+    expect(cues[1]!.startSec).toBe(2);
+    expect(cues[0]!.pinned).toBe(true);
+  });
+});
+
 describe("captionEditWas (R15 §59 — re-edit keeps the base guard)", () => {
   it("first edit stores what the caller saw; a re-edit keeps the ORIGINAL was", () => {
     expect(captionEditWas({}, 4, "helo")).toBe("helo");

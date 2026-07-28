@@ -218,11 +218,43 @@ function resolveSwappedProps(
   );
 }
 
+/**
+ * The override entry a cue resolves against: its own, layered over its split
+ * ROOT's (R16 §68). A split half is still the same scene — captions scaled
+ * on the original must render scaled on both halves — so `id@ms` inherits
+ * everything from `id`, with two exceptions that describe the WHOLE original
+ * rather than a piece of it: `timing` (the root's absolute window would undo
+ * the split) and `hidden` (deleting the original is not deleting one half).
+ * The half's OWN entry wins key by key, and the record-shaped keys merge
+ * field-wise so nudging one field on a half doesn't drop the rest of what it
+ * inherited.
+ */
+function effectiveOverride(
+  scenes: Record<string, SceneOverride>,
+  id: string,
+): SceneOverride | undefined {
+  const own = scenes[id];
+  const at = id.indexOf("@");
+  if (at === -1) return own;
+  const root = scenes[id.slice(0, at)];
+  if (!root) return own;
+  const { timing: _timing, hidden: _hidden, ...base } = root;
+  if (!own) return { ...base, props: { ...base.props }, elements: { ...base.elements } };
+  return {
+    ...base,
+    ...own,
+    props: { ...base.props, ...own.props },
+    elements: { ...base.elements, ...own.elements },
+    ...(base.video || own.video ? { video: { ...base.video, ...own.video } } : {}),
+    ...(base.pip || own.pip ? { pip: { ...base.pip, ...own.pip } } : {}),
+  };
+}
+
 export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): AppliedOverrides {
   const ids = new Set(cues.map((c) => c.id));
   const orphans = Object.keys(doc.scenes).filter((id) => !ids.has(id));
   const out = cues.map((cue) => {
-    const o = doc.scenes[cue.id];
+    const o = effectiveOverride(doc.scenes, cue.id);
     if (!o) return cue;
     const swapped = o.component !== undefined && o.component !== cue.component;
     const component = o.component ?? cue.component;
@@ -251,7 +283,14 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       // After ...cue, so a hand-set rect WINS over one routeAroundSourceText
       // baked into the base cues.
       ...(o.graphicRect ? { graphicRect: o.graphicRect } : {}),
-      ...(o.timing ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true } : {}),
+      // Never onto an ALREADY-pinned cue (R16 §68): the second override pass
+      // runs after `splitCues`, and re-applying a pinned scene's original
+      // window to its first half — which kept the scene's id — would undo
+      // the cut and overlap the second half. An unsplit pinned cue skips a
+      // byte-identical re-application; a not-yet-pinned cue pins as before.
+      ...(o.timing && !cue.pinned
+        ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true }
+        : {}),
     };
   });
   return { cues: out, orphans };
