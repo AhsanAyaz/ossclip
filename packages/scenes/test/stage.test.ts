@@ -18,6 +18,8 @@ import {
   backdropOpacityAt,
   captionAnchorAt,
   clampGraphicRect,
+  FULL_BLEED_GRAPHIC_SLOT,
+  graphicSlotFor,
   headFitsSlot,
   layoutSlots,
   objectPosYFor,
@@ -103,13 +105,58 @@ describe("layoutSlots", () => {
       const base = layoutSlots(meta.defaultLayout).graphic;
       for (const alt of meta.altLayouts) {
         const slot = layoutSlots(alt).graphic;
-        // full-bleed has no graphic slot — a scene assigned there renders nothing.
+        // full-bleed has no slot of its own (graphics there use the R13
+        // fallback band) — the registry should never PLAN a scene onto it.
         expect(slot, `${id} alternate ${alt} has no graphic slot`).not.toBeNull();
         expect(slot!.h, `${id}: ${alt} is shorter than ${meta.defaultLayout}`).toBeGreaterThanOrEqual(
           base!.h,
         );
         expect(alt, `${id} lists its own default as an alternate`).not.toBe(meta.defaultLayout);
       }
+    }
+  });
+});
+
+describe("graphicSlotFor (R13 — layout never vetoes the component)", () => {
+  it("resolves a non-null slot for EVERY layout — switching layouts can't hide a graphic", () => {
+    for (const layout of LayoutSchema.options) {
+      const slot = graphicSlotFor({ layout });
+      expect(slot, layout).not.toBeNull();
+      expect(slot.w, layout).toBeGreaterThan(0);
+      expect(slot.h, layout).toBeGreaterThan(0);
+    }
+  });
+
+  it("full-bleed falls back to the dedicated band, which is safe-area legal as-is", () => {
+    expect(graphicSlotFor({ layout: "full-bleed" })).toEqual(FULL_BLEED_GRAPHIC_SLOT);
+    // The fallback must already satisfy the same invariant every layout's own
+    // slot is pinned to — clamping it is a no-op.
+    expect(clampGraphicRect(FULL_BLEED_GRAPHIC_SLOT)).toEqual(FULL_BLEED_GRAPHIC_SLOT);
+  });
+
+  it("full-bleed's fallback band stays clear of its caption band", () => {
+    // The slot table deliberately keeps full-bleed's graphic null (plain cues
+    // must not make captions dodge an empty band), so the §2/§6 loop above
+    // never checks this pair — pin it here.
+    const anchor = layoutSlots("full-bleed").captionAnchor;
+    expect(anchor - CAPTION_HALF_BAND).toBeGreaterThanOrEqual(
+      FULL_BLEED_GRAPHIC_SLOT.y + FULL_BLEED_GRAPHIC_SLOT.h,
+    );
+  });
+
+  it("a cue's own rect wins over the layout slot, clamped into the safe area", () => {
+    const slot = graphicSlotFor({
+      layout: "blurred-behind",
+      graphicRect: { x: 0, y: 0, w: 0.5, h: 0.3 },
+    });
+    expect(slot.x).toBeGreaterThanOrEqual(SAFE_RECT.x);
+    expect(slot.y).toBeGreaterThanOrEqual(SAFE_RECT.y);
+  });
+
+  it("every non-full-bleed layout resolves to its own slot table entry", () => {
+    for (const layout of LayoutSchema.options) {
+      if (layout === "full-bleed") continue;
+      expect(graphicSlotFor({ layout })).toEqual(layoutSlots(layout).graphic);
     }
   });
 });

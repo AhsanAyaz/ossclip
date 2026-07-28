@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useVideoConfig } from "remotion";
 import type { SceneCue, Theme } from "@ossclip/core/browser";
-import { clampGraphicRect, layoutSlots } from "./stage";
+import { graphicSlotFor } from "./stage";
 import { fitScale } from "./fit";
 import { TitleCard } from "./components/TitleCard";
 import { StatCard } from "./components/StatCard";
@@ -40,12 +40,11 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         if (cue.kind === "plain" || !cue.component || !cue.props) return null;
         // A cue may carry its own rect — routed there by source-text
         // avoidance (FINDINGS §26) or set by hand in the editor (R11 Task
-        // 2). Clamped defensively: a hand-edited overrides.json must not be
-        // able to push a graphic under the platform chrome.
-        const slot = cue.graphicRect
-          ? clampGraphicRect(cue.graphicRect)
-          : layoutSlots(cue.layout).graphic;
-        if (!slot) return null;
+        // 2). Never null (R13): a layout with no slot of its own
+        // (full-bleed) falls back to `FULL_BLEED_GRAPHIC_SLOT` rather than
+        // silently dropping the graphic — layout places the video, it does
+        // not veto the component.
+        const slot = graphicSlotFor(cue);
         const Component = COMPONENTS[cue.component];
         const from = Math.round(cue.startSec * fps);
         const durationInFrames = Math.max(1, Math.round((cue.endSec - cue.startSec) * fps));

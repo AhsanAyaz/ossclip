@@ -480,6 +480,38 @@ export function layoutSlots(
   }
 }
 
+/**
+ * Where a graphic floats when its cue's layout defines no slot (R13).
+ *
+ * `full-bleed` was designed as "talking head only" and returns `graphic:
+ * null` — which made it the one layout that silently DELETED the graphic
+ * when the user switched to it, selection box and all. Layout and component
+ * are independent axes: layout decides where the VIDEO sits, and a cue that
+ * has a graphic always renders it. The band is blurred-behind's geometry —
+ * the placement most graphics already ship on — over the full-frame video,
+ * minus the blur. Deliberately NOT added to `layoutSlots` itself: the slot
+ * table is shared stage geometry (caption avoidance, routing candidates),
+ * and a phantom full-bleed slot there would make captions steer around a
+ * band that is empty on every plain cue.
+ */
+export const FULL_BLEED_GRAPHIC_SLOT: Rect = { x: 0.07, y: 0.24, w: 0.77, h: 0.36 };
+
+/**
+ * The slot a cue's graphic actually renders in — never null. Precedence: the
+ * cue's own rect (routed by source-text avoidance or hand-set in the editor,
+ * clamped so a hand-edited overrides.json can't push a graphic under the
+ * platform chrome), then the layout's slot, then the full-bleed fallback.
+ * One resolver for the renderer and the Inspector, so the box the panel
+ * edits is byte-for-byte the box the stage draws.
+ */
+export function graphicSlotFor(cue: {
+  layout: Layout;
+  graphicRect?: Rect | null;
+}): Rect {
+  if (cue.graphicRect) return clampGraphicRect(cue.graphicRect);
+  return layoutSlots(cue.layout).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
+}
+
 /** Seconds the video slot spends morphing between layouts at a cue boundary. */
 export const LAYOUT_TRANSITION_SEC = 0.35;
 

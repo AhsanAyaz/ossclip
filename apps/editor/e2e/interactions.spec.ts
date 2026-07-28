@@ -591,3 +591,61 @@ test("element text edits live in the panel; the inline double-click input is gon
   const props = doc.scenes[renderProps.baseSceneCues[0].id].props;
   expect(JSON.stringify(props)).toContain("REPLACED BY PANEL");
 });
+
+test("switching layout never hides the graphic — every option keeps the scene on stage (R13)", async ({
+  page,
+}) => {
+  // The author's repro: a ChatMock on blurred-behind, switched to any other
+  // layout — the bubble, its text, and the selection box all vanished.
+  // full-bleed was the deleting layout (its slot table has no graphic slot);
+  // the sweep pins EVERY option so a future layout can't regress the same way.
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-5").click();
+  await expect(page.getByTestId("overlay-box")).toBeVisible();
+  const layoutSelect = page.getByTestId("layout-select");
+  await expect(layoutSelect).toHaveValue("blurred-behind");
+
+  const graphic = page.locator('[data-edit-scene="scene-5"]');
+  for (const layout of ["video-top", "pip-bubble", "graphic-only", "full-bleed", "blurred-behind"]) {
+    await layoutSelect.selectOption(layout);
+    await expect(graphic, layout).toBeVisible();
+    await expect
+      .poll(async () => {
+        const b = await graphic.boundingBox();
+        return b ? Math.min(b.width, b.height) : 0;
+      }, { message: `graphic has no footprint under ${layout}` })
+      .toBeGreaterThan(20);
+    // The selection box tracks the graphic to its new slot…
+    await expect(page.getByTestId("overlay-box"), layout).toBeVisible();
+    // …and the Inspector's Graphic box stays editable (it used to disappear
+    // with the slot on full-bleed).
+    await expect(page.getByTestId("field-box-x"), layout).toBeVisible();
+  }
+  // Nothing was saved — reloading discards the sweep's in-memory overrides.
+});
+
+test("a layout swap re-slots a graphic the pipeline had routed elsewhere (R13)", async ({
+  page,
+}) => {
+  // scene-3 carries a graphicRect BAKED into the base cue by
+  // routeAroundSourceText — computed for its original video-top layout
+  // (y=0.5). A layout override must drop it, or the graphic renders at the
+  // old layout's routed position inside the new layout's staging.
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("timeline-block-scene-3").click();
+  await expect(page.getByTestId("overlay-box")).toBeVisible();
+  await page.getByTestId("layout-select").selectOption("blurred-behind");
+
+  const stage = (await page.getByTestId("stage").boundingBox())!;
+  // blurred-behind's own slot starts at y=0.24; the stale routed rect sat at
+  // y=0.5. Poll until the graphic sits in the NEW slot's band (±0.05 for
+  // frame-pixel quantization) — a graphic still parked at 0.5 never passes.
+  await expect
+    .poll(async () => {
+      const b = await page.locator('[data-edit-scene="scene-3"]').boundingBox();
+      return b ? Math.abs((b.y - stage.y) / stage.height - 0.24) < 0.05 : false;
+    })
+    .toBe(true);
+});

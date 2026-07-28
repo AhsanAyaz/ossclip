@@ -1,6 +1,6 @@
 import React from "react";
 import { LayoutSchema, SceneComponentIdSchema, type SceneCue, type Theme } from "@ossclip/core/browser";
-import { clampGraphicRect, layoutSlots } from "@ossclip/renderer/composition";
+import { clampGraphicRect, graphicSlotFor } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
@@ -332,6 +332,7 @@ export const Inspector: React.FC<InspectorProps> = ({
             <span style={label}>Layout</span>
             <select
               style={numberInput}
+              data-testid="layout-select"
               value={cue.layout}
               onChange={(e) => edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"])}
             >
@@ -439,11 +440,11 @@ export const Inspector: React.FC<InspectorProps> = ({
         {(() => {
           // Graphic box (R11 Task 2.10) — the precision fallback to the
           // stage handles. The effective rect is the hand-set override, the
-          // routed rect the cue carries, or the layout's own slot; layouts
-          // with no slot (full-bleed) have no box to edit.
+          // routed rect the cue carries, the layout's own slot, or the
+          // full-bleed fallback band (R13) — the same resolver SceneLayer
+          // draws from, so this box is always the one on screen.
           if (isPlain) return null;
-          const eff = cue.graphicRect ?? layoutSlots(cue.layout).graphic;
-          if (!eff) return null;
+          const eff = graphicSlotFor(cue);
           const boxPatch = (key: "x" | "y" | "w" | "h") => (v: number) =>
             edits.patchGraphicRect(
               selection.sceneId,

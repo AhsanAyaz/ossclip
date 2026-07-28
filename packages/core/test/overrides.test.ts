@@ -366,4 +366,33 @@ describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
     // Idempotent on a scene without one.
     expect(clearGraphicRect(cleared, "scene-0")).toBe(cleared);
   });
+
+  it("a LAYOUT override drops a baked routed rect — it was computed for the old layout (R13)", () => {
+    const routed = { ...cue("scene-0"), graphicRect: { x: 0.05, y: 0.6, w: 0.7, h: 0.2 } };
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "blurred-behind" } } });
+    const { cues } = applyOverrides([routed], doc);
+    expect(cues[0]!.layout).toBe("blurred-behind");
+    expect(cues[0]!.graphicRect).toBeUndefined();
+    // Idempotent under the editor's second pass: the cue now carries the new
+    // layout, so re-applying the same doc changes nothing further.
+    expect(applyOverrides(cues, doc).cues[0]).toEqual(cues[0]);
+  });
+
+  it("a hand-set rect still wins even when the layout swaps in the same override", () => {
+    const routed = { ...cue("scene-0"), graphicRect: { x: 0.05, y: 0.6, w: 0.7, h: 0.2 } };
+    const hand = { x: 0.1, y: 0.15, w: 0.6, h: 0.4 };
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { layout: "blurred-behind", graphicRect: hand } },
+    });
+    const { cues } = applyOverrides([routed], doc);
+    expect(cues[0]!.graphicRect).toEqual(hand);
+  });
+
+  it("an override restating the cue's OWN layout keeps the routed rect", () => {
+    // The rect was computed for exactly this layout — nothing invalidated it.
+    const routed = { ...cue("scene-0"), graphicRect: { x: 0.05, y: 0.6, w: 0.7, h: 0.2 } };
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "video-top" } } });
+    const { cues } = applyOverrides([routed], doc);
+    expect(cues[0]!.graphicRect).toEqual(routed.graphicRect);
+  });
 });
