@@ -1074,7 +1074,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         if (sourceTitled) {
           console.log("  ▸ source already has a title in this frame — shipping it without a banner");
         } else if (pick.face) {
-          const band = coverTextRect(pick.face);
+          const band = coverTextRect(pick.face, frame);
           console.log(
             `  ▸ banner in the ${band.y + band.h / 2 < pick.face.centerYFrac ? "band above" : "band below"} ` +
               `the face (${(band.y * 100).toFixed(0)}-${((band.y + band.h) * 100).toFixed(0)}%)`,
@@ -1086,6 +1086,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
             text: sourceTitled ? "" : coverText,
             theme,
             face: pick.face,
+            // The cover is the OUTPUT's thumbnail — a landscape render gets a
+            // landscape cover (R16 §76). The still was already extracted at
+            // this size; only the composition disagreed.
+            frame: { width: frame.width, height: frame.height },
           },
           { publicDir: work, outPath: coverPath, browserExecutable: cfg.browserExecutable },
         );

@@ -29,12 +29,22 @@ export interface CoverCompProps {
    * around it (FINDINGS §33) — reference covers keep the box off the speaker.
    */
   face?: { centerYFrac: number; sizeFrac: number };
+  /**
+   * The OUTPUT frame this cover belongs to (R16 §76). A landscape render used
+   * to ship a 1080×1920 cover, because this composition was registered at a
+   * fixed portrait size and — unlike the production composition — had no
+   * `calculateMetadata` to follow the settings. The extracted still was
+   * already 16:9, so `objectFit: cover` cropped it back to a portrait crop of
+   * itself: a portrait thumbnail for a landscape video.
+   */
+  frame?: { width: number; height: number };
 }
 
 export const defaultCoverProps: CoverCompProps = {
   frameFileName: "",
   text: "COVER",
   theme: defaultTheme,
+  frame: { width: 1080, height: 1920 },
 };
 
 export const COVER_ID = "cover";
@@ -45,16 +55,25 @@ export const CoverComposition: React.FC<CoverCompProps> = ({
   theme,
   byline,
   face,
+  frame: outFrame = { width: 1080, height: 1920 },
 }) => {
+  const landscape = outFrame.width >= outFrame.height;
   // The profile grid crops to a centre square, so the banner must sit inside
   // COVER_GRID_SAFE or it is simply cut off in the grid — a different
   // constraint from the player's SAFE_AREA, and both have to hold. Within
   // that, it takes whichever band the head leaves free.
   const words = text.trim().split(/\s+/).filter(Boolean);
   // Long headlines get smaller type rather than more lines: three lines of
-  // banner in a grid tile is unreadable at thumbnail size.
-  const fontSize = words.length <= 4 ? 96 : words.length <= 6 ? 78 : 64;
-  const rect = coverTextRect(face && face.sizeFrac > 0 ? face : null);
+  // banner in a grid tile is unreadable at thumbnail size. A landscape cover
+  // is 1920 wide but only 1080 tall, so the same point size eats twice the
+  // frame height — type is set against the SHORT edge, which is the one that
+  // decides how much of the thumbnail a banner swallows.
+  const base = words.length <= 4 ? 96 : words.length <= 6 ? 78 : 64;
+  const fontSize = Math.round(base * (Math.min(outFrame.width, outFrame.height) / 1080));
+  const rect = coverTextRect(
+    face && face.sizeFrac > 0 ? face : null,
+    outFrame as { width: number; height: number },
+  );
 
   const frame = frameFileName ? (
     <Img
@@ -108,6 +127,10 @@ export const CoverComposition: React.FC<CoverCompProps> = ({
             textTransform: "uppercase",
             textAlign: "center",
             textWrap: "balance",
+            // A 1920-wide banner spanning the whole frame reads as a bar, not
+            // a title card — landscape keeps the box inside the middle of the
+            // frame, the way a thumbnail's title block sits.
+            maxWidth: landscape ? "72%" : "100%",
           }}
         >
           {text}
@@ -117,7 +140,7 @@ export const CoverComposition: React.FC<CoverCompProps> = ({
             style={{
               color: theme.fg,
               fontFamily: theme.fontDisplay,
-              fontSize: 34,
+              fontSize: Math.round(34 * (Math.min(outFrame.width, outFrame.height) / 1080)),
               fontWeight: 800,
               letterSpacing: "0.18em",
               textTransform: "uppercase",

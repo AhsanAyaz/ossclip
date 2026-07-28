@@ -5,7 +5,12 @@ import {
   defaultProductionProps,
   type ProductionCompProps,
 } from "./ProductionComposition";
-import { COVER_ID, CoverComposition, defaultCoverProps } from "./CoverComposition";
+import {
+  COVER_ID,
+  CoverComposition,
+  defaultCoverProps,
+  type CoverCompProps,
+} from "./CoverComposition";
 
 export const COMPOSITION_ID = "production";
 
@@ -20,6 +25,17 @@ export const RemotionRoot: React.FC = () => {
       height={1920}
       fps={30}
       durationInFrames={1}
+      // The cover follows the OUTPUT frame (R16 §76). Without this it stayed
+      // at the registered 1080×1920 while the production composition tracked
+      // `settings` — so a landscape render shipped a portrait thumbnail, its
+      // 16:9 still centre-cropped back to 9:16 by `objectFit: cover`.
+      calculateMetadata={({ props }) => {
+        const p = props as unknown as CoverCompProps;
+        return {
+          width: p.frame?.width ?? 1080,
+          height: p.frame?.height ?? 1920,
+        };
+      }}
     />
     <Composition
       id={COMPOSITION_ID}

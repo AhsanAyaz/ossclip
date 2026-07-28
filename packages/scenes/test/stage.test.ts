@@ -473,6 +473,24 @@ describe("cover banner placement (FINDINGS §33)", () => {
     expect(coverTextRect(null)).toEqual(COVER_TEXT_RECT);
     expect(coverTextRect(undefined)).toEqual(COVER_TEXT_RECT);
   });
+
+  it("a landscape cover drops the profile-GRID crop (R16 §76)", () => {
+    // The grid square is an Instagram constraint on a 9:16 cover. A 16:9
+    // cover is a YouTube thumbnail shown whole — squeezing the banner into
+    // the middle 56% of an already short frame would be a portrait rule
+    // applied to a landscape image.
+    const land = coverTextRect(null, LANDSCAPE_FRAME);
+    expect(land).toEqual(safeRectFor(LANDSCAPE_FRAME));
+    expect(land.h).toBeGreaterThan(COVER_TEXT_RECT.h);
+    // The face rule still holds in landscape: the banner routes off the head.
+    const face = { centerYFrac: 0.32, sizeFrac: 0.22 };
+    const banded = coverTextRect(face, LANDSCAPE_FRAME);
+    const head = headBand(face);
+    expect(banded.y >= head.end || banded.y + banded.h <= head.start).toBe(true);
+    // …and stays inside the landscape safe area.
+    expect(banded.y).toBeGreaterThanOrEqual(land.y - 1e-9);
+    expect(banded.y + banded.h).toBeLessThanOrEqual(land.y + land.h + 1e-9);
+  });
 });
 
 describe("freeBands", () => {

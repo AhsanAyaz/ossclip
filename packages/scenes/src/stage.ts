@@ -446,13 +446,22 @@ const MIN_COVER_BAND_H = 0.13;
  * grid-safe strip), the full rect comes back: a banner over the face still
  * beats a cover with no headline, and the caller logs that it happened.
  */
-export function coverTextRect(face?: { centerYFrac: number; sizeFrac: number } | null): Rect {
-  if (!face) return COVER_TEXT_RECT;
-  const range = { start: COVER_TEXT_RECT.y, end: COVER_TEXT_RECT.y + COVER_TEXT_RECT.h };
+export function coverTextRect(
+  face?: { centerYFrac: number; sizeFrac: number } | null,
+  frame: FrameSize = PORTRAIT_FRAME,
+): Rect {
+  // The GRID crop is a portrait-cover constraint (R16 §76): it models
+  // Instagram cropping a 9:16 cover to a centre square. A 16:9 cover is a
+  // YouTube thumbnail, shown whole — applying the square crop there would
+  // squeeze the banner into the middle 56% of an already short frame for no
+  // reason. Landscape keeps only the player's own safe area.
+  const base = frame.width >= frame.height ? safeRectFor(frame) : COVER_TEXT_RECT;
+  if (!face) return base;
+  const range = { start: base.y, end: base.y + base.h };
   const head = headBand(face);
   const [tallest] = freeBands(range, [{ y: head.start, h: head.end - head.start }]);
-  if (!tallest || tallest.end - tallest.start < MIN_COVER_BAND_H) return COVER_TEXT_RECT;
-  return { ...COVER_TEXT_RECT, y: tallest.start, h: tallest.end - tallest.start };
+  if (!tallest || tallest.end - tallest.start < MIN_COVER_BAND_H) return base;
+  return { ...base, y: tallest.start, h: tallest.end - tallest.start };
 }
 
 const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
