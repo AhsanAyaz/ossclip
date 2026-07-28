@@ -604,3 +604,46 @@ Captions are DERIVED (`buildCaptionLines` over the repaired transcript through t
 - The strict repair gate refused `"and that is double scape"` → `"double escape"` with "span of 5 words is a rewrite, not a mishearing". That is §17's rule working as specified; the cost of the strictness the author chose. A caption edit (§45a) is the intended escape hatch.
 - 0 cuts on this take is correct — no silence crossed `standard`.
 - The v8 pip bubble crops the head at ~121% of the circle. Measured and unfixable by any constant: the canvas is portrait (450×800), the bubble is a 324px circle, cover is width-bound, and that ratio is independent of bubble size. Zooming out inside a round mask leaves crescent gaps. Shipped as a per-scene `video: {scale, dx, dy}` override instead — the author's call: keep the constraint out of the code and fix it where it belongs.
+
+# Round 12 — a landscape source, and text that does not fit (`Agents in 2026`, 2026-07-31)
+
+*First run against a LANDSCAPE source: 1920×1080, 12m21s, 2396 words, Gemini as the producer (~$0.10 for beats + props). Two full runs of the same take, one cover and one contain, plus the author editing the workdir by hand while the second rendered.*
+
+**Shipped this round:** `--source-fit contain` — a landscape source rendered whole instead of cover-cropped. Measured reason: cover-cropping 16:9 into 9:16 displays the picture 3413px wide and keeps 1080 of them, **32% of the width**, with the head filling the frame top to bottom. Round 10 had quietly made that worse — plain takes are `full-bleed` and takes cover most of the timeline, so a landscape source spent most of its runtime in the one layout that ruins it.
+
+**Still open from the analysis, not built:** the framing assessment (`assessCueFraming`, which already computes head-vs-slot) only runs when a normalization plan exists, i.e. for letterboxed sources. A uniform landscape file gets no assessment, so neither the producer's framing brief nor the repair pass ever learns that `full-bleed` is wrong for it. Plain-take layout is also picked without reference to source shape.
+
+## 46. A single unbreakable word overflows its card
+
+`RuleCard`, scene-4: kicker `NEEDED`, text `AI HARNESS`. It wraps to `AI` / `HARNESS`, and `HARNESS` is wider than the card's inner width — the glyphs run past the rounded rect and are clipped by the slot's `overflow: hidden`, so the card reads `HARNES` with a severed `S` floating on the backdrop.
+
+Root cause is checkable, not a guess: `estimateMinWidthPx` (`packages/scenes/src/fit.ts`) has cases for `TerminalMock` and `StatCard` and `default: return 0`. RuleCard hits the default, so `widthCap` never binds and `fitScale` is free to magnify to `MAX_SCALE = 2.4` on the height model alone. The height model (`textHeight`) knows how text WRAPS but has no notion of a minimum unbreakable word — and a word cannot wrap. This is exactly the §28a rule (ChatMock: shrink until the longest WORD fits inside bubble-minus-padding), solved once for one component and never generalized.
+
+Directions worth weighing, not a plan: derive a longest-word min-width for every text component rather than the two that have one; or fold the constraint into the fit solve so no scale that overflows a word is reachable; or add a render-time backstop so a miss clips inside the card instead of spilling onto the stage. Also worth deciding whether these estimates stay analytic (`CHAR_W_*` constants) or start measuring — every one of these misses has been an estimate being optimistic.
+
+## 47. No good way to fix a graphic that does not fit
+
+The author's repair for §46 was to select the element and type `scale 0.8` plus two pixel offsets into number fields. It works, and it is typing coordinates at a picture.
+
+Asked for explicitly: **every scale should be a slider, at the least — and everything should be transformable, with edge nodes to adjust.**
+
+The precedent is already in the codebase and this is the one place that missed it: R11 shipped a zoom SLIDER for video framing and eight transform handles for the graphic BOX; R10 shipped drag-to-pan for the video itself. Elements are the last thing still driven by number fields alone. Note the half-state to investigate — an element can already be DRAGGED to move, but there is no resize gesture and no handles, so position is direct manipulation while size is not.
+
+## 48. Numeric fields show locale decimals and 13 decimal places
+
+Observed on the author's machine: X reads `−76,7378281484908`, SCALE reads `0,8`. Two separate defects wearing one coat — the drag writes full float precision and nothing rounds it for display, and the decimal separator is a comma in the author's locale, which `<input type="number">` treats differently from a period. §43 fixed the `step` attribute, not either of these. Worth confirming whether a comma-locale value can commit at all, since that decides whether this is cosmetic or a second unusable-field bug.
+
+## 49. Inline double-click editing overlays the thing it edits
+
+Double-clicking an element opens a floating input positioned over that element. In the author's screenshot the input shows `HARNESS` while the un-edited tail `SS` is still painted behind it — you edit text while looking at a mixture of the old render and the new value, on top of the graphic you are trying to judge.
+
+The Inspector ALREADY has a TEXT field for the selected element, so the overlay is a worse duplicate of a control that exists. **Author's call: editing should happen in the side panel, not by double-click.**
+
+To investigate before removing anything: the panel's TEXT field only covers props whose `data-edit-id` names a top-level string. The array-backed ids (`line-N` / `node-N` / `message-N`, handled by `buildArrayPatch`) are reachable ONLY from the overlay today, so deleting the double-click path without extending the panel would take away the only way to retype a FlowDiagram node or a ChatMock message. Caption retype (§45a) is a separate double-click flow on the caption track, and whether that one follows the same rule is its own decision.
+
+## Not defects, noted
+
+- **The editor's preview and the exported mp4 can be different generations, and nothing says so.** The author compared a preview showing the contained frame against an mp4 showing the cropped one and reasonably read it as an editor bug. Both were correct: a `produce` run had rewritten `render-props.json` in place at 20:29 while the page held a snapshot from mount, and the mp4 was the 19:46 export. Related and worth stating in the UI: **Render replays `command.json` — the flags of the last COMPLETED produce — not what is on screen.** Overrides are re-applied on top so hand edits always survive, but pipeline-level decisions (source fit, cleanup level, provider) come from the recorded command. A workdir whose last produce predates the recording feature has no `command.json` at all and the button is honestly disabled.
+- **`contain` leaves the layout slots where they were.** Graphics still sit over the picture and the dead space above and below it goes unused, because every layout's geometry assumes the video fills the frame. A top-aligned "band" variant — picture at the top, graphics and captions in the freed space — is the podcast-clip look and is the obvious follow-up if the contain output is worth keeping.
+- Gemini as the producer: repairs were strong (`cloud code` → `Claude Code`, `Revind` → `Rewind`, `cloud code incense` → `Claude Code instance`) and the strict gate refused a genuinely wrong rewrite of an unfamiliar product name twice on length. One longer span of the same rewrite DID land in an earlier run, which is the §17 heuristic ("unfamiliar proper nouns are usually mishearings") turning a correct new name into a wrong old one. A guard on names the speaker uses consistently, or that appear in `--speaker`/`--intent`, is worth considering.
+- 0.1% removed from 741s. Nothing is wrong with the cut engine — it tightens pauses and drops fillers, and this take has neither to spare. It does mean a 12-minute source yields a 12-minute vertical: **there is no highlight selection anywhere in the pipeline**, and for long-form input that is a bigger gap than framing.
