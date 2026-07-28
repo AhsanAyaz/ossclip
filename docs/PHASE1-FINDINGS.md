@@ -560,3 +560,47 @@ Cumulative against where §37 started: **6 calls / $1.71 → 3 calls / $0.85.**
 - **9 moments → 7 scenes** is by design: two moments were `sceneKind: "none"` (plain talking-head beats). Though 7 of 9 carrying graphics overshoots the prompt's own "at most half" guidance — see §3/§4.
 - `startSec`/`endSec` stay `undefined` on `production.json` scenes while resolved times live only in `render-props.json`. That matches PHASE1 §2 ("never persist as the source of truth") but makes the doc harder to inspect by hand; consider writing them back as a debug-only mirror.
 - The producer's editorial judgment was good: it pulled true figures (861%, +242%, +34%, 2,200 devs) rather than inventing them, and the `rationale` field reads like an editor's notes.
+
+---
+
+# Round 9 — first real editing session (`5 ClaudeCode.v8`, 2026-07-29)
+
+*Author driving `ossclip edit` on `~/Downloads/.ossclip/5 ClaudeCode-07fbd090` for the first time. Seven items, all found by hand in ten minutes of use — none by a test.*
+
+**Planned, not fixed:** [`docs/superpowers/plans/2026-07-29-editor-playback-and-captions.md`](./superpowers/plans/2026-07-29-editor-playback-and-captions.md).
+
+**Improved this round (v8, verified):** the two `video-top` framing warnings are gone — `▸ framing: every scene fits its slot (tightest scene-9 at 93% of its band)`. The producer chose the layouts itself: `RuleCard` and `ScreenshotFrame` both default to `video-top` and both came back `pip-bubble`, which is neither their default nor their alternate, so it can only have come from the framing brief. The repair pass never had to fire. Provider was `claude-cli` (Opus 5 editorial, Haiku 4.5 mechanical), 3 calls, ~$0.72 API-rate equivalent on the subscription.
+
+## 39. The player treats its whole surface as play/pause
+
+`App.tsx` passes `controls` but not `clickToPlay`, and Remotion defaults `clickToPlay` to `controls`. §Task 2 of the usability round made the swallow SELECTIVE — clicks on editable elements are the editor's, everything else reaches the Player — which was right for that bug and is the wrong policy for an editor: the frame is a canvas, not a button. Decided: disable click-to-play entirely; transport is the play button, SPACE and (new) J/K/L.
+
+## 40. No speed control, no J/K/L
+
+Requested: `L` play forward and faster on repeat, `J` backward and faster on repeat, `K` stop/play toggle at 1×, `SPACE` toggle. `SPACE` already ships (§Task 5). **Open question that changes the design:** whether this Remotion `<Player>` honours a negative `playbackRate` for reverse, or whether `J` has to be a seek loop. Measure before designing.
+
+## 41. The ruler above the timeline does not seek
+
+It is two `<span>` labels with no handler, so every seek has to aim at a scene block — which also selects that scene. Navigating and selecting should not be the same gesture.
+
+## 42. The safe area is invisible while dragging
+
+`SAFE_AREA` is top 12% / bottom 22% / right 16% / left 4%. An element dragged under the chrome looks like it vanished. Show the outline faintly *during a drag only*, from the exported constant rather than a copy.
+
+## 43. Every numeric inspector field rejects decimals
+
+`NumberField` renders `<input type="number">` with no `step`, so HTML's default `step=1` makes `0.62` invalid and the value never commits. It bites hardest on the new video-framing `scale`, whose entire useful range is 0–1 — the field is unusable as shipped. The element `dx`/`dy`/`scale` fields have carried the same defect since they shipped.
+
+## 44. The TIMING section tells the user nothing
+
+It renders the time range only when a cue is pinned; an unpinned cue gets the bare string `Tracking transcript`. But an unpinned cue still has a resolved `startSec`/`endSec` — the user is looking at a scene on screen and being told nothing about when it is, or which words it is tracking.
+
+## 45. NEW FEATURE — caption editing
+
+Captions are DERIVED (`buildCaptionLines` over the repaired transcript through the `TimeMap`), so there is no caption layer in `overrides.json` for an edit to live in. Four constraints that make this a design task rather than a text box: word-level timings drive the kinetic highlight and must survive an edit (`applyRepairs` already solves that shape — proportional split inside the original span); scene copy and captions must keep agreeing (§21, `reconcileCopy`); cues anchor to word INDICES, so changing word count moves every downstream anchor; and the scope is genuinely three different projects — 1:1 retype, full re-timed transcript editing, or a Descript-style pane that also drives cutting. **Scope to be decided with the author before any code.**
+
+## Not defects, noted
+
+- The strict repair gate refused `"and that is double scape"` → `"double escape"` with "span of 5 words is a rewrite, not a mishearing". That is §17's rule working as specified; the cost of the strictness the author chose. A caption edit (§45a) is the intended escape hatch.
+- 0 cuts on this take is correct — no silence crossed `standard`.
+- The v8 pip bubble crops the head at ~121% of the circle. Measured and unfixable by any constant: the canvas is portrait (450×800), the bubble is a 324px circle, cover is width-bound, and that ratio is independent of bubble size. Zooming out inside a round mask leaves crescent gaps. Shipped as a per-scene `video: {scale, dx, dy}` override instead — the author's call: keep the constraint out of the code and fix it where it belongs.
