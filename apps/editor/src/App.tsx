@@ -6,6 +6,7 @@ import { ProductionComposition, type ProductionCompProps } from "@ossclip/render
 import {
   applyCaptionEdits,
   applyOverrides,
+  dropHiddenCues,
   fillPlainCues,
   resolveTheme,
   defaultTheme,
@@ -133,12 +134,14 @@ export const App: React.FC = () => {
     );
     const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
     const { cues: graphicCues } = applyOverrides(baseCues, edits.doc);
-    // Same sequence as `produce.ts`: fill the gaps with plain takes, then a
-    // SECOND override pass so framing edits on `take-*` ids land on the cues
-    // the fill just created. The second pass is a no-op on graphic cues
-    // (same component ⇒ no swap ⇒ the prop merge is idempotent) — do not
-    // "simplify" it away.
-    const filled = fillPlainCues(graphicCues, {
+    // Same sequence as `produce.ts`: overrides → drop the deleted scenes →
+    // fill the gaps with plain takes (a deleted scene's window becomes an
+    // editable take — Task C's payoff for doing A first) → a SECOND override
+    // pass so framing edits on take-* ids land on the cues the fill just
+    // created. The second pass is a no-op on graphic cues (same component ⇒
+    // no swap ⇒ the prop merge is idempotent) — do not "simplify" it away.
+    const { cues: visibleCues } = dropHiddenCues(graphicCues, edits.doc);
+    const filled = fillPlainCues(visibleCues, {
       outputDurationSec: renderProps.outputDurationSec,
       clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
     });
@@ -166,9 +169,27 @@ export const App: React.FC = () => {
     void edits.save().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
 
+  // Deleted scenes, at their override-applied timing — the Timeline draws
+  // them as restorable ghosts (PLAN Task C5), and selecting one resolves to
+  // this list so the Inspector can offer Restore even though the live cues
+  // no longer contain it.
+  const ghostCues = useMemo<SceneCue[]>(() => {
+    if (!renderProps) return [];
+    const baseCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
+      (c) => c.kind !== "plain",
+    );
+    const { cues } = applyOverrides(baseCues, edits.doc);
+    return cues.filter((c) => edits.doc.scenes[c.id]?.hidden === true);
+  }, [renderProps, edits.doc]);
+
   const selectedCue = useMemo(
-    () => (selection ? live?.sceneCues.find((c) => c.id === selection.sceneId) ?? null : null),
-    [live, selection],
+    () =>
+      selection
+        ? live?.sceneCues.find((c) => c.id === selection.sceneId) ??
+          ghostCues.find((c) => c.id === selection.sceneId) ??
+          null
+        : null,
+    [live, selection, ghostCues],
   );
 
   // The words the selected cue is on screen FOR — "tracking transcript" as a
@@ -293,6 +314,7 @@ export const App: React.FC = () => {
       </div>
       <Timeline
         cues={live.sceneCues}
+        ghosts={ghostCues}
         durationSec={live.outputDurationSec}
         fps={live.settings.fps}
         playerRef={playerRef}

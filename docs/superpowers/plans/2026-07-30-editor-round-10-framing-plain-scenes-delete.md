@@ -2,7 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes.
 
-**Status:** planned 2026-07-30 from the author's second real editing session; not started. Task order is A → B → C and it matters (see A's rationale).
+**Status:** implemented 2026-07-30 (remote session), in the planned order A → B → C, one commit each.
+
+> **Status 2026-07-30 — Tasks A, B, C done.** 12 Playwright e2e, 460+ unit tests, typecheck and editor build green. Deviations and discoveries, so the next reader doesn't re-derive them:
+>
+> - **Task A:** `kind` is OPTIONAL rather than `.default("graphic")` — `render-props.json` reaches the editor as unparsed JSON, so pre-Task-A cues carry no `kind` at runtime and a defaulted (required-in-type) field would be a lie the type system tells; every check is written `=== "plain"`. The forcing function the plan wanted (tsc enumerating consumers) came from `component`/`props` optionality and worked — it surfaced `SceneLayer`'s component map key, `source-fit`'s registry lookup, and `applyOverrides`' swap path. Full-bleed plain cues are filtered out of `videoSlotAt`/`backdropOpacityAt`: they butt FLUSH against graphic cues, so the ±1e-3 neighbour probes would see them where they used to see a gap and double-morph the slot (pinned by a sweep test asserting plain ≡ gap at every 0.05s sample). A plain cue whose layout override leaves full-bleed stages like any scene. Two consumers the plan didn't list: `timing.ts`'s clamp had to ignore plain neighbours (a flush take pins every graphic exactly where it stands — no drag could move; caught by the Task 6 e2e), and plain blocks SCRUB on press-and-drag — the takes cover most of the track, and click-only takes would have regressed the R9 scrub gesture.
+> - **Task B:** as planned (getScale math, no compensateEdits — commented at both sites; videoPreview applied at the END of the live memo; one gesture = one patch = one undo step). The hit walk stops at video-slot descendants AND at real controls (button/input/select/textarea); the Player's transport strip keeps pointer events while faded out and has no stable DOM marker, so the bottom 64px of the stage never starts a grab. One defect found by e2e: the slider's keyup committed on EVERY key — the "s" of Cmd+S re-dirtied the doc right after saving; it now commits only on keys that move a range input.
+> - **Task C:** as planned. `dropHiddenCues` keeps `applyOverrides` 1:1; hide keeps the scene's other edits so restore brings them back intact; orphan reporting subtracts hidden ids (a deletion is not a lost edit). Ghosts paint above the take that took over their window, same `timeline-block-<id>` testid.
+> - **Author's run still owed (cannot be done in the container):** re-produce the real clip, confirm the timeline is fully covered, drag the picture inside a `take-*` block, delete a weak scene and restore it.
 
 **Goal:** every second of the timeline is a selectable block — graphic scenes, plain takes, and ghosts of deleted scenes — and any of them can be reframed by dragging the picture, with one undo step per gesture.
 

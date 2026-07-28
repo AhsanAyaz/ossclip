@@ -633,11 +633,25 @@ export const Overlay: React.FC<OverlayProps> = ({
         if (isTypingContext()) return;
         e.preventDefault();
         onTransport(e.key.toUpperCase() as "J" | "K" | "L");
+      } else if (!mod && (e.key === "Delete" || e.key === "Backspace")) {
+        // Soft-delete the selected GRAPHIC scene (PLAN Task C6). Scene-level
+        // selection only: with an element selected, Backspace is far more
+        // likely aimed at text than at the whole scene. Takes can't be
+        // deleted (their window is derived — there is nothing to remove),
+        // and a ghost is already deleted. Selection is kept so the
+        // Inspector's Restore is one keystroke away from an accidental hit.
+        if (isTypingContext()) return;
+        const sel = selectionRef.current;
+        if (!sel || sel.elementId !== null) return;
+        if (!cue || cue.kind === "plain" || cue.id !== sel.sceneId) return;
+        if (edits.doc.scenes[sel.sceneId]?.hidden === true) return;
+        e.preventDefault();
+        edits.hideScene(sel.sceneId);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, editingText, captionEdit, onSave, playerRef, stageRef, onTransport]);
+  }, [select, edits, editingText, captionEdit, onSave, playerRef, stageRef, onTransport, cue]);
 
   return (
     <div

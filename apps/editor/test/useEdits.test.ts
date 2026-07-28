@@ -93,3 +93,31 @@ describe("undo coalescing (PLAN 2026-07-30 Task B5)", () => {
     vi.restoreAllMocks();
   });
 });
+
+describe("delete a scene with a way back (PLAN 2026-07-30 Task C)", () => {
+  it("hideScene writes hidden: true", () => {
+    const s = editReducer(initialEditState(), { type: "hideScene", sceneId: "scene-3" });
+    expect(s.doc.scenes["scene-3"]!.hidden).toBe(true);
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("restoreScene DELETES the key rather than writing hidden: false", () => {
+    let s = editReducer(initialEditState(), { type: "hideScene", sceneId: "scene-3" });
+    s = editReducer(s, { type: "restoreScene", sceneId: "scene-3" });
+    expect("hidden" in s.doc.scenes["scene-3"]!).toBe(false);
+  });
+
+  it("hiding keeps the scene's other edits so restore brings them back intact", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchVideo", sceneId: "scene-3", patch: { scale: 0.8 },
+    });
+    s = editReducer(s, { type: "hideScene", sceneId: "scene-3" });
+    s = editReducer(s, { type: "restoreScene", sceneId: "scene-3" });
+    expect(s.doc.scenes["scene-3"]!.video!.scale).toBe(0.8);
+  });
+
+  it("restoring a scene that is not hidden is a no-op", () => {
+    const s = initialEditState();
+    expect(editReducer(s, { type: "restoreScene", sceneId: "scene-3" })).toBe(s);
+  });
+});

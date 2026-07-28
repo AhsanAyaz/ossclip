@@ -50,6 +50,8 @@ export type EditAction =
     }
   | { type: "clearVideo"; sceneId: string }
   | { type: "clearTiming"; sceneId: string }
+  | { type: "hideScene"; sceneId: string }
+  | { type: "restoreScene"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
   | { type: "patchLayout"; sceneId: string; layout: Layout }
   | { type: "patchCaption"; index: number; text: string; was: string }
@@ -148,6 +150,24 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         scenes: { ...state.doc.scenes, [action.sceneId]: rest },
       });
     }
+    case "hideScene": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, hidden: true } },
+      });
+    }
+    case "restoreScene": {
+      const scene = state.doc.scenes[action.sceneId];
+      if (!scene?.hidden) return state;
+      // DELETE the key rather than writing hidden: false — same rule as
+      // clearVideo/clearTiming: an explicit false is still an override.
+      const { hidden: _dropped, ...rest } = scene;
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: rest },
+      });
+    }
     case "patchComponent": {
       const scene = withScene(state.doc, action.sceneId);
       return commit({
@@ -238,6 +258,8 @@ export function useEdits() {
       coalesce?: string,
     ) => dispatch({ type: "patchVideo", sceneId, patch, coalesce }),
     clearVideo: (sceneId: string) => dispatch({ type: "clearVideo", sceneId }),
+    hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
+    restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
     patchComponent: (sceneId: string, component: SceneComponentId) =>
       dispatch({ type: "patchComponent", sceneId, component }),
     patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),

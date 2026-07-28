@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   OverrideDocSchema,
   applyOverrides,
+  dropHiddenCues,
   clearElementTransform,
   clearTiming,
   reclampPinnedTiming,
@@ -296,5 +297,34 @@ describe("applyCaptionEdits (caption retype, scope (a))", () => {
 
   it("no edits is the identity", () => {
     expect(applyCaptionEdits(lines, {}).lines).toEqual(lines);
+  });
+});
+
+describe("dropHiddenCues (PLAN 2026-07-30 Task C)", () => {
+  it("drops exactly the hidden cue and reports it — applyOverrides stays 1:1", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-1": { hidden: true } } });
+    const input = [cue("scene-0"), { ...cue("scene-1"), startSec: 6, endSec: 10 }];
+    // The 1:1 contract this function exists to protect:
+    expect(applyOverrides(input, doc).cues).toHaveLength(2);
+    const { cues, hidden } = dropHiddenCues(input, doc);
+    expect(cues.map((c) => c.id)).toEqual(["scene-0"]);
+    expect(hidden).toEqual(["scene-1"]);
+  });
+
+  it("is a no-op without hidden overrides, and ignores hidden on unknown ids", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-9": { hidden: true } } });
+    const input = [cue("scene-0")];
+    const { cues, hidden } = dropHiddenCues(input, doc);
+    expect(cues).toEqual(input);
+    expect(hidden).toEqual([]);
+  });
+
+  it("hidden round-trips through the override schema", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-3": { hidden: true } } });
+    expect(doc.scenes["scene-3"]!.hidden).toBe(true);
+    // An orphaned edit on a hidden id still reports as an orphan elsewhere —
+    // hiding never silently eats the entry.
+    const { orphans } = applyOverrides([], doc);
+    expect(orphans).toEqual(["scene-3"]);
   });
 });

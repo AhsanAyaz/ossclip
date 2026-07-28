@@ -207,6 +207,31 @@ export const Inspector: React.FC<InspectorProps> = ({
 
   if (selection && cue) {
     const isPlain = cue.kind === "plain";
+    // A deleted scene (PLAN Task C4): the ghost selection resolves here, and
+    // the ONLY offer is the way back — its other controls would edit a scene
+    // that isn't rendering.
+    if (edits.doc.scenes[selection.sceneId]?.hidden === true) {
+      return (
+        <div>
+          <div style={section}>
+            <span style={label}>Scene</span>
+            <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
+              {selection.sceneId} <span style={{ color: "#9A9AA3", fontWeight: 400 }}>(deleted)</span>
+            </div>
+            <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+              Its window plays as a plain take. Restore brings the graphic back.
+            </div>
+            <button
+              data-testid="restore-scene"
+              style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
+              onClick={() => edits.restoreScene(selection.sceneId)}
+            >
+              Restore scene
+            </button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div>
         <div style={section}>
@@ -389,6 +414,21 @@ export const Inspector: React.FC<InspectorProps> = ({
             </button>
           ) : null}
         </div>
+        {!isPlain ? (
+          <div style={section}>
+            {/* Soft delete (PLAN Task C): the block goes ghost, the window
+                becomes a plain take, and Restore undoes it — so this is
+                danger-styled but not destructive. Delete/Backspace does the
+                same from the keyboard. */}
+            <button
+              data-testid="delete-scene"
+              style={button}
+              onClick={() => edits.hideScene(selection.sceneId)}
+            >
+              Delete scene
+            </button>
+          </div>
+        ) : null}
       </div>
     );
   }

@@ -30,6 +30,7 @@ import {
   defaultProviderName,
   defaultTheme,
   detectSilences,
+  dropHiddenCues,
   emptyOverrideDoc,
   extractAudio,
   fillPlainCues,
@@ -590,6 +591,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     overrideDoc = parsed.data;
   }
   const { cues: editedCues } = applyOverrides(routed.cues, overrideDoc);
+  // Scenes the user deleted in the editor drop here — their windows become
+  // plain takes in the fill below, which is Task C's payoff for Task A.
+  const { cues: visibleCues, hidden: hiddenIds } = dropHiddenCues(editedCues, overrideDoc);
+  if (hiddenIds.length > 0) {
+    console.log(`▸ ${hiddenIds.length} scene(s) hidden by the edit layer: ${hiddenIds.join(", ")}`);
+  }
   const theme = resolveTheme(defaultTheme, overrideDoc);
 
   // A pin freezes a scene's ABSOLUTE time against whatever its neighbours'
@@ -599,7 +606,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // order — re-clamp it here, the same way the editor clamps a pinned nudge
   // at drag time, rather than letting an overlap reach `SceneLayer`/
   // `buildCaptionLines`.
-  const { cues: reclamped, adjusted } = reclampPinnedTiming(editedCues);
+  const { cues: reclamped, adjusted } = reclampPinnedTiming(visibleCues);
   for (const id of adjusted) {
     console.log(`  ⚠ pinned timing for ${id} overlapped a re-planned neighbour — clamped back in bounds`);
   }
@@ -617,10 +624,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     outputDurationSec: map.outputDuration,
     clipStarts: map.spans.map((s) => s.outIn),
   });
-  const { cues: sceneCues, orphans } = applyOverrides(filled, overrideDoc);
+  const { cues: sceneCues, orphans: rawOrphans } = applyOverrides(filled, overrideDoc);
+  // A hidden scene's id is absent from the filled list by construction —
+  // that's a deletion doing its job, not a lost edit.
+  const orphans = rawOrphans.filter((id) => !hiddenIds.includes(id));
   const editedCount = Object.keys(overrideDoc.scenes).length;
   if (editedCount > 0) {
-    console.log(`▸ applied your edits to ${editedCount - orphans.length} scene(s)`);
+    console.log(`▸ applied your edits to ${editedCount - orphans.length - hiddenIds.length} scene(s)`);
   }
   for (const id of orphans) {
     console.log(`  ⚠ edit for ${id} dropped — the plan no longer has that scene`);

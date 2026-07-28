@@ -68,6 +68,15 @@ export const SceneOverrideSchema = z.object({
       autoZoom: z.boolean().optional(),
     })
     .optional(),
+  /**
+   * The scene is deleted — SOFTLY (PLAN 2026-07-30 Task C): the cue drops
+   * from the render (`dropHiddenCues`) and its window becomes a plain take,
+   * but the plan still has the scene and the timeline shows a restorable
+   * ghost. Restore DELETES this key rather than writing `false`, matching
+   * `clearVideo`/`clearTiming`: an explicit `hidden: false` would still be
+   * an override with nothing to say.
+   */
+  hidden: z.boolean().optional(),
 });
 export type SceneOverride = z.infer<typeof SceneOverrideSchema>;
 
@@ -168,6 +177,30 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     };
   });
   return { cues: out, orphans };
+}
+
+export interface DropHiddenResult {
+  cues: SceneCue[];
+  /** Ids the edit layer hid, in cue order — for the console and the ghosts. */
+  hidden: string[];
+}
+
+/**
+ * Drop the cues the user deleted. A separate pass rather than a branch in
+ * `applyOverrides`, deliberately: that function's 1:1 contract (every cue in
+ * → every cue out) is load-bearing for its callers and much of its test
+ * suite, and hiding is the one edit that breaks it. Runs immediately after
+ * it, in `produce.ts` and the editor's live memo alike — BEFORE the plain
+ * fill, so a deleted scene's window becomes an editable take on both sides.
+ */
+export function dropHiddenCues(cues: readonly SceneCue[], doc: OverrideDoc): DropHiddenResult {
+  const hidden: string[] = [];
+  const out = cues.filter((cue) => {
+    if (doc.scenes[cue.id]?.hidden !== true) return true;
+    hidden.push(cue.id);
+    return false;
+  });
+  return { cues: out, hidden };
 }
 
 export interface AppliedCaptionEdits {
