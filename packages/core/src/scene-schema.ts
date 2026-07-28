@@ -107,6 +107,19 @@ export const SceneCueSchema = z
       autoZoom: z.boolean().optional(),
     })
     .optional(),
+  /**
+   * The pip bubble, reshaped per scene (R14 §52): mask roundness (0 = square
+   * card, 1 = the default circle) and the slot's top-left placement, frame
+   * fractions. Only consulted when the cue's resolved layout is `pip-bubble` —
+   * it is a property of the bubble, not of the video in general.
+   */
+  pip: z
+    .object({
+      cornerRadius: z.number().min(0).max(1).optional(),
+      x: z.number().min(0).max(1).optional(),
+      y: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
   })

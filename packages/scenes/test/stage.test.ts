@@ -279,6 +279,49 @@ describe("videoSlotAt", () => {
   });
 });
 
+describe("pip override (R14 §52 — roundness and placement per scene)", () => {
+  const base = layoutSlots("pip-bubble").video;
+
+  it("moves the bubble and reshapes its mask mid-cue", () => {
+    const cues = [{ ...cue("pip-bubble", 2, 6), pip: { cornerRadius: 0.25, x: 0.1, y: 0.3 } }];
+    const mid = videoSlotAt(cues, 4);
+    expect(mid.rect.x).toBe(0.1);
+    expect(mid.rect.y).toBe(0.3);
+    expect(mid.cornerRadius).toBe(0.25);
+    // Size is not the override's to change — only placement and roundness.
+    expect(mid.rect.w).toBe(base.rect.w);
+    expect(mid.rect.h).toBe(base.rect.h);
+  });
+
+  it("partial override keeps the layout's own values for the rest", () => {
+    const cues = [{ ...cue("pip-bubble", 2, 6), pip: { cornerRadius: 0 } }];
+    const mid = videoSlotAt(cues, 4);
+    expect(mid.cornerRadius).toBe(0);
+    expect(mid.rect).toEqual(base.rect);
+  });
+
+  it("clamps placement so the bubble stays on-frame", () => {
+    const cues = [{ ...cue("pip-bubble", 2, 6), pip: { x: 1, y: 1 } }];
+    const mid = videoSlotAt(cues, 4);
+    expect(mid.rect.x + mid.rect.w).toBeLessThanOrEqual(1 + 1e-9);
+    expect(mid.rect.y + mid.rect.h).toBeLessThanOrEqual(1 + 1e-9);
+  });
+
+  it("is IGNORED under any other layout — a bubble property must not bend a full frame", () => {
+    const cues = [{ ...cue("blurred-behind", 2, 6), pip: { cornerRadius: 0.5, y: 0.1 } }];
+    expect(videoSlotAt(cues, 4)).toEqual(layoutSlots("blurred-behind").video);
+  });
+
+  it("the morph eases toward the OVERRIDDEN bubble, not the stock one", () => {
+    const cues = [{ ...cue("pip-bubble", 2, 6), pip: { y: 0.2 } }];
+    const entering = videoSlotAt(cues, 2 + LAYOUT_TRANSITION_SEC / 2);
+    // Halfway in from full-bleed (y=0): easing toward y=0.2 keeps the rect's
+    // y strictly below the STOCK bubble's midpoint path (stock y=0.66).
+    expect(entering.rect.y).toBeLessThan(0.66 / 2);
+    expect(entering.rect.y).toBeGreaterThan(0);
+  });
+});
+
 describe("caption + backdrop timelines", () => {
   const cues = [cue("graphic-only", 2, 6)];
   it("captions stay visible while a graphic owns the frame, in its reserved band", () => {

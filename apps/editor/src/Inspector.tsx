@@ -1,6 +1,6 @@
 import React from "react";
 import { LayoutSchema, SceneComponentIdSchema, type SceneCue, type Theme } from "@ossclip/core/browser";
-import { clampGraphicRect, graphicSlotFor } from "@ossclip/renderer/composition";
+import { clampGraphicRect, graphicSlotFor, layoutSlots } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
@@ -437,6 +437,73 @@ export const Inspector: React.FC<InspectorProps> = ({
             </button>
           ) : null}
         </div>
+        {cue.layout === "pip-bubble"
+          ? (() => {
+              // PiP bubble (R14 §52): mask roundness and placement, per scene.
+              // Shown for ANY cue whose resolved layout is pip-bubble — a
+              // plain take switched there gets the same bubble. Defaults come
+              // from the layout's own slot, so the fields always state what
+              // is actually on screen.
+              const slot = layoutSlots("pip-bubble").video;
+              const pip = cue.pip ?? {};
+              const roundness = pip.cornerRadius ?? slot.cornerRadius;
+              return (
+                <div style={section}>
+                  <span style={label}>PiP bubble</span>
+                  <div style={row}>
+                    <span style={label}>
+                      roundness{"  "}
+                      <span style={{ color: "#EDEDF2" }}>{roundness.toFixed(2)}</span>
+                    </span>
+                    {/* 1 = the default circle, 0 = a square card. Commits per
+                        tick under one coalesce key — one scrub, one undo. */}
+                    <input
+                      type="range"
+                      data-testid="pip-roundness"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={roundness}
+                      onChange={(e) =>
+                        edits.patchPip(
+                          selection.sceneId,
+                          { cornerRadius: Number(e.target.value) },
+                          `pip:${selection.sceneId}:cornerRadius`,
+                        )
+                      }
+                    />
+                  </div>
+                  <NumberField
+                    id="pip-x"
+                    value={pip.x ?? slot.rect.x}
+                    min={0}
+                    max={1 - slot.rect.w}
+                    onCommit={(v) =>
+                      edits.patchPip(selection.sceneId, { x: v }, `pip:${selection.sceneId}:x`)
+                    }
+                  />
+                  <NumberField
+                    id="pip-y"
+                    value={pip.y ?? slot.rect.y}
+                    min={0}
+                    max={1 - slot.rect.h}
+                    onCommit={(v) =>
+                      edits.patchPip(selection.sceneId, { y: v }, `pip:${selection.sceneId}:y`)
+                    }
+                  />
+                  {cue.pip ? (
+                    <button
+                      data-testid="reset-pip"
+                      style={button}
+                      onClick={() => edits.clearPip(selection.sceneId)}
+                    >
+                      Reset bubble
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })()
+          : null}
         {(() => {
           // Graphic box (R11 Task 2.10) — the precision fallback to the
           // stage handles. The effective rect is the hand-set override, the

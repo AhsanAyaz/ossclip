@@ -143,3 +143,37 @@ describe("graphic box editing (PLAN 2026-07-31 Task 2)", () => {
     expect("graphicRect" in s.doc.scenes["scene-0"]!).toBe(false);
   });
 });
+
+describe("pip bubble editing (R14 §52)", () => {
+  it("patchPip merges field by field, like patchVideo", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchPip", sceneId: "scene-0", patch: { cornerRadius: 0.3 },
+    });
+    s = editReducer(s, { type: "patchPip", sceneId: "scene-0", patch: { y: 0.2 } });
+    expect(s.doc.scenes["scene-0"]!.pip).toEqual({ cornerRadius: 0.3, y: 0.2 });
+  });
+
+  it("clearPip DELETES the key — a pip restating the defaults is still an override", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchPip", sceneId: "scene-0", patch: { cornerRadius: 1 },
+    });
+    s = editReducer(s, { type: "clearPip", sceneId: "scene-0" });
+    expect("pip" in s.doc.scenes["scene-0"]!).toBe(false);
+  });
+
+  it("clearPip on a scene without one is a no-op", () => {
+    const s = initialEditState();
+    expect(editReducer(s, { type: "clearPip", sceneId: "scene-0" })).toBe(s);
+  });
+
+  it("a layout swap KEEPS the pip — it re-applies when the scene returns to pip-bubble", () => {
+    // Unlike the graphic rect (whose geometry belongs to one layout's slot),
+    // the pip override is scoped at RENDER time: other layouts ignore it, so
+    // there is nothing stale for a swap to leave behind.
+    let s = editReducer(initialEditState(), {
+      type: "patchPip", sceneId: "scene-0", patch: { cornerRadius: 0.2 },
+    });
+    s = editReducer(s, { type: "patchLayout", sceneId: "scene-0", layout: "video-top" });
+    expect(s.doc.scenes["scene-0"]!.pip).toEqual({ cornerRadius: 0.2 });
+  });
+});

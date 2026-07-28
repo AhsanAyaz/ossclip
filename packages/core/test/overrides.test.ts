@@ -396,3 +396,22 @@ describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
     expect(cues[0]!.graphicRect).toEqual(routed.graphicRect);
   });
 });
+
+describe("pip override (R14 §52)", () => {
+  it("lands on the cue like the video override does", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { layout: "pip-bubble", pip: { cornerRadius: 0.4, x: 0.1, y: 0.6 } } },
+    });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.pip).toEqual({ cornerRadius: 0.4, x: 0.1, y: 0.6 });
+  });
+
+  it("rejects out-of-range values — hand-editable data is validated", () => {
+    expect(
+      OverrideDocSchema.safeParse({ scenes: { s: { pip: { cornerRadius: 1.5 } } } }).success,
+    ).toBe(false);
+    expect(OverrideDocSchema.safeParse({ scenes: { s: { pip: { x: -0.2 } } } }).success).toBe(
+      false,
+    );
+  });
+});

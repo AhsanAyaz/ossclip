@@ -69,6 +69,20 @@ export const SceneOverrideSchema = z.object({
     })
     .optional(),
   /**
+   * The pip bubble's mask roundness and placement (R14 §52) — mirrors
+   * `SceneCueSchema.pip`, validated here because this is the hand-editable
+   * layer. Per scene like `video`: it is one bubble meeting one moment's
+   * staging. Ignored unless the scene's resolved layout is `pip-bubble`, so
+   * it survives a layout round-trip instead of bending other layouts.
+   */
+  pip: z
+    .object({
+      cornerRadius: z.number().min(0).max(1).optional(),
+      x: z.number().min(0).max(1).optional(),
+      y: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
+  /**
    * The graphic slot, reshaped by hand (PLAN 2026-07-31 Task 2) — frame
    * fractions like every other rect. Validated HERE even though
    * `SceneCueSchema.graphicRect` is not: this one is hand-editable user
@@ -196,6 +210,7 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       props,
       ...(Object.keys(o.elements).length > 0 ? { elements: o.elements } : {}),
       ...(o.video ? { video: o.video } : {}),
+      ...(o.pip ? { pip: o.pip } : {}),
       // After ...cue, so a hand-set rect WINS over one routeAroundSourceText
       // baked into the base cues.
       ...(o.graphicRect ? { graphicRect: o.graphicRect } : {}),

@@ -58,6 +58,13 @@ export type EditAction =
       coalesce?: string;
     }
   | { type: "clearVideo"; sceneId: string }
+  | {
+      type: "patchPip";
+      sceneId: string;
+      patch: { cornerRadius?: number; x?: number; y?: number };
+      coalesce?: string;
+    }
+  | { type: "clearPip"; sceneId: string }
   | { type: "clearTiming"; sceneId: string }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
@@ -159,6 +166,30 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // override, and would keep overriding after a re-produce changed the
       // framing underneath it.
       const { video: _dropped, ...rest } = scene;
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: rest },
+      });
+    }
+    case "patchPip": {
+      const scene = withScene(state.doc, action.sceneId);
+      return commit(
+        {
+          ...state.doc,
+          scenes: {
+            ...state.doc.scenes,
+            [action.sceneId]: { ...scene, pip: { ...scene.pip, ...action.patch } },
+          },
+        },
+        action.coalesce,
+      );
+    }
+    case "clearPip": {
+      const scene = state.doc.scenes[action.sceneId];
+      if (!scene?.pip) return state;
+      // DELETE, same rule as clearVideo: a pip that restates the defaults is
+      // still an override.
+      const { pip: _dropped, ...rest } = scene;
       return commit({
         ...state.doc,
         scenes: { ...state.doc.scenes, [action.sceneId]: rest },
@@ -287,6 +318,12 @@ export function useEdits() {
       coalesce?: string,
     ) => dispatch({ type: "patchVideo", sceneId, patch, coalesce }),
     clearVideo: (sceneId: string) => dispatch({ type: "clearVideo", sceneId }),
+    patchPip: (
+      sceneId: string,
+      patch: { cornerRadius?: number; x?: number; y?: number },
+      coalesce?: string,
+    ) => dispatch({ type: "patchPip", sceneId, patch, coalesce }),
+    clearPip: (sceneId: string) => dispatch({ type: "clearPip", sceneId }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
     patchGraphicRect: (sceneId: string, rect: GraphicRect, coalesce?: string) =>

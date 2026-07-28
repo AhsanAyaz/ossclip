@@ -563,6 +563,31 @@ function morphCues(cues: readonly SceneCue[]): readonly SceneCue[] {
 }
 
 /**
+ * The video slot a CUE resolves to: its layout's slot, adjusted by the user's
+ * pip override (R14 §52) when — and only when — the resolved layout is
+ * `pip-bubble`. Roundness and placement are properties of the BUBBLE;
+ * consulting them under other layouts would let a stale override bend a
+ * full-frame layout, the same trap §50 closed for the graphic rect.
+ * Placement is clamped to keep the bubble on-frame (video may bleed under the
+ * platform chrome — that rule is about text, not faces — but not off it).
+ */
+function cueVideoSlot(
+  cue: SceneCue,
+  face: FaceCrop,
+  bands: readonly SourceBand[],
+): VideoSlotState {
+  const v = layoutSlots(cue.layout, face, bands).video;
+  const pip = cue.layout === "pip-bubble" ? cue.pip : undefined;
+  if (!pip) return v;
+  const rect = {
+    ...v.rect,
+    x: Math.min(Math.max(pip.x ?? v.rect.x, 0), 1 - v.rect.w),
+    y: Math.min(Math.max(pip.y ?? v.rect.y, 0), 1 - v.rect.h),
+  };
+  return { ...v, rect, cornerRadius: pip.cornerRadius ?? v.cornerRadius };
+}
+
+/**
  * The video slot's state at output time t, easing between layouts around cue
  * boundaries. The morph runs INSIDE the cue's own window (start → start+T,
  * end-T → end) so neighbouring cues never fight over the slot.
@@ -579,15 +604,17 @@ export function videoSlotAt(
   const base = layoutSlots("full-bleed", face, bands).video;
   const cue = activeCueAt(cues, tSec);
   if (!cue) return base;
-  const target = layoutSlots(cue.layout, face, bands).video;
+  const target = cueVideoSlot(cue, face, bands);
   const T = Math.min(LAYOUT_TRANSITION_SEC, (cue.endSec - cue.startSec) / 2);
   const sinceStart = tSec - cue.startSec;
   const untilEnd = cue.endSec - tSec;
 
+  // Each neighbour resolves through its OWN pip override, so a morph into a
+  // repositioned bubble eases toward where that bubble actually is.
   const prev = activeCueAt(cues, cue.startSec - 1e-3);
   const next = activeCueAt(cues, cue.endSec + 1e-3);
-  const from = prev ? layoutSlots(prev.layout, face, bands).video : base;
-  const to = next ? layoutSlots(next.layout, face, bands).video : base;
+  const from = prev ? cueVideoSlot(prev, face, bands) : base;
+  const to = next ? cueVideoSlot(next, face, bands) : base;
 
   if (sinceStart < T) return lerpVideo(from, target, easeInOut(sinceStart / T));
   if (untilEnd < T) return lerpVideo(target, to, easeInOut(1 - untilEnd / T));
