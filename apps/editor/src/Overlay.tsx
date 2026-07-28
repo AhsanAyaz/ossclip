@@ -104,6 +104,13 @@ interface OverlayProps {
 
 const HANDLE = 9;
 
+/** Drag commits round to a tenth of a composition px (§48): a rescaled page
+ * delta is a long float, and nobody nudges finer than 0.1px — the stored doc
+ * and the number fields should read like a person set them. */
+const round1 = (v: number): number => Math.round(v * 10) / 10;
+/** Rect fractions round to 4 decimals — 0.1px of frame at 1080 wide. */
+const round4 = (v: number): number => Math.round(v * 10000) / 10000;
+
 /** Box transform handle chrome (R11 Task 2). */
 const boxHandleBase: React.CSSProperties = {
   position: "absolute",
@@ -618,17 +625,20 @@ export const Overlay: React.FC<OverlayProps> = ({
           const canvas = canvasBox();
           if (canvas) {
             // ONE patch per gesture — one undo step, like every other drag.
-            edits.patchGraphicRect(
-              rectDrag.sceneId,
-              clampGraphicRect(
-                applyBoxHandle(
-                  rectDrag.start,
-                  rectDrag.handle,
-                  rectDrag.dx / canvas.w,
-                  rectDrag.dy / canvas.h,
-                ),
+            const final = clampGraphicRect(
+              applyBoxHandle(
+                rectDrag.start,
+                rectDrag.handle,
+                rectDrag.dx / canvas.w,
+                rectDrag.dy / canvas.h,
               ),
             );
+            edits.patchGraphicRect(rectDrag.sceneId, {
+              x: round4(final.x),
+              y: round4(final.y),
+              w: round4(final.w),
+              h: round4(final.h),
+            });
           }
         }
         onGraphicPreview(null);
@@ -645,8 +655,8 @@ export const Overlay: React.FC<OverlayProps> = ({
           const scale = pageToComposition();
           // ONE patch per gesture — one undo step (PLAN Task B2.4).
           edits.patchVideo(videoDrag.sceneId, {
-            dx: videoDrag.baseDx + videoDrag.dx * scale,
-            dy: videoDrag.baseDy + videoDrag.dy * scale,
+            dx: round1(videoDrag.baseDx + videoDrag.dx * scale),
+            dy: round1(videoDrag.baseDy + videoDrag.dy * scale),
           });
         }
         onVideoPreview(null);
@@ -667,8 +677,8 @@ export const Overlay: React.FC<OverlayProps> = ({
         const scene = edits.doc.scenes[sel.sceneId];
         const prior = scene?.elements[sel.elementId];
         edits.patchElement(sel.sceneId, sel.elementId, {
-          dx: (prior?.dx ?? 0) + drag.dx * scale,
-          dy: (prior?.dy ?? 0) + drag.dy * scale,
+          dx: round1((prior?.dx ?? 0) + drag.dx * scale),
+          dy: round1((prior?.dy ?? 0) + drag.dy * scale),
         });
       }
       dragRef.current = null;

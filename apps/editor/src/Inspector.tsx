@@ -64,46 +64,55 @@ const button: React.CSSProperties = {
   cursor: "pointer",
 };
 
+/** Display precision (§48): three decimals is enough for any real edit —
+ * never the 13 digits of float dust a drag can produce. */
+const roundShown = (v: number): string => String(Math.round(v * 1000) / 1000);
+
 const NumberField: React.FC<{
   id: string;
   value: number;
   onCommit: (v: number) => void;
-  /**
-   * HTML's default step is 1, which silently marks 0.62 INVALID and refuses
-   * to commit it — that made the 0–1 video-framing scale useless and has
-   * quietly afflicted every numeric field since they shipped (FINDINGS §43).
-   * "any" accepts decimals; pass a number only to genuinely quantise.
-   */
-  step?: number | "any";
   min?: number;
   max?: number;
-}> = ({ id, value, onCommit, step = "any", min, max }) => (
-  <div style={row}>
-    <span style={label}>{id}</span>
-    <input
-      type="number"
-      data-testid={`field-${id}`}
-      style={numberInput}
-      step={step}
-      min={min}
-      max={max}
-      value={Number.isFinite(value) ? value : 0}
-      onChange={(e) => {
-        // An in-progress value like "-" or "" parses to NaN (or, for some
-        // browsers, an empty string parses to 0 which is fine) — only
-        // dispatch once the field holds a real number, so a still-typing
-        // input never JSON.stringifies to `null` and corrupts the stored
-        // transform. Clamp to the declared range so the schema's own bounds
-        // (`positive().max(4)`) reject nothing the UI accepted.
-        const parsed = Number(e.target.value);
-        if (!Number.isFinite(parsed)) return;
-        const lo = min ?? -Infinity;
-        const hi = max ?? Infinity;
-        onCommit(Math.min(hi, Math.max(lo, parsed)));
-      }}
-    />
-  </div>
-);
+}> = ({ id, value, onCommit, min, max }) => {
+  // A DRAFT while focused (§48): the field is controlled from the committed
+  // value, and re-formatting the text mid-keystroke would wipe what the user
+  // is typing — "0,8" would snap to "0" the instant the comma landed.
+  const [draft, setDraft] = React.useState<string | null>(null);
+  return (
+    <div style={row}>
+      <span style={label}>{id}</span>
+      <input
+        // type="text" + inputMode="decimal", NOT type="number" (§48): in a
+        // comma-decimal locale the number input renders "0,8" but reports a
+        // typed comma value as an EMPTY string, so the field could display a
+        // number that can never be committed. §43 fixed `step`; the locale
+        // separator was the second half of the same unusable-field defect.
+        type="text"
+        inputMode="decimal"
+        data-testid={`field-${id}`}
+        style={numberInput}
+        value={draft ?? (Number.isFinite(value) ? roundShown(value) : "0")}
+        onFocus={(e) => setDraft(e.target.value)}
+        onBlur={() => setDraft(null)}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          // Accept both decimal separators; skip while the text is not yet a
+          // number ("", "-", "0,") so a still-typing input never commits
+          // garbage. Clamp to the declared range so the schema's own bounds
+          // reject nothing the UI accepted.
+          const text = e.target.value.trim();
+          if (text === "") return;
+          const parsed = Number(text.replace(",", "."));
+          if (!Number.isFinite(parsed)) return;
+          const lo = min ?? -Infinity;
+          const hi = max ?? Infinity;
+          onCommit(Math.min(hi, Math.max(lo, parsed)));
+        }}
+      />
+    </div>
+  );
+};
 
 const ThemeField: React.FC<{
   id: string;

@@ -157,6 +157,14 @@ test("decimal scale commits, and the timing section states the window (R9-5+6)",
   // derived `take-*` cues between the graphics (Task A), so positional
   // indexing into it names a different cue than the block that was clicked.
   expect(doc.scenes[renderProps.baseSceneCues[0].id].video.scale).toBe(0.62);
+
+  // R12 §48: a comma-decimal locale types "0,7" — it must COMMIT as 0.7,
+  // not sit in the field as a string the old number input reported empty.
+  await page.getByTestId("field-scale").fill("0,7");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc2 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc2.scenes[renderProps.baseSceneCues[0].id].video.scale).toBe(0.7);
 });
 
 test("the timeline scrubs on press-and-drag, and a click inside a block seeks to that point (Tasks 3+4)", async ({
