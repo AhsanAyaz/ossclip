@@ -62,10 +62,13 @@ export const ChatMock: React.FC<{
   props: z.infer<typeof ChatMockProps>;
   theme: Theme;
   widthPx?: number;
+  heightPx?: number;
   edits?: ElementEdits;
-}> = ({ props, theme, widthPx, edits }) => {
+}> = ({ props, theme, widthPx, heightPx, edits }) => {
   const bubbles = chatBubbles(props);
-  const fontSize = chatMetrics(bubbles.map((b) => b.text), widthPx);
+  // Self-fitting (R11 Task 3): the type solves against the REAL slot, both
+  // axes — the stage no longer magnifies this component.
+  const fontSize = chatMetrics(bubbles.map((b) => b.text), { widthPx, heightPx });
   return (
     <div
       style={{

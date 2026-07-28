@@ -126,10 +126,10 @@ describe("fill contract (FINDINGS §23)", () => {
 
   it("the thin-strip cases gain real size", () => {
     // The components §23 called out: each rendered at 8-15% of its slot.
-    // FlowDiagram and StrikethroughReveal solve their own type against the
-    // slot, so there is no "unscaled" baseline for them — flow.test.ts and the
-    // reveal tests below cover their fill directly.
-    for (const id of ["TitleCard", "ChatMock", "TerminalMock"] as const) {
+    // Self-fitting components (FlowDiagram, StrikethroughReveal, and since
+    // R11 ChatMock) have no "unscaled" baseline — their own suites cover
+    // their fill directly.
+    for (const id of ["TitleCard", "TerminalMock"] as const) {
       const slot = slotOf(id);
       const natural = estimateHeightPx(id, SPARSE[id], slot.widthPx, slot.heightPx);
       const { height } = fittedHeight(id, SPARSE[id]);
@@ -162,9 +162,16 @@ describe("fill contract (FINDINGS §23)", () => {
   });
 
   it("scales type with content — less copy reads bigger than more", () => {
+    // Self-fitting since R11 Task 3: the stage no longer scales ChatMock
+    // (magnifying it narrowed its own text box); its METRIC carries the
+    // less-copy-reads-bigger property instead.
     const slot = slotOf("ChatMock");
-    const one = fitScale("ChatMock", { messages: [{ from: "user", text: "why?" }] }, slot);
-    const four = fitScale("ChatMock", DENSE.ChatMock, slot);
+    expect(fitScale("ChatMock", DENSE.ChatMock, slot)).toBe(1);
+    const one = chatMetrics(["why?"], slot);
+    const four = chatMetrics(
+      (DENSE.ChatMock.messages as Array<{ text: string }>).map((m) => m.text),
+      slot,
+    );
     expect(one).toBeGreaterThan(four);
   });
 
@@ -304,13 +311,57 @@ describe("ChatMock bubbles (FINDINGS §28)", () => {
     // A single unbreakable word has no wrap opportunity, so only the type size
     // can keep it inside the rounded rect (§28a).
     const long = ['"ABSOLUTELYENORMOUSKEYWORD"'];
-    const font = chatMetrics(long, SLOT_W);
+    const font = chatMetrics(long, { widthPx: SLOT_W });
     const inner = SLOT_W - 80;
     const bubbleWidth = font * (long[0]!.length * 0.58 + 2 * 0.85);
     expect(bubbleWidth).toBeLessThanOrEqual(inner * 0.82 + 1);
   });
 
-  it("never exceeds the authored type size for ordinary copy", () => {
-    expect(chatMetrics(['"AGENTS"'], SLOT_W)).toBe(40);
+  it("a short line — the CTA word — grows toward the composition ceiling (R11 Task 3)", () => {
+    // The old layout-space 40 only made sense under the stage's ×2.4
+    // magnifier; self-fitting, the single-word ask sizes against the real
+    // slot, bounded by 96 (the same 40 × 2.4, expressed directly) and by
+    // §28a's word fit.
+    const font = chatMetrics(['"AGENTS"'], { widthPx: SLOT_W });
+    expect(font).toBeGreaterThan(40);
+    expect(font).toBeLessThanOrEqual(96);
+    const bubbleWidth = font * ('"AGENTS"'.length * 0.58 + 2 * 0.85);
+    expect(bubbleWidth).toBeLessThanOrEqual((SLOT_W - 80) * 0.82 + 1);
+  });
+
+  describe("sized to read, not to fill (R11 Task 3.5)", () => {
+    // Scene-11's real case: one 26-character message in the real
+    // blurred-behind slot rendered as five one-word lines.
+    const SLOT = { widthPx: 0.77 * 1080, heightPx: 0.36 * 1920 };
+    const MSG = "Which one didn't you know?";
+    const perLine = (font: number, widthPx: number): number => {
+      const textW = (widthPx - 80) * 0.82 - 2 * font * 0.85;
+      return Math.floor(textW / (0.58 * font));
+    };
+
+    it("scene-11's message wraps to at most 2 lines and the bubble reads wide", () => {
+      const font = chatMetrics([MSG], SLOT);
+      const chars = perLine(font, SLOT.widthPx);
+      expect(Math.ceil(MSG.length / chars)).toBeLessThanOrEqual(2);
+      // The bubble spans a real share of the slot, not a thin column.
+      const lineChars = Math.min(MSG.length, chars);
+      const bubbleWidth = font * (lineChars * 0.58 + 2 * 0.85);
+      expect(bubbleWidth).toBeGreaterThan(SLOT.widthPx * 0.6);
+    });
+
+    it("a long multi-message exchange still fits its slot height", () => {
+      const messages = Array.from({ length: 5 }, (_, i) => ({
+        from: i % 2 ? "agent" : "user",
+        text: "a fairly long conversational message that wraps a few times over",
+      }));
+      const height = estimateHeightPx("ChatMock", { messages }, SLOT.widthPx, SLOT.heightPx);
+      expect(height).toBeLessThanOrEqual(SLOT.heightPx + 1);
+    });
+
+    it("widening the slot strictly increases characters per line — what the box handle depends on", () => {
+      const narrow = chatMetrics([MSG], SLOT);
+      const wide = chatMetrics([MSG], { widthPx: SLOT.widthPx * 1.2, heightPx: SLOT.heightPx });
+      expect(perLine(wide, SLOT.widthPx * 1.2)).toBeGreaterThan(perLine(narrow, SLOT.widthPx));
+    });
   });
 });

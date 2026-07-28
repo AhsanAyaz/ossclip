@@ -24,14 +24,21 @@ import type { SceneComponentId } from "@ossclip/core/browser";
 /** Fraction of the slot height a fitted graphic aims to occupy. */
 export const FILL_TARGET = 0.94;
 /** Components that solve their own type against the slot, needing no scale. */
-const SELF_FITTING = new Set<SceneComponentId>(["FlowDiagram", "StrikethroughReveal"]);
+const SELF_FITTING = new Set<SceneComponentId>([
+  "FlowDiagram",
+  "StrikethroughReveal",
+  "ChatMock",
+]);
 
 /**
  * Components whose type is solved against the slot directly, so the stage's
- * uniform scale would only cancel out. Both are WIDTH-bound — a row of chips
- * or a line of big words can only grow until it hits the slot's edge — which
- * means neither can fill a tall slot by scaling, and how much they do fill is
- * a property of their own solver rather than of `fitScale`.
+ * uniform scale would only cancel out. FlowDiagram and StrikethroughReveal
+ * are WIDTH-bound — a row of chips or a line of big words can only grow
+ * until it hits the slot's edge. ChatMock joined them in R11 Task 3 for the
+ * inverse reason: its bubble is capped at 82% of its own box, so magnifying
+ * it NARROWS the text it can hold — `fitScale`'s ×2.4 turned a 26-character
+ * message into a five-line one-word column. Its type solves against the
+ * real slot in `chatMetrics` instead.
  */
 export function isSelfFitting(component: SceneComponentId): boolean {
   return SELF_FITTING.has(component);
@@ -150,14 +157,11 @@ export function estimateHeightPx(
       return h;
     }
     case "ChatMock": {
-      const bubbles = chatBubbles(props);
-      const font = chatMetrics(bubbles.map((b) => b.text), widthPx);
-      const inner = (widthPx - 80) * BUBBLE_MAX_WIDTH - 2 * font * BUBBLE_PAD_X;
-      let h = 0;
-      for (const b of bubbles) {
-        h += textHeight(b.text.length, font, inner, 1.2, CHAR_W_BOLD) + font * 1.2 + 4;
-      }
-      return h + font * 0.5 * Math.max(0, bubbles.length - 1);
+      // One model, two callers (R11 Task 3.3): the metric solved the font
+      // against this same stack-height function, so the two cannot disagree.
+      const texts = chatBubbles(props).map((b) => b.text);
+      const font = chatMetrics(texts, { widthPx, heightPx });
+      return chatStackHeightPx(texts, font, widthPx);
     }
     case "ScreenshotFrame": {
       // The placeholder is a fixed 420px block; a real image is unbounded and
@@ -266,12 +270,39 @@ export function revealMetrics(
   );
 }
 
-/** Base type size a chat bubble is authored at, and its legibility floor. */
-const CHAT_FONT = 40;
+/**
+ * Chat typography (R11 Task 3), all in COMPOSITION px now that ChatMock is
+ * self-fitting (the old `CHAT_FONT = 40` was a layout-space number that only
+ * made sense before ×2.4 magnification stopped applying):
+ * - `CHAT_TARGET_LINE_CHARS` is the measure — overlay-caption typography
+ *   wraps around ~22 characters, not body-text 45+.
+ * - `CHAT_WRAP_FONT` caps a WRAPPING exchange at caption-sized type. The cap
+ *   is what makes widening the box REWRAP the text (strictly more characters
+ *   per line) instead of just magnifying it — the property the Task 2 handle
+ *   depends on; without it the font scales with the slot and the wrap comes
+ *   out the same at every width.
+ * - `CHAT_MAX_FONT` is what a single short line — the CTA word — may grow
+ *   to: today's 40 × 2.4 ceiling, expressed directly.
+ */
 const CHAT_MIN_FONT = 22;
+const CHAT_WRAP_FONT = 44;
+const CHAT_MAX_FONT = 96;
+const CHAT_TARGET_LINE_CHARS = 22;
 /** Bubble geometry as multiples of the font size — see ChatMock's Bubble. */
 const BUBBLE_PAD_X = 0.85;
 const BUBBLE_MAX_WIDTH = 0.82;
+
+/** Height of the bubble stack at a given font. ONE model, two callers
+ * (`chatMetrics`' height fit and `estimateHeightPx`) — no disagreement. */
+function chatStackHeightPx(texts: readonly string[], font: number, widthPx: number): number {
+  const inner = widthPx - 80; // root padding "0 40px"
+  const textW = inner * BUBBLE_MAX_WIDTH - 2 * font * BUBBLE_PAD_X;
+  let h = 0;
+  for (const t of texts) {
+    h += textHeight(t.length, font, textW, 1.2, CHAR_W_BOLD) + font * 1.2 + 4;
+  }
+  return h + font * 0.5 * Math.max(0, texts.length - 1);
+}
 
 /**
  * The bubbles a ChatMock actually renders.
@@ -298,25 +329,47 @@ export function chatBubbles(
 }
 
 /**
- * Type size for chat bubbles, bounded by the bubble's OWN box rather than the
- * slot (FINDINGS §28a).
+ * Type size for chat bubbles, solved against the REAL slot (R11 Task 3).
  *
- * The fill work bounded the slot, which is not the same constraint: a bubble
- * is capped at 82% of the container and carries its own padding, so a single
- * unbreakable word — `"AGENTS"`, or an emoji-bearing reply — renders edge to
- * edge and spills through the rounded rect. Wrapping cannot save it, because
- * one word has no break opportunity. So the type shrinks until the longest
- * WORD fits inside bubble-minus-padding.
+ * Sized by LINE LENGTH: the line the type must fit is the whole message when
+ * it is short (a CTA word grows toward `CHAT_MAX_FONT` and fills its
+ * bubble), and the ~22-character target measure when it wraps (capped at
+ * caption-sized `CHAT_WRAP_FONT`, so a wider slot means MORE words per line,
+ * never just bigger ones). The old sizer used the longest WORD as the sizer
+ * itself, which — through the fill magnifier narrowing the layout box —
+ * rendered a 26-character message as five one-word lines.
+ *
+ * §28a's invariant is kept EXACTLY, as the hard upper bound it always was:
+ * the longest unbreakable word must still fit inside bubble-minus-padding,
+ * because wrapping cannot save a single word. And the stack must fit the
+ * slot's height budget — the font shrinks (down to `CHAT_MIN_FONT`) until
+ * the same height model `estimateHeightPx` uses says it fits.
  */
-export function chatMetrics(texts: readonly string[], widthPx = 831): number {
+export function chatMetrics(
+  texts: readonly string[],
+  slot: { widthPx?: number; heightPx?: number } = {},
+): number {
+  const widthPx = slot.widthPx ?? 831;
+  const heightPx = slot.heightPx ?? Infinity;
   const inner = widthPx - 80; // root padding "0 40px"
+  const longestText = texts.reduce((max, t) => Math.max(max, t.length), 0);
+  if (longestText === 0) return CHAT_WRAP_FONT;
   const longestWord = texts
     .flatMap((t) => t.split(/\s+/))
     .reduce((max, w) => Math.max(max, w.length), 0);
-  if (longestWord === 0) return CHAT_FONT;
   // bubbleWidth = font·(chars·CHAR_W + 2·PAD_X) ≤ inner·MAX_WIDTH
-  const fit = (inner * BUBBLE_MAX_WIDTH) / (longestWord * CHAR_W_BOLD + 2 * BUBBLE_PAD_X);
-  return Math.max(CHAT_MIN_FONT, Math.min(CHAT_FONT, Math.floor(fit)));
+  const fitChars = (chars: number): number =>
+    (inner * BUBBLE_MAX_WIDTH) / (chars * CHAR_W_BOLD + 2 * BUBBLE_PAD_X);
+  const line = Math.min(longestText, CHAT_TARGET_LINE_CHARS);
+  const ceiling = longestText > CHAT_TARGET_LINE_CHARS ? CHAT_WRAP_FONT : CHAT_MAX_FONT;
+  let font = Math.floor(Math.min(fitChars(line), fitChars(longestWord), ceiling));
+  while (
+    font > CHAT_MIN_FONT &&
+    chatStackHeightPx(texts, font, widthPx) > heightPx * FILL_TARGET
+  ) {
+    font -= 1;
+  }
+  return Math.max(CHAT_MIN_FONT, font);
 }
 
 /** Below this the chips stop reading on a phone — switch shape, don't shrink. */
