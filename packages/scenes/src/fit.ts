@@ -183,11 +183,41 @@ export function estimateHeightPx(
  * "$ ossclip produce raw.mp4" in the terminal once graphics started filling
  * their slot, so the fill scale is bounded by this too.
  */
+/** Longest unbreakable word in a string, in characters. */
+const longestWord = (v: unknown): number =>
+  str(v)
+    .split(/\s+/)
+    .reduce((max, w) => Math.max(max, w.length), 0);
+
 export function estimateMinWidthPx(
   component: SceneComponentId,
   props: Record<string, unknown>,
 ): number {
   switch (component) {
+    case "RuleCard": {
+      // §46: `AI HARNESS` wrapped to two lines and HARNESS — one unbreakable
+      // word — was wider than the card, spilling past the rounded rect until
+      // the slot's overflow:hidden severed it. The height model knows how
+      // text WRAPS but a word cannot, so the longest word is a hard floor on
+      // width, exactly like ChatMock's §28a rule. Fonts, paddings and
+      // letter-spacings mirror RuleCard.tsx.
+      const kicker = longestWord(props.kicker) * 30 * (CHAR_W_UPPER + 0.28);
+      const text = longestWord(props.text) * 72 * CHAR_W_UPPER;
+      const struck = longestWord(props.struck) * 44 * (CHAR_W_UPPER + 0.04);
+      const widest = Math.max(kicker, text, struck);
+      return widest > 0 ? 60 + 96 + widest : 0; // root "0 30px" + card "40px 48px"
+    }
+    case "TitleCard": {
+      // Same rule; fonts and spacings mirror TitleCard.tsx. The emphasis
+      // block is one huge token (a "861%"-style stat) and renders at 210px.
+      const titleFont = str(props.emphasis) ? 64 : 96;
+      const eyebrow = longestWord(props.eyebrow) * 34 * (CHAR_W_UPPER + 0.35);
+      const emphasis = longestWord(props.emphasis) * 210 * CHAR_W_UPPER;
+      const title = longestWord(props.title) * titleFont * (CHAR_W_UPPER + 0.02);
+      const sub = longestWord(props.sub) * 40 * CHAR_W_BOLD;
+      const widest = Math.max(eyebrow, emphasis, title, sub);
+      return widest > 0 ? 80 + widest : 0; // root padding "0 40px"
+    }
     case "TerminalMock": {
       let longest = 0;
       for (const w of arr(props.windows)) {
@@ -206,10 +236,7 @@ export function estimateMinWidthPx(
       // filling their slot).
       const value = str(props.value).length * 110 * CHAR_W_UPPER;
       if (value === 0) return 0;
-      const longestWord = str(props.label)
-        .split(/\s+/)
-        .reduce((max, w) => Math.max(max, w.length), 0);
-      const label = longestWord * 42 * CHAR_W_UPPER;
+      const label = longestWord(props.label) * 42 * CHAR_W_UPPER;
       return 60 + 104 + label + 40 + value; // root pad + card pad + row
     }
     default:

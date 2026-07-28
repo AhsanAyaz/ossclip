@@ -201,8 +201,10 @@ describe("fill contract (FINDINGS §23)", () => {
   it("never scales non-reflowing content past the slot width", () => {
     // The terminal's lines are white-space: pre — they cannot wrap, so a scale
     // chosen on height alone runs "$ ossclip produce raw.mp4" off the edge.
+    // RuleCard and TitleCard joined in R12 §46: a single unbreakable WORD
+    // cannot wrap either, and without a min-width they magnified past it.
     for (const set of [SPARSE, DENSE]) {
-      for (const id of ["TerminalMock", "StatCard"] as const) {
+      for (const id of ["TerminalMock", "StatCard", "RuleCard", "TitleCard"] as const) {
         const slot = slotOf(id);
         const k = fitScale(id, set[id], slot);
         const minWidth = estimateMinWidthPx(id, set[id]);
@@ -363,5 +365,29 @@ describe("ChatMock bubbles (FINDINGS §28)", () => {
       const wide = chatMetrics([MSG], { widthPx: SLOT.widthPx * 1.2, heightPx: SLOT.heightPx });
       expect(perLine(wide, SLOT.widthPx * 1.2)).toBeGreaterThan(perLine(narrow, SLOT.widthPx));
     });
+  });
+});
+
+describe("a single unbreakable word never scales past its card (R12 §46)", () => {
+  it("the real scene-4: RuleCard 'AI HARNESS' keeps HARNESS inside the slot", () => {
+    // Rendered as AI / HARNESS, and HARNESS was wider than the card — the
+    // glyphs ran past the rounded rect and the slot's overflow:hidden served
+    // the viewer a severed S. The height model knows wrapping; a word can't.
+    const props = { kicker: "NEEDED", text: "AI HARNESS" };
+    const slot = slotOf("RuleCard");
+    const minWidth = estimateMinWidthPx("RuleCard", props);
+    expect(minWidth).toBeGreaterThan(0); // used to hit `default: return 0`
+    const k = fitScale("RuleCard", props, slot);
+    expect(minWidth * k).toBeLessThanOrEqual(slot.widthPx + 1);
+    expect(k).toBeLessThan(2.4 - 1e-6); // the cap actually bound
+  });
+
+  it("TitleCard's longest word caps the scale the same way", () => {
+    const props = { title: "AN UNBREAKABLETITLEWORD HERE" };
+    const slot = slotOf("TitleCard");
+    const minWidth = estimateMinWidthPx("TitleCard", props);
+    expect(minWidth).toBeGreaterThan(0);
+    const k = fitScale("TitleCard", props, slot);
+    expect(minWidth * k).toBeLessThanOrEqual(slot.widthPx + 1);
   });
 });
