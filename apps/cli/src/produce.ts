@@ -36,8 +36,11 @@ import {
   loadConfig,
   loudnorm,
   MAX_NORMALIZE_UPSCALE,
+  ZOOM_MAX_SCALE,
+  assessCueFraming,
   bakeNormalizedSource,
   planNormalization,
+  type NormalizePlan,
   makeMezzanine,
   measureFace,
   measureFaceInWindows,
@@ -64,7 +67,12 @@ import {
   type Transcript,
 } from "@ossclip/core";
 import { renderCover, renderProduction } from "@ossclip/renderer";
-import { coverTextRect, regionsDuring, routeAroundSourceText } from "@ossclip/scenes/geometry";
+import {
+  coverTextRect,
+  layoutSlots,
+  regionsDuring,
+  routeAroundSourceText,
+} from "@ossclip/scenes/geometry";
 
 export interface ProduceOptions {
   out?: string;
@@ -110,6 +118,12 @@ function sha1File(path: string): Promise<string> {
       .on("error", rej);
   });
 }
+
+/**
+ * Frame-area share above which a layout's video slot is the SUBJECT rather
+ * than an inset. `video-top` is 42% and full-bleed 100%; the pip bubble is 5%.
+ */
+const PRIMARY_VIDEO_SLOT_AREA = 0.2;
 
 async function preflight(bin: string, hint: string): Promise<void> {
   try {
@@ -164,102 +178,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     );
   }
 
-  /**
-   * Mixed framing (option (a), decided with the author 2026-07-28): a source
-   * that alternates framings is NORMALIZED — every segment cropped to the
-   * tightest field of view the take ever shows, placed on that segment's own
-   * measured face, and baked into one uniform file. Everything downstream then
-   * runs the ordinary uniform-source path against the baked file; the render-
-   * time per-segment cover (which produced a ~3× apparent zoom jump at every
-   * boundary) is gone. When the strip is too small to cover the output without
-   * visible softening, normalization refuses and the render falls back to
-   * FIT — the strip inset at natural size (option (b)) — with a loud warning.
-   */
-  let analysisInput = input;
-  let analysisProbe = sourceProbe;
-  let analysisCropVf = cropVf;
-  let cacheTag = "";
-  let fitFallback = false;
-  if (!detection.uniform) {
-    const boxed = letterboxedSeconds(contentTimeline);
-    console.log(
-      `▸ source framing CHANGES mid-take: ${contentTimeline.length} segments, ` +
-        `${boxed.toFixed(1)}s of ${sourceProbe.duration.toFixed(1)}s letterboxed`,
-    );
-    for (const seg of contentTimeline) {
-      console.log(
-        `  · ${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s ` +
-          (seg.rect.full
-            ? "full frame"
-            : `content ${seg.rect.w}×${seg.rect.h} at x ${seg.rect.x}, y ${seg.rect.y}`),
-      );
-    }
-    // Each segment's face, measured inside ITS OWN rect — a single median
-    // across mixed framings averages two coordinate systems and points the
-    // crop at neither (the old C5 gap; it put the eyes at the top of the
-    // frame on the motivating clip).
-    const segmentFaces = await measureFaceInWindows(
-      tools,
-      input,
-      contentTimeline.map((seg) => ({
-        startSec: seg.startSec,
-        endSec: seg.endSec,
-        cropVf: cropFilter(seg.rect),
-      })),
-      { workDir: work },
-    );
-    const plan = planNormalization(contentTimeline, segmentFaces, { width: 1080, height: 1920 });
-    if (plan.ok) {
-      const planHash = createHash("sha1").update(JSON.stringify(plan)).digest("hex").slice(0, 8);
-      const baked = join(work, `content-${planHash}.mp4`);
-      if (!existsSync(baked)) {
-        console.log(
-          `▸ normalizing framing: one ${plan.canvas.width}×${plan.canvas.height} field of view ` +
-            `across ${plan.segments.length} segments (upscale ×${plan.coverUpscale.toFixed(2)})…`,
-        );
-        await bakeNormalizedSource(tools, input, plan, baked);
-      } else {
-        console.log(`▸ normalized framing cached (${basename(baked)})`);
-      }
-      analysisInput = baked;
-      analysisProbe = await probe(tools, baked);
-      analysisCropVf = "";
-      cacheTag = basename(baked);
-    } else {
-      fitFallback = true;
-      console.log(
-        `  ⚠ strip too small to unify (would upscale ×${plan.coverUpscale.toFixed(2)} > ` +
-          `${MAX_NORMALIZE_UPSCALE}) — letterboxed stretches render FITTED at natural size; ` +
-          `framing will visibly change at ${contentTimeline.length - 1} boundaries`,
-      );
-    }
-  }
-  const contentRect: ContentRect = detection.uniform ?? {
-    x: 0, y: 0, w: analysisProbe.width, h: analysisProbe.height, full: true,
-  };
-  /** The picture's dimensions — what every geometric consumer reasons about. */
-  const content = { width: contentRect.w, height: contentRect.h };
-
-  // Face measurement (FINDINGS §13): one static crop offset per source,
-  // measured rather than guessed; cached in the workdir like the transcript.
-  const faceSamples = 9;
-  const faceBox = await measureFace(tools, analysisInput, analysisProbe.duration, {
-    cacheDir: work,
-    cropVf: analysisCropVf,
-    cacheTag,
-    samples: faceSamples,
-  });
-  console.log(
-    faceBox
-      ? `▸ face at ${(faceBox.centerYFrac * 100).toFixed(0)}% down the frame, ` +
-          `${(faceBox.sizeFrac * 100).toFixed(0)}% tall ` +
-          `(${faceBox.framesDetected}/${faceBox.framesSampled} frames` +
-          `${faceBox.framesRotated ? `, ${faceBox.framesRotated} recovered by tilt sweep` : ""})`
-      : // A miss must be LOUD (PLAN Task 8): the silent fallback to the
-        // assumed selfie framing is how a wrong crop shipped unnoticed.
-        `▸ no face detected in ${faceSamples} sampled frames — using the ASSUMED framing; ` +
-          "the crop may be wrong, check the output",
-  );
 
   let transcript: Transcript;
   const transcriptCache = join(work, "transcript.json");
@@ -478,6 +396,112 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
 
+  // ---- Framing (plan step C) --------------------------------------------
+  // Deliberately AFTER the scenes exist. Framing used to be decided before
+  // the producer had run, which meant the one field of view baked for the
+  // whole video was chosen without knowing that a moment would be a tiny
+  // pip bubble and the next a full-bleed close-up. The cut is still computed
+  // on raw ASR above, so moving this changes no edit decision.
+  /**
+   * Mixed framing (option (a), decided with the author 2026-07-28): a source
+   * that alternates framings is NORMALIZED — every segment cropped to the
+   * tightest field of view the take ever shows, placed on that segment's own
+   * measured face, and baked into one uniform file. Everything downstream then
+   * runs the ordinary uniform-source path against the baked file; the render-
+   * time per-segment cover (which produced a ~3× apparent zoom jump at every
+   * boundary) is gone. When the strip is too small to cover the output without
+   * visible softening, normalization refuses and the render falls back to
+   * FIT — the strip inset at natural size (option (b)) — with a loud warning.
+   */
+  /** The bake plan, kept so per-scene framing can be assessed against it. */
+  let framingPlan: NormalizePlan | null = null;
+  let analysisInput = input;
+  let analysisProbe = sourceProbe;
+  let analysisCropVf = cropVf;
+  let cacheTag = "";
+  let fitFallback = false;
+  if (!detection.uniform) {
+    const boxed = letterboxedSeconds(contentTimeline);
+    console.log(
+      `▸ source framing CHANGES mid-take: ${contentTimeline.length} segments, ` +
+        `${boxed.toFixed(1)}s of ${sourceProbe.duration.toFixed(1)}s letterboxed`,
+    );
+    for (const seg of contentTimeline) {
+      console.log(
+        `  · ${seg.startSec.toFixed(1)}–${seg.endSec.toFixed(1)}s ` +
+          (seg.rect.full
+            ? "full frame"
+            : `content ${seg.rect.w}×${seg.rect.h} at x ${seg.rect.x}, y ${seg.rect.y}`),
+      );
+    }
+    // Each segment's face, measured inside ITS OWN rect — a single median
+    // across mixed framings averages two coordinate systems and points the
+    // crop at neither (the old C5 gap; it put the eyes at the top of the
+    // frame on the motivating clip).
+    const segmentFaces = await measureFaceInWindows(
+      tools,
+      input,
+      contentTimeline.map((seg) => ({
+        startSec: seg.startSec,
+        endSec: seg.endSec,
+        cropVf: cropFilter(seg.rect),
+      })),
+      { workDir: work },
+    );
+    const plan = planNormalization(contentTimeline, segmentFaces, { width: 1080, height: 1920 });
+    framingPlan = plan;
+    if (plan.ok) {
+      const planHash = createHash("sha1").update(JSON.stringify(plan)).digest("hex").slice(0, 8);
+      const baked = join(work, `content-${planHash}.mp4`);
+      if (!existsSync(baked)) {
+        console.log(
+          `▸ normalizing framing: one ${plan.canvas.width}×${plan.canvas.height} field of view ` +
+            `across ${plan.segments.length} segments (upscale ×${plan.coverUpscale.toFixed(2)})…`,
+        );
+        await bakeNormalizedSource(tools, input, plan, baked);
+      } else {
+        console.log(`▸ normalized framing cached (${basename(baked)})`);
+      }
+      analysisInput = baked;
+      analysisProbe = await probe(tools, baked);
+      analysisCropVf = "";
+      cacheTag = basename(baked);
+    } else {
+      fitFallback = true;
+      console.log(
+        `  ⚠ strip too small to unify (would upscale ×${plan.coverUpscale.toFixed(2)} > ` +
+          `${MAX_NORMALIZE_UPSCALE}) — letterboxed stretches render FITTED at natural size; ` +
+          `framing will visibly change at ${contentTimeline.length - 1} boundaries`,
+      );
+    }
+  }
+  const contentRect: ContentRect = detection.uniform ?? {
+    x: 0, y: 0, w: analysisProbe.width, h: analysisProbe.height, full: true,
+  };
+  /** The picture's dimensions — what every geometric consumer reasons about. */
+  const content = { width: contentRect.w, height: contentRect.h };
+
+  // Face measurement (FINDINGS §13): one static crop offset per source,
+  // measured rather than guessed; cached in the workdir like the transcript.
+  const faceSamples = 9;
+  const faceBox = await measureFace(tools, analysisInput, analysisProbe.duration, {
+    cacheDir: work,
+    cropVf: analysisCropVf,
+    cacheTag,
+    samples: faceSamples,
+  });
+  console.log(
+    faceBox
+      ? `▸ face at ${(faceBox.centerYFrac * 100).toFixed(0)}% down the frame, ` +
+          `${(faceBox.sizeFrac * 100).toFixed(0)}% tall ` +
+          `(${faceBox.framesDetected}/${faceBox.framesSampled} frames` +
+          `${faceBox.framesRotated ? `, ${faceBox.framesRotated} recovered by tilt sweep` : ""})`
+      : // A miss must be LOUD (PLAN Task 8): the silent fallback to the
+        // assumed selfie framing is how a wrong crop shipped unnoticed.
+        `▸ no face detected in ${faceSamples} sampled frames — using the ASSUMED framing; ` +
+          "the crop may be wrong, check the output",
+  );
+
   // ---- Route around the source's own burned-in text (FINDINGS §26) --------
   // Fed a finished reel, ossclip would otherwise stack its layer on an
   // existing one — cropping through the source's title and then restating it
@@ -657,6 +681,59 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     `▸ zoom: ${zoom.clips} clip(s), ${zoom.rampSec}s push then hold ` +
       `(${zoom.segments.length} segments)`,
   );
+
+  // ---- Per-scene framing (plan step D) ------------------------------------
+  // A slot wider than the source canvas is cover-cropped VERTICALLY, so it
+  // shows only a fraction of the canvas height and the face grows by the
+  // inverse. `video-top` is a wide band against a portrait canvas, which is
+  // why a close-up moment placed there loses its crown. Not fixable by
+  // cropping — the pixels a wide band wants do not exist in a portrait
+  // close-up — so it is REPORTED here, and the producer is what has to stop
+  // choosing that layout for those moments (steps A and B).
+  if (framingPlan) {
+    const toSource = (outSec: number): number => {
+      for (const sp of map.spans) {
+        if (outSec >= sp.outIn && outSec < sp.outOut) return sp.srcIn + (outSec - sp.outIn);
+      }
+      return map.spans[map.spans.length - 1]?.srcOut ?? outSec;
+    };
+    // Only layouts where the video IS the subject. A `pip-bubble` is a small
+    // circular inset and a `graphic-only` slot is not even drawn (opacity 0):
+    // a tight head-shot is what a bubble is FOR, so judging it against the
+    // same head-fits rule would report a defect for working as designed.
+    const issues = assessCueFraming(
+      sceneCues.flatMap((c) => {
+        const v = layoutSlots(c.layout).video;
+        if (v.opacity <= 0 || v.rect.w * v.rect.h < PRIMARY_VIDEO_SLOT_AREA) return [];
+        return [{
+          id: c.id,
+          layout: c.layout,
+          startSec: toSource(c.startSec),
+          endSec: toSource(c.endSec),
+          slot: { width: v.rect.w * 1080, height: v.rect.h * 1920 },
+        }];
+      }),
+      framingPlan.segments,
+      framingPlan.faceFracOfCanvas,
+      framingPlan.canvas,
+      ZOOM_MAX_SCALE,
+    );
+    const tight = issues.filter((f) => f.headFracOfSlot > 1);
+    for (const f of tight) {
+      console.log(
+        `  ⚠ ${f.cueId} (${f.layout}): head is ${(f.headFracOfSlot * 100).toFixed(0)}% of its ` +
+          `video slot — the crop will trim it. This layout is too wide for how close ` +
+          `the speaker is here.`,
+      );
+    }
+    if (issues.length > 0 && tight.length === 0) {
+      const worst = issues.reduce((a, b) => (b.headFracOfSlot > a.headFracOfSlot ? b : a));
+      console.log(
+        `▸ framing: every scene fits its slot (tightest ${worst.cueId} at ` +
+          `${(worst.headFracOfSlot * 100).toFixed(0)}% of its band)`,
+      );
+    }
+  }
 
   let renderVideo = analysisInput;
   // A letterboxed source MUST go through the re-encode even under

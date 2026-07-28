@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assessCueFraming,
   MAX_FACE_FRACTION,
   MAX_NORMALIZE_UPSCALE,
   normalizationFilterGraph,
@@ -278,5 +279,54 @@ describe("pickTransition (boundary refinement)", () => {
       pickTransition([sample(1, stripPx), sample(1.1, stripPx)], STRIP, FULL, W, H),
     ).toBeNull();
     expect(pickTransition([], STRIP, FULL, W, H)).toBeNull();
+  });
+});
+
+describe("assessCueFraming (plan step D — per-scene framing)", () => {
+  const canvas = { width: 450, height: 800 }; // portrait, as normalization bakes
+  const segs = [{ startSec: 0, endSec: 30 }];
+  const cue = (layout: string, w: number, h: number) => ({
+    id: `c-${layout}`,
+    layout,
+    startSec: 5,
+    endSec: 10,
+    slot: { width: w, height: h },
+  });
+
+  it("a wide band shows less canvas height, so the face grows by the inverse", () => {
+    // video-top is 1080x806 against a 450x800 canvas: cover binds on width and
+    // shows canvasAspect/slotAspect = 0.42 of the canvas height.
+    const [full] = assessCueFraming([cue("full-bleed", 1080, 1920)], segs, [0.44], canvas, 1);
+    const [top] = assessCueFraming([cue("video-top", 1080, 806)], segs, [0.44], canvas, 1);
+    expect(full!.faceFracOfSlot).toBeCloseTo(0.44, 6);
+    expect(top!.faceFracOfSlot).toBeGreaterThan(1);
+    expect(top!.headFracOfSlot).toBeGreaterThan(1);
+  });
+
+  it("flags exactly the crown-trimming case the render showed", () => {
+    const issues = assessCueFraming(
+      [cue("full-bleed", 1080, 1920), cue("video-top", 1080, 806)],
+      segs,
+      [0.44],
+      canvas,
+      1.05,
+    );
+    expect(issues.filter((f) => f.headFracOfSlot > 1).map((f) => f.layout)).toEqual(["video-top"]);
+  });
+
+  it("judges a cue by the TIGHTEST segment it spans, not an average", () => {
+    const spanning = [{ ...cue("full-bleed", 1080, 1920), startSec: 8, endSec: 22 }];
+    const two = [
+      { startSec: 0, endSec: 10 },
+      { startSec: 10, endSec: 30 },
+    ];
+    const [f] = assessCueFraming(spanning, two, [0.2, 0.5], canvas, 1);
+    expect(f!.faceFracOfSlot).toBeCloseTo(0.5, 6);
+  });
+
+  it("a cue over an unmeasured stretch is not reported rather than guessed", () => {
+    expect(assessCueFraming([cue("full-bleed", 1080, 1920)], segs, [0], canvas, 1)).toEqual([]);
+    const none = assessCueFraming([cue("full-bleed", 1080, 1920)], segs, [0.4], { width: 0, height: 0 }, 1);
+    expect(none).toEqual([]);
   });
 });

@@ -40,6 +40,13 @@ export interface NormalizePlan {
   canvas: { width: number; height: number };
   segments: NormalizeSegment[];
   /**
+   * Per segment, the face's height as a fraction of the CANVAS after baking —
+   * what the framing actually achieved, as opposed to what it aimed for. This
+   * is the input to `assessCueFraming`, and eventually to telling the producer
+   * which windows can host which layouts.
+   */
+  faceFracOfCanvas: number[];
+  /**
    * The upscale a full-bleed cover of the OUTPUT implies. The quality gate:
    * past `MAX_NORMALIZE_UPSCALE` the picture would be visibly soft, and a
    * soft fake is worse than an honest fit.
@@ -120,7 +127,13 @@ export function planNormalization(
   const boxed = timeline.filter((s) => !s.rect.full);
   // Callers only reach here for a mixed source, but refuse rather than crash.
   if (boxed.length === 0 || timeline.length < 2) {
-    return { canvas: { width: 0, height: 0 }, segments: [], coverUpscale: Infinity, ok: false };
+    return {
+      canvas: { width: 0, height: 0 },
+      segments: [],
+      faceFracOfCanvas: [],
+      coverUpscale: Infinity,
+      ok: false,
+    };
   }
 
   /**
@@ -230,7 +243,91 @@ export function planNormalization(
       ? output.height / canvas.height
       : output.width / canvas.width;
 
-  return { canvas, segments, coverUpscale, ok: coverUpscale <= MAX_NORMALIZE_UPSCALE };
+  // What each segment actually achieved once its window is scaled to the
+  // canvas — measured from the plan, never assumed to equal the target: a
+  // segment clamped at its own rect lands wherever its rect put it.
+  const faceFracOfCanvas = timeline.map((seg, i) => {
+    const frac = measured[i];
+    if (frac === null || frac === undefined) return target ?? 0;
+    return (frac * seg.rect.h) / segments[i]!.window.h;
+  });
+
+  return {
+    canvas,
+    segments,
+    faceFracOfCanvas,
+    coverUpscale,
+    ok: coverUpscale <= MAX_NORMALIZE_UPSCALE,
+  };
+}
+
+/** A cue's video slot, in output pixels — `layoutSlots(cue.layout).video.rect`. */
+export interface CueSlot {
+  id: string;
+  layout: string;
+  /** SOURCE seconds, so this intersects the content timeline directly. */
+  startSec: number;
+  endSec: number;
+  slot: { width: number; height: number };
+}
+
+export interface FramingIssue {
+  cueId: string;
+  layout: string;
+  /** Face height over the SLOT's height, after cover crops the canvas to it. */
+  faceFracOfSlot: number;
+  /** The whole head, under the idle zoom. Above 1 it does not fit. */
+  headFracOfSlot: number;
+}
+
+/**
+ * How each scene's slot actually frames the speaker (plan step D).
+ *
+ * A slot WIDER than the canvas gets cover-cropped vertically, so it shows only
+ * `canvasAspect / slotAspect` of the canvas height — and the face grows by the
+ * inverse of that. `video-top` is a 1080x806 band against a portrait canvas:
+ * it shows ~42% of the canvas height, so a face occupying 44% of the canvas
+ * occupies 105% of the band. That is the crown trimming, and it is a property
+ * of the LAYOUT, not of the source or of any global constant.
+ *
+ * This reports it per cue rather than fixing it, deliberately. It is not
+ * fixable by cropping: the pixels a wide band wants do not exist in a portrait
+ * close-up. It is fixable by not putting a wide band on that moment — which is
+ * a producer decision, and this is the evidence it needs.
+ */
+export function assessCueFraming(
+  cues: readonly CueSlot[],
+  segments: ReadonlyArray<{ startSec: number; endSec: number }>,
+  faceFracOfCanvas: readonly number[],
+  canvas: { width: number; height: number },
+  zoom: number,
+): FramingIssue[] {
+  if (canvas.width <= 0 || canvas.height <= 0) return [];
+  const canvasAspect = canvas.width / canvas.height;
+  const out: FramingIssue[] = [];
+  for (const cue of cues) {
+    // The worst framing the cue is on screen for — a cue spanning a boundary
+    // is judged by its tightest moment, not by an average of the two.
+    let frac = 0;
+    segments.forEach((seg, i) => {
+      if (seg.startSec < cue.endSec && seg.endSec > cue.startSec) {
+        frac = Math.max(frac, faceFracOfCanvas[i] ?? 0);
+      }
+    });
+    if (frac <= 0 || cue.slot.width <= 0 || cue.slot.height <= 0) continue;
+    const slotAspect = cue.slot.width / cue.slot.height;
+    // Cover shows this share of the canvas height; 1 when the slot is no
+    // wider than the canvas, since then the width is what gets cropped.
+    const visible = Math.min(1, canvasAspect / slotAspect);
+    const faceFracOfSlot = frac / visible;
+    out.push({
+      cueId: cue.id,
+      layout: cue.layout,
+      faceFracOfSlot,
+      headFracOfSlot: HEAD_PER_FACE * faceFracOfSlot * zoom,
+    });
+  }
+  return out;
 }
 
 /**
