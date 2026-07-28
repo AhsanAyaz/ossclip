@@ -63,6 +63,31 @@ function clamp01(v: number): number {
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5;
 }
 
+/**
+ * Size and offset the full source frame so `rect` FITS inside `slot`,
+ * centred — option (b), the fallback when normalization refuses because the
+ * strip is too small to cover the output without visible softening. The strip
+ * renders at its natural aspect against the stage backdrop: an honest inset
+ * rather than a fake full-frame shot. The face bias is irrelevant here —
+ * nothing is cropped away, so there is nothing to bias toward.
+ */
+export function contentFitBox(
+  source: { width: number; height: number },
+  rect: { x: number; y: number; w: number; h: number },
+  slot: { width: number; height: number },
+): CoverBox {
+  const sw = Math.max(1, source.width);
+  const sh = Math.max(1, source.height);
+  const cw = Math.max(1, rect.w);
+  const ch = Math.max(1, rect.h);
+  const k = Math.min(slot.width / cw, slot.height / ch);
+  const left = -rect.x * k + (slot.width - cw * k) / 2;
+  const top = -rect.y * k + (slot.height - ch * k) / 2;
+  return { width: sw * k, height: sh * k, left, top };
+}
+
+export type ContentCropMode = "cover" | "fit";
+
 /** A kept span, as the TimeMap emits it — output and source in one record. */
 export interface SpanLike {
   outIn: number;
@@ -88,6 +113,24 @@ export function sourceTimeAt(spans: readonly SpanLike[], outSec: number): number
   if (outSec < first.outIn) return first.srcIn;
   const last = spans[spans.length - 1]!;
   return last.srcOut;
+}
+
+/**
+ * The box for a rect in a slot under either mode. `cover` fills the slot from
+ * the rect (face-biased); `fit` insets the rect whole. One dispatch point so
+ * the two modes cannot drift in how they treat the source frame.
+ */
+export function contentBox(
+  mode: ContentCropMode,
+  source: { width: number; height: number },
+  rect: { x: number; y: number; w: number; h: number },
+  slot: { width: number; height: number },
+  posX: number,
+  posY: number,
+): CoverBox {
+  return mode === "fit"
+    ? contentFitBox(source, rect, slot)
+    : contentCoverBox(source, rect, slot, posX, posY);
 }
 
 /** The content rect to render at an OUTPUT time. */

@@ -35,8 +35,12 @@ import {
   formatUsageReport,
   loadConfig,
   loudnorm,
+  MAX_NORMALIZE_UPSCALE,
+  bakeNormalizedSource,
+  planNormalization,
   makeMezzanine,
   measureFace,
+  measureFaceInWindows,
   pickCoverFrame,
   measureLevels,
   probe,
@@ -152,28 +156,35 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // pass crops to the content rect so the bars stop existing.
   const detection = await detectContentRect(tools, input, sourceProbe, { cacheDir: work });
   const contentTimeline = detection.timeline;
-  /**
-   * PLAN Task C: only a source with UNIFORM framing can be baked. A mixed
-   * source alternates framings, so there is no single crop to apply — and its
-   * letterboxed stretches hold a LANDSCAPE picture, which cannot become a
-   * portrait frame by cropping alone. Those are cropped at render time, where
-   * the stage already cover-crops a landscape source with the face bias.
-   */
-  const contentRect: ContentRect = detection.uniform ?? {
-    x: 0, y: 0, w: sourceProbe.width, h: sourceProbe.height, full: true,
-  };
   const cropVf = cropFilter(detection.uniform);
   if (detection.uniform && !detection.uniform.full) {
     console.log(
-      `▸ source is letterboxed: content ${contentRect.w}×${contentRect.h} at ` +
-        `x ${contentRect.x}, y ${contentRect.y} (bars trimmed everywhere downstream)`,
+      `▸ source is letterboxed: content ${detection.uniform.w}×${detection.uniform.h} at ` +
+        `x ${detection.uniform.x}, y ${detection.uniform.y} (bars trimmed everywhere downstream)`,
     );
-  } else if (!detection.uniform) {
+  }
+
+  /**
+   * Mixed framing (option (a), decided with the author 2026-07-28): a source
+   * that alternates framings is NORMALIZED — every segment cropped to the
+   * tightest field of view the take ever shows, placed on that segment's own
+   * measured face, and baked into one uniform file. Everything downstream then
+   * runs the ordinary uniform-source path against the baked file; the render-
+   * time per-segment cover (which produced a ~3× apparent zoom jump at every
+   * boundary) is gone. When the strip is too small to cover the output without
+   * visible softening, normalization refuses and the render falls back to
+   * FIT — the strip inset at natural size (option (b)) — with a loud warning.
+   */
+  let analysisInput = input;
+  let analysisProbe = sourceProbe;
+  let analysisCropVf = cropVf;
+  let cacheTag = "";
+  let fitFallback = false;
+  if (!detection.uniform) {
     const boxed = letterboxedSeconds(contentTimeline);
     console.log(
       `▸ source framing CHANGES mid-take: ${contentTimeline.length} segments, ` +
-        `${boxed.toFixed(1)}s of ${sourceProbe.duration.toFixed(1)}s letterboxed ` +
-        `(cropped per segment at render time, not baked)`,
+        `${boxed.toFixed(1)}s of ${sourceProbe.duration.toFixed(1)}s letterboxed`,
     );
     for (const seg of contentTimeline) {
       console.log(
@@ -183,16 +194,59 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
             : `content ${seg.rect.w}×${seg.rect.h} at x ${seg.rect.x}, y ${seg.rect.y}`),
       );
     }
+    // Each segment's face, measured inside ITS OWN rect — a single median
+    // across mixed framings averages two coordinate systems and points the
+    // crop at neither (the old C5 gap; it put the eyes at the top of the
+    // frame on the motivating clip).
+    const segmentFaces = await measureFaceInWindows(
+      tools,
+      input,
+      contentTimeline.map((seg) => ({
+        startSec: seg.startSec,
+        endSec: seg.endSec,
+        cropVf: cropFilter(seg.rect),
+      })),
+      { workDir: work },
+    );
+    const plan = planNormalization(contentTimeline, segmentFaces, { width: 1080, height: 1920 });
+    if (plan.ok) {
+      const planHash = createHash("sha1").update(JSON.stringify(plan)).digest("hex").slice(0, 8);
+      const baked = join(work, `content-${planHash}.mp4`);
+      if (!existsSync(baked)) {
+        console.log(
+          `▸ normalizing framing: one ${plan.canvas.width}×${plan.canvas.height} field of view ` +
+            `across ${plan.segments.length} segments (upscale ×${plan.coverUpscale.toFixed(2)})…`,
+        );
+        await bakeNormalizedSource(tools, input, plan, baked);
+      } else {
+        console.log(`▸ normalized framing cached (${basename(baked)})`);
+      }
+      analysisInput = baked;
+      analysisProbe = await probe(tools, baked);
+      analysisCropVf = "";
+      cacheTag = basename(baked);
+    } else {
+      fitFallback = true;
+      console.log(
+        `  ⚠ strip too small to unify (would upscale ×${plan.coverUpscale.toFixed(2)} > ` +
+          `${MAX_NORMALIZE_UPSCALE}) — letterboxed stretches render FITTED at natural size; ` +
+          `framing will visibly change at ${contentTimeline.length - 1} boundaries`,
+      );
+    }
   }
+  const contentRect: ContentRect = detection.uniform ?? {
+    x: 0, y: 0, w: analysisProbe.width, h: analysisProbe.height, full: true,
+  };
   /** The picture's dimensions — what every geometric consumer reasons about. */
   const content = { width: contentRect.w, height: contentRect.h };
 
   // Face measurement (FINDINGS §13): one static crop offset per source,
   // measured rather than guessed; cached in the workdir like the transcript.
   const faceSamples = 9;
-  const faceBox = await measureFace(tools, input, sourceProbe.duration, {
+  const faceBox = await measureFace(tools, analysisInput, analysisProbe.duration, {
     cacheDir: work,
-    cropVf,
+    cropVf: analysisCropVf,
+    cacheTag,
     samples: faceSamples,
   });
   console.log(
@@ -429,10 +483,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // existing one — cropping through the source's title and then restating it
   // underneath. Graphics move to a clear slot or are skipped; captions never
   // are, they just relocate.
-  const sourceText = await scanSourceText(tools, input, sourceProbe.duration, {
+  const sourceText = await scanSourceText(tools, analysisInput, analysisProbe.duration, {
     cacheDir: work,
     assumeEdited: opts.sourceIsEdited,
-    cropVf,
+    cropVf: analysisCropVf,
+    cacheTag,
   });
   if (sourceText.regions.length > 0) {
     console.log(
@@ -603,12 +658,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       `(${zoom.segments.length} segments)`,
   );
 
-  let renderVideo = input;
+  let renderVideo = analysisInput;
   // A letterboxed source MUST go through the re-encode even under
   // --no-mezzanine: the bars are pixels in the file, and cropping them here is
   // what lets every layout and zoom downstream treat the picture as the frame.
   // The cropped file gets its own name so a pre-crop cache is never reused.
-  if (opts.mezzanine || !contentRect.full) {
+  // A NORMALIZED source skips this outright: the bake already carries the
+  // mezzanine's encode settings, and re-encoding it would be a second
+  // generation of loss for nothing.
+  if (analysisInput === input && (opts.mezzanine || !contentRect.full)) {
     const mezz = join(work, contentRect.full ? "mezzanine.mp4" : "mezzanine-content.mp4");
     if (!existsSync(mezz)) {
       console.log(
@@ -676,15 +734,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     ctaKeyword,
     ctaWindow,
     sourceTextRegions: textRegions,
-    // PLAN Task C. Sent ONLY for a mixed-framing source: a uniform one already
-    // had its bars cropped into the mezzanine, and cropping to the same rect
-    // again at render time would eat the picture twice.
-    ...(detection.uniform
-      ? {}
-      : {
+    // Sent ONLY on the fit fallback (option (b)): a normalized mixed source is
+    // already one uniform file, and a uniform source had its bars cropped into
+    // the mezzanine — cropping either again at render time would eat the
+    // picture twice.
+    ...(fitFallback
+      ? {
           contentTimeline,
           sourceSize: { width: sourceProbe.width, height: sourceProbe.height },
-        }),
+          contentCropMode: "fit" as const,
+        }
+      : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 
@@ -726,9 +786,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       console.log("▸ no cover text (run --produce for one) — skipping cover");
     } else {
       const detector = await createFaceDetector();
-      const pick = await pickCoverFrame(tools, input, sourceProbe.duration, {
+      const pick = await pickCoverFrame(tools, analysisInput, analysisProbe.duration, {
         cacheDir: work,
-        cropVf,
+        cropVf: analysisCropVf,
         detectFace: (pixels, w, h) => {
           const d = detector(pixels, w, h);
           // pico returns [row, col, size, score] in detection-frame pixels,
@@ -744,9 +804,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         await run(cfg.ffmpegPath, [
           "-v", "error",
           "-ss", pick.timeSec.toFixed(3),
-          "-i", input,
+          "-i", analysisInput,
           "-frames:v", "1",
-          "-vf", `${cropVf ? `${cropVf},` : ""}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920`,
+          "-vf", `${analysisCropVf ? `${analysisCropVf},` : ""}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920`,
           "-y", join(work, frameName),
         ]);
         const coverPath = resolve(

@@ -259,6 +259,8 @@ export interface ScanSourceTextOptions {
    * is the cropped one.
    */
   cropVf?: string;
+  /** Extra cache key for when the scanned file is the normalized bake. */
+  cacheTag?: string;
 }
 
 /** Cache format version — bump to invalidate stale scans after a rebuild. */
@@ -283,10 +285,16 @@ export async function scanSourceText(
     const cached = JSON.parse(await readFile(cachePath, "utf8")) as SourceTextScan & {
       version?: number;
       cropVf?: string;
+      cacheTag?: string;
     };
     // Regions are fractions of the analyzed frame, so a scan made against a
-    // different crop describes geometry that no longer renders.
-    if (cached.version === SCAN_VERSION && (cached.cropVf ?? "") === (opts.cropVf ?? "")) {
+    // different crop (or a different baked file) describes geometry that no
+    // longer renders.
+    if (
+      cached.version === SCAN_VERSION &&
+      (cached.cropVf ?? "") === (opts.cropVf ?? "") &&
+      (cached.cacheTag ?? "") === (opts.cacheTag ?? "")
+    ) {
       return cached;
     }
   }
@@ -329,7 +337,11 @@ export async function scanSourceText(
   if (cachePath) {
     await writeFile(
       cachePath,
-      JSON.stringify({ version: SCAN_VERSION, cropVf: opts.cropVf ?? "", ...scan }, null, 2),
+      JSON.stringify(
+        { version: SCAN_VERSION, cropVf: opts.cropVf ?? "", cacheTag: opts.cacheTag ?? "", ...scan },
+        null,
+        2,
+      ),
     );
   }
   return scan;

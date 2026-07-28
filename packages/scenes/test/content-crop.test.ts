@@ -116,3 +116,37 @@ describe("contentRectAtOutput", () => {
     expect(contentRectAtOutput([], spans, 8, SOURCE)).toMatchObject({ full: true, w: 1440 });
   });
 });
+
+import { contentBox, contentFitBox } from "../src/content-crop";
+
+describe("contentFitBox (option (b) — the inset fallback)", () => {
+  const source = { width: 1440, height: 2560 };
+  const strip = { x: 0, y: 1100, w: 1440, h: 300 };
+  const slot = { width: 1080, height: 1920 };
+
+  it("insets the rect whole — nothing cropped, nothing fake-zoomed", () => {
+    const box = contentFitBox(source, strip, slot);
+    const k = box.width / source.width;
+    // The strip fits inside the slot on both axes…
+    expect(strip.w * k).toBeLessThanOrEqual(slot.width + 1e-6);
+    expect(strip.h * k).toBeLessThanOrEqual(slot.height + 1e-6);
+    // …and binds on one of them (largest fit, not arbitrary shrink).
+    expect(Math.max(strip.w * k - slot.width, strip.h * k - slot.height)).toBeCloseTo(0, 6);
+  });
+
+  it("centres the rect in the slot", () => {
+    const box = contentFitBox(source, strip, slot);
+    const k = box.width / source.width;
+    const left = box.left + strip.x * k;
+    const top = box.top + strip.y * k;
+    expect(left).toBeCloseTo((slot.width - strip.w * k) / 2, 6);
+    expect(top).toBeCloseTo((slot.height - strip.h * k) / 2, 6);
+  });
+
+  it("contentBox dispatches: fit ignores the face bias, cover spends it", () => {
+    const fit = contentBox("fit", source, strip, slot, 0.1, 0.9);
+    expect(fit).toEqual(contentFitBox(source, strip, slot));
+    const cover = contentBox("cover", source, strip, slot, 0.1, 0.9);
+    expect(cover).not.toEqual(fit);
+  });
+});

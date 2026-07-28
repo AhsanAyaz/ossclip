@@ -258,6 +258,45 @@ export function contentRectTimeline(
 }
 
 /**
+ * The exact framing-change instant inside a densely-sampled window
+ * (NORMALIZE plan, boundary refinement).
+ *
+ * The coarse timeline places a boundary midway between two 2 Hz samples —
+ * ±0.25s of slack, which was fine while the boundary only steered a render-
+ * time crop but is not fine once segments are BAKED: every frame on the wrong
+ * side of a baked boundary is cropped with the wrong window, and a quarter
+ * second of bar-edged frames at each of nine boundaries is exactly the class
+ * of artifact the bake exists to remove.
+ *
+ * Given per-frame samples spanning the coarse boundary, this finds the gap
+ * between the last frame still framed like `before` and the first framed like
+ * `after`, and returns its midpoint. Frames matching neither (transition
+ * wipes, encoder smear) are skipped. Null — keep the coarse boundary — when
+ * the window never actually straddles the change.
+ */
+export function pickTransition(
+  samples: readonly CropSample[],
+  before: ContentRect,
+  after: ContentRect,
+  width: number,
+  height: number,
+): number | null {
+  let lastBefore: number | null = null;
+  for (const s of [...samples].sort((a, b) => a.tSec - b.tSec)) {
+    const rect = stableContentRect([s], width, height);
+    if (sameFraming(rect, before, width, height)) {
+      lastBefore = s.tSec;
+    } else if (sameFraming(rect, after, width, height)) {
+      // The first after-framed frame only counts once a before-framed frame
+      // has been seen — otherwise the window started past the change and the
+      // "transition" would be an artifact of where the window was cut.
+      return lastBefore === null ? null : (lastBefore + s.tSec) / 2;
+    }
+  }
+  return null;
+}
+
+/**
  * The content rect active at a SOURCE time. Half-open, so a boundary belongs to
  * the segment starting there. Times outside the timeline clamp to its ends
  * rather than falling back to the full frame — a clamp keeps a rounding error

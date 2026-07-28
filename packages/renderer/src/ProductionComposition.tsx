@@ -50,6 +50,8 @@ export interface ProductionCompProps {
   contentTimeline?: ContentRectSegment[];
   /** The source's own pixel dimensions, which the timeline is measured in. */
   sourceSize?: { width: number; height: number };
+  /** How letterboxed stretches render: cover (default) or fit (option (b)). */
+  contentCropMode?: "cover" | "fit";
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -77,6 +79,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   sourceTextRegions,
   contentTimeline,
   sourceSize,
+  contentCropMode,
 }) => {
   if (!videoFileName) {
     return (
@@ -106,6 +109,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         contentTimeline={contentTimeline}
         spans={spans}
         sourceSize={sourceSize}
+        contentCropMode={contentCropMode}
       >
         <EdlVideo src={src} spans={spans} />
       </VideoStage>

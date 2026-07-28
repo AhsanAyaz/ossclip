@@ -9,7 +9,7 @@ import type {
 } from "@ossclip/core/browser";
 import { zoomScaleAt } from "@ossclip/core/browser";
 import { backdropOpacityAt, videoSlotAt } from "./stage";
-import { contentCoverBox, contentRectAtOutput, type SpanLike } from "./content-crop";
+import { contentBox, contentRectAtOutput, type ContentCropMode, type SpanLike } from "./content-crop";
 
 /**
  * The stage (PHASE1 §1): a solid backdrop that fades in when a scene demotes
@@ -40,6 +40,12 @@ export const VideoStage: React.FC<{
   spans?: SpanLike[];
   /** The source's own pixel dimensions — the frame the timeline is measured in. */
   sourceSize?: { width: number; height: number };
+  /**
+   * How a letterboxed stretch renders: `cover` fills the slot from the strip
+   * (face-biased crop), `fit` insets the strip whole — the fallback when the
+   * strip is too small to cover without visible softening (option (b)).
+   */
+  contentCropMode?: ContentCropMode;
   children: React.ReactNode;
 }> = ({
   cues,
@@ -50,6 +56,7 @@ export const VideoStage: React.FC<{
   contentTimeline,
   spans,
   sourceSize,
+  contentCropMode = "cover",
   children,
 }) => {
   const frame = useCurrentFrame();
@@ -108,6 +115,7 @@ export const VideoStage: React.FC<{
             timeline={contentTimeline}
             spans={spans}
             sourceSize={sourceSize}
+            mode={contentCropMode}
             tSec={t}
             slot={{ width: wPx, height: hPx }}
             posX={slot.objectPosX}
@@ -140,19 +148,20 @@ const ContentCrop: React.FC<{
   timeline?: ContentRectSegment[];
   spans?: SpanLike[];
   sourceSize?: { width: number; height: number };
+  mode: ContentCropMode;
   tSec: number;
   slot: { width: number; height: number };
   posX: number;
   posY: number;
   children: React.ReactNode;
-}> = ({ timeline, spans, sourceSize, tSec, slot, posX, posY, children }) => {
+}> = ({ timeline, spans, sourceSize, mode, tSec, slot, posX, posY, children }) => {
   const passthrough = <div style={{ position: "absolute", inset: 0 }}>{children}</div>;
   if (!timeline || timeline.length < 2 || !sourceSize) return passthrough;
 
   const rect = contentRectAtOutput(timeline, spans ?? [], tSec, sourceSize);
   if (rect.full) return passthrough;
 
-  const box = contentCoverBox(sourceSize, rect, slot, posX, posY);
+  const box = contentBox(mode, sourceSize, rect, slot, posX, posY);
   return (
     <div
       style={{

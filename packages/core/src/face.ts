@@ -290,6 +290,93 @@ export async function createFaceDetector(): Promise<
   };
 }
 
+/** A face measured inside one time-and-crop window, in the WINDOW's fractions. */
+export interface WindowFace {
+  centerXFrac: number;
+  centerYFrac: number;
+  sizeFrac: number;
+  framesDetected: number;
+  framesSampled: number;
+}
+
+/**
+ * The face per WINDOW — one measurement per (time range, crop) pair, each in
+ * that crop's own fractions (NORMALIZE plan, the old Task C5 gap).
+ *
+ * A mixed-framing source cannot use `measureFace`'s single median: some of its
+ * samples are fractions of a letterboxed strip and some of the full frame, and
+ * a median across two coordinate systems describes neither — that mispointed
+ * crop is exactly what put the eyes at the top of the frame on the author's
+ * clip. Normalization instead measures each segment inside its own rect and
+ * uses the result to place that segment's crop window.
+ *
+ * No cache: a handful of frames per window, and the caller's bake output is
+ * itself cached by a hash of the plan this feeds.
+ */
+export async function measureFaceInWindows(
+  tools: { ffmpegPath: string },
+  videoPath: string,
+  windows: ReadonlyArray<{ startSec: number; endSec: number; cropVf: string }>,
+  opts: { samplesPerWindow?: number; workDir?: string } = {},
+): Promise<Array<WindowFace | null>> {
+  const cascadeBytes = new Uint8Array(
+    await readFile(new URL("../assets/facefinder", import.meta.url)),
+  );
+  const classify = unpackCascade(cascadeBytes);
+  const out: Array<WindowFace | null> = [];
+
+  for (const [wi, w] of windows.entries()) {
+    const dur = Math.max(0, w.endSec - w.startSec);
+    // Short segments still get two looks; long ones don't need more than four.
+    const samples = Math.min(opts.samplesPerWindow ?? 4, Math.max(2, Math.floor(dur)));
+    const centersX: number[] = [];
+    const centersY: number[] = [];
+    const sizes: number[] = [];
+    for (let i = 0; i < samples; i++) {
+      // Interior points only — a frame ON the boundary may already be the
+      // other framing, which is the confusion this function exists to avoid.
+      const t = w.startSec + (dur * (i + 1)) / (samples + 1);
+      const framePath = join(opts.workDir ?? ".", `segface-${wi}-${i}.gray`);
+      await run(tools.ffmpegPath, [
+        "-v", "error",
+        "-ss", t.toFixed(3),
+        "-i", videoPath,
+        "-frames:v", "1",
+        "-vf", `${w.cropVf ? `${w.cropVf},` : ""}scale=${DET_W}:-2`,
+        "-pix_fmt", "gray",
+        "-f", "rawvideo",
+        "-y", framePath,
+      ]);
+      const pixels = new Uint8Array(await readFile(framePath));
+      await unlink(framePath).catch(() => {});
+      const detH = Math.floor(pixels.length / DET_W);
+      if (detH < 32) continue;
+      const hit = bestDetectionWithSweep(pixels, detH, DET_W, classify, {
+        shiftfactor: 0.1,
+        minsize: Math.max(24, Math.round(detH * 0.094)),
+        maxsize: detH,
+        scalefactor: 1.1,
+      });
+      if (!hit) continue;
+      centersY.push(hit.det[0] / detH);
+      centersX.push(hit.det[1] / DET_W);
+      sizes.push(hit.det[2] / detH);
+    }
+    out.push(
+      centersY.length >= 2
+        ? {
+            centerXFrac: median(centersX),
+            centerYFrac: median(centersY),
+            sizeFrac: median(sizes),
+            framesDetected: centersY.length,
+            framesSampled: samples,
+          }
+        : null,
+    );
+  }
+  return out;
+}
+
 export interface MeasureFaceOptions {
   /** Frames to sample, spread across the middle of the take. */
   samples?: number;
@@ -303,6 +390,12 @@ export interface MeasureFaceOptions {
    * enough share of the searched area for the cascade's scale sweep to find.
    */
   cropVf?: string;
+  /**
+   * Extra cache-validity key beyond `cropVf` — set to the measured FILE's
+   * identity when it is not the workdir's original source (the normalized
+   * bake), so a cache from one geometry is never served for another.
+   */
+  cacheTag?: string;
 }
 
 function median(xs: number[]): number {
@@ -328,10 +421,17 @@ export async function measureFace(
     const cached = JSON.parse(await readFile(cachePath, "utf8")) as {
       face: FaceBox | null;
       cropVf?: string;
+      cacheTag?: string;
     };
-    // A measurement made against a different geometry (pre-Task-7 cache, or a
-    // changed content rect) describes a frame that no longer renders.
-    if ((cached.cropVf ?? "") === (opts.cropVf ?? "")) return cached.face;
+    // A measurement made against a different geometry (pre-Task-7 cache, a
+    // changed content rect, or a different baked file) describes a frame that
+    // no longer renders.
+    if (
+      (cached.cropVf ?? "") === (opts.cropVf ?? "") &&
+      (cached.cacheTag ?? "") === (opts.cacheTag ?? "")
+    ) {
+      return cached.face;
+    }
   }
 
   const cascadeBytes = new Uint8Array(
@@ -394,7 +494,10 @@ export async function measureFace(
       : null;
 
   if (cachePath) {
-    await writeFile(cachePath, JSON.stringify({ face, cropVf: opts.cropVf ?? "" }, null, 2));
+    await writeFile(
+      cachePath,
+      JSON.stringify({ face, cropVf: opts.cropVf ?? "", cacheTag: opts.cacheTag ?? "" }, null, 2),
+    );
   }
   return face;
 }

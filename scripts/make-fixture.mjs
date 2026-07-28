@@ -175,3 +175,26 @@ sh("ffmpeg", [
   letterboxedPath,
 ]);
 console.log(`letterboxed: ${letterboxedPath} (content 1080x606 at y 657)`);
+
+/**
+ * The mixed-framing source (NORMALIZE plan, the old C8 gap): full-bleed
+ * portrait alternating with a letterboxed strip every 3 seconds, at the REAL
+ * clip's exact geometry — 1440×2560 with a 1440×808 strip at y=876. The
+ * dimensions matter: normalization's quality gate is measured in output
+ * pixels, and this strip passes it at ×2.38 exactly as the author's clip
+ * does, so the fixture drives the BAKE path end to end (a smaller strip
+ * would silently verify only the fit fallback).
+ */
+const mixedPath = join(OUT_DIR, "mixed-framing.mp4");
+sh("ffmpeg", [
+  "-y", "-i", fixturePath,
+  "-filter_complex",
+  "[0:v]scale=1440:2560,split=2[a][b];" +
+    "[a]scale=1440:808,pad=1440:2560:0:876[strip];" +
+    "[b][strip]overlay=0:0:enable='lt(mod(t,6),3)'[out]",
+  "-map", "[out]", "-map", "0:a",
+  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+  "-c:a", "copy",
+  mixedPath,
+]);
+console.log(`mixed framing: ${mixedPath} (1440x2560, 808px strip alternating every 3s)`);

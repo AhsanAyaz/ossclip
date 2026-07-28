@@ -5,6 +5,7 @@ import { run } from "./exec";
 import {
   contentRectTimeline,
   parseCropdetect,
+  pickTransition,
   type ContentRect,
   type ContentRectSegment,
 } from "./content-rect";
@@ -25,11 +26,11 @@ export interface DetectContentRectOptions {
 }
 
 /**
- * v2 stores a TIMELINE rather than one rect (PLAN Task C). A v1 file is not
- * upgradable — it recorded the union's verdict, not the per-sample evidence —
- * so a stale cache is re-measured rather than misread.
+ * v2 stored the coarse timeline (PLAN Task C); v3 stores boundaries REFINED
+ * to the frame (NORMALIZE plan) — a v2 cache carries ±0.25s boundaries that
+ * would be baked into the normalized source, so it is re-measured.
  */
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 /**
  * Sampling rate. Task 7 took 12 samples spread over the whole source, which is
@@ -90,10 +91,65 @@ export async function detectContentRect(
     probe.height,
     probe.duration,
   );
+  await refineBoundaries(tools, videoPath, timeline, probe);
   if (cachePath) {
     await writeFile(cachePath, JSON.stringify({ version: CACHE_VERSION, timeline }, null, 2));
   }
   return withUniform(timeline);
+}
+
+/** How far around a coarse boundary the refinement pass looks. Must exceed the
+ * coarse sampling half-step (0.25s at 2 Hz) with room for run-absorption
+ * slop, and stay small enough that nine boundaries cost under a second of
+ * decode each. */
+const REFINE_HALF_WINDOW_SEC = 0.8;
+
+/**
+ * Sharpen each boundary of a mixed timeline to the frame, in place.
+ *
+ * The coarse pass samples at 2 Hz and places boundaries midway between
+ * disagreeing samples — good enough to steer a render-time crop, not good
+ * enough to BAKE: every frame on the wrong side of a baked boundary gets the
+ * wrong window. This decodes ~1.6s around each boundary at native fps
+ * (`-ss` before `-i`, so it is a seek, not a scan; cropdetect's `t:` restarts
+ * at the seek point) and moves the boundary to the midpoint of the two frames
+ * that actually disagree. A window that never straddles the change keeps the
+ * coarse estimate — wrong by less than the window, and said so by the caller's
+ * log rather than silently.
+ */
+async function refineBoundaries(
+  tools: { ffmpegPath: string },
+  videoPath: string,
+  timeline: ContentRectSegment[],
+  probe: { width: number; height: number; duration: number },
+): Promise<void> {
+  for (let i = 1; i < timeline.length; i++) {
+    const coarse = timeline[i]!.startSec;
+    const from = Math.max(0, coarse - REFINE_HALF_WINDOW_SEC);
+    const { stderr } = await run(
+      tools.ffmpegPath,
+      [
+        "-ss", from.toFixed(3),
+        "-t", (REFINE_HALF_WINDOW_SEC * 2).toFixed(3),
+        "-i", videoPath,
+        "-vf", "cropdetect=limit=24:round=2:reset=1",
+        "-f", "null", "-",
+      ],
+      { allowNonZero: true },
+    );
+    const samples = parseCropdetect(stderr).map((s) => ({ ...s, tSec: from + s.tSec }));
+    const exact = pickTransition(
+      samples,
+      timeline[i - 1]!.rect,
+      timeline[i]!.rect,
+      probe.width,
+      probe.height,
+    );
+    if (exact !== null) {
+      timeline[i - 1]!.endSec = exact;
+      timeline[i]!.startSec = exact;
+    }
+  }
 }
 
 function withUniform(timeline: ContentRectSegment[]): ContentRectDetection {
