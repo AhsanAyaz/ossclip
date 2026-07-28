@@ -270,6 +270,12 @@ export const Timeline: React.FC<TimelineProps> = ({
                 ...block,
                 left: `${left}%`,
                 width: `${width}%`,
+                // Explicit stacking (PLAN R11 Task 1) — paint order used to
+                // be DOM order, which is time order, so a later take always
+                // clipped the selected block's border and an end-edge drag
+                // grew UNDERNEATH its neighbour. Levels: block 1, ghost 2,
+                // selected 3, dragging 4, playhead 5.
+                zIndex: isDragging ? 4 : isSelected ? 3 : 1,
                 border: isSelected
                   ? "2px solid #5b8cff"
                   : isPlain
@@ -319,6 +325,10 @@ export const Timeline: React.FC<TimelineProps> = ({
                 ...block,
                 left: `${left}%`,
                 width: `${width}%`,
+                // Level 2: "the ghost paints above the take that took over
+                // its window" is now a stated rule, not an accident of DOM
+                // order (PLAN R11 Task 1). Selected ghosts join level 3.
+                zIndex: isSelected ? 3 : 2,
                 border: isSelected ? "2px dashed #5b8cff" : "1px dashed #6a6a75",
                 background: "transparent",
               }}
@@ -443,6 +453,8 @@ const playhead: React.CSSProperties = {
   top: -26,
   bottom: -4,
   width: 2,
+  // Top of the timeline's stacking levels — the needle reads over any block.
+  zIndex: 5,
   background: "#FFE14D",
   // The needle paints but doesn't intercept; its grab zone (child) does.
   pointerEvents: "none",

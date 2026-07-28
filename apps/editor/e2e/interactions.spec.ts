@@ -416,3 +416,39 @@ test("Delete turns a scene into a restorable ghost and its window into a take (T
   const doc2 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   expect("hidden" in doc2.scenes["scene-3"]).toBe(false);
 });
+
+test("the selected block paints above its take neighbours, including mid-resize (R11 Task 1)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  const scene = page.getByTestId("timeline-block-scene-2");
+  await scene.click();
+  const z = (testId: string) =>
+    page
+      .getByTestId(testId)
+      .evaluate((el) => Number(getComputedStyle(el).zIndex) || 0);
+  expect(await z("timeline-block-scene-2")).toBeGreaterThan(await z("timeline-block-take-0"));
+
+  // Drag the START edge left into take-0's territory (the takes stay stale
+  // until the commit, deliberately) — while the preview is live, the block
+  // must be the topmost thing at a point inside the overlap, or the drag
+  // grows invisibly underneath its neighbour.
+  const box = (await scene.boundingBox())!;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + 2, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 60, y, { steps: 4 });
+  const topId = await page.evaluate(
+    ([x, py]) =>
+      document
+        .elementFromPoint(x!, py!)
+        ?.closest('[data-testid^="timeline-block-"]')
+        ?.getAttribute("data-testid") ?? null,
+    [box.x - 30, y],
+  );
+  expect(topId).toBe("timeline-block-scene-2");
+  await page.mouse.up();
+  // The edge drag pinned scene-2 — undo so this test leaves no residue.
+  await page.keyboard.press("Meta+z");
+});
