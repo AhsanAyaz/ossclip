@@ -4,6 +4,7 @@ import { transportReduce, type TransportKey } from "./transport";
 import type { AnyZodObject } from "remotion";
 import { ProductionComposition, type ProductionCompProps } from "@ossclip/renderer/composition";
 import {
+  applyCaptionEdits,
   applyOverrides,
   resolveTheme,
   defaultTheme,
@@ -43,6 +44,10 @@ type PlayerProductionProps = ProductionCompProps & Record<string, unknown>;
 type RawRenderProps = PlayerProductionProps & {
   baseSceneCues?: SceneCue[];
   baseTheme?: Theme;
+  /** Pre-edit caption lines, mirroring `baseSceneCues` — the base the caption
+   * retype layer merges onto (merging onto already-edited lines would trip
+   * every edit's own stale-guard). */
+  baseCaptionLines?: PlayerProductionProps["captionLines"];
 };
 
 export const App: React.FC = () => {
@@ -116,9 +121,11 @@ export const App: React.FC = () => {
     const baseCues = renderProps.baseSceneCues ?? renderProps.sceneCues ?? [];
     const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
     const { cues } = applyOverrides(baseCues, edits.doc);
+    const baseCaptions = renderProps.baseCaptionLines ?? renderProps.captionLines ?? [];
     return {
       ...renderProps,
       sceneCues: cues,
+      captionLines: applyCaptionEdits(baseCaptions, edits.doc.captions).lines,
       theme: resolveTheme(baseTheme, edits.doc),
       videoFileName: `/media/${renderProps.videoFileName}`,
     };

@@ -258,3 +258,43 @@ describe("per-scene video framing override", () => {
     expect(() => OverrideDocSchema.parse({ scenes: { s1: { video: { scale: 99 } } } })).toThrow();
   });
 });
+
+import { applyCaptionEdits } from "../src/overrides";
+
+describe("applyCaptionEdits (caption retype, scope (a))", () => {
+  const lines = [
+    { start: 0, end: 1, words: [
+      { text: "double", start: 0, end: 0.5 },
+      { text: "scape", start: 0.5, end: 1 },
+    ]},
+    { start: 1, end: 2, words: [{ text: "quits", start: 1, end: 2 }] },
+  ];
+
+  it("replaces the word's TEXT and nothing else — timing is the contract", () => {
+    const { lines: out, dropped } = applyCaptionEdits(lines, {
+      "1": { text: "escape", was: "scape" },
+    });
+    expect(out[0]!.words[1]).toEqual({ text: "escape", start: 0.5, end: 1 });
+    expect(out[0]!.words[0]).toEqual(lines[0]!.words[0]);
+    expect(dropped).toEqual([]);
+  });
+
+  it("indexes across LINES — the stream, not the line, is the id space", () => {
+    const { lines: out } = applyCaptionEdits(lines, { "2": { text: "exits", was: "quits" } });
+    expect(out[1]!.words[0]!.text).toBe("exits");
+  });
+
+  it("drops a stale edit with a report instead of hitting the wrong word", () => {
+    // The §17 heard-guard pattern: a cleanup/repair change re-derived the
+    // stream, so index 1 is no longer the word this edit knew.
+    const { lines: out, dropped } = applyCaptionEdits(lines, {
+      "1": { text: "escape", was: "something-else" },
+    });
+    expect(out[0]!.words[1]!.text).toBe("scape");
+    expect(dropped).toEqual([{ index: 1, expected: "something-else", found: "scape" }]);
+  });
+
+  it("no edits is the identity", () => {
+    expect(applyCaptionEdits(lines, {}).lines).toEqual(lines);
+  });
+});

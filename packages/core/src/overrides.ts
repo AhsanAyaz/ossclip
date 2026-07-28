@@ -8,6 +8,7 @@ import {
   type Theme,
 } from "./scene-schema";
 import { resolveSceneProps } from "./scene-registry";
+import type { CaptionLine } from "./captions";
 
 /**
  * The user's edit layer (SPEC: direct manipulation).
@@ -68,10 +69,31 @@ export const SceneOverrideSchema = z.object({
 });
 export type SceneOverride = z.infer<typeof SceneOverrideSchema>;
 
+/**
+ * One retyped caption word (PLAN 2026-07-29 Task 7, scope (a) — decided with
+ * the author: 1:1 in-place retype, timing untouched).
+ *
+ * Keyed by the word's position in the caption stream, GUARDED by the text
+ * that was there when the edit was made — the same verification-anchor
+ * pattern as `AppliedRepair.heard` (§17). Captions are derived (repaired
+ * transcript through the TimeMap), so a changed cleanup level or repair set
+ * can shift positions; the guard means a stale edit is DROPPED WITH A LOG
+ * rather than silently landing on the wrong word.
+ */
+export const CaptionEditSchema = z.object({
+  /** The replacement text. */
+  text: z.string().min(1).max(80),
+  /** The word this edit replaced — the stale-index guard. */
+  was: z.string(),
+});
+export type CaptionEdit = z.infer<typeof CaptionEditSchema>;
+
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */
   theme: ThemeSchema.partial().default({}),
   scenes: z.record(z.string(), SceneOverrideSchema).default({}),
+  /** Retyped caption words, keyed by caption-stream word index. */
+  captions: z.record(z.string(), CaptionEditSchema).default({}),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 
@@ -141,6 +163,40 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     };
   });
   return { cues: out, orphans };
+}
+
+export interface AppliedCaptionEdits {
+  lines: CaptionLine[];
+  /** Edits whose guard failed — the word at that index is not what they knew. */
+  dropped: Array<{ index: number; expected: string; found: string }>;
+}
+
+/**
+ * Apply retyped caption words. Text only, never timing — the stamps drive the
+ * kinetic highlight and the 1:1 constraint is what keeps scene anchors and
+ * §21's copy/caption agreement intact. An edit whose `was` no longer matches
+ * is reported, not applied and not silently discarded.
+ */
+export function applyCaptionEdits(
+  lines: readonly CaptionLine[],
+  edits: Record<string, CaptionEdit>,
+): AppliedCaptionEdits {
+  const dropped: AppliedCaptionEdits["dropped"] = [];
+  if (Object.keys(edits).length === 0) return { lines: [...lines], dropped };
+  let index = 0;
+  const out = lines.map((line) => ({
+    ...line,
+    words: line.words.map((w) => {
+      const edit = edits[String(index++)];
+      if (!edit) return w;
+      if (w.text !== edit.was) {
+        dropped.push({ index: index - 1, expected: edit.was, found: w.text });
+        return w;
+      }
+      return { ...w, text: edit.text };
+    }),
+  }));
+  return { lines: out, dropped };
 }
 
 /** Theme tokens the user set, over whatever the production already had. */

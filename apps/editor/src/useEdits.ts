@@ -30,6 +30,7 @@ export type EditAction =
   | { type: "clearTiming"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
   | { type: "patchLayout"; sceneId: string; layout: Layout }
+  | { type: "patchCaption"; index: number; text: string; was: string }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "saved" };
@@ -122,6 +123,20 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, layout: action.layout } },
       });
     }
+    case "patchCaption": {
+      // Retyping a word back to its original CLEARS the override — same rule
+      // as clearVideo: an override that matches the base is still an
+      // override, and would shadow a future re-produce's repaired text.
+      const key = String(action.index);
+      if (action.text === action.was) {
+        const { [key]: _dropped, ...rest } = state.doc.captions;
+        return commit({ ...state.doc, captions: rest });
+      }
+      return commit({
+        ...state.doc,
+        captions: { ...state.doc.captions, [key]: { text: action.text, was: action.was } },
+      });
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -177,6 +192,8 @@ export function useEdits() {
     patchComponent: (sceneId: string, component: SceneComponentId) =>
       dispatch({ type: "patchComponent", sceneId, component }),
     patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),
+    patchCaption: (index: number, text: string, was: string) =>
+      dispatch({ type: "patchCaption", index, text, was }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

@@ -13,6 +13,7 @@ import {
   applyOverrides,
   applyRepairs,
   assembleScenes,
+  applyCaptionEdits,
   buildCaptionLines,
   buildCutlist,
   buildZoomPlan,
@@ -692,9 +693,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   console.log(report);
   console.log("");
 
-  const captionLines = buildCaptionLines(transcript, map, {
+  const baseCaptionLines = buildCaptionLines(transcript, map, {
     breakpoints: sceneCues.flatMap((c) => [c.startSec, c.endSec]),
   });
+  // The user's retyped caption words (editor, PLAN 2026-07-29 Task 7 scope
+  // (a)). Guarded per word: a stale edit — the pipeline re-derived a
+  // different word at that position — is dropped LOUDLY, never applied to
+  // the wrong word and never silently forgotten.
+  const { lines: captionLines, dropped: staleCaptionEdits } = applyCaptionEdits(
+    baseCaptionLines,
+    overrideDoc.captions,
+  );
+  const liveCaptionEdits = Object.keys(overrideDoc.captions).length - staleCaptionEdits.length;
+  if (liveCaptionEdits > 0) console.log(`▸ ${liveCaptionEdits} caption word(s) retyped by the editor`);
+  for (const d of staleCaptionEdits) {
+    console.log(
+      `  ⚠ caption edit at word ${d.index} dropped: expected "${d.expected}" there, ` +
+        `the transcript now has "${d.found}"`,
+    );
+  }
 
   // Micro zoom punches (FINDINGS §15) reversing at real phrase breaks (§18).
   // Breaths are source-time; TimeMap has no span mapper, so both ends go
@@ -820,6 +837,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     // it never happened, even though `overrides.json` on disk is correct.
     baseSceneCues: routed.cues,
     baseTheme: defaultTheme,
+    baseCaptionLines,
     settings: production.render,
     outputDurationSec: map.outputDuration,
     // The aspect travels with the measurement because the crop math needs it:

@@ -63,12 +63,15 @@ export function inCtaWindow(
 
 const LineView: React.FC<{
   line: CaptionLine;
+  /** This line's first word's index in the WHOLE caption stream — the id the
+   * editor's retype override keys on (`OverrideDoc.captions`). */
+  wordOffset: number;
   verticalAnchor: number;
   fontSizePx: number;
   activeColor: string;
   ctaKeyword?: string;
   ctaWindow?: { startSec: number; endSec: number };
-}> = ({ line, verticalAnchor, fontSizePx, activeColor, ctaKeyword, ctaWindow }) => {
+}> = ({ line, wordOffset, verticalAnchor, fontSizePx, activeColor, ctaKeyword, ctaWindow }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   // The parent <Sequence> starts at line.start, so local frame 0 === line.start.
@@ -106,8 +109,17 @@ const LineView: React.FC<{
           return (
             <span
               key={i}
+              // The editor double-click retypes a word in place; the RAW text
+              // rides along because the rendered text may be CTA-decorated,
+              // and the retype's stale-guard must compare against the truth.
+              data-caption-word={wordOffset + i}
+              data-caption-text={w.text}
               style={{
                 display: "inline-block",
+                // Words are individually hit-testable for the editor (the
+                // parent layer stays pointer-events: none); harmless in the
+                // render, where nothing dispatches events.
+                pointerEvents: "auto",
                 transform: active ? "scale(1.08)" : "scale(1)",
                 color: active ? activeColor : "white",
                 transition: "transform 60ms linear",
@@ -140,6 +152,14 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   sourceTextRegions = [],
 }) => {
   const { fps } = useVideoConfig();
+  // Each line's first-word index in the whole stream, so a word's id is
+  // stable regardless of which line the layout put it on.
+  const offsets: number[] = [];
+  let running = 0;
+  for (const line of lines) {
+    offsets.push(running);
+    running += line.words.length;
+  }
   return (
     <AbsoluteFill>
       {lines.map((line, i) => {
@@ -160,6 +180,7 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
           <Sequence key={i} from={from} durationInFrames={durationInFrames}>
             <LineView
               line={line}
+              wordOffset={offsets[i]!}
               verticalAnchor={anchor}
               fontSizePx={fontSizePx}
               activeColor={activeColor}

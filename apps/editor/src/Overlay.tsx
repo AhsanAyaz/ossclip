@@ -132,6 +132,13 @@ export const Overlay: React.FC<OverlayProps> = ({
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [editingText, setEditingText] = useState<string | null>(null);
+  /** An in-progress caption word retype (PLAN Task 7, scope (a)). */
+  const [captionEdit, setCaptionEdit] = useState<{
+    index: number;
+    was: string;
+    draft: string;
+    rect: DOMRect;
+  } | null>(null);
   const [editRefusal, setEditRefusal] = useState<string | null>(null);
   const dragRef = useRef<{ x: number; y: number; dx: number; dy: number } | null>(null);
   const [dragOffset, setDragOffset] = useState({ dx: 0, dy: 0 });
@@ -164,7 +171,12 @@ export const Overlay: React.FC<OverlayProps> = ({
    * everything it touched.
    */
   const elementBelow = (clientX: number, clientY: number): Element | null => {
-    const touched: HTMLElement[] = [];
+    // Restore each element's PREVIOUS inline value, never "": several targets
+    // (caption words, the scene slots) carry a React inline pointer-events,
+    // and clearing it leaves them unhittable until React happens to re-render
+    // them — which is how the first click of a double-click used to make the
+    // caption word invisible to the second.
+    const touched: Array<{ el: HTMLElement; prev: string }> = [];
     let result: Element | null = null;
     for (let i = 0; i < 25; i++) {
       const el = document.elementFromPoint(clientX, clientY);
@@ -173,13 +185,19 @@ export const Overlay: React.FC<OverlayProps> = ({
         break;
       }
       result = el;
-      if (el.hasAttribute("data-edit-id") || el.hasAttribute("data-edit-scene")) break;
+      if (
+        el.hasAttribute("data-edit-id") ||
+        el.hasAttribute("data-edit-scene") ||
+        el.hasAttribute("data-caption-word")
+      ) {
+        break;
+      }
       if (!(el instanceof HTMLElement)) break;
-      touched.push(el);
+      touched.push({ el, prev: el.style.pointerEvents });
       el.style.pointerEvents = "none";
     }
-    touched.forEach((el) => {
-      el.style.pointerEvents = "";
+    touched.forEach(({ el, prev }) => {
+      el.style.pointerEvents = prev;
     });
     return result;
   };
@@ -408,6 +426,31 @@ export const Overlay: React.FC<OverlayProps> = ({
     return () => clearTimeout(t);
   }, [editRefusal]);
 
+  // Double-click on a caption word opens an in-place retype (PLAN Task 7,
+  // scope (a): 1:1 text swap, timing untouched). Window-level because the
+  // caption spans live inside the Player's DOM, not the overlay's; they are
+  // individually hit-testable (pointer-events: auto) and topmost, so a plain
+  // elementFromPoint finds them without the layer walk.
+  useEffect(() => {
+    const onDoubleClick = (e: MouseEvent) => {
+      const stage = stageRef.current;
+      if (!stage || !stage.contains(e.target as Node)) return;
+      const word = document
+        .elementFromPoint(e.clientX, e.clientY)
+        ?.closest<HTMLElement>("[data-caption-word]");
+      if (!word) return;
+      e.preventDefault();
+      const index = Number(word.dataset.captionWord);
+      // The RAW text, not textContent — the rendered word may be CTA-decorated
+      // ("AGENTS"), and the stale-guard must match the stored truth.
+      const was = word.dataset.captionText ?? "";
+      if (!Number.isFinite(index) || !was) return;
+      setCaptionEdit({ index, was, draft: was, rect: word.getBoundingClientRect() });
+    };
+    window.addEventListener("dblclick", onDoubleClick);
+    return () => window.removeEventListener("dblclick", onDoubleClick);
+  }, [stageRef]);
+
   useEffect(() => {
     /** A keystroke belongs to a field, not the transport. */
     const isTypingContext = (): boolean => {
@@ -420,7 +463,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       );
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (editingText !== null) return;
+      if (editingText !== null || captionEdit !== null) return;
       const mod = e.metaKey || e.ctrlKey;
       if (e.key === "Escape") {
         select(null);
@@ -462,7 +505,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, editingText, onSave, playerRef, stageRef, onTransport]);
+  }, [select, edits, editingText, captionEdit, onSave, playerRef, stageRef, onTransport]);
 
   return (
     <div
@@ -541,6 +584,45 @@ export const Overlay: React.FC<OverlayProps> = ({
             </div>
           ) : null}
         </div>
+      ) : null}
+      {captionEdit ? (
+        <input
+          autoFocus
+          data-testid="caption-edit"
+          value={captionEdit.draft}
+          onChange={(e) => setCaptionEdit({ ...captionEdit, draft: e.target.value })}
+          onBlur={() => {
+            const trimmed = captionEdit.draft.trim();
+            // Commit on anything non-empty (retyping the original back CLEARS
+            // the override — the reducer's rule); empty is a cancel, because a
+            // caption word cannot be deleted here: 1:1 is the contract that
+            // keeps timings and scene anchors intact.
+            if (trimmed) edits.patchCaption(captionEdit.index, trimmed, captionEdit.was);
+            setCaptionEdit(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") setCaptionEdit(null);
+          }}
+          style={{
+            position: "fixed",
+            pointerEvents: "auto",
+            left: captionEdit.rect.left - 4,
+            top: captionEdit.rect.top - 4,
+            width: Math.max(captionEdit.rect.width + 40, 90),
+            height: captionEdit.rect.height + 8,
+            fontSize: Math.max(13, Math.min(captionEdit.rect.height * 0.7, 28)),
+            fontFamily: "'Inter', system-ui, sans-serif",
+            fontWeight: 800,
+            border: "2px solid #FFE14D",
+            borderRadius: 4,
+            padding: "0 4px",
+            background: "#0B0B0E",
+            color: "#fff",
+            outline: "none",
+            zIndex: 11,
+          }}
+        />
       ) : null}
       {editingText !== null && rect ? (
         <input

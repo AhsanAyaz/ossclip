@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes.
 
-**Status:** Tasks 1–6 implemented 2026-07-29 (remote session); Task 7 remains gated on the scope decision in 7.1. Logged 2026-07-29 from the author's first real editing session on `5 ClaudeCode.v8` (workdir `~/Downloads/.ossclip/5 ClaudeCode-07fbd090`).
+**Status:** Tasks 1–7 implemented (Tasks 1–6 on 2026-07-29, Task 7 scope (a) on 2026-07-30, both remote sessions). Logged 2026-07-29 from the author's first real editing session on `5 ClaudeCode.v8` (workdir `~/Downloads/.ossclip/5 ClaudeCode-07fbd090`).
 
 > **Status 2026-07-30 — Tasks 1–6 done.** 438 unit tests, typecheck, editor build and 8 Playwright e2e green.
 >
@@ -12,7 +12,7 @@
 > - **Task 4:** a dashed safe-area guide with a faint outside-dim renders only while a drag is in progress, drawn from the exported `SAFE_AREA` (re-exported through `@ossclip/renderer/composition` to respect the editor's import surface), `pointer-events: none`. Screenshot-verified mid-drag and asserted gone on mouseup. 4.2 decided: ONE guide; the cover grid rect would double the lines for a constraint that only matters to the cover.
 > - **Task 5:** `NumberField` gains `step` (default `"any"` — the defect was HTML's default step=1 rejecting 0.62), `min`/`max` clamped at commit so the UI and the schema's `positive().max(4)` agree, and `data-testid`. All call sites audited: both scale fields bounded 0.05–4, `radiusPx` floored at 0. e2e proves 0.62 lands in `overrides.json`.
 > - **Task 6:** the timing section always states the resolved `start – end (duration)`; pinned/tracking is a label on it; an unpinned cue also shows the caption words under its window ("tracking transcript" as a checkable fact). Derived from `captionLines` in output time — no new plumbing.
-> - **Task 7:** untouched, deliberately — 7.1's scope decision (a/b/c) belongs to the author.
+> - **Task 7:** scope decided WITH the author — **(a) in-place word retype, 1:1, no timing change.** Implemented 2026-07-30: `overrides.json` gains a `captions` record keyed by global caption-stream word index, each entry `{text, was}` — `was` is the verification anchor (the §17 `heard`-guard pattern), so an edit that no longer matches the underlying word after a re-`produce` is DROPPED with a loud console report, never silently misapplied. `applyCaptionEdits` in core is the single merge point, used by both the render pipeline (`produce.ts`) and the live editor preview; `baseCaptionLines` travels in render-props beside the pristine `baseSceneCues` so client-side merges apply onto an unedited base. UI: double-click a caption word on the stage → floating input in place → Enter commits, Escape cancels, retyping the original clears the override. Retype-only by construction — 1:1 substitution can never shift word indices or timings, which is what makes it safe next to scene anchors (the Task-7 hard-part list above). Levels (b)/(c) deliberately not built. One pre-existing bug fixed en route: the overlay hit-test walk restored `style.pointerEvents` to `""` instead of its previous value, erasing React inline styles on any element it crossed (it broke the second click of a double-click on caption words). 441 unit tests, typecheck, editor build and 9 Playwright e2e green.
 
 **Goal:** Make the editor's playback behave like an editor's playback — explicit transport, J/K/L, a seekable ruler — and close three concrete defects the session surfaced, then take the one large feature (caption editing) seriously rather than bolting it on.
 
@@ -120,9 +120,9 @@ What makes it hard, stated up front so it is designed rather than discovered:
 - **Scene copy and captions must keep agreeing (FINDINGS §21).** `reconcileCopy` exists because a graphic and the caption under it spelling one word two ways is a shipped defect. A manual caption edit can reintroduce it; decide whether an edit propagates, warns, or is scoped.
 - **The transcript is the anchor for scene timing.** Cues resolve from word indices. An edit that changes word COUNT shifts every downstream anchor unless it is constrained to 1:1 substitutions (which is precisely the constraint `reconcileCopy` accepts, and why).
 
-- [ ] **Step 7.1: Decide the scope first, with the author.** Three honest levels: (a) retype a word in place, 1:1, no timing change — small, safe, closes most of the need (e.g. the `double scape` → `double escape` case the strict repair gate refuses); (b) full transcript editing with split/merge and re-timed words; (c) Descript-style pane that also drives cutting (delete a sentence, the video loses it). These are days apart in cost. **Do not assume (c) from one screenshot.**
-- [ ] **Step 7.2:** Design the override shape for whichever level is chosen, and write down how it survives a re-`produce` — that is the property that makes `overrides.json` worth having.
-- [ ] **Step 7.3:** Plan the UI separately once the data model is settled.
+- [x] **Step 7.1: Decide the scope first, with the author.** Three honest levels: (a) retype a word in place, 1:1, no timing change — small, safe, closes most of the need (e.g. the `double scape` → `double escape` case the strict repair gate refuses); (b) full transcript editing with split/merge and re-timed words; (c) Descript-style pane that also drives cutting (delete a sentence, the video loses it). These are days apart in cost. **Do not assume (c) from one screenshot.** *Decided: (a).*
+- [x] **Step 7.2:** Design the override shape for whichever level is chosen, and write down how it survives a re-`produce` — that is the property that makes `overrides.json` worth having. *Shape: `captions: Record<globalWordIndex, {text, was}>`; survival is the `was`-guard — match ⇒ apply, mismatch ⇒ drop loudly (see status block).*
+- [x] **Step 7.3:** Plan the UI separately once the data model is settled. *Built: dblclick-in-place retype on the stage; no pane — (a) doesn't need one.*
 
 ---
 

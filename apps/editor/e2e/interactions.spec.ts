@@ -254,3 +254,35 @@ test("dragging a block body moves the scene in time, keeping its duration; a cli
   const doc2 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   expect(doc2.scenes[renderProps.sceneCues[0].id]?.timing).toBeUndefined();
 });
+
+test("double-click retypes a caption word in place; the edit lands in overrides.json (Task 7a)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  // Park the playhead where a caption line is definitely on screen: click
+  // into the first scene block, which seeks mid-caption.
+  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await page.waitForSelector("[data-caption-word]");
+
+  const word = page.locator("[data-caption-word]").first();
+  const wordIndex = await word.getAttribute("data-caption-word");
+  const was = await word.getAttribute("data-caption-text");
+  const box = (await word.boundingBox())!;
+  await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+
+  const input = page.getByTestId("caption-edit");
+  await expect(input).toBeVisible();
+  // The input seeds with the RAW word, not a decorated rendering.
+  await expect(input).toHaveValue(was!);
+  await input.fill("RETYPED");
+  await page.keyboard.press("Enter");
+
+  // The stage caption updates live…
+  await expect(page.locator(`[data-caption-word="${wordIndex}"]`)).toHaveText(/RETYPED/);
+  // …and the override survives a save, keyed and guarded.
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc.captions[wordIndex!]).toEqual({ text: "RETYPED", was });
+});
