@@ -77,7 +77,11 @@ export const VideoStage: React.FC<{
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const t = frame / fps;
-  const slot = videoSlotAt(cues, t, face ?? undefined, sourceTextRegions ?? []);
+  // The composition already knows its own frame — hand it to the geometry so
+  // a landscape export crops against 16:9 instead of the portrait assumption
+  // baked in when 9:16 was the only output (R15).
+  const outFrame = { width, height };
+  const slot = videoSlotAt(cues, t, face ?? undefined, sourceTextRegions ?? [], outFrame);
   const backdrop = backdropOpacityAt(cues, t);
 
   const wPx = slot.rect.w * width;

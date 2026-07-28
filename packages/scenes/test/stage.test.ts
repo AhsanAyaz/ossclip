@@ -19,6 +19,11 @@ import {
   captionAnchorAt,
   clampGraphicRect,
   FULL_BLEED_GRAPHIC_SLOT,
+  LANDSCAPE_FRAME,
+  LANDSCAPE_SAFE_AREA,
+  PORTRAIT_FRAME,
+  safeAreaFor,
+  safeRectFor,
   graphicSlotFor,
   headFitsSlot,
   layoutSlots,
@@ -631,5 +636,62 @@ describe("caption anchor honours a hand-moved rect on a CLEAN source (R11 Task 2
     expect(moved).not.toBe(base);
     // The moved anchor's band is clear of the rect.
     expect(moved < onTop.y || moved > onTop.y + onTop.h).toBe(true);
+  });
+});
+
+describe("landscape frame (R15)", () => {
+  const LS = LANDSCAPE_FRAME;
+
+  it("a 16:9 source in a 16:9 full-bleed slot needs no crop bias at all", () => {
+    // The whole point of a landscape export: the picture fits exactly, so
+    // there is no overflow to bias and nothing of the frame is thrown away.
+    const face = { centerYFrac: 0.4, sizeFrac: 0.2, sourceAspect: 16 / 9 };
+    const full = { x: 0, y: 0, w: 1, h: 1 };
+    expect(objectPosYFor(full, face, LS)).toBe(0.5);
+    expect(objectPosXFor(full, face, LS)).toBe(0.5);
+  });
+
+  it("the SAME source in the portrait frame is cropped hard — the asymmetry the frame arg exists for", () => {
+    const face = { centerYFrac: 0.4, sizeFrac: 0.2, sourceAspect: 16 / 9, centerXFrac: 0.3 };
+    const full = { x: 0, y: 0, w: 1, h: 1 };
+    // Portrait: a 16:9 source is height-constrained and spills sideways.
+    expect(objectPosXFor(full, face, PORTRAIT_FRAME)).not.toBe(0.5);
+  });
+
+  it("landscape drops the platform chrome insets", () => {
+    expect(safeAreaFor(LS)).toBe(LANDSCAPE_SAFE_AREA);
+    expect(safeAreaFor(PORTRAIT_FRAME)).toBe(SAFE_AREA);
+    // Landscape has no action rail to dodge, so its usable rect is wider.
+    expect(safeRectFor(LS).w).toBeGreaterThan(safeRectFor(PORTRAIT_FRAME).w);
+  });
+
+  it("clampGraphicRect respects the frame it is given", () => {
+    const wide = { x: 0.03, y: 0.03, w: 0.9, h: 0.5 };
+    // Legal in landscape (left inset 0.05)…
+    expect(clampGraphicRect(wide, LS).x).toBeCloseTo(0.05, 6);
+    // …and pushed further in under portrait's tighter, rail-aware rect.
+    expect(clampGraphicRect(wide, PORTRAIT_FRAME).w).toBeLessThan(
+      clampGraphicRect(wide, LS).w,
+    );
+  });
+
+  it("every layout still resolves a graphic slot inside the LANDSCAPE safe rect", () => {
+    const safe = safeRectFor(LS);
+    for (const layout of LayoutSchema.options) {
+      const g = clampGraphicRect(graphicSlotFor({ layout }, LS), LS);
+      expect(g.x, layout).toBeGreaterThanOrEqual(safe.x - 1e-9);
+      expect(g.y, layout).toBeGreaterThanOrEqual(safe.y - 1e-9);
+      expect(g.x + g.w, layout).toBeLessThanOrEqual(safe.x + safe.w + 1e-9);
+      expect(g.y + g.h, layout).toBeLessThanOrEqual(safe.y + safe.h + 1e-9);
+    }
+  });
+
+  it("defaults stay portrait, so no existing caller changes behaviour", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.22 };
+    const band = { x: 0, y: 0, w: 1, h: 0.42 };
+    expect(objectPosYFor(band, face)).toBe(objectPosYFor(band, face, PORTRAIT_FRAME));
+    expect(layoutSlots("video-top", face)).toEqual(
+      layoutSlots("video-top", face, [], PORTRAIT_FRAME),
+    );
   });
 });

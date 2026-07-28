@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
-import { SAFE_AREA, activeCueAt } from "./stage";
+import { safeAreaFor, activeCueAt } from "./stage";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
 
 export interface CaptionTrackProps {
@@ -73,7 +73,8 @@ const LineView: React.FC<{
   ctaWindow?: { startSec: number; endSec: number };
 }> = ({ line, wordOffset, verticalAnchor, fontSizePx, activeColor, ctaKeyword, ctaWindow }) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
+  const safeArea = safeAreaFor({ width, height });
   // The parent <Sequence> starts at line.start, so local frame 0 === line.start.
   const t = line.start + frame / fps;
   return (
@@ -90,8 +91,8 @@ const LineView: React.FC<{
           gap: "0.28em",
           flexWrap: "wrap",
           // Keep caption text clear of the platform's right-hand action rail.
-          paddingLeft: `${SAFE_AREA.left * 100}%`,
-          paddingRight: `${SAFE_AREA.right * 100}%`,
+          paddingLeft: `${safeArea.left * 100}%`,
+          paddingRight: `${safeArea.right * 100}%`,
           fontFamily:
             "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
           fontWeight: 900,

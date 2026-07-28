@@ -44,7 +44,7 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         // (full-bleed) falls back to `FULL_BLEED_GRAPHIC_SLOT` rather than
         // silently dropping the graphic — layout places the video, it does
         // not veto the component.
-        const slot = graphicSlotFor(cue);
+        const slot = graphicSlotFor(cue, { width, height });
         const Component = COMPONENTS[cue.component];
         const from = Math.round(cue.startSec * fps);
         const durationInFrames = Math.max(1, Math.round((cue.endSec - cue.startSec) * fps));

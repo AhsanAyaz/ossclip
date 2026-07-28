@@ -241,3 +241,25 @@ export function repairMomentLayouts(
   });
   return { moments: out, issues };
 }
+
+/**
+ * Layouts that make sense in a LANDSCAPE frame (R15).
+ *
+ * `video-top`, `pip-bubble` and `graphic-only` are vertical-format ideas: they
+ * exist to split a tall frame between a face and a card, or to demote the
+ * speaker to an inset because a 9:16 frame cannot show both at a readable
+ * size. A 16:9 export has the opposite problem — the source already fills the
+ * frame exactly, so carving a 0.42-tall band out of it crops a 16:9 picture
+ * into a 4.2:1 letterbox and shrinks the speaker for nothing.
+ *
+ * Landscape therefore keeps the two layouts that read as one picture: the
+ * speaker full-frame, and the speaker dimmed behind a card.
+ */
+export const LANDSCAPE_LAYOUTS: readonly Layout[] = ["full-bleed", "blurred-behind"];
+
+/** Nearest landscape-appropriate layout. Identity for the two that already
+ * qualify; everything else becomes `blurred-behind`, which is the closest
+ * thing to "a graphic over the speaker" that does not split the frame. */
+export function landscapeLayout(layout: Layout): Layout {
+  return LANDSCAPE_LAYOUTS.includes(layout) ? layout : "blurred-behind";
+}

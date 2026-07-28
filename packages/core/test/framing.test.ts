@@ -1,3 +1,4 @@
+import { LayoutSchema } from "../src/scene-schema";
 import { describe, expect, it } from "vitest";
 import {
   buildFramingBrief,
@@ -7,6 +8,7 @@ import {
   repairMomentLayouts,
   worstFaceFrac,
   type FramingContext,
+  landscapeLayout,
 } from "../src/framing";
 import { headFracInSlot } from "../src/normalize";
 import type { Moment } from "../src/producer/beats";
@@ -205,5 +207,21 @@ describe("repairMomentLayouts (Task B — the safety net)", () => {
     // blurred-behind (full-frame) trims less than video-top (wide band).
     expect(moments[0]!.layout).toBe("blurred-behind");
     expect(issues[0]!.issue).toContain("no StatCard layout fully fits");
+  });
+});
+
+describe("landscape layouts (R15)", () => {
+  it("keeps the two that read as one picture, remaps the split-screen ones", () => {
+    expect(landscapeLayout("full-bleed")).toBe("full-bleed");
+    expect(landscapeLayout("blurred-behind")).toBe("blurred-behind");
+    for (const l of ["video-top", "pip-bubble", "graphic-only"] as const) {
+      expect(landscapeLayout(l)).toBe("blurred-behind");
+    }
+  });
+
+  it("is idempotent — remapping an already-landscape plan changes nothing", () => {
+    for (const l of LayoutSchema.options) {
+      expect(landscapeLayout(landscapeLayout(l))).toBe(landscapeLayout(l));
+    }
   });
 });

@@ -29,6 +29,11 @@ program
   )
   .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
   .option("--workdir <dir>", "cache/work directory (default: <input dir>/.ossclip)")
+  .option(
+    "--aspect <ratio>",
+    "output shape: 9:16 (vertical, default) or 16:9 (landscape, 1920x1080)",
+    "9:16",
+  )
   .option("--produce", "run the LLM producer brain to plan title cards & graphics", false)
   .option("--intent <text>", "what the video should be ('educational video about agents…')")
   .option(
@@ -86,6 +91,7 @@ program
       render: opts.render,
       mezzanine: opts.mezzanine,
       workdir: opts.workdir,
+      aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
       noiseDb: opts.noiseDb,
       produce: opts.produce,
       intent: opts.intent,

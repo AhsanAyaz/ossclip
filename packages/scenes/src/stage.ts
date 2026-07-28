@@ -31,9 +31,21 @@ export interface VideoSlotState {
   objectPosX: number;
 }
 
-/** The frame the stage lays out for — all rect fractions refer to this. */
-const FRAME_W = 1080;
-const FRAME_H = 1920;
+/** Output frame pixels. Every rect on the stage is a FRACTION of this, so the
+ * only thing the frame changes is pixel-ratio math: how much of the source a
+ * slot displays, and therefore where the crop has to sit. */
+export interface FrameSize {
+  width: number;
+  height: number;
+}
+
+/** The vertical frame ossclip was built for, and its landscape sibling (R15). */
+export const PORTRAIT_FRAME: FrameSize = { width: 1080, height: 1920 };
+export const LANDSCAPE_FRAME: FrameSize = { width: 1920, height: 1080 };
+
+/** Default frame — portrait, so every existing caller keeps its behaviour. */
+const FRAME_W = PORTRAIT_FRAME.width;
+const FRAME_H = PORTRAIT_FRAME.height;
 
 /**
  * Assumed face when none was measured (screen recording, detector miss):
@@ -78,9 +90,13 @@ export const CHIN_BOTTOM_MARGIN = 0.6 * ZOOM_BITE;
  * whether the crown was in the source to begin with. When this is false the
  * crop is a choice about which end to lose, not a solvable placement.
  */
-export function headFitsSlot(rect: Rect, face: FaceCrop): boolean {
-  const slotH = rect.h * FRAME_H;
-  const displayedH = displayedHeight(rect, face);
+export function headFitsSlot(
+  rect: Rect,
+  face: FaceCrop,
+  frame: FrameSize = PORTRAIT_FRAME,
+): boolean {
+  const slotH = rect.h * frame.height;
+  const displayedH = displayedHeight(rect, face, frame);
   const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
   const crownFrac = face.centerYFrac - size / 2 - HEAD_ABOVE_FACE * size;
   const needed =
@@ -100,10 +116,14 @@ const FRAME_ASPECT = FRAME_W / FRAME_H;
  * HEIGHT-constrained: it fills the slot's height exactly and spills sideways,
  * so there is no vertical bias to apply and `objectPosXFor` takes over.
  */
-function displayedHeight(rect: Rect, face: FaceCrop): number {
-  const slotW = rect.w * FRAME_W;
-  const slotH = rect.h * FRAME_H;
-  return Math.max(slotH, slotW / (face.sourceAspect ?? FRAME_ASPECT));
+function displayedHeight(
+  rect: Rect,
+  face: FaceCrop,
+  frame: FrameSize = PORTRAIT_FRAME,
+): number {
+  const slotW = rect.w * frame.width;
+  const slotH = rect.h * frame.height;
+  return Math.max(slotH, slotW / (face.sourceAspect ?? frame.width / frame.height));
 }
 
 /**
@@ -116,9 +136,13 @@ function displayedHeight(rect: Rect, face: FaceCrop): number {
  * whole head the interval is empty and we keep the CHIN, because a talking
  * head without a mouth stops reading as speech (FINDINGS §13).
  */
-export function objectPosYFor(rect: Rect, face: FaceCrop): number {
-  const slotH = rect.h * FRAME_H;
-  const displayedH = displayedHeight(rect, face);
+export function objectPosYFor(
+  rect: Rect,
+  face: FaceCrop,
+  frame: FrameSize = PORTRAIT_FRAME,
+): number {
+  const slotH = rect.h * frame.height;
+  const displayedH = displayedHeight(rect, face, frame);
   const overflow = displayedH - slotH;
   if (overflow <= 1) return 0.5; // slot shows the full source height — no bias to apply
 
@@ -166,10 +190,11 @@ export function avoidSlicingText(
   rect: Rect,
   face: FaceCrop,
   bands: readonly SourceBand[],
+  frame: FrameSize = PORTRAIT_FRAME,
 ): number {
   if (bands.length === 0) return posY;
-  const slotH = rect.h * FRAME_H;
-  const displayedH = displayedHeight(rect, face);
+  const slotH = rect.h * frame.height;
+  const displayedH = displayedHeight(rect, face, frame);
   const overflow = displayedH - slotH;
   if (overflow <= 1) return posY; // whole source visible — nothing to slice
 
@@ -224,10 +249,14 @@ export function avoidSlicingText(
  * who was sitting to one side. Unmeasured X falls back to centre, which is
  * exactly the old behaviour.
  */
-export function objectPosXFor(rect: Rect, face: FaceCrop): number {
-  const slotW = rect.w * FRAME_W;
-  const slotH = rect.h * FRAME_H;
-  const displayedW = Math.max(slotW, slotH * (face.sourceAspect ?? FRAME_ASPECT));
+export function objectPosXFor(
+  rect: Rect,
+  face: FaceCrop,
+  frame: FrameSize = PORTRAIT_FRAME,
+): number {
+  const slotW = rect.w * frame.width;
+  const slotH = rect.h * frame.height;
+  const displayedW = Math.max(slotW, slotH * (face.sourceAspect ?? frame.width / frame.height));
   const overflow = displayedW - slotW;
   if (overflow <= 1 || face.centerXFrac === undefined) return 0.5;
   // Centre the face in the slot, then clamp to what the source actually has.
@@ -255,6 +284,29 @@ export interface StageSlots {
  * (FINDINGS §6a.)
  */
 export const SAFE_AREA = { top: 0.12, bottom: 0.22, right: 0.16, left: 0.04 };
+
+/**
+ * Landscape has no platform chrome to dodge (R15). A 16:9 export plays on
+ * YouTube/desktop/embeds: no action rail eating the right 16%, no username
+ * ticker eating the bottom 22%. Those insets exist to survive Reels/TikTok
+ * overlays, and carrying them into landscape would squeeze every graphic into
+ * the middle of a frame that has no such constraint. What remains is ordinary
+ * broadcast title-safe margin, plus a little extra at the bottom for the
+ * player's own scrub bar.
+ */
+export const LANDSCAPE_SAFE_AREA = { top: 0.06, bottom: 0.12, right: 0.05, left: 0.05 };
+
+/** Which chrome insets apply to a frame — decided by its shape, not a flag,
+ * so the renderer and the editor can never disagree about it. */
+export function safeAreaFor(frame: FrameSize = PORTRAIT_FRAME): typeof SAFE_AREA {
+  return frame.width > frame.height ? LANDSCAPE_SAFE_AREA : SAFE_AREA;
+}
+
+/** The textual-safe rect for a given frame. */
+export function safeRectFor(frame: FrameSize = PORTRAIT_FRAME): Rect {
+  const a = safeAreaFor(frame);
+  return { x: a.left, y: a.top, w: 1 - a.left - a.right, h: 1 - a.top - a.bottom };
+}
 
 /**
  * Cover-image safe area (FINDINGS §31) — a DIFFERENT constraint from
@@ -296,17 +348,18 @@ const GRAPHIC_RECT_MIN_H = 0.05;
  * hand-edited `overrides.json` can't push a graphic under the platform
  * chrome. Same invariant `stage.test.ts` pins for every layout's own slot.
  */
-export function clampGraphicRect(rect: Rect): Rect {
+export function clampGraphicRect(rect: Rect, frame: FrameSize = PORTRAIT_FRAME): Rect {
+  const SAFE = safeRectFor(frame);
   // Epsilon-tolerant: SAFE_RECT's bounds are float sums (1 - 0.04 - 0.16 =
   // 0.79999…), and a layout slot that is EXACTLY 0.8 wide must clamp to
   // itself, not to the representation noise.
   const EPS = 1e-9;
   const clamp = (v: number, lo: number, hi: number): number =>
     v < lo - EPS ? lo : v > hi + EPS ? hi : v;
-  const w = clamp(rect.w, GRAPHIC_RECT_MIN_W, SAFE_RECT.w);
-  const h = clamp(rect.h, GRAPHIC_RECT_MIN_H, SAFE_RECT.h);
-  const x = clamp(rect.x, SAFE_RECT.x, SAFE_RECT.x + SAFE_RECT.w - w);
-  const y = clamp(rect.y, SAFE_RECT.y, SAFE_RECT.y + SAFE_RECT.h - h);
+  const w = clamp(rect.w, GRAPHIC_RECT_MIN_W, SAFE.w);
+  const h = clamp(rect.h, GRAPHIC_RECT_MIN_H, SAFE.h);
+  const x = clamp(rect.x, SAFE.x, SAFE.x + SAFE.w - w);
+  const y = clamp(rect.y, SAFE.y, SAFE.y + SAFE.h - h);
   return { x, y, w, h };
 }
 
@@ -427,9 +480,11 @@ export function layoutSlots(
   face: FaceCrop = DEFAULT_FACE,
   /** Burned-in text bands visible right now — the crop must not slice them. */
   textBands: readonly SourceBand[] = [],
+  frame: FrameSize = PORTRAIT_FRAME,
 ): StageSlots {
-  const posY = (rect: Rect) => avoidSlicingText(objectPosYFor(rect, face), rect, face, textBands);
-  const posX = (rect: Rect) => objectPosXFor(rect, face);
+  const posY = (rect: Rect) =>
+    avoidSlicingText(objectPosYFor(rect, face, frame), rect, face, textBands, frame);
+  const posX = (rect: Rect) => objectPosXFor(rect, face, frame);
   switch (layout) {
     case "full-bleed":
       return {
@@ -504,12 +559,12 @@ export const FULL_BLEED_GRAPHIC_SLOT: Rect = { x: 0.07, y: 0.24, w: 0.77, h: 0.3
  * One resolver for the renderer and the Inspector, so the box the panel
  * edits is byte-for-byte the box the stage draws.
  */
-export function graphicSlotFor(cue: {
-  layout: Layout;
-  graphicRect?: Rect | null;
-}): Rect {
-  if (cue.graphicRect) return clampGraphicRect(cue.graphicRect);
-  return layoutSlots(cue.layout).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
+export function graphicSlotFor(
+  cue: { layout: Layout; graphicRect?: Rect | null },
+  frame: FrameSize = PORTRAIT_FRAME,
+): Rect {
+  if (cue.graphicRect) return clampGraphicRect(cue.graphicRect, frame);
+  return layoutSlots(cue.layout, DEFAULT_FACE, [], frame).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
 }
 
 /** Seconds the video slot spends morphing between layouts at a cue boundary. */
@@ -575,8 +630,9 @@ function cueVideoSlot(
   cue: SceneCue,
   face: FaceCrop,
   bands: readonly SourceBand[],
+  frame: FrameSize,
 ): VideoSlotState {
-  const v = layoutSlots(cue.layout, face, bands).video;
+  const v = layoutSlots(cue.layout, face, bands, frame).video;
   const pip = cue.layout === "pip-bubble" ? cue.pip : undefined;
   if (!pip) return v;
   const rect = {
@@ -598,13 +654,14 @@ export function videoSlotAt(
   face: FaceCrop = DEFAULT_FACE,
   /** Text regions in OUTPUT time; only those on screen now constrain the crop. */
   textRegions: readonly (SourceBand & { startSec: number; endSec: number })[] = [],
+  frame: FrameSize = PORTRAIT_FRAME,
 ): VideoSlotState {
   const cues = morphCues(allCues);
   const bands = textRegions.filter((r) => tSec >= r.startSec && tSec < r.endSec);
-  const base = layoutSlots("full-bleed", face, bands).video;
+  const base = layoutSlots("full-bleed", face, bands, frame).video;
   const cue = activeCueAt(cues, tSec);
   if (!cue) return base;
-  const target = cueVideoSlot(cue, face, bands);
+  const target = cueVideoSlot(cue, face, bands, frame);
   const T = Math.min(LAYOUT_TRANSITION_SEC, (cue.endSec - cue.startSec) / 2);
   const sinceStart = tSec - cue.startSec;
   const untilEnd = cue.endSec - tSec;
@@ -613,8 +670,8 @@ export function videoSlotAt(
   // repositioned bubble eases toward where that bubble actually is.
   const prev = activeCueAt(cues, cue.startSec - 1e-3);
   const next = activeCueAt(cues, cue.endSec + 1e-3);
-  const from = prev ? cueVideoSlot(prev, face, bands) : base;
-  const to = next ? cueVideoSlot(next, face, bands) : base;
+  const from = prev ? cueVideoSlot(prev, face, bands, frame) : base;
+  const to = next ? cueVideoSlot(next, face, bands, frame) : base;
 
   if (sinceStart < T) return lerpVideo(from, target, easeInOut(sinceStart / T));
   if (untilEnd < T) return lerpVideo(target, to, easeInOut(1 - untilEnd / T));

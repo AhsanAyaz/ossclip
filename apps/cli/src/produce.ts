@@ -34,6 +34,7 @@ import {
   emptyOverrideDoc,
   extractAudio,
   fillPlainCues,
+  landscapeLayout,
   formatCutReport,
   formatUsageLine,
   formatUsageReport,
@@ -118,6 +119,12 @@ export interface ProduceOptions {
    * face.
    */
   sourceFit?: "cover" | "contain";
+  /**
+   * Output shape (R15). `9:16` is the vertical default every layout was tuned
+   * for; `16:9` exports 1920×1080 for YouTube/desktop, where there is no
+   * platform chrome to dodge and a landscape source needs no cropping at all.
+   */
+  aspect?: "9:16" | "16:9";
 }
 
 function sha1File(path: string): Promise<string> {
@@ -156,9 +163,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   await preflight(cfg.ffmpegPath, "Install ffmpeg (brew install ffmpeg / apt install ffmpeg) or set OSSCLIP_FFMPEG.");
   await preflight(cfg.ffprobePath, "Install ffmpeg (provides ffprobe) or set OSSCLIP_FFPROBE.");
 
+  // The output frame — every rect downstream is a fraction of THIS, and the
+  // stage geometry now takes it as an argument rather than assuming portrait.
+  const landscape = opts.aspect === "16:9";
+  const frame = landscape ? { width: 1920, height: 1080 } : { width: 1080, height: 1920 };
+
   const hash = (await sha1File(input)).slice(0, 8);
   const workRoot = opts.workdir ? resolve(opts.workdir) : join(dirname(input), ".ossclip");
-  const work = join(workRoot, `${basename(input).replace(/\.[^.]+$/, "")}-${hash}`);
+  const work = join(
+    workRoot,
+    `${basename(input).replace(/\.[^.]+$/, "")}-${hash}${landscape ? "-16x9" : ""}`,
+  );
   await mkdir(work, { recursive: true });
   const tools = { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath };
 
@@ -347,7 +362,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       })),
       { workDir: work },
     );
-    framingPlan = planNormalization(contentTimeline, segmentFaces, { width: 1080, height: 1920 });
+    framingPlan = planNormalization(contentTimeline, segmentFaces, frame);
   }
 
   // ---- Scenes: hand-authored file, or the producer brain (PHASE1 §4) ----
@@ -378,7 +393,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
             const v = layoutSlots(layout).video;
             return {
               layout,
-              slotAspect: (v.rect.w * 1080) / (v.rect.h * 1920),
+              slotAspect: (v.rect.w * frame.width) / (v.rect.h * frame.height),
               primary: v.opacity > 0 && v.rect.w * v.rect.h >= PRIMARY_VIDEO_SLOT_AREA,
             };
           }),
@@ -474,6 +489,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     }
   }
 
+  // Landscape keeps the frame whole (R15): the split-screen layouts are
+  // vertical-format answers, and applying them to 16:9 crops the picture into
+  // a letterbox for no gain. Remapped here — before assembly — so cues,
+  // captions, the framing report and the editor all see one set of layouts.
+  if (landscape) {
+    const remapped = scenes.filter((sc) => landscapeLayout(sc.layout) !== sc.layout);
+    for (const sc of remapped) {
+      console.log(`  ▸ ${sc.id}: ${sc.layout} → ${landscapeLayout(sc.layout)} (landscape)`);
+      sc.layout = landscapeLayout(sc.layout);
+    }
+    if (remapped.length > 0) {
+      console.log(`▸ ${remapped.length} scene(s) re-laid out for the 16:9 frame`);
+    }
+  }
+
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
 
@@ -547,12 +577,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // because the result LOOKS deliberate — a tight talking head — and nothing
   // else in the run would mention that the desk, the screen and the second
   // person are simply gone.
-  if (opts.sourceFit !== "contain" && content.height > 0) {
-    const displayedW = 1920 * (content.width / content.height);
-    if (displayedW > 1080 * 1.05) {
+  if (!landscape && opts.sourceFit !== "contain" && content.height > 0) {
+    const displayedW = frame.height * (content.width / content.height);
+    if (displayedW > frame.width * 1.05) {
       console.log(
         `▸ source is ${(content.width / content.height).toFixed(2)}:1 — a full-frame crop keeps ` +
-          `${((1080 / displayedW) * 100).toFixed(0)}% of its width. ` +
+          `${((frame.width / displayedW) * 100).toFixed(0)}% of its width. ` +
           "Use --source-fit contain to show the whole frame instead.",
       );
     }
@@ -598,6 +628,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     );
   }
   for (const s of routed.skipped) console.log(`  ⚠ scene ${s.id} skipped: ${s.reason}`);
+
+  // Source-text routing picks from a component's `altLayouts`, which include
+  // the vertical split layouts — so in landscape it can hand back exactly what
+  // the remap above removed. Re-assert the constraint on its OUTPUT, and say
+  // when that costs a text dodge: the graphic keeps whatever free-band rect
+  // routing gave it, but the frame stays whole (R15).
+  if (landscape) {
+    for (const c of routed.cues) {
+      const want = landscapeLayout(c.layout);
+      if (want === c.layout) continue;
+      console.log(
+        `  ▸ ${c.id}: ${c.layout} → ${want} (landscape; source-text routing had moved it)`,
+      );
+      c.layout = want;
+    }
+  }
 
   // ---- The user's edit layer (SPEC: direct manipulation) -------------------
   // Read AFTER assembly so hand edits sit on top of whatever the producer just
@@ -711,7 +757,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     cutlist,
     scenes: scenes.length > 0 ? scenes : undefined,
     theme,
-    render: { width: 1080, height: 1920, fps: 30 },
+    render: { ...frame, fps: 30 },
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
@@ -810,7 +856,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           layout: c.layout,
           startSec: toSource(c.startSec),
           endSec: toSource(c.endSec),
-          slot: { width: v.rect.w * 1080, height: v.rect.h * 1920 },
+          slot: { width: v.rect.w * frame.width, height: v.rect.h * frame.height },
         }];
       }),
       framingPlan.segments,
@@ -993,7 +1039,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           "-ss", pick.timeSec.toFixed(3),
           "-i", analysisInput,
           "-frames:v", "1",
-          "-vf", `${analysisCropVf ? `${analysisCropVf},` : ""}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920`,
+          "-vf", `${analysisCropVf ? `${analysisCropVf},` : ""}scale=${frame.width}:${frame.height}:force_original_aspect_ratio=increase,crop=${frame.width}:${frame.height}`,
           "-y", join(work, frameName),
         ]);
         const coverPath = resolve(
