@@ -1,42 +1,51 @@
 # ossclip
 
-**Open, local-first AI video producer.** Raw talking-head footage in → a polished, virality-optimized vertical short out: filler words and dead air removed, word-timed kinetic captions, face-aware framing, and title cards / stat cards / diagrams planned by an LLM producer against a hand-built scene library — plus a cover image for the profile grid.
+<!-- DEMO GIF: the single highest-value asset on this page — record it from
+     `ossclip produce input.mp4 --produce -o out.mp4` (before/after side by
+     side, then a few seconds of `ossclip edit` direct manipulation). -->
 
-Your footage never leaves your machine. Transcription is local (whisper.cpp), rendering is local (Remotion), and the only network calls are the LLM planning ones — on your own API key, or on your existing Claude Code subscription.
+**A local-first CLI that turns a talking-head take into a finished short.** It cuts silence and filler words, writes word-timed kinetic captions, frames on the measured face, and has an LLM plan **code-rendered on-screen graphics** — title cards, stat cards, diagrams, terminal and chat mockups — from what was actually said. Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones, on your own key or your existing Claude Code subscription. Vertical 9:16 by default, landscape 16:9 with `--aspect`.
+
+The graphics layer is the part comparable tools don't have: nine Zod-typed scene components ([`packages/core/src/scene-registry.ts`](./packages/core/src/scene-registry.ts)) each carry a `whenToUse` contract the LLM producer plans against, every planned scene validates against its schema before it renders, and a fit contract keeps every component inside the platform-safe area on real copy. Open-source alternatives stop at find → crop → caption; commercial tools gate the graphics layer behind paid tiers.
+
+**Scope, honestly:** ossclip **polishes a take you have already cut down** — every finding in this repo came from real 30–70 s takes. It does not yet select highlights out of long-form footage: feed it 20 minutes and you get a polished 20 minutes. The [findings log](./docs/PHASE1-FINDINGS.md) says this plainly (Round 12: "there is no highlight selection anywhere in the pipeline"). Long-form clip selection can come after launch, tested against real long-form footage.
 
 > **Status: working end to end, pre-1.0.** Cut, captions, zoom, scene graphics, the LLM producer, cover images and a direct-manipulation editor are all built and exercised on real footage. Interfaces still move between rounds. See [`docs/PHASE1-FINDINGS.md`](./docs/PHASE1-FINDINGS.md) for the running defect log — every fix in this repo traces to a numbered finding from a real render.
 
 **Docs:** a single-page reference — install, concepts, keybinds, flags — lives at [`docs/site/index.html`](./docs/site/index.html) (self-contained; open it locally or serve it via GitHub Pages).
 
-## Requirements
-
-- Node ≥ 22, pnpm
-- `ffmpeg` and `ffprobe` on PATH
-- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli`) + a ggml model
-- For `--produce`: a logged-in [Claude Code](https://claude.com/claude-code), or `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY`
+## Install
 
 ```sh
-pnpm install
-pnpm build            # builds the editor page; needed once before `ossclip edit`
+npm install -g ossclip     # or: pnpm add -g ossclip
+ossclip doctor             # checks every prerequisite, prints the exact fix per line
+```
+
+`ossclip doctor` checks all of it — Node ≥ 22, `ffmpeg`/`ffprobe`, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli`), the transcription model, and an LLM provider — and prints the per-platform install command for anything missing. The short version:
+
+```sh
+brew install ffmpeg whisper-cpp        # macOS; Linux: apt install ffmpeg + build whisper.cpp
 
 mkdir -p ~/.ossclip/models
 curl -L -o ~/.ossclip/models/ggml-small.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 ```
 
-`small.en` is the default. A mistranscribed word ends up in your captions *and* on a graphic, so accuracy matters more here than speed — which is also why `--produce` runs a repair pass over the transcript before anything is drawn. Compare models on your own footage with `--whisper-model base.en|small.en|medium.en`.
+For `--produce` (the LLM graphics planner): a logged-in [Claude Code](https://claude.com/claude-code), or `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY`.
+
+`small.en` is the default model. A mistranscribed word ends up in your captions *and* on a graphic, so accuracy matters more here than speed — which is also why `--produce` runs a repair pass over the transcript before anything is drawn. Compare models on your own footage with `--whisper-model base.en|small.en|medium.en`.
 
 ## Quick start
 
 ```sh
 # The whole thing: cut + captions + LLM-planned graphics + cover
-pnpm ossclip produce input.mp4 --produce -o out.mp4
+ossclip produce input.mp4 --produce -o out.mp4
 
 # Just the cut and captions — no LLM, no network
-pnpm ossclip produce input.mp4 -o out.mp4
+ossclip produce input.mp4 -o out.mp4
 
 # See what would be cut and why, without rendering
-pnpm ossclip produce input.mp4 --no-render
+ossclip produce input.mp4 --no-render
 ```
 
 Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`, the hash taken from the source's *content* — so the same footage reuses its cache, `--workdir` starts a separate project, and deleting the directory forces a clean run) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
@@ -44,8 +53,8 @@ Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<
 ## Editing what it produced
 
 ```sh
-pnpm ossclip edit "<work directory>"     # opens http://127.0.0.1:5174
-pnpm ossclip edit                        # bare: pick from recent projects, or browse
+ossclip edit "<work directory>"     # opens http://127.0.0.1:5174
+ossclip edit                        # bare: pick from recent projects, or browse
 ```
 
 - **Click** an element to select it, **drag** to move, **double-click** to retype.
@@ -61,6 +70,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | --- | --- |
 | `produce <input>` | the full pipeline: transcribe → analyze → cut → captions → scenes → render (+ cover) |
 | `edit [workdir]` | direct-manipulation editor; bare `edit` opens a project picker |
+| `doctor` | check every prerequisite and print the exact fix for anything missing |
 | `transcribe <input>` | stops after the transcript and cut report — no render |
 | `studio <render-props.json>` | opens Remotion Studio on a produced composition, for visual debugging |
 
@@ -72,6 +82,8 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--intent "<text>"` | what the video should be — steers the producer's editorial choices |
 | `--speaker "<who>"` | who is on camera, e.g. `"Ahsan, host of Code with Ahsan"`. Helps the repair pass recognise a mangled name and stops grounding flagging it |
 | `--cleanup <level>` | `exact` \| `light` \| `standard` \| `aggressive`. How hard to cut silence and fillers |
+| `--aspect <ratio>` | `9:16` (default) or `16:9` — landscape export with landscape-native layouts |
+| `--source-fit <mode>` | `cover` crops to fill; `contain` shows the whole frame inset — the landscape-source escape hatch |
 | `--llm <provider>` | `claude` \| `claude-cli` \| `gemini` \| `mock` |
 | `--llm-model <id>` / `--llm-fast-model <id>` | override the editorial / mechanical model. `--llm-fast-model same` disables tiering |
 | `--no-repair` | skip the ASR mishearing repair; captions then show the raw transcription |
@@ -139,7 +151,19 @@ Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPE
 - **Frames** on the measured face rather than a constant, including sources that are letterboxed or that change framing mid-take (those get normalized to one field of view before anything else runs).
 - **Plans** scenes from the transcript, then checks its own choices: a layout that would crop the speaker's head is rewritten, and copy that isn't grounded in what was actually said is flagged.
 - **Captions** every word, routed around any text already burned into the source.
-- **Covers** — writes `<out>.cover.jpg` sized for the Instagram profile grid's centre-square crop.
+- **Covers** — writes `<out>.cover.jpg` sized for the platform the aspect targets.
+
+## Working from a clone (contributors)
+
+```sh
+pnpm install
+pnpm build             # builds the editor page; needed once before `ossclip edit`
+pnpm ossclip produce input.mp4 --produce -o out.mp4
+
+pnpm test              # vitest
+pnpm typecheck
+node scripts/make-fixture.mjs    # regenerates the deterministic test fixtures
+```
 
 ## Repo layout
 
@@ -148,17 +172,8 @@ packages/core      framework-free pipeline: schema, ingest, transcribe, analyze,
                    timemap, captions, framing/normalization, the LLM producer
 packages/scenes    React components shared by preview & render (EdlVideo, CaptionTrack, SceneLayer)
 packages/renderer  Remotion composition + programmatic render entry
-apps/cli           the ossclip CLI
+apps/cli           the ossclip CLI (published to npm as `ossclip`)
 apps/editor        direct-manipulation editing page over a produced workdir (`ossclip edit`)
-```
-
-## Development
-
-```sh
-pnpm test          # vitest
-pnpm typecheck
-pnpm --filter @ossclip/editor build
-node scripts/make-fixture.mjs    # regenerates the deterministic test fixtures
 ```
 
 ## Licensing

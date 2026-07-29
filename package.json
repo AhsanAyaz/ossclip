@@ -2,7 +2,7 @@
   "name": "ossclip-monorepo",
   "private": true,
   "version": "0.0.1",
-  "description": "ossclip — open, local-first AI video producer",
+  "description": "ossclip — local-first CLI video producer (monorepo)",
   "scripts": {
     "test": "vitest run",
     "ossclip": "pnpm --filter ossclip exec tsx src/index.ts",

@@ -16,8 +16,11 @@ const program = new Command();
 
 program
   .name("ossclip")
-  .description("open, local-first AI video producer — Phase 0: the cut")
-  .version("0.0.1");
+  .description(
+    "local-first video producer: cuts silence and fillers, word-timed captions, " +
+      "face-aware framing, LLM-planned code-rendered graphics",
+  )
+  .version("0.1.0");
 
 program
   .command("produce")

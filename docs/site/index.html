@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ossclip — open, local-first AI video producer</title>
-<meta name="description" content="Raw talking-head footage in → a polished, virality-optimized short out. Local transcription, local rendering, LLM-planned graphics, a direct-manipulation editor." />
+<title>ossclip — turn a talking-head take into a finished short, locally</title>
+<meta name="description" content="A local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, LLM-planned code-rendered graphics, and a direct-manipulation editor. Local transcription and rendering." />
 <style>
   :root {
     --bg: #0B0B0E; --panel: #111116; --panel2: #0F0F14;
@@ -70,7 +70,7 @@
 <div class="layout">
 <nav class="side">
   <div class="brand">ossclip</div>
-  <div class="tag">open, local-first AI video producer</div>
+  <div class="tag">a talking-head take in, a finished short out — locally</div>
   <div class="group">start</div>
   <a href="#install">Install</a>
   <a href="#quickstart">Quick start</a>
@@ -91,35 +91,41 @@
 <main>
 
 <h1>ossclip<span class="dot">.</span></h1>
-<p class="lede">Raw talking-head footage in → a polished, virality-optimized short out: filler words and dead air removed, word-timed kinetic captions, face-aware framing, and title cards / stat cards / diagrams planned by an LLM producer against a hand-built scene library — plus a cover image for the profile grid.</p>
+<p class="lede">A local-first CLI that turns a talking-head take into a finished short: filler words and dead air cut, word-timed kinetic captions, face-aware framing, and <strong>LLM-planned, code-rendered on-screen graphics</strong> — title cards, stat cards, diagrams, terminal and chat mockups — planned against a hand-built, Zod-typed scene library. Plus a cover image sized for the platform.</p>
 <p><strong>Your footage never leaves your machine.</strong> Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones — on your own API key, or on your existing Claude Code subscription.</p>
+<p>Scope, honestly: ossclip <strong>polishes a take you have already cut down</strong>. It does not yet select highlights out of long-form footage — feed it 20 minutes and you get a polished 20 minutes.</p>
 <span class="status">working end to end · pre-1.0</span>
 
 <h2 id="install">Install</h2>
-<p>Requirements: Node ≥ 22 with pnpm, <code>ffmpeg</code>/<code>ffprobe</code> on PATH, <a href="https://github.com/ggml-org/whisper.cpp">whisper.cpp</a> (<code>whisper-cli</code>) with a ggml model, and — for <code>--produce</code> — a logged-in Claude Code, an <code>ANTHROPIC_API_KEY</code>, or a <code>GEMINI_API_KEY</code>.</p>
-<pre><code>pnpm install
-pnpm build            # builds the editor page; needed once before `ossclip edit`
+<pre><code>npm install -g ossclip     # or: pnpm add -g ossclip
+ossclip doctor             # checks every prerequisite, prints the exact fix per line</code></pre>
+<p><code>ossclip doctor</code> checks Node ≥ 22, <code>ffmpeg</code>/<code>ffprobe</code>, <a href="https://github.com/ggml-org/whisper.cpp">whisper.cpp</a> (<code>whisper-cli</code>), the transcription model, and an LLM provider — with the per-platform install command for anything missing. The short version:</p>
+<pre><code>brew install ffmpeg whisper-cpp        # macOS; Linux: apt install ffmpeg + build whisper.cpp
 
 mkdir -p ~/.ossclip/models
 curl -L -o ~/.ossclip/models/ggml-small.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin</code></pre>
+<p>For <code>--produce</code>: a logged-in Claude Code, an <code>ANTHROPIC_API_KEY</code>, or a <code>GEMINI_API_KEY</code>.</p>
 <p><code>small.en</code> is the default. A mistranscribed word ends up in your captions <em>and</em> on a graphic, so accuracy beats speed here — and <code>--produce</code> runs a repair pass over the transcript before anything is drawn.</p>
 
 <h2 id="quickstart">Quick start</h2>
 <pre><code># The whole thing: cut + captions + LLM-planned graphics + cover
-pnpm ossclip produce input.mp4 --produce -o out.mp4
+ossclip produce input.mp4 --produce -o out.mp4
 
 # Just the cut and captions — no LLM, no network
-pnpm ossclip produce input.mp4 -o out.mp4
+ossclip produce input.mp4 -o out.mp4
 
 # See what would be cut and why, without rendering
-pnpm ossclip produce input.mp4 --no-render
+ossclip produce input.mp4 --no-render
+
+# Check the whole toolchain first
+ossclip doctor
 
 # Open the editor over what a run produced (bare `edit` opens a project picker)
-pnpm ossclip edit "&lt;work directory&gt;"
+ossclip edit "&lt;work directory&gt;"
 
 # Landscape (YouTube/desktop) instead of the 9:16 default
-pnpm ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
+ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
 
 <h2 id="pipeline">How it works</h2>
 <div class="pipeline">
@@ -152,8 +158,8 @@ pnpm ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
 <p>Reported token counts are exact where the provider reports them and marked <code>(est)</code> where derived; a model with no known price gets tokens and <strong>no cost guess</strong>. Per-call breakdown in <code>report.txt</code>, raw records in <code>usage.json</code>.</p>
 
 <h2 id="editor">Editing</h2>
-<pre><code>pnpm ossclip edit "&lt;work directory&gt;"     # opens http://127.0.0.1:5174
-pnpm ossclip edit                        # bare: pick from recent projects, or browse</code></pre>
+<pre><code>ossclip edit "&lt;work directory&gt;"     # opens http://127.0.0.1:5174
+ossclip edit                        # bare: pick from recent projects, or browse</code></pre>
 <div class="cards">
   <div class="card"><b>Direct manipulation</b><span>Click to select, drag to move, corner handles to resize, panel fields for precision. Graphic boxes, elements, video framing, pip bubble — every element on every component is grabbable.</span></div>
   <div class="card"><b>Timeline</b><span>Zoom 1–16×, scrub, drag blocks in time, resize edges, split at the playhead (⌘B — each half inherits the scene's edits), soft-delete with a way back. The view follows the cursor.</span></div>
