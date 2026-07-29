@@ -82,6 +82,10 @@ export const TerminalMock: React.FC<{
       ))}
       {props.fanOut ? (
         <div
+          // The last un-transformable element on any component (R17 §85
+          // audit): with an id it joins the generic drag/resize/retype
+          // machinery like everything else.
+          data-edit-id="fanOut"
           style={{
             ...rise(tail),
             fontFamily: theme.fontDisplay,
@@ -90,6 +94,7 @@ export const TerminalMock: React.FC<{
             letterSpacing: "0.2em",
             color: theme.fg,
             textTransform: "uppercase",
+            ...editStyle(edits, "fanOut"),
           }}
         >
           ⌄ {props.fanOut}
