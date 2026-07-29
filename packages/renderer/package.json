@@ -1,6 +1,6 @@
 {
   "name": "@ossclip/renderer",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "ossclip's Remotion composition and programmatic render entry",
   "type": "module",
   "license": "MIT",

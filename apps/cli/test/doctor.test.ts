@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type { OssclipConfig } from "@ossclip/core";
 import { formatDoctor, runDoctor, type DoctorProbes } from "../src/doctor";
 
@@ -109,5 +110,16 @@ describe("ossclip doctor (R18 §90a)", () => {
     const checks = await runDoctor(CFG, healthy({ nodeMajor: 20 }));
     expect(byName(checks, "node").ok).toBe(false);
     expect(byName(checks, "node").fix).toContain("Node ≥ 22");
+  });
+});
+
+describe("CLI version reporting (R22 §113)", () => {
+  it("reads the version from the manifest instead of a literal", () => {
+    const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+    // A hardcoded `.version("1.2.3")` is invisible until someone reads a bug
+    // report against the wrong number: the literal stayed at 0.1.0 through
+    // two releases while npm installed 0.1.2.
+    expect(src).not.toMatch(/\.version\(\s*["'`]\d/);
+    expect(src).toContain("package.json");
   });
 });

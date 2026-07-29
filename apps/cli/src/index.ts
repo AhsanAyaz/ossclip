@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
@@ -20,7 +21,18 @@ program
     "local-first video producer: cuts silence and fillers, word-timed captions, " +
       "face-aware framing, LLM-planned code-rendered graphics",
   )
-  .version("0.1.0");
+  // Read from the manifest, never hardcoded (R22 §113): a literal here said
+  // "0.1.0" for every release after it, so `--version` reported the number a
+  // developer typed rather than the one npm installed — the exact field a
+  // bug report is judged by. npm always packs package.json regardless of
+  // `files`, so this resolves in a published install too.
+  .version(
+    (
+      JSON.parse(
+        readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+      ) as { version: string }
+    ).version,
+  );
 
 program
   .command("produce")
