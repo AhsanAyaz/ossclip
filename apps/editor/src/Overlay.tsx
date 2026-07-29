@@ -146,7 +146,7 @@ const elHandleBase: React.CSSProperties = {
   background: "#ffe14d",
 };
 
-/** The move grips (R21 §106): the box's whole dashed BOUNDARY drags — a
+/** The move grips (R21 §107): the box's whole dashed BOUNDARY drags — a
  * strip along each edge, inset clear of the corner handles. Only the edges:
  * the body must stay click-through or element selection inside the box
  * breaks. The midpoint resize handles sit a zIndex above and win where
@@ -295,7 +295,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     baseDy: number;
   } | null>(null);
   const videoRafRef = useRef(0);
-  /** An in-progress drag of the PiP bubble itself (R21 §106): in the
+  /** An in-progress drag of the PiP bubble itself (R21 §107): in the
    * pip-bubble layout the video IS the bubble, and the thing under the
    * cursor should move — plain drag repositions the bubble (`cue.pip`, the
    * R14 §52 override); ⌥-drag keeps the framing pan. */
@@ -607,7 +607,7 @@ export const Overlay: React.FC<OverlayProps> = ({
         const stageBottom = stage.getBoundingClientRect().bottom;
         if (videoSceneId && e.clientY < stageBottom - PLAYER_CONTROLS_STRIP_PX) {
           select({ sceneId: videoSceneId, elementId: null });
-          // The pip bubble (R21 §106): in this layout the picture IS the
+          // The pip bubble (R21 §107): in this layout the picture IS the
           // bubble, and dragging the thing under the cursor should move IT.
           // Plain drag repositions the bubble; ⌥-drag keeps the framing pan
           // (⌥ already means "pan" on this stage — the view hint says so).
@@ -686,7 +686,7 @@ export const Overlay: React.FC<OverlayProps> = ({
             ) &&
             e.clientY < stage.getBoundingClientRect().bottom - PLAYER_CONTROLS_STRIP_PX;
           // Over a pip bubble the affordance is MOVE (a plain drag will
-          // reposition it — R21 §106); elsewhere the picture pans, so grab.
+          // reposition it — R21 §107); elsewhere the picture pans, so grab.
           const overPip =
             overVideo &&
             (() => {

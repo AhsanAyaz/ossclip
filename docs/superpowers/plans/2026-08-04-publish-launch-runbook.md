@@ -47,7 +47,7 @@ The README's first command is `npm install -g ossclip`; it must be true the mome
 
 ## 5. Say it
 
-- [ ] **AUTHOR: the announcement.** The differentiated story is the process, not just the tool: every fix in the repo traces to a numbered finding from a real render (`docs/PHASE1-FINDINGS.md`, 106 findings across 21 rounds), and the graphics layer is the part comparable OSS tools stop short of. The 200k-follower audience is the channel nobody else has — one honest walkthrough post beats a Show HN race. (Both is fine; the audience post first.)
+- [ ] **AUTHOR: the announcement.** The differentiated story is the process, not just the tool: every fix in the repo traces to a numbered finding from a real render (`docs/PHASE1-FINDINGS.md`, 107 findings across 21 rounds), and the graphics layer is the part comparable OSS tools stop short of. The 200k-follower audience is the channel nobody else has — one honest walkthrough post beats a Show HN race. (Both is fine; the audience post first.)
 - [ ] **AUTHOR: pin expectations.** The README already narrows the promise (`--clip` newest/least-proven, one clip not N, Remotion licence note) — the announcement should repeat the honest framing, not oversell past it.
 
 ## 6. The week after
