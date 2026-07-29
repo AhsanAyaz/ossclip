@@ -5,6 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>ossclip — turn a talking-head take into a finished short, locally</title>
 <meta name="description" content="A local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, LLM-planned code-rendered graphics, and a direct-manipulation editor. Local transcription and rendering." />
+<link rel="canonical" href="https://ahsanayaz.github.io/ossclip/" />
+
+<!-- Link previews (R22 §110). Absolute URLs on purpose: a relative og:image
+     is ignored by most unfurlers, so the card would silently not appear. -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="ossclip" />
+<meta property="og:url" content="https://ahsanayaz.github.io/ossclip/" />
+<meta property="og:title" content="ossclip — a talking-head take in, a finished short out, locally" />
+<meta property="og:description" content="Cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned on-screen graphics rendered as code. Transcription and rendering stay on your machine." />
+<meta property="og:image" content="https://ahsanayaz.github.io/ossclip/assets/social-card.png" />
+<meta property="og:image:width" content="1280" />
+<meta property="og:image:height" content="640" />
+<meta property="og:image:alt" content="ossclip — a talking-head take in, a finished short out, locally" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="ossclip — a talking-head take in, a finished short out, locally" />
+<meta name="twitter:description" content="Cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned on-screen graphics rendered as code. Local transcription and rendering." />
+<meta name="twitter:image" content="https://ahsanayaz.github.io/ossclip/assets/social-card.png" />
+<meta name="theme-color" content="#0B0B0E" />
 <style>
   :root {
     --bg: #0B0B0E; --panel: #111116; --panel2: #0F0F14;
@@ -99,8 +117,8 @@
 <p>AI can make mistakes: the cut, captions and graphics are generated — review the output before publishing.</p>
 <span class="status">working end to end · pre-1.0</span>
 
-<img class="shot" src="./assets/render-example.png" alt="A produced frame: the speaker full-bleed, word-timed captions, and an LLM-planned stat card in a lower third" />
-<p class="caption">One frame out of <code>ossclip produce</code> — the captions, the framing and the graphic are all generated from what was said.</p>
+<img class="shot" src="./assets/render-example.png" alt="A produce run in the terminal: transcribe, analyze, cut, captions, scenes, render — each step reporting what it did" />
+<p class="caption">One <code>ossclip produce</code> run, end to end — every stage says what it did and why.</p>
 
 <h2 id="install">Install</h2>
 <pre><code>npm install -g ossclip     # or: pnpm add -g ossclip
