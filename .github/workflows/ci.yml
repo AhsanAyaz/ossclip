@@ -1,9 +1,21 @@
 name: CI
 
+# Actions minutes are billed on PRIVATE repos (they are free for standard
+# runners once this repo is public), so the triggers are deliberately narrow:
+# a docs- or markdown-only change cannot break a test, and should not spend a
+# runner proving it.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".github/workflows/pages.yml"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 # A newer push to the same branch supersedes an in-flight run.
@@ -40,7 +52,22 @@ jobs:
       # The suite drives a REAL edit server, which serves the built editor
       # page — so the Vite build is a precondition, not an optimisation.
       - run: pnpm build
-      - run: pnpm --filter @ossclip/editor exec playwright install --with-deps chromium
+      # A Chromium download is ~1 minute of billed runner time on every run.
+      # Key on the Playwright version, since that is what decides the browser
+      # revision — a lockfile bump to anything else must not evict it.
+      - id: pw-version
+        run: echo "v=$(node -p "require('./apps/editor/package.json').devDependencies['@playwright/test']")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: pw-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw-version.outputs.v }}
+      - if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @ossclip/editor exec playwright install --with-deps chromium
+      # The OS-level libs are not in the cached directory, so they are still
+      # needed on a cache hit — but this is seconds, not a browser download.
+      - if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter @ossclip/editor exec playwright install-deps chromium
       - run: pnpm --filter @ossclip/editor exec playwright test
       # The report is the only way to read a failure that did not reproduce
       # locally; keep it only when there is something to explain.
