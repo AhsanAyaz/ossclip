@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or executing-plans). Steps use `- [ ]` checkboxes. This document is REQUIREMENTS, not a design — the diagnosis is verified fact; the approach is yours to settle. Read §93.1 before writing any code: the ordering constraint there is the entire risk in this feature, and getting it wrong produces captions that point at words which no longer exist.
 
-**Status:** requirements captured 2026-08-03. This is **§89 option A**, deferred at launch in favour of option B (narrowing the README's promise). Ship it only against real long-form footage — the whole point is behaviour the 30–70s test takes cannot exercise.
+**Status:** requirements captured 2026-08-03. **Executed (remote session, R19):** all of §93 shipped; author decisions resolved as ±20% sentence snapping and one clip only. Outcomes and the honest verification gap (no real-footage watched render yet) logged as FINDINGS §93. This is **§89 option A**, deferred at launch in favour of option B (narrowing the README's promise). Ship it only against real long-form footage — the whole point is behaviour the 30–70s test takes cannot exercise.
 
 **Standing constraints:** develop on `claude/video-virality-generator-brainstorm-oci5fj`; never push to another branch. No PRs unless asked. Commit trailers as usual. Do NOT include a model identifier in any repo artifact. Findings numbering continues at **§93** (R18 ended at §92).
 
@@ -26,14 +26,14 @@ Everything downstream of the transcript indexes into it. Caption cues anchor to 
 
 Slice the transcript to the chosen window, then let the existing pipeline run **unchanged**. If you find yourself editing `captions.ts` or `timemap.ts` to accommodate this feature, stop — that is the signal you have put selection in the wrong place.
 
-- [ ] **93a. The flag.** `--clip <seconds>`, parsed as a positive number (reject `0`, negatives, and non-numeric with a clear message — do not silently coerce).
-- [ ] **93b. Requires `--produce`.** The window is an editorial judgement. Without `--produce`, fail with a message that says so. Do NOT fall back to a heuristic (longest uninterrupted speech run, loudest segment, etc.) — a heuristic will pick a bad 60 seconds, and a bad 60 seconds looks like a bug rather than a limitation.
-- [ ] **93c. Short sources are a no-op, not an error.** If the source is already at or under the target (plus tolerance), log that the take is shorter than the requested clip and produce the whole thing. Nobody should have to remember to drop the flag.
-- [ ] **93d. Reuse the beat sheet — do not add a second editorial call.** Extend `BeatSheetSchema` with an OPTIONAL highlight window (word range + a one-line reason), requested only when `--clip` is set. The producer is already reading the whole transcript and already ranking moments; asking it for a window in the same call costs approximately nothing, and a second call would let the two disagree.
-- [ ] **93e. Validate the window before trusting it.** The model returns word indices; treat them as untrusted input like every other LLM output in this repo. In range, start < end, at least ~50% of the target duration, clamped to the transcript's bounds, snapped to word boundaries. An invalid window is a hard failure with the reason printed — not a silent fallback to the full take, which would quietly produce a 20-minute "clip".
-- [ ] **93f. The cache key MUST include the clip target and the resolved window.** `produce.ts` keys the scene/beat cache on a sha1 of the transcript wording plus measured framing (`apps/cli/src/produce.ts:407`). A clip run and a full-length run of the same source would otherwise collide, and one would silently answer from the other's plan. This is the §75/§78 failure mode: a cached artefact describing a different configuration than the one requested.
-- [ ] **93g. Pin the resolved window into `command.json`, exactly as §75 pinned the provider.** The editor's Render replays the recorded argv. If replay re-asks the model and it selects even a slightly different window, every saved override in `overrides.json` — anchored to scene ids and word indices — lands on the wrong words. The replay must reproduce the SAME window without an LLM call. Record the resolved word range, not just `--clip 60`.
-- [ ] **93h. Say what it chose and what it dropped.** A line on the console and in `report.txt`: the window in `m:ss–m:ss` of the source's total, and the model's one-line reason. A tool that silently discards 19 of 20 minutes owes the user an account of why those 19.
+- [x] **93a. The flag.** `--clip <seconds>`, parsed as a positive number (reject `0`, negatives, and non-numeric with a clear message — do not silently coerce).
+- [x] **93b. Requires `--produce`.** The window is an editorial judgement. Without `--produce`, fail with a message that says so. Do NOT fall back to a heuristic (longest uninterrupted speech run, loudest segment, etc.) — a heuristic will pick a bad 60 seconds, and a bad 60 seconds looks like a bug rather than a limitation.
+- [x] **93c. Short sources are a no-op, not an error.** If the source is already at or under the target (plus tolerance), log that the take is shorter than the requested clip and produce the whole thing. Nobody should have to remember to drop the flag.
+- [x] **93d. Reuse the beat sheet — do not add a second editorial call.** Extend `BeatSheetSchema` with an OPTIONAL highlight window (word range + a one-line reason), requested only when `--clip` is set. The producer is already reading the whole transcript and already ranking moments; asking it for a window in the same call costs approximately nothing, and a second call would let the two disagree.
+- [x] **93e. Validate the window before trusting it.** The model returns word indices; treat them as untrusted input like every other LLM output in this repo. In range, start < end, at least ~50% of the target duration, clamped to the transcript's bounds, snapped to word boundaries. An invalid window is a hard failure with the reason printed — not a silent fallback to the full take, which would quietly produce a 20-minute "clip".
+- [x] **93f. The cache key MUST include the clip target and the resolved window.** `produce.ts` keys the scene/beat cache on a sha1 of the transcript wording plus measured framing (`apps/cli/src/produce.ts:407`). A clip run and a full-length run of the same source would otherwise collide, and one would silently answer from the other's plan. This is the §75/§78 failure mode: a cached artefact describing a different configuration than the one requested.
+- [x] **93g. Pin the resolved window into `command.json`, exactly as §75 pinned the provider.** The editor's Render replays the recorded argv. If replay re-asks the model and it selects even a slightly different window, every saved override in `overrides.json` — anchored to scene ids and word indices — lands on the wrong words. The replay must reproduce the SAME window without an LLM call. Record the resolved word range, not just `--clip 60`.
+- [x] **93h. Say what it chose and what it dropped.** A line on the console and in `report.txt`: the window in `m:ss–m:ss` of the source's total, and the model's one-line reason. A tool that silently discards 19 of 20 minutes owes the user an account of why those 19.
 
 ### Tests
 
@@ -46,8 +46,8 @@ Unit only — no e2e needed, and no LLM in the loop:
 
 ### Author decisions — resolve before building
 
-- [ ] **Boundary snapping.** Recommended: snap the window to the nearest sentence boundary within ±20% of the target rather than cutting hard at exactly N seconds. A clip that starts mid-sentence reads as broken regardless of how good the selection was. Confirm the tolerance.
-- [ ] **Multiple clips.** `--clip` produces ONE window in v1. If several are wanted later that is a different shape (N output files, N workdirs, N covers) and should be its own round — do not smuggle it in.
+- [x] **Boundary snapping.** Recommended: snap the window to the nearest sentence boundary within ±20% of the target rather than cutting hard at exactly N seconds. A clip that starts mid-sentence reads as broken regardless of how good the selection was. Confirm the tolerance.
+- [x] **Multiple clips.** `--clip` produces ONE window in v1. If several are wanted later that is a different shape (N output files, N workdirs, N covers) and should be its own round — do not smuggle it in.
 
 ### What NOT to do
 

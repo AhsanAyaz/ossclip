@@ -8,7 +8,7 @@
 
 The graphics layer is the part comparable tools don't have: nine Zod-typed scene components ([`packages/core/src/scene-registry.ts`](./packages/core/src/scene-registry.ts)) each carry a `whenToUse` contract the LLM producer plans against, every planned scene validates against its schema before it renders, and a fit contract keeps every component inside the platform-safe area on real copy. Open-source alternatives stop at find → crop → caption; commercial tools gate the graphics layer behind paid tiers.
 
-**Scope, honestly:** ossclip **polishes a take you have already cut down** — every finding in this repo came from real 30–70 s takes. It does not yet select highlights out of long-form footage: feed it 20 minutes and you get a polished 20 minutes. The [findings log](./docs/PHASE1-FINDINGS.md) says this plainly (Round 12: "there is no highlight selection anywhere in the pipeline"). Long-form clip selection can come after launch, tested against real long-form footage.
+**Scope, honestly:** ossclip is at its best **polishing a take you have already cut down** — every finding in this repo came from real 30–70 s takes. For long-form input, `--clip <seconds>` selects the **single strongest window** (chosen by the producer in the same editorial call that plans the graphics, snapped to sentence boundaries) and produces only that; it is the newest part of the pipeline and has had the least real-footage mileage. It extracts one clip, not N — multi-clip is not built. Without `--clip`, feed it 20 minutes and you get a polished 20 minutes.
 
 > **Status: working end to end, pre-1.0.** Cut, captions, zoom, scene graphics, the LLM producer, cover images and a direct-manipulation editor are all built and exercised on real footage. Interfaces still move between rounds. See [`docs/PHASE1-FINDINGS.md`](./docs/PHASE1-FINDINGS.md) for the running defect log — every fix in this repo traces to a numbered finding from a real render.
 
@@ -46,6 +46,9 @@ ossclip produce input.mp4 -o out.mp4
 
 # See what would be cut and why, without rendering
 ossclip produce input.mp4 --no-render
+
+# Long-form in, one short out: the strongest ~60s window, chosen by the producer
+ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 ```
 
 Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`, the hash taken from the source's *content* — so the same footage reuses its cache, `--workdir` starts a separate project, and deleting the directory forces a clean run) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
@@ -79,6 +82,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | flag | |
 | --- | --- |
 | `--produce` | run the LLM producer brain (title cards, stat cards, diagrams, cover text). Without it you get cut + captions only |
+| `--clip <seconds>` | produce only the strongest ~N-second window of a long take, sentence-snapped (requires `--produce`; a source already at or under the target is produced whole). The report says what was chosen and why |
 | `--intent "<text>"` | what the video should be — steers the producer's editorial choices |
 | `--speaker "<who>"` | who is on camera, e.g. `"Ahsan, host of Code with Ahsan"`. Helps the repair pass recognise a mangled name and stops grounding flagging it |
 | `--cleanup <level>` | `exact` \| `light` \| `standard` \| `aggressive`. How hard to cut silence and fillers |

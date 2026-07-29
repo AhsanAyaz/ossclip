@@ -93,7 +93,7 @@
 <h1>ossclip<span class="dot">.</span></h1>
 <p class="lede">A local-first CLI that turns a talking-head take into a finished short: filler words and dead air cut, word-timed kinetic captions, face-aware framing, and <strong>LLM-planned, code-rendered on-screen graphics</strong> — title cards, stat cards, diagrams, terminal and chat mockups — planned against a hand-built, Zod-typed scene library. Plus a cover image sized for the platform.</p>
 <p><strong>Your footage never leaves your machine.</strong> Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones — on your own API key, or on your existing Claude Code subscription.</p>
-<p>Scope, honestly: ossclip <strong>polishes a take you have already cut down</strong>. It does not yet select highlights out of long-form footage — feed it 20 minutes and you get a polished 20 minutes.</p>
+<p>Scope, honestly: ossclip is at its best <strong>polishing a take you have already cut down</strong>. For long-form input, <code>--clip &lt;seconds&gt;</code> selects the single strongest window (the producer's judgement, sentence-snapped) and produces only that — one clip, not N. Without it, 20 minutes in is a polished 20 minutes out.</p>
 <span class="status">working end to end · pre-1.0</span>
 
 <h2 id="install">Install</h2>
@@ -117,6 +117,9 @@ ossclip produce input.mp4 -o out.mp4
 
 # See what would be cut and why, without rendering
 ossclip produce input.mp4 --no-render
+
+# Long-form in, one short out: the strongest ~60s window
+ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 
 # Check the whole toolchain first
 ossclip doctor
@@ -234,6 +237,7 @@ ossclip edit                        # bare: pick from recent projects, or browse
 <h2 id="flags">produce flags</h2>
 <table>
   <tr><td>--produce</td><td>run the LLM producer brain. Without it: cut + captions only</td></tr>
+  <tr><td>--clip &lt;seconds&gt;</td><td>produce only the strongest ~N-second window of a long take, sentence-snapped (requires --produce; a short-enough source is produced whole). The report says what was chosen and why</td></tr>
   <tr><td>--intent "&lt;text&gt;"</td><td>what the video should be — steers the producer's editorial choices</td></tr>
   <tr><td>--speaker "&lt;who&gt;"</td><td>who is on camera — helps repair recognise a mangled name</td></tr>
   <tr><td>--cleanup &lt;level&gt;</td><td><em>exact | light | standard | aggressive</em> — how hard to cut silence and fillers</td></tr>
