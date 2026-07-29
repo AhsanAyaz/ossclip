@@ -56,6 +56,23 @@ apps/editor        the direct-manipulation editor (`ossclip edit`)
 
 Things deliberately **not** in scope, so you don't build one and find out at review: a hosted version, a web uploader, a GUI installer, stock B-roll, TTS, speaker diarisation. Long-form highlight selection is a real gap, not a rejected one — see the README's scope note if you want to take it on, and open an issue first so the design gets discussed before the code.
 
+## Docs assets
+
+The shipped images live in `docs/site/assets/` — one copy, served as the Pages
+site and linked from the README with a `./docs/site/assets/…` path. Screen
+recordings are re-made whenever the UI moves, so the multi-MB masters stay OUT
+of git (`docs/assets/` is ignored); only the derived, size-budgeted asset is
+committed. To regenerate the editor GIF from a fresh recording:
+
+```sh
+ffmpeg -i docs/assets/editor-preview.mp4 \
+  -vf "fps=12,scale=900:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=192[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" \
+  docs/site/assets/editor-preview.gif
+```
+
+Keep it under ~8MB: GitHub renders a GIF inline on the README, but an `<video>`
+tag pointing at a repo-relative MP4 does not render at all.
+
 ## Bugs
 
 The useful bug report for a video tool has: the command you ran, the relevant part of `report.txt`, the source's shape (portrait/landscape, length), and — if it's a visual defect — a frame. `ossclip doctor` output helps for anything that smells environmental.

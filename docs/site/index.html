@@ -59,6 +59,8 @@
   .card b { font-family: var(--mono); font-size: 13px; color: var(--fg); display: block; margin-bottom: 4px; }
   .card span { font-size: 12.5px; color: var(--muted); }
   .note { border-left: 3px solid var(--accent); background: var(--panel); border-radius: 0 8px 8px 0; padding: 10px 16px; margin: 16px 0; font-size: 13.5px; }
+  .shot { display: block; width: 100%; max-width: 100%; height: auto; border: 1px solid var(--border2); border-radius: 10px; margin: 18px 0 6px; }
+  .caption { font-size: 12.5px; color: var(--dim); margin: 0 0 20px; }
   .foot { margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--dim); }
   @media (max-width: 860px) {
     nav.side { display: none; }
@@ -96,6 +98,9 @@
 <p>Scope, honestly: ossclip is at its best <strong>polishing a take you have already cut down</strong>. For long-form input, <code>--clip &lt;seconds&gt;</code> selects the single strongest window (the producer's judgement, sentence-snapped) and produces only that — one clip, not N. Without it, 20 minutes in is a polished 20 minutes out.</p>
 <p>AI can make mistakes: the cut, captions and graphics are generated — review the output before publishing.</p>
 <span class="status">working end to end · pre-1.0</span>
+
+<img class="shot" src="./assets/render-example.png" alt="A produced frame: the speaker full-bleed, word-timed captions, and an LLM-planned stat card in a lower third" />
+<p class="caption">One frame out of <code>ossclip produce</code> — the captions, the framing and the graphic are all generated from what was said.</p>
 
 <h2 id="install">Install</h2>
 <pre><code>npm install -g ossclip     # or: pnpm add -g ossclip
@@ -162,6 +167,8 @@ ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
 <p>Reported token counts are exact where the provider reports them and marked <code>(est)</code> where derived; a model with no known price gets tokens and <strong>no cost guess</strong>. Per-call breakdown in <code>report.txt</code>, raw records in <code>usage.json</code>.</p>
 
 <h2 id="editor">Editing</h2>
+<img class="shot" src="./assets/editor-preview.gif" alt="The ossclip editor: preview, transform handles, inspector and timeline" />
+<p class="caption">Select, drag, retype — every edit lands in <code>overrides.json</code>, which the producer never overwrites.</p>
 <pre><code>ossclip edit "&lt;work directory&gt;"     # opens http://127.0.0.1:5174
 ossclip edit                        # bare: pick from recent projects, or browse</code></pre>
 <div class="cards">

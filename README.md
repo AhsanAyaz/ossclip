@@ -1,8 +1,8 @@
 # ossclip
 
-<!-- DEMO GIF: the single highest-value asset on this page — record it from
-     `ossclip produce input.mp4 --produce -o out.mp4` (before/after side by
-     side, then a few seconds of `ossclip edit` direct manipulation). -->
+![A produced frame: the speaker full-bleed, word-timed captions, and an LLM-planned stat card in a lower third](./docs/site/assets/render-example.png)
+
+<p align="center"><em>One frame out of <code>ossclip produce</code> — captions, framing and the graphic are all generated from what was said.</em></p>
 
 **A local-first CLI that turns a talking-head take into a finished short.** It cuts silence and filler words, writes word-timed kinetic captions, frames on the measured face, and has an LLM plan **code-rendered on-screen graphics** — title cards, stat cards, diagrams, terminal and chat mockups — from what was actually said. Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones, on your own key or your existing Claude Code subscription. Vertical 9:16 by default, landscape 16:9 with `--aspect`.
 
@@ -54,6 +54,8 @@ ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`, the hash taken from the source's *content* — so the same footage reuses its cache, `--workdir` starts a separate project, and deleting the directory forces a clean run) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
 
 ## Editing what it produced
+
+![The ossclip editor: preview, transform handles, inspector and timeline](./docs/site/assets/editor-preview.gif)
 
 ```sh
 ossclip edit "<work directory>"     # opens http://127.0.0.1:5174

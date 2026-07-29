@@ -22,3 +22,9 @@ BRAINSTORM.md
 # npm packaging artifacts (R18 §90b)
 apps/cli/editor-dist/
 *.tgz
+
+# Screen-recording MASTERS (R22 §108). The derived, shipped assets live in
+# `docs/site/assets/` — one copy, served by Pages and linked from the README.
+# The multi-MB source recordings stay out: they are re-recorded every time the
+# UI changes, and git would keep every generation of them forever.
+docs/assets/
