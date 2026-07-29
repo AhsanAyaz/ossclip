@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  appendUsageRun,
-  backfillUsageLog,
-  providerFromArgv,
-  providerOfLog,
-  type LlmUsage,
-} from "../src";
+import { appendUsageRun, providerOfLog, type LlmUsage } from "../src";
 
 const call = (provider: string, model: string, schemaName = "beat_sheet"): LlmUsage => ({
   provider,
@@ -91,48 +85,5 @@ describe("usage log is append-only (R16 §78)", () => {
     const log = appendUsageRun({}, { at: AT, records: [] });
     expect(providerOfLog(log)).toBeNull();
     expect(log.runs[0]!.provider).toBeNull();
-  });
-});
-
-describe("backfilling a pre-§78 workdir (R16 §79)", () => {
-  it("recovers the provider and marks the entry as reconstructed", () => {
-    // What the two real Agents workdirs looked like: a cached re-run had
-    // already flattened the accounting to nothing.
-    const emptied = { records: [], totals: { calls: 0 } };
-    const log = backfillUsageLog(emptied, { provider: "gemini", at: AT })!;
-    expect(log.runs).toHaveLength(1);
-    expect(log.runs[0]!.provider).toBe("gemini");
-    expect(log.runs[0]!.backfilled).toBe(true);
-    expect(log.runs[0]!.note).toContain("command.json");
-    // Tokens are genuinely lost — claim nothing.
-    expect(log.runs[0]!.models).toEqual([]);
-    expect(log.runs[0]!.totals.calls).toBe(0);
-  });
-
-  it("refuses to touch a log that already has history — a record beats a guess", () => {
-    const real = appendUsageRun({}, { at: AT, records: [call("claude-cli", "claude-opus-5")] });
-    expect(backfillUsageLog(real, { provider: "gemini", at: AT })).toBeNull();
-  });
-
-  it("keeps surviving records and prefers THEIR provider over the argv's", () => {
-    // A workdir whose usage was never emptied: the recorded provider is the
-    // fact, the flag only ever a hint.
-    const legacy = { records: [call("claude-cli", "claude-opus-5")], totals: { calls: 1 } };
-    const log = backfillUsageLog(legacy, { provider: "gemini", at: AT })!;
-    expect(log.runs[0]!.provider).toBe("claude-cli");
-    expect(log.runs[0]!.models).toEqual(["claude-opus-5"]);
-    expect(log.runs[0]!.cached).toBe(false);
-    expect(log.records).toHaveLength(1);
-  });
-});
-
-describe("providerFromArgv", () => {
-  it("reads the flag out of a recorded invocation", () => {
-    expect(providerFromArgv(["produce", "a.mp4", "--produce", "--llm", "gemini"])).toBe("gemini");
-    expect(providerFromArgv(["produce", "a.mp4", "--produce"])).toBeNull();
-    // A trailing `--llm` with no value is not a provider named "--out".
-    expect(providerFromArgv(["produce", "--llm", "--out", "x.mp4"])).toBeNull();
-    // §75 appends the resolved provider, so the LAST flag is the one that ran.
-    expect(providerFromArgv(["--llm", "claude", "--llm", "gemini"])).toBe("gemini");
   });
 });

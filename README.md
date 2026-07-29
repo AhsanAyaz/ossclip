@@ -61,7 +61,6 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `edit <workdir>` | direct-manipulation editor over a produced workdir |
 | `transcribe <input>` | stops after the transcript and cut report — no render |
 | `studio <render-props.json>` | opens Remotion Studio on a produced composition, for visual debugging |
-| `backfill <paths...>` | recovers the provider of workdirs produced before the usage log became append-only (`--dry-run` to preview) |
 
 ### `produce` flags worth knowing
 

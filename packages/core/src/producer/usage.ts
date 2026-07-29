@@ -342,10 +342,6 @@ export interface UsageRun {
   cached: boolean;
   records: LlmUsage[];
   totals: UsageTotals;
-  /** True when this entry was reconstructed after the fact, not recorded. */
-  backfilled?: boolean;
-  /** Why the entry is thin, when it is. */
-  note?: string;
 }
 
 /**
@@ -424,56 +420,4 @@ export function appendUsageRun(
     records: cached ? prevRecords : records,
     totals: cached && prevRecords.length > 0 ? summarizeUsage(prevRecords, pricing) : totals,
   };
-}
-
-/** Marks a run entry whose provider was recovered rather than recorded. */
-export const BACKFILL_NOTE =
-  "provider recovered from command.json (R16 §78); this run's token counts were lost " +
-  "when a cached re-run overwrote them";
-
-/**
- * Rebuild the provenance of a workdir produced before §78 (R16 §79).
- *
- * Those runs left `usage.json` holding `records: []` — a cached re-run
- * overwrote the real accounting — so the only surviving evidence of who
- * planned the video is the `--llm` flag in `command.json`. This claims
- * exactly that and no more: the provider, and when the planning cache was
- * written. Tokens and model names are genuinely gone, and are left empty
- * rather than invented; the entry says so in `note`.
- *
- * Returns null when there is nothing to do — a log that already has history
- * is left alone, because a real record always beats a reconstructed one.
- */
-export function backfillUsageLog(
-  previous: unknown,
-  meta: { provider: string; at: string },
-  pricing: Record<string, ModelPrice> = {},
-): UsageLog | null {
-  const prev = (previous ?? {}) as Partial<UsageLog>;
-  if (Array.isArray(prev.runs) && prev.runs.length > 0) return null;
-  const records = Array.isArray(prev.records) ? prev.records : [];
-  const totals = summarizeUsage(records, pricing);
-  const models: string[] = [];
-  for (const r of records) {
-    if (r.model && !models.includes(r.model)) models.push(r.model);
-  }
-  const entry: UsageRun = {
-    at: meta.at,
-    provider: records[0]?.provider ?? meta.provider,
-    models,
-    cached: records.length === 0,
-    records,
-    totals,
-    backfilled: true,
-    note: BACKFILL_NOTE,
-  };
-  return { runs: [entry], records, totals };
-}
-
-/** The `--llm <provider>` a recorded invocation used, if it named one. */
-export function providerFromArgv(argv: readonly string[]): string | null {
-  const i = argv.lastIndexOf("--llm");
-  if (i === -1) return null;
-  const value = argv[i + 1];
-  return value && !value.startsWith("--") ? value : null;
 }
