@@ -161,6 +161,8 @@ pnpm --filter @ossclip/editor build
 node scripts/make-fixture.mjs    # regenerates the deterministic test fixtures
 ```
 
-## License
+## Licensing
 
-MIT — see [LICENSE](./LICENSE).
+ossclip's own code is **MIT** — see [LICENSE](./LICENSE).
+
+Rendering uses [Remotion](https://www.remotion.dev/), which is **source-available under its own two-tier licence**, not MIT: free for individuals, non-profits, and for-profit companies up to the size stated in its terms; for-profit companies above that threshold need a paid [Remotion Company Licence](https://www.remotion.dev/license). If you use ossclip inside a company, check [Remotion's LICENSE](https://github.com/remotion-dev/remotion/blob/main/LICENSE.md) — its terms, not this README, are authoritative.

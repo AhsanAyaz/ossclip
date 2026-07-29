@@ -19,3 +19,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Note (not part of the MIT grant above, which covers this repository's own
+code): rendering depends on Remotion, which is source-available under its own
+two-tier licence — see https://github.com/remotion-dev/remotion/blob/main/LICENSE.md.

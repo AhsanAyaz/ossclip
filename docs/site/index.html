@@ -86,6 +86,7 @@
   <a href="#layouts">Layouts</a>
   <a href="#flags">produce flags</a>
   <a href="#config">Configuration</a>
+  <a href="#licensing">Licensing</a>
 </nav>
 <main>
 
@@ -257,6 +258,10 @@ pnpm ossclip edit                        # bare: pick from recent projects, or b
 }</code></pre>
 <p><strong>Provider keys</strong> come from the environment, and ossclip loads <code>.env</code> files before choosing a provider — first hit wins per key, a real environment variable always beats a file: <code>$OSSCLIP_ENV_FILE</code> → <code>.env</code> walking up from the cwd → <code>~/.ossclip/.env</code>.</p>
 <p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>.</p>
+
+<h2 id="licensing">Licensing</h2>
+<p>ossclip's own code is <strong>MIT</strong> — see the repo's <code>LICENSE</code>.</p>
+<p>Rendering uses <a href="https://www.remotion.dev/">Remotion</a>, which is <strong>source-available under its own two-tier licence</strong>, not MIT: free for individuals, non-profits, and for-profit companies up to the size stated in its terms; larger for-profit companies need a paid <a href="https://www.remotion.dev/license">Remotion Company Licence</a>. If you use ossclip inside a company, check <a href="https://github.com/remotion-dev/remotion/blob/main/LICENSE.md">Remotion's LICENSE</a> — its terms are authoritative.</p>
 
 <div class="foot">
   ossclip is built findings-first: every fix traces to a numbered defect from a real render — the running log lives in <code>docs/PHASE1-FINDINGS.md</code>. This page: <code>docs/site/index.html</code>, self-contained, ready for GitHub Pages.
