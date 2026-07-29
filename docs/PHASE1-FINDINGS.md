@@ -920,3 +920,7 @@ Two real traps: ⌥+arrows did NOTHING with no selection (the walk had no entry 
 ## 105. The standard honesty line
 
 "AI can make mistakes. The cut, captions and graphics are generated — review before publishing." — in the editor's side panel (always, LLM run or not: the cut and captions are machine-derived either way), at the end of every report.txt, in the README, and on the docs site.
+
+## 106. The selected box should move from its boundary — and so should the bubble
+
+Selecting a scene drew the blue dashed box with resize handles, but the only MOVE surface was an invisible 10px strip along the top edge — dragging the boundary the selection visibly draws did nothing. Now every edge of the boundary is a move grip with the move cursor; the body stays click-through on purpose (element selection inside the box depends on it). The audit for the same gap found one more: the PiP bubble had numeric x/y (R14 §52) but no direct manipulation — dragging it panned the video INSIDE the bubble. Plain drag now moves the BUBBLE (with the move cursor announcing it); ⌥-drag keeps the framing pan, consistent with ⌥ meaning "pan" everywhere else on this stage. Both drags coalesce to one undo step, like every other gesture.

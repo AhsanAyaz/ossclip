@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import { SPLIT_MIN_PIECE_SEC, type SceneCue } from "@ossclip/core/browser";
-import { clampGraphicRect, safeAreaFor } from "@ossclip/renderer/composition";
+import { clampGraphicRect, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import type { GraphicRect, useEdits } from "./useEdits";
 
@@ -146,14 +146,19 @@ const elHandleBase: React.CSSProperties = {
   background: "#ffe14d",
 };
 
-/** The move grip: a titlebar-style strip along the box's top edge, inset
- * clear of the corner handles. The body below it must stay click-through. */
-const moveStrip: React.CSSProperties = {
+/** The move grips (R21 §106): the box's whole dashed BOUNDARY drags — a
+ * strip along each edge, inset clear of the corner handles. Only the edges:
+ * the body must stay click-through or element selection inside the box
+ * breaks. The midpoint resize handles sit a zIndex above and win where
+ * they overlap. */
+const MOVE_EDGES: Record<"top" | "bottom" | "left" | "right", React.CSSProperties> = {
+  top: { top: 0, left: 14, right: 14, height: 10 },
+  bottom: { bottom: 0, left: 14, right: 14, height: 10 },
+  left: { left: 0, top: 14, bottom: 14, width: 10 },
+  right: { right: 0, top: 14, bottom: 14, width: 10 },
+};
+const moveEdgeBase: React.CSSProperties = {
   position: "absolute",
-  top: 0,
-  left: 14,
-  right: 14,
-  height: 10,
   cursor: "move",
   pointerEvents: "auto",
   zIndex: 5,
@@ -290,6 +295,18 @@ export const Overlay: React.FC<OverlayProps> = ({
     baseDy: number;
   } | null>(null);
   const videoRafRef = useRef(0);
+  /** An in-progress drag of the PiP bubble itself (R21 §106): in the
+   * pip-bubble layout the video IS the bubble, and the thing under the
+   * cursor should move — plain drag repositions the bubble (`cue.pip`, the
+   * R14 §52 override); ⌥-drag keeps the framing pan. */
+  const pipDragRef = useRef<{
+    sceneId: string;
+    x: number;
+    y: number;
+    base: { x: number; y: number };
+    slot: { w: number; h: number };
+  } | null>(null);
+  const pipRafRef = useRef(0);
   /** An in-progress transform of the graphic box (R11 Task 2). `start` is
    * the box in frame fractions at mousedown, measured off the DOM. */
   const rectDragRef = useRef<{
@@ -590,6 +607,22 @@ export const Overlay: React.FC<OverlayProps> = ({
         const stageBottom = stage.getBoundingClientRect().bottom;
         if (videoSceneId && e.clientY < stageBottom - PLAYER_CONTROLS_STRIP_PX) {
           select({ sceneId: videoSceneId, elementId: null });
+          // The pip bubble (R21 §106): in this layout the picture IS the
+          // bubble, and dragging the thing under the cursor should move IT.
+          // Plain drag repositions the bubble; ⌥-drag keeps the framing pan
+          // (⌥ already means "pan" on this stage — the view hint says so).
+          const pipCue = cues.find((c) => c.id === videoSceneId);
+          if (pipCue?.layout === "pip-bubble" && !e.altKey) {
+            const slot = layoutSlots("pip-bubble", undefined, [], settings).video.rect;
+            pipDragRef.current = {
+              sceneId: videoSceneId,
+              x: e.clientX,
+              y: e.clientY,
+              base: { x: pipCue.pip?.x ?? slot.x, y: pipCue.pip?.y ?? slot.y },
+              slot: { w: slot.w, h: slot.h },
+            };
+            return;
+          }
           const prior = edits.doc.scenes[videoSceneId]?.video;
           videoDragRef.current = {
             sceneId: videoSceneId,
@@ -613,7 +646,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("mousedown", onWindowMouseDown);
     return () => window.removeEventListener("mousedown", onWindowMouseDown);
-  }, [stageRef, select, edits, canvasBox]);
+  }, [stageRef, select, edits, canvasBox, cues, settings]);
 
   useEffect(() => {
     // Page px → composition px. The factor comes from the Player's own
@@ -639,6 +672,8 @@ export const Overlay: React.FC<OverlayProps> = ({
       if (stage) {
         if (rectDragRef.current || elResizeRef.current) {
           // A handle drag: the handle's own cursor is right; leave it be.
+        } else if (pipDragRef.current) {
+          stage.style.cursor = "move";
         } else if (videoDragRef.current) {
           stage.style.cursor = "grabbing";
         } else {
@@ -650,7 +685,15 @@ export const Overlay: React.FC<OverlayProps> = ({
               "button, input, select, textarea, [data-edit-id], [data-edit-scene], [data-caption-word]",
             ) &&
             e.clientY < stage.getBoundingClientRect().bottom - PLAYER_CONTROLS_STRIP_PX;
-          stage.style.cursor = overVideo ? "grab" : "";
+          // Over a pip bubble the affordance is MOVE (a plain drag will
+          // reposition it — R21 §106); elsewhere the picture pans, so grab.
+          const overPip =
+            overVideo &&
+            (() => {
+              const id = findVideoFrom(t);
+              return id !== null && cues.find((c) => c.id === id)?.layout === "pip-bubble";
+            })();
+          stage.style.cursor = overVideo ? (overPip ? "move" : "grab") : "";
         }
       }
       const elResize = elResizeRef.current;
@@ -682,6 +725,30 @@ export const Overlay: React.FC<OverlayProps> = ({
               settings,
             );
             onGraphicPreview({ sceneId: drag.sceneId, rect: next });
+          });
+        }
+        return;
+      }
+      const pipDrag = pipDragRef.current;
+      if (pipDrag) {
+        // Live commits under ONE coalesce key (the pip sliders' contract):
+        // one drag, one undo step. rAF-throttled like every stage drag.
+        if (!pipRafRef.current) {
+          pipRafRef.current = requestAnimationFrame(() => {
+            pipRafRef.current = 0;
+            const drag = pipDragRef.current;
+            const canvas = canvasBox();
+            if (!drag || !canvas) return;
+            const fx = (e.clientX - drag.x) / canvas.w;
+            const fy = (e.clientY - drag.y) / canvas.h;
+            edits.patchPip(
+              drag.sceneId,
+              {
+                x: round4(Math.min(Math.max(drag.base.x + fx, 0), 1 - drag.slot.w)),
+                y: round4(Math.min(Math.max(drag.base.y + fy, 0), 1 - drag.slot.h)),
+              },
+              `pip:${drag.sceneId}:drag`,
+            );
           });
         }
         return;
@@ -766,6 +833,17 @@ export const Overlay: React.FC<OverlayProps> = ({
         onGraphicPreview(null);
         return;
       }
+      const pipDrag = pipDragRef.current;
+      if (pipDrag) {
+        // The moves already landed, coalesced under one key — nothing to
+        // commit here beyond letting go.
+        pipDragRef.current = null;
+        if (pipRafRef.current) {
+          cancelAnimationFrame(pipRafRef.current);
+          pipRafRef.current = 0;
+        }
+        return;
+      }
       const videoDrag = videoDragRef.current;
       if (videoDrag) {
         videoDragRef.current = null;
@@ -812,7 +890,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [edits, stageRef, settings, playerRef, onVideoPreview, onGraphicPreview, canvasBox]);
+  }, [edits, stageRef, settings, playerRef, onVideoPreview, onGraphicPreview, canvasBox, cues]);
 
   // Element INLINE editing is gone (R12 §49, the author's call): the
   // floating input painted over the element while the un-edited render was
@@ -1139,7 +1217,14 @@ export const Overlay: React.FC<OverlayProps> = ({
               a titlebar-style strip along the top edge, not the whole body. */}
           {!selection.elementId && cue && cue.kind !== "plain" ? (
             <>
-              <div data-box-handle="move" data-testid="box-handle-move" style={moveStrip} />
+              {(["top", "bottom", "left", "right"] as const).map((side) => (
+                <div
+                  key={side}
+                  data-box-handle="move"
+                  data-testid={side === "top" ? "box-handle-move" : `box-handle-move-${side}`}
+                  style={{ ...moveEdgeBase, ...MOVE_EDGES[side] }}
+                />
+              ))}
               {(["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const).map((h) => (
                 <div
                   key={h}
