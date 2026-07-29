@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod/v4";
 import { OverrideDocSchema, emptyOverrideDoc } from "@ossclip/core";
 
@@ -33,6 +34,44 @@ const RENDER_LOG_LINES = 200;
 export interface EditServer {
   url: string;
   close: () => void;
+}
+
+/** A workdir is exactly "a directory a produce run wrote its props into". */
+const isWorkdir = (dir: string): boolean => existsSync(join(dir, "render-props.json"));
+
+/** Where the recent-projects list lives — beside config.json. Overridable
+ * for tests, which must not write into the runner's real home. */
+const recentsPath = (dir?: string): string =>
+  join(dir ?? join(homedir(), ".ossclip"), "recent-projects.json");
+
+/** Recent workdirs, newest first, invalid entries filtered at READ time —
+ * a deleted workdir silently drops off the list instead of 404ing a click. */
+export async function readRecentProjects(recentDir?: string): Promise<string[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(recentsPath(recentDir), "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((p): p is string => typeof p === "string" && isWorkdir(p));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Remember a workdir (R17 §83) — called by `produce` after a successful run
+ * and by the edit server on every open, so the picker's "recent" list is the
+ * projects you actually touched. Best-effort: a read-only home must never
+ * fail a produce run over a convenience file.
+ */
+export async function recordRecentProject(dir: string, recentDir?: string): Promise<void> {
+  try {
+    const path = recentsPath(recentDir);
+    await mkdir(dirname(path), { recursive: true });
+    const existing = await readRecentProjects(recentDir);
+    const next = [resolve(dir), ...existing.filter((p) => p !== resolve(dir))].slice(0, 12);
+    await writeFile(path, JSON.stringify(next, null, 2));
+  } catch {
+    // Convenience only.
+  }
 }
 
 const MIME: Record<string, string> = {
@@ -126,16 +165,25 @@ function sendFile(
 }
 
 export async function startEditServer(
-  workdirArg: string,
-  opts: { port?: number; pageDir?: string } = {},
+  workdirArg?: string,
+  opts: { port?: number; pageDir?: string; recentDir?: string } = {},
 ): Promise<EditServer> {
-  const workdir = resolve(workdirArg);
-  const propsPath = join(workdir, "render-props.json");
-  if (!existsSync(propsPath)) {
-    throw new Error(`no render-props.json in ${workdir} — run \`ossclip produce\` there first`);
-  }
-  const overridesPath = join(workdir, "overrides.json");
-  const commandPath = join(workdir, "command.json");
+  // MUTABLE since R17 §83: the server can start with no project (the page
+  // shows a picker) and switch projects without restarting. Every workdir-
+  // touching endpoint guards on null.
+  let workdir: string | null = null;
+  const propsPath = (): string => join(workdir!, "render-props.json");
+  const overridesPath = (): string => join(workdir!, "overrides.json");
+  const commandPath = (): string => join(workdir!, "command.json");
+  const openWorkdir = async (dirArg: string): Promise<void> => {
+    const dir = resolve(dirArg);
+    if (!isWorkdir(dir)) {
+      throw new Error(`no render-props.json in ${dir} — run \`ossclip produce\` there first`);
+    }
+    workdir = dir;
+    await recordRecentProject(dir, opts.recentDir);
+  };
+  if (workdirArg !== undefined) await openWorkdir(workdirArg);
 
   // One render at a time (R11 Task 4.2). The child is killed on server
   // close so a Ctrl-C on the edit server never orphans an ffmpeg.
@@ -169,24 +217,82 @@ export async function startEditServer(
         const url = new URL(req.url ?? "/", "http://localhost");
 
         if (url.pathname === "/api/production" && req.method === "GET") {
-          const renderProps = JSON.parse(await readFile(propsPath, "utf8"));
-          const overrides = existsSync(overridesPath)
-            ? OverrideDocSchema.parse(JSON.parse(await readFile(overridesPath, "utf8")))
+          if (!workdir) {
+            // Not an error — the picker state (R17 §83). Recents ride along
+            // so the page needs no second request to draw it.
+            return send(200, { noWorkdir: true, recent: await readRecentProjects(opts.recentDir) });
+          }
+          const renderProps = JSON.parse(await readFile(propsPath(), "utf8"));
+          const overrides = existsSync(overridesPath())
+            ? OverrideDocSchema.parse(JSON.parse(await readFile(overridesPath(), "utf8")))
             : emptyOverrideDoc();
           return send(200, {
             renderProps,
             overrides,
+            workdir,
             videoFileName: renderProps.videoFileName,
             // Whether the Render button has a recorded invocation to replay.
-            canRender: existsSync(commandPath),
+            canRender: existsSync(commandPath()),
+            // Recents ride along here too, so the top bar's Open picker has
+            // a list without a second endpoint.
+            recent: await readRecentProjects(opts.recentDir),
           });
+        }
+
+        if (url.pathname === "/api/workdir" && req.method === "POST") {
+          // Open/switch the project (R17 §83). Refused mid-render: the
+          // running child belongs to the CURRENT workdir, and its status
+          // reporting against a switched one would lie.
+          if (renderChild) return send(409, { error: "a render is running — cancel it first" });
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          const parsed = z
+            .object({ path: z.string().min(1) })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: "expected { path }" });
+          try {
+            await openWorkdir(parsed.data.path);
+          } catch (err) {
+            return send(400, { error: err instanceof Error ? err.message : String(err) });
+          }
+          return send(200, { ok: true, workdir });
+        }
+
+        if (url.pathname === "/api/fs" && req.method === "GET") {
+          // The picker's folder browser (R17 §83): directories only, with
+          // "this one is a project" flagged. Local tool on a local loopback
+          // — the same trust as typing the path as a CLI argument.
+          const dir = resolve(url.searchParams.get("dir") || homedir());
+          try {
+            const names = await readdir(dir, { withFileTypes: true });
+            const entries = names
+              .filter((d) => d.isDirectory())
+              .map((d) => {
+                const path = join(dir, d.name);
+                return { name: d.name, path, isWorkdir: isWorkdir(path) };
+              })
+              .sort((a, b) =>
+                a.isWorkdir !== b.isWorkdir ? (a.isWorkdir ? -1 : 1) : a.name.localeCompare(b.name),
+              )
+              .slice(0, 500);
+            const parent = dirname(dir);
+            return send(200, {
+              dir,
+              parent: parent === dir ? null : parent,
+              isWorkdir: isWorkdir(dir),
+              entries,
+            });
+          } catch (err) {
+            return send(400, { error: err instanceof Error ? err.message : String(err) });
+          }
         }
 
         if (url.pathname === "/api/render" && req.method === "POST") {
           // Replays ONLY the argv `produce` recorded — the request body is
           // never read, let alone executed.
+          if (!workdir) return send(409, { error: "no workdir open" });
           if (renderChild) return send(409, { error: "a render is already running" });
-          if (!existsSync(commandPath)) {
+          if (!existsSync(commandPath())) {
             return send(412, {
               error:
                 "no command.json in this workdir — run `ossclip produce` once from " +
@@ -194,7 +300,7 @@ export async function startEditServer(
             });
           }
           const parsed = CommandSchema.safeParse(
-            JSON.parse(await readFile(commandPath, "utf8")),
+            JSON.parse(await readFile(commandPath(), "utf8")),
           );
           if (!parsed.success) return send(500, { error: `command.json is not valid: ${parsed.error.message}` });
           const cmd = parsed.data;
@@ -242,19 +348,21 @@ export async function startEditServer(
         }
 
         if (url.pathname === "/api/overrides" && req.method === "PUT") {
+          if (!workdir) return send(409, { error: "no workdir open" });
           const chunks: Buffer[] = [];
           for await (const c of req) chunks.push(c as Buffer);
           const parsed = OverrideDocSchema.safeParse(JSON.parse(Buffer.concat(chunks).toString()));
           if (!parsed.success) return send(400, { error: parsed.error.message });
           // Atomic: the producer may read this file at any moment, and a
           // half-written document would be worse than a stale one.
-          const tmp = `${overridesPath}.tmp`;
+          const tmp = `${overridesPath()}.tmp`;
           await writeFile(tmp, JSON.stringify(parsed.data, null, 2));
-          await rename(tmp, overridesPath);
+          await rename(tmp, overridesPath());
           return send(200, { ok: true });
         }
 
         if (url.pathname.startsWith("/media/")) {
+          if (!workdir) return send(409, { error: "no workdir open" });
           const file = join(workdir, decodeURIComponent(url.pathname.slice("/media/".length)));
           // Never serve outside the workdir, whatever the path claims.
           if (!isInside(workdir, file) || !existsSync(file)) return send(404, { error: "not found" });

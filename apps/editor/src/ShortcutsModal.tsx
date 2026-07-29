@@ -31,6 +31,7 @@ const SECTIONS: Array<{ title: string; rows: Array<[keys: string, action: string
       ["⌘/ctrl + B", "split the scene at the playhead"],
       ["delete / backspace", "delete the selected scene (restorable)"],
       ["⌘/ctrl + Z", "undo"],
+      ["⌘/ctrl + ⇧ + Z", "redo (⌘Y works too)"],
       ["⌘/ctrl + S", "save"],
       ["double-click caption word", "retype it in place"],
       ["drag element / corner handles", "move · resize"],

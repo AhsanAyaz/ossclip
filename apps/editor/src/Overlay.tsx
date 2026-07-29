@@ -894,7 +894,13 @@ export const Overlay: React.FC<OverlayProps> = ({
         select(null);
       } else if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        edits.undo();
+        // ⌘⇧Z redoes (R17 §80) — the convention everywhere; ⌘Y below is the
+        // Windows-habit alias.
+        if (e.shiftKey) edits.redo();
+        else edits.undo();
+      } else if (mod && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        edits.redo();
       } else if (mod && e.key.toLowerCase() === "s") {
         e.preventDefault();
         // Route through the same handler the Save button uses, so a failed

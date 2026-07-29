@@ -161,10 +161,13 @@ program
 program
   .command("edit")
   .description("open the editing page on a produced workdir")
-  .argument("<workdir>", "a work directory containing render-props.json")
+  // OPTIONAL since R17 §83: with no argument the editor opens on a project
+  // picker — recent produce runs plus a folder browser — and the top bar's
+  // Open button switches projects without restarting the server.
+  .argument("[workdir]", "a work directory containing render-props.json")
   .option("--port <n>", "port to listen on", (v) => Number.parseInt(v, 10), 5174)
   .option("--no-open", "do not open a browser")
-  .action(async (workdir: string, opts) => {
+  .action(async (workdir: string | undefined, opts) => {
     const { startEditServer } = await import("./edit");
     const { fileURLToPath } = await import("node:url");
     const { dirname, join } = await import("node:path");

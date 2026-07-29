@@ -92,10 +92,31 @@ export const TranscriptPanel: React.FC<{
   }, [currentIndex]);
 
   const q = query.trim().toLowerCase();
-  const matches = useMemo(
-    () => (q ? new Set(words.filter((w) => w.live.toLowerCase().includes(q)).map((w) => w.index)) : null),
+  const matchList = useMemo(
+    () => (q ? words.filter((w) => w.live.toLowerCase().includes(q)).map((w) => w.index) : []),
     [q, words],
   );
+  const matches = useMemo(() => (q ? new Set(matchList) : null), [q, matchList]);
+  // Find NAVIGATION (R17 §81): a cursor over the match list, driven by the
+  // chevrons and Enter/⇧Enter, scrolling the hit to view — the usual finder.
+  const [matchCursor, setMatchCursor] = useState(0);
+  const scrollToWord = (index: number): void => {
+    bodyRef.current
+      ?.querySelector<HTMLElement>(`[data-testid="transcript-word-${index}"]`)
+      ?.scrollIntoView?.({ block: "center" });
+  };
+  useEffect(() => {
+    setMatchCursor(0);
+    if (matchList.length > 0) scrollToWord(matchList[0]!);
+    // Jump to the first hit as the query narrows — matchList identity tracks q.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchList]);
+  const gotoMatch = (dir: 1 | -1): void => {
+    if (matchList.length === 0) return;
+    const next = (matchCursor + dir + matchList.length) % matchList.length;
+    setMatchCursor(next);
+    scrollToWord(matchList[next]!);
+  };
 
   const commit = (index: number, base: string, draft: string): void => {
     const text = draft.trim();
@@ -113,16 +134,48 @@ export const TranscriptPanel: React.FC<{
           1:1 retype only — word count and timing stay fixed, so scene anchors
           and the caption highlight keep working.
         </div>
-        <input
-          data-testid="transcript-search"
-          style={search}
-          placeholder="Find a word…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input
+            data-testid="transcript-search"
+            style={{ ...search, flex: 1 }}
+            placeholder="Find a word…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter walks the hits, ⇧Enter walks them backwards — the
+              // universal finder contract.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                gotoMatch(e.shiftKey ? -1 : 1);
+              }
+            }}
+          />
+          <button
+            data-testid="transcript-prev"
+            style={chevron}
+            onClick={() => gotoMatch(-1)}
+            disabled={matchList.length === 0}
+            title="Previous match (⇧Enter)"
+            aria-label="Previous match"
+          >
+            ‹
+          </button>
+          <button
+            data-testid="transcript-next"
+            style={chevron}
+            onClick={() => gotoMatch(1)}
+            disabled={matchList.length === 0}
+            title="Next match (Enter)"
+            aria-label="Next match"
+          >
+            ›
+          </button>
+        </div>
         {matches ? (
-          <div style={{ fontSize: 11, color: "#9A9AA3" }}>
-            {matches.size} match{matches.size === 1 ? "" : "es"}
+          <div data-testid="transcript-match-count" style={{ fontSize: 11, color: "#9A9AA3" }}>
+            {matchList.length === 0
+              ? "0 matches"
+              : `${matchCursor + 1}/${matchList.length} match${matchList.length === 1 ? "" : "es"}`}
           </div>
         ) : null}
       </div>
@@ -161,6 +214,7 @@ export const TranscriptPanel: React.FC<{
                 style={{
                   ...word,
                   ...(matches?.has(w.index) ? matchStyle : {}),
+                  ...(matchList[matchCursor] === w.index ? currentMatchStyle : {}),
                   ...(w.live !== w.base ? editedStyle : {}),
                   ...(currentIndex === w.index ? currentStyle : {}),
                 }}
@@ -238,6 +292,26 @@ const word: React.CSSProperties = {
 const matchStyle: React.CSSProperties = {
   background: "#2b2b1a",
   outline: "1px solid #6b6432",
+};
+
+/** The match the cursor is ON — brighter than its siblings, like any finder. */
+const currentMatchStyle: React.CSSProperties = {
+  background: "#3d3a17",
+  outline: "2px solid #FFE14D",
+  color: "#fff",
+};
+
+const chevron: React.CSSProperties = {
+  width: 26,
+  height: 30,
+  fontSize: 16,
+  lineHeight: 1,
+  color: "#EDEDF2",
+  background: "#1A1A21",
+  border: "1px solid #2A2A33",
+  borderRadius: 6,
+  cursor: "pointer",
+  padding: 0,
 };
 
 const editedStyle: React.CSSProperties = {

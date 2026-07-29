@@ -43,6 +43,49 @@ describe("edit state", () => {
   });
 });
 
+describe("redo (R17 §80)", () => {
+  const patch = (value: string) =>
+    ({ type: "patchProps", sceneId: "scene-0", patch: { value } }) as const;
+
+  it("redo restores what undo took back, step by step", () => {
+    let s = editReducer(initialEditState(), patch("1%"));
+    s = editReducer(s, patch("2%"));
+    s = editReducer(s, { type: "undo" });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["scene-0"]?.props.value).toBeUndefined();
+    s = editReducer(s, { type: "redo" });
+    expect(s.doc.scenes["scene-0"]!.props.value).toBe("1%");
+    s = editReducer(s, { type: "redo" });
+    expect(s.doc.scenes["scene-0"]!.props.value).toBe("2%");
+    // The branch is spent — a further redo is a no-op, same object.
+    expect(editReducer(s, { type: "redo" })).toBe(s);
+  });
+
+  it("a NEW edit after undo abandons the redo branch — the universal contract", () => {
+    let s = editReducer(initialEditState(), patch("1%"));
+    s = editReducer(s, { type: "undo" });
+    s = editReducer(s, patch("9%"));
+    expect(editReducer(s, { type: "redo" })).toBe(s);
+    expect(s.doc.scenes["scene-0"]!.props.value).toBe("9%");
+  });
+
+  it("redo across a save boundary tracks dirty honestly", () => {
+    let s = editReducer(initialEditState(), patch("1%"));
+    s = editReducer(s, { type: "saved" });
+    s = editReducer(s, { type: "undo" });
+    expect(s.dirty).toBe(true);
+    // Redo returns to exactly the saved document — clean again.
+    s = editReducer(s, { type: "redo" });
+    expect(s.dirty).toBe(false);
+    expect(s.doc.scenes["scene-0"]!.props.value).toBe("1%");
+  });
+
+  it("redo on a fresh state is a no-op", () => {
+    const s = initialEditState();
+    expect(editReducer(s, { type: "redo" })).toBe(s);
+  });
+});
+
 describe("undo coalescing (PLAN 2026-07-30 Task B5)", () => {
   const patch = (scale: number, coalesce?: string) =>
     ({ type: "patchVideo", sceneId: "scene-0", patch: { scale }, coalesce }) as const;

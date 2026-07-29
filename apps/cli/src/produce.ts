@@ -72,6 +72,7 @@ import {
   type SceneComponentId,
   type Transcript,
 } from "@ossclip/core";
+import { recordRecentProject } from "./edit";
 import { renderCover, renderProduction } from "@ossclip/renderer";
 import {
   coverTextRect,
@@ -1161,5 +1162,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       2,
     ),
   );
+  // Every produce run is a project the picker should offer (R17 §83) —
+  // best-effort, so a read-only home dir never fails the render.
+  await recordRecentProject(work);
   console.log(`✓ done → ${outPath}`);
 }

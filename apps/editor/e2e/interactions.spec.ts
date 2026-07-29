@@ -1208,3 +1208,133 @@ test("pip bubble: roundness and placement are per-scene edits (R14 §52)", async
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
 });
+
+test("undo/redo: toolbar buttons and ⌘⇧Z walk the history both ways (R17 §80)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  const undoBtn = page.getByTestId("undo-button");
+  const redoBtn = page.getByTestId("redo-button");
+  // A fresh session has no history in either direction.
+  await expect(undoBtn).toBeDisabled();
+  await expect(redoBtn).toBeDisabled();
+
+  // One observable edit: split scene-0 at the click position.
+  const blocks = page.locator('[data-testid^="timeline-block-"]');
+  const before = await blocks.count();
+  await page.getByTestId("timeline-block-scene-0").click();
+  await page.keyboard.press("Meta+b");
+  await expect(blocks).toHaveCount(before + 1);
+  await expect(undoBtn).toBeEnabled();
+
+  // The button pair walks it back and forth.
+  await undoBtn.click();
+  await expect(blocks).toHaveCount(before);
+  await expect(redoBtn).toBeEnabled();
+  await redoBtn.click();
+  await expect(blocks).toHaveCount(before + 1);
+
+  // The keyboard pair does the same.
+  await page.keyboard.press("Meta+z");
+  await expect(blocks).toHaveCount(before);
+  await page.keyboard.press("Meta+Shift+z");
+  await expect(blocks).toHaveCount(before + 1);
+
+  // A NEW edit after an undo abandons the redo branch — the universal
+  // contract, and the reason redo needs no confirmation dialog.
+  await page.keyboard.press("Meta+z");
+  await expect(blocks).toHaveCount(before);
+  await page.keyboard.press("Meta+b");
+  await expect(blocks).toHaveCount(before + 1);
+  await expect(redoBtn).toBeDisabled();
+  await page.keyboard.press("Meta+z");
+  await expect(blocks).toHaveCount(before);
+});
+
+test("transcript find: chevrons and Enter walk the matches with a counter (R17 §81)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("transcript-toggle").click();
+  // "free" appears exactly twice in the fixture — indices 10 and 90, far
+  // enough apart that walking between them must scroll the pane.
+  await page.getByTestId("transcript-search").fill("free");
+  const count = page.getByTestId("transcript-match-count");
+  await expect(count).toHaveText("1/2 matches");
+  await expect(page.getByTestId("transcript-word-10")).toBeInViewport();
+
+  await page.getByTestId("transcript-next").click();
+  await expect(count).toHaveText("2/2 matches");
+  await expect(page.getByTestId("transcript-word-90")).toBeInViewport();
+
+  // Walking past the end wraps — the usual finder behaviour.
+  await page.getByTestId("transcript-next").click();
+  await expect(count).toHaveText("1/2 matches");
+  await page.getByTestId("transcript-prev").click();
+  await expect(count).toHaveText("2/2 matches");
+
+  // Enter / ⇧Enter in the box are the keyboard chevrons.
+  await page.getByTestId("transcript-search").press("Enter");
+  await expect(count).toHaveText("1/2 matches");
+  await page.getByTestId("transcript-search").press("Shift+Enter");
+  await expect(count).toHaveText("2/2 matches");
+
+  // No matches is said outright, and the chevrons disable.
+  await page.getByTestId("transcript-search").fill("zzzznothing");
+  await expect(count).toHaveText("0 matches");
+  await expect(page.getByTestId("transcript-next")).toBeDisabled();
+});
+
+test("view zoom shrinks below 100% for arranging, floored at 25% (R17 §82)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("100%");
+  const fitWidth = (await page.getByTestId("stage").boundingBox())!.width;
+
+  // − below the fitted size actually shrinks the Player — real width, not a
+  // CSS transform, so gesture calibration holds at every zoom.
+  await page.getByTestId("view-zoom-out").click();
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("50%");
+  await expect
+    .poll(async () => (await page.getByTestId("stage").boundingBox())!.width)
+    .toBeLessThan(fitWidth * 0.6);
+
+  await page.getByTestId("view-zoom-out").click();
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("25%");
+  await expect(page.getByTestId("view-zoom-out")).toBeDisabled();
+
+  await page.getByTestId("view-zoom-fit").click();
+  await expect(page.getByTestId("view-zoom-level")).toHaveText("100%");
+});
+
+test("Open raises the project picker; a recent click reopens the project (R17 §83)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("open-button").click();
+  const picker = page.getByTestId("project-picker");
+  await expect(picker).toBeVisible();
+  // The folder browser lists real directories from the server.
+  await expect(page.getByTestId("project-fs-list")).toBeVisible();
+  // Esc dismisses the switcher (a project is open — there is a way back).
+  await page.keyboard.press("Escape");
+  await expect(picker).toHaveCount(0);
+
+  // The server recorded this workdir as recent when it opened it — clicking
+  // that entry drives the full switch path: POST /api/workdir, reload, and
+  // the picker closes on success.
+  await page.getByTestId("open-button").click();
+  const recent = page.getByTestId("project-recent").first();
+  await expect(recent).toBeVisible();
+  await recent.click();
+  await expect(picker).toHaveCount(0);
+  await settle(page);
+  await expect(page.getByTestId("timeline-block-scene-0")).toBeVisible();
+  // The top bar names the open project.
+  await expect(page.getByTestId("workdir-label")).toBeVisible();
+});

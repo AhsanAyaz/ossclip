@@ -61,3 +61,52 @@ test("a running render survives a refresh, and can be cancelled (R16 §60)", asy
   await page.getByText("Dismiss").click();
   await expect(page.getByTestId("render-log")).toHaveCount(0);
 });
+
+test("the render log is a scrollable tail and collapses behind the toggle (R17 §84)", async ({
+  page,
+}) => {
+  // A burst-printer: more lines at once than the tail box can show, then
+  // stays alive so the run can be cancelled.
+  await writeFile(
+    COMMAND,
+    JSON.stringify({
+      execPath: process.execPath,
+      execArgv: [],
+      script: "-e",
+      args: ["for (let i = 0; i < 60; i++) console.log(`line ${i}`); setTimeout(() => {}, 50000);"],
+      cwd: WORKDIR,
+    }),
+  );
+  await page.goto("/");
+  await page.waitForSelector('[data-testid^="timeline-block-"]');
+  await page.getByTestId("render-button").click();
+  await expect(page.getByTestId("render-status")).toBeVisible();
+
+  // The tail holds ALL 60 lines in a bounded, scrollable box — not the old
+  // last-six-lines slice — and sticks to the bottom as they arrive.
+  const tail = page.getByTestId("render-tail");
+  await expect(tail).toContainText("line 59");
+  expect(await tail.evaluate((el) => el.scrollHeight > el.clientHeight + 20)).toBe(true);
+  expect(
+    await tail.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 8),
+    "the tail follows the newest line until the user scrolls away",
+  ).toBe(true);
+  // Scrolling to the top lets the log be READ mid-run; the earliest line is
+  // reachable, which the six-line slice never allowed.
+  await tail.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect(tail).toContainText("line 0");
+
+  // Collapse: the tail folds away, the status row (spinner, elapsed,
+  // cancel) stays. Expand brings it back.
+  await page.getByTestId("render-logs-toggle").click();
+  await expect(tail).toHaveCount(0);
+  await expect(page.getByTestId("render-status")).toBeVisible();
+  await page.getByTestId("render-logs-toggle").click();
+  await expect(page.getByTestId("render-tail")).toBeVisible();
+
+  await page.getByTestId("render-cancel").click();
+  await expect(page.getByTestId("render-cancelled")).toBeVisible();
+  await page.getByText("Dismiss").click();
+});

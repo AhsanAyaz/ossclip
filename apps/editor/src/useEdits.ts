@@ -24,6 +24,10 @@ export interface EditState {
   doc: OverrideDoc;
   /** Snapshots, newest last. Undo is free because the doc is plain JSON. */
   past: OverrideDoc[];
+  /** Undone snapshots, next-to-redo last (R17 §80). A NEW commit clears
+   * this — the branch you undid away from is gone once you edit again,
+   * which is the redo semantics every editor has. */
+  future: OverrideDoc[];
   dirty: boolean;
   /** History length at the last save, so undoing past it re-marks dirty. */
   savedAt: number;
@@ -85,11 +89,13 @@ export type EditAction =
   | { type: "patchCaption"; index: number; text: string; was: string }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
+  | { type: "redo" }
   | { type: "saved" };
 
 export const initialEditState = (): EditState => ({
   doc: emptyOverrideDoc(),
   past: [],
+  future: [],
   dirty: false,
   savedAt: 0,
   lastCoalesce: null,
@@ -112,6 +118,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     return {
       doc,
       past: merge ? state.past : [...state.past, state.doc],
+      // Editing after an undo abandons the undone branch (R17 §80).
+      future: [],
       dirty: true,
       savedAt: state.savedAt,
       lastCoalesce: coalesce !== undefined ? { key: coalesce, at: now } : null,
@@ -120,7 +128,14 @@ export function editReducer(state: EditState, action: EditAction): EditState {
 
   switch (action.type) {
     case "load":
-      return { doc: action.doc, past: [], dirty: false, savedAt: 0, lastCoalesce: null };
+      return {
+        doc: action.doc,
+        past: [],
+        future: [],
+        dirty: false,
+        savedAt: 0,
+        lastCoalesce: null,
+      };
     case "patchProps": {
       const scene = withScene(state.doc, action.sceneId);
       return commit(
@@ -335,6 +350,20 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       return {
         doc,
         past,
+        future: [...state.future, state.doc],
+        savedAt: state.savedAt,
+        dirty: past.length !== state.savedAt,
+        lastCoalesce: null,
+      };
+    }
+    case "redo": {
+      if (state.future.length === 0) return state;
+      const doc = state.future[state.future.length - 1]!;
+      const past = [...state.past, state.doc];
+      return {
+        doc,
+        past,
+        future: state.future.slice(0, -1),
         savedAt: state.savedAt,
         dirty: past.length !== state.savedAt,
         lastCoalesce: null,
@@ -369,8 +398,10 @@ export function useEdits() {
     doc: state.doc,
     dirty: state.dirty,
     canUndo: state.past.length > 0,
+    canRedo: state.future.length > 0,
     load: (doc: OverrideDoc) => dispatch({ type: "load", doc }),
     undo: () => dispatch({ type: "undo" }),
+    redo: () => dispatch({ type: "redo" }),
     save,
     patchProps: (sceneId: string, patch: Record<string, unknown>, coalesce?: string) =>
       dispatch({ type: "patchProps", sceneId, patch, coalesce }),

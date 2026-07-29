@@ -21,6 +21,7 @@ import { Inspector } from "./Inspector";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
+import { ProjectPicker } from "./ProjectPicker";
 import { formatElapsed, pinnedInfoLines, renderProgress } from "./renderStatus";
 
 /**
@@ -67,6 +68,13 @@ export const App: React.FC = () => {
   // Inspector's zoom slider both write it, the live memo applies it last, and
   // it clears the moment the real patch lands in the edit layer.
   const [videoPreview, setVideoPreview] = useState<VideoPreview | null>(null);
+  // Open project (R17 §83): the picker shows when a bare `ossclip edit` has
+  // no workdir yet (required — there is nothing behind it) or when the top
+  // bar's Open button raises it to switch. `required` is derived: no loaded
+  // production means nothing to dismiss back to.
+  const [showPicker, setShowPicker] = useState(false);
+  const [recentProjects, setRecentProjects] = useState<string[]>([]);
+  const [workdirPath, setWorkdirPath] = useState<string | null>(null);
   // Render-from-the-editor (R11 Task 4): whether the server has a recorded
   // invocation to replay, and the in-flight run's state while it does.
   const [canRender, setCanRender] = useState(false);
@@ -136,7 +144,9 @@ export const App: React.FC = () => {
   } | null>(null);
   const applyViewZoom = useCallback((next: number, anchor?: { x: number; y: number }) => {
     const el = stageAreaRef.current;
-    const clamped = Math.min(8, Math.max(1, next));
+    // Below 1 is allowed (R17 §82): shrinking under the fitted size gives
+    // room to see the whole frame small and pan/arrange around it.
+    const clamped = Math.min(8, Math.max(0.25, next));
     const prev = viewZoomRef.current;
     if (el && clamped !== prev) {
       const r = el.getBoundingClientRect();
@@ -235,6 +245,9 @@ export const App: React.FC = () => {
   }, []);
   // The keybinds reference (R16 §63) — "?" or the top-bar button.
   const [showShortcuts, setShowShortcuts] = useState(false);
+  // Render log visibility (R17 §84): the status row always shows; the pinned
+  // lines and the scrollable tail collapse behind the chevron.
+  const [logsOpen, setLogsOpen] = useState(true);
 
   // J/K/L transport (PLAN Task 2): the reducer owns the ladder; this owns the
   // side effects. `playing` is the Player's own event-mirrored state, so the
@@ -322,43 +335,97 @@ export const App: React.FC = () => {
     renderPollRef.current = poll;
   }, []);
 
+  // The production load, shared by mount and every project switch (R17 §83).
+  const loadProduction = useCallback(async (): Promise<void> => {
+    const res = await fetch("/api/production");
+    if (!res.ok) throw new Error(`GET /api/production failed: ${res.status}`);
+    const body = (await res.json()) as {
+      renderProps?: RawRenderProps;
+      overrides?: OverrideDoc;
+      canRender?: boolean;
+      workdir?: string;
+      noWorkdir?: boolean;
+      recent?: string[];
+    };
+    setRecentProjects(body.recent ?? []);
+    if (body.noWorkdir) {
+      // Bare `ossclip edit` (R17 §83): no project open — the picker IS the
+      // page until one is chosen.
+      setShowPicker(true);
+      return;
+    }
+    setRenderProps(body.renderProps!);
+    setWorkdirPath(body.workdir ?? null);
+    setCanRender(Boolean(body.canRender));
+    edits.load(body.overrides!);
+    // Resume a render already in flight (R16 §60): a refresh used to
+    // orphan the panel — the child kept rendering server-side with no
+    // progress, no logs, and no way to cancel it from the UI.
+    const s = await fetch("/api/render/status");
+    const status = (await s.json()) as {
+      running: boolean;
+      lines?: string[];
+      startedAt?: number | null;
+    };
+    if (status.running) {
+      setRender({
+        running: true,
+        lines: status.lines ?? [],
+        startedAt: status.startedAt,
+      });
+      beginRenderPoll();
+    }
+    // `edits.load` closes over the mount-time hook object, but it only
+    // dispatches — the reducer instance is stable, so the stale closure is
+    // harmless and the callback can stay referentially stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [beginRenderPoll]);
+
   useEffect(() => {
-    void (async () => {
-      try {
-        const res = await fetch("/api/production");
-        if (!res.ok) throw new Error(`GET /api/production failed: ${res.status}`);
-        const body = (await res.json()) as {
-          renderProps: RawRenderProps;
-          overrides: OverrideDoc;
-          canRender?: boolean;
-        };
-        setRenderProps(body.renderProps);
-        setCanRender(Boolean(body.canRender));
-        edits.load(body.overrides);
-        // Resume a render already in flight (R16 §60): a refresh used to
-        // orphan the panel — the child kept rendering server-side with no
-        // progress, no logs, and no way to cancel it from the UI.
-        const s = await fetch("/api/render/status");
-        const status = (await s.json()) as {
-          running: boolean;
-          lines?: string[];
-          startedAt?: number | null;
-        };
-        if (status.running) {
-          setRender({
-            running: true,
-            lines: status.lines ?? [],
-            startedAt: status.startedAt,
-          });
-          beginRenderPoll();
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
+    void loadProduction().catch((err) =>
+      setError(err instanceof Error ? err.message : String(err)),
+    );
     // Load once on mount; the edit layer is applied live via `live` below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switch/open a project (R17 §83): POST the path, then reset everything
+  // that belonged to the OLD project and load the new one. Returns an error
+  // string for the picker to show, or null on success.
+  const openProject = useCallback(
+    async (path: string): Promise<string | null> => {
+      // Switching abandons unsaved edits — the new overrides replace the doc
+      // wholesale, so say so while there is still a way back.
+      if (
+        edits.dirty &&
+        !window.confirm("Unsaved edits will be lost — switch projects anyway?")
+      ) {
+        return null;
+      }
+      try {
+        const res = await fetch("/api/workdir", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) return body.error ?? `open failed: ${res.status}`;
+        setSelection(null);
+        setVideoPreview(null);
+        setGraphicPreview(null);
+        setRender(null);
+        setViewZoom(1);
+        setRenderProps(null);
+        setShowPicker(false);
+        await loadProduction();
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [edits.dirty, loadProduction],
+  );
 
   const live = useMemo<PlayerProductionProps | null>(() => {
     if (!renderProps) return null;
@@ -492,9 +559,21 @@ export const App: React.FC = () => {
   }
 
   if (!live) {
+    // No production yet. Either a bare `ossclip edit` waiting on a project
+    // choice (the picker is the page — nothing behind it to dismiss to), or
+    // the ordinary load in flight.
     return (
       <div style={shell}>
-        <div style={{ padding: 24, color: "#9A9AA3" }}>Loading production…</div>
+        {showPicker ? (
+          <ProjectPicker
+            recent={recentProjects}
+            required
+            onOpen={openProject}
+            onClose={() => {}}
+          />
+        ) : (
+          <div style={{ padding: 24, color: "#9A9AA3" }}>Loading production…</div>
+        )}
       </div>
     );
   }
@@ -512,9 +591,50 @@ export const App: React.FC = () => {
     <div style={shell}>
       <div style={topBar}>
         <span style={wordmark}>ossclip</span>
+        {workdirPath ? (
+          // Which project is open — the answer to "wait, which video is
+          // this?" once switching exists. Last two segments, because the
+          // default workdir is always literally named `.ossclip`.
+          <span data-testid="workdir-label" style={workdirLabel} title={workdirPath}>
+            {workdirPath.split("/").filter(Boolean).slice(-2).join("/")}
+          </span>
+        ) : null}
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={ghostButton} onClick={() => edits.undo()} disabled={!edits.canUndo}>
-            Undo
+          {/* The file menu, sized to what it holds (R17 §83): one action.
+              Opens/switches the project without restarting the server. */}
+          <button
+            data-testid="open-button"
+            style={ghostButton}
+            onClick={() => setShowPicker(true)}
+            title={
+              workdirPath
+                ? `Open another project — currently ${workdirPath}`
+                : "Open another project"
+            }
+          >
+            Open
+          </button>
+          {/* Undo/redo as icons (R17 §80) — the pair every editor's toolbar
+              has, ⌘Z / ⌘⇧Z on the keyboard. */}
+          <button
+            data-testid="undo-button"
+            style={ghostButton}
+            onClick={() => edits.undo()}
+            disabled={!edits.canUndo}
+            title="Undo (⌘Z)"
+            aria-label="Undo"
+          >
+            <UndoIcon />
+          </button>
+          <button
+            data-testid="redo-button"
+            style={ghostButton}
+            onClick={() => edits.redo()}
+            disabled={!edits.canRedo}
+            title="Redo (⌘⇧Z)"
+            aria-label="Redo"
+          >
+            <RedoIcon />
           </button>
           <button
             data-testid="transcript-toggle"
@@ -567,6 +687,14 @@ export const App: React.FC = () => {
         </button>
       </div>
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
+      {showPicker ? (
+        <ProjectPicker
+          recent={recentProjects}
+          required={false}
+          onOpen={openProject}
+          onClose={() => setShowPicker(false)}
+        />
+      ) : null}
       {render ? (
         <div
           data-testid="render-log"
@@ -628,20 +756,30 @@ export const App: React.FC = () => {
               >
                 Cancel
               </button>
+              <button
+                data-testid="render-logs-toggle"
+                style={{ ...ghostButton, padding: "2px 8px" }}
+                onClick={() => setLogsOpen((v) => !v)}
+                title={logsOpen ? "Collapse the log" : "Expand the log"}
+              >
+                {logsOpen ? "▾ logs" : "▸ logs"}
+              </button>
             </div>
           ) : null}
-          {/* Provider + token/cost lines pinned above the tail (R13): they
-              print early and would scroll away long before anyone wonders
-              what this run cost. Only lines the run actually printed — a
-              cached replay has no cost to report. */}
-          {pinnedInfoLines(render.lines).map((l) => (
-            <div key={l} data-testid="render-pinned" style={{ color: "#C9C9D4" }}>
-              {l}
-            </div>
-          ))}
-          {render.lines.slice(-6).map((l, i) => (
-            <div key={i}>{l}</div>
-          ))}
+          {logsOpen ? (
+            <>
+              {/* Provider + token/cost lines pinned above the tail (R13):
+                  they print early and would scroll away long before anyone
+                  wonders what this run cost. Only lines the run actually
+                  printed — a cached replay has no cost to report. */}
+              {pinnedInfoLines(render.lines).map((l) => (
+                <div key={l} data-testid="render-pinned" style={{ color: "#C9C9D4" }}>
+                  {l}
+                </div>
+              ))}
+              <LogTail lines={render.lines} />
+            </>
+          ) : null}
         </div>
       ) : null}
       <div style={mainRow}>
@@ -753,8 +891,8 @@ export const App: React.FC = () => {
               data-testid="view-zoom-out"
               style={viewZoomButton}
               onClick={() => applyViewZoom(viewZoom / 2)}
-              disabled={viewZoom <= 1}
-              title="Zoom the preview out (ctrl/cmd+scroll on the preview)"
+              disabled={viewZoom <= 0.25}
+              title="Zoom the preview out — below 100% shrinks under the fitted size"
             >
               −
             </button>
@@ -774,7 +912,7 @@ export const App: React.FC = () => {
               data-testid="view-zoom-fit"
               style={{ ...viewZoomButton, width: "auto", padding: "0 8px" }}
               onClick={() => applyViewZoom(1)}
-              disabled={viewZoom <= 1}
+              disabled={Math.abs(viewZoom - 1) < 1e-3}
               title="Fit the preview to the window"
             >
               fit
@@ -809,6 +947,51 @@ export const App: React.FC = () => {
   );
 };
 
+/**
+ * The render log tail (R17 §84): the FULL captured stream in its own scroll
+ * box, stuck to the bottom while new lines arrive — until the user scrolls
+ * up to read, which un-sticks it (scrolling back down re-arms the stick).
+ */
+const LogTail: React.FC<{ lines: string[] }> = ({ lines }) => {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const stickRef = useRef(true);
+  useEffect(() => {
+    const el = ref.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+  return (
+    <div
+      ref={ref}
+      data-testid="render-tail"
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        stickRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+      }}
+      style={{ maxHeight: 220, overflowY: "auto" }}
+    >
+      {lines.map((l, i) => (
+        <div key={i}>{l}</div>
+      ))}
+    </div>
+  );
+};
+
+/** Curved-arrow undo/redo glyphs — inline SVG so they inherit the button's
+ * disabled color like text would. */
+const UndoIcon: React.FC = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </svg>
+);
+
+const RedoIcon: React.FC = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+    <path d="m15 14 5-5-5-5" />
+    <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+  </svg>
+);
+
 const shell: React.CSSProperties = {
   fontFamily: "'Inter', system-ui, sans-serif",
   background: "#0B0B0E",
@@ -839,6 +1022,16 @@ const wordmark: React.CSSProperties = {
   letterSpacing: "0.02em",
   color: "#FFE14D",
   marginRight: 8,
+};
+
+const workdirLabel: React.CSSProperties = {
+  fontSize: 12,
+  fontFamily: "ui-monospace, 'SF Mono', monospace",
+  color: "#6a6a75",
+  maxWidth: 260,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 
 const statusText: React.CSSProperties = {
@@ -963,8 +1156,7 @@ const renderLog: React.CSSProperties = {
   background: "#0F0F14",
   borderBottom: "1px solid #2A2A33",
   padding: "6px 20px",
-  maxHeight: 110,
-  overflowY: "auto",
+  // The TAIL scrolls itself (R17 §84) — the panel no longer clips it.
   whiteSpace: "pre-wrap",
   flexShrink: 0,
 };
