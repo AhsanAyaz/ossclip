@@ -1,20 +1,45 @@
 {
-  "name": "@ossclip/cli",
-  "version": "0.0.1",
-  "private": true,
+  "name": "ossclip",
+  "version": "0.1.0",
+  "description": "Local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned code-rendered graphics — transcription and rendering never leave your machine",
   "type": "module",
-  "bin": {
-    "ossclip": "./src/index.ts"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AhsanAyaz/open-clip.git",
+    "directory": "apps/cli"
   },
+  "keywords": [
+    "video",
+    "cli",
+    "captions",
+    "remotion",
+    "whisper",
+    "shorts",
+    "video-editing",
+    "llm"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "ossclip": "./bin/ossclip.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "editor-dist"
+  ],
   "scripts": {
-    "ossclip": "tsx src/index.ts"
+    "ossclip": "tsx src/index.ts",
+    "prepack": "pnpm --filter @ossclip/editor build && rm -rf editor-dist && cp -r ../editor/dist editor-dist"
   },
   "dependencies": {
     "@ossclip/core": "workspace:*",
     "@ossclip/renderer": "workspace:*",
+    "@ossclip/scenes": "workspace:*",
     "commander": "^12.1.0",
     "tsx": "^4.19.0",
-    "zod": "^3.25.76",
-    "@ossclip/scenes": "workspace:*"
+    "zod": "^3.25.76"
   }
 }

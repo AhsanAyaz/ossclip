@@ -5,7 +5,7 @@
   "description": "ossclip — open, local-first AI video producer",
   "scripts": {
     "test": "vitest run",
-    "ossclip": "pnpm --filter @ossclip/cli exec tsx src/index.ts",
+    "ossclip": "pnpm --filter ossclip exec tsx src/index.ts",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit",
     "fixture": "node scripts/make-fixture.mjs",
     "build": "pnpm --filter @ossclip/editor build"

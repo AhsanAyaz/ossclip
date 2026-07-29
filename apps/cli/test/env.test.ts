@@ -58,7 +58,7 @@ describe("loadEnvFiles (R16 §77)", () => {
   });
 
   it("walks UP to find a repo-root .env", () => {
-    // `pnpm --filter @ossclip/cli exec …` runs with the cwd at apps/cli, so a
+    // `pnpm --filter ossclip exec …` runs with the cwd at apps/cli, so a
     // repo-root .env is invisible without this — which is exactly how the
     // first §77 run still failed with 'GEMINI_API_KEY is not set'.
     delete process.env.OSSCLIP_TEST_A;

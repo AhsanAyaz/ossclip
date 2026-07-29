@@ -1,12 +1,21 @@
 {
   "name": "@ossclip/scenes",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
+  "description": "ossclip's scene library and stage geometry — React components shared by preview and render",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AhsanAyaz/open-clip.git",
+    "directory": "packages/scenes"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./geometry": "./src/geometry.ts"
   },
+  "files": [
+    "src"
+  ],
   "dependencies": {
     "@ossclip/core": "workspace:*",
     "zod": "^3.25.0"

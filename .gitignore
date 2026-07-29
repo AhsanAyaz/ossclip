@@ -18,3 +18,7 @@ apps/editor/playwright-report/
 # Local working materials — never distributed (R18 §86)
 reference/
 BRAINSTORM.md
+
+# npm packaging artifacts (R18 §90b)
+apps/cli/editor-dist/
+*.tgz

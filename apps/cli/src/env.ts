@@ -19,7 +19,7 @@ import { dirname, join, resolve } from "node:path";
  *   2. `.env` walking UP from the cwd, nearest first
  *   3. `~/.ossclip/.env`
  *
- * The upward walk is not a flourish: `pnpm --filter @ossclip/cli exec …` runs
+ * The upward walk is not a flourish: `pnpm --filter ossclip exec …` runs
  * with the cwd set to `apps/cli`, so a repo-root `.env` — the only place
  * anyone puts one — is invisible to a plain `<cwd>/.env` lookup. Same reason
  * every JS toolchain walks up for its config.

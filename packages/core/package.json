@@ -1,12 +1,21 @@
 {
   "name": "@ossclip/core",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
+  "description": "ossclip's framework-free pipeline: schema, transcription, analysis, cutlist, captions, framing, and the LLM producer",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AhsanAyaz/open-clip.git",
+    "directory": "packages/core"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts"
   },
+  "files": [
+    "src"
+  ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "zod": "^3.25.0"
