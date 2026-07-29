@@ -4,6 +4,8 @@
 
 **Status:** requirements captured 2026-08-02 from a strategy audit of the repo (OSS vs commercial). Verdict: **open source it, MIT, do not sell, do not open-core, do not build a hosted version.** This plan is what has to be true before the repo can be published under the author's real name and put in front of strangers. Nothing here is a feature request except §89.
 
+**Executed (remote session):** all items shipped except §89a — §89 took option B per this plan's own default (the author had not decided). The repo was PRIVATE at purge time, so §86 was an erasure, not a mitigation; the `ossclip` npm name was available; publishing itself is the author's launch-day action. Outcomes logged as findings §86–§91 in `docs/PHASE1-FINDINGS.md`.
+
 **Standing constraints for this work:** develop on `claude/video-virality-generator-brainstorm-oci5fj`; never push to another branch. No PRs unless asked. Commit trailers as usual. Do NOT include a model identifier in any repo artifact.
 
 **Numbering:** R17 landed §80–§85 (editor: redo, find-next, zoom-out, project switching, render log, transform audit) while this was being written, so these items are **§86–§91**. Note for the author: R17 is more editor work — see *What NOT to do*.
@@ -18,14 +20,14 @@
 
 Reverse-engineering observable output is legitimate and the analysis in this repo is good work. Publishing 46MB of another company's UI under the author's real name, in a repo whose founding document reads as a teardown, is a needless invitation — and that company ships its own CLI, so they are watching this surface.
 
-- [ ] **80a. Purge `reference/` from history**, not just from `HEAD`. The images are in every commit that touched them; deleting the directory in a new commit leaves them one `git log -p` away.
+- [x] **80a. Purge `reference/` from history**, not just from `HEAD`. The images are in every commit that touched them; deleting the directory in a new commit leaves them one `git log -p` away.
   - `git-filter-repo` is NOT installed on the author's machine (verified). Install it (`brew install git-filter-repo`) rather than reaching for `filter-branch`, which is deprecated and mangles tags.
   - `git filter-repo --path reference/ --invert-paths --force`, then re-add the remote (filter-repo drops it by design) and force-push.
   - **This rewrites the shared branch.** The author is the sole contributor and the branch exists only on their fork, so a force-push is acceptable — but state plainly in your report that every existing clone must re-clone.
   - Keep a local copy OUTSIDE the repo first. The images are still useful for the author's own comparison work; they just cannot ship.
-- [ ] **80b. Add `reference/` to `.gitignore`** so a stray `git add -A` cannot reintroduce them.
-- [ ] **80c. Fix the four references to the directory** — `BRAINSTORM.md`, `docs/PHASE1.md`, and `docs/PHASE1-FINDINGS.md:9` ("Reference frames for comparison live in `reference/`"). They become dangling instructions the moment the directory is gone. Rewrite them to say the comparison frames were local to the author's machine and are not distributed.
-- [ ] **80d. `BRAINSTORM.md`** — **AUTHOR DECISION**, take the safer default unless told otherwise: keep it out of the public tree (move to the author's local notes) OR rewrite it as a design-rationale document with the competitor teardown framing removed. Do not publish it as-is. 274 lines; the value is in §5 and §7, which stand on their own without the "decoding" frame.
+- [x] **80b. Add `reference/` to `.gitignore`** so a stray `git add -A` cannot reintroduce them.
+- [x] **80c. Fix the four references to the directory** — `BRAINSTORM.md`, `docs/PHASE1.md`, and `docs/PHASE1-FINDINGS.md:9` ("Reference frames for comparison live in `reference/`"). They become dangling instructions the moment the directory is gone. Rewrite them to say the comparison frames were local to the author's machine and are not distributed.
+- [x] **80d. `BRAINSTORM.md`** — **AUTHOR DECISION**, take the safer default unless told otherwise: keep it out of the public tree (move to the author's local notes) OR rewrite it as a design-rationale document with the competitor teardown framing removed. Do not publish it as-is. 274 lines; the value is in §5 and §7, which stand on their own without the "decoding" frame.
 
 **Check before you start:** whether `AhsanAyaz/open-clip` is already public on GitHub. If it is, the purge still happens, but say so in the report — history that has been public may be cached or forked, and the author needs to know the purge is a mitigation rather than an erasure.
 
@@ -37,9 +39,9 @@ Reverse-engineering observable output is legitimate and the analysis in this rep
 
 ossclip's own code is the author's to license MIT. What the README currently implies — that any company can take this and render video for free — is not true, and a company that follows it is exposed. This is a disclosure fix, not a licensing change.
 
-- [ ] **81a.** Add a short **Licensing** section to `README.md`: ossclip is MIT; rendering uses Remotion, which is source-available under a two-tier licence; link to Remotion's LICENSE and state that for-profit companies above its threshold need a company licence. Do not paraphrase the threshold numbers — link and let Remotion state its own terms, so the note cannot go stale.
-- [ ] **81b.** Same note, two lines, at the bottom of `LICENSE`, clearly separated from the MIT text so nobody reads it as a modification of the MIT grant.
-- [ ] **81c.** Mirror it in `docs/site/index.html` (there is no licensing section there at all today).
+- [x] **81a.** Add a short **Licensing** section to `README.md`: ossclip is MIT; rendering uses Remotion, which is source-available under a two-tier licence; link to Remotion's LICENSE and state that for-profit companies above its threshold need a company licence. Do not paraphrase the threshold numbers — link and let Remotion state its own terms, so the note cannot go stale.
+- [x] **81b.** Same note, two lines, at the bottom of `LICENSE`, clearly separated from the MIT text so nobody reads it as a modification of the MIT grant.
+- [x] **81c.** Mirror it in `docs/site/index.html` (there is no licensing section there at all today).
 
 ---
 
@@ -50,10 +52,10 @@ ossclip's own code is the author's to license MIT. What the README currently imp
 1. **"Viral/virality" is the wrong register for the audience that will actually adopt this.** The evidence from comparable launches is one-sided: creator-framed short-form tools land in the low single-digit points on HN; developer-tool framings of the same domain ("video editing in plain English", "open-source video editor built for AI") land two orders of magnitude higher. The people who can clear this tool's install requirements are developers.
 2. **It promises long-form → short-form, which the tool does not do.** See §89.
 
-- [ ] **82a.** Rewrite the README's opening paragraph and the GitHub repo description in developer-tool register. No "viral", no "virality-optimized", no "AI producer" as the lead noun. Say what it does mechanically: cuts silence and fillers, word-timed captions, face-aware framing, LLM-planned on-screen graphics, local transcription and rendering.
-- [ ] **82b.** Leave `PRODUCER_SYSTEM` in `packages/core/src/producer/beats.ts` alone. Its "virality grammar" block is an internal prompt that steers editorial choices and it works; this item is about the public promise, not the model's instructions.
-- [ ] **82c.** Put the differentiator in the first screenful, because it is real and unique: **LLM-planned, code-rendered on-screen graphics** (`packages/core/src/scene-registry.ts` — nine Zod-typed components with `whenToUse` strings the producer consumes, plus the fit contract that keeps them inside the safe area on real copy). Every comparable OSS project stops at find → crop → caption; the commercial tools gate the graphics layer behind paid tiers. This is the reason to choose ossclip and it is currently buried.
-- [ ] **82d.** Lead the README with a demo GIF, above the prose. **Blocked on the author** — it needs their footage. Leave a placeholder with the exact command that produced it, and say in your report that the GIF is the single highest-value missing asset for a video tool.
+- [x] **82a.** Rewrite the README's opening paragraph and the GitHub repo description in developer-tool register. No "viral", no "virality-optimized", no "AI producer" as the lead noun. Say what it does mechanically: cuts silence and fillers, word-timed captions, face-aware framing, LLM-planned on-screen graphics, local transcription and rendering.
+- [x] **82b.** Leave `PRODUCER_SYSTEM` in `packages/core/src/producer/beats.ts` alone. Its "virality grammar" block is an internal prompt that steers editorial choices and it works; this item is about the public promise, not the model's instructions.
+- [x] **82c.** Put the differentiator in the first screenful, because it is real and unique: **LLM-planned, code-rendered on-screen graphics** (`packages/core/src/scene-registry.ts` — nine Zod-typed components with `whenToUse` strings the producer consumes, plus the fit contract that keeps them inside the safe area on real copy). Every comparable OSS project stops at find → crop → caption; the commercial tools gate the graphics layer behind paid tiers. This is the reason to choose ossclip and it is currently buried.
+- [x] **82d.** Lead the README with a demo GIF, above the prose. **Blocked on the author** — it needs their footage. Leave a placeholder with the exact command that produced it, and say in your report that the GIF is the single highest-value missing asset for a video tool.
 
 ---
 
@@ -72,7 +74,7 @@ Long-form → short-form selection is the defining feature of this category, com
   - **Ordering matters and is the whole design risk:** selection must happen after transcript + repair but BEFORE analyze/cut/captions/scenes, because it changes which words exist. Slice the transcript to the chosen window, then let the existing pipeline run unchanged. Getting this wrong means captions and scene anchors index into words that are no longer there — the same class of bug §17 fixed for repairs.
   - Requires `--produce` (the window is an editorial judgement). Without it, fail with a clear message rather than falling back to a heuristic that will pick a bad 60 seconds and look like a bug.
   - Tests: unit coverage for window selection given a beat sheet (in range, clamped to the take, minimum length, refuses an empty window). No e2e needed.
-- [ ] **89b (option B — narrow the promise).** Say plainly in the README that ossclip polishes a take you have already cut, that long-form clip selection is out of scope today, and link the findings entry. Honest, defensible, and consistent with every run to date.
+- [x] **89b (option B — narrow the promise).** Say plainly in the README that ossclip polishes a take you have already cut, that long-form clip selection is out of scope today, and link the findings entry. Honest, defensible, and consistent with every run to date.
 
 **Recommendation if the author does not decide:** take **89b** and ship. It costs an hour, it makes the README true, and it does not risk the transcript-slicing bug on launch week. 89a can follow after launch with real users' long-form footage to test against.
 
@@ -84,15 +86,15 @@ Long-form → short-form selection is the defining feature of this category, com
 
 This is the difference between ~20 people completing a render and ~60 — and every failure that does happen arrives as a GitHub issue the author answers personally.
 
-- [ ] **84a. `ossclip doctor`** — a subcommand that checks each precondition and prints the exact fix per platform (ffmpeg, ffprobe, whisper-cli, model present in `~/.ossclip/models`, a provider key or a logged-in Claude Code) with a ✓/✗ per line and a non-zero exit if anything is missing. This is the highest-leverage item in the plan. Note that `loadEnvFiles` (R16 §77) already resolves keys from `.env`, so the key check must run after it or it will report a false negative.
-- [ ] **84b. Publish to npm.** The root package is `ossclip-monorepo` and the CLI is `@ossclip/cli`; the public entry point should be plain `ossclip` with a `bin`. **Check name availability on npm first** and report back if it is taken rather than inventing a variant. Ship the prebuilt editor bundle in the package `files` so `ossclip edit` works without a build step.
-- [ ] **84c.** Rewrite the README quick start to lead with the published-package path, with the clone-the-monorepo path kept below for contributors.
+- [x] **84a. `ossclip doctor`** — a subcommand that checks each precondition and prints the exact fix per platform (ffmpeg, ffprobe, whisper-cli, model present in `~/.ossclip/models`, a provider key or a logged-in Claude Code) with a ✓/✗ per line and a non-zero exit if anything is missing. This is the highest-leverage item in the plan. Note that `loadEnvFiles` (R16 §77) already resolves keys from `.env`, so the key check must run after it or it will report a false negative.
+- [x] **84b. Publish to npm.** The root package is `ossclip-monorepo` and the CLI is `@ossclip/cli`; the public entry point should be plain `ossclip` with a `bin`. **Check name availability on npm first** and report back if it is taken rather than inventing a variant. Ship the prebuilt editor bundle in the package `files` so `ossclip edit` works without a build step.
+- [x] **84c.** Rewrite the README quick start to lead with the published-package path, with the clone-the-monorepo path kept below for contributors.
 
 ---
 
 ## 91. Delete the dormant app
 
-- [ ] **91.** `apps/studio/` contains a single `README.md` describing a UI that was never built (verified: `ls apps/studio` → `README.md`). A dead app directory in a published tree reads as an abandoned project. Delete it; the idea is preserved in `BRAINSTORM.md` §5.4 if that document survives §86d.
+- [x] **91.** `apps/studio/` contains a single `README.md` describing a UI that was never built (verified: `ls apps/studio` → `README.md`). A dead app directory in a published tree reads as an abandoned project. Delete it; the idea is preserved in `BRAINSTORM.md` §5.4 if that document survives §86d.
 
 ---
 
