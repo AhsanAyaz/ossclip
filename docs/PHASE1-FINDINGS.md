@@ -943,3 +943,11 @@ Launch runbook steps 0–2, executed. **Freeze check** green on macOS at the lau
 **The repo is now `AhsanAyaz/ossclip`** — the tool's name, matching the npm package a reader is told to install on the first line. Every `repository.url` follows it.
 
 **Package metadata.** All four packages published blank-page-ready: none carried a README, which is what npm shows when a package has none. Each now ships one — the CLI's is a real landing page (absolute raw-GitHub image URL, since npm cannot resolve a repo-relative path), the three libraries' say what they are, that the CLI is the supported entry point, and that their APIs move between rounds. `homepage`, `bugs` and `author` added alongside. Verified by `npm pack --dry-run`: README present in every tarball, `editor-dist/` present in the CLI's.
+
+## 109. Published
+
+Steps 3 and 4 of the runbook, executed. `ossclip@0.1.0` plus `@ossclip/core`, `/scenes` and `/renderer` are on npm under a free (public-only) org; the repo is public at `github.com/AhsanAyaz/ossclip`; the docs site is live at `ahsanayaz.github.io/ossclip` via the Pages workflow, assets and all; CI runs green on main on free public runners.
+
+Two things worth writing down. **A scoped package can be published, owned and public and still 404 on `npm view` for a few minutes** — the write path and the read replica are not the same system. `npm access get status` answered "public" while `npm view` was still 404ing, which is the pair of commands that separates "the publish failed" from "wait": one asks the registry, the other asks a cache. Nothing needed republishing. **The CLI published before its libraries**, so for those minutes `npm i -g ossclip` failed on a dependency that did not exist yet — harmless because pnpm had already rewritten `workspace:*` into exact `0.1.0` ranges at pack time, so publishing the libraries afterwards satisfied the CLI already on the registry. Publishing libraries first (as the runbook says) avoids the window entirely.
+
+Verified from the registry on a clean shell: `npm i -g ossclip` then `ossclip doctor` — seven of seven checks pass, including the editor page resolving to the `editor-dist/` the `prepack` step bundles.

@@ -4,7 +4,7 @@
 
 **Standing constraints:** develop on `claude/video-virality-generator-brainstorm-oci5fj`; never push to another branch without explicit instruction (step 4 below IS that instruction, one-time, for `main`). Do NOT include a model identifier in any repo artifact.
 
-**Progress:** steps 0–2 done (R22 §108) — freeze check green, assets shipped, `main` fast-forwarded to the launch tip, repo renamed to `AhsanAyaz/ossclip`, description + topics set, all four packages README-ready. Remaining: npm publish (step 3, author's commands), the public flip (step 4), announcement (step 5).
+**Progress:** steps 0–4 DONE (R22 §108–§109) — published to npm, repo public, Pages live, CI green. Remaining: step 5 (announcement, author's to write) and step 6 (the week after). Original progress note: steps 0–2 (R22 §108) — freeze check green, assets shipped, `main` fast-forwarded to the launch tip, repo renamed to `AhsanAyaz/ossclip`, description + topics set, all four packages README-ready. Remaining: npm publish (step 3, author's commands), the public flip (step 4), announcement (step 5).
 
 **State at capture (2026-08-04):** repo private, history purged (R18 §86 — a fresh full clone is 2.2M with no withdrawn material on any ref). npm name `ossclip` verified available; packages publish-ready (R18 §90b, verified by tarball install). CI + Pages workflows committed and green (§92). README honest (§88/§89/§93). Licensing disclosed (§87). Disclaimers in place (§105). The one asset that does not exist yet is the demo GIF.
 
@@ -28,24 +28,24 @@ The working branch carries the whole (purged) history; `main` is still just the 
 - [x] **AUTHOR (or AGENT with this runbook as the instruction):**
   `git push origin claude/video-virality-generator-brainstorm-oci5fj:main --force-with-lease` — main becomes the full history.
 - [x] **AUTHOR:** Settings → default branch = `main`. Keep the working branch for ongoing rounds or retire it — future PRs target `main` either way.
-- [ ] **AGENT:** confirm CI runs green on `main` after the push.
+- [x] **AGENT:** confirm CI runs green on `main` after the push.
 
 ## 3. npm — publish before anyone can read the README
 
 The README's first command is `npm install -g ossclip`; it must be true the moment the repo is public. Publish FIRST.
 
-- [ ] **AUTHOR: npm auth.** `npm login`, then create the `ossclip` org (for the `@ossclip/*` scope) — or publish the three libraries under your user scope and adjust the CLI's dependency names accordingly (org is cleaner; it was verified unclaimed at R18).
-- [ ] **AUTHOR: publish, libraries first** (pnpm rewrites `workspace:*` at pack):
+- [x] **AUTHOR: npm auth.** `npm login`, then create the `ossclip` org (for the `@ossclip/*` scope) — or publish the three libraries under your user scope and adjust the CLI's dependency names accordingly (org is cleaner; it was verified unclaimed at R18).
+- [x] **AUTHOR: publish, libraries first** (pnpm rewrites `workspace:*` at pack):
   `pnpm --filter @ossclip/core --filter @ossclip/scenes --filter @ossclip/renderer publish --access public`
   then `pnpm --filter ossclip publish --access public` (its `prepack` builds `editor-dist/` automatically).
-- [ ] **AUTHOR: smoke-test from the registry** on a clean shell: `npm i -g ossclip && ossclip doctor && ossclip --help`. Doctor's ✗ lines are the machine's, not the package's — the bin running at all is the test.
+- [x] **AUTHOR: smoke-test from the registry** on a clean shell: `npm i -g ossclip && ossclip doctor && ossclip --help`. Doctor's ✗ lines are the machine's, not the package's — the bin running at all is the test.
 
 ## 4. Flip the repo public
 
-- [ ] **AUTHOR:** Settings → Danger Zone → change visibility → public. This is the erasure-vs-mitigation boundary from R18: after this moment, history is cacheable — which is why §86 ran while it was still private.
-- [ ] **AUTHOR:** repo About: description — "Local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned code-rendered graphics" — plus topics (`video`, `cli`, `remotion`, `whisper`, `captions`, `shorts`, `llm`) and the docs URL once Pages is live.
-- [ ] **AGENT: post-flip verification.** Pages deploys (the workflow was blocked on the private plan — it starts working at the flip; Source already reads "GitHub Actions"). CI green and free (public runners are unmetered — the §92 cost question dissolves here). Fresh anonymous clone works. `npm home ossclip` links resolve.
-- [ ] **AGENT: add the CI badge** to the README top once the first public run is green.
+- [x] **AUTHOR:** Settings → Danger Zone → change visibility → public. This is the erasure-vs-mitigation boundary from R18: after this moment, history is cacheable — which is why §86 ran while it was still private.
+- [x] **AUTHOR:** repo About: description — "Local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned code-rendered graphics" — plus topics (`video`, `cli`, `remotion`, `whisper`, `captions`, `shorts`, `llm`) and the docs URL once Pages is live.
+- [x] **AGENT: post-flip verification.** Pages deploys (the workflow was blocked on the private plan — it starts working at the flip; Source already reads "GitHub Actions"). CI green and free (public runners are unmetered — the §92 cost question dissolves here). Fresh anonymous clone works. `npm home ossclip` links resolve.
+- [x] **AGENT: add the CI badge** to the README top once the first public run is green.
 
 ## 5. Say it
 
