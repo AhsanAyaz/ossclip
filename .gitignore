@@ -14,3 +14,7 @@ apps/editor/playwright-report/
 .env
 .env.*
 !.env.example
+
+# Local working materials — never distributed (R18 §86)
+reference/
+BRAINSTORM.md

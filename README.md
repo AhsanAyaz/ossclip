@@ -150,7 +150,6 @@ packages/scenes    React components shared by preview & render (EdlVideo, Captio
 packages/renderer  Remotion composition + programmatic render entry
 apps/cli           the ossclip CLI
 apps/editor        direct-manipulation editing page over a produced workdir (`ossclip edit`)
-apps/studio        (dormant) agent-native studio app
 ```
 
 ## Development

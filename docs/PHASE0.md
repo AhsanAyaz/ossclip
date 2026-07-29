@@ -1,6 +1,6 @@
 # Phase 0 — Prove the Cut: Implementation Plan
 
-*Working name: `ossclip`. Companion to `BRAINSTORM.md` (§8, Phase 0). This phase contains **zero LLM surface** — it's pure engineering, runs fully offline, and produces something immediately useful on real footage.*
+*Working name: `ossclip`. Companion to the author's design notes (`BRAINSTORM.md` §8, Phase 0 — local working notes, not distributed). This phase contains **zero LLM surface** — it's pure engineering, runs fully offline, and produces something immediately useful on real footage.*
 
 ## Goal
 

@@ -14,7 +14,7 @@
 
 ## 86. `reference/` cannot be published
 
-**Observed (verified):** `git ls-files reference | wc -l` → **30 tracked PNGs, 46MB**, and they are screenshots of a competitor's product UI and its produced frames. `BRAINSTORM.md` opens by stating it "decodes the reference product (a commercial AI-producer product)" and carries a section headed "The smoking gun."
+**Observed (verified):** `git ls-files reference | wc -l` → **30 tracked PNGs, 46MB**, and they are screenshots of a commercial product's UI and its produced frames. `BRAINSTORM.md` opens by framing itself as a decode of that product and reads as a teardown throughout.
 
 Reverse-engineering observable output is legitimate and the analysis in this repo is good work. Publishing 46MB of another company's UI under the author's real name, in a repo whose founding document reads as a teardown, is a needless invitation — and that company ships its own CLI, so they are watching this surface.
 

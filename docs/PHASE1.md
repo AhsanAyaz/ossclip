@@ -1,6 +1,6 @@
 # Phase 1 — The Stage, the Scene Library, and the Producer Brain
 
-*Companion to `BRAINSTORM.md` (§4.4, §4.6, §8 Phase 1) and `docs/PHASE0.md`. Phase 0 proved the cut; this phase makes the frame do something. Reference screenshots live in `reference/` — they are the acceptance target for the look.*
+*Companion to `docs/PHASE0.md` and the author's design notes (`BRAINSTORM.md` §4.4, §4.6, §8 — local working notes, not distributed). Phase 0 proved the cut; this phase makes the frame do something. The acceptance target for the look was a set of comparison screenshots kept locally on the author's machine.*
 
 ## Goal
 
@@ -15,7 +15,7 @@ ossclip produce input.mp4 --scenes my-scenes.json -o out.mp4   # no LLM, hand-au
 
 1. A `scenes[]` array on the Production doc drives the frame. Rendering a hand-written `scenes.json` produces the right visuals **with no LLM in the loop** — the whole phase is testable offline.
 2. At least these layouts render correctly and hold the speaker's audio continuous across every scene boundary: `full-bleed`, `video-top`, `pip-bubble`, `graphic-only`, `blurred-behind`.
-3. Eight scene components exist, are art-directed once by hand, and cover the observed Opus grammar (table in §3). Each validates its props with zod and renders from JSON alone.
+3. Eight scene components exist, are art-directed once by hand, and cover the observed scene grammar of comparable produced shorts (table in §3). Each validates its props with zod and renders from JSON alone.
 4. `ossclip produce --produce` calls an LLM that emits a beat sheet + scene props, every scene zod-parses, and an invalid scene degrades to a `TitleCard` (or is dropped) rather than failing the render.
 5. Scene timings live in **output time** and survive a re-cut: change `--cleanup` and the scenes still land on the words they belong to (they are anchored to transcript ranges, not raw seconds — §5).
 6. `props` and `overrides` are stored separately from day one; re-running the producer replaces `props` and leaves `overrides` untouched.
@@ -23,7 +23,7 @@ ossclip produce input.mp4 --scenes my-scenes.json -o out.mp4   # no LLM, hand-au
 
 ## 1. The architectural change: the frame is a stage
 
-Phase 0 assumed graphics are overlays on full-bleed video. **The reference contradicts that.** In `reference/Screenshot 2026-07-26 at 21.08.10.png` the speaker is a small circle at the bottom while a screenshot and two rule cards own the frame; in `21.07.30.png` the video is cropped to a top block with a stat card beneath it; in `21.08.28.png` it is a top half with a title card below.
+Phase 0 assumed graphics are overlays on full-bleed video. **The comparison frames contradicted that** (kept locally, not distributed): in one the speaker is a small circle at the bottom while a screenshot and two rule cards own the frame; in another the video is cropped to a top block with a stat card beneath it; in a third it is a top half with a title card below.
 
 So the composition is not `video + overlays`. It is a **stage with slots**, and the talking head is one occupant competing for space:
 

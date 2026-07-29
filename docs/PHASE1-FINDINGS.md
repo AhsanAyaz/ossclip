@@ -6,7 +6,7 @@
 
 *First end-to-end `--produce --llm claude-cli` run on real footage (68 s portrait take, macOS, whisper `base.en`). The pipeline works: 7 scenes planned from 9 moments, all 5 layouts exercised, audio continuous across every transition, real numbers lifted from the take. These are the defects that run exposed, worst first, plus one new requirement (§6).*
 
-Reference frames for comparison live in `reference/`. The produced frames referenced below came from `ffmpeg -ss <t>` on the render.
+The comparison frames (and the design notes they informed, `BRAINSTORM.md`) were working materials local to the author's machine and are not distributed with this repo. The produced frames referenced below came from `ffmpeg -ss <t>` on the render.
 
 ## 1. `FlowDiagram` breaks its own layout
 
