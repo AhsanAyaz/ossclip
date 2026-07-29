@@ -327,28 +327,40 @@ export async function repairTranscript(
   opts: RepairOptions = {},
 ): Promise<{ transcript: Transcript; applied: AppliedRepair[]; error?: string }> {
   if (transcript.words.length === 0) return { transcript, applied: [] };
-  try {
-    const result = await provider.complete({
-      system: REPAIR_SYSTEM,
-      user: buildRepairUserPrompt(transcript, opts.speaker),
-      schema: TranscriptRepairSchema,
-      schemaName: "transcript_repair",
-      // EDITORIAL on purpose, despite looking mechanical. Measured on the real
-      // reel: the small model returned zero repairs where the large one
-      // recovers "code with SM" → "Code with Ahsan" every time. Deciding what
-      // a person actually said is semantic work, and it is the gate that keeps
-      // a mishearing off the screen (§17) — the wrong place to save $0.20.
-      tier: "editorial",
-      maxTokens: 4000,
-    });
-    return applyRepairs(transcript, result.repairs, opts);
-  } catch (err) {
-    return {
-      transcript,
-      applied: [],
-      error: err instanceof Error ? err.message : String(err),
-    };
+  // The budget scales with the transcript (R20 §98): the flat 4000 was sized
+  // for 30-70s takes, and the first long-form run blew straight through it —
+  // a thinking model's thought tokens draw from the SAME budget, so the
+  // visible JSON was truncated mid-string after burning half the run's cost.
+  const maxTokens = Math.min(32000, 4000 + transcript.words.length * 10);
+  let lastError: unknown;
+  // Two attempts (R20 §98): repair is the gate that keeps a mishearing off
+  // the screen (§17), and one malformed response was measured costing the
+  // whole pass — a single retry is cheap against that. Still fail-soft after.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await provider.complete({
+        system: REPAIR_SYSTEM,
+        user: buildRepairUserPrompt(transcript, opts.speaker),
+        schema: TranscriptRepairSchema,
+        schemaName: "transcript_repair",
+        // EDITORIAL on purpose, despite looking mechanical. Measured on the real
+        // reel: the small model returned zero repairs where the large one
+        // recovers "code with SM" → "Code with Ahsan" every time. Deciding what
+        // a person actually said is semantic work, and it is the gate that keeps
+        // a mishearing off the screen (§17) — the wrong place to save $0.20.
+        tier: "editorial",
+        maxTokens,
+      });
+      return applyRepairs(transcript, result.repairs, opts);
+    } catch (err) {
+      lastError = err;
+    }
   }
+  return {
+    transcript,
+    applied: [],
+    error: lastError instanceof Error ? lastError.message : String(lastError),
+  };
 }
 
 // ---- §21: the producer's copy and the captions must spell words the same ---

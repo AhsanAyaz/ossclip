@@ -29,6 +29,8 @@ interface InspectorProps {
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
+/** Two fields on one line — the X/Y and W/H pairs (R20 §96). */
+const pairGrid: React.CSSProperties = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 };
 const label: React.CSSProperties = {
   fontSize: 11,
   fontWeight: 600,
@@ -78,14 +80,74 @@ const NumberField: React.FC<{
   onCommit: (v: number) => void;
   min?: number;
   max?: number;
-}> = ({ id, value, onCommit, min, max }) => {
+  /**
+   * Value change per pixel of horizontal drag on the LABEL (R20 §96, the
+   * Filmora gesture): press the label and slide left/right to scrub the
+   * value; a plain click focuses the input for typing as before. Defaults
+   * to range/240 when bounded, else 0.5/px.
+   */
+  dragStep?: number;
+}> = ({ id, value, onCommit, min, max, dragStep }) => {
   // A DRAFT while focused (§48): the field is controlled from the committed
   // value, and re-formatting the text mid-keystroke would wipe what the user
   // is typing — "0,8" would snap to "0" the instant the comma landed.
   const [draft, setDraft] = React.useState<string | null>(null);
+  const [scrubbing, setScrubbing] = React.useState(false);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const drag = React.useRef<{ x: number; v: number; moved: boolean } | null>(null);
+  const lo = min ?? -Infinity;
+  const hi = max ?? Infinity;
+  const perPx =
+    dragStep ?? (min !== undefined && max !== undefined ? (max - min) / 240 : 0.5);
   return (
     <div style={row}>
-      <span style={label}>{id}</span>
+      <span
+        // The label is the scrub handle. Commits per move under the caller's
+        // fixed coalesce key, so one scrub is one undo step — the same
+        // contract every slider here already holds. touch-action none keeps
+        // the browser from claiming the gesture for scrolling.
+        data-testid={`scrub-${id}`}
+        style={{
+          ...label,
+          cursor: "ew-resize",
+          userSelect: "none",
+          touchAction: "none",
+          ...(scrubbing ? { color: "#FFE14D" } : {}),
+        }}
+        onPointerDown={(e) => {
+          drag.current = { x: e.clientX, v: Number.isFinite(value) ? value : 0, moved: false };
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          setScrubbing(true);
+        }}
+        onPointerMove={(e) => {
+          const d = drag.current;
+          if (!d) return;
+          const dx = e.clientX - d.x;
+          if (!d.moved && Math.abs(dx) <= 2) return; // a click, until it isn't
+          d.moved = true;
+          // Quantized to the §48 display precision, so a scrub can never
+          // commit float dust the field itself would refuse to show.
+          const next = Math.round(Math.min(hi, Math.max(lo, d.v + dx * perPx)) * 1000) / 1000;
+          onCommit(next);
+        }}
+        onPointerUp={() => {
+          const wasDrag = drag.current?.moved === true;
+          drag.current = null;
+          setScrubbing(false);
+          // A click without a drag focuses the input — typing stays one
+          // gesture away, exactly where it was before scrubbing existed.
+          if (!wasDrag) {
+            inputRef.current?.focus();
+            inputRef.current?.select();
+          }
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+          setScrubbing(false);
+        }}
+      >
+        {id}
+      </span>
       <input
         // type="text" + inputMode="decimal", NOT type="number" (§48): in a
         // comma-decimal locale the number input renders "0,8" but reports a
@@ -94,6 +156,7 @@ const NumberField: React.FC<{
         // separator was the second half of the same unusable-field defect.
         type="text"
         inputMode="decimal"
+        ref={inputRef}
         data-testid={`field-${id}`}
         style={numberInput}
         value={draft ?? (Number.isFinite(value) ? roundShown(value) : "0")}
@@ -109,8 +172,6 @@ const NumberField: React.FC<{
           if (text === "") return;
           const parsed = Number(text.replace(",", "."));
           if (!Number.isFinite(parsed)) return;
-          const lo = min ?? -Infinity;
-          const hi = max ?? Infinity;
           onCommit(Math.min(hi, Math.max(lo, parsed)));
         }}
       />
@@ -275,25 +336,30 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
           {/* Typing "120" is one gesture, not three edits — the coalesce key
               collapses the keystroke burst into a single undo step (B5). */}
-          <NumberField
-            id="x"
-            value={transform.dx ?? 0}
-            onCommit={(v) =>
-              edits.patchElement(selection.sceneId, elementId, { dx: v }, `element:${selection.sceneId}:${elementId}:dx`)
-            }
-          />
-          <NumberField
-            id="y"
-            value={transform.dy ?? 0}
-            onCommit={(v) =>
-              edits.patchElement(selection.sceneId, elementId, { dy: v }, `element:${selection.sceneId}:${elementId}:dy`)
-            }
-          />
+          <div style={pairGrid}>
+            <NumberField
+              id="x"
+              value={transform.dx ?? 0}
+              dragStep={1}
+              onCommit={(v) =>
+                edits.patchElement(selection.sceneId, elementId, { dx: v }, `element:${selection.sceneId}:${elementId}:dx`)
+              }
+            />
+            <NumberField
+              id="y"
+              value={transform.dy ?? 0}
+              dragStep={1}
+              onCommit={(v) =>
+                edits.patchElement(selection.sceneId, elementId, { dy: v }, `element:${selection.sceneId}:${elementId}:dy`)
+              }
+            />
+          </div>
           <NumberField
             id="scale"
             value={transform.scale ?? 1}
             min={0.05}
             max={4}
+            dragStep={0.01}
             onCommit={(v) =>
               edits.patchElement(selection.sceneId, elementId, { scale: v }, `element:${selection.sceneId}:${elementId}:scale`)
             }
@@ -461,24 +527,29 @@ export const Inspector: React.FC<InspectorProps> = ({
             value={cue.video?.scale ?? 1}
             min={0.05}
             max={4}
+            dragStep={0.01}
             onCommit={(v) =>
               edits.patchVideo(selection.sceneId, { scale: v }, `video:${selection.sceneId}:scale`)
             }
           />
-          <NumberField
-            id="dx"
-            value={cue.video?.dx ?? 0}
-            onCommit={(v) =>
-              edits.patchVideo(selection.sceneId, { dx: v }, `video:${selection.sceneId}:dx`)
-            }
-          />
-          <NumberField
-            id="dy"
-            value={cue.video?.dy ?? 0}
-            onCommit={(v) =>
-              edits.patchVideo(selection.sceneId, { dy: v }, `video:${selection.sceneId}:dy`)
-            }
-          />
+          <div style={pairGrid}>
+            <NumberField
+              id="dx"
+              value={cue.video?.dx ?? 0}
+              dragStep={1}
+              onCommit={(v) =>
+                edits.patchVideo(selection.sceneId, { dx: v }, `video:${selection.sceneId}:dx`)
+              }
+            />
+            <NumberField
+              id="dy"
+              value={cue.video?.dy ?? 0}
+              dragStep={1}
+              onCommit={(v) =>
+                edits.patchVideo(selection.sceneId, { dy: v }, `video:${selection.sceneId}:dy`)
+              }
+            />
+          </div>
           {cue.video ? (
             <button style={button} onClick={() => edits.clearVideo(selection.sceneId)}>
               Reset framing
@@ -521,24 +592,28 @@ export const Inspector: React.FC<InspectorProps> = ({
                       }
                     />
                   </div>
-                  <NumberField
-                    id="pip-x"
-                    value={pip.x ?? slot.rect.x}
-                    min={0}
-                    max={1 - slot.rect.w}
-                    onCommit={(v) =>
-                      edits.patchPip(selection.sceneId, { x: v }, `pip:${selection.sceneId}:x`)
-                    }
-                  />
-                  <NumberField
-                    id="pip-y"
-                    value={pip.y ?? slot.rect.y}
-                    min={0}
-                    max={1 - slot.rect.h}
-                    onCommit={(v) =>
-                      edits.patchPip(selection.sceneId, { y: v }, `pip:${selection.sceneId}:y`)
-                    }
-                  />
+                  <div style={pairGrid}>
+                    <NumberField
+                      id="pip-x"
+                      value={pip.x ?? slot.rect.x}
+                      min={0}
+                      max={1 - slot.rect.w}
+                      dragStep={0.002}
+                      onCommit={(v) =>
+                        edits.patchPip(selection.sceneId, { x: v }, `pip:${selection.sceneId}:x`)
+                      }
+                    />
+                    <NumberField
+                      id="pip-y"
+                      value={pip.y ?? slot.rect.y}
+                      min={0}
+                      max={1 - slot.rect.h}
+                      dragStep={0.002}
+                      onCommit={(v) =>
+                        edits.patchPip(selection.sceneId, { y: v }, `pip:${selection.sceneId}:y`)
+                      }
+                    />
+                  </div>
                   {cue.pip ? (
                     <button
                       data-testid="reset-pip"
@@ -572,10 +647,14 @@ export const Inspector: React.FC<InspectorProps> = ({
               <div style={{ fontSize: 12, color: "#9A9AA3" }}>
                 Frame fractions — or drag the handles on the stage.
               </div>
-              <NumberField id="box-x" value={eff.x} min={0} max={1} onCommit={boxPatch("x")} />
-              <NumberField id="box-y" value={eff.y} min={0} max={1} onCommit={boxPatch("y")} />
-              <NumberField id="box-w" value={eff.w} min={0.08} max={1} onCommit={boxPatch("w")} />
-              <NumberField id="box-h" value={eff.h} min={0.05} max={1} onCommit={boxPatch("h")} />
+              <div style={pairGrid}>
+                <NumberField id="box-x" value={eff.x} min={0} max={1} dragStep={0.002} onCommit={boxPatch("x")} />
+                <NumberField id="box-y" value={eff.y} min={0} max={1} dragStep={0.002} onCommit={boxPatch("y")} />
+              </div>
+              <div style={pairGrid}>
+                <NumberField id="box-w" value={eff.w} min={0.08} max={1} dragStep={0.002} onCommit={boxPatch("w")} />
+                <NumberField id="box-h" value={eff.h} min={0.05} max={1} dragStep={0.002} onCommit={boxPatch("h")} />
+              </div>
               {edits.doc.scenes[selection.sceneId]?.graphicRect ? (
                 <button
                   data-testid="reset-box"
@@ -649,6 +728,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                 value={effScale}
                 min={0.2}
                 max={3}
+                dragStep={0.01}
                 onCommit={(v) =>
                   edits.patchCaptionScale(selection.sceneId, v, `captionScale:${selection.sceneId}`)
                 }
@@ -739,7 +819,7 @@ export const Inspector: React.FC<InspectorProps> = ({
         <ThemeField id="accent" value={theme.accent ?? resolvedTheme.accent} isColor onCommit={(v) => patch("accent", v)} />
         <ThemeField id="bg" value={theme.bg ?? resolvedTheme.bg} isColor onCommit={(v) => patch("bg", v)} />
         <ThemeField id="fg" value={theme.fg ?? resolvedTheme.fg} isColor onCommit={(v) => patch("fg", v)} />
-        <NumberField id="radiusPx" value={theme.radiusPx ?? resolvedTheme.radiusPx} min={0} onCommit={(v) => patch("radiusPx", v)} />
+        <NumberField id="radiusPx" value={theme.radiusPx ?? resolvedTheme.radiusPx} min={0} dragStep={0.5} onCommit={(v) => patch("radiusPx", v)} />
         <ThemeField
           id="fontDisplay"
           value={theme.fontDisplay ?? resolvedTheme.fontDisplay}

@@ -942,6 +942,16 @@ export const App: React.FC = () => {
         selection={selection}
         onSelect={setSelection}
         edits={edits}
+        videoSrc={live.videoFileName}
+        toSourceSec={(outSec) => {
+          // Output→source through the spans (R20 §97) — the filmstrip frame
+          // must be the source second actually playing there, not the raw
+          // output second, or every thumbnail past the first cut is wrong.
+          for (const sp of live.spans ?? []) {
+            if (outSec >= sp.outIn && outSec < sp.outOut) return sp.srcIn + (outSec - sp.outIn);
+          }
+          return (live.spans ?? [])[0]?.srcIn ?? outSec;
+        }}
       />
     </div>
   );

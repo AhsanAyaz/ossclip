@@ -19,6 +19,19 @@ const SHORT_TAKE_MIN_SCENE_SEC = 3;
  * Exported: the beat scheduler budgets coverage with this same number (§7).
  */
 export const MAX_SCENE_SEC = 5;
+/**
+ * A lower third never TAKES the frame — the speaker stays full-bleed the
+ * whole time — so the pattern-interrupt argument behind MAX_SCENE_SEC does
+ * not apply and the punch-out at 5s was cutting cards off mid-sentence
+ * (R20 §95, seen on the first real landscape run). It holds through its
+ * whole moment instead, under this generous ceiling so a rambling moment
+ * still cannot pin one static card up for a minute.
+ */
+export const MAX_OVERLAY_SCENE_SEC = 15;
+
+/** The on-screen cap for a cue, by how much frame its layout takes. */
+const maxSceneSecFor = (layout: SceneCue["layout"]): number =>
+  layout === "lower-third" ? MAX_OVERLAY_SCENE_SEC : MAX_SCENE_SEC;
 /** Breathing room enforced between consecutive scenes. */
 const SCENE_GAP_SEC = 0.05;
 
@@ -89,7 +102,7 @@ export function assembleScenes(
     if (cue.endSec - cue.startSec < minScene) {
       cue.endSec = cue.startSec + minScene;
     }
-    cue.endSec = Math.min(cue.endSec, cue.startSec + MAX_SCENE_SEC, map.outputDuration);
+    cue.endSec = Math.min(cue.endSec, cue.startSec + maxSceneSecFor(cue.layout), map.outputDuration);
     if (cue.endSec - cue.startSec < DROP_BELOW_SEC) {
       dropped.push({ id: cue.id, reason: "too short after clamping" });
       continue;

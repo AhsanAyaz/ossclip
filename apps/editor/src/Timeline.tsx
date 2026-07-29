@@ -16,6 +16,12 @@ interface TimelineProps {
   selection: Selection | null;
   onSelect: (selection: Selection | null) => void;
   edits: ReturnType<typeof useEdits>;
+  /** The served video URL (R20 §97) — feeds the take filmstrips. Optional:
+   * without it (or when the file 404s) blocks simply stay flat panels. */
+  videoSrc?: string;
+  /** Output→source time, through the spans — a filmstrip frame must come
+   * from the SOURCE second actually playing at that point of the cut. */
+  toSourceSec?: (outSec: number) => number;
 }
 
 interface DragState {
@@ -70,6 +76,73 @@ const fmt = (sec: number): string => {
   return `${m}:${r}`;
 };
 
+/** Tick labels drop the decimal — a ruler mark is a landmark, not a readout. */
+const tickFmt = (sec: number): string => {
+  const s = Math.max(0, Math.round(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+/**
+ * Take filmstrips (R20 §97, the Filmora look): one frame per plain take,
+ * seeked out of a detached <video> and drawn to a small canvas. Purely
+ * decorative — any failure (missing file, codec, abort) leaves the flat
+ * block exactly as it was, and nothing here sits in a gesture's path.
+ * Sequential on ONE element: N parallel videos of the same file would cost
+ * more than the thumbnails are worth.
+ */
+const useTakeThumbs = (
+  videoSrc: string | undefined,
+  times: readonly number[],
+): Record<string, string> => {
+  const [thumbs, setThumbs] = React.useState<Record<string, string>>({});
+  const cacheRef = React.useRef<Record<string, string>>({});
+  const key = times.map((t) => t.toFixed(1)).join(",");
+  React.useEffect(() => {
+    if (!videoSrc || times.length === 0) return;
+    const missing = [...new Set(times.map((t) => t.toFixed(1)))].filter(
+      (t) => cacheRef.current[t] === undefined,
+    );
+    if (missing.length === 0) return;
+    let cancelled = false;
+    const video = document.createElement("video");
+    video.src = videoSrc;
+    video.muted = true;
+    video.preload = "auto";
+    const canvas = document.createElement("canvas");
+    const run = async (): Promise<void> => {
+      await new Promise<void>((res, rej) => {
+        video.onloadedmetadata = () => res();
+        video.onerror = () => rej(new Error("no video for thumbnails"));
+      });
+      canvas.width = 168;
+      canvas.height = Math.max(
+        1,
+        Math.round((168 * video.videoHeight) / Math.max(1, video.videoWidth)),
+      );
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      for (const t of missing) {
+        if (cancelled) return;
+        await new Promise<void>((res) => {
+          video.onseeked = () => res();
+          video.currentTime = Math.max(0, Number(t));
+        });
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        cacheRef.current[t] = canvas.toDataURL("image/jpeg", 0.6);
+      }
+      if (!cancelled) setThumbs({ ...cacheRef.current });
+    };
+    void run().catch(() => {});
+    return () => {
+      cancelled = true;
+      video.removeAttribute("src");
+      video.load();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` stands in for `times`
+  }, [videoSrc, key]);
+  return thumbs;
+};
+
 /**
  * The bottom strip: one block per scene positioned against the clip's
  * duration, a playhead synced to the Player's own clock, click-to-seek, and
@@ -88,6 +161,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   selection,
   onSelect,
   edits,
+  videoSrc,
+  toSourceSec,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -107,6 +182,20 @@ export const Timeline: React.FC<TimelineProps> = ({
   // actually rendered — setting scrollLeft before that would clamp against
   // the old width.
   const [zoom, setZoom] = useState(1);
+  // One filmstrip frame per plain take (R20 §97), at the take's midpoint in
+  // SOURCE time — graphic scenes keep their flat card look on purpose: the
+  // block for a card is not footage, and painting footage under it would say
+  // otherwise. Keyed per cue id at render below.
+  const takeThumbTimes = React.useMemo(
+    () =>
+      toSourceSec
+        ? cues
+            .filter((c) => c.kind === "plain")
+            .map((c) => toSourceSec((c.startSec + c.endSec) / 2))
+        : [],
+    [cues, toSourceSec],
+  );
+  const takeThumbs = useTakeThumbs(videoSrc, takeThumbTimes);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const zoomAnchorRef = useRef<{ prevZoom: number; anchorX: number } | null>(null);
 
@@ -401,8 +490,71 @@ export const Timeline: React.FC<TimelineProps> = ({
               scrubbingRef.current = true;
             }}
           >
-            <span style={rulerLabel}>0:00</span>
-            <span style={rulerLabel}>{fmt(durationSec)}</span>
+            {(() => {
+              // Graduated ticks (R20 §97): interval picked so labels keep
+              // ~70px of air at the current zoom, minors at a fifth of it.
+              // Everything inside is pointer-inert — the ruler div itself
+              // owns the seek gesture above.
+              if (durationSec <= 0) return <span style={rulerLabel}>0:00</span>;
+              const viewportW = scrollerRef.current?.clientWidth ?? 1200;
+              const pxPerSec = (viewportW * zoom) / durationSec;
+              const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+              let major = steps.find((s) => s * pxPerSec >= 70) ?? 600;
+              while (durationSec / (major / 5) > 600) major *= 2; // DOM cap
+              const minor = major / 5;
+              const ticks: React.ReactNode[] = [];
+              for (let t = 0; t <= durationSec + 1e-6; t += minor) {
+                const isMajor = Math.round(t / minor) % 5 === 0;
+                const left = `${(t / durationSec) * 100}%`;
+                ticks.push(
+                  <div
+                    key={t.toFixed(3)}
+                    style={{
+                      position: "absolute",
+                      left,
+                      bottom: 0,
+                      width: 1,
+                      height: isMajor ? 8 : 4,
+                      background: isMajor ? "#3A3A44" : "#26262e",
+                      pointerEvents: "none",
+                    }}
+                  />,
+                );
+                if (isMajor && t + minor <= durationSec) {
+                  ticks.push(
+                    <span
+                      key={`l${t.toFixed(3)}`}
+                      style={{
+                        ...rulerLabel,
+                        position: "absolute",
+                        left,
+                        top: 0,
+                        transform: t === 0 ? undefined : "translateX(-50%)",
+                        pointerEvents: "none",
+                      }}
+                    >
+                      {tickFmt(t)}
+                    </span>,
+                  );
+                }
+              }
+              return (
+                <>
+                  {ticks}
+                  <span
+                    style={{
+                      ...rulerLabel,
+                      position: "absolute",
+                      right: 2,
+                      top: 0,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {fmt(durationSec)}
+                  </span>
+                </>
+              );
+            })()}
           </div>
           <div
             ref={trackRef}
@@ -426,6 +578,10 @@ export const Timeline: React.FC<TimelineProps> = ({
               const left = durationSec > 0 ? (startSec / durationSec) * 100 : 0;
               const width = durationSec > 0 ? Math.max(0, ((endSec - startSec) / durationSec) * 100) : 0;
               const isSelected = selection?.sceneId === cue.id;
+              const thumb =
+                isPlain && toSourceSec
+                  ? takeThumbs[toSourceSec((cue.startSec + cue.endSec) / 2).toFixed(1)]
+                  : undefined;
               return (
                 <div
                   key={cue.id}
@@ -469,10 +625,30 @@ export const Timeline: React.FC<TimelineProps> = ({
                       : isPlain
                         ? "1px solid #22222a"
                         : "1px solid #2A2A33",
-                    background: isSelected ? "#1c2333" : isPlain ? "#131318" : "#1A1A21",
+                    backgroundColor: isSelected ? "#1c2333" : isPlain ? "#131318" : "#1A1A21",
+                    // The filmstrip (R20 §97): the take's own frame repeated
+                    // across the block, dimmed under a gradient so the label
+                    // stays readable. Missing thumb → the flat panel above.
+                    ...(thumb
+                      ? {
+                          backgroundImage:
+                            "linear-gradient(rgba(10,10,14,0.35), rgba(10,10,14,0.6)), " +
+                            `url(${thumb})`,
+                          backgroundSize: "auto 100%, auto 100%",
+                          backgroundRepeat: "repeat-x",
+                        }
+                      : {}),
                   }}
                 >
-                  <span style={isPlain ? { ...blockLabel, color: "#55555f" } : blockLabel}>
+                  <span
+                    style={
+                      isPlain
+                        ? thumb
+                          ? { ...blockLabel, color: "#D8D8DE", textShadow: "0 1px 2px rgba(0,0,0,0.9)" }
+                          : { ...blockLabel, color: "#55555f" }
+                        : blockLabel
+                    }
+                  >
                     {cue.id}
                   </span>
                   {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
@@ -600,9 +776,8 @@ const scroller: React.CSSProperties = {
 };
 
 const ruler: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
+  // Positioned canvas for the graduated ticks (R20 §97).
+  position: "relative",
   // Tall enough to press, and visibly a surface rather than two floating
   // labels — it seeks now, and it should look like it does.
   height: 18,

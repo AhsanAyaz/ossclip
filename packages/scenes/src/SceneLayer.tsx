@@ -36,6 +36,26 @@ const COMPONENTS: Record<
 const EXIT_SEC = 0.3;
 
 /**
+ * Layouts whose graphic slot sits over LIVE video (R20 §94). Everywhere else
+ * the graphic lands on the stage background and the theme guarantees its
+ * contrast; here the background is whatever pixels the footage happens to
+ * show, and a typographic component (TitleCard, StrikethroughReveal) can land
+ * white text on a bright wall. The slot gets a frosted scrim: theme-bg tint
+ * over a backdrop blur. Slot-shaped rather than a broadcast bottom-gradient
+ * so it FOLLOWS the box when the editor drags or resizes it.
+ */
+const OVER_VIDEO_LAYOUTS = new Set<SceneCue["layout"]>(["lower-third", "full-bleed"]);
+const SCRIM_ALPHA = 0.55;
+
+const scrimColor = (themeBg: string): string => {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(themeBg.trim());
+  const [r, g, b] = m
+    ? [0, 2, 4].map((i) => Number.parseInt(m[1]!.slice(i, i + 2), 16))
+    : [0, 0, 0];
+  return `rgba(${r}, ${g}, ${b}, ${SCRIM_ALPHA})`;
+};
+
+/**
  * Uniform exit for every graphic (R16 §69). Components own their ENTRANCES
  * (staggered rises, per element); the exit lives here at the layer because it
  * is the cue's END doing the animating, and every component leaving the same
@@ -120,7 +140,21 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
               }}
             >
               <ExitFade durationInFrames={durationInFrames}>
-                <div style={{ width: slotW / scale, transform: `scale(${scale})` }}>
+                {OVER_VIDEO_LAYOUTS.has(cue.layout) ? (
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      background: scrimColor(theme.bg),
+                      backdropFilter: "blur(14px)",
+                      WebkitBackdropFilter: "blur(14px)",
+                      borderRadius: theme.radiusPx,
+                    }}
+                  />
+                ) : null}
+                {/* position:relative so the content paints (and hit-tests)
+                    above the positioned scrim — document order alone loses. */}
+                <div style={{ width: slotW / scale, transform: `scale(${scale})`, position: "relative" }}>
                   <Component
                     props={cue.props}
                     theme={theme}

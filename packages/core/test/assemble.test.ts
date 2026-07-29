@@ -93,4 +93,30 @@ describe("assembleScenes", () => {
     expect(cues[0]!.props!.title).toBe("OVERRIDDEN");
     expect(dropped[0]).toMatchObject({ id: "b" });
   });
+
+  it("a lower third holds through its whole moment; frame-taking layouts still punch out at 5s (R20 §95)", () => {
+    // 20 words at 0.5s each — a 9.4s moment, longer than MAX_SCENE_SEC.
+    const long: Transcript = {
+      language: "en",
+      words: Array.from({ length: 20 }, (_, i) => ({
+        text: `w${i}`,
+        start: i * 0.5,
+        end: i * 0.5 + 0.4,
+      })),
+    };
+    const map = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" } satisfies Segment]);
+    const lower = assembleScenes(
+      [scene("lower", 0, 19, { layout: "lower-third" })],
+      long,
+      map,
+    ).cues[0]!;
+    // The sentence is 0 → 9.9s; the card stays for all of it.
+    expect(lower.endSec - lower.startSec).toBeGreaterThan(9);
+    const taking = assembleScenes(
+      [scene("taking", 0, 19, { layout: "video-top" })],
+      long,
+      map,
+    ).cues[0]!;
+    expect(taking.endSec - taking.startSec).toBeCloseTo(5, 5);
+  });
 });
