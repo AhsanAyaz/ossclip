@@ -959,3 +959,13 @@ Neither surface a shared link lands on had one. The docs site carried a `<title>
 One asset serves both: `docs/site/assets/social-card.png`, 1280×640, rendered from a small HTML card through the Playwright chromium already in the repo — so it is reproducible, matches the palette exactly, and re-renders in seconds when the wording changes. The site's `og:image`/`twitter:image` point at it with ABSOLUTE URLs, deliberately: a relative `og:image` is ignored by most unfurlers, which fails silently and looks identical in local testing. The GitHub upload is manual — the social-preview image is the one repo setting with no API.
 
 Caught while making the card, and worth more than the card: the README and the site were both captioning `render-example.png` as "a produced frame — the speaker full-bleed, word-timed captions, a stat card in a lower third". It is a screenshot of the TERMINAL during a produce run. The image was fine; the words under it described a different image entirely, on the two pages a stranger reads first. Fixed to say what it actually shows.
+
+## 111. The published package was missing a file every real source needs
+
+Found by the author running the PUBLISHED `ossclip` on a fresh source, minutes after launch: `ENOENT … @ossclip/core/assets/facefinder`. `@ossclip/core@0.1.0` shipped `files: ["README.md", "src"]`, and `face.ts` loads the vendored pico cascade from `../assets/facefinder` — 234KB that was never in the tarball.
+
+Why nothing caught it: in this workspace `@ossclip/core` resolves through a symlink to the whole package directory, so the file is always there. Every local run, all 626 tests, the CI matrix and even the R18 tarball-install smoke test passed — that smoke test ran `doctor` and `--help`, which never touch face detection. The failure needs a real source AND the published layout at once. The mixed-framing path hit it immediately.
+
+Fixed by adding `assets` to core's `files`, and guarded by a test that reads the SOURCE for every `new URL("../…", import.meta.url)` it loads and asserts each path is inside a `files` entry — so a future runtime asset that nobody packs fails in CI instead of in a stranger's terminal. All four packages go to 0.1.1 together: pnpm freezes `workspace:*` into EXACT versions at pack time, so a CLI pinned to `@ossclip/core@0.1.0` would keep resolving the broken tarball no matter what 0.1.1 contained.
+
+The wider lesson for a first launch: a smoke test that installs the package and runs `--help` proves the bin resolves, nothing more. The install path is only really verified by doing the actual work on real input.
