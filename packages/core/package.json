@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AhsanAyaz/open-clip.git",
+    "url": "git+https://github.com/AhsanAyaz/ossclip.git",
     "directory": "packages/core"
   },
   "exports": {
@@ -14,10 +14,16 @@
     "./browser": "./src/browser.ts"
   },
   "files": [
+    "README.md",
     "src"
   ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "zod": "^3.25.0"
-  }
+  },
+  "homepage": "https://github.com/AhsanAyaz/ossclip#readme",
+  "bugs": {
+    "url": "https://github.com/AhsanAyaz/ossclip/issues"
+  },
+  "author": "Muhammad Ahsan Ayaz"
 }

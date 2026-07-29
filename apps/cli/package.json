@@ -1,12 +1,12 @@
 {
   "name": "ossclip",
   "version": "0.1.0",
-  "description": "Local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned code-rendered graphics — transcription and rendering never leave your machine",
+  "description": "Local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned code-rendered graphics \u2014 transcription and rendering never leave your machine",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AhsanAyaz/open-clip.git",
+    "url": "git+https://github.com/AhsanAyaz/ossclip.git",
     "directory": "apps/cli"
   },
   "keywords": [
@@ -26,6 +26,7 @@
     "ossclip": "./bin/ossclip.mjs"
   },
   "files": [
+    "README.md",
     "bin",
     "src",
     "editor-dist"
@@ -41,5 +42,10 @@
     "commander": "^12.1.0",
     "tsx": "^4.19.0",
     "zod": "^3.25.76"
-  }
+  },
+  "homepage": "https://github.com/AhsanAyaz/ossclip#readme",
+  "bugs": {
+    "url": "https://github.com/AhsanAyaz/ossclip/issues"
+  },
+  "author": "Muhammad Ahsan Ayaz"
 }

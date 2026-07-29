@@ -929,3 +929,17 @@ A failure is now never cached; only a completed pass is. Verified on the real wo
 ## 107. The selected box should move from its boundary — and so should the bubble
 
 Selecting a scene drew the blue dashed box with resize handles, but the only MOVE surface was an invisible 10px strip along the top edge — dragging the boundary the selection visibly draws did nothing. Now every edge of the boundary is a move grip with the move cursor; the body stays click-through on purpose (element selection inside the box depends on it). The audit for the same gap found one more: the PiP bubble had numeric x/y (R14 §52) but no direct manipulation — dragging it panned the video INSIDE the bubble. Plain drag now moves the BUBBLE (with the move cursor announcing it); ⌥-drag keeps the framing pan, consistent with ⌥ meaning "pan" everywhere else on this stage. Both drags coalesce to one undo step, like every other gesture.
+
+# Round 22 — launch execution (2026-07-29)
+
+## 108. The repo shipped its assets, its name and its package metadata
+
+Launch runbook steps 0–2, executed. **Freeze check** green on macOS at the launch tip: typecheck, 626 unit tests, editor build, 45/45 Playwright; a fresh full clone carries no withdrawn material on any ref.
+
+**Assets.** A produced frame heads the README and the docs site; an editor GIF sits where the editor is described. They live in `docs/site/assets/` — ONE copy, served as the Pages site root and linked from the README by repo-relative path, because Pages publishes only `docs/site/`. The recording masters stay out of git (`docs/assets/`, ignored): the UI moves every round, and each re-record would otherwise be another 17MB in history forever. The shipped editor asset is a GIF, not the MP4 master, for a mechanical reason — GitHub renders a GIF inline on a README, and a repo-relative MP4 in a `<video>` tag does not render at all. `CONTRIBUTING.md` carries the regeneration command and the ~8MB budget.
+
+**`main` became the launch branch** by fast-forward, not force: the cleaned initial commit was an ancestor of the working branch, so nothing was discarded.
+
+**The repo is now `AhsanAyaz/ossclip`** — the tool's name, matching the npm package a reader is told to install on the first line. Every `repository.url` follows it.
+
+**Package metadata.** All four packages published blank-page-ready: none carried a README, which is what npm shows when a package has none. Each now ships one — the CLI's is a real landing page (absolute raw-GitHub image URL, since npm cannot resolve a repo-relative path), the three libraries' say what they are, that the CLI is the supported entry point, and that their APIs move between rounds. `homepage`, `bugs` and `author` added alongside. Verified by `npm pack --dry-run`: README present in every tarball, `editor-dist/` present in the CLI's.

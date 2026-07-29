@@ -4,28 +4,30 @@
 
 **Standing constraints:** develop on `claude/video-virality-generator-brainstorm-oci5fj`; never push to another branch without explicit instruction (step 4 below IS that instruction, one-time, for `main`). Do NOT include a model identifier in any repo artifact.
 
+**Progress:** steps 0–2 done (R22 §108) — freeze check green, assets shipped, `main` fast-forwarded to the launch tip, repo renamed to `AhsanAyaz/ossclip`, description + topics set, all four packages README-ready. Remaining: npm publish (step 3, author's commands), the public flip (step 4), announcement (step 5).
+
 **State at capture (2026-08-04):** repo private, history purged (R18 §86 — a fresh full clone is 2.2M with no withdrawn material on any ref). npm name `ossclip` verified available; packages publish-ready (R18 §90b, verified by tarball install). CI + Pages workflows committed and green (§92). README honest (§88/§89/§93). Licensing disclosed (§87). Disclaimers in place (§105). The one asset that does not exist yet is the demo GIF.
 
 ---
 
 ## 0. Freeze check — everything the README claims, re-verified
 
-- [ ] **AGENT: full verification suite** on the tip: `pnpm typecheck` · `pnpm test` · editor build · full Playwright. All green or the launch waits.
-- [ ] **AGENT: fresh-clone audit.** Clone the repo fresh, full (all refs): no `reference/`, no `BRAINSTORM.md`, `.git` ~2MB. This was true after R18; re-verify at the tip being launched.
+- [x] **AGENT: full verification suite** on the tip: `pnpm typecheck` · `pnpm test` · editor build · full Playwright. All green or the launch waits.
+- [x] **AGENT: fresh-clone audit.** Clone the repo fresh, full (all refs): no `reference/`, no `BRAINSTORM.md`, `.git` ~2MB. This was true after R18; re-verify at the tip being launched.
 - [ ] **AUTHOR: one real end-to-end run** on the machine that will demo it: `ossclip produce <real footage> --produce -o out.mp4`, watch the output. The R20/R21 layout work (scrim, variety, band padding) has not yet been seen on a real render — this run is where it is.
 
 ## 1. The demo GIF — the highest-value missing asset
 
-- [ ] **AUTHOR: record it.** The README placeholder says exactly what to record: before/after of `ossclip produce input.mp4 --produce -o out.mp4`, then a few seconds of direct manipulation in `ossclip edit`. 15–25s, under ~8MB (GitHub renders GIFs inline; an MP4 in a `<video>` tag does NOT render on the README).
-- [ ] **AGENT: embed it** at the placeholder, verify the README renders on GitHub's preview.
+- [x] **AUTHOR: record it.** The README placeholder says exactly what to record: before/after of `ossclip produce input.mp4 --produce -o out.mp4`, then a few seconds of direct manipulation in `ossclip edit`. 15–25s, under ~8MB (GitHub renders GIFs inline; an MP4 in a `<video>` tag does NOT render on the README).
+- [x] **AGENT: embed it** at the placeholder, verify the README renders on GitHub's preview.
 
 ## 2. Make `main` the launch branch
 
 The working branch carries the whole (purged) history; `main` is still just the cleaned initial commit. GitHub shows `main` to strangers.
 
-- [ ] **AUTHOR (or AGENT with this runbook as the instruction):**
+- [x] **AUTHOR (or AGENT with this runbook as the instruction):**
   `git push origin claude/video-virality-generator-brainstorm-oci5fj:main --force-with-lease` — main becomes the full history.
-- [ ] **AUTHOR:** Settings → default branch = `main`. Keep the working branch for ongoing rounds or retire it — future PRs target `main` either way.
+- [x] **AUTHOR:** Settings → default branch = `main`. Keep the working branch for ongoing rounds or retire it — future PRs target `main` either way.
 - [ ] **AGENT:** confirm CI runs green on `main` after the push.
 
 ## 3. npm — publish before anyone can read the README

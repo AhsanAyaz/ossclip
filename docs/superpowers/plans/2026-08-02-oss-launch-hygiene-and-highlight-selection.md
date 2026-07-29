@@ -10,7 +10,7 @@
 
 **Numbering:** R17 landed §80–§85 (editor: redo, find-next, zoom-out, project switching, render log, transform audit) while this was being written, so these items are **§86–§91**. Note for the author: R17 is more editor work — see *What NOT to do*.
 
-**Verified state at capture (2026-08-02, rebased onto `c30c9db` (R17)):** 100 commits, first on 2026-07-26. Remote `git@github.com:AhsanAyaz/open-clip.git`. 590 unit tests, ~40 e2e, tsc and editor build green.
+**Verified state at capture (2026-08-02, rebased onto `c30c9db` (R17)):** 100 commits, first on 2026-07-26. Remote `git@github.com:AhsanAyaz/ossclip.git`. 590 unit tests, ~40 e2e, tsc and editor build green.
 
 ---
 
@@ -29,7 +29,7 @@ Reverse-engineering observable output is legitimate and the analysis in this rep
 - [x] **80c. Fix the four references to the directory** — `BRAINSTORM.md`, `docs/PHASE1.md`, and `docs/PHASE1-FINDINGS.md:9` ("Reference frames for comparison live in `reference/`"). They become dangling instructions the moment the directory is gone. Rewrite them to say the comparison frames were local to the author's machine and are not distributed.
 - [x] **80d. `BRAINSTORM.md`** — **AUTHOR DECISION**, take the safer default unless told otherwise: keep it out of the public tree (move to the author's local notes) OR rewrite it as a design-rationale document with the competitor teardown framing removed. Do not publish it as-is. 274 lines; the value is in §5 and §7, which stand on their own without the "decoding" frame.
 
-**Check before you start:** whether `AhsanAyaz/open-clip` is already public on GitHub. If it is, the purge still happens, but say so in the report — history that has been public may be cached or forked, and the author needs to know the purge is a mitigation rather than an erasure.
+**Check before you start:** whether `AhsanAyaz/ossclip` is already public on GitHub. If it is, the purge still happens, but say so in the report — history that has been public may be cached or forked, and the author needs to know the purge is a mitigation rather than an erasure.
 
 ---
 

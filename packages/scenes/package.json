@@ -1,12 +1,12 @@
 {
   "name": "@ossclip/scenes",
   "version": "0.1.0",
-  "description": "ossclip's scene library and stage geometry — React components shared by preview and render",
+  "description": "ossclip's scene library and stage geometry \u2014 React components shared by preview and render",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AhsanAyaz/open-clip.git",
+    "url": "git+https://github.com/AhsanAyaz/ossclip.git",
     "directory": "packages/scenes"
   },
   "exports": {
@@ -14,6 +14,7 @@
     "./geometry": "./src/geometry.ts"
   },
   "files": [
+    "README.md",
     "src"
   ],
   "dependencies": {
@@ -28,5 +29,10 @@
     "@types/react": "^18.3.0",
     "react": "^18.3.1",
     "remotion": "^4.0.0"
-  }
+  },
+  "homepage": "https://github.com/AhsanAyaz/ossclip#readme",
+  "bugs": {
+    "url": "https://github.com/AhsanAyaz/ossclip/issues"
+  },
+  "author": "Muhammad Ahsan Ayaz"
 }
