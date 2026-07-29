@@ -137,11 +137,11 @@ pnpm ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
   <li><strong>Captions</strong> — word-timed kinetic captions with an active-word highlight, routed around the platform's safe areas, the active graphic, and any text burned into the source.</li>
   <li><strong>Producer</strong> — the LLM plans a beat sheet and scenes against the component library, steered by a measured framing brief (a wide band never lands on a close-up), grounded against the transcript so a stat it prints is a stat that was said.</li>
   <li><strong>Verify</strong> — layouts that would crop the head are repaired, graphics route around the source's own on-screen text, on-screen copy is reconciled with the captions.</li>
-  <li><strong>Render</strong> — Remotion, locally, plus a cover JPEG framed for the profile grid.</li>
+  <li><strong>Render</strong> — Remotion, locally, plus a cover JPEG at the OUTPUT's aspect: 9:16 framed for the profile grid's square crop, 16:9 framed as a thumbnail shown whole.</li>
 </ul>
 
 <h2 id="workdir">The work directory</h2>
-<p>Every run writes <code>&lt;input dir&gt;/.ossclip/&lt;name&gt;-&lt;hash&gt;/</code>: the transcript, the analysis, <code>production.json</code>, <code>render-props.json</code>, <code>report.txt</code>, <code>usage.json</code>, the cached LLM plan, and <code>command.json</code> — the recorded invocation the editor's Render button replays. It is a cache: delete it to force a clean run; keep it and re-runs are near-instant.</p>
+<p>Every run writes <code>&lt;input dir&gt;/.ossclip/&lt;name&gt;-&lt;hash&gt;/</code> — the hash is of the source's CONTENT, so the same footage reuses its cache (rename it and you still land in the same place; <code>--workdir</code> starts a separate project, deleting the directory forces a clean run): the transcript, the analysis, <code>production.json</code>, <code>render-props.json</code>, <code>report.txt</code>, <code>usage.json</code>, the cached LLM plan, and <code>command.json</code> — the recorded invocation the editor's Render button replays. It is a cache: delete it to force a clean run; keep it and re-runs are near-instant.</p>
 <div class="note"><strong>Edits survive re-runs.</strong> Everything you change in the editor lands in <code>overrides.json</code> — a file the producer never writes. Re-running <code>produce</code> re-plans the video and keeps your edits. Re-rendering from the editor replays the <em>same configuration</em> as the recorded run — flags, aspect, and provider (the resolved provider is pinned into <code>command.json</code>, so an env-detected choice can't drift).</div>
 
 <h2 id="providers">Models &amp; cost</h2>
@@ -153,9 +153,9 @@ pnpm ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
 <pre><code>pnpm ossclip edit "&lt;work directory&gt;"     # opens http://127.0.0.1:5174</code></pre>
 <div class="cards">
   <div class="card"><b>Direct manipulation</b><span>Click to select, drag to move, corner handles to resize, panel fields for precision. Graphic boxes, elements, video framing, pip bubble — all grabbable.</span></div>
-  <div class="card"><b>Timeline</b><span>Zoom 1–16×, scrub, drag blocks in time, resize edges, split at the playhead (⌘B), soft-delete with a way back. The view follows the cursor.</span></div>
+  <div class="card"><b>Timeline</b><span>Zoom 1–16×, scrub, drag blocks in time, resize edges, split at the playhead (⌘B — each half inherits the scene's edits), soft-delete with a way back. The view follows the cursor.</span></div>
   <div class="card"><b>Captions</b><span>Double-click a word to retype it (1:1 — timings stay). Position and scale per scene, or applied to every scene at once.</span></div>
-  <div class="card"><b>Transcript view</b><span>The whole transcript, searchable; click a word to jump the preview, double-click to fix it. Same override layer as the stage.</span></div>
+  <div class="card"><b>Transcript view</b><span>The whole transcript, searchable, wrapped in a drag-resizable pane that follows playback; click a word to jump the preview, double-click to fix it. Same override layer as the stage.</span></div>
   <div class="card"><b>Render from the editor</b><span>Replays the recorded produce invocation — same flags, same provider — with live progress, elapsed time, token/cost lines, cancel, and a panel that survives a refresh.</span></div>
   <div class="card"><b>Preview</b><span>Fills the window in either aspect; ⌘+scroll magnifies as a view-only zoom (never an edit), ⌥-drag pans.</span></div>
 </div>

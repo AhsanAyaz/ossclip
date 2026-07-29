@@ -39,7 +39,7 @@ pnpm ossclip produce input.mp4 -o out.mp4
 pnpm ossclip produce input.mp4 --no-render
 ```
 
-Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
+Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`, the hash taken from the source's *content* — so the same footage reuses its cache, `--workdir` starts a separate project, and deleting the directory forces a clean run) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
 
 ## Editing what it produced
 
