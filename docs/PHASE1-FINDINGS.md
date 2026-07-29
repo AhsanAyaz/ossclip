@@ -812,3 +812,31 @@ The R13 panel showed the last six lines of the captured stream — fine as a liv
 Asked to ensure ALL on-screen elements have transform capability. Audited every component in the scene library against the §47 machinery (drag to move, corner handles to resize, scale slider, retype): the generic path covers any node carrying `data-edit-id`, and the sweep found exactly ONE without it — TerminalMock's fan-out caption. It now has one. The audit's real product is the invariant to hold new components to: every visible element carries an edit id.
 
 On the request's other half — dropping side-panel controls now that dragging works: **kept, deliberately.** The panel fields are the precision path (§47/§48 — exact numbers, locale decimals, reset buttons) and the only keyboard-accessible one; the stage is the fast path. Two paths to the same override is the standard editor UX, not duplication.
+
+# Round 18 — launch hygiene: what has to be true before strangers read this repo (2026-07-29)
+
+*From the OSS strategy audit (plan: `docs/superpowers/plans/2026-08-02-oss-launch-hygiene-and-highlight-selection.md`). Not features — the work of making the repo publishable under the author's real name. The repo was verified PRIVATE before the §86 purge, so the purge is an erasure, not a mitigation.*
+
+## 86. The working materials could not ship
+
+`reference/` held 30 tracked PNGs (46MB) of a commercial product's UI, and `BRAINSTORM.md` — the founding document — read as a teardown of it. Legitimate analysis to have done; needless to publish. Both are untracked, gitignored, and purged from ALL history with `git filter-repo` (deleting in a new commit would have left them one `git log -p` away). The docs that pointed at them now say the frames and notes were local to the author's machine and are not distributed; the BRAINSTORM §-citations across code comments stay, as historical anchors to a private document. The safer §86d default was taken — BRAINSTORM.md left the public tree entirely rather than being rewritten; the author's own clone retains it and a cleaned design-rationale rewrite can be published later if wanted.
+
+## 87. The licence implied something false
+
+Root LICENSE said MIT, unqualified; the README said "MIT — see LICENSE". Together they implied any company can render video with this for free — but Remotion is source-available under a two-tier licence, and for-profit companies above its stated size need a paid company licence. ossclip's own code stays MIT; a Licensing section in the README, a clearly-separated note under the MIT text in LICENSE, and a new docs-site section now link Remotion's own terms. The threshold numbers are deliberately not restated anywhere, so the note cannot go stale.
+
+## 88. The README promised the wrong category
+
+"Virality-optimized" led the public promise — the wrong register for the developers who can actually clear the install requirements, and attached to an implied long-form → short-form capability the tool does not have (§89). Rewritten mechanic-first, with the actual differentiator in the first screenful: LLM-planned, code-rendered graphics against the Zod-typed scene registry with its `whenToUse` contracts and fit guarantees. `PRODUCER_SYSTEM`'s internal virality grammar is untouched — it steers editorial choices and it works; the fix is to the promise, not the prompt.
+
+## 89. Highlight selection — option B, the honest scope
+
+The defining feature of the clip-tool category is not in this pipeline, and the findings log already said so (Round 12: "there is no highlight selection anywhere in the pipeline"). The author decision was between building `--clip <seconds>` (window selection between repair and analyze — the same word-index-invalidation risk class §17 fixed) and narrowing the promise. **Option B shipped**, per the plan's own default: the README and docs site now state plainly that ossclip polishes a take you have already cut, and that long-form selection is out of scope today. Option A remains open post-launch, when real users' long-form footage exists to test against.
+
+## 90. The install cliff
+
+Seven preconditions stood between a first-time user and a first frame, all reachable only through a monorepo clone. Two answers: **`ossclip doctor`** (§90a — every prerequisite checked with the exact per-platform fix printed per line, provider check running after the `.env` load so a file-supplied key is not a false negative, non-zero exit when anything is missing) and **npm packaging** (§90b — the CLI becomes plain `ossclip`, name verified available; core/scenes/renderer become publishable with pnpm rewriting workspace ranges at pack; sources ship because Remotion bundles the composition from `.tsx` at render time; the bin registers tsx from its own dependencies; prepack builds the editor page into `editor-dist/` so `ossclip edit` needs no build step). Verified by packing all four, installing the tarballs into a scratch project, and running the installed bin end to end. Publishing itself is the author's launch-day action.
+
+## 91. The dormant app
+
+`apps/studio/` was one README describing a UI that was never built — in a published tree that reads as abandonment, not ambition. Deleted.
