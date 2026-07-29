@@ -5,6 +5,7 @@ import { Command } from "commander";
 import { z } from "zod/v4";
 import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
+import { backfill, formatBackfill } from "./backfill";
 import { loadEnvFiles } from "./env";
 import { produce } from "./produce";
 
@@ -184,6 +185,22 @@ program
     const server = await startEditServer(workdir, { port: opts.port, pageDir });
     console.log(`▸ editor at ${server.url}`);
     if (opts.open) spawn("open", [server.url], { stdio: "ignore" });
+  });
+
+program
+  .command("backfill")
+  .description("recover the provider of workdirs produced before the usage log became append-only")
+  .argument("<paths...>", "a work directory, or a root containing them (e.g. ~/Videos/.ossclip)")
+  .option("--dry-run", "report what would change and write nothing", false)
+  .option("--no-backup", "skip the .pre-backfill copies")
+  .action(async (paths: string[], opts) => {
+    // Only workdirs whose usage.json was emptied by a cached re-run are
+    // touched, the provider comes from their own recorded argv, and anything
+    // with a real run history is left alone — a recorded fact always beats a
+    // reconstructed one.
+    const results = await backfill(paths, { dryRun: opts.dryRun, backup: opts.backup });
+    console.log(formatBackfill(results));
+    if (opts.dryRun) console.log("(dry run — nothing was written)");
   });
 
 program.parseAsync().catch((err) => {
