@@ -61,7 +61,7 @@ import {
   run,
   runWhisper,
   scanSourceText,
-  summarizeUsage,
+  appendUsageRun,
   OverrideDocSchema,
   type AppliedRepair,
   type CleanupLevel,
@@ -370,6 +370,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   let scenes: Scene[] = [];
   /** Editorial output kept for the cover (§31): hook + its thumbnail form. */
   let beatSheet: { hook: string; coverText?: string } | undefined;
+  /** Who planned this run (R16 §78) — stamped into production.json below. */
+  let producerStamp: Production["producer"];
   if (opts.scenes) {
     scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(resolve(opts.scenes), "utf8")));
     console.log(`▸ scenes injected from ${opts.scenes} (${scenes.length})`);
@@ -466,14 +468,32 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         ? "▸ llm: no calls — repairs and scenes came from the workdir cache"
         : formatUsageLine(provider.usage, cfg.pricing),
     );
-    await writeFile(
-      join(work, "usage.json"),
-      JSON.stringify(
-        { records: provider.usage, totals: summarizeUsage(provider.usage, cfg.pricing) },
-        null,
-        2,
-      ),
+    // APPEND, never replace (R16 §78): a fully-cached re-run makes no calls,
+    // and overwriting the file with `records: []` erased which provider had
+    // planned the video. A malformed or pre-§78 file is a valid input — it
+    // becomes the history's first entry rather than an error.
+    const logPath = join(work, "usage.json");
+    let existing: unknown = {};
+    try {
+      existing = JSON.parse(await readFile(logPath, "utf8"));
+    } catch {
+      existing = {};
+    }
+    const log = appendUsageRun(
+      existing,
+      { at: new Date().toISOString(), records: provider.usage, provider: providerName },
+      cfg.pricing,
     );
+    await writeFile(logPath, JSON.stringify(log, null, 2));
+    // …and stamp it onto the artefact it explains, so `production.json` says
+    // who planned it without a second file to cross-reference.
+    const last = log.runs[log.runs.length - 1]!;
+    producerStamp = {
+      provider: last.provider ?? providerName,
+      models: last.models,
+      cached: last.cached,
+      at: last.at,
+    };
   }
 
   // The overlay and the caption under it must spell the same word (§21).
@@ -770,6 +790,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     analysis,
     cutlist,
     scenes: scenes.length > 0 ? scenes : undefined,
+    producer: producerStamp,
     theme,
     render: { ...frame, fps: 30 },
   };
@@ -798,7 +819,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         .join("\n") +
       "\n";
   }
-  if (provider) report += formatUsageReport(provider.usage, cfg.pricing);
+  if (provider) {
+    report += formatUsageReport(provider.usage, cfg.pricing);
+    // A cached run has no usage block to print, and used to leave the report
+    // silent about who planned the video (R16 §78) — the same erasure the
+    // usage log had. Name the provider it is reusing.
+    if (provider.usage.length === 0 && producerStamp) {
+      report +=
+        `\nllm: no calls this run — planned by ${producerStamp.provider}` +
+        (producerStamp.models.length > 0 ? ` (${producerStamp.models.join(", ")})` : "") +
+        `, reused from the workdir cache\n`;
+    }
+  }
   await writeFile(join(work, "report.txt"), report);
   console.log("");
   console.log(report);

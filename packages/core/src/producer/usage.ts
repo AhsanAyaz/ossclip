@@ -329,3 +329,95 @@ export function formatUsageReport(
     "\n"
   );
 }
+
+/** One produce run's entry in the workdir's usage log. */
+export interface UsageRun {
+  /** ISO timestamp, supplied by the caller so this stays pure. */
+  at: string;
+  /** Resolved provider, or null when a run made no calls and none is known. */
+  provider: string | null;
+  /** Models seen this run, first-seen order — the tiering, visible. */
+  models: string[];
+  /** True when the run made no calls: everything came from the workdir cache. */
+  cached: boolean;
+  records: LlmUsage[];
+  totals: UsageTotals;
+}
+
+/**
+ * The workdir's usage log (R16 §78).
+ *
+ * `records`/`totals` describe ONE run, and every run rewrote them — so a
+ * fully-cached re-run (zero calls, `records: []`) erased the provenance of
+ * the run that actually did the planning. Two real workdirs were left saying
+ * nothing about which provider chose their scenes.
+ *
+ * So the file grows a `runs` history, and the top-level `records`/`totals`
+ * now hold the last run THAT MADE CALLS rather than simply the last run —
+ * every existing reader keeps working and stops being lied to. The whole
+ * shape is optional on read: a pre-§78 file is a valid input.
+ */
+export interface UsageLog {
+  runs: UsageRun[];
+  /** Last run that made calls — NOT necessarily the last run. */
+  records: LlmUsage[];
+  totals: UsageTotals;
+}
+
+/** The provider a log knows about, newest run with calls first. */
+export function providerOfLog(log: Pick<UsageLog, "runs" | "records">): string | null {
+  for (let i = log.runs.length - 1; i >= 0; i--) {
+    const run = log.runs[i]!;
+    if (!run.cached && run.provider) return run.provider;
+  }
+  return log.records[0]?.provider ?? null;
+}
+
+/** Models the log last saw in a run that made calls. */
+function modelsOfLog(log: Pick<UsageLog, "runs" | "records">): string[] {
+  for (let i = log.runs.length - 1; i >= 0; i--) {
+    const run = log.runs[i]!;
+    if (!run.cached && run.models.length > 0) return [...run.models];
+  }
+  const seen: string[] = [];
+  for (const r of log.records) {
+    if (r.model && !seen.includes(r.model)) seen.push(r.model);
+  }
+  return seen;
+}
+
+export function appendUsageRun(
+  previous: unknown,
+  run: { at: string; records: readonly LlmUsage[]; provider?: string | null },
+  pricing: Record<string, ModelPrice> = {},
+): UsageLog {
+  const prev = (previous ?? {}) as Partial<UsageLog>;
+  const prevRuns = Array.isArray(prev.runs) ? prev.runs : [];
+  const prevRecords = Array.isArray(prev.records) ? prev.records : [];
+  const records = [...run.records];
+  const cached = records.length === 0;
+  const models: string[] = [];
+  for (const r of records) {
+    if (r.model && !models.includes(r.model)) models.push(r.model);
+  }
+  // A cached run inherits the models it is REUSING the output of, exactly as
+  // it inherits the provider — otherwise the stamp on a cached production
+  // names a provider with no models beside it.
+  const inheritedModels = cached
+    ? modelsOfLog({ runs: prevRuns, records: prevRecords })
+    : models;
+  // A cached run still names the provider it INHERITS, so the history reads
+  // as a continuous account rather than a gap.
+  const provider =
+    records[0]?.provider ??
+    run.provider ??
+    providerOfLog({ runs: prevRuns, records: prevRecords });
+  const totals = summarizeUsage(records, pricing);
+  const entry: UsageRun = { at: run.at, provider, models: inheritedModels, cached, records, totals };
+  return {
+    runs: [...prevRuns, entry],
+    // Never overwrite a real accounting with an empty one.
+    records: cached ? prevRecords : records,
+    totals: cached && prevRecords.length > 0 ? summarizeUsage(prevRecords, pricing) : totals,
+  };
+}

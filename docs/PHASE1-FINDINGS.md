@@ -763,3 +763,14 @@ Reported with the cover from a 16:9 run: a 1080×1920 image, the wide frame cent
 ## 77. `.env` was never read
 
 The provider keys are the one thing ossclip takes from the environment rather than `config.json` — secrets do not belong in a file that gets pasted into issues — but the only supported way to supply them was `export` in the calling shell. That is a poor contract for a tool launched from an editor, a script, or a replayed `command.json`: the key existed in the shell that ran `produce` and nowhere else, so provider auto-detection quietly picked something different (the same class of drift §75 pinned for the recorded argv). `ossclip` now loads `.env` before anything reads a key: `$OSSCLIP_ENV_FILE` → `.env` walking UP from the cwd (nearest first) → `~/.ossclip/.env`, first hit wins per key, and a real environment variable always beats a file so an explicit `GEMINI_API_KEY=… ossclip produce` cannot be overridden by a stale checkout `.env`. The run prints which files it loaded — paths only, never values. The upward walk is not a flourish: `pnpm --filter @ossclip/cli exec …` sets the cwd to `apps/cli`, so a repo-root `.env` — the only place anyone puts one — was invisible to a flat `<cwd>/.env` lookup, and the first run after the fix still died on `GEMINI_API_KEY is not set`.
+
+## 78. A cached re-run erased who planned the video
+
+Asked which projects had used Gemini and which Claude, two of five workdirs could not answer: `usage.json` read `records: []` and `report.txt` had no `llm` block at all. Cause: both files describe ONE run and are rewritten every run, and a fully-cached re-run legitimately makes zero calls — so the accounting of the run that actually did the planning was overwritten with an empty one. Only `command.json` (R11, so absent from older workdirs) still carried the `--llm` flag.
+
+Three fixes, all in the same direction — provenance travels with the artefact:
+- **`usage.json` is append-only.** It grows a `runs` history, one entry per run with its own provider, models, `cached` flag, records and totals. The top-level `records`/`totals` now hold the last run THAT MADE CALLS rather than simply the last run, so every existing reader keeps working and stops being lied to. A pre-§78 file is a valid input: it becomes the history's first record instead of an error.
+- **`production.json` carries a `producer` stamp** — provider, models (editorial first, so the tiering is visible), `cached`, timestamp — beside the scenes it explains.
+- **`report.txt` names the provider on a cached run** (`llm: no calls this run — planned by gemini (…), reused from the workdir cache`) instead of falling silent.
+
+A cached run inherits both the provider and the models it is reusing, so a re-run's stamp is a continuous account rather than a gap. Verified against the real `.ossclip-fable5` workdir: a cached re-run kept its two Gemini records, added a history entry, and stamped `production.json`.

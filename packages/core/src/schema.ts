@@ -137,6 +137,24 @@ export const ProductionSchema = z.object({
   analysis: AnalysisSchema.optional(),
   cutlist: z.array(SegmentSchema).optional(),
   scenes: z.array(SceneSchema).optional(),
+  /**
+   * WHO planned this production (R16 §78). `usage.json` answers "what did
+   * that cost", but it describes one run and a fully-cached re-run makes no
+   * calls — so the provider that actually chose these scenes used to vanish
+   * from the workdir. This travels with the artefact it explains.
+   *
+   * `cached: true` means this run made no LLM calls and the provider named
+   * here is the one carried forward from the run that did.
+   */
+  producer: z
+    .object({
+      provider: z.string(),
+      /** Models seen this run, editorial first — the tiering is visible. */
+      models: z.array(z.string()).default([]),
+      cached: z.boolean().default(false),
+      at: z.string().optional(),
+    })
+    .optional(),
   theme: ThemeSchema.optional(),
   render: RenderSettingsSchema,
 });
