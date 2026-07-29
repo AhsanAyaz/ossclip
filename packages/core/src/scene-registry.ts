@@ -123,8 +123,22 @@ export const ChatMockProps = z.object({
 });
 
 export const ScreenshotFrameProps = z.object({
-  /** File name inside the render public dir; omitted → styled placeholder frame. */
-  src: z.string().optional(),
+  /**
+   * File name inside the render public dir; omitted → styled placeholder
+   * frame. NEVER invent one (R22 §112): the producer reads the transcript
+   * and a take that mentions a file will tempt it into naming that file,
+   * which does not exist beside the video and used to kill the render.
+   * `produce` strips any `src` it cannot find, so a guess costs a warning
+   * rather than a failure — but the right output is no `src` at all.
+   */
+  src: z
+    .string()
+    .optional()
+    .describe(
+      "OMIT THIS unless the user supplied an actual image file beside the video — " +
+        "never invent a filename from the transcript; without it the frame renders " +
+        "as a styled placeholder, which is the intended look",
+    ),
   label: z.string().max(32).optional(),
   kenBurns: z.boolean().default(true),
 });

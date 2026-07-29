@@ -990,6 +990,31 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     console.log(`  ⚠ CTA keyword dropped — ${r.reason}`);
   }
 
+  // ScreenshotFrame `src` must name a file that EXISTS (R22 §112). The
+  // producer reads the transcript and will happily invent a plausible
+  // filename from it — a take that says "CLAUDE.md" produced
+  // `src: "claude.md"` — and Remotion treats an unloadable image as a fatal
+  // render error, so the whole run died at 40% after four minutes of work.
+  // The prop is optional and the component already draws a styled
+  // placeholder without it, so dropping the bad reference degrades exactly
+  // the way the schema intended. Checked against the two directories that
+  // can become the render's public dir: the workdir (mezzanine path) and
+  // the source's own folder (--no-mezzanine).
+  const srcRejections: Array<{ sceneId: string; src: string }> = [];
+  for (const holder of [...scenes, ...graphicCues]) {
+    const src = holder.props?.src;
+    if (typeof src !== "string" || src.length === 0) continue;
+    if (existsSync(join(work, src)) || existsSync(join(dirname(input), src))) continue;
+    delete (holder.props as Record<string, unknown>).src;
+    srcRejections.push({ sceneId: holder.id, src });
+  }
+  for (const r of [...new Map(srcRejections.map((r) => [r.src, r])).values()]) {
+    console.log(
+      `  ⚠ image "${r.src}" does not exist beside the video — ` +
+        "rendering the frame as a placeholder instead",
+    );
+  }
+
   const production: Production = {
     version: 1,
     source: { path: input, probe: sourceProbe, audioPath, face: faceBox },
