@@ -4,8 +4,24 @@ import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod/v4";
 import { OverrideDocSchema, emptyOverrideDoc } from "@ossclip/core";
+
+/**
+ * Where the built editor page lives (R18 §90b): `editor-dist/` inside this
+ * package for an npm install (prepack copies the Vite build there so
+ * `ossclip edit` works with no build step), else the monorepo sibling's
+ * `dist/` for a clone. Null when neither exists — callers own the loud
+ * error, and `ossclip doctor` reports it as a check.
+ */
+export function resolveEditorPageDir(): string | null {
+  const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  for (const candidate of [join(pkgRoot, "editor-dist"), join(pkgRoot, "../editor/dist")]) {
+    if (existsSync(join(candidate, "index.html"))) return candidate;
+  }
+  return null;
+}
 
 /**
  * The editor's backend: a handful of endpoints and a static file server,

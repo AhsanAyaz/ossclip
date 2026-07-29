@@ -168,25 +168,36 @@ program
   .option("--port <n>", "port to listen on", (v) => Number.parseInt(v, 10), 5174)
   .option("--no-open", "do not open a browser")
   .action(async (workdir: string | undefined, opts) => {
-    const { startEditServer } = await import("./edit");
-    const { fileURLToPath } = await import("node:url");
-    const { dirname, join } = await import("node:path");
-    const { existsSync } = await import("node:fs");
-    const pageDir = join(dirname(fileURLToPath(import.meta.url)), "../../editor/dist");
-    // `apps/editor` is a Vite app — nothing builds it as part of installing
-    // or running the CLI, so a user who never ran `vite build` gets a
-    // server that starts fine but 404s on every request for the page
-    // itself. Fail loudly with the fix instead of leaving them staring at
-    // `{"error":"not found"}` in the browser.
-    if (!existsSync(pageDir)) {
+    const { startEditServer, resolveEditorPageDir } = await import("./edit");
+    // An npm install ships the page prebuilt (editor-dist/); a clone builds
+    // it once with `pnpm build`. A server that starts fine but 404s every
+    // page request is the worst version of missing — fail loudly with the
+    // fix instead.
+    const pageDir = resolveEditorPageDir();
+    if (pageDir === null) {
       throw new Error(
-        `editor UI isn't built yet (looked in ${pageDir}) — run \`pnpm build\` ` +
-          `(or \`pnpm --filter @ossclip/editor build\`) once, then re-run \`ossclip edit\`.`,
+        "editor UI isn't built yet — run `pnpm build` " +
+          "(or `pnpm --filter @ossclip/editor build`) once, then re-run `ossclip edit`.",
       );
     }
     const server = await startEditServer(workdir, { port: opts.port, pageDir });
     console.log(`▸ editor at ${server.url}`);
     if (opts.open) spawn("open", [server.url], { stdio: "ignore" });
+  });
+
+program
+  .command("doctor")
+  .description("check every prerequisite and print the exact fix for anything missing")
+  .action(async () => {
+    // Env files are loaded at module top (R16 §77) — BEFORE this runs — so a
+    // provider key living in a `.env` is visible here, not a false negative.
+    if (envFiles.length > 0) console.log(`▸ env: ${envFiles.join(", ")}`);
+    const { runDoctor, formatDoctor, realProbes } = await import("./doctor");
+    const { resolveEditorPageDir } = await import("./edit");
+    const { loadConfig } = await import("@ossclip/core");
+    const checks = await runDoctor(loadConfig(), realProbes(resolveEditorPageDir()));
+    console.log(formatDoctor(checks));
+    if (checks.some((c) => !c.ok)) process.exit(1);
   });
 
 program.parseAsync().catch((err) => {
