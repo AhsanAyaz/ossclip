@@ -840,3 +840,11 @@ Seven preconditions stood between a first-time user and a first frame, all reach
 ## 91. The dormant app
 
 `apps/studio/` was one README describing a UI that was never built — in a published tree that reads as abandonment, not ambition. Deleted.
+
+## 92. Nothing ran the tests but me
+
+597 unit tests and 45 e2e in the repo, and no CI — so a contributor's PR could not prove itself and a reviewer had to take "works on my machine" on faith. Two workflows: `ci.yml` (typecheck + unit on one job, editor e2e on another, since e2e needs the Vite build and a Chromium download that the fast job should not wait on) and `pages.yml`, which publishes `docs/site/` as the Pages site root. Deliberately NOT Pages' deploy-from-`/docs` mode: that would serve PHASE0, PHASE1 and this findings log as raw markdown at public URLs. Only the site directory ships.
+
+Writing them surfaced a real one: the first full macOS run failed `§69-71` (playback keys / frame steps / exit fade), and the same test passed alone and in two subsequent full runs — a timing flake, not a regression, on a suite that drives a video element mounting and a render child spawning. A flaky red build teaches contributors to ignore the build, so `retries: 2` and `forbidOnly` are now on **under `CI` only**: three failures is still a failure, a retried pass is reported as flaky, and locally retries stay off so a flake surfaces while the person who can debug it is watching.
+
+`CONTRIBUTING.md` covers the same gap for humans — how to run it, what to verify, and the two invariants (`overrides.json` is never written by the producer; every visible element carries a `data-edit-id`) that a newcomer would otherwise have to reverse-engineer.

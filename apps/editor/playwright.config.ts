@@ -51,6 +51,16 @@ process.env.OSSCLIP_E2E_WORKDIR = WORKDIR;
 
 export default defineConfig({
   testDir: "./e2e",
+  // Retry ON CI ONLY. This suite drives real timing — a video element
+  // mounting, a render child spawning — against a shared machine of unknown
+  // load, and a one-in-forty timing miss reported as a red build teaches
+  // contributors to ignore the build. A test that fails all three attempts
+  // still fails; a retried one is reported as flaky, which is the honest
+  // signal. Locally retries stay OFF, so a flake surfaces while you are the
+  // one who can debug it.
+  retries: process.env.CI ? 2 : 0,
+  // A stray `test.only` would otherwise green-light a PR having run one test.
+  forbidOnly: Boolean(process.env.CI),
   // The landscape spec REWRITES the shared workdir's render-props.json to a
   // 16:9 frame for its own tests (the server reads the file per request, so
   // no second server is needed) — but that swap must never race the portrait

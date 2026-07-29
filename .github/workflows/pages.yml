@@ -1,0 +1,39 @@
+name: Docs
+
+# Publishes `docs/site/` (the self-contained single-page reference) as the
+# GitHub Pages site root. Deliberately NOT Pages' "deploy from /docs folder"
+# mode: that would also serve PHASE0.md, PHASE1.md and the findings log as
+# raw markdown at public URLs. Only the site directory ships.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; never cancel one mid-flight (a half-deployed site
+# is worse than a stale one).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/site
+      - id: deployment
+        uses: actions/deploy-pages@v4
