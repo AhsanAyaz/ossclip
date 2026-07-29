@@ -45,11 +45,13 @@ Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<
 
 ```sh
 pnpm ossclip edit "<work directory>"     # opens http://127.0.0.1:5174
+pnpm ossclip edit                        # bare: pick from recent projects, or browse
 ```
 
 - **Click** an element to select it, **drag** to move, **double-click** to retype.
 - **Timeline**: click a scene to select and seek to that point, press-and-drag to scrub, drag a block body to move it in time, drag its edges to retime it.
-- **SPACE** toggles playback, **⌘Z** undoes, **⌘S** saves.
+- **SPACE** toggles playback, **⌘Z** / **⌘⇧Z** undo and redo (also in the top bar), **⌘S** saves. Press **?** for the full keybinds reference.
+- **Open** in the top bar switches projects in place — recent produce runs plus a folder browser, no server restart.
 
 Edits land in `<workdir>/overrides.json` — a file the producer never writes. Re-running `produce` re-plans the video and **keeps your edits**.
 
@@ -58,7 +60,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | command | what it does |
 | --- | --- |
 | `produce <input>` | the full pipeline: transcribe → analyze → cut → captions → scenes → render (+ cover) |
-| `edit <workdir>` | direct-manipulation editor over a produced workdir |
+| `edit [workdir]` | direct-manipulation editor; bare `edit` opens a project picker |
 | `transcribe <input>` | stops after the transcript and cut report — no render |
 | `studio <render-props.json>` | opens Remotion Studio on a produced composition, for visual debugging |
 

@@ -778,3 +778,37 @@ A cached run inherits both the provider and the models it is reusing, so a re-ru
 ## 79. `ossclip backfill` — built, then removed
 
 §78 stops the erasure going forward; the workdirs already flattened stay flat, so a `backfill` subcommand recovered their provider from each one's recorded `command.json` argv. It worked and was idempotent — and it was cut the same day. The whole population of affected workdirs is two directories on one machine, already recovered by hand; a permanent subcommand for a one-off migration is a surface every future reader has to understand and every future refactor has to carry. Recorded here rather than silently reverted: if a pre-§78 workdir ever turns up again, the recovery is a dozen lines against `usage.json` and the provider is sitting in `command.json`'s `--llm`.
+
+# Round 17 — an editor that opens on nothing, and the everyday verbs done properly (2026-07-29)
+
+*Status (remote session, same date): all eight asks shipped. 588 unit tests, 45 e2e.*
+
+## 80. Undo had no partner
+
+⌘Z existed since round 9; redo never did — an undo one step too far was simply gone, which turns every undo into a small gamble. The reducer's history was a single `past` stack, so this is the textbook completion: undo now pushes the current doc onto a `future` stack, redo pops it back, and any NEW edit clears `future` — the universal abandon-the-branch contract that makes redo safe to offer without a confirmation. `dirty` stays honest across the boundary (redoing back to the exact saved document reads as clean). Both verbs are also in the top bar now as the standard curved-arrow icon pair, enabled exactly when their stack is non-empty — the request's other half: undo/redo you can SEE. Keyboard: ⌘⇧Z, with ⌘Y for the muscle memory that expects it.
+
+## 81. Find without next
+
+The transcript search highlighted every match at once and stopped there — with 30 hits, "which one?" was answered by scrolling. The usual finder contract is now in: ‹ › chevrons beside the box, Enter/⇧Enter doing the same from the keyboard, a `3/7 matches` counter, wrap-around at both ends, and the CURRENT match painted brighter than its siblings and scrolled to centre. The cursor resets to the first hit as the query narrows.
+
+## 82. View zoom stopped at 100%
+
+The §55b magnifier clamped at 1× on the low side, so the preview could never be made SMALLER than the fitted size — but "fit" fills the stage, which is exactly when there is no slack to pan against while arranging an element near an edge. The floor is now 25%. Same mechanism as zooming in (the Player's real width changes, so `getScale()` and every gesture stay calibrated), same anchor math around the cursor; `fit` remains one click back to 100%.
+
+## 83. NEW — `ossclip edit` with no argument, and switching projects in place
+
+`edit` demanded a workdir path on the command line — the one part of an otherwise direct-manipulation tool that required remembering where a hash-named directory landed. The argument is now optional, and the workdir is server state rather than server identity:
+
+- **Server**: `startEditServer` holds a mutable current-workdir (possibly none). `GET /api/production` answers `{ noWorkdir, recent }` until one opens; `POST /api/workdir` validates and switches (refused mid-render — the running child belongs to the OLD project); `GET /api/fs` is a directories-only browser with "this one is a project" flagged (local tool, loopback-bound — the same trust as typing the path as an argument). Every workdir-touching endpoint 409s while none is open.
+- **Recents**: every successful `produce` run and every open records the workdir into `~/.ossclip/recent-projects.json` (capped, deduped, best-effort — a read-only home never fails a render). Deleted workdirs drop off at read time instead of 404ing a click.
+- **Client**: a bare launch opens on the picker — recents plus the folder browser — and the top bar grew an **Open** button that raises the same picker as a switcher, plus a label naming the open project. Switching resets selection/preview/render state, loads the new overrides (fresh undo history), and warns first when unsaved edits would be lost. No server restart at any point.
+
+## 84. The render log was six lines, forever
+
+The R13 panel showed the last six lines of the captured stream — fine as a liveness signal, useless the moment something scrolled past. The tail is now the FULL ring buffer in a bounded scroll box that sticks to the bottom while lines arrive and un-sticks when scrolled up to read (scrolling back down re-arms it — the terminal-emulator contract). And the whole log — pinned cost lines included — collapses behind a `▾ logs` toggle in the status row, because once the spinner/elapsed/percent row exists (§R13), the raw stream is a debugging surface, not something every render needs on screen.
+
+## 85. The transform audit — every element, grabbable
+
+Asked to ensure ALL on-screen elements have transform capability. Audited every component in the scene library against the §47 machinery (drag to move, corner handles to resize, scale slider, retype): the generic path covers any node carrying `data-edit-id`, and the sweep found exactly ONE without it — TerminalMock's fan-out caption. It now has one. The audit's real product is the invariant to hold new components to: every visible element carries an edit id.
+
+On the request's other half — dropping side-panel controls now that dragging works: **kept, deliberately.** The panel fields are the precision path (§47/§48 — exact numbers, locale decimals, reset buttons) and the only keyboard-accessible one; the stage is the fast path. Two paths to the same override is the standard editor UX, not duplication.
