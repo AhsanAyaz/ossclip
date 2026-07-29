@@ -1,5 +1,9 @@
 # ossclip
 
+[![CI](https://github.com/AhsanAyaz/ossclip/actions/workflows/ci.yml/badge.svg)](https://github.com/AhsanAyaz/ossclip/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/ossclip)](https://www.npmjs.com/package/ossclip)
+[![docs](https://img.shields.io/badge/docs-ahsanayaz.github.io%2Fossclip-8ab4f8)](https://ahsanayaz.github.io/ossclip/)
+
 ![A produced frame: the speaker full-bleed, word-timed captions, and an LLM-planned stat card in a lower third](./docs/site/assets/render-example.png)
 
 <p align="center"><em>One frame out of <code>ossclip produce</code> — captions, framing and the graphic are all generated from what was said.</em></p>
@@ -12,7 +16,7 @@ The graphics layer is the part comparable tools don't have: nine Zod-typed scene
 
 > **Status: working end to end, pre-1.0.** Cut, captions, zoom, scene graphics, the LLM producer, cover images and a direct-manipulation editor are all built and exercised on real footage. Interfaces still move between rounds. See [`docs/PHASE1-FINDINGS.md`](./docs/PHASE1-FINDINGS.md) for the running defect log — every fix in this repo traces to a numbered finding from a real render.
 
-**Docs:** a single-page reference — install, concepts, keybinds, flags — lives at [`docs/site/index.html`](./docs/site/index.html) (self-contained; open it locally or serve it via GitHub Pages).
+**Docs:** a single-page reference — install, concepts, keybinds, flags — is live at **[ahsanayaz.github.io/ossclip](https://ahsanayaz.github.io/ossclip/)** (source: [`docs/site/index.html`](./docs/site/index.html), self-contained).
 
 ## Install
 
