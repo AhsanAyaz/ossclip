@@ -375,8 +375,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       });
       transcript = result.transcript;
       repairs = result.applied;
-      if (result.error) console.log(`  ⚠ transcript repair unavailable: ${result.error}`);
-      await writeFile(repairCache, JSON.stringify(repairs, null, 2));
+      if (result.error) {
+        // NEVER cache a FAILURE (§106). `repairTranscript` fails soft — a
+        // dead provider returns zero repairs, which on disk is
+        // indistinguishable from "this take needed none". Caching it made the
+        // failure permanent: every later run read `[]` and skipped the pass
+        // entirely, so the mishearings stayed in the captions and no amount
+        // of re-running could fix them. Same family as §78 — an artefact
+        // describing a state that isn't the one it was produced under.
+        console.log(
+          `  ⚠ transcript repair unavailable: ${result.error}\n` +
+            "    (not cached — the next run retries the pass)",
+        );
+      } else {
+        await writeFile(repairCache, JSON.stringify(repairs, null, 2));
+      }
     }
     for (const r of repairs) {
       console.log(
