@@ -20,8 +20,8 @@ export class MockProvider implements LlmProvider {
     schemaName: string;
   }): Promise<T> {
     const result =
-      req.schemaName === "beat_sheet"
-        ? this.beatSheet(req.user, req.schema)
+      req.schemaName === "beat_sheet" || req.schemaName === "clip_beat_sheet"
+        ? this.beatSheet(req.user, req.schema, req.schemaName === "clip_beat_sheet")
         : req.schemaName === "transcript_repair"
           ? // A deterministic no-op: the offline path must exercise the repair
             // call without inventing corrections a real provider would justify.
@@ -43,22 +43,37 @@ export class MockProvider implements LlmProvider {
     return result;
   }
 
-  private beatSheet<T>(user: string, schema: z.ZodType<T>): T {
+  private beatSheet<T>(user: string, schema: z.ZodType<T>, clip: boolean): T {
     const wordCount = (user.match(/\[\d+\]/g) ?? []).length;
+    // Clip mode (R19 §93): a deterministic highlight — a stretch starting 40%
+    // in, sized at ~2.8 words/sec of the requested target. No timestamps here,
+    // so `resolveClipWindow` does the real fitting (trim + sentence snap) on
+    // the actual word stamps downstream.
+    const targetSec = Number.parseFloat(/Target clip length: ~(\d+(?:\.\d+)?)s/.exec(user)?.[1] ?? "60");
+    const winStart = clip ? Math.min(Math.floor(wordCount * 0.4), Math.max(0, wordCount - 2)) : 0;
+    const winEnd = clip
+      ? Math.min(wordCount - 1, winStart + Math.max(3, Math.round(targetSec * 2.8)))
+      : wordCount - 1;
     const kinds = ["TitleCard", "none", "StatCard", "none", "FlowDiagram", "none", "RuleCard"] as const;
-    const per = Math.max(3, Math.ceil(wordCount / 6));
+    const per = Math.max(3, Math.ceil((winEnd - winStart + 1) / 6));
     const moments = [];
-    for (let start = 0, k = 0; start < wordCount; start += per, k++) {
+    for (let start = winStart, k = 0; start <= winEnd; start += per, k++) {
       moments.push({
         startWord: start,
-        endWord: Math.min(start + per - 1, wordCount - 1),
+        endWord: Math.min(start + per - 1, winEnd),
         purpose: `beat ${k + 1}`,
         onScreenCopy: `BEAT ${k + 1}`,
         sceneKind: kinds[k % kinds.length]!,
       });
       if (moments.length >= 8) break;
     }
-    const sheet = BeatSheetSchema.parse({ hook: "MOCK HOOK", moments });
+    const sheet = {
+      hook: "MOCK HOOK",
+      moments,
+      ...(clip
+        ? { highlight: { startWord: winStart, endWord: winEnd, reason: "mock: fixed 40%-in window" } }
+        : {}),
+    };
     return schema.parse(sheet);
   }
 

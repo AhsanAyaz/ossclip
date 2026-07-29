@@ -14,9 +14,10 @@ const POLICIES: Record<Exclude<CleanupLevel, "exact">, LevelPolicy> = {
   aggressive: { pauseMin: 0.5, tightenTo: 0.18, removeFillers: true },
 };
 
-/** Dead air kept before the first word / after the last word. */
-const LEAD_KEEP = 0.25;
-const TAIL_KEEP = 0.35;
+/** Dead air kept before the first word / after the last word. Exported for
+ * the clip bound (R19 §93), so a clip boundary breathes like a take boundary. */
+export const LEAD_KEEP = 0.25;
+export const TAIL_KEEP = 0.35;
 /** Removals shorter than this aren't worth a visible cut. */
 const MIN_REMOVAL = 0.15;
 /** Padding kept between a filler cut and its neighbor words. */

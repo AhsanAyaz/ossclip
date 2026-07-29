@@ -63,13 +63,24 @@ import {
   scanSourceText,
   appendUsageRun,
   OverrideDocSchema,
+  CLIP_SNAP_TOLERANCE,
+  ClipWindowSchema,
+  boundCutlistToWindow,
+  formatClipTime,
+  parseClipWindowPin,
+  sliceRawTranscript,
+  sliceRepairs,
+  sliceTranscript,
+  type Analysis,
   type AppliedRepair,
   type CleanupLevel,
+  type ClipWindow,
   type LlmProvider,
   type Production,
   type ProviderName,
   type Scene,
   type SceneComponentId,
+  type Segment,
   type Transcript,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
@@ -127,6 +138,19 @@ export interface ProduceOptions {
    * platform chrome to dodge and a landscape source needs no cropping at all.
    */
   aspect?: "9:16" | "16:9";
+  /**
+   * `--clip <seconds>` (R19 §93): produce only the strongest ~N-second window
+   * of a long take, chosen by the producer in the same editorial call as the
+   * beat sheet. Requires `--produce`; a source already at or under the target
+   * (+20% tolerance) is a no-op, not an error.
+   */
+  clip?: number;
+  /**
+   * `--clip-window <start:end>` (§93g): the RESOLVED window's word range,
+   * recorded into `command.json` so the editor's Render replays the SAME
+   * window with zero LLM calls. Written by clip runs; not for hand use.
+   */
+  clipWindow?: string;
 }
 
 function sha1File(path: string): Promise<string> {
@@ -162,6 +186,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   const input = resolve(inputArg);
   if (!existsSync(input)) throw new Error(`input not found: ${input}`);
 
+  // §93b: the window is an editorial judgement, and there is deliberately no
+  // heuristic fallback — an automatically-guessed 60 seconds reads as a bug,
+  // not a limitation. Refused up front, before any work is spent.
+  if (opts.clip !== undefined) {
+    if (opts.scenes) {
+      throw new Error(
+        "--clip cannot be combined with hand-authored --scenes — the window is the producer's call.",
+      );
+    }
+    if (!opts.produce) {
+      throw new Error(
+        "--clip needs the producer's editorial judgement: add --produce. " +
+          "There is no heuristic fallback for picking the window.",
+      );
+    }
+  }
+  if (opts.clipWindow !== undefined && opts.clip === undefined) {
+    throw new Error("--clip-window is recorded by --clip runs for replay — pass --clip too.");
+  }
+
   await preflight(cfg.ffmpegPath, "Install ffmpeg (brew install ffmpeg / apt install ffmpeg) or set OSSCLIP_FFMPEG.");
   await preflight(cfg.ffprobePath, "Install ffmpeg (provides ffprobe) or set OSSCLIP_FFPROBE.");
 
@@ -185,6 +229,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     `▸ source ${sourceProbe.width}x${sourceProbe.height} @ ${sourceProbe.fps.toFixed(2)}fps · ${sourceProbe.duration.toFixed(2)}s`,
   );
   if (!sourceProbe.hasAudio) throw new Error("source has no audio stream — nothing to cut by");
+
+  // §93c: a source already at or under the target is a no-op, not an error —
+  // nobody should have to remember to drop the flag per input. The tolerance
+  // matches the sentence-snap band, so "just over" doesn't force a selection.
+  let clipTargetSec = opts.clip;
+  if (
+    clipTargetSec !== undefined &&
+    sourceProbe.duration <= clipTargetSec * (1 + CLIP_SNAP_TOLERANCE)
+  ) {
+    console.log(
+      `▸ source is ${sourceProbe.duration.toFixed(1)}s — already within the ` +
+        `${clipTargetSec}s clip target (+${(CLIP_SNAP_TOLERANCE * 100).toFixed(0)}% tolerance); ` +
+        "producing the whole take",
+    );
+    clipTargetSec = undefined;
+  }
 
   const audioPath = join(work, "audio.wav");
   if (!existsSync(audioPath)) {
@@ -247,14 +307,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     { ffmpegPath: cfg.ffmpegPath, noiseDb: opts.noiseDb ?? levels.thresholdDb },
     audioPath,
   );
-  const analysis = analyze(transcript, silences, sourceProbe.duration, levels);
-  const cutlist = buildCutlist({
+  // `let`, not `const` (R19 §93): a clip run re-derives all three from the
+  // transcript sliced to the chosen window, further down.
+  let analysis: Analysis = analyze(transcript, silences, sourceProbe.duration, levels);
+  let cutlist: Segment[] = buildCutlist({
     transcript,
     analysis,
     duration: sourceProbe.duration,
     level: opts.cleanup,
   });
-  const map = new TimeMap(cutlist);
+  let map = new TimeMap(cutlist);
 
   // ---- Transcript repair (FINDINGS §17/§21) --------------------------------
   // Deliberately AFTER the cutlist: the cut is computed from raw ASR, so the
@@ -279,7 +341,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     });
   }
 
-  const rawTranscript = transcript;
+  let rawTranscript = transcript;
   let repairs: AppliedRepair[] = [];
   if (provider && opts.repair !== false) {
     const rawKey = createHash("sha1")
@@ -373,6 +435,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   let beatSheet: { hook: string; coverText?: string } | undefined;
   /** Who planned this run (R16 §78) — stamped into production.json below. */
   let producerStamp: Production["producer"];
+  /** The resolved `--clip` window (R19 §93) — set only on a clip run; feeds
+   * `production.json`, the report, and the command.json pin below. */
+  let clipWindow: ClipWindow | null = null;
   if (opts.scenes) {
     scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(resolve(opts.scenes), "utf8")));
     console.log(`▸ scenes injected from ${opts.scenes} (${scenes.length})`);
@@ -404,6 +469,79 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           zoom: ZOOM_MAX_SCALE,
         }
       : undefined;
+    // ---- Clip window resolution (R19 §93) ---------------------------------
+    // Authority order: the command.json pin (§93g — the editor's Render must
+    // replay the SAME window) > the workdir's window cache > ONE extended
+    // beat-sheet call (§93d). Pin and cache both yield a window with zero LLM
+    // calls; only a first run selects.
+    let clipFresh: Awaited<ReturnType<typeof produceScenes>> | null = null;
+    if (clipTargetSec !== undefined) {
+      const windowKey = createHash("sha1")
+        .update(
+          JSON.stringify([
+            providerName,
+            opts.llmModel,
+            opts.intent,
+            clipTargetSec,
+            framingCtx ?? null,
+            transcript.words.map((w) => w.text),
+          ]),
+        )
+        .digest("hex")
+        .slice(0, 8);
+      const clipWindowCache = join(work, `clipwindow-${windowKey}.json`);
+      if (opts.clipWindow) {
+        clipWindow = parseClipWindowPin(transcript, opts.clipWindow);
+        console.log(
+          `▸ clip window pinned by the recorded command: words ` +
+            `${clipWindow.startWord}–${clipWindow.endWord}`,
+        );
+      } else if (existsSync(clipWindowCache)) {
+        clipWindow = ClipWindowSchema.parse(JSON.parse(await readFile(clipWindowCache, "utf8")));
+        console.log("▸ clip window cached");
+      } else {
+        console.log(`▸ selecting the strongest ~${clipTargetSec}s window (${providerName})…`);
+        clipFresh = await produceScenes(provider, {
+          transcript,
+          outputDuration: clipTargetSec,
+          intent: opts.intent,
+          speaker: opts.speaker ?? cfg.speaker,
+          forceComponent: opts.forceComponent,
+          framing: framingCtx,
+          clip: { targetSec: clipTargetSec },
+        });
+        clipWindow = clipFresh.clip!.window;
+        for (const note of clipFresh.clip!.notes) console.log(`  ▸ ${note}`);
+        await writeFile(clipWindowCache, JSON.stringify(clipWindow, null, 2));
+      }
+
+      // Slice the pipeline state to the window (§93.1), then let everything
+      // downstream — captions, scenes, zoom, the editor — run unchanged on
+      // the slice. The raw transcript slices by TIME (repairs may change word
+      // counts, so raw and repaired index spaces need not line up); repairs
+      // shift with it so production.json stays a reproducible pair.
+      console.log(
+        `▸ clip: ${formatClipTime(clipWindow.startSec)}–${formatClipTime(clipWindow.endSec)} ` +
+          `of ${formatClipTime(sourceProbe.duration)} — ${clipWindow.reason}`,
+      );
+      const rawSlice = sliceRawTranscript(rawTranscript, clipWindow);
+      repairs = sliceRepairs(repairs, rawSlice.offset, rawSlice.transcript.words.length);
+      rawTranscript = rawSlice.transcript;
+      transcript = sliceTranscript(transcript, clipWindow);
+      analysis = analyze(rawTranscript, silences, sourceProbe.duration, levels);
+      cutlist = boundCutlistToWindow(
+        buildCutlist({
+          transcript: rawTranscript,
+          analysis,
+          duration: sourceProbe.duration,
+          level: opts.cleanup,
+        }),
+        clipWindow,
+        sourceProbe.duration,
+      );
+      map = new TimeMap(cutlist);
+    }
+
     const cacheKey = createHash("sha1")
       .update(
         JSON.stringify([
@@ -415,6 +553,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           // The framing constraints steer layout choice, so a change in the
           // measured framing must invalidate the cached plan.
           framingCtx ?? null,
+          // §93f: the clip target and the RESOLVED window key the plan too —
+          // without them a clip run and a full run of the same source would
+          // collide and answer from each other's cache (the §78 failure
+          // mode). Keyed POST-resolution so a replay that derives the same
+          // window hits the same entries.
+          clipTargetSec ?? null,
+          clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : null,
           transcript.words.map((w) => w.text),
         ]),
       )
@@ -424,7 +569,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     // The cover needs the editorial copy, which is not in the scene list — a
     // cached run must still be able to write one.
     const beatCache = join(work, `beatsheet-${cacheKey}.json`);
-    if (existsSync(sceneCache)) {
+    if (clipFresh) {
+      // The selection call already planned the scenes (§93d: ONE editorial
+      // call chooses the window and the beats inside it) — adopt them and
+      // cache under the post-resolution key so re-runs and replays hit it.
+      scenes = clipFresh.scenes;
+      beatSheet = { hook: clipFresh.beatSheet.hook, coverText: clipFresh.beatSheet.coverText };
+      console.log(`▸ hook: ${clipFresh.beatSheet.hook}`);
+      console.log(
+        `▸ planned ${clipFresh.beatSheet.moments.length} moments, ${scenes.length} scenes` +
+          (clipFresh.failures.length > 0
+            ? ` (${clipFresh.failures.length} fell back to TitleCard)`
+            : ""),
+      );
+      for (const issue of clipFresh.beatIssues) {
+        console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
+      }
+      await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
+      await writeFile(beatCache, JSON.stringify(beatSheet, null, 2));
+    } else if (existsSync(sceneCache)) {
       scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(sceneCache, "utf8")));
       console.log(`▸ scenes cached (${scenes.length})`);
       if (existsSync(beatCache)) {
@@ -790,6 +953,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     repairs: repairs.length > 0 ? repairs : undefined,
     analysis,
     cutlist,
+    ...(clipWindow && clipTargetSec !== undefined
+      ? { clip: { targetSec: clipTargetSec, ...clipWindow } }
+      : {}),
     scenes: scenes.length > 0 ? scenes : undefined,
     producer: producerStamp,
     theme,
@@ -798,6 +964,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
   let report = formatCutReport(production);
+  // §93h: a tool that discards 19 of 20 minutes owes the user an account of
+  // why those 19 — the window, its share of the take, and the model's reason.
+  if (clipWindow && clipTargetSec !== undefined) {
+    const dur = clipWindow.endSec - clipWindow.startSec;
+    report +=
+      `\nclip window (--clip ${clipTargetSec}):\n` +
+      `  ${formatClipTime(clipWindow.startSec)}–${formatClipTime(clipWindow.endSec)} of ` +
+      `${formatClipTime(sourceProbe.duration)} (${dur.toFixed(1)}s selected, ` +
+      `${((dur / sourceProbe.duration) * 100).toFixed(0)}% of the take)\n` +
+      `  reason: ${clipWindow.reason}\n`;
+  }
   const landed = repairs.filter((r) => r.applied);
   if (landed.length > 0) {
     report +=
@@ -1146,6 +1323,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   const recordedArgs = process.argv.slice(2);
   if (provider && !recordedArgs.includes("--llm")) {
     recordedArgs.push("--llm", providerName);
+  }
+  // §93g: pin the RESOLVED window, exactly as §75 pinned the provider. The
+  // editor's Render replays this argv; if replay re-asked the model and got a
+  // slightly different window, every saved override — anchored to scene ids
+  // and word indices — would land on the wrong words. The word range, not
+  // just `--clip 60`, is what makes replay deterministic with zero LLM calls.
+  if (clipWindow && !recordedArgs.includes("--clip-window")) {
+    recordedArgs.push("--clip-window", `${clipWindow.startWord}:${clipWindow.endWord}`);
   }
   await writeFile(
     join(work, "command.json"),

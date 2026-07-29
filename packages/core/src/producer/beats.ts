@@ -46,6 +46,28 @@ export const BeatSheetSchema = z.object({
 });
 export type BeatSheet = z.infer<typeof BeatSheetSchema>;
 
+/**
+ * The `--clip` highlight request (R19 §93d): asked for IN THE SAME editorial
+ * call as the beat sheet — the producer is already reading the whole
+ * transcript and ranking moments, so the window costs approximately nothing
+ * here, and a second call would let two editorial judgements disagree.
+ */
+export const ClipHighlightSchema = z.object({
+  startWord: z.number().int().nonnegative(),
+  endWord: z.number().int().nonnegative(),
+  reason: z
+    .string()
+    .max(200)
+    .describe("one line: why THIS window is the strongest stretch of the take"),
+});
+export type ClipHighlight = z.infer<typeof ClipHighlightSchema>;
+
+export const ClipBeatSheetSchema = BeatSheetSchema.extend({
+  highlight: ClipHighlightSchema.describe(
+    "the single contiguous window to produce — every moment above must lie inside it",
+  ),
+});
+
 export const PRODUCER_SYSTEM = `You are the producer for a short-form vertical video (Reels/Shorts/TikTok). You receive a word-indexed transcript of a talking-head take that has already been cut. Your job is EDITORIAL: segment the take into moments, pick which moments deserve a graphic scene, and write the on-screen copy.
 
 Virality grammar — follow these as hard policies:
@@ -62,11 +84,31 @@ Virality grammar — follow these as hard policies:
 - FRAMING: when the prompt carries a "Camera framing" brief, it is measured from the footage and is a HARD constraint: on words marked CLOSE, never choose a layout listed as UNAVAILABLE there — pick a \`layout\` that keeps the whole head in frame (pip-bubble, graphic-only, full-bleed) or leave the moment as "none". You may set \`layout\` on any moment; omit it to accept the component's default.
 - COVER: also write \`coverText\` — the hook compressed to a thumbnail headline, AT MOST ${COVER_MAX_WORDS} WORDS. It is read at a glance in a profile grid, so it must stand alone without the video: the claim or the number, no lead-in, no ellipsis.`;
 
+/**
+ * The `--clip` request, appended to the USER prompt (R19 §93d). The tuned
+ * PRODUCER_SYSTEM stays untouched — this adds the window request without
+ * rewriting the editorial instructions the beat sheet already follows.
+ */
+export function buildClipAddendum(targetSec: number): string {
+  return (
+    `\n\nCLIP SELECTION: the source is long-form, and only ONE window of roughly ` +
+    `${targetSec.toFixed(0)} seconds will be produced.\n` +
+    `1. First choose the strongest contiguous ~${targetSec.toFixed(0)}s of speech — the highlight: ` +
+    `self-contained, hook-worthy at its start, resolving by its end. Return it as \`highlight\` ` +
+    `(word range + a one-line reason).\n` +
+    `2. Prefer a window that starts at a sentence start and ends at a sentence end — a boundary ` +
+    `mid-sentence will be snapped to the nearest sentence afterwards.\n` +
+    `3. Then write the beat sheet AS IF the highlight were the whole take: the hook and EVERY ` +
+    `moment must lie inside the highlight's word range. Plan nothing outside it.`
+  );
+}
+
 export function buildBeatsUserPrompt(
   transcript: Transcript,
   duration: number,
   intent: string | undefined,
   framingBrief?: string,
+  clip?: { targetSec: number },
 ): string {
   const words = transcript.words
     .map((w, i) => `[${i}]${w.text}`)
@@ -76,12 +118,15 @@ export function buildBeatsUserPrompt(
     .join("\n");
   return (
     `Intent: ${intent ?? "make this clear, punchy and viral-worthy"}\n` +
-    `Output duration after the cut: ${duration.toFixed(1)}s\n\n` +
+    (clip
+      ? `Target clip length: ~${clip.targetSec.toFixed(0)}s (see CLIP SELECTION below)\n\n`
+      : `Output duration after the cut: ${duration.toFixed(1)}s\n\n`) +
     `Scene components available (sceneKind values; "none" = talking head only):\n${menu}\n\n` +
     // The framing brief sits ABOVE the transcript so the constraint is read
     // before the content it constrains (Task A).
     (framingBrief ? `${framingBrief}\n\n` : "") +
-    `Word-indexed transcript (word indices refer to THIS list):\n${words}`
+    `Word-indexed transcript (word indices refer to THIS list):\n${words}` +
+    (clip ? buildClipAddendum(clip.targetSec) : "")
   );
 }
 
@@ -248,12 +293,25 @@ export async function generateBeatSheet(
   intent: string | undefined,
   speaker?: string,
   framingBrief?: string,
-): Promise<{ sheet: BeatSheet; issues: BeatsValidationIssue[] }> {
+  clip?: { targetSec: number },
+): Promise<{ sheet: BeatSheet; issues: BeatsValidationIssue[]; highlight?: ClipHighlight }> {
+  const user =
+    (speaker ? `The speaker: ${speaker}\n\n` : "") +
+    buildBeatsUserPrompt(transcript, duration, intent, framingBrief, clip);
+  if (clip) {
+    // Same editorial call, extended schema (R19 §93d) — the highlight and the
+    // beat sheet come from ONE judgement, so they cannot disagree.
+    const raw = await provider.complete({
+      system: PRODUCER_SYSTEM,
+      user,
+      schema: ClipBeatSheetSchema,
+      schemaName: "clip_beat_sheet",
+    });
+    return { ...normalizeBeatSheet(raw, transcript), highlight: raw.highlight };
+  }
   const raw = await provider.complete({
     system: PRODUCER_SYSTEM,
-    user:
-      (speaker ? `The speaker: ${speaker}\n\n` : "") +
-      buildBeatsUserPrompt(transcript, duration, intent, framingBrief),
+    user,
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",
   });

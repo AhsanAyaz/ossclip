@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
 import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
@@ -43,6 +43,25 @@ program
     "9:16",
   )
   .option("--produce", "run the LLM producer brain to plan title cards & graphics", false)
+  .option(
+    "--clip <seconds>",
+    "produce only the strongest ~N-second window of a long take (requires --produce; " +
+      "a source already at or under the target is produced whole)",
+    (v: string) => {
+      // §93a: reject rather than coerce — `--clip 0`, negatives and typos must
+      // not silently become "no clip" or NaN-length windows.
+      const n = Number.parseFloat(v);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new InvalidArgumentError(`--clip wants a positive number of seconds, got "${v}"`);
+      }
+      return n;
+    },
+  )
+  .option(
+    "--clip-window <start:end>",
+    "internal: the resolved highlight's word range, recorded into command.json by --clip " +
+      "runs so the editor's Render replays the same window without an LLM call",
+  )
   .option("--intent <text>", "what the video should be ('educational video about agents…')")
   .option(
     "--llm <provider>",
@@ -120,6 +139,8 @@ program
       sourceFit,
       cover: opts.cover !== false,
       coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
+      clip: opts.clip,
+      clipWindow: opts.clipWindow,
     });
   });
 

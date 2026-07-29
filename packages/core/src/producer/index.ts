@@ -6,9 +6,20 @@ import { ClaudeCliProvider } from "./claude-cli";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 import { MockProvider } from "./mock";
 import { TieredProvider } from "./tiered";
-import { generateBeatSheet, type BeatSheet, type BeatsValidationIssue } from "./beats";
+import {
+  generateBeatSheet,
+  normalizeBeatSheet,
+  type BeatSheet,
+  type BeatsValidationIssue,
+} from "./beats";
 import { generateScenes, type ScenePropsFailure } from "./scene-props";
 import { buildFramingBrief, repairMomentLayouts, type FramingContext } from "../framing";
+import {
+  resolveClipWindow,
+  sliceMoments,
+  sliceTranscript,
+  type ClipWindow,
+} from "../clip";
 
 export * from "./provider";
 export * from "./usage";
@@ -97,6 +108,13 @@ export interface ProduceScenesResult {
   beatIssues: BeatsValidationIssue[];
   scenes: Scene[];
   failures: ScenePropsFailure[];
+  /**
+   * Present on a `--clip` run (R19 §93): the resolved window (pre-slice index
+   * space + source seconds), the transcript sliced to it — which is the space
+   * the returned moments and scenes live in — and what resolution changed
+   * about the model's raw pick.
+   */
+  clip?: { window: ClipWindow; transcript: Transcript; notes: string[] };
 }
 
 /** The full producer-brain pipeline: beat sheet → per-moment scene props. */
@@ -121,38 +139,75 @@ export async function produceScenes(
      * the repair pass that enforces it — ship both, trust neither alone.
      */
     framing?: FramingContext;
+    /**
+     * `--clip` (R19 §93): select ONE ~targetSec window and plan only inside
+     * it. The window request rides the beat-sheet call (§93d); the returned
+     * moments/scenes are re-anchored to the sliced transcript, and the caller
+     * slices the rest of its pipeline state to `clip.window`.
+     */
+    clip?: { targetSec: number };
   },
 ): Promise<ProduceScenesResult> {
   const framingBrief = args.framing
     ? buildFramingBrief(args.framing, args.transcript)
     : undefined;
-  const { sheet, issues } = await generateBeatSheet(
+  const { sheet, issues, highlight } = await generateBeatSheet(
     provider,
     args.transcript,
     args.outputDuration,
     args.intent,
     args.speaker,
     framingBrief || undefined,
+    args.clip,
   );
+
+  // ---- Clip window (R19 §93) ----------------------------------------------
+  // Resolve (validate + sentence-snap) the highlight, slice the transcript,
+  // and re-anchor the moments into the slice. Then re-run normalization
+  // against the SLICED transcript: the coverage budget and variety passes
+  // were computed against the full take's runtime above, and a 60s window
+  // deserves a 60s window's graphics schedule.
+  let transcript = args.transcript;
+  let workingSheet = sheet;
+  let clip: ProduceScenesResult["clip"];
+  if (args.clip) {
+    const resolved = resolveClipWindow(args.transcript, highlight, args.clip.targetSec);
+    transcript = sliceTranscript(args.transcript, resolved.window);
+    const anchored = sliceMoments(sheet.moments, resolved.window);
+    if (anchored.length === 0) {
+      issues.push({
+        moment: -1,
+        issue: "no moments inside the highlight — the clip renders as a plain captioned take",
+      });
+    }
+    const renorm = normalizeBeatSheet(
+      { hook: sheet.hook, coverText: sheet.coverText, moments: anchored },
+      transcript,
+    );
+    workingSheet = renorm.sheet;
+    issues.push(...renorm.issues);
+    clip = { window: resolved.window, transcript, notes: resolved.notes };
+  }
+
   // Applied AFTER normalization: the coverage budget and variety passes may
   // demote moments to "none", and forcing before them can leave nothing to
   // render — the flag would appear to work and produce no scenes at all.
   // The forced component drops the producer's layout too: it was chosen for
   // a different component and may not even be in the forced one's repertoire.
   let moments = args.forceComponent
-    ? sheet.moments.map((m) =>
+    ? workingSheet.moments.map((m) =>
         m.sceneKind === "none" ? m : { ...m, sceneKind: args.forceComponent!, layout: undefined },
       )
-    : sheet.moments;
+    : workingSheet.moments;
   // The safety net (Task B): whatever the prompt did, no moment leaves here
   // with a layout that would crop the head at its own moment's framing.
   if (args.framing) {
-    const repaired = repairMomentLayouts(moments, args.transcript, args.framing);
+    const repaired = repairMomentLayouts(moments, transcript, args.framing);
     moments = repaired.moments;
     issues.push(...repaired.issues);
   }
-  const { scenes, failures } = await generateScenes(provider, moments, args.transcript, {
+  const { scenes, failures } = await generateScenes(provider, moments, transcript, {
     framing: args.framing,
   });
-  return { beatSheet: { ...sheet, moments }, beatIssues: issues, scenes, failures };
+  return { beatSheet: { ...workingSheet, moments }, beatIssues: issues, scenes, failures, clip };
 }

@@ -18,7 +18,7 @@ export type Transcript = z.infer<typeof TranscriptSchema>;
 export const CleanupLevelSchema = z.enum(["exact", "light", "standard", "aggressive"]);
 export type CleanupLevel = z.infer<typeof CleanupLevelSchema>;
 
-export const RemovalReasonSchema = z.enum(["silence", "pause", "filler", "retake", "user"]);
+export const RemovalReasonSchema = z.enum(["silence", "pause", "filler", "retake", "user", "clip"]);
 export type RemovalReason = z.infer<typeof RemovalReasonSchema>;
 
 /**
@@ -136,6 +136,22 @@ export const ProductionSchema = z.object({
     .optional(),
   analysis: AnalysisSchema.optional(),
   cutlist: z.array(SegmentSchema).optional(),
+  /**
+   * Present on a `--clip` run (R19 §93): the target and the resolved window.
+   * `startWord`/`endWord` are indices into the PRE-slice repaired transcript
+   * (the space selection ran in); the seconds are source time and stay
+   * meaningful against the sliced `transcript` stored above.
+   */
+  clip: z
+    .object({
+      targetSec: z.number().positive(),
+      startWord: z.number().int().nonnegative(),
+      endWord: z.number().int().nonnegative(),
+      startSec: z.number().nonnegative(),
+      endSec: z.number().nonnegative(),
+      reason: z.string(),
+    })
+    .optional(),
   scenes: z.array(SceneSchema).optional(),
   /**
    * WHO planned this production (R16 §78). `usage.json` answers "what did
