@@ -4,6 +4,30 @@ import { clampGraphicRect, graphicSlotFor, layoutSlots } from "@ossclip/renderer
 import type { useEdits } from "./useEdits";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
+/** What planned this video and what it cost (R21 §104) — `/api/usage`'s
+ * shape, read straight off the workdir's own artefacts. */
+export interface RunInfo {
+  usage: {
+    totals?: {
+      calls: number;
+      inputTokens: number;
+      outputTokens: number;
+      billedUsd: number | null;
+      equivalentUsd: number | null;
+      anyEstimated: boolean;
+      allUnbilled: boolean;
+    } | null;
+    runs?: Array<{ at: string; cached: boolean }>;
+  } | null;
+  production: {
+    producer?: { provider: string; models: string[]; cached?: boolean; at?: string } | null;
+    clip?: { targetSec: number; startSec: number; endSec: number; reason: string } | null;
+    cleanup?: string | null;
+    intent?: string | null;
+    sourceDuration?: number | null;
+  } | null;
+}
+
 interface InspectorProps {
   selection: Selection | null;
   /** The currently-selected scene's resolved cue, or null when nothing is selected. */
@@ -26,6 +50,8 @@ interface InspectorProps {
   /** Live framing preview (PLAN Task B) — the zoom slider writes it while
    * scrubbing, the release commits the real patch and clears it. */
   onVideoPreview: (preview: VideoPreview | null) => void;
+  /** Run provenance and cost for the no-selection view (R21 §104). */
+  runInfo?: RunInfo | null;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -99,55 +125,14 @@ const NumberField: React.FC<{
   const hi = max ?? Infinity;
   const perPx =
     dragStep ?? (min !== undefined && max !== undefined ? (max - min) / 240 : 0.5);
+  // Not focused → the INPUT is the scrub surface (R21 §99, the Filmora
+  // gesture exactly): press and slide inside the field to adjust; a clean
+  // click (≤2px of travel) focuses it for typing. Once focused it is a plain
+  // text field again — dragging selects text, keys edit — until blur.
+  const editing = draft !== null;
   return (
     <div style={row}>
-      <span
-        // The label is the scrub handle. Commits per move under the caller's
-        // fixed coalesce key, so one scrub is one undo step — the same
-        // contract every slider here already holds. touch-action none keeps
-        // the browser from claiming the gesture for scrolling.
-        data-testid={`scrub-${id}`}
-        style={{
-          ...label,
-          cursor: "ew-resize",
-          userSelect: "none",
-          touchAction: "none",
-          ...(scrubbing ? { color: "#FFE14D" } : {}),
-        }}
-        onPointerDown={(e) => {
-          drag.current = { x: e.clientX, v: Number.isFinite(value) ? value : 0, moved: false };
-          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-          setScrubbing(true);
-        }}
-        onPointerMove={(e) => {
-          const d = drag.current;
-          if (!d) return;
-          const dx = e.clientX - d.x;
-          if (!d.moved && Math.abs(dx) <= 2) return; // a click, until it isn't
-          d.moved = true;
-          // Quantized to the §48 display precision, so a scrub can never
-          // commit float dust the field itself would refuse to show.
-          const next = Math.round(Math.min(hi, Math.max(lo, d.v + dx * perPx)) * 1000) / 1000;
-          onCommit(next);
-        }}
-        onPointerUp={() => {
-          const wasDrag = drag.current?.moved === true;
-          drag.current = null;
-          setScrubbing(false);
-          // A click without a drag focuses the input — typing stays one
-          // gesture away, exactly where it was before scrubbing existed.
-          if (!wasDrag) {
-            inputRef.current?.focus();
-            inputRef.current?.select();
-          }
-        }}
-        onPointerCancel={() => {
-          drag.current = null;
-          setScrubbing(false);
-        }}
-      >
-        {id}
-      </span>
+      <span style={label}>{id}</span>
       <input
         // type="text" + inputMode="decimal", NOT type="number" (§48): in a
         // comma-decimal locale the number input renders "0,8" but reports a
@@ -158,10 +143,51 @@ const NumberField: React.FC<{
         inputMode="decimal"
         ref={inputRef}
         data-testid={`field-${id}`}
-        style={numberInput}
+        style={{
+          ...numberInput,
+          ...(editing ? {} : { cursor: "ew-resize", touchAction: "none" }),
+          ...(scrubbing ? { borderColor: "#FFE14D", color: "#FFE14D" } : {}),
+        }}
         value={draft ?? (Number.isFinite(value) ? roundShown(value) : "0")}
         onFocus={(e) => setDraft(e.target.value)}
         onBlur={() => setDraft(null)}
+        onPointerDown={(e) => {
+          if (editing) return; // focused = a text field; leave selection alone
+          // preventDefault keeps the browser from focusing on mousedown — the
+          // gesture decides: a drag scrubs, a clean click focuses on release.
+          e.preventDefault();
+          drag.current = { x: e.clientX, v: Number.isFinite(value) ? value : 0, moved: false };
+          e.currentTarget.setPointerCapture(e.pointerId);
+          setScrubbing(true);
+        }}
+        onPointerMove={(e) => {
+          const d = drag.current;
+          if (!d) return;
+          const dx = e.clientX - d.x;
+          if (!d.moved && Math.abs(dx) <= 2) return; // a click, until it isn't
+          d.moved = true;
+          // Commits per move under the caller's fixed coalesce key, so one
+          // scrub is one undo step — the contract the sliders already hold.
+          // Quantized to the §48 display precision, so a scrub can never
+          // commit float dust the field itself would refuse to show.
+          const next = Math.round(Math.min(hi, Math.max(lo, d.v + dx * perPx)) * 1000) / 1000;
+          onCommit(next);
+        }}
+        onPointerUp={() => {
+          const wasDrag = drag.current?.moved === true;
+          drag.current = null;
+          setScrubbing(false);
+          // A click without a drag focuses for typing — exactly where the
+          // field was before scrubbing existed.
+          if (!wasDrag) {
+            inputRef.current?.focus();
+            inputRef.current?.select();
+          }
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+          setScrubbing(false);
+        }}
         onChange={(e) => {
           setDraft(e.target.value);
           // Accept both decimal separators; skip while the text is not yet a
@@ -219,6 +245,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   resolvedTheme,
   anchorText,
   onVideoPreview,
+  runInfo,
 }) => {
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
@@ -809,6 +836,11 @@ export const Inspector: React.FC<InspectorProps> = ({
 
   const theme = edits.doc.theme;
   const patch = (key: string, v: string | number) => edits.patchTheme({ [key]: v });
+  const mmss = (sec: number): string =>
+    `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+  const totals = runInfo?.usage?.totals ?? null;
+  const producer = runInfo?.production?.producer ?? null;
+  const clip = runInfo?.production?.clip ?? null;
   return (
     <div>
       <div style={section}>
@@ -826,6 +858,54 @@ export const Inspector: React.FC<InspectorProps> = ({
           isColor={false}
           onCommit={(v) => patch("fontDisplay", v)}
         />
+      </div>
+      {producer || totals ? (
+        <div style={section} data-testid="run-info">
+          {/* Provenance and cost (R21 §104) — the same accounting report.txt
+              prints, where the person deciding whether to re-plan can see it. */}
+          <span style={label}>This video</span>
+          {producer ? (
+            <div style={{ fontSize: 12, color: "#C9C9D4" }}>
+              planned by <span style={{ color: "#EDEDF2" }}>{producer.provider}</span>
+              {producer.models.length > 0 ? ` (${producer.models.join(", ")})` : ""}
+              {producer.cached ? " · reused from cache" : ""}
+              {producer.at ? ` · ${new Date(producer.at).toLocaleString()}` : ""}
+            </div>
+          ) : null}
+          {totals ? (
+            <div style={{ fontSize: 12, color: "#C9C9D4" }}>
+              {totals.calls} LLM call{totals.calls === 1 ? "" : "s"} ·{" "}
+              {totals.inputTokens.toLocaleString()} in / {totals.outputTokens.toLocaleString()} out
+              tokens{totals.anyEstimated ? " (partly estimated)" : ""}
+            </div>
+          ) : null}
+          {totals && totals.equivalentUsd !== null ? (
+            <div style={{ fontSize: 12, color: "#C9C9D4" }}>
+              {totals.allUnbilled
+                ? `~$${totals.equivalentUsd.toFixed(2)} of API-rate work, covered by the subscription`
+                : totals.billedUsd !== null
+                  ? `~$${totals.billedUsd.toFixed(2)} charged at API rates`
+                  : `~$${totals.equivalentUsd.toFixed(2)} at API rates`}
+            </div>
+          ) : null}
+          {clip ? (
+            <div style={{ fontSize: 12, color: "#C9C9D4" }}>
+              clip: {mmss(clip.startSec)}–{mmss(clip.endSec)}
+              {runInfo?.production?.sourceDuration
+                ? ` of ${mmss(runInfo.production.sourceDuration)}`
+                : ""}{" "}
+              (--clip {clip.targetSec})
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <div style={section}>
+        {/* R21 §105 — the standard honesty line. It stays even on a no-LLM
+            run: the cut and captions are machine-derived from ASR either way. */}
+        <div data-testid="ai-disclaimer" style={{ fontSize: 12, color: "#9A9AA3" }}>
+          AI can make mistakes. The cut, captions and graphics are generated — review them
+          before publishing.
+        </div>
       </div>
     </div>
   );

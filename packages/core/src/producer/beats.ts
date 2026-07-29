@@ -109,6 +109,7 @@ export function buildBeatsUserPrompt(
   intent: string | undefined,
   framingBrief?: string,
   clip?: { targetSec: number },
+  aspect?: "9:16" | "16:9",
 ): string {
   const words = transcript.words
     .map((w, i) => `[${i}]${w.text}`)
@@ -121,6 +122,15 @@ export function buildBeatsUserPrompt(
     (clip
       ? `Target clip length: ~${clip.targetSec.toFixed(0)}s (see CLIP SELECTION below)\n\n`
       : `Output duration after the cut: ${duration.toFixed(1)}s\n\n`) +
+    // Landscape layout guidance (R21 §101): without it the first real 16:9
+    // run put nearly every graphic in a lower third. A deterministic variety
+    // pass downstream is the guarantee; this is the steer.
+    (aspect === "16:9"
+      ? `Output frame: LANDSCAPE 16:9. Vary the \`layout\` deliberately — lower-third, ` +
+        `split-left, split-right and blurred-behind are all available; never the same ` +
+        `layout twice in a row, and never a list/terminal/chat component in a lower-third ` +
+        `(the band is too shallow for a stack).\n\n`
+      : "") +
     `Scene components available (sceneKind values; "none" = talking head only):\n${menu}\n\n` +
     // The framing brief sits ABOVE the transcript so the constraint is read
     // before the content it constrains (Task A).
@@ -294,10 +304,11 @@ export async function generateBeatSheet(
   speaker?: string,
   framingBrief?: string,
   clip?: { targetSec: number },
+  aspect?: "9:16" | "16:9",
 ): Promise<{ sheet: BeatSheet; issues: BeatsValidationIssue[]; highlight?: ClipHighlight }> {
   const user =
     (speaker ? `The speaker: ${speaker}\n\n` : "") +
-    buildBeatsUserPrompt(transcript, duration, intent, framingBrief, clip);
+    buildBeatsUserPrompt(transcript, duration, intent, framingBrief, clip, aspect);
   if (clip) {
     // Same editorial call, extended schema (R19 §93d) — the highlight and the
     // beat sheet come from ONE judgement, so they cannot disagree.

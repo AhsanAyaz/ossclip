@@ -94,6 +94,7 @@
 <p class="lede">A local-first CLI that turns a talking-head take into a finished short: filler words and dead air cut, word-timed kinetic captions, face-aware framing, and <strong>LLM-planned, code-rendered on-screen graphics</strong> — title cards, stat cards, diagrams, terminal and chat mockups — planned against a hand-built, Zod-typed scene library. Plus a cover image sized for the platform.</p>
 <p><strong>Your footage never leaves your machine.</strong> Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones — on your own API key, or on your existing Claude Code subscription.</p>
 <p>Scope, honestly: ossclip is at its best <strong>polishing a take you have already cut down</strong>. For long-form input, <code>--clip &lt;seconds&gt;</code> selects the single strongest window (the producer's judgement, sentence-snapped) and produces only that — one clip, not N. Without it, 20 minutes in is a polished 20 minutes out.</p>
+<p>AI can make mistakes: the cut, captions and graphics are generated — review the output before publishing.</p>
 <span class="status">working end to end · pre-1.0</span>
 
 <h2 id="install">Install</h2>

@@ -61,7 +61,10 @@ export interface ModelPrice {
  * `~/.ossclip/config.json` under `pricing` if your account differs.
  */
 export const DEFAULT_PRICING: Record<string, ModelPrice> = {
-  opus: { inputPerMTok: 15, outputPerMTok: 75 },
+  // Opus repriced at 4.5: $5/$25 (was $15/$75 through 4.1), unchanged through
+  // Opus 5 (verified 2026-07, R21 §104). An account still running a pre-4.5
+  // opus should override this in config.json.
+  opus: { inputPerMTok: 5, outputPerMTok: 25 },
   sonnet: { inputPerMTok: 3, outputPerMTok: 15 },
   haiku: { inputPerMTok: 1, outputPerMTok: 5 },
   "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },

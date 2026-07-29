@@ -116,7 +116,7 @@ A per-call breakdown lands in `report.txt`, the raw records in `usage.json`. Two
 Prices are a built-in per-family assumption. Override for your account in `~/.ossclip/config.json`:
 
 ```json
-{ "pricing": { "claude-opus-5": { "inputPerMTok": 15, "outputPerMTok": 75 } } }
+{ "pricing": { "claude-opus-5": { "inputPerMTok": 5, "outputPerMTok": 25 } } }
 ```
 
 ## Configuration
@@ -156,6 +156,8 @@ Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPE
 - **Plans** scenes from the transcript, then checks its own choices: a layout that would crop the speaker's head is rewritten, and copy that isn't grounded in what was actually said is flagged.
 - **Captions** every word, routed around any text already burned into the source.
 - **Covers** — writes `<out>.cover.jpg` sized for the platform the aspect targets.
+
+> AI can make mistakes. The cut, the captions and every graphic are generated — review the output (the editor and `report.txt` exist for exactly that) before publishing.
 
 ## Working from a clone (contributors)
 

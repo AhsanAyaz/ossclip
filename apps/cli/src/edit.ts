@@ -255,6 +255,37 @@ export async function startEditServer(
           });
         }
 
+        if (url.pathname === "/api/usage" && req.method === "GET") {
+          // The run summary (R21 §104): what planned this video and what it
+          // cost. Straight reads of the artefacts `produce` already writes —
+          // usage.json carries per-run totals, production.json the producer
+          // stamp and the clip window; the editor only has to display them.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const readJson = async (name: string): Promise<unknown> => {
+            try {
+              return JSON.parse(await readFile(join(workdir!, name), "utf8"));
+            } catch {
+              return null;
+            }
+          };
+          const usage = await readJson("usage.json");
+          const production = (await readJson("production.json")) as Record<string, unknown> | null;
+          return send(200, {
+            usage,
+            production: production
+              ? {
+                  producer: production.producer ?? null,
+                  clip: production.clip ?? null,
+                  cleanup: production.cleanup ?? null,
+                  intent: production.intent ?? null,
+                  sourceDuration:
+                    (production.source as { probe?: { duration?: number } } | undefined)?.probe
+                      ?.duration ?? null,
+                }
+              : null,
+          });
+        }
+
         if (url.pathname === "/api/workdir" && req.method === "POST") {
           // Open/switch the project (R17 §83). Refused mid-render: the
           // running child belongs to the CURRENT workdir, and its status
@@ -278,25 +309,44 @@ export async function startEditServer(
           // The picker's folder browser (R17 §83): directories only, with
           // "this one is a project" flagged. Local tool on a local loopback
           // — the same trust as typing the path as a CLI argument.
+          // R21 §103: hidden directories are OMITTED — a dev home holds
+          // dozens of dot-dirs, and listing them made the picker read as a
+          // wall of noise — EXCEPT `.ossclip`, whose projects are the whole
+          // point: its workdirs surface INLINE, so browsing ~/Downloads
+          // shows the projects produced there without knowing the
+          // convention directory exists.
           const dir = resolve(url.searchParams.get("dir") || homedir());
           try {
             const names = await readdir(dir, { withFileTypes: true });
-            const entries = names
-              .filter((d) => d.isDirectory())
-              .map((d) => {
-                const path = join(dir, d.name);
-                return { name: d.name, path, isWorkdir: isWorkdir(path) };
-              })
-              .sort((a, b) =>
-                a.isWorkdir !== b.isWorkdir ? (a.isWorkdir ? -1 : 1) : a.name.localeCompare(b.name),
-              )
-              .slice(0, 500);
+            const entries: Array<{ name: string; path: string; isWorkdir: boolean }> = [];
+            for (const d of names.filter((x) => x.isDirectory())) {
+              if (d.name.startsWith(".")) {
+                if (d.name !== ".ossclip") continue;
+                try {
+                  const inner = await readdir(join(dir, d.name), { withFileTypes: true });
+                  for (const w of inner.filter((x) => x.isDirectory())) {
+                    const path = join(dir, d.name, w.name);
+                    if (isWorkdir(path)) {
+                      entries.push({ name: `.ossclip/${w.name}`, path, isWorkdir: true });
+                    }
+                  }
+                } catch {
+                  // unreadable convention dir — nothing to surface
+                }
+                continue;
+              }
+              const path = join(dir, d.name);
+              entries.push({ name: d.name, path, isWorkdir: isWorkdir(path) });
+            }
+            entries.sort((a, b) =>
+              a.isWorkdir !== b.isWorkdir ? (a.isWorkdir ? -1 : 1) : a.name.localeCompare(b.name),
+            );
             const parent = dirname(dir);
             return send(200, {
               dir,
               parent: parent === dir ? null : parent,
               isWorkdir: isWorkdir(dir),
-              entries,
+              entries: entries.slice(0, 500),
             });
           } catch (err) {
             return send(400, { error: err instanceof Error ? err.message : String(err) });

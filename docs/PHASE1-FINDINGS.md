@@ -888,3 +888,35 @@ Two inspirations taken, not copied: a graduated ruler (major/minor ticks with la
 ## 98. The repair call died of its own token budget — and said "JSON error"
 
 Field failure on the first real long-form run: `transcript repair unavailable: Unterminated string in JSON at position 401`, after burning 5,952 in / 3,993 out tokens — over half the run's cost — on unusable output. Root cause was NOT malformed generation: the repair call's flat `maxTokens: 4000` was sized for 30–70s takes, and on a thinking model the thought tokens draw from the same budget — ~3,900 thinking left ~100 for the answer, truncating the JSON mid-string. Three fixes, none of them a framework: (a) the Gemini provider now sends a native `responseSchema` (converted from the zod schema to the API's OpenAPI subset — literal unions flatten to enums, nullables fold, records fall back to prompt-stated JSON mode; repair/beat/clip schemas are pinned convertible by test) so the decoder emits only schema-valid JSON — the guarantee the author asked genkit for, from the API itself; (b) a `MAX_TOKENS` finish is now reported as the truncation it is, with the thinking share named, instead of surfacing as a syntax error at some position; (c) the repair budget scales with the transcript (4000 + 10/word, capped 32k) and the call retries once before failing soft. The Anthropic provider already had all three properties (SDK structured output, explicit truncation error) — verified, untouched. Claude CLI structured output rides the CLI's own JSON mode as before.
+
+# Round 21 — second pass on the real promo (2026-07-29)
+
+*Seven items from continued editing of the Upwork promo. §99–§103 are editor behaviour, §104–§105 product honesty.*
+
+## 99. The scrub belongs on the input
+
+R20 §96 put drag-to-scrub on the LABEL; the reference (and the author) put it on the FIELD. Moved: an unfocused input is the scrub surface — press and slide adjusts, a clean click (≤2px) focuses for typing, and a FOCUSED input is a plain text field again (drag selects text) until blur. `preventDefault` on pointerdown keeps the browser from focusing mid-gesture; the §48 locale/draft semantics and every testid are unchanged.
+
+## 100. The band had no air, and a list cannot live there
+
+Two symptoms, one band: content touched the scrim's edges (zero visual padding), and a BulletList rendered clipped — its 36px legibility floor cannot fit four rows in 0.18 of frame height, and §6a clips rather than shrinking into illegibility. The band now insets its CONTENT (12% of slot height, capped 24px) while the scrim keeps the full slot, and the real fix for stacks is §101: they don't belong in a lower third at all.
+
+## 101. Landscape variety — the producer had settled into one layout
+
+The first real 16:9 run put nearly every graphic in a lower third. Legal, monotonous, and for stack components broken (§100). Two moves: the beat prompt now carries a landscape hint (vary across lower-third/split-left/split-right/blurred-behind, never twice in a row, no stacks in the band) — and because a prompt is a steer, not a guarantee, a deterministic variety pass after the landscape remap enforces both rules in time order. The editor's per-scene layout override still wins over everything.
+
+## 102. Shortcuts that died with focus, and a walk with no starting point
+
+Two real traps: ⌥+arrows did NOTHING with no selection (the walk had no entry point — it now starts at the first scene, ⌥← at the last), and a focused field held every shortcut hostage until a click elsewhere — Escape now blurs the field first (keeping the selection), so the keyboard always has a way back out. Text-entry guards otherwise unchanged: arrows in a field still move the caret, space still types a space.
+
+## 103. The picker was listing every dotfile directory in $HOME
+
+"I thought open would just be a folder picker." It is — but it listed hidden directories too, and a dev home has dozens, so the browse pane read as a wall of anonymous dots. Hidden directories are now omitted with ONE exception made useful: `.ossclip`'s projects surface INLINE (browsing ~/Downloads shows `▸ .ossclip/Upwork Promo-…` directly), so the convention directory never has to be known. A native OS picker is not available to a local web page that must hand the server a filesystem PATH — the in-app browser stays, decluttered.
+
+## 104. The video now says who made it and what it cost
+
+`GET /api/usage` serves the accounting `produce` already writes (usage.json totals + the production stamp), and the Inspector's no-selection view shows it: provider and models, calls, tokens (estimation flagged), cost — billed, or API-equivalent for subscription runs — and the clip window when there is one. Pricing research corrected one stale family: opus repriced at 4.5 to $5/$25 (was $15/$75), verified against current published rates; gemini-3.6-flash at $1.50/$7.50 was already right. The README's override example now shows the real numbers.
+
+## 105. The standard honesty line
+
+"AI can make mistakes. The cut, captions and graphics are generated — review before publishing." — in the editor's side panel (always, LLM run or not: the cut and captions are machine-derived either way), at the end of every report.txt, in the README, and on the docs site.

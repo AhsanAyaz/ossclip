@@ -146,6 +146,9 @@ export async function produceScenes(
      * slices the rest of its pipeline state to `clip.window`.
      */
     clip?: { targetSec: number };
+    /** Output frame shape (R21 §101) — landscape gets layout-variety
+     * guidance in the beat prompt. Omitted = portrait, no extra text. */
+    aspect?: "9:16" | "16:9";
   },
 ): Promise<ProduceScenesResult> {
   const framingBrief = args.framing
@@ -159,6 +162,7 @@ export async function produceScenes(
     args.speaker,
     framingBrief || undefined,
     args.clip,
+    args.aspect,
   );
 
   // ---- Clip window (R19 §93) ----------------------------------------------

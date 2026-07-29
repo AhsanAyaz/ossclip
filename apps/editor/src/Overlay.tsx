@@ -891,6 +891,13 @@ export const Overlay: React.FC<OverlayProps> = ({
       if (captionEdit !== null) return;
       const mod = e.metaKey || e.ctrlKey;
       if (e.key === "Escape") {
+        // A focused field first (R21 §102): Escape LEAVES the field, keeping
+        // the selection — without this, focus stayed trapped in the input and
+        // every shortcut below read as "broken" until a click elsewhere.
+        if (isTypingContext()) {
+          (document.activeElement as HTMLElement | null)?.blur();
+          return;
+        }
         select(null);
       } else if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
@@ -965,12 +972,17 @@ export const Overlay: React.FC<OverlayProps> = ({
         edits.addSplit(Math.round(t * 1000) / 1000);
       } else if (!mod && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         // ⌥+arrows move the SELECTION to the neighbouring scene (R16 §62) —
-        // the playhead stays put; this is "select", not "navigate".
+        // the playhead stays put; this is "select", not "navigate". With
+        // NOTHING selected it starts the walk (R21 §102): → selects the
+        // first scene, ← the last, instead of doing nothing.
         if (isTextEntry()) return;
         const sel = selectionRef.current;
-        if (!sel) return;
-        const idx = cues.findIndex((c) => c.id === sel.sceneId);
-        const next = idx === -1 ? undefined : cues[idx + (e.key === "ArrowRight" ? 1 : -1)];
+        const next = sel
+          ? (() => {
+              const idx = cues.findIndex((c) => c.id === sel.sceneId);
+              return idx === -1 ? undefined : cues[idx + (e.key === "ArrowRight" ? 1 : -1)];
+            })()
+          : cues[e.key === "ArrowRight" ? 0 : cues.length - 1];
         if (!next) return;
         e.preventDefault();
         select({ sceneId: next.id, elementId: null });

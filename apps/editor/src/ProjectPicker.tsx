@@ -103,6 +103,10 @@ export const ProjectPicker: React.FC<{
         ) : null}
         <div style={{ marginTop: 16 }}>
           <div style={sectionTitle}>browse</div>
+          <div style={{ color: "#6a6a75", fontSize: 12, marginBottom: 6 }}>
+            Folders only — hidden ones are omitted, and any projects produced inside a folder
+            show up directly as <span style={{ color: "#FFE14D" }}>▸ .ossclip/…</span> entries.
+          </div>
           {listing ? (
             <>
               <div style={pathRow}>
@@ -142,11 +146,18 @@ export const ProjectPicker: React.FC<{
                     onClick={() => (e.isWorkdir ? open(e.path) : void browse(e.path))}
                     title={e.path}
                   >
-                    <span style={{ marginRight: 8 }}>{e.isWorkdir ? "▸" : "◦"}</span>
+                    <span style={{ marginRight: 8, color: e.isWorkdir ? "#FFE14D" : "#6a6a75" }}>
+                      {e.isWorkdir ? "▸" : "▪"}
+                    </span>
                     {e.name}
-                    {e.isWorkdir ? <span style={workdirBadge}>project</span> : null}
+                    {e.isWorkdir ? <span style={workdirBadge}>project</span> : <span style={{ color: "#55555f" }}>/</span>}
                   </button>
                 ))}
+                {listing.entries.length === 0 ? (
+                  <div style={{ color: "#6a6a75", fontSize: 12, padding: "6px 8px" }}>
+                    no folders here
+                  </div>
+                ) : null}
               </div>
             </>
           ) : (

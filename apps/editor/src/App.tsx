@@ -17,7 +17,7 @@ import {
 } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
-import { Inspector } from "./Inspector";
+import { Inspector, type RunInfo } from "./Inspector";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
@@ -60,6 +60,8 @@ type RawRenderProps = PlayerProductionProps & {
 export const App: React.FC = () => {
   const edits = useEdits();
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
+  // Run provenance/cost for the Inspector's no-selection view (R21 §104).
+  const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -358,6 +360,10 @@ export const App: React.FC = () => {
     setWorkdirPath(body.workdir ?? null);
     setCanRender(Boolean(body.canRender));
     edits.load(body.overrides!);
+    // Best-effort — the panel simply omits the section when this fails.
+    void fetch("/api/usage")
+      .then(async (r) => setRunInfo(r.ok ? ((await r.json()) as RunInfo) : null))
+      .catch(() => setRunInfo(null));
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
     // progress, no logs, and no way to cancel it from the UI.
@@ -930,6 +936,7 @@ export const App: React.FC = () => {
             resolvedTheme={live.theme}
             anchorText={anchorText}
             onVideoPreview={setVideoPreview}
+            runInfo={runInfo}
           />
         </div>
       </div>

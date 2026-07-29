@@ -47,8 +47,9 @@ describe("pricing (FINDINGS §36)", () => {
   });
 
   it("prices opus at the published per-million rates", () => {
-    // 10k in @ $15/M + 1k out @ $75/M = $0.15 + $0.075
-    expect(costOf(call()).usd).toBeCloseTo(0.225, 6);
+    // 10k in @ $5/M + 1k out @ $25/M = $0.05 + $0.025 (the 4.5+ repricing,
+    // verified 2026-07 — R21 §104).
+    expect(costOf(call()).usd).toBeCloseTo(0.075, 6);
   });
 });
 
@@ -74,7 +75,7 @@ describe("totals", () => {
   it("an unpriced UNBILLED call leaves the billed total intact", () => {
     // Nothing about the mock's tokens can change what the API charged.
     const t = summarizeUsage([call(), call({ provider: "mock", billed: false, model: undefined })]);
-    expect(t.billedUsd).toBeCloseTo(0.225, 6);
+    expect(t.billedUsd).toBeCloseTo(0.075, 6);
     expect(t.equivalentUsd).toBeNull();
   });
 

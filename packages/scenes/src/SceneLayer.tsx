@@ -110,10 +110,18 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         const durationInFrames = Math.max(1, Math.round((cue.endSec - cue.startSec) * fps));
         const slotW = slot.w * width;
         const slotH = slot.h * height;
+        // Over-video bands keep breathing room (R21 §100): the scrim fills
+        // the slot, the CONTENT solves against an inset box, so type never
+        // touches the band's edge. Elsewhere padding stays 0 — those slots
+        // sit on the stage background and already carry their own air.
+        const overVideo = OVER_VIDEO_LAYOUTS.has(cue.layout);
+        const pad = overVideo ? Math.min(24, Math.round(slotH * 0.12)) : 0;
+        const contentW = slotW - pad * 2;
+        const contentH = slotH - pad * 2;
         // Fill the slot instead of floating at natural size in it (§23). The
-        // component lays out at slotW/scale and is then scaled up, so its
-        // rendered width is exactly the slot width while its type grows.
-        const scale = fitScale(cue.component, cue.props, { widthPx: slotW, heightPx: slotH });
+        // component lays out at contentW/scale and is then scaled up, so its
+        // rendered width is exactly the content width while its type grows.
+        const scale = fitScale(cue.component, cue.props, { widthPx: contentW, heightPx: contentH });
         return (
           <Sequence key={cue.id} from={from} durationInFrames={durationInFrames}>
             <div
@@ -140,7 +148,7 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
               }}
             >
               <ExitFade durationInFrames={durationInFrames}>
-                {OVER_VIDEO_LAYOUTS.has(cue.layout) ? (
+                {overVideo ? (
                   <div
                     style={{
                       position: "absolute",
@@ -154,12 +162,12 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                 ) : null}
                 {/* position:relative so the content paints (and hit-tests)
                     above the positioned scrim — document order alone loses. */}
-                <div style={{ width: slotW / scale, transform: `scale(${scale})`, position: "relative" }}>
+                <div style={{ width: contentW / scale, transform: `scale(${scale})`, position: "relative" }}>
                   <Component
                     props={cue.props}
                     theme={theme}
-                    widthPx={slotW / scale}
-                    heightPx={slotH / scale}
+                    widthPx={contentW / scale}
+                    heightPx={contentH / scale}
                     // Stored nudges are composition px; this wrapper scales by
                     // `scale`, so they are counter-divided here or a drag lands
                     // `scale`× past where it was dropped (PLAN Task 1).

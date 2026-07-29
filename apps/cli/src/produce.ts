@@ -509,6 +509,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
           forceComponent: opts.forceComponent,
           framing: framingCtx,
           clip: { targetSec: clipTargetSec },
+          aspect: landscape ? "16:9" : "9:16",
         });
         clipWindow = clipFresh.clip!.window;
         for (const note of clipFresh.clip!.notes) console.log(`  ▸ ${note}`);
@@ -603,6 +604,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         speaker: opts.speaker ?? cfg.speaker,
         forceComponent: opts.forceComponent,
         framing: framingCtx,
+        aspect: landscape ? "16:9" : "9:16",
       });
       scenes = result.scenes;
       beatSheet = { hook: result.beatSheet.hook, coverText: result.beatSheet.coverText };
@@ -687,6 +689,41 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     if (remapped.length > 0) {
       console.log(`▸ ${remapped.length} scene(s) re-laid out for the 16:9 frame`);
     }
+
+    // Layout VARIETY (R21 §101): the first real landscape run put nearly
+    // every graphic in a lower third — legal, monotonous, and for stack
+    // components actively broken (a BulletList's legibility floor cannot fit
+    // 0.18 of frame height; it rendered cropped). Two deterministic rules in
+    // time order: stack components never take the shallow band, and no two
+    // consecutive graphics share a layout. The prompt asks the producer for
+    // the same variety (see the aspect hint); this pass is the guarantee.
+    // The editor's per-scene layout override still wins over all of it.
+    const STACK_COMPONENTS = new Set<string>(["BulletList", "ChatMock", "TerminalMock"]);
+    const VARIETY_CYCLE: Array<Scene["layout"]> = [
+      "lower-third",
+      "split-right",
+      "blurred-behind",
+      "split-left",
+    ];
+    let prevLayout: Scene["layout"] | null = null;
+    let varied = 0;
+    for (const sc of scenes) {
+      let want = sc.layout;
+      if (STACK_COMPONENTS.has(sc.component) && want === "lower-third") want = "split-right";
+      if (want === prevLayout) {
+        const alternatives = VARIETY_CYCLE.filter(
+          (l) => l !== prevLayout && !(STACK_COMPONENTS.has(sc.component) && l === "lower-third"),
+        );
+        want = alternatives[Math.max(0, VARIETY_CYCLE.indexOf(want)) % alternatives.length]!;
+      }
+      if (want !== sc.layout) {
+        console.log(`  ▸ ${sc.id}: ${sc.layout} → ${want} (landscape variety)`);
+        sc.layout = want;
+        varied++;
+      }
+      prevLayout = want;
+    }
+    if (varied > 0) console.log(`▸ ${varied} scene(s) re-laid out for variety`);
   }
 
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
@@ -1009,6 +1046,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         `, reused from the workdir cache\n`;
     }
   }
+  // R21 §105 — the standard honesty line, in the artefact people forward.
+  report +=
+    "\nnote: the cut, captions and graphics are AI-generated — review the output before publishing.\n";
   await writeFile(join(work, "report.txt"), report);
   console.log("");
   console.log(report);
