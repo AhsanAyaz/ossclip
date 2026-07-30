@@ -993,3 +993,24 @@ The launch-week complaint, on real footage: a scene starts on the right context 
 Both ends fixed to one rule: **a graphic holds through the whole moment that motivated it.** Assembly clamps at a single 15-second ceiling for every layout (the lower-third exception generalized; the ceiling is a safety net for a rambling moment, not the normal exit), and the prompt now asks for moments that span the FULL stretch of speech about their beat — typically 5-15 seconds — with the graphic explicitly staying up until the speaker moves on. The pattern-interrupt rhythm the 5s punch-out used to enforce now comes from where it belonged all along: the coverage budget prices a graphic at its FULL span (the §7 scheduler stops pretending a 12-second card costs 5), which means fewer, longer graphics under the same 40-50% coverage — the trade §114 makes deliberately, and the §7/§8 test is repriced to match. Verified on the synthetic clip workdir: scenes that clamped at 5.0s now run their full 14.4s moments, and a scene straddling the clip's end still truncates at the output boundary.
 
 Existing workdirs pick this up on their next `produce` run without re-planning — the cue spans are derived at assembly, so a cached plan gets the new durations for free; only NEW plans see the reworded prompt. Editor-retimed scenes (pinned timing) are untouched, as ever.
+
+# Round 24 — two captions on one frame (2026-07-30)
+
+## 115. Adjacent sequences overran by a frame
+
+Spotted while recording a new demo: at 46.00s two caption lines rendered on top of each other, "And number five" stacked over "your rules." at two different heights. The obvious suspect was the caption timings, and they were innocent — all 77 lines were contiguous to the millisecond, zero overlapping pairs. §6b's breakpoints had done their job: the outgoing line ended at exactly 46.000 and the incoming one started at exactly 46.000.
+
+The defect was one layer down, in the seconds→frames conversion:
+
+```ts
+const from = Math.round(line.start * fps);
+const durationInFrames = Math.max(1, Math.round((line.end - line.start) * fps));
+```
+
+Two independent roundings. The last frame is `round(start·fps) + round(duration·fps)`, which is not `round(end·fps)` — when the start rounds down and the duration rounds up, the window reaches one frame past its end and lands on the next window's first frame. For the pair above: `round(45.25×30) = 1358`, `round(0.75×30) = 23`, last frame 1380; the next line's `from` is `round(46.0×30) = 1380`. Both drew on frame 1380.
+
+**8 of that render's 76 caption transitions collided.** Only 3 were visible, and the reason is the interesting part: those 3 straddled a scene-cue boundary, so the two lines resolved to *different* anchors and stacked at different heights. The other 5 overlapped exactly and read as a one-frame bold flash — present in every render ossclip has ever produced, and invisible. Earlier 3-scene renders of the identical source looked clean at the same timestamp because they had fewer cue boundaries, not because they had fewer collisions. A latent per-boundary defect gets more *exposed* as scene counts rise, which is a trap waiting for the §116 floor.
+
+The same idiom appeared at all three adjacent-`<Sequence>` sites, so all three are fixed, not just the reported one: captions (two lines), `SceneLayer` (**two graphics on screen**, the worst of the three) and `EdlVideo` (two video spans, plus a fade ramp measured against a length that was one frame long). The invariant now lives in one place, `frameWindow` in `packages/scenes/src/frames.ts`: **the end frame comes from the end time, never from a rounded duration.** Sub-frame windows still get one frame on purpose — a zero-length `<Sequence>` renders nothing, and a caption that never appears is worse than one that briefly shares a frame.
+
+Guarded by `packages/scenes/test/frames.test.ts`, which asserts the invariant against the verbatim 45.25/46.00/46.76 timings, all 77 real line spans, and a cross-fps sweep — and asserts that the *old* idiom collided on exactly 8 of those transitions, so the regression cannot quietly stop testing anything. Verified on a re-render of the same workdir: 45.97s, 46.00s and 46.03s now each carry one caption.

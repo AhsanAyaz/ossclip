@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import type { KeptSpan } from "@ossclip/core/browser";
+import { frameWindow } from "./frames";
 
 export interface EdlVideoProps {
   src: string;
@@ -54,8 +55,10 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
   return (
     <AbsoluteFill style={{ backgroundColor: background }}>
       {spans.map((sp, i) => {
-        const from = Math.round(sp.outIn * fps);
-        const durationInFrames = Math.max(1, Math.round((sp.outOut - sp.outIn) * fps));
+        // §115: from the end TIME. Beyond stacking two spans for a frame, a
+        // duration that is one frame long also skews the fade ramp below,
+        // which measures against `durationInFrames`.
+        const { from, durationInFrames } = frameWindow(sp.outIn, sp.outOut, fps);
         return (
           <Sequence key={i} from={from} durationInFrames={durationInFrames} premountFor={fps}>
             <AbsoluteFill style={{ transform: `scale(${scales[i]})` }}>

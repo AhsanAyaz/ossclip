@@ -2,6 +2,7 @@ import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
 import { safeAreaFor, activeCueAt } from "./stage";
+import { frameWindow } from "./frames";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
 
 export interface CaptionTrackProps {
@@ -186,8 +187,11 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
                   frame,
                 )
               : verticalAnchor;
-        const from = Math.round(line.start * fps);
-        const durationInFrames = Math.max(1, Math.round((line.end - line.start) * fps));
+        // End frame from the end TIME, never from a rounded duration — see
+        // frameWindow. Two lines either side of a cue boundary resolve to
+        // different anchors, so a one-frame overlap there renders as two
+        // captions stacked at two heights (§115).
+        const { from, durationInFrames } = frameWindow(line.start, line.end, fps);
         return (
           <Sequence key={i} from={from} durationInFrames={durationInFrames}>
             <LineView

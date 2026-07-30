@@ -3,6 +3,7 @@ import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotio
 import type { SceneCue, Theme } from "@ossclip/core/browser";
 import { graphicSlotFor } from "./stage";
 import { fitScale } from "./fit";
+import { frameWindow } from "./frames";
 import { TitleCard } from "./components/TitleCard";
 import { StatCard } from "./components/StatCard";
 import { RuleCard } from "./components/RuleCard";
@@ -106,8 +107,9 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         // not veto the component.
         const slot = graphicSlotFor(cue, { width, height });
         const Component = COMPONENTS[cue.component];
-        const from = Math.round(cue.startSec * fps);
-        const durationInFrames = Math.max(1, Math.round((cue.endSec - cue.startSec) * fps));
+        // §115: from the end TIME — a rounded duration can reach a frame past
+        // the cue and put two graphics on screen at once.
+        const { from, durationInFrames } = frameWindow(cue.startSec, cue.endSec, fps);
         const slotW = slot.w * width;
         const slotH = slot.h * height;
         // Over-video bands keep breathing room (R21 §100): the scrim fills
