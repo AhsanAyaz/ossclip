@@ -6,6 +6,7 @@ import { saveConfigPatch, type OssclipConfig } from "@ossclip/core";
 import { MODELS, ffmpegAsset, whisperAsset } from "../src/setup/manifest";
 import { formatPlan, planSetup, type SetupProbes } from "../src/setup/plan";
 import { download } from "../src/setup/download";
+import { tarCandidates } from "../src/setup/extract";
 import { openCommand } from "../src/open";
 
 const CFG: OssclipConfig = {
@@ -255,6 +256,26 @@ describe("saveConfigPatch", () => {
     const path = saveConfigPatch({ whisperPath: "/w" }, dir);
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ whisperPath: "/w" });
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("tarCandidates (§117: GNU tar can't read a zip)", () => {
+  it("windows tries the system bsdtar by ABSOLUTE path before bare tar", () => {
+    // Any box with Git for Windows — every GitHub runner — puts MSYS GNU tar
+    // ahead of the system bsdtar on PATH, and GNU tar exits 128 on a zip.
+    const c = tarCandidates("win32", { SystemRoot: "C:\\Windows" });
+    expect(c[0]).toBe("C:\\Windows\\System32\\tar.exe");
+    expect(c[1]).toBe("tar");
+  });
+
+  it("windows honours a relocated SystemRoot, and falls back when it is unset", () => {
+    expect(tarCandidates("win32", { SystemRoot: "D:\\Win" })[0]).toBe("D:\\Win\\System32\\tar.exe");
+    expect(tarCandidates("win32", {})[0]).toBe("C:\\Windows\\System32\\tar.exe");
+  });
+
+  it("posix just uses tar", () => {
+    expect(tarCandidates("linux", {})).toEqual(["tar"]);
+    expect(tarCandidates("darwin", {})).toEqual(["tar"]);
   });
 });
 

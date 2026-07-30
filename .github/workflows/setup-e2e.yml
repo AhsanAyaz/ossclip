@@ -71,5 +71,7 @@ jobs:
           FFMPEG=$(node -p "JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.ossclip/config.json','utf8')).ffmpegPath")
           "$FFMPEG" -y -f lavfi -i color=c=black:s=320x240:r=30 -i speech.wav \
             -shortest -c:v libx264 -c:a aac sample.mp4
-          pnpm ossclip transcribe sample.mp4 --workdir wd
-          grep -riq "cliff" wd/*/transcript.json
+          # Absolute paths: `pnpm --filter ossclip exec` runs with the cwd set
+          # to apps/cli, so a relative input resolves against the wrong dir.
+          pnpm ossclip transcribe "$PWD/sample.mp4" --workdir "$PWD/wd"
+          grep -riq "cliff" "$PWD"/wd/*/transcript.json

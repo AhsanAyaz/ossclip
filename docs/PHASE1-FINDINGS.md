@@ -1014,3 +1014,17 @@ Two independent roundings. The last frame is `round(start·fps) + round(duration
 The same idiom appeared at all three adjacent-`<Sequence>` sites, so all three are fixed, not just the reported one: captions (two lines), `SceneLayer` (**two graphics on screen**, the worst of the three) and `EdlVideo` (two video spans, plus a fade ramp measured against a length that was one frame long). The invariant now lives in one place, `frameWindow` in `packages/scenes/src/frames.ts`: **the end frame comes from the end time, never from a rounded duration.** Sub-frame windows still get one frame on purpose — a zero-length `<Sequence>` renders nothing, and a caption that never appears is worse than one that briefly shares a frame.
 
 Guarded by `packages/scenes/test/frames.test.ts`, which asserts the invariant against the verbatim 45.25/46.00/46.76 timings, all 77 real line spans, and a cross-fps sweep — and asserts that the *old* idiom collided on exactly 8 of those transitions, so the regression cannot quietly stop testing anything. Verified on a re-render of the same workdir: 45.97s, 46.00s and 46.03s now each carry one caption.
+
+## 117. `tar` on Windows is whichever tar PATH found first
+
+The first three-OS `setup-e2e` run: macOS green, Linux green, Windows failed both archives with `tar exited 128`. The model downloaded fine and its path was written to `config.json`, so the download and config halves were never in doubt — only extraction.
+
+`extractArchive` spawned a bare `tar`. On Windows that resolves through PATH, and any machine with Git for Windows installed — every GitHub runner, and most developer boxes — puts MSYS **GNU** tar ahead of the system bsdtar at `%SystemRoot%\System32\tar.exe`. GNU tar cannot read a zip; it exits 128. The §90 design note ("Windows 10+ ships tar.exe, which reads zip *and* tar.gz") was true about the OS and wrong about what `tar` means on a real box.
+
+The fallback that existed for exactly this did not fire, which is the more instructive half. `Expand-Archive` was wired to the child's `error` event — that is ENOENT, "the binary isn't there". A binary that *is* there and exits nonzero takes the `exit` path, which rejected. So the recovery path was reachable only in the one scenario it was least needed for.
+
+Now: on win32 the system bsdtar is tried by **absolute path first**, then bare `tar`, then `Expand-Archive` for zips — and a candidate failing for *any* reason (spawn error or nonzero exit) falls through to the next rather than throwing. `tarCandidates` is pure over an injected platform and env so the ordering is unit-tested without a Windows box.
+
+One bug inside the fix, caught by that test on the first run: the candidate path was built with `join`, which uses the *host* separator, so a Windows path assembled on macOS came out `C:\Windows/System32/tar.exe`. `win32.join` is the correct API when the platform is a parameter rather than the environment.
+
+Also fixed from the same run, in the workflow rather than the product: the end-to-end transcribe step passed a relative `sample.mp4`, and `pnpm --filter ossclip exec` runs with the cwd set to `apps/cli` — the identical cwd quirk `env.ts` documents for `.env` lookup. Linux's `setup` step had in fact fully succeeded; only the step verifying it was wrong.

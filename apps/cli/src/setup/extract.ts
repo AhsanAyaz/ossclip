@@ -1,46 +1,64 @@
 import { spawn } from "node:child_process";
 import { chmodSync, readdirSync, type Dirent } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 
 /**
  * Archive extraction without a single npm dependency: every platform we
  * download for ships a `tar` that reads everything we download. GNU tar
  * covers .tar.gz/.tar.xz on Linux; bsdtar (macOS, and Windows 10+ as
- * C:\Windows\System32\tar.exe) additionally reads .zip. The one gap —
- * a Windows box with tar.exe removed — falls back to PowerShell's
- * Expand-Archive for zips.
+ * %SystemRoot%\System32\tar.exe) additionally reads .zip.
+ *
+ * The Windows subtlety that cost a CI run (§117): a bare `tar` there is
+ * whichever one PATH finds first, and any machine with Git for Windows —
+ * every GitHub runner, and most developer boxes — puts MSYS **GNU** tar
+ * ahead of the system bsdtar. GNU tar cannot read a zip and exits 128. So
+ * on win32 the system bsdtar is tried by absolute path FIRST, and every
+ * candidate that fails for ANY reason falls through to the next: the
+ * original code only fell back when `spawn` itself errored, which a
+ * nonzero exit is not.
  */
 
-export function extractArchive(
+/** Extractors to try, in order. Pure, so the ordering is unit-testable. */
+export function tarCandidates(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (platform !== "win32") return ["tar"];
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows";
+  // `win32.join`, not `join`: this builds a Windows path and the planner is
+  // pure over an injected platform, so it must not pick separators from
+  // whatever host the tests happen to run on.
+  // Absolute bsdtar first, then whatever PATH has (an unusual box may only
+  // have one of them).
+  return [win32.join(systemRoot, "System32", "tar.exe"), "tar"];
+}
+
+const spawnOk = (bin: string, args: string[]): Promise<boolean> =>
+  new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: "ignore" });
+    child.on("error", () => resolve(false));
+    child.on("exit", (code) => resolve(code === 0));
+  });
+
+export async function extractArchive(
   archivePath: string,
   destDir: string,
   platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("tar", ["-xf", archivePath, "-C", destDir], { stdio: "ignore" });
-    child.on("error", () => {
-      if (platform === "win32" && archivePath.endsWith(".zip")) {
-        const ps = spawn(
-          "powershell",
-          [
-            "-NoProfile",
-            "-Command",
-            `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destDir}' -Force`,
-          ],
-          { stdio: "ignore" },
-        );
-        ps.on("error", (e) => reject(new Error(`neither tar nor PowerShell could extract: ${e.message}`)));
-        ps.on("exit", (code) =>
-          code === 0 ? resolve() : reject(new Error(`Expand-Archive exited ${code}`)),
-        );
-        return;
-      }
-      reject(new Error(`'tar' not found — needed to extract ${archivePath}`));
-    });
-    child.on("exit", (code) =>
-      code === 0 ? resolve() : reject(new Error(`tar exited ${code} extracting ${archivePath}`)),
-    );
-  });
+  for (const bin of tarCandidates(platform, env)) {
+    if (await spawnOk(bin, ["-xf", archivePath, "-C", destDir])) return;
+  }
+  if (platform === "win32" && archivePath.endsWith(".zip")) {
+    const ok = await spawnOk("powershell", [
+      "-NoProfile",
+      "-Command",
+      `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destDir}' -Force`,
+    ]);
+    if (ok) return;
+    throw new Error(`neither tar nor Expand-Archive could extract ${archivePath}`);
+  }
+  throw new Error(`tar could not extract ${archivePath}`);
 }
 
 /**
