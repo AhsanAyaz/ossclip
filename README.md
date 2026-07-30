@@ -4,9 +4,9 @@
 [![npm](https://img.shields.io/npm/v/ossclip)](https://www.npmjs.com/package/ossclip)
 [![docs](https://img.shields.io/badge/docs-ahsanayaz.github.io%2Fossclip-8ab4f8)](https://ahsanayaz.github.io/ossclip/)
 
-![A produce run in the terminal: transcribe, analyze, cut, captions, scenes, render — each step reporting what it did](./docs/site/assets/render-example.png)
+![Before and after: the raw take beside the produced short — captions, framing and LLM-planned graphics](./docs/site/assets/demo-before-after.gif)
 
-<p align="center"><em>One <code>ossclip produce</code> run, end to end — every stage says what it did and why, and the cut report is written beside the video.</em></p>
+<p align="center"><em>Left: the raw take. Right: what <code>ossclip produce</code> returns — cuts, word-timed captions, face-aware framing and code-rendered graphics.</em></p>
 
 **A local-first CLI that turns a talking-head take into a finished short.** It cuts silence and filler words, writes word-timed kinetic captions, frames on the measured face, and has an LLM plan **code-rendered on-screen graphics** — title cards, stat cards, diagrams, terminal and chat mockups — from what was actually said. Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones, on your own key or your existing Claude Code subscription. Vertical 9:16 by default, landscape 16:9 with `--aspect`.
 
@@ -54,6 +54,10 @@ ossclip produce input.mp4 --no-render
 # Long-form in, one short out: the strongest ~60s window, chosen by the producer
 ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 ```
+
+![A produce run in the terminal: transcribe, analyze, cut, captions, scenes, render — each step reporting what it did](./docs/site/assets/render-example.png)
+
+<p align="center"><em>One <code>ossclip produce</code> run, end to end — every stage says what it did and why, and the cut report is written beside the video.</em></p>
 
 Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`, the hash taken from the source's *content* — so the same footage reuses its cache, `--workdir` starts a separate project, and deleting the directory forces a clean run) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
 
