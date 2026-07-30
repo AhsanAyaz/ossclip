@@ -13,25 +13,21 @@ const DROP_BELOW_SEC = 0.8;
 const SHORT_TAKE_SEC = 45;
 const SHORT_TAKE_MIN_SCENE_SEC = 3;
 /**
- * A graphic punches in, makes its point, and hands the frame back to the
- * speaker — it does not have to span the moment that motivated it. Keeps the
- * §4.5 pattern-interrupt rhythm instead of 10s static cards (FINDINGS §3).
- * Exported: the beat scheduler budgets coverage with this same number (§7).
+ * A graphic holds through the WHOLE moment that motivated it (R23 §114).
+ * The old 5s punch-out implemented §4.5's pattern interrupt (§3's fix for
+ * 10s static cards), but post-launch footage showed its real effect: scenes
+ * started on their context and LEFT while the speaker was still on it — the
+ * card gone, the captions still discussing it. The interrupt rhythm now
+ * comes from the coverage budget and moment alternation (the beat scheduler
+ * prices a graphic at its full span), not from cutting cards off early.
+ * This ceiling is the safety net for a rambling moment, not the normal
+ * exit; it was the lower-third hold since R20 §95 and is now every
+ * layout's. Exported: the beat scheduler budgets coverage with it (§7).
  */
-export const MAX_SCENE_SEC = 5;
-/**
- * A lower third never TAKES the frame — the speaker stays full-bleed the
- * whole time — so the pattern-interrupt argument behind MAX_SCENE_SEC does
- * not apply and the punch-out at 5s was cutting cards off mid-sentence
- * (R20 §95, seen on the first real landscape run). It holds through its
- * whole moment instead, under this generous ceiling so a rambling moment
- * still cannot pin one static card up for a minute.
- */
-export const MAX_OVERLAY_SCENE_SEC = 15;
-
-/** The on-screen cap for a cue, by how much frame its layout takes. */
-const maxSceneSecFor = (layout: SceneCue["layout"]): number =>
-  layout === "lower-third" ? MAX_OVERLAY_SCENE_SEC : MAX_SCENE_SEC;
+export const MAX_SCENE_SEC = 15;
+/** R20 §95's lower-third ceiling — now the universal one; kept as an alias
+ * so published consumers of the old name keep compiling. */
+export const MAX_OVERLAY_SCENE_SEC = MAX_SCENE_SEC;
 /** Breathing room enforced between consecutive scenes. */
 const SCENE_GAP_SEC = 0.05;
 
@@ -102,7 +98,7 @@ export function assembleScenes(
     if (cue.endSec - cue.startSec < minScene) {
       cue.endSec = cue.startSec + minScene;
     }
-    cue.endSec = Math.min(cue.endSec, cue.startSec + maxSceneSecFor(cue.layout), map.outputDuration);
+    cue.endSec = Math.min(cue.endSec, cue.startSec + MAX_SCENE_SEC, map.outputDuration);
     if (cue.endSec - cue.startSec < DROP_BELOW_SEC) {
       dropped.push({ id: cue.id, reason: "too short after clamping" });
       continue;

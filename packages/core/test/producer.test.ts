@@ -72,9 +72,11 @@ describe("producer brain", () => {
     expect(issues.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("budgets graphics by COVERAGE and keeps survivors spread (FINDINGS §7/§8)", () => {
-    // 120 words → ~60s runtime; 8 moments of 15 words (≈7.4s each, est show 5s).
-    // 8×5s = 40s of graphics vs a budget of 45% × 59.9s ≈ 27s → demote 3.
+  it("budgets graphics by COVERAGE and keeps survivors spread (FINDINGS §7/§8, repriced §114)", () => {
+    // 120 words → ~60s runtime; 8 moments of 15 words (≈7.4s each). Since
+    // §114 a graphic is priced at its FULL span (it holds through the whole
+    // moment), so 8×7.4s ≈ 59s of graphics vs a budget of 45% × 59.9s ≈ 27s
+    // → only ~3 survive. Fewer, longer graphics is the deal §114 made.
     const t = mkTranscript(120);
     const kinds = ["TitleCard", "StatCard", "FlowDiagram", "RuleCard", "ChatMock", "TerminalMock", "StrikethroughReveal", "ScreenshotFrame"] as const;
     const sheet = BeatSheetSchema.parse({
@@ -90,18 +92,26 @@ describe("producer brain", () => {
     const { sheet: fixed, issues } = normalizeBeatSheet(sheet, t);
     const survivors = fixed.moments.flatMap((m, i) => (m.sceneKind !== "none" ? [i] : []));
     const runtime = t.words[t.words.length - 1]!.end - t.words[0]!.start;
-    const shown = survivors.length * 5;
+    const spanOf = (i: number) => {
+      const m = fixed.moments[i]!;
+      return Math.min(t.words[m.endWord]!.end - t.words[m.startWord]!.start, 15);
+    };
+    const shown = survivors.reduce((acc, i) => acc + spanOf(i), 0);
     expect(shown).toBeLessThanOrEqual(GRAPHICS_COVERAGE_TARGET * runtime + 1e-6);
     // Hook and payoff spared.
     expect(fixed.moments[0]!.sceneKind).toBe("TitleCard");
     expect(fixed.moments[7]!.sceneKind).toBe("ScreenshotFrame");
-    // No drought: consecutive survivors never more than ~1/3 of runtime apart.
+    // No drought: the demotion policy still opens the SMALLEST gaps it can.
+    // With ~3 full-span survivors over 60s the best achievable spacing is
+    // ~runtime/2 between midpoints — the §8 hollow-middle failure this
+    // guards against left gaps far beyond that.
     const mids = survivors.map((i) => {
       const m = fixed.moments[i]!;
       return (t.words[m.startWord]!.start + t.words[m.endWord]!.end) / 2;
     });
     for (let i = 1; i < mids.length; i++) {
-      expect(mids[i]! - mids[i - 1]!).toBeLessThanOrEqual(runtime / 3 + 1e-6);
+      // +1s of slack: midpoints sit on word boundaries, not ideal positions.
+      expect(mids[i]! - mids[i - 1]!).toBeLessThanOrEqual(runtime / 2 + 1);
     }
     expect(issues.some((i) => i.issue.includes("coverage"))).toBe(true);
   });

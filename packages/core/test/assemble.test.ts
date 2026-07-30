@@ -94,8 +94,8 @@ describe("assembleScenes", () => {
     expect(dropped[0]).toMatchObject({ id: "b" });
   });
 
-  it("a lower third holds through its whole moment; frame-taking layouts still punch out at 5s (R20 §95)", () => {
-    // 20 words at 0.5s each — a 9.4s moment, longer than MAX_SCENE_SEC.
+  it("every layout holds through its whole moment (R23 §114), under the 15s ceiling", () => {
+    // 20 words at 0.5s each — a 9.9s moment, longer than the old 5s punch-out.
     const long: Transcript = {
       language: "en",
       words: Array.from({ length: 20 }, (_, i) => ({
@@ -105,18 +105,29 @@ describe("assembleScenes", () => {
       })),
     };
     const map = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" } satisfies Segment]);
-    const lower = assembleScenes(
-      [scene("lower", 0, 19, { layout: "lower-third" })],
-      long,
-      map,
+    for (const layout of ["lower-third", "video-top", "graphic-only"] as const) {
+      const cue = assembleScenes([scene(`s-${layout}`, 0, 19, { layout })], long, map).cues[0]!;
+      // The discussion runs 0 → 9.9s; the card stays for all of it — the
+      // launch complaint was cards leaving while the captions still talked
+      // about them.
+      expect(cue.endSec - cue.startSec).toBeGreaterThan(9);
+    }
+    // The ceiling still exists: a 25s moment cannot pin one static card up
+    // for its whole span.
+    const rambling: Transcript = {
+      language: "en",
+      words: Array.from({ length: 50 }, (_, i) => ({
+        text: `w${i}`,
+        start: i * 0.5,
+        end: i * 0.5 + 0.4,
+      })),
+    };
+    const longMap = new TimeMap([{ srcIn: 0, srcOut: 25, kind: "keep" } satisfies Segment]);
+    const capped = assembleScenes(
+      [scene("capped", 0, 49, { layout: "lower-third" })],
+      rambling,
+      longMap,
     ).cues[0]!;
-    // The sentence is 0 → 9.9s; the card stays for all of it.
-    expect(lower.endSec - lower.startSec).toBeGreaterThan(9);
-    const taking = assembleScenes(
-      [scene("taking", 0, 19, { layout: "video-top" })],
-      long,
-      map,
-    ).cues[0]!;
-    expect(taking.endSec - taking.startSec).toBeCloseTo(5, 5);
+    expect(capped.endSec - capped.startSec).toBeCloseTo(15, 5);
   });
 });
