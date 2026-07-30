@@ -1,0 +1,41 @@
+name: Bug report
+description: Something failed or produced the wrong output
+labels: ["bug"]
+body:
+  - type: input
+    id: command
+    attributes:
+      label: The command you ran
+      placeholder: ossclip produce input.mp4 --produce -o out.mp4
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`ossclip doctor` output"
+      description: Paste the whole table — it's the fastest way to rule the environment in or out, and install friction reported here directly drives the roadmap.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The error, or what the output got wrong. For a visual defect, attach a frame. Include the relevant part of `report.txt` if the run got that far.
+    validations:
+      required: true
+  - type: input
+    id: source-shape
+    attributes:
+      label: Source shape
+      description: Portrait/landscape, rough length, anything unusual (letterboxed, burned-in captions, screen recording…)
+      placeholder: portrait, 45s, phone recording
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: OS and how you installed
+      placeholder: "Windows 11, npm i -g ossclip + ossclip setup"
+    validations:
+      required: true

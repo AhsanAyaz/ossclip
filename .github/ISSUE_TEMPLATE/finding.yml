@@ -1,0 +1,40 @@
+name: Finding
+description: A real render did something worth logging — the unit this project improves by
+labels: ["finding"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ossclip is findings-first: every fix traces to a numbered entry in
+        `docs/PHASE1-FINDINGS.md` — a defect seen in a REAL render, what caused
+        it, and what changed. This template is how a render of yours becomes
+        one. It doesn't have to be a crash; "the graphic left before the point
+        was made" is a finding.
+  - type: textarea
+    id: observed
+    attributes:
+      label: What you observed
+      description: What the output did, on what footage. A frame or a short clip says more than a paragraph.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: input
+    id: source-shape
+    attributes:
+      label: Source shape
+      placeholder: landscape, 8min screen-share with talking head, --clip 60
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Relevant part of report.txt
+      description: The producer explains its choices there — the line that justified the wrong choice is usually the finding.
+      render: text
+    validations:
+      required: false
