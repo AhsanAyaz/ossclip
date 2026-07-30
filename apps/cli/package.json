@@ -1,6 +1,6 @@
 {
   "name": "ossclip",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Local-first CLI video producer: cuts silence and fillers, word-timed captions, face-aware framing, and LLM-planned code-rendered graphics \u2014 transcription and rendering never leave your machine",
   "type": "module",
   "license": "MIT",
