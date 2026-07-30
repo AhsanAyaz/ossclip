@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
 import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
@@ -186,11 +186,38 @@ program
   .action(async (renderProps: string, opts) => {
     const propsPath = resolve(renderProps);
     const publicDir = opts.videoDir ? resolve(opts.videoDir) : dirname(propsPath);
+    // Resolve Remotion's CLI through module resolution instead of spawning
+    // `pnpm` — a global `npm i -g ossclip` has no pnpm and no workspace, and
+    // Windows would need the .cmd shim. `@remotion/cli` is a dependency of
+    // @ossclip/renderer, so resolving from THERE works in both a clone and a
+    // published install, on every OS, run via the node that's running us.
+    const { createRequire } = await import("node:module");
+    let remotionCliJs: string;
+    try {
+      const require = createRequire(import.meta.url);
+      const rendererDir = dirname(require.resolve("@ossclip/renderer/package.json"));
+      const fromRenderer = createRequire(join(rendererDir, "package.json"));
+      const cliPkgPath = fromRenderer.resolve("@remotion/cli/package.json");
+      const cliPkg = JSON.parse(readFileSync(cliPkgPath, "utf8")) as {
+        bin: string | Record<string, string>;
+      };
+      const binRel = typeof cliPkg.bin === "string" ? cliPkg.bin : cliPkg.bin.remotion;
+      if (!binRel) throw new Error("no remotion bin entry");
+      remotionCliJs = join(dirname(cliPkgPath), binRel);
+    } catch {
+      throw new Error(
+        "couldn't resolve @remotion/cli — in a clone, run `pnpm install` first",
+      );
+    }
     const child = spawn(
-      "pnpm",
-      ["exec", "remotion", "studio", STUDIO_ENTRY, `--props=${propsPath}`, `--public-dir=${publicDir}`],
+      process.execPath,
+      [remotionCliJs, "studio", STUDIO_ENTRY, `--props=${propsPath}`, `--public-dir=${publicDir}`],
       { stdio: "inherit" },
     );
+    child.on("error", (e) => {
+      console.error(`✗ failed to start Remotion Studio: ${e.message}`);
+      process.exit(1);
+    });
     child.on("exit", (code) => process.exit(code ?? 0));
   });
 
@@ -218,7 +245,26 @@ program
     }
     const server = await startEditServer(workdir, { port: opts.port, pageDir });
     console.log(`▸ editor at ${server.url}`);
-    if (opts.open) spawn("open", [server.url], { stdio: "ignore" });
+    if (opts.open) {
+      const { openInBrowser } = await import("./open");
+      openInBrowser(server.url);
+    }
+  });
+
+program
+  .command("setup")
+  .description(
+    "install everything ossclip needs (ffmpeg, whisper.cpp, the transcription model) " +
+      "into ~/.ossclip — the one-command onboarding on macOS, Linux, and Windows",
+  )
+  .option("--model <name>", "transcription model to download (default: config, i.e. small.en)")
+  .option("--skip-llm", "don't ask about an LLM provider (only --produce needs one)", false)
+  .option("--force", "re-download the pieces setup manages, even if present", false)
+  .option("-y, --yes", "no questions — accept the plan and skip the provider prompt", false)
+  .action(async (opts) => {
+    if (envFiles.length > 0) console.log(`▸ env: ${envFiles.join(", ")}`);
+    const { setup } = await import("./setup/setup");
+    await setup({ model: opts.model, skipLlm: opts.skipLlm, force: opts.force, yes: opts.yes });
   });
 
 program

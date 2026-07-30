@@ -20,24 +20,37 @@ The graphics layer is the part comparable tools don't have: nine Zod-typed scene
 
 ## Install
 
+Two commands, on macOS, Linux, or Windows (plain PowerShell — no WSL, no admin rights):
+
 ```sh
-npm install -g ossclip     # or: pnpm add -g ossclip
-ossclip doctor             # checks every prerequisite, prints the exact fix per line
+npm install -g ossclip
+ossclip setup
 ```
 
-`ossclip doctor` checks all of it — Node ≥ 22, `ffmpeg`/`ffprobe`, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (`whisper-cli`), the transcription model, and an LLM provider — and prints the per-platform install command for anything missing. The short version:
+`ossclip setup` provisions everything ossclip runs on, into one folder (`~/.ossclip`): a static [ffmpeg](https://ffmpeg.org) build, a prebuilt [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli` (on macOS both come via Homebrew), and the transcription model — `small.en`, ~466 MB, the biggest piece of a ~600 MB total. It shows the plan with sizes and asks before downloading, resumes interrupted downloads, verifies checksums, and **skips anything you already have** — an ffmpeg already on your PATH stays yours. It records absolute paths in `~/.ossclip/config.json`, so nothing edits your PATH. Uninstalling is `npm rm -g ossclip` plus deleting `~/.ossclip`.
+
+Setup also offers to save an LLM key for `--produce` (the graphics planner): a logged-in [Claude Code](https://claude.com/claude-code) is detected automatically, or paste an `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`. Skip it freely — cut + captions run fully local without one.
+
+If anything looks wrong later, one command diagnoses it: `ossclip doctor` prints a line per prerequisite and the exact fix.
+
+> **Never used a terminal?** That's fine. Install Node ≥ 22 from [nodejs.org](https://nodejs.org) (a normal click-through installer), open a terminal (macOS: press ⌘-space, type *terminal*; Windows: open the Start menu, type *PowerShell*), paste the two lines above, press Enter, and answer the questions. Expect the downloads to take a few minutes.
+
+Licence note, since setup downloads binaries: the static ffmpeg builds it fetches ([BtbN](https://github.com/BtbN/FFmpeg-Builds)) are GPL, downloaded onto your machine at your request — nothing GPL ships inside the MIT npm package.
+
+### Manual install (if you'd rather own the toolchain)
 
 ```sh
-brew install ffmpeg whisper-cpp        # macOS; Linux: apt install ffmpeg + build whisper.cpp
+brew install ffmpeg whisper-cpp        # macOS; Linux/Windows: ffmpeg from your package manager,
+                                       # whisper-cli from https://github.com/ggml-org/whisper.cpp/releases
 
 mkdir -p ~/.ossclip/models
 curl -L -o ~/.ossclip/models/ggml-small.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 ```
 
-For `--produce` (the LLM graphics planner): a logged-in [Claude Code](https://claude.com/claude-code), or `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY`.
+`ossclip doctor` checks all of it — Node ≥ 22, `ffmpeg`/`ffprobe`, `whisper-cli`, the model, an LLM provider — and prints the per-platform command for anything missing. Binaries can live anywhere: point `OSSCLIP_FFMPEG` / `OSSCLIP_WHISPER` (or `config.json`) at them. Setup and manual install compose — setup only ever fills the gaps doctor would flag.
 
-`small.en` is the default model. A mistranscribed word ends up in your captions *and* on a graphic, so accuracy matters more here than speed — which is also why `--produce` runs a repair pass over the transcript before anything is drawn. Compare models on your own footage with `--whisper-model base.en|small.en|medium.en`.
+`small.en` is the default model. A mistranscribed word ends up in your captions *and* on a graphic, so accuracy matters more here than speed — which is also why `--produce` runs a repair pass over the transcript before anything is drawn. Compare models on your own footage with `--whisper-model base.en|small.en|medium.en` (~142 MB / ~466 MB / ~1.5 GB; `ossclip setup --model <name>` downloads any of them).
 
 ## Quick start
 
@@ -83,6 +96,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | --- | --- |
 | `produce <input>` | the full pipeline: transcribe → analyze → cut → captions → scenes → render (+ cover) |
 | `edit [workdir]` | direct-manipulation editor; bare `edit` opens a project picker |
+| `setup` | install ffmpeg, whisper.cpp and the model into `~/.ossclip` — the one-command onboarding (`--model <name>`, `--skip-llm`, `--force`, `--yes`) |
 | `doctor` | check every prerequisite and print the exact fix for anything missing |
 | `transcribe <input>` | stops after the transcript and cut report — no render |
 | `studio <render-props.json>` | opens Remotion Studio on a produced composition, for visual debugging |

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -40,6 +40,42 @@ const DEFAULTS: OssclipConfig = {
   // reached the captions and a hook label (FINDINGS §14b).
   model: "small.en",
 };
+
+/** Everything ossclip owns on disk lives under here: config.json, models/, bin/, .env. */
+export const CONFIG_DIR = join(homedir(), ".ossclip");
+
+export function configFilePath(baseDir: string = CONFIG_DIR): string {
+  return join(baseDir, "config.json");
+}
+
+/**
+ * Merge a patch into `~/.ossclip/config.json`, creating it if needed.
+ *
+ * Read-merge-write over the RAW file, not a loaded OssclipConfig: users
+ * hand-edit this file, and keys the patch doesn't touch (`pricing`,
+ * `speaker`, comments-by-convention like `_note`) must survive a
+ * `ossclip setup` run untouched.
+ */
+export function saveConfigPatch(patch: Partial<OssclipConfig>, baseDir: string = CONFIG_DIR): string {
+  const path = configFilePath(baseDir);
+  let existing: Record<string, unknown> = {};
+  try {
+    existing = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    // absent or unparseable — a fresh object; setup never destroys a broken
+    // file silently, so keep a .bak when the file existed but didn't parse
+    try {
+      const raw = readFileSync(path, "utf8");
+      writeFileSync(`${path}.bak`, raw);
+    } catch {
+      // truly absent — nothing to back up
+    }
+  }
+  mkdirSync(baseDir, { recursive: true });
+  const merged = { ...existing, ...patch };
+  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`);
+  return path;
+}
 
 /**
  * Resolution order per key: env (OSSCLIP_FFMPEG, OSSCLIP_FFPROBE, OSSCLIP_WHISPER,

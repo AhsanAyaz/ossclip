@@ -206,8 +206,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
     throw new Error("--clip-window is recorded by --clip runs for replay — pass --clip too.");
   }
 
-  await preflight(cfg.ffmpegPath, "Install ffmpeg (brew install ffmpeg / apt install ffmpeg) or set OSSCLIP_FFMPEG.");
-  await preflight(cfg.ffprobePath, "Install ffmpeg (provides ffprobe) or set OSSCLIP_FFPROBE.");
+  await preflight(cfg.ffmpegPath, "Run `ossclip setup`, install ffmpeg yourself (brew/apt/winget), or set OSSCLIP_FFMPEG.");
+  await preflight(cfg.ffprobePath, "Run `ossclip setup`, install ffmpeg (provides ffprobe), or set OSSCLIP_FFPROBE.");
 
   // The output frame — every rect downstream is a fraction of THIS, and the
   // stage geometry now takes it as an argument rather than assuming portrait.
@@ -278,14 +278,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   } else {
     await preflight(
       cfg.whisperPath,
-      "Install whisper.cpp (https://github.com/ggml-org/whisper.cpp) or set OSSCLIP_WHISPER.",
+      "Run `ossclip setup`, install whisper.cpp yourself (https://github.com/ggml-org/whisper.cpp), or set OSSCLIP_WHISPER.",
     );
     const model = opts.whisperModel ?? cfg.model;
     const modelPath = isAbsolute(model) ? model : join(cfg.modelDir, `ggml-${model}.bin`);
     if (!existsSync(modelPath)) {
       throw new Error(
         `whisper model not found at ${modelPath}.\n` +
-          `Download one, e.g.:\n  curl -L -o ${modelPath} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${model}.bin`,
+          `Run \`ossclip setup${model === cfg.model ? "" : ` --model ${model}`}\` to download it — or manually:\n` +
+          `  curl -L -o ${modelPath} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${model}.bin`,
       );
     }
     console.log(`▸ transcribing (${basename(modelPath)})…`);

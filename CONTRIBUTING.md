@@ -10,7 +10,7 @@ pnpm build            # builds the editor page (`ossclip edit` serves it)
 pnpm ossclip doctor   # checks ffmpeg, whisper-cli, the model, a provider key
 ```
 
-`doctor` is the fast answer to "why did that fail" — it prints the exact fix per missing prerequisite. You need `ffmpeg`/`ffprobe`, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with a ggml model, and Node ≥ 22. An LLM key is needed only for `--produce`; the cut-and-caption path is fully offline.
+`doctor` is the fast answer to "why did that fail" — it prints the exact fix per missing prerequisite. You need `ffmpeg`/`ffprobe`, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with a ggml model, and Node ≥ 22. `pnpm ossclip setup` provisions the missing pieces into `~/.ossclip` if you'd rather not install them yourself. An LLM key is needed only for `--produce`; the cut-and-caption path is fully offline.
 
 Run the pipeline on your own footage:
 
@@ -54,7 +54,7 @@ apps/editor        the direct-manipulation editor (`ossclip edit`)
 
 ## Scope
 
-Things deliberately **not** in scope, so you don't build one and find out at review: a hosted version, a web uploader, a GUI installer, stock B-roll, TTS, speaker diarisation. Long-form highlight selection is a real gap, not a rejected one — see the README's scope note if you want to take it on, and open an issue first so the design gets discussed before the code.
+Things deliberately **not** in scope, so you don't build one and find out at review: a hosted version, a web uploader, a GUI installer, stock B-roll, TTS, speaker diarisation. (`ossclip setup` is not the rejected GUI installer — it's CLI provisioning of the same toolchain doctor checks, and it deliberately stays that.) Long-form highlight selection is a real gap, not a rejected one — see the README's scope note if you want to take it on, and open an issue first so the design gets discussed before the code. The roadmap — what's next, what needs a design issue first, what's rejected — lives in [`ROADMAP.md`](./ROADMAP.md).
 
 ## Docs assets
 
