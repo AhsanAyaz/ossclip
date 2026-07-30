@@ -1,0 +1,75 @@
+name: setup e2e
+
+# The real proof that `ossclip setup` works where the docs say it does:
+# a cold provision on all three OSes, then doctor must show every piece
+# setup owns as green. External downloads make this inherently slower and
+# flakier than unit CI, so it runs only when the setup path changes, on
+# demand, and weekly (to catch an upstream release asset disappearing).
+on:
+  pull_request:
+    paths:
+      - "apps/cli/src/setup/**"
+      - ".github/workflows/setup-e2e.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays — a broken upstream pin should not wait for the next PR
+
+concurrency:
+  group: setup-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    name: ossclip setup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Repeat runs shouldn't re-download ~200 MB; the key is the manifest,
+      # so bumping any pin gets a genuinely cold run.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ossclip
+          key: ossclip-setup-${{ runner.os }}-${{ hashFiles('apps/cli/src/setup/manifest.ts') }}
+
+      - name: ossclip setup
+        shell: bash
+        run: pnpm ossclip setup --model tiny.en --skip-llm --yes
+
+      # Doctor exits nonzero here by design — the runner has no LLM key and
+      # no built editor page, and neither is what this workflow proves. The
+      # assertion is that every piece SETUP owns is green.
+      - name: doctor shows the provisioned pieces green
+        shell: bash
+        run: |
+          pnpm ossclip doctor | tee doctor.txt || true
+          for check in ffmpeg ffprobe whisper-cli "whisper model (tiny.en)"; do
+            grep -F "✓ $check" doctor.txt || { echo "::error::$check is not green"; exit 1; }
+          done
+
+      # One real transcription through the provisioned binaries. espeak-ng
+      # synthesizes deterministic speech (same tool the test fixtures use);
+      # ubuntu-only because it's an apt one-liner there and one OS already
+      # proves the binaries transcribe.
+      - name: end-to-end transcribe (ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends espeak-ng
+          espeak-ng -v en-us -s 150 -w speech.wav \
+            "The install cliff is the adoption ceiling. This sentence proves the toolchain transcribes."
+          FFMPEG=$(node -p "JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.ossclip/config.json','utf8')).ffmpegPath")
+          "$FFMPEG" -y -f lavfi -i color=c=black:s=320x240:r=30 -i speech.wav \
+            -shortest -c:v libx264 -c:a aac sample.mp4
+          pnpm ossclip transcribe sample.mp4 --workdir wd
+          grep -riq "cliff" wd/*/transcript.json
