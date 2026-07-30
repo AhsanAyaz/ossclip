@@ -10,6 +10,11 @@ import type { OssclipConfig } from "@ossclip/core";
  * every one that fails silently becomes a GitHub issue instead of a
  * one-line fix the tool could have printed itself.
  *
+ * Since `ossclip setup` exists, doctor and setup are two halves of one
+ * contract: setup is the fix doctor prints first, and doctor is the
+ * verification setup ends with. The manual command stays on every fix line
+ * for people who'd rather own their toolchain.
+ *
  * Checks are pure over injected probes so the table is unit-testable; the
  * CLI wires the real spawn/existsSync in. The provider check MUST run after
  * `loadEnvFiles` (R16 §77) or a key living in `.env` reports a false
@@ -36,9 +41,18 @@ export interface DoctorProbes {
   editorPageDir: string | null;
 }
 
-/** brew on mac, apt elsewhere — the generic hint covers the rest. */
-const installHint = (platform: NodeJS.Platform, brew: string, apt: string, generic: string): string =>
-  platform === "darwin" ? brew : platform === "linux" ? apt : generic;
+/** brew on mac, apt on linux, winget/prebuilt on windows — generic covers the rest. */
+const installHint = (
+  platform: NodeJS.Platform,
+  brew: string,
+  apt: string,
+  win: string,
+  generic: string,
+): string =>
+  platform === "darwin" ? brew : platform === "linux" ? apt : platform === "win32" ? win : generic;
+
+/** Every installable prerequisite leads with the one-command ramp. */
+const viaSetup = (manual: string): string => "run `ossclip setup` — or manually: " + manual;
 
 export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
@@ -60,13 +74,15 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
     ...(ffmpegOk
       ? {}
       : {
-          fix:
+          fix: viaSetup(
             installHint(
               p.platform,
               "brew install ffmpeg",
               "sudo apt install ffmpeg",
+              "winget install ffmpeg",
               "install ffmpeg from https://ffmpeg.org",
             ) + " — or point OSSCLIP_FFMPEG (or config.json ffmpegPath) at the binary",
+          ),
         }),
   });
 
@@ -78,13 +94,15 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
     ...(ffprobeOk
       ? {}
       : {
-          fix:
+          fix: viaSetup(
             installHint(
               p.platform,
               "brew install ffmpeg (provides ffprobe)",
               "sudo apt install ffmpeg (provides ffprobe)",
+              "winget install ffmpeg (provides ffprobe)",
               "ffprobe ships with ffmpeg — https://ffmpeg.org",
             ) + " — or set OSSCLIP_FFPROBE",
+          ),
         }),
   });
 
@@ -96,13 +114,15 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
     ...(whisperOk
       ? {}
       : {
-          fix:
+          fix: viaSetup(
             installHint(
               p.platform,
               "brew install whisper-cpp",
-              "build whisper.cpp from source: https://github.com/ggml-org/whisper.cpp",
+              "download a prebuilt from https://github.com/ggml-org/whisper.cpp/releases",
+              "download whisper-blas-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases",
               "build whisper.cpp from source: https://github.com/ggml-org/whisper.cpp",
             ) + " — or point OSSCLIP_WHISPER at your whisper-cli",
+          ),
         }),
   });
 
@@ -117,9 +137,10 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
     ...(modelOk
       ? {}
       : {
-          fix:
+          fix: viaSetup(
             `mkdir -p ${cfg.modelDir} && curl -L -o ${modelPath} ` +
-            `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${cfg.model}.bin`,
+              `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${cfg.model}.bin`,
+          ),
         }),
   });
 
@@ -141,6 +162,7 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
       ? {}
       : {
           fix:
+            "run `ossclip setup` (it can save a key for you), or " +
             "export ANTHROPIC_API_KEY or GEMINI_API_KEY (a .env file works — see README), " +
             "or install Claude Code (https://claude.com/claude-code) and log in",
         }),

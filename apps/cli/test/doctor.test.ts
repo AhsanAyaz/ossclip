@@ -44,13 +44,37 @@ describe("ossclip doctor (R18 §90a)", () => {
     const ffmpeg = byName(checks, "ffmpeg");
     expect(ffmpeg.ok).toBe(false);
     expect(ffmpeg.fix).toContain("OSSCLIP_FFMPEG");
-    // Platform-specific: darwin says brew, linux says apt.
+    // Platform-specific: darwin says brew, linux says apt, windows says winget.
     expect(ffmpeg.fix).toContain("brew install ffmpeg");
     const linux = await runDoctor(
       CFG,
       healthy({ platform: "linux", binRuns: async (bin) => bin !== "ffmpeg" }),
     );
     expect(byName(linux, "ffmpeg").fix).toContain("apt install ffmpeg");
+    const win = await runDoctor(
+      CFG,
+      healthy({ platform: "win32", binRuns: async (bin) => bin !== "ffmpeg" }),
+    );
+    expect(byName(win, "ffmpeg").fix).toContain("winget install ffmpeg");
+  });
+
+  it("every installable prerequisite's fix leads with `ossclip setup` (§90: setup is the ramp)", async () => {
+    const checks = await runDoctor(
+      CFG,
+      healthy({ binRuns: async (bin) => bin === "brew", exists: () => false }),
+    );
+    for (const name of ["ffmpeg", "ffprobe", "whisper-cli", "whisper model"]) {
+      expect(byName(checks, name).fix).toMatch(/^run `ossclip setup`/);
+    }
+  });
+
+  it("windows gets a real whisper hint, not 'build from source'", async () => {
+    const checks = await runDoctor(
+      CFG,
+      healthy({ platform: "win32", binRuns: async (bin) => bin !== "whisper-cli" }),
+    );
+    expect(byName(checks, "whisper-cli").fix).toContain("whisper-blas-bin-x64.zip");
+    expect(byName(checks, "whisper-cli").fix).not.toContain("build whisper.cpp from source");
   });
 
   it("a missing model prints the exact download command for the CONFIGURED model", async () => {

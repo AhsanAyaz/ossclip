@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "ossclip": "tsx src/index.ts",
-    "prepack": "pnpm --filter @ossclip/editor build && rm -rf editor-dist && cp -r ../editor/dist editor-dist"
+    "prepack": "pnpm --filter @ossclip/editor build && node scripts/prepack.mjs"
   },
   "dependencies": {
     "@ossclip/core": "workspace:*",
