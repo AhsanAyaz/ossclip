@@ -123,16 +123,21 @@
 <p class="caption">One <code>ossclip produce</code> run, end to end — every stage says what it did and why.</p>
 
 <h2 id="install">Install</h2>
-<pre><code>npm install -g ossclip     # or: pnpm add -g ossclip
-ossclip doctor             # checks every prerequisite, prints the exact fix per line</code></pre>
-<p><code>ossclip doctor</code> checks Node ≥ 22, <code>ffmpeg</code>/<code>ffprobe</code>, <a href="https://github.com/ggml-org/whisper.cpp">whisper.cpp</a> (<code>whisper-cli</code>), the transcription model, and an LLM provider — with the per-platform install command for anything missing. The short version:</p>
-<pre><code>brew install ffmpeg whisper-cpp        # macOS; Linux: apt install ffmpeg + build whisper.cpp
+<p>Two commands, on macOS, Linux, or Windows (plain PowerShell — no WSL, no admin rights). The only prerequisite is Node ≥ 22 from <a href="https://nodejs.org">nodejs.org</a>.</p>
+<pre><code>npm install -g ossclip
+ossclip setup</code></pre>
+<p><code>ossclip setup</code> provisions everything into one folder (<code>~/.ossclip</code>): a static <a href="https://ffmpeg.org">ffmpeg</a> build, a prebuilt <a href="https://github.com/ggml-org/whisper.cpp">whisper.cpp</a> <code>whisper-cli</code> (on macOS both come via Homebrew), and the transcription model — <code>small.en</code>, ~466&nbsp;MB, the biggest piece of a ~600&nbsp;MB total. It shows the plan with sizes and asks before downloading, resumes interrupted downloads, verifies checksums, and skips anything you already have — an ffmpeg already on your PATH stays yours. Paths are recorded in <code>~/.ossclip/config.json</code>, so nothing edits your PATH. Uninstall = <code>npm rm -g ossclip</code> plus deleting <code>~/.ossclip</code>.</p>
+<p>Setup also offers to save an LLM key for <code>--produce</code>: a logged-in Claude Code is detected automatically, or paste an <code>ANTHROPIC_API_KEY</code> or <code>GEMINI_API_KEY</code>. Skip it freely — cut + captions run fully local without one. If anything looks wrong later, <code>ossclip doctor</code> prints a line per prerequisite and the exact fix.</p>
+<p>Licence note, since setup downloads binaries: the static ffmpeg builds it fetches (<a href="https://github.com/BtbN/FFmpeg-Builds">BtbN</a>) are GPL, downloaded onto your machine at your request — nothing GPL ships inside the MIT npm package.</p>
+<h3>Manual install (if you'd rather own the toolchain)</h3>
+<pre><code>brew install ffmpeg whisper-cpp        # macOS; Linux/Windows: ffmpeg from your package manager,
+                                       # whisper-cli from https://github.com/ggml-org/whisper.cpp/releases
 
 mkdir -p ~/.ossclip/models
 curl -L -o ~/.ossclip/models/ggml-small.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin</code></pre>
-<p>For <code>--produce</code>: a logged-in Claude Code, an <code>ANTHROPIC_API_KEY</code>, or a <code>GEMINI_API_KEY</code>.</p>
-<p><code>small.en</code> is the default. A mistranscribed word ends up in your captions <em>and</em> on a graphic, so accuracy beats speed here — and <code>--produce</code> runs a repair pass over the transcript before anything is drawn.</p>
+<p><code>ossclip doctor</code> checks all of it — with the per-platform command for anything missing. Binaries can live anywhere: point <code>OSSCLIP_FFMPEG</code> / <code>OSSCLIP_WHISPER</code> (or <code>config.json</code>) at them. Setup and manual install compose — setup only ever fills the gaps doctor would flag.</p>
+<p><code>small.en</code> is the default. A mistranscribed word ends up in your captions <em>and</em> on a graphic, so accuracy beats speed here — and <code>--produce</code> runs a repair pass over the transcript before anything is drawn. <code>ossclip setup --model &lt;name&gt;</code> downloads <code>base.en</code> (~142&nbsp;MB) or <code>medium.en</code> (~1.5&nbsp;GB) instead.</p>
 
 <h2 id="quickstart">Quick start</h2>
 <pre><code># The whole thing: cut + captions + LLM-planned graphics + cover
