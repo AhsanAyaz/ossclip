@@ -158,3 +158,90 @@ describe("buildCutlist", () => {
     expect(cutlist).toEqual([{ srcIn: 0, srcOut: duration, kind: "keep" }]);
   });
 });
+
+/**
+ * R27 §127. Lead and tail used to be identified by comparing the silence to a
+ * word stamp, and whisper's `-ml 1` stamps stretch to fill gaps. On a real
+ * take the first word was stamped 0.00-0.53 across silence that plainly starts
+ * at 0.00, so `pause.end <= first.start` was false; the opening dead air fell
+ * through to the interior rule, was shorter than `pauseMin`, and survived. The
+ * tail failed the same way by a 0.07s overlap, leaving the speaker on screen
+ * looking down after the last word.
+ */
+describe("lead and tail are decided by position in the file (§127)", () => {
+  /** The measured shape of the real failure: stamps that cover the silence. */
+  const stretched = (duration: number) => {
+    const words: Word[] = [
+      { text: "Video", start: 0, end: 0.53 }, // stamp covers the 0-0.53 silence
+      { text: "editing", start: 0.53, end: 1.1 },
+      { text: "is", start: 1.1, end: 1.4 },
+      { text: "hard.", start: 1.4, end: duration - 0.53 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    // Real dead air at both ends, overlapping those stretched stamps.
+    const silences: Span[] = [
+      { start: 0, end: 0.53 },
+      { start: duration - 0.6, end: duration },
+    ];
+    // Levels, as the CLI supplies them: this is what lets `analyze` override
+    // its own veto when a word is stamped over measurably dead air.
+    const windowSec = 0.1;
+    const windowsDb = Array.from({ length: Math.ceil(duration / windowSec) }, (_, i) => {
+      const t = i * windowSec;
+      return t < 0.53 || t >= duration - 0.6 ? -58 : -14;
+    });
+    return {
+      transcript,
+      analysis: analyze(transcript, silences, duration, { windowsDb, windowSec, speechDb: -14 }),
+      duration,
+    };
+  };
+
+  it("trims opening dead air even when the first word's stamp covers it", () => {
+    const { transcript, analysis, duration } = stretched(10);
+    const cut = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const lead = cut.find((s) => s.kind === "remove" && s.srcIn === 0);
+    expect(lead, "opening silence was not cut").toBeDefined();
+    // Speech starts at 0.53; LEAD_KEEP = 0.25 of run-up survives.
+    expect(lead!.srcOut).toBeCloseTo(0.28, 2);
+  });
+
+  it("trims trailing dead air even when the last stamp bleeds into it", () => {
+    const { transcript, analysis, duration } = stretched(10);
+    const cut = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const tail = cut.find((s) => s.kind === "remove" && Math.abs(s.srcOut - duration) < 1e-6);
+    expect(tail, "trailing silence was not cut").toBeDefined();
+    // TAIL_KEEP = 0.35 past where speech actually stops.
+    expect(tail!.srcIn).toBeCloseTo(duration - 0.6 + 0.35, 2);
+  });
+
+  it("aggressive breathes less at the ends than standard", () => {
+    // A short that LOOPS shows every frame of post-speech dead air on repeat,
+    // so "cut harder" has to reach the ends too — the fixed keeps were the one
+    // thing --cleanup aggressive could not tighten.
+    const tailStart = (level: "light" | "standard" | "aggressive"): number => {
+      const { transcript, analysis, duration } = stretched(10);
+      const cut = buildCutlist({ transcript, analysis, duration, level });
+      return cut.find((s) => s.kind === "remove" && Math.abs(s.srcOut - duration) < 1e-6)!.srcIn;
+    };
+    expect(tailStart("aggressive")).toBeLessThan(tailStart("standard"));
+    expect(tailStart("standard")).toBeLessThan(tailStart("light"));
+  });
+
+  it("cuts both ends regardless of cleanup level, since neither is a 'pause'", () => {
+    // The bug's real sting: these are shorter than `standard`'s 0.7s pauseMin,
+    // so misclassifying them as interior pauses silently kept them.
+    for (const level of ["light", "standard", "aggressive"] as const) {
+      const { transcript, analysis, duration } = stretched(10);
+      const cut = buildCutlist({ transcript, analysis, duration, level });
+      const removals = cut.filter((s) => s.kind === "remove");
+      expect(removals.length, `${level} kept the ends`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("still leaves the take alone when there is no dead air at either end", () => {
+    const { transcript, analysis, duration } = setup([["a", 0.4, 0], ["b", 0.4, 0]]);
+    const cut = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    expect(cut).toEqual([{ srcIn: 0, srcOut: duration, kind: "keep" }]);
+  });
+});
