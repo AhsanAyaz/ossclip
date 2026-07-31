@@ -144,3 +144,31 @@ describe("grounding judges the copy that renders, not the copy that was planned 
     expect(issues.map((i) => i.token)).toEqual(["revenue"]);
   });
 });
+
+/**
+ * R27 §126. A structured line's siblings are rendering directives, not copy.
+ * The check judged them as on-screen text, and since the take can never say
+ * "cross" or "none", the warning was unfixable by construction.
+ */
+describe("structured lines: only the copy is judged (§126)", () => {
+  it("ignores a line's mark/struck directives", () => {
+    const lines = [
+      { text: "CODE CHURN WENT UP", struck: false, mark: "none" },
+      { text: "861 PERCENT", struck: true, mark: "cross" },
+    ];
+    expect(checkGrounding([scene("StrikethroughReveal", { lines })], transcript)).toEqual([]);
+  });
+
+  it("still catches an invention inside the copy itself", () => {
+    const lines = [{ text: "REVENUE WENT UP", struck: false, mark: "cross" }];
+    const issues = checkGrounding([scene("StrikethroughReveal", { lines })], transcript);
+    expect(issues.map((i) => i.token)).toEqual(["revenue"]);
+  });
+
+  it("falls back to every value when an object has no text field", () => {
+    const lines = [{ headline: "REVENUE" }];
+    expect(
+      checkGrounding([scene("StrikethroughReveal", { lines })], transcript).map((i) => i.token),
+    ).toEqual(["revenue"]);
+  });
+});

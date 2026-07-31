@@ -88,7 +88,17 @@ function needsSupport(token: string): boolean {
 function stringsOf(value: unknown): string[] {
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) return value.flatMap(stringsOf);
-  if (value && typeof value === "object") return Object.values(value).flatMap(stringsOf);
+  if (value && typeof value === "object") {
+    // A structured line carries its copy in `text`; its siblings are RENDERING
+    // DIRECTIVES, not words anyone reads (R27 §126). Walking every value made
+    // the check judge them as on-screen copy, so a StrikethroughReveal line
+    // `{text, struck, mark: "cross"}` was reported as inventing "cross" — and
+    // the take can never contain those tokens, so the warning was unfixable
+    // by construction. Two of the four warnings on a real render were this.
+    const text = (value as Record<string, unknown>).text;
+    if (typeof text === "string") return [text];
+    return Object.values(value).flatMap(stringsOf);
+  }
   return [];
 }
 
