@@ -63,6 +63,12 @@
   p strong, li strong { color: var(--fg); }
   .lede { font-size: 17px; color: var(--fg); max-width: 640px; }
   .status { display: inline-block; font-family: var(--mono); font-size: 11px; color: var(--bg); background: var(--accent); border-radius: 4px; padding: 2px 8px; margin: 10px 0 0; }
+  .gh { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--fg); background: var(--panel); border: 1px solid var(--border2); border-radius: 6px; padding: 4px 12px; margin: 10px 0 0 10px; }
+  .gh:hover { border-color: var(--accent); text-decoration: none; color: var(--fg); }
+  .gh .star { color: var(--accent); }
+  .gh .gh-stars { color: var(--muted); border-left: 1px solid var(--border2); padding-left: 8px; }
+  .gh .gh-stars[hidden] { display: none; }
+  nav.side .gh { display: inline-flex; margin: 0 0 14px; padding: 4px 12px; color: var(--fg); }
   table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
   th { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); padding: 6px 12px; border-bottom: 1px solid var(--border2); }
   td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--muted); vertical-align: top; }
@@ -91,6 +97,7 @@
 <nav class="side">
   <div class="brand">ossclip</div>
   <div class="tag">a talking-head take in, a finished short out — locally</div>
+  <a class="gh" href="https://github.com/AhsanAyaz/ossclip"><span class="star">★</span> GitHub <span class="gh-stars" hidden></span></a>
   <div class="group">start</div>
   <a href="#install">Install</a>
   <a href="#quickstart">Quick start</a>
@@ -116,6 +123,7 @@
 <p>Scope, honestly: ossclip is at its best <strong>polishing a take you have already cut down</strong>. For long-form input, <code>--clip &lt;seconds&gt;</code> selects the single strongest window (the producer's judgement, sentence-snapped) and produces only that — one clip, not N. Without it, 20 minutes in is a polished 20 minutes out.</p>
 <p>AI can make mistakes: the cut, captions and graphics are generated — review the output before publishing.</p>
 <span class="status">working end to end · pre-1.0</span>
+<a class="gh" href="https://github.com/AhsanAyaz/ossclip"><span class="star">★</span> Star on GitHub <span class="gh-stars" hidden></span></a>
 
 <img class="shot" src="./assets/demo-before-after.gif" alt="Before and after: the raw take beside the produced short" />
 <p class="caption">Left: the raw take. Right: what <code>ossclip produce</code> returns.</p>
@@ -312,5 +320,30 @@ ossclip edit                        # bare: pick from recent projects, or browse
 
 </main>
 </div>
+<!-- Live star count. Unauthenticated GitHub API is 60 req/hr per client IP, so the
+     result is cached per session — and the pills render complete without it: the
+     count span stays hidden and the links still work if this never resolves. -->
+<script>
+(function () {
+  var els = document.querySelectorAll(".gh-stars");
+  if (!els.length) return;
+  function show(n) {
+    var s = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+    els.forEach(function (el) { el.textContent = s; el.hidden = false; });
+  }
+  try {
+    var cached = JSON.parse(sessionStorage.getItem("ossclip-stars") || "null");
+    if (cached && Date.now() - cached.t < 36e5) { show(cached.n); return; }
+  } catch (e) {}
+  fetch("https://api.github.com/repos/AhsanAyaz/ossclip")
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (d) {
+      if (typeof d.stargazers_count !== "number") return;
+      try { sessionStorage.setItem("ossclip-stars", JSON.stringify({ n: d.stargazers_count, t: Date.now() })); } catch (e) {}
+      show(d.stargazers_count);
+    })
+    .catch(function () {});
+})();
+</script>
 </body>
 </html>
