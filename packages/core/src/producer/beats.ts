@@ -6,13 +6,39 @@ import { MAX_SCENE_SEC } from "../assemble";
 import { COVER_MAX_WORDS, coverHeadline } from "../cover";
 import type { LlmProvider } from "./provider";
 
+/**
+ * Free text from the model, capped rather than refused (R27 §123).
+ *
+ * The standing doctrine (§112) is that LLM output is untrusted input,
+ * "validated where the pipeline can still degrade instead of at the point
+ * where it can only die". A bare `.max(n)` is the second kind: on two of three
+ * real runs the editorial call came back with a 61-character `onScreenCopy`
+ * and the whole produce died at the Zod boundary — transcription, analysis and
+ * the cut all discarded over one character of a headline.
+ *
+ * `preprocess` keeps `maxLength: n` in the JSON schema the provider is handed,
+ * so the model is still ASKED for the limit; it just no longer costs a run
+ * when the model misses by a word. Truncation prefers the last word boundary,
+ * and adds no ellipsis — the prompt explicitly forbids one on cover text.
+ */
+export function cappedText(max: number): z.ZodType<string> {
+  return z.preprocess((v) => {
+    if (typeof v !== "string" || v.length <= max) return v;
+    const cut = v.slice(0, max);
+    const lastSpace = cut.lastIndexOf(" ");
+    // Only honour a word boundary that keeps most of the budget; a single very
+    // long word would otherwise collapse to nothing.
+    return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd();
+  }, z.string().max(max)) as z.ZodType<string>;
+}
+
 /** Call 1 — the editorial call (PHASE1 §4): moments, copy, component picks. */
 export const MomentSchema = z.object({
   startWord: z.number().int().nonnegative(),
   endWord: z.number().int().nonnegative(),
-  purpose: z.string().max(100),
+  purpose: cappedText(100),
   /** Short on-screen copy for this beat — the fallback TitleCard title. */
-  onScreenCopy: z.string().max(60),
+  onScreenCopy: cappedText(60),
   /** "none" = plain talking head with captions; otherwise a library component. */
   sceneKind: z.union([SceneComponentIdSchema, z.literal("none")]),
   /**
@@ -24,20 +50,18 @@ export const MomentSchema = z.object({
   layout: LayoutSchema.optional().describe(
     "stage layout for this scene; omit for the component default. NEVER a layout the framing brief marks UNAVAILABLE for these words",
   ),
-  rationale: z.string().max(120).optional(),
+  rationale: cappedText(120).optional(),
 });
 export type Moment = z.infer<typeof MomentSchema>;
 
 export const BeatSheetSchema = z.object({
-  hook: z.string().max(120),
+  hook: cappedText(120),
   /**
    * Banner text for the cover image (FINDINGS §31). Written here rather than
    * by a second LLM call, because the producer is already choosing the hook —
    * this is the same editorial judgement, shortened for a thumbnail.
    */
-  coverText: z
-    .string()
-    .max(60)
+  coverText: cappedText(60)
     .optional()
     .describe(
       `cover banner: at most ${COVER_MAX_WORDS} words, the hook compressed to a thumbnail headline`,

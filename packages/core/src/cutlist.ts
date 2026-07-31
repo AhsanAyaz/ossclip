@@ -49,10 +49,26 @@ export interface BuildCutlistArgs {
   analysis: Analysis;
   duration: number;
   level: CleanupLevel;
+  /**
+   * Spans the speaker marked as bloopers out loud (R27 §122), from
+   * `findBloopSpans`. Passed in rather than detected here so this stays a pure
+   * function of its arguments — and so `--blooper-marker` is the only thing
+   * that can put a `retake` cut in the timeline.
+   */
+  bloops?: readonly { startWord: number; endWord: number; startSec: number; endSec: number }[];
 }
 
-export function buildCutlist({ transcript, analysis, duration, level }: BuildCutlistArgs): Segment[] {
+export function buildCutlist({
+  transcript,
+  analysis,
+  duration,
+  level,
+  bloops,
+}: BuildCutlistArgs): Segment[] {
   const keepAll: Segment[] = [{ srcIn: 0, srcOut: duration, kind: "keep" }];
+  // `exact` means exact: it is the escape hatch for "touch nothing", and a
+  // blooper cut is still a cut. --blooper-marker with --cleanup exact is a
+  // contradiction, and the flag the user typed second does not get to win.
   if (level === "exact") return keepAll;
   const policy = POLICIES[level];
   const words = transcript.words;
@@ -61,6 +77,22 @@ export function buildCutlist({ transcript, analysis, duration, level }: BuildCut
   const fillerIndices = new Set(analysis.fillers.map((f) => f.wordIndex));
 
   const removals: Removal[] = [];
+
+  // Marked bloopers, injected BEFORE the sort/merge below so they inherit the
+  // whole existing machine: merging with the silence that brackets the flub,
+  // MIN_KEEP sliver folding, and the partition emit. Source is "acoustic"
+  // because the boundaries are word stamps we chose deliberately — the
+  // protected-word pass must not push them back off the words they exist to
+  // remove.
+  for (const b of bloops ?? []) {
+    removals.push({
+      start: b.startSec,
+      end: b.endSec,
+      reason: "retake",
+      confidence: 1,
+      source: "acoustic",
+    });
+  }
 
   for (const pause of analysis.cuttable) {
     const isLead = first !== undefined && pause.end <= first.start + 1e-6;

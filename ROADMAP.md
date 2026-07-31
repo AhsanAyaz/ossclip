@@ -21,6 +21,11 @@ the code (see [CONTRIBUTING](./CONTRIBUTING.md)).
 
 Concrete, scoped, mostly logged as findings already:
 
+- **Make source-text routing video-aware** (R27 §120). Routing dodges burned-in
+  text without ever reading the video slot, so a moved graphic can land on the
+  speaker in the layouts that author the two apart. Pinned as a failing test
+  (`source-fit.test.ts`, `it.fails`); the scan is behind `--source-is-edited`
+  now, so it can no longer fire on a raw take.
 - `--safe-area <preset>` CLI flag — per-platform safe-area presets instead of
   the built-in default.
 - Caption band derived from live occupancy rather than per-layout hand-tuned
@@ -41,23 +46,26 @@ Concrete, scoped, mostly logged as findings already:
 
 ## Later — needs a design issue first
 
-The authoring track (§119–§123) is captured in one document, ordered — the
-ordering is load-bearing, and several items are cheap only in sequence.
-Its prerequisite (the scene-count target) has shipped, which makes the
-document's own first question live: re-ask on real footage whether authoring
-is still wanted before building it:
+The authoring track is captured in one document, ordered — the ordering is
+load-bearing, and several items are cheap only in sequence. Its prerequisite
+(the scene-count target) has shipped, which makes the document's own first
+question live: re-ask on real footage whether authoring is still wanted before
+building it:
 [`docs/superpowers/plans/2026-08-06-authoring-roadmap.md`](./docs/superpowers/plans/2026-08-06-authoring-roadmap.md).
+That document carries no § numbers on purpose — it reserved them twice and had
+to be renumbered twice. A finding takes the next free number when it lands.
 
-- **Multi-source input** (§119) — several raw takes in, one short out. Joined
+- **Multi-source input** — several raw takes in, one short out. Joined
   before anything measures them, so the time map and its property-tested
   invariants never learn there was more than one file.
-- **Retake/blooper removal** (§120) — the `"retake"` cut reason is already
-  reserved and unused; `--clip` is the template. Forces one real decision: the
-  cut is deterministic today, and semantic detection ends that.
-- **User cuts** (§121) — remove a bad bit after generation. Server-side first,
+- **Semantic retake removal** — the *spoken-marker* half shipped in R27 §122
+  (`--blooper-marker`), deterministically. What remains is detecting a flub the
+  speaker did NOT mark, which is inherently semantic and would end the
+  guarantee that the cut is reproducible without an LLM.
+- **User cuts** — remove a bad bit after generation. Server-side first,
   editor second. `splits` and pinned scene timing are keyed to absolute output
   seconds and would silently drift after a re-cut.
-- **Agent-authored scenes** (§122) — as a `Scene[]` file the existing
+- **Agent-authored scenes** — as a `Scene[]` file the existing
   `--scenes` flag consumes, NOT an endpoint on the edit server, which is
   replay-only by deliberate design.
 - **Multi-clip**: `--clip` producing N outputs from one take. Its own round
@@ -78,7 +86,7 @@ diarisation. A Dockerfile stays out until someone actually asks for it in an
 issue — for the target user, Docker Desktop is a taller cliff than
 `ossclip setup`.
 
-**Freeform TSX** (§123) stays here too, and now with reasons written down:
+**Freeform TSX** stays here too, and now with reasons written down:
 `docs/PHASE1.md` already resisted it by that exact phrase, and seven systems
 are keyed to the closed component enum — four of which fail *silently* on an
 unknown component, including the grounding check that stops invented copy

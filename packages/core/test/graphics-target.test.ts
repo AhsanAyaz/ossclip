@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod/v4";
 import {
   BeatSheetSchema,
   SEC_PER_GRAPHIC,
@@ -257,5 +258,69 @@ describe("the moment cap no longer caps graphics (§118)", () => {
       sceneKind: i % 2 === 0 ? ("StatCard" as const) : ("none" as const),
     }));
     expect(() => BeatSheetSchema.parse({ hook: "h", moments })).not.toThrow();
+  });
+});
+
+/**
+ * R27 §123. `.max(n)` on model free text is a die-here boundary: two of three
+ * real runs came back with a 61-character `onScreenCopy` and the whole produce
+ * exited 1, throwing away transcription, analysis and the cut over one
+ * character of a headline. §112 says validate where the pipeline can still
+ * degrade.
+ */
+describe("over-long model copy is capped, not fatal (§123)", () => {
+  it("truncates at a word boundary instead of throwing", () => {
+    const long = "Agent loops are the single most misunderstood idea in AI engineering today";
+    const parsed = BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 3, purpose: "p", onScreenCopy: long, sceneKind: "StatCard" },
+      ],
+    });
+    const copy = parsed.moments[0]!.onScreenCopy;
+    expect(copy.length).toBeLessThanOrEqual(60);
+    expect(long.startsWith(copy)).toBe(true);
+    expect(copy.endsWith(" ")).toBe(false);
+    // A word boundary, not a mid-word chop.
+    expect(copy).toBe("Agent loops are the single most misunderstood idea in AI");
+  });
+
+  it("the exact case that killed two real runs: 61 characters", () => {
+    const sixtyOne = "x".repeat(61);
+    expect(() => BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 1, purpose: "p", onScreenCopy: sixtyOne, sceneKind: "none" },
+      ],
+    })).not.toThrow();
+  });
+
+  it("hard-chops a single unbreakable word rather than collapsing it", () => {
+    const wall = "y".repeat(90);
+    const parsed = BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 1, purpose: "p", onScreenCopy: wall, sceneKind: "none" },
+      ],
+    });
+    expect(parsed.moments[0]!.onScreenCopy).toHaveLength(60);
+  });
+
+  it("leaves copy within the cap untouched", () => {
+    const fine = "Three parts, one loop";
+    const parsed = BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 1, purpose: "p", onScreenCopy: fine, sceneKind: "none" },
+      ],
+    });
+    expect(parsed.moments[0]!.onScreenCopy).toBe(fine);
+  });
+
+  it("still ASKS the model for the limit — maxLength survives in the JSON schema", () => {
+    // The point is to stop dying, not to stop constraining: if maxLength
+    // vanished from the schema the provider would no longer be told the cap.
+    const json = JSON.stringify(z.toJSONSchema(BeatSheetSchema));
+    expect(json).toContain('"maxLength":60');
   });
 });

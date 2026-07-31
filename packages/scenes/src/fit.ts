@@ -175,7 +175,7 @@ export function estimateHeightPx(
       // Self-fitting like the reveal: rows of nowrap uppercase text. Same
       // model bulletMetrics solves against — the two cannot disagree.
       const items = arr(props.items).map((i) => str(i));
-      const font = bulletMetrics(items, widthPx, heightPx, Boolean(str(props.title)));
+      const font = bulletMetrics(items, widthPx, heightPx, Boolean(str(props.title)), str(props.title));
       return bulletStackHeightPx(items.length, font, Boolean(str(props.title)));
     }
   }
@@ -257,7 +257,21 @@ const BULLET_MIN_FONT = 36;
 const BULLET_MAX_FONT = 120;
 /** Row: 1.15 line-height + 0.45em gap; the kicker title ≈ one smaller row. */
 const BULLET_ROW_H = 1.6;
-const BULLET_TITLE_H = 1.1;
+/**
+ * The kicker title's real height (R27 §121). It renders at `fontSize * 0.36`
+ * (`BulletList.tsx:75`) plus the column's `0.45em` gap — 0.36x1.2 + 0.45 ≈
+ * 0.88em, not the 1.1em this used to charge. Over-charging the title shrinks
+ * `heightFit`, so a titled list was solved against a budget ~0.2em smaller
+ * than the one it actually occupies.
+ */
+const BULLET_TITLE_H = 0.88;
+/**
+ * Per-character advance of the kicker, in ems of the BASE font: its own
+ * 0.36em type times (glyph + the 0.28em tracking it is set with). Letter
+ * spacing was not modelled at all, so a long title could overrun the slot
+ * width unbudgeted.
+ */
+const BULLET_TITLE_CHAR_W = (CHAR_W_UPPER + 0.28) * 0.36;
 /** Glyph column: the ▸ plus its gap, in ems. */
 const BULLET_GLYPH_W = 1.1;
 
@@ -276,10 +290,15 @@ export function bulletMetrics(
   widthPx = 831,
   heightPx = Infinity,
   hasTitle = false,
+  title = "",
 ): number {
   const longest = items.reduce((max, t) => Math.max(max, t.length), 0);
   if (longest === 0) return BULLET_MIN_FONT;
-  const widthFit = widthPx / (longest * CHAR_W_UPPER + BULLET_GLYPH_W);
+  // Whichever of the longest bullet and the tracked-out kicker needs more room.
+  const widthFit = Math.min(
+    widthPx / (longest * CHAR_W_UPPER + BULLET_GLYPH_W),
+    title ? widthPx / (title.length * BULLET_TITLE_CHAR_W) : Infinity,
+  );
   const heightFit =
     (heightPx * FILL_TARGET) /
     (Math.max(1, items.length) * BULLET_ROW_H + (hasTitle ? BULLET_TITLE_H : 0));

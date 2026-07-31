@@ -6,6 +6,27 @@ export interface IngestTools {
   ffprobePath: string;
 }
 
+/**
+ * The stream's rotation, normalized to 0/90/180/270 (R27 §119).
+ *
+ * Two spellings, because containers disagree: a Display Matrix side-datum
+ * (modern ffprobe, and the only one a concatenated MP4 keeps) or the legacy
+ * `rotate` tag. ffprobe reports the matrix angle signed — -90 and 270 are the
+ * same quarter turn — so everything is folded into [0, 360).
+ */
+export function normalizeRotation(raw: number | string | undefined): number {
+  const n = typeof raw === "string" ? Number(raw) : raw;
+  if (n === undefined || !Number.isFinite(n)) return 0;
+  const deg = ((Math.round(n) % 360) + 360) % 360;
+  // Anything that is not a quarter turn cannot swap an axis; treat as upright.
+  return deg % 90 === 0 ? deg : 0;
+}
+
+/** A quarter turn exchanges the axes, so the DISPLAYED frame is w/h swapped. */
+export function rotationSwapsAxes(rotation: number): boolean {
+  return rotation === 90 || rotation === 270;
+}
+
 export async function probe(tools: IngestTools, path: string): Promise<Probe> {
   const { stdout } = await run(tools.ffprobePath, [
     "-v", "error",
@@ -21,6 +42,8 @@ export async function probe(tools: IngestTools, path: string): Promise<Probe> {
       height?: number;
       avg_frame_rate?: string;
       r_frame_rate?: string;
+      side_data_list?: Array<{ rotation?: number }>;
+      tags?: { rotate?: string };
     }>;
     format?: { duration?: string };
   };
@@ -31,12 +54,25 @@ export async function probe(tools: IngestTools, path: string): Promise<Probe> {
   const [num, den] = (rate ?? "30/1").split("/").map(Number);
   const duration = Number(info.format?.duration);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error(`could not determine duration of ${path}`);
+  // `side_data_list` carries several kinds of datum (ambient viewing
+  // environment, content light level); only one of them has a rotation.
+  const matrix = video.side_data_list?.find((s) => typeof s.rotation === "number");
+  const rotation = normalizeRotation(matrix?.rotation ?? video.tags?.rotate);
+  const rawW = video.width ?? 0;
+  const rawH = video.height ?? 0;
+  // Report what is DISPLAYED. ffmpeg auto-rotates in the filter chain, so every
+  // measurement taken through it (cropdetect, face, the mezzanine) is already
+  // in this space; returning the raw stream size made the pipeline reconcile
+  // two orientations into a bogus square and "detect" a letterbox on a
+  // full-frame portrait take (R27 §119).
+  const swap = rotationSwapsAxes(rotation);
   return {
     duration,
-    width: video.width ?? 0,
-    height: video.height ?? 0,
+    width: swap ? rawH : rawW,
+    height: swap ? rawW : rawH,
     fps: den ? (num ?? 30) / den : 30,
     hasAudio: Boolean(audio),
+    ...(rotation !== 0 ? { rotation } : {}),
   };
 }
 

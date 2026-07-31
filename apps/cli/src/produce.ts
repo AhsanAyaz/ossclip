@@ -38,6 +38,8 @@ import {
   landscapeLayout,
   formatCutReport,
   formatGraphicsAccounting,
+  findBloopSpans,
+  formatBloopSpan,
   formatUsageLine,
   formatUsageReport,
   loadConfig,
@@ -127,6 +129,11 @@ export interface ProduceOptions {
   coverPath?: string;
   /** Treat the source as an already-edited reel with burned-in graphics. */
   sourceIsEdited?: boolean;
+  /**
+   * Spoken blooper marker (R27 §122) — `--blooper-marker blooper`. Saying it
+   * on camera cuts the attempt it spoiled, back to that sentence's start.
+   */
+  blooperMarker?: string;
   /**
    * How the source meets the vertical frame. `cover` (default) crops it to
    * fill; `contain` shows the WHOLE frame inset against the backdrop, which is
@@ -313,11 +320,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // `let`, not `const` (R19 §93): a clip run re-derives all three from the
   // transcript sliced to the chosen window, further down.
   let analysis: Analysis = analyze(transcript, silences, sourceProbe.duration, levels);
+  // Spoken blooper markers (R27 §122). Detected on the RAW transcript, before
+  // repair — the repair pass reads a bare "blooper." as an oddity and has
+  // already been observed proposing "break loop." for it. Detecting first
+  // means the marker cannot be rewritten out from under the detector.
+  let bloops = opts.blooperMarker ? findBloopSpans(transcript, opts.blooperMarker) : [];
+  if (opts.blooperMarker) {
+    console.log(
+      bloops.length > 0
+        ? `▸ blooper marker "${opts.blooperMarker}": ${bloops.length} take(s) cut`
+        : `▸ blooper marker "${opts.blooperMarker}": never said — nothing cut`,
+    );
+    for (const b of bloops) console.log(`  ▸ ${formatBloopSpan(transcript, b)}`);
+  }
   let cutlist: Segment[] = buildCutlist({
     transcript,
     analysis,
     duration: sourceProbe.duration,
     level: opts.cleanup,
+    bloops,
   });
   let map = new TimeMap(cutlist);
 
@@ -551,12 +572,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       rawTranscript = rawSlice.transcript;
       transcript = sliceTranscript(transcript, clipWindow);
       analysis = analyze(rawTranscript, silences, sourceProbe.duration, levels);
+      // Re-detect on the SLICE: word indices moved, so the spans found against
+      // the full take no longer address the same words.
+      bloops = opts.blooperMarker ? findBloopSpans(rawTranscript, opts.blooperMarker) : [];
       cutlist = boundCutlistToWindow(
         buildCutlist({
           transcript: rawTranscript,
           analysis,
           duration: sourceProbe.duration,
           level: opts.cleanup,
+          bloops,
         }),
         clipWindow,
         sourceProbe.duration,
@@ -865,12 +890,23 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // existing one — cropping through the source's title and then restating it
   // underneath. Graphics move to a clear slot or are skipped; captions never
   // are, they just relocate.
-  const sourceText = await scanSourceText(tools, analysisInput, analysisProbe.duration, {
-    cacheDir: work,
-    assumeEdited: opts.sourceIsEdited,
-    cropVf: analysisCropVf,
-    cacheTag,
-  });
+  //
+  // Behind --source-is-edited since R27 §120. The detector cannot tell burned-in
+  // GRAPHICS from text that is simply in the room, and on a raw take at a desk
+  // it read the background monitors as 45 bands of "source text". The cost is
+  // not cosmetic: every graphic was then moved and SHRUNK to a free band —
+  // a BulletList pinned to its 36px font floor, a FlowDiagram's slot halved
+  // (0.54 → 0.27, type 71 → 35), and a ScreenshotFrame slid onto the speaker's
+  // face. Routing around a hazard only pays when there is a hazard, and only
+  // the user knows whether their source is already edited.
+  const sourceText = opts.sourceIsEdited
+    ? await scanSourceText(tools, analysisInput, analysisProbe.duration, {
+        cacheDir: work,
+        assumeEdited: true,
+        cropVf: analysisCropVf,
+        cacheTag,
+      })
+    : { regions: [], assumed: false, framesSampled: 0 };
   if (sourceText.regions.length > 0) {
     console.log(
       sourceText.assumed
@@ -1086,6 +1122,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       `${formatClipTime(sourceProbe.duration)} (${dur.toFixed(1)}s selected, ` +
       `${((dur / sourceProbe.duration) * 100).toFixed(0)}% of the take)\n` +
       `  reason: ${clipWindow.reason}\n`;
+  }
+  // §122: a cut that takes whole sentences owes the user the words it took —
+  // the timestamps above say WHERE, not what was lost.
+  if (bloops.length > 0) {
+    report +=
+      `\nbloopers cut (you said "${opts.blooperMarker}" — FINDINGS §122):\n` +
+      bloops.map((b) => `  ${formatBloopSpan(rawTranscript, b)}`).join("\n") +
+      "\n";
   }
   const landed = repairs.filter((r) => r.applied);
   if (landed.length > 0) {

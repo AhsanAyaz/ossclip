@@ -117,3 +117,38 @@ describe("routing reserves room for captions (FINDINGS §26)", () => {
     ).toBeNull();
   });
 });
+
+/**
+ * R27 §120. Routing negotiates only with burned-in source text — it never
+ * reads `layoutSlots(...).video`. Some layouts INTEND the graphic to sit over
+ * the picture (`blurred-behind` blurs and dims it; `full-bleed` and
+ * `lower-third` overlay a band), so overlap is not wrong everywhere.
+ *
+ * These three are different: their graphic slot is authored clear of the video
+ * slot, which is the whole reason the layout exists. Routing should preserve
+ * that separation, and today it does not — it slides the graphic up into the
+ * picture, and the graphic wins because SceneLayer renders after VideoStage.
+ * On the motivating take that put a ScreenshotFrame across the speaker's face.
+ */
+describe("a routed graphic and the video it was authored clear of", () => {
+  const SEPARATED = ["video-top", "split-left", "split-right"] as const;
+
+  const overlap = (layout: (typeof SEPARATED)[number], rect: { y: number; h: number }): number => {
+    const v = layoutSlots(layout).video.rect;
+    return Math.min(rect.y + rect.h, v.y + v.h) - Math.max(rect.y, v.y);
+  };
+
+  it.each(SEPARATED)("%s: the authored slot is clear of the video to begin with", (layout) => {
+    expect(overlap(layout, layoutSlots(layout).graphic!)).toBeLessThanOrEqual(0);
+  });
+
+  // `it.fails` PINS the open defect: when routing is made video-aware this
+  // test starts erroring, which is the reminder to promote it to a real
+  // assertion. Deferred rather than fixed because the scan that triggers it is
+  // now behind --source-is-edited, so it can no longer fire on a raw take.
+  it.fails.each(SEPARATED)("%s: routing keeps it clear (KNOWN BAD)", (layout) => {
+    const moved = placeInFreeBand(layoutSlots(layout).graphic!, TITLE_BAND);
+    expect(moved).not.toBeNull();
+    expect(overlap(layout, moved!)).toBeLessThanOrEqual(0);
+  });
+});
