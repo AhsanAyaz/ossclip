@@ -51,9 +51,9 @@ Items 2–5 are each tractable alone. **Together they are "the full agent-native
 
 ### 119.1 The shape that keeps the invariants
 
-- [ ] **118a. Concat first, before `extractAudio`.** Probe each input, compute offsets, produce ONE joined mezzanine early, and let the entire existing pipeline treat it as a single source. This leaves `KeptSpan`, `TimeMap`, `EdlVideo`, `assembleScenes` and `buildCaptionLines` **completely untouched** — which is precisely what preserves the property-tested invariants. The alternative (a `srcId` on `KeptSpan`) touches every consumer of the time map and should be rejected unless concat-first is proven impossible.
-- [ ] **118b. Workdir identity over an ordered list.** Hash the ordered `[sha1, …]` plus the join order. The human-readable prefix has no obvious answer — pick one and say why in a comment.
-- [ ] **118c. A `sources:` block on `production.json`** — `[{path, probe, offsetSec}]` — so the report and the editor can say which file a span came from. This is the only genuinely new artefact.
+- [ ] **119a. Concat first, before `extractAudio`.** Probe each input, compute offsets, produce ONE joined mezzanine early, and let the entire existing pipeline treat it as a single source. This leaves `KeptSpan`, `TimeMap`, `EdlVideo`, `assembleScenes` and `buildCaptionLines` **completely untouched** — which is precisely what preserves the property-tested invariants. The alternative (a `srcId` on `KeptSpan`) touches every consumer of the time map and should be rejected unless concat-first is proven impossible.
+- [ ] **119b. Workdir identity over an ordered list.** Hash the ordered `[sha1, …]` plus the join order. The human-readable prefix has no obvious answer — pick one and say why in a comment.
+- [ ] **119c. A `sources:` block on `production.json`** — `[{path, probe, offsetSec}]` — so the report and the editor can say which file a span came from. This is the only genuinely new artefact.
 
 ### 119.2 The two costs this must own, out loud
 
@@ -80,9 +80,9 @@ z.enum(["silence", "pause", "filler", "retake", "user", "clip"])
 
 `--clip` is the template and should be followed closely (`packages/core/src/clip.ts`). It does **not** trim the timeline: `boundCutlistToWindow` converts everything outside the window into `remove` segments with `reason: "clip"`, keeping the cutlist a full partition of `[0, duration]` so the TimeMap invariant holds by construction.
 
-- [ ] **119a. Emit `Segment[]` with `kind: "remove", reason: "retake"`** folded into the same partition — never a separate trimming pass. Everything downstream (report, TimeMap, scene dropping by vanished anchor, caption re-derivation, `EdlVideo` spans, the editor filmstrip) then works with **zero changes**, exactly as `--clip` does.
-- [ ] **119b. Cache the decision and pin it for replay.** `--clip` caches `clipwindow-<key>.json` and writes `--clip-window startWord:endWord` into `command.json` so the editor's Render reproduces the same choice with no LLM call. A detector that re-asks a model on every replay would drift every saved override — the failure §93g exists to prevent.
-- [ ] **119c. Refuse rather than guess.** `--clip` refuses without `--produce` and states there is no heuristic fallback. A retake detector should be equally explicit about what it will not do.
+- [ ] **120a. Emit `Segment[]` with `kind: "remove", reason: "retake"`** folded into the same partition — never a separate trimming pass. Everything downstream (report, TimeMap, scene dropping by vanished anchor, caption re-derivation, `EdlVideo` spans, the editor filmstrip) then works with **zero changes**, exactly as `--clip` does.
+- [ ] **120b. Cache the decision and pin it for replay.** `--clip` caches `clipwindow-<key>.json` and writes `--clip-window startWord:endWord` into `command.json` so the editor's Render reproduces the same choice with no LLM call. A detector that re-asks a model on every replay would drift every saved override — the failure §93g exists to prevent.
+- [ ] **120c. Refuse rather than guess.** `--clip` refuses without `--produce` and states there is no heuristic fallback. A retake detector should be equally explicit about what it will not do.
 
 ### 120.2 The decision this forces — make it consciously
 
@@ -108,8 +108,8 @@ This was scoped out once with reasoning (§59c): *"Deleting a sentence from the 
 
 Re-cutting is the case the design was built for. Scenes anchor by **word index** and are dropped *with a reason* when their anchor words vanish; captions are re-derived from the map. This is the PHASE1 risk-table mitigation, working as intended.
 
-- [ ] **120a. `reason: "user"` cuts, server-side.** Extend the override doc with a cut list — the reason token is already reserved — and fold user cuts into `buildCutlist`'s output **before** `new TimeMap(cutlist)`. Ship and prove this from the CLI before any UI exists.
-- [ ] **120b. Then the editor.** Only after 120a is solid.
+- [ ] **121a. `reason: "user"` cuts, server-side.** Extend the override doc with a cut list — the reason token is already reserved — and fold user cuts into `buildCutlist`'s output **before** `new TimeMap(cutlist)`. Ship and prove this from the CLI before any UI exists.
+- [ ] **121b. Then the editor.** Only after 121a is solid.
 
 ### 121.2 The drift this will cause, which nothing currently guards
 
@@ -138,9 +138,9 @@ Silently is the operative word: nothing throws, the render just puts things in t
 
 `ossclip produce --scenes <path>` reads a hand-authored `Scene[]` **with no LLM in the loop** (`produce.ts:457`). That is the natural target.
 
-- [ ] **121a. Generate `Scene[]`, not overrides.** An agent step that emits a scenes file the existing flag consumes. Cheap, no new endpoint, no new trust boundary, and it composes with everything.
-- [ ] **121b. Anything using the nine registered components is editable for free.** `data-edit-id` + `editStyle` give move/resize/scale with zero editor changes; only *text* editing needs the `Overlay.tsx` id↔props mapping for a new prop shape.
-- [ ] **121c. Do NOT add a generate endpoint to the edit server** without a written security story that addresses the replay-only rationale head on. Same user value is available at an order of magnitude less cost via 121a.
+- [ ] **122a. Generate `Scene[]`, not overrides.** An agent step that emits a scenes file the existing flag consumes. Cheap, no new endpoint, no new trust boundary, and it composes with everything.
+- [ ] **122b. Anything using the nine registered components is editable for free.** `data-edit-id` + `editStyle` give move/resize/scale with zero editor changes; only *text* editing needs the `Overlay.tsx` id↔props mapping for a new prop shape.
+- [ ] **122c. Do NOT add a generate endpoint to the edit server** without a written security story that addresses the replay-only rationale head on. Same user value is available at an order of magnitude less cost via 122a.
 
 ---
 
@@ -174,7 +174,7 @@ Today the model emits JSON only. Nothing executes; there is nothing to sandbox. 
 
 ### 123.3 The middle path
 
-- [ ] **122a. Grow the registry when a real render demands it.** `BulletList` was added exactly that way — a logged miss where copy got bent into the wrong card because no component said "list". Ten or fifteen typed components with the fit contract intact buys most of the expressive range at none of the cost. The `README` sells the typed registry as the differentiator; a codegen escape hatch would quietly retire that claim.
+- [ ] **123a. Grow the registry when a real render demands it.** `BulletList` was added exactly that way — a logged miss where copy got bent into the wrong card because no component said "list". Ten or fifteen typed components with the fit contract intact buys most of the expressive range at none of the cost. The `README` sells the typed registry as the differentiator; a codegen escape hatch would quietly retire that claim.
 
 ---
 
