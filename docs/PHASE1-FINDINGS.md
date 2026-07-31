@@ -1028,3 +1028,23 @@ Now: on win32 the system bsdtar is tried by **absolute path first**, then bare `
 One bug inside the fix, caught by that test on the first run: the candidate path was built with `join`, which uses the *host* separator, so a Windows path assembled on macOS came out `C:\Windows/System32/tar.exe`. `win32.join` is the correct API when the platform is a parameter rather than the environment.
 
 Also fixed from the same run, in the workflow rather than the product: the end-to-end transcribe step passed a relative `sample.mp4`, and `pnpm --filter ossclip exec` runs with the cwd set to `apps/cli` — the identical cwd quirk `env.ts` documents for `.env` lookup. Linux's `setup` step had in fact fully succeeded; only the step verifying it was wrong.
+
+# Round 25 — the producer was never told how many graphics to plan (2026-07-31)
+
+## 118. Three limits stacked, and none of them was the coverage budget
+
+Chased from a real complaint — "the graphics aren't good enough to show off". The measurable version: a 64s take that enumerates five features out loud got **three** graphics on the default model, and five on a stronger one. §116 blamed the missing floor above `SHORT_TAKE_SEC`. That was one third of it, and the least important third.
+
+Three limits were stacked:
+
+1. **Nothing stated a count.** `GRAPHICS_COVERAGE_TARGET = 0.45` reads like a target and is only a ceiling: the scheduler demotes when the model plans too many and is silent when it plans too few. On this take, 45% of 64s allowed roughly 29 seconds of graphics; three graphics used far less, so **the demote loop never executed once**. No existing mechanism had an opinion about under-planning.
+2. **The prompt steered away from density.** The COVERAGE line said graphics "spend their whole moment against that budget, so **be selective**". §114 made every graphic hold its full moment and repriced the budget accordingly — and the prompt's advice for living within that reprice was to plan fewer graphics rather than shorter ones.
+3. **`moments` was capped at 12.** With the mandated alternation between graphic and "none" moments, twelve moments is a hard ceiling of ~six graphics at any length. A five-feature take needs seven graphic beats — hook, five features, payoff — and therefore ~14 moments. **The schema cap was binding before the coverage budget ever was.**
+
+Fixed at all three: the cap is 24; the prompt asks for shorter moments rather than fewer when the target is high; and the user prompt now states an explicit count. The count comes from `graphicsTarget` — the larger of runtime density (one per 9s, the density the prompt's own "no stretch longer than ~10s" rule implies) and structure. Structure is free and deterministic: `countEnumeratedBeats` reads the take counting itself ("number one… number two", "first/second", "step 3"), counts *distinct* ordinals so a repeat doesn't inflate, and requires at least two so "first of all" isn't a list.
+
+**The floor was deliberately NOT extended above 45s**, against §116a's first instinct. A count floor that outranks the percentage at every length fights §114: more graphics × full spans exceeds 45%, the demote loop starts removing what the floor just required, and the two rules oscillate. It would also be aimed at the wrong failure — when the producer under-plans, that loop never runs, so no floor there could have helped. §29's short-take floor stands unchanged; above it the count lives in the prompt, and the scheduler's job is only to say when the result missed (§118b).
+
+Verified on the same 64s take, same model, fresh plan: **3 → 6 graphics**, with `scene-12` present — a beat the old cap made structurally impossible. 679 tests green, including the §7/§8/§114 ceiling tests, which still pass unchanged: the ceiling was never relaxed.
+
+**Deviation from §116b, stated plainly:** the shortfall is reported on the console with every other beat-sheet issue (`⚠ moment -1: graphics: 6 of 7 planned — the take enumerates 5 points`), not in `report.txt`. Putting it in the cut report would separate it from the issues it belongs with. If the report is where it is wanted, that is a small plumbing change, not a redesign.

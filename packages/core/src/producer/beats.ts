@@ -42,7 +42,14 @@ export const BeatSheetSchema = z.object({
     .describe(
       `cover banner: at most ${COVER_MAX_WORDS} words, the hook compressed to a thumbnail headline`,
     ),
-  moments: z.array(MomentSchema).min(1).max(12),
+  /**
+   * Raised from 12 to 24 (§118): with the alternation policy above, a cap of
+   * 12 moments is a ceiling of ~6 graphics however long the take is. A 64s
+   * take enumerating five features needs seven graphic beats — hook, five
+   * features, payoff — and therefore ~14 moments to alternate between them.
+   * The cap was binding before the coverage budget ever was.
+   */
+  moments: z.array(MomentSchema).min(1).max(24),
 });
 export type BeatSheet = z.infer<typeof BeatSheetSchema>;
 
@@ -77,7 +84,8 @@ Virality grammar — follow these as hard policies:
 - Use contrast/negation beats (StrikethroughReveal, RuleCard with struck alternatives) when the speaker rejects an idea.
 - End with a payoff or takeaway moment.
 - A moment spans the FULL stretch of speech about its beat — typically 5-15 seconds — in transcript order, non-overlapping. The graphic stays on screen for the ENTIRE moment, so the word range must cover everything the graphic refers to: a stat card leaves when the speaker moves on, not before.
-- COVERAGE: graphics should be on screen for roughly 40-50% of the runtime. A graphic spends its whole moment against that budget, so be selective — give graphics to the moments where one genuinely earns the frame, and spread them evenly: never leave a stretch longer than ~10 seconds with no graphic.
+- COUNT: the user prompt states how many graphic moments this take should get. That number is a TARGET, not a maximum — hit it. Planning under it is the most common failure: a take that makes five distinct points and gets two graphics has been under-produced, whatever the coverage percentage says.
+- COVERAGE: graphics should be on screen for roughly 40-50% of the runtime. A graphic spends its whole moment against that budget, so when the target implies many graphics, make each moment SHORTER rather than dropping moments — more, tighter graphics beats fewer, longer ones. Spread them evenly: never leave a stretch longer than ~10 seconds with no graphic.
 - VARIETY: never the same component twice in a row, and prefer a component you have NOT used yet in this video — reuse a treatment only when the beat genuinely calls for it. A repeat reads as a template.
 - Keep the face LARGE: prefer StatCard/RuleCard/ScreenshotFrame (they sit under a big face) over TitleCard (face becomes a small bubble); use FlowDiagram/TerminalMock sparingly — they remove the face entirely and only earn that when the graphic IS the point.
 - The transcript is ASR output and may contain mishearings: an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity — write on-screen copy with the common-sense reading, never a suspected mishearing.
@@ -117,11 +125,23 @@ export function buildBeatsUserPrompt(
   const menu = Object.entries(SCENE_REGISTRY)
     .map(([id, meta]) => `- ${id}: ${meta.whenToUse}`)
     .join("\n");
+  // §118: state the graphic COUNT explicitly. Everything else in this prompt
+  // describes what a good graphic is; nothing said how many to plan, and the
+  // coverage budget downstream only ever removes.
+  const enumerated = countEnumeratedBeats(transcript);
+  const target = graphicsTarget(clip?.targetSec ?? duration, enumerated);
+  const targetLine =
+    `Graphic moments to plan: ${target}` +
+    (enumerated > 0
+      ? ` — the speaker enumerates ${enumerated} points out loud, so each one earns its own graphic, plus a hook and a payoff.\n`
+      : ` (about one per ${SEC_PER_GRAPHIC}s of runtime). Plan this many unless the take genuinely cannot carry them.\n`);
   return (
     `Intent: ${intent ?? "make this clear, punchy and viral-worthy"}\n` +
     (clip
-      ? `Target clip length: ~${clip.targetSec.toFixed(0)}s (see CLIP SELECTION below)\n\n`
-      : `Output duration after the cut: ${duration.toFixed(1)}s\n\n`) +
+      ? `Target clip length: ~${clip.targetSec.toFixed(0)}s (see CLIP SELECTION below)\n`
+      : `Output duration after the cut: ${duration.toFixed(1)}s\n`) +
+    targetLine +
+    "\n" +
     // Landscape layout guidance (R21 §101): without it the first real 16:9
     // run put nearly every graphic in a lower third. A deterministic variety
     // pass downstream is the guarantee; this is the steer.
@@ -146,6 +166,87 @@ export interface BeatsValidationIssue {
   issue: string;
 }
 
+/**
+ * How many graphics a take of this length should be asked for (§118).
+ *
+ * The failure this exists for: nothing ever told the producer how many
+ * graphics to plan. `GRAPHICS_COVERAGE_TARGET` reads like a target and is
+ * only a ceiling — the demote loop below runs when the model plans too MANY
+ * and does nothing at all when it plans too few. On one 64s take the model
+ * planned three graphics against a budget that allowed roughly twenty-nine
+ * seconds of them; the loop never executed once, so no existing mechanism
+ * had an opinion.
+ *
+ * One graphic per ~9s of runtime, which is the density the prompt's own
+ * "never leave a stretch longer than ~10 seconds with no graphic" rule
+ * implies, floored at the §29 short-take count.
+ */
+export const SEC_PER_GRAPHIC = 9;
+
+/**
+ * Ordinal cues a speaker uses to enumerate. A take that counts its own
+ * points out loud is telling us how many graphics it wants, and that signal
+ * is free, deterministic, and better than any runtime heuristic.
+ */
+const ORDINAL_WORDS = [
+  "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+];
+const ORDINAL_ADJECTIVES = [
+  "first", "second", "third", "fourth", "fifth",
+  "sixth", "seventh", "eighth", "ninth", "tenth",
+];
+
+/**
+ * How many distinct enumerated beats the speaker announces — "number one …
+ * number two", "first … second", "step 3". Counts DISTINCT ordinals so a
+ * speaker who says "number two" twice doesn't inflate the target, and
+ * requires at least two so a passing "first of all" isn't read as a list.
+ */
+export function countEnumeratedBeats(transcript: Transcript): number {
+  const words = transcript.words.map((w) =>
+    w.text.toLowerCase().replace(/[^a-z0-9]/g, ""),
+  );
+  const seen = new Set<number>();
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    const adj = ORDINAL_ADJECTIVES.indexOf(w);
+    if (adj !== -1) {
+      seen.add(adj + 1);
+      continue;
+    }
+    // "number one" / "step 2" / "point three" — the ordinal must FOLLOW a
+    // counting noun, or every stray "one" in the take counts as a beat.
+    if (w !== "number" && w !== "step" && w !== "point" && w !== "tip") continue;
+    const next = words[i + 1];
+    if (!next) continue;
+    const spelled = ORDINAL_WORDS.indexOf(next);
+    if (spelled !== -1) {
+      seen.add(spelled + 1);
+      continue;
+    }
+    const digit = Number.parseInt(next, 10);
+    if (Number.isInteger(digit) && digit >= 1 && digit <= 10) seen.add(digit);
+  }
+  return seen.size >= 2 ? seen.size : 0;
+}
+
+/**
+ * The number of graphics to ASK for — whichever of structure and runtime is
+ * larger. An enumerated take earns its own count plus a hook and a payoff
+ * (the virality grammar demands both anyway), but a long take that happens
+ * to enumerate three points still has everything else in it, so runtime
+ * density is a floor rather than a loser.
+ */
+export function graphicsTarget(runtimeSec: number, enumerated: number): number {
+  const byRuntime = Math.max(
+    SHORT_TAKE_MIN_GRAPHICS,
+    Math.round(runtimeSec / SEC_PER_GRAPHIC),
+  );
+  const byStructure = enumerated > 0 ? enumerated + 2 : 0;
+  // Never more than the moment schema can carry once alternation is counted.
+  return Math.min(Math.max(byRuntime, byStructure), 12);
+}
+
 /** Fraction of the runtime that should show a graphic (FINDINGS §7). */
 export const GRAPHICS_COVERAGE_TARGET = 0.45;
 /**
@@ -156,6 +257,12 @@ export const GRAPHICS_COVERAGE_TARGET = 0.45;
  */
 export const SHORT_TAKE_SEC = 45;
 export const SHORT_TAKE_MIN_GRAPHICS = 4;
+
+/** Why the target was what it was, when the take enumerated itself. */
+function enumeratedNote(transcript: Transcript): string | null {
+  const n = countEnumeratedBeats(transcript);
+  return n > 0 ? ` — the take enumerates ${n} points` : null;
+}
 
 /** A moment's approximate seconds of speech, from the transcript word stamps. */
 function momentDuration(m: Moment, transcript: Transcript): number {
@@ -225,6 +332,15 @@ export function normalizeBeatSheet(
 
   // On a short take the count floor outranks the percentage — never demote
   // below it, whatever the coverage budget says (§29).
+  //
+  // §118 decided NOT to extend this floor above 45s, and the reason matters:
+  // a floor that outranks the ceiling at every length would fight §114's
+  // full-span pricing — more graphics × whole moments blows past 45%, the
+  // loop below starts removing what the floor just required, and the two
+  // rules oscillate. It would also be treating the wrong failure. When the
+  // producer UNDER-plans, this loop never runs at all, so no floor here
+  // could have helped; the fix is the target in the prompt. What this layer
+  // owes the user instead is to SAY so — see the shortfall issue below.
   const minGraphics = runtime < SHORT_TAKE_SEC ? SHORT_TAKE_MIN_GRAPHICS : 0;
 
   for (;;) {
@@ -291,6 +407,21 @@ export function normalizeBeatSheet(
   const coverText = coverHeadline(requested);
   if (coverText !== requested) {
     issues.push({ moment: -1, issue: `coverText shortened to "${coverText}"` });
+  }
+
+  // §118b: a run that under-delivers must say so. The producer was asked for
+  // a specific number of graphics; if fewer survive, that is a fact about
+  // this render the report should carry, exactly as every cut is justified.
+  // Silence is what let three graphics on a five-point take look normal.
+  const delivered = surviving().length;
+  const asked = graphicsTarget(runtime, countEnumeratedBeats(transcript));
+  if (delivered < asked) {
+    issues.push({
+      moment: -1,
+      issue:
+        `graphics: ${delivered} of ${asked} planned` +
+        (enumeratedNote(transcript) ?? ` (target is ~1 per ${SEC_PER_GRAPHIC}s)`),
+    });
   }
 
   return { sheet: { hook: sheet.hook, coverText, moments }, issues };
