@@ -1038,7 +1038,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
 
   // Grounding post-check (FINDINGS §14a): flags label tokens the take never
   // says — a hallucinated hook label is visible here without watching the video.
-  const groundingIssues = checkGrounding(scenes, transcript, opts.speaker ?? cfg.speaker);
+  //
+  // Checked against the copy that will actually RENDER, overrides included
+  // (R27 §124). It used to read the producer's raw scenes, so it was wrong in
+  // both directions: it kept reporting invented copy the user had already
+  // fixed by hand — the warning outlived the defect, which teaches people to
+  // ignore warnings — and it never looked at copy the user typed themselves.
+  // `checkGrounding` already merges a scene's `overrides` slot; nothing was
+  // filling it from `overrides.json`.
+  const scenesAsRendered = scenes.map((s) => {
+    const edit = overrideDoc.scenes[s.id]?.props;
+    return edit && Object.keys(edit).length > 0
+      ? { ...s, overrides: { ...s.overrides, ...edit } }
+      : s;
+  });
+  const groundingIssues = checkGrounding(scenesAsRendered, transcript, opts.speaker ?? cfg.speaker);
   for (const g of groundingIssues) {
     console.log(`  ⚠ grounding: ${g.component} ${g.sceneId} ${g.field} "${g.token}" — not in the take`);
   }

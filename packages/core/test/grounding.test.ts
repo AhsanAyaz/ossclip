@@ -115,3 +115,32 @@ describe("speaker vocabulary (FINDINGS §39)", () => {
     expect(issues.map((i) => i.token)).toContain("revenue");
   });
 });
+
+/**
+ * R27 §124. The check reads a scene's `overrides` slot, but the CLI used to
+ * hand it the producer's raw scenes, so it judged copy that no longer reaches
+ * the frame: a hand-fixed label kept being reported, and copy the user typed
+ * was never looked at. A warning that outlives its defect teaches people to
+ * ignore warnings.
+ */
+describe("grounding judges the copy that renders, not the copy that was planned (§124)", () => {
+  const edited = (props: Record<string, unknown>, overrides: Record<string, unknown>): Scene => ({
+    ...scene("FlowDiagram", props),
+    overrides,
+  });
+
+  it("clears a warning once the invented token is edited away", () => {
+    const invented = { nodes: ["CODE CHURN", "REVENUE"] };
+    expect(checkGrounding([scene("FlowDiagram", invented)], transcript)).toHaveLength(1);
+    expect(
+      checkGrounding([edited(invented, { nodes: ["CODE CHURN", "AGENTS"] })], transcript),
+    ).toEqual([]);
+  });
+
+  it("catches an invention the USER introduced, which the planned copy did not have", () => {
+    const grounded = { nodes: ["CODE CHURN", "AGENTS"] };
+    expect(checkGrounding([scene("FlowDiagram", grounded)], transcript)).toEqual([]);
+    const issues = checkGrounding([edited(grounded, { nodes: ["CODE CHURN", "REVENUE"] })], transcript);
+    expect(issues.map((i) => i.token)).toEqual(["revenue"]);
+  });
+});
