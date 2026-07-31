@@ -56,6 +56,22 @@ apps/editor        the direct-manipulation editor (`ossclip edit`)
 
 Things deliberately **not** in scope, so you don't build one and find out at review: a hosted version, a web uploader, a GUI installer, stock B-roll, TTS, speaker diarisation. (`ossclip setup` is not the rejected GUI installer — it's CLI provisioning of the same toolchain doctor checks, and it deliberately stays that.) Long-form highlight selection is a real gap, not a rejected one — see the README's scope note if you want to take it on, and open an issue first so the design gets discussed before the code. The roadmap — what's next, what needs a design issue first, what's rejected — lives in [`ROADMAP.md`](./ROADMAP.md).
 
+## Where docs live
+
+Four places, and the distinction is worth knowing before you add a file:
+
+| directory | committed? | what belongs there |
+| --- | --- | --- |
+| `docs/site/` | yes | the published single-page reference + the shipped images |
+| `docs/superpowers/plans/`, `docs/PHASE1-FINDINGS.md` | yes | decisions and the defect log — the project's memory |
+| `docs/assets/` | **no** | screen-recording masters only (multi-MB, re-recorded whenever the UI moves) |
+| `docs/local/` | **no** | working drafts: launch copy, post scripts, evaluation notes, anything half-thought |
+
+`docs/local/` is ignored as a whole directory, so a new draft needs no new
+`.gitignore` rule. Nothing in it is published, reviewed, or a decision — if a
+draft becomes one, it moves to a plan doc or the findings log and gets
+committed like anything else.
+
 ## Docs assets
 
 The shipped images live in `docs/site/assets/` — one copy, served as the Pages

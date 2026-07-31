@@ -28,3 +28,12 @@ apps/cli/editor-dist/
 # The multi-MB source recordings stay out: they are re-recorded every time the
 # UI changes, and git would keep every generation of them forever.
 docs/assets/
+
+# Working drafts that are nobody else's business: launch copy, post scripts,
+# evaluation notes, anything half-thought. Ignored as a DIRECTORY so a new
+# draft needs no new rule — the reason `docs/assets/` had started collecting
+# markdown that has nothing to do with screen recordings.
+# Nothing here is published, reviewed, or a decision. A draft that becomes a
+# decision moves to `docs/superpowers/plans/` or the findings log and gets
+# committed like anything else.
+docs/local/
