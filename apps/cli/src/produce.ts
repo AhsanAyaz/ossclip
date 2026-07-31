@@ -37,6 +37,9 @@ import {
   splitCues,
   landscapeLayout,
   formatCutReport,
+  formatGraphicsAccounting,
+  findBloopSpans,
+  formatBloopSpan,
   formatUsageLine,
   formatUsageReport,
   loadConfig,
@@ -73,6 +76,7 @@ import {
   sliceTranscript,
   type Analysis,
   type AppliedRepair,
+  type BeatsValidationIssue,
   type CleanupLevel,
   type ClipWindow,
   type LlmProvider,
@@ -125,6 +129,11 @@ export interface ProduceOptions {
   coverPath?: string;
   /** Treat the source as an already-edited reel with burned-in graphics. */
   sourceIsEdited?: boolean;
+  /**
+   * Spoken blooper marker (R27 §122) — `--blooper-marker blooper`. Saying it
+   * on camera cuts the attempt it spoiled, back to that sentence's start.
+   */
+  blooperMarker?: string;
   /**
    * How the source meets the vertical frame. `cover` (default) crops it to
    * fill; `contain` shows the WHOLE frame inset against the backdrop, which is
@@ -311,11 +320,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // `let`, not `const` (R19 §93): a clip run re-derives all three from the
   // transcript sliced to the chosen window, further down.
   let analysis: Analysis = analyze(transcript, silences, sourceProbe.duration, levels);
+  // Spoken blooper markers (R27 §122). Detected on the RAW transcript, before
+  // repair — the repair pass reads a bare "blooper." as an oddity and has
+  // already been observed proposing "break loop." for it. Detecting first
+  // means the marker cannot be rewritten out from under the detector.
+  let bloops = opts.blooperMarker ? findBloopSpans(transcript, opts.blooperMarker) : [];
+  if (opts.blooperMarker) {
+    console.log(
+      bloops.length > 0
+        ? `▸ blooper marker "${opts.blooperMarker}": ${bloops.length} take(s) cut`
+        : `▸ blooper marker "${opts.blooperMarker}": never said — nothing cut`,
+    );
+    for (const b of bloops) console.log(`  ▸ ${formatBloopSpan(transcript, b)}`);
+  }
   let cutlist: Segment[] = buildCutlist({
     transcript,
     analysis,
     duration: sourceProbe.duration,
     level: opts.cleanup,
+    bloops,
   });
   let map = new TimeMap(cutlist);
 
@@ -447,6 +470,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   let scenes: Scene[] = [];
   /** Editorial output kept for the cover (§31): hook + its thumbnail form. */
   let beatSheet: { hook: string; coverText?: string } | undefined;
+  /** The graphics accounting line for report.txt (§118b), and the beat-sheet
+   * issues that explain it. Cached alongside the beat sheet so a cached
+   * re-run's report keeps the accounting instead of erasing it (§78). */
+  let graphicsLine: string | undefined;
+  let beatIssues: BeatsValidationIssue[] = [];
   /** Who planned this run (R16 §78) — stamped into production.json below. */
   let producerStamp: Production["producer"];
   /** The resolved `--clip` window (R19 §93) — set only on a clip run; feeds
@@ -544,12 +572,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       rawTranscript = rawSlice.transcript;
       transcript = sliceTranscript(transcript, clipWindow);
       analysis = analyze(rawTranscript, silences, sourceProbe.duration, levels);
+      // Re-detect on the SLICE: word indices moved, so the spans found against
+      // the full take no longer address the same words.
+      bloops = opts.blooperMarker ? findBloopSpans(rawTranscript, opts.blooperMarker) : [];
       cutlist = boundCutlistToWindow(
         buildCutlist({
           transcript: rawTranscript,
           analysis,
           duration: sourceProbe.duration,
           level: opts.cleanup,
+          bloops,
         }),
         clipWindow,
         sourceProbe.duration,
@@ -600,13 +632,33 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       for (const issue of clipFresh.beatIssues) {
         console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
       }
+      beatIssues = clipFresh.beatIssues;
+      // `transcript` is the slice here — the space the accounting was made in.
+      graphicsLine = formatGraphicsAccounting(
+        clipFresh.graphics.delivered,
+        clipFresh.graphics.asked,
+        transcript,
+      );
       await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
-      await writeFile(beatCache, JSON.stringify(beatSheet, null, 2));
+      await writeFile(
+        beatCache,
+        JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
+      );
     } else if (existsSync(sceneCache)) {
       scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(sceneCache, "utf8")));
       console.log(`▸ scenes cached (${scenes.length})`);
       if (existsSync(beatCache)) {
-        beatSheet = JSON.parse(await readFile(beatCache, "utf8")) as typeof beatSheet;
+        // Pre-§118b caches carry no accounting — the report then simply
+        // omits the graphics section rather than guessing one.
+        const cached = JSON.parse(await readFile(beatCache, "utf8")) as {
+          hook: string;
+          coverText?: string;
+          graphics?: string;
+          issues?: BeatsValidationIssue[];
+        };
+        beatSheet = { hook: cached.hook, coverText: cached.coverText };
+        graphicsLine = cached.graphics;
+        beatIssues = cached.issues ?? [];
       }
     } else {
       console.log(`▸ producing scenes (${providerName})…`);
@@ -630,11 +682,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       for (const issue of result.beatIssues) {
         console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
       }
+      beatIssues = result.beatIssues;
+      graphicsLine = formatGraphicsAccounting(
+        result.graphics.delivered,
+        result.graphics.asked,
+        transcript,
+      );
       // Cache props only — overrides are user-owned and live in overrides.json,
       // never in production.json (that file is derived and every `produce`
       // run overwrites it, per the merge rule in `overrides.ts`).
       await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
-      await writeFile(beatCache, JSON.stringify(beatSheet, null, 2));
+      await writeFile(
+        beatCache,
+        JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
+      );
     }
   }
 
@@ -829,12 +890,23 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // existing one — cropping through the source's title and then restating it
   // underneath. Graphics move to a clear slot or are skipped; captions never
   // are, they just relocate.
-  const sourceText = await scanSourceText(tools, analysisInput, analysisProbe.duration, {
-    cacheDir: work,
-    assumeEdited: opts.sourceIsEdited,
-    cropVf: analysisCropVf,
-    cacheTag,
-  });
+  //
+  // Behind --source-is-edited since R27 §120. The detector cannot tell burned-in
+  // GRAPHICS from text that is simply in the room, and on a raw take at a desk
+  // it read the background monitors as 45 bands of "source text". The cost is
+  // not cosmetic: every graphic was then moved and SHRUNK to a free band —
+  // a BulletList pinned to its 36px font floor, a FlowDiagram's slot halved
+  // (0.54 → 0.27, type 71 → 35), and a ScreenshotFrame slid onto the speaker's
+  // face. Routing around a hazard only pays when there is a hazard, and only
+  // the user knows whether their source is already edited.
+  const sourceText = opts.sourceIsEdited
+    ? await scanSourceText(tools, analysisInput, analysisProbe.duration, {
+        cacheDir: work,
+        assumeEdited: true,
+        cropVf: analysisCropVf,
+        cacheTag,
+      })
+    : { regions: [], assumed: false, framesSampled: 0 };
   if (sourceText.regions.length > 0) {
     console.log(
       sourceText.assumed
@@ -966,7 +1038,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
 
   // Grounding post-check (FINDINGS §14a): flags label tokens the take never
   // says — a hallucinated hook label is visible here without watching the video.
-  const groundingIssues = checkGrounding(scenes, transcript, opts.speaker ?? cfg.speaker);
+  //
+  // Checked against the copy that will actually RENDER, overrides included
+  // (R27 §124). It used to read the producer's raw scenes, so it was wrong in
+  // both directions: it kept reporting invented copy the user had already
+  // fixed by hand — the warning outlived the defect, which teaches people to
+  // ignore warnings — and it never looked at copy the user typed themselves.
+  // `checkGrounding` already merges a scene's `overrides` slot; nothing was
+  // filling it from `overrides.json`.
+  const scenesAsRendered = scenes.map((s) => {
+    const edit = overrideDoc.scenes[s.id]?.props;
+    return edit && Object.keys(edit).length > 0
+      ? { ...s, overrides: { ...s.overrides, ...edit } }
+      : s;
+  });
+  const groundingIssues = checkGrounding(scenesAsRendered, transcript, opts.speaker ?? cfg.speaker);
   for (const g of groundingIssues) {
     console.log(`  ⚠ grounding: ${g.component} ${g.sceneId} ${g.field} "${g.token}" — not in the take`);
   }
@@ -1051,6 +1137,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       `${((dur / sourceProbe.duration) * 100).toFixed(0)}% of the take)\n` +
       `  reason: ${clipWindow.reason}\n`;
   }
+  // §122: a cut that takes whole sentences owes the user the words it took —
+  // the timestamps above say WHERE, not what was lost.
+  if (bloops.length > 0) {
+    report +=
+      `\nbloopers cut (you said "${opts.blooperMarker}" — FINDINGS §122):\n` +
+      bloops.map((b) => `  ${formatBloopSpan(rawTranscript, b)}`).join("\n") +
+      "\n";
+  }
   const landed = repairs.filter((r) => r.applied);
   if (landed.length > 0) {
     report +=
@@ -1072,6 +1166,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         .map((g) => `  ${g.component} ${g.sceneId} ${g.field}: "${g.token}"`)
         .join("\n") +
       "\n";
+  }
+  // §118b: the graphics count justified in the artefact, like every cut is —
+  // delivered vs asked and why, then the scheduler's own account of what it
+  // demoted. The shortfall issue repeats the accounting line, so it is the
+  // one issue not reprinted here.
+  if (graphicsLine) {
+    report +=
+      `\n${graphicsLine} (FINDINGS §118)\n` +
+      beatIssues
+        .filter((i) => !i.issue.startsWith("graphics:"))
+        .map((i) => `  ⚠ moment ${i.moment}: ${i.issue}\n`)
+        .join("");
   }
   if (provider) {
     report += formatUsageReport(provider.usage, cfg.pricing);

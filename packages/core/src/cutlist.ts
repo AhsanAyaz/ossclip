@@ -6,12 +6,23 @@ interface LevelPolicy {
   /** Resulting gap length after tightening. */
   tightenTo: number;
   removeFillers: boolean;
+  /**
+   * Run-up kept before the first word and after the last (R27 §127).
+   *
+   * Level-dependent, because "how hard should I cut" plainly covers the ends
+   * too, and a fixed 0.25/0.35 was the one thing `--cleanup aggressive` could
+   * not tighten. On a short that LOOPS, a third of a second of the speaker
+   * sitting there after the last word is a visible dead beat every time the
+   * video repeats — the reason this surfaced on a real render.
+   */
+  leadKeep: number;
+  tailKeep: number;
 }
 
 const POLICIES: Record<Exclude<CleanupLevel, "exact">, LevelPolicy> = {
-  light: { pauseMin: 1.2, tightenTo: 0.3, removeFillers: false },
-  standard: { pauseMin: 0.7, tightenTo: 0.22, removeFillers: true },
-  aggressive: { pauseMin: 0.5, tightenTo: 0.18, removeFillers: true },
+  light: { pauseMin: 1.2, tightenTo: 0.3, removeFillers: false, leadKeep: 0.35, tailKeep: 0.45 },
+  standard: { pauseMin: 0.7, tightenTo: 0.22, removeFillers: true, leadKeep: 0.25, tailKeep: 0.35 },
+  aggressive: { pauseMin: 0.5, tightenTo: 0.18, removeFillers: true, leadKeep: 0.12, tailKeep: 0.15 },
 };
 
 /** Dead air kept before the first word / after the last word. Exported for
@@ -49,10 +60,26 @@ export interface BuildCutlistArgs {
   analysis: Analysis;
   duration: number;
   level: CleanupLevel;
+  /**
+   * Spans the speaker marked as bloopers out loud (R27 §122), from
+   * `findBloopSpans`. Passed in rather than detected here so this stays a pure
+   * function of its arguments — and so `--blooper-marker` is the only thing
+   * that can put a `retake` cut in the timeline.
+   */
+  bloops?: readonly { startWord: number; endWord: number; startSec: number; endSec: number }[];
 }
 
-export function buildCutlist({ transcript, analysis, duration, level }: BuildCutlistArgs): Segment[] {
+export function buildCutlist({
+  transcript,
+  analysis,
+  duration,
+  level,
+  bloops,
+}: BuildCutlistArgs): Segment[] {
   const keepAll: Segment[] = [{ srcIn: 0, srcOut: duration, kind: "keep" }];
+  // `exact` means exact: it is the escape hatch for "touch nothing", and a
+  // blooper cut is still a cut. --blooper-marker with --cleanup exact is a
+  // contradiction, and the flag the user typed second does not get to win.
   if (level === "exact") return keepAll;
   const policy = POLICIES[level];
   const words = transcript.words;
@@ -62,17 +89,49 @@ export function buildCutlist({ transcript, analysis, duration, level }: BuildCut
 
   const removals: Removal[] = [];
 
+  // Marked bloopers, injected BEFORE the sort/merge below so they inherit the
+  // whole existing machine: merging with the silence that brackets the flub,
+  // MIN_KEEP sliver folding, and the partition emit. Source is "acoustic"
+  // because the boundaries are word stamps we chose deliberately — the
+  // protected-word pass must not push them back off the words they exist to
+  // remove.
+  for (const b of bloops ?? []) {
+    removals.push({
+      start: b.startSec,
+      end: b.endSec,
+      reason: "retake",
+      confidence: 1,
+      source: "acoustic",
+    });
+  }
+
   for (const pause of analysis.cuttable) {
-    const isLead = first !== undefined && pause.end <= first.start + 1e-6;
-    const isTail = last !== undefined && pause.start >= last.end - 1e-6;
+    // Lead and tail are decided by the SILENCE's position in the file, not by
+    // comparing it to a word stamp (R27 §127). Whisper's `-ml 1` stamps stretch
+    // to fill gaps: on a real take the first word was stamped 0.00–0.53 over
+    // silence that plainly starts at 0.00, so `pause.end <= first.start` was
+    // false and the opening dead air fell through to the interior rule — where
+    // it was under `pauseMin` and survived. The tail failed the same way, by a
+    // 0.07s overlap, leaving the speaker on screen looking down after the last
+    // word. Dead air touching either end of the file IS lead/tail, whatever the
+    // recognizer claims about where words begin.
+    const isLead = pause.start <= 1e-6;
+    const isTail = pause.end >= duration - 1e-6;
     if (isLead) {
-      // Trim dead air before the first word down to LEAD_KEEP (hook starts fast).
-      const end = Math.min(pause.end, (first?.start ?? pause.end) - LEAD_KEEP);
+      // Keep LEAD_KEEP of run-up before speech starts (hook starts fast).
+      // Measured back from the END of the silence — where speech actually
+      // begins — rather than from a word stamp that may cover the silence.
+      const speechStarts = first !== undefined ? Math.max(pause.end, first.start) : pause.end;
+      const end = Math.min(pause.end, speechStarts - policy.leadKeep);
       if (end - pause.start >= MIN_REMOVAL) {
         removals.push({ start: pause.start, end, reason: "silence", confidence: 0.95, source: "acoustic" });
       }
     } else if (isTail) {
-      const start = Math.max(pause.start, (last?.end ?? pause.start) + TAIL_KEEP);
+      // Same, mirrored: the take ends when the speech does, so keep TAIL_KEEP
+      // past the last word and drop everything after — including the pause the
+      // recognizer's final stamp bled into.
+      const speechEnds = last !== undefined ? Math.min(pause.start, last.end) : pause.start;
+      const start = Math.max(pause.start, speechEnds + policy.tailKeep);
       if (pause.end - start >= MIN_REMOVAL) {
         removals.push({ start, end: pause.end, reason: "silence", confidence: 0.95, source: "acoustic" });
       }

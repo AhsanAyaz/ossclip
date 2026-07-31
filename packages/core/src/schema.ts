@@ -71,10 +71,22 @@ export type Analysis = z.infer<typeof AnalysisSchema>;
 
 export const ProbeSchema = z.object({
   duration: z.number().positive(),
+  /**
+   * DISPLAYED dimensions, after the rotation matrix (R27 §119) — not the raw
+   * stream's. A phone/camera writes a portrait take as a landscape stream plus
+   * a 90° display matrix, and ffmpeg's filter chain auto-rotates, so the raw
+   * numbers disagree with every measurement taken through ffmpeg.
+   */
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   fps: z.number().positive(),
   hasAudio: z.boolean(),
+  /**
+   * The stream's rotation in degrees (0/90/180/270), recorded so a workdir says
+   * why its geometry is what it is. Optional: pre-§119 `production.json` files
+   * predate it and must still parse.
+   */
+  rotation: z.number().int().optional(),
 });
 export type Probe = z.infer<typeof ProbeSchema>;
 

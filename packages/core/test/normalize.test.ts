@@ -236,6 +236,25 @@ describe("normalizationFilterGraph", () => {
     // Every trim resets its timestamps, or concat would stack the offsets.
     expect(graph.match(/setpts=PTS-STARTPTS/g)).toHaveLength(3);
   });
+
+  it("pins SAR on every segment, or concat refuses the whole bake (R27 §125)", () => {
+    // Segments are scaled to ONE canvas from DIFFERENT crops, and ffmpeg
+    // derives a sample aspect from that ratio — 946x1682 -> 860x1530 gives SAR
+    // 1683:1682, 932x1660 gives 1377:1376. concat requires identical SAR and
+    // aborts when they disagree, so a take whose framing varies (the only
+    // take normalization runs on) would not render at all.
+    const plan = planNormalization(
+      [seg(0, 10, STRIP), seg(10, 20, FULL), seg(20, 30, STRIP)],
+      [null, null, null],
+      OUT,
+    );
+    const graph = normalizationFilterGraph(plan);
+    expect(graph.match(/setsar=1/g)).toHaveLength(plan.segments.length);
+    // On each segment the pin must come AFTER the scale that introduced the skew.
+    for (const part of graph.split(";").filter((p) => p.includes("scale="))) {
+      expect(part.indexOf("setsar=1")).toBeGreaterThan(part.indexOf("scale="));
+    }
+  });
 });
 
 describe("pickTransition (boundary refinement)", () => {

@@ -115,3 +115,60 @@ describe("speaker vocabulary (FINDINGS §39)", () => {
     expect(issues.map((i) => i.token)).toContain("revenue");
   });
 });
+
+/**
+ * R27 §124. The check reads a scene's `overrides` slot, but the CLI used to
+ * hand it the producer's raw scenes, so it judged copy that no longer reaches
+ * the frame: a hand-fixed label kept being reported, and copy the user typed
+ * was never looked at. A warning that outlives its defect teaches people to
+ * ignore warnings.
+ */
+describe("grounding judges the copy that renders, not the copy that was planned (§124)", () => {
+  const edited = (props: Record<string, unknown>, overrides: Record<string, unknown>): Scene => ({
+    ...scene("FlowDiagram", props),
+    overrides,
+  });
+
+  it("clears a warning once the invented token is edited away", () => {
+    const invented = { nodes: ["CODE CHURN", "REVENUE"] };
+    expect(checkGrounding([scene("FlowDiagram", invented)], transcript)).toHaveLength(1);
+    expect(
+      checkGrounding([edited(invented, { nodes: ["CODE CHURN", "AGENTS"] })], transcript),
+    ).toEqual([]);
+  });
+
+  it("catches an invention the USER introduced, which the planned copy did not have", () => {
+    const grounded = { nodes: ["CODE CHURN", "AGENTS"] };
+    expect(checkGrounding([scene("FlowDiagram", grounded)], transcript)).toEqual([]);
+    const issues = checkGrounding([edited(grounded, { nodes: ["CODE CHURN", "REVENUE"] })], transcript);
+    expect(issues.map((i) => i.token)).toEqual(["revenue"]);
+  });
+});
+
+/**
+ * R27 §126. A structured line's siblings are rendering directives, not copy.
+ * The check judged them as on-screen text, and since the take can never say
+ * "cross" or "none", the warning was unfixable by construction.
+ */
+describe("structured lines: only the copy is judged (§126)", () => {
+  it("ignores a line's mark/struck directives", () => {
+    const lines = [
+      { text: "CODE CHURN WENT UP", struck: false, mark: "none" },
+      { text: "861 PERCENT", struck: true, mark: "cross" },
+    ];
+    expect(checkGrounding([scene("StrikethroughReveal", { lines })], transcript)).toEqual([]);
+  });
+
+  it("still catches an invention inside the copy itself", () => {
+    const lines = [{ text: "REVENUE WENT UP", struck: false, mark: "cross" }];
+    const issues = checkGrounding([scene("StrikethroughReveal", { lines })], transcript);
+    expect(issues.map((i) => i.token)).toEqual(["revenue"]);
+  });
+
+  it("falls back to every value when an object has no text field", () => {
+    const lines = [{ headline: "REVENUE" }];
+    expect(
+      checkGrounding([scene("StrikethroughReveal", { lines })], transcript).map((i) => i.token),
+    ).toEqual(["revenue"]);
+  });
+});

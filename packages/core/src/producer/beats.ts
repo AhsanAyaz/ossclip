@@ -6,13 +6,39 @@ import { MAX_SCENE_SEC } from "../assemble";
 import { COVER_MAX_WORDS, coverHeadline } from "../cover";
 import type { LlmProvider } from "./provider";
 
+/**
+ * Free text from the model, capped rather than refused (R27 §123).
+ *
+ * The standing doctrine (§112) is that LLM output is untrusted input,
+ * "validated where the pipeline can still degrade instead of at the point
+ * where it can only die". A bare `.max(n)` is the second kind: on two of three
+ * real runs the editorial call came back with a 61-character `onScreenCopy`
+ * and the whole produce died at the Zod boundary — transcription, analysis and
+ * the cut all discarded over one character of a headline.
+ *
+ * `preprocess` keeps `maxLength: n` in the JSON schema the provider is handed,
+ * so the model is still ASKED for the limit; it just no longer costs a run
+ * when the model misses by a word. Truncation prefers the last word boundary,
+ * and adds no ellipsis — the prompt explicitly forbids one on cover text.
+ */
+export function cappedText(max: number): z.ZodType<string> {
+  return z.preprocess((v) => {
+    if (typeof v !== "string" || v.length <= max) return v;
+    const cut = v.slice(0, max);
+    const lastSpace = cut.lastIndexOf(" ");
+    // Only honour a word boundary that keeps most of the budget; a single very
+    // long word would otherwise collapse to nothing.
+    return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd();
+  }, z.string().max(max)) as z.ZodType<string>;
+}
+
 /** Call 1 — the editorial call (PHASE1 §4): moments, copy, component picks. */
 export const MomentSchema = z.object({
   startWord: z.number().int().nonnegative(),
   endWord: z.number().int().nonnegative(),
-  purpose: z.string().max(100),
+  purpose: cappedText(100),
   /** Short on-screen copy for this beat — the fallback TitleCard title. */
-  onScreenCopy: z.string().max(60),
+  onScreenCopy: cappedText(60),
   /** "none" = plain talking head with captions; otherwise a library component. */
   sceneKind: z.union([SceneComponentIdSchema, z.literal("none")]),
   /**
@@ -24,20 +50,18 @@ export const MomentSchema = z.object({
   layout: LayoutSchema.optional().describe(
     "stage layout for this scene; omit for the component default. NEVER a layout the framing brief marks UNAVAILABLE for these words",
   ),
-  rationale: z.string().max(120).optional(),
+  rationale: cappedText(120).optional(),
 });
 export type Moment = z.infer<typeof MomentSchema>;
 
 export const BeatSheetSchema = z.object({
-  hook: z.string().max(120),
+  hook: cappedText(120),
   /**
    * Banner text for the cover image (FINDINGS §31). Written here rather than
    * by a second LLM call, because the producer is already choosing the hook —
    * this is the same editorial judgement, shortened for a thumbnail.
    */
-  coverText: z
-    .string()
-    .max(60)
+  coverText: cappedText(60)
     .optional()
     .describe(
       `cover banner: at most ${COVER_MAX_WORDS} words, the hook compressed to a thumbnail headline`,
@@ -264,6 +288,22 @@ function enumeratedNote(transcript: Transcript): string | null {
   return n > 0 ? ` — the take enumerates ${n} points` : null;
 }
 
+/**
+ * The one-line graphics accounting (§118b): delivered vs asked, and why the
+ * ask was what it was. One formatter for the console issue and `report.txt`,
+ * so the two can never say different things about the same run.
+ */
+export function formatGraphicsAccounting(
+  delivered: number,
+  asked: number,
+  transcript: Transcript,
+): string {
+  return (
+    `graphics: ${delivered} of ${asked} planned` +
+    (enumeratedNote(transcript) ?? ` (target is ~1 per ${SEC_PER_GRAPHIC}s)`)
+  );
+}
+
 /** A moment's approximate seconds of speech, from the transcript word stamps. */
 function momentDuration(m: Moment, transcript: Transcript): number {
   const first = transcript.words[m.startWord];
@@ -277,10 +317,21 @@ function momentMidpoint(m: Moment, transcript: Transcript): number {
   return first && last ? (first.start + last.end) / 2 : 0;
 }
 
-/** Semantic validation beyond the schema; repairs what it can, reports the rest. */
+/**
+ * Semantic validation beyond the schema; repairs what it can, reports the rest.
+ *
+ * `askedGraphics` is the count the PROMPT stated (§118b): pass it so the
+ * shortfall check measures against what was actually asked for — on a clip
+ * run the internal fallback would measure against the full take's runtime,
+ * not the clip target the prompt named. `null` skips the check entirely (the
+ * pre-slice pass of a clip run, whose sheet is renormalized after slicing —
+ * two passes reporting the same shortfall would say it twice). Omitted, the
+ * ask is derived from the transcript's own span.
+ */
 export function normalizeBeatSheet(
   sheet: BeatSheet,
   transcript: Transcript,
+  askedGraphics?: number | null,
 ): { sheet: BeatSheet; issues: BeatsValidationIssue[] } {
   const wordCount = transcript.words.length;
   const issues: BeatsValidationIssue[] = [];
@@ -414,13 +465,14 @@ export function normalizeBeatSheet(
   // this render the report should carry, exactly as every cut is justified.
   // Silence is what let three graphics on a five-point take look normal.
   const delivered = surviving().length;
-  const asked = graphicsTarget(runtime, countEnumeratedBeats(transcript));
-  if (delivered < asked) {
+  const asked =
+    askedGraphics === undefined
+      ? graphicsTarget(runtime, countEnumeratedBeats(transcript))
+      : askedGraphics;
+  if (asked !== null && delivered < asked) {
     issues.push({
       moment: -1,
-      issue:
-        `graphics: ${delivered} of ${asked} planned` +
-        (enumeratedNote(transcript) ?? ` (target is ~1 per ${SEC_PER_GRAPHIC}s)`),
+      issue: formatGraphicsAccounting(delivered, asked, transcript),
     });
   }
 
@@ -436,10 +488,22 @@ export async function generateBeatSheet(
   framingBrief?: string,
   clip?: { targetSec: number },
   aspect?: "9:16" | "16:9",
-): Promise<{ sheet: BeatSheet; issues: BeatsValidationIssue[]; highlight?: ClipHighlight }> {
+): Promise<{
+  sheet: BeatSheet;
+  issues: BeatsValidationIssue[];
+  /** The graphic count the prompt asked for (§118b) — what "asked" means everywhere downstream. */
+  asked: number;
+  highlight?: ClipHighlight;
+}> {
   const user =
     (speaker ? `The speaker: ${speaker}\n\n` : "") +
     buildBeatsUserPrompt(transcript, duration, intent, framingBrief, clip, aspect);
+  // The same number `buildBeatsUserPrompt` states — computed from the same
+  // inputs by the same pure functions, so the check and the ask agree.
+  const asked = graphicsTarget(
+    clip?.targetSec ?? duration,
+    countEnumeratedBeats(transcript),
+  );
   if (clip) {
     // Same editorial call, extended schema (R19 §93d) — the highlight and the
     // beat sheet come from ONE judgement, so they cannot disagree.
@@ -449,7 +513,8 @@ export async function generateBeatSheet(
       schema: ClipBeatSheetSchema,
       schemaName: "clip_beat_sheet",
     });
-    return { ...normalizeBeatSheet(raw, transcript), highlight: raw.highlight };
+    // `null`: the post-slice renormalization owns the shortfall check.
+    return { ...normalizeBeatSheet(raw, transcript, null), asked, highlight: raw.highlight };
   }
   const raw = await provider.complete({
     system: PRODUCER_SYSTEM,
@@ -457,5 +522,5 @@ export async function generateBeatSheet(
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",
   });
-  return normalizeBeatSheet(raw, transcript);
+  return { ...normalizeBeatSheet(raw, transcript, asked), asked };
 }

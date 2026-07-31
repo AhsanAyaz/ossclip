@@ -118,7 +118,8 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--whisper-model <name>` | transcription model for this run |
 | `--scenes <path>` | hand-authored scenes JSON — no LLM in the loop |
 | `--force-component <id>` | debug: render every graphic with one component (e.g. `FlowDiagram`) to exercise it on real copy |
-| `--source-is-edited` | the source is already an edited reel with burned-in text — keep ossclip's graphics off it |
+| `--source-is-edited` | the source is already an edited reel with burned-in text — keep ossclip's graphics off it (also what enables the source-text scan) |
+| `--blooper-marker <word>` | say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Off unless given |
 | `--no-cover` / `--cover <path>` | skip, or redirect, the cover image written beside the video |
 | `--no-render` | stop after writing the props |
 | `--workdir <dir>` | where the cache lives |

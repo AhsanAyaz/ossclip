@@ -289,7 +289,8 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--whisper-model &lt;name&gt;</td><td>transcription model for this run (<em>base.en | small.en | medium.en</em>)</td></tr>
   <tr><td>--no-repair</td><td>skip the ASR mishearing repair</td></tr>
   <tr><td>--scenes &lt;path&gt;</td><td>hand-authored scenes JSON — no LLM in the loop</td></tr>
-  <tr><td>--source-is-edited</td><td>the source already has burned-in graphics — keep ossclip's off them</td></tr>
+  <tr><td>--source-is-edited</td><td>the source already has burned-in graphics — keep ossclip's off them <em>(also what turns the source-text scan on)</em></td></tr>
+  <tr><td>--blooper-marker &lt;word&gt;</td><td>say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Off unless given</td></tr>
   <tr><td>--no-cover / --cover &lt;path&gt;</td><td>skip, or redirect, the cover image</td></tr>
   <tr><td>--no-render</td><td>stop after writing the props</td></tr>
   <tr><td>--workdir &lt;dir&gt;</td><td>where the cache lives</td></tr>

@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod/v4";
 import {
   BeatSheetSchema,
   SEC_PER_GRAPHIC,
   buildBeatsUserPrompt,
   countEnumeratedBeats,
+  formatGraphicsAccounting,
+  generateBeatSheet,
   graphicsTarget,
   normalizeBeatSheet,
 } from "../src/producer/beats";
+import type { LlmProvider } from "../src/producer/provider";
 import type { Transcript } from "../src/schema";
 
 /**
@@ -170,6 +174,78 @@ describe("§118b: under-delivery is reported, never silent", () => {
   });
 });
 
+describe("§118b: the accounting measures against the ask, not the runtime", () => {
+  /** A provider that returns a canned sheet — the ask is what's under test. */
+  const canned = (sheet: unknown): LlmProvider =>
+    ({ name: "canned", usage: [], complete: async () => sheet }) as unknown as LlmProvider;
+
+  const oneGraphic = {
+    hook: "h",
+    moments: [
+      { startWord: 0, endWord: 3, purpose: "a", onScreenCopy: "A", sceneKind: "StatCard" },
+      { startWord: 4, endWord: 59, purpose: "b", onScreenCopy: "B", sceneKind: "none" },
+    ],
+  };
+
+  it("formats one line for the console issue and report.txt alike", () => {
+    expect(formatGraphicsAccounting(6, 7, speak(filler(60)))).toBe(
+      `graphics: 6 of 7 planned (target is ~1 per ${SEC_PER_GRAPHIC}s)`,
+    );
+    expect(
+      formatGraphicsAccounting(3, 5, speak("number one a number two b number three c")),
+    ).toBe("graphics: 3 of 5 planned — the take enumerates 3 points");
+  });
+
+  it("an explicit ask overrides the transcript-span fallback", () => {
+    // 60 words ≈ 30s of transcript would derive an ask of 4; the prompt said 9.
+    const { issues } = normalizeBeatSheet(BeatSheetSchema.parse(oneGraphic), speak(filler(60)), 9);
+    expect(issues.find((i) => i.issue.startsWith("graphics:"))?.issue).toContain("1 of 9 planned");
+  });
+
+  it("null skips the check — the pre-slice pass of a clip run", () => {
+    const { issues } = normalizeBeatSheet(
+      BeatSheetSchema.parse(oneGraphic),
+      speak(filler(60)),
+      null,
+    );
+    expect(issues.some((i) => i.issue.startsWith("graphics:"))).toBe(false);
+  });
+
+  it("measures a plain run against the duration the prompt stated", async () => {
+    // The transcript spans ~5 minutes of SOURCE time, but the prompt said 54s
+    // of output — the ask is 6, not the span-derived 12.
+    const { asked, issues } = await generateBeatSheet(
+      canned(oneGraphic),
+      speak(filler(600)),
+      54,
+      undefined,
+    );
+    expect(asked).toBe(6);
+    expect(issues.find((i) => i.issue.startsWith("graphics:"))?.issue).toContain("1 of 6 planned");
+  });
+
+  it("measures a clip run against the clip target, and only once", async () => {
+    // Pre-fix this reported against the FULL take's runtime (capped at 12) —
+    // a number the prompt never stated — and would have reported again after
+    // the slice. The pre-slice pass now stays quiet; `asked` is the clip's.
+    const sheet = {
+      ...oneGraphic,
+      highlight: { startWord: 0, endWord: 59, reason: "r" },
+    };
+    const { asked, issues } = await generateBeatSheet(
+      canned(sheet),
+      speak(filler(600)),
+      300,
+      undefined,
+      undefined,
+      undefined,
+      { targetSec: 60 },
+    );
+    expect(asked).toBe(7);
+    expect(issues.some((i) => i.issue.startsWith("graphics:"))).toBe(false);
+  });
+});
+
 describe("the moment cap no longer caps graphics (§118)", () => {
   it("accepts enough moments to alternate at the target density", () => {
     // 7 graphics alternating with plain takes needs ~14 moments; the old
@@ -182,5 +258,69 @@ describe("the moment cap no longer caps graphics (§118)", () => {
       sceneKind: i % 2 === 0 ? ("StatCard" as const) : ("none" as const),
     }));
     expect(() => BeatSheetSchema.parse({ hook: "h", moments })).not.toThrow();
+  });
+});
+
+/**
+ * R27 §123. `.max(n)` on model free text is a die-here boundary: two of three
+ * real runs came back with a 61-character `onScreenCopy` and the whole produce
+ * exited 1, throwing away transcription, analysis and the cut over one
+ * character of a headline. §112 says validate where the pipeline can still
+ * degrade.
+ */
+describe("over-long model copy is capped, not fatal (§123)", () => {
+  it("truncates at a word boundary instead of throwing", () => {
+    const long = "Agent loops are the single most misunderstood idea in AI engineering today";
+    const parsed = BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 3, purpose: "p", onScreenCopy: long, sceneKind: "StatCard" },
+      ],
+    });
+    const copy = parsed.moments[0]!.onScreenCopy;
+    expect(copy.length).toBeLessThanOrEqual(60);
+    expect(long.startsWith(copy)).toBe(true);
+    expect(copy.endsWith(" ")).toBe(false);
+    // A word boundary, not a mid-word chop.
+    expect(copy).toBe("Agent loops are the single most misunderstood idea in AI");
+  });
+
+  it("the exact case that killed two real runs: 61 characters", () => {
+    const sixtyOne = "x".repeat(61);
+    expect(() => BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 1, purpose: "p", onScreenCopy: sixtyOne, sceneKind: "none" },
+      ],
+    })).not.toThrow();
+  });
+
+  it("hard-chops a single unbreakable word rather than collapsing it", () => {
+    const wall = "y".repeat(90);
+    const parsed = BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 1, purpose: "p", onScreenCopy: wall, sceneKind: "none" },
+      ],
+    });
+    expect(parsed.moments[0]!.onScreenCopy).toHaveLength(60);
+  });
+
+  it("leaves copy within the cap untouched", () => {
+    const fine = "Three parts, one loop";
+    const parsed = BeatSheetSchema.parse({
+      hook: "h",
+      moments: [
+        { startWord: 0, endWord: 1, purpose: "p", onScreenCopy: fine, sceneKind: "none" },
+      ],
+    });
+    expect(parsed.moments[0]!.onScreenCopy).toBe(fine);
+  });
+
+  it("still ASKS the model for the limit — maxLength survives in the JSON schema", () => {
+    // The point is to stop dying, not to stop constraining: if maxLength
+    // vanished from the schema the provider would no longer be told the cap.
+    const json = JSON.stringify(z.toJSONSchema(BeatSheetSchema));
+    expect(json).toContain('"maxLength":60');
   });
 });

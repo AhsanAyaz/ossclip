@@ -11,6 +11,7 @@ export * from "./transcribe";
 export * from "./analyze";
 export * from "./cutlist";
 export * from "./clip";
+export * from "./blooper";
 export * from "./captions";
 export * from "./zoom";
 export * from "./grounding";

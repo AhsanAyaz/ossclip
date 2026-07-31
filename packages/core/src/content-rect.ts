@@ -96,6 +96,19 @@ export function stableContentRect(
   const whole: ContentRect = { x: 0, y: 0, w: width, h: height, full: true };
   if (rects.length === 0 || width <= 0 || height <= 0) return whole;
 
+  // A measurement that does not FIT the frame was taken in a different
+  // coordinate space than the one we are reconciling it against, so nothing it
+  // says can be trusted (R27 §119). This is how a portrait take read as
+  // landscape used to produce a "letterbox": cropdetect measured the rotated
+  // 2160x3840 frame, the caller believed 3840x2160, and clamping the union of
+  // the two orientations yielded a 2160x2160 square that was never on screen.
+  // Refuse, exactly as MIN_CONTENT_FRAC refuses an implausibly small rect —
+  // cropping on bad evidence is far worse than leaving bars alone.
+  const fits = rects.every(
+    (r) => r.x >= 0 && r.y >= 0 && r.x + r.w <= width && r.y + r.h <= height,
+  );
+  if (!fits) return whole;
+
   let left = Infinity;
   let top = Infinity;
   let right = -Infinity;

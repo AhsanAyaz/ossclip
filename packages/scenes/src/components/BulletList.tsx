@@ -55,7 +55,7 @@ export const BulletList: React.FC<{
   heightPx?: number;
   edits?: ElementEdits;
 }> = ({ props, theme, widthPx, heightPx, edits }) => {
-  const fontSize = bulletMetrics(props.items, widthPx, heightPx, Boolean(props.title));
+  const fontSize = bulletMetrics(props.items, widthPx, heightPx, Boolean(props.title), props.title);
   const titleEnter = useEnter(0);
   return (
     <div

@@ -1047,4 +1047,84 @@ Fixed at all three: the cap is 24; the prompt asks for shorter moments rather th
 
 Verified on the same 64s take, same model, fresh plan: **3 → 6 graphics**, with `scene-12` present — a beat the old cap made structurally impossible. 679 tests green, including the §7/§8/§114 ceiling tests, which still pass unchanged: the ceiling was never relaxed.
 
-**Deviation from §116b, stated plainly:** the shortfall is reported on the console with every other beat-sheet issue (`⚠ moment -1: graphics: 6 of 7 planned — the take enumerates 5 points`), not in `report.txt`. Putting it in the cut report would separate it from the issues it belongs with. If the report is where it is wanted, that is a small plumbing change, not a redesign.
+**Deviation from §116b, stated plainly:** the shortfall is reported on the console with every other beat-sheet issue (`⚠ moment -1: graphics: 6 of 7 planned — the take enumerates 5 points`), not in `report.txt`. Putting it in the cut report would separate it from the issues it belongs with. If the report is where it is wanted, that is a small plumbing change, not a redesign. *(Closed in R26 — the report was where it was wanted.)*
+
+# Round 26 — the accounting reaches the report, measured against the stated ask (2026-07-31)
+
+## 118b. Closed — and the ask it measures against is now the ask that was made
+
+The plumbing §118 deferred, plus one defect found while doing it.
+
+`report.txt` now carries the graphics accounting on every produced run — `graphics: 6 of 7 planned — the take enumerates 5 points`, followed by the scheduler's demotions — next to the cut justifications, where §116b always wanted it. The line prints whether or not the run under-delivered: a count that merely *meets* its target is also a fact worth one line in the artefact people forward. It survives cached re-runs the same way the provider stamp does (the §78 posture): the accounting and the beat-sheet issues are cached alongside the beat sheet, so a re-render's report keeps saying what was asked and delivered instead of silently dropping the section. A pre-§118b cache simply omits the section rather than guessing.
+
+The defect: the shortfall check measured against the wrong ask on `--clip` runs. `normalizeBeatSheet` derived its target from the transcript's own span — the FULL take — while the prompt had stated the clip-length target. A 5-minute source clipped to 60s would be measured against the span-derived cap of 12 when the model was asked for 7, reporting a shortfall the model never had; and the post-slice renormalization would then report it a second time. Now `generateBeatSheet` computes the ask once — the same number, from the same pure functions, that `buildBeatsUserPrompt` states — threads it into the check, and the pre-slice pass of a clip run skips the check entirely (the post-slice pass owns it). One formatter (`formatGraphicsAccounting`) builds the line for the console issue and the report alike, so the two can never disagree about the same run.
+
+Also from this session, in the docs rather than the code: the authoring plan had reserved findings numbers ahead of the work (§118–§122), and R25 took §118 first. The plan's items are renumbered §119–§123, and the rule is now written where it was broken: a plan reserves no numbers; a finding takes the next free one when it lands. §116 stays a hole in the log for the same reason.
+
+# Round 27 — the source was portrait all along (2026-07-31)
+
+First real-footage run of a joined five-clip take ("What Is An Agent Loop", 85s). Four visible defects were reported off the render; three of them turned out to be two bugs, and the fourth was a feature the take asked for by name.
+
+## 119. The rotation matrix was ignored, and everything compounded from there
+
+The camera wrote a **portrait** recording as a 3840×2160 stream plus a `rotation=90` display matrix. The displayed frame is 2160×3840 — **already 9:16, the exact target aspect, needing no crop at all.**
+
+`probe()` (`ingest.ts`) read `width`/`height` straight off `ffprobe -show_streams` and never looked at `side_data_list`, so the pipeline believed the source was landscape. But ffmpeg's *filter chain* auto-rotates, so every measurement taken through ffmpeg — cropdetect, face, the mezzanine — was already in the displayed space. Two orientations, one reconciliation:
+
+- cropdetect honestly reported `crop=2160:3840:0:0`: the full frame, no bars (verified — minimum column luma 103, where a real bar is ~0–16).
+- `stableContentRect` clamped that 3840-tall rect against a frame it believed was 2160 tall, and the union came out **2160×2160** — a square that was never on screen — logged as "source is letterboxed".
+- The bottom 44% of the picture was then cropped away, `sourceAspect` went to the stage as 1.00, and `object-fit: cover` into 1080×1920 kept 56.25% of what was left.
+
+Net **~1.8× magnification on a source that needed none**, which is the "over-zoomed" complaint. The animated layers were innocent all along: `ZOOM_MAX_SCALE` 1.05 × the 1.07 punch-in is 1.1235, and the diagnosis wasted time on them first.
+
+Fixed at the source: `probe()` reads the display matrix (both the modern side-datum and the legacy `rotate` tag), normalizes to 0/90/180/270, and **swaps width/height on a quarter turn** so the whole pipeline sees what ffmpeg sees. `Probe` records the rotation so a workdir says why its geometry is what it is.
+
+Second guard, at the place that produced the nonsense: `stableContentRect` now **refuses a measurement that does not fit the frame** and returns the whole frame instead. A rect that overhangs was taken in a different coordinate space, so nothing it says can be trusted — the same posture `MIN_CONTENT_FRAC` already takes toward an implausibly small rect. Clamping two disagreeing geometries together produced a plausible-looking number, which is worse than refusing.
+
+## 120. The source-text scan fired on the room, and shrank every graphic
+
+`scanSourceText` ran unconditionally; `--source-is-edited` only *added* assumed bands. On a raw take at a desk it read the background monitors as **45 bands** of "source text", and `placeInFreeBand` then moved and shrank every graphic to dodge them. The cost was not cosmetic:
+
+| scene | authored slot h | routed to | consequence |
+| --- | --- | --- | --- |
+| BulletList | 0.36 | 0.15 | height budget 288px → font pinned at the 36px floor |
+| ScreenshotFrame | 0.36 | 0.25 | slid onto the speaker's face |
+| FlowDiagram | 0.54 | 0.27 | stack font 71 → 35 |
+
+So the tiny bullets, the screenshot over the face and the tiny flow diagram were **one bug wearing three hats** — and none of them was a fit-contract bug, which is where the investigation would naturally have gone.
+
+The detector cannot tell burned-in *graphics* from text that is merely in the room, and only the user knows which they have. The scan is now behind `--source-is-edited`. Routing around a hazard pays only when there is a hazard.
+
+**Left open, deliberately, and pinned as a failing test:** routing never consults `layoutSlots(...).video`, so a dodging graphic can still land on a primary video slot. `blurred-behind`/`full-bleed`/`lower-third` intend that overlap; `video-top` and the splits author their graphic slot *clear* of the video, and routing violates it for all three. `source-fit.test.ts` asserts the separation holds today (it does) and uses `it.fails` to pin the violation — when routing is made video-aware the pinned test starts erroring, which is the reminder to promote it.
+
+## 121. BulletList under-fills, and the reason is not tunable
+
+With the routing bug gone the residual is real but small, and worth stating precisely rather than "fixing": in the motivating slot (842×806) the four real bullets solve to font 59 from the WIDTH term and 101 from the height term, so the stack fills ~55% and **the leftover height cannot be spent**. Items are `whiteSpace: nowrap` by design — a wrapped bullet stops reading as a list — so growing the font would overflow horizontally. `bulletMetrics` returning `min(widthFit, heightFit)` is correct.
+
+Two genuine model errors fixed: the kicker title was charged `1.1em` of height while rendering at `0.36em` (≈0.88em with its gap), and its `0.28em` tracking was not modelled for width at all, so a long kicker could overrun the slot unbudgeted.
+
+The fill test that should have caught the under-fill did not exist — the general fill assertions skip self-fitting components, and the one bullet test used 2-character items so width never bound. It exists now, and it pins the 55% as a documented trade-off rather than hiding it. **Spending the leftover height is a design decision** (allow a two-line item, or widen the slot), not a tuning one, and is not taken here.
+
+## 122. Blooper removal by spoken marker — the deterministic subset
+
+The take contained the pattern twice, unmistakably: a flubbed attempt, the word "blooper", another flubbed attempt, "blooper", then the good take. The marker *terminates* a bad attempt, so removal runs backwards from it to the start of the sentence it spoiled, and consecutive marked attempts collapse into one cut.
+
+`--blooper-marker <word>`, off unless given. Opt-in matters here: this very take says "the cases where you can say blooper", so an always-on default would eat real content in a video *about* bloopers.
+
+The authoring roadmap treats retake removal as inherently semantic and therefore as the thing that would end the guarantee that `buildCutlist` is a pure function of (raw transcript, analysis, duration, level). **A spoken marker is the third option that document did not consider** — not accepting a semantic stage, not approximating semantics deterministically, but letting the speaker supply the semantics at record time. The word is in the transcript or it is not. The spans arrive as an argument; `buildCutlist` stays pure.
+
+Everything the roadmap predicted about the mechanics held. Removals are injected before the existing sort/merge, so they inherit merging with the silence bracketing the flub, `MIN_KEEP` sliver folding, and the partition emit; `reason: "retake"` was already in the schema with zero emitters; report, `TimeMap`, scene dropping, caption re-derivation and `EdlVideo` needed **zero changes**. The interior three-way split of a `keep` — the case `--clip` cannot do, since it only clamps against the two outer boundaries — falls out of the cursor walk for free.
+
+Detection runs on the RAW transcript, before repair, and that ordering is load-bearing: the repair pass reads a bare "blooper." as an oddity and was observed proposing "break loop." for it twice. Detecting first means the marker cannot be rewritten out from under the detector. `--cleanup exact` still wins over the flag — "touch nothing" outranks a request to cut, and the more conservative flag wins rather than the one typed last.
+
+Real run: 7.86s removed as one `retake` cut, both attempts gone, "That could be the exit condition." intact, and `report.txt` quotes the words it took — a cut that takes whole sentences owes more than a timestamp.
+
+## 123. `.max()` on model copy was a die-here boundary
+
+Two of three real produce runs exited 1 at Zod with `moments.N.onScreenCopy: expected string to have <=60 characters`. The model returned 61 characters and the run threw away transcription, analysis, the cut, and the whole beat sheet.
+
+§112 says LLM output is untrusted input, "validated where the pipeline can still degrade instead of at the point where it can only die". A bare `.max(n)` on free text is exactly the second kind, and truncating an over-long headline is an obviously safe degradation. `cappedText(n)` wraps the constraint in `z.preprocess`, which **keeps `maxLength: n` in the JSON schema handed to the provider** — the model is still asked for the limit — while truncating at a word boundary if it misses. Applied to `hook`, `coverText`, `purpose`, `onScreenCopy` and `rationale`.
+
+This was logged in R26 as deserving its own round and deferred; it then blocked the R27 verification run twice, which is its own argument. Frequency was the thing the first sighting got wrong — "non-deterministic" read as "rare", and it is not.
+
+**Carried forward:** truncation is silent. The provider seam has no channel for a repair note, and inventing one was out of scope here. If a truncated headline ever reads wrong on screen, that silence is the first thing to revisit.

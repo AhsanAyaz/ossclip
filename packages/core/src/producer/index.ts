@@ -106,6 +106,13 @@ export function defaultProviderName(env: NodeJS.ProcessEnv = process.env): Provi
 export interface ProduceScenesResult {
   beatSheet: BeatSheet;
   beatIssues: BeatsValidationIssue[];
+  /**
+   * The graphics accounting (§118b): how many the prompt asked for and how
+   * many survived planning. `delivered` equals the scene count — layout
+   * repair never demotes, and a failed props call falls back to a TitleCard
+   * rather than dropping the scene.
+   */
+  graphics: { asked: number; delivered: number };
   scenes: Scene[];
   failures: ScenePropsFailure[];
   /**
@@ -154,7 +161,7 @@ export async function produceScenes(
   const framingBrief = args.framing
     ? buildFramingBrief(args.framing, args.transcript)
     : undefined;
-  const { sheet, issues, highlight } = await generateBeatSheet(
+  const { sheet, issues, asked, highlight } = await generateBeatSheet(
     provider,
     args.transcript,
     args.outputDuration,
@@ -187,6 +194,9 @@ export async function produceScenes(
     const renorm = normalizeBeatSheet(
       { hook: sheet.hook, coverText: sheet.coverText, moments: anchored },
       transcript,
+      // The ask the prompt stated — NOT re-derived from the slice, which
+      // would compare the model against a number it was never given (§118b).
+      asked,
     );
     workingSheet = renorm.sheet;
     issues.push(...renorm.issues);
@@ -213,5 +223,13 @@ export async function produceScenes(
   const { scenes, failures } = await generateScenes(provider, moments, transcript, {
     framing: args.framing,
   });
-  return { beatSheet: { ...workingSheet, moments }, beatIssues: issues, scenes, failures, clip };
+  const delivered = moments.filter((m) => m.sceneKind !== "none").length;
+  return {
+    beatSheet: { ...workingSheet, moments },
+    beatIssues: issues,
+    graphics: { asked, delivered },
+    scenes,
+    failures,
+    clip,
+  };
 }

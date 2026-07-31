@@ -33,9 +33,10 @@ export const CLIP_SNAP_TOLERANCE = 0.2;
 /** Word that closes a sentence — ASR punctuation rides on the word text. */
 const SENTENCE_END = /[.!?…]["'")\]»]*$/u;
 
-const isSentenceEnd = (t: Transcript, i: number): boolean =>
+/** Exported since R27 §122: the blooper cut walks back to a sentence start. */
+export const isSentenceEnd = (t: Transcript, i: number): boolean =>
   SENTENCE_END.test(t.words[i]?.text ?? "");
-const isSentenceStart = (t: Transcript, i: number): boolean =>
+export const isSentenceStart = (t: Transcript, i: number): boolean =>
   i === 0 || isSentenceEnd(t, i - 1);
 
 const durSec = (t: Transcript, start: number, end: number): number =>

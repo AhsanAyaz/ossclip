@@ -432,3 +432,51 @@ describe("a single unbreakable word never scales past its card (R12 §46)", () =
     expect(minWidth * k).toBeLessThanOrEqual(slot.widthPx + 1);
   });
 });
+
+/**
+ * R27 §121. Nothing asserted BulletList fills its slot: the fill assertions
+ * skip self-fitting components, and the one bullet test uses 2-character items
+ * so the WIDTH term never binds. On real copy it binds almost always, because
+ * items are nowrap uppercase.
+ */
+describe("BulletList fill (§121)", () => {
+  const SLOT = { w: 842.4, h: 806.4 }; // pip-bubble's graphic slot, portrait
+  const REAL = ["MCP TOOLS", "CONTEXT", "TASK DEFINITION", "DEFINITION OF DONE"];
+  const fill = (items: readonly string[], title = ""): number => {
+    const font = bulletMetrics(items, SLOT.w, SLOT.h, Boolean(title), title);
+    return bulletStackHeightPx(items.length, font, Boolean(title)) / SLOT.h;
+  };
+
+  it("fewer items render bigger — the §23 fill property, on real-length copy", () => {
+    expect(fill(REAL.slice(0, 2))).toBeLessThan(1);
+    expect(bulletMetrics(REAL.slice(0, 2), SLOT.w, SLOT.h)).toBeGreaterThanOrEqual(
+      bulletMetrics(REAL, SLOT.w, SLOT.h),
+    );
+  });
+
+  it("never overflows the slot it was given", () => {
+    for (const n of [1, 2, 3, 4, 5, 6]) {
+      expect(fill(REAL.slice(0, n) as string[], "LOOP INPUTS"), `${n} items`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("a long nowrap item is what caps the type, not the height budget", () => {
+    // Documents the real constraint measured on the motivating render: the
+    // stack fills ~55% of its slot and the leftover height CANNOT be spent
+    // without wrapping an item, which would stop it reading as a list.
+    // Widening the slot or allowing a two-line item is a design decision, not
+    // a tuning one — this pins the trade-off rather than hiding it.
+    const measured = fill(REAL, "LOOP INPUTS");
+    expect(measured).toBeGreaterThan(0.4);
+    expect(measured).toBeLessThan(0.7);
+    // Short items in the same slot DO fill it — proof the model grows when it can.
+    expect(fill(["ONE", "TWO", "THREE", "FOUR"], "LOOP INPUTS")).toBeGreaterThan(measured);
+  });
+
+  it("a tracked-out kicker is budgeted for width, not just ignored", () => {
+    // letterSpacing 0.28em was unmodelled, so a long title could overrun.
+    const long = bulletMetrics(REAL, SLOT.w, SLOT.h, true, "A".repeat(90));
+    const short = bulletMetrics(REAL, SLOT.w, SLOT.h, true, "LOOP INPUTS");
+    expect(long).toBeLessThan(short);
+  });
+});

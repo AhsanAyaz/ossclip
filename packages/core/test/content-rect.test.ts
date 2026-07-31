@@ -25,6 +25,39 @@ describe("parseCropdetect", () => {
   });
 });
 
+describe("stableContentRect — a measurement in another orientation is refused (R27 §119)", () => {
+  it("refuses a rect that does not fit the frame rather than clamping it", () => {
+    // The real defect: a portrait take (rotation 90) stored as a 3840x2160
+    // stream. cropdetect auto-rotates and honestly reports the full 2160x3840
+    // frame; the caller believed 3840x2160. Clamping the two together produced
+    // a 2160x2160 square that was never on screen, logged as a letterbox, and
+    // cropped away the bottom 44% of the picture.
+    expect(stableContentRect([{ x: 0, y: 0, w: 2160, h: 3840 }], 3840, 2160)).toEqual({
+      x: 0,
+      y: 0,
+      w: 3840,
+      h: 2160,
+      full: true,
+    });
+  });
+
+  it("still measures normally once the frame agrees with the rect", () => {
+    // Same footage after the probe fix: the frame is the displayed 2160x3840,
+    // the rect fits, and a full-frame source is correctly left alone.
+    expect(stableContentRect([{ x: 0, y: 0, w: 2160, h: 3840 }], 2160, 3840)).toEqual({
+      x: 0,
+      y: 0,
+      w: 2160,
+      h: 3840,
+      full: true,
+    });
+  });
+
+  it("refuses a rect that overhangs on only one side", () => {
+    expect(stableContentRect([{ x: 100, y: 0, w: 1400, h: 800 }], 1440, 810).full).toBe(true);
+  });
+});
+
 describe("stableContentRect (PLAN Task 7)", () => {
   const W = 1440;
   const H = 2560;

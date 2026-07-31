@@ -1,3 +1,4 @@
+import { rename, rm } from "node:fs/promises";
 import { run } from "./exec";
 import type { ContentRectSegment } from "./content-rect";
 import type { WindowFace } from "./face";
@@ -368,7 +369,14 @@ export function normalizationFilterGraph(plan: NormalizePlan): string {
     return (
       `[0:v]trim=start=${s.startSec.toFixed(3)}:end=${s.endSec.toFixed(3)},` +
       `setpts=PTS-STARTPTS,crop=${w.w}:${w.h}:${w.x}:${w.y},` +
-      `scale=${plan.canvas.width}:${plan.canvas.height}[v${i}]`
+      // setsar=1 is load-bearing, not tidiness (R27 §125). Every segment is
+      // scaled to the SAME canvas, but from a DIFFERENT crop, and ffmpeg
+      // derives a sample aspect from that ratio: a 946x1682 crop yields SAR
+      // 1683:1682 and a 932x1660 crop 1377:1376. `concat` requires identical
+      // SAR across inputs and aborts the whole bake when they disagree, so a
+      // take whose framing varies — exactly the take normalization exists
+      // for — failed to render at all.
+      `scale=${plan.canvas.width}:${plan.canvas.height},setsar=1[v${i}]`
     );
   });
   const inputs = plan.segments.map((_, i) => `[v${i}]`).join("");
@@ -386,12 +394,27 @@ export async function bakeNormalizedSource(
   plan: NormalizePlan,
   outPath: string,
 ): Promise<void> {
-  await run(tools.ffmpegPath, [
-    "-y", "-i", input,
-    "-filter_complex", normalizationFilterGraph(plan),
-    "-map", "[v]", "-map", "0:a?",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "30", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "192k",
-    outPath,
-  ]);
+  // Encode to a sibling temp path and rename only on success (R27 §125).
+  // ffmpeg writes the container header as it goes, so a bake that dies
+  // mid-graph leaves a file with no `moov` atom — and the cache upstream keys
+  // on EXISTENCE, so that corpse is then reused as a valid normalized source
+  // on every later run. The failure surfaces as "moov atom not found" from a
+  // step that never ran, and deleting the workdir is the only way out. Rename
+  // is atomic on a POSIX filesystem, so the cache can only ever see a file
+  // ffmpeg finished writing.
+  const partial = `${outPath}.partial.mp4`;
+  try {
+    await run(tools.ffmpegPath, [
+      "-y", "-i", input,
+      "-filter_complex", normalizationFilterGraph(plan),
+      "-map", "[v]", "-map", "0:a?",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "30", "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "192k",
+      partial,
+    ]);
+    await rename(partial, outPath);
+  } catch (err) {
+    await rm(partial, { force: true });
+    throw err;
+  }
 }
