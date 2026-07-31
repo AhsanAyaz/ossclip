@@ -37,6 +37,7 @@ import {
   splitCues,
   landscapeLayout,
   formatCutReport,
+  formatGraphicsAccounting,
   formatUsageLine,
   formatUsageReport,
   loadConfig,
@@ -73,6 +74,7 @@ import {
   sliceTranscript,
   type Analysis,
   type AppliedRepair,
+  type BeatsValidationIssue,
   type CleanupLevel,
   type ClipWindow,
   type LlmProvider,
@@ -447,6 +449,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   let scenes: Scene[] = [];
   /** Editorial output kept for the cover (§31): hook + its thumbnail form. */
   let beatSheet: { hook: string; coverText?: string } | undefined;
+  /** The graphics accounting line for report.txt (§118b), and the beat-sheet
+   * issues that explain it. Cached alongside the beat sheet so a cached
+   * re-run's report keeps the accounting instead of erasing it (§78). */
+  let graphicsLine: string | undefined;
+  let beatIssues: BeatsValidationIssue[] = [];
   /** Who planned this run (R16 §78) — stamped into production.json below. */
   let producerStamp: Production["producer"];
   /** The resolved `--clip` window (R19 §93) — set only on a clip run; feeds
@@ -600,13 +607,33 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       for (const issue of clipFresh.beatIssues) {
         console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
       }
+      beatIssues = clipFresh.beatIssues;
+      // `transcript` is the slice here — the space the accounting was made in.
+      graphicsLine = formatGraphicsAccounting(
+        clipFresh.graphics.delivered,
+        clipFresh.graphics.asked,
+        transcript,
+      );
       await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
-      await writeFile(beatCache, JSON.stringify(beatSheet, null, 2));
+      await writeFile(
+        beatCache,
+        JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
+      );
     } else if (existsSync(sceneCache)) {
       scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(sceneCache, "utf8")));
       console.log(`▸ scenes cached (${scenes.length})`);
       if (existsSync(beatCache)) {
-        beatSheet = JSON.parse(await readFile(beatCache, "utf8")) as typeof beatSheet;
+        // Pre-§118b caches carry no accounting — the report then simply
+        // omits the graphics section rather than guessing one.
+        const cached = JSON.parse(await readFile(beatCache, "utf8")) as {
+          hook: string;
+          coverText?: string;
+          graphics?: string;
+          issues?: BeatsValidationIssue[];
+        };
+        beatSheet = { hook: cached.hook, coverText: cached.coverText };
+        graphicsLine = cached.graphics;
+        beatIssues = cached.issues ?? [];
       }
     } else {
       console.log(`▸ producing scenes (${providerName})…`);
@@ -630,11 +657,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
       for (const issue of result.beatIssues) {
         console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
       }
+      beatIssues = result.beatIssues;
+      graphicsLine = formatGraphicsAccounting(
+        result.graphics.delivered,
+        result.graphics.asked,
+        transcript,
+      );
       // Cache props only — overrides are user-owned and live in overrides.json,
       // never in production.json (that file is derived and every `produce`
       // run overwrites it, per the merge rule in `overrides.ts`).
       await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
-      await writeFile(beatCache, JSON.stringify(beatSheet, null, 2));
+      await writeFile(
+        beatCache,
+        JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
+      );
     }
   }
 
@@ -1072,6 +1108,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
         .map((g) => `  ${g.component} ${g.sceneId} ${g.field}: "${g.token}"`)
         .join("\n") +
       "\n";
+  }
+  // §118b: the graphics count justified in the artefact, like every cut is —
+  // delivered vs asked and why, then the scheduler's own account of what it
+  // demoted. The shortfall issue repeats the accounting line, so it is the
+  // one issue not reprinted here.
+  if (graphicsLine) {
+    report +=
+      `\n${graphicsLine} (FINDINGS §118)\n` +
+      beatIssues
+        .filter((i) => !i.issue.startsWith("graphics:"))
+        .map((i) => `  ⚠ moment ${i.moment}: ${i.issue}\n`)
+        .join("");
   }
   if (provider) {
     report += formatUsageReport(provider.usage, cfg.pricing);

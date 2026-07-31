@@ -264,6 +264,22 @@ function enumeratedNote(transcript: Transcript): string | null {
   return n > 0 ? ` — the take enumerates ${n} points` : null;
 }
 
+/**
+ * The one-line graphics accounting (§118b): delivered vs asked, and why the
+ * ask was what it was. One formatter for the console issue and `report.txt`,
+ * so the two can never say different things about the same run.
+ */
+export function formatGraphicsAccounting(
+  delivered: number,
+  asked: number,
+  transcript: Transcript,
+): string {
+  return (
+    `graphics: ${delivered} of ${asked} planned` +
+    (enumeratedNote(transcript) ?? ` (target is ~1 per ${SEC_PER_GRAPHIC}s)`)
+  );
+}
+
 /** A moment's approximate seconds of speech, from the transcript word stamps. */
 function momentDuration(m: Moment, transcript: Transcript): number {
   const first = transcript.words[m.startWord];
@@ -277,10 +293,21 @@ function momentMidpoint(m: Moment, transcript: Transcript): number {
   return first && last ? (first.start + last.end) / 2 : 0;
 }
 
-/** Semantic validation beyond the schema; repairs what it can, reports the rest. */
+/**
+ * Semantic validation beyond the schema; repairs what it can, reports the rest.
+ *
+ * `askedGraphics` is the count the PROMPT stated (§118b): pass it so the
+ * shortfall check measures against what was actually asked for — on a clip
+ * run the internal fallback would measure against the full take's runtime,
+ * not the clip target the prompt named. `null` skips the check entirely (the
+ * pre-slice pass of a clip run, whose sheet is renormalized after slicing —
+ * two passes reporting the same shortfall would say it twice). Omitted, the
+ * ask is derived from the transcript's own span.
+ */
 export function normalizeBeatSheet(
   sheet: BeatSheet,
   transcript: Transcript,
+  askedGraphics?: number | null,
 ): { sheet: BeatSheet; issues: BeatsValidationIssue[] } {
   const wordCount = transcript.words.length;
   const issues: BeatsValidationIssue[] = [];
@@ -414,13 +441,14 @@ export function normalizeBeatSheet(
   // this render the report should carry, exactly as every cut is justified.
   // Silence is what let three graphics on a five-point take look normal.
   const delivered = surviving().length;
-  const asked = graphicsTarget(runtime, countEnumeratedBeats(transcript));
-  if (delivered < asked) {
+  const asked =
+    askedGraphics === undefined
+      ? graphicsTarget(runtime, countEnumeratedBeats(transcript))
+      : askedGraphics;
+  if (asked !== null && delivered < asked) {
     issues.push({
       moment: -1,
-      issue:
-        `graphics: ${delivered} of ${asked} planned` +
-        (enumeratedNote(transcript) ?? ` (target is ~1 per ${SEC_PER_GRAPHIC}s)`),
+      issue: formatGraphicsAccounting(delivered, asked, transcript),
     });
   }
 
@@ -436,10 +464,22 @@ export async function generateBeatSheet(
   framingBrief?: string,
   clip?: { targetSec: number },
   aspect?: "9:16" | "16:9",
-): Promise<{ sheet: BeatSheet; issues: BeatsValidationIssue[]; highlight?: ClipHighlight }> {
+): Promise<{
+  sheet: BeatSheet;
+  issues: BeatsValidationIssue[];
+  /** The graphic count the prompt asked for (§118b) — what "asked" means everywhere downstream. */
+  asked: number;
+  highlight?: ClipHighlight;
+}> {
   const user =
     (speaker ? `The speaker: ${speaker}\n\n` : "") +
     buildBeatsUserPrompt(transcript, duration, intent, framingBrief, clip, aspect);
+  // The same number `buildBeatsUserPrompt` states — computed from the same
+  // inputs by the same pure functions, so the check and the ask agree.
+  const asked = graphicsTarget(
+    clip?.targetSec ?? duration,
+    countEnumeratedBeats(transcript),
+  );
   if (clip) {
     // Same editorial call, extended schema (R19 §93d) — the highlight and the
     // beat sheet come from ONE judgement, so they cannot disagree.
@@ -449,7 +489,8 @@ export async function generateBeatSheet(
       schema: ClipBeatSheetSchema,
       schemaName: "clip_beat_sheet",
     });
-    return { ...normalizeBeatSheet(raw, transcript), highlight: raw.highlight };
+    // `null`: the post-slice renormalization owns the shortfall check.
+    return { ...normalizeBeatSheet(raw, transcript, null), asked, highlight: raw.highlight };
   }
   const raw = await provider.complete({
     system: PRODUCER_SYSTEM,
@@ -457,5 +498,5 @@ export async function generateBeatSheet(
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",
   });
-  return normalizeBeatSheet(raw, transcript);
+  return { ...normalizeBeatSheet(raw, transcript, asked), asked };
 }

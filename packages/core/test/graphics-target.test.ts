@@ -4,9 +4,12 @@ import {
   SEC_PER_GRAPHIC,
   buildBeatsUserPrompt,
   countEnumeratedBeats,
+  formatGraphicsAccounting,
+  generateBeatSheet,
   graphicsTarget,
   normalizeBeatSheet,
 } from "../src/producer/beats";
+import type { LlmProvider } from "../src/producer/provider";
 import type { Transcript } from "../src/schema";
 
 /**
@@ -166,6 +169,78 @@ describe("§118b: under-delivery is reported, never silent", () => {
       })),
     });
     const { issues } = normalizeBeatSheet(sheet, t);
+    expect(issues.some((i) => i.issue.startsWith("graphics:"))).toBe(false);
+  });
+});
+
+describe("§118b: the accounting measures against the ask, not the runtime", () => {
+  /** A provider that returns a canned sheet — the ask is what's under test. */
+  const canned = (sheet: unknown): LlmProvider =>
+    ({ name: "canned", usage: [], complete: async () => sheet }) as unknown as LlmProvider;
+
+  const oneGraphic = {
+    hook: "h",
+    moments: [
+      { startWord: 0, endWord: 3, purpose: "a", onScreenCopy: "A", sceneKind: "StatCard" },
+      { startWord: 4, endWord: 59, purpose: "b", onScreenCopy: "B", sceneKind: "none" },
+    ],
+  };
+
+  it("formats one line for the console issue and report.txt alike", () => {
+    expect(formatGraphicsAccounting(6, 7, speak(filler(60)))).toBe(
+      `graphics: 6 of 7 planned (target is ~1 per ${SEC_PER_GRAPHIC}s)`,
+    );
+    expect(
+      formatGraphicsAccounting(3, 5, speak("number one a number two b number three c")),
+    ).toBe("graphics: 3 of 5 planned — the take enumerates 3 points");
+  });
+
+  it("an explicit ask overrides the transcript-span fallback", () => {
+    // 60 words ≈ 30s of transcript would derive an ask of 4; the prompt said 9.
+    const { issues } = normalizeBeatSheet(BeatSheetSchema.parse(oneGraphic), speak(filler(60)), 9);
+    expect(issues.find((i) => i.issue.startsWith("graphics:"))?.issue).toContain("1 of 9 planned");
+  });
+
+  it("null skips the check — the pre-slice pass of a clip run", () => {
+    const { issues } = normalizeBeatSheet(
+      BeatSheetSchema.parse(oneGraphic),
+      speak(filler(60)),
+      null,
+    );
+    expect(issues.some((i) => i.issue.startsWith("graphics:"))).toBe(false);
+  });
+
+  it("measures a plain run against the duration the prompt stated", async () => {
+    // The transcript spans ~5 minutes of SOURCE time, but the prompt said 54s
+    // of output — the ask is 6, not the span-derived 12.
+    const { asked, issues } = await generateBeatSheet(
+      canned(oneGraphic),
+      speak(filler(600)),
+      54,
+      undefined,
+    );
+    expect(asked).toBe(6);
+    expect(issues.find((i) => i.issue.startsWith("graphics:"))?.issue).toContain("1 of 6 planned");
+  });
+
+  it("measures a clip run against the clip target, and only once", async () => {
+    // Pre-fix this reported against the FULL take's runtime (capped at 12) —
+    // a number the prompt never stated — and would have reported again after
+    // the slice. The pre-slice pass now stays quiet; `asked` is the clip's.
+    const sheet = {
+      ...oneGraphic,
+      highlight: { startWord: 0, endWord: 59, reason: "r" },
+    };
+    const { asked, issues } = await generateBeatSheet(
+      canned(sheet),
+      speak(filler(600)),
+      300,
+      undefined,
+      undefined,
+      undefined,
+      { targetSec: 60 },
+    );
+    expect(asked).toBe(7);
     expect(issues.some((i) => i.issue.startsWith("graphics:"))).toBe(false);
   });
 });

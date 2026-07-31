@@ -1047,4 +1047,16 @@ Fixed at all three: the cap is 24; the prompt asks for shorter moments rather th
 
 Verified on the same 64s take, same model, fresh plan: **3 → 6 graphics**, with `scene-12` present — a beat the old cap made structurally impossible. 679 tests green, including the §7/§8/§114 ceiling tests, which still pass unchanged: the ceiling was never relaxed.
 
-**Deviation from §116b, stated plainly:** the shortfall is reported on the console with every other beat-sheet issue (`⚠ moment -1: graphics: 6 of 7 planned — the take enumerates 5 points`), not in `report.txt`. Putting it in the cut report would separate it from the issues it belongs with. If the report is where it is wanted, that is a small plumbing change, not a redesign.
+**Deviation from §116b, stated plainly:** the shortfall is reported on the console with every other beat-sheet issue (`⚠ moment -1: graphics: 6 of 7 planned — the take enumerates 5 points`), not in `report.txt`. Putting it in the cut report would separate it from the issues it belongs with. If the report is where it is wanted, that is a small plumbing change, not a redesign. *(Closed in R26 — the report was where it was wanted.)*
+
+# Round 26 — the accounting reaches the report, measured against the stated ask (2026-07-31)
+
+## 118b. Closed — and the ask it measures against is now the ask that was made
+
+The plumbing §118 deferred, plus one defect found while doing it.
+
+`report.txt` now carries the graphics accounting on every produced run — `graphics: 6 of 7 planned — the take enumerates 5 points`, followed by the scheduler's demotions — next to the cut justifications, where §116b always wanted it. The line prints whether or not the run under-delivered: a count that merely *meets* its target is also a fact worth one line in the artefact people forward. It survives cached re-runs the same way the provider stamp does (the §78 posture): the accounting and the beat-sheet issues are cached alongside the beat sheet, so a re-render's report keeps saying what was asked and delivered instead of silently dropping the section. A pre-§118b cache simply omits the section rather than guessing.
+
+The defect: the shortfall check measured against the wrong ask on `--clip` runs. `normalizeBeatSheet` derived its target from the transcript's own span — the FULL take — while the prompt had stated the clip-length target. A 5-minute source clipped to 60s would be measured against the span-derived cap of 12 when the model was asked for 7, reporting a shortfall the model never had; and the post-slice renormalization would then report it a second time. Now `generateBeatSheet` computes the ask once — the same number, from the same pure functions, that `buildBeatsUserPrompt` states — threads it into the check, and the pre-slice pass of a clip run skips the check entirely (the post-slice pass owns it). One formatter (`formatGraphicsAccounting`) builds the line for the console issue and the report alike, so the two can never disagree about the same run.
+
+Also from this session, in the docs rather than the code: the authoring plan had reserved findings numbers ahead of the work (§118–§122), and R25 took §118 first. The plan's items are renumbered §119–§123, and the rule is now written where it was broken: a plan reserves no numbers; a finding takes the next free one when it lands. §116 stays a hole in the log for the same reason.

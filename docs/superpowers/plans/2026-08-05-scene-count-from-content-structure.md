@@ -2,7 +2,11 @@
 
 > **For agentic workers:** This document is REQUIREMENTS, not a design — the diagnosis below is verified fact read out of the source and reproduced across three real renders; the approach is yours to settle. Read §116.2 before choosing one: the asymmetry described there is the whole difficulty, and the obvious fix (a deterministic floor mirroring the existing ceiling) does not work as stated.
 
-**Status:** captured 2026-07-30 from a real demo-recording session. Not started. Findings numbering continues at **§116** (R23 ended at §114).
+**Status: SHIPPED 2026-07-31 as R25 §118** — see `docs/PHASE1-FINDINGS.md`. The §116 this document reserved was never used as a findings number (R24 took §115/§117 around it; the fix landed as the next free number, §118) and stays a hole in the log. Outcome, against the approaches in §116.2: approaches **1 and 3 combined** — an explicit count in the prompt (`graphicsTarget`: runtime density of one per 9s, or the take's own enumeration via `countEnumeratedBeats`, whichever is larger) plus a raised moment cap (12 → 24, which was binding first). The deterministic floor (§116a's first instinct) was deliberately NOT extended above 45s, for exactly the oscillation §116.3 warns about — and because when the model under-plans, the demote loop never runs, so no floor there could act. Approach 2 (validate-and-retry) was NOT built: held until a real render under-delivers despite the stated target, which the §116b accounting now makes visible in `report.txt` (closed in R26). Verified 3 → 6 graphics on the motivating 64s take, same model.
+
+Original capture below, unchanged.
+
+**Status (original):** captured 2026-07-30 from a real demo-recording session. Not started. Findings numbering continues at **§116** (R23 ended at §114).
 
 **Verified state at capture:** `normalizeBeatSheet` (`packages/core/src/producer/beats.ts`) enforces a graphics-coverage **ceiling** and, below a 45-second runtime, a **count floor**. Above 45 seconds there is no floor of any kind.
 
