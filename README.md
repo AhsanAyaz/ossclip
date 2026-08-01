@@ -4,7 +4,7 @@
 [![npm](https://img.shields.io/npm/v/ossclip)](https://www.npmjs.com/package/ossclip)
 [![docs](https://img.shields.io/badge/docs-ahsanayaz.github.io%2Fossclip-8ab4f8)](https://ahsanayaz.github.io/ossclip/)
 
-![Before and after: the raw take beside the produced short — captions, framing and LLM-planned graphics](./docs/site/assets/demo-before-after.gif)
+![Before and after: the raw take beside the produced short — captions, framing and LLM-planned graphics](./docs/site/assets/before-after.gif)
 
 <p align="center"><em>Left: the raw take. Right: what <code>ossclip produce</code> returns — cuts, word-timed captions, face-aware framing and code-rendered graphics.</em></p>
 

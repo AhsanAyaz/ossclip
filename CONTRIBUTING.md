@@ -97,12 +97,27 @@ mask whose rounded-corner wedges sit on top — and ffmpeg overlays the two
 portrait clips between them at fixed offsets. The geometry lives in both the
 HTML and the overlay offsets, so changing one means changing the other.
 
-Two deliverables come out of it: `demo-before-after.mp4` (1520x1460, used by the
-site via `<video autoplay muted loop>`) and `demo-before-after.gif` (700x672,
+Two deliverables come out of it: `before-after.mp4` (1520x1460, used by the
+site via `<video autoplay muted loop controls>`) and `before-after.gif` (700x672,
 10fps, 80 colours, ~6MB, used by the README). The GIF is built from a **shorter**
 master — two 4s shots rather than two 6s ones — because side-by-side portrait
 video is expensive in GIF: the full-length 12s version lands at 17MB however it
 is tuned, and duration is the only lever that moves it far enough.
+
+The MP4 carries **one** audio track, taken from the produced side only — the
+loudness-normalized one, trimmed to the same two shots as the picture, with 0.1s
+fades so the join does not click. Pick the shot boundaries off the transcript,
+not off round numbers: the first cut started shot two at exactly the output time
+the word "OSS" begins, so the fade-in swallowed its first phoneme and the CTA
+played as "S clips". Mixing both panels would just be the same voice
+twice, a fifth of a second apart. It stays `muted` on the site so autoplay is
+never blocked; `controls` is what makes the track reachable at all, and without
+it the audio would be dead weight.
+
+Renaming the asset is how you force GitHub to re-render it. The README image is
+served through a caching proxy keyed on the URL, so replacing bytes at the same
+path leaves the old frame on the repo page long after `raw.githubusercontent`
+serves the new one.
 
 ## Bugs
 
