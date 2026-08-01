@@ -89,6 +89,21 @@ ffmpeg -i docs/assets/editor-preview.mp4 \
 Keep it under ~8MB: GitHub renders a GIF inline on the README, but an `<video>`
 tag pointing at a repo-relative MP4 does not render at all.
 
+The before/after demo is composed rather than screen-recorded, because this
+machine's ffmpeg has no `drawtext` (no freetype) and because a capture shows the
+desktop. `docs/assets/demo-layers.html` renders two layers with headless Chrome —
+an opaque background carrying the labels and panel borders, and a transparent
+mask whose rounded-corner wedges sit on top — and ffmpeg overlays the two
+portrait clips between them at fixed offsets. The geometry lives in both the
+HTML and the overlay offsets, so changing one means changing the other.
+
+Two deliverables come out of it: `demo-before-after.mp4` (1520x1460, used by the
+site via `<video autoplay muted loop>`) and `demo-before-after.gif` (700x672,
+10fps, 80 colours, ~6MB, used by the README). The GIF is built from a **shorter**
+master — two 4s shots rather than two 6s ones — because side-by-side portrait
+video is expensive in GIF: the full-length 12s version lands at 17MB however it
+is tuned, and duration is the only lever that moves it far enough.
+
 ## Bugs
 
 The useful bug report for a video tool has: the command you ran, the relevant part of `report.txt`, the source's shape (portrait/landscape, length), and — if it's a visual defect — a frame. `ossclip doctor` output helps for anything that smells environmental.
