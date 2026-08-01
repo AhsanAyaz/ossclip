@@ -97,9 +97,9 @@ mask whose rounded-corner wedges sit on top — and ffmpeg overlays the two
 portrait clips between them at fixed offsets. The geometry lives in both the
 HTML and the overlay offsets, so changing one means changing the other.
 
-Two deliverables come out of it: `before-after.mp4` (1520x1460, used by the
-site via `<video autoplay muted loop controls>`) and `before-after.gif` (700x672,
-10fps, 80 colours, ~6MB, used by the README). The GIF is built from a **shorter**
+Two deliverables come out of it: `demo.mp4` (1520x1460, used by the
+site via `<video autoplay muted loop controls>`) and `demo.gif` (640x615,
+10fps, 80 colours, ~7MB, used by the README). The GIF is built from a **shorter**
 master — two 4s shots rather than two 6s ones — because side-by-side portrait
 video is expensive in GIF: the full-length 12s version lands at 17MB however it
 is tuned, and duration is the only lever that moves it far enough.
@@ -107,12 +107,21 @@ is tuned, and duration is the only lever that moves it far enough.
 The MP4 carries **one** audio track, taken from the produced side only — the
 loudness-normalized one, trimmed to the same two shots as the picture, with 0.1s
 fades so the join does not click. Pick the shot boundaries off the transcript,
-not off round numbers: the first cut started shot two at exactly the output time
-the word "OSS" begins, so the fade-in swallowed its first phoneme and the CTA
-played as "S clips". Mixing both panels would just be the same voice
+not off round numbers. Two attempts started shot two mid-word and the CTA played
+as "S clips"; the shipped cut ends shot one on "So I built" and opens shot two on
+"OSS clips", so the join reads as one sentence. Check a re-cut by transcribing the
+audio back — `whisper-cli -m ~/.ossclip/models/ggml-small.en.bin -f cut.wav -nt` —
+rather than by trusting the arithmetic. Mixing both panels would just be the same voice
 twice, a fifth of a second apart. It stays `muted` on the site so autoplay is
 never blocked; `controls` is what makes the track reachable at all, and without
 it the audio would be dead weight.
+
+The canonical master is `docs/assets/demo-with-audio.mp4` — full quality, with
+the audio, matching the shipped cut. Both deliverables derive from it: the site
+MP4 is that file at crf 26 with `-c:a copy`, and the GIF is `fps=10,scale=640`
+off the same source. It is gitignored like every other master here, so it lives
+only on the machine that made it; regenerate it from the layer HTML and the two
+takes if it is lost.
 
 Renaming the asset is how you force GitHub to re-render it. The README image is
 served through a caching proxy keyed on the URL, so replacing bytes at the same
