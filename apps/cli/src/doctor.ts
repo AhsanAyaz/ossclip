@@ -18,7 +18,7 @@ import type { OssclipConfig } from "@ossclip/core";
  * Checks are pure over injected probes so the table is unit-testable; the
  * CLI wires the real spawn/existsSync in. The provider check MUST run after
  * `loadEnvFiles` (R16 §77) or a key living in `.env` reports a false
- * negative — `index.ts` loads env at module top, before any command runs.
+ * negative — `program.ts` loads env at module top, before any command runs.
  */
 
 export interface DoctorCheck {

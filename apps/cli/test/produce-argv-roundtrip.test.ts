@@ -13,7 +13,7 @@ const answers = (over: Partial<ProduceAnswers> = {}): ProduceAnswers => ({
 
 /**
  * Parses wizard argv with the REAL program — `buildProgram()` from
- * src/index.ts — and captures the options object `produce`'s action would
+ * src/program.ts — and captures the options object `produce`'s action would
  * receive, with only that action's effect stubbed out.
  *
  * This used to hand-declare thirteen options mirroring index.ts. A replica
@@ -23,7 +23,7 @@ const answers = (over: Partial<ProduceAnswers> = {}): ProduceAnswers => ({
  * where that is unrepresentable.
  */
 const parse = async (argv: string[]): Promise<Record<string, unknown>> => {
-  const { buildProgram } = await import("../src/index");
+  const { buildProgram } = await import("../src/program");
   const program = buildProgram();
   // Drift must fail as a named test, not as process.exit(1) inside the vitest
   // worker — and commander's own "error: unknown option" is not this suite's

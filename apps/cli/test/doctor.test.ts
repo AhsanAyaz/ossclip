@@ -139,7 +139,7 @@ describe("ossclip doctor (R18 §90a)", () => {
 
 describe("CLI version reporting (R22 §113)", () => {
   it("reads the version from the manifest instead of a literal", () => {
-    const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+    const src = readFileSync(new URL("../src/program.ts", import.meta.url), "utf8");
     // A hardcoded `.version("1.2.3")` is invisible until someone reads a bug
     // report against the wrong number: the literal stayed at 0.1.0 through
     // two releases while npm installed 0.1.2.

@@ -2,7 +2,7 @@
  * Wizard answers → the argv a user could have typed.
  *
  * This is the load-bearing shape of the whole interactive layer: the wizard
- * produces ARGUMENTS, not a ProduceOptions, so the zod parses in index.ts
+ * produces ARGUMENTS, not a ProduceOptions, so the zod parses in program.ts
  * stay the only validation path and the printed command is the executed one.
  */
 
