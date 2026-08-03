@@ -25,6 +25,149 @@
 
 ---
 
+### Task 0: Tell the user where the run went, at the end
+
+The highest-leverage line in this plan, and the one that stands alone. `produce` already prints `▸ workdir <path>` at `apps/cli/src/produce.ts:235` — the *start* of a run. After a six-minute produce that line is thousands of lines up the scrollback, and the last thing printed (`✓ done → out.mp4`) names neither the workdir nor `edit`. The reported user had the PDF guide open and still could not find the directory.
+
+The work directory's location is **settled and unchanged**: `<input dir>/.ossclip/<basename>-<sha1 of content>/`. It is a content-keyed cache, so it cannot follow `--out` (which is optional, may be absent under `--no-render`, and must not fork the cache when it changes), and it holds the mezzanine — often larger than the source — so it must not move to the home partition. The defect was signposting, not location.
+
+**Files:**
+- Create: `apps/cli/src/interactive/edit-hint.ts`
+- Modify: `apps/cli/src/produce.ts:1393-1396` (the `--no-render` return) and `:1537-1539` (the final lines)
+- Test: `apps/cli/test/edit-hint.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `editHint(workdir: string): string`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `apps/cli/test/edit-hint.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { editHint } from "../src/interactive/edit-hint";
+
+describe("editHint", () => {
+  it("prints a command the user can paste", () => {
+    expect(editHint("/Users/k/Downloads/.ossclip/take-5add0651")).toBe(
+      "▸ edit it:  ossclip edit /Users/k/Downloads/.ossclip/take-5add0651",
+    );
+  });
+
+  // The reported user was on Windows with spaces nowhere in sight, but the
+  // next one will not be. An unquoted path with a space teaches a command
+  // that fails.
+  it("quotes a path containing a space", () => {
+    expect(editHint("/Users/k/My Videos/.ossclip/take-1")).toBe(
+      "▸ edit it:  ossclip edit '/Users/k/My Videos/.ossclip/take-1'",
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Run the test and watch it fail**
+
+Run: `pnpm vitest run apps/cli/test/edit-hint.test.ts`
+Expected: FAIL — cannot resolve `../src/interactive/edit-hint`.
+
+Note: this test asserts POSIX quoting, so it pins `quoteArg`'s POSIX branch. It runs on the CI matrix's Windows leg too, so pass the platform explicitly in the implementation rather than letting it default.
+
+- [ ] **Step 3: Write the implementation**
+
+Create `apps/cli/src/interactive/edit-hint.ts`:
+
+```ts
+import { quoteArg } from "./render";
+
+/**
+ * The closing signpost of a produce run.
+ *
+ * `▸ workdir <path>` is printed at the START of a run, which after six
+ * minutes of transcription and rendering is thousands of lines up the
+ * scrollback. The reported user had the written guide open and still could
+ * not find the directory, because the last thing on screen named neither it
+ * nor the command that opens it.
+ */
+export function editHint(workdir: string): string {
+  // Platform pinned rather than defaulted: this string is asserted in a test
+  // that runs on the Windows CI leg too.
+  return `▸ edit it:  ossclip edit ${quoteArg(workdir, "linux")}`;
+}
+```
+
+Note this depends on `quoteArg` from Task 2. If Task 0 is executed first and alone, land `apps/cli/src/interactive/render.ts` and its test (Task 2) as part of this task, and skip Task 2 later.
+
+- [ ] **Step 4: Print it from both of produce's exits**
+
+In `apps/cli/src/produce.ts`, add the import beside the existing local imports:
+
+```ts
+import { editHint } from "./interactive/edit-hint";
+```
+
+At the `--no-render` exit (`apps/cli/src/produce.ts:1393-1396`):
+
+```ts
+  if (!opts.render) {
+    console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
+    console.log(editHint(work));
+    return;
+  }
+```
+
+At the end of the function (`apps/cli/src/produce.ts:1537-1539`):
+
+```ts
+  await recordRecentProject(work);
+  console.log(`✓ done → ${outPath}`);
+  console.log(editHint(work));
+}
+```
+
+- [ ] **Step 5: Run the test and watch it pass**
+
+Run: `pnpm vitest run apps/cli/test/edit-hint.test.ts`
+Expected: PASS, 2 tests.
+
+- [ ] **Step 6: Full suite**
+
+Run: `pnpm test && pnpm typecheck`
+Expected: green. Task 0 adds 2 tests, and folding in Task 2's `render.ts` adds 6 more — every "Expected: N passing" count in Tasks 1–9 below shifts up accordingly. Treat the counts as a direction of travel, not an assertion.
+
+- [ ] **Step 7: See it for real**
+
+```bash
+pnpm fixture
+pnpm ossclip produce fixtures/<generated>.mp4 --no-render
+```
+Expected: the final two lines name the props path and then `▸ edit it:  ossclip edit …`. Paste that command; it must open the editor.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add apps/cli/src/interactive/edit-hint.ts apps/cli/test/edit-hint.test.ts apps/cli/src/produce.ts
+git commit -m "Produce ends by naming the directory it wrote and the command that opens it
+
+\`▸ workdir <path>\` is printed at the START of a run. After six minutes of
+transcription and rendering it is thousands of lines up the scrollback, and
+the last line on screen — \`✓ done → out.mp4\` — named neither the work
+directory nor \`edit\`. The user this came from had the written guide open
+and still could not find it.
+
+The work directory does not move. It is a content-keyed cache, so it cannot
+follow --out (optional, absent under --no-render, and changing it must not
+fork the cache), and it holds the mezzanine, which is frequently larger than
+the source and has no business on the home partition. The defect was
+signposting.
+
+Printed from both exits, --no-render included: a props-only run is exactly
+when somebody wants the editor. The path is quoted, because the next
+reporter will have a space in theirs."
+```
+
+---
+
 ### Task 1: The interactivity gate and cancel-safe prompt wrappers
 
 Everything else in this plan asks `isInteractive()` before prompting, and unwraps clack results through `unwrap()`. Both land first so no later task invents its own.
