@@ -97,6 +97,17 @@ import {
   routeAroundSourceText,
 } from "@ossclip/scenes/geometry";
 
+/**
+ * What a finished run tells its caller. The workdir is what the post-produce
+ * editor offer opens; `rendered` is false for a --no-render run, which has
+ * props but no video.
+ */
+export interface ProduceResult {
+  workdir: string;
+  out?: string;
+  rendered: boolean;
+}
+
 export interface ProduceOptions {
   out?: string;
   cleanup: CleanupLevel;
@@ -191,7 +202,7 @@ async function preflight(bin: string, hint: string): Promise<void> {
   }
 }
 
-export async function produce(inputArg: string, opts: ProduceOptions): Promise<void> {
+export async function produce(inputArg: string, opts: ProduceOptions): Promise<ProduceResult> {
   const cfg = loadConfig();
   const input = resolve(inputArg);
   if (!existsSync(input)) throw new Error(`input not found: ${input}`);
@@ -1394,7 +1405,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   if (!opts.render) {
     console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
     console.log(editHint(work));
-    return;
+    return { workdir: work, rendered: false };
   }
 
   const outPath = resolve(opts.out ?? input.replace(/(\.[^.]+)?$/, ".ossclip.mp4"));
@@ -1539,4 +1550,5 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   await recordRecentProject(work);
   console.log(`✓ done → ${outPath}`);
   console.log(editHint(work));
+  return { workdir: work, out: outPath, rendered: true };
 }
