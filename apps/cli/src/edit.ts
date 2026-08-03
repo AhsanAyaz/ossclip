@@ -194,7 +194,13 @@ export async function startEditServer(
   const openWorkdir = async (dirArg: string): Promise<void> => {
     const dir = resolve(dirArg);
     if (!isWorkdir(dir)) {
-      throw new Error(`no render-props.json in ${dir} — run \`ossclip produce\` there first`);
+      // Not "run produce there first" — the reported failure said that to a
+      // user who HAD, because produce writes one level down into
+      // .ossclip/<name>/ and this wanted that nested directory.
+      throw new Error(
+        `no render-props.json in ${dir} — produce writes into ` +
+          `<video's folder>/.ossclip/<name>/, and that nested folder is what edit opens`,
+      );
     }
     workdir = dir;
     await recordRecentProject(dir, opts.recentDir);

@@ -249,7 +249,36 @@ program
           "(or `pnpm --filter @ossclip/editor build`) once, then re-run `ossclip edit`.",
       );
     }
-    const server = await startEditServer(workdir, { port: opts.port, pageDir });
+
+    // With no argument the editor opens on its own project picker (R17 §83).
+    // With one, resolve what the user MEANT: `ossclip edit <video folder>`
+    // was the reported failure, and produce's output lives one level down.
+    let target: string | undefined = workdir;
+    if (workdir !== undefined) {
+      const { probeWorkdir } = await import("./interactive/workdir-probe");
+      const { resolveWorkdir } = await import("./interactive/resolve-workdir");
+      const { isInteractive } = await import("./interactive/tty");
+      const { dir, probe } = await probeWorkdir(workdir);
+      const resolution = resolveWorkdir(dir, probe);
+      if (resolution.kind === "none") throw new Error(resolution.message);
+      if (resolution.kind === "choose") {
+        if (!isInteractive()) {
+          throw new Error(
+            `several produce runs under ${dir} — name one:\n` +
+              resolution.candidates.map((c) => `  ossclip edit ${c.path}`).join("\n"),
+          );
+        }
+        const { pickWorkdir } = await import("./interactive/pick-workdir");
+        target = await pickWorkdir(resolution.candidates);
+      } else {
+        target = resolution.workdir;
+        // Say so when the path was not the one typed — a silent redirect
+        // leaves the user with the wrong mental model of where things live.
+        if (resolution.via === "nested") console.log(`▸ resolved ${workdir} → ${target}`);
+      }
+    }
+
+    const server = await startEditServer(target, { port: opts.port, pageDir });
     console.log(`▸ editor at ${server.url}`);
     if (opts.open) {
       const { openInBrowser } = await import("./open");
