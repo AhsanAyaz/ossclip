@@ -120,6 +120,13 @@ program
   )
   .option("--no-cover", "skip the cover image written beside the video")
   .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
+  .option("--open-editor", "open the editor when the run finishes")
+  .option(
+    "--no-open-editor",
+    "don't open the editor, and don't ask (overrides openEditorAfterProduce)",
+  )
+  .option("--editor-port <n>", "port for the editor started by --open-editor",
+    (v) => Number.parseInt(v, 10), 5174)
   .action(async (input: string | undefined, opts, command: Command) => {
     if (input === undefined) {
       // commander 12's parseAsync does not reset option state between calls,
@@ -162,7 +169,7 @@ program
     // Parsed, not coerced: a typo'd `--source-fit containn` silently falling
     // back to cover is exactly the crop the flag exists to prevent.
     const sourceFit = z.enum(["cover", "contain"]).parse(opts.sourceFit);
-    await produce(input, {
+    const result = await produce(input, {
       out: opts.out,
       cleanup,
       transcript: opts.transcript,
@@ -191,6 +198,8 @@ program
       clip: opts.clip,
       clipWindow: opts.clipWindow,
     });
+    const { offerEditor } = await import("./interactive/offer-editor");
+    await offerEditor(result, { flag: opts.openEditor, port: opts.editorPort });
   });
 
 program
