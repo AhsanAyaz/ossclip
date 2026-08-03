@@ -34,6 +34,30 @@ program
     ).version,
   );
 
+// Bare `ossclip` at a TTY opens the menu. Piped or in CI it prints help,
+// byte for byte what it printed before — a front door must not become a
+// hang for a script.
+program.action(async () => {
+  const { isInteractive } = await import("./interactive/tty");
+  if (!isInteractive()) {
+    program.outputHelp();
+    return;
+  }
+  const { chooseFromMenu, menuArgv } = await import("./interactive/menu");
+  const choice = await chooseFromMenu();
+  const direct = menuArgv(choice);
+  if (direct !== null) {
+    await program.parseAsync(["node", "ossclip", ...direct]);
+    return;
+  }
+  const { produceWizard } = await import("./interactive/produce-wizard");
+  const { renderCommand } = await import("./interactive/render");
+  const { loadConfig } = await import("@ossclip/core");
+  const argv = await produceWizard({ speaker: loadConfig().speaker });
+  console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
+  await program.parseAsync(["node", "ossclip", ...argv]);
+});
+
 program
   .command("produce")
   .description("transcribe → analyze → cut → captions → render")

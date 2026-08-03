@@ -74,6 +74,22 @@ ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 
 Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`, the hash taken from the source's *content* — so the same footage reuses its cache, `--workdir` starts a separate project, and deleting the directory forces a clean run) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
 
+### Not sure what to run?
+
+```sh
+ossclip
+```
+
+Opens a menu — produce a video, open the editor on something you already
+produced, set up your install, or check what's missing. Every choice prints
+the equivalent command before it runs, so the menu is also how you learn the
+flags.
+
+`ossclip produce` with no file name does the same thing for just the produce
+options. And `ossclip edit` with no path opens a picker over your recent
+runs — you never have to know that produce writes into
+`<your video's folder>/.ossclip/<name>/`.
+
 ## Editing what it produced
 
 ![The ossclip editor: preview, transform handles, inspector and timeline](./docs/site/assets/editor-preview.gif)
