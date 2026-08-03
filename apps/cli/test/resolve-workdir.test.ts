@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveWorkdir, type WorkdirProbe } from "../src/interactive/resolve-workdir";
+import { candidateListMessage, resolveWorkdir, type WorkdirProbe } from "../src/interactive/resolve-workdir";
 
 const probe = (over: Partial<WorkdirProbe> = {}): WorkdirProbe => ({
   isWorkdir: false,
@@ -66,5 +66,26 @@ describe("resolveWorkdir", () => {
     if (r.kind !== "none") throw new Error("unreachable");
     expect(r.message).toContain("\\.ossclip\\");
     expect(r.message).not.toContain("/.ossclip/");
+  });
+});
+
+describe("candidateListMessage", () => {
+  it("renders one pasteable command per candidate", () => {
+    const msg = candidateListMessage("/v", [
+      { path: "/v/.ossclip/new", mtimeMs: 9 },
+      { path: "/v/.ossclip/old", mtimeMs: 1 },
+    ]);
+    expect(msg).toContain("several produce runs under /v");
+    expect(msg).toContain("  ossclip edit /v/.ossclip/new");
+    expect(msg).toContain("  ossclip edit /v/.ossclip/old");
+  });
+
+  // The whole point of this branch: the line must survive a paste. An
+  // unquoted path with a space arrives at the shell as two arguments.
+  it("quotes a candidate path containing a space", () => {
+    const msg = candidateListMessage("/v", [
+      { path: "/v/My Videos/.ossclip/take-a", mtimeMs: 1 },
+    ]);
+    expect(msg).toContain("ossclip edit '/v/My Videos/.ossclip/take-a'");
   });
 });

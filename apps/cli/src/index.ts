@@ -256,17 +256,14 @@ program
     let target: string | undefined = workdir;
     if (workdir !== undefined) {
       const { probeWorkdir } = await import("./interactive/workdir-probe");
-      const { resolveWorkdir } = await import("./interactive/resolve-workdir");
+      const { resolveWorkdir, candidateListMessage } = await import("./interactive/resolve-workdir");
       const { isInteractive } = await import("./interactive/tty");
       const { dir, probe } = await probeWorkdir(workdir);
       const resolution = resolveWorkdir(dir, probe);
       if (resolution.kind === "none") throw new Error(resolution.message);
       if (resolution.kind === "choose") {
         if (!isInteractive()) {
-          throw new Error(
-            `several produce runs under ${dir} — name one:\n` +
-              resolution.candidates.map((c) => `  ossclip edit ${c.path}`).join("\n"),
-          );
+          throw new Error(candidateListMessage(dir, resolution.candidates));
         }
         const { pickWorkdir } = await import("./interactive/pick-workdir");
         target = await pickWorkdir(resolution.candidates);

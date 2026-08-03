@@ -1,4 +1,5 @@
 import { sep as hostSep } from "node:path";
+import { renderCommand } from "./render";
 
 /**
  * Resolving what a user meant by `ossclip edit <path>`.
@@ -56,4 +57,17 @@ export function resolveWorkdir(
       `  Produce one:                ossclip produce ${dir}${sep}your-video.mp4\n` +
       `  Or pick from recent runs:   ossclip edit`,
   };
+}
+
+/**
+ * The several-candidates message for a session with no TTY, where the
+ * interactive picker cannot run. Each line is rendered through
+ * renderCommand so a path containing a space pastes into a shell as ONE
+ * argument — an unquoted list defeats the only thing this branch is for.
+ */
+export function candidateListMessage(dir: string, candidates: Candidate[]): string {
+  return (
+    `several produce runs under ${dir} — name one:\n` +
+    candidates.map((c) => `  ${renderCommand(["edit", c.path])}`).join("\n")
+  );
 }
