@@ -36,6 +36,7 @@
     "prepack": "pnpm --filter @ossclip/editor build && node scripts/prepack.mjs"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@ossclip/core": "workspace:*",
     "@ossclip/renderer": "workspace:*",
     "@ossclip/scenes": "workspace:*",
