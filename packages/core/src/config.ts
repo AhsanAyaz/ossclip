@@ -4,6 +4,9 @@ import { join } from "node:path";
 
 import type { ModelPrice } from "./producer/usage";
 
+/** Whether a finished `produce` offers to open the editor. */
+export type OpenEditorPref = "ask" | "always" | "never";
+
 export interface OssclipConfig {
   ffmpegPath: string;
   ffprobePath: string;
@@ -21,6 +24,12 @@ export interface OssclipConfig {
    * a plausible one, and stops grounding flagging the speaker's own name.
    */
   speaker?: string;
+  /**
+   * What a finished produce run does about the editor: ask (default), always
+   * open, or never mention it. Written by the post-produce prompt when the
+   * user picks one of its "stop asking" answers.
+   */
+  openEditorAfterProduce?: OpenEditorPref;
   browserExecutable?: string;
   /**
    * USD per million tokens, keyed by model id or family substring — overrides
@@ -96,6 +105,8 @@ export function loadConfig(): OssclipConfig {
     model: process.env.OSSCLIP_MODEL ?? fileCfg.model ?? DEFAULTS.model,
     fastModel: process.env.OSSCLIP_FAST_MODEL ?? fileCfg.fastModel,
     speaker: process.env.OSSCLIP_SPEAKER ?? fileCfg.speaker,
+    openEditorAfterProduce: (process.env.OSSCLIP_OPEN_EDITOR ??
+      fileCfg.openEditorAfterProduce) as OpenEditorPref | undefined,
     browserExecutable: process.env.OSSCLIP_BROWSER ?? fileCfg.browserExecutable,
     pricing: fileCfg.pricing,
   };
