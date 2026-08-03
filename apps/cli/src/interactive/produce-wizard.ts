@@ -24,6 +24,19 @@ const EXTRAS = [
   { value: "llm", label: "Choose the LLM provider", hint: "--llm" },
 ] as const;
 
+/**
+ * `produce.ts`'s own §93b guard throws "--clip needs the producer's
+ * editorial judgement: add --produce" whenever `--clip` shows up without
+ * `--produce`. Offering "Only the strongest N seconds" to someone who just
+ * answered "no" to graphics is offering a menu item that is a guaranteed
+ * error nine prompts later — so the clip extra is only ever listed once
+ * graphics is already on. Exported and kept pure so this can be asserted
+ * without a TTY.
+ */
+export function extrasFor(graphics: boolean): (typeof EXTRAS)[number][] {
+  return graphics ? [...EXTRAS] : EXTRAS.filter((e) => e.value !== "graphicsClip");
+}
+
 export async function produceWizard(cfg: { speaker?: string } = {}): Promise<string[]> {
   assertInteractive("produce wizard");
   intro("ossclip produce");
@@ -88,7 +101,7 @@ export async function produceWizard(cfg: { speaker?: string } = {}): Promise<str
   const chosen = unwrap(
     await multiselect({
       message: "Anything else? (space to toggle, enter to accept)",
-      options: [...EXTRAS],
+      options: extrasFor(graphics),
       required: false,
     }),
   ) as string[];

@@ -120,8 +120,21 @@ program
   )
   .option("--no-cover", "skip the cover image written beside the video")
   .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
-  .action(async (input: string | undefined, opts) => {
+  .action(async (input: string | undefined, opts, command: Command) => {
     if (input === undefined) {
+      // commander 12's parseAsync does not reset option state between calls,
+      // so a flag typed alongside a bare `produce` would survive into the
+      // wizard's own parse and silently override the answer the user just
+      // gave — while `▸ running:` printed a command without it. Refusing is
+      // the only shape where the printed command is always the run.
+      const typedFlags = command.options.some(
+        (o) => command.getOptionValueSource(o.attributeName()) === "cli",
+      );
+      if (typedFlags) {
+        throw new Error(
+          "pass the input file when you pass flags — bare `ossclip produce` opens the wizard instead",
+        );
+      }
       const { isInteractive } = await import("./interactive/tty");
       if (!isInteractive()) {
         throw new Error("missing required argument 'input' — the video file to produce");

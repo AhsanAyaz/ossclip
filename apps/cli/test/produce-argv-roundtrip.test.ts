@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { produceArgv, type ProduceAnswers } from "../src/interactive/produce-argv";
+import { extrasFor } from "../src/interactive/produce-wizard";
 
 const answers = (over: Partial<ProduceAnswers> = {}): ProduceAnswers => ({
   input: "./take.mp4",
@@ -88,6 +89,19 @@ describe("wizard argv survives the real commander parse", () => {
       sourceIsEdited: true,
       llm: "claude-cli",
     });
+  });
+
+  it("never offers the clip extra without graphics — produce.ts §93b refuses that combination", () => {
+    // apps/cli/src/produce.ts throws "--clip needs the producer's editorial
+    // judgement: add --produce" whenever --clip shows up without --produce.
+    // produceArgv itself has no opinion — it would happily emit --clip with
+    // graphics: false and extras.clip set, e.g.
+    // produceArgv(answers({ graphics: false, extras: { clip: 60 } })) — so it
+    // is extrasFor's filtering, asserted here, that is the only thing
+    // standing between a "no" to graphics and that dead end nine prompts
+    // later: the multiselect never lists the option in the first place.
+    expect(extrasFor(false).some((e) => e.value === "graphicsClip")).toBe(false);
+    expect(extrasFor(true).some((e) => e.value === "graphicsClip")).toBe(true);
   });
 
   it("rejects an argv containing a flag the CLI does not define", async () => {
