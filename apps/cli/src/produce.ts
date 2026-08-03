@@ -88,6 +88,7 @@ import {
   type Transcript,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
+import { editHint } from "./interactive/edit-hint";
 import { renderCover, renderProduction } from "@ossclip/renderer";
 import {
   coverTextRect,
@@ -1392,6 +1393,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
 
   if (!opts.render) {
     console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
+    console.log(editHint(work));
     return;
   }
 
@@ -1536,4 +1538,5 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<v
   // best-effort, so a read-only home dir never fails the render.
   await recordRecentProject(work);
   console.log(`✓ done → ${outPath}`);
+  console.log(editHint(work));
 }
