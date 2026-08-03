@@ -3,7 +3,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod/v4";
 import { OverrideDocSchema, emptyOverrideDoc } from "@ossclip/core";
@@ -197,9 +197,13 @@ export async function startEditServer(
       // Not "run produce there first" — the reported failure said that to a
       // user who HAD, because produce writes one level down into
       // .ossclip/<name>/ and this wanted that nested directory.
+      // The layout is spelled with the host separator, as resolve-workdir.ts
+      // does: hardcoded forward slashes here meant a Windows user met both
+      // conventions from one product depending on which entry point they hit.
       throw new Error(
         `no render-props.json in ${dir} — produce writes into ` +
-          `<video's folder>/.ossclip/<name>/, and that nested folder is what edit opens`,
+          `<video's folder>${sep}.ossclip${sep}<name>${sep}, and that nested folder ` +
+          `is what edit opens`,
       );
     }
     workdir = dir;
