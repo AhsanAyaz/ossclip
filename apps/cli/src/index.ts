@@ -37,7 +37,10 @@ program
 program
   .command("produce")
   .description("transcribe → analyze → cut → captions → render")
-  .argument("<input>", "input video file")
+  // OPTIONAL so a bare `ossclip produce` at a TTY opens the wizard instead of
+  // printing a usage error at somebody who does not yet know the flags. A
+  // non-interactive run still gets commander's "missing required argument".
+  .argument("[input]", "input video file")
   .option("-o, --out <path>", "output video path (default: <input>.ossclip.mp4)")
   .option("--cleanup <level>", "exact | light | standard | aggressive", "standard")
   .option("--transcript <path>", "inject a transcript JSON instead of running whisper")
@@ -117,7 +120,22 @@ program
   )
   .option("--no-cover", "skip the cover image written beside the video")
   .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
-  .action(async (input: string, opts) => {
+  .action(async (input: string | undefined, opts) => {
+    if (input === undefined) {
+      const { isInteractive } = await import("./interactive/tty");
+      if (!isInteractive()) {
+        throw new Error("missing required argument 'input' — the video file to produce");
+      }
+      const { produceWizard } = await import("./interactive/produce-wizard");
+      const { renderCommand } = await import("./interactive/render");
+      const { loadConfig } = await import("@ossclip/core");
+      const argv = await produceWizard({ speaker: loadConfig().speaker });
+      console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
+      // Re-entering the SAME parse the flags take: the zod checks below run
+      // on wizard output exactly as they do on a typed command line.
+      await program.parseAsync(["node", "ossclip", ...argv]);
+      return;
+    }
     // Say which keys came from a file — never the keys themselves. A run that
     // picks a provider from a `.env` should say where that came from.
     if (envFiles.length > 0) console.log(`▸ env: ${envFiles.join(", ")}`);
