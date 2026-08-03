@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -51,8 +51,56 @@ describe("probeWorkdir", () => {
     expect(probe.candidates.map((c) => c.path)).toEqual([good]);
   });
 
-  it("reports an empty probe for a path that does not exist", async () => {
+  it("reports a path that does not exist as missing, not as empty", async () => {
     const { probe } = await probeWorkdir(join(scratch(), "nope"));
+    expect(probe).toEqual({
+      isWorkdir: false,
+      candidates: [],
+      reason: "missing",
+      code: "ENOENT",
+    });
+  });
+
+  it("reports a readable folder with no .ossclip as no failure at all", async () => {
+    const { probe } = await probeWorkdir(scratch());
     expect(probe).toEqual({ isWorkdir: false, candidates: [] });
   });
+
+  // The bug this whole branch exists to kill, in its second disguise: a run
+  // IS there, and the old catch-everything reported it as "run produce".
+  it.skipIf(process.getuid?.() === 0)(
+    "reports an unreadable .ossclip as unreadable, not as missing output",
+    async () => {
+      const root = scratch();
+      makeRun(root, "take-aaa");
+      chmodSync(join(root, ".ossclip"), 0o000);
+      try {
+        const { probe } = await probeWorkdir(root);
+        expect(probe.candidates).toEqual([]);
+        expect(probe.reason).toBe("unreadable");
+        expect(probe.code).toBe("EACCES");
+      } finally {
+        // Leaving it at 000 makes the OS's tmp reaper — and any later run of
+        // this suite — unable to clean the tree up.
+        chmodSync(join(root, ".ossclip"), 0o755);
+      }
+    },
+  );
+
+  it.skipIf(process.getuid?.() === 0)(
+    "reports an unreadable target path as unreadable",
+    async () => {
+      const root = scratch();
+      const closed = join(root, "closed");
+      mkdirSync(closed);
+      chmodSync(root, 0o000);
+      try {
+        const { probe } = await probeWorkdir(closed);
+        expect(probe.reason).toBe("unreadable");
+        expect(probe.code).toBe("EACCES");
+      } finally {
+        chmodSync(root, 0o755);
+      }
+    },
+  );
 });

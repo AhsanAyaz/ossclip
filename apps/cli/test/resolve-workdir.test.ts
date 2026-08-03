@@ -61,6 +61,39 @@ describe("resolveWorkdir", () => {
     expect(r.message).toContain("ossclip edit");
   });
 
+  // The founding bug, twice over: a path that does not exist and a path that
+  // cannot be read were both reported as "no ossclip output — run produce".
+  it("says so when the path does not exist, and still names the picker", () => {
+    const r = resolveWorkdir("/v/typo.mp4", probe({ reason: "missing", code: "ENOENT" }));
+    if (r.kind !== "none") throw new Error("unreachable");
+    expect(r.message).toContain("no such path: /v/typo.mp4");
+    expect(r.message).toContain("ossclip edit");
+    // Never "produce into <the typo>/your-video.mp4" — a path that can never exist.
+    expect(r.message).not.toContain("ossclip produce");
+  });
+
+  it("says permissions, not produce, when the path cannot be read", () => {
+    const r = resolveWorkdir("/v", probe({ reason: "unreadable", code: "EACCES" }));
+    if (r.kind !== "none") throw new Error("unreachable");
+    expect(r.message).toContain("can't read /v");
+    expect(r.message).toContain("EACCES");
+    expect(r.message).toContain("permissions");
+    // The run may be right there — telling them to redo it is the old bug.
+    expect(r.message).not.toContain("ossclip produce");
+  });
+
+  it("names an unexpected errno rather than guessing at a cause", () => {
+    const r = resolveWorkdir("/v", probe({ reason: "unreadable", code: "ELOOP" }));
+    if (r.kind !== "none") throw new Error("unreachable");
+    expect(r.message).toContain("ELOOP");
+  });
+
+  it("keeps the layout explanation for a readable, empty folder", () => {
+    const r = resolveWorkdir("/v", probe());
+    if (r.kind !== "none") throw new Error("unreachable");
+    expect(r.message).toContain("no ossclip output under /v");
+  });
+
   it("writes the layout hint with the host's separator", () => {
     const r = resolveWorkdir("D:\\TiDB", probe(), "\\");
     if (r.kind !== "none") throw new Error("unreachable");
