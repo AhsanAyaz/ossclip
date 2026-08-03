@@ -20,9 +20,32 @@ export function decideOpenEditor(i: {
   // --no-render run does write.
   if (i.flag === true) return "open";
   if (i.flag === false) return "skip";
+  // Above the stored preference, not below it: a persisted "always" (or
+  // OSSCLIP_OPEN_EDITOR=always) is not a per-run instruction, and starting a
+  // long-lived edit server in `ossclip produce take.mp4 > build.log 2>&1`
+  // holds the event loop open with nobody there to see it or close it. Only
+  // the explicit flag above may do that.
+  if (!i.interactive) return "skip";
   // Otherwise a run with no render has nothing to look at, so the offer is noise.
   if (!i.rendered) return "skip";
   if (i.pref === "always") return "open";
   if (i.pref === "never") return "skip";
-  return i.interactive ? "ask" : "skip";
+  return "ask";
+}
+
+export type OpenEditorAnswer = "yes" | "no" | "always" | "never";
+
+/**
+ * What each answer to the end-of-run offer means: whether to open now, and
+ * the preference to persist if the answer was one of the two that stop the
+ * asking. Pure so all four are asserted without a prompt — the interactive
+ * path is then only the I/O around it.
+ */
+export function answerToDecision(answer: OpenEditorAnswer): {
+  pref?: OpenEditorPref;
+  open: boolean;
+} {
+  const open = answer === "yes" || answer === "always";
+  if (answer === "always" || answer === "never") return { pref: answer, open };
+  return { open };
 }

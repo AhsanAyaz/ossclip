@@ -1,7 +1,8 @@
 import { loadConfig, saveConfigPatch, type OpenEditorPref } from "@ossclip/core";
 import type { ProduceResult } from "../produce";
-import { decideOpenEditor } from "./prefs";
+import { answerToDecision, decideOpenEditor, type OpenEditorAnswer } from "./prefs";
 import { isInteractive, select, unwrap } from "./prompts";
+import { renderCommand } from "./render";
 
 /**
  * The offer at the end of a produce run. The user who prompted this work
@@ -34,16 +35,18 @@ export async function offerEditor(
           { value: "never", label: "No, and stop asking" },
         ],
       }),
-    ) as "yes" | "no" | "always" | "never";
+    ) as OpenEditorAnswer;
 
-    if (answer === "always" || answer === "never") {
-      const next: OpenEditorPref = answer === "always" ? "always" : "never";
-      const path = saveConfigPatch({ openEditorAfterProduce: next });
+    // The mapping itself lives in prefs.ts, where four answers are asserted
+    // without a TTY — this file is I/O and a manual walk was its only cover.
+    const decided = answerToDecision(answer);
+    if (decided.pref !== undefined) {
+      const path = saveConfigPatch({ openEditorAfterProduce: decided.pref });
       // Say where the answer went, and how to take it back — a preference
       // saved silently is one the user cannot find again.
-      console.log(`▸ saved openEditorAfterProduce="${next}" to ${path}`);
+      console.log(`▸ saved openEditorAfterProduce="${decided.pref}" to ${path}`);
     }
-    open = answer === "yes" || answer === "always";
+    open = decided.open;
   }
 
   if (!open) return;
@@ -52,9 +55,12 @@ export async function offerEditor(
   const pageDir = resolveEditorPageDir();
   if (pageDir === null) {
     // Not fatal here: the render succeeded. Say what is missing and stop.
+    // Through renderCommand like every other `ossclip edit <path>` we print:
+    // hand-built, this one quoted nothing, so a workdir with a space in it
+    // printed a command that fails.
     console.log(
-      "▸ editor UI isn't built — run `pnpm build` once, then `ossclip edit` " +
-        `${result.workdir}`,
+      "▸ editor UI isn't built — run `pnpm build` once, then " +
+        renderCommand(["edit", result.workdir]),
     );
     return;
   }

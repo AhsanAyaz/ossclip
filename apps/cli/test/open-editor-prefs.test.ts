@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { saveConfigPatch } from "@ossclip/core";
-import { decideOpenEditor } from "../src/interactive/prefs";
+import { answerToDecision, decideOpenEditor } from "../src/interactive/prefs";
 
 const base = (over = {}) => ({
   flag: undefined as boolean | undefined,
@@ -42,6 +42,37 @@ describe("decideOpenEditor", () => {
 
   it("never asks without a TTY", () => {
     expect(decideOpenEditor(base({ interactive: false }))).toBe("skip");
+  });
+
+  // A stored preference must not start a server nobody can see:
+  // `ossclip produce take.mp4 > build.log 2>&1` would hang on the edit
+  // server holding the event loop open, with nothing there to close it.
+  it("never opens on a stored preference without a TTY", () => {
+    expect(decideOpenEditor(base({ pref: "always", interactive: false }))).toBe("skip");
+  });
+
+  // The per-run flag is a deliberate instruction and still wins — this is
+  // how a script asks for the server on purpose.
+  it("still opens on an explicit flag without a TTY", () => {
+    expect(decideOpenEditor(base({ flag: true, interactive: false }))).toBe("open");
+  });
+});
+
+describe("answerToDecision", () => {
+  it("opens on yes without touching the stored preference", () => {
+    expect(answerToDecision("yes")).toEqual({ open: true });
+  });
+
+  it("closes on no without touching the stored preference", () => {
+    expect(answerToDecision("no")).toEqual({ open: false });
+  });
+
+  it("opens AND persists on 'yes, and stop asking'", () => {
+    expect(answerToDecision("always")).toEqual({ pref: "always", open: true });
+  });
+
+  it("closes AND persists on 'no, and stop asking'", () => {
+    expect(answerToDecision("never")).toEqual({ pref: "never", open: false });
   });
 });
 
