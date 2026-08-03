@@ -12,33 +12,35 @@ const answers = (over: Partial<ProduceAnswers> = {}): ProduceAnswers => ({
 });
 
 /**
- * Builds a commander program shaped exactly like the real `produce` command
- * and captures the options object the action would receive. If a wizard ever
- * emits a flag the CLI does not accept — or spells one differently — this
- * fails rather than shipping a wizard that teaches a broken command line.
+ * Parses wizard argv with the REAL program — `buildProgram()` from
+ * src/index.ts — and captures the options object `produce`'s action would
+ * receive, with only that action's effect stubbed out.
+ *
+ * This used to hand-declare thirteen options mirroring index.ts. A replica
+ * drifts silently: rename `--whisper-model` in index.ts and the wizard keeps
+ * emitting the old spelling, the replica keeps accepting it, this passes, and
+ * the shipped CLI breaks. Parsing against the real thing is the only shape
+ * where that is unrepresentable.
  */
 const parse = async (argv: string[]): Promise<Record<string, unknown>> => {
-  const { Command } = await import("commander");
-  const program = new Command();
+  const { buildProgram } = await import("../src/index");
+  const program = buildProgram();
+  // Drift must fail as a named test, not as process.exit(1) inside the vitest
+  // worker — and commander's own "error: unknown option" is not this suite's
+  // output. Applied to the subcommands too: they were created before these
+  // calls, so they do not inherit them.
+  for (const cmd of [program, ...program.commands]) {
+    cmd.exitOverride();
+    cmd.configureOutput({ writeErr() {} });
+  }
   let captured: Record<string, unknown> = {};
-  program
-    .command("produce")
-    .argument("[input]")
-    .option("-o, --out <path>")
-    .option("--cleanup <level>", "", "standard")
-    .option("--aspect <ratio>", "", "9:16")
-    .option("--produce", "", false)
-    .option("--intent <text>")
-    .option("--clip <seconds>", "", Number.parseFloat)
-    .option("--source-fit <mode>", "", "cover")
-    .option("--speaker <who>")
-    .option("--whisper-model <name>")
-    .option("--blooper-marker <word>")
-    .option("--source-is-edited")
-    .option("--llm <provider>")
-    .action((input: string, opts: Record<string, unknown>) => {
-      captured = { input, ...opts };
-    });
+  const produce = program.commands.find((c) => c.name() === "produce");
+  if (produce === undefined) throw new Error("the real program has no `produce` command");
+  // Replaces the action handler commander already holds: every option
+  // definition, parser and default above it is the shipped one.
+  produce.action((input: string | undefined, opts: Record<string, unknown>) => {
+    captured = { input, ...opts };
+  });
   await program.parseAsync(["node", "ossclip", ...argv]);
   return captured;
 };
@@ -106,13 +108,10 @@ describe("wizard argv survives the real commander parse", () => {
 
   it("rejects an argv containing a flag the CLI does not define", async () => {
     // Proves the harness would actually catch drift rather than silently
-    // accepting anything.
-    const program = (await import("commander")).Command;
-    const p = new program();
-    p.exitOverride();
-    p.command("produce").argument("[input]").action(() => {});
-    await expect(
-      p.parseAsync(["node", "ossclip", "produce", "./t.mp4", "--not-a-flag"]),
-    ).rejects.toThrow();
+    // accepting anything — and that it fails as a test instead of exiting the
+    // worker, which is what the missing exitOverride() used to do.
+    await expect(parse(["produce", "./t.mp4", "--not-a-flag"])).rejects.toThrow(
+      /unknown option/,
+    );
   });
 });
