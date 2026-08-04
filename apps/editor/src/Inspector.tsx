@@ -481,10 +481,18 @@ export const Inspector: React.FC<InspectorProps> = ({
     // unrelated content, not "this block is still marked for removal". An
     // applied cut's own Restore lives on its Timeline seam marker instead
     // (`Timeline.tsx`'s `cutSeamHit`), which this branch must never shadow.
-    const activeCut = edits.doc.cuts.find(
+    //
+    // `findIndex`, not `find` (fix round 2, re-review): `restoreChunk` is
+    // keyed by INDEX, not a window match, precisely because a src-anchored
+    // and a src-less entry can share this exact window (the seam-
+    // coincidence case `cutChunk`'s own comment in useEdits.ts documents) —
+    // a window-filter restore would delete BOTH, including one this branch
+    // never even matched. The index found here identifies exactly the
+    // src-less entry this view is offering Restore for.
+    const activeCutIndex = edits.doc.cuts.findIndex(
       (c) => c.src === undefined && c.startSec === cue.startSec && c.endSec === cue.endSec,
     );
-    if (activeCut) {
+    if (activeCutIndex !== -1) {
       return (
         <div>
           <div style={section}>
@@ -504,7 +512,7 @@ export const Inspector: React.FC<InspectorProps> = ({
               style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
               onClick={() => {
                 blurActive();
-                edits.restoreChunk(cue.startSec, cue.endSec);
+                edits.restoreChunk(activeCutIndex);
               }}
             >
               Restore

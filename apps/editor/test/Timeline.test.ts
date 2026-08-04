@@ -218,6 +218,52 @@ describe("Timeline — user cuts render as a dead-region overlay (PLAN 2026-08-0
     expect(container.querySelector('[data-testid="timeline-cut-seam-1-3"]')).toBeNull();
   });
 
+  it("re-review fix round 2: no seam when `spans` is empty — never a misleading Restore target at 0%", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          cuts: [{ startSec: 2, endSec: 4, src: { startSec: 1, endSec: 3 } }],
+          // `spans` deliberately omitted — sourceToOutputClamped([], …)
+          // returns 0, which used to paint a clickable Restore target at
+          // the timeline's very start. It must not.
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="timeline-cut-seam-2-4"]')).toBeNull();
+    // Nor does it fall back to a band — this cut IS applied (src present),
+    // it just can't be placed yet.
+    expect(container.querySelector('[data-testid="timeline-cut-2-4"]')).toBeNull();
+  });
+
+  it("re-review fix round 2: the SEAM-COINCIDENCE scenario — a src-anchored and a src-less entry sharing one window render BOTH a seam and a band, and restoring one leaves the other untouched", async () => {
+    const spans: KeptSpan[] = [{ srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 }];
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          cuts: [
+            { startSec: 2, endSec: 4, src: { startSec: 1, endSec: 3 } }, // applied — the seam
+            { startSec: 2, endSec: 4 }, // fresh — the band, same window
+          ],
+          spans,
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="timeline-cut-2-4"]')).not.toBeNull(); // band
+    expect(container.querySelector('[data-testid="timeline-cut-seam-2-4"]')).not.toBeNull(); // seam
+
+    // Restoring the SEAM removes only the applied entry — the band (and its
+    // own, independent, restore-later chance) survives untouched. This is
+    // the exact bug the reviewer caught: the original window-filter
+    // `restoreChunk` would have deleted BOTH from this one click.
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="timeline-cut-seam-2-4"]')!
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 5 }));
+    });
+    expect(container.querySelector('[data-testid="timeline-cut-seam-2-4"]')).toBeNull();
+    expect(container.querySelector('[data-testid="timeline-cut-2-4"]')).not.toBeNull();
+  });
+
   it("Minor (a): duplicate-window cuts don't collide on their React key", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     await act(async () => {

@@ -43,9 +43,13 @@ interface TimelineProps {
    * The CURRENT render-props' spans (source↔output mapping) — needed only to
    * place an ALREADY-APPLIED cut's seam marker at its true position in
    * today's output via `sourceToOutputClamped`. Optional/defaulted to `[]`
-   * for the same back-compat reason as `cuts`; harmless when omitted (an
-   * applied cut with no spans to place it against simply doesn't draw its
-   * seam — there's nothing else honest to draw).
+   * for the same back-compat reason as `cuts`; harmless when omitted — an
+   * applied cut with no spans to place it against draws NO seam at all
+   * (the `cuts.map` guard below skips it outright), never a misleading one
+   * at `sourceToOutputClamped`'s empty-array fallback position (0%, the
+   * timeline's very start — not a real answer, just where the lookup gives
+   * up; a clickable Restore target there would be actively wrong, worse
+   * than no seam, per the re-review's Minor).
    */
   spans?: readonly KeptSpan[];
   durationSec: number;
@@ -886,6 +890,16 @@ export const Timeline: React.FC<TimelineProps> = ({
               // TODAY", nothing about reshaping the timeline (the DECIDE
               // above `live` in App.tsx still holds). Clicking the seam
               // offers Restore directly — there is no cue to select instead.
+              //
+              // No `spans` (re-review Minor, PLAN 2026-08-04 Task 4c):
+              // `sourceToOutputClamped([], …)` returns 0, which would paint
+              // a clickable Restore target at the timeline's very start —
+              // a POSITION the seam never actually claimed, just the
+              // fallback of a lookup with nothing to look up against.
+              // Skipping the seam entirely here is safer than a parked,
+              // misleading Restore target; nothing is lost — the entry is
+              // untouched and gets its seam back the moment `spans` loads.
+              if (spans.length === 0) return null;
               const seamPct = pct(sourceToOutputClamped(spans, cut.src.startSec));
               return (
                 <div
@@ -899,10 +913,14 @@ export const Timeline: React.FC<TimelineProps> = ({
                     // triggering the track's own seek-and-scrub underneath.
                     // Blur discipline comes free from the strip's own
                     // capture-phase `blurTypingElement` above; no separate
-                    // call needed here.
+                    // call needed here. `i` is this entry's own index in
+                    // `doc.cuts` (fix round 2, re-review) — identity, so a
+                    // sibling entry that happens to share this window (the
+                    // seam-coincidence case `cutChunk` documents) is never
+                    // touched by this click.
                     e.stopPropagation();
                     e.preventDefault();
-                    edits.restoreChunk(cut.startSec, cut.endSec);
+                    edits.restoreChunk(i);
                   }}
                   style={{ ...cutSeamHit, left: `${seamPct}%` }}
                 >

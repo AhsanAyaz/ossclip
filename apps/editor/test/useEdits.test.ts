@@ -173,15 +173,16 @@ describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", 
     expect(s.past).toHaveLength(1);
   });
 
-  it("restoreChunk removes the WHOLE entry, matched by exact window", () => {
+  it("restoreChunk removes the entry at the given INDEX", () => {
     let s = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });
-    s = editReducer(s, { type: "restoreChunk", startSec: 10, endSec: 14 });
+    s = editReducer(s, { type: "restoreChunk", index: 0 });
     expect(s.doc.cuts).toEqual([]);
   });
 
-  it("restoreChunk on a window with no matching cut is a no-op (same state, not a new commit)", () => {
+  it("restoreChunk on an out-of-bounds index is a no-op (same state, not a new commit)", () => {
     const s = initialEditState();
-    expect(editReducer(s, { type: "restoreChunk", startSec: 10, endSec: 14 })).toBe(s);
+    expect(editReducer(s, { type: "restoreChunk", index: 0 })).toBe(s);
+    expect(editReducer(s, { type: "restoreChunk", index: -1 })).toBe(s);
   });
 
   it("cutting undoes like any other edit", () => {
@@ -199,24 +200,45 @@ describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", 
     ]);
   });
 
+  // Fix round 2 (re-review, PLAN 2026-08-04 Task 4c): the SEAM-COINCIDENCE
+  // scenario the reviewer pinned down. Cut [10, 15] → Render resolves it to
+  // `{10, 15, src}` and shifts everything after 15 back by 5 — the block
+  // that used to sit at [15, 20] now legitimately occupies [10, 15] in the
+  // CURRENT render-props' frame, and the Inspector (correctly, per round 1)
+  // offers "Delete this chunk" on it. The ORIGINAL implementation filtered
+  // by window alone and would have silently deleted the APPLIED cut's own
+  // entry here — src and all — the moment this fires.
+  it("cutChunk NEVER touches a src-anchored entry at the same window — adds a second, independent entry instead", () => {
+    const withAppliedCut = editReducer(initialEditState(), { type: "load", doc: {
+      theme: {}, scenes: {}, captions: {}, splits: [],
+      cuts: [{ startSec: 10, endSec: 15, src: { startSec: 43.4, endSec: 48.4 } }],
+    } });
+
+    const s = editReducer(withAppliedCut, { type: "cutChunk", startSec: 10, endSec: 15 });
+
+    expect(s.doc.cuts).toHaveLength(2);
+    // The applied entry survives, byte-for-byte, same src.
+    expect(s.doc.cuts).toContainEqual({
+      startSec: 10, endSec: 15, src: { startSec: 43.4, endSec: 48.4 },
+    });
+    // ...plus a FRESH, independent, src-less entry for the new decision.
+    expect(s.doc.cuts).toContainEqual({ startSec: 10, endSec: 15 });
+  });
+
   // The binding contract (packages/core/src/overrides.ts's schema comment,
   // PLAN 2026-08-04 Task 4c): the editor must never write or preserve a
-  // cut's `src` — `src` is produce's own resolved source anchor. This is
-  // the one path in this reducer that could otherwise carry a stale `src`
-  // forward: re-cutting a window whose on-disk entry already has one (e.g.
-  // a workdir the editor re-opened after a produce run had already resolved
-  // it) must land on a fresh {startSec, endSec}-only object, not the old
-  // entry with its src intact.
-  it("cutChunk on a window whose EXISTING cut already carries a src strips it — never preserved, never carried forward", () => {
-    const withSrcOnDisk = editReducer(initialEditState(), { type: "load", doc: {
-      theme: {}, scenes: {}, captions: {}, splits: [],
-      cuts: [{ startSec: 10, endSec: 14, src: { startSec: 43.4, endSec: 47.9 } }],
-    } });
-    expect(withSrcOnDisk.doc.cuts[0]!.src).toBeDefined();
+  // cut's `src` — `src` is produce's own resolved source anchor. `cutChunk`
+  // only ever replaces an EXISTING SRC-LESS entry at the same window (a
+  // genuine re-cut of a window nobody has produced yet); it never invents
+  // one.
+  it("cutChunk on a window whose EXISTING SRC-LESS entry is stale still writes a fresh, src-less replacement", () => {
+    const withStaleCut = editReducer(initialEditState(), {
+      type: "cutChunk", startSec: 10, endSec: 14,
+    });
 
-    const s = editReducer(withSrcOnDisk, { type: "cutChunk", startSec: 10, endSec: 14 });
+    const s = editReducer(withStaleCut, { type: "cutChunk", startSec: 10, endSec: 14 });
 
-    expect(s.doc.cuts).toEqual([{ startSec: 10, endSec: 14 }]);
+    expect(s.doc.cuts).toEqual([{ startSec: 10, endSec: 14 }]); // still exactly one
     expect("src" in s.doc.cuts[0]!).toBe(false);
   });
 
@@ -225,8 +247,35 @@ describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", 
       theme: {}, scenes: {}, captions: {}, splits: [],
       cuts: [{ startSec: 10, endSec: 14, src: { startSec: 43.4, endSec: 47.9 } }],
     } });
-    const s = editReducer(withSrcOnDisk, { type: "restoreChunk", startSec: 10, endSec: 14 });
+    const s = editReducer(withSrcOnDisk, { type: "restoreChunk", index: 0 });
     expect(s.doc.cuts).toEqual([]);
+  });
+
+  // The other half of the seam-coincidence fix: with BOTH a src-anchored
+  // and a src-less entry sharing one window, restoreChunk must remove
+  // EXACTLY the one its caller means — Timeline's seam passes the applied
+  // entry's own index, Inspector's band Restore passes the src-less one's.
+  // The ORIGINAL window-filter implementation would have deleted BOTH from
+  // either click.
+  it("restoreChunk by index removes exactly ONE of two entries sharing a window, never its sibling", () => {
+    const doc = {
+      theme: {}, scenes: {}, captions: {}, splits: [],
+      cuts: [
+        { startSec: 10, endSec: 15, src: { startSec: 43.4, endSec: 48.4 } }, // index 0: the seam
+        { startSec: 10, endSec: 15 }, // index 1: the band
+      ],
+    };
+    const loaded = editReducer(initialEditState(), { type: "load", doc });
+
+    // The seam's Restore (index 0) removes only the applied entry.
+    const seamRestored = editReducer(loaded, { type: "restoreChunk", index: 0 });
+    expect(seamRestored.doc.cuts).toEqual([{ startSec: 10, endSec: 15 }]);
+
+    // The band's Restore (index 1) removes only the fresh entry.
+    const bandRestored = editReducer(loaded, { type: "restoreChunk", index: 1 });
+    expect(bandRestored.doc.cuts).toEqual([
+      { startSec: 10, endSec: 15, src: { startSec: 43.4, endSec: 48.4 } },
+    ]);
   });
 });
 

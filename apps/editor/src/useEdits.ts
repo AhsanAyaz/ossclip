@@ -83,7 +83,10 @@ export type EditAction =
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
   | { type: "cutChunk"; startSec: number; endSec: number }
-  | { type: "restoreChunk"; startSec: number; endSec: number }
+  /** `index` is the entry's position in `doc.cuts` at the moment the caller
+   * looked it up — identity, not a window match (fix round 2, PLAN
+   * 2026-08-04 Task 4c re-review; see the reducer case's own comment). */
+  | { type: "restoreChunk"; index: number }
   | { type: "patchGraphicRect"; sceneId: string; rect: GraphicRect; coalesce?: string }
   | { type: "clearGraphicRect"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
@@ -306,15 +309,29 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // Writes ONLY `{startSec, endSec}` — never a `src` (the schema
       // comment on `OverrideDocSchema.cuts`, packages/core/src/overrides.ts:
       // `src` is produce's own resolved source anchor, and the editor must
-      // never write or preserve one). The filter-then-push below replaces
-      // any existing entry at this exact window rather than pushing a
-      // duplicate — the one path in this UI that could otherwise "edit an
-      // existing cut's range" (re-cutting a window whose on-disk cut
-      // already carries a `src` from a prior produce run), and the
-      // replacement's fresh object has no `src` key at all, which is what
-      // that contract requires.
+      // never write or preserve one).
+      //
+      // Fix round 2 (re-review, PLAN 2026-08-04 Task 4c): the filter below
+      // ONLY replaces an existing SRC-LESS entry at this exact window — a
+      // SRC-ANCHORED entry at the same window is left completely alone,
+      // never touched, whatever it is. That coincidence is not a fluke: a
+      // cut [10, 15] → Render (the entry becomes `{10, 15, src}`, and
+      // everything after 15 shifts back by 5) → the block that used to sit
+      // at [15, 20] now legitimately occupies [10, 15] in THIS render-props'
+      // frame — exactly what the Inspector's "Delete this chunk" is for.
+      // Filtering by window alone (the original implementation) would
+      // silently delete the APPLIED cut's own entry, src and all, the
+      // instant the user cut that new block — the previously-removed
+      // material would return on the next produce with no seam, no notice,
+      // no way to tell it happened. Two entries sharing one window (one
+      // src-anchored, one fresh) is the honest state here: they describe
+      // two INDEPENDENT decisions that happen to land on the same numbers,
+      // and `resolveCutSourceRanges`/`applyUserCuts` (packages/core/src/
+      // recut.ts) already resolve every `cuts` entry independently — a
+      // src-anchored one used directly, a src-less one converted through
+      // `priorMap` — so nothing downstream needs them deduplicated.
       const cuts = state.doc.cuts.filter(
-        (c) => c.startSec !== action.startSec || c.endSec !== action.endSec,
+        (c) => c.src !== undefined || c.startSec !== action.startSec || c.endSec !== action.endSec,
       );
       return commit({
         ...state.doc,
@@ -326,17 +343,22 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // same "delete the key, don't write a false-ish value" rule as
       // `restoreScene`'s `hidden` removal — there is no "not cut" state for
       // one `cuts` array entry to hold, so the entry itself has to go.
-      // Matched by exact float equality against `startSec`/`endSec`: both
-      // this action's payload and the entry being matched trace back to the
-      // SAME `cue.startSec`/`endSec` with no arithmetic in between (the cue
-      // that `cutChunk` read its window from cannot have drifted within a
-      // session — `live` never consumes `doc.cuts`), unlike a
-      // playhead-derived time, which is why `addSplit`'s dedupe needs a
-      // tolerance and this doesn't.
-      const cuts = state.doc.cuts.filter(
-        (c) => c.startSec !== action.startSec || c.endSec !== action.endSec,
-      );
-      if (cuts.length === state.doc.cuts.length) return state; // nothing matched
+      //
+      // Fix round 2 (re-review): keyed by INDEX, not by a window filter.
+      // Once a src-anchored and a src-less entry can legitimately share one
+      // window (see `cutChunk` above), a window filter can no longer tell
+      // WHICH of the (up to two) matching entries the caller meant — the
+      // original implementation removed EVERY entry sharing the window,
+      // so a seam click (meant to restore only the applied cut) would also
+      // silently delete an unrelated fresh cut at the same numbers, and
+      // vice versa. Both callers (`Timeline.tsx`'s seam, `Inspector.tsx`'s
+      // band Restore) already hold the exact array index of the ONE entry
+      // they're offering Restore for — Timeline's `cuts.map((cut, i) =>
+      // …)` and Inspector's `cuts.findIndex(…)` — so identity-by-index is
+      // free to obtain at every call site and removes exactly one entry,
+      // never a sibling that happens to share its numbers.
+      if (action.index < 0 || action.index >= state.doc.cuts.length) return state;
+      const cuts = state.doc.cuts.filter((_, i) => i !== action.index);
       return commit({ ...state.doc, cuts });
     }
     case "patchComponent": {
@@ -483,8 +505,7 @@ export function useEdits() {
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
     cutChunk: (startSec: number, endSec: number) => dispatch({ type: "cutChunk", startSec, endSec }),
-    restoreChunk: (startSec: number, endSec: number) =>
-      dispatch({ type: "restoreChunk", startSec, endSec }),
+    restoreChunk: (index: number) => dispatch({ type: "restoreChunk", index }),
     patchGraphicRect: (sceneId: string, rect: GraphicRect, coalesce?: string) =>
       dispatch({ type: "patchGraphicRect", sceneId, rect, coalesce }),
     clearGraphicRect: (sceneId: string) => dispatch({ type: "clearGraphicRect", sceneId }),
