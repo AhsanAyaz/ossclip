@@ -103,3 +103,87 @@ export function clampTiming(
   if (e > hi) { e = hi; s = Math.max(lo, e - MIN_SCENE_SEC); }
   return { startSec: s, endSec: e };
 }
+
+/**
+ * Candidate landing spots for a drag on `sceneId` (precision-editing design,
+ * "Timeline snapping"): every OTHER stored cue's edges — `stored()` above,
+ * because plain takes re-derive around wherever the graphic lands and are
+ * never something to snap TO, same reasoning `moveTiming`/`clampTiming`
+ * already lean on — plus the playhead and the clip's own bounds. The
+ * dragged scene's own edges are excluded; a scene cannot snap to itself.
+ * Sorted ascending and deduplicated within 1e-6 so a playhead or bound that
+ * happens to coincide with a cue edge doesn't hand the caller two
+ * near-identical targets whose tie-break order depends on float noise.
+ */
+export function snapTargets(
+  cues: readonly SceneCue[],
+  sceneId: string,
+  playheadSec: number,
+  durationSec: number,
+): number[] {
+  const raw = [0, durationSec, playheadSec];
+  for (const c of stored(cues)) {
+    if (c.id === sceneId) continue;
+    raw.push(c.startSec, c.endSec);
+  }
+  raw.sort((a, b) => a - b);
+  const out: number[] = [];
+  let last: number | undefined;
+  for (const t of raw) {
+    if (last === undefined || t - last > 1e-6) {
+      out.push(t);
+      last = t;
+    }
+  }
+  return out;
+}
+
+/**
+ * Snap `sec` to whichever target is nearest, within `thresholdSec`; the
+ * caller converts the 8px screen threshold into seconds at the current zoom
+ * (zoom lives at the call site, not here). On an exact tie between two
+ * targets equidistant from `sec`, the EARLIER one wins — arbitrary, but a
+ * fixed rule beats letting the outcome depend on which of two equal
+ * floating-point distances a scan happens to visit first. No targets, or a
+ * threshold that isn't positive, is "snapping is off": pass `sec` through
+ * unchanged rather than special-casing the caller.
+ */
+export function applySnap(
+  sec: number,
+  targets: readonly number[],
+  thresholdSec: number,
+): { sec: number; snapped: number | null } {
+  if (thresholdSec <= 0 || targets.length === 0) return { sec, snapped: null };
+  let best: number | null = null;
+  let bestDist = Infinity;
+  for (const t of targets) {
+    const dist = Math.abs(sec - t);
+    if (dist < bestDist || (dist === bestDist && best !== null && t < best)) {
+      best = t;
+      bestDist = dist;
+    }
+  }
+  if (best === null || bestDist > thresholdSec) return { sec, snapped: null };
+  return { sec: best, snapped: best };
+}
+
+/**
+ * "m:ss:ff" — the OpusClip-style readout the outside-user feedback asked
+ * for (precision-editing design, "The frames readout"). `ff` is
+ * `Math.floor` on the sub-second remainder, NEVER `Math.round`: rounding at
+ * a rate like 29.97fps can push that remainder's frame count up to `fps`
+ * itself (ff === fps), which displays a frame number that doesn't exist at
+ * that rate (e.g. frame 30 of a 30fps clip). Negative input has no
+ * meaningful timecode, so it clamps to 0 rather than showing a sign;
+ * `fps <= 0` has no frame concept at all, so it falls back to a
+ * seconds-only string instead of dividing by zero.
+ */
+export function formatTimecode(sec: number, fps: number): string {
+  const clamped = Math.max(0, sec);
+  if (fps <= 0) return `${clamped.toFixed(1)}s`;
+  const whole = Math.floor(clamped);
+  const m = Math.floor(whole / 60);
+  const s = whole % 60;
+  const ff = Math.floor((clamped - whole) * fps);
+  return `${m}:${String(s).padStart(2, "0")}:${String(ff).padStart(2, "0")}`;
+}
