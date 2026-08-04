@@ -14,6 +14,7 @@ import { ChatMock } from "./components/ChatMock";
 import { ScreenshotFrame } from "./components/ScreenshotFrame";
 import { BulletList } from "./components/BulletList";
 import { compensateEdits, type ElementEdits } from "./editable";
+import { EXIT_SEC } from "./motion";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- props are registry-validated upstream */
 const COMPONENTS: Record<
@@ -30,11 +31,6 @@ const COMPONENTS: Record<
   ScreenshotFrame,
   BulletList,
 };
-
-/** Seconds a graphic spends leaving. Matches LAYOUT_TRANSITION_SEC's order of
- * magnitude so the graphic departs WITH the video slot's morph — the reported
- * failure was the split view closing first and the card then blinking out. */
-const EXIT_SEC = 0.3;
 
 /**
  * Layouts whose graphic slot sits over LIVE video (R20 §94). Everywhere else
