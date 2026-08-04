@@ -364,6 +364,33 @@ export function dropHiddenCues(cues: readonly SceneCue[], doc: OverrideDoc): Dro
   return { cues: out, hidden };
 }
 
+/**
+ * Split at the stored split points BEFORE dropping hidden cues (PLAN
+ * 2026-08-04 Task 1, bug 3).
+ *
+ * `dropHiddenCues` matches by the EXACT id the user deleted, and a split
+ * root's `hidden` is meant to apply only to "the root's own post-split
+ * segment (the half that still carries the bare id)" per `effectiveOverride`
+ * above — but `produce.ts` and the editor's live memo both called
+ * `dropHiddenCues` on the ROOT cues, before `splitCues` had run. That erased
+ * the ENTIRE pre-split window (both halves at once); the plain fill then
+ * covered it with one take, and the later `splitCues` call cut that PLAIN
+ * take into two plain pieces — killing the graphic on the half the user
+ * never asked to delete (field case: `scene-6` deleted, `scene-6@36400` died
+ * with it). Splitting first means a hidden root id only ever matches the
+ * post-split cue that kept the bare id, exactly the exception
+ * `effectiveOverride` already promises. Safe to call again after the fill's
+ * own `splitCues` pass — re-splitting at a boundary that already exists is a
+ * no-op (the split point sits exactly on the joint, so neither piece's
+ * window contains it).
+ */
+export function splitThenDropHidden(
+  cues: readonly SceneCue[],
+  doc: OverrideDoc,
+): DropHiddenResult {
+  return dropHiddenCues(splitCues(cues, doc.splits), doc);
+}
+
 export interface AppliedCaptionEdits {
   lines: CaptionLine[];
   /** Edits whose guard failed — the word at that index is not what they knew. */

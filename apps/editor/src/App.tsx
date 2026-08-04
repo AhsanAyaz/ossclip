@@ -7,6 +7,7 @@ import {
   applyCaptionEdits,
   applyOverrides,
   dropHiddenCues,
+  splitThenDropHidden,
   fillPlainCues,
   splitCues,
   resolveTheme,
@@ -450,21 +451,29 @@ export const App: React.FC = () => {
     );
     const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
     const { cues: graphicCues } = applyOverrides(baseCues, edits.doc);
-    // Same sequence as `produce.ts`: overrides → drop the deleted scenes →
-    // fill the gaps with plain takes (a deleted scene's window becomes an
-    // editable take — Task C's payoff for doing A first) → a SECOND override
-    // pass so framing edits on take-* ids land on the cues the fill just
-    // created. The second pass is a no-op on graphic cues (same component ⇒
-    // no swap ⇒ the prop merge is idempotent) — do not "simplify" it away.
-    const { cues: visibleCues } = dropHiddenCues(graphicCues, edits.doc);
+    // Same sequence as `produce.ts`: overrides → split, then drop the deleted
+    // scenes → fill the gaps with plain takes (a deleted scene's window
+    // becomes an editable take — Task C's payoff for doing A first) → a
+    // SECOND override pass so framing edits on take-* ids land on the cues
+    // the fill just created. The second pass is a no-op on graphic cues (same
+    // component ⇒ no swap ⇒ the prop merge is idempotent) — do not
+    // "simplify" it away.
+    // `splitThenDropHidden`, not a bare `dropHiddenCues`: applying a stored
+    // split (R16 §61) BEFORE dropping hidden cues is what lets a hidden ROOT
+    // id (a deleted split half) match only its OWN post-split segment,
+    // instead of erasing the whole pre-split window — including the half a
+    // split was about to carve off — before the split ever ran (PLAN
+    // 2026-08-04 Task 1, bug 3: deleting one split half used to delete both).
+    const { cues: visibleCues } = splitThenDropHidden(graphicCues, edits.doc);
     const filled = fillPlainCues(visibleCues, {
       outputDurationSec: renderProps.outputDurationSec,
       clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
     });
-    // User splits (R16 §61) — after the fill so takes split like scenes,
-    // before the final pass so edits on the `id@ms` halves land. The extra
-    // dropHiddenCues catches halves the user deleted, whose hidden override
-    // did not exist yet when the first drop ran.
+    // User splits (R16 §61) — after the fill so TAKES split like scenes did
+    // above; a no-op here for scene ids, already split by
+    // `splitThenDropHidden`. Before the final pass so edits on the `id@ms`
+    // halves land. The extra dropHiddenCues below catches halves of a TAKE
+    // the user deleted, whose id did not exist until the fill just ran.
     const splitted = splitCues(filled, edits.doc.splits);
     const { cues: mergedCues } = applyOverrides(splitted, edits.doc);
     const { cues } = dropHiddenCues(mergedCues, edits.doc);

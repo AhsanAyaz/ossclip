@@ -5,13 +5,16 @@ import {
   captionEditWas,
   clearGraphicRect,
   splitCues,
+  splitThenDropHidden,
   dropHiddenCues,
   clearElementTransform,
   clearTiming,
   reclampPinnedTiming,
   resolveTheme,
   setElementTransform,
+  type OverrideDoc,
 } from "../src/overrides";
+import { fillPlainCues } from "../src/fill";
 import { defaultTheme, type SceneCue } from "../src/scene-schema";
 
 const cue = (id: string): SceneCue => ({
@@ -546,6 +549,72 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
     expect(cues[0]!.endSec).toBe(2);
     expect(cues[1]!.startSec).toBe(2);
     expect(cues[0]!.pinned).toBe(true);
+  });
+});
+
+describe("the produce.ts / editor pipeline order (PLAN 2026-08-04 Task 1, bug 3)", () => {
+  // Mirrors `produce.ts`'s exact call sequence (App.tsx's live-preview memo
+  // duplicates the same order): applyOverrides → splitThenDropHidden →
+  // reclampPinnedTiming → fillPlainCues → splitCues → applyOverrides →
+  // dropHiddenCues. A unit test on `splitCues`/`dropHiddenCues` alone can't
+  // see this bug — it only shows up in the ORDER two correct-in-isolation
+  // passes run in.
+  function pipeline(routedCues: SceneCue[], doc: OverrideDoc): SceneCue[] {
+    const { cues: editedCues } = applyOverrides(routedCues, doc);
+    const { cues: visibleCues } = splitThenDropHidden(editedCues, doc);
+    const { cues: reclamped } = reclampPinnedTiming(visibleCues);
+    const filled = fillPlainCues(reclamped, { outputDurationSec: 40 });
+    const split = splitCues(filled, doc.splits);
+    const { cues: mergedCues } = applyOverrides(split, doc);
+    return dropHiddenCues(mergedCues, doc).cues;
+  }
+
+  // Scene before the split scene, so the split scene's window doesn't happen
+  // to start the timeline — matching the field case (scene-6 among others).
+  const before = (): SceneCue => ({ ...cue("scene-5"), startSec: 0, endSec: 30 });
+  const splitScene = (): SceneCue => ({ ...cue("scene-6"), startSec: 30, endSec: 40 });
+
+  it("deleting the split ROOT (the field case: scene-6 + scene-6@36400) leaves the split-off half's graphic intact", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-6": { hidden: true } },
+      splits: [36.4],
+    });
+    const cues = pipeline([before(), splitScene()], doc);
+    // The root id is gone — it was deleted.
+    expect(cues.find((c) => c.id === "scene-6")).toBeUndefined();
+    // The split-off half must SURVIVE as its own graphic cue, not dissolve
+    // into the plain fill alongside the root (today: both halves die).
+    const right = cues.find((c) => c.id === "scene-6@36400");
+    expect(right).toBeDefined();
+    expect(right!.kind).not.toBe("plain");
+    expect(right!.component).toBe("StatCard");
+    expect(right!.startSec).toBe(36.4);
+    expect(right!.endSec).toBe(40);
+  });
+
+  it("deleting the split-off RIGHT half keeps the left half intact", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-6@36400": { hidden: true } },
+      splits: [36.4],
+    });
+    const cues = pipeline([before(), splitScene()], doc);
+    expect(cues.find((c) => c.id === "scene-6@36400")).toBeUndefined();
+    const left = cues.find((c) => c.id === "scene-6");
+    expect(left).toBeDefined();
+    expect(left!.kind).not.toBe("plain");
+    expect(left!.component).toBe("StatCard");
+    expect(left!.startSec).toBe(30);
+    expect(left!.endSec).toBe(36.4);
+  });
+
+  it("deleting an UNSPLIT scene still turns its whole window into a plain take, as today", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-6": { hidden: true } } });
+    const cues = pipeline([before(), splitScene()], doc);
+    expect(cues.find((c) => c.id === "scene-6")).toBeUndefined();
+    expect(cues.find((c) => c.id === "scene-6@36400")).toBeUndefined();
+    const plain = cues.find((c) => c.startSec === 30 && c.endSec === 40);
+    expect(plain).toBeDefined();
+    expect(plain!.kind).toBe("plain");
   });
 });
 

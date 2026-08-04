@@ -31,6 +31,7 @@ import {
   defaultTheme,
   detectSilences,
   dropHiddenCues,
+  splitThenDropHidden,
   emptyOverrideDoc,
   extractAudio,
   fillPlainCues,
@@ -997,7 +998,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const { cues: editedCues } = applyOverrides(routed.cues, overrideDoc);
   // Scenes the user deleted in the editor drop here — their windows become
   // plain takes in the fill below, which is Task C's payoff for Task A.
-  const { cues: visibleCues, hidden: hiddenIds } = dropHiddenCues(editedCues, overrideDoc);
+  // `splitThenDropHidden`, not a bare `dropHiddenCues`: this runs before
+  // `splitCues` below, so a hidden ROOT id (`scene-6`) used to erase its
+  // whole pre-split window — both the half it names and the half a stored
+  // split (R16 §61) had already carved off — before that split ever got a
+  // chance to separate them (PLAN 2026-08-04 Task 1, bug 3).
+  const { cues: visibleCues, hidden: hiddenIds } = splitThenDropHidden(editedCues, overrideDoc);
   if (hiddenIds.length > 0) {
     console.log(`▸ ${hiddenIds.length} scene(s) hidden by the edit layer: ${hiddenIds.join(", ")}`);
   }
@@ -1029,15 +1035,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     clipStarts: map.spans.map((s) => s.outIn),
   });
   // User splits (R16 §61) — after the fill so takes split like scenes, and
-  // before the final override pass so edits on the `id@ms` halves land.
+  // before the final override pass so edits on the `id@ms` halves land. A
+  // split whose ROOT was a graphic scene already happened once inside
+  // `splitThenDropHidden` above (PLAN 2026-08-04 Task 1) — re-running it here
+  // is a no-op for that scene (the split point sits exactly on the joint
+  // between the two halves, matching neither), so this call stays the one
+  // that actually cuts TAKE ids, which don't exist until the fill just ran.
   const split = splitCues(filled, overrideDoc.splits);
   if (overrideDoc.splits.length > 0) {
     console.log(`▸ ${overrideDoc.splits.length} scene split(s) from the edit layer`);
   }
   const { cues: mergedCues, orphans: rawOrphans } = applyOverrides(split, overrideDoc);
-  // Halves the user deleted AFTER splitting: their hidden override targets an
-  // `id@ms` id that only exists post-split, so the first drop above never saw
-  // it. Same order as the editor's live memo.
+  // Halves of a TAKE the user deleted after splitting: a take id only exists
+  // once the fill above runs, so its `id@ms` half couldn't have been seen by
+  // `splitThenDropHidden` earlier (that pass only ever saw graphic scenes).
+  // Scene halves were already caught above; this is a no-op for them. Same
+  // order as the editor's live memo.
   const { cues: sceneCues, hidden: hiddenHalves } = dropHiddenCues(mergedCues, overrideDoc);
   if (hiddenHalves.length > 0) {
     console.log(`▸ ${hiddenHalves.length} split half(s) hidden by the edit layer`);
