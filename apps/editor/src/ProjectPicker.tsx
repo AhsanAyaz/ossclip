@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 /**
  * The project picker (R17 §83): what a bare `ossclip edit` opens onto, and
@@ -25,6 +25,21 @@ export const ProjectPicker: React.FC<{
   const [listing, setListing] = useState<FsListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // Bottom fade only while the list is actually scrollable and not already
+  // at its end — a static fade on a short list would lie about there being
+  // more to see.
+  const [listOverflows, setListOverflows] = useState(false);
+
+  const recomputeListOverflow = (): void => {
+    const el = listRef.current;
+    // Degrade to no-fade if the ref is unmounted (spec's stated fallback).
+    if (!el) {
+      setListOverflows(false);
+      return;
+    }
+    setListOverflows(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  };
 
   const browse = async (dir?: string): Promise<void> => {
     try {
@@ -41,6 +56,15 @@ export const ProjectPicker: React.FC<{
     // The browser starts at home once per mount; navigation is click-driven.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    // Recompute after every listing change (content height changes) and on
+    // window resize (the flex list's clientHeight changes with the window).
+    recomputeListOverflow();
+    window.addEventListener("resize", recomputeListOverflow);
+    return () => window.removeEventListener("resize", recomputeListOverflow);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listing]);
 
   useEffect(() => {
     if (required) return;
@@ -101,7 +125,7 @@ export const ProjectPicker: React.FC<{
             ))}
           </div>
         ) : null}
-        <div style={{ marginTop: 16 }}>
+        <div style={browseSection}>
           <div style={sectionTitle}>browse</div>
           <div style={{ color: "#6a6a75", fontSize: 12, marginBottom: 6 }}>
             Folders only — hidden ones are omitted, and any projects produced inside a folder
@@ -124,7 +148,13 @@ export const ProjectPicker: React.FC<{
                   </button>
                 ) : null}
               </div>
-              <div style={entryList} data-testid="project-fs-list">
+              <div
+                ref={listRef}
+                className="ossclip-scroll-list"
+                style={listOverflows ? { ...entryList, ...bottomFade } : entryList}
+                onScroll={recomputeListOverflow}
+                data-testid="project-fs-list"
+              >
                 {listing.parent ? (
                   <button
                     data-testid="project-fs-up"
@@ -183,7 +213,8 @@ const panel: React.CSSProperties = {
   width: 620,
   maxWidth: "90vw",
   maxHeight: "82vh",
-  overflowY: "auto",
+  display: "flex",
+  flexDirection: "column",
   background: "#12121A",
   border: "1px solid #3A3A48",
   borderRadius: 8,
@@ -260,12 +291,31 @@ const openHereButton: React.CSSProperties = {
   cursor: "pointer",
 };
 
+// The card is a flex column with no scroll of its own (see `panel`); this
+// section is the item that grows to fill it, so its child `entryList` has
+// somewhere to grow into rather than overflowing the card's maxHeight.
+const browseSection: React.CSSProperties = {
+  marginTop: 16,
+  display: "flex",
+  flexDirection: "column",
+  flex: 1,
+  minHeight: 0,
+};
+
 const entryList: React.CSSProperties = {
-  maxHeight: "34vh",
+  flex: 1,
+  minHeight: 0,
   overflowY: "auto",
   display: "flex",
   flexDirection: "column",
   gap: 2,
+};
+
+// Fades the last ~24px so a scrollable-but-not-at-end list reads as
+// continuable rather than clipped. Applied only while listOverflows.
+const bottomFade: React.CSSProperties = {
+  maskImage: "linear-gradient(to bottom, black calc(100% - 24px), transparent 100%)",
+  WebkitMaskImage: "linear-gradient(to bottom, black calc(100% - 24px), transparent 100%)",
 };
 
 const entryButton: React.CSSProperties = {

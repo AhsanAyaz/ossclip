@@ -1,0 +1,20 @@
+/* Global CSS entry (loaded from main.tsx). Inline styles cannot express
+ * ::-webkit-scrollbar, so the picker's scroll list gets a scoped class here
+ * instead of an element-wide rule. */
+.ossclip-scroll-list {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a44 transparent;
+}
+
+.ossclip-scroll-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ossclip-scroll-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ossclip-scroll-list::-webkit-scrollbar-thumb {
+  background: #3a3a44;
+  border-radius: 4px;
+}
