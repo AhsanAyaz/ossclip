@@ -363,3 +363,62 @@ describe("wordless slivers between removals fold in regardless of MIN_KEEP (§12
     expect(removals[0]!.reason).toBe("silence");
   });
 });
+
+describe("§124's fold does not eat a filler light promises to keep (fix wave final review)", () => {
+  it("does not fold a lone filler between two silences at light, where removeFillers is false", () => {
+    // Two acoustic silences, each independently longer than light's 1.2s
+    // pauseMin (so both become their own removal via the interior-pause
+    // branch), bracketing a single spoken "um" that neither silence span
+    // overlaps — the field shape "…[pause] um [pause]…". At `light`,
+    // `removeFillers` is false: the filler is never scheduled for removal at
+    // all, so the §124 wordless-gap fold (widened by Task 6 to reach up to
+    // `pauseMin`, 1.2s here) must not treat the gap holding it as wordless.
+    const words: Word[] = [
+      { text: "before", start: 0, end: 0.4 },
+      { text: "um", start: 2.0, end: 2.2 },
+      { text: "after", start: 4.0, end: 4.3 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 4.3;
+    const silences: Span[] = [
+      { start: 0.4, end: 1.9 }, // duration 1.5s > light's pauseMin (1.2s)
+      { start: 2.3, end: 3.9 }, // duration 1.6s > light's pauseMin (1.2s)
+    ];
+    const analysis = analyze(transcript, silences, duration);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "light" });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(
+      removals,
+      "the two silences must stay separate removals — folding them merges away the kept 'um'",
+    ).toHaveLength(2);
+    const survivor = cutlist.find(
+      (s) => s.kind === "keep" && s.srcIn <= 2.0 && s.srcOut >= 2.2,
+    );
+    expect(
+      survivor,
+      "the kept sliver holding 'um' must survive — light's contract is removeFillers: false",
+    ).toBeDefined();
+  });
+
+  it("still folds the same wordless-gap shape at standard, where the filler IS removed anyway", () => {
+    // Same acoustic geometry, standard level: `removeFillers` is true, so
+    // "um" gets its own filler removal and the whole stretch collapses to
+    // one continuous cut — regression guard that the light-only carve-out
+    // above doesn't change already-correct behavior at other levels.
+    const words: Word[] = [
+      { text: "before", start: 0, end: 0.4 },
+      { text: "um", start: 2.0, end: 2.2 },
+      { text: "after", start: 4.0, end: 4.3 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 4.3;
+    const silences: Span[] = [
+      { start: 0.4, end: 1.9 },
+      { start: 2.3, end: 3.9 },
+    ];
+    const analysis = analyze(transcript, silences, duration);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals).toHaveLength(1);
+  });
+});

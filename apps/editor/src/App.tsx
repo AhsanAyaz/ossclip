@@ -24,6 +24,8 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { ProjectPicker } from "./ProjectPicker";
 import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
+import { guardedSave } from "./save";
+import { ghostCues as computeGhostCues } from "./ghosts";
 
 /**
  * `<Player>`'s generics require `Props extends Record<string, unknown>`, and
@@ -549,7 +551,17 @@ export const App: React.FC = () => {
   }, [renderProps, edits.doc, videoPreview, graphicPreview]);
 
   const onSave = (): void => {
-    void edits.save().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    // Finding 1, PLAN 2026-08-04 fix wave final review: `guardedSave`'s own
+    // doc comment (save.ts) has the full reasoning — a Save mid-render PUTs
+    // the pre-render doc over produce's src-resolved write-back, for the
+    // whole render's duration. This is the thin I/O wrapper; both the Save
+    // button and ⌘S (Overlay.tsx) go through it.
+    const outcome = guardedSave(render?.running === true, edits.save);
+    if (outcome.blocked) {
+      setError(outcome.reason);
+      return;
+    }
+    void outcome.result.catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
 
   // Render (R11 Task 4.4): save first when dirty — a render of unsaved edits
@@ -581,8 +593,12 @@ export const App: React.FC = () => {
     const baseCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
       (c) => c.kind !== "plain",
     );
-    const { cues } = applyOverrides(baseCues, edits.doc);
-    return cues.filter((c) => edits.doc.scenes[c.id]?.hidden === true);
+    // Finding 2, PLAN 2026-08-04 fix wave final review: `ghostCues`'s own
+    // doc comment (ghosts.ts) has the full reasoning — this used to filter
+    // for `hidden` on the PRE-split cues, so a hidden `id@ms` half (a
+    // sanctioned gesture since Task 1) never matched anything and had no
+    // ghost, no Restore, no way back but hand-editing overrides.json.
+    return computeGhostCues(baseCues, edits.doc);
   }, [renderProps, edits.doc]);
 
   const selectedCue = useMemo(
@@ -709,7 +725,17 @@ export const App: React.FC = () => {
           <button
             style={{ ...ghostButton, ...(edits.dirty ? primaryButton : {}) }}
             onClick={onSave}
-            disabled={!edits.dirty}
+            // Finding 1, PLAN 2026-08-04 fix wave final review: belt-and-
+            // braces alongside `onSave`'s own guard (save.ts) — a render in
+            // flight means produce already wrote its src-resolved
+            // overrides.json for THIS render, and a Save now would PUT the
+            // stale pre-render doc back over it.
+            disabled={!edits.dirty || render?.running === true}
+            title={
+              render?.running === true
+                ? "Can't save while a render is running"
+                : undefined
+            }
           >
             Save
           </button>

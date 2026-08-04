@@ -178,7 +178,23 @@ export function buildCutlist({
   // keep. Acoustic boundaries are exempt: whisper's `-ml 1` stamps stretch a
   // word's end all the way to the next word's start, so a pause *always* looks
   // like it is "inside" a word — applying this rule to them cancels every cut.
-  const protectedWords = words.filter((_, i) => !fillerIndices.has(i));
+  //
+  // Fillers are excluded here ONLY when `policy.removeFillers` says they're
+  // actually being removed (fix wave final review, findings §124's
+  // follow-up): this same `protectedWords` list also feeds
+  // `hasProtectedWordInside` below, which Task 6 widened to fold a wordless
+  // keep-gap up to `policy.pauseMin` (1.2s at light). Excluding fillers
+  // unconditionally meant a lone "um" sitting in a gap between two silence
+  // removals read as "wordless" even at `light`, where `removeFillers` is
+  // false and the filler was never scheduled for removal at all — so the
+  // fold silently ate it, cutting a word `light`'s own contract promises to
+  // keep. The transcript-boundary loop right below is unaffected: it only
+  // ever runs for `source === "transcript"` removals, which only exist when
+  // `policy.removeFillers` created them (the `if (policy.removeFillers)`
+  // block above) — so at `light`, that loop already sees zero such removals
+  // and this widened list changes nothing for it, verified by reading rather
+  // than assumed.
+  const protectedWords = words.filter((_, i) => !policy.removeFillers || !fillerIndices.has(i));
   for (const r of removals) {
     if (r.source !== "transcript") continue;
     for (const w of protectedWords) {
