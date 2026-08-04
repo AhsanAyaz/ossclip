@@ -496,6 +496,14 @@ export interface ReclampResult {
   adjusted: string[];
 }
 
+/** The scene a cue id belongs to, stripping a split half's `@ms` suffix —
+ * same idiom `splitCues` itself uses to derive a later half's id from its
+ * root. Two cues sharing a root are the SAME scene, cut in two. */
+function splitRootId(id: string): string {
+  const at = id.indexOf("@");
+  return at === -1 ? id : id.slice(0, at);
+}
+
 /**
  * Re-clamp every PINNED cue's absolute timing against its current neighbours
  * in the array, in order.
@@ -519,8 +527,22 @@ export function reclampPinnedTiming(cues: readonly SceneCue[]): ReclampResult {
     if (!cue.pinned) continue;
     const prev = out[i - 1];
     const next = out[i + 1];
-    const lo = prev ? prev.endSec + PINNED_GAP_SEC : 0;
-    const hi = next ? next.startSec - PINNED_GAP_SEC : Number.POSITIVE_INFINITY;
+    // Two adjacent pinned cues that are split halves of the SAME scene are
+    // not independent neighbours (PLAN 2026-08-04 Task 1 follow-up, found in
+    // review): `splitThenDropHidden` now runs `splitCues` before this
+    // function, so a pinned+split scene reaches here as two entries, both
+    // still `pinned: true`, with an EXACT boundary (`left.endSec ===
+    // right.startSec`) that `splitCues` already cut. Applying the usual
+    // `PINNED_GAP_SEC` buffer between them would carve a sliver out of the
+    // seam that `fillPlainCues` then fills with a spurious plain take
+    // spliced between the two halves — bug 3 again, one layer up, even
+    // though the cue array itself looks correctly split.
+    const prevIsSibling = prev?.pinned === true && splitRootId(prev.id) === splitRootId(cue.id);
+    const nextIsSibling = next?.pinned === true && splitRootId(next.id) === splitRootId(cue.id);
+    const lo = prev ? prev.endSec + (prevIsSibling ? 0 : PINNED_GAP_SEC) : 0;
+    const hi = next
+      ? next.startSec - (nextIsSibling ? 0 : PINNED_GAP_SEC)
+      : Number.POSITIVE_INFINITY;
     let s = Math.min(Math.max(cue.startSec, lo), Math.max(lo, hi - MIN_PINNED_SCENE_SEC));
     let e = Math.max(Math.min(cue.endSec, hi), s + MIN_PINNED_SCENE_SEC);
     if (e > hi) {

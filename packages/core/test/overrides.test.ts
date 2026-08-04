@@ -236,6 +236,27 @@ describe("reclampPinnedTiming (produce-side re-clamp after a re-plan)", () => {
     expect(out[0]).toEqual(cues[0]);
     expect(out[2]).toEqual(cues[2]);
   });
+
+  it("does not carve a PINNED_GAP_SEC gap between two split halves of the same pinned scene (PLAN 2026-08-04 Task 1 follow-up)", () => {
+    // What `splitCues` actually produces for a pinned [30,40] scene split at
+    // 36.4: both halves keep `pinned: true` and share an EXACT boundary.
+    const cues: SceneCue[] = [
+      { ...cue("scene-5"), startSec: 0, endSec: 30 },
+      { ...cue("scene-6"), startSec: 30, endSec: 36.4, pinned: true },
+      { ...cue("scene-6@36400"), startSec: 36.4, endSec: 40, pinned: true },
+    ];
+    const { cues: out, adjusted } = reclampPinnedTiming(cues);
+    // The left half still gets its buffer against the REAL (non-sibling)
+    // neighbour before it…
+    expect(out[1]!.startSec).toBe(30.05);
+    // …but the seam between the two halves stays exactly on the split
+    // point — no PINNED_GAP_SEC sliver, and so nothing for `fillPlainCues`
+    // to later fill with a spurious plain take between them.
+    expect(out[1]!.endSec).toBe(36.4);
+    expect(out[2]!.startSec).toBe(36.4);
+    expect(out[2]!.endSec).toBe(40);
+    expect(adjusted).toEqual(["scene-6"]);
+  });
 });
 
 describe("per-scene video framing override", () => {
@@ -615,6 +636,35 @@ describe("the produce.ts / editor pipeline order (PLAN 2026-08-04 Task 1, bug 3)
     const plain = cues.find((c) => c.startSec === 30 && c.endSec === 40);
     expect(plain).toBeDefined();
     expect(plain!.kind).toBe("plain");
+  });
+
+  it("a PINNED scene that is also split leaves no gap between the halves (review finding: splitThenDropHidden's split used to run before reclampPinnedTiming saw the whole cue)", () => {
+    // Reviewer's own trace: a scene pinned to [30,40], split at 36.4. Both
+    // halves inherit `pinned: true` from `splitCues`, and the ORIGINAL
+    // pipeline order (reclamp on the single unsplit cue, split afterward)
+    // produced touching halves [30.05, 36.4] / [36.4, 40]. Running
+    // `splitCues` before `reclampPinnedTiming` (this task's Step-2 fix)
+    // instead saw two separate pinned entries and carved a spurious
+    // PINNED_GAP_SEC (0.05s) sliver between them, which `fillPlainCues`
+    // would then fill with an unintended plain take — no test in the suite
+    // exercised pin+split together, which is how this slipped through.
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-6": { timing: { startSec: 30, endSec: 40 } } },
+      splits: [36.4],
+    });
+    const cues = pipeline([before(), { ...cue("scene-6"), startSec: 30, endSec: 40 }], doc);
+    const left = cues.find((c) => c.id === "scene-6");
+    const right = cues.find((c) => c.id === "scene-6@36400");
+    expect(left).toBeDefined();
+    expect(right).toBeDefined();
+    expect(left!.pinned).toBe(true);
+    expect(right!.pinned).toBe(true);
+    // The seam: no gap, and so nothing for fillPlainCues to splice a plain
+    // take into between the two halves.
+    expect(left!.endSec).toBe(right!.startSec);
+    expect(cues.some((c) => c.kind === "plain" && c.startSec >= 30 && c.endSec <= 40)).toBe(
+      false,
+    );
   });
 });
 
