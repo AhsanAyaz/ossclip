@@ -33,6 +33,22 @@ That is an editor/output divergence — the class of defect this project has bee
 
 `SceneLayer.tsx:60` reads: *"Components own their ENTRANCES (staggered rises, per element); the exit lives here at the layer…"*. They do not. One component animates, and what it animates is a slow drift rather than an entrance. The comment describes a design that was never built.
 
+### Correction (found during execution)
+
+The table above was wrong in its central claim, and the error survived into
+the first implementation. Every component HAS an entrance: all nine stagger
+their content in through `anim.ts`'s `useEnter` springs (damping 200, 0.5s),
+present since Phase 1. The survey missed it twice in the same direction —
+`anim.ts` is a `.ts` file excluded by a `*.tsx` glob, and components call
+`useEnter()`, which contains none of the grepped primitive names.
+
+What never animated was the over-video **scrim**: it sits outside the
+components' springs and appeared at full opacity on the cue's first frame —
+almost certainly the reported "half black box appears". The layer entrance
+is therefore scoped to the scrim alone; a layer-wide entrance would stack a
+second animation on the springs, compounding opacity and ~44px of travel.
+The caption fix and the CSS-transition tripwire are unaffected.
+
 ## Scope
 
 **In:** a uniform entrance at the layer, mirroring the existing exit; both clamped so they cannot overlap on a short cue; the caption emphasis driven by frame instead of CSS; and the false comment corrected to describe what exists.

@@ -53,19 +53,23 @@ const scrimColor = (themeBg: string): string => {
 };
 
 /**
- * Uniform entrance and exit for every graphic, both at the layer (R16 §69).
- * Every component arriving and leaving the same way is what makes the cut
- * read as designed — and the layer is the only place that can guarantee it:
- * a per-component convention is a silent trap for every component added
- * later. (An earlier comment here claimed components owned staggered
- * per-element entrances. None did — eight of nine rendered static, which a
- * user reported as "choppy" and asked to fix with motion blur. Blur cannot
- * fix a thing that does not move; arriving can.)
+ * Uniform EXIT for every graphic, and an entrance for the SCRIM alone —
+ * both at the layer (R16 §69).
  *
- * Both read their seconds from `entranceExitSec`, which shrinks the pair
- * proportionally on a cue too short to hold both — overlapping ends multiply
- * their opacities into a mid-life dip. Inside the cue's Sequence, so local
- * frame 0 is the cue's own start.
+ * Components own their content entrances: all nine stagger their elements
+ * in through anim.ts's useEnter springs, a fact this file has now
+ * mis-stated in both directions — an old comment claimed it while an
+ * earlier survey missed it and briefly replaced it with a layer-wide
+ * entrance that DOUBLE-animated everything. What never animated was the
+ * over-video scrim (R21 §100), which appeared at full opacity on the cue's
+ * first frame: "a half black box appears" (spec 2026-08-04). So the
+ * entrance here is the scrim's, and only the scrim's.
+ *
+ * The exit stays layer-wide: it is the cue's END doing the animating, and
+ * every component leaving the same way is what makes the cut read as
+ * designed. Both ends read their seconds from entranceExitSec, which
+ * shrinks the pair together on a cue too short to hold both. Inside the
+ * cue's Sequence, so local frame 0 is the cue's own start.
  */
 const wrapperStyle = (ease: number): React.CSSProperties => ({
   width: "100%",
@@ -79,17 +83,6 @@ const wrapperStyle = (ease: number): React.CSSProperties => ({
   transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
 });
 
-const EntranceRise: React.FC<{ durationInFrames: number; children: React.ReactNode }> = ({
-  durationInFrames,
-  children,
-}) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  const { enterSec } = entranceExitSec(durationInFrames / fps);
-  const p = enterSec <= 0 ? 1 : Math.min(1, Math.max(0, frame / fps / enterSec));
-  return <div style={wrapperStyle(easeOutQuad(p))}>{children}</div>;
-};
-
 const ExitFade: React.FC<{ durationInFrames: number; children: React.ReactNode }> = ({
   durationInFrames,
   children,
@@ -100,6 +93,39 @@ const ExitFade: React.FC<{ durationInFrames: number; children: React.ReactNode }
   const remaining = (durationInFrames - frame) / fps;
   const p = exitSec <= 0 ? 1 : Math.min(1, Math.max(0, remaining / exitSec));
   return <div style={wrapperStyle(easeOutQuad(p))}>{children}</div>;
+};
+
+/**
+ * The scrim's own entrance. Positioned absolute so it stays out of the flex
+ * flow — a normal-flow wrapper would become a second flex item and shove the
+ * content off centre. The scrim is the one thing at this layer that never
+ * animated in: components stagger their content in through anim.ts's
+ * useEnter springs, but the frosted band behind them appeared at full
+ * opacity on the cue's first frame — reported as "a half black box appears"
+ * (spec 2026-08-04). Fading the whole layer instead would stack a second
+ * entrance on top of the springs, compounding opacity and ~44px of travel.
+ */
+const ScrimEnter: React.FC<{ durationInFrames: number; children: React.ReactNode }> = ({
+  durationInFrames,
+  children,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const { enterSec } = entranceExitSec(durationInFrames / fps);
+  const p = enterSec <= 0 ? 1 : Math.min(1, Math.max(0, frame / fps / enterSec));
+  const ease = easeOutQuad(p);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        opacity: ease,
+        transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
+      }}
+    >
+      {children}
+    </div>
+  );
 };
 
 /** Renders each cue's graphic into its layout's graphic slot, scene-local time. */
@@ -162,9 +188,9 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                 overflow: "hidden",
               }}
             >
-              <EntranceRise durationInFrames={durationInFrames}>
-                <ExitFade durationInFrames={durationInFrames}>
-                  {overVideo ? (
+              <ExitFade durationInFrames={durationInFrames}>
+                {overVideo ? (
+                  <ScrimEnter durationInFrames={durationInFrames}>
                     <div
                       style={{
                         position: "absolute",
@@ -175,23 +201,23 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                         borderRadius: theme.radiusPx,
                       }}
                     />
-                  ) : null}
-                  {/* position:relative so the content paints (and hit-tests)
-                      above the positioned scrim — document order alone loses. */}
-                  <div style={{ width: contentW / scale, transform: `scale(${scale})`, position: "relative" }}>
-                    <Component
-                      props={cue.props}
-                      theme={theme}
-                      widthPx={contentW / scale}
-                      heightPx={contentH / scale}
-                      // Stored nudges are composition px; this wrapper scales by
-                      // `scale`, so they are counter-divided here or a drag lands
-                      // `scale`× past where it was dropped (PLAN Task 1).
-                      edits={compensateEdits(cue.elements, scale)}
-                    />
-                  </div>
-                </ExitFade>
-              </EntranceRise>
+                  </ScrimEnter>
+                ) : null}
+                {/* position:relative so the content paints (and hit-tests)
+                    above the positioned scrim — document order alone loses. */}
+                <div style={{ width: contentW / scale, transform: `scale(${scale})`, position: "relative" }}>
+                  <Component
+                    props={cue.props}
+                    theme={theme}
+                    widthPx={contentW / scale}
+                    heightPx={contentH / scale}
+                    // Stored nudges are composition px; this wrapper scales by
+                    // `scale`, so they are counter-divided here or a drag lands
+                    // `scale`× past where it was dropped (PLAN Task 1).
+                    edits={compensateEdits(cue.elements, scale)}
+                  />
+                </div>
+              </ExitFade>
             </div>
           </Sequence>
         );
