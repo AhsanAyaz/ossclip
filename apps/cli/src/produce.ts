@@ -950,14 +950,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
   // Name the destination layout and stop there. The target is whichever
-  // clause-3 alternate the component declares first, and they do not agree on
-  // what that looks like: `blurred-behind` blurs and dims the picture, while
-  // `graphic-only` hides it outright at opacity 0 (§120). Promising a blurred
-  // backdrop was true for one of them and a lie for the other three.
+  // alternate the component declares that videoObstacleFor clears, and the
+  // two answers do not look alike: `blurred-behind` blurs and dims the
+  // picture (clause 3), while `graphic-only` hides it outright at opacity 0
+  // (clause 1). Three components declare each, so promising a blurred
+  // backdrop would have been a lie half the time (§120).
   for (const o of routed.overlaid) {
     console.log(
       `  ▸ scene ${o.id}: ${o.from} → ${o.to} (no room clear of the video — ` +
-        `${o.to} places the graphic over the picture)`,
+        `moved to ${o.to})`,
     );
   }
   for (const s of routed.skipped) console.log(`  ⚠ scene ${s.id} skipped: ${s.reason}`);

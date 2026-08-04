@@ -82,7 +82,11 @@ export function videoObstacleFor(
   frame: FrameSize = PORTRAIT_FRAME,
 ): OccupiedRegion | null {
   const slots = layoutSlots(layout, undefined, [], frame);
-  // A layout with no graphic slot never reaches the placer at all.
+  // Clause 0 — no graphic slot, so there is nothing to keep clear of anything.
+  // NOT "this layout never reaches the placer": full-bleed is skipped as a
+  // CANDIDATE for having no slot, then borrows the default layout's geometry
+  // and reaches the placer anyway. Answering null here is what stops it being
+  // constrained by a video band that is not on its screen (§120).
   if (!slots.graphic) return null;
   // Clause 1 — graphic-only parks the pip rect at zero opacity.
   if (slots.video.opacity === 0) return null;
@@ -288,9 +292,11 @@ export function routeAroundSourceText(
     // have covered everything, or it may have left a band that only the
     // VIDEO made too small to use. Retrying without the obstacle is the
     // cheapest way to ask which, and it runs only on the skip path.
-    // Same frame as the placement it is second-guessing — a diagnostic that
-    // searched a different safe area than the attempt above could blame the
-    // video for a band the run never actually looked at (R15).
+    // Same frame as the placement it is second-guessing. Portrait's safe
+    // window is a strict subset of landscape's, so a portrait-hardcoded
+    // diagnostic in a 16:9 run would find nothing free where the placement
+    // had looked wider — and wrongly blame the TEXT for a drop the video
+    // caused (R15).
     const clearOfTextAlone = base ? placeInFreeBand(base, active, null, frame) !== null : false;
     skipped.push({
       id: cue.id,

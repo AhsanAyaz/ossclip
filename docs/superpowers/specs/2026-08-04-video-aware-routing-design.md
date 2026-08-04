@@ -108,10 +108,13 @@ export function placeInFreeBand(
   rect: { x: number; y: number; w: number; h: number },
   regions: readonly OccupiedRegion[],
   videoObstacle?: OccupiedRegion | null,
+  frame?: FrameSize,
 ): { x: number; y: number; w: number; h: number } | null
 ```
 
-It concatenates the obstacle onto `regions` before calling `freeBands`. That is the entire behavioural change in the placer — the caption reservation, the `MIN_ROUTED_SLOT_H` floor, and the shrink-to-band all keep working against a tighter constraint set, unchanged.
+It concatenates the obstacle onto `regions` before calling `freeBands`. The caption reservation, the `MIN_ROUTED_SLOT_H` floor, and the shrink-to-band all keep working against a tighter constraint set, unchanged.
+
+**The fourth parameter was not in the first draft of this design, and its absence was a defect.** The band search runs between `SAFE_AREA.top` and `1 - SAFE_AREA.bottom`, and `SAFE_AREA` is the *portrait* inset pair — landscape's is looser at top and bottom. Threading `frame` into every `layoutSlots` call while leaving the search window hardcoded would have left routing frame-aware about slots and frame-blind about the area it may place into, refusing legal room in 16:9. `captionAnchorAvoiding` in the same file has resolved its insets through `safeAreaFor(frame)` since R15; the placer now does too.
 
 The optional third parameter is what lets the pinned test be *promoted* rather than rewritten: it keeps calling `placeInFreeBand(slot, TITLE_BAND)` and starts passing an obstacle.
 
