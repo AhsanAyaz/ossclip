@@ -88,6 +88,32 @@ describe("findBloopSpans", () => {
     expect(span!.startSec).toBe(t.words[span!.startWord]!.start);
     expect(span!.endSec).toBe(t.words[span!.endWord]!.end);
   });
+
+  // Field bug: whisper transcribed the spoken marker "blooper" as "looker"
+  // (Levenshtein distance 2 on normalized tokens; sound-alike rejects the
+  // pair because the b/l onset differs — see phonetics.ts soundsSimilar).
+  // --blooper-marker blooper never fired. Task 3, editor-dogfood-fixes plan.
+  it("fuzzy-matches an ASR mishearing of a marker at least 6 characters long", () => {
+    const t = speak("This is fine. I meant to say something else looker. This is the good take.");
+    const spans = findBloopSpans(t, "blooper");
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.matched).toEqual(["looker"]);
+  });
+
+  it("surfaces the fuzzy hit in the report line instead of cutting silently", () => {
+    const t = speak("This is fine. I meant to say something else looker. This is the good take.");
+    const [span] = findBloopSpans(t, "blooper");
+    expect(formatBloopSpan(t, span!)).toContain('matched "looker" ~ "blooper"');
+  });
+
+  // Guard: a short marker is too easy to confuse with ordinary words
+  // ("cut" ~ "cat"/"but" both sound-alike and are within edit distance 2),
+  // so fuzzy matching only turns on once the marker is long enough that a
+  // false positive is unlikely. Short markers stay exact-only.
+  it("keeps a short marker exact-only — no fuzzy match for 'cut'", () => {
+    const t = speak("Say the word but. Then say cat too. Nobody said the marker.");
+    expect(findBloopSpans(t, "cut")).toEqual([]);
+  });
 });
 
 describe("blooper spans through buildCutlist", () => {

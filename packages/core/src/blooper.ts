@@ -1,5 +1,6 @@
 import { normalizeToken } from "./analyze";
 import { isSentenceStart } from "./clip";
+import { levenshtein, soundsSimilar } from "./phonetics";
 import type { Transcript } from "./schema";
 
 /**
@@ -38,6 +39,53 @@ export interface BloopSpan {
   endSec: number;
   /** How many marker words this span swallowed — 2+ means repeated attempts. */
   markers: number;
+  /** The marker text this span was searched for, normalized — for the report line. */
+  marker: string;
+  /**
+   * Surface forms in this span that matched by sound-alike or edit distance,
+   * not exact text — e.g. ASR wrote "looker" for a "blooper" marker. Every
+   * fuzzy hit must land here: it is what makes fuzzy matching safe to ship
+   * on by default, since a false positive shows up in report.txt instead of
+   * silently cutting a good take (Task 3, editor-dogfood-fixes plan).
+   */
+  matched: string[];
+}
+
+// Fuzzy matching only turns on once the marker is long enough that a false
+// positive is unlikely — a short marker like "cut" sound-alikes ("cat") and
+// sits within edit distance 2 of half the dictionary ("but", "gut", "cot"),
+// so short markers stay exact-only (Task 3, editor-dogfood-fixes plan).
+const FUZZY_MIN_MARKER_LEN = 6;
+// "blooper" → "looker" is exactly this: 2 edits (drop the "b", substitute
+// "p" for "k"). Found in the wild — see the guard test in blooper.test.ts.
+const FUZZY_MAX_DISTANCE = 2;
+
+interface MarkerMatch {
+  /** Normalized text of the transcript word that matched. */
+  surface: string;
+  /** False when this needed sound-alike/edit-distance rather than an exact hit. */
+  exact: boolean;
+}
+
+/**
+ * Whether a transcript word counts as the marker, and how.
+ *
+ * Exact match (today's rule) always wins first. Past that, two independent
+ * fuzzy arms — sound-alike (phonetics.ts, shared with the repair pass) OR a
+ * small edit distance — because they catch different ASR failure shapes and
+ * neither alone covers "blooper"/"looker": `soundsSimilar` rejects that pair
+ * on its onset test (b/l differ), so the edit-distance arm is load-bearing
+ * for the field bug this exists to fix.
+ */
+function matchMarker(wordText: string, want: string): MarkerMatch | null {
+  const norm = normalizeToken(wordText);
+  if (!norm) return null;
+  if (norm === want) return { surface: norm, exact: true };
+  if (want.length < FUZZY_MIN_MARKER_LEN) return null;
+  if (soundsSimilar(norm, want) || levenshtein(norm, want) <= FUZZY_MAX_DISTANCE) {
+    return { surface: norm, exact: false };
+  }
+  return null;
 }
 
 /**
@@ -45,7 +93,9 @@ export interface BloopSpan {
  *
  * `marker` is matched with `normalizeToken`, the same normalizer the filler
  * detector uses, so case and trailing punctuation do not matter — ASR writes
- * the word as "blooper." with the period riding on it.
+ * the word as "blooper." with the period riding on it. Beyond exact text, a
+ * marker of at least `FUZZY_MIN_MARKER_LEN` characters also matches an ASR
+ * mishearing — see `matchMarker`.
  *
  * Returns spans in transcript order, non-overlapping.
  */
@@ -53,11 +103,15 @@ export function findBloopSpans(transcript: Transcript, marker: string): BloopSpa
   const want = normalizeToken(marker);
   if (!want) return [];
   const words = transcript.words;
-  const isMarker = (i: number): boolean => normalizeToken(words[i]?.text ?? "") === want;
+  const matchAt = (i: number): MarkerMatch | null => {
+    const w = words[i];
+    return w ? matchMarker(w.text, want) : null;
+  };
 
   const spans: BloopSpan[] = [];
   for (let i = 0; i < words.length; i++) {
-    if (!isMarker(i)) continue;
+    const match = matchAt(i);
+    if (!match) continue;
 
     // Walk back over the attempt this marker spoiled, to the start of its
     // sentence. The marker's own text usually ENDS a sentence ("blooper."), so
@@ -70,10 +124,12 @@ export function findBloopSpans(transcript: Transcript, marker: string): BloopSpa
     // one-word island of a sentence nobody finished.
     const prev = spans[spans.length - 1];
     let markers = 1;
+    let matched = match.exact ? [] : [match.surface];
     if (prev && start <= prev.endWord + 1) {
       spans.pop();
       start = prev.startWord;
       markers = prev.markers + 1;
+      matched = [...prev.matched, ...matched];
     }
 
     spans.push({
@@ -82,6 +138,8 @@ export function findBloopSpans(transcript: Transcript, marker: string): BloopSpa
       startSec: words[start]!.start,
       endSec: words[i]!.end,
       markers,
+      marker: want,
+      matched,
     });
   }
   return spans;
@@ -98,5 +156,13 @@ export function formatBloopSpan(transcript: Transcript, span: BloopSpan): string
     .map((w) => w.text)
     .join(" ");
   const attempts = span.markers > 1 ? ` (${span.markers} attempts)` : "";
-  return `"${said}"${attempts}`;
+  // A fuzzy hit must never be silent — this line is the safety net that
+  // makes on-by-default fuzzy matching acceptable (Task 3, editor-dogfood-fixes
+  // plan): a false positive shows up here instead of quietly cutting a good
+  // take.
+  const fuzzy =
+    span.matched.length > 0
+      ? " " + span.matched.map((m) => `matched "${m}" ~ "${span.marker}"`).join(", ")
+      : "";
+  return `"${said}"${attempts}${fuzzy}`;
 }

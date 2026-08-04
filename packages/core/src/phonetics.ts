@@ -69,7 +69,12 @@ function phraseKey(text: string): string {
     .join("");
 }
 
-function levenshtein(a: string, b: string): number {
+// Exported: blooper.ts reuses this directly for the marker fuzzy-match arm
+// (Task 3, editor-dogfood-fixes plan) instead of a second copy — plain edit
+// distance on the raw normalized word, not the phonetic key `soundsLike`
+// compares, because "blooper"/"looker" fails the onset test below yet is
+// exactly the mishearing the marker match needs to catch.
+export function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
