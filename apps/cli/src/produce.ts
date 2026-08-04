@@ -937,7 +937,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const endSec = map.toOutputClamped(r.endSec);
     return endSec > startSec ? [{ ...r, startSec, endSec }] : [];
   });
-  const routed = routeAroundSourceText(assembled, textRegions);
+  // The frame matters here: the splits separate by X in 16:9, so routing that
+  // assumed portrait decided against geometry that is not what renders (§120).
+  const routed = routeAroundSourceText(assembled, textRegions, frame);
   for (const r of routed.relayouts) {
     console.log(`  ▸ scene ${r.id}: ${r.from} → ${r.to} (source text in the way)`);
   }
@@ -945,6 +947,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log(
       `  ▸ scene ${m.id}: graphic moved into the free band at ` +
         `${(m.y * 100).toFixed(0)}-${((m.y + m.h) * 100).toFixed(0)}%`,
+    );
+  }
+  for (const o of routed.overlaid) {
+    console.log(
+      `  ▸ scene ${o.id}: ${o.from} → ${o.to} (no room clear of the video — ` +
+        `the graphic now sits on a blurred backdrop)`,
     );
   }
   for (const s of routed.skipped) console.log(`  ⚠ scene ${s.id} skipped: ${s.reason}`);
