@@ -132,4 +132,14 @@ describe("formatTimecode", () => {
   it("clamps negative seconds even under the fps guard", () => {
     expect(formatTimecode(-5, 0)).toBe("0.0s");
   });
+
+  it("pads the frame field to the fps' own digit width, not a hardcoded 2", () => {
+    // 120fps: max legal frame index is 119 (3 digits). floor(0.5 * 120) = 60,
+    // which must render "060" — padded to match 119, not "60".
+    expect(formatTimecode(1.5, 120)).toBe("0:01:060");
+  });
+
+  it("leaves the common 30fps width (2 digits) unchanged", () => {
+    expect(formatTimecode(1.5, 30)).toBe("0:01:15");
+  });
 });

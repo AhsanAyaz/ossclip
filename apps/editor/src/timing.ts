@@ -177,6 +177,14 @@ export function applySnap(
  * meaningful timecode, so it clamps to 0 rather than showing a sign;
  * `fps <= 0` has no frame concept at all, so it falls back to a
  * seconds-only string instead of dividing by zero.
+ *
+ * `ff`'s zero-pad width is the digit count of the largest legal frame index
+ * (fps - 1), not a hardcoded 2: at 30fps that's "29" (2 digits, the common
+ * case), but at 120fps it's "119" (3 digits) — padding everything to 2
+ * would print "5" as "05" but "105" as "105", an inconsistent width within
+ * one readout. `Math.ceil` covers fractional rates (29.97 -> width of 29,
+ * matching the emitted frame range); `Math.max(1, …)` keeps 1fps at width 1
+ * instead of collapsing to an empty pad.
  */
 export function formatTimecode(sec: number, fps: number): string {
   const clamped = Math.max(0, sec);
@@ -185,5 +193,6 @@ export function formatTimecode(sec: number, fps: number): string {
   const m = Math.floor(whole / 60);
   const s = whole % 60;
   const ff = Math.floor((clamped - whole) * fps);
-  return `${m}:${String(s).padStart(2, "0")}:${String(ff).padStart(2, "0")}`;
+  const ffWidth = String(Math.max(1, Math.ceil(fps) - 1)).length;
+  return `${m}:${String(s).padStart(2, "0")}:${String(ff).padStart(ffWidth, "0")}`;
 }
