@@ -6,6 +6,7 @@ export * from "./assemble";
 export * from "./fill";
 export * from "./producer/index";
 export * from "./timemap";
+export * from "./recut";
 export * from "./ingest";
 export * from "./transcribe";
 export * from "./analyze";

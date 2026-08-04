@@ -169,6 +169,18 @@ export const OverrideDocSchema = z.object({
    * split lands on graphic cues and takes alike.
    */
   splits: z.array(z.number().nonnegative()).default([]),
+  /**
+   * User cuts — ranges of the OUTPUT to remove, in the output seconds of the
+   * CURRENT render-props (what the user saw when they cut) (PLAN 2026-08-04
+   * Task 4). Optional-with-default like `splits` above, so an `overrides.json`
+   * written before this field existed still parses unchanged. Consumed by
+   * `produce.ts` (subtracted from the automatic cutlist's keep-spans) and by
+   * `recut.ts`'s `remapOverridesThroughRecut`, which re-anchors every OTHER
+   * absolute-output-seconds value in this doc through the resulting re-cut —
+   * see that module's docstring for why a bare "shift everything after the
+   * cut point" is not the actual rule.
+   */
+  cuts: z.array(z.object({ startSec: z.number().nonnegative(), endSec: z.number().nonnegative() })).default([]),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 

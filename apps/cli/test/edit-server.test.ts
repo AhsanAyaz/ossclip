@@ -33,7 +33,7 @@ describe("edit server", () => {
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body.renderProps.videoFileName).toBe("clip.mp4");
-    expect(body.overrides).toEqual({ theme: {}, scenes: {}, captions: {}, splits: [] });
+    expect(body.overrides).toEqual({ theme: {}, scenes: {}, captions: {}, splits: [], cuts: [] });
   });
 
   it("saves overrides to disk", async () => {
