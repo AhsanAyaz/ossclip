@@ -3,6 +3,7 @@ import type { PlayerRef } from "@remotion/player";
 import { SPLIT_MIN_PIECE_SEC, type SceneCue } from "@ossclip/core/browser";
 import { clampGraphicRect, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
+import { guideSnap, THRESHOLD_FRAC, type Guide } from "./guides";
 import type { GraphicRect, useEdits } from "./useEdits";
 
 export interface Selection {
@@ -26,8 +27,9 @@ export interface GraphicPreview {
 }
 
 /** Which part of the box a handle drags. Compass points resize; "move" is
- * the titlebar-style grip along the top edge. */
-type BoxHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "move";
+ * the titlebar-style grip along the top edge. Exported for `guides.ts`
+ * (`guideSnap` reuses these exact semantics — see `applyBoxHandle` below). */
+export type BoxHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "move";
 
 /** One resize/move step, in frame fractions. */
 function applyBoxHandle(start: GraphicRect, handle: BoxHandle, fdx: number, fdy: number): GraphicRect {
@@ -321,6 +323,10 @@ export const Overlay: React.FC<OverlayProps> = ({
   const rectRafRef = useRef(0);
   /** State (not just the ref) so the safe-area guide re-renders during it. */
   const [rectDragging, setRectDragging] = useState(false);
+  /** The centre/safe-area guides `guideSnap` currently has active (Overlay
+   * guides) — state, not a ref, so the yellow lines re-render live during
+   * the drag; cleared on mouseup and whenever a drag holds Alt. */
+  const [guides, setGuides] = useState<Guide[]>([]);
   /** An in-progress corner-resize of an ELEMENT (R12 §47): radial from the
    * element's centre, committed as ONE uniform-scale patch on mouseup. */
   const elResizeRef = useRef<{
@@ -724,7 +730,21 @@ export const Overlay: React.FC<OverlayProps> = ({
               applyBoxHandle(drag.start, drag.handle, drag.dx / canvas.w, drag.dy / canvas.h),
               settings,
             );
-            onGraphicPreview({ sceneId: drag.sceneId, rect: next });
+            // Overlay guides (spec): snap onto centre lines / safe-area
+            // edges, AFTER applyBoxHandle + the clamp, before the preview
+            // renders. Alt is the escape hatch (same convention as the
+            // timeline's snapping) — checked here, at the call site, off the
+            // captured mousemove event, so `guideSnap` itself never reads
+            // modifier state and a held Alt reproduces the pre-guide drag
+            // byte-for-byte.
+            if (e.altKey) {
+              setGuides([]);
+              onGraphicPreview({ sceneId: drag.sceneId, rect: next });
+            } else {
+              const snapped = guideSnap(next, drag.handle, safeAreaFor(settings), THRESHOLD_FRAC);
+              setGuides(snapped.guides);
+              onGraphicPreview({ sceneId: drag.sceneId, rect: snapped.rect });
+            }
           });
         }
         return;
@@ -788,7 +808,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       drag.dy = e.clientY - drag.y;
       setDragOffset({ dx: drag.dx, dy: drag.dy });
     };
-    const onUp = () => {
+    const onUp = (e: MouseEvent) => {
       const elResize = elResizeRef.current;
       if (elResize) {
         elResizeRef.current = null;
@@ -805,6 +825,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       if (rectDrag) {
         rectDragRef.current = null;
         setRectDragging(false);
+        setGuides([]);
         if (rectRafRef.current) {
           cancelAnimationFrame(rectRafRef.current);
           rectRafRef.current = 0;
@@ -813,7 +834,7 @@ export const Overlay: React.FC<OverlayProps> = ({
           const canvas = canvasBox();
           if (canvas) {
             // ONE patch per gesture — one undo step, like every other drag.
-            const final = clampGraphicRect(
+            let final = clampGraphicRect(
               applyBoxHandle(
                 rectDrag.start,
                 rectDrag.handle,
@@ -822,6 +843,12 @@ export const Overlay: React.FC<OverlayProps> = ({
               ),
               settings,
             );
+            // Same guide snap as the live preview, same Alt escape hatch —
+            // the committed rect must match whatever the last preview frame
+            // showed, or the box would visibly jump on release.
+            if (!e.altKey) {
+              final = guideSnap(final, rectDrag.handle, safeAreaFor(settings), THRESHOLD_FRAC).rect;
+            }
             edits.patchGraphicRect(rectDrag.sceneId, {
               x: round4(final.x),
               y: round4(final.y),
@@ -1145,6 +1172,25 @@ export const Overlay: React.FC<OverlayProps> = ({
           }}
         />
       ) : null}
+      {/* Overlay guides (spec: "Overlay guides") — a 1px accent-yellow line
+          spanning the frame for each axis `guideSnap` currently has active.
+          Percentage-positioned against THIS div, same coordinate convention
+          as the safe-area guide above (both are frame fractions). Only
+          rendered while there's something to show. */}
+      {guides.map((g) => (
+        <div
+          key={g.axis}
+          data-testid={`guide-${g.axis}`}
+          style={{
+            position: "absolute",
+            pointerEvents: "none",
+            background: "#FFE14D",
+            ...(g.axis === "x"
+              ? { left: `${g.at * 100}%`, top: 0, bottom: 0, width: 1 }
+              : { top: `${g.at * 100}%`, left: 0, right: 0, height: 1 }),
+          }}
+        />
+      ))}
       {rect && selection ? (
         <div
           ref={boxRef}
