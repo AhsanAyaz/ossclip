@@ -268,7 +268,18 @@ export function routeAroundSourceText(
       continue;
     }
 
-    skipped.push({ id: cue.id, reason: "source already has on-screen text here" });
+    // Two different failures land here now, and naming the wrong one
+    // undercuts the §118 accounting this path exists to serve: the text may
+    // have covered everything, or it may have left a band that only the
+    // VIDEO made too small to use. Retrying without the obstacle is the
+    // cheapest way to ask which, and it runs only on the skip path.
+    const clearOfTextAlone = base ? placeInFreeBand(base, active, null) !== null : false;
+    skipped.push({
+      id: cue.id,
+      reason: clearOfTextAlone
+        ? "no band clear of both the source's text and the video"
+        : "source already has on-screen text here",
+    });
   }
   return { cues: out, relayouts, moved, overlaid, skipped };
 }

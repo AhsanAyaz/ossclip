@@ -209,4 +209,15 @@ describe("falling back to a layout that intends the overlap (R27 §120)", () => 
     const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], []);
     expect(plan.overlaid).toEqual([]);
   });
+
+  it("says the video was the blocker when the text alone left room", () => {
+    const plan = routeAroundSourceText([cue("a", "pip-bubble", "TitleCard")], [{ y: 0.12, h: 0.5 }]);
+    expect(plan.cues).toEqual([]);
+    expect(plan.skipped[0]!.reason).toMatch(/clear of both/);
+  });
+
+  it("still blames the text when the text really did cover everything", () => {
+    const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], [{ y: 0, h: 1 }]);
+    expect(plan.skipped[0]!.reason).toMatch(/source already has on-screen text/);
+  });
 });
