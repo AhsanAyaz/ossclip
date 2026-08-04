@@ -12,7 +12,7 @@ import {
   zoomedScrollLeft,
 } from "./timing";
 import type { useEdits } from "./useEdits";
-import type { Selection } from "./Overlay";
+import { blurTypingElement, type Selection } from "./Overlay";
 
 interface TimelineProps {
   /** The LIVE (override-applied) cues — same array the Player renders from. */
@@ -524,7 +524,17 @@ export const Timeline: React.FC<TimelineProps> = ({
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 
   return (
-    <div style={strip}>
+    <div
+      style={strip}
+      // Timeline mousedown (bug 6, PLAN 2026-08-04 Task 2): CAPTURE phase,
+      // on the whole strip, so it runs BEFORE the ruler/track/block's own
+      // bubble-phase handlers below — a scrub or a block select must not
+      // itself land the first keystroke of the gesture into a still-focused
+      // Inspector field. One listener up here covers every mousedown surface
+      // in the strip (ruler, track background, blocks, ghosts, playhead
+      // grab) instead of repeating the same call in each of their handlers.
+      onMouseDownCapture={blurTypingElement}
+    >
       <div style={zoomBar}>
         {/* Zoom controls (R14 §53), always visible so the feature is
             discoverable — buttons anchor about the viewport centre,

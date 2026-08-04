@@ -96,6 +96,30 @@ const button: React.CSSProperties = {
   cursor: "pointer",
 };
 
+/**
+ * Blur before running a destructive/mutating button's click (PLAN
+ * 2026-08-04 Task 2, bug 4). Confirmed via a jsdom mount, not assumed: a
+ * click that switches which Inspector view renders (Delete/Restore scene)
+ * unmounts the button and the browser already resets focus to `<body>` —
+ * but a click that DOESN'T change the view (Reset element/framing/box/
+ * bubble/captions, Un-pin, Apply to all) leaves React re-using the exact
+ * same DOM node, and the button keeps focus after its own click. Overlay's
+ * global keydown listener has no `Enter` case, so a focused button just
+ * sits there ready to silently re-fire its own click on the next Enter
+ * press instead of any shortcut reaching the player or timeline — a
+ * narrower guard (treating a focused button as "typing", the way inputs
+ * already are) was rejected because it would also block Enter/Space from
+ * activating a legitimately-focused button elsewhere (the stage's own
+ * Play/Pause, `?`'s ShortcutsModal) — the failure mode a chunk of
+ * `Overlay.tsx`'s own guard exists to avoid. Blurring here instead is
+ * unconditional across every button below, Delete/Restore included: the
+ * rule then doesn't depend on an unmount happening to keep resetting focus
+ * on its own.
+ */
+const blurActive = (): void => {
+  (document.activeElement as HTMLElement | null)?.blur?.();
+};
+
 /** Display precision (§48): three decimals is enough for any real edit —
  * never the 13 digits of float dust a drag can produce. */
 const roundShown = (v: number): string => String(Math.round(v * 1000) / 1000);
@@ -393,7 +417,13 @@ export const Inspector: React.FC<InspectorProps> = ({
           />
         </div>
         <div style={section}>
-          <button style={button} onClick={() => edits.clearElement(selection.sceneId, elementId)}>
+          <button
+            style={button}
+            onClick={() => {
+              blurActive();
+              edits.clearElement(selection.sceneId, elementId);
+            }}
+          >
             Reset element
           </button>
         </div>
@@ -420,7 +450,10 @@ export const Inspector: React.FC<InspectorProps> = ({
             <button
               data-testid="restore-scene"
               style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
-              onClick={() => edits.restoreScene(selection.sceneId)}
+              onClick={() => {
+                blurActive();
+                edits.restoreScene(selection.sceneId);
+              }}
             >
               Restore scene
             </button>
@@ -578,7 +611,13 @@ export const Inspector: React.FC<InspectorProps> = ({
             />
           </div>
           {cue.video ? (
-            <button style={button} onClick={() => edits.clearVideo(selection.sceneId)}>
+            <button
+              style={button}
+              onClick={() => {
+                blurActive();
+                edits.clearVideo(selection.sceneId);
+              }}
+            >
               Reset framing
             </button>
           ) : null}
@@ -645,7 +684,10 @@ export const Inspector: React.FC<InspectorProps> = ({
                     <button
                       data-testid="reset-pip"
                       style={button}
-                      onClick={() => edits.clearPip(selection.sceneId)}
+                      onClick={() => {
+                        blurActive();
+                        edits.clearPip(selection.sceneId);
+                      }}
                     >
                       Reset bubble
                     </button>
@@ -686,7 +728,10 @@ export const Inspector: React.FC<InspectorProps> = ({
                 <button
                   data-testid="reset-box"
                   style={button}
-                  onClick={() => edits.clearGraphicRect(selection.sceneId)}
+                  onClick={() => {
+                    blurActive();
+                    edits.clearGraphicRect(selection.sceneId);
+                  }}
                 >
                   Reset box
                 </button>
@@ -764,9 +809,10 @@ export const Inspector: React.FC<InspectorProps> = ({
                 data-testid="caption-y-all"
                 style={{ ...button, color: "#EDEDF2", border: "1px solid #2A2A33" }}
                 title="Write this scene's caption position and scale to every scene — one undo step"
-                onClick={() =>
-                  edits.patchCaptionStyleAll(allSceneIds, { y: effY, scale: effScale })
-                }
+                onClick={() => {
+                  blurActive();
+                  edits.patchCaptionStyleAll(allSceneIds, { y: effY, scale: effScale });
+                }}
               >
                 Apply to all scenes
               </button>
@@ -774,7 +820,10 @@ export const Inspector: React.FC<InspectorProps> = ({
                 <button
                   data-testid="reset-caption-y"
                   style={button}
-                  onClick={() => edits.clearCaptionStyle(selection.sceneId)}
+                  onClick={() => {
+                    blurActive();
+                    edits.clearCaptionStyle(selection.sceneId);
+                  }}
                 >
                   Reset captions
                 </button>
@@ -810,7 +859,13 @@ export const Inspector: React.FC<InspectorProps> = ({
             </div>
           ) : null}
           {cue.pinned ? (
-            <button style={button} onClick={() => edits.clearTiming(selection.sceneId)}>
+            <button
+              style={button}
+              onClick={() => {
+                blurActive();
+                edits.clearTiming(selection.sceneId);
+              }}
+            >
               Un-pin (re-anchor to words)
             </button>
           ) : null}
@@ -824,7 +879,10 @@ export const Inspector: React.FC<InspectorProps> = ({
             <button
               data-testid="delete-scene"
               style={button}
-              onClick={() => edits.hideScene(selection.sceneId)}
+              onClick={() => {
+                blurActive();
+                edits.hideScene(selection.sceneId);
+              }}
             >
               Delete scene
             </button>

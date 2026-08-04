@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { buildArrayPatch, elementTextOf } from "../src/Overlay";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it } from "vitest";
+import { blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
 
 describe("buildArrayPatch — ChatMock CTA keyword mapping", () => {
   const props = { keyword: "agents" };
@@ -62,5 +63,50 @@ describe("elementTextOf — the panel's read direction (R12 §49)", () => {
   it("returns null for a window (its lines carry their own ids) and out-of-range indices", () => {
     expect(elementTextOf("window-0", { windows: [] })).toBeNull();
     expect(elementTextOf("node-5", { nodes: ["A"] })).toBeNull();
+  });
+});
+
+describe("blurTypingElement — bug 6's fix (PLAN 2026-08-04 Task 2)", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("blurs a focused INPUT", () => {
+    document.body.innerHTML = '<input id="f" />';
+    const input = document.getElementById("f") as HTMLInputElement;
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    blurTypingElement();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("blurs a focused TEXTAREA", () => {
+    document.body.innerHTML = "<textarea id=\"t\"></textarea>";
+    const textarea = document.getElementById("t") as HTMLTextAreaElement;
+    textarea.focus();
+    blurTypingElement();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("leaves a focused BUTTON alone — a click-away has no typed value to lose there", () => {
+    document.body.innerHTML = '<button id="b">go</button>';
+    const btn = document.getElementById("b") as HTMLButtonElement;
+    btn.focus();
+    blurTypingElement();
+    expect(document.activeElement).toBe(btn);
+  });
+
+  it("leaves a focused SELECT alone — no free-typed value to discard, unlike a text field", () => {
+    document.body.innerHTML = '<select id="s"><option>a</option></select>';
+    const select = document.getElementById("s") as HTMLSelectElement;
+    select.focus();
+    blurTypingElement();
+    expect(document.activeElement).toBe(select);
+  });
+
+  it("is a no-op when nothing is focused", () => {
+    expect(document.activeElement).toBe(document.body);
+    expect(() => blurTypingElement()).not.toThrow();
+    expect(document.activeElement).toBe(document.body);
   });
 });

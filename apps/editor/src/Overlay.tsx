@@ -263,6 +263,29 @@ export function elementTextOf(
 }
 
 /**
+ * Blur an INPUT/TEXTAREA before a click elsewhere is handled (PLAN
+ * 2026-08-04 Task 2, bug 6): the Inspector's own text fields — the
+ * `element-text` input, every `NumberField`, `ThemeField` — already write
+ * their edit on every `onChange`, not on blur (verified by reading them:
+ * none gates its `onCommit`/`patch*` call behind a blur handler), so
+ * dropping focus here only clears the STALE FOCUS, never the last-typed
+ * value — a click away from a field commits what was typed, it does not
+ * discard it. Without this, `document.activeElement` stays on the field and
+ * Overlay's global keydown guard (`isTypingContext`) keeps routing every
+ * keystroke into it instead of the shortcut the click was reaching for —
+ * exactly bug 6 as filed (clicking the timeline doesn't blur the field).
+ * Deliberately narrower than `isTypingContext` below (no SELECT, no
+ * contentEditable): a dropdown or a range slider has no free-typed value a
+ * click could discard, so there is nothing here for them to lose.
+ */
+export function blurTypingElement(): void {
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    active.blur();
+  }
+}
+
+/**
  * A transparent layer above the `<Player>` that turns clicks into a
  * selection, drags into `patchElement` nudges, and a double-click into
  * inline text editing. It never blocks the player's own controls: only the
@@ -522,6 +545,12 @@ export const Overlay: React.FC<OverlayProps> = ({
       // this listener is global precisely so pass-through works, but it must
       // not react to unrelated clicks.
       if (!stage.contains(e.target as Node)) return;
+      // Player-area mousedown (bug 6, PLAN 2026-08-04 Task 2): a click on the
+      // stage — selecting a scene, dragging an element — should never leave
+      // a stale Inspector field eating the keystrokes that follow. See
+      // `blurTypingElement`'s own comment for why this only drops focus,
+      // never a value.
+      blurTypingElement();
       // View gestures (§55b): Alt-drag and middle-drag pan the magnified
       // preview — App owns them. They must not select, deselect, or arm any
       // edit drag here.
