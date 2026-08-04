@@ -114,8 +114,10 @@ This was scoped out once with reasoning (§59c): *"Deleting a sentence from the 
 
 Re-cutting is the case the design was built for. Scenes anchor by **word index** and are dropped *with a reason* when their anchor words vanish; captions are re-derived from the map. This is the PHASE1 risk-table mitigation, working as intended.
 
-- [ ] **a. `reason: "user"` cuts, server-side.** Extend the override doc with a cut list — the reason token is already reserved — and fold user cuts into `buildCutlist`'s output **before** `new TimeMap(cutlist)`. Ship and prove this from the CLI before any UI exists.
-- [ ] **b. Then the editor.** Only after 121a is solid.
+- [x] **a. `reason: "user"` cuts, server-side.** Extend the override doc with a cut list — the reason token is already reserved — and fold user cuts into `buildCutlist`'s output **before** `new TimeMap(cutlist)`. Ship and prove this from the CLI before any UI exists.
+- [x] **b. Then the editor.** Only after 121a is solid.
+
+**Update (PLAN 2026-08-04 `2026-08-04-editor-dogfood-fixes.md`, Task 4; findings §124's follow-up): both items shipped.** `OverrideDocSchema.cuts` now carries `{startSec, endSec, src?}` ranges (`packages/core/src/overrides.ts`); `applyUserCuts`/`resolveCutSourceRanges` (`packages/core/src/recut.ts`) fold them into `buildCutlist`'s output before `new TimeMap(cutlist)` runs, exactly as (a) asked, and the subtracted spans carry the reserved `reason: "user"` token. (a) shipped and was proven from the CLI first — `--no-render` against the field workdir, splits/pins confirmed re-anchored — before (b)'s editor UI landed on top of it: Inspector's "Delete this chunk" on a selected take or scene, a struck-through Timeline band, and Restore. The drift this section warned about below is answered, not just acknowledged — see the risk-table row.
 
 ### The drift this will cause, which nothing currently guards
 
@@ -125,6 +127,8 @@ Two override fields are keyed to **absolute output seconds** and will silently l
 - **`splits: number[]` has no equivalent guard at all.** This is the sharp edge of the whole item.
 
 Silently is the operative word: nothing throws, the render just puts things in the wrong place. Whatever approach is chosen must make this loud.
+
+**Update (PLAN 2026-08-04 Task 4a): answered for both fields.** `remapOverridesThroughRecut` (`packages/core/src/recut.ts`) re-anchors every absolute-output-seconds value in the doc — pinned `SceneOverride.timing` AND `splits: number[]` alike, the field this section named as having no guard at all — through source time via the OLD and NEW `TimeMap`s. A value whose source moment the new cut itself removed lands on the cut's edge and is REPORTED, not silently dropped (`RecutRemap.reports`, surfaced through produce's own write-back). `reclampPinnedTiming` was not extended to cover `splits`; `remapOverridesThroughRecut` is a separate, newer mechanism that covers both, run before `reclampPinnedTiming` in the pipeline.
 
 ---
 
@@ -190,6 +194,6 @@ Today the model emits JSON only. Nothing executes; there is nothing to sandbox. 
 | --- | --- |
 | Doing multi-source, retakes, user cuts and agent-authored scenes concurrently rebuilds the resisted "agent-native studio shell" by accident | one at a time, each landing on real footage before the next starts |
 | Semantic retake detection silently ends the deterministic-cut guarantee | state it where the guarantee is currently claimed, or keep the detector deterministic |
-| User cuts drift `splits` and pinned `timing` with no error | extend `reclampPinnedTiming`; `splits` needs a guard that does not exist yet |
+| User cuts drift `splits` and pinned `timing` with no error | **Answered (PLAN 2026-08-04 Task 4a, findings §124's follow-up):** `remapOverridesThroughRecut` (`packages/core/src/recut.ts`) re-anchors both through source time via the old/new `TimeMap`s, reporting rather than silently dropping a value the new cut removed. Originally proposed as extending `reclampPinnedTiming`; shipped as a separate mechanism covering both fields instead. |
 | Multi-source regresses audio on multi-mic material | per-region thresholds, or document the limitation |
 | Authoring gets built to solve a density problem §118 already solved | §118 has landed — re-ask on real footage whether agent-authored scenes are still wanted before building it |
