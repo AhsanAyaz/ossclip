@@ -11,7 +11,7 @@ import { findEditableFrom } from "../src/hitTest";
  * scene component calls) and renders inside `<Sequence>`. Standing up a real
  * `<Player>` in jsdom to get that context would be slow and beside the
  * point — this test is about DOM STRUCTURE (does the editor's attribute walk
- * still reach through `EntranceRise`/`ExitFade`?), not frame math, which
+ * still reach through `Scrim`/`ExitFade`?), not frame math, which
  * Task 1/2's `motion.test.ts` already covers exhaustively. Mocking
  * `remotion` with plain pass-through stand-ins gives a deterministic tree
  * without a Player.
@@ -39,11 +39,11 @@ vi.mock("remotion", () => ({
 
 const { SceneLayer } = await import("../../../packages/scenes/src/SceneLayer");
 
-describe("SceneLayer — the editor's attribute walk survives EntranceRise/ExitFade", () => {
-  it("keeps data-edit-id leaves reachable from data-edit-scene through both wrappers", () => {
-    // lower-third: an OVER_VIDEO layout, so the scrim sits inside both
-    // wrappers too — the structural claim the task brief made about the
-    // scrim arriving/leaving WITH its card, not exposed by a plain layout.
+describe("SceneLayer — the editor's attribute walk survives Scrim/ExitFade", () => {
+  it("keeps data-edit-id leaves reachable from data-edit-scene through ExitFade", () => {
+    // lower-third: an OVER_VIDEO layout, so the scrim renders alongside the
+    // content inside ExitFade — the structural claim the task brief made
+    // about the scrim leaving WITH its card, not exposed by a plain layout.
     const cue: SceneCue = {
       id: "scene-0",
       kind: "graphic",
@@ -71,7 +71,7 @@ describe("SceneLayer — the editor's attribute walk survives EntranceRise/ExitF
 
     // The exact walk hitTest.ts does on a real click — proves the leaf's
     // nearest `[data-edit-scene]` ancestor is still the cue's own box, i.e.
-    // neither EntranceRise nor ExitFade broke or rerouted the ancestry.
+    // neither Scrim nor ExitFade broke or rerouted the ancestry.
     expect(findEditableFrom(leaf)).toEqual({ sceneId: "scene-0", elementId: "title" });
   });
 });

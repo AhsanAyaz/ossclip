@@ -96,18 +96,19 @@ const ExitFade: React.FC<{ durationInFrames: number; children: React.ReactNode }
 };
 
 /**
- * The scrim's own entrance. Positioned absolute so it stays out of the flex
- * flow — a normal-flow wrapper would become a second flex item and shove the
- * content off centre. The scrim is the one thing at this layer that never
- * animated in: components stagger their content in through anim.ts's
- * useEnter springs, but the frosted band behind them appeared at full
- * opacity on the cue's first frame — reported as "a half black box appears"
- * (spec 2026-08-04). Fading the whole layer instead would stack a second
- * entrance on top of the springs, compounding opacity and ~44px of travel.
+ * The scrim, carrying its own entrance. One div, deliberately: an ancestor
+ * wrapper with opacity < 1 forms a Backdrop Root, which empties the
+ * backdrop-filter's input — the band rendered as flat tint for the whole
+ * entrance and the blur snapped on when the ease hit 1. Opacity on the
+ * element itself composites the blurred band at partial alpha instead, so
+ * the frost fades in WITH the tint. Positioned absolute so it stays out of
+ * ExitFade's flex flow; painted before the content div in tree order, so
+ * content keeps painting above it (R21 §100).
  */
-const ScrimEnter: React.FC<{ durationInFrames: number; children: React.ReactNode }> = ({
+const Scrim: React.FC<{ durationInFrames: number; themeBg: string; radiusPx: number }> = ({
   durationInFrames,
-  children,
+  themeBg,
+  radiusPx,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -119,12 +120,14 @@ const ScrimEnter: React.FC<{ durationInFrames: number; children: React.ReactNode
       style={{
         position: "absolute",
         inset: 0,
+        background: scrimColor(themeBg),
+        backdropFilter: "blur(14px)",
+        WebkitBackdropFilter: "blur(14px)",
+        borderRadius: radiusPx,
         opacity: ease,
         transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
       }}
-    >
-      {children}
-    </div>
+    />
   );
 };
 
@@ -190,18 +193,11 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
             >
               <ExitFade durationInFrames={durationInFrames}>
                 {overVideo ? (
-                  <ScrimEnter durationInFrames={durationInFrames}>
-                    <div
-                      style={{
-                        position: "absolute",
-                        inset: 0,
-                        background: scrimColor(theme.bg),
-                        backdropFilter: "blur(14px)",
-                        WebkitBackdropFilter: "blur(14px)",
-                        borderRadius: theme.radiusPx,
-                      }}
-                    />
-                  </ScrimEnter>
+                  <Scrim
+                    durationInFrames={durationInFrames}
+                    themeBg={theme.bg}
+                    radiusPx={theme.radiusPx}
+                  />
                 ) : null}
                 {/* position:relative so the content paints (and hit-tests)
                     above the positioned scrim — document order alone loses. */}

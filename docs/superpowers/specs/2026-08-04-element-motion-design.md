@@ -29,7 +29,7 @@ So a `StatCard` pops into existence on one frame, sits perfectly still, then sli
 
 That is an editor/output divergence — the class of defect this project has been bitten by before, and the reason `overrides.json` exists as a separate layer at all.
 
-### A comment that is not true
+### A comment that is not true (retracted — see Correction below)
 
 `SceneLayer.tsx:60` reads: *"Components own their ENTRANCES (staggered rises, per element); the exit lives here at the layer…"*. They do not. One component animates, and what it animates is a slow drift rather than an entrance. The comment describes a design that was never built.
 
@@ -51,36 +51,34 @@ The caption fix and the CSS-transition tripwire are unaffected.
 
 ## Scope
 
-**In:** a uniform entrance at the layer, mirroring the existing exit; both clamped so they cannot overlap on a short cue; the caption emphasis driven by frame instead of CSS; and the false comment corrected to describe what exists.
+**In:** an entrance for the over-video scrim — the one element that never animated (see Correction); the entrance/exit pair clamped so they cannot overlap on a short cue; the caption emphasis driven by frame instead of CSS; and the layer comment corrected to describe what exists.
 
 **Out, deliberately:**
 
 - **Motion blur.** Not rejected on principle — deferred because it is the wrong first move. Once elements traverse real distance, the places it could legitimately help are the pip-mask lerp and the zoom push, both of which already move continuously. Re-ask on real footage after this ships. `@remotion/motion-blur` is not currently a dependency.
 - **60fps.** Doubles render time for a pipeline whose slowest stage is already encoding. An 18px move over 9 frames is 2px/frame — smooth at 30.
-- **Per-element staggered entrances.** A `BulletList` landing item by item is richer and is what the false comment promised, but it is nine components to write, nine curves to keep in sync, and a silent trap for every component added later. The uniform wrapper fixes all nine at once; stagger is an editorial round of its own, to be re-asked once real footage judges the uniform version.
+- **Changing the components' existing staggered entrances.** They exist (`anim.ts` `useEnter`, Phase 1 — see Correction) and are untouched; re-tuning them is an editorial round of its own.
 - **Changing any component's internals.** Zero component files are touched.
 
 ## Architecture
 
-### The entrance is a layer wrapper, symmetric with the exit
+### The entrance is the scrim's, and only the scrim's (superseded the layer wrapper)
 
-`SceneLayer.tsx` already argues the case for the exit: *"the exit lives here at the layer because it is the cue's END doing the animating, and every component leaving the same way is what makes the cut read as designed."* Arriving is the same argument at the other end of the cue.
-
-```tsx
-<Sequence from={from} durationInFrames={durationInFrames}>
-  <EntranceRise durationInFrames={durationInFrames}>   {/* new */}
-    <ExitFade durationInFrames={durationInFrames}>
-      <Component … />
-    </ExitFade>
-  </EntranceRise>
-</Sequence>
-```
-
-Nine components gain an entrance; zero component files change.
+The first implementation wrapped every cue in a layer-wide `EntranceRise`,
+believing the components static. They are not (see Correction), so that
+wrapper double-animated content — layer fade + 18px stacked under each
+component's 0.5s spring stagger, compounding opacity and ~44px of travel.
+The entrance is now a single `Scrim` component: one absolutely-positioned
+div carrying the band's visual style AND its own opacity/rise, on the
+exit's curve and `entranceExitSec`'s clamped seconds. One div deliberately —
+an ancestor wrapper at partial opacity forms a Backdrop Root and empties
+the backdrop-filter, so the frost would snap on when the ease hit 1
+instead of fading in with the tint. The exit stays layer-wide and
+unchanged.
 
 ### One curve, both ends
 
-The exit fades out while sliding **down** 18px (`translateY((1 - ease) * 18)` as `ease → 0`). The entrance is its mirror: it starts 18px low and rises to rest. Rises in, settles, sinks out — and both ends share the exit's existing ease-out quad, `p * (2 - p)`, so there is one curve in the file rather than two that can drift apart.
+The exit fades out while sliding **down** 18px (`translateY((1 - ease) * 18)` as `ease → 0`). The scrim's entrance is its mirror: it starts 18px low and rises to rest. Rises in, settles, sinks out — and both ends share the exit's existing ease-out quad, `p * (2 - p)`, so there is one curve in the file rather than two that can drift apart.
 
 `ENTER_SEC = 0.3`, matching `EXIT_SEC`. At 30fps that is 9 frames for 18px — 2px per frame, which is why this reads smooth without any blur.
 
