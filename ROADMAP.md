@@ -52,6 +52,15 @@ Concrete, scoped, mostly logged as findings already:
   `BulletList` at the 1.2s floor loses its last bullet (peaks at 41% opacity
   mid-exit). Deriving spring delays from cue duration is the fix, and it is
   a design round, not a patch.
+- GAP-aware timeline snap targets. `snapTargets` (`timing.ts`) offers a
+  neighbour's own `startSec`/`endSec`, but a start-edge drag that lands there
+  gets pushed `GAP` (0.05s) further by `clampTiming`'s own floor — the snap
+  correctly disarms (Timeline.tsx no longer shows a tick the block doesn't
+  sit on) rather than land wrong, but it can never actually snap flush
+  against a neighbour on that edge either. Offering `prev.endSec + GAP` /
+  `next.startSec - GAP` as additional targets alongside the raw edges would
+  close that; deferred as its own round rather than folded into the
+  tick-honesty fix.
 
 ## Later — needs a design issue first
 

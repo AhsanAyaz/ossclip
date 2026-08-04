@@ -72,7 +72,7 @@ While a snap is active, the timeline renders a 1-px vertical tick at the snapped
 export function formatTimecode(sec: number, fps: number): string
 ```
 
-Used by the transport's current/total readout and by the drag preview, so the number a drag shows is in the same units as the number the transport shows. `live.settings.fps` is already plumbed to both sites.
+Used by the ruler's total-duration label and by a NEW drag readout that appears only while a block or edge is being dragged. **(corrected)** The premise this paragraph shipped under was false: there was no existing transport current/total time display to share units with — the editor had no such readout before this round. That was adjudicated at execution time (Task 2), not planned here: the drag readout stayed in scope because it directly serves the user's stated complaint ("adding frames as well"), even though the brief that produced this spec assumed a pre-existing display it could plug into.
 
 Rounding rule, stated because it is the trap: the frame component is `Math.floor((sec % 1) * fps)` computed on the *rounded-down* whole-second remainder — never `Math.round`, which at `29.97…` produces `ff == fps` and displays `0:01:30` for a 30fps clip, a timecode that does not exist.
 
@@ -87,11 +87,13 @@ export interface Guide { axis: "x" | "y"; at: number /* frame fraction */ }
  * overlay can draw them. */
 export function guideSnap(
   rect: GraphicRect,
-  handle: BoxHandle | "move",
-  frame: FrameSize,
+  handle: BoxHandle,
+  safe: SafeArea,
   thresholdFrac: number,
 ): { rect: GraphicRect; guides: Guide[] }
 ```
+
+**(corrected)** The shipped signature above replaces this section's original `(rect, handle: BoxHandle | "move", frame: FrameSize, thresholdFrac)`: `BoxHandle` already includes `"move"` in `Overlay.tsx` (the `| "move"` stub was redundant), and the function takes the resolved `SafeArea` rect directly rather than a `FrameSize` it would have had to derive one from — `guides.ts` stays free of a `safeAreaFor` import that way.
 
 Candidates: horizontal centre, vertical centre, and the four safe-area edges from the existing `safeAreaFor(frame)` — the same source the caption placement already uses, so the guide a user snaps to is the same boundary the renderer respects. Nothing else; the candidate list is closed by design this round.
 
@@ -102,7 +104,7 @@ Candidates: horizontal centre, vertical centre, and the four safe-area edges fro
 `ProjectPicker.tsx` restructures from nested `maxHeight`s to a flex column:
 
 - The card keeps `maxHeight: 82vh` but becomes `display: flex; flexDirection: column` with **no outer scroll**. Under the cap it stays content-sized (a shallow home directory does not get a tall empty card); at the cap, the flex column makes the browse list the part that gives.
-- Header, recent list, and section titles are natural-height rows. The recent list keeps a modest `maxHeight` with its own scroll *only* if it has more than ~6 entries — recents are capped at 12 by `recordRecentProject`, so this stays small.
+- Header, recent list, and section titles are natural-height rows. The recent list keeps a modest `maxHeight` with its own scroll *only* if it has more than ~6 entries — recents are capped at 12 by `recordRecentProject`, so this stays small. **(corrected, implemented in the final-review fix wave)** Shipped as an unconditional `maxHeight: 176px; overflowY: auto; flexShrink: 0` on the recent-list block — `overflowY: auto` only scrolls when content actually exceeds the cap, so a short list renders exactly as before without a conditional branch; a full 12-entry list at a short window can no longer collapse the browse section beneath it to zero height.
 - The browse list gets `flex: 1; minHeight: 0; overflowY: auto` — it fills whatever the card has left, at every window size. The vh magic numbers go.
 - The list's scrollbar is **styled visible** (thin, `#3a3a44` thumb via `::-webkit-scrollbar` — the editor ships in Chromium-family browsers; Firefox falls back to `scrollbar-width: thin`), and the list gets a bottom **fade mask when scrollable-but-not-at-end**, so a cut list looks continuable instead of broken.
 
@@ -114,10 +116,10 @@ All pure cores are total: `applySnap` with no targets or a zero threshold return
 
 ## Testing
 
-- `timing.test.ts` (existing file, appended): `snapTargets` includes neighbour edges/playhead/bounds and excludes the dragged scene's own edges; `applySnap` at, inside, and outside threshold; equidistant targets pick the earlier one deterministically; **snap-then-clamp**: a snap proposing an overlap is corrected by the existing clamps (composition test through `moveTiming`).
+- **(corrected)** `snap.test.ts` (new file, not "`timing.test.ts`, appended" as this section originally said — that phrasing contradicted the parity rule stated in the very next bullet, since appending to `timing.test.ts` while requiring it "untouched" is a contradiction): `snapTargets` includes neighbour edges/playhead/bounds and excludes the dragged scene's own edges; `applySnap` at, inside, and outside threshold; equidistant targets pick the earlier one deterministically; **snap-then-clamp**: a snap proposing an overlap is corrected by the existing clamps (composition test through `moveTiming`).
 - `formatTimecode`: zero, sub-second, the `29.97` rounding trap, minute rollover, `fps <= 0` guard.
 - `guideSnap`: each candidate axis, move vs resize semantics, threshold boundary, the no-hit passthrough (`toEqual` the input rect).
-- **`ProjectPicker` gets its first rendering test** — same hole `SceneLayer` had: nothing renders this file today. jsdom test with a mocked `/api/fs` response of 40 entries asserting the browse list element carries `flex: 1` semantics and its container marks `overflowY: auto` — plus the existing e2e picker flow in `apps/editor/e2e` must stay green.
+- **`ProjectPicker` gets its first rendering test** — same hole `SceneLayer` had: nothing renders this file today. jsdom test with a mocked `/api/fs` response of 40 entries asserting **(corrected: this bullet had it backwards)** the browse **list** element carries `overflowY: auto` (plus `flex: 1`/`minHeight: 0`) and the **card** itself carries no `overflowY` of its own — plus the existing e2e picker flow in `apps/editor/e2e` must stay green. **(corrected, added post-implementation)** The recent-list block also gets its own capped `maxHeight`/`overflowY: auto` per the "one scroll region" section below — implemented in the final-review fix wave, asserted by a second case in the same test file (12 recents).
 - The 0.1.7-parity invariant: existing `timing.ts` and `Overlay`/`hitTest` tests are untouched; any change to them is a red flag, not an update.
 
 ## Follow-ups this round deliberately creates

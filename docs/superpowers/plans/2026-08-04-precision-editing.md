@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **(corrected, final-review fix wave):** the spec this plan was built from carried two errors, both corrected in place at `docs/superpowers/specs/2026-08-04-precision-editing-design.md`. (1) Its frames-readout section assumed an existing transport current/total time display for `formatTimecode` to share units with — there was none; this was caught and adjudicated during Task 2's execution, not here, and the drag readout that actually shipped is a new UI element kept because it serves the user's complaint directly. (2) Its `guideSnap` signature (`handle: BoxHandle | "move", frame: FrameSize`) drifted from what shipped (`handle: BoxHandle, safe: SafeArea`) during Task 3. Neither correction changes any task below — see the spec for what actually shipped.
+
 **Goal:** Timeline snapping, a `min:sec:frame` readout, centre + safe-area overlay guides, and the picker rebuilt around one visible scroll region.
 
 **Architecture:** Pure cores first (`timing.ts`, a `guides.ts` beside `hitTest.ts`), UI wiring second. Snap runs BEFORE the existing clamps, which remain the single authority on legality. Spec: `docs/superpowers/specs/2026-08-04-precision-editing-design.md` — read it before any task.
