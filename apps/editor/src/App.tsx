@@ -23,7 +23,7 @@ import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { ProjectPicker } from "./ProjectPicker";
-import { formatElapsed, pinnedInfoLines, renderProgress } from "./renderStatus";
+import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
 
 /**
  * `<Player>`'s generics require `Props extends Record<string, unknown>`, and
@@ -60,6 +60,20 @@ type RawRenderProps = PlayerProductionProps & {
 
 export const App: React.FC = () => {
   const edits = useEdits();
+  // Finding 2, PLAN 2026-08-04 Task 4c fix wave: `beginRenderPoll` below is a
+  // STABLE `useCallback` (created once at mount) that needs to read the
+  // LIVE `edits.dirty` at the moment a render finishes, not whatever it was
+  // when the callback was created — the exact stale-closure shape R16 §73
+  // already burned this file on once (the ⌘+scroll zoom listener that read
+  // a ref for the same reason). Updated every render, read only inside the
+  // poll's success branch.
+  const editsDirtyRef = useRef(edits.dirty);
+  editsDirtyRef.current = edits.dirty;
+  // Shown once, after a Render, ONLY when it discarded local edits made
+  // while it ran (Finding 2's decided resolution: reload from produce's own
+  // write-back unconditionally, but say so out loud when that reload threw
+  // something away rather than silently losing it).
+  const [dirtyDiscardedNotice, setDirtyDiscardedNotice] = useState(false);
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
@@ -318,9 +332,21 @@ export const App: React.FC = () => {
           }
           if (body.exitCode === 0) {
             const p = await fetch("/api/production");
-            const prod = (await p.json()) as { renderProps: RawRenderProps; canRender?: boolean };
+            const prod = (await p.json()) as {
+              renderProps: RawRenderProps;
+              overrides?: OverrideDoc;
+              canRender?: boolean;
+            };
             setRenderProps(prod.renderProps);
             setCanRender(Boolean(prod.canRender));
+            // Finding 2, PLAN 2026-08-04 Task 4c fix wave — see
+            // `renderCompleteReload`'s own doc comment (renderStatus.ts) for
+            // the full reasoning; this is the thin I/O wrapper around that
+            // pure decision. `edits.load` is the SAME reload path
+            // mount/project-switch already use.
+            const reload = renderCompleteReload(prod.overrides, editsDirtyRef.current);
+            if (reload.load) edits.load(reload.load);
+            if (reload.notifyDiscard) setDirtyDiscardedNotice(true);
             setRender(null);
           } else {
             setRender({
@@ -336,6 +362,11 @@ export const App: React.FC = () => {
       })();
     }, 1000);
     renderPollRef.current = poll;
+    // `edits.load` closes over the mount-time hook object, same as
+    // `loadProduction`'s identical pattern below — it only ever dispatches
+    // through the reducer's stable `dispatch`, so the stale closure is
+    // harmless and this callback can stay referentially stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // The production load, shared by mount and every project switch (R17 §83).
@@ -813,6 +844,22 @@ export const App: React.FC = () => {
           ) : null}
         </div>
       ) : null}
+      {dirtyDiscardedNotice ? (
+        // Finding 2's honest-copy requirement (PLAN 2026-08-04 Task 4c fix
+        // wave): this only ever shows when the reload above actually threw
+        // something away, so it says exactly that rather than being a
+        // routine "we refreshed" banner nobody needs to read.
+        <div data-testid="reanchor-notice" style={reanchorNotice}>
+          Render re-anchored your saved cuts and splits — edits made while it
+          ran were dropped, not merged, to avoid overwriting that anchor.
+          <button
+            style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+            onClick={() => setDirtyDiscardedNotice(false)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div style={mainRow}>
         {showTranscript ? (
           <>
@@ -969,6 +1016,12 @@ export const App: React.FC = () => {
         cues={live.sceneCues}
         ghosts={ghostCues}
         cuts={edits.doc.cuts}
+        // The CURRENT render-props' spans (PLAN 2026-08-04 Task 4c fix
+        // wave, review finding 1) — Timeline needs these to place an
+        // ALREADY-APPLIED cut's seam marker at its true position via
+        // `sourceToOutputClamped`; a NOT-YET-APPLIED cut's struck band
+        // doesn't consume them at all.
+        spans={live.spans ?? []}
         durationSec={live.outputDurationSec}
         fps={live.settings.fps}
         playerRef={playerRef}
@@ -1201,6 +1254,22 @@ const renderLog: React.CSSProperties = {
   padding: "6px 20px",
   // The TAIL scrolls itself (R17 §84) — the panel no longer clips it.
   whiteSpace: "pre-wrap",
+  flexShrink: 0,
+};
+
+/** The Finding 2 discard notice (PLAN 2026-08-04 Task 4c fix wave) — same
+ * chrome family as `renderLog` (monospace, dark panel, a bottom border) so
+ * it reads as part of the same status-reporting language, not a foreign
+ * alert box; yellow text because this is informational, not an error. */
+const reanchorNotice: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  fontSize: 12,
+  fontFamily: "ui-monospace, 'SF Mono', monospace",
+  color: "#FFE14D",
+  background: "#0F0F14",
+  borderBottom: "1px solid #2A2A33",
+  padding: "6px 20px",
   flexShrink: 0,
 };
 

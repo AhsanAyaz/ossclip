@@ -49,8 +49,11 @@ function Harness({
   /** Pre-loads `doc.cuts` (like a workdir the editor re-opened) before the
    * Inspector ever mounts — for the "already cut" view, which the Harness's
    * own dispatch cycle can't reach any other way (there's no "select an
-   * already-cut block" gesture to simulate; the match is on window). */
-  initialCuts?: { startSec: number; endSec: number }[];
+   * already-cut block" gesture to simulate; the match is on window). `src`
+   * is settable so tests can cover the review fix wave's finding 1: an
+   * ALREADY-APPLIED cut (src present) must NEVER trigger this view, even on
+   * an exact window match. */
+  initialCuts?: { startSec: number; endSec: number; src?: { startSec: number; endSec: number } }[];
 }) {
   const edits = useEdits();
   React.useEffect(() => {
@@ -127,49 +130,16 @@ describe("Inspector — destructive/mutating buttons blur on click (PLAN 2026-08
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("cut-chunk: the click swaps the whole panel to the Restore view — focus lands on body (PLAN 2026-08-04 Task 4c)", async () => {
-    await act(async () => {
-      root.render(React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }));
-    });
-    const btn = container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!;
-    expect(btn).not.toBeNull();
-    btn.focus();
-    expect(document.activeElement).toBe(btn);
-    await act(async () => {
-      btn.click();
-    });
-    // Same shape as delete-scene above: the button is gone (this IS the
-    // marked-for-removal/Restore panel now), so the assertion doesn't
-    // actually distinguish "blurred by the fix" from "blurred by the
-    // unmount" — restore-chunk below covers the case that does.
-    expect(container.querySelector('[data-testid="cut-chunk"]')).toBeNull();
-    expect(document.activeElement).toBe(document.body);
-  });
-
-  it("restore-chunk: the SAME button survives the re-render (matched-window pass-through, not an unmount) — focus must be dropped explicitly", async () => {
-    await act(async () => {
-      root.render(
-        React.createElement(Harness, {
-          selection: { sceneId: "take-0", elementId: null },
-          cue: takeCue,
-          initialCuts: [{ startSec: takeCue.startSec, endSec: takeCue.endSec }],
-        }),
-      );
-    });
-    const btn = container.querySelector<HTMLButtonElement>('[data-testid="restore-chunk"]')!;
-    expect(btn).not.toBeNull();
-    btn.focus();
-    expect(document.activeElement).toBe(btn);
-    await act(async () => {
-      btn.click();
-    });
-    // restoreChunk empties `doc.cuts` back to `[]` — the panel re-renders
-    // into the NORMAL take view (a different shape: "Delete this chunk"
-    // instead of "Restore"), so the specific button IS gone here too, same
-    // as delete-scene/cut-chunk above — still confirms blur either way.
-    expect(container.querySelector('[data-testid="restore-chunk"]')).toBeNull();
-    expect(document.activeElement).toBe(document.body);
-  });
+  // No dedicated cut-chunk/restore-chunk blur tests here (fix wave Minor
+  // (b), PLAN 2026-08-04 Task 4c): BOTH always swap the whole panel to a
+  // different view shape on click (cut-chunk → the Restore view;
+  // restore-chunk → back to the normal take/scene view), exactly like
+  // delete-scene above — there is no way to construct a version of either
+  // where the SAME button survives its own click, so a dedicated test could
+  // only ever repeat delete-scene's own already-acknowledged non-discriminating
+  // assertion under a different name. Their functional behavior (the button
+  // disappearing, the OTHER view's button appearing) is covered by the
+  // "Inspector — user cuts" describe block below.
 });
 
 describe("Inspector — user cuts (PLAN 2026-08-04 Task 4c)", () => {
@@ -225,6 +195,30 @@ describe("Inspector — user cuts (PLAN 2026-08-04 Task 4c)", () => {
     // The marked-for-removal view is exclusive, same as the hidden-scene
     // view above it — no editing controls should be reachable underneath.
     expect(container.querySelector('[data-testid="delete-scene"]')).toBeNull();
+  });
+
+  it("review finding 1: an ALREADY-APPLIED cut (src present) never triggers the marked-for-removal view, even on an exact window match", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          initialCuts: [
+            {
+              startSec: graphicCue.startSec,
+              endSec: graphicCue.endSec,
+              src: { startSec: 43.4, endSec: 55.3 },
+            },
+          ],
+        }),
+      );
+    });
+    // The window matches exactly — a src-LESS cut here would show Restore
+    // (proven by the sibling test below). With `src` present, the material
+    // at this window is a HISTORICAL record only (schema comment on
+    // `OverrideDocSchema.cuts`) — this scene is live content, so the normal
+    // edit view (with "Delete this chunk") is what must show.
+    expect(container.querySelector('[data-testid="cut-chunk"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="restore-chunk"]')).toBeNull();
   });
 
   it("a cut recorded at a DIFFERENT window than the selected cue does not trigger the Restore view", async () => {

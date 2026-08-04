@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { clampTiming, clampZoom, moveTiming, timeAtX, zoomedScrollLeft } from "../src/timing";
-import type { SceneCue } from "@ossclip/core/browser";
+import {
+  clampTiming,
+  clampZoom,
+  moveTiming,
+  sourceToOutputClamped,
+  timeAtX,
+  zoomedScrollLeft,
+} from "../src/timing";
+import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
 
 const cues = [
   { id: "a", startSec: 0, endSec: 5 },
@@ -131,5 +138,40 @@ describe("plain takes never clamp a drag (PLAN 2026-07-30 Task A)", () => {
   it("clampTiming likewise ignores the take", () => {
     const t = clampTiming(withTakes, "b", 8, 16, 30);
     expect(t.startSec).toBeCloseTo(8, 9);
+  });
+});
+
+describe("sourceToOutputClamped (PLAN 2026-08-04 Task 4c fix wave, review finding 1)", () => {
+  // Two kept spans with a 3s GAP between them (5-8 in source time) — the
+  // shape produced by an automatic cut or an already-applied user cut sitting
+  // between them, same fixture shape TimeMap's own tests use.
+  const spans: KeptSpan[] = [
+    { srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 },
+    { srcIn: 8, srcOut: 12, outIn: 5, outOut: 9 },
+  ];
+
+  it("maps a source instant inside a kept span directly", () => {
+    expect(sourceToOutputClamped(spans, 2)).toBeCloseTo(2, 9);
+    expect(sourceToOutputClamped(spans, 10)).toBeCloseTo(7, 9); // 5 + (10-8)
+  });
+
+  it("clamps a source instant inside the GAP to the seam between the two spans", () => {
+    // ANY point strictly between two adjacent kept spans lands on the SAME
+    // output instant, not "whichever edge it's numerically nearer to" — kept
+    // output time has no gap (TimeMap's own invariant, "contiguous in output
+    // time"), so the first span's outOut and the second span's outIn are
+    // literally the same number (5 here). 5.5 (near the first span) and 7.9
+    // (near the second) both prove that, not two different clamp outcomes.
+    expect(sourceToOutputClamped(spans, 5.5)).toBeCloseTo(5, 9);
+    expect(sourceToOutputClamped(spans, 7.9)).toBeCloseTo(5, 9);
+  });
+
+  it("clamps before the first span and after the last", () => {
+    expect(sourceToOutputClamped(spans, -3)).toBeCloseTo(0, 9); // first span's outIn
+    expect(sourceToOutputClamped(spans, 99)).toBeCloseTo(9, 9); // last span's outOut
+  });
+
+  it("is 0 on an empty spans array — no crash, no NaN", () => {
+    expect(sourceToOutputClamped([], 5)).toBe(0);
   });
 });

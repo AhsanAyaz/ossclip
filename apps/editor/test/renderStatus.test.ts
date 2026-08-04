@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatElapsed, pinnedInfoLines, renderProgress } from "../src/renderStatus";
+import {
+  formatElapsed,
+  pinnedInfoLines,
+  renderCompleteReload,
+  renderProgress,
+} from "../src/renderStatus";
+import { emptyOverrideDoc } from "@ossclip/core/browser";
 
 // A realistic tail of a replayed `produce` run — the exact line shapes the
 // pipeline prints (produce.ts and formatUsageLine), which is all the panel
@@ -68,5 +74,24 @@ describe("formatElapsed", () => {
 
   it("floors a clock skew at zero instead of printing negative time", () => {
     expect(formatElapsed(5_000, 1_000)).toBe("0:00");
+  });
+});
+
+describe("renderCompleteReload (PLAN 2026-08-04 Task 4c fix wave, review finding 2)", () => {
+  it("loads produce's on-disk doc when the caller was CLEAN — no notice", () => {
+    const doc = { ...emptyOverrideDoc(), splits: [4.2] };
+    expect(renderCompleteReload(doc, false)).toEqual({ load: doc, notifyDiscard: false });
+  });
+
+  it("STILL loads produce's on-disk doc when the caller was DIRTY — produce's write-back always wins, no field-level merge", () => {
+    const doc = { ...emptyOverrideDoc(), splits: [4.2] };
+    const result = renderCompleteReload(doc, true);
+    expect(result.load).toBe(doc); // same reference — nothing merged into it
+    expect(result.notifyDiscard).toBe(true);
+  });
+
+  it("does nothing when the response carried no overrides at all (a workdir with none yet)", () => {
+    expect(renderCompleteReload(undefined, true)).toEqual({ load: null, notifyDiscard: false });
+    expect(renderCompleteReload(undefined, false)).toEqual({ load: null, notifyDiscard: false });
   });
 });

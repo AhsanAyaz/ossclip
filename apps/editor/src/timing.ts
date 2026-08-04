@@ -1,4 +1,4 @@
-import type { SceneCue } from "@ossclip/core/browser";
+import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
 
 /** Same floor assembly uses, so a hand nudge cannot make an unrenderable cue. */
 const MIN_SCENE_SEC = 1.2;
@@ -172,6 +172,37 @@ export function applySnap(
   }
   if (best === null || bestDist > thresholdSec) return { sec, snapped: null };
   return { sec: best, snapped: best };
+}
+
+/**
+ * Output position for a SOURCE instant, clamped to the nearest kept edge when
+ * the instant itself was cut (PLAN 2026-08-04 Task 4c fix wave, review
+ * finding 1) — used to place the seam marker for an ALREADY-APPLIED cut
+ * (`doc.cuts[*].src` present) at its true position in the CURRENT output,
+ * rather than at the stale `startSec`/`endSec` it was drawn against (a
+ * frame that no longer exists once produce has actually removed it).
+ *
+ * A small, standalone reimplementation of `TimeMap.toOutputClamped`
+ * (`packages/core/src/timemap.ts`) rather than a call to it: the editor only
+ * ever has the PLAIN `spans` array off `render-props.json` (there is no
+ * client-side `TimeMap` to construct one from — see App.tsx's DECIDE comment
+ * on why building one here would be the second-EDL-in-the-browser this
+ * feature is explicitly not doing). `spans` carries the same invariant a
+ * `TimeMap`'s own do (sorted, non-overlapping, contiguous in output time),
+ * so the identical two-pass algorithm applies unchanged: exact containment
+ * first, then walk in order and land on whichever kept edge is nearest.
+ */
+export function sourceToOutputClamped(spans: readonly KeptSpan[], srcSec: number): number {
+  if (spans.length === 0) return 0;
+  for (const sp of spans) {
+    if (srcSec >= sp.srcIn && srcSec <= sp.srcOut) return sp.outIn + (srcSec - sp.srcIn);
+  }
+  let best = 0;
+  for (const sp of spans) {
+    if (sp.srcOut <= srcSec) best = sp.outOut;
+    else if (sp.srcIn >= srcSec) return sp.outIn;
+  }
+  return best;
 }
 
 /**

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import type { SceneCue } from "@ossclip/core/browser";
+import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
 import {
   applySnap,
   clampTiming,
@@ -8,11 +8,24 @@ import {
   formatTimecode,
   moveTiming,
   snapTargets,
+  sourceToOutputClamped,
   timeAtX,
   zoomedScrollLeft,
 } from "./timing";
 import type { useEdits } from "./useEdits";
 import { blurTypingElement, type Selection } from "./Overlay";
+
+/** One `doc.cuts` entry, as far as the Timeline needs it — mirrors
+ * `OverrideDoc["cuts"][number]` structurally without importing the whole
+ * schema module into a presentation component. */
+interface CutEntry {
+  startSec: number;
+  endSec: number;
+  /** Present once produce has actually resolved and applied this cut (PLAN
+   * 2026-08-04 Task 4c fix wave, review finding 1) — see the two rendering
+   * modes below `cuts.map` for why this key changes what gets drawn. */
+  src?: { startSec: number; endSec: number };
+}
 
 interface TimelineProps {
   /** The LIVE (override-applied) cues — same array the Player renders from. */
@@ -20,14 +33,21 @@ interface TimelineProps {
   /** Deleted scenes at their base timing — drawn as restorable ghosts. */
   ghosts: readonly SceneCue[];
   /**
-   * User cuts (`doc.cuts`, PLAN 2026-08-04 Task 4c) — drawn as a struck-
-   * through dead-region overlay at their OWN recorded window, in the same
-   * output-second coordinate frame `durationSec`/`cues` already use (the
-   * schema's "output seconds of the CURRENT render-props"). Optional and
-   * defaulted so every existing caller (and test) that predates this prop
-   * keeps compiling unchanged.
+   * User cuts (`doc.cuts`, PLAN 2026-08-04 Task 4c). Two rendering modes,
+   * keyed on `src` (review fix wave, finding 1) — see the `cuts.map` below
+   * for the full reasoning. Optional and defaulted so every existing caller
+   * (and test) that predates this prop keeps compiling unchanged.
    */
-  cuts?: readonly { startSec: number; endSec: number }[];
+  cuts?: readonly CutEntry[];
+  /**
+   * The CURRENT render-props' spans (source↔output mapping) — needed only to
+   * place an ALREADY-APPLIED cut's seam marker at its true position in
+   * today's output via `sourceToOutputClamped`. Optional/defaulted to `[]`
+   * for the same back-compat reason as `cuts`; harmless when omitted (an
+   * applied cut with no spans to place it against simply doesn't draw its
+   * seam — there's nothing else honest to draw).
+   */
+  spans?: readonly KeptSpan[];
   durationSec: number;
   fps: number;
   playerRef: React.RefObject<PlayerRef | null>;
@@ -172,6 +192,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   cues,
   ghosts,
   cuts = [],
+  spans = [],
   durationSec,
   fps,
   playerRef,
@@ -809,29 +830,83 @@ export const Timeline: React.FC<TimelineProps> = ({
                 </div>
               );
             })}
-            {cuts.map((cut) => {
-              // User cuts (PLAN 2026-08-04 Task 4c): purely decorative
-              // (`pointerEvents: none`), drawn OVER the live block at the
-              // SAME window `doc.cuts` itself records — never a derived or
-              // shifted position, because nothing here re-derives one (the
-              // DECIDE in the task report: the live preview does not build
-              // a second cut timeline, so this stays honest by not
-              // pretending the block moved). Unlike a ghost, the cue this
-              // overlay sits on top of is STILL the real, still-selectable
-              // block underneath (cuts don't remove anything from `cues`) —
-              // so this needs no separate click handling of its own;
-              // selecting the block it covers is how the Inspector's
-              // Restore gets reached.
-              const left = durationSec > 0 ? (cut.startSec / durationSec) * 100 : 0;
-              const width =
-                durationSec > 0 ? Math.max(0, ((cut.endSec - cut.startSec) / durationSec) * 100) : 0;
+            {cuts.map((cut, i) => {
+              // User cuts (PLAN 2026-08-04 Task 4c): TWO rendering modes,
+              // keyed on `src` (review fix wave, finding 1). A cut's own
+              // `startSec`/`endSec` describe the render-props frame the user
+              // was looking at when they cut — the schema comment on
+              // `OverrideDocSchema.cuts` (packages/core/src/overrides.ts)
+              // says outright that once produce resolves `src`, those two
+              // numbers are a historical record, "never authoritative
+              // again". Drawing a struck band at them regardless would, once
+              // Render has actually applied the cut, paint a dead region
+              // over LIVE content of the new, SHORTER timeline — the exact
+              // bug the review caught (and could even mismatch a live block
+              // it happens to still overlap, offering a Restore that deletes
+              // the wrong entry's meaning).
+              const pct = (t: number): number =>
+                durationSec > 0 ? Math.min(100, Math.max(0, (t / durationSec) * 100)) : 0;
+
+              if (!cut.src) {
+                // NOT YET APPLIED: the material is genuinely still on
+                // screen, at `startSec`/`endSec` in THIS render-props' own
+                // frame — today's struck band + Restore, unchanged. Both
+                // ends clamp into [0, durationSec] (the review's "clamp all
+                // cut visuals to the timeline width regardless") in case an
+                // EARLIER produce run already shortened the timeline out
+                // from under a cut nobody has restored yet.
+                const clampedStart = Math.min(Math.max(cut.startSec, 0), durationSec);
+                const clampedEnd = Math.min(Math.max(cut.endSec, 0), durationSec);
+                const left = pct(clampedStart);
+                const width =
+                  durationSec > 0
+                    ? Math.max(0, ((clampedEnd - clampedStart) / durationSec) * 100)
+                    : 0;
+                return (
+                  <div
+                    key={`cut-${i}-${cut.startSec}-${cut.endSec}`}
+                    data-testid={`timeline-cut-${cut.startSec}-${cut.endSec}`}
+                    style={{ ...cutOverlay, left: `${left}%`, width: `${width}%` }}
+                  >
+                    <div style={cutStrike} />
+                  </div>
+                );
+              }
+
+              // ALREADY APPLIED: the window at `startSec`/`endSec` no longer
+              // exists in THIS output at all — produce removed it and
+              // shifted everything after it (Task 4b). There is no live
+              // block left underneath to strike through, so this draws a
+              // SEAM instead of a band, positioned by mapping `src.startSec`
+              // (the SOURCE range produce actually removed — the one value
+              // that's still true) through the CURRENT render-props' own
+              // `spans` via `sourceToOutputClamped` — a small pure position
+              // LOOKUP over data the editor already has, not a rebuilt
+              // cutlist: it answers "where does this source instant land
+              // TODAY", nothing about reshaping the timeline (the DECIDE
+              // above `live` in App.tsx still holds). Clicking the seam
+              // offers Restore directly — there is no cue to select instead.
+              const seamPct = pct(sourceToOutputClamped(spans, cut.src.startSec));
               return (
                 <div
-                  key={`cut-${cut.startSec}-${cut.endSec}`}
-                  data-testid={`timeline-cut-${cut.startSec}-${cut.endSec}`}
-                  style={{ ...cutOverlay, left: `${left}%`, width: `${width}%` }}
+                  key={`cut-${i}-${cut.startSec}-${cut.endSec}`}
+                  data-testid={`timeline-cut-seam-${cut.startSec}-${cut.endSec}`}
+                  title="Restore cut — the material returns on the next produce/Render"
+                  onMouseDown={(e) => {
+                    // Same "select/act on mousedown" idiom every other
+                    // Timeline gesture uses (blocks, ghosts, the track
+                    // itself) — stopPropagation keeps this from ALSO
+                    // triggering the track's own seek-and-scrub underneath.
+                    // Blur discipline comes free from the strip's own
+                    // capture-phase `blurTypingElement` above; no separate
+                    // call needed here.
+                    e.stopPropagation();
+                    e.preventDefault();
+                    edits.restoreChunk(cut.startSec, cut.endSec);
+                  }}
+                  style={{ ...cutSeamHit, left: `${seamPct}%` }}
                 >
-                  <div style={cutStrike} />
+                  <div style={cutSeamLine} />
                 </div>
               );
             })}
@@ -1025,11 +1100,12 @@ const pinBadge: React.CSSProperties = {
   pointerEvents: "none",
 };
 
-/** User-cut dead region (PLAN 2026-08-04 Task 4c): a hatched red band above
- * every other block level (3, matching "selected") so the strike-through
- * always reads even over a selected block — it's decorative and inert
- * (`pointerEvents: none` on the caller), so winning the paint order costs
- * nothing real. */
+/** User-cut dead region — NOT YET APPLIED mode only (PLAN 2026-08-04 Task
+ * 4c; two-mode split is the review fix wave's finding 1). A hatched red band
+ * above every other block level (3, matching "selected") so the
+ * strike-through always reads even over a selected block — it's decorative
+ * and inert (`pointerEvents: none` on the caller), so winning the paint
+ * order costs nothing real. */
 const cutOverlay: React.CSSProperties = {
   position: "absolute",
   top: 3,
@@ -1052,6 +1128,37 @@ const cutStrike: React.CSSProperties = {
   top: "50%",
   height: 2,
   background: "rgba(255,92,92,0.8)",
+};
+
+/** Seam marker's clickable hit zone — ALREADY-APPLIED mode only. Wider than
+ * the visual line so it's actually catchable (same "wide hit / thin paint"
+ * split as `playheadGrab` below `playhead`). `pointerEvents: "auto"`
+ * deliberately breaks from the struck band's `"none"` above: there is no
+ * live block underneath a seam for a click to fall through to instead (the
+ * material's actually gone) — the seam has to be its own click target. */
+const cutSeamHit: React.CSSProperties = {
+  position: "absolute",
+  top: -4,
+  bottom: -4,
+  width: 12,
+  marginLeft: -6,
+  zIndex: 4,
+  cursor: "pointer",
+  pointerEvents: "auto",
+};
+
+/** The seam's actual paint — a thin tick, visually distinct from the struck
+ * band's filled hatch on purpose: "already gone, click to restore" is a
+ * different fact from "still here, marked dead" and should not look like the
+ * same mark at a glance. */
+const cutSeamLine: React.CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  top: 0,
+  bottom: 0,
+  width: 2,
+  background: "#FF5C5C",
+  pointerEvents: "none",
 };
 
 const edgeHandle: React.CSSProperties = {

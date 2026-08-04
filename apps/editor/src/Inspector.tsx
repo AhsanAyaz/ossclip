@@ -461,17 +461,28 @@ export const Inspector: React.FC<InspectorProps> = ({
         </div>
       );
     }
-    // A cut chunk (PLAN 2026-08-04 Task 4c): matched by exact window
-    // equality against `cue`'s OWN startSec/endSec. Safe as exact equality
-    // (not a tolerance) because both numbers trace back to the SAME value
-    // with no arithmetic in between — `cutChunk` writes the cue's window
-    // verbatim, and `live` (App.tsx) never reads `doc.cuts`, so the cue's
-    // own window cannot have drifted out from under the match within a
-    // session. Restore is the ONLY offer here, same reasoning as the
-    // hidden-scene branch above: this UI exposes no way to edit a cut's
+    // A cut chunk, NOT YET APPLIED (PLAN 2026-08-04 Task 4c; keyed to
+    // `src`-LESS cuts only per the review fix wave's finding 1): matched by
+    // exact window equality against `cue`'s OWN startSec/endSec. Safe as
+    // exact equality (not a tolerance) because both numbers trace back to
+    // the SAME value with no arithmetic in between — `cutChunk` writes the
+    // cue's window verbatim, and `live` (App.tsx) never reads `doc.cuts`, so
+    // the cue's own window cannot have drifted out from under the match
+    // within a session. Restore is the ONLY offer here, same reasoning as
+    // the hidden-scene branch above: this UI exposes no way to edit a cut's
     // range, so there is nothing else this view needs to show.
+    //
+    // `c.src === undefined` is load-bearing, not incidental: once produce
+    // resolves `src`, `startSec`/`endSec` are a HISTORICAL record only
+    // (schema comment on `OverrideDocSchema.cuts`,
+    // packages/core/src/overrides.ts) — the material at that window is
+    // GONE from the current output, so a live cue's window landing on the
+    // same numbers by coincidence (a re-plan, a later independent cut) is
+    // unrelated content, not "this block is still marked for removal". An
+    // applied cut's own Restore lives on its Timeline seam marker instead
+    // (`Timeline.tsx`'s `cutSeamHit`), which this branch must never shadow.
     const activeCut = edits.doc.cuts.find(
-      (c) => c.startSec === cue.startSec && c.endSec === cue.endSec,
+      (c) => c.src === undefined && c.startSec === cue.startSec && c.endSec === cue.endSec,
     );
     if (activeCut) {
       return (
