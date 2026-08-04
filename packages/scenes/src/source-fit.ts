@@ -106,8 +106,17 @@ export function videoObstacleFor(
 export function placeInFreeBand(
   rect: { x: number; y: number; w: number; h: number },
   regions: readonly OccupiedRegion[],
+  /**
+   * The picture, when this layout authored the graphic clear of it (§120).
+   * Optional and defaulted so every existing caller keeps its behaviour;
+   * `videoObstacleFor` returns null for the layouts that intend the overlap.
+   */
+  videoObstacle?: OccupiedRegion | null,
 ): { x: number; y: number; w: number; h: number } | null {
-  const [tallest] = freeBands({ start: SAFE_AREA.top, end: 1 - SAFE_AREA.bottom }, regions);
+  // freeBands merges overlapping blocked rects itself, so the obstacle can
+  // simply join the text regions rather than needing to be reconciled.
+  const blocked = videoObstacle ? [...regions, videoObstacle] : regions;
+  const [tallest] = freeBands({ start: SAFE_AREA.top, end: 1 - SAFE_AREA.bottom }, blocked);
   if (!tallest) return null;
   const bandHeight = tallest.end - tallest.start;
   if (bandHeight < MIN_ROUTED_SLOT_H) return null;
