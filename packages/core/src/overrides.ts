@@ -192,6 +192,16 @@ export const OverrideDocSchema = z.object({
    * `endSec` are left exactly as the user drew them even once `src` exists:
    * a historical record of what render-props they were looking at, never
    * authoritative again once `src` is present.
+   *
+   * The editor (PLAN 2026-08-04 Task 4c) MUST NEVER WRITE OR
+   * PRESERVE-AND-MODIFY `src` ITSELF — resolving it is produce's job alone.
+   * Creating a cut writes ONLY `{startSec, endSec}`; if a cut's range is
+   * ever edited/moved (not currently exposed, but the rule holds for any
+   * future gesture that would), its `src` is DELETED rather than carried
+   * forward, so the next produce re-resolves it against the render-props
+   * current at that point rather than an anchor drawn for a range that no
+   * longer means the same thing; Restore removes the WHOLE entry, `src`
+   * included — there is no "not cut" state for one array entry to hold.
    */
   cuts: z
     .array(

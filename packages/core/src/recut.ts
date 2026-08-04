@@ -71,18 +71,22 @@ export function remapOverridesThroughRecut(
     }),
   );
 
-  // `doc.cuts` ranges are themselves absolute-output-seconds, recorded
-  // against whichever render-props were current when the user drew them
-  // (schema comment on `OverrideDocSchema.cuts`) — a cut made before an
-  // EARLIER recut is exactly as stale as a split or a pin, and needs the
-  // same old→source→new re-anchoring so the next produce subtracts it from
-  // the right place instead of the place it used to be.
-  const cuts = doc.cuts.map((cut) => ({
-    startSec: remapPoint("cut start", cut.startSec, oldMap, newMap, reports),
-    endSec: remapPoint("cut end", cut.endSec, oldMap, newMap, reports),
-  }));
-
-  return { doc: { ...doc, splits, scenes, cuts }, reports };
+  // `doc.cuts` is deliberately NOT remapped here (PLAN 2026-08-04 Task 4c
+  // prerequisite cleanup; review fix wave finding 1 is what made the old
+  // comment here wrong). The design this function was first written against
+  // ("a cut is exactly as stale as a split or a pin, remap it the same way")
+  // changed under it: `resolveCutSourceRanges` is what interprets a cut now,
+  // through `priorMap` — a bare old→source→new point remap through the very
+  // recut a cut CAUSED collapses it to a zero-width point at its own edge
+  // (Task 4b's Bug A), and doing that here would also silently DROP any
+  // resolved `src` the caller's `doc` already carries, since this function
+  // has no way to know a cut's `src` is settled and irreplaceable (schema
+  // comment on `OverrideDocSchema.cuts`). `applyUserCuts` is the only place
+  // `cuts` gets resolved, and its one call into this function passes
+  // `cuts: []` specifically so this function is never asked to make that
+  // call — the spread below carries the caller's `cuts` through untouched,
+  // whatever they are.
+  return { doc: { ...doc, splits, scenes }, reports };
 }
 
 /** One entry of `OverrideDoc.cuts` — see the schema comment on `src`. */

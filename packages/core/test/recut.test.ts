@@ -65,7 +65,7 @@ const partitionArb = fc
   });
 
 describe("remapOverridesThroughRecut — identity re-cut", () => {
-  it("is the identity on splits, pinned timing, and cuts, with nothing to report", () => {
+  it("is the identity on splits and pinned timing, with nothing to report", () => {
     fc.assert(
       fc.property(
         partitionArb,
@@ -79,6 +79,9 @@ describe("remapOverridesThroughRecut — identity re-cut", () => {
           const doc = OverrideDocSchema.parse({
             splits,
             scenes: { s: { timing: { startSec: pinStart, endSec: map.outputDuration } } },
+            // Rides along to prove the pass-through below, not to be
+            // remapped itself (PLAN 2026-08-04 Task 4c prerequisite
+            // cleanup) — see the dedicated describe block further down.
             cuts: [{ startSec: 0, endSec: at(fracs[1] ?? 0.5) }],
           });
 
@@ -89,8 +92,9 @@ describe("remapOverridesThroughRecut — identity re-cut", () => {
           out.splits.forEach((s, i) => expect(s).toBeCloseTo(splits[i]!, 6));
           expect(out.scenes.s!.timing!.startSec).toBeCloseTo(pinStart, 6);
           expect(out.scenes.s!.timing!.endSec).toBeCloseTo(map.outputDuration, 6);
-          expect(out.cuts[0]!.startSec).toBeCloseTo(0, 6);
-          expect(out.cuts[0]!.endSec).toBeCloseTo(at(fracs[1] ?? 0.5), 6);
+          // Same reference, not just an equal value — proof nothing here
+          // recomputed it.
+          expect(out.cuts).toBe(doc.cuts);
         },
       ),
     );
@@ -224,30 +228,30 @@ describe("remapOverridesThroughRecut — pinned timing (unit)", () => {
   });
 });
 
-describe("remapOverridesThroughRecut — cuts recorded against an older output (unit)", () => {
-  it("re-anchors an unconsumed cut range past an earlier recut", () => {
+describe("remapOverridesThroughRecut — cuts are never remapped here (PLAN 2026-08-04 Task 4c prerequisite cleanup)", () => {
+  it("passes doc.cuts through completely unchanged across a recut that would move a raw point", () => {
     const oldMap = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
     const newMap = cutOutputRange(oldMap, 5, 8);
     const doc = OverrideDocSchema.parse({ cuts: [{ startSec: 30, endSec: 34 }] });
 
     const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
 
-    expect(out.cuts[0]!.startSec).toBeCloseTo(27, 6); // 30 - 3
-    expect(out.cuts[0]!.endSec).toBeCloseTo(31, 6); // 34 - 3
+    // Same reference: proof this function never touches `cuts` at all —
+    // resolving/re-anchoring a cut is `resolveCutSourceRanges`'s job
+    // (through `priorMap`, in `applyUserCuts`), not this one's.
+    expect(out.cuts).toBe(doc.cuts);
     expect(reports).toEqual([]);
   });
 
-  it("reports and clamps a stored cut whose range a NEWER cut already swallowed", () => {
+  it("does not report on a cut even when its own range falls entirely inside the new cut", () => {
     const oldMap = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
     const newMap = cutOutputRange(oldMap, 20, 30);
-    // Recorded against the OLD output, now strictly inside the newer cut.
     const doc = OverrideDocSchema.parse({ cuts: [{ startSec: 22, endSec: 26 }] });
 
     const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
 
-    expect(out.cuts[0]!.startSec).toBeCloseTo(20, 6);
-    expect(out.cuts[0]!.endSec).toBeCloseTo(20, 6);
-    expect(reports).toHaveLength(2);
+    expect(out.cuts).toBe(doc.cuts);
+    expect(reports).toEqual([]);
   });
 });
 
