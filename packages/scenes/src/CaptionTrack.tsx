@@ -4,6 +4,7 @@ import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
 import { safeAreaFor, activeCueAt } from "./stage";
 import { frameWindow } from "./frames";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
+import { CAPTION_POP_SEC, easeOutQuad } from "./motion";
 
 export interface CaptionTrackProps {
   lines: CaptionLine[];
@@ -107,7 +108,15 @@ const LineView: React.FC<{
         }}
       >
         {line.words.map((w, i) => {
-          const active = t >= w.start && t <= Math.max(w.end, w.start + 0.12);
+          const held = Math.max(w.end, w.start + 0.12);
+          const inWindow = t >= w.start && t <= held;
+          // Ramp from the word's OWN start, then hold — frame-driven, because
+          // the CSS transition this replaces only ever animated in the
+          // editor's real-time <Player>; the render seeks and screenshots,
+          // so no wall-clock time passes and the scale snapped (spec
+          // 2026-08-04). Same ease as the layer's entrance and exit.
+          const p = inWindow ? Math.min(1, (t - w.start) / CAPTION_POP_SEC) : 0;
+          const pop = easeOutQuad(p);
           return (
             <span
               key={i}
@@ -122,9 +131,11 @@ const LineView: React.FC<{
                 // parent layer stays pointer-events: none); harmless in the
                 // render, where nothing dispatches events.
                 pointerEvents: "auto",
-                transform: active ? "scale(1.08)" : "scale(1)",
-                color: active ? activeColor : "white",
-                transition: "transform 60ms linear",
+                transform: pop > 0 ? `scale(${1 + 0.08 * pop})` : "scale(1)",
+                // Colour stays keyed to the window, not the ramp: colour has
+                // no in-between worth animating, and lerping it would fight
+                // the stroke.
+                color: inWindow ? activeColor : "white",
               }}
             >
               {/* Per WORD, not per line: a line straddling the cue boundary

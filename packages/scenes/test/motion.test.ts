@@ -1,5 +1,8 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CAPTION_POP_SEC, ENTER_SEC, EXIT_SEC, easeOutQuad, entranceExitSec } from "../src/motion";
 
 describe("easeOutQuad", () => {
@@ -55,5 +58,30 @@ describe("entranceExitSec", () => {
 describe("the caption pop duration", () => {
   it("is four frames at 30fps — long enough to read as a rise, not a step", () => {
     expect(CAPTION_POP_SEC * 30).toBeCloseTo(4, 0);
+  });
+});
+
+describe("no CSS transitions in the render path", () => {
+  // Remotion renders by seeking to a frame and screenshotting it — no
+  // wall-clock time passes, so a CSS transition animates in the editor's
+  // real-time <Player> and SNAPS in the rendered file. CaptionTrack shipped
+  // exactly that: a 60ms transition the render never played. This scan pins
+  // the bug CLASS, not the one instance.
+  it("finds no `transition:` style property under packages/scenes/src", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (/\.tsx?$/.test(entry.name)) {
+          const src = readFileSync(path, "utf8");
+          // The CSS property shape (`transition: "…"`), not the word — prose
+          // like "layout transitions" in comments must not trip this.
+          if (/\btransition\s*:\s*["'`]/.test(src)) offenders.push(entry.name);
+        }
+      }
+    };
+    walk(fileURLToPath(new URL("../src", import.meta.url)));
+    expect(offenders).toEqual([]);
   });
 });
