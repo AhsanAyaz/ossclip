@@ -113,3 +113,17 @@ export class TimeMap {
     return { start, end };
   }
 }
+
+/**
+ * Rebuild a `TimeMap` from another map's own `spans` — e.g. a PREVIOUS
+ * produce run's `render-props.json`, read back to learn which coordinate
+ * frame the user's stored splits/pins are CURRENTLY anchored to (PLAN
+ * 2026-08-04 Task 4b: `applyUserCuts`'s `priorMap`). The constructor only
+ * reasons about `keep`-kind segments when building `spans` — `remove`
+ * segments carry no information it uses — so handing back exactly the spans
+ * a map once produced, each re-labelled `keep`, reconstructs an identical
+ * map without needing the original cutlist's `remove` segments at all.
+ */
+export function mapFromKeptSpans(spans: readonly KeptSpan[]): TimeMap {
+  return new TimeMap(spans.map((s) => ({ srcIn: s.srcIn, srcOut: s.srcOut, kind: "keep" as const })));
+}

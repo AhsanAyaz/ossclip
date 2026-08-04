@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { TimeMap } from "../src/timemap";
+import { TimeMap, mapFromKeptSpans } from "../src/timemap";
 import type { Segment } from "../src/schema";
 
 /** Random full partition of [0, D] into alternating keep/remove segments. */
@@ -126,5 +126,32 @@ describe("TimeMap invariants (property-based)", () => {
           { srcIn: 1, srcOut: 3, kind: "keep" },
         ]),
     ).toThrow(/overlap/);
+  });
+});
+
+describe("mapFromKeptSpans", () => {
+  it("reconstructs an identical map from another map's own spans", () => {
+    fc.assert(
+      fc.property(partitionArb, ({ segments }) => {
+        const original = new TimeMap(segments);
+        const rebuilt = mapFromKeptSpans(original.spans);
+        expect(rebuilt.outputDuration).toBeCloseTo(original.outputDuration, 9);
+        expect(rebuilt.spans).toEqual(original.spans);
+      }),
+    );
+  });
+
+  it("round-trips through JSON — the actual render-props.json path", () => {
+    // `produce.ts` reads this back from a PREVIOUS run's render-props.json,
+    // so the fixture goes through the exact serialization that file does.
+    const original = new TimeMap([
+      { srcIn: 0, srcOut: 10, kind: "keep" },
+      { srcIn: 10, srcOut: 14, kind: "remove", reason: "user" },
+      { srcIn: 14, srcOut: 30, kind: "keep" },
+    ]);
+    const spans = JSON.parse(JSON.stringify(original.spans));
+    const rebuilt = mapFromKeptSpans(spans);
+    expect(rebuilt.outputDuration).toBeCloseTo(original.outputDuration, 9);
+    expect(rebuilt.toSource(12)).toBeCloseTo(original.toSource(12), 9);
   });
 });

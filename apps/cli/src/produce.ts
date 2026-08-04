@@ -8,6 +8,8 @@ import {
   LayoutSchema,
   SceneSchema,
   TimeMap,
+  type KeptSpan,
+  mapFromKeptSpans,
   TranscriptSchema,
   analyze,
   applyOverrides,
@@ -43,6 +45,7 @@ import {
   formatBloopSpan,
   formatUsageLine,
   formatUsageReport,
+  applyUserCuts,
   loadConfig,
   loudnorm,
   MAX_NORMALIZE_UPSCALE,
@@ -814,6 +817,78 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (varied > 0) console.log(`▸ ${varied} scene(s) re-laid out for variety`);
   }
 
+  // ---- The user's edit layer: loaded here for `cuts` (PLAN 2026-08-04
+  // Task 4) -------------------------------------------------------------
+  // Everything ELSE the doc carries (scene props, splits, retyped captions)
+  // still applies further down, AFTER assembly and routing, exactly as
+  // before this feature existed — see the comment there. `cuts` is the one
+  // exception: it changes `map` itself, and every downstream consumer of
+  // `map` below this point (assembly, captions, the zoom plan, render-props)
+  // must see the POST-cut timeline, so the file has to be read and the cut
+  // applied before any of that runs.
+  const overridesPath = join(work, "overrides.json");
+  let overrideDoc = emptyOverrideDoc();
+  if (existsSync(overridesPath)) {
+    const parsed = OverrideDocSchema.safeParse(
+      JSON.parse(await readFile(overridesPath, "utf8")),
+    );
+    if (!parsed.success) {
+      // Hand-editable user data: refuse rather than silently resetting it.
+      throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
+    }
+    overrideDoc = parsed.data;
+  }
+  // `applyUserCuts`'s `priorMap`: splits/pins already re-anchored by an
+  // EARLIER cut are stored relative to THAT run's final timeline, not the
+  // fresh automatic `map` this run just rebuilt — reusing `map` as "old"
+  // again would shift them a second time for nothing (confirmed on the
+  // dogfood workdir: a produce re-run with no new edits moved an already
+  // re-anchored split again). The PREVIOUS run's `render-props.json` is
+  // exactly the timeline the editor showed when the user set them, so its
+  // `spans` reconstruct the right "old" map; a fresh or unreadable workdir
+  // falls back to `map`, matching a first-ever run where the two coincide.
+  const priorRenderProps = join(work, "render-props.json");
+  let priorMap = map;
+  if (existsSync(priorRenderProps)) {
+    try {
+      const prev = JSON.parse(await readFile(priorRenderProps, "utf8")) as { spans?: KeptSpan[] };
+      if (prev.spans) priorMap = mapFromKeptSpans(prev.spans);
+    } catch {
+      // Unreadable/corrupt — fall back to `map`, same as no prior run.
+    }
+  }
+  const cutResult = applyUserCuts(overrideDoc, cutlist, map, priorMap);
+  cutlist = cutResult.cutlist;
+  map = cutResult.map;
+  overrideDoc = cutResult.doc;
+  if (overrideDoc.cuts.length > 0) {
+    console.log(
+      `▸ ${overrideDoc.cuts.length} user cut(s) removed ${cutResult.removedSec.toFixed(1)}s ` +
+        `of output (${map.outputDuration.toFixed(1)}s remaining)`,
+    );
+  }
+  if (cutResult.changed) {
+    for (const r of cutResult.reports) console.log(`  ⚠ ${r}`);
+    // Keep a `.bak` of whatever was on disk first — the same safety net
+    // `saveConfigPatch` keeps for a config file it's about to replace —
+    // before this run's ONE sanctioned overwrite of the user's own data
+    // (see `applyUserCuts`'s doc comment for why this write is allowed at
+    // all). Atomic write via tmp+rename, matching the edit server's own
+    // `PUT /overrides` handler: the producer or a live editor session may
+    // read this file at any moment, and a half-written document would be
+    // worse than a stale one.
+    try {
+      const raw = await readFile(overridesPath, "utf8");
+      await writeFile(`${overridesPath}.bak`, raw);
+    } catch {
+      // Nothing on disk to back up (first cut ever applied here) — fine.
+    }
+    const tmp = `${overridesPath}.tmp`;
+    await writeFile(tmp, JSON.stringify(overrideDoc, null, 2));
+    await rename(tmp, overridesPath);
+    console.log("▸ overrides.json re-anchored to the new cut and saved (previous copy kept as .bak)");
+  }
+
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
 
@@ -981,20 +1056,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   }
 
   // ---- The user's edit layer (SPEC: direct manipulation) -------------------
-  // Read AFTER assembly so hand edits sit on top of whatever the producer just
-  // planned, and never in production.json — that file is ours to overwrite.
-  const overridesPath = join(work, "overrides.json");
-  let overrideDoc = emptyOverrideDoc();
-  if (existsSync(overridesPath)) {
-    const parsed = OverrideDocSchema.safeParse(
-      JSON.parse(await readFile(overridesPath, "utf8")),
-    );
-    if (!parsed.success) {
-      // Hand-editable user data: refuse rather than silently resetting it.
-      throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
-    }
-    overrideDoc = parsed.data;
-  }
+  // `overrideDoc` was already loaded above (before assembly, so `cuts` could
+  // reshape `map` in time) — applied here, AFTER assembly and routing, so
+  // hand edits sit on top of whatever the producer just planned. Never
+  // written to production.json — that file is ours to overwrite.
   const { cues: editedCues } = applyOverrides(routed.cues, overrideDoc);
   // Scenes the user deleted in the editor drop here — their windows become
   // plain takes in the fill below, which is Task C's payoff for Task A.
@@ -1182,6 +1247,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     report +=
       `\nbloopers cut (you said "${opts.blooperMarker}" — FINDINGS §122):\n` +
       bloops.map((b) => `  ${formatBloopSpan(rawTranscript, b)}`).join("\n") +
+      "\n";
+  }
+  // PLAN 2026-08-04 Task 4: the removed ranges themselves are already in the
+  // report above (`formatCutReport` walks `production.cutlist`, and the
+  // subtracted spans carry `reason: "user"`) — this section is specifically
+  // for what a cut MOVED: a decision that landed on a cut edge must be
+  // visible here, never silently repositioned.
+  if (cutResult.changed && cutResult.reports.length > 0) {
+    report +=
+      "\noverrides re-anchored by your cut (nothing moved silently):\n" +
+      cutResult.reports.map((r) => `  ${r}`).join("\n") +
       "\n";
   }
   const landed = repairs.filter((r) => r.applied);
