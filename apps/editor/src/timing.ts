@@ -147,6 +147,13 @@ export function snapTargets(
  * floating-point distances a scan happens to visit first. No targets, or a
  * threshold that isn't positive, is "snapping is off": pass `sec` through
  * unchanged rather than special-casing the caller.
+ *
+ * (corrected) With `targets` sorted ascending — every call site here passes
+ * `snapTargets`'s own output — the tie clause below is dead code: the
+ * earlier candidate is scanned first and already wins outright on the
+ * strict `dist < bestDist`, so the tie branch never gets a chance to fire.
+ * It stays because `applySnap` is exported and a future unsorted external
+ * caller would need it.
  */
 export function applySnap(
   sec: number,

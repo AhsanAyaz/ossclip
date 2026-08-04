@@ -108,21 +108,32 @@ export const ProjectPicker: React.FC<{
           </div>
         ) : null}
         {recent.length > 0 ? (
-          <div style={{ marginTop: 16 }}>
+          <div style={{ marginTop: 16, flexShrink: 0 }}>
             <div style={sectionTitle}>recent</div>
-            {recent.map((p) => (
-              <button
-                key={p}
-                data-testid="project-recent"
-                style={entryButton}
-                disabled={busy}
-                onClick={() => open(p)}
-                title={p}
-              >
-                <span style={{ color: "#FFE14D", marginRight: 8 }}>▸</span>
-                {p}
-              </button>
-            ))}
+            {/* The list keeps its own modest scroll (spec: "recent list keeps
+                a modest maxHeight with its own scroll") instead of growing
+                unbounded — a full recents list at a short window height would
+                otherwise collapse `browseSection` to zero and push the browse
+                panel past the card, unreachable. */}
+            <div
+              className="ossclip-scroll-list"
+              style={recentList}
+              data-testid="project-recent-list"
+            >
+              {recent.map((p) => (
+                <button
+                  key={p}
+                  data-testid="project-recent"
+                  style={entryButton}
+                  disabled={busy}
+                  onClick={() => open(p)}
+                  title={p}
+                >
+                  <span style={{ color: "#FFE14D", marginRight: 8 }}>▸</span>
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
         <div style={browseSection}>
@@ -300,6 +311,17 @@ const browseSection: React.CSSProperties = {
   flexDirection: "column",
   flex: 1,
   minHeight: 0,
+};
+
+// Its own capped scroll region (see the comment at the call site) — a long
+// recents list must not be able to starve the browse section below it.
+const recentList: React.CSSProperties = {
+  maxHeight: 176,
+  overflowY: "auto",
+  flexShrink: 0,
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
 };
 
 const entryList: React.CSSProperties = {

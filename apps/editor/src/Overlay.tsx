@@ -321,6 +321,16 @@ export const Overlay: React.FC<OverlayProps> = ({
     start: GraphicRect;
   } | null>(null);
   const rectRafRef = useRef(0);
+  /** The altKey state as of the LAST mousemove of the current rect drag, not
+   * the mouseup that commits it — the two events are independent, so without
+   * this a user who presses/releases Alt after their last move (no
+   * intervening mousemove) commits under a different Alt state than the
+   * preview last showed, and the box visibly jumps on release. Reset to null
+   * at drag start; null falls back to the mouseup event's own altKey, which
+   * only matters if the drag commits with zero mousemoves in between (it
+   * can't today — the commit is gated on `dx !== 0 || dy !== 0` below — but
+   * the fallback keeps this correct even if that gate ever loosens). */
+  const rectMoveAltKeyRef = useRef<boolean | null>(null);
   /** State (not just the ref) so the safe-area guide re-renders during it. */
   const [rectDragging, setRectDragging] = useState(false);
   /** The centre/safe-area guides `guideSnap` currently has active (Overlay
@@ -577,6 +587,7 @@ export const Overlay: React.FC<OverlayProps> = ({
         const canvas = canvasBox();
         if (node && canvas) {
           const r = node.getBoundingClientRect();
+          rectMoveAltKeyRef.current = null;
           rectDragRef.current = {
             sceneId: handleSel.sceneId,
             handle: handleEl.dataset.boxHandle as BoxHandle,
@@ -717,6 +728,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       if (rectDrag) {
         rectDrag.dx = e.clientX - rectDrag.x;
         rectDrag.dy = e.clientY - rectDrag.y;
+        rectMoveAltKeyRef.current = e.altKey;
         if (!rectRafRef.current) {
           rectRafRef.current = requestAnimationFrame(() => {
             rectRafRef.current = 0;
@@ -845,8 +857,12 @@ export const Overlay: React.FC<OverlayProps> = ({
             );
             // Same guide snap as the live preview, same Alt escape hatch —
             // the committed rect must match whatever the last preview frame
-            // showed, or the box would visibly jump on release.
-            if (!e.altKey) {
+            // showed, or the box would visibly jump on release. Read from
+            // the LAST MOUSEMOVE's Alt state, not this mouseup's own: they
+            // are independent events, and a press/release of Alt with no
+            // move in between would otherwise commit under a different Alt
+            // state than what the preview last drew.
+            if (!(rectMoveAltKeyRef.current ?? e.altKey)) {
               final = guideSnap(final, rectDrag.handle, safeAreaFor(settings), THRESHOLD_FRAC).rect;
             }
             edits.patchGraphicRect(rectDrag.sceneId, {
@@ -857,6 +873,7 @@ export const Overlay: React.FC<OverlayProps> = ({
             });
           }
         }
+        rectMoveAltKeyRef.current = null;
         onGraphicPreview(null);
         return;
       }

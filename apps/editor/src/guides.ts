@@ -17,11 +17,14 @@ export interface SafeArea {
 }
 
 /**
- * ~1.5% of the frame: at the composition's native 1080px width that's ~16px
- * of on-screen pull once the stage is scaled up to fill the panel — close
- * enough to feel magnetic on a deliberate drag near a guide, far enough
- * below a handle's own hit radius (HANDLE = 9px in Overlay.tsx) that it
- * never fires on a drag that was aimed at the handle, not the guide.
+ * ~1.5% of the frame: at the composition's native 1080px width that's ~16.2
+ * composition px. (corrected) The stage the user actually drags on is
+ * scaled DOWN to fill the panel — ~380px of page width (App.tsx), roughly a
+ * third of native — so the felt pull is closer to ~5.7 page px: enough to
+ * read as magnetic on a deliberate approach, not so wide it snaps from
+ * across the frame. HANDLE (9px, Overlay.tsx) is unrelated: it's the outline
+ * padding drawn around a selection for the resize-handle affordances, not a
+ * hit radius this threshold needs to clear.
  */
 export const THRESHOLD_FRAC = 0.015;
 

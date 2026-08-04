@@ -86,4 +86,25 @@ describe("ProjectPicker — one scroll region", () => {
     expect(card).not.toBeNull();
     expect(card.style.overflowY).toBe("");
   });
+
+  it("caps the recent list's own height so a full list can't starve the browse section below it", async () => {
+    const recent = Array.from({ length: 12 }, (_, i) => `/home/user/project-${i}`);
+    await act(async () => {
+      root.render(
+        React.createElement(ProjectPicker, {
+          recent,
+          required: true,
+          onOpen: async () => null,
+          onClose: () => {},
+        }),
+      );
+    });
+
+    const list = container.querySelector('[data-testid="project-recent-list"]') as HTMLElement;
+    expect(list).not.toBeNull();
+    expect(list.style.maxHeight).toBe("176px");
+    expect(list.style.overflowY).toBe("auto");
+    expect(list.style.flexShrink).toBe("0");
+    expect(list.className).toContain("ossclip-scroll-list");
+  });
 });

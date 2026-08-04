@@ -419,7 +419,20 @@ export const Timeline: React.FC<TimelineProps> = ({
           }
         }
         const shifted = moveTiming(cues, press.sceneId, correctedDelta, durationSec);
-        if (shifted) setDragPreview({ sceneId: press.sceneId, ...shifted, snapped: snappedAt });
+        if (shifted) {
+          // moveTiming is the authority on where the block actually lands —
+          // a neighbour or the clip bounds can override the snapped delta
+          // entirely. A tick drawn at a target the block does not sit on is
+          // a lie, so it only survives if an ACHIEVED edge still matches the
+          // target within float noise.
+          const achievedSnap =
+            snappedAt !== null &&
+            (Math.abs(shifted.startSec - snappedAt) < 1e-6 ||
+              Math.abs(shifted.endSec - snappedAt) < 1e-6)
+              ? snappedAt
+              : null;
+          setDragPreview({ sceneId: press.sceneId, ...shifted, snapped: achievedSnap });
+        }
         return;
       }
       const drag = dragRef.current;
@@ -447,7 +460,18 @@ export const Timeline: React.FC<TimelineProps> = ({
         }
       }
       const clamped = clampTiming(cues, drag.sceneId, wantStart, wantEnd, durationSec);
-      setDragPreview({ sceneId: drag.sceneId, ...clamped, snapped: snappedAt });
+      // Same rule as the body-drag path above: clampTiming is the authority
+      // (e.g. a start snapped to `prev.endSec` gets pushed to
+      // `prev.endSec + GAP` by the clamp) — null the tick unless an achieved
+      // edge still matches the target within float noise, so it never lights
+      // up somewhere the block does not actually sit.
+      const achievedSnap =
+        snappedAt !== null &&
+        (Math.abs(clamped.startSec - snappedAt) < 1e-6 ||
+          Math.abs(clamped.endSec - snappedAt) < 1e-6)
+          ? snappedAt
+          : null;
+      setDragPreview({ sceneId: drag.sceneId, ...clamped, snapped: achievedSnap });
     };
     const onUp = (e: MouseEvent) => {
       scrubbingRef.current = false;
@@ -780,7 +804,11 @@ export const Timeline: React.FC<TimelineProps> = ({
               // `scrollWidth > clientWidth` true even at zoom 1 — which
               // silently arms `pageAtEdge` (view paging is meant to be a
               // ZOOMED-in behaviour) and can jump the view mid edge-drag.
-              // The readout must stay fully inside the track, always.
+              // (corrected) The flip only guarantees the readout stays fully
+              // inside the track on tracks wider than ~733px (110px / 15%);
+              // below that width it can still overflow slightly — a
+              // pre-existing shape of the 85% constant, deferred rather than
+              // fixed here.
               <div
                 data-testid="drag-readout"
                 style={{

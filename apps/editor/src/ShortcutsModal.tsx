@@ -36,6 +36,14 @@ const SECTIONS: Array<{ title: string; rows: Array<[keys: string, action: string
       ["double-click caption word", "retype it in place"],
       ["drag element / corner handles", "move · resize"],
       ["drag picture", "pan the video framing"],
+      [
+        "drag a scene block / edge on the timeline",
+        "snaps to scene edges + the playhead (hold ⌥ while dragging to disable)",
+      ],
+      [
+        "drag a box on the stage",
+        "snaps to centre / safe-area guides (hold ⌥ mid-drag to disable)",
+      ],
     ],
   },
   {
