@@ -7,7 +7,7 @@ import {
   routeAroundSourceText,
   videoObstacleFor,
 } from "../src/source-fit";
-import { CAPTION_HALF_BAND, SAFE_AREA, layoutSlots } from "../src/stage";
+import { CAPTION_HALF_BAND, LANDSCAPE_FRAME, SAFE_AREA, layoutSlots } from "../src/stage";
 
 const cue = (
   id: string,
@@ -117,6 +117,22 @@ describe("routing reserves room for captions (FINDINGS §26)", () => {
       placeInFreeBand({ x: 0, y: 0.2, w: 1, h: 0.3 }, [{ y: 0.12, h: 0.5 }, { y: 0.68, h: 0.1 }]),
     ).toBeNull();
   });
+
+  it("searches the frame's own safe area, not portrait's (R15)", () => {
+    // The band search is the other frame-dependent geometry in routing, and it
+    // was hardcoded to portrait while every layoutSlots call took the frame.
+    // Text spanning [0.12, 0.72] leaves [0.72, 0.88] — 0.16, comfortably over
+    // the 0.14 floor, and legal in 16:9, which has no action rail or username
+    // ticker to dodge. Portrait's 0.22 bottom inset ends the search at 0.78 and
+    // sees only 0.06 of it, so the same regions must skip there.
+    const rect = { x: 0.05, y: 0.2, w: 0.5, h: 0.3 };
+    const regions = [{ y: 0.12, h: 0.6 }];
+    const landscape = placeInFreeBand(rect, regions, null, LANDSCAPE_FRAME);
+    expect(landscape, "landscape refused a band its safe area allows").not.toBeNull();
+    expect(landscape!.y).toBeGreaterThanOrEqual(0.72 - 1e-9);
+    expect(landscape!.y + landscape!.h).toBeLessThanOrEqual(0.88 + 1e-9);
+    expect(placeInFreeBand(rect, regions, null)).toBeNull();
+  });
 });
 
 /**
@@ -179,6 +195,21 @@ describe("falling back to a layout that intends the overlap (R27 §120)", () => 
     expect(videoObstacleFor(to)).toBeNull();
   });
 
+  it("emits the cue in the new layout, with the rect that was placed there", () => {
+    // The bookkeeping entry and the emitted cue are two separate writes, and
+    // only the second one renders. An implementation that recorded `overlaid`
+    // correctly while pushing the OLD layout's rect satisfies every other
+    // assertion in this block — so assert the payload, not just the receipt.
+    const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], BLOCKING);
+    const to = plan.overlaid[0]!.to;
+    const emitted = plan.cues[0]!;
+    expect(emitted.layout).toBe(to);
+    expect(emitted.graphicRect, "cue kept the authored slot").toBeTruthy();
+    expect(overlapFraction(emitted.graphicRect!, BLOCKING)).toBe(0);
+    // And it is the OVERLAY layout's slot that moved, not video-top's.
+    expect(emitted.graphicRect).not.toEqual(layoutSlots("video-top").graphic);
+  });
+
   it("reports the move separately from a source-text relayout", () => {
     // The reason differs: this graphic moved because of the PICTURE, and
     // saying "source text in the way" would be a false explanation.
@@ -219,5 +250,21 @@ describe("falling back to a layout that intends the overlap (R27 §120)", () => 
   it("still blames the text when the text really did cover everything", () => {
     const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], [{ y: 0, h: 1 }]);
     expect(plan.skipped[0]!.reason).toMatch(/source already has on-screen text/);
+  });
+
+  it("asks the RENDERED layout for the obstacle, not the layout that lent the slot", () => {
+    // `full-bleed` has no graphic slot, so the moved-rect path borrows
+    // pip-bubble's geometry from TitleCard's default — but the cue still
+    // RENDERS full-bleed, whose obstacle is null. Reading the donor's instead
+    // makes the placer dodge pip-bubble's bubble at [0.66, 0.829], leaving a
+    // 0.06 band under the 0.14 floor; TitleCard declares no alternates, so the
+    // scene was dropped and blamed on a video the layout means to sit on.
+    const plan = routeAroundSourceText([cue("a", "full-bleed", "TitleCard")], [{ y: 0.12, h: 0.48 }]);
+    expect(plan.skipped).toEqual([]);
+    expect(plan.cues).toHaveLength(1);
+    expect(plan.moved[0]).toMatchObject({ id: "a" });
+    const emitted = plan.cues[0]!;
+    expect(emitted.layout, "the moved path must not change the layout").toBe("full-bleed");
+    expect(overlapFraction(emitted.graphicRect!, [{ y: 0.12, h: 0.48 }])).toBe(0);
   });
 });
