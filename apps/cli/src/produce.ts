@@ -949,10 +949,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         `${(m.y * 100).toFixed(0)}-${((m.y + m.h) * 100).toFixed(0)}%`,
     );
   }
+  // Name the destination layout and stop there. The target is whichever
+  // clause-3 alternate the component declares first, and they do not agree on
+  // what that looks like: `blurred-behind` blurs and dims the picture, while
+  // `graphic-only` hides it outright at opacity 0 (§120). Promising a blurred
+  // backdrop was true for one of them and a lie for the other three.
   for (const o of routed.overlaid) {
     console.log(
       `  ▸ scene ${o.id}: ${o.from} → ${o.to} (no room clear of the video — ` +
-        `the graphic now sits on a blurred backdrop)`,
+        `${o.to} places the graphic over the picture)`,
     );
   }
   for (const s of routed.skipped) console.log(`  ⚠ scene ${s.id} skipped: ${s.reason}`);
