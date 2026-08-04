@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import React, { act, useRef } from "react";
+import React, { act, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { PlayerRef } from "@remotion/player";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
+import { onSaveEffect } from "../src/save";
 
 // Same one-time act() opt-in as project-picker.test.ts/Inspector.test.ts —
 // needed the moment a file mounts a component instead of calling pure
@@ -251,5 +252,164 @@ describe("Overlay's window mousedown listener — the real wiring for bug 6", ()
       );
     });
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+/**
+ * The gap the scoped re-review flagged: Finding 1's guard (`onSaveEffect`,
+ * save.ts) had correct render-running logic, but App.tsx's first cut wired
+ * a block through `setError` — the app's FATAL, full-screen, no-dismiss
+ * view — so a ⌘S during a render killed the whole editor instead of
+ * showing a routine notice. A pure test of `onSaveEffect` alone (its own
+ * `save.test.ts`) cannot see that: the bug was in the GLUE, not the
+ * decision. This mounts `Overlay` with the SAME `onSaveEffect` App.tsx
+ * calls, wired to real `useState` standing in for `error`/
+ * `saveBlockedNotice` exactly as App.tsx wires them, and dispatches a real
+ * `keydown` at `window` (Overlay's own listener target) — the actual path
+ * a user's ⌘S takes, not a direct function call.
+ */
+describe("⌘S while a render is running — the real onSave wiring (PLAN 2026-08-04 fix wave, scoped re-review)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  function SaveHarness({
+    renderRunning,
+    startDirty,
+  }: {
+    renderRunning: boolean;
+    startDirty: boolean;
+  }) {
+    const edits = useEdits();
+    const stageRef = useRef<HTMLDivElement>(null);
+    const playerRef = useRef<PlayerRef>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [saveBlockedNotice, setSaveBlockedNotice] = useState(false);
+    // Seeds a real dirty doc through the actual reducer — never a hand-set
+    // boolean standing in for `edits.dirty` — so this test exercises the
+    // same `dirty` value App.tsx's `onSave` reads.
+    React.useEffect(() => {
+      if (startDirty) edits.patchProps("scene-0", { value: "1%" });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    // Byte-identical to App.tsx's `onSave` — see that file's own comment
+    // beside its call to `onSaveEffect`.
+    const onSave = () => {
+      onSaveEffect({
+        dirty: edits.dirty,
+        renderRunning,
+        save: edits.save,
+        onBlocked: () => setSaveBlockedNotice(true),
+        onSaveError: (message) => setError(message),
+      });
+    };
+    return React.createElement(
+      React.Fragment,
+      null,
+      // Stand-ins for App.tsx's `error`/`saveBlockedNotice`-driven UI —
+      // enough to assert on without mounting the whole app shell.
+      React.createElement("div", { "data-testid": "error", "data-value": error ?? "" }),
+      React.createElement("div", {
+        "data-testid": "save-blocked-notice",
+        "data-value": saveBlockedNotice ? "shown" : "hidden",
+      }),
+      React.createElement("div", { ref: stageRef, "data-testid": "stage" }),
+      React.createElement(Overlay, {
+        stageRef,
+        selection: null,
+        onSelect: vi.fn(),
+        edits,
+        onSave,
+        settings: { width: 1080, height: 1920, fps: 30 },
+        cues: [],
+        onToggleHelp: vi.fn(),
+        playerRef,
+        onTransport: vi.fn(),
+        onVideoPreview: vi.fn(),
+        onGraphicPreview: vi.fn(),
+        cue: null,
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    document.elementFromPoint = () => null;
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  const cmdS = () =>
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true, cancelable: true }),
+      );
+    });
+
+  it("blocks the PUT, shows the dismissible notice, and does NOT switch to the fatal error view", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await act(async () => {
+      root.render(React.createElement(SaveHarness, { renderRunning: true, startDirty: true }));
+    });
+    await cmdS();
+    // (a) no PUT fires.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // (b) the fatal view's trigger (`error`) never got set.
+    expect(container.querySelector('[data-testid="error"]')!.getAttribute("data-value")).toBe("");
+    // (c) the dismissible notice DID show — the block was surfaced, just not fatally.
+    expect(
+      container.querySelector('[data-testid="save-blocked-notice"]')!.getAttribute("data-value"),
+    ).toBe("shown");
+  });
+
+  it("does nothing on a CLEAN doc — a reflexive ⌘S with nothing to save is a no-op, not a lockout", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await act(async () => {
+      root.render(React.createElement(SaveHarness, { renderRunning: true, startDirty: false }));
+    });
+    await cmdS();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="error"]')!.getAttribute("data-value")).toBe("");
+    expect(
+      container.querySelector('[data-testid="save-blocked-notice"]')!.getAttribute("data-value"),
+    ).toBe("hidden");
+  });
+
+  it("saves normally through the same wiring once no render is running", async () => {
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    await act(async () => {
+      root.render(React.createElement(SaveHarness, { renderRunning: false, startDirty: true }));
+    });
+    // The dispatch AND the `save()` promise chain it kicks off (which ends
+    // in a `dispatch({type:"saved"})` React update) must be in the SAME
+    // `act` call — splitting them, as an earlier draft of this test did,
+    // let the state update land after `act` had already returned and
+    // warned about testing outside of `act`.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/overrides",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    expect(container.querySelector('[data-testid="error"]')!.getAttribute("data-value")).toBe("");
+    expect(
+      container.querySelector('[data-testid="save-blocked-notice"]')!.getAttribute("data-value"),
+    ).toBe("hidden");
   });
 });

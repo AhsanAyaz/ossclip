@@ -24,7 +24,7 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { ProjectPicker } from "./ProjectPicker";
 import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
-import { guardedSave } from "./save";
+import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
 
 /**
@@ -76,6 +76,12 @@ export const App: React.FC = () => {
   // write-back unconditionally, but say so out loud when that reload threw
   // something away rather than silently losing it).
   const [dirtyDiscardedNotice, setDirtyDiscardedNotice] = useState(false);
+  // A Save (button or ⌘S) that landed while a render was running (Finding 1,
+  // PLAN 2026-08-04 fix wave; scoped re-review). Dismissible and non-fatal —
+  // `onSaveEffect`'s own doc comment (save.ts) has the full reasoning for why
+  // this must never go through `setError`, which is the FATAL, full-screen
+  // view below with no dismiss and no state reset.
+  const [saveBlockedNotice, setSaveBlockedNotice] = useState(false);
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
@@ -359,7 +365,28 @@ export const App: React.FC = () => {
             });
           }
         } catch {
-          // Transient poll failure — keep polling; the interval survives.
+          // Bundled fix (PLAN 2026-08-04 fix wave, scoped re-review — same
+          // root as the Save guard above): this used to claim "keep
+          // polling; the interval survives" unconditionally, but the
+          // interval is cleared ABOVE the moment an exit is detected — a
+          // tick that gets that far and then throws (the follow-up
+          // `fetch("/api/production")`, not the render-status check just
+          // above it) lands here with NO interval left running. Left
+          // alone, `render` stuck at whatever the last successful tick
+          // reported (`{running: true}`) used to just be a stale progress
+          // panel; now that Save refuses while `render?.running`, it is a
+          // PERMANENT save lockout with no way out but a reload that
+          // discards the in-memory doc — exactly the failure mode the
+          // guard above exists to prevent, reintroduced by a different
+          // route. `edit.ts`'s `renderExit` keeps reporting the same
+          // completed exit code until the NEXT render starts, so simply
+          // starting a new interval is a safe, self-healing retry: the
+          // very next tick re-derives the same branch and tries the
+          // reload again. When the interval is STILL running (the
+          // render-status fetch itself threw), this really is the
+          // transient case the old comment described, and doing nothing
+          // is correct — the next tick retries on its own.
+          if (renderPollRef.current === null) beginRenderPoll();
         }
       })();
     }, 1000);
@@ -551,17 +578,19 @@ export const App: React.FC = () => {
   }, [renderProps, edits.doc, videoPreview, graphicPreview]);
 
   const onSave = (): void => {
-    // Finding 1, PLAN 2026-08-04 fix wave final review: `guardedSave`'s own
-    // doc comment (save.ts) has the full reasoning — a Save mid-render PUTs
-    // the pre-render doc over produce's src-resolved write-back, for the
-    // whole render's duration. This is the thin I/O wrapper; both the Save
-    // button and ⌘S (Overlay.tsx) go through it.
-    const outcome = guardedSave(render?.running === true, edits.save);
-    if (outcome.blocked) {
-      setError(outcome.reason);
-      return;
-    }
-    void outcome.result.catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    // Finding 1, PLAN 2026-08-04 fix wave final review (scoped re-review
+    // fixed a regression here — see `onSaveEffect`'s own doc comment,
+    // save.ts, for the full reasoning): this is the thin I/O wrapper both
+    // the Save button and ⌘S (Overlay.tsx) go through. `onBlocked` is a
+    // dismissible notice, NEVER `setError` — that path is FATAL (the
+    // full-screen view below).
+    onSaveEffect({
+      dirty: edits.dirty,
+      renderRunning: render?.running === true,
+      save: edits.save,
+      onBlocked: () => setSaveBlockedNotice(true),
+      onSaveError: (message) => setError(message),
+    });
   };
 
   // Render (R11 Task 4.4): save first when dirty — a render of unsaved edits
@@ -881,6 +910,24 @@ export const App: React.FC = () => {
           <button
             style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
             onClick={() => setDirtyDiscardedNotice(false)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+      {saveBlockedNotice ? (
+        // Finding 1's scoped re-review fix (PLAN 2026-08-04 fix wave):
+        // dismissible and non-fatal, same chrome as `dirtyDiscardedNotice`
+        // above — a render in flight is routine, not an app-breaking error,
+        // and `onSaveEffect`'s doc comment (save.ts) explains why this must
+        // never route through `setError` instead.
+        <div data-testid="save-blocked-notice" style={reanchorNotice}>
+          Can't save while a render is running — it's writing its own
+          overrides.json right now. Wait for it to finish (or cancel it)
+          before saving.
+          <button
+            style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+            onClick={() => setSaveBlockedNotice(false)}
           >
             Dismiss
           </button>
