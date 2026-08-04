@@ -397,7 +397,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         // read here at the call site — the pure core never sees it.
         let correctedDelta = deltaSec;
         let snappedAt: number | null = null;
-        const cue = r && !e.altKey ? cues.find((c) => c.id === press.sceneId) : undefined;
+        const cue = r && r.width > 0 && !e.altKey ? cues.find((c) => c.id === press.sceneId) : undefined;
         if (cue && r) {
           const thresholdSec = SNAP_PX / (r.width / durationSec);
           const targets = snapTargets(cues, press.sceneId, frameRef.current / fps, durationSec);
@@ -407,6 +407,9 @@ export const Timeline: React.FC<TimelineProps> = ({
           const snapEnd = applySnap(wantEnd, targets, thresholdSec);
           const distStart = snapStart.snapped === null ? Infinity : Math.abs(snapStart.sec - wantStart);
           const distEnd = snapEnd.snapped === null ? Infinity : Math.abs(snapEnd.sec - wantEnd);
+          // On an exact tie, the START edge wins — arbitrary but fixed, same
+          // "earlier wins" spirit as applySnap's own tie-break in timing.ts,
+          // so the outcome never depends on which edge a scan visits first.
           if (distStart <= distEnd && snapStart.snapped !== null) {
             correctedDelta = deltaSec + (snapStart.sec - wantStart);
             snappedAt = snapStart.snapped;
@@ -430,7 +433,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       // Edge drag: snap the dragged edge only, then the existing clamp — snap
       // is a pre-pass, the clamp remains the single authority on legality.
       let snappedAt: number | null = null;
-      if (!e.altKey) {
+      if (!e.altKey && r.width > 0) {
         const thresholdSec = SNAP_PX / (r.width / durationSec);
         const targets = snapTargets(cues, drag.sceneId, frameRef.current / fps, durationSec);
         if (drag.edge === "start") {
@@ -768,11 +771,25 @@ export const Timeline: React.FC<TimelineProps> = ({
               // so a landing spot reads in the units the user is judging it
               // by. Rendered for every live drag, snapped or not — the tick
               // below is the snap-only indicator.
+              //
+              // A late block (start past ~85% of the track) flips the
+              // anchor to its RIGHT edge (translateX(-100%) instead of the
+              // default -4px, which extends rightward): left-anchored, its
+              // ~110px nowrap width would overflow past the track's right
+              // edge into the scroller's own scrollable range, making
+              // `scrollWidth > clientWidth` true even at zoom 1 — which
+              // silently arms `pageAtEdge` (view paging is meant to be a
+              // ZOOMED-in behaviour) and can jump the view mid edge-drag.
+              // The readout must stay fully inside the track, always.
               <div
                 data-testid="drag-readout"
                 style={{
                   ...dragReadout,
                   left: `${durationSec > 0 ? (dragPreview.startSec / durationSec) * 100 : 0}%`,
+                  transform:
+                    durationSec > 0 && dragPreview.startSec / durationSec > 0.85
+                      ? "translateX(-100%)"
+                      : dragReadout.transform,
                 }}
               >
                 {formatTimecode(dragPreview.startSec, fps)} – {formatTimecode(dragPreview.endSec, fps)}
