@@ -2,7 +2,6 @@ import { SCENE_REGISTRY, type Layout, type SceneCue } from "@ossclip/core/browse
 import {
   CAPTION_HALF_BAND,
   PORTRAIT_FRAME,
-  SAFE_AREA,
   freeBands,
   layoutSlots,
   safeAreaFor,
@@ -112,11 +111,21 @@ export function placeInFreeBand(
    * `videoObstacleFor` returns null for the layouts that intend the overlap.
    */
   videoObstacle?: OccupiedRegion | null,
+  /**
+   * The output frame. The band search is the other frame-dependent geometry in
+   * routing (R15): landscape has no platform chrome to dodge, so its insets are
+   * 0.06/0.12 against portrait's 0.12/0.22. Searching the portrait safe area in
+   * a 16:9 run refuses legal area — a band at [0.72, 0.88] is 0.16 tall and
+   * free, and portrait's floor of 0.78 hides all but 0.06 of it. Optional and
+   * portrait-defaulted so every existing caller keeps its behaviour.
+   */
+  frame: FrameSize = PORTRAIT_FRAME,
 ): { x: number; y: number; w: number; h: number } | null {
   // freeBands merges overlapping blocked rects itself, so the obstacle can
   // simply join the text regions rather than needing to be reconciled.
   const blocked = videoObstacle ? [...regions, videoObstacle] : regions;
-  const [tallest] = freeBands({ start: SAFE_AREA.top, end: 1 - SAFE_AREA.bottom }, blocked);
+  const safe = safeAreaFor(frame);
+  const [tallest] = freeBands({ start: safe.top, end: 1 - safe.bottom }, blocked);
   if (!tallest) return null;
   const bandHeight = tallest.end - tallest.start;
   if (bandHeight < MIN_ROUTED_SLOT_H) return null;
@@ -219,14 +228,20 @@ export function routeAroundSourceText(
     // No layout is clear where it stands — so move the slot instead of losing
     // the scene. "Route around them, or skip" is the rule, and routing comes
     // first: the graphic keeps its size and slides into the largest free band.
-    // Which layout supplies the base decides which video the obstacle is, so
-    // resolve that FIRST rather than reading the slot twice.
+    //
+    // The SLOT may be borrowed — `full-bleed` has none, so the default layout
+    // donates its geometry — but the OBSTACLE must come from `cue.layout`, the
+    // layout that actually renders. This path only moves the rect; it never
+    // changes the layout, so asking the donor hands the placer a video band
+    // that is not on screen. A full-bleed cue would dodge pip-bubble's bubble
+    // and be skipped "because of the video" — in a layout §120's own rule
+    // classifies as intending the overlap, and for which the obstacle is null.
     const baseLayout = layoutSlots(cue.layout, undefined, [], frame).graphic
       ? cue.layout
       : meta.defaultLayout;
     const base = layoutSlots(baseLayout, undefined, [], frame).graphic;
     const shifted = base
-      ? placeInFreeBand(base, active, videoObstacleFor(baseLayout, frame))
+      ? placeInFreeBand(base, active, videoObstacleFor(cue.layout, frame), frame)
       : null;
     if (shifted) {
       moved.push({ id: cue.id, y: shifted.y, h: shifted.h });
@@ -256,7 +271,7 @@ export function routeAroundSourceText(
       if (videoObstacleFor(alt, frame) !== null) continue;
       const slot = layoutSlots(alt, undefined, [], frame).graphic;
       if (!slot) continue;
-      const moved2 = placeInFreeBand(slot, active, null);
+      const moved2 = placeInFreeBand(slot, active, null, frame);
       if (moved2) {
         overlay = { layout: alt, rect: moved2 };
         break;
@@ -273,7 +288,10 @@ export function routeAroundSourceText(
     // have covered everything, or it may have left a band that only the
     // VIDEO made too small to use. Retrying without the obstacle is the
     // cheapest way to ask which, and it runs only on the skip path.
-    const clearOfTextAlone = base ? placeInFreeBand(base, active, null) !== null : false;
+    // Same frame as the placement it is second-guessing — a diagnostic that
+    // searched a different safe area than the attempt above could blame the
+    // video for a band the run never actually looked at (R15).
+    const clearOfTextAlone = base ? placeInFreeBand(base, active, null, frame) !== null : false;
     skipped.push({
       id: cue.id,
       reason: clearOfTextAlone

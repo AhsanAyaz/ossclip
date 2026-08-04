@@ -151,7 +151,7 @@ printed with its own line. A run that quietly changes a scene's visual character
 
 There is no new failure mode. Every path already terminates in one of: placed as authored, relayout, moved rect, or skip-with-reason. The change adds one more relayout opportunity before the existing skip, and the skip's reason string stays accurate — a scene reaching it now had no clear band *and* no overlay alternate.
 
-`videoObstacleFor` reads only the slot table, which is total over the `Layout` enum, so it cannot throw. A layout with `graphic: null` (`full-bleed`) never reaches routing's placer, because the candidate loop skips slotless layouts before any of this.
+`videoObstacleFor` reads only the slot table, which is total over the `Layout` enum, so it cannot throw. A layout with `graphic: null` (`full-bleed`) is skipped as a *candidate* — but that only rules it out as a destination, not as the cue's own layout, and the placer runs afterwards regardless. A `full-bleed` cue with a graphic borrows the default layout's slot geometry and reaches the placer like any other. `videoObstacleFor("full-bleed")` returns null on clause 0 (no graphic slot), which is the correct answer for it: the layout renders the picture full-frame and intends whatever sits on it. The obstacle must therefore be asked of the cue's own layout, never of the layout that donated the slot — the moved-rect path changes the rect, not the layout.
 
 ## Testing
 
