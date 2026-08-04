@@ -60,15 +60,18 @@ function nearest(candidates: AxisCandidate[], thresholdFrac: number): AxisCandid
  * edges (spec: "Overlay guides"). Pure and total: outside every threshold it
  * returns `rect` unchanged and no guides — the caller (`Overlay.tsx`) runs
  * this AFTER `applyBoxHandle` + `clampGraphicRect` and before the edit
- * commits, so `rect` here is already valid geometry; snapping only nudges it
- * onto one of the closed candidate set below.
+ * commits, so `rect` here is already valid geometry going IN. Snapping tries
+ * to nudge it onto one of the closed candidate set below, but the move
+ * branch's centre candidate is REJECTED (not applied, not re-clamped) when
+ * doing so would push an edge outside the safe bounds — see the comment on
+ * that candidate for why re-clamping isn't the fix.
  *
  * Move drags snap the rect's CENTRE to the frame's centre lines and its
- * EDGES to the safe-area edges — whichever candidate is nearest wins per
- * axis, at most one guide per axis. Resize drags snap only the edge(s) the
- * `handle` actually drags (the same `.includes("w"/"e"/"n"/"s")` semantics
- * `applyBoxHandle` uses) — the centre candidates don't apply, since a resize
- * doesn't move the rect's centre on purpose.
+ * EDGES to the safe-area edges — whichever LEGAL candidate is nearest wins
+ * per axis, at most one guide per axis. Resize drags snap only the edge(s)
+ * the `handle` actually drags (the same `.includes("w"/"e"/"n"/"s")`
+ * semantics `applyBoxHandle` uses) — the centre candidates don't apply,
+ * since a resize doesn't move the rect's centre on purpose.
  */
 export function guideSnap(
   rect: GraphicRect,
@@ -82,9 +85,24 @@ export function guideSnap(
   if (handle === "move") {
     const centerX = rect.x + rect.w / 2;
     const rightEdge = rect.x + rect.w;
+    // The safe area is ASYMMETRIC in production (portrait's SAFE_AREA is
+    // top:0.12 bottom:0.22 left:0.04 right:0.16) — frame-centre 0.5 is NOT
+    // the safe area's own centre. A rect can sit with its CENTRE close to
+    // 0.5 while its far edge already sits past a safe bound (a wide rect is
+    // enough to prove it: centre near 0.5, right edge already past
+    // 1-safe.right). Landing such a rect's centre on 0.5 would produce an
+    // illegal box; the edge candidates below are always legal here (the
+    // caller's clamp already guarantees `rect` fits inside the safe rect,
+    // and an edge candidate only ever moves the rect FURTHER inside), so
+    // the fix is to drop the centre candidate from consideration rather
+    // than accept-then-reclamp — reclamping would leave the drawn guide
+    // line not matching where the rect actually ends up, the exact desync
+    // the ordering (snap AFTER the clamp) was chosen to avoid.
+    const centerXNext = 0.5 - rect.w / 2;
+    const centerXLegal = centerXNext >= safe.left && centerXNext + rect.w <= 1 - safe.right;
     const xHit = nearest(
       [
-        { target: 0.5, feature: centerX },
+        ...(centerXLegal ? [{ target: 0.5, feature: centerX }] : []),
         { target: safe.left, feature: rect.x },
         { target: 1 - safe.right, feature: rightEdge },
       ],
@@ -100,9 +118,12 @@ export function guideSnap(
 
     const centerY = rect.y + rect.h / 2;
     const bottomEdge = rect.y + rect.h;
+    // Same asymmetry, same rejection rule, on the y axis.
+    const centerYNext = 0.5 - rect.h / 2;
+    const centerYLegal = centerYNext >= safe.top && centerYNext + rect.h <= 1 - safe.bottom;
     const yHit = nearest(
       [
-        { target: 0.5, feature: centerY },
+        ...(centerYLegal ? [{ target: 0.5, feature: centerY }] : []),
         { target: safe.top, feature: rect.y },
         { target: 1 - safe.bottom, feature: bottomEdge },
       ],

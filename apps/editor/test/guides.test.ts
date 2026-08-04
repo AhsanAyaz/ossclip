@@ -134,23 +134,61 @@ describe("guideSnap — passthrough", () => {
 });
 
 describe("guideSnap — one guide per axis", () => {
+  // w = 0.6 (SAFE's width is 1 - 0.04 - 0.16 = 0.8): unlike the w = 0.9
+  // fixture this replaced, a legal centre-snap is actually reachable for
+  // this width (review CRITICAL — landing centre-x on 0.5 needs w <= 0.68
+  // here, `0.5 - w/2 + w <= 1 - safe.right`), so these cases genuinely
+  // exercise "nearest wins" between two AVAILABLE candidates rather than
+  // the centre being rejected outright.
   it("picks the nearer of two simultaneous hits on the same axis, never both", () => {
-    // w = 0.9: centre-x sits 0.01 from 0.5, the left edge sits 0.02 from
-    // safe.left — both within a widened threshold, centre nearer. Only ONE
-    // guide (the winner) may come back for the x axis.
-    const rect: GraphicRect = { x: 0.06, y: 0.3, w: 0.9, h: 0.02 };
-    const wideThreshold = 0.1;
+    // centre-x sits 0.06 from 0.5, the left edge sits 0.10 from safe.left —
+    // both within the widened threshold, centre nearer. Only ONE guide (the
+    // winner) may come back for the x axis.
+    const rect: GraphicRect = { x: 0.14, y: 0.3, w: 0.6, h: 0.02 };
+    const wideThreshold = 0.12;
     const { rect: out, guides } = guideSnap(rect, "move", SAFE, wideThreshold);
     expect(guides.filter((g) => g.axis === "x")).toHaveLength(1);
-    expectRectCloseTo(out, { x: 0.05, y: 0.3, w: 0.9, h: 0.02 });
+    expectRectCloseTo(out, { x: 0.2, y: 0.3, w: 0.6, h: 0.02 });
     expect(guides).toEqual([{ axis: "x", at: 0.5 }]);
   });
 
   it("picks the edge when it's nearer than the centre", () => {
-    const rect: GraphicRect = { x: 0.02, y: 0.3, w: 0.9, h: 0.02 };
-    const wideThreshold = 0.1;
-    const { guides } = guideSnap(rect, "move", SAFE, wideThreshold);
+    // left edge sits 0.04 from safe.left, centre-x sits 0.12 from 0.5 — the
+    // centre IS a legal, available candidate here, just farther.
+    const rect: GraphicRect = { x: 0.08, y: 0.3, w: 0.6, h: 0.02 };
+    const wideThreshold = 0.13;
+    const { rect: out, guides } = guideSnap(rect, "move", SAFE, wideThreshold);
     expect(guides.filter((g) => g.axis === "x")).toHaveLength(1);
+    expectRectCloseTo(out, { x: 0.04, y: 0.3, w: 0.6, h: 0.02 });
     expect(guides).toEqual([{ axis: "x", at: 0.04 }]);
+  });
+});
+
+describe("guideSnap — move centre legality (asymmetric safe area)", () => {
+  it("rejects an illegal centre snap instead of producing an out-of-bounds rect (review CRITICAL repro)", () => {
+    // SAFE is asymmetric (top:0.12 bottom:0.22 left:0.04 right:0.16), so
+    // frame-centre 0.5 is not the safe area's own centre. This rect's
+    // centre-x (0.495) sits within threshold of 0.5, but snapping it there
+    // would land x at 0.125 — right edge 0.875, past the safe cap of 0.84
+    // for w=0.75. No OTHER candidate is close enough either (left edge is
+    // 0.08 away, right edge 0.03 away, both past 0.015), so the rect must
+    // come back completely unchanged, not silently re-clamped to something
+    // else.
+    const rect: GraphicRect = { x: 0.12, y: 0.5, w: 0.75, h: 0.1 };
+    expect(guideSnap(rect, "move", SAFE, 0.015)).toEqual({
+      rect: { x: 0.12, y: 0.5, w: 0.75, h: 0.1 },
+      guides: [],
+    });
+  });
+
+  it("still snaps the centre when landing on it is legal (symmetric safe area)", () => {
+    // Proves the rejection is conditional, not a blanket centre-disable: a
+    // symmetric safe area puts 0.5 at its own centre too, so a wide rect
+    // centred near 0.5 lands legally and must still snap.
+    const symmetricSafe: SafeArea = { top: 0.1, bottom: 0.1, left: 0.1, right: 0.1 };
+    const rect: GraphicRect = { x: 0.145, y: 0.3, w: 0.7, h: 0.02 };
+    const { rect: out, guides } = guideSnap(rect, "move", symmetricSafe, THRESHOLD);
+    expectRectCloseTo(out, { x: 0.15, y: 0.3, w: 0.7, h: 0.02 });
+    expect(guides).toEqual([{ axis: "x", at: 0.5 }]);
   });
 });
