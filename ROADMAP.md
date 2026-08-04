@@ -43,6 +43,15 @@ Concrete, scoped, mostly logged as findings already:
   remains is evidence: a render that under-delivers *despite* the stated
   target is the trigger for the validate-and-retry pass the plan deferred.
   See [`docs/superpowers/plans/2026-08-05-scene-count-from-content-structure.md`](./docs/superpowers/plans/2026-08-05-scene-count-from-content-structure.md).
+- The exit's Backdrop Root over the scrim: `ExitFade` at `opacity < 1` empties
+  the scrim's backdrop-filter, so the frost snaps to flat tint on the exit's
+  first frame — the mirror of the entrance bug fixed in the element-motion
+  round. ~5 lines: `Scrim` computes enter × exit opacity itself and
+  `ExitFade` wraps only the content.
+- Content springs vs the exit: stagger delays are constants, so a five-item
+  `BulletList` at the 1.2s floor loses its last bullet (peaks at 41% opacity
+  mid-exit). Deriving spring delays from cue duration is the fix, and it is
+  a design round, not a patch.
 
 ## Later — needs a design issue first
 

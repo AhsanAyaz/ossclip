@@ -57,19 +57,22 @@ const scrimColor = (themeBg: string): string => {
  * both at the layer (R16 §69).
  *
  * Components own their content entrances: all nine stagger their elements
- * in through anim.ts's useEnter springs, a fact this file has now
- * mis-stated in both directions — an old comment claimed it while an
- * earlier survey missed it and briefly replaced it with a layer-wide
- * entrance that DOUBLE-animated everything. What never animated was the
- * over-video scrim (R21 §100), which appeared at full opacity on the cue's
- * first frame: "a half black box appears" (spec 2026-08-04). So the
- * entrance here is the scrim's, and only the scrim's.
+ * in through anim.ts's useEnter springs, a fact this file stated correctly
+ * for a year, then briefly contradicted when a survey missed the springs
+ * and a layer-wide entrance double-animated everything. What never animated
+ * was the over-video scrim (R21 §100), which appeared at full opacity on
+ * the cue's first frame: "a half black box appears" (spec 2026-08-04). So
+ * the entrance here is the scrim's, and only the scrim's.
  *
  * The exit stays layer-wide: it is the cue's END doing the animating, and
  * every component leaving the same way is what makes the cut read as
  * designed. Both ends read their seconds from entranceExitSec, which
- * shrinks the pair together on a cue too short to hold both. Inside the
- * cue's Sequence, so local frame 0 is the cue's own start.
+ * shrinks the pair together on a cue too short to hold both — the scrim
+ * and the exit, that is; the components' content springs (anim.ts) predate
+ * the resolver and do not read it, so a long-staggered component can still
+ * overlap the exit on a short cue (see the spec's 'Neither end may eat the
+ * other' correction). Inside the cue's Sequence, so local frame 0 is the
+ * cue's own start.
  */
 const wrapperStyle = (ease: number): React.CSSProperties => ({
   width: "100%",
@@ -78,8 +81,10 @@ const wrapperStyle = (ease: number): React.CSSProperties => ({
   alignItems: "center",
   justifyContent: "center",
   opacity: ease,
-  // 18px over ENTER_SEC/EXIT_SEC (9 frames at 30fps) is 2px a frame — the
-  // move reads smooth without any blur, which was the actual ask.
+  // 18px over the exit's ~9 frames. Eased, so the peak step is 3.78px on the
+  // first frame, tapering below 0.25px — small enough to read smooth at 30fps
+  // without blur, which was the actual ask. (Used only by ExitFade since the
+  // entrance was scoped to the scrim; see ./motion for the seconds.)
   transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
 });
 

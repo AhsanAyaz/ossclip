@@ -2,6 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **SUPERSEDED IN PART — read before reusing anything here.** This plan's
+> central premise ("eight of nine components render static") was FALSE: all
+> nine stagger content in via `anim.ts`'s `useEnter` springs, present since
+> Phase 1. The survey missed them twice in one direction — `anim.ts` is a
+> `.ts` file excluded by a `*.tsx` glob, and components call `useEnter()`,
+> which contains none of the grepped primitive names. Task 2's `EntranceRise`
+> below was implemented, found to double-animate content (layer fade + 18px
+> stacked under the 0.5s springs), and replaced by a scrim-scoped `Scrim`
+> component. Do not reintroduce the wrapper. The true story is the spec's
+> "Correction" section: `docs/superpowers/specs/2026-08-04-element-motion-design.md`.
+
 **Goal:** Give every graphic an entrance mirroring the exit that already exists, make the caption's active-word emphasis actually animate in the render, and pin the bug class (CSS transitions in a seek-and-screenshot renderer) with a test.
 
 **Architecture:** A new pure module `packages/scenes/src/motion.ts` owns the two durations, the shared ease, and `entranceExitSec` — the resolver that shrinks both ends together so they can never overlap on a short cue. `SceneLayer.tsx` gains an `EntranceRise` wrapper outside the existing `ExitFade`, both reading their duration from the resolver. `CaptionTrack.tsx` swaps its dead CSS transition for frame-driven interpolation over the same ease.
@@ -202,6 +213,8 @@ yet."
 ---
 
 ### Task 2: `EntranceRise` — the arrival that mirrors the departure
+
+> **Superseded:** `EntranceRise` shipped, double-animated, and was replaced by the scrim-scoped `Scrim`. See the spec's Correction.
 
 **Files:**
 - Modify: `packages/scenes/src/SceneLayer.tsx` only

@@ -12,7 +12,7 @@ Asked which elements, she was precise:
 
 The last sentence is the diagnosis, read the other way round. **Those elements have no movement.** Motion blur cannot fix a thing that does not move.
 
-### What the code does today
+### What the code does today (superseded — see Correction)
 
 | element | animation |
 | --- | --- |
@@ -56,7 +56,7 @@ The caption fix and the CSS-transition tripwire are unaffected.
 **Out, deliberately:**
 
 - **Motion blur.** Not rejected on principle — deferred because it is the wrong first move. Once elements traverse real distance, the places it could legitimately help are the pip-mask lerp and the zoom push, both of which already move continuously. Re-ask on real footage after this ships. `@remotion/motion-blur` is not currently a dependency.
-- **60fps.** Doubles render time for a pipeline whose slowest stage is already encoding. An 18px move over 9 frames is 2px/frame — smooth at 30.
+- **60fps.** Doubles render time for a pipeline whose slowest stage is already encoding. An 18px move over 9 frames is a peak step of 3.78px, tapering — smooth at 30.
 - **Changing the components' existing staggered entrances.** They exist (`anim.ts` `useEnter`, Phase 1 — see Correction) and are untouched; re-tuning them is an editorial round of its own.
 - **Changing any component's internals.** Zero component files are touched.
 
@@ -80,7 +80,7 @@ unchanged.
 
 The exit fades out while sliding **down** 18px (`translateY((1 - ease) * 18)` as `ease → 0`). The scrim's entrance is its mirror: it starts 18px low and rises to rest. Rises in, settles, sinks out — and both ends share the exit's existing ease-out quad, `p * (2 - p)`, so there is one curve in the file rather than two that can drift apart.
 
-`ENTER_SEC = 0.3`, matching `EXIT_SEC`. At 30fps that is 9 frames for 18px — 2px per frame, which is why this reads smooth without any blur.
+`ENTER_SEC = 0.3`, matching `EXIT_SEC`. At 30fps that is 9 frames for 18px — a peak step of 3.78px, tapering, which is why this reads smooth without any blur.
 
 ### Neither end may eat the other
 
@@ -105,6 +105,16 @@ export function entranceExitSec(
 
 Pure, in its own module, so the arithmetic is tested without rendering a frame.
 
+**Scope of this guarantee (correction):** it covers the scrim's entrance and
+the layer exit — the two ends `entranceExitSec` governs. The components'
+content springs (`anim.ts`, 0.5s + stagger) predate it and do not read it,
+so content can still overlap the exit on ordinary cues: the boundary is
+`duration < 0.8s + maxStaggerDelay`, and a five-item `BulletList` at the
+editor's 1.2s floor starts its last bullet's spring one frame after the
+exit begins — that bullet peaks at 41% opacity and never arrives. Known,
+pre-existing, and deliberately not fixed in this round; deriving the
+springs' delays from the cue duration is a design round of its own.
+
 ### The caption emphasis is driven by frame
 
 `CaptionTrack.tsx` already computes `t = line.start + frame / fps` and the word's own `w.start`, so the progress is available without new plumbing:
@@ -124,7 +134,7 @@ const pop = p * (2 - p);
 
 ## Error handling
 
-No new failure modes. Every value is a clamped interpolation over a finite duration, and `entranceExitSec` returns non-negative seconds for any input including zero and negative durations — a degenerate cue renders static rather than throwing, which is the correct outcome for something that should not exist.
+No new failure modes. Every value is a clamped interpolation over a finite duration, and `entranceExitSec` returns non-negative seconds for any input including zero and negative durations — a degenerate cue renders nothing rather than throwing (every animated value is at its frame-0 state, which for a one-frame cue is fully transparent), which is the correct outcome for something that should not exist.
 
 The animations are visual only. They do not touch `production.json`, `render-props.json`, `overrides.json`, the cue timing, or the grounding checks. A re-produce and a re-render both reach the same document they do today.
 
@@ -137,7 +147,7 @@ The animations are visual only. They do not touch `production.json`, `render-pro
 - a shorter cue gets both scaled proportionally, and **their sum never exceeds the duration** — the property, asserted directly, not inferred from two examples;
 - a zero or negative duration returns zeros rather than negatives.
 
-For the components, the risk is regression rather than the animation itself: `SceneLayer` and `CaptionTrack` have existing tests, and the wrapper must not disturb what they assert about layout, anchors or hit-testing. The editor's `Overlay.test.ts` and `hitTest.test.ts` cover drag targets that sit inside these elements — an entrance that changed layout rather than transform would break them, which is exactly the alarm we want.
+For the components, the risk is regression rather than the animation itself: `SceneLayer` and `CaptionTrack` have existing tests, and the layer's exit and scrim components must not disturb what they assert about layout, anchors or hit-testing. The editor's `Overlay.test.ts` and `hitTest.test.ts` cover drag targets that sit inside these elements — an entrance that changed layout rather than transform would break them, which is exactly the alarm we want.
 
 One assertion is worth adding directly for the bug: **no CSS `transition` may appear in the render path.** A grep-style test over `packages/scenes/src` pins the thing that was wrong, and stops the next person reintroducing an animation that works in the editor and vanishes in the file.
 
