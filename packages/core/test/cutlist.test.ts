@@ -311,16 +311,55 @@ describe("wordless slivers between removals fold in regardless of MIN_KEEP (§12
   });
 
   it("does NOT fold a wordless gap longer than the level's pauseMin", () => {
-    // island=1.4 -> post-tighten keep-gap ≈1.42s, above standard's 0.7s
-    // pauseMin. A wordless stretch this long is exactly what pauseMin says
-    // the pipeline should treat as a deliberate beat (or, if genuinely dead
-    // air, would already have its own removal) — not something that should
-    // vanish as collateral of merging two unrelated cuts. Pins the outer
-    // sanity bound decided in Task 6's report (§124's fix task, judgment
-    // point (a)).
+    // island=1.4 -> post-tighten keep-gap = 1.62s, above standard's 0.7s
+    // pauseMin. If this whole gap were genuinely silent, the interior-pause
+    // branch above would already have cut it as its own removal (a `pauseDur
+    // > pauseMin` silence is the only case that branch doesn't `continue`
+    // past) — so a wordless-per-transcript gap this long, surviving as bare
+    // space between two OTHER removals, means the acoustic detector measured
+    // real audio there and declined to call it silence. Folding it anyway,
+    // on the transcript's word-count alone, would eat that live content.
+    // Pins the outer sanity bound decided in Task 6's report (§124's fix
+    // task, judgment point (a)).
     const { transcript, analysis, duration } = twoSilencesWithIsland(1.4);
     const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard" });
     const removals = cutlist.filter((s) => s.kind === "remove");
     expect(removals, "a >pauseMin wordless gap must stay a separate keep, not fold away").toHaveLength(2);
+  });
+
+  it("folds a gap that lands exactly on the pauseMin boundary (inclusive)", () => {
+    // Aggressive level (pauseMin=0.5, tightenTo=0.18) hits the boundary with
+    // exact float equality: island=0.32 -> pad-in 0.072, pad-out 0.108 ->
+    // post-tighten gap = 9.392 - 8.892 = 0.5 === policy.pauseMin exactly.
+    // The merge condition is `gap <= pauseMin`, so equality must still fold.
+    const { transcript, analysis, duration } = twoSilencesWithIsland(0.32);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "aggressive" });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals, "a gap exactly at pauseMin must still fold (inclusive boundary)").toHaveLength(1);
+  });
+
+  it("chains a fold across three removals with two consecutive wordless gaps", () => {
+    // before/silence/silence/silence/after — the same wordless-transcript-gap
+    // shape as the field bug, but the acoustic detector split it into THREE
+    // silences (two transient islands) instead of two. Both post-tighten
+    // gaps (0.52s and 0.42s) are wordless and under standard's 0.7s pauseMin,
+    // so the merge loop must chain both folds into a single removal, not
+    // stop after merging only the first pair.
+    const words: Word[] = [
+      { text: "before", start: 0, end: 0.4 },
+      { text: "after", start: 30, end: 30.3 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 30.3;
+    const silences: Span[] = [
+      { start: 0.4, end: 9 },
+      { start: 9.3, end: 18 },
+      { start: 18.2, end: 30 },
+    ];
+    const analysis = analyze(transcript, silences, duration);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals, "all three silences must chain into one removal, not stop at the first merge").toHaveLength(1);
+    expect(removals[0]!.reason).toBe("silence");
   });
 });

@@ -202,19 +202,22 @@ export function buildCutlist({
   // MIN_KEEP was never asked at all (findings §124). MIN_KEEP's own comment
   // already says wordless fragments fold; this makes the code do it.
   //
-  // The fold is capped at `policy.pauseMin`, not left unbounded: that's the
-  // same constant the interior-pause branch above already uses to decide
-  // "is this pause long enough that the pipeline treats it as a deliberate
-  // beat" (pauses shorter than it never even become a removal). Without a
-  // cap, a wordless gap of any length — an off-mic aside, a deliberate
-  // dramatic pause — sitting between two unrelated removals (a filler cut
-  // and a distant retake cut, say) would be silently swallowed as collateral
-  // of merging them, even though pauseMin already says a pause that long
-  // should survive. Capping at pauseMin keeps the fold scoped to slivers —
-  // the field bug was 0.37s, comfortably under every level's pauseMin
-  // (0.5-1.2s) — without re-deciding longer pauses the level policy already
-  // settled. `Math.max` with MIN_KEEP is defensive, not load-bearing: every
-  // current pauseMin already exceeds MIN_KEEP.
+  // The fold is capped at `policy.pauseMin`, not left unbounded — folds any
+  // wordless gap UP TO pauseMin, refuses anything past it. The cap isn't
+  // about protecting short gaps; it's about what a gap LONGER than pauseMin
+  // sitting between two removals implies. The interior-pause branch above
+  // already generates its own removal for every genuinely silent stretch
+  // longer than pauseMin (`pauseDur <= policy.pauseMin` is the only case it
+  // skips) — so if a wordless-per-transcript gap that long survives here
+  // as bare space between two OTHER removals, the acoustic detector looked
+  // at it and did NOT call it silence. That's a live-audio signal the
+  // transcript can't see (a breath, laughter, room action, b-roll audio)
+  // being kept safe from a rule that only knows "the transcript found no
+  // words." A gap AT OR UNDER pauseMin, by contrast, is exactly the field
+  // bug's shape (0.37s, standard's 0.7s pauseMin): debris left over once
+  // both its neighbors are already cut, not a stretch the detector had any
+  // chance to flag on its own. `Math.max` with MIN_KEEP is defensive, not
+  // load-bearing: every current pauseMin already exceeds MIN_KEEP.
   const merged: Removal[] = [];
   for (const r of removals) {
     if (r.end - r.start < 0.05) continue;
