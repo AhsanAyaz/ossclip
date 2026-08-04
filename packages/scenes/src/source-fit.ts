@@ -64,6 +64,41 @@ export function overlapFraction(
 }
 
 /**
+ * The video rect a routed graphic must stay clear of, or null when this
+ * layout intends the graphic to sit on the picture (R27 §120).
+ *
+ * Three clauses, all read from the slot table, none naming a layout. Deriving
+ * rather than listing is load-bearing twice: §120's own list of three missed
+ * `pip-bubble`, whose fully visible bubble sits 0.1 below its graphic; and
+ * clause 2's "in THIS frame" is what sends the landscape splits — which
+ * separate by X, with a full-height video — to clause 3 instead of skipping
+ * every scene in 16:9.
+ *
+ * No startSec/endSec: those exist on OccupiedRegion because burned-in titles
+ * are transient (§32) and the video slot is not. Absent already means
+ * "always" to `regionsDuring`.
+ */
+export function videoObstacleFor(
+  layout: Layout,
+  frame: FrameSize = PORTRAIT_FRAME,
+): OccupiedRegion | null {
+  const slots = layoutSlots(layout, undefined, [], frame);
+  // A layout with no graphic slot never reaches the placer at all.
+  if (!slots.graphic) return null;
+  // Clause 1 — graphic-only parks the pip rect at zero opacity.
+  if (slots.video.opacity === 0) return null;
+  const g = slots.graphic;
+  const v = slots.video.rect;
+  const overlap = Math.min(g.y + g.h, v.y + v.h) - Math.max(g.y, v.y);
+  // Clause 3 — they already share vertical space, so the layout means it.
+  // `> 0` rather than `>= 0`: touching edges count as clear, matching the
+  // `toBeLessThanOrEqual(0)` the §120 test asserts.
+  if (overlap > 0) return null;
+  // Clause 2 — authored apart, so routing must keep them apart.
+  return { y: v.y, h: v.h };
+}
+
+/**
  * Slide a graphic rect into the tallest band that the source's text leaves
  * free, keeping its size. Returns null when no free band can hold it — the
  * only case where a scene is genuinely skipped.
