@@ -193,12 +193,37 @@ export function buildCutlist({
       return mid > start && mid < end;
     });
 
-  // Merge removals that overlap, or whose in-between keep is a wordless sliver.
+  // Merge removals that overlap, or whose in-between keep is a wordless
+  // sliver — folded in regardless of length, not just when it's already
+  // under MIN_KEEP. A 0.37s wordless gap between two `silence` removals
+  // shipped in a real cleanup run because the old condition ANDed the
+  // wordless check to the length check, so `hasProtectedWordInside` was only
+  // ever asked once the gap was already short — a wordless gap that cleared
+  // MIN_KEEP was never asked at all (findings §124). MIN_KEEP's own comment
+  // already says wordless fragments fold; this makes the code do it.
+  //
+  // The fold is capped at `policy.pauseMin`, not left unbounded: that's the
+  // same constant the interior-pause branch above already uses to decide
+  // "is this pause long enough that the pipeline treats it as a deliberate
+  // beat" (pauses shorter than it never even become a removal). Without a
+  // cap, a wordless gap of any length — an off-mic aside, a deliberate
+  // dramatic pause — sitting between two unrelated removals (a filler cut
+  // and a distant retake cut, say) would be silently swallowed as collateral
+  // of merging them, even though pauseMin already says a pause that long
+  // should survive. Capping at pauseMin keeps the fold scoped to slivers —
+  // the field bug was 0.37s, comfortably under every level's pauseMin
+  // (0.5-1.2s) — without re-deciding longer pauses the level policy already
+  // settled. `Math.max` with MIN_KEEP is defensive, not load-bearing: every
+  // current pauseMin already exceeds MIN_KEEP.
   const merged: Removal[] = [];
   for (const r of removals) {
     if (r.end - r.start < 0.05) continue;
     const prev = merged[merged.length - 1];
-    if (prev && (r.start <= prev.end + 1e-6 || (r.start - prev.end < MIN_KEEP && !hasProtectedWordInside(prev.end, r.start)))) {
+    const gap = prev ? r.start - prev.end : Number.POSITIVE_INFINITY;
+    const overlapping = prev !== undefined && gap <= 1e-6;
+    const wordless = prev !== undefined && !hasProtectedWordInside(prev.end, r.start);
+    const foldableGap = wordless && gap <= Math.max(MIN_KEEP, policy.pauseMin);
+    if (prev && (overlapping || foldableGap)) {
       const prevDur = prev.end - prev.start;
       const curDur = r.end - r.start;
       prev.end = Math.max(prev.end, r.end);

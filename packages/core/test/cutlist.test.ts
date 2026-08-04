@@ -245,3 +245,82 @@ describe("lead and tail are decided by position in the file (§127)", () => {
     expect(cut).toEqual([{ srcIn: 0, srcOut: duration, kind: "keep" }]);
   });
 });
+
+/**
+ * Findings §124. A 0.37s wordless sliver survived a real cleanup run between
+ * two `silence` removals: the acoustic detector split one continuous 9.76s
+ * dead-air stretch into two silences (a ~150ms transient inside it), and the
+ * merge condition only asked `hasProtectedWordInside` when the resulting
+ * keep-gap was already under MIN_KEEP — so a wordless gap that cleared
+ * MIN_KEEP (0.37s > 0.25s) was never asked the question and shipped as a
+ * `keep`, despite holding zero transcript words and sitting between two
+ * `silence` cuts.
+ */
+describe("wordless slivers between removals fold in regardless of MIN_KEEP (§124)", () => {
+  /**
+   * Two acoustic silences with a small non-silent island between them, inside
+   * one continuous transcript gap that holds zero words — the exact shape of
+   * the field bug. `island` is the raw acoustic gap between the two silence
+   * spans; standard-level tightening (pad 0.088s in, 0.132s out) turns it into
+   * the surviving keep-gap the merge step must decide about.
+   */
+  function twoSilencesWithIsland(island: number) {
+    const words: Word[] = [
+      { text: "before", start: 0, end: 0.4 },
+      { text: "after", start: 20, end: 20.3 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 20.3;
+    // Silence spans deliberately NOT contiguous — mirrors `silencedetect`
+    // finding two spans, not one, per §124's evidence chain.
+    const silences: Span[] = [
+      { start: 0.4, end: 9 },
+      { start: 9 + island, end: 20 },
+    ];
+    const analysis = analyze(transcript, silences, duration);
+    return { transcript, analysis, duration };
+  }
+
+  it("folds a wordless gap wider than MIN_KEEP into one continuous removal", () => {
+    // island=0.4 -> post-tighten keep-gap = 0.62s (> MIN_KEEP's 0.25s, well
+    // under standard's pauseMin of 0.7s) — same order of magnitude as the
+    // field's 0.37s sliver, deliberately kept above MIN_KEEP to pin the bug.
+    const { transcript, analysis, duration } = twoSilencesWithIsland(0.4);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals, "the two silences must merge into one removal, no keep sliver between them").toHaveLength(1);
+    expect(removals[0]!.reason).toBe("silence");
+  });
+
+  it("still leaves a short gap alone when a protected word sits inside it", () => {
+    // Two filler cuts bracketing a real word ("no") in a window under
+    // MIN_KEEP — the paired guard: word protection must still beat the
+    // length gate, exactly as before this fix (unchanged behavior).
+    const words: Word[] = [
+      { text: "um", start: 0, end: 0.2 },
+      { text: "no", start: 0.22, end: 0.24 },
+      { text: "um", start: 0.26, end: 0.46 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 0.46;
+    const analysis = analyze(transcript, [], duration);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const kept = cutlist.filter((s) => s.kind === "keep");
+    const survivor = kept.find((s) => s.srcIn > 0 && s.srcIn < 0.46 && s.srcOut - s.srcIn < 0.25);
+    expect(survivor, "the sliver holding the real word 'no' must survive as its own keep").toBeDefined();
+  });
+
+  it("does NOT fold a wordless gap longer than the level's pauseMin", () => {
+    // island=1.4 -> post-tighten keep-gap ≈1.42s, above standard's 0.7s
+    // pauseMin. A wordless stretch this long is exactly what pauseMin says
+    // the pipeline should treat as a deliberate beat (or, if genuinely dead
+    // air, would already have its own removal) — not something that should
+    // vanish as collateral of merging two unrelated cuts. Pins the outer
+    // sanity bound decided in Task 6's report (§124's fix task, judgment
+    // point (a)).
+    const { transcript, analysis, duration } = twoSilencesWithIsland(1.4);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals, "a >pauseMin wordless gap must stay a separate keep, not fold away").toHaveLength(2);
+  });
+});

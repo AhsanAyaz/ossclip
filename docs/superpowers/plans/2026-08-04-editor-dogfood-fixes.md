@@ -92,6 +92,17 @@ Property tests with fast-check (root devDep): remapping through an identity re-c
 
 **Investigation, not implementation.** Using the repro workdir's `report.txt`, `production.json` and the cutlist artifacts: find the chunk (visible near a scene around 0:32 in the field report), determine whether it (a) sat inside a pinned/graphic scene window the cleaner refuses to cut, (b) was above the measured noise floor (fan/room tone measured hot), or (c) exposes a real cutlist bug. Outcome: a findings entry (next free § number, per ROADMAP convention) and — only if (c) — a fix task appended to this plan. Do not tune thresholds on one sample.
 
+### Task 6: fold wordless gaps between removals regardless of length (bug 1 fix, appended per Task 5's (c) verdict)
+
+**Appended by the executing session after Task 5's diagnosis (findings §124):** a 0.37s wordless sliver survived between two silence cuts because `cutlist.ts`'s merge loop only evaluates the wordless check (`hasProtectedWordInside`) when the gap is already under `MIN_KEEP` — `overlapping OR (short AND wordless)`. A ~150ms acoustic transient split one 9.76s dead-air stretch into two silences; the 0.37s island between them held zero transcript words but cleared `MIN_KEEP`, so it shipped.
+
+**Files:** `packages/core/src/cutlist.ts` (the merge loop building `merged`); test `packages/core/test/cutlist.test.ts`.
+
+- [ ] **Step 1: pin with a failing test** modeled on the field sample: two silence removals separated by a wordless gap longer than `MIN_KEEP` (use the field numbers `{44.30075, 50.141125}` / `{50.291375, 54.251188}` as a regression fixture, or an equivalent synthetic pair). Assert they merge into one continuous `remove` with no keep inside. Paired guard test: a short gap that holds a protected word still survives.
+- [ ] **Step 2: decide the two flagged judgment points by reading, not assuming** (Task 5 report §"Fix task"): (a) whether an unconditionally-folded wordless gap needs an outer sanity bound (is a wordless gap between e.g. a `filler` and a `retake` removal reachable, and would folding it eat intended content?); (b) whether `hasProtectedWordInside`'s midpoint test still behaves once it fires on longer gaps. Record both decisions with evidence in the report.
+- [ ] **Step 3: implement** — fold when `overlapping OR wordless OR short` (the wordless check unconditional), shaped by Step 2's decisions. `MIN_KEEP` keeps its role for gaps that DO hold a word. No threshold retuning (plan constraint).
+- [ ] **Step 4:** full suite; commit citing findings §124.
+
 ---
 
 ## Sequencing and sizing
