@@ -158,3 +158,55 @@ describe("a routed graphic and the video it was authored clear of", () => {
     expect(overlap(layout, moved!)).toBeLessThanOrEqual(0);
   });
 });
+
+describe("falling back to a layout that intends the overlap (R27 §120)", () => {
+  // Text across the band a video-top graphic would route into. Its own slot
+  // is blocked, and the band left over collides with the video — so before
+  // §120 this scene placed on the picture, and after the obstacle landed it
+  // would have been skipped. blurred-behind blurs 22px and dims 0.55 for
+  // exactly this case, and StatCard already declares it as an alternate.
+  const BLOCKING = [
+    { y: 0.06, h: 0.16 },
+    { y: 0.46, h: 0.34 },
+  ];
+
+  it("moves the scene to an overlay layout rather than dropping it", () => {
+    const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], BLOCKING);
+    expect(plan.skipped).toEqual([]);
+    expect(plan.cues).toHaveLength(1);
+    expect(plan.overlaid[0]).toMatchObject({ id: "a", from: "video-top" });
+    const to = plan.overlaid[0]!.to;
+    expect(videoObstacleFor(to)).toBeNull();
+  });
+
+  it("reports the move separately from a source-text relayout", () => {
+    // The reason differs: this graphic moved because of the PICTURE, and
+    // saying "source text in the way" would be a false explanation.
+    const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], BLOCKING);
+    expect(plan.relayouts).toEqual([]);
+    expect(plan.overlaid).toHaveLength(1);
+  });
+
+  it("still skips when even the overlay layouts are covered in text", () => {
+    // The floor must hold: the fallback may not resurrect a scene that has
+    // genuinely nowhere legal to go.
+    const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], [{ y: 0, h: 1 }]);
+    expect(plan.cues).toEqual([]);
+    expect(plan.overlaid).toEqual([]);
+    expect(plan.skipped[0]).toMatchObject({ id: "a" });
+  });
+
+  it("skips a component that declares no overlay alternate", () => {
+    // TitleCard defaults to pip-bubble — itself a separated layout under
+    // clause 2 — and its altLayouts is []. Nowhere blessed to fall back to,
+    // and routing must not invent a placement the registry has not approved.
+    const plan = routeAroundSourceText([cue("a", "pip-bubble", "TitleCard")], [{ y: 0, h: 1 }]);
+    expect(plan.overlaid).toEqual([]);
+    expect(plan.skipped).toHaveLength(1);
+  });
+
+  it("leaves overlaid empty on a clean source", () => {
+    const plan = routeAroundSourceText([cue("a", "video-top", "StatCard")], []);
+    expect(plan.overlaid).toEqual([]);
+  });
+});

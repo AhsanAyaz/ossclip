@@ -145,6 +145,13 @@ export interface SourceTextPlan {
   relayouts: Array<{ id: string; from: Layout; to: Layout }>;
   /** Scenes whose graphic was repositioned into a free band. */
   moved: Array<{ id: string; y: number; h: number }>;
+  /**
+   * Scenes moved to a layout that INTENDS a graphic over the picture, because
+   * no band was clear of both the source's text and the video (§120). Kept
+   * separate from `relayouts` because the reason differs, and a run that
+   * quietly changes a scene's visual character should say which happened.
+   */
+  overlaid: Array<{ id: string; from: Layout; to: Layout }>;
   /** Scenes dropped because no layout had a free slot. */
   skipped: Array<{ id: string; reason: string }>;
 }
@@ -165,11 +172,12 @@ export function routeAroundSourceText(
   frame: FrameSize = PORTRAIT_FRAME,
 ): SourceTextPlan {
   if (regions.length === 0) {
-    return { cues: [...cues], relayouts: [], moved: [], skipped: [] };
+    return { cues: [...cues], relayouts: [], moved: [], overlaid: [], skipped: [] };
   }
   const out: SceneCue[] = [];
   const relayouts: SourceTextPlan["relayouts"] = [];
   const moved: SourceTextPlan["moved"] = [];
+  const overlaid: SourceTextPlan["overlaid"] = [];
   const skipped: SourceTextPlan["skipped"] = [];
 
   for (const cue of cues) {
@@ -225,9 +233,44 @@ export function routeAroundSourceText(
       out.push({ ...cue, graphicRect: shifted });
       continue;
     }
+
+    // Adding the video as an obstacle strictly shrinks the free space, so
+    // strictly more scenes would reach the skip below than before §120 — and
+    // R25 §118 shipped under-delivery accounting because missing graphics are
+    // a known pain. Before losing the scene, try the layouts this component
+    // ALREADY declares that intend a graphic over the picture.
+    //
+    // Note this is not the candidate loop again: there, an alternate had to be
+    // clear where it was authored. Here the graphic is free to slide within
+    // the alternate, because clause 3 means its video is not an obstacle —
+    // strictly more room, which is why it can succeed where the step above
+    // failed.
+    //
+    // Drawn from the registry's altLayouts rather than a global list of
+    // overlay layouts: seven systems are keyed to the closed component enum
+    // and four fail SILENTLY on an unknown value, so routing must not invent
+    // a placement the registry has not blessed.
+    let overlay: { layout: Layout; rect: { x: number; y: number; w: number; h: number } } | null =
+      null;
+    for (const alt of meta.altLayouts ?? []) {
+      if (videoObstacleFor(alt, frame) !== null) continue;
+      const slot = layoutSlots(alt, undefined, [], frame).graphic;
+      if (!slot) continue;
+      const moved2 = placeInFreeBand(slot, active, null);
+      if (moved2) {
+        overlay = { layout: alt, rect: moved2 };
+        break;
+      }
+    }
+    if (overlay) {
+      overlaid.push({ id: cue.id, from: cue.layout, to: overlay.layout });
+      out.push({ ...cue, layout: overlay.layout, graphicRect: overlay.rect });
+      continue;
+    }
+
     skipped.push({ id: cue.id, reason: "source already has on-screen text here" });
   }
-  return { cues: out, relayouts, moved, skipped };
+  return { cues: out, relayouts, moved, overlaid, skipped };
 }
 
 /**
