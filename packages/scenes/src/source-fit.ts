@@ -157,6 +157,12 @@ export interface SourceTextPlan {
 export function routeAroundSourceText(
   cues: readonly SceneCue[],
   regions: readonly OccupiedRegion[],
+  /**
+   * The output frame. Portrait by default so every existing caller keeps its
+   * behaviour — but a 16:9 run MUST pass its own, because the splits separate
+   * by X there and the slot table answers differently (§120).
+   */
+  frame: FrameSize = PORTRAIT_FRAME,
 ): SourceTextPlan {
   if (regions.length === 0) {
     return { cues: [...cues], relayouts: [], moved: [], skipped: [] };
@@ -189,7 +195,7 @@ export function routeAroundSourceText(
     ];
     let placed: Layout | null = null;
     for (const layout of candidates) {
-      const slot = layoutSlots(layout).graphic;
+      const slot = layoutSlots(layout, undefined, [], frame).graphic;
       if (!slot) continue;
       if (overlapFraction(slot, active) <= MAX_GRAPHIC_OVERLAP) {
         placed = layout;
@@ -205,8 +211,15 @@ export function routeAroundSourceText(
     // No layout is clear where it stands — so move the slot instead of losing
     // the scene. "Route around them, or skip" is the rule, and routing comes
     // first: the graphic keeps its size and slides into the largest free band.
-    const base = layoutSlots(cue.layout).graphic ?? layoutSlots(meta.defaultLayout).graphic;
-    const shifted = base ? placeInFreeBand(base, active) : null;
+    // Which layout supplies the base decides which video the obstacle is, so
+    // resolve that FIRST rather than reading the slot twice.
+    const baseLayout = layoutSlots(cue.layout, undefined, [], frame).graphic
+      ? cue.layout
+      : meta.defaultLayout;
+    const base = layoutSlots(baseLayout, undefined, [], frame).graphic;
+    const shifted = base
+      ? placeInFreeBand(base, active, videoObstacleFor(baseLayout, frame))
+      : null;
     if (shifted) {
       moved.push({ id: cue.id, y: shifted.y, h: shifted.h });
       out.push({ ...cue, graphicRect: shifted });
