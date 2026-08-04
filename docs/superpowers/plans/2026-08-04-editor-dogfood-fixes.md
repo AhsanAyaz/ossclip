@@ -34,19 +34,19 @@
 
 **Files:** `packages/core/src/overrides.ts` (and only if the order-of-application diagnosis demands it, the call sites in `apps/cli/src/produce.ts` / `apps/cli/src/edit.ts`); test appended to `packages/core/test/overrides.test.ts` (or the file that currently tests `applyOverrides`/`splitCues` — locate it).
 
-- [ ] **Step 1: pin the bug.** Write the failing test first, from the field case: cues containing `scene-6`; overrides with `splits: [36.4]` and `scenes["scene-6"].hidden: true`. Run the SAME pipeline order production uses (read `produce.ts` to get it — likely `applyOverrides` → `fillPlainCues` → `splitCues`). Assert: the output contains a cue covering `scene-6@36400`'s window WITH its graphic intact. Expected today: FAIL — both halves are plain.
-- [ ] **Step 2: diagnose which of the two orderings is broken** (hide-before-split vs `effectiveOverride` leaking `hidden` to the half) and fix the minimal one. The likely fix: `hidden` on a ROOT id must apply only to the root's own post-split segment (the half that still carries the bare id), never to `id@ms` halves — which may mean applying `hidden` after `splitCues`, or resolving hidden per-cue through `effectiveOverride` (which already implements the exception) instead of wherever it is short-circuited today.
-- [ ] **Step 3:** second test: deleting the RIGHT half (`scenes["scene-6@36400"].hidden: true`) keeps the left intact. Third: deleting an UNSPLIT scene still works exactly as today (the Restore-scene flow in `Inspector.tsx` depends on it).
-- [ ] **Step 4:** full suite; commit with the why (the comment in `effectiveOverride` promised this; the pipeline order broke the promise).
+- [x] **Step 1: pin the bug.** Write the failing test first, from the field case: cues containing `scene-6`; overrides with `splits: [36.4]` and `scenes["scene-6"].hidden: true`. Run the SAME pipeline order production uses (read `produce.ts` to get it — likely `applyOverrides` → `fillPlainCues` → `splitCues`). Assert: the output contains a cue covering `scene-6@36400`'s window WITH its graphic intact. Expected today: FAIL — both halves are plain.
+- [x] **Step 2: diagnose which of the two orderings is broken** (hide-before-split vs `effectiveOverride` leaking `hidden` to the half) and fix the minimal one. The likely fix: `hidden` on a ROOT id must apply only to the root's own post-split segment (the half that still carries the bare id), never to `id@ms` halves — which may mean applying `hidden` after `splitCues`, or resolving hidden per-cue through `effectiveOverride` (which already implements the exception) instead of wherever it is short-circuited today.
+- [x] **Step 3:** second test: deleting the RIGHT half (`scenes["scene-6@36400"].hidden: true`) keeps the left intact. Third: deleting an UNSPLIT scene still works exactly as today (the Restore-scene flow in `Inspector.tsx` depends on it).
+- [x] **Step 4:** full suite; commit with the why (the comment in `effectiveOverride` promised this; the pipeline order broke the promise).
 
 ### Task 2: focus management — dead shortcuts after delete, sticky text input (bugs 4, 6)
 
 **Files:** `apps/editor/src/Overlay.tsx` (the keydown guard), `apps/editor/src/Inspector.tsx` (destructive buttons), `apps/editor/src/Timeline.tsx` (background mousedown); test appended to `apps/editor/test/Overlay.test.ts` if the guard is pure enough to test, else a new jsdom test.
 
-- [ ] **Step 1:** read the keydown handler's guard in `Overlay.tsx`. Confirm the bug-4 mechanism (keys ignored while a `<button>` holds focus). 
-- [ ] **Step 2, bug 4:** after any destructive/mutating Inspector button (delete scene, restore, reset element), blur the button — `(document.activeElement as HTMLElement | null)?.blur?.()` in the click handler, with a why-comment naming this plan. Alternative if cleaner: narrow the guard to inputs/textareas/selects only, letting buttons keep focus but not eat shortcuts — decide by reading what else the button-guard protects (Enter/Space activating the focused button is the reason it exists; if so, blur-after-click is the right fix, not guard-narrowing).
-- [ ] **Step 3, bug 6:** on timeline track/scene-block mousedown AND on player-area mousedown, if `document.activeElement` is an INPUT/TEXTAREA, blur it before handling. The Inspector's inputs commit on change/blur already — verify a click-away therefore commits rather than discards, and say so in the comment.
-- [ ] **Step 4:** jsdom test for whichever pieces are testable (the guard function if extracted; the blur-on-mousedown via dispatched events). Full suite; commit.
+- [x] **Step 1:** read the keydown handler's guard in `Overlay.tsx`. Confirm the bug-4 mechanism (keys ignored while a `<button>` holds focus). 
+- [x] **Step 2, bug 4:** after any destructive/mutating Inspector button (delete scene, restore, reset element), blur the button — `(document.activeElement as HTMLElement | null)?.blur?.()` in the click handler, with a why-comment naming this plan. Alternative if cleaner: narrow the guard to inputs/textareas/selects only, letting buttons keep focus but not eat shortcuts — decide by reading what else the button-guard protects (Enter/Space activating the focused button is the reason it exists; if so, blur-after-click is the right fix, not guard-narrowing).
+- [x] **Step 3, bug 6:** on timeline track/scene-block mousedown AND on player-area mousedown, if `document.activeElement` is an INPUT/TEXTAREA, blur it before handling. The Inspector's inputs commit on change/blur already — verify a click-away therefore commits rather than discards, and say so in the comment.
+- [x] **Step 4:** jsdom test for whichever pieces are testable (the guard function if extracted; the blur-on-mousedown via dispatched events). Full suite; commit.
 
 ### Task 3: fuzzy blooper marker (bug 2)
 
@@ -54,9 +54,9 @@
 
 **Design, decided:** stay deterministic — no LLM. Extend `isMarker` to accept a word when EITHER normalized-exact (today's rule) OR `soundsSimilar(word, marker)` from `phonetics.ts` OR Levenshtein ≤ 2 on normalized tokens when the marker is ≥ 6 chars (write the small distance function in `blooper.ts` if none exists in core — check first). **Every fuzzy hit must be reported**: `findBloopSpans` gains a per-span record of the matched surface forms, and produce's existing blooper report line (`formatBloopSpan` in core — locate) prints `matched "looker" ~ "blooper"` so a false positive is visible in `report.txt` instead of silently cutting a good take. That reporting requirement is why this is safe to ship on-by-default.
 
-- [ ] **Step 1:** failing test with the field pair: transcript containing "looker" where the marker is "blooper" → one span found, `matched` records `"looker"`. Also a guard test: a marker of "cut" (3 chars) must NOT fuzzy-match "but"/"cat" — short markers stay exact-only.
-- [ ] **Step 2:** implement; verify "blooper"/"looker" actually passes whichever predicate you rely on (phonetics may reject it — the b/l onset differs; if `soundsSimilar` fails the pair, the Levenshtein arm is the load-bearing one and the test proves it).
-- [ ] **Step 3:** thread the matched forms into the report line. Full suite; commit.
+- [x] **Step 1:** failing test with the field pair: transcript containing "looker" where the marker is "blooper" → one span found, `matched` records `"looker"`. Also a guard test: a marker of "cut" (3 chars) must NOT fuzzy-match "but"/"cat" — short markers stay exact-only.
+- [x] **Step 2:** implement; verify "blooper"/"looker" actually passes whichever predicate you rely on (phonetics may reject it — the b/l onset differs; if `soundsSimilar` fails the pair, the Levenshtein arm is the load-bearing one and the test proves it).
+- [x] **Step 3:** thread the matched forms into the report line. Full suite; commit.
 
 ### Task 4: user cuts — remove a range of the output, without drifting every stored decision (bugs 1, 5)
 
@@ -84,9 +84,9 @@ Property tests with fast-check (root devDep): remapping through an identity re-c
 
 **The editor UI:** on a selected plain TAKE (and any scene), Inspector gains "Delete this chunk" → writes the block's window into `cuts`. Split-then-delete becomes the cutting gesture — exactly what the reporter tried to do. Soft like scene deletes: a deleted region renders struck-through on the timeline with a Restore, backed by removing the range from `cuts`.
 
-- [ ] Task 4a: `recut.ts` + property tests (pure, no UI).
-- [ ] Task 4b: cutlist subtraction in `produce.ts` + the overrides rewrite-with-backup + report lines; verify on the repro workdir: add a cut over the silent chunk, re-run produce `--no-render`, confirm splits/pins landed re-anchored and the report says what moved.
-- [ ] Task 4c: editor UI (Inspector button, timeline dead-region rendering, restore) + jsdom tests for the pure parts.
+- [x] Task 4a: `recut.ts` + property tests (pure, no UI).
+- [x] Task 4b: cutlist subtraction in `produce.ts` + the overrides rewrite-with-backup + report lines; verify on the repro workdir: add a cut over the silent chunk, re-run produce `--no-render`, confirm splits/pins landed re-anchored and the report says what moved.
+- [x] Task 4c: editor UI (Inspector button, timeline dead-region rendering, restore) + jsdom tests for the pure parts.
 
 ### Task 5: why did the silent chunk survive? (bug 1, diagnosis)
 
@@ -98,10 +98,10 @@ Property tests with fast-check (root devDep): remapping through an identity re-c
 
 **Files:** `packages/core/src/cutlist.ts` (the merge loop building `merged`); test `packages/core/test/cutlist.test.ts`.
 
-- [ ] **Step 1: pin with a failing test** modeled on the field sample: two silence removals separated by a wordless gap longer than `MIN_KEEP` (use the field numbers `{44.30075, 50.141125}` / `{50.291375, 54.251188}` as a regression fixture, or an equivalent synthetic pair). Assert they merge into one continuous `remove` with no keep inside. Paired guard test: a short gap that holds a protected word still survives.
-- [ ] **Step 2: decide the two flagged judgment points by reading, not assuming** (Task 5 report §"Fix task"): (a) whether an unconditionally-folded wordless gap needs an outer sanity bound (is a wordless gap between e.g. a `filler` and a `retake` removal reachable, and would folding it eat intended content?); (b) whether `hasProtectedWordInside`'s midpoint test still behaves once it fires on longer gaps. Record both decisions with evidence in the report.
-- [ ] **Step 3: implement** — fold when `overlapping OR wordless OR short` (the wordless check unconditional), shaped by Step 2's decisions. `MIN_KEEP` keeps its role for gaps that DO hold a word. No threshold retuning (plan constraint).
-- [ ] **Step 4:** full suite; commit citing findings §124.
+- [x] **Step 1: pin with a failing test** modeled on the field sample: two silence removals separated by a wordless gap longer than `MIN_KEEP` (use the field numbers `{44.30075, 50.141125}` / `{50.291375, 54.251188}` as a regression fixture, or an equivalent synthetic pair). Assert they merge into one continuous `remove` with no keep inside. Paired guard test: a short gap that holds a protected word still survives.
+- [x] **Step 2: decide the two flagged judgment points by reading, not assuming** (Task 5 report §"Fix task"): (a) whether an unconditionally-folded wordless gap needs an outer sanity bound (is a wordless gap between e.g. a `filler` and a `retake` removal reachable, and would folding it eat intended content?); (b) whether `hasProtectedWordInside`'s midpoint test still behaves once it fires on longer gaps. Record both decisions with evidence in the report.
+- [x] **Step 3: implement** — fold when `overlapping OR wordless OR short` (the wordless check unconditional), shaped by Step 2's decisions. `MIN_KEEP` keeps its role for gaps that DO hold a word. No threshold retuning (plan constraint).
+- [x] **Step 4:** full suite; commit citing findings §124.
 
 ---
 
