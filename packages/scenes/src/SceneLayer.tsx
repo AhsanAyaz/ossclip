@@ -14,7 +14,7 @@ import { ChatMock } from "./components/ChatMock";
 import { ScreenshotFrame } from "./components/ScreenshotFrame";
 import { BulletList } from "./components/BulletList";
 import { compensateEdits, type ElementEdits } from "./editable";
-import { EXIT_SEC } from "./motion";
+import { easeOutQuad, entranceExitSec } from "./motion";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- props are registry-validated upstream */
 const COMPONENTS: Record<
@@ -53,36 +53,53 @@ const scrimColor = (themeBg: string): string => {
 };
 
 /**
- * Uniform exit for every graphic (R16 §69). Components own their ENTRANCES
- * (staggered rises, per element); the exit lives here at the layer because it
- * is the cue's END doing the animating, and every component leaving the same
- * way is what makes the cut read as designed. Inside the cue's Sequence, so
+ * Uniform entrance and exit for every graphic, both at the layer (R16 §69).
+ * Every component arriving and leaving the same way is what makes the cut
+ * read as designed — and the layer is the only place that can guarantee it:
+ * a per-component convention is a silent trap for every component added
+ * later. (An earlier comment here claimed components owned staggered
+ * per-element entrances. None did — eight of nine rendered static, which a
+ * user reported as "choppy" and asked to fix with motion blur. Blur cannot
+ * fix a thing that does not move; arriving can.)
+ *
+ * Both read their seconds from `entranceExitSec`, which shrinks the pair
+ * proportionally on a cue too short to hold both — overlapping ends multiply
+ * their opacities into a mid-life dip. Inside the cue's Sequence, so local
  * frame 0 is the cue's own start.
  */
+const wrapperStyle = (ease: number): React.CSSProperties => ({
+  width: "100%",
+  height: "100%",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  opacity: ease,
+  // 18px over ENTER_SEC/EXIT_SEC (9 frames at 30fps) is 2px a frame — the
+  // move reads smooth without any blur, which was the actual ask.
+  transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
+});
+
+const EntranceRise: React.FC<{ durationInFrames: number; children: React.ReactNode }> = ({
+  durationInFrames,
+  children,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const { enterSec } = entranceExitSec(durationInFrames / fps);
+  const p = enterSec <= 0 ? 1 : Math.min(1, Math.max(0, frame / fps / enterSec));
+  return <div style={wrapperStyle(easeOutQuad(p))}>{children}</div>;
+};
+
 const ExitFade: React.FC<{ durationInFrames: number; children: React.ReactNode }> = ({
   durationInFrames,
   children,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const { exitSec } = entranceExitSec(durationInFrames / fps);
   const remaining = (durationInFrames - frame) / fps;
-  const p = Math.min(1, Math.max(0, remaining / EXIT_SEC));
-  const ease = p * (2 - p);
-  return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: ease,
-        transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
-      }}
-    >
-      {children}
-    </div>
-  );
+  const p = exitSec <= 0 ? 1 : Math.min(1, Math.max(0, remaining / exitSec));
+  return <div style={wrapperStyle(easeOutQuad(p))}>{children}</div>;
 };
 
 /** Renders each cue's graphic into its layout's graphic slot, scene-local time. */
@@ -145,34 +162,36 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                 overflow: "hidden",
               }}
             >
-              <ExitFade durationInFrames={durationInFrames}>
-                {overVideo ? (
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      background: scrimColor(theme.bg),
-                      backdropFilter: "blur(14px)",
-                      WebkitBackdropFilter: "blur(14px)",
-                      borderRadius: theme.radiusPx,
-                    }}
-                  />
-                ) : null}
-                {/* position:relative so the content paints (and hit-tests)
-                    above the positioned scrim — document order alone loses. */}
-                <div style={{ width: contentW / scale, transform: `scale(${scale})`, position: "relative" }}>
-                  <Component
-                    props={cue.props}
-                    theme={theme}
-                    widthPx={contentW / scale}
-                    heightPx={contentH / scale}
-                    // Stored nudges are composition px; this wrapper scales by
-                    // `scale`, so they are counter-divided here or a drag lands
-                    // `scale`× past where it was dropped (PLAN Task 1).
-                    edits={compensateEdits(cue.elements, scale)}
-                  />
-                </div>
-              </ExitFade>
+              <EntranceRise durationInFrames={durationInFrames}>
+                <ExitFade durationInFrames={durationInFrames}>
+                  {overVideo ? (
+                    <div
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        background: scrimColor(theme.bg),
+                        backdropFilter: "blur(14px)",
+                        WebkitBackdropFilter: "blur(14px)",
+                        borderRadius: theme.radiusPx,
+                      }}
+                    />
+                  ) : null}
+                  {/* position:relative so the content paints (and hit-tests)
+                      above the positioned scrim — document order alone loses. */}
+                  <div style={{ width: contentW / scale, transform: `scale(${scale})`, position: "relative" }}>
+                    <Component
+                      props={cue.props}
+                      theme={theme}
+                      widthPx={contentW / scale}
+                      heightPx={contentH / scale}
+                      // Stored nudges are composition px; this wrapper scales by
+                      // `scale`, so they are counter-divided here or a drag lands
+                      // `scale`× past where it was dropped (PLAN Task 1).
+                      edits={compensateEdits(cue.elements, scale)}
+                    />
+                  </div>
+                </ExitFade>
+              </EntranceRise>
             </div>
           </Sequence>
         );
