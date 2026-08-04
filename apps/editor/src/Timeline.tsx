@@ -1,7 +1,16 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { SceneCue } from "@ossclip/core/browser";
-import { clampTiming, clampZoom, moveTiming, timeAtX, zoomedScrollLeft } from "./timing";
+import {
+  applySnap,
+  clampTiming,
+  clampZoom,
+  formatTimecode,
+  moveTiming,
+  snapTargets,
+  timeAtX,
+  zoomedScrollLeft,
+} from "./timing";
 import type { useEdits } from "./useEdits";
 import type { Selection } from "./Overlay";
 
@@ -61,6 +70,11 @@ const EDGE_HIT = 10;
 /** Travel before a block press commits to being a move drag. */
 const MOVE_THRESHOLD_PX = 4;
 
+/** Snap catch radius in SCREEN pixels (precision-editing design, "Timeline
+ * snapping") — converted to seconds per pointer-move via the track's live
+ * px-per-second, so zoom changes what snaps without a separate constant. */
+const SNAP_PX = 8;
+
 /** Edge paging (R15 §58): a live gesture within this many px of the
  * scroller's bound pages the view by one viewport width in that direction. */
 const PAGE_EDGE_PX = 8;
@@ -68,13 +82,6 @@ const PAGE_EDGE_PX = 8;
 /** Floor between pages, so hovering at the bound doesn't machine-gun the
  * scroll — one page per deliberate return to the edge. */
 const PAGE_COOLDOWN_MS = 300;
-
-const fmt = (sec: number): string => {
-  const s = Math.max(0, sec);
-  const m = Math.floor(s / 60);
-  const r = (s % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${r}`;
-};
 
 /** Tick labels drop the decimal — a ruler mark is a landmark, not a readout. */
 const tickFmt = (sec: number): string => {
@@ -169,10 +176,20 @@ export const Timeline: React.FC<TimelineProps> = ({
   const scrubbingRef = useRef(false);
   const blockPressRef = useRef<BlockPress | null>(null);
   const [frame, setFrame] = useState(0);
+  // Live playhead frame for the mousemove listener below (attached once,
+  // re-attached only on [cues, durationSec, edits, seekTrack, fps] — same
+  // ref trick as `zoomRef`, so a stale closure can't hand `snapTargets` a
+  // frame count from whenever the listener last (re)attached.
+  const frameRef = useRef(frame);
+  frameRef.current = frame;
   const [dragPreview, setDragPreview] = useState<{
     sceneId: string;
     startSec: number;
     endSec: number;
+    /** The snap target the drag is currently resting on, or null — carries
+     * the tick and readout (precision-editing design, "Timeline snapping"),
+     * extending this existing channel rather than adding a parallel one. */
+    snapped: number | null;
   } | null>(null);
   // Timeline zoom (R14 §53): 1 = the clip fits the viewport; above it the
   // track widens inside the scroller and gestures get proportionally finer —
@@ -322,7 +339,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         origStart: cue.startSec,
         origEnd: cue.endSec,
       };
-      setDragPreview({ sceneId: cue.id, startSec: cue.startSec, endSec: cue.endSec });
+      setDragPreview({ sceneId: cue.id, startSec: cue.startSec, endSec: cue.endSec, snapped: null });
     },
     [],
   );
@@ -372,8 +389,34 @@ export const Timeline: React.FC<TimelineProps> = ({
         const deltaSec = r
           ? ((e.clientX - r.left - press.startContentX) / r.width) * durationSec
           : 0;
-        const shifted = moveTiming(cues, press.sceneId, deltaSec, durationSec);
-        if (shifted) setDragPreview({ sceneId: press.sceneId, ...shifted });
+        // Snap (precision-editing design, "Timeline snapping"): propose both
+        // edges shifted by the raw delta, snap each independently, and take
+        // whichever correction is smaller — the nearer edge wins and the
+        // WHOLE block still moves by one corrected delta, so duration stays
+        // exact through `moveTiming` below. Alt/Option is the escape hatch,
+        // read here at the call site — the pure core never sees it.
+        let correctedDelta = deltaSec;
+        let snappedAt: number | null = null;
+        const cue = r && !e.altKey ? cues.find((c) => c.id === press.sceneId) : undefined;
+        if (cue && r) {
+          const thresholdSec = SNAP_PX / (r.width / durationSec);
+          const targets = snapTargets(cues, press.sceneId, frameRef.current / fps, durationSec);
+          const wantStart = cue.startSec + deltaSec;
+          const wantEnd = cue.endSec + deltaSec;
+          const snapStart = applySnap(wantStart, targets, thresholdSec);
+          const snapEnd = applySnap(wantEnd, targets, thresholdSec);
+          const distStart = snapStart.snapped === null ? Infinity : Math.abs(snapStart.sec - wantStart);
+          const distEnd = snapEnd.snapped === null ? Infinity : Math.abs(snapEnd.sec - wantEnd);
+          if (distStart <= distEnd && snapStart.snapped !== null) {
+            correctedDelta = deltaSec + (snapStart.sec - wantStart);
+            snappedAt = snapStart.snapped;
+          } else if (snapEnd.snapped !== null) {
+            correctedDelta = deltaSec + (snapEnd.sec - wantEnd);
+            snappedAt = snapEnd.snapped;
+          }
+        }
+        const shifted = moveTiming(cues, press.sceneId, correctedDelta, durationSec);
+        if (shifted) setDragPreview({ sceneId: press.sceneId, ...shifted, snapped: snappedAt });
         return;
       }
       const drag = dragRef.current;
@@ -382,10 +425,26 @@ export const Timeline: React.FC<TimelineProps> = ({
       if (!track) return;
       const r = track.getBoundingClientRect();
       const deltaSec = ((e.clientX - r.left - drag.startContentX) / r.width) * durationSec;
-      const wantStart = drag.edge === "start" ? drag.origStart + deltaSec : drag.origStart;
-      const wantEnd = drag.edge === "end" ? drag.origEnd + deltaSec : drag.origEnd;
+      let wantStart = drag.edge === "start" ? drag.origStart + deltaSec : drag.origStart;
+      let wantEnd = drag.edge === "end" ? drag.origEnd + deltaSec : drag.origEnd;
+      // Edge drag: snap the dragged edge only, then the existing clamp — snap
+      // is a pre-pass, the clamp remains the single authority on legality.
+      let snappedAt: number | null = null;
+      if (!e.altKey) {
+        const thresholdSec = SNAP_PX / (r.width / durationSec);
+        const targets = snapTargets(cues, drag.sceneId, frameRef.current / fps, durationSec);
+        if (drag.edge === "start") {
+          const snap = applySnap(wantStart, targets, thresholdSec);
+          wantStart = snap.sec;
+          snappedAt = snap.snapped;
+        } else {
+          const snap = applySnap(wantEnd, targets, thresholdSec);
+          wantEnd = snap.sec;
+          snappedAt = snap.snapped;
+        }
+      }
       const clamped = clampTiming(cues, drag.sceneId, wantStart, wantEnd, durationSec);
-      setDragPreview({ sceneId: drag.sceneId, ...clamped });
+      setDragPreview({ sceneId: drag.sceneId, ...clamped, snapped: snappedAt });
     };
     const onUp = (e: MouseEvent) => {
       scrubbingRef.current = false;
@@ -433,7 +492,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [cues, durationSec, edits, seekTrack]);
+  }, [cues, durationSec, edits, seekTrack, fps]);
 
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 
@@ -550,7 +609,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                       pointerEvents: "none",
                     }}
                   >
-                    {fmt(durationSec)}
+                    {formatTimecode(durationSec, fps)}
                   </span>
                 </>
               );
@@ -703,6 +762,35 @@ export const Timeline: React.FC<TimelineProps> = ({
                 </div>
               );
             })}
+            {dragPreview ? (
+              // The drag readout (precision-editing design, "The frames
+              // readout"): m:ss:ff in the same units the transport shows,
+              // so a landing spot reads in the units the user is judging it
+              // by. Rendered for every live drag, snapped or not — the tick
+              // below is the snap-only indicator.
+              <div
+                data-testid="drag-readout"
+                style={{
+                  ...dragReadout,
+                  left: `${durationSec > 0 ? (dragPreview.startSec / durationSec) * 100 : 0}%`,
+                }}
+              >
+                {formatTimecode(dragPreview.startSec, fps)} – {formatTimecode(dragPreview.endSec, fps)}
+              </div>
+            ) : null}
+            {dragPreview?.snapped !== null && dragPreview?.snapped !== undefined ? (
+              // The snap tick (precision-editing design, "Timeline
+              // snapping"): a 1px landmark at the target the drag is
+              // currently resting on, carried through the existing
+              // `dragPreview` channel rather than a parallel state.
+              <div
+                data-testid="snap-tick"
+                style={{
+                  ...snapTick,
+                  left: `${durationSec > 0 ? (dragPreview.snapped / durationSec) * 100 : 0}%`,
+                }}
+              />
+            ) : null}
             <div data-testid="playhead" style={{ ...playhead, left: `${playheadPct}%` }}>
               {/* The playhead itself is grabbable (Task 3): pressing it starts
                   the same scrub as the track, WITHOUT the initial jump-seek —
@@ -851,6 +939,36 @@ const edgeHandle: React.CSSProperties = {
   top: 0,
   bottom: 0,
   width: EDGE_HIT,
+};
+
+/** 1px landmark at the drag's current snap target (accent yellow, matching
+ * the playhead — both are "a time worth noticing" marks on the track). */
+const snapTick: React.CSSProperties = {
+  position: "absolute",
+  top: -4,
+  bottom: -4,
+  width: 1,
+  zIndex: 6,
+  background: "#FFE14D",
+  pointerEvents: "none",
+};
+
+/** The live drag readout, floated above the track so it never fights the
+ * block's own label for room. */
+const dragReadout: React.CSSProperties = {
+  position: "absolute",
+  bottom: "100%",
+  marginBottom: 3,
+  transform: "translateX(-4px)",
+  whiteSpace: "nowrap",
+  fontSize: 10,
+  fontFamily: "ui-monospace, 'SF Mono', monospace",
+  color: "#0B0B0E",
+  background: "#FFE14D",
+  padding: "1px 5px",
+  borderRadius: 3,
+  zIndex: 6,
+  pointerEvents: "none",
 };
 
 const playhead: React.CSSProperties = {
