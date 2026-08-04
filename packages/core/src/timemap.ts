@@ -127,3 +127,26 @@ export class TimeMap {
 export function mapFromKeptSpans(spans: readonly KeptSpan[]): TimeMap {
   return new TimeMap(spans.map((s) => ({ srcIn: s.srcIn, srcOut: s.srcOut, kind: "keep" as const })));
 }
+
+/**
+ * Whether two maps describe the same kept-span structure, within `eps` —
+ * the re-anchoring gate (review fix wave, PLAN 2026-08-04 Task 4, finding
+ * 3): `applyUserCuts` re-anchors `splits`/pinned timing whenever `priorMap`
+ * and this run's final map disagree, span for span, REGARDLESS of whether
+ * `cuts` is empty — comparing the maps directly, not the doc, is what keeps
+ * "was there drift to correct" and "did correcting it change anything"
+ * separate questions.
+ */
+export function mapsClose(a: TimeMap, b: TimeMap, eps: number): boolean {
+  if (Math.abs(a.outputDuration - b.outputDuration) > eps) return false;
+  if (a.spans.length !== b.spans.length) return false;
+  return a.spans.every((sp, i) => {
+    const other = b.spans[i]!;
+    return (
+      Math.abs(sp.srcIn - other.srcIn) <= eps &&
+      Math.abs(sp.srcOut - other.srcOut) <= eps &&
+      Math.abs(sp.outIn - other.outIn) <= eps &&
+      Math.abs(sp.outOut - other.outOut) <= eps
+    );
+  });
+}

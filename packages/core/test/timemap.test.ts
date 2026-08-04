@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { TimeMap, mapFromKeptSpans } from "../src/timemap";
+import { TimeMap, mapFromKeptSpans, mapsClose } from "../src/timemap";
 import type { Segment } from "../src/schema";
 
 /** Random full partition of [0, D] into alternating keep/remove segments. */
@@ -153,5 +153,46 @@ describe("mapFromKeptSpans", () => {
     const rebuilt = mapFromKeptSpans(spans);
     expect(rebuilt.outputDuration).toBeCloseTo(original.outputDuration, 9);
     expect(rebuilt.toSource(12)).toBeCloseTo(original.toSource(12), 9);
+  });
+});
+
+describe("mapsClose", () => {
+  it("is reflexive: a map is always close to itself", () => {
+    fc.assert(
+      fc.property(partitionArb, ({ segments }) => {
+        const map = new TimeMap(segments);
+        expect(mapsClose(map, map, 1e-6)).toBe(true);
+      }),
+    );
+  });
+
+  it("tolerates noise within eps but not past it", () => {
+    const a = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const within = new TimeMap([{ srcIn: 0, srcOut: 60 + 5e-7, kind: "keep" }]);
+    const beyond = new TimeMap([{ srcIn: 0, srcOut: 60 + 5e-5, kind: "keep" }]);
+
+    expect(mapsClose(a, within, 1e-6)).toBe(true);
+    expect(mapsClose(a, beyond, 1e-6)).toBe(false);
+  });
+
+  it("is false when a real cut changed the span structure", () => {
+    const a = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const b = new TimeMap([
+      { srcIn: 0, srcOut: 20, kind: "keep" },
+      { srcIn: 20, srcOut: 24, kind: "remove", reason: "user" },
+      { srcIn: 24, srcOut: 60, kind: "keep" },
+    ]);
+    expect(mapsClose(a, b, 1e-6)).toBe(false);
+  });
+
+  it("is false when span counts differ even if duration happens to match", () => {
+    const a = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    // Same total kept duration (30+30), split into two spans instead of one.
+    const b = new TimeMap([
+      { srcIn: 0, srcOut: 30, kind: "keep" },
+      { srcIn: 30, srcOut: 31, kind: "remove", reason: "user" },
+      { srcIn: 31, srcOut: 61, kind: "keep" },
+    ]);
+    expect(mapsClose(a, b, 1e-6)).toBe(false);
   });
 });

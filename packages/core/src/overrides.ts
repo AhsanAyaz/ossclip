@@ -179,8 +179,31 @@ export const OverrideDocSchema = z.object({
    * absolute-output-seconds value in this doc through the resulting re-cut —
    * see that module's docstring for why a bare "shift everything after the
    * cut point" is not the actual rule.
+   *
+   * `src` (review fix wave, PLAN 2026-08-04 Task 4): a cut's `startSec`/
+   * `endSec` alone are meaningless without knowing WHICH render-props they
+   * were drawn against — a bare output-seconds pair has no faithful
+   * representation once its own cut has happened (Task 4b's Bug A: remapping
+   * it through the very recut it caused collapses it to a zero-width point).
+   * `src` is the cut's resolved SOURCE-time range, computed once — the first
+   * produce run that sees a `src`-less cut resolves it against the
+   * render-props the user was looking at, and the write-back records it here
+   * — and used directly, unconverted, on every run after that. `startSec`/
+   * `endSec` are left exactly as the user drew them even once `src` exists:
+   * a historical record of what render-props they were looking at, never
+   * authoritative again once `src` is present.
    */
-  cuts: z.array(z.object({ startSec: z.number().nonnegative(), endSec: z.number().nonnegative() })).default([]),
+  cuts: z
+    .array(
+      z.object({
+        startSec: z.number().nonnegative(),
+        endSec: z.number().nonnegative(),
+        src: z
+          .object({ startSec: z.number().nonnegative(), endSec: z.number().nonnegative() })
+          .optional(),
+      }),
+    )
+    .default([]),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 

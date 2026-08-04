@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import { TimeMap } from "../src/timemap";
-import { applyUserCuts, remapOverridesThroughRecut, subtractCutsFromCutlist } from "../src/recut";
+import {
+  applyUserCuts,
+  remapOverridesThroughRecut,
+  resolveCutSourceRanges,
+  subtractRangesFromCutlist,
+} from "../src/recut";
 import { OverrideDocSchema } from "../src/overrides";
 import type { Segment } from "../src/schema";
 
@@ -246,17 +251,19 @@ describe("remapOverridesThroughRecut — cuts recorded against an older output (
   });
 });
 
-describe("subtractCutsFromCutlist", () => {
-  it("matches cutOutputRange's spans for a single fresh cut", () => {
+describe("subtractRangesFromCutlist", () => {
+  it("matches cutOutputRange's spans for a single fresh cut, given the OUTPUT range pre-converted to source", () => {
     fc.assert(
       fc.property(freshCutScenario, ({ duration, cutStart, cutEnd }) => {
         const map = new TimeMap([{ srcIn: 0, srcOut: duration, kind: "keep" }]);
         const viaFixture = cutOutputRange(map, cutStart, cutEnd);
+        // The map here is the identity (single untouched span), so output
+        // and source coincide — this is the one case a hand-derived source
+        // range needs no separate conversion step to set up.
         const viaImpl = new TimeMap(
-          subtractCutsFromCutlist(
+          subtractRangesFromCutlist(
             [{ srcIn: 0, srcOut: duration, kind: "keep" }],
-            [{ startSec: cutStart, endSec: cutEnd }],
-            map,
+            [{ start: cutStart, end: cutEnd }],
           ),
         );
         expect(viaImpl.outputDuration).toBeCloseTo(viaFixture.outputDuration, 6);
@@ -266,26 +273,22 @@ describe("subtractCutsFromCutlist", () => {
   });
 
   it("tags the newly-removed span with reason \"user\" so formatCutReport lists it", () => {
-    const map = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
-    const out = subtractCutsFromCutlist(
+    const out = subtractRangesFromCutlist(
       [{ srcIn: 0, srcOut: 60, kind: "keep" }],
-      [{ startSec: 20, endSec: 24 }],
-      map,
+      [{ start: 20, end: 24 }],
     );
     const removed = out.filter((s) => s.kind === "remove");
     expect(removed).toHaveLength(1);
     expect(removed[0]).toMatchObject({ srcIn: 20, srcOut: 24, reason: "user" });
   });
 
-  it("subtracts two non-overlapping cuts independently, both anchored to the SAME map", () => {
-    const map = new TimeMap([{ srcIn: 0, srcOut: 100, kind: "keep" }]);
-    const out = subtractCutsFromCutlist(
+  it("subtracts two non-overlapping ranges independently", () => {
+    const out = subtractRangesFromCutlist(
       [{ srcIn: 0, srcOut: 100, kind: "keep" }],
       [
-        { startSec: 10, endSec: 15 },
-        { startSec: 50, endSec: 52 },
+        { start: 10, end: 15 },
+        { start: 50, end: 52 },
       ],
-      map,
     );
     const newMap = new TimeMap(out);
     expect(newMap.outputDuration).toBeCloseTo(100 - 5 - 2, 6);
@@ -293,88 +296,177 @@ describe("subtractCutsFromCutlist", () => {
   });
 
   it("carves around an existing automatic `remove` segment untouched", () => {
-    // An automatic cut already removed [20, 25); a user cut spanning [15, 30)
-    // in OUTPUT time reaches across that existing gap.
+    // An automatic cut already removed [20, 25); a range spanning [15, 30)
+    // reaches across that existing gap.
     const cutlist: Segment[] = [
       { srcIn: 0, srcOut: 20, kind: "keep" },
       { srcIn: 20, srcOut: 25, kind: "remove", reason: "silence" },
       { srcIn: 25, srcOut: 60, kind: "keep" },
     ];
-    const map = new TimeMap(cutlist);
-    // Output time is contiguous: source 15 -> output 15; source 30 -> output 25.
-    const out = subtractCutsFromCutlist(cutlist, [{ startSec: 15, endSec: 25 }], map);
+    const out = subtractRangesFromCutlist(cutlist, [{ start: 15, end: 30 }]);
     // The automatic removal survives untouched, exactly once.
     expect(out.filter((s) => s.reason === "silence")).toHaveLength(1);
     expect(out.find((s) => s.reason === "silence")).toMatchObject({ srcIn: 20, srcOut: 25 });
-    // The user cut carved both sides of it: [15,20) and [25,30).
+    // The user range carved both sides of it: [15,20) and [25,30).
     const userCuts = out.filter((s) => s.reason === "user");
     expect(userCuts).toHaveLength(2);
-    expect(userCuts).toContainEqual(
-      expect.objectContaining({ srcIn: 15, srcOut: 20 }),
-    );
-    expect(userCuts).toContainEqual(
-      expect.objectContaining({ srcIn: 25, srcOut: 30 }),
-    );
+    expect(userCuts).toContainEqual(expect.objectContaining({ srcIn: 15, srcOut: 20 }));
+    expect(userCuts).toContainEqual(expect.objectContaining({ srcIn: 25, srcOut: 30 }));
   });
 
-  it("ignores a degenerate cut (endSec <= startSec)", () => {
+  it("no-ops on a degenerate range (end <= start)", () => {
     const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
-    const map = new TimeMap(cutlist);
-    const out = subtractCutsFromCutlist(cutlist, [{ startSec: 30, endSec: 30 }], map);
+    const out = subtractRangesFromCutlist(cutlist, [{ start: 30, end: 30 }]);
     expect(out).toEqual(cutlist);
   });
 
-  it("returns segments TimeMap accepts (sorted, non-overlapping) for many cuts", () => {
+  it("returns segments TimeMap accepts (sorted, non-overlapping) for many ranges", () => {
     fc.assert(
       fc.property(
         fc.double({ min: 20, max: 200, noNaN: true }),
         fc.array(fc.double({ min: 0, max: 1, noNaN: true }), { minLength: 0, maxLength: 8 }),
         (duration, fracs) => {
-          const map = new TimeMap([{ srcIn: 0, srcOut: duration, kind: "keep" }]);
-          const cuts = fracs.map((f) => {
+          const ranges = fracs.map((f) => {
             const start = f * duration * 0.9;
-            return { startSec: start, endSec: start + duration * 0.05 };
+            return { start, end: start + duration * 0.05 };
           });
           // Must not throw — TimeMap's constructor is the sortedness/overlap check.
-          expect(() => new TimeMap(subtractCutsFromCutlist([{ srcIn: 0, srcOut: duration, kind: "keep" }], cuts, map))).not.toThrow();
+          expect(() =>
+            new TimeMap(subtractRangesFromCutlist([{ srcIn: 0, srcOut: duration, kind: "keep" }], ranges)),
+          ).not.toThrow();
         },
       ),
     );
   });
 });
 
+describe("resolveCutSourceRanges", () => {
+  // The review's core drift scenario, verified on the real dogfood workdir:
+  // an UNRELATED change (there, fuzzier blooper matching) grew the automatic
+  // cutlist between when render-props.json was last written and this run.
+  // `priorMap` (the identity here — nothing had drifted YET when the user
+  // drew the cut) is what the cut's `startSec`/`endSec` are actually
+  // expressed against; `map` (drifted: a 5.8s retake removal at the very
+  // start) is NOT. Using `map` to interpret the cut would land it 5.8s away
+  // from where the user pointed — exactly the bug finding 1 reported.
+  it("converts a fresh cut through priorMap, not this run's drifted map", () => {
+    const priorMap = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const driftedCutlist: Segment[] = [
+      { srcIn: 0, srcOut: 5.8, kind: "remove", reason: "retake" },
+      { srcIn: 5.8, srcOut: 60, kind: "keep" },
+    ];
+    const map = new TimeMap(driftedCutlist);
+    const cut = { startSec: 31, endSec: 33.5 };
+
+    const { ranges, cuts, reports } = resolveCutSourceRanges([cut], priorMap, map);
+
+    // Via priorMap (correct): output 31/33.5 map straight through, the
+    // identity. Via map (the bug): output 31 -> source 5.8+31=36.8.
+    expect(ranges).toEqual([{ start: 31, end: 33.5 }]);
+    expect(cuts[0]!.src).toEqual({ startSec: 31, endSec: 33.5 });
+    // startSec/endSec — the historical record of what the user drew — are
+    // untouched.
+    expect(cuts[0]!.startSec).toBe(31);
+    expect(cuts[0]!.endSec).toBe(33.5);
+    expect(reports).toEqual([]);
+  });
+
+  it("uses `src` directly when present, ignoring startSec/endSec and priorMap entirely", () => {
+    const priorMap = new TimeMap([{ srcIn: 0, srcOut: 200, kind: "keep" }]);
+    const map = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    // startSec/endSec are deliberately nonsense — proving they're unused
+    // once `src` is present (they're display/history only, per the schema).
+    const cut = { startSec: 999, endSec: 999.1, src: { startSec: 10, endSec: 14 } };
+
+    const { ranges, cuts, reports } = resolveCutSourceRanges([cut], priorMap, map);
+
+    expect(ranges).toEqual([{ start: 10, end: 14 }]);
+    expect(cuts[0]).toBe(cut); // untouched — no new object, nothing to write back
+    expect(reports).toEqual([]);
+  });
+
+  it("falls back to `map` WITH a report when priorMap is unavailable and the cut has no src", () => {
+    // A non-identity map so the fallback is provably `map`, not some
+    // coincidental match.
+    const map = new TimeMap([{ srcIn: 10, srcOut: 70, kind: "keep" }]);
+    const cut = { startSec: 20, endSec: 24 };
+
+    const { ranges, cuts, reports } = resolveCutSourceRanges([cut], null, map);
+
+    expect(ranges).toEqual([{ start: 30, end: 34 }]); // map.toSource(20/24) = 10+20 / 10+24
+    expect(cuts[0]!.src).toEqual({ startSec: 30, endSec: 34 });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain("no render-props");
+  });
+
+  it("resolves multiple cuts independently and excludes only the degenerate one from ranges", () => {
+    const priorMap = new TimeMap([{ srcIn: 0, srcOut: 100, kind: "keep" }]);
+    const map = priorMap;
+    const cuts = [
+      { startSec: 10, endSec: 12 },
+      { startSec: 50, endSec: 50 }, // degenerate — nothing to remove
+      { startSec: 70, endSec: 75 },
+    ];
+
+    const { ranges, cuts: resolved } = resolveCutSourceRanges(cuts, priorMap, map);
+
+    expect(ranges).toEqual([
+      { start: 10, end: 12 },
+      { start: 70, end: 75 },
+    ]);
+    // All three still come back with a resolved `src`, degenerate included —
+    // nothing about resolution itself is lossy, only the subtraction step.
+    expect(resolved).toHaveLength(3);
+    expect(resolved[1]!.src).toEqual({ startSec: 50, endSec: 50 });
+  });
+});
+
 describe("applyUserCuts", () => {
-  it("is a no-op when doc.cuts is empty", () => {
+  it("is a true no-op when there are no cuts and priorMap already matches map", () => {
     const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
     const map = new TimeMap(cutlist);
     const doc = OverrideDocSchema.parse({ splits: [10] });
 
-    const result = applyUserCuts(doc, cutlist, map);
+    const result = applyUserCuts(doc, cutlist, map, map);
 
     expect(result.changed).toBe(false);
     expect(result.reports).toEqual([]);
     expect(result.removedSec).toBe(0);
-    expect(result.map.outputDuration).toBeCloseTo(map.outputDuration, 6);
-    expect(result.doc).toBe(doc);
+    expect(result.doc).toEqual(doc);
   });
 
-  it("subtracts the cut and leaves the doc's cuts UNCHANGED (not collapsed) when there's nothing else to re-anchor", () => {
+  it("is also a no-op with priorMap: null and no cuts (first-ever produce)", () => {
+    const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
+    const map = new TimeMap(cutlist);
+    const doc = OverrideDocSchema.parse({ splits: [10] });
+
+    const result = applyUserCuts(doc, cutlist, map, null);
+
+    expect(result.changed).toBe(false);
+    expect(result.reports).toEqual([]);
+  });
+
+  // A fresh cut resolving its `src` for the first time is itself a real,
+  // persistable change — even with nothing else in the doc to re-anchor —
+  // because WITHOUT writing `src` back, the next run has no stable way to
+  // reinterpret `startSec`/`endSec` (review fix wave finding 1's Bug A,
+  // generalized: an output-seconds pair means nothing once its own render-
+  // props frame is gone).
+  it("marks `changed` on a first-time cut resolution even with nothing else to re-anchor", () => {
     const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
     const map = new TimeMap(cutlist);
     const doc = OverrideDocSchema.parse({ cuts: [{ startSec: 20, endSec: 24 }] });
 
-    const result = applyUserCuts(doc, cutlist, map);
+    // priorMap === map: nothing had drifted before this, the ordinary
+    // "user just drew this cut against the current render-props" case.
+    const result = applyUserCuts(doc, cutlist, map, map);
 
     expect(result.removedSec).toBeCloseTo(4, 6);
     expect(result.map.outputDuration).toBeCloseTo(56, 6);
-    // Nothing to re-anchor (no splits, no pins) — no write-back needed.
-    expect(result.changed).toBe(false);
+    expect(result.changed).toBe(true);
+    expect(result.doc.cuts[0]!.src).toEqual({ startSec: 20, endSec: 24 });
+    expect(result.doc.cuts[0]!.startSec).toBe(20); // untouched
     expect(result.reports).toEqual([]);
-    // The critical persistence property (see the doc comment on
-    // `applyUserCuts`): the stored cut keeps its ORIGINAL, non-degenerate
-    // range so a second produce run subtracts the SAME source material
-    // again, rather than a zero-width no-op that would silently restore it.
-    expect(result.doc.cuts).toEqual(doc.cuts);
   });
 
   it("re-anchors a split after the cut and reports nothing (a clean shift)", () => {
@@ -385,12 +477,11 @@ describe("applyUserCuts", () => {
       splits: [40],
     });
 
-    const result = applyUserCuts(doc, cutlist, map);
+    const result = applyUserCuts(doc, cutlist, map, map);
 
     expect(result.changed).toBe(true);
     expect(result.reports).toEqual([]);
     expect(result.doc.splits[0]).toBeCloseTo(36, 6); // 40 - 4
-    expect(result.doc.cuts).toEqual(doc.cuts);
   });
 
   it("re-anchors a pin the cut swallowed and reports it", () => {
@@ -401,104 +492,94 @@ describe("applyUserCuts", () => {
       scenes: { "scene-1": { timing: { startSec: 22, endSec: 26 } } },
     });
 
-    const result = applyUserCuts(doc, cutlist, map);
+    const result = applyUserCuts(doc, cutlist, map, map);
 
     expect(result.changed).toBe(true);
     expect(result.reports).toHaveLength(2);
     expect(result.doc.scenes["scene-1"]!.timing!.startSec).toBeCloseTo(20, 6);
     expect(result.doc.scenes["scene-1"]!.timing!.endSec).toBeCloseTo(20, 6);
-    expect(result.doc.cuts).toEqual(doc.cuts);
   });
 
-  it("is idempotent: removes the SAME material on a re-run with no new edits", () => {
-    const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
-    const map = new TimeMap(cutlist);
-    const doc = OverrideDocSchema.parse({ cuts: [{ startSec: 20, endSec: 24 }] });
-
-    const first = applyUserCuts(doc, cutlist, map);
-    // A second produce run rebuilds the SAME automatic cutlist from scratch
-    // (deterministic from source + cleanup level) and re-reads the SAME
-    // overrides.json this run wrote back (or, since nothing changed, never
-    // rewrote) — simulated here by re-running against the ORIGINAL automatic
-    // cutlist/map with `first.doc`.
-    const second = applyUserCuts(first.doc, cutlist, map);
-
-    expect(second.map.outputDuration).toBeCloseTo(first.map.outputDuration, 6);
-    expect(second.removedSec).toBeCloseTo(first.removedSec, 6);
-  });
-
-  // Found on the repro workdir during Task 4b's verification (a real
-  // `pnpm produce --no-render` run twice in a row): without `priorMap`, a
-  // split re-anchored on run 1 (now expressed in the POST-cut frame) got
-  // treated as if it were STILL in the PRE-cut frame on run 2 and shifted by
-  // the cut's duration a second time — 33.9s became 31.4s with no new edit.
-  it("does NOT double-shift a split that a PRIOR run already re-anchored", () => {
+  it("is idempotent once `src` is resolved: a stable re-run makes no further changes", () => {
     const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
     const map = new TimeMap(cutlist);
     const doc = OverrideDocSchema.parse({ cuts: [{ startSec: 20, endSec: 24 }], splits: [40] });
 
-    const first = applyUserCuts(doc, cutlist, map);
-    expect(first.doc.splits[0]).toBeCloseTo(36, 6); // 40 - 4, as in the earlier test
+    const first = applyUserCuts(doc, cutlist, map, map);
+    expect(first.changed).toBe(true); // src resolved + split re-anchored
 
-    // Second produce run: SAME automatic map (nothing upstream changed), but
-    // `priorMap` is now `first.map` — reconstructed in `produce.ts` from the
-    // render-props.json THIS run's predecessor wrote (`mapFromKeptSpans`) —
-    // because that, not the automatic map, is the frame `first.doc.splits`
-    // is actually expressed in.
+    // Second run: automatic cutlist unchanged, `priorMap` is `first.map` —
+    // exactly what render-props.json now says (the frame `first.doc` is
+    // anchored to). `first.doc.cuts[0]` already has `src`, so it's used
+    // directly, independent of `priorMap`/`map` this time.
     const second = applyUserCuts(first.doc, cutlist, map, first.map);
 
     expect(second.changed).toBe(false);
-    expect(second.doc.splits[0]).toBeCloseTo(36, 6); // unchanged — NOT 32
+    expect(second.doc).toEqual(first.doc);
+    expect(second.map.outputDuration).toBeCloseTo(first.map.outputDuration, 6);
   });
 
-  // Found on the repro workdir alongside the double-shift bug: `priorMap`
-  // differing from `map` for reasons OTHER than the user's own cut (there,
-  // an unrelated fuzzy-blooper-marker change widened the automatic cutlist
-  // between when render-props.json was last written and this run) makes a
-  // SECOND stored cut land squarely inside the recut, which used to leak a
-  // "cut start"/"cut end fell inside the new cut" report — describing a
-  // value the function then throws away (`doc.cuts` is always restored to
-  // the original). `reports` must only ever explain splits/pins.
-  it("never reports on `cuts` themselves, even when priorMap drift pushes one onto an edge", () => {
-    const cutlist: Segment[] = [{ srcIn: 0, srcOut: 100, kind: "keep" }];
+  // Review fix wave finding 3: emptying `cuts` (the editor's Restore
+  // gesture) must give the split back exactly what the user originally set,
+  // not leave it stranded in the post-cut frame — even though `cuts.length`
+  // is back to zero and there is nothing left to drive a subtraction.
+  it("restoring a cut (cuts emptied again) re-anchors splits/pins back to their pre-cut values", () => {
+    const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
+    const map = new TimeMap(cutlist); // stable automatic map across both runs
+
+    const initialDoc = OverrideDocSchema.parse({ cuts: [{ startSec: 20, endSec: 24 }], splits: [40] });
+    const run1 = applyUserCuts(initialDoc, cutlist, map, map);
+    expect(run1.doc.splits[0]).toBeCloseTo(36, 6);
+
+    // Restore: the editor removes the cut, everything else (including the
+    // now-re-anchored split) is whatever run1 wrote back.
+    const restoredDoc: typeof run1.doc = { ...run1.doc, cuts: [] };
+    const run2 = applyUserCuts(restoredDoc, cutlist, map, run1.map);
+
+    expect(run2.changed).toBe(true);
+    // Back to 40 — `remapPoint` maps 36 through run1.map (the short, post-
+    // cut frame) to source, then through `map` (the full, uncut frame) back
+    // to output: source = 24 + (36-20) = 40 (past the old cut in the short
+    // frame's second span); `map` is identity, so output = source = 40.
+    expect(run2.doc.splits[0]).toBeCloseTo(40, 6);
+  });
+
+  // The other half of finding 3's parenthetical: automatic-cutlist drift
+  // re-anchors splits/pins even on a workdir that has never had a user cut.
+  it("re-anchors a split when the automatic cutlist alone drifts, with cuts always empty", () => {
+    const priorMap = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const doc = OverrideDocSchema.parse({ splits: [40] });
+
+    // Baseline: nothing has drifted yet.
+    const stable = applyUserCuts(doc, [{ srcIn: 0, srcOut: 60, kind: "keep" }], priorMap, priorMap);
+    expect(stable.changed).toBe(false);
+
+    // Now the automatic cutlist grows a 5s retake removal at the start —
+    // nothing the user did; `priorMap` (what render-props.json still says)
+    // is unchanged.
+    const driftedCutlist: Segment[] = [
+      { srcIn: 0, srcOut: 5, kind: "remove", reason: "retake" },
+      { srcIn: 5, srcOut: 60, kind: "keep" },
+    ];
+    const driftedMap = new TimeMap(driftedCutlist);
+
+    const result = applyUserCuts(doc, driftedCutlist, driftedMap, priorMap);
+
+    expect(result.changed).toBe(true);
+    expect(result.reports).toEqual([]); // a clean shift, nothing clamped
+    expect(result.doc.splits[0]).toBeCloseTo(35, 6); // 40 - 5, the drift
+  });
+
+  it("tolerates float noise between priorMap and map without marking `changed`", () => {
+    const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
     const map = new TimeMap(cutlist);
-    // `priorMap` already has an unrelated 10s gap early on — standing in for
-    // "the automatic cutlist changed for a reason that has nothing to do
-    // with this run's user cut" (PLAN 2026-08-04 Task 4b verification).
-    const priorMap = new TimeMap([
-      { srcIn: 0, srcOut: 5, kind: "keep" },
-      { srcIn: 5, srcOut: 15, kind: "remove", reason: "silence" },
-      { srcIn: 15, srcOut: 100, kind: "keep" },
-    ]);
-    const doc = OverrideDocSchema.parse({
-      cuts: [
-        { startSec: 40, endSec: 44 },
-        // In OLD (priorMap) output terms this sits inside [40,44) once
-        // shifted through the 10s gap `priorMap` already accounts for and
-        // `map` (this run's fresh automatic map) does not yet.
-        { startSec: 42, endSec: 43 },
-      ],
-      splits: [70],
-    });
+    // 1e-9s off — far below EPS (1e-6), the kind of noise a JSON round-trip
+    // of a TimeMap's spans can introduce (review fix wave, Minor finding).
+    const priorMap = new TimeMap([{ srcIn: 0, srcOut: 60 + 1e-9, kind: "keep" }]);
+    const doc = OverrideDocSchema.parse({ splits: [30] });
 
     const result = applyUserCuts(doc, cutlist, map, priorMap);
 
-    expect(result.reports.every((r) => !r.startsWith("cut start") && !r.startsWith("cut end"))).toBe(
-      true,
-    );
-    expect(result.doc.cuts).toEqual(doc.cuts);
-  });
-
-  it("WOULD double-shift without `priorMap` (documents why the parameter exists)", () => {
-    const cutlist: Segment[] = [{ srcIn: 0, srcOut: 60, kind: "keep" }];
-    const map = new TimeMap(cutlist);
-    const doc = OverrideDocSchema.parse({ cuts: [{ startSec: 20, endSec: 24 }], splits: [40] });
-
-    const first = applyUserCuts(doc, cutlist, map);
-    // Omitting `priorMap` defaults it to `map` — the automatic map again,
-    // NOT the frame `first.doc.splits` is anchored to.
-    const second = applyUserCuts(first.doc, cutlist, map);
-
-    expect(second.doc.splits[0]).toBeCloseTo(32, 6); // 36 - 4: the bug, pinned down
+    expect(result.changed).toBe(false);
   });
 });

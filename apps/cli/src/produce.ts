@@ -838,23 +838,27 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     }
     overrideDoc = parsed.data;
   }
-  // `applyUserCuts`'s `priorMap`: splits/pins already re-anchored by an
-  // EARLIER cut are stored relative to THAT run's final timeline, not the
-  // fresh automatic `map` this run just rebuilt — reusing `map` as "old"
-  // again would shift them a second time for nothing (confirmed on the
-  // dogfood workdir: a produce re-run with no new edits moved an already
-  // re-anchored split again). The PREVIOUS run's `render-props.json` is
-  // exactly the timeline the editor showed when the user set them, so its
-  // `spans` reconstruct the right "old" map; a fresh or unreadable workdir
-  // falls back to `map`, matching a first-ever run where the two coincide.
+  // `applyUserCuts`'s `priorMap`: a cut's `startSec`/`endSec` (when it has
+  // no `src` yet) and any already-re-anchored splits/pins are expressed
+  // relative to whatever render-props the user was LAST looking at, not the
+  // fresh automatic `map` this run just rebuilt — reusing `map` as "the
+  // frame the doc is in" gets it wrong the moment ANYTHING drifts (review
+  // fix wave finding 1 — confirmed for real on the dogfood workdir, where an
+  // unrelated blooper-matching change put "output 31s" 5.8s away from where
+  // the user actually pointed when they drew the cut). The PREVIOUS run's
+  // `render-props.json` is exactly that frame; `null` (no readable
+  // render-props.json — first-ever produce, or a corrupt workdir) is passed
+  // through as-is rather than defaulting to `map` — `applyUserCuts` needs to
+  // tell "no prior frame to compare against" apart from "available and
+  // happens to equal `map`" (finding 3's re-anchor gate depends on it).
   const priorRenderProps = join(work, "render-props.json");
-  let priorMap = map;
+  let priorMap: TimeMap | null = null;
   if (existsSync(priorRenderProps)) {
     try {
       const prev = JSON.parse(await readFile(priorRenderProps, "utf8")) as { spans?: KeptSpan[] };
       if (prev.spans) priorMap = mapFromKeptSpans(prev.spans);
     } catch {
-      // Unreadable/corrupt — fall back to `map`, same as no prior run.
+      // Unreadable/corrupt — treated the same as no prior run.
     }
   }
   const cutResult = applyUserCuts(overrideDoc, cutlist, map, priorMap);
@@ -867,27 +871,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         `of output (${map.outputDuration.toFixed(1)}s remaining)`,
     );
   }
-  if (cutResult.changed) {
-    for (const r of cutResult.reports) console.log(`  ⚠ ${r}`);
-    // Keep a `.bak` of whatever was on disk first — the same safety net
-    // `saveConfigPatch` keeps for a config file it's about to replace —
-    // before this run's ONE sanctioned overwrite of the user's own data
-    // (see `applyUserCuts`'s doc comment for why this write is allowed at
-    // all). Atomic write via tmp+rename, matching the edit server's own
-    // `PUT /overrides` handler: the producer or a live editor session may
-    // read this file at any moment, and a half-written document would be
-    // worse than a stale one.
-    try {
-      const raw = await readFile(overridesPath, "utf8");
-      await writeFile(`${overridesPath}.bak`, raw);
-    } catch {
-      // Nothing on disk to back up (first cut ever applied here) — fine.
-    }
-    const tmp = `${overridesPath}.tmp`;
-    await writeFile(tmp, JSON.stringify(overrideDoc, null, 2));
-    await rename(tmp, overridesPath);
-    console.log("▸ overrides.json re-anchored to the new cut and saved (previous copy kept as .bak)");
-  }
+  // Printed regardless of `cutResult.changed`: a missing-render-props
+  // fallback (see `resolveCutSourceRanges`) is a decision worth saying out
+  // loud even on a run that ends up writing nothing. The actual
+  // `overrides.json` write — gated on `changed` — happens further down,
+  // beside `render-props.json`'s own write (see the comment there for why).
+  for (const r of cutResult.reports) console.log(`  ⚠ ${r}`);
 
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
@@ -1504,6 +1493,42 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
+
+  // The one sanctioned overrides.json write (PLAN 2026-08-04 Task 4; see
+  // `applyUserCuts`'s doc comment for why it's allowed at all) — computed
+  // way back when `cutResult` was built, but the actual write waits until
+  // HERE, immediately after `render-props.json`'s own write, deliberately
+  // adjacent (review fix wave finding 2). A crash or Ctrl-C anywhere in
+  // between (assembly, LLM captions, ffmpeg, face measurement — several
+  // hundred lines of I/O that can throw) used to be able to land between the
+  // OLD ordering's early overrides.json write and this one: overrides.json
+  // would already describe the NEW (post-cut) frame while render-props.json
+  // on disk still described the OLD one, so the NEXT run's `priorMap` —
+  // reconstructed from that stale render-props.json — would be off by
+  // exactly the cut's duration and silently double-shift every split and
+  // pin. Writing render-props.json FIRST means the worst a crash between the
+  // two can do is leave overrides.json one run stale relative to it — the
+  // next run's `priorMap` then sees drift and re-anchors again, the same
+  // recovery path finding 3 already has to support — never a false "nothing
+  // changed" that quietly corrupts positions.
+  if (cutResult.changed) {
+    // Keep a `.bak` of whatever was on disk first — the same safety net
+    // `saveConfigPatch` keeps for a config file it's about to replace —
+    // before overwriting the user's own data. Atomic write via tmp+rename,
+    // matching the edit server's own `PUT /overrides` handler: the producer
+    // or a live editor session may read this file at any moment, and a
+    // half-written document would be worse than a stale one.
+    try {
+      const raw = await readFile(overridesPath, "utf8");
+      await writeFile(`${overridesPath}.bak`, raw);
+    } catch {
+      // Nothing on disk to back up (first cut ever applied here) — fine.
+    }
+    const tmp = `${overridesPath}.tmp`;
+    await writeFile(tmp, JSON.stringify(overrideDoc, null, 2));
+    await rename(tmp, overridesPath);
+    console.log("▸ overrides.json re-anchored to the new cut and saved (previous copy kept as .bak)");
+  }
 
   if (!opts.render) {
     console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);

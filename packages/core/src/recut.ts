@@ -1,6 +1,6 @@
 import type { OverrideDoc } from "./overrides";
 import type { Segment } from "./schema";
-import { TimeMap } from "./timemap";
+import { mapsClose, TimeMap } from "./timemap";
 
 /**
  * What `remapOverridesThroughRecut` hands back alongside the re-anchored doc.
@@ -85,35 +85,113 @@ export function remapOverridesThroughRecut(
   return { doc: { ...doc, splits, scenes, cuts }, reports };
 }
 
+/** One entry of `OverrideDoc.cuts` — see the schema comment on `src`. */
+export type UserCut = OverrideDoc["cuts"][number];
+
 /**
- * Subtract `cuts` (output-second ranges) from a cutlist's `keep` segments.
+ * Deep-equal with float tolerance — a "did this actually change" check for
+ * values that passed through TimeMap arithmetic and a JSON round-trip, where
+ * exact equality flags noise (review fix wave, PLAN 2026-08-04 Task 4,
+ * finding "Minor"): a 1-ulp drift is not a user edit, and treating it as one
+ * rewrites `overrides.json` — a user-owned file whose timestamp and diffs
+ * matter — on every produce run for nothing.
+ */
+function closeEnough(a: unknown, b: unknown, eps: number): boolean {
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) <= eps;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => closeEnough(v, b[i], eps));
+  }
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const ak = Object.keys(a).sort();
+    const bk = Object.keys(b).sort();
+    if (ak.length !== bk.length || ak.some((k, i) => k !== bk[i])) return false;
+    return ak.every((k) =>
+      closeEnough((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], eps),
+    );
+  }
+  return a === b;
+}
+
+/** Tolerance for every float comparison in this module — generous enough to
+ * absorb a JSON round-trip and a chain of TimeMap arithmetic, tight enough
+ * that a genuine sub-millisecond user nudge still counts as a change. */
+const EPS = 1e-6;
+
+/**
+ * Resolve each user cut to a SOURCE-time range to remove, and to a `src`
+ * value worth persisting.
  *
- * Every cut is converted to SOURCE time through the SAME `map` — the
- * automatic, pre-user-cut cutlist's own map — independently of every other
- * cut, not cumulatively through each other (PLAN 2026-08-04 Task 4). That is
- * what keeps a stored cut interpretable the same way on every produce run:
- * `map` is deterministic from the source and `--cleanup` level alone, so as
- * long as neither changes, converting the SAME stored range through the SAME
- * map always yields the same source instant, run after run, with nothing
- * else to track.
+ * A cut WITH `src` already is stable and settled: `src` is used directly,
+ * unconverted, every run, forever — it is never re-derived from
+ * `startSec`/`endSec` again, because there is no map left that could
+ * re-derive it correctly (review fix wave finding 1's Bug A: a cut's own
+ * source range has no faithful representation in any output frame taken
+ * AFTER that cut's own removal).
+ *
+ * A cut WITHOUT `src` is fresh — drawn by the user against `priorMap`, the
+ * render-props they were looking at (the schema comment's "output seconds of
+ * the CURRENT render-props") — so it converts through `priorMap.toSource`,
+ * NOT `map` (this run's freshly-rebuilt automatic cutlist, which has no
+ * relationship to what the user was looking at once anything has drifted:
+ * confirmed on the dogfood workdir, where an unrelated automatic-cutlist
+ * change put "output 31s in `map`" 5.8s away from "output 31s in
+ * `priorMap`"). `priorMap` missing entirely (no readable render-props.json —
+ * a first-ever produce, or a corrupt workdir) falls back to `map`, WITH a
+ * report — never silently, per the same "nothing moves without saying so"
+ * rule as `remapPoint`.
+ */
+export interface ResolvedCuts {
+  /** Source-time ranges to remove, one per cut with a non-degenerate result. */
+  ranges: { start: number; end: number }[];
+  /** `cuts`, each carrying a resolved `src` — the only thing about a cut
+   * that ever changes on write-back; `startSec`/`endSec` are untouched. */
+  cuts: UserCut[];
+  reports: string[];
+}
+
+export function resolveCutSourceRanges(
+  cuts: readonly UserCut[],
+  priorMap: TimeMap | null,
+  map: TimeMap,
+): ResolvedCuts {
+  const reports: string[] = [];
+  const resolved: UserCut[] = [];
+  const ranges: { start: number; end: number }[] = [];
+  for (const cut of cuts) {
+    let src = cut.src;
+    if (!src) {
+      let anchor = priorMap;
+      if (!anchor) {
+        reports.push(
+          `cut ${cut.startSec.toFixed(3)}–${cut.endSec.toFixed(3)}s has no render-props to ` +
+            "anchor to — used this run's automatic cutlist instead; verify placement",
+        );
+        anchor = map;
+      }
+      src = { startSec: anchor.toSource(cut.startSec), endSec: anchor.toSource(cut.endSec) };
+    }
+    resolved.push(src === cut.src ? cut : { ...cut, src });
+    if (src.endSec > src.startSec) ranges.push({ start: src.startSec, end: src.endSec });
+  }
+  return { ranges, cuts: resolved, reports };
+}
+
+/**
+ * Subtract source-time `ranges` from a cutlist's `keep` segments.
  *
  * `remove` segments already in the cutlist pass through untouched; a `keep`
- * segment is split around every cut range that overlaps it. New `remove`
+ * segment is split around every range that overlaps it. New `remove`
  * segments carry `reason: "user"` (`RemovalReasonSchema` already has this
  * value) so `formatCutReport` — which walks `production.cutlist` — lists a
  * user cut exactly like an automatic one, with no separate report path
  * needed for "what got removed."
  */
-export function subtractCutsFromCutlist(
+export function subtractRangesFromCutlist(
   cutlist: readonly Segment[],
-  cuts: readonly { startSec: number; endSec: number }[],
-  map: TimeMap,
+  ranges: readonly { start: number; end: number }[],
 ): Segment[] {
-  const ranges = cuts
-    .map((c) => ({ start: map.toSource(c.startSec), end: map.toSource(c.endSec) }))
-    .filter((r) => r.end > r.start)
-    .sort((a, b) => a.start - b.start);
-  if (ranges.length === 0) return [...cutlist];
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  if (sorted.length === 0) return [...cutlist];
 
   const out: Segment[] = [];
   for (const seg of cutlist) {
@@ -127,7 +205,7 @@ export function subtractCutsFromCutlist(
     // NEIGHBOURING keep segment (separated by an existing automatic cut) is
     // simply considered again there, on its own bounds.
     let cursor = seg.srcIn;
-    for (const r of ranges) {
+    for (const r of sorted) {
       const overlapStart = Math.max(cursor, r.start);
       const overlapEnd = Math.min(seg.srcOut, r.end);
       if (overlapStart >= overlapEnd) continue;
@@ -142,92 +220,112 @@ export function subtractCutsFromCutlist(
 
 /** What applying the user's `cuts` to a cutlist hands back to `produce.ts`. */
 export interface ApplyUserCutsResult {
-  /** `subtractCutsFromCutlist`'s result — `[...cutlist]` unchanged when
+  /** `subtractRangesFromCutlist`'s result — `[...cutlist]` unchanged when
    * `doc.cuts` is empty. */
   cutlist: Segment[];
   /** `new TimeMap(cutlist)`, handed back so the caller doesn't rebuild it. */
   map: TimeMap;
   /**
-   * The doc with `splits`/pinned `scenes[id].timing` re-anchored through the
-   * cut. `cuts` is deliberately NOT taken from `remapOverridesThroughRecut`'s
-   * output — see the inline comment where it's restored, below.
+   * The doc with `cuts[*].src` resolved and `splits`/pinned
+   * `scenes[id].timing` re-anchored where drift was found. `cuts[*].startSec`/
+   * `endSec` are always the user's original values — see `resolveCutSourceRanges`.
    */
   doc: OverrideDoc;
-  /** Every remap report — empty when `changed` is false, so a produce run
-   * with nothing to say about it prints nothing. */
+  /** Every report worth surfacing — missing-anchor fallbacks (always) plus
+   * remap reports (only when a re-anchor actually happened). Shown
+   * regardless of `changed`: these are about DECISIONS, not about whether a
+   * file got written. */
   reports: string[];
   /**
-   * Whether `doc.splits`/`doc.scenes` actually moved. The write-back guard
-   * (PLAN 2026-08-04 Task 4): an untouched `overrides.json` must not be
-   * rewritten on every produce run just because `cuts` is non-empty.
+   * Whether `doc` actually differs from what was read (a cut resolved its
+   * `src` for the first time, and/or splits/pins moved). The write-back
+   * guard (PLAN 2026-08-04 Task 4 + review fix wave finding 3): an untouched
+   * `overrides.json` must not be rewritten on every produce run.
    */
   changed: boolean;
-  /** Total duration `doc.cuts` removed, for the produce report's headline. */
+  /** Total duration this run's cuts removed, for the produce report's headline. */
   removedSec: number;
 }
 
 /**
- * Subtract the user's `cuts` from `cutlist`, then re-anchor the REST of the
- * doc (splits, pinned timing) through the resulting re-cut (PLAN 2026-08-04
- * Task 4). This is the ONE sanctioned write to `overrides.json` — every
- * other file `produce.ts` writes is derived and safe to overwrite every run,
- * but this rewrites the user's OWN decisions, and does so because a cut
- * changes the timeline those decisions are anchored to. Rewriting them here
- * is what keeps them meaning the same thing, not silently landing somewhere
- * else the next time the editor opens.
+ * Subtract the user's `cuts` from `cutlist`, then re-anchor `splits`/pinned
+ * timing through whatever drift is found between `priorMap` (the frame the
+ * doc's stored values are CURRENTLY anchored to — `produce.ts` reconstructs
+ * this from the last-written `render-props.json`) and this run's final map
+ * (PLAN 2026-08-04 Task 4). This is the ONE sanctioned write to
+ * `overrides.json` — every other file `produce.ts` writes is derived and
+ * safe to overwrite every run, but this rewrites the user's OWN decisions,
+ * and does so because the timeline those decisions are anchored to keeps
+ * moving out from under them. Rewriting them here is what keeps them meaning
+ * the same thing, not silently landing somewhere else the next time the
+ * editor opens.
  *
- * `cuts` is ALWAYS interpreted against `map` — the freshly-built automatic
- * cutlist's own map, deterministic from the source and `--cleanup` level, so
- * a stored cut keeps meaning the same source range on every run (see
- * `subtractCutsFromCutlist`'s doc comment). Splits and pinned timing are
- * different: they are written back re-anchored to whatever `map` produces
- * THIS run, so on the NEXT run they are no longer expressed in `map`'s frame
- * — treating `map` as their "old" coordinate space a second time would shift
- * them again by the same amount for nothing. `priorMap` is what fixes that:
- * pass the map their CURRENT values are actually anchored to (in
- * `produce.ts`, reconstructed from the last-written `render-props.json` via
- * `mapFromKeptSpans` — exactly "the render-props the editor showed when the
- * user set them"). Defaults to `map` for a workdir with no prior render, the
- * one case where "automatic map" and "map the user last saw" coincide.
+ * Two gates, deliberately independent (review fix wave finding 3):
+ *  - Subtracting cuts from the cutlist only happens when `doc.cuts` is
+ *    non-empty — nothing to subtract otherwise.
+ *  - Re-anchoring `splits`/`scenes[*].timing` happens whenever `priorMap` is
+ *    available AND differs (span-for-span, float-tolerant) from this run's
+ *    final map — REGARDLESS of whether `cuts` is empty. A doc with cuts
+ *    already applied, then emptied again (the editor's Restore gesture), has
+ *    splits/pins still sitting in last run's POST-cut frame with nothing in
+ *    `cuts` left to drive a re-anchor off of; gating on `cuts.length` alone
+ *    stranded them. The same gate also catches the automatic cutlist itself
+ *    drifting for a reason that has nothing to do with the user's cuts at
+ *    all (a `--cleanup` change, a repair-pass improvement) — confirmed for
+ *    real on the dogfood workdir during verification.
  *
- * A no-op — `cutlist`/`map` unchanged, `changed: false` — when `doc.cuts` is
- * empty, so callers can invoke this unconditionally.
+ * `priorMap === null` (no readable render-props.json: first-ever produce, or
+ * a corrupt workdir) skips re-anchoring entirely — there is nothing to
+ * compare against — but a `src`-less cut still resolves, falling back to
+ * `map` with a report (see `resolveCutSourceRanges`).
  */
 export function applyUserCuts(
   doc: OverrideDoc,
   cutlist: readonly Segment[],
   map: TimeMap,
-  priorMap: TimeMap = map,
+  priorMap: TimeMap | null,
 ): ApplyUserCutsResult {
-  if (doc.cuts.length === 0) {
-    return { cutlist: [...cutlist], map, doc, reports: [], changed: false, removedSec: 0 };
+  let newCutlist: Segment[] = [...cutlist];
+  let cuts = doc.cuts;
+  let reports: string[] = [];
+  if (doc.cuts.length > 0) {
+    const resolved = resolveCutSourceRanges(doc.cuts, priorMap, map);
+    newCutlist = subtractRangesFromCutlist(cutlist, resolved.ranges);
+    cuts = resolved.cuts;
+    reports = resolved.reports;
   }
-  const newCutlist = subtractCutsFromCutlist(cutlist, doc.cuts, map);
   const newMap = new TimeMap(newCutlist);
-  // `cuts: []` going IN: the schema comment on `OverrideDocSchema.cuts`
-  // calls out that this function re-anchors every OTHER absolute-output-
-  // seconds value in the doc, deliberately not `cuts` itself — remapping a
-  // cut through the SAME transition it just caused collapses it to a
-  // zero-width point at its own edge (the identical "landed on a cut edge"
-  // case this reports for splits/pins), and reporting THAT would tell the
-  // user their cut moved when it didn't — it's restored, unchanged, below.
-  // Leaving it out of the call entirely (rather than discarding `.cuts` from
-  // the result) is what keeps `reports` free of that noise in the first
-  // place, not just free of the value.
-  const { doc: remapped, reports } = remapOverridesThroughRecut(
-    { ...doc, cuts: [] },
-    priorMap,
-    newMap,
-  );
-  const changed =
-    JSON.stringify({ splits: remapped.splits, scenes: remapped.scenes }) !==
-    JSON.stringify({ splits: doc.splits, scenes: doc.scenes });
+  const removedSec = map.outputDuration - newMap.outputDuration;
+  const cutsChanged = !closeEnough(cuts, doc.cuts, EPS);
+
+  let finalDoc: OverrideDoc = { ...doc, cuts };
+  let reanchored = false;
+  if (priorMap !== null && !mapsClose(priorMap, newMap, EPS)) {
+    // `cuts: []` going IN: this function re-anchors `splits`/pinned timing
+    // only — see `resolveCutSourceRanges` above for why `cuts` itself is
+    // handled separately and never round-tripped through `remapPoint`
+    // (remapping a cut through the very recut it caused collapses it to a
+    // zero-width point at its own edge, the identical "landed on a cut
+    // edge" case reported for splits/pins — and reporting THAT would tell
+    // the user their cut moved when it didn't).
+    const { doc: remapped, reports: remapReports } = remapOverridesThroughRecut(
+      { ...doc, cuts: [] },
+      priorMap,
+      newMap,
+    );
+    if (!closeEnough(remapped.splits, doc.splits, EPS) || !closeEnough(remapped.scenes, doc.scenes, EPS)) {
+      finalDoc = { ...remapped, cuts };
+      reports = [...reports, ...remapReports];
+      reanchored = true;
+    }
+  }
+
   return {
     cutlist: newCutlist,
     map: newMap,
-    doc: { ...remapped, cuts: doc.cuts },
-    reports: changed ? reports : [],
-    changed,
-    removedSec: map.outputDuration - newMap.outputDuration,
+    doc: finalDoc,
+    reports,
+    changed: cutsChanged || reanchored,
+    removedSec,
   };
 }
