@@ -19,6 +19,15 @@ interface TimelineProps {
   cues: readonly SceneCue[];
   /** Deleted scenes at their base timing — drawn as restorable ghosts. */
   ghosts: readonly SceneCue[];
+  /**
+   * User cuts (`doc.cuts`, PLAN 2026-08-04 Task 4c) — drawn as a struck-
+   * through dead-region overlay at their OWN recorded window, in the same
+   * output-second coordinate frame `durationSec`/`cues` already use (the
+   * schema's "output seconds of the CURRENT render-props"). Optional and
+   * defaulted so every existing caller (and test) that predates this prop
+   * keeps compiling unchanged.
+   */
+  cuts?: readonly { startSec: number; endSec: number }[];
   durationSec: number;
   fps: number;
   playerRef: React.RefObject<PlayerRef | null>;
@@ -162,6 +171,7 @@ const useTakeThumbs = (
 export const Timeline: React.FC<TimelineProps> = ({
   cues,
   ghosts,
+  cuts = [],
   durationSec,
   fps,
   playerRef,
@@ -799,6 +809,32 @@ export const Timeline: React.FC<TimelineProps> = ({
                 </div>
               );
             })}
+            {cuts.map((cut) => {
+              // User cuts (PLAN 2026-08-04 Task 4c): purely decorative
+              // (`pointerEvents: none`), drawn OVER the live block at the
+              // SAME window `doc.cuts` itself records — never a derived or
+              // shifted position, because nothing here re-derives one (the
+              // DECIDE in the task report: the live preview does not build
+              // a second cut timeline, so this stays honest by not
+              // pretending the block moved). Unlike a ghost, the cue this
+              // overlay sits on top of is STILL the real, still-selectable
+              // block underneath (cuts don't remove anything from `cues`) —
+              // so this needs no separate click handling of its own;
+              // selecting the block it covers is how the Inspector's
+              // Restore gets reached.
+              const left = durationSec > 0 ? (cut.startSec / durationSec) * 100 : 0;
+              const width =
+                durationSec > 0 ? Math.max(0, ((cut.endSec - cut.startSec) / durationSec) * 100) : 0;
+              return (
+                <div
+                  key={`cut-${cut.startSec}-${cut.endSec}`}
+                  data-testid={`timeline-cut-${cut.startSec}-${cut.endSec}`}
+                  style={{ ...cutOverlay, left: `${left}%`, width: `${width}%` }}
+                >
+                  <div style={cutStrike} />
+                </div>
+              );
+            })}
             {dragPreview ? (
               // The drag readout (precision-editing design, "The frames
               // readout"): m:ss:ff in the same units the transport shows,
@@ -987,6 +1023,35 @@ const pinBadge: React.CSSProperties = {
   padding: "1px 5px",
   borderRadius: 3,
   pointerEvents: "none",
+};
+
+/** User-cut dead region (PLAN 2026-08-04 Task 4c): a hatched red band above
+ * every other block level (3, matching "selected") so the strike-through
+ * always reads even over a selected block — it's decorative and inert
+ * (`pointerEvents: none` on the caller), so winning the paint order costs
+ * nothing real. */
+const cutOverlay: React.CSSProperties = {
+  position: "absolute",
+  top: 3,
+  bottom: 3,
+  zIndex: 3,
+  pointerEvents: "none",
+  borderRadius: 4,
+  border: "1px solid rgba(255,92,92,0.6)",
+  background:
+    "repeating-linear-gradient(135deg, rgba(255,92,92,0.22), rgba(255,92,92,0.22) 6px, transparent 6px, transparent 12px)",
+};
+
+/** The literal "struck through" line — a hatch alone reads as "selected" or
+ * "dragging" at a glance; a horizontal line through the middle is the same
+ * mark the ghost ROW already uses on its own label text. */
+const cutStrike: React.CSSProperties = {
+  position: "absolute",
+  left: 0,
+  right: 0,
+  top: "50%",
+  height: 2,
+  background: "rgba(255,92,92,0.8)",
 };
 
 const edgeHandle: React.CSSProperties = {

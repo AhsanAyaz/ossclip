@@ -22,6 +22,14 @@ const graphicCue: SceneCue = {
   elements: { title: { scale: 1.4 } },
 };
 
+const takeCue: SceneCue = {
+  id: "take-0",
+  kind: "plain",
+  layout: "video-top",
+  startSec: 30,
+  endSec: 40,
+};
+
 /**
  * Wires a real `useEdits()` reducer to `Inspector` so a button's `onClick`
  * runs the ACTUAL dispatch/re-render cycle — this is what distinguishes
@@ -31,11 +39,30 @@ const graphicCue: SceneCue = {
  * covered because the bug 4 fix (`blurActive` in Inspector.tsx) has to hold
  * for both, not just the one where an incidental unmount already helped.
  */
-function Harness({ selection }: { selection: { sceneId: string; elementId: string | null } }) {
+function Harness({
+  selection,
+  cue = graphicCue,
+  initialCuts,
+}: {
+  selection: { sceneId: string; elementId: string | null };
+  cue?: SceneCue;
+  /** Pre-loads `doc.cuts` (like a workdir the editor re-opened) before the
+   * Inspector ever mounts — for the "already cut" view, which the Harness's
+   * own dispatch cycle can't reach any other way (there's no "select an
+   * already-cut block" gesture to simulate; the match is on window). */
+  initialCuts?: { startSec: number; endSec: number }[];
+}) {
   const edits = useEdits();
+  React.useEffect(() => {
+    if (initialCuts) {
+      edits.load({ theme: {}, scenes: {}, captions: {}, splits: [], cuts: initialCuts });
+    }
+    // Mount-once load, same shape as App.tsx's own `loadProduction` effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return React.createElement(Inspector, {
     selection,
-    cue: graphicCue,
+    cue,
     frame: { width: 1080, height: 1920 },
     allSceneIds: ["scene-0"],
     edits,
@@ -98,5 +125,138 @@ describe("Inspector — destructive/mutating buttons blur on click (PLAN 2026-08
     // still hold focus if its own click handler didn't blur it.
     expect(container.contains(btn)).toBe(true);
     expect(document.activeElement).toBe(document.body);
+  });
+
+  it("cut-chunk: the click swaps the whole panel to the Restore view — focus lands on body (PLAN 2026-08-04 Task 4c)", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }));
+    });
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!;
+    expect(btn).not.toBeNull();
+    btn.focus();
+    expect(document.activeElement).toBe(btn);
+    await act(async () => {
+      btn.click();
+    });
+    // Same shape as delete-scene above: the button is gone (this IS the
+    // marked-for-removal/Restore panel now), so the assertion doesn't
+    // actually distinguish "blurred by the fix" from "blurred by the
+    // unmount" — restore-chunk below covers the case that does.
+    expect(container.querySelector('[data-testid="cut-chunk"]')).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("restore-chunk: the SAME button survives the re-render (matched-window pass-through, not an unmount) — focus must be dropped explicitly", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "take-0", elementId: null },
+          cue: takeCue,
+          initialCuts: [{ startSec: takeCue.startSec, endSec: takeCue.endSec }],
+        }),
+      );
+    });
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="restore-chunk"]')!;
+    expect(btn).not.toBeNull();
+    btn.focus();
+    expect(document.activeElement).toBe(btn);
+    await act(async () => {
+      btn.click();
+    });
+    // restoreChunk empties `doc.cuts` back to `[]` — the panel re-renders
+    // into the NORMAL take view (a different shape: "Delete this chunk"
+    // instead of "Restore"), so the specific button IS gone here too, same
+    // as delete-scene/cut-chunk above — still confirms blur either way.
+    expect(container.querySelector('[data-testid="restore-chunk"]')).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe("Inspector — user cuts (PLAN 2026-08-04 Task 4c)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("offers Delete this chunk on a plain TAKE, not just a scene — the actual dogfooding ask", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "take-0", elementId: null },
+          cue: takeCue,
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="cut-chunk"]')).not.toBeNull();
+    // A take has no "Delete scene" — that button only ever hides a graphic.
+    expect(container.querySelector('[data-testid="delete-scene"]')).toBeNull();
+  });
+
+  it("offers Delete this chunk on a scene too, alongside (not instead of) Delete scene", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }));
+    });
+    expect(container.querySelector('[data-testid="cut-chunk"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="delete-scene"]')).not.toBeNull();
+  });
+
+  it("shows Restore instead of Delete this chunk once the cue's window has a matching cut", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          initialCuts: [{ startSec: graphicCue.startSec, endSec: graphicCue.endSec }],
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="restore-chunk"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="cut-chunk"]')).toBeNull();
+    // The marked-for-removal view is exclusive, same as the hidden-scene
+    // view above it — no editing controls should be reachable underneath.
+    expect(container.querySelector('[data-testid="delete-scene"]')).toBeNull();
+  });
+
+  it("a cut recorded at a DIFFERENT window than the selected cue does not trigger the Restore view", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          initialCuts: [{ startSec: 100, endSec: 110 }],
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="cut-chunk"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="restore-chunk"]')).toBeNull();
+  });
+
+  it("clicking Delete this chunk writes exactly the cue's own window, and Restore removes it again", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "take-0", elementId: null },
+          cue: takeCue,
+        }),
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="restore-chunk"]')).not.toBeNull();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="restore-chunk"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="cut-chunk"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="restore-chunk"]')).toBeNull();
   });
 });

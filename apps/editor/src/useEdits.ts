@@ -82,6 +82,8 @@ export type EditAction =
   | { type: "clearTiming"; sceneId: string }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
+  | { type: "cutChunk"; startSec: number; endSec: number }
+  | { type: "restoreChunk"; startSec: number; endSec: number }
   | { type: "patchGraphicRect"; sceneId: string; rect: GraphicRect; coalesce?: string }
   | { type: "clearGraphicRect"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
@@ -291,6 +293,52 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         scenes: { ...state.doc.scenes, [action.sceneId]: rest },
       });
     }
+    case "cutChunk": {
+      // Delete this chunk (PLAN 2026-08-04 Task 4c) — split-then-delete
+      // becomes the actual cutting gesture the dogfooding verdict asked
+      // for: split isolates a chunk into its own block, this removes it.
+      // Soft like `hideScene`, but a DIFFERENT axis of soft — `hideScene`
+      // only drops a graphic and keeps the window's duration; this marks
+      // the WINDOW ITSELF for removal from the output, TAKE or SCENE alike,
+      // and takes effect on the next produce/Render (App.tsx's `live` memo
+      // never reads `doc.cuts` — see its own comment for why).
+      //
+      // Writes ONLY `{startSec, endSec}` — never a `src` (the schema
+      // comment on `OverrideDocSchema.cuts`, packages/core/src/overrides.ts:
+      // `src` is produce's own resolved source anchor, and the editor must
+      // never write or preserve one). The filter-then-push below replaces
+      // any existing entry at this exact window rather than pushing a
+      // duplicate — the one path in this UI that could otherwise "edit an
+      // existing cut's range" (re-cutting a window whose on-disk cut
+      // already carries a `src` from a prior produce run), and the
+      // replacement's fresh object has no `src` key at all, which is what
+      // that contract requires.
+      const cuts = state.doc.cuts.filter(
+        (c) => c.startSec !== action.startSec || c.endSec !== action.endSec,
+      );
+      return commit({
+        ...state.doc,
+        cuts: [...cuts, { startSec: action.startSec, endSec: action.endSec }],
+      });
+    }
+    case "restoreChunk": {
+      // The way back (PLAN 2026-08-04 Task 4c): removes the WHOLE entry,
+      // same "delete the key, don't write a false-ish value" rule as
+      // `restoreScene`'s `hidden` removal — there is no "not cut" state for
+      // one `cuts` array entry to hold, so the entry itself has to go.
+      // Matched by exact float equality against `startSec`/`endSec`: both
+      // this action's payload and the entry being matched trace back to the
+      // SAME `cue.startSec`/`endSec` with no arithmetic in between (the cue
+      // that `cutChunk` read its window from cannot have drifted within a
+      // session — `live` never consumes `doc.cuts`), unlike a
+      // playhead-derived time, which is why `addSplit`'s dedupe needs a
+      // tolerance and this doesn't.
+      const cuts = state.doc.cuts.filter(
+        (c) => c.startSec !== action.startSec || c.endSec !== action.endSec,
+      );
+      if (cuts.length === state.doc.cuts.length) return state; // nothing matched
+      return commit({ ...state.doc, cuts });
+    }
     case "patchComponent": {
       const scene = withScene(state.doc, action.sceneId);
       return commit({
@@ -434,6 +482,9 @@ export function useEdits() {
     addSplit: (t: number) => dispatch({ type: "addSplit", t }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
+    cutChunk: (startSec: number, endSec: number) => dispatch({ type: "cutChunk", startSec, endSec }),
+    restoreChunk: (startSec: number, endSec: number) =>
+      dispatch({ type: "restoreChunk", startSec, endSec }),
     patchGraphicRect: (sceneId: string, rect: GraphicRect, coalesce?: string) =>
       dispatch({ type: "patchGraphicRect", sceneId, rect, coalesce }),
     clearGraphicRect: (sceneId: string) => dispatch({ type: "clearGraphicRect", sceneId }),

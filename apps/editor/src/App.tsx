@@ -434,6 +434,22 @@ export const App: React.FC = () => {
     [edits.dirty, loadProduction],
   );
 
+  // DECIDE (PLAN 2026-08-04 Task 4c): this memo deliberately never reads
+  // `edits.doc.cuts`. A cut removes an output-second RANGE and shifts every
+  // scene after it — the same reshaping `produce.ts`'s `buildCutlist` +
+  // `TimeMap` + `assembleScenes` does server-side. Reproducing that here
+  // would mean a second EDL implementation in the browser (the brief's own
+  // explicit "don't"), and there is nothing cheap to lean on instead: this
+  // memo's `renderProps.spans`/`outputDurationSec` describe the LAST
+  // produce run's timeline, not a live re-cut one, and the editor has no
+  // client-side TimeMap to rebuild a post-cut version from (only
+  // `render-props.json`'s `spans`, which is `produce.ts`'s OUTPUT, not
+  // something a cut can be subtracted from without the same server-side
+  // machinery). The honest v1: a cut renders as a marked-dead region
+  // (Timeline's struck-through overlay, fed straight from `edits.doc.cuts`
+  // below) that TAKES EFFECT on the next produce/Render, which already
+  // subtracts it correctly (Task 4b) — never silently pretending the live
+  // preview reflects a cut it can't actually apply.
   const live = useMemo<PlayerProductionProps | null>(() => {
     if (!renderProps) return null;
     // Always merge onto the PRISTINE base, never onto `renderProps.sceneCues`/
@@ -952,6 +968,7 @@ export const App: React.FC = () => {
       <Timeline
         cues={live.sceneCues}
         ghosts={ghostCues}
+        cuts={edits.doc.cuts}
         durationSec={live.outputDurationSec}
         fps={live.settings.fps}
         playerRef={playerRef}

@@ -461,6 +461,47 @@ export const Inspector: React.FC<InspectorProps> = ({
         </div>
       );
     }
+    // A cut chunk (PLAN 2026-08-04 Task 4c): matched by exact window
+    // equality against `cue`'s OWN startSec/endSec. Safe as exact equality
+    // (not a tolerance) because both numbers trace back to the SAME value
+    // with no arithmetic in between — `cutChunk` writes the cue's window
+    // verbatim, and `live` (App.tsx) never reads `doc.cuts`, so the cue's
+    // own window cannot have drifted out from under the match within a
+    // session. Restore is the ONLY offer here, same reasoning as the
+    // hidden-scene branch above: this UI exposes no way to edit a cut's
+    // range, so there is nothing else this view needs to show.
+    const activeCut = edits.doc.cuts.find(
+      (c) => c.startSec === cue.startSec && c.endSec === cue.endSec,
+    );
+    if (activeCut) {
+      return (
+        <div>
+          <div style={section}>
+            <span style={label}>{isPlain ? "Take" : "Scene"}</span>
+            <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
+              {selection.sceneId}{" "}
+              <span style={{ color: "#9A9AA3", fontWeight: 400 }}>(marked for removal)</span>
+            </div>
+            <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+              Struck through on the timeline. It disappears from the output on
+              the next produce/Render — this preview still plays it (the
+              editor doesn't re-derive a second cut timeline just to show one
+              early).
+            </div>
+            <button
+              data-testid="restore-chunk"
+              style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
+              onClick={() => {
+                blurActive();
+                edits.restoreChunk(cue.startSec, cue.endSec);
+              }}
+            >
+              Restore
+            </button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div>
         <div style={section}>
@@ -888,6 +929,33 @@ export const Inspector: React.FC<InspectorProps> = ({
             </button>
           </div>
         ) : null}
+        <div style={section}>
+          {/* User cuts (PLAN 2026-08-04 Task 4c) — the dogfooding verdict's
+              actual ask: "I can split a Take, but can't delete any of it."
+              Split isolates a chunk into its own block; this removes it,
+              TAKE or SCENE alike (unlike "Delete scene" above, which only
+              drops the graphic and keeps the window). Soft, same shape as
+              every other delete in this panel: nothing here shortens the
+              LIVE preview (`live` in App.tsx never reads `doc.cuts` — the
+              DECIDE was to render a marked-dead region rather than build a
+              second EDL in the browser), the timeline shows it struck
+              through, and Restore is one click away until the next
+              produce/Render actually cuts it out of the output. */}
+          <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+            Removes this window from the output on the next produce/Render.
+            Struck through here until then — the preview keeps playing it.
+          </div>
+          <button
+            data-testid="cut-chunk"
+            style={button}
+            onClick={() => {
+              blurActive();
+              edits.cutChunk(cue.startSec, cue.endSec);
+            }}
+          >
+            Delete this chunk
+          </button>
+        </div>
       </div>
     );
   }

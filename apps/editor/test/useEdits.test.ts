@@ -165,6 +165,71 @@ describe("delete a scene with a way back (PLAN 2026-07-30 Task C)", () => {
   });
 });
 
+describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", () => {
+  it("cutChunk writes ONLY {startSec, endSec} — no src key", () => {
+    const s = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });
+    expect(s.doc.cuts).toEqual([{ startSec: 10, endSec: 14 }]);
+    expect("src" in s.doc.cuts[0]!).toBe(false);
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("restoreChunk removes the WHOLE entry, matched by exact window", () => {
+    let s = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });
+    s = editReducer(s, { type: "restoreChunk", startSec: 10, endSec: 14 });
+    expect(s.doc.cuts).toEqual([]);
+  });
+
+  it("restoreChunk on a window with no matching cut is a no-op (same state, not a new commit)", () => {
+    const s = initialEditState();
+    expect(editReducer(s, { type: "restoreChunk", startSec: 10, endSec: 14 })).toBe(s);
+  });
+
+  it("cutting undoes like any other edit", () => {
+    let s = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.cuts).toEqual([]);
+  });
+
+  it("cutting a DIFFERENT window keeps both entries", () => {
+    let s = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });
+    s = editReducer(s, { type: "cutChunk", startSec: 20, endSec: 22 });
+    expect(s.doc.cuts).toEqual([
+      { startSec: 10, endSec: 14 },
+      { startSec: 20, endSec: 22 },
+    ]);
+  });
+
+  // The binding contract (packages/core/src/overrides.ts's schema comment,
+  // PLAN 2026-08-04 Task 4c): the editor must never write or preserve a
+  // cut's `src` — `src` is produce's own resolved source anchor. This is
+  // the one path in this reducer that could otherwise carry a stale `src`
+  // forward: re-cutting a window whose on-disk entry already has one (e.g.
+  // a workdir the editor re-opened after a produce run had already resolved
+  // it) must land on a fresh {startSec, endSec}-only object, not the old
+  // entry with its src intact.
+  it("cutChunk on a window whose EXISTING cut already carries a src strips it — never preserved, never carried forward", () => {
+    const withSrcOnDisk = editReducer(initialEditState(), { type: "load", doc: {
+      theme: {}, scenes: {}, captions: {}, splits: [],
+      cuts: [{ startSec: 10, endSec: 14, src: { startSec: 43.4, endSec: 47.9 } }],
+    } });
+    expect(withSrcOnDisk.doc.cuts[0]!.src).toBeDefined();
+
+    const s = editReducer(withSrcOnDisk, { type: "cutChunk", startSec: 10, endSec: 14 });
+
+    expect(s.doc.cuts).toEqual([{ startSec: 10, endSec: 14 }]);
+    expect("src" in s.doc.cuts[0]!).toBe(false);
+  });
+
+  it("restoreChunk removes an entry even when it carries a resolved src", () => {
+    const withSrcOnDisk = editReducer(initialEditState(), { type: "load", doc: {
+      theme: {}, scenes: {}, captions: {}, splits: [],
+      cuts: [{ startSec: 10, endSec: 14, src: { startSec: 43.4, endSec: 47.9 } }],
+    } });
+    const s = editReducer(withSrcOnDisk, { type: "restoreChunk", startSec: 10, endSec: 14 });
+    expect(s.doc.cuts).toEqual([]);
+  });
+});
+
 describe("graphic box editing (PLAN 2026-07-31 Task 2)", () => {
   it("patchGraphicRect stores the rect; a layout swap clears it", () => {
     let s = editReducer(initialEditState(), {
