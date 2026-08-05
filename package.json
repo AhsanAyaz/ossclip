@@ -2,13 +2,14 @@
   "name": "ossclip-monorepo",
   "private": true,
   "version": "0.0.1",
-  "description": "ossclip — local-first CLI video producer (monorepo)",
+  "description": "ossclip \u2014 local-first CLI video producer (monorepo)",
   "scripts": {
     "test": "vitest run",
     "ossclip": "pnpm --filter ossclip exec tsx src/index.ts",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit",
     "fixture": "node scripts/make-fixture.mjs",
-    "build": "pnpm --filter @ossclip/editor build"
+    "build": "pnpm --filter @ossclip/editor build",
+    "release:publish": "pnpm -r publish --access public"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
