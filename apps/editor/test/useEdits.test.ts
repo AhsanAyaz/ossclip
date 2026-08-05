@@ -165,6 +165,49 @@ describe("delete a scene with a way back (PLAN 2026-07-30 Task C)", () => {
   });
 });
 
+describe("delete an individual element with a way back (PLAN Task 2)", () => {
+  it("hideElement writes hidden: true onto that element's entry", () => {
+    const s = editReducer(initialEditState(), {
+      type: "hideElement", sceneId: "scene-3", elementId: "message-1",
+    });
+    expect(s.doc.scenes["scene-3"]!.elements!["message-1"]).toEqual({ hidden: true });
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("restoreElement DELETES only the hidden key, not the whole entry", () => {
+    let s = editReducer(initialEditState(), {
+      type: "hideElement", sceneId: "scene-3", elementId: "message-1",
+    });
+    s = editReducer(s, { type: "restoreElement", sceneId: "scene-3", elementId: "message-1" });
+    expect("hidden" in s.doc.scenes["scene-3"]!.elements!["message-1"]!).toBe(false);
+  });
+
+  it("hiding keeps a prior nudge so restore brings it back intact — unlike clearElement's full reset", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchElement", sceneId: "scene-3", elementId: "message-1", patch: { dx: 12, scale: 1.2 },
+    });
+    s = editReducer(s, { type: "hideElement", sceneId: "scene-3", elementId: "message-1" });
+    s = editReducer(s, { type: "restoreElement", sceneId: "scene-3", elementId: "message-1" });
+    expect(s.doc.scenes["scene-3"]!.elements!["message-1"]).toEqual({ dx: 12, scale: 1.2 });
+  });
+
+  it("restoring an element that is not hidden is a no-op", () => {
+    const s = initialEditState();
+    expect(
+      editReducer(s, { type: "restoreElement", sceneId: "scene-3", elementId: "message-1" }),
+    ).toBe(s);
+  });
+
+  it("hiding one element leaves a sibling element's own edits untouched", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchElement", sceneId: "scene-3", elementId: "message-0", patch: { dx: 4 },
+    });
+    s = editReducer(s, { type: "hideElement", sceneId: "scene-3", elementId: "message-1" });
+    expect(s.doc.scenes["scene-3"]!.elements!["message-0"]).toEqual({ dx: 4 });
+    expect(s.doc.scenes["scene-3"]!.elements!["message-1"]).toEqual({ hidden: true });
+  });
+});
+
 describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", () => {
   it("cutChunk writes ONLY {startSec, endSec} — no src key", () => {
     const s = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });

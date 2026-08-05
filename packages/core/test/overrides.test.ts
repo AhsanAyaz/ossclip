@@ -11,6 +11,7 @@ import {
   clearTiming,
   reclampPinnedTiming,
   resolveTheme,
+  restoreElement,
   setElementTransform,
   type OverrideDoc,
 } from "../src/overrides";
@@ -98,6 +99,34 @@ describe("override document", () => {
     doc = setElementTransform(doc, "scene-0", "value", { dx: 5 });
     doc = setElementTransform(doc, "scene-0", "value", { dy: -3 });
     expect(doc.scenes["scene-0"]!.elements!.value).toEqual({ dx: 5, dy: -3 });
+  });
+
+  it("carries a hidden element flag onto the cue (PLAN Task 2)", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { elements: { value: { hidden: true } } } },
+    });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.elements).toEqual({ value: { hidden: true } });
+  });
+
+  it("hides an element via setElementTransform, and restoreElement deletes ONLY the hidden key — nudges survive", () => {
+    let doc = OverrideDocSchema.parse({});
+    doc = setElementTransform(doc, "scene-0", "value", { dx: 5, scale: 1.2 });
+    doc = setElementTransform(doc, "scene-0", "value", { hidden: true });
+    expect(doc.scenes["scene-0"]!.elements!.value).toEqual({ dx: 5, scale: 1.2, hidden: true });
+    doc = restoreElement(doc, "scene-0", "value");
+    // The hidden key is gone; the nudge/scale made before the delete is not.
+    expect(doc.scenes["scene-0"]!.elements!.value).toEqual({ dx: 5, scale: 1.2 });
+  });
+
+  it("restoreElement on an element that isn't hidden is a no-op", () => {
+    let doc = OverrideDocSchema.parse({});
+    doc = setElementTransform(doc, "scene-0", "value", { dx: 5 });
+    expect(restoreElement(doc, "scene-0", "value")).toBe(doc);
+    // Also a no-op on a scene/element that doesn't exist at all.
+    expect(restoreElement(OverrideDocSchema.parse({}), "scene-9", "value")).toEqual(
+      OverrideDocSchema.parse({}),
+    );
   });
 
   it("sets and clears a timing override, and clearing REMOVES the entry", () => {

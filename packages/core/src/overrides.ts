@@ -23,6 +23,19 @@ export const ElementTransformSchema = z.object({
   dx: z.number().optional(),
   dy: z.number().optional(),
   scale: z.number().positive().optional(),
+  /**
+   * The element is deleted — SOFTLY (PLAN Task 2, one level down from
+   * `SceneOverrideSchema.hidden` below): `editStyle`
+   * (packages/scenes/src/editable.ts) suppresses it at the one chokepoint
+   * every component's leaf renders its edit style through, so no
+   * per-component change is needed and the remaining siblings close the
+   * gap on their own — the same delete semantics a whole SCENE gets,
+   * scoped to one of its elements. The backing array
+   * (`props.messages`/`lines`/`nodes`/`items`) is never touched — ids are
+   * positional, so hiding `message-1` can't renumber `message-2` out from
+   * under its own edits.
+   */
+  hidden: z.boolean().optional(),
 });
 export type ElementTransform = z.infer<typeof ElementTransformSchema>;
 
@@ -504,6 +517,32 @@ export function clearElementTransform(
   if (!scene) return doc;
   const { [elementId]: _removed, ...rest } = scene.elements;
   return { ...doc, scenes: { ...doc.scenes, [sceneId]: { ...scene, elements: rest } } };
+}
+
+/**
+ * Un-hide ONE element: DELETE only the `hidden` key (PLAN Task 2), so a
+ * nudge/scale made before the delete survives the restore — the
+ * element-level mirror of `restoreScene`'s "delete the key, don't write a
+ * false-ish value" rule below. `clearElementTransform` above stays the FULL
+ * reset (nudges included); this is the narrower "bring it back as it was"
+ * gesture the element panel's Restore button offers.
+ */
+export function restoreElement(
+  doc: OverrideDoc,
+  sceneId: string,
+  elementId: string,
+): OverrideDoc {
+  const scene = doc.scenes[sceneId];
+  const entry = scene?.elements[elementId];
+  if (!scene || !entry?.hidden) return doc;
+  const { hidden: _dropped, ...rest } = entry;
+  return {
+    ...doc,
+    scenes: {
+      ...doc.scenes,
+      [sceneId]: { ...scene, elements: { ...scene.elements, [elementId]: rest } },
+    },
+  };
 }
 
 /**

@@ -38,6 +38,17 @@ interface InspectorProps {
   allSceneIds: string[];
   edits: ReturnType<typeof useEdits>;
   /**
+   * Drops the ELEMENT half of the selection (PLAN Task 2): the "Delete
+   * element" button calls this right after hiding, with `elementId: null`
+   * — the element has zero rect once `editStyle` returns `display:none`
+   * (`hitTest.rectOf`, Overlay's box-measure effect, would collapse to
+   * nothing), so nothing on stage is left for an ELEMENT selection to keep
+   * pointing at. The SCENE half survives on purpose: it lands the user on
+   * this same scene's panel, right where the "Hidden elements" Restore
+   * list they just populated lives.
+   */
+  onSelect: (selection: Selection | null) => void;
+  /**
    * The theme actually on screen right now (defaults merged with the
    * override doc) — the fallback a theme field shows when the user hasn't
    * overridden that token. Hardcoding a fallback here instead (as before)
@@ -266,6 +277,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   frame,
   allSceneIds,
   edits,
+  onSelect,
   resolvedTheme,
   anchorText,
   onVideoPreview,
@@ -426,6 +438,29 @@ export const Inspector: React.FC<InspectorProps> = ({
           >
             Reset element
           </button>
+          {/* Soft delete (PLAN Task 2), same shape as "Delete scene": the
+              element goes `display:none` (`editStyle`, packages/scenes/src/
+              editable.ts — the one chokepoint every leaf renders its edit
+              style through), the remaining siblings close the gap on their
+              own. Selection DROPS TO THE SCENE, not to nothing — see
+              `onSelect`'s own doc comment for why the element-level
+              selection specifically has to go — which lands the user
+              straight on the SCENE panel's "Hidden elements" Restore list
+              this same delete just populated, one click away from undoing
+              it. Also the path that lets a user hide ChatMock's synthetic
+              CTA bubble (`message-0` in keyword mode) — their call, not
+              special-cased away. */}
+          <button
+            data-testid="delete-element"
+            style={{ ...button, marginTop: 8 }}
+            onClick={() => {
+              blurActive();
+              edits.hideElement(selection.sceneId, elementId);
+              onSelect({ sceneId: selection.sceneId, elementId: null });
+            }}
+          >
+            Delete element
+          </button>
         </div>
       </div>
     );
@@ -433,6 +468,16 @@ export const Inspector: React.FC<InspectorProps> = ({
 
   if (selection && cue) {
     const isPlain = cue.kind === "plain";
+    // Elements this scene's user hid one at a time (PLAN Task 2) — plain
+    // takes have no `cue.elements` at all (no component, nothing to key an
+    // id against), so this is naturally empty for them. Hidden elements are
+    // unselectable on stage by construction (`display:none` drops them out
+    // of `elementFromPoint`'s hit chain), so this list — mirroring the
+    // scene-level ghost/Restore pattern above — is the ONLY way back to one
+    // short of hand-editing overrides.json.
+    const hiddenElementIds = Object.entries(cue.elements ?? {})
+      .filter(([, e]) => e.hidden === true)
+      .map(([id]) => id);
     // A deleted scene (PLAN Task C4): the ghost selection resolves here, and
     // the ONLY offer is the way back — its other controls would edit a scene
     // that isn't rendering.
@@ -946,6 +991,41 @@ export const Inspector: React.FC<InspectorProps> = ({
             >
               Delete scene
             </button>
+          </div>
+        ) : null}
+        {hiddenElementIds.length > 0 ? (
+          <div style={section}>
+            {/* Restore for elements deleted one at a time (PLAN Task 2) —
+                mirrors the ghost/restore pattern above, scoped to this
+                scene's elements instead of the whole scene. Listed here,
+                not on the element itself, because a hidden element can no
+                longer be selected on stage to reach its own panel. */}
+            <span style={label}>Hidden elements</span>
+            {hiddenElementIds.map((id) => (
+              <div
+                key={id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 13, fontFamily: "ui-monospace, monospace", color: "#C9C9D4" }}>
+                  {id}
+                </span>
+                <button
+                  data-testid={`restore-element-${id}`}
+                  style={{ ...button, color: "#5FBF77", border: "1px solid #24402c", padding: "4px 8px" }}
+                  onClick={() => {
+                    blurActive();
+                    edits.restoreElement(selection.sceneId, id);
+                  }}
+                >
+                  Restore
+                </button>
+              </div>
+            ))}
           </div>
         ) : null}
         <div style={section}>

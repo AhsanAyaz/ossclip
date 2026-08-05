@@ -5,6 +5,7 @@ import {
   clearGraphicRect,
   clearTiming,
   emptyOverrideDoc,
+  restoreElement,
   setElementTransform,
   type ElementTransform,
   type Layout,
@@ -55,6 +56,10 @@ export type EditAction =
       coalesce?: string;
     }
   | { type: "clearElement"; sceneId: string; elementId: string }
+  /** Soft-delete ONE element (PLAN Task 2) — the element-level mirror of
+   * `hideScene`/`restoreScene` below. */
+  | { type: "hideElement"; sceneId: string; elementId: string }
+  | { type: "restoreElement"; sceneId: string; elementId: string }
   | { type: "patchTiming"; sceneId: string; startSec: number; endSec: number }
   | {
       type: "patchVideo";
@@ -161,6 +166,23 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       );
     case "clearElement":
       return commit(clearElementTransform(state.doc, action.sceneId, action.elementId));
+    case "hideElement":
+      // Merge `{hidden:true}` via setElementTransform (PLAN Task 2) — its
+      // patch type widened to include `hidden` alongside dx/dy/scale, so
+      // this is the same merge-a-patch path every nudge already takes.
+      return commit(
+        setElementTransform(state.doc, action.sceneId, action.elementId, { hidden: true }),
+      );
+    case "restoreElement": {
+      // No-op guard BEFORE commit (same shape as restoreScene above): an
+      // element that isn't hidden must not push a no-op onto the undo
+      // stack just because `restoreElement` (overrides.ts) itself returns
+      // a byte-identical doc rather than the SAME reference through the
+      // spread in `commit`.
+      const entry = state.doc.scenes[action.sceneId]?.elements[action.elementId];
+      if (!entry?.hidden) return state;
+      return commit(restoreElement(state.doc, action.sceneId, action.elementId));
+    }
     case "patchTiming": {
       const scene = withScene(state.doc, action.sceneId);
       return commit({
@@ -479,6 +501,10 @@ export function useEdits() {
       dispatch({ type: "patchElement", sceneId, elementId, patch, coalesce }),
     clearElement: (sceneId: string, elementId: string) =>
       dispatch({ type: "clearElement", sceneId, elementId }),
+    hideElement: (sceneId: string, elementId: string) =>
+      dispatch({ type: "hideElement", sceneId, elementId }),
+    restoreElement: (sceneId: string, elementId: string) =>
+      dispatch({ type: "restoreElement", sceneId, elementId }),
     patchTiming: (sceneId: string, startSec: number, endSec: number) =>
       dispatch({ type: "patchTiming", sceneId, startSec, endSec }),
     clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),

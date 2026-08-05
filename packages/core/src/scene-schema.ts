@@ -98,11 +98,19 @@ export const SceneCueSchema = z
       h: z.number(),
     })
     .optional(),
-  /** Per-element nudges from the user's edit layer, by `data-edit-id`. */
+  /**
+   * Per-element nudges from the user's edit layer, by `data-edit-id`.
+   * Mirrors `ElementTransformSchema` (overrides.ts) field for field,
+   * duplicated because this is the RESOLVED cue shape, not the override
+   * doc — `hidden` (PLAN Task 2) travels the same path `dx`/`dy`/`scale`
+   * already do: `applyOverrides` copies the override's `elements` onto the
+   * cue verbatim, so a hand-set flag reaches here unchanged.
+   */
   elements: z.record(z.string(), z.object({
     dx: z.number().optional(),
     dy: z.number().optional(),
     scale: z.number().positive().optional(),
+    hidden: z.boolean().optional(),
   })).optional(),
   /**
    * How the video sits in this scene's slot, when the automatic face-aware

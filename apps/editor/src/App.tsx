@@ -1078,6 +1078,7 @@ export const App: React.FC = () => {
             frame={{ width: live.settings.width, height: live.settings.height }}
             allSceneIds={live.sceneCues.map((c) => c.id)}
             edits={edits}
+            onSelect={setSelection}
             resolvedTheme={live.theme}
             anchorText={anchorText}
             onVideoPreview={setVideoPreview}

@@ -2,7 +2,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultTheme, type SceneCue } from "@ossclip/core/browser";
+import { defaultTheme, type OverrideDoc, type SceneCue } from "@ossclip/core/browser";
 import { Inspector } from "../src/Inspector";
 import { useEdits } from "../src/useEdits";
 
@@ -43,6 +43,9 @@ function Harness({
   selection,
   cue = graphicCue,
   initialCuts,
+  initialElements,
+  onSelect = () => {},
+  onDocChange,
 }: {
   selection: { sceneId: string; elementId: string | null };
   cue?: SceneCue;
@@ -54,21 +57,48 @@ function Harness({
    * ALREADY-APPLIED cut (src present) must NEVER trigger this view, even on
    * an exact window match. */
   initialCuts?: { startSec: number; endSec: number; src?: { startSec: number; endSec: number } }[];
+  /**
+   * Pre-loads `doc.scenes["scene-0"].elements` (PLAN Task 2) — same
+   * mount-once-load shape as `initialCuts`, for the "Hidden elements"
+   * Restore-list tests. The `cue` prop this Harness hands to `Inspector` is
+   * STATIC (it never re-derives from `edits.doc` the way App.tsx's real
+   * `live` memo does), so a Restore click's effect is only observable
+   * through `edits.doc` itself — this is what gives that click a real
+   * entry to act on rather than a no-op against an empty doc.
+   */
+  initialElements?: Record<string, { dx?: number; dy?: number; scale?: number; hidden?: boolean }>;
+  onSelect?: (s: { sceneId: string; elementId: string | null } | null) => void;
+  /** Fires on every render with the CURRENT `edits.doc` — the only way this
+   * Harness exposes the real reducer state to a test's assertions. */
+  onDocChange?: (doc: OverrideDoc) => void;
 }) {
   const edits = useEdits();
   React.useEffect(() => {
-    if (initialCuts) {
-      edits.load({ theme: {}, scenes: {}, captions: {}, splits: [], cuts: initialCuts });
+    if (initialCuts || initialElements) {
+      edits.load({
+        theme: {},
+        scenes: initialElements ? { "scene-0": { props: {}, elements: initialElements } } : {},
+        captions: {},
+        splits: [],
+        cuts: initialCuts ?? [],
+      });
     }
     // Mount-once load, same shape as App.tsx's own `loadProduction` effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Runs after every render (no dep array) — a plain effect, not a render-
+  // time call, so it stays a side effect rather than breaking React's
+  // render-must-be-pure rule just to hand a test its assertion data.
+  React.useEffect(() => {
+    onDocChange?.(edits.doc);
+  });
   return React.createElement(Inspector, {
     selection,
     cue,
     frame: { width: 1080, height: 1920 },
     allSceneIds: ["scene-0"],
     edits,
+    onSelect,
     resolvedTheme: defaultTheme,
     onVideoPreview: vi.fn(),
   });
@@ -130,6 +160,44 @@ describe("Inspector — destructive/mutating buttons blur on click (PLAN 2026-08
     expect(document.activeElement).toBe(document.body);
   });
 
+  it("delete-element: blurs, dispatches hideElement, and drops the selection to the scene (not to nothing) (PLAN Task 2)", async () => {
+    let doc: OverrideDoc | undefined;
+    const onSelect = vi.fn();
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: "title" },
+          onSelect,
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="delete-element"]')!;
+    expect(btn).not.toBeNull();
+    btn.focus();
+    expect(document.activeElement).toBe(btn);
+    await act(async () => {
+      btn.click();
+    });
+    // Unlike delete-scene, this click does NOT unmount the button: the
+    // element branch is gated on `selection?.elementId` (a prop this
+    // Harness — like the real App.tsx — holds separately from `edits.doc`),
+    // and `onSelect(null)` only updates that prop in the real app, where
+    // App's own `setSelection` re-renders Inspector with a different
+    // `selection`. This static-selection Harness can't reproduce that
+    // second hop, so the SAME button survives its own click here — the
+    // blur assertion below is exactly the non-vacuous case the reset-element
+    // test above already established the pattern for.
+    expect(container.contains(btn)).toBe(true);
+    expect(document.activeElement).toBe(document.body);
+    expect(doc?.scenes["scene-0"]?.elements?.title).toEqual({ hidden: true });
+    // Drops to the SCENE, not to nothing — lands the user on the very panel
+    // ("Hidden elements" Restore, tested below) that now offers a way back.
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "scene-0", elementId: null });
+  });
+
   // No dedicated cut-chunk/restore-chunk blur tests here (fix wave Minor
   // (b), PLAN 2026-08-04 Task 4c): BOTH always swap the whole panel to a
   // different view shape on click (cut-chunk → the Restore view;
@@ -140,6 +208,85 @@ describe("Inspector — destructive/mutating buttons blur on click (PLAN 2026-08
   // assertion under a different name. Their functional behavior (the button
   // disappearing, the OTHER view's button appearing) is covered by the
   // "Inspector — user cuts" describe block below.
+});
+
+const graphicCueWithHiddenElement: SceneCue = {
+  ...graphicCue,
+  elements: { title: { scale: 1.4 }, eyebrow: { hidden: true } },
+};
+
+describe("Inspector — the SCENE panel's hidden-elements Restore list (PLAN Task 2)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("lists a hidden element by id, alongside the scene's other controls (not instead of them)", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          cue: graphicCueWithHiddenElement,
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="restore-element-eyebrow"]')).not.toBeNull();
+    // Not the exclusive ghost/marked-for-removal view — the scene itself is
+    // live, only one of its elements is hidden.
+    expect(container.querySelector('[data-testid="delete-scene"]')).not.toBeNull();
+  });
+
+  it("nothing rendered when no element on this cue is hidden", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }),
+      );
+    });
+    expect(container.querySelector('[data-testid^="restore-element-"]')).toBeNull();
+  });
+
+  it("Restore blurs and dispatches restoreElement, deleting only the hidden key", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          cue: graphicCueWithHiddenElement,
+          // A REAL doc entry to restore — the `cue` prop above is display-only
+          // (see the Harness's own doc comment on `initialElements`).
+          initialElements: { eyebrow: { hidden: true } },
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="restore-element-eyebrow"]')!;
+    expect(btn).not.toBeNull();
+    btn.focus();
+    expect(document.activeElement).toBe(btn);
+    await act(async () => {
+      btn.click();
+    });
+    expect(document.activeElement).toBe(document.body);
+    // The hidden key is gone; there was nothing else on this entry to
+    // survive (no prior nudge), so it's left as the empty leftover — same
+    // "restore deletes ONLY the hidden key" contract `restoreElement`
+    // (packages/core/src/overrides.ts) documents and its own unit tests
+    // cover with a nudge present too.
+    expect(doc?.scenes["scene-0"]?.elements?.eyebrow).toEqual({});
+  });
 });
 
 describe("Inspector — user cuts (PLAN 2026-08-04 Task 4c)", () => {

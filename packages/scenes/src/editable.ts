@@ -1,8 +1,10 @@
 import type React from "react";
 
-/** Per-element nudges from the user's edit layer, keyed by `data-edit-id`. */
+/** Per-element nudges from the user's edit layer, keyed by `data-edit-id`.
+ * `hidden` (PLAN Task 2) is a soft-delete flag, not a nudge — see `editStyle`
+ * below for where it takes effect. */
 export type ElementEdits =
-  | Record<string, { dx?: number; dy?: number; scale?: number }>
+  | Record<string, { dx?: number; dy?: number; scale?: number; hidden?: boolean }>
   | undefined;
 
 /**
@@ -45,6 +47,17 @@ export function compensateEdits(edits: ElementEdits, renderScale: number): Eleme
 export function editStyle(edits: ElementEdits, id: string): React.CSSProperties {
   const e = edits?.[id];
   if (!e) return {};
+  // Soft-delete (PLAN Task 2), suppressed HERE — the one chokepoint every
+  // component's leaf renders its edit style through, so no per-component
+  // change is needed and the remaining siblings close the gap on their own
+  // (a flex/stack layout just has one fewer box; a scale-to-fill layout's
+  // sibling type still fills whatever it filled before — see SceneLayer.tsx
+  // for the one place `fitScale` does NOT yet account for this). Also
+  // suppresses ChatMock's synthetic CTA bubble (`message-0` in keyword
+  // mode, `chatBubbles` in fit.ts) if the user chooses to hide it — that's
+  // allowed, not special-cased away: it's their call what the CTA scene
+  // shows.
+  if (e.hidden) return { display: "none" };
   const parts = [`translate(${e.dx ?? 0}px, ${e.dy ?? 0}px)`];
   if (e.scale !== undefined && e.scale !== 1) parts.push(`scale(${e.scale})`);
   return { transform: parts.join(" ") };

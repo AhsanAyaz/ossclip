@@ -170,6 +170,18 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         // Fill the slot instead of floating at natural size in it (§23). The
         // component lays out at contentW/scale and is then scaled up, so its
         // rendered width is exactly the content width while its type grows.
+        //
+        // Accepted v1 wrinkle (PLAN Task 2): `fitScale` sizes off `cue.props`
+        // alone — it has no visibility into which elements the user hid via
+        // `cue.elements[id].hidden`, so a scene with a hidden bubble/line/
+        // node still gets the SAME conservative scale as if everything were
+        // showing. The remaining siblings still close the gap correctly
+        // (`editStyle`'s `display:none` just removes a box from the flex/
+        // stack), they just aren't scaled up to use the space the hidden one
+        // freed. Teaching the fit models the edit layer would mean every
+        // metrics function taking `elements` alongside `props` for a v1
+        // feature whose actual ask was "let me delete one bubble," not
+        // "re-fit the layout around the gap" — deferred, not forgotten.
         const scale = fitScale(cue.component, cue.props, { widthPx: contentW, heightPx: contentH });
         return (
           <Sequence key={cue.id} from={from} durationInFrames={durationInFrames}>

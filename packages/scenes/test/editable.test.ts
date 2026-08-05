@@ -27,6 +27,28 @@ describe("editStyle", () => {
   });
 });
 
+describe("editStyle — hidden (PLAN Task 2: delete individual elements)", () => {
+  it("suppresses the element via display:none, not a transform", () => {
+    expect(editStyle({ value: { hidden: true } }, "value")).toEqual({ display: "none" });
+  });
+
+  it("hidden wins over a stored nudge/scale — no transform leaks through", () => {
+    expect(editStyle({ value: { dx: 12, dy: -4, scale: 1.5, hidden: true } }, "value")).toEqual({
+      display: "none",
+    });
+  });
+
+  it("suppression is per id, not global — an untouched sibling is unaffected", () => {
+    expect(editStyle({ value: { hidden: true } }, "other")).toEqual({});
+  });
+
+  it("hidden: false (the schema allows it, even though the editor never writes it) does not suppress", () => {
+    expect(editStyle({ value: { hidden: false, dx: 3 } }, "value").transform).toBe(
+      "translate(3px, 0px)",
+    );
+  });
+});
+
 describe("compensateEdits (PLAN Task 1 — drag lands where you drop it)", () => {
   it("divides the stored composition-px nudge by the wrapper's fill scale", () => {
     // The bug: editStyle renders INSIDE SceneLayer's `scale(fitScale)`
@@ -61,5 +83,11 @@ describe("compensateEdits (PLAN Task 1 — drag lands where you drop it)", () =>
   it("composes with editStyle into the counter-scaled translate", () => {
     const style = editStyle(compensateEdits({ el: { dx: 90, dy: 30 } }, 3), "el");
     expect(style.transform).toBe("translate(30px, 10px)");
+  });
+
+  it("passes hidden through untouched — it isn't a dx/dy field to counter-scale (PLAN Task 2)", () => {
+    expect(compensateEdits({ el: { hidden: true, dx: 100 } }, 2)).toEqual({
+      el: { hidden: true, dx: 50 },
+    });
   });
 });
