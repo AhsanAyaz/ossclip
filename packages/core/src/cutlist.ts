@@ -67,7 +67,7 @@ export interface BuildCutlistArgs {
    */
   bloops?: readonly { startWord: number; endWord: number; startSec: number; endSec: number }[];
   /**
-   * Spans `findRetakeGroups` (R27 §127) elected to cut — the deterministic
+   * Spans `findRetakeGroups` (R27 §128) elected to cut — the deterministic
    * "keep only the last complete take" detector for the flub the speaker did
    * NOT mark. Also a `reason: "retake"` cut, and also passed in rather than
    * detected here, for the same purity reason as `bloops`: `buildCutlist`
@@ -116,7 +116,7 @@ export function buildCutlist({
     });
   }
 
-  // Same injection, same reason, lower confidence (R27 §127): a marker is the
+  // Same injection, same reason, lower confidence (R27 §128): a marker is the
   // speaker asserting "this attempt is bad" — confidence 1. A retake group is
   // this codebase inferring it from token similarity and the hallucination
   // guard, so it earns 0.9, not 1 — the report and any future confidence-

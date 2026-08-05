@@ -156,7 +156,7 @@ export interface ProduceOptions {
    */
   blooperMarker?: string;
   /**
-   * `--collapse-retakes` (R27 §127): deterministically collapse consecutive
+   * `--collapse-retakes` (R27 §128): deterministically collapse consecutive
    * near-identical sentences — the flub the speaker did NOT mark out loud.
    * Opt-in, default off for v1: the promotion criterion is clean field runs
    * recorded in this same report appendix, the mechanism this whole findings
@@ -455,11 +455,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
     for (const b of bloops) console.log(`  ▸ ${formatBloopSpan(transcript, b)}`);
   }
-  // Deterministic retake collapse (R27 §127) — the flub the speaker did NOT
+  // Deterministic retake collapse (R27 §128) — the flub the speaker did NOT
   // mark. Same RAW-transcript-before-repair ordering as the blooper marker
   // above and for the same reason: repair reading a stray restart as an
   // oddity would rewrite the exact pattern this looks for.
-  let retakeGroups = opts.collapseRetakes ? findRetakeGroups(transcript, analysis) : [];
+  let retakeGroups = opts.collapseRetakes
+    ? findRetakeGroups(transcript, analysis, { transparentMarker: opts.blooperMarker })
+    : [];
   let retakes = retakeGroups.flatMap((g) => g.cuts);
   if (opts.collapseRetakes) {
     console.log(
@@ -480,10 +482,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     retakes,
   });
   let map = new TimeMap(cutlist);
-  // Known limit (§127): the sanity valve can cancel a legitimate retake cut
+  // Known limit (§128): the sanity valve can cancel a legitimate retake cut
   // along with everything else if analysis went haywire elsewhere. Silence
   // there would be wrong — a collapse the user asked for quietly vanished.
-  if (retakes.length > 0 && !cutlist.some((s) => s.kind === "remove" && s.reason === "retake")) {
+  // Detected directly off buildCutlist's own valve shape (one `keep` segment
+  // spanning the whole duration) rather than "no retake reason survived":
+  // the merge step reassigns a removal's `reason` to whichever piece is
+  // LONGER when it folds two removals together (cutlist.ts, `curDur >
+  // prevDur`), so a retake genuinely cut but merged into a longer silence
+  // removal would read as "no retake reason survived" even though the cut
+  // happened — a false alarm the direct check can't produce.
+  // `exact` also collapses to this exact single-keep shape (buildCutlist's
+  // own early return) and is not the valve — "touch nothing" is the ask, not
+  // a failure, so it's excluded here rather than misreported as one.
+  const valveFired = opts.cleanup !== "exact" && cutlist.length === 1 && cutlist[0]!.kind === "keep";
+  if (retakes.length > 0 && valveFired) {
     console.log(
       "  ⚠ collapse-retakes found a retake, but the sanity valve reset the whole cutlist — nothing was cut",
     );
@@ -722,7 +735,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // Re-detect on the SLICE: word indices moved, so the spans found against
       // the full take no longer address the same words.
       bloops = opts.blooperMarker ? findBloopSpans(rawTranscript, opts.blooperMarker) : [];
-      retakeGroups = opts.collapseRetakes ? findRetakeGroups(rawTranscript, analysis) : [];
+      retakeGroups = opts.collapseRetakes
+        ? findRetakeGroups(rawTranscript, analysis, { transparentMarker: opts.blooperMarker })
+        : [];
       retakes = retakeGroups.flatMap((g) => g.cuts);
       cutlist = boundCutlistToWindow(
         buildCutlist({
@@ -1378,14 +1393,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       bloops.map((b) => `  ${formatBloopSpan(rawTranscript, b)}`).join("\n") +
       "\n";
   }
-  // §127: same reasoning as §122's block above, for the flub the speaker did
+  // §128: same reasoning as §122's block above, for the flub the speaker did
   // NOT say a marker over — kept / cut (with similarity) / ignored as a
   // hallucination (with its silence fraction), in the words `report.txt`
   // already trusts. Also the record `--collapse-retakes`'s opt-in default
   // is promoted from: a clean run here is the evidence.
   if (retakeGroups.length > 0) {
     report +=
-      "\nretakes collapsed (--collapse-retakes — FINDINGS §127):\n" +
+      "\nretakes collapsed (--collapse-retakes — FINDINGS §128):\n" +
       retakeGroups.map((g) => formatRetakeGroup(rawTranscript, g)).join("\n") +
       "\n";
   }

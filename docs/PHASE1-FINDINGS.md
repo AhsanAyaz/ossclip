@@ -1157,7 +1157,7 @@ Field report, same day the cuts UI shipped: "there's still no way of deleting a 
 
 The order was right for its original purpose (R18 §90b: npm installs have ONLY `editor-dist`, clones have ONLY the sibling `dist`) and wrong the moment both exist — which any local `npm pack`/prepack makes true forever after, silently. This class of bug is nasty precisely because every layer looks healthy: the build is fresh, the server starts, the page renders, and the missing feature reads as "not implemented" rather than "not served" — it burned a debugging session on the false premise before anyone thought to ask which files the server was reading.
 
-## 127. Retake collapse without a spoken marker — and the guard a real hallucination forced
+## 128. Retake collapse without a spoken marker — and the guard a real hallucination forced
 
 §122 shipped the half of retake removal that needs the speaker to say a word out loud. What was left — collapsing a retake the speaker did NOT mark — turned out to have a deterministic formulation too, the same way §122's marker did: not an LLM adjudicating which take is "good", but token-similarity matching on the raw transcript, which `buildCutlist` can still consume as a pure function of its arguments.
 

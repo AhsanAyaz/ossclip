@@ -18,7 +18,7 @@ import type { Transcript } from "./schema";
  * useful half of the feature and leaves the guarantee intact.
  *
  * The OTHER half — the flub the speaker did NOT mark — turned out to have a
- * deterministic formulation too: `retake.ts` (R27 §127) collapses consecutive
+ * deterministic formulation too: `retake.ts` (R27 §128) collapses consecutive
  * near-identical sentences by token similarity, no LLM, same purity
  * guarantee. What's left unbuilt is narrower than this comment used to claim:
  * a genuinely REWORDED retake (different words, same idea) is still semantic,

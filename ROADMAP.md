@@ -78,7 +78,7 @@ to be renumbered twice. A finding takes the next free number when it lands.
   invariants never learn there was more than one file.
 - **Semantic retake removal** — the *spoken-marker* half shipped in R27 §122
   (`--blooper-marker`), deterministically, and the unmarked half shipped too in
-  R27 §127 (`--collapse-retakes`): consecutive near-identical sentences,
+  R27 §128 (`--collapse-retakes`): consecutive near-identical sentences,
   collapsed by token similarity, no LLM, guarded against whisper hallucinating
   a repeat over dead air. What remains is narrower than this item used to
   claim — only a genuinely REWORDED retake (different words, same idea, so it

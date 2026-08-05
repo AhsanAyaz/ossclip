@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyze } from "../src/analyze";
+import { findBloopSpans } from "../src/blooper";
 import { buildCutlist } from "../src/cutlist";
 import {
   HALLUCINATION_SILENCE_FRAC,
@@ -12,10 +13,10 @@ import { TimeMap } from "../src/timemap";
 import type { Analysis, Span, Transcript, Word } from "../src/schema";
 
 /**
- * R27 §127. Deterministic retake collapse — a sibling of `findBloopSpans`
+ * R27 §128. Deterministic retake collapse — a sibling of `findBloopSpans`
  * (§122), for the take the speaker did NOT mark: consecutive near-identical
  * sentences, keep the last complete one, cut the rest. See PHASE1-FINDINGS.md
- * §127 for the predicate, the worked examples, and why keep-last is a
+ * §128 for the predicate, the worked examples, and why keep-last is a
  * documented convention rather than a proof.
  */
 
@@ -61,10 +62,10 @@ describe("findRetakeGroups: matching complete attempts", () => {
     expect(groups).toHaveLength(1);
     const g = groups[0]!;
     expect(g.cuts).toHaveLength(1);
-    expect(wordsIn(transcript, g.kept.startWord, g.kept.endWord)).toBe("That is the exit condition.");
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That is the exit condition.");
     expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That is the exit condition.");
     // The line before the retake pair is untouched — no group for it.
-    expect(g.kept.startWord).toBeGreaterThan(4);
+    expect(g.kept!.startWord).toBeGreaterThan(4);
   });
 
   it("three-take: keeps only the last, cuts both earlier attempts", () => {
@@ -76,7 +77,7 @@ describe("findRetakeGroups: matching complete attempts", () => {
     const g = groups[0]!;
     expect(g.cuts).toHaveLength(2);
     // Kept is the LAST sentence in the transcript.
-    expect(g.kept.endWord).toBe(transcript.words.length - 1);
+    expect(g.kept!.endWord).toBe(transcript.words.length - 1);
   });
 
   it("unrelated: two different sentences never group", () => {
@@ -115,7 +116,7 @@ describe("findRetakeGroups: partial attempts", () => {
     const g = groups[0]!;
     expect(g.cuts).toHaveLength(1);
     expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That could be the exit");
-    expect(wordsIn(transcript, g.kept.startWord, g.kept.endWord)).toBe("That could be the exit condition.");
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That could be the exit condition.");
   });
 
   it("trailing-partial: a complete take followed by an abandoned restart is cut, the earlier complete kept", () => {
@@ -126,8 +127,45 @@ describe("findRetakeGroups: partial attempts", () => {
     expect(groups).toHaveLength(1);
     const g = groups[0]!;
     expect(g.cuts).toHaveLength(1);
-    expect(wordsIn(transcript, g.kept.startWord, g.kept.endWord)).toBe("That could be the exit condition.");
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That could be the exit condition.");
     expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That could be the exit");
+  });
+});
+
+/**
+ * Review fix: `rawSimilarity` picked the "partial" role by raw token count,
+ * not by which instance was actually incomplete. A restart says FEWER words
+ * than the take it restarts — that's the only shape the prefix rule models —
+ * but an incomplete instance that says MORE words (a continuation/
+ * elaboration, or a `--clip` slice ending mid-sentence after accumulating
+ * more words) hit the same prefix rule backwards: the shorter COMPLETE
+ * side's tokens were truncated down and compared against only the longer
+ * incomplete side's matching opening, scoring a spurious near-1.0 and
+ * getting the fuller, more-complete continuation CUT instead of the short
+ * line.
+ */
+describe("findRetakeGroups: a longer continuation is not a retake of a shorter line", () => {
+  it("reviewer repro: an unpunctuated continuation is not mistaken for a retry of the shorter line", () => {
+    // "Let me show you this." (5 tokens, complete) followed by an
+    // unpunctuated continuation that says MORE (9 tokens, incomplete). Before
+    // the fix this scored 1.0 and cut the continuation; the true similarity
+    // (first 5 tokens match, 4 extra tokens unaccounted for) is
+    // 1 - 4/9 ≈ 0.56, under RETAKE_SIM_THRESHOLD — no match, nothing cut.
+    const { transcript, analysis } = speak(
+      "Let me show you this. Let me show you this whole thing in detail",
+    );
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  it("--clip-flavored: a trailing incomplete slice that says MORE than an earlier complete line is not collapsed into it", () => {
+    // Simulates a --clip window boundary landing mid-sentence: the transcript
+    // (or its slice) just stops before real punctuation, and what's left
+    // over happens to open the same way as an earlier complete sentence but
+    // continues on with real additional content.
+    const { transcript, analysis } = speak(
+      "That is the exit condition. That is the exit condition and there is more context here",
+    );
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
   });
 });
 
@@ -146,6 +184,30 @@ describe("findRetakeGroups: chaining — what may sit between two attempts", () 
 
   it("marker-transparency: a lone --blooper-marker word bridges the chain like a filler", () => {
     const { transcript, analysis } = speak("That is the exit condition. blooper. That is the exit condition.");
+    const groups = findRetakeGroups(transcript, analysis, { transparentMarker: "blooper" });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.cuts).toHaveLength(1);
+  });
+
+  /**
+   * Review fix: both produce.ts call sites invoked `findRetakeGroups(t,
+   * analysis)` with no third argument, so `--blooper-marker` + `--collapse-
+   * retakes` together silently blocked most collapsing — the marker sentence
+   * read as an ordinary blocking sentence instead of transparent, exactly
+   * like the "blocked" half of the test above. Reproduces the exact combined-
+   * flags shape produce.ts wires: both detectors running on the same raw
+   * transcript, `findRetakeGroups` given `{ transparentMarker: <the same
+   * word findBloopSpans is searching for> }`.
+   */
+  it("combined flags: --collapse-retakes still bridges a marker sentence when --blooper-marker is also set", () => {
+    const { transcript, analysis } = speak(
+      "Wrong words blooper. That is the exit condition. blooper. That is the exit condition.",
+    );
+    // The marker also does its own job — cutting the flub it terminates.
+    const bloops = findBloopSpans(transcript, "blooper");
+    expect(bloops.length).toBeGreaterThan(0);
+    // Without the fix, this returned [] — the marker sentence blocked the
+    // chain instead of bridging it.
     const groups = findRetakeGroups(transcript, analysis, { transparentMarker: "blooper" });
     expect(groups).toHaveLength(1);
     expect(groups[0]!.cuts).toHaveLength(1);
@@ -184,10 +246,10 @@ describe("findRetakeGroups: chaining — what may sit between two attempts", () 
     const g = groups[0]!;
     expect(g.hallucinated).toHaveLength(1);
     expect(g.cuts).toHaveLength(1);
-    expect(wordsIn(transcript, g.kept.startWord, g.kept.endWord)).toBe(
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe(
       "That is the exit condition.",
     );
-    expect(g.kept.startWord).toBe(10);
+    expect(g.kept!.startWord).toBe(10);
   });
 });
 
@@ -239,7 +301,7 @@ describe("findRetakeGroups: hallucination guard", () => {
     expect(g.hallucinated).toHaveLength(1);
     expect(g.hallucinated[0]!.silenceFrac).toBeGreaterThanOrEqual(HALLUCINATION_SILENCE_FRAC);
     // The real, early take is what survives.
-    expect(wordsIn(transcript, g.kept.startWord, g.kept.endWord)).toBe("That is the exit condition.");
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That is the exit condition.");
   });
 
   it("field case: a real take early, hallucinated repeats later — keep-last must not elect the hallucination", () => {
@@ -280,8 +342,8 @@ describe("findRetakeGroups: hallucination guard", () => {
     // earlier duplicate of the hallucinated "last" instance.
     expect(g.cuts).toEqual([]);
     expect(g.hallucinated).toHaveLength(2);
-    expect(wordsIn(transcript, g.kept.startWord, g.kept.endWord)).toBe("That is the exit condition.");
-    expect(g.kept.startWord).toBe(5);
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That is the exit condition.");
+    expect(g.kept!.startWord).toBe(5);
   });
 
   it("boundary pin: silenceFrac just under HALLUCINATION_SILENCE_FRAC is a normal retake, not a hallucination", () => {
@@ -332,6 +394,52 @@ describe("findRetakeGroups: hallucination guard", () => {
     const g = findRetakeGroups(transcript, analysis)[0]!;
     expect(g.hallucinated).toHaveLength(1);
     expect(g.cuts).toEqual([]);
+  });
+
+  /**
+   * Review fix (Important 3, decided resolution): when NO complete instance
+   * clears RESTART_SPLIT_MIN_SIL (0.35), the group goes report-only — same
+   * never-cut-never-keep posture as the hallucination guard, and for the
+   * same reason. Both instances here clear 0.35 but neither is hallucinated
+   * (both under 0.65): the old "fall back to last complete regardless"
+   * behavior would have kept the GAPPIER 0.60-frac instance and cut the
+   * cleaner 0.40-frac one — backwards from what the bar exists to prevent.
+   */
+  it("survivor-bar edge: neither instance clears 0.35 (0.40 vs 0.60) — report-only, nothing cut", () => {
+    const words: Word[] = [
+      { text: "That", start: 0, end: 0.3 },
+      { text: "is", start: 0.3, end: 0.5 },
+      { text: "the", start: 0.5, end: 0.7 },
+      { text: "exit", start: 0.7, end: 1.0 },
+      { text: "condition.", start: 1.0, end: 1.4 },
+      { text: "That", start: 2.0, end: 2.3 },
+      { text: "is", start: 2.3, end: 2.5 },
+      { text: "the", start: 2.5, end: 2.7 },
+      { text: "exit", start: 2.7, end: 3.0 },
+      { text: "condition.", start: 3.0, end: 3.4 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 3.9;
+    // First instance 0-1.4 (1.4s): 0.40 * 1.4 = 0.56s of silence.
+    // Second instance 2.0-3.4 (1.4s): 0.60 * 1.4 = 0.84s of silence.
+    const silences: Span[] = [
+      { start: 0, end: 0.56 },
+      { start: 2.0, end: 2.84 },
+    ];
+    const analysis = analyze(transcript, silences, duration);
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.kept).toBeNull();
+    expect(g.cuts).toEqual([]);
+    expect(g.hallucinated).toEqual([]);
+    expect(g.undecided).toHaveLength(2);
+    const fracs = g.undecided.map((u) => Math.round(u.silenceFrac * 100)).sort((a, b) => a - b);
+    expect(fracs).toEqual([40, 60]);
+    // The report says why, and quotes both attempts.
+    const report = formatRetakeGroup(transcript, g);
+    expect(report).toContain("no cut");
+    expect(report).toMatch(/attempt.*"That is the exit condition\."/);
   });
 });
 
@@ -418,21 +526,45 @@ describe("retake groups through buildCutlist", () => {
     expect(map.outputDuration).toBeCloseTo(kept, 9);
   });
 
-  it("silence-merge shape (§124): a retake cut merges with the silence bracketing it, no wordless sliver", () => {
-    // Mirrors §124's field shape: the retake removal sits directly against
-    // an acoustic silence removal with nothing but a short wordless gap
-    // between them, and the two must fold into one continuous cut.
-    const groups = findRetakeGroups(transcript, analysis);
+  /**
+   * Review fix (Important 4): the previous version of this test used the
+   * describe block's shared fixture, whose default speak() gap (0.1s) is
+   * under standard's 0.7s pauseMin — no silence removal was ever produced,
+   * so there was nothing to merge with and the assertion could not fail for
+   * the reason its own comment claimed. Rebuilt with its own fixture: a real
+   * 1.2s pause (standard's `silence`-reason interior branch) sitting directly
+   * against the retake cut it follows — §124's exact shape, now actually
+   * exercised.
+   */
+  it("silence-merge shape (§124): a retake cut merges with the acoustic silence bracketing it, no wordless sliver survives", () => {
+    const shape = speak("That is the exit condition. That is the exit condition.", {
+      4: 1.2, // pause after "condition." (index 4) — well above standard's 0.7s pauseMin
+    });
+    const groups = findRetakeGroups(shape.transcript, shape.analysis);
     const retakes = groups.flatMap((g) => g.cuts);
-    expect(retakes.length).toBeGreaterThan(0);
-    const cut = buildCutlist({ transcript, analysis, duration, level: "standard", retakes });
+    expect(retakes).toHaveLength(1);
+    const cut = buildCutlist({
+      transcript: shape.transcript,
+      analysis: shape.analysis,
+      duration: shape.duration,
+      level: "standard",
+      retakes,
+    });
     const removals = cut.filter((s) => s.kind === "remove");
-    // The retake cut plus the pause ahead of it collapse to one removal —
-    // not left as two removals with a sliver of dead air between them.
-    const overlappingRetake = removals.filter(
-      (r) => r.srcIn <= retakes[0]!.startSec + 0.05 && r.srcOut >= retakes[0]!.endSec - 0.05,
-    );
-    expect(overlappingRetake.length).toBeGreaterThan(0);
+    // The retake cut and the acoustic pause right after it fold into ONE
+    // removal — not two removals with a wordless keep-sliver between them.
+    expect(removals).toHaveLength(1);
+    expect(removals[0]!.srcIn).toBeCloseTo(retakes[0]!.startSec, 5);
+    // The merged removal extends past the retake's own end — proof the
+    // silence actually folded in rather than surviving as its own removal.
+    expect(removals[0]!.srcOut).toBeGreaterThan(retakes[0]!.endSec);
+    // The kept take, on the far side of the merged cut, survives intact.
+    const map = new TimeMap(cut);
+    const kept = groups[0]!.kept!;
+    const survives = shape.transcript.words
+      .slice(kept.startWord, kept.endWord + 1)
+      .every((w) => map.mapWord(w) !== null);
+    expect(survives).toBe(true);
   });
 
   it("sanity valve: an over-broad retake span still falls back to keep-everything", () => {

@@ -4,10 +4,10 @@ import { levenshtein } from "./phonetics";
 import type { Analysis, Span, Transcript } from "./schema";
 
 /**
- * Deterministic retake collapse (R27 §127) — the sibling of `findBloopSpans`
+ * Deterministic retake collapse (R27 §128) — the sibling of `findBloopSpans`
  * (§122) for the flub the speaker did NOT mark out loud. Consecutive
  * near-identical sentences in the raw transcript are a retake; keep the last
- * complete attempt, cut the rest. See PHASE1-FINDINGS.md §127 for the worked
+ * complete attempt, cut the rest. See PHASE1-FINDINGS.md §128 for the worked
  * examples and the guard rationale below.
  *
  * Deliberately NOT `soundsSimilar` (§125: `soundsSimilar("builds", "blooper")`
@@ -77,11 +77,30 @@ export interface RetakeHallucination extends RetakeInstance {
   silenceFrac: number;
 }
 
-/** One chain of matching attempts at the same line. */
+/** A real instance reported without a cut/keep decision — see `RetakeGroup.kept`. */
+export interface RetakeUndecided extends RetakeInstance {
+  silenceFrac: number;
+}
+
+/**
+ * One chain of matching attempts at the same line.
+ *
+ * `kept` is `null` when NO complete instance in the chain clears the
+ * RESTART_SPLIT_MIN_SIL survivor bar — never cut, never keep, the same
+ * posture the hallucination guard already takes, and for the same reason:
+ * electing a "least-bad" survivor here risks keeping the gappiest, least
+ * trustworthy instance in the chain over a cleaner earlier one (review fix —
+ * the previous last-complete fallback could keep a 0.60-silenceFrac instance
+ * and cut a 0.40 one, backwards from what the guard exists to prevent).
+ * `cuts` is empty in that case and every real instance in the chain is
+ * listed in `undecided` instead, so the report can say WHY nothing was
+ * decided rather than going silent.
+ */
 export interface RetakeGroup {
-  kept: RetakeInstance;
+  kept: RetakeInstance | null;
   cuts: RetakeCut[];
   hallucinated: RetakeHallucination[];
+  undecided: RetakeUndecided[];
 }
 
 // ---- token comparison -------------------------------------------------
@@ -255,11 +274,39 @@ function buildInstances(
 
 // ---- matching -------------------------------------------------------------
 
-/** Raw similarity, no threshold — used for the report once a group exists. */
+/**
+ * Raw similarity, no threshold — used for the report once a group exists,
+ * and for the match gate below.
+ *
+ * The prefix rule only models one shape: a restart/abandoned partial says
+ * FEWER words than the take it restarts. Picking "whichever instance has
+ * fewer tokens" as the prefix role — instead of "whichever instance is
+ * actually incomplete" — silently applies that same rule to the OPPOSITE
+ * shape: an incomplete instance that says MORE words than its counterpart (a
+ * continuation/elaboration, or a `--clip` slice that ends mid-sentence after
+ * accumulating more words than some earlier complete sentence). Truncating
+ * the shorter COMPLETE side's full text down to nothing extra and comparing
+ * it against only the incomplete side's matching opening reports a spurious
+ * near-1.0 score on two sentences that actually diverge in their second
+ * half — verified against a real repro: "Let me show you this." (complete)
+ * vs. the unpunctuated continuation "Let me show you this whole thing in
+ * detail" scored 1.0 and got the LONGER, more complete continuation cut
+ * instead of the short line. Full-sequence comparison scores that
+ * divergence honestly instead, whenever the incomplete side is the LONGER
+ * one.
+ */
 function rawSimilarity(a: Instance, b: Instance): number {
   if (a.complete && b.complete) return fullSimilarity(a.tokens, b.tokens);
-  const [shorter, longer] = a.tokens.length <= b.tokens.length ? [a, b] : [b, a];
-  return prefixSimilarity(shorter.tokens, longer.tokens);
+  if (!a.complete && !b.complete) {
+    const [shorter, longer] = a.tokens.length <= b.tokens.length ? [a, b] : [b, a];
+    return prefixSimilarity(shorter.tokens, longer.tokens);
+  }
+  const incomplete = a.complete ? b : a;
+  const other = a.complete ? a : b;
+  if (incomplete.tokens.length <= other.tokens.length) {
+    return prefixSimilarity(incomplete.tokens, other.tokens);
+  }
+  return fullSimilarity(a.tokens, b.tokens);
 }
 
 /** Similarity if it clears both the threshold and RETAKE_MIN_TOKENS, else null. */
@@ -276,25 +323,33 @@ function toPublic(i: Instance): RetakeInstance {
 
 /**
  * Kept = the LAST live complete instance whose own silenceFrac clears the
- * stricter RESTART_SPLIT_MIN_SIL survivor bar; falls back to the last
- * complete instance overall if none does (keep-last is a documented
- * convention, not a proof — PHASE1-FINDINGS.md §127's known limits). Every
- * other real instance in the chain — earlier completes, all partials — cuts.
+ * stricter RESTART_SPLIT_MIN_SIL survivor bar. When NO complete instance
+ * clears it — including when the chain has no complete instance at all —
+ * the group goes report-only: `kept` is null, nothing cuts, and every real
+ * instance is returned in `undecided` with its own silenceFrac. Keep-last is
+ * a documented convention, not a proof (PHASE1-FINDINGS.md §128's known
+ * limits), and falling back to "last complete regardless" when the bar
+ * rejects everyone silently picks the gappiest instance available — exactly
+ * the failure the bar exists to catch, just moved one level up.
  */
 function buildGroup(chain: readonly Instance[], hallucinated: readonly Instance[]): RetakeGroup {
   const completes = chain.filter((i) => i.complete);
-  const kept =
-    [...completes].reverse().find((i) => i.silenceFrac <= RESTART_SPLIT_MIN_SIL) ??
-    completes[completes.length - 1] ??
-    chain[chain.length - 1]!;
-  const cuts: RetakeCut[] = chain
-    .filter((i) => i !== kept)
-    .map((i) => ({ ...toPublic(i), similarity: rawSimilarity(i, kept) }));
+  const kept = [...completes].reverse().find((i) => i.silenceFrac <= RESTART_SPLIT_MIN_SIL);
   const hallu: RetakeHallucination[] = hallucinated.map((i) => ({
     ...toPublic(i),
     silenceFrac: i.silenceFrac,
   }));
-  return { kept: toPublic(kept), cuts, hallucinated: hallu };
+  if (!kept) {
+    const undecided: RetakeUndecided[] = chain.map((i) => ({
+      ...toPublic(i),
+      silenceFrac: i.silenceFrac,
+    }));
+    return { kept: null, cuts: [], hallucinated: hallu, undecided };
+  }
+  const cuts: RetakeCut[] = chain
+    .filter((i) => i !== kept)
+    .map((i) => ({ ...toPublic(i), similarity: rawSimilarity(i, kept) }));
+  return { kept: toPublic(kept), cuts, hallucinated: hallu, undecided: [] };
 }
 
 /**
@@ -366,6 +421,12 @@ export function findRetakeGroups(
  * design): kept / cut (with similarity) / ignored-as-hallucination (with its
  * silence fraction), quoting the actual words — same audit-trail reasoning as
  * `formatBloopSpan`, sharper here because nothing SAID this was a retake.
+ *
+ * `group.kept === null` is the report-only case: no complete instance
+ * cleared the survivor bar, so nothing was cut OR kept — every real instance
+ * is listed with its own silenceFrac instead, same shape as the
+ * hallucination lines, so the report says WHY nothing was decided rather
+ * than going silent.
  */
 export function formatRetakeGroup(transcript: Transcript, group: RetakeGroup): string {
   const said = (i: RetakeInstance): string =>
@@ -373,9 +434,19 @@ export function formatRetakeGroup(transcript: Transcript, group: RetakeGroup): s
       .slice(i.startWord, i.endWord + 1)
       .map((w) => w.text)
       .join(" ");
-  const lines: string[] = [`kept: "${said(group.kept)}"`];
-  for (const c of group.cuts) {
-    lines.push(`  cut (${Math.round(c.similarity * 100)}% match): "${said(c)}"`);
+  const lines: string[] = [];
+  if (group.kept === null) {
+    lines.push(
+      "no cut: no attempt's own dead-air fraction cleared the survivor bar — reporting every attempt instead of guessing which one is real",
+    );
+    for (const u of group.undecided) {
+      lines.push(`  attempt (${Math.round(u.silenceFrac * 100)}% silence): "${said(u)}"`);
+    }
+  } else {
+    lines.push(`kept: "${said(group.kept)}"`);
+    for (const c of group.cuts) {
+      lines.push(`  cut (${Math.round(c.similarity * 100)}% match): "${said(c)}"`);
+    }
   }
   for (const h of group.hallucinated) {
     lines.push(
