@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   assertAllClipsHaveAudio,
+  audioGuardMessage,
   buildConcatFilter,
+  evaluateAudioProbes,
   folderManifestKey,
   planFolderConcat,
+  probeClipsWithAudioGuard,
   type ConcatEntry,
 } from "../src/concat";
 
@@ -168,5 +171,140 @@ describe("assertAllClipsHaveAudio", () => {
         { name: "c.mov", hasAudio: false },
       ]),
     ).toThrow(/a\.mov.*c\.mov|c\.mov.*a\.mov/s);
+  });
+});
+
+// 0.1.9 first-contact (2026-08-05): pointed at ~/Downloads (~100 unrelated
+// videos), the audio guard spent 4m32s probing everything before refusing 13
+// silent b-roll clips. The fix is a fail-fast pool; these are its PURE
+// decision half — what the guard concludes from the probe results settled at
+// the moment it fires.
+describe("evaluateAudioProbes", () => {
+  it("returns null while every settled probe has audio", () => {
+    expect(
+      evaluateAudioProbes(
+        [
+          { name: "a.mov", hasAudio: true },
+          { name: "b.mov", hasAudio: true },
+        ],
+        5,
+      ),
+    ).toBeNull();
+  });
+
+  it("reports the offenders known so far plus how many clips were never checked", () => {
+    expect(
+      evaluateAudioProbes(
+        [
+          { name: "a.mov", hasAudio: true },
+          { name: "broll.mp4", hasAudio: false },
+        ],
+        10,
+      ),
+    ).toEqual({ offenders: ["broll.mp4"], uncheckedCount: 8 });
+  });
+
+  it("reports zero unchecked when every probe settled before the guard fired", () => {
+    expect(
+      evaluateAudioProbes(
+        [
+          { name: "a.mov", hasAudio: false },
+          { name: "b.mov", hasAudio: true },
+        ],
+        2,
+      ),
+    ).toEqual({ offenders: ["a.mov"], uncheckedCount: 0 });
+  });
+});
+
+describe("audioGuardMessage", () => {
+  it("keeps the thorough complete-list text when everything was checked", () => {
+    const msg = audioGuardMessage({ offenders: ["a.mov", "c.mov"], uncheckedCount: 0 });
+    expect(msg).toMatch(/no audio stream in: a\.mov, c\.mov/);
+    expect(msg).toMatch(/produce cuts by silence/);
+    expect(msg).not.toMatch(/not checked/);
+  });
+
+  it("is honest about aborting early when clips remain unchecked", () => {
+    const msg = audioGuardMessage({ offenders: ["broll.mp4"], uncheckedCount: 87 });
+    expect(msg).toMatch(/no audio stream in: broll\.mp4/);
+    expect(msg).toMatch(/stopped at the first missing-audio clip/i);
+    expect(msg).toMatch(/87 later clips were not checked/);
+  });
+
+  it("suggests the likely real mistake: a mixed folder like ~\\/Downloads", () => {
+    // The field report's actual error was upstream of the guard — the wizard
+    // was answered with all of ~/Downloads instead of a clips folder. The
+    // message must point at that, in both the complete and the aborted shape.
+    expect(audioGuardMessage({ offenders: ["a.mov"], uncheckedCount: 0 })).toMatch(/~\/Downloads/);
+    expect(audioGuardMessage({ offenders: ["a.mov"], uncheckedCount: 3 })).toMatch(/~\/Downloads/);
+  });
+});
+
+describe("probeClipsWithAudioGuard", () => {
+  it("returns every result in input order when all clips have audio", async () => {
+    const results = await probeClipsWithAudioGuard(
+      ["a.mov", "b.mov", "c.mov"],
+      async (name) => ({ hasAudio: true, name }),
+      2,
+    );
+    expect(results.map((r) => r.name)).toEqual(["a.mov", "b.mov", "c.mov"]);
+  });
+
+  it("rejects at the FIRST missing-audio result without waiting on slower probes", async () => {
+    // c's probe never settles — pre-fix, the guard awaited ALL probes
+    // (Promise.all) before deciding, which is exactly the 4m32s.
+    const p = probeClipsWithAudioGuard(
+      ["a.mov", "b.mov", "c.mov"],
+      (name) => {
+        if (name === "c.mov") return new Promise<{ hasAudio: boolean }>(() => {});
+        return Promise.resolve({ hasAudio: name !== "b.mov" });
+      },
+      3,
+    );
+    await expect(p).rejects.toThrow(/no audio stream in: b\.mov/);
+    await expect(p).rejects.toThrow(/1 later clip was not checked/);
+  });
+
+  it("stops launching new probes once the guard has fired", async () => {
+    const launched: string[] = [];
+    await expect(
+      probeClipsWithAudioGuard(
+        ["silent.mp4", "b.mov", "c.mov"],
+        (name) => {
+          launched.push(name);
+          return Promise.resolve({ hasAudio: false });
+        },
+        1,
+      ),
+    ).rejects.toThrow(/silent\.mp4/);
+    expect(launched).toEqual(["silent.mp4"]);
+  });
+
+  it("never holds more probes in flight than the pool bound", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    await probeClipsWithAudioGuard(
+      ["a", "b", "c", "d", "e", "f"],
+      async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+        return { hasAudio: true };
+      },
+      2,
+    );
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+  });
+
+  it("propagates a probe failure (e.g. `no video stream in <path>`) as-is", async () => {
+    await expect(
+      probeClipsWithAudioGuard(
+        ["a.mov"],
+        () => Promise.reject(new Error("no video stream in a.mov")),
+        4,
+      ),
+    ).rejects.toThrow(/no video stream in a\.mov/);
   });
 });

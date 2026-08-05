@@ -131,21 +131,137 @@ export function buildConcatFilter(n: number, target: { w: number; h: number }): 
  * no way to know a clip is silent. Handed a video-only clip (b-roll with no
  * audio stream), ffmpeg dies deep inside the filtergraph with a bare stream-
  * specifier error that names neither the clip nor the reason. `probe()`
- * already reports `hasAudio`; failing HERE, before ffmpeg ever runs, keeps
- * faith with the brief's "a file that probe() rejects is an error naming the
- * file, not a silent skip" — a clip with no audio is the same class of
- * problem, just discovered an instant later than "no video stream at all".
+ * already reports `hasAudio`; failing BEFORE ffmpeg ever runs keeps faith
+ * with the brief's "a file that probe() rejects is an error naming the file,
+ * not a silent skip" — a clip with no audio is the same class of problem,
+ * just discovered an instant later than "no video stream at all".
+ *
+ * `evaluateAudioProbes` is the guard's pure decision (0.1.9 first-contact,
+ * 2026-08-05): the fail-fast pool below fires it the moment a silent clip is
+ * seen, when only SOME probes have settled — so the verdict carries both the
+ * offenders known at that moment and how many clips were never checked, and
+ * the message can be honest about the difference instead of implying a
+ * complete list it doesn't have.
  */
+export interface AudioGuardFailure {
+  /** Clips known silent when the guard fired, in enumeration order. */
+  offenders: string[];
+  /** Clips whose probes had not settled when the guard fired. */
+  uncheckedCount: number;
+}
+
+export function evaluateAudioProbes(
+  settled: ReadonlyArray<{ name: string; hasAudio: boolean }>,
+  total: number,
+): AudioGuardFailure | null {
+  const offenders = settled.filter((c) => !c.hasAudio).map((c) => c.name);
+  if (offenders.length === 0) return null;
+  return { offenders, uncheckedCount: total - settled.length };
+}
+
+export function audioGuardMessage(failure: AudioGuardFailure): string {
+  const { offenders, uncheckedCount } = failure;
+  const stopped =
+    uncheckedCount > 0
+      ? ` Stopped at the first missing-audio clip; ${uncheckedCount} later ` +
+        `clip${uncheckedCount === 1 ? " was" : "s were"} not checked.`
+      : "";
+  // The ~/Downloads sentence is the 0.1.9 first-contact lesson: the guard
+  // fired CORRECTLY, but on the wrong folder — the wizard had been answered
+  // with all of ~/Downloads, and "13 clips lack audio" never suggested the
+  // user was one directory too high.
+  return (
+    `no audio stream in: ${offenders.join(", ")} — produce cuts by silence, so ` +
+    "every clip in a folder concat needs one (a silent b-roll clip can't be " +
+    "concatenated this way)." +
+    stopped +
+    " If this is a mixed folder like ~/Downloads rather than a folder of just " +
+    "the takes to concatenate, point produce at the clips folder instead."
+  );
+}
+
 export function assertAllClipsHaveAudio(
   clips: ReadonlyArray<{ name: string; hasAudio: boolean }>,
 ): void {
-  const silent = clips.filter((c) => !c.hasAudio).map((c) => c.name);
-  if (silent.length > 0) {
-    throw new Error(
-      `no audio stream in: ${silent.join(", ")} — produce cuts by silence, so ` +
-        "every clip in a folder concat needs one (a silent b-roll clip can't be concatenated this way).",
-    );
-  }
+  const failure = evaluateAudioProbes(clips, clips.length);
+  if (failure !== null) throw new Error(audioGuardMessage(failure));
+}
+
+/**
+ * Bounded, fail-fast probe pool (0.1.9 first-contact, 2026-08-05): the guard
+ * used to `Promise.all` every probe — pointed at ~/Downloads, that meant
+ * 4m32s of ffprobe over ~100 unrelated videos before the error the FIRST
+ * silent clip already implied. Two fixes in one shape: a concurrency bound so
+ * a big folder doesn't stampede the disk with a hundred simultaneous
+ * ffprobes, and an immediate reject on the first missing-audio result — the
+ * verdict is built from whatever has settled at that moment, and in-flight
+ * probes are simply ignored (ffprobe is a short-lived read-only process;
+ * letting it finish unobserved is harmless).
+ *
+ * Generic over `probeOne` so the scheduling is testable without ffprobe; the
+ * abort/offenders DECISION lives in `evaluateAudioProbes` (pure), this is the
+ * IO glue around it.
+ */
+export async function probeClipsWithAudioGuard<T extends { hasAudio: boolean }>(
+  names: readonly string[],
+  probeOne: (name: string, index: number) => Promise<T>,
+  concurrency = 8,
+): Promise<T[]> {
+  if (names.length === 0) return [];
+  const results: (T | undefined)[] = new Array(names.length);
+  return await new Promise<T[]>((resolveAll, rejectAll) => {
+    let nextIndex = 0;
+    let settledCount = 0;
+    let finished = false;
+
+    const launch = (): void => {
+      if (finished || nextIndex >= names.length) return;
+      const i = nextIndex;
+      nextIndex++;
+      const name = names[i];
+      if (name === undefined) return; // unreachable: i < names.length
+      probeOne(name, i).then(
+        (result) => {
+          if (finished) return;
+          results[i] = result;
+          settledCount++;
+          if (!result.hasAudio) {
+            const settled: Array<{ name: string; hasAudio: boolean }> = [];
+            for (let j = 0; j < names.length; j++) {
+              const r = results[j];
+              const n = names[j];
+              if (r !== undefined && n !== undefined) settled.push({ name: n, hasAudio: r.hasAudio });
+            }
+            const failure = evaluateAudioProbes(settled, names.length);
+            // Never null here — the result that brought us into this branch
+            // lacks audio — but throwing through the pure function keeps one
+            // single source of truth for the verdict.
+            if (failure !== null) {
+              finished = true;
+              rejectAll(new Error(audioGuardMessage(failure)));
+            }
+            return;
+          }
+          if (settledCount === names.length) {
+            finished = true;
+            resolveAll(results as T[]);
+          } else {
+            launch();
+          }
+        },
+        (err: unknown) => {
+          // A probe that FAILS (e.g. `no video stream in <path>`) propagates
+          // as-is, same as the Promise.all it replaced — an error naming the
+          // file, not a silent skip (folder-input-brief.md).
+          if (finished) return;
+          finished = true;
+          rejectAll(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
+    };
+    const initial = Math.min(concurrency, names.length);
+    for (let k = 0; k < initial; k++) launch();
+  });
 }
 
 const ConcatManifestSchema = z.object({
@@ -284,9 +400,10 @@ export async function concatFolder(
   // A file with a video EXTENSION that fails to probe (no video stream) is an
   // error naming the file, not a silent skip (folder-input-brief.md) — so
   // `probe()`'s own "no video stream in <path>" is left to propagate rather
-  // than caught here.
-  const probes = await Promise.all(order.map((name) => probe(tools, join(folder, name))));
-  assertAllClipsHaveAudio(order.map((name, i) => ({ name, hasAudio: probes[i]!.hasAudio })));
+  // than caught here. The pool bounds concurrency and rejects on the FIRST
+  // silent clip instead of probing the whole folder before refusing (0.1.9
+  // first-contact, 2026-08-05 — see probeClipsWithAudioGuard).
+  const probes = await probeClipsWithAudioGuard(order, (name) => probe(tools, join(folder, name)));
 
   const filter = buildConcatFilter(order.length, target);
   const inputArgs = order.flatMap((name) => ["-i", join(folder, name)]);
