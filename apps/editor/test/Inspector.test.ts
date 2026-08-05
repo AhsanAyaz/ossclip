@@ -2,7 +2,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { defaultTheme, type OverrideDoc, type SceneCue } from "@ossclip/core/browser";
+import { applyOverrides, defaultTheme, type OverrideDoc, type SceneCue } from "@ossclip/core/browser";
 import { Inspector } from "../src/Inspector";
 import { useEdits } from "../src/useEdits";
 
@@ -43,7 +43,7 @@ function Harness({
   selection,
   cue = graphicCue,
   initialCuts,
-  initialElements,
+  initialScenes,
   onSelect = () => {},
   onDocChange,
 }: {
@@ -58,15 +58,21 @@ function Harness({
    * an exact window match. */
   initialCuts?: { startSec: number; endSec: number; src?: { startSec: number; endSec: number } }[];
   /**
-   * Pre-loads `doc.scenes["scene-0"].elements` (PLAN Task 2) — same
-   * mount-once-load shape as `initialCuts`, for the "Hidden elements"
-   * Restore-list tests. The `cue` prop this Harness hands to `Inspector` is
-   * STATIC (it never re-derives from `edits.doc` the way App.tsx's real
-   * `live` memo does), so a Restore click's effect is only observable
-   * through `edits.doc` itself — this is what gives that click a real
-   * entry to act on rather than a no-op against an empty doc.
+   * Pre-loads `doc.scenes[id].elements` for one or more scene ids (PLAN
+   * Task 2; keyed by id rather than fixed to "scene-0" per the review fix
+   * wave — the split-half Restore test needs to preload the ROOT id, which
+   * is a DIFFERENT scene than the half `selection.sceneId` points at) —
+   * same mount-once-load shape as `initialCuts`. The `cue` prop this
+   * Harness hands to `Inspector` is STATIC (it never re-derives from
+   * `edits.doc` the way App.tsx's real `live` memo does), so a Restore
+   * click's effect is only observable through `edits.doc` itself — this is
+   * what gives that click a real entry to act on rather than a no-op
+   * against an empty doc.
    */
-  initialElements?: Record<string, { dx?: number; dy?: number; scale?: number; hidden?: boolean }>;
+  initialScenes?: Record<
+    string,
+    { elements: Record<string, { dx?: number; dy?: number; scale?: number; hidden?: boolean }> }
+  >;
   onSelect?: (s: { sceneId: string; elementId: string | null } | null) => void;
   /** Fires on every render with the CURRENT `edits.doc` — the only way this
    * Harness exposes the real reducer state to a test's assertions. */
@@ -74,10 +80,14 @@ function Harness({
 }) {
   const edits = useEdits();
   React.useEffect(() => {
-    if (initialCuts || initialElements) {
+    if (initialCuts || initialScenes) {
       edits.load({
         theme: {},
-        scenes: initialElements ? { "scene-0": { props: {}, elements: initialElements } } : {},
+        scenes: initialScenes
+          ? Object.fromEntries(
+              Object.entries(initialScenes).map(([id, s]) => [id, { props: {}, ...s }]),
+            )
+          : {},
         captions: {},
         splits: [],
         cuts: initialCuts ?? [],
@@ -264,8 +274,8 @@ describe("Inspector — the SCENE panel's hidden-elements Restore list (PLAN Tas
           selection: { sceneId: "scene-0", elementId: null },
           cue: graphicCueWithHiddenElement,
           // A REAL doc entry to restore — the `cue` prop above is display-only
-          // (see the Harness's own doc comment on `initialElements`).
-          initialElements: { eyebrow: { hidden: true } },
+          // (see the Harness's own doc comment on `initialScenes`).
+          initialScenes: { "scene-0": { elements: { eyebrow: { hidden: true } } } },
           onDocChange: (d) => {
             doc = d;
           },
@@ -281,11 +291,122 @@ describe("Inspector — the SCENE panel's hidden-elements Restore list (PLAN Tas
     });
     expect(document.activeElement).toBe(document.body);
     // The hidden key is gone; there was nothing else on this entry to
-    // survive (no prior nudge), so it's left as the empty leftover — same
-    // "restore deletes ONLY the hidden key" contract `restoreElement`
-    // (packages/core/src/overrides.ts) documents and its own unit tests
-    // cover with a nudge present too.
-    expect(doc?.scenes["scene-0"]?.elements?.eyebrow).toEqual({});
+    // survive (no prior nudge), so the whole entry is deleted rather than
+    // left as an empty `{}` leftover (review fix wave, bundled minor (a) —
+    // an empty entry would still shadow an inherited root nudge on a split
+    // half; see `restoreElement`'s own comment in overrides.ts, and its
+    // unit tests for the case WITH a prior nudge to preserve).
+    expect(doc?.scenes["scene-0"]?.elements?.eyebrow).toBeUndefined();
+    expect("eyebrow" in (doc?.scenes["scene-0"]?.elements ?? {})).toBe(false);
+  });
+
+  it("split half: a hidden id inherited from the ROOT dispatches Restore against the ROOT id, not the half's own (silently no-op-ing) entry (review fix wave, Important 1)", async () => {
+    let doc: OverrideDoc | undefined;
+    // The RESOLVED half cue, exactly as `effectiveOverride` +
+    // `applyOverrides` would actually produce it: `elements` merges per id
+    // across root/half (unlike `timing`/`hidden`, which are excluded from
+    // that inheritance), so the half's own resolved `cue.elements` already
+    // shows the root's hidden flag even though nothing was ever written
+    // directly onto the half's own doc entry.
+    const halfCue: SceneCue = {
+      ...takeCue,
+      id: "take-0@4000",
+      elements: { title: { hidden: true } },
+    };
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "take-0@4000", elementId: null },
+          cue: halfCue,
+          // The hidden flag lives on the ROOT's own raw doc entry — the
+          // half ("take-0@4000") has NO entry of its own at all, which is
+          // exactly the shape that made the pre-fix Restore button a silent
+          // no-op (it dispatched against the half id and found nothing).
+          initialScenes: { "take-0": { elements: { title: { hidden: true } } } },
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const btn = container.querySelector<HTMLButtonElement>('[data-testid="restore-element-title"]')!;
+    expect(btn).not.toBeNull();
+    await act(async () => {
+      btn.click();
+    });
+    // The ROOT's raw entry lost `hidden` — not the half's (it never had one
+    // to lose).
+    expect("title" in (doc?.scenes["take-0"]?.elements ?? {})).toBe(false);
+    expect(doc?.scenes["take-0@4000"]).toBeUndefined();
+  });
+});
+
+/**
+ * A cue that RE-DERIVES from `edits.doc` on every render, via the same
+ * `applyOverrides` call App.tsx's real `live` memo makes — unlike `Harness`
+ * above, whose `cue` prop is a fixed fixture the test hands it once. Every
+ * other test in this file necessarily proves its claims across TWO static
+ * fixtures (a "before" cue and, where needed, an "after" one) because
+ * `Harness` can't show a click's effect on the thing it just clicked. This
+ * one instead runs the full delete → relist → restore → delist loop through
+ * ONE mounted component and ONE re-rendering cue, the seam the review named.
+ */
+function DynamicHarness({ baseCue }: { baseCue: SceneCue }) {
+  const edits = useEdits();
+  const [selection, setSelection] = React.useState<{ sceneId: string; elementId: string | null } | null>(
+    { sceneId: baseCue.id, elementId: "title" },
+  );
+  const cue = React.useMemo(() => applyOverrides([baseCue], edits.doc).cues[0]!, [baseCue, edits.doc]);
+  return React.createElement(Inspector, {
+    selection,
+    cue,
+    frame: { width: 1080, height: 1920 },
+    allSceneIds: [baseCue.id],
+    edits,
+    onSelect: setSelection,
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+  });
+}
+
+describe("Inspector — delete → list → restore → delist, through one re-rendering cue (PLAN Task 2 review fix)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("Delete element puts it in the scene's Hidden-elements list; Restore takes it back out", async () => {
+    await act(async () => {
+      root.render(React.createElement(DynamicHarness, { baseCue: graphicCue }));
+    });
+    // Starts on the element panel — `title` is selected.
+    const deleteBtn = container.querySelector<HTMLButtonElement>('[data-testid="delete-element"]')!;
+    expect(deleteBtn).not.toBeNull();
+    await act(async () => {
+      deleteBtn.click();
+    });
+    // Selection dropped to the scene (per `onSelect`'s own contract), and
+    // the resolved cue re-derived through the REAL `edits.doc` now carries
+    // the hidden flag — landing the Inspector on the scene panel with the
+    // element listed for Restore.
+    const restoreBtn = container.querySelector<HTMLButtonElement>('[data-testid="restore-element-title"]')!;
+    expect(restoreBtn).not.toBeNull();
+    await act(async () => {
+      restoreBtn.click();
+    });
+    // Gone from the list — the SAME re-rendering cue now shows it unhidden.
+    expect(container.querySelector('[data-testid="restore-element-title"]')).toBeNull();
   });
 });
 

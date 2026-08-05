@@ -129,6 +129,65 @@ describe("override document", () => {
     );
   });
 
+  it("restoring an entry that was ONLY hidden deletes the key entirely, not just the hidden field (review fix wave)", () => {
+    // `elements` merges per ID, not per FIELD (see effectiveOverride) — an
+    // empty `{}` leftover would still win that whole-entry merge and
+    // permanently shadow an inherited nudge, so the key itself must go.
+    let doc = OverrideDocSchema.parse({});
+    doc = setElementTransform(doc, "scene-0", "value", { hidden: true });
+    doc = restoreElement(doc, "scene-0", "value");
+    expect("value" in doc.scenes["scene-0"]!.elements).toBe(false);
+  });
+
+  it("hiding an element on the ROOT (review fix wave, Important 1) suppresses it on EVERY resulting half, and restoring the root un-suppresses all of them", () => {
+    // The literal review scenario: hide lands on the root BEFORE any split
+    // exists, so `elements` (unlike `timing`/`hidden`, which
+    // `effectiveOverride` explicitly excludes from inheritance) reaches
+    // both halves through the per-id merge. Restore has to target the
+    // ROOT's own doc entry — this proves the mechanism that Inspector.tsx's
+    // per-row owning-id resolution now dispatches against.
+    const take = (): SceneCue => ({
+      id: "take-0", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10,
+    });
+    let doc = OverrideDocSchema.parse({
+      scenes: { "take-0": { elements: { title: { hidden: true } } } },
+    });
+    let { cues } = applyOverrides(splitCues([take()], [4]), doc);
+    for (const half of cues) {
+      expect(half.elements, half.id).toEqual({ title: { hidden: true } });
+    }
+    doc = restoreElement(doc, "take-0", "title");
+    expect("title" in doc.scenes["take-0"]!.elements).toBe(false);
+    ({ cues } = applyOverrides(splitCues([take()], [4]), doc));
+    for (const half of cues) {
+      expect(half.elements, half.id).toBeUndefined();
+    }
+  });
+
+  it("a split half's own hide-only entry, once restored, stops shadowing the root's nudge (review fix wave)", () => {
+    // The scenario the review named for bundled minor (a): the ROOT carries
+    // a nudge, a SPLIT HALF hides the same element (its own entry is only
+    // `{hidden:true}`), and restoring that half must let the root's nudge
+    // show through again rather than leaving an empty `{}` in its way.
+    let doc = OverrideDocSchema.parse({
+      scenes: { "take-0": { elements: { title: { dx: 12 } } } },
+    });
+    doc = setElementTransform(doc, "take-0@4000", "title", { hidden: true });
+    expect(doc.scenes["take-0@4000"]!.elements.title).toEqual({ hidden: true });
+    doc = restoreElement(doc, "take-0@4000", "title");
+    // The half's own entry is gone entirely, not left as `{}`.
+    expect("title" in doc.scenes["take-0@4000"]!.elements).toBe(false);
+    const halves = splitCues(
+      [{ id: "take-0", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10 } as SceneCue],
+      [4],
+    );
+    const { cues } = applyOverrides(halves, doc);
+    // Both halves now show the ROOT's nudge — nothing left hiding it.
+    for (const half of cues) {
+      expect(half.elements, half.id).toEqual({ title: { dx: 12 } });
+    }
+  });
+
   it("sets and clears a timing override, and clearing REMOVES the entry", () => {
     // Same distinction as `clearElementTransform`: un-pinning must go back to
     // tracking words, not merely happen to land on the same numbers, so the

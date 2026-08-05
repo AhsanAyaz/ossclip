@@ -1,5 +1,11 @@
 import React from "react";
-import { LayoutSchema, SceneComponentIdSchema, type SceneCue, type Theme } from "@ossclip/core/browser";
+import {
+  LayoutSchema,
+  SceneComponentIdSchema,
+  splitRootId,
+  type SceneCue,
+  type Theme,
+} from "@ossclip/core/browser";
 import { clampGraphicRect, graphicSlotFor, layoutSlots } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
@@ -468,16 +474,6 @@ export const Inspector: React.FC<InspectorProps> = ({
 
   if (selection && cue) {
     const isPlain = cue.kind === "plain";
-    // Elements this scene's user hid one at a time (PLAN Task 2) — plain
-    // takes have no `cue.elements` at all (no component, nothing to key an
-    // id against), so this is naturally empty for them. Hidden elements are
-    // unselectable on stage by construction (`display:none` drops them out
-    // of `elementFromPoint`'s hit chain), so this list — mirroring the
-    // scene-level ghost/Restore pattern above — is the ONLY way back to one
-    // short of hand-editing overrides.json.
-    const hiddenElementIds = Object.entries(cue.elements ?? {})
-      .filter(([, e]) => e.hidden === true)
-      .map(([id]) => id);
     // A deleted scene (PLAN Task C4): the ghost selection resolves here, and
     // the ONLY offer is the way back — its other controls would edit a scene
     // that isn't rendering.
@@ -566,6 +562,35 @@ export const Inspector: React.FC<InspectorProps> = ({
         </div>
       );
     }
+    // Elements this scene's user hid one at a time (PLAN Task 2) — plain
+    // takes have no `cue.elements` at all (no component, nothing to key an
+    // id against), so this is naturally empty for them. Hidden elements are
+    // unselectable on stage by construction (`display:none` drops them out
+    // of `elementFromPoint`'s hit chain), so this list — mirroring the
+    // scene-level ghost/Restore pattern above — is the ONLY way back to one
+    // short of hand-editing overrides.json. Computed here, past both early
+    // returns above — dead weight in either of those views, which never
+    // render it (review fix wave, PLAN Task 2).
+    const hiddenElements = Object.entries(cue.elements ?? {})
+      .filter(([, e]) => e.hidden === true)
+      .map(([id]) => {
+        // WHERE this id's `hidden` actually lives (review fix wave, PLAN
+        // Task 2): `cue.elements` is already merged across a split half and
+        // its root (`effectiveOverride`, packages/core/src/overrides.ts —
+        // `elements` merges per id, and is NOT in that function's
+        // inheritance-exclusion list the way `timing`/`hidden` are), so a
+        // half's panel can list an id whose `hidden` flag actually sits on
+        // the ROOT's own doc entry. Dispatching Restore against
+        // `selection.sceneId` unconditionally would target the half's own
+        // (nonexistent) entry, no-op silently, and leave the row promising
+        // a way back that does nothing. Check the SELECTED scene's own raw
+        // entry first; fall back to the split root — `splitRootId` is a
+        // no-op on an unsplit id, so this collapses to the pre-fix
+        // behavior there.
+        const ownHidden = edits.doc.scenes[selection.sceneId]?.elements[id]?.hidden === true;
+        const owningSceneId = ownHidden ? selection.sceneId : splitRootId(selection.sceneId);
+        return { id, owningSceneId };
+      });
     return (
       <div>
         <div style={section}>
@@ -993,7 +1018,7 @@ export const Inspector: React.FC<InspectorProps> = ({
             </button>
           </div>
         ) : null}
-        {hiddenElementIds.length > 0 ? (
+        {hiddenElements.length > 0 ? (
           <div style={section}>
             {/* Restore for elements deleted one at a time (PLAN Task 2) —
                 mirrors the ghost/restore pattern above, scoped to this
@@ -1001,7 +1026,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                 not on the element itself, because a hidden element can no
                 longer be selected on stage to reach its own panel. */}
             <span style={label}>Hidden elements</span>
-            {hiddenElementIds.map((id) => (
+            {hiddenElements.map(({ id, owningSceneId }) => (
               <div
                 key={id}
                 style={{
@@ -1019,7 +1044,11 @@ export const Inspector: React.FC<InspectorProps> = ({
                   style={{ ...button, color: "#5FBF77", border: "1px solid #24402c", padding: "4px 8px" }}
                   onClick={() => {
                     blurActive();
-                    edits.restoreElement(selection.sceneId, id);
+                    // Dispatched against the OWNING scene id, not blindly
+                    // `selection.sceneId` — see `hiddenElements`' own
+                    // comment above for why the two can differ on a split
+                    // half.
+                    edits.restoreElement(owningSceneId, id);
                   }}
                 >
                   Restore

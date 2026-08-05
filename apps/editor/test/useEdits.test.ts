@@ -174,12 +174,12 @@ describe("delete an individual element with a way back (PLAN Task 2)", () => {
     expect(s.past).toHaveLength(1);
   });
 
-  it("restoreElement DELETES only the hidden key, not the whole entry", () => {
+  it("restoreElement DELETES the hidden key — and, with no other fields left on this entry, the entry itself (review fix wave: an empty leftover would still shadow an inherited root nudge)", () => {
     let s = editReducer(initialEditState(), {
       type: "hideElement", sceneId: "scene-3", elementId: "message-1",
     });
     s = editReducer(s, { type: "restoreElement", sceneId: "scene-3", elementId: "message-1" });
-    expect("hidden" in s.doc.scenes["scene-3"]!.elements!["message-1"]!).toBe(false);
+    expect("message-1" in s.doc.scenes["scene-3"]!.elements).toBe(false);
   });
 
   it("hiding keeps a prior nudge so restore brings it back intact — unlike clearElement's full reset", () => {

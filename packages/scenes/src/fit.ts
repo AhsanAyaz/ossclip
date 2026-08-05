@@ -527,6 +527,10 @@ export function flowMetrics(
  * chips end up visibly bigger than six, which is the point of §23. Solved by
  * bisection because the height model depends on the content width, which
  * depends on the scale.
+ *
+ * Sizes off `props` alone — blind to which elements the edit layer hid
+ * (PLAN Task 2's accepted v1 wrinkle; see the call site's own comment in
+ * `SceneLayer.tsx` for the full reasoning).
  */
 export function fitScale(
   component: SceneComponentId,

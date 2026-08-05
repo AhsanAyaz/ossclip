@@ -536,12 +536,23 @@ export function restoreElement(
   const entry = scene?.elements[elementId];
   if (!scene || !entry?.hidden) return doc;
   const { hidden: _dropped, ...rest } = entry;
+  // `elements` merges per ID, not per FIELD (`effectiveOverride` above:
+  // `elements: { ...base.elements, ...own.elements }` replaces a shared id
+  // WHOLESALE, unlike `video`/`pip`, which merge field by field). Review
+  // fix wave, PLAN Task 2: a half whose own entry was ONLY `{hidden:true}`
+  // would otherwise be left with the empty leftover `{}` once `hidden` is
+  // stripped — and that empty object still wins the wholesale merge,
+  // permanently shadowing whatever nudge the split ROOT had for this id,
+  // even though "restore keeps nudges" is exactly this function's promise.
+  // Dropping the key entirely once nothing but `hidden` was ever on it lets
+  // the root's own entry (if any) show through again — same "delete rather
+  // than leave an inert key" instinct as clearVideo/clearTiming.
+  const { [elementId]: _own, ...withoutEntry } = scene.elements;
+  const elements =
+    Object.keys(rest).length > 0 ? { ...scene.elements, [elementId]: rest } : withoutEntry;
   return {
     ...doc,
-    scenes: {
-      ...doc.scenes,
-      [sceneId]: { ...scene, elements: { ...scene.elements, [elementId]: rest } },
-    },
+    scenes: { ...doc.scenes, [sceneId]: { ...scene, elements } },
   };
 }
 
@@ -580,10 +591,21 @@ export interface ReclampResult {
   adjusted: string[];
 }
 
-/** The scene a cue id belongs to, stripping a split half's `@ms` suffix —
+/**
+ * The scene a cue id belongs to, stripping a split half's `@ms` suffix —
  * same idiom `splitCues` itself uses to derive a later half's id from its
- * root. Two cues sharing a root are the SAME scene, cut in two. */
-function splitRootId(id: string): string {
+ * root, and the same one `effectiveOverride` above inlines to find a half's
+ * root entry. Two cues sharing a root are the SAME scene, cut in two.
+ *
+ * Exported (PLAN Task 2 review fix) for the editor's own use: a hidden
+ * ELEMENT on a split half can be inherited from the root (`elements`
+ * merges per id in `effectiveOverride`, and `elements` is NOT in that
+ * function's inheritance-exclusion list the way `timing`/`hidden` are) —
+ * Inspector.tsx's per-row Restore has to know whether the `hidden` it's
+ * offering to undo lives on the half's own doc entry or the root's, and
+ * this is the same root-id derivation either side of that decision needs.
+ */
+export function splitRootId(id: string): string {
   const at = id.indexOf("@");
   return at === -1 ? id : id.slice(0, at);
 }
