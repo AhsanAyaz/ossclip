@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { COVER_MAX_WORDS, coverHeadline, laplacianVariance, scoreCandidate } from "../src/cover";
+import {
+  COVER_MAX_WORDS,
+  coverDecision,
+  coverHeadline,
+  laplacianVariance,
+  scoreCandidate,
+} from "../src/cover";
 
 /** A flat grey frame — no edges at all. */
 const flat = (w: number, h: number) => new Uint8Array(w * h).fill(128);
@@ -93,5 +99,22 @@ describe("cover headline cap (FINDINGS §35)", () => {
   it("an empty headline stays empty — the caller decides what that means", () => {
     expect(coverHeadline("")).toBe("");
     expect(coverHeadline("   ")).toBe("");
+  });
+});
+
+describe("cover decision (Urdu field run 2026-08-05)", () => {
+  it("hook text present → banner cover, unchanged from before", () => {
+    expect(coverDecision(true, "SIX MONTHS OF MAX, FREE")).toBe("banner");
+  });
+
+  it("no hook text → textless cover, not a skip — the face frame needs no text", () => {
+    expect(coverDecision(true, "")).toBe("textless");
+    // Whitespace is what an empty beat-sheet field can round-trip to.
+    expect(coverDecision(true, "   ")).toBe("textless");
+  });
+
+  it("--no-cover wins over everything, text or not", () => {
+    expect(coverDecision(false, "SIX MONTHS OF MAX, FREE")).toBe("none");
+    expect(coverDecision(false, "")).toBe("none");
   });
 });

@@ -24,6 +24,7 @@ import {
   concatFolder,
   folderManifestKey,
   listFolderVideos,
+  coverDecision,
   coverHeadline,
   cropFilter,
   detectContentRect,
@@ -2161,13 +2162,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // A separate file, not a burned-in intro: both platforms accept a custom
   // cover, so nothing has to be pickable from the video — and spending the
   // opening seconds on a title card fights the hook-in-2s policy directly.
-  if (opts.cover !== false) {
+  {
     // §35's cap applies here too: a cached beat sheet from before the fix, or
     // the hook fallback, must not slip a 13-word paragraph onto a thumbnail.
     const coverText = coverHeadline(beatSheet?.coverText ?? beatSheet?.hook ?? "");
-    if (!coverText) {
-      console.log("▸ no cover text (run --produce for one) — skipping cover");
-    } else {
+    // Urdu field run 2026-08-05: a run without --produce has no hook text,
+    // and skipping the cover for that threw away the part that never needed
+    // text — the sharpness-scored face frame. No headline now means a bare
+    // frame, not no cover; see `coverDecision`'s doc comment.
+    const cover = coverDecision(opts.cover !== false, coverText);
+    if (cover !== "none") {
       const detector = await createFaceDetector();
       const pick = await pickCoverFrame(tools, analysisInput, analysisProbe.duration, {
         cacheDir: work,
@@ -2195,31 +2199,45 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         const coverPath = resolve(
           opts.coverPath ?? outPath.replace(/(\.[^.]+)?$/, ".cover.jpg"),
         );
-        // §34: if the source's own title is up at this instant, the frame
-        // already has a headline. Adding ours states the same claim twice in
-        // one image — a cover with one title beats a cover with two.
-        const sourceTitled = regionsDuring(
-          sourceText.regions,
-          pick.timeSec - 0.5,
-          pick.timeSec + 0.5,
-        ).length > 0;
-        console.log(
-          `▸ cover from ${pick.timeSec.toFixed(1)}s ` +
-            `(${pick.hasFace ? "face" : "no face"}, sharpness ${pick.sharpness.toFixed(0)})…`,
-        );
-        if (sourceTitled) {
-          console.log("  ▸ source already has a title in this frame — shipping it without a banner");
-        } else if (pick.face) {
-          const band = coverTextRect(pick.face, frame);
+        // The §34 dedupe check and the band-placement log exist only to
+        // route a banner around the frame's contents — a textless cover
+        // (Urdu field run 2026-08-05) has no banner to place, so both are
+        // skipped rather than run against text that isn't there.
+        let bannerText = "";
+        if (cover === "banner") {
+          // §34: if the source's own title is up at this instant, the frame
+          // already has a headline. Adding ours states the same claim twice in
+          // one image — a cover with one title beats a cover with two.
+          const sourceTitled = regionsDuring(
+            sourceText.regions,
+            pick.timeSec - 0.5,
+            pick.timeSec + 0.5,
+          ).length > 0;
           console.log(
-            `  ▸ banner in the ${band.y + band.h / 2 < pick.face.centerYFrac ? "band above" : "band below"} ` +
-              `the face (${(band.y * 100).toFixed(0)}-${((band.y + band.h) * 100).toFixed(0)}%)`,
+            `▸ cover from ${pick.timeSec.toFixed(1)}s ` +
+              `(${pick.hasFace ? "face" : "no face"}, sharpness ${pick.sharpness.toFixed(0)})…`,
+          );
+          if (sourceTitled) {
+            console.log("  ▸ source already has a title in this frame — shipping it without a banner");
+          } else if (pick.face) {
+            const band = coverTextRect(pick.face, frame);
+            console.log(
+              `  ▸ banner in the ${band.y + band.h / 2 < pick.face.centerYFrac ? "band above" : "band below"} ` +
+                `the face (${(band.y * 100).toFixed(0)}-${((band.y + band.h) * 100).toFixed(0)}%)`,
+            );
+          }
+          bannerText = sourceTitled ? "" : coverText;
+        } else {
+          console.log(
+            `▸ cover from ${pick.timeSec.toFixed(1)}s ` +
+              `(${pick.hasFace ? "face" : "no face"}, sharpness ${pick.sharpness.toFixed(0)}) ` +
+              `— no banner text (run --produce for one)`,
           );
         }
         await renderCover(
           {
             frameFileName: frameName,
-            text: sourceTitled ? "" : coverText,
+            text: bannerText,
             theme,
             face: pick.face,
             // The cover is the OUTPUT's thumbnail — a landscape render gets a

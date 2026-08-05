@@ -59,6 +59,27 @@ export function coverHeadline(text: string, maxWords = COVER_MAX_WORDS): string 
   return out.join(" ").replace(/[,;:—–-]+$/, "");
 }
 
+/**
+ * What the cover step should emit.
+ *
+ * "textless" exists because of the Urdu field run 2026-08-05: a run without
+ * `--produce` has no LLM hook text, and the old behavior skipped the cover
+ * entirely — but frame selection needs no text at all, and the
+ * sharpness-scored face frame is a clean thumbnail on its own. Only the
+ * banner needs a headline; the pick does not, so a missing headline demotes
+ * the cover to a bare frame instead of erasing it.
+ */
+export type CoverDecision = "banner" | "textless" | "none";
+
+/**
+ * Pure so the three-way outcome is testable without a video, ffmpeg, or a
+ * beat sheet on disk — the same I/O split as `openCommand()`.
+ */
+export function coverDecision(coverEnabled: boolean, headline: string): CoverDecision {
+  if (!coverEnabled) return "none";
+  return headline.trim() ? "banner" : "textless";
+}
+
 /** Where the face sits in the COVER frame, as fractions of it. */
 export interface CoverFace {
   centerXFrac: number;
