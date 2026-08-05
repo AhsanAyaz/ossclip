@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCaptionLines } from "../src/captions";
+import { buildCaptionLines, lineDirection } from "../src/captions";
 import { TimeMap } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
 
@@ -80,5 +80,36 @@ describe("buildCaptionLines", () => {
     const lines = buildCaptionLines(transcript, map);
     expect(lines[0]!.end).toBeLessThanOrEqual(lines[1]!.start + 1e-9);
     expect(lines[lines.length - 1]!.end).toBeLessThanOrEqual(map.outputDuration + 1e-9);
+  });
+});
+
+describe("lineDirection — first-strong-character heuristic (UAX #9 P2/P3)", () => {
+  it("resolves a pure Urdu line RTL", () => {
+    expect(lineDirection("یہ ایک ٹاپک ہے")).toBe("rtl");
+  });
+
+  it("resolves a pure English line LTR", () => {
+    expect(lineDirection("this is a topic")).toBe("ltr");
+  });
+
+  // The Urdu field transcript (2026-08-05) code-switches: a line opening with
+  // a Latin loanword resolves by its FIRST STRONG character — LTR — which is
+  // the standard bidi answer, not the language code's.
+  it("resolves a leading-Latin code-switched Urdu line LTR", () => {
+    expect(lineDirection("Fulfillment کیا ہے")).toBe("ltr");
+  });
+
+  it("skips digits and punctuation, which are bidi-weak/neutral", () => {
+    expect(lineDirection("2026 میں یہ")).toBe("rtl");
+    expect(lineDirection('"یہ"')).toBe("rtl");
+    expect(lineDirection("2026: a year")).toBe("ltr");
+  });
+
+  it("defaults LTR when no strong character exists", () => {
+    expect(lineDirection("123 456!")).toBe("ltr");
+  });
+
+  it("resolves Hebrew RTL too, not just Arabic script", () => {
+    expect(lineDirection("שלום עולם")).toBe("rtl");
   });
 });

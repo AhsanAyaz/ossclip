@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
-import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
+import { lineDirection, type CaptionLine, type SceneCue } from "@ossclip/core/browser";
 import { safeAreaFor, activeCueAt } from "./stage";
 import { frameWindow } from "./frames";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
@@ -79,6 +79,14 @@ const LineView: React.FC<{
   const safeArea = safeAreaFor({ width, height });
   // The parent <Sequence> starts at line.start, so local frame 0 === line.start.
   const t = line.start + frame / fps;
+  // Per-line, from the text itself (first-strong, see lineDirection): Urdu
+  // captions were laying out LTR (Urdu field test 2026-08-05). On the flex
+  // row `direction: rtl` reverses the VISUAL order of the word spans and the
+  // wrap direction; the highlight below is keyed to each word's own
+  // start/end times, not to position, so it still walks in spoken order.
+  // Mixed runs INSIDE a word (Latin, digits) are the browser's bidi to
+  // resolve against this direction — never hand-reordered here.
+  const direction = lineDirection(line.words.map((w) => w.text).join(" "));
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       <div
@@ -88,6 +96,7 @@ const LineView: React.FC<{
           left: 0,
           right: 0,
           transform: "translateY(-50%)",
+          direction,
           display: "flex",
           justifyContent: "center",
           gap: "0.28em",

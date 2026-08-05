@@ -14,6 +14,26 @@ export interface CaptionLine {
   end: number;
 }
 
+/**
+ * Per-LINE direction from the text itself — the first-strong-character
+ * heuristic (Unicode UAX #9 rules P2/P3), not the transcript's language
+ * code. The Urdu field transcript (2026-08-05) code-switches: lines opening
+ * with a Latin loanword ("Fulfillment …") exist alongside pure Urdu lines,
+ * and first-strong is the standard resolution for exactly that — the line
+ * lays out the way its own leading text reads. Digits and punctuation are
+ * bidi-weak/neutral and skipped, so "2026 میں …" still resolves RTL.
+ */
+const STRONG_RTL = /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/u;
+const STRONG_LTR = /\p{L}/u; // checked AFTER the RTL scripts, which are also \p{L}
+
+export function lineDirection(text: string): "rtl" | "ltr" {
+  for (const ch of text) {
+    if (STRONG_RTL.test(ch)) return "rtl";
+    if (STRONG_LTR.test(ch)) return "ltr";
+  }
+  return "ltr";
+}
+
 export interface CaptionOptions {
   maxWordsPerLine?: number;
   maxLineDuration?: number;

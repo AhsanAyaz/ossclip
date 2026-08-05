@@ -19,6 +19,9 @@ export {
   type ContentRect,
   type ContentRectSegment,
 } from "./content-rect";
-export type { CaptionLine, CaptionWord } from "./captions";
+// lineDirection is a VALUE export but stays browser-safe: captions.ts
+// imports types only. CaptionTrack needs it at render time (Urdu field test
+// 2026-08-05 — RTL lines were laying out LTR).
+export { lineDirection, type CaptionLine, type CaptionWord } from "./captions";
 export type { KeptSpan } from "./timemap";
 export type { Probe, Production, RenderSettings, Segment, Transcript, Word } from "./schema";
