@@ -60,13 +60,19 @@ export function recordedProduceArgs(pins: {
   if (pins.clipWindow !== undefined && !args.includes("--clip-window")) {
     args.push("--clip-window", pins.clipWindow);
   }
-  // The config-sourced watermark, pinned like §75 pinned the provider: the
-  // replay may run on a machine whose ~/.ossclip/config.json never turned it
-  // on, and the credit would silently vanish from the re-render. The
-  // --no-watermark guard is belt-and-braces — a typed --no-watermark means
-  // the resolved value was false and no pin is passed at all.
-  if (pins.watermark === true && !args.includes("--watermark") && !args.includes("--no-watermark")) {
-    args.push("--watermark");
+  // The watermark, pinned like §75 pinned the provider — in BOTH directions
+  // (review, Important): the effective default is config-dependent, so "no
+  // flag in the argv" does not replay identically everywhere. An off-record
+  // left unpinned would silently GAIN a watermark the moment the replay runs
+  // under a config-on (`~/.ossclip/config.json` edited later, or the editor's
+  // Render on another machine) — the exact drift §75 exists to prevent, just
+  // mirrored. So every record carries the RESOLVED state: `--watermark` when
+  // on, `--no-watermark` when off, and a typed flag (already in the argv,
+  // caught by the includes-guard) is never doubled. One flag per command.json
+  // is the price; determinism is the contract, byte-identity of off-records
+  // was only ever a nicety.
+  if (pins.watermark !== undefined && !args.includes("--watermark") && !args.includes("--no-watermark")) {
+    args.push(pins.watermark ? "--watermark" : "--no-watermark");
   }
   return args;
 }

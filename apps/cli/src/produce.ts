@@ -2226,16 +2226,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // recordedProduceArgs prefers the argv the re-entry stashed and falls back
   // to process.argv for a directly typed `ossclip produce …`, which stays
   // byte-identical to what was always recorded.
-  // Watermark pin, same §75 shape: a config-sourced ON (flag untyped) exists
-  // only in THIS machine's ~/.ossclip/config.json — a replay elsewhere would
-  // silently drop the credit. Pinned as the RESOLVED value; a typed flag is
-  // already in the argv and the includes-guard leaves it alone. Off needs no
-  // pin: off is the universal default, so an argv without the flag replays
-  // identically everywhere.
+  // Watermark pin, same §75 shape, and in BOTH directions (review,
+  // Important): the effective default comes from THIS machine's
+  // ~/.ossclip/config.json, so an unpinned record replays differently
+  // wherever that config differs — an off-run would silently gain a credit
+  // under a later/foreign config-on, an on-run would silently lose it. The
+  // RESOLVED state is always pinned; a typed flag is already in the argv and
+  // the includes-guard leaves it alone.
   const recordedArgs = recordedProduceArgs({
     llm: provider ? providerName : undefined,
     clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
-    watermark: watermark || undefined,
+    watermark,
   });
   await writeFile(
     join(work, "command.json"),

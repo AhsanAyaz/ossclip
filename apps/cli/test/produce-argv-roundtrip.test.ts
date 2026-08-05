@@ -125,6 +125,20 @@ describe("wizard argv survives the real commander parse", () => {
     expect(extrasFor(true).some((e) => e.value === "graphicsClip")).toBe(true);
   });
 
+  // Review, minor a: on a config-on machine the watermark entry sits
+  // unchecked while the credit renders anyway — unchecked means "don't emit
+  // the flag", not "off". The entry's hint must say so, and must stay the
+  // plain "--watermark" teaching hint everywhere else.
+  it("annotates the watermark extra's hint when the config already turns it on", () => {
+    const annotated = extrasFor(true, { watermarkFromConfig: true }).find(
+      (e) => e.value === "watermark",
+    );
+    expect(annotated?.hint).toMatch(/--no-watermark/);
+    expect(annotated?.hint).toMatch(/config/);
+    const plain = extrasFor(true).find((e) => e.value === "watermark");
+    expect(plain?.hint).toBe("--watermark");
+  });
+
   it("rejects an argv containing a flag the CLI does not define", async () => {
     // Proves the harness would actually catch drift rather than silently
     // accepting anything — and that it fails as a test instead of exiting the

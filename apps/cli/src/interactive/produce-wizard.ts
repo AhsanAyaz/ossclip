@@ -47,9 +47,26 @@ const EXTRAS = [
  * error nine prompts later — so the clip extra is only ever listed once
  * graphics is already on. Exported and kept pure so this can be asserted
  * without a TTY.
+ *
+ * `watermarkFromConfig` (review, minor a): on a config-on machine the
+ * watermark entry sits UNCHECKED while the credit will render anyway —
+ * unchecked is "don't emit the flag", not "off", and the multiselect has no
+ * way to say the second thing. The honest cheap fix is to say so in the
+ * entry's own hint rather than pre-checking it (a pre-check would emit a
+ * redundant --watermark and teach a command line longer than the run needs,
+ * against produceArgv's default-elision rule).
  */
-export function extrasFor(graphics: boolean): (typeof EXTRAS)[number][] {
-  return graphics ? [...EXTRAS] : EXTRAS.filter((e) => e.value !== "graphicsClip");
+export function extrasFor(
+  graphics: boolean,
+  opts: { watermarkFromConfig?: boolean } = {},
+): { value: (typeof EXTRAS)[number]["value"]; label: string; hint: string }[] {
+  const list = graphics ? [...EXTRAS] : EXTRAS.filter((e) => e.value !== "graphicsClip");
+  if (opts.watermarkFromConfig !== true) return [...list];
+  return list.map((e) =>
+    e.value === "watermark"
+      ? { ...e, hint: "already on via your config — unticking does not disable it; --no-watermark does" }
+      : e,
+  );
 }
 
 /** Select value that routes to the free-text model prompt instead of a name. */
@@ -114,7 +131,7 @@ export function whisperModelChoices(
 }
 
 export async function produceWizard(
-  cfg: { speaker?: string; modelDir?: string; input?: string } = {},
+  cfg: { speaker?: string; modelDir?: string; input?: string; watermark?: boolean } = {},
 ): Promise<string[]> {
   assertInteractive("produce wizard");
   intro("ossclip produce");
@@ -193,7 +210,7 @@ export async function produceWizard(
   const chosen = unwrap(
     await multiselect({
       message: "Anything else? (space to toggle, enter to accept)",
-      options: extrasFor(graphics),
+      options: extrasFor(graphics, { watermarkFromConfig: cfg.watermark === true }),
       required: false,
     }),
   ) as string[];
