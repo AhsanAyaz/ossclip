@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-argv";
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
@@ -50,7 +50,57 @@ export function extrasFor(graphics: boolean): (typeof EXTRAS)[number][] {
   return graphics ? [...EXTRAS] : EXTRAS.filter((e) => e.value !== "graphicsClip");
 }
 
-export async function produceWizard(cfg: { speaker?: string; input?: string } = {}): Promise<string[]> {
+/** Select value that routes to the free-text model prompt instead of a name. */
+export const CUSTOM_MODEL = "__custom__";
+
+/** The three names `ossclip setup` knows how to download, with their hints. */
+const CANONICAL_MODELS = [
+  { value: "base.en", hint: "fastest, least accurate" },
+  { value: "small.en", hint: "default" },
+  { value: "medium.en", hint: "slowest, most accurate" },
+] as const;
+
+/**
+ * modelDir listing → select choices. Pure so the enumeration rules —
+ * `ggml-*.bin` stripped to bare names, everything else ignored — are testable
+ * without a TTY or a real ~/.ossclip. Exists because the fixed .en-only list
+ * made a downloaded fine-tune unpickable from the wizard (Urdu field test
+ * 2026-08-05: ggml-medium-urdu.bin was installed and working via
+ * `--whisper-model medium-urdu`, and the wizard could not name it).
+ */
+export function whisperModelChoices(
+  modelDirFiles: string[],
+): { value: string; label: string; hint: string }[] {
+  const installed = new Set<string>();
+  for (const f of modelDirFiles) {
+    // Bare name is what --whisper-model takes: produce.ts joins it back into
+    // `ggml-<name>.bin`, so the round trip is exact by construction.
+    const m = /^ggml-(.+)\.bin$/.exec(f);
+    if (m?.[1] !== undefined) installed.add(m[1]);
+  }
+  // Canonicals stay listed whether or not downloaded: produce.ts already
+  // errors helpfully (naming the setup/curl fix) on a missing model, so the
+  // pick works — but the download should not be a surprise, hence the marker.
+  const choices: { value: string; label: string; hint: string }[] = CANONICAL_MODELS.map((c) => ({
+    value: c.value,
+    label: c.value,
+    hint: installed.has(c.value) ? c.hint : `${c.hint} · will need download`,
+  }));
+  const canonical = new Set<string>(CANONICAL_MODELS.map((c) => c.value));
+  for (const name of [...installed].filter((n) => !canonical.has(n)).sort()) {
+    choices.push({ value: name, label: name, hint: "installed" });
+  }
+  choices.push({
+    value: CUSTOM_MODEL,
+    label: "type a name or absolute path",
+    hint: "anything whisper.cpp can load",
+  });
+  return choices;
+}
+
+export async function produceWizard(
+  cfg: { speaker?: string; modelDir?: string; input?: string } = {},
+): Promise<string[]> {
   assertInteractive("produce wizard");
   intro("ossclip produce");
 
@@ -165,26 +215,40 @@ export async function produceWizard(cfg: { speaker?: string; input?: string } = 
     ) as string;
   }
   if (chosen.includes("whisperModel")) {
-    extras.whisperModel = unwrap(
+    // Enumerated from disk, not hardcoded (Urdu field test 2026-08-05): a
+    // fine-tune the user already installed must be pickable here, not
+    // flags-only. A missing/unset modelDir just means nothing extra to list.
+    const modelFiles =
+      cfg.modelDir !== undefined && existsSync(cfg.modelDir) ? readdirSync(cfg.modelDir) : [];
+    let model = unwrap(
       await select({
         message: "Transcription model",
         initialValue: "small.en",
-        options: [
-          { value: "base.en", label: "base.en", hint: "fastest, least accurate" },
-          { value: "small.en", label: "small.en", hint: "default" },
-          { value: "medium.en", label: "medium.en", hint: "slowest, most accurate" },
-        ],
+        options: whisperModelChoices(modelFiles),
       }),
     ) as string;
+    if (model === CUSTOM_MODEL) {
+      model = unwrap(
+        await text({
+          message: "Model name or absolute path to a ggml .bin",
+          placeholder: "medium-urdu",
+          validate: (v) => (v ? undefined : "a model name or path is required"),
+        }),
+      ) as string;
+    }
+    extras.whisperModel = model;
     // Follow-up under the same extra, like --clip's seconds prompt: a language
     // only means anything once a model is being picked, and a multilingual
     // fine-tune silently decodes English without it (Urdu field test
-    // 2026-08-05). Empty keeps whisper's en default, and produceArgv's
-    // default-elision rule then emits no flag at all.
+    // 2026-08-05). A non-.en pick is multilingual by construction, so the
+    // prefill makes plain Enter the safe answer — `auto` lets whisper detect.
+    // Empty keeps whisper's en default, and produceArgv's default-elision
+    // rule then emits no flag at all.
     const lang = unwrap(
       await text({
         message: "Transcription language code (empty = default en)",
         placeholder: "ur",
+        initialValue: model.endsWith(".en") ? "" : "auto",
         defaultValue: "",
       }),
     ) as string;

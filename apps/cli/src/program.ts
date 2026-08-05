@@ -106,7 +106,10 @@ export function buildProgram(): Command {
         }
         const { produceWizard } = await import("./interactive/produce-wizard");
         const { loadConfig } = await import("@ossclip/core");
-        const argv = await produceWizard({ speaker: loadConfig().speaker, input: path });
+        const cfg = loadConfig();
+        // modelDir so the wizard can enumerate installed whisper models
+        // (Urdu field test 2026-08-05) — same resolution produce.ts uses.
+        const argv = await produceWizard({ speaker: cfg.speaker, modelDir: cfg.modelDir, input: path });
         console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
         setReplayArgv(argv); // §129
         await program.parseAsync(["node", "ossclip", ...argv]);
@@ -136,7 +139,8 @@ export function buildProgram(): Command {
       }
       const { produceWizard } = await import("./interactive/produce-wizard");
       const { loadConfig } = await import("@ossclip/core");
-      const argv = await produceWizard({ speaker: loadConfig().speaker });
+      const cfg = loadConfig();
+      const argv = await produceWizard({ speaker: cfg.speaker, modelDir: cfg.modelDir });
       console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
       setReplayArgv(argv); // §129
       await program.parseAsync(["node", "ossclip", ...argv]);
@@ -276,7 +280,8 @@ export function buildProgram(): Command {
         const { produceWizard } = await import("./interactive/produce-wizard");
         const { renderCommand } = await import("./interactive/render");
         const { loadConfig } = await import("@ossclip/core");
-        const argv = await produceWizard({ speaker: loadConfig().speaker });
+        const cfg = loadConfig();
+        const argv = await produceWizard({ speaker: cfg.speaker, modelDir: cfg.modelDir });
         console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
         // Re-entering the SAME parse the flags take: the zod checks below run
         // on wizard output exactly as they do on a typed command line.
