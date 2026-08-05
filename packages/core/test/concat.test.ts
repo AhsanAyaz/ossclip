@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   assertAllClipsHaveAudio,
@@ -138,6 +139,41 @@ describe("folderManifestKey (review fix — workdir must go stale with the folde
     const one = [entry("a.mov:1:2|b.mov", 4, 3)];
     const two = [entry("a.mov", 2, 1), entry("b.mov", 4, 3)];
     expect(folderManifestKey(one, "name")).not.toBe(folderManifestKey(two, "name"));
+  });
+
+  /**
+   * §131: a field report of workdir "drift" on an untouched folder turned out
+   * to be a rename — the two runs' recorded source-concat.json manifests held
+   * IDENTICAL sizes and mtimes but different names (camera-export UUIDs, then
+   * `1`–`4`), and under `--sort name` the rename also changed the concat
+   * order, so re-keying was mandatory, not a bug. mtimes were the suspect
+   * (iCloud-synced Downloads) and were exonerated byte-for-byte. Pinned with
+   * the recorded values, deriving the exact observed workdir hashes the same
+   * way produce.ts does, so the next "same folder, different workdir" report
+   * can be checked here instead of re-litigated from suspicion.
+   */
+  it("§131 field case: a rename alone (same sizes, same mtimes) re-keys; an unchanged manifest never does", () => {
+    const workdirHash = (entries: ConcatEntry[]): string =>
+      createHash("sha1").update(folderManifestKey(entries, "name")).digest("hex").slice(0, 8);
+    const run1 = [
+      entry("05B96FC5-F5FD-4847-B269-C8F2E3473718.MP4", 1785938022000, 114591202),
+      entry("52924DE0-8F13-4191-A581-08A747F6DE2A.MP4", 1785938022000, 43730595),
+      entry("754D3FF1-FA29-44DB-A31F-678593A1A228.MP4", 1785938022000, 25755631),
+      entry("E6820A81-F531-49C5-9D11-84A523D30532.MP4", 1785938850000, 179555444),
+    ];
+    const run2 = [
+      entry("1.MP4", 1785938022000, 25755631),
+      entry("2.MP4", 1785938022000, 43730595),
+      entry("3.MP4", 1785938022000, 114591202),
+      entry("4.MP4", 1785938850000, 179555444),
+    ];
+    expect(workdirHash(run1)).toBe("1addff5a");
+    expect(workdirHash(run2)).toBe("202e2b55");
+    // Determinism half: re-statting an untouched folder — same names, sizes,
+    // mtimes — keys identically. The field case's stability was verified live
+    // (today's stat still keys 202e2b55); this is that invariant, pinned.
+    const restat = run2.map((e) => ({ ...e }));
+    expect(workdirHash(restat)).toBe(workdirHash(run2));
   });
 });
 
