@@ -2,16 +2,24 @@
 
 ## Model routing
 
-Opus in the main thread does the thinking: exploring the codebase, design,
-writing plans, reviewing what came back, and any debugging where the cause is
-not yet known.
+The session's own model does the thinking in the main thread: exploring the
+codebase, design, writing plans, reviewing what came back, and any debugging
+where the cause is not yet known.
 
-Mechanical steps from a settled design get delegated to the `executor`
-subagent, which is pinned to Sonnet (`.claude/agents/executor.md`). A step is
-delegable when it is self-contained enough to hand to someone who has not
-read this conversation — which a written plan task already is. Bundle the
-context it needs into the prompt; subagents do not inherit the main thread's
-context.
+Delegated steps run the SAME model as the session — the `executor` subagent
+(`.claude/agents/executor.md`) is `model: inherit`, and ad-hoc Agent
+dispatches for planning, implementing, or reviewing should either pass the
+session's model explicitly or omit the model so it inherits. When the
+session runs Fable, subagents run Fable. Do not downgrade dispatches to
+Sonnet/Haiku for economy unless the user asks for it — a skill's own
+cost-tiering guidance does not override this (2026-08-05: a whole
+plan executed on Sonnet/Opus subagents under a Fable session before anyone
+noticed).
+
+A step is delegable when it is self-contained enough to hand to someone who
+has not read this conversation — which a written plan task already is.
+Bundle the context it needs into the prompt; subagents do not inherit the
+main thread's context.
 
 Escalate back to the main thread the moment a delegated step turns out to
 need a decision. A subagent guessing at design is the failure mode this split

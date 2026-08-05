@@ -1,7 +1,10 @@
 ---
 name: executor
 description: Execute one self-contained, already-planned implementation step in this repo. Use for mechanical work where the design is settled and written down — applying a plan task, adding tests to an agreed contract, a rename, a targeted fix with a known cause. NOT for design, exploration, debugging an unknown cause, or anything where the right approach is still open.
-model: sonnet
+# inherit, not a pinned tier: when the session runs a top-tier model
+# (Fable/Opus), delegated implementation runs it too. Pinning sonnet here
+# silently downgraded every delegated step of a Fable session (2026-08-05).
+model: inherit
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 
