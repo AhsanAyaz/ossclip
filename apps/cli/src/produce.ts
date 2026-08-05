@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
-import { existsSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
@@ -196,6 +196,14 @@ export interface ProduceOptions {
    * a file input.
    */
   sort?: "name" | "mtime";
+  /**
+   * Whether `--sort` was TYPED, as opposed to commander filling in its
+   * `"name"` default. `sort` alone can't tell those apart, and `--sort` does
+   * nothing on a file input — final-review fix wave, cheap minor c: print a
+   * notice instead of silently ignoring a flag the user explicitly reached
+   * for.
+   */
+  sortExplicit?: boolean;
 }
 
 function sha1File(path: string): Promise<string> {
@@ -242,6 +250,31 @@ function deriveWorkdir(
  */
 export function defaultOutPath(originalInput: string): string {
   return originalInput.replace(/(\.[^.]+)?$/, ".ossclip.mp4");
+}
+
+/**
+ * Which directory the Remotion render will bundle its `publicDir` from,
+ * given the SAME `mezzanineWillBuild` boolean `produce()` computes once and
+ * feeds to the real `renderVideo` assignment further down — passed in,
+ * rather than recomputed here, so the two can never read a different answer
+ * to "will a mezzanine get built" than each other.
+ *
+ * Finding 3 (final-review fix wave): `dirname(renderVideo)` is where
+ * Remotion's `staticFile()` looks; a side-image accepted from some OTHER
+ * directory (a folder run's clips folder, or — the reviewer's pre-existing
+ * "latent" case — a file run's own folder once a mezzanine gets built)
+ * passes the accept check and then 404s inside the render, after the run has
+ * already spent the minutes getting there. `analysisInput` becomes something
+ * other than `input` only via the framing bake, and that bake always writes
+ * into `work`; the mezzanine build is the other path into `work`.
+ */
+export function planRenderPublicDir(p: {
+  input: string;
+  inputIsAnalysisInput: boolean;
+  mezzanineWillBuild: boolean;
+  work: string;
+}): string {
+  return !p.inputIsAnalysisInput || p.mezzanineWillBuild ? p.work : dirname(p.input);
 }
 
 /**
@@ -317,6 +350,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // manifest content gives a folder input the same invariant a file input
   // already has via `sha1File`: content changes ⇒ a fresh workdir.
   const isFolder = statSync(input).isDirectory();
+  // Final-review fix wave, cheap minor c: --sort only means anything for a
+  // folder input; on a file it did nothing, silently. Gated on `sortExplicit`
+  // (whether the user TYPED it) rather than on `opts.sort` itself, since
+  // commander's own "name" default would otherwise print this on every plain
+  // file run.
+  if (!isFolder && opts.sortExplicit) {
+    console.log("▸ --sort is ignored — <input> is a file, not a folder of clips");
+  }
   let folderListing: Awaited<ReturnType<typeof listFolderVideos>> | undefined;
   let hash: string;
   if (isFolder) {
@@ -464,13 +505,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     : [];
   let retakes = retakeGroups.flatMap((g) => g.cuts);
   if (opts.collapseRetakes) {
-    console.log(
-      retakeGroups.length > 0
-        ? `▸ collapse-retakes: ${retakeGroups.length} group(s), ${retakes.length} take(s) cut`
-        : "▸ collapse-retakes: no retakes found",
-    );
-    for (const g of retakeGroups) {
-      for (const line of formatRetakeGroup(transcript, g).split("\n")) console.log(`  ▸ ${line}`);
+    // `exact` never cuts anything — buildCutlist's own early return collapses
+    // to one whole-duration `keep` regardless of what's in `retakes` — so
+    // "N group(s), M take(s) cut" here was a claim the run never honored.
+    // Same fact `valveFired` below already checks; gated the same way
+    // (final-review fix wave, cheap minor b).
+    if (opts.cleanup === "exact") {
+      console.log("▸ collapse-retakes: --cleanup exact wins — nothing cut");
+    } else {
+      console.log(
+        retakeGroups.length > 0
+          ? `▸ collapse-retakes: ${retakeGroups.length} group(s), ${retakes.length} take(s) cut`
+          : "▸ collapse-retakes: no retakes found",
+      );
+      for (const g of retakeGroups) {
+        for (const line of formatRetakeGroup(transcript, g).split("\n")) console.log(`  ▸ ${line}`);
+      }
     }
   }
   let cutlist: Segment[] = buildCutlist({
@@ -1072,6 +1122,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   };
   /** The picture's dimensions — what every geometric consumer reasons about. */
   const content = { width: contentRect.w, height: contentRect.h };
+  // Computed ONCE and reused by both the accepted-side-image public-dir
+  // check below and the real mezzanine build further down — one boolean,
+  // not two independent copies of the same condition that could silently
+  // drift apart (Finding 3, final-review fix wave: that drift is exactly
+  // what let an accepted image 404 inside Remotion's staticFile()).
+  const mezzanineWillBuild = analysisInput === input && (opts.mezzanine || !contentRect.full);
 
   // Face measurement (FINDINGS §13): one static crop offset per source,
   // measured rather than guessed; cached in the workdir like the transcript.
@@ -1334,14 +1390,46 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // IS `work` and that branch was silently checking the same directory
   // twice. `originalInput` (the folder itself) is the natural place someone
   // would actually drop an image for a folder run.
+  //
+  // Finding 3 (final-review fix wave): accepting an image from a sideDir is
+  // NOT the same as the render being able to load it — Remotion's
+  // `staticFile()` only ever looks in ONE directory, `dirname(renderVideo)`.
+  // `planRenderPublicDir` computes that same directory from the
+  // `mezzanineWillBuild` boolean set above (shared with the real
+  // `renderVideo` assignment further down, so the two can't disagree about
+  // which directory wins). An image accepted from a sideDir that isn't THAT
+  // directory used to pass this check and then 404 mid-render — a failure
+  // that surfaced only after the whole pipeline had already spent its budget
+  // getting there. The fix is to make the two agree by construction: copy
+  // the file into the render's public dir the moment it's accepted from
+  // anywhere else. This also retires the "latent" file-input+mezzanine case
+  // the reviewer found pre-existing: an image beside a source video that
+  // then gets mezzanine'd (the default) was accepted from `dirname(input)`
+  // but the mezzanine's public dir is `work` — same failure shape, one
+  // branch earlier.
   const srcRejections: Array<{ sceneId: string; src: string }> = [];
+  const srcCopies: Array<{ src: string; from: string }> = [];
   const sideDirs = isFolder ? [work, originalInput] : [work, dirname(input)];
+  const renderPublicDirPath = planRenderPublicDir({
+    input,
+    inputIsAnalysisInput: analysisInput === input,
+    mezzanineWillBuild,
+    work,
+  });
   for (const holder of [...scenes, ...graphicCues]) {
     const src = holder.props?.src;
     if (typeof src !== "string" || src.length === 0) continue;
-    if (sideDirs.some((dir) => existsSync(join(dir, src)))) continue;
-    delete (holder.props as Record<string, unknown>).src;
-    srcRejections.push({ sceneId: holder.id, src });
+    const foundDir = sideDirs.find((dir) => existsSync(join(dir, src)));
+    if (!foundDir) {
+      delete (holder.props as Record<string, unknown>).src;
+      srcRejections.push({ sceneId: holder.id, src });
+      continue;
+    }
+    if (foundDir !== renderPublicDirPath) {
+      mkdirSync(dirname(join(renderPublicDirPath, src)), { recursive: true });
+      copyFileSync(join(foundDir, src), join(renderPublicDirPath, src));
+      srcCopies.push({ src, from: foundDir });
+    }
   }
   for (const r of [...new Map(srcRejections.map((r) => [r.src, r])).values()]) {
     console.log(
@@ -1349,10 +1437,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         "rendering the frame as a placeholder instead",
     );
   }
+  for (const c of [...new Map(srcCopies.map((c) => [c.src, c])).values()]) {
+    console.log(`  ▸ image "${c.src}" copied into the render's public dir (found in ${c.from})`);
+  }
 
   const production: Production = {
     version: 1,
-    source: { path: input, probe: sourceProbe, audioPath, face: faceBox },
+    // `originalInput`, not `input`: for a folder run `input` is by now
+    // `<workdir>/source-concat.mp4`, and `source.path` only feeds
+    // `report.txt`'s printed "source:" line (checked — nothing resolves a
+    // file against it) — so it should say what the user actually pointed
+    // produce at (final-review fix wave, cheap minor a), same fix shape as
+    // `defaultOutPath` above.
+    source: { path: originalInput, probe: sourceProbe, audioPath, face: faceBox },
     cleanup: opts.cleanup,
     intent: opts.intent,
     // The RAW transcript, because `analysis` and `cutlist` index into it —
@@ -1568,7 +1665,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // A NORMALIZED source skips this outright: the bake already carries the
   // mezzanine's encode settings, and re-encoding it would be a second
   // generation of loss for nothing.
-  if (analysisInput === input && (opts.mezzanine || !contentRect.full)) {
+  // `mezzanineWillBuild` (computed once, above, with `contentRect`) — not a
+  // second copy of this condition — so this can't drift from what
+  // `planRenderPublicDir` already decided the accepted-image check against
+  // (Finding 3, final-review fix wave).
+  if (mezzanineWillBuild) {
     const mezz = join(work, contentRect.full ? "mezzanine.mp4" : "mezzanine-content.mp4");
     if (!existsSync(mezz)) {
       console.log(

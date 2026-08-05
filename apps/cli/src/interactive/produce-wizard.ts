@@ -4,9 +4,17 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Twenty-six flags sorted into three tiers: six always
- * asked, eight behind one "anything else?" multiselect, and twelve that stay
- * flags-only because they are debug or internal surfaces.
+ * The produce wizard. Thirty flags (plus the positional input path) sorted
+ * into three tiers: six prompts asked directly — the input path, plus five
+ * flags (--out, --cleanup, --aspect, --produce, --intent) — eight behind one
+ * "anything else?" multiselect, and the remaining seventeen stay flags-only:
+ * debug/internal surfaces, replay-only fields, or (final-review fix wave,
+ * Finding 1) --sort. A folder's clip order only means anything once the
+ * folder has been enumerated, and that enumeration happens inside
+ * `produce()` — after the wizard has already returned argv — so there is
+ * nothing for a prompt to offer a choice about beforehand. --sort stays
+ * typed-only, same tier as --clip-window below, not a tenth multiselect
+ * entry.
  *
  * --clip-window is deliberately NOT offered: --clip runs write it into
  * command.json so the editor's Render replays the same window without an LLM
@@ -48,12 +56,19 @@ export async function produceWizard(cfg: { speaker?: string } = {}): Promise<str
 
   const input = unwrap(
     await text({
-      message: "Video file",
+      // Finding 1 (final-review fix wave): `ossclip produce <folder>` shipped
+      // (folder-input-brief.md) but this prompt still rejected a directory —
+      // the wizard was the only way in that couldn't do what the CLI could.
+      // A folder is concatenated by name (codepoint order, like `ls`); --sort
+      // mtime reorders it but stays a typed flag, not a wizard question (see
+      // the file-level comment above for why).
+      message: "Video file, or a folder of clips to concatenate (by name; --sort mtime is a typed flag)",
       placeholder: "./raw/take1.mp4",
       validate: (v) => {
         if (!v) return "a path is required";
-        if (!existsSync(v)) return `no such file: ${v}`;
-        if (!statSync(v).isFile()) return `${v} is a directory, not a video file`;
+        if (!existsSync(v)) return `no such path: ${v}`;
+        const st = statSync(v);
+        if (!st.isFile() && !st.isDirectory()) return `${v} is neither a video file nor a folder`;
         return undefined;
       },
     }),

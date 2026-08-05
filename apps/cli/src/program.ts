@@ -83,7 +83,10 @@ export function buildProgram(): Command {
     // OPTIONAL so a bare `ossclip produce` at a TTY opens the wizard instead of
     // printing a usage error at somebody who does not yet know the flags. A
     // non-interactive run still gets commander's "missing required argument".
-    .argument("[input]", "input video file")
+    .argument(
+      "[input]",
+      "input video file, or a folder of clips to concatenate (by name; see --sort)",
+    )
     .option("-o, --out <path>", "output video path (default: <input>.ossclip.mp4)")
     .option("--cleanup <level>", "exact | light | standard | aggressive", "standard")
     .option("--transcript <path>", "inject a transcript JSON instead of running whisper")
@@ -227,6 +230,10 @@ export function buildProgram(): Command {
       // Same reasoning as --source-fit: a typo'd --sort dat must not silently
       // become the default rather than an error naming the mistake.
       const sort = z.enum(["name", "mtime"]).parse(opts.sort);
+      // Final-review fix wave, cheap minor c: distinguishes "the user typed
+      // --sort" from "commander's own default filled it in" so produce() can
+      // say something when --sort is given for a file, where it does nothing.
+      const sortExplicit = command.getOptionValueSource("sort") === "cli";
       const result = await produce(input, {
         out: opts.out,
         cleanup,
@@ -235,6 +242,7 @@ export function buildProgram(): Command {
         mezzanine: opts.mezzanine,
         workdir: opts.workdir,
         sort,
+        sortExplicit,
         aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
         noiseDb: opts.noiseDb,
         produce: opts.produce,

@@ -110,7 +110,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 
 | command | what it does |
 | --- | --- |
-| `produce <input>` | the full pipeline: transcribe → analyze → cut → captions → scenes → render (+ cover) |
+| `produce <input>` | the full pipeline: transcribe → analyze → cut → captions → scenes → render (+ cover). `<input>` can be a single video file, or a folder of clips — concatenated in order (by name, or `--sort mtime`) before anything else runs |
 | `edit [workdir]` | direct-manipulation editor; bare `edit` opens a project picker |
 | `setup` | install ffmpeg, whisper.cpp and the model into `~/.ossclip` — the one-command onboarding (`--model <name>`, `--skip-llm`, `--force`, `--yes`) |
 | `doctor` | check every prerequisite and print the exact fix for anything missing |
@@ -137,9 +137,12 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--source-is-edited` | the source is already an edited reel with burned-in text — keep ossclip's graphics off it (also what enables the source-text scan) |
 | `--blooper-marker <word>` | say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Off unless given |
 | `--collapse-retakes` | deterministically collapse consecutive near-identical sentences, keeping only the last complete attempt — no marker needed. Off by default |
+| `--sort <order>` | when `<input>` is a folder: `name` (default, plain codepoint sort, matches `ls`) or `mtime` (oldest first) — the order clips get concatenated in. Ignored for a file input |
 | `--no-cover` / `--cover <path>` | skip, or redirect, the cover image written beside the video |
 | `--no-render` | stop after writing the props |
 | `--workdir <dir>` | where the cache lives |
+
+`--collapse-retakes` on a folder run only catches a retake that's back-to-back near-identical *lines* — within one clip, or across a clip boundary when each clip is essentially a single line — because the chain it looks for requires every consecutive sentence to match, not just "clip N as a whole resembles clip N − 1"; a whole clip re-recorded as a multi-sentence retake of the previous one will not collapse (R27 §128's chaining rule).
 
 ### Which model runs
 
