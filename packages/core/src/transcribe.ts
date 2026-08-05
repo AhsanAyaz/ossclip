@@ -51,17 +51,36 @@ export interface WhisperOptions {
   modelPath: string;
   /** Output base path; whisper writes `${outBase}.json`. */
   outBase: string;
+  /**
+   * Language code passed as `-l` (e.g. "ur", "de", "auto"). whisper.cpp
+   * defaults to English when the flag is absent, which decodes garbage out of
+   * a non-English fine-tune (Urdu field test 2026-08-05: ggml-medium-urdu
+   * needed `-l ur` to emit Urdu script at all). Left unset, the spawned args
+   * stay byte-identical to what English-suffixed models always got.
+   */
+  language?: string;
 }
 
-export async function runWhisper(opts: WhisperOptions, wavPath: string): Promise<Transcript> {
-  await run(opts.whisperPath, [
+/**
+ * Pure arg construction, split from the spawn the same way openCommand() is
+ * split from openInBrowser(): the `-l` conditional is exactly the kind of
+ * branch that must be testable without a whisper binary on the box.
+ */
+export function whisperArgs(opts: WhisperOptions, wavPath: string): string[] {
+  const args = [
     "-m", opts.modelPath,
     "-f", wavPath,
     "-oj",
     "-of", opts.outBase,
     "-ml", "1",
     "--no-prints",
-  ]);
+  ];
+  if (opts.language !== undefined) args.push("-l", opts.language);
+  return args;
+}
+
+export async function runWhisper(opts: WhisperOptions, wavPath: string): Promise<Transcript> {
+  await run(opts.whisperPath, whisperArgs(opts, wavPath));
   const json = JSON.parse(await readFile(`${opts.outBase}.json`, "utf8")) as WhisperJson;
   return parseWhisperJson(json);
 }

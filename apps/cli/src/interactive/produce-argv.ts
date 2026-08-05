@@ -11,6 +11,7 @@ export interface ProduceExtras {
   sourceFit?: "cover" | "contain";
   speaker?: string;
   whisperModel?: string;
+  whisperLanguage?: string;
   blooperMarker?: string;
   collapseRetakes?: boolean;
   sourceIsEdited?: boolean;
@@ -50,6 +51,9 @@ export function produceArgv(a: ProduceAnswers): string[] {
   if (e.sourceFit === "contain") argv.push("--source-fit", "contain");
   if (e.speaker) argv.push("--speaker", e.speaker);
   if (e.whisperModel) argv.push("--whisper-model", e.whisperModel);
+  // Empty answer means "whisper's default (en)" — the elision rule above:
+  // no flag whose value equals the default.
+  if (e.whisperLanguage) argv.push("--whisper-language", e.whisperLanguage);
   if (e.blooperMarker) argv.push("--blooper-marker", e.blooperMarker);
   if (e.collapseRetakes === true) argv.push("--collapse-retakes");
   if (e.sourceIsEdited === true) argv.push("--source-is-edited");

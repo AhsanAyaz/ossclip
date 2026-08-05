@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWhisperJson, type WhisperJson } from "../src/transcribe";
+import { parseWhisperJson, whisperArgs, type WhisperJson } from "../src/transcribe";
 
 /** Trimmed sample of real whisper.cpp `-oj -ml 1` output structure. */
 const sample: WhisperJson = {
@@ -17,6 +17,37 @@ const sample: WhisperJson = {
     { offsets: { from: 2700, to: 3000 }, text: " done" },
   ],
 };
+
+describe("whisperArgs", () => {
+  const opts = { whisperPath: "/bin/whisper-cli", modelPath: "/m/ggml-small.en.bin", outBase: "/w/whisper" };
+
+  // Byte-identical to what every English-suffixed model always got: the
+  // language flag must never perturb the default invocation.
+  it("passes no -l when language is unset", () => {
+    expect(whisperArgs(opts, "/w/audio.wav")).toEqual([
+      "-m", "/m/ggml-small.en.bin",
+      "-f", "/w/audio.wav",
+      "-oj",
+      "-of", "/w/whisper",
+      "-ml", "1",
+      "--no-prints",
+    ]);
+  });
+
+  // whisper.cpp defaults to English without -l, which decodes garbage out of
+  // a non-English fine-tune (Urdu field test 2026-08-05).
+  it("appends -l <code> when a language is set", () => {
+    expect(whisperArgs({ ...opts, language: "ur" }, "/w/audio.wav")).toEqual([
+      "-m", "/m/ggml-small.en.bin",
+      "-f", "/w/audio.wav",
+      "-oj",
+      "-of", "/w/whisper",
+      "-ml", "1",
+      "--no-prints",
+      "-l", "ur",
+    ]);
+  });
+});
 
 describe("parseWhisperJson", () => {
   it("merges sub-word continuations into whole words", () => {

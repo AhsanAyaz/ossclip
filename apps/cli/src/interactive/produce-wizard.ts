@@ -176,6 +176,19 @@ export async function produceWizard(cfg: { speaker?: string; input?: string } = 
         ],
       }),
     ) as string;
+    // Follow-up under the same extra, like --clip's seconds prompt: a language
+    // only means anything once a model is being picked, and a multilingual
+    // fine-tune silently decodes English without it (Urdu field test
+    // 2026-08-05). Empty keeps whisper's en default, and produceArgv's
+    // default-elision rule then emits no flag at all.
+    const lang = unwrap(
+      await text({
+        message: "Transcription language code (empty = default en)",
+        placeholder: "ur",
+        defaultValue: "",
+      }),
+    ) as string;
+    if (lang) extras.whisperLanguage = lang;
   }
   if (chosen.includes("blooperMarker")) {
     extras.blooperMarker = unwrap(

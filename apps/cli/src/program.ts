@@ -216,6 +216,10 @@ export function buildProgram(): Command {
     )
     .option("--whisper-model <name>", "transcription model for this run, e.g. base.en | small.en | medium.en")
     .option(
+      "--whisper-language <code>",
+      "transcription language code for a multilingual model, e.g. ur | de | auto (whisper defaults to en)",
+    )
+    .option(
       "--force-component <id>",
       "debug: render every graphic with this component (e.g. FlowDiagram) to exercise it on real copy",
     )
@@ -300,6 +304,14 @@ export function buildProgram(): Command {
       // --sort" from "commander's own default filled it in" so produce() can
       // say something when --sort is given for a file, where it does nothing.
       const sortExplicit = command.getOptionValueSource("sort") === "cli";
+      // Not an enum — whisper accepts dozens of codes plus "auto" and the list
+      // grows with fine-tunes — but an empty string would reach whisper as a
+      // bare `-l` and must be an error naming the flag, not a silent English
+      // run over an Urdu model (Urdu field test 2026-08-05).
+      const whisperLanguage =
+        opts.whisperLanguage !== undefined
+          ? z.string().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
+          : undefined;
       const result = await produce(input, {
         out: opts.out,
         cleanup,
@@ -320,6 +332,7 @@ export function buildProgram(): Command {
         scenes: opts.scenes,
         repair: opts.repair,
         whisperModel: opts.whisperModel,
+        whisperLanguage,
         forceComponent,
         // commander gives `--no-cover` as cover:false and `--cover <path>` as a
         // string on the same key.
@@ -345,6 +358,10 @@ export function buildProgram(): Command {
     .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
     .option("--workdir <dir>", "cache/work directory")
     .option("--whisper-model <name>", "transcription model for this run, e.g. base.en | small.en | medium.en")
+    .option(
+      "--whisper-language <code>",
+      "transcription language code for a multilingual model, e.g. ur | de | auto (whisper defaults to en)",
+    )
     .action(async (input: string, opts) => {
       const cleanup = CleanupLevelSchema.parse(opts.cleanup);
       await produce(input, {
@@ -355,6 +372,11 @@ export function buildProgram(): Command {
         workdir: opts.workdir,
         noiseDb: opts.noiseDb,
         whisperModel: opts.whisperModel,
+        // Same guard as produce's: empty must error, not become a bare `-l`.
+        whisperLanguage:
+          opts.whisperLanguage !== undefined
+            ? z.string().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
+            : undefined,
       });
     });
 

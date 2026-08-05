@@ -54,6 +54,7 @@ describe("produceArgv", () => {
             sourceFit: "contain",
             speaker: "Ahsan, host of Code with Ahsan",
             whisperModel: "medium.en",
+            whisperLanguage: "ur",
             blooperMarker: "blooper",
             collapseRetakes: true,
             sourceIsEdited: true,
@@ -67,11 +68,21 @@ describe("produceArgv", () => {
       "--source-fit", "contain",
       "--speaker", "Ahsan, host of Code with Ahsan",
       "--whisper-model", "medium.en",
+      "--whisper-language", "ur",
       "--blooper-marker", "blooper",
       "--collapse-retakes",
       "--source-is-edited",
       "--llm", "claude-cli",
     ]);
+  });
+
+  // The wizard's language follow-up returns "" for "keep whisper's en
+  // default" — that answer must not grow the taught command line (Urdu field
+  // test 2026-08-05: only a typed code means anything).
+  it("omits an empty --whisper-language rather than emitting a bare flag", () => {
+    expect(
+      produceArgv(answers({ extras: { whisperModel: "medium.en", whisperLanguage: "" } })),
+    ).toEqual(["produce", "./take.mp4", "--whisper-model", "medium.en"]);
   });
 
   it("omits source-fit when it is the default cover", () => {

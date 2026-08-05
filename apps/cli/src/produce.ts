@@ -143,6 +143,12 @@ export interface ProduceOptions {
   repair?: boolean;
   /** Override the whisper model for this run (A/B base.en vs small.en). */
   whisperModel?: string;
+  /**
+   * `-l` language code for whisper (e.g. "ur", "auto"). Unset keeps whisper's
+   * English default — required for a non-English fine-tune, which otherwise
+   * decodes garbage (Urdu field test 2026-08-05).
+   */
+  whisperLanguage?: string;
   /** Debug: force every graphic moment to this component. */
   forceComponent?: SceneComponentId;
   /** Write a cover image beside the video (default on). */
@@ -585,7 +591,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     }
     console.log(`▸ transcribing (${basename(modelPath)})…`);
     transcript = await runWhisper(
-      { whisperPath: cfg.whisperPath, modelPath, outBase: join(work, "whisper") },
+      {
+        whisperPath: cfg.whisperPath,
+        modelPath,
+        outBase: join(work, "whisper"),
+        language: opts.whisperLanguage,
+      },
       audioPath,
     );
     console.log(`▸ transcribed ${transcript.words.length} words`);
