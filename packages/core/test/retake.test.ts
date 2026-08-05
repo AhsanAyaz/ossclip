@@ -286,6 +286,13 @@ describe("findRetakeGroups: wildcard-bridge and chain-drift (non-transitive matc
     // rule made the fragment the anchor, the prefix rule scored the distinct
     // closing sentence 1.0 against it, and the first REAL sentence was cut at
     // a printed 50% match.
+    //
+    // C1 follow-up: the fragment itself is now SPARED, not cut. It is a
+    // non-final fragment whose kept match (the first sentence) sits EARLIER
+    // — the abandonment rule can't distinguish it from parallel-structure
+    // rhetoric (probe C1's exact geometry), and in truth it's a false start
+    // of the sentence FOLLOWING it, which the S1 match never proved.
+    // Report-only is the honest disposition on both readings.
     const { transcript, analysis } = speak(
       "Let me show you this. Let me show Let me show you how deploys work here.",
       { 7: 0.5 },
@@ -293,15 +300,15 @@ describe("findRetakeGroups: wildcard-bridge and chain-drift (non-transitive matc
     const groups = findRetakeGroups(transcript, analysis);
     expect(groups).toHaveLength(1);
     const g = groups[0]!;
-    // The fragment is a true retake of the first sentence: that pair collapses.
     expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("Let me show you this.");
-    expect(g.cuts).toHaveLength(1);
-    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("Let me show");
-    // The DISTINCT sentence never enters the group at all — not cut, not
-    // undecided, untouched.
+    // Zero cuts: the fragment goes to report-only undecided instead.
+    expect(g.cuts).toEqual([]);
+    expect(g.undecided).toHaveLength(1);
+    expect(wordsIn(transcript, g.undecided[0]!.startWord, g.undecided[0]!.endWord)).toBe("Let me show");
+    expect(g.undecided[0]!.reason).toBe("clause-boundary");
+    // The DISTINCT sentence never enters the group at all — untouched.
     const touched = [...g.cuts, ...g.undecided];
     for (const t of touched) expect(t.startWord).toBeLessThan(8);
-    expect(g.undecided).toEqual([]);
   });
 
   it("drift shape: no chain member is ever cut below RETAKE_SIM_THRESHOLD against the KEPT instance", () => {
@@ -327,6 +334,84 @@ describe("findRetakeGroups: wildcard-bridge and chain-drift (non-transitive matc
     // The report spares them out loud rather than going silent.
     const report = formatRetakeGroup(transcript, g);
     expect(report).toContain("not cut");
+  });
+});
+
+/**
+ * Audit fix (Critical, probe C1) — parallel-structure rhetoric with a
+ * mid-sentence pause. The finding-1 defenses cannot catch this: the
+ * fragment's match to the kept sentence is a GENUINE 1.0, because parallel
+ * rhetoric repeats the opening on purpose. Field-reachable once the stamp-
+ * based sub-split went live on real transcripts. The abandonment rule in
+ * `buildGroup` is the fix: a fragment is only cuttable when the kept
+ * survivor starts AFTER it (restart superseded later) or it is the FINAL
+ * fragment of its coarse sentence; a non-final fragment whose kept match
+ * sits earlier is a clause boundary and goes to report-only undecided.
+ */
+describe("findRetakeGroups: abandonment rule (probe C1 — parallel rhetoric across a pause)", () => {
+  it("C1: 'If it fails, we retry. If it fails, [pause] we give up.' — zero cuts, second sentence survives whole", () => {
+    // Word indices: 0 If 1 it 2 fails, 3 we 4 retry. | 5 If 6 it 7 fails,
+    // [0.4s dramatic pause] 8 we 9 give 10 up.
+    const shape = speak("If it fails, we retry. If it fails, we give up.", { 7: 0.4 });
+    const groups = findRetakeGroups(shape.transcript, shape.analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.cuts).toEqual([]);
+    // The fragment is reported, with its (legitimate) 100% match and the
+    // grammatical reason it survived.
+    expect(g.undecided).toHaveLength(1);
+    expect(g.undecided[0]!.reason).toBe("clause-boundary");
+    expect(g.undecided[0]!.similarity).toBe(1);
+    const report = formatRetakeGroup(shape.transcript, g);
+    expect(report).toContain("clause boundary");
+    // End-to-end: through buildCutlist + TimeMap, every word of the second
+    // sentence — fragment AND remainder — survives to the output.
+    const cut = buildCutlist({
+      transcript: shape.transcript,
+      analysis: shape.analysis,
+      duration: shape.duration,
+      level: "standard",
+      retakes: groups.flatMap((gr) => gr.cuts),
+    });
+    const map = new TimeMap(cut);
+    for (let i = 5; i <= 10; i++) {
+      expect(map.mapWord(shape.transcript.words[i]!)).not.toBeNull();
+    }
+  });
+
+  it("C2: a lone sentence with an internal dramatic pause forms no group at all", () => {
+    const { transcript, analysis } = speak("If it fails, we give up.", { 2: 0.4 });
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  it("C3: pause-sentence first, parallel sentence second — no group either", () => {
+    // Reversed C1 order: the fragment founds its own anchor, its remainder
+    // does not match it, and the following parallel sentence does not match
+    // the remainder — nothing chains.
+    const { transcript, analysis } = speak("If it fails, we give up. If it fails, we retry.", {
+      2: 0.4,
+    });
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  it("does NOT block the legitimate restart-superseded-later case: two abandoned partials before the kept take still cut", () => {
+    // Both fragments are non-final, but the kept survivor starts AFTER them
+    // — the (a) arm of the abandonment rule. Word indices: 0-4 first
+    // partial, 5-8 second partial, 9-14 the complete take.
+    const { transcript, analysis } = speak(
+      "That could be the exit That could be the That could be the exit condition.",
+      { 4: 0.5, 8: 0.5 },
+    );
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe(
+      "That could be the exit condition.",
+    );
+    expect(g.cuts).toHaveLength(2);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That could be the exit");
+    expect(wordsIn(transcript, g.cuts[1]!.startWord, g.cuts[1]!.endWord)).toBe("That could be the");
+    expect(g.undecided).toEqual([]);
   });
 });
 

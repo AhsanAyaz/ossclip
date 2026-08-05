@@ -81,12 +81,21 @@ export interface RetakeHallucination extends RetakeInstance {
 export interface RetakeUndecided extends RetakeInstance {
   silenceFrac: number;
   /**
-   * Present when the instance sat in a chain WITH a kept survivor but scored
-   * below RETAKE_SIM_THRESHOLD against it (§128's cut-validation rule): the
-   * report needs the number to say why this member was spared, and
-   * `silenceFrac` isn't the reason in that case — the similarity is.
+   * Present when the instance sat in a chain WITH a kept survivor but was
+   * spared (§128): the report needs the number to say what the match to the
+   * kept instance actually was, whichever rule spared it.
    */
   similarity?: number;
+  /**
+   * Why a chain member with a kept survivor was spared (§128):
+   * `below-threshold` — scored under RETAKE_SIM_THRESHOLD against the kept
+   * instance (the cut-validation rule); `clause-boundary` — matched, but is
+   * a NON-final fragment whose same-sentence remainder survives, so the
+   * "match" is parallel rhetoric around a mid-sentence pause, not an
+   * abandoned take (the abandonment rule). Absent in the report-only
+   * (`kept: null`) posture, where silenceFrac is the story.
+   */
+  reason?: "below-threshold" | "clause-boundary";
 }
 
 /**
@@ -173,6 +182,14 @@ interface Instance {
   tokens: string[];
   /** Ends at a real sentence-end, vs. a speculative silence sub-split. */
   complete: boolean;
+  /**
+   * The LAST fragment of its coarse sentence — nothing of that sentence
+   * follows it. A non-final fragment always has a same-sentence remainder
+   * after it, which is what the abandonment rule in `buildGroup` needs to
+   * know (§128): cutting a non-final fragment whose remainder lives on
+   * leaves that remainder grammatically orphaned mid-sentence.
+   */
+  finalFragment: boolean;
   silenceFrac: number;
   hallucinated: boolean;
 }
@@ -199,9 +216,12 @@ function silenceFraction(silences: readonly Span[], start: number, end: number):
  * case: an abandoned attempt has no terminal punctuation of its own, so ASR
  * glues it onto whatever comes next until the NEXT real sentence-end. Only the
  * silence tells you where the restart actually happened. Over-splitting alone
- * can never create a cut: a fragment only ever matters once it MATCHES
- * something (`findRetakeGroups` below); a spurious split just sits there,
- * silently below RETAKE_MIN_TOKENS or simply unmatched.
+ * can never create a cut — but NOT because a spurious fragment can't match:
+ * probe C1 (§128) proved parallel rhetoric makes a clause-boundary fragment
+ * match an earlier sentence at a legitimate 1.0. The real backstop is
+ * `buildGroup`'s abandonment rule: a non-final fragment whose kept match
+ * sits earlier is never cut, so a spurious split ends at a report line,
+ * not a shear through live audio.
  */
 function buildInstances(
   transcript: Transcript,
@@ -223,7 +243,7 @@ function buildInstances(
   }
   coarse.push({ start, end: words.length - 1 });
 
-  const toInstance = (s: number, e: number, complete: boolean): Instance => {
+  const toInstance = (s: number, e: number, complete: boolean, finalFragment: boolean): Instance => {
     const tokens: string[] = [];
     for (let i = s; i <= e; i++) {
       if (fillerIndices.has(i)) continue;
@@ -242,6 +262,7 @@ function buildInstances(
       endSec,
       tokens,
       complete,
+      finalFragment,
       silenceFrac,
       hallucinated: silenceFrac >= HALLUCINATION_SILENCE_FRAC,
     };
@@ -305,14 +326,14 @@ function buildInstances(
     const splitAfter = [...splitAfterSet].sort((a, b) => a - b);
     let fragStart = sent.start;
     for (const at of splitAfter) {
-      instances.push(toInstance(fragStart, at, false));
+      instances.push(toInstance(fragStart, at, false, false));
       fragStart = at + 1;
     }
     // The final fragment is only "complete" if the coarse block itself ended
     // at REAL sentence punctuation — a transcript (or clip window) that just
     // runs out of words mid-sentence is a trailing abandoned partial, not a
     // finished take, whatever fragment boundary it happens to land on.
-    instances.push(toInstance(fragStart, sent.end, isSentenceEnd(transcript, sent.end)));
+    instances.push(toInstance(fragStart, sent.end, isSentenceEnd(transcript, sent.end), true));
   }
   return instances;
 }
@@ -390,6 +411,21 @@ function toPublic(i: Instance): RetakeInstance {
  * executed proof: "Let me show you this." / "Let me show—" / "Let me show
  * you how deploys work here." cut the first REAL, DISTINCT sentence at a
  * printed 50% match before this rule existed.
+ *
+ * Abandonment rule (audit fix, §128 — probe C1, parallel-structure
+ * rhetoric): a similarity gate cannot catch a fragment whose match is
+ * GENUINELY 1.0. "If it fails, we retry. If it fails, [0.4s dramatic
+ * pause] we give up." — the sub-split shears the second sentence at the
+ * comma pause, and "If it fails," legitimately prefix-scores 1.0 against
+ * the kept first sentence, because parallel rhetoric repeats the opening
+ * on purpose. Cutting it hard-cuts live mid-sentence audio and leaves the
+ * grammatically orphaned remainder "we give up." behind. So a fragment is
+ * only ABANDONED — hence cuttable — when (a) the kept survivor starts
+ * AFTER it (a restart superseded by a later attempt), or (b) it is the
+ * FINAL fragment of its coarse sentence, i.e. nothing of its own sentence
+ * survives past it. A NON-final fragment whose kept match sits EARLIER is
+ * a clause boundary, not an abandoned take: its own sentence continues
+ * without it, so it goes to `undecided` (report-only), never `cuts`.
  */
 function buildGroup(chain: readonly Instance[], hallucinated: readonly Instance[]): RetakeGroup {
   const completes = chain.filter((i) => i.complete);
@@ -414,9 +450,27 @@ function buildGroup(chain: readonly Instance[], hallucinated: readonly Instance[
   for (const i of chain) {
     if (i === kept) continue;
     const sim = matchScore(i, kept);
-    if (sim !== null) cuts.push({ ...toPublic(i), similarity: sim });
+    if (sim === null) {
+      undecided.push({
+        ...toPublic(i),
+        silenceFrac: i.silenceFrac,
+        similarity: rawSimilarity(i, kept),
+        reason: "below-threshold",
+      });
+      continue;
+    }
+    // The abandonment rule (see block comment): a complete instance is
+    // always its sentence's final fragment, so this only ever spares the
+    // non-final sub-split fragments C1 is about.
+    const abandoned = i.finalFragment || kept.startWord > i.endWord;
+    if (abandoned) cuts.push({ ...toPublic(i), similarity: sim });
     else
-      undecided.push({ ...toPublic(i), silenceFrac: i.silenceFrac, similarity: rawSimilarity(i, kept) });
+      undecided.push({
+        ...toPublic(i),
+        silenceFrac: i.silenceFrac,
+        similarity: sim,
+        reason: "clause-boundary",
+      });
   }
   return { kept: toPublic(kept), cuts, hallucinated: hallu, undecided };
 }
@@ -533,8 +587,14 @@ export function formatRetakeGroup(transcript: Transcript, group: RetakeGroup): s
       lines.push(`  cut (${Math.round(c.similarity * 100)}% match): "${said(c)}"`);
     }
     for (const u of group.undecided) {
+      const pct = Math.round((u.similarity ?? 0) * 100);
+      // The clause-boundary line must NOT read like a near-miss cut (§128,
+      // probe C1): the match there is often a legitimate 100%, and the
+      // reason it survived is grammatical, not numeric.
       lines.push(
-        `  not cut (${Math.round((u.similarity ?? 0) * 100)}% match to the kept take — below the cut floor): "${said(u)}"`,
+        u.reason === "clause-boundary"
+          ? `  not cut (${pct}% match, but its own sentence continues past it — a clause boundary, not an abandoned take): "${said(u)}"`
+          : `  not cut (${pct}% match to the kept take — below the cut floor): "${said(u)}"`,
       );
     }
   }
