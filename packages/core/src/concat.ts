@@ -161,9 +161,12 @@ export function evaluateAudioProbes(
 
 export function audioGuardMessage(failure: AudioGuardFailure): string {
   const { offenders, uncheckedCount } = failure;
+  // "Result", not "clip": probes settle in parallel, so the unchecked set can
+  // include clips EARLIER in concat order than the offender — "later clips"
+  // would overclaim an ordering the pool doesn't have (review, Minor 1).
   const stopped =
     uncheckedCount > 0
-      ? ` Stopped at the first missing-audio clip; ${uncheckedCount} later ` +
+      ? ` Stopped at the first missing-audio result; ${uncheckedCount} ` +
         `clip${uncheckedCount === 1 ? " was" : "s were"} not checked.`
       : "";
   // The ~/Downloads sentence is the 0.1.9 first-contact lesson: the guard
@@ -220,7 +223,15 @@ export async function probeClipsWithAudioGuard<T extends { hasAudio: boolean }>(
       nextIndex++;
       const name = names[i];
       if (name === undefined) return; // unreachable: i < names.length
-      probeOne(name, i).then(
+      // Deferred through a resolved promise so a probeOne that throws
+      // SYNCHRONOUSLY rejects the pool instead of deadlocking it (review,
+      // Minor 2): a sync throw out of a replacement `launch()` inside the
+      // success handler below would otherwise escape both handlers, leaving
+      // the pool one settle short of ever resolving. Unreachable with the
+      // real async probe, but the generic API must not depend on that.
+      Promise.resolve()
+        .then(() => probeOne(name, i))
+        .then(
         (result) => {
           if (finished) return;
           results[i] = result;

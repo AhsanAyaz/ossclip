@@ -228,8 +228,12 @@ describe("audioGuardMessage", () => {
   it("is honest about aborting early when clips remain unchecked", () => {
     const msg = audioGuardMessage({ offenders: ["broll.mp4"], uncheckedCount: 87 });
     expect(msg).toMatch(/no audio stream in: broll\.mp4/);
-    expect(msg).toMatch(/stopped at the first missing-audio clip/i);
-    expect(msg).toMatch(/87 later clips were not checked/);
+    // "Result", not "clip", and no "later" (review, Minor 1): probes settle in
+    // parallel, so the unchecked set can include clips EARLIER in concat order
+    // than the offender — the wording must not claim an ordering.
+    expect(msg).toMatch(/stopped at the first missing-audio result/i);
+    expect(msg).toMatch(/87 clips were not checked/);
+    expect(msg).not.toMatch(/later/);
   });
 
   it("suggests the likely real mistake: a mixed folder like ~\\/Downloads", () => {
@@ -263,7 +267,7 @@ describe("probeClipsWithAudioGuard", () => {
       3,
     );
     await expect(p).rejects.toThrow(/no audio stream in: b\.mov/);
-    await expect(p).rejects.toThrow(/1 later clip was not checked/);
+    await expect(p).rejects.toThrow(/1 clip was not checked/);
   });
 
   it("stops launching new probes once the guard has fired", async () => {
@@ -306,5 +310,23 @@ describe("probeClipsWithAudioGuard", () => {
         4,
       ),
     ).rejects.toThrow(/no video stream in a\.mov/);
+  });
+
+  it("rejects instead of deadlocking when probeOne throws synchronously", async () => {
+    // Review, Minor 2: with concurrency 1, b's probe is a replacement launch
+    // fired from inside a's success handler — a SYNC throw there used to
+    // escape both promise handlers, leaving the pool one settle short of ever
+    // resolving. Unreachable with the real async probe; the generic API must
+    // not depend on that.
+    await expect(
+      probeClipsWithAudioGuard(
+        ["a.mov", "b.mov"],
+        (name) => {
+          if (name === "b.mov") throw new Error("sync throw from b.mov");
+          return Promise.resolve({ hasAudio: true });
+        },
+        1,
+      ),
+    ).rejects.toThrow(/sync throw from b\.mov/);
   });
 });

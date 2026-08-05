@@ -82,6 +82,19 @@ describe("bare `ossclip <path>`", () => {
     expect(produced()?.[0]).toBe(file);
   });
 
+  it("excess positionals are a loud error, never a wordless drop", async () => {
+    // Review, Important: the field path was typed UNQUOTED — `ossclip
+    // ./Anyhropic c Compiler`. Commander 12's default allowExcessArguments
+    // would route the first token and DISCARD the rest, so if `./Anyhropic`
+    // existed, produce would run on the wrong scope without a word.
+    const dirA = mkdtempSync(join(tmpdir(), "ossclip-bare-"));
+    const { program } = await harness();
+    stub(program, "produce");
+    await expect(
+      program.parseAsync(["node", "ossclip", dirA, "c", "Compiler"]),
+    ).rejects.toThrow(/too many arguments/);
+  });
+
   it("registered subcommand names win over path interpretation", async () => {
     // No file named `doctor` exists here — if path interpretation ran first,
     // this would be the "no such file" error above instead of the doctor run.

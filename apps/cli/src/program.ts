@@ -68,6 +68,13 @@ export function buildProgram(): Command {
       "an existing video file or clips folder — shorthand for `ossclip produce <path>`, " +
         "with the wizard asking the remaining questions",
     )
+    // Commander 12 allows excess args by default, which is the SECOND half of
+    // the field failure (review, Important): the report's path was typed
+    // UNQUOTED — `ossclip ./Anyhropic c Compiler` — and with excess args
+    // allowed, `c` and `Compiler` would vanish wordlessly the moment
+    // `./Anyhropic` happened to exist, producing the wrong scope. An unquoted
+    // multi-word path must be a loud error, never a partial run.
+    .allowExcessArguments(false)
     .action(async (path: string | undefined) => {
       const { isInteractive } = await import("./interactive/tty");
       if (path !== undefined) {
