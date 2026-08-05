@@ -24,6 +24,39 @@ async function fixtureWorkdir(): Promise<string> {
   return dir;
 }
 
+/**
+ * A command.json whose "render" is a real node SCRIPT FILE, not `node -e`:
+ * since §129 the render endpoint prepends the `produce` literal to any
+ * recorded args that lack it, and with `-e` the first arg IS the program
+ * text — the healed argv would evaluate the string "produce" instead of the
+ * fixture. A script file keeps args in the modern `["produce", …]` shape
+ * the endpoint leaves untouched (the §129 tests below pass legacy args on
+ * purpose).
+ */
+async function recordCommand(dir: string, code: string, args: string[] = ["produce"]): Promise<void> {
+  await writeFile(join(dir, "recorded.cjs"), code);
+  await writeFile(
+    join(dir, "command.json"),
+    JSON.stringify({
+      execPath: process.execPath,
+      execArgv: [],
+      script: join(dir, "recorded.cjs"),
+      args,
+      cwd: dir,
+    }),
+  );
+}
+
+/** Poll the render status until the child exits (or ~5s passes). */
+async function awaitRenderExit(url: string): Promise<{ exitCode: number | null; lines: string[] }> {
+  let status = { running: true, exitCode: null as number | null, lines: [] as string[] };
+  for (let i = 0; i < 50 && (status.running || status.exitCode === null); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    status = await (await fetch(`${url}/api/render/status`)).json();
+  }
+  return status;
+}
+
 describe("edit server", () => {
   it("serves the production document", async () => {
     const dir = await fixtureWorkdir();
@@ -128,16 +161,7 @@ describe("edit server", () => {
 
   it("replays ONLY the recorded argv, capturing output — the request body is never executed", async () => {
     const dir = await fixtureWorkdir();
-    await writeFile(
-      join(dir, "command.json"),
-      JSON.stringify({
-        execPath: process.execPath,
-        execArgv: [],
-        script: "-e",
-        args: ["console.log('hi from the recorded command')"],
-        cwd: dir,
-      }),
-    );
+    await recordCommand(dir, "console.log('hi from the recorded command')");
     const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
     close = server.close;
     // A client-supplied command in the body must be IGNORED outright — a
@@ -149,11 +173,7 @@ describe("edit server", () => {
       body: JSON.stringify({ execPath: "/bin/sh", script: "-c", args: ["echo pwned"] }),
     });
     expect(res.status).toBe(202);
-    let status = { running: true, exitCode: null as number | null, lines: [] as string[] };
-    for (let i = 0; i < 50 && (status.running || status.exitCode === null); i++) {
-      await new Promise((r) => setTimeout(r, 100));
-      status = await (await fetch(`${server.url}/api/render/status`)).json();
-    }
+    const status = await awaitRenderExit(server.url);
     expect(status.exitCode).toBe(0);
     expect(status.lines.join("\n")).toContain("hi from the recorded command");
     expect(status.lines.join("\n")).not.toContain("pwned");
@@ -165,18 +185,50 @@ describe("edit server", () => {
     expect(prod.canRender).toBe(true);
   });
 
+  it("§129: a legacy record missing the `produce` literal is healed at spawn", async () => {
+    // The field artifact's exact shape: a pre-fix wizard/bare-path run
+    // recorded process.argv — `["./folder", "--llm", …]`, no `produce` — and
+    // replaying it verbatim died with "error: unknown option '--llm'". The
+    // endpoint must prepend the literal so the existing workdir renders
+    // WITHOUT re-producing.
+    const dir = await fixtureWorkdir();
+    await recordCommand(dir, "console.log(JSON.stringify(process.argv.slice(2)))", [
+      "./folder",
+      "--llm",
+      "mock",
+    ]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    const status = await awaitRenderExit(server.url);
+    expect(status.exitCode).toBe(0);
+    const argvLine = status.lines.find((l) => l.startsWith("["));
+    expect(argvLine).toBeDefined();
+    expect(JSON.parse(argvLine!)).toEqual(["produce", "./folder", "--llm", "mock"]);
+  });
+
+  it("§129: a modern record already starting with `produce` replays untouched", async () => {
+    const dir = await fixtureWorkdir();
+    await recordCommand(dir, "console.log(JSON.stringify(process.argv.slice(2)))", [
+      "produce",
+      "./folder",
+      "--llm",
+      "mock",
+    ]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    const status = await awaitRenderExit(server.url);
+    expect(status.exitCode).toBe(0);
+    const argvLine = status.lines.find((l) => l.startsWith("["));
+    expect(argvLine).toBeDefined();
+    // Exactly one `produce` — the heal must never stack a second one.
+    expect(JSON.parse(argvLine!)).toEqual(["produce", "./folder", "--llm", "mock"]);
+  });
+
   it("cancel kills the child and the status says CANCELLED, not failed (R16 §60)", async () => {
     const dir = await fixtureWorkdir();
-    await writeFile(
-      join(dir, "command.json"),
-      JSON.stringify({
-        execPath: process.execPath,
-        execArgv: [],
-        script: "-e",
-        args: ["setTimeout(() => {}, 10000)"],
-        cwd: dir,
-      }),
-    );
+    await recordCommand(dir, "setTimeout(() => {}, 10000)");
     const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
     close = server.close;
     // Nothing to cancel yet — 409, not a silent ok.
@@ -198,16 +250,7 @@ describe("edit server", () => {
 
   it("409 while a render is already running; server close kills the child", async () => {
     const dir = await fixtureWorkdir();
-    await writeFile(
-      join(dir, "command.json"),
-      JSON.stringify({
-        execPath: process.execPath,
-        execArgv: [],
-        script: "-e",
-        args: ["setTimeout(() => {}, 10000)"],
-        cwd: dir,
-      }),
-    );
+    await recordCommand(dir, "setTimeout(() => {}, 10000)");
     const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
     close = server.close;
     expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
@@ -299,16 +342,7 @@ describe("project open and switch (R17 §83)", () => {
 
   it("refuses a switch while a render is running", async () => {
     const dir = await fixtureWorkdir();
-    await writeFile(
-      join(dir, "command.json"),
-      JSON.stringify({
-        execPath: process.execPath,
-        execArgv: [],
-        script: "-e",
-        args: ["setTimeout(() => {}, 10000)"],
-        cwd: dir,
-      }),
-    );
+    await recordCommand(dir, "setTimeout(() => {}, 10000)");
     const other = await fixtureWorkdir();
     const server = await startEditServer(dir, { port: 0, recentDir: await tmpRecentDir() });
     close = server.close;

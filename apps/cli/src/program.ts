@@ -7,6 +7,7 @@ import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { produce } from "./produce";
+import { setReplayArgv } from "./replay-argv";
 
 // Before anything reads a provider key (R16 §77) — including the auto-detect
 // order in `defaultProviderName`, which decides which model runs.
@@ -95,6 +96,11 @@ export function buildProgram(): Command {
           // IS supplied — a piped `ossclip <path>` is `ossclip produce <path>`.
           const direct = ["produce", path];
           console.log(`\n▸ running:\n    ${renderCommand(direct)}\n`);
+          // §129: THIS argv — not process.argv, which still says `ossclip
+          // <path>` with no `produce` literal — is the invocation
+          // command.json must record for the editor's Render to replay.
+          // Every parseAsync re-entry below stashes for the same reason.
+          setReplayArgv(direct);
           await program.parseAsync(["node", "ossclip", ...direct]);
           return;
         }
@@ -102,6 +108,7 @@ export function buildProgram(): Command {
         const { loadConfig } = await import("@ossclip/core");
         const argv = await produceWizard({ speaker: loadConfig().speaker, input: path });
         console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
+        setReplayArgv(argv); // §129
         await program.parseAsync(["node", "ossclip", ...argv]);
         return;
       }
@@ -119,6 +126,11 @@ export function buildProgram(): Command {
         // menu is also how you learn the flags", and three of the four entries
         // printed nothing. The menu's whole pedagogical point is this line.
         console.log(`\n▸ running:\n    ${renderCommand(direct)}\n`);
+        // §129: stashed even for non-produce choices — the invariant is that
+        // the stash always mirrors the parse being entered, and only
+        // produce's recording ever reads it (consume-on-read keeps a
+        // non-produce stash from leaking past this parse).
+        setReplayArgv(direct);
         await program.parseAsync(["node", "ossclip", ...direct]);
         return;
       }
@@ -126,6 +138,7 @@ export function buildProgram(): Command {
       const { loadConfig } = await import("@ossclip/core");
       const argv = await produceWizard({ speaker: loadConfig().speaker });
       console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
+      setReplayArgv(argv); // §129
       await program.parseAsync(["node", "ossclip", ...argv]);
     });
 
@@ -263,6 +276,7 @@ export function buildProgram(): Command {
         console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
         // Re-entering the SAME parse the flags take: the zod checks below run
         // on wizard output exactly as they do on a typed command line.
+        setReplayArgv(argv); // §129
         await program.parseAsync(["node", "ossclip", ...argv]);
         return;
       }

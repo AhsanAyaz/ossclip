@@ -98,6 +98,7 @@ import {
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { editHint } from "./interactive/edit-hint";
+import { recordedProduceArgs } from "./replay-argv";
 import { renderCover, renderProduction } from "@ossclip/renderer";
 import {
   coverTextRect,
@@ -2092,18 +2093,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // provider (R16 §75). Pin the RESOLVED choice into the recorded args —
   // never the key itself; secrets stay out of the workdir — so a replay
   // uses the same configuration or fails loudly asking for it.
-  const recordedArgs = process.argv.slice(2);
-  if (provider && !recordedArgs.includes("--llm")) {
-    recordedArgs.push("--llm", providerName);
-  }
   // §93g: pin the RESOLVED window, exactly as §75 pinned the provider. The
   // editor's Render replays this argv; if replay re-asked the model and got a
   // slightly different window, every saved override — anchored to scene ids
   // and word indices — would land on the wrong words. The word range, not
   // just `--clip 60`, is what makes replay deterministic with zero LLM calls.
-  if (clipWindow && !recordedArgs.includes("--clip-window")) {
-    recordedArgs.push("--clip-window", `${clipWindow.startWord}:${clipWindow.endWord}`);
-  }
+  //
+  // §129: NOT process.argv. A wizard or bare-path run re-enters commander
+  // with a BUILT argv while process.argv still holds the original invocation
+  // (`ossclip <path>`, no `produce` literal, none of the wizard's answers) —
+  // recording process.argv shipped a command that replays as
+  // `ossclip <path> --llm …` and dies on "unknown option '--llm'".
+  // recordedProduceArgs prefers the argv the re-entry stashed and falls back
+  // to process.argv for a directly typed `ossclip produce …`, which stays
+  // byte-identical to what was always recorded.
+  const recordedArgs = recordedProduceArgs({
+    llm: provider ? providerName : undefined,
+    clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
+  });
   await writeFile(
     join(work, "command.json"),
     JSON.stringify(

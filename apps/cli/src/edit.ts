@@ -390,11 +390,22 @@ export async function startEditServer(
           );
           if (!parsed.success) return send(500, { error: `command.json is not valid: ${parsed.error.message}` });
           const cmd = parsed.data;
+          // §129: heal legacy records at replay. Before the fix, wizard and
+          // bare-path runs recorded process.argv — the ORIGINAL invocation,
+          // missing the `produce` literal the re-entered parse actually ran —
+          // so replaying them verbatim dies at commander's front door with
+          // "error: unknown option '--llm'". produce is the ONLY command that
+          // ever writes command.json, so an args array not starting with
+          // "produce" can only be that bug: prepend the literal to
+          // reconstruct the command that ran. A modern record — and a legacy
+          // directly-typed `ossclip produce …` — already starts with it and
+          // is untouched.
+          const args = cmd.args[0] === "produce" ? cmd.args : ["produce", ...cmd.args];
           renderLines = [];
           renderExit = null;
           renderStartedAt = Date.now();
           renderCancelled = false;
-          const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...cmd.args], {
+          const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...args], {
             cwd: cmd.cwd,
             stdio: ["ignore", "pipe", "pipe"],
           });

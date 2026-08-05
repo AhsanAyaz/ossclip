@@ -15,16 +15,24 @@ const COMMAND = join(WORKDIR, "command.json");
  * failure ever leaks it (the server kills the child on close).
  */
 
+// A script FILE, not `node -e` (§129): the render endpoint prepends the
+// `produce` literal to recorded args that lack it, and with `-e` the first
+// arg IS the program text — the healed argv would evaluate the string
+// "produce" and exit instantly instead of running the slow fake.
+const FAKE_RENDER = join(WORKDIR, "renderflow-fake.cjs");
+
 test.beforeAll(async () => {
+  await writeFile(
+    FAKE_RENDER,
+    "let i=0; setInterval(() => { console.log(`  ${Math.min(90, i * 10)}%`); i++; if (i > 100) process.exit(0); }, 500);",
+  );
   await writeFile(
     COMMAND,
     JSON.stringify({
       execPath: process.execPath,
       execArgv: [],
-      script: "-e",
-      args: [
-        "let i=0; setInterval(() => { console.log(`  ${Math.min(90, i * 10)}%`); i++; if (i > 100) process.exit(0); }, 500);",
-      ],
+      script: FAKE_RENDER,
+      args: ["produce"],
       cwd: WORKDIR,
     }),
   );
@@ -32,6 +40,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await rm(COMMAND, { force: true });
+  await rm(FAKE_RENDER, { force: true });
 });
 
 test("a running render survives a refresh, and can be cancelled (R16 §60)", async ({
