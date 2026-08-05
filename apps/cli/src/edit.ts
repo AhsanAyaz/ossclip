@@ -14,13 +14,23 @@ import { OverrideDocSchema, emptyOverrideDoc } from "@ossclip/core";
  * `ossclip edit` works with no build step), else the monorepo sibling's
  * `dist/` for a clone. Null when neither exists — callers own the loud
  * error, and `ossclip doctor` reports it as a check.
+ *
+ * When BOTH exist, the newer index.html wins (§126): in a clone, a stale
+ * `editor-dist/` left behind by a local prepack silently shadowed a fresh
+ * `pnpm build` for a whole field session — the user reported a feature
+ * missing that had shipped, because the server kept serving the old page.
+ * In an npm install only `editor-dist/` exists, so the mtime tiebreak
+ * never changes behavior there.
  */
 export function resolveEditorPageDir(): string | null {
   const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-  for (const candidate of [join(pkgRoot, "editor-dist"), join(pkgRoot, "../editor/dist")]) {
-    if (existsSync(join(candidate, "index.html"))) return candidate;
-  }
-  return null;
+  const candidates = [join(pkgRoot, "editor-dist"), join(pkgRoot, "../editor/dist")]
+    .filter((dir) => existsSync(join(dir, "index.html")))
+    .sort(
+      (a, b) =>
+        statSync(join(b, "index.html")).mtimeMs - statSync(join(a, "index.html")).mtimeMs,
+    );
+  return candidates[0] ?? null;
 }
 
 /**
