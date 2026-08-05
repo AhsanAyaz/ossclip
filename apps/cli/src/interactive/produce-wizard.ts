@@ -4,8 +4,8 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Twenty-five flags sorted into three tiers: six always
- * asked, seven behind one "anything else?" multiselect, and twelve that stay
+ * The produce wizard. Twenty-six flags sorted into three tiers: six always
+ * asked, eight behind one "anything else?" multiselect, and twelve that stay
  * flags-only because they are debug or internal surfaces.
  *
  * --clip-window is deliberately NOT offered: --clip runs write it into
@@ -20,6 +20,11 @@ const EXTRAS = [
   { value: "speaker", label: "Say who is on camera", hint: "--speaker" },
   { value: "whisperModel", label: "Pick a transcription model", hint: "--whisper-model" },
   { value: "blooperMarker", label: "Cut flubbed takes on a spoken word", hint: "--blooper-marker" },
+  {
+    value: "collapseRetakes",
+    label: "Collapse repeated takes automatically",
+    hint: "--collapse-retakes",
+  },
   { value: "sourceIsEdited", label: "Source already has burned-in text", hint: "--source-is-edited" },
   { value: "llm", label: "Choose the LLM provider", hint: "--llm" },
 ] as const;
@@ -124,6 +129,7 @@ export async function produceWizard(cfg: { speaker?: string } = {}): Promise<str
     );
   }
   if (chosen.includes("sourceFit")) extras.sourceFit = "contain";
+  if (chosen.includes("collapseRetakes")) extras.collapseRetakes = true;
   if (chosen.includes("sourceIsEdited")) extras.sourceIsEdited = true;
   if (chosen.includes("speaker")) {
     extras.speaker = unwrap(

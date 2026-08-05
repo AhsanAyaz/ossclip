@@ -53,6 +53,7 @@ describe("wizard argv survives the real commander parse", () => {
     expect(opts.cleanup).toBe("standard");
     expect(opts.produce).toBe(false);
     expect(opts.sourceFit).toBe("cover");
+    expect(opts.collapseRetakes).toBe(false);
   });
 
   it("every tier-2 extra lands on the option commander names", async () => {
@@ -70,6 +71,7 @@ describe("wizard argv survives the real commander parse", () => {
             speaker: "Ahsan",
             whisperModel: "medium.en",
             blooperMarker: "blooper",
+            collapseRetakes: true,
             sourceIsEdited: true,
             llm: "claude-cli",
           },
@@ -88,6 +90,7 @@ describe("wizard argv survives the real commander parse", () => {
       speaker: "Ahsan",
       whisperModel: "medium.en",
       blooperMarker: "blooper",
+      collapseRetakes: true,
       sourceIsEdited: true,
       llm: "claude-cli",
     });

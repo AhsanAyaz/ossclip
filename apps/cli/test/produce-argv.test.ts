@@ -55,6 +55,7 @@ describe("produceArgv", () => {
             speaker: "Ahsan, host of Code with Ahsan",
             whisperModel: "medium.en",
             blooperMarker: "blooper",
+            collapseRetakes: true,
             sourceIsEdited: true,
             llm: "claude-cli",
           },
@@ -67,6 +68,7 @@ describe("produceArgv", () => {
       "--speaker", "Ahsan, host of Code with Ahsan",
       "--whisper-model", "medium.en",
       "--blooper-marker", "blooper",
+      "--collapse-retakes",
       "--source-is-edited",
       "--llm", "claude-cli",
     ]);
@@ -80,6 +82,12 @@ describe("produceArgv", () => {
 
   it("omits a false --source-is-edited rather than emitting the flag", () => {
     expect(produceArgv(answers({ extras: { sourceIsEdited: false } }))).toEqual([
+      "produce", "./take.mp4",
+    ]);
+  });
+
+  it("omits a false --collapse-retakes rather than emitting the flag", () => {
+    expect(produceArgv(answers({ extras: { collapseRetakes: false } }))).toEqual([
       "produce", "./take.mp4",
     ]);
   });

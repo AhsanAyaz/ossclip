@@ -167,6 +167,12 @@ export function buildProgram(): Command {
       "cut the flubbed take whenever you say this word out loud (e.g. blooper): " +
         "removal runs back to the start of the sentence it spoiled. Off unless given",
     )
+    .option(
+      "--collapse-retakes",
+      "deterministically collapse consecutive near-identical sentences, keeping only " +
+        "the last complete attempt — the flub the speaker did NOT mark. Off by default",
+      false,
+    )
     .option("--no-cover", "skip the cover image written beside the video")
     .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
     .option("--open-editor", "open the editor when the run finishes")
@@ -245,6 +251,7 @@ export function buildProgram(): Command {
         // string on the same key.
         sourceIsEdited: opts.sourceIsEdited === true,
         blooperMarker: opts.blooperMarker,
+        collapseRetakes: opts.collapseRetakes,
         sourceFit,
         cover: opts.cover !== false,
         coverPath: typeof opts.cover === "string" ? opts.cover : undefined,

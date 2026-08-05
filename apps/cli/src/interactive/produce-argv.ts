@@ -12,6 +12,7 @@ export interface ProduceExtras {
   speaker?: string;
   whisperModel?: string;
   blooperMarker?: string;
+  collapseRetakes?: boolean;
   sourceIsEdited?: boolean;
   llm?: "claude" | "claude-cli" | "gemini" | "mock";
 }
@@ -50,6 +51,7 @@ export function produceArgv(a: ProduceAnswers): string[] {
   if (e.speaker) argv.push("--speaker", e.speaker);
   if (e.whisperModel) argv.push("--whisper-model", e.whisperModel);
   if (e.blooperMarker) argv.push("--blooper-marker", e.blooperMarker);
+  if (e.collapseRetakes === true) argv.push("--collapse-retakes");
   if (e.sourceIsEdited === true) argv.push("--source-is-edited");
   if (e.llm) argv.push("--llm", e.llm);
 
