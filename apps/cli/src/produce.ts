@@ -293,6 +293,18 @@ export function planRenderPublicDir(p: {
 /** Fixed subfolder every copied side-image lands in — see `planScreenshotSrcCopy`. */
 export const SIDE_IMAGE_SUBDIR = "side-images";
 
+/**
+ * An http(s) URL `src` is ScreenshotFrame's own documented territory — the
+ * component resolves `/^https?:\/\//` itself instead of calling
+ * `staticFile()` (ScreenshotFrame.tsx) — so produce must pass it through
+ * untouched: no filesystem lookup, no copy, no rewrite (audit fix: the
+ * safe-src check used to reject a URL as "names a path, not a bare filename",
+ * a misleading message about a shape the renderer explicitly supports).
+ */
+export function isRemoteScreenshotSrc(src: string): boolean {
+  return /^https?:\/\//.test(src);
+}
+
 /** A bare filename: no separator of either flavor, and not a `.`/`..` segment. */
 function isBareSafeName(name: string): boolean {
   return name.length > 0 && !/[\\/]/.test(name) && name !== "." && name !== "..";
@@ -1540,6 +1552,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   for (const holder of [...scenes, ...graphicCues]) {
     const src = holder.props?.src;
     if (typeof src !== "string" || src.length === 0) continue;
+    // A remote URL is the renderer's job, not a file to look up or copy —
+    // see `isRemoteScreenshotSrc` for why this must come before the safe-src
+    // check (which would otherwise reject it with a misleading message).
+    if (isRemoteScreenshotSrc(src)) continue;
     if (!isSafeScreenshotSrc(src)) {
       delete (holder.props as Record<string, unknown>).src;
       srcRejections.push({ sceneId: holder.id, src, reason: "unsafe" });
@@ -1592,6 +1608,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   }
   for (const c of [...new Map(srcCopies.map((c) => [c.src, c])).values()]) {
     console.log(`  ▸ image "${c.src}" copied into ${c.destRel} (found in ${c.from})`);
+  }
+  // Audit fix: on a --no-mezzanine file run the render's public dir is the
+  // source video's OWN folder, so the copies above just wrote a
+  // `side-images/` subfolder into a directory the user owns — say so rather
+  // than leaving them to discover an unexplained folder beside their input.
+  if (srcCopies.length > 0 && renderPublicDirPath !== work) {
+    console.log(
+      `  ▸ note: rendering without a mezzanine serves images from the source's folder — ` +
+        `created ${SIDE_IMAGE_SUBDIR}/ in ${renderPublicDirPath}`,
+    );
   }
 
   const production: Production = {

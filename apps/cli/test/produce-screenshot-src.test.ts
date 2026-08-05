@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isSafeScreenshotSrc, planScreenshotSrcCopy, sideImageDestRel } from "../src/produce";
+import {
+  isRemoteScreenshotSrc,
+  isSafeScreenshotSrc,
+  planScreenshotSrcCopy,
+  sideImageDestRel,
+} from "../src/produce";
 
 /**
  * Final-review fix wave — Important finding on the second pass of Finding 3:
@@ -101,6 +106,34 @@ describe("planScreenshotSrcCopy", () => {
     // check (not exercised here — it's IO-backed) is what makes the
     // already-copied case a no-op rather than a re-copy.
     expect(isSafeScreenshotSrc("side-images/already-there.png")).toBe(true);
+  });
+});
+
+/**
+ * Audit fix: ScreenshotFrame resolves `/^https?:\/\//` srcs itself instead
+ * of `staticFile()` (ScreenshotFrame.tsx), but produce()'s safe-src check
+ * rejected a URL as "names a path, not a bare filename" — a misleading
+ * message about a documented shape. A remote src is recognized FIRST and
+ * passed through untouched: no lookup, no copy, no rewrite.
+ */
+describe("isRemoteScreenshotSrc", () => {
+  it("recognizes http and https URLs", () => {
+    expect(isRemoteScreenshotSrc("https://example.com/shot.png")).toBe(true);
+    expect(isRemoteScreenshotSrc("http://example.com/shot.png")).toBe(true);
+  });
+
+  it("does not claim local shapes, other schemes, or a URL not at the start", () => {
+    expect(isRemoteScreenshotSrc("screenshot.png")).toBe(false);
+    expect(isRemoteScreenshotSrc("side-images/foo.png")).toBe(false);
+    expect(isRemoteScreenshotSrc("file:///etc/passwd")).toBe(false);
+    expect(isRemoteScreenshotSrc("ftp://example.com/x.png")).toBe(false);
+    expect(isRemoteScreenshotSrc("x https://example.com")).toBe(false);
+  });
+
+  it("(trace) a URL would otherwise be rejected by the safe-src check — the misleading-message bug", () => {
+    // The slash-containing URL fails isSafeScreenshotSrc, which is exactly
+    // why the remote check must run BEFORE it in produce()'s loop.
+    expect(isSafeScreenshotSrc("https://example.com/shot.png")).toBe(false);
   });
 });
 
