@@ -96,6 +96,12 @@ export function buildProgram(): Command {
     .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
     .option("--workdir <dir>", "cache/work directory (default: <input dir>/.ossclip)")
     .option(
+      "--sort <order>",
+      "when <input> is a folder: order its clips before concatenating them — " +
+        "name (default, plain codepoint sort, matches `ls`) or mtime (oldest first)",
+      "name",
+    )
+    .option(
       "--aspect <ratio>",
       "output shape: 9:16 (vertical, default) or 16:9 (landscape, 1920x1080)",
       "9:16",
@@ -212,6 +218,9 @@ export function buildProgram(): Command {
       // Parsed, not coerced: a typo'd `--source-fit containn` silently falling
       // back to cover is exactly the crop the flag exists to prevent.
       const sourceFit = z.enum(["cover", "contain"]).parse(opts.sourceFit);
+      // Same reasoning as --source-fit: a typo'd --sort dat must not silently
+      // become the default rather than an error naming the mistake.
+      const sort = z.enum(["name", "mtime"]).parse(opts.sort);
       const result = await produce(input, {
         out: opts.out,
         cleanup,
@@ -219,6 +228,7 @@ export function buildProgram(): Command {
         render: opts.render,
         mezzanine: opts.mezzanine,
         workdir: opts.workdir,
+        sort,
         aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
         noiseDb: opts.noiseDb,
         produce: opts.produce,

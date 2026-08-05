@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
@@ -21,6 +21,7 @@ import {
   buildZoomPlan,
   checkGrounding,
   rejectCtaKeyword,
+  concatFolder,
   coverHeadline,
   cropFilter,
   detectContentRect,
@@ -176,6 +177,13 @@ export interface ProduceOptions {
    * window with zero LLM calls. Written by clip runs; not for hand use.
    */
   clipWindow?: string;
+  /**
+   * `<input>` a DIRECTORY: order its clips before concatenating them into the
+   * source produce runs on (folder-input-brief.md). `name` (default) is a
+   * plain codepoint sort, matching `ls`; `mtime` is oldest-first. Ignored for
+   * a file input.
+   */
+  sort?: "name" | "mtime";
 }
 
 function sha1File(path: string): Promise<string> {
@@ -186,6 +194,28 @@ function sha1File(path: string): Promise<string> {
       .on("end", () => res(h.digest("hex")))
       .on("error", rej);
   });
+}
+
+/**
+ * Where a run's cache/work directory lives, keyed off `identity` — the input
+ * file for an ordinary run, or the FOLDER itself for `produce <folder>`
+ * (folder-input-brief.md: hashing is the caller's job because the two cases
+ * hash different things — a file's bytes vs. a folder's path — this only
+ * places the result). `--workdir` overrides the root; the identity's own
+ * basename still names the subfolder so two different inputs sharing one
+ * `--workdir` don't collide.
+ */
+function deriveWorkdir(
+  identity: string,
+  hash: string,
+  workdirOpt: string | undefined,
+  landscape: boolean,
+): string {
+  const workRoot = workdirOpt ? resolve(workdirOpt) : join(dirname(identity), ".ossclip");
+  return join(
+    workRoot,
+    `${basename(identity).replace(/\.[^.]+$/, "")}-${hash}${landscape ? "-16x9" : ""}`,
+  );
 }
 
 /**
@@ -208,7 +238,10 @@ async function preflight(bin: string, hint: string): Promise<void> {
 
 export async function produce(inputArg: string, opts: ProduceOptions): Promise<ProduceResult> {
   const cfg = loadConfig();
-  const input = resolve(inputArg);
+  // `let`, not `const`: a folder input is reassigned to the concat
+  // intermediate below (folder-input-brief.md) so nothing past that point has
+  // to know a folder was ever involved.
+  let input = resolve(inputArg);
   if (!existsSync(input)) throw new Error(`input not found: ${input}`);
 
   // §93b: the window is an editorial judgement, and there is deliberately no
@@ -239,16 +272,44 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const landscape = opts.aspect === "16:9";
   const frame = landscape ? { width: 1920, height: 1080 } : { width: 1080, height: 1920 };
 
-  const hash = (await sha1File(input)).slice(0, 8);
-  const workRoot = opts.workdir ? resolve(opts.workdir) : join(dirname(input), ".ossclip");
-  const work = join(
-    workRoot,
-    `${basename(input).replace(/\.[^.]+$/, "")}-${hash}${landscape ? "-16x9" : ""}`,
-  );
-  await mkdir(work, { recursive: true });
   const tools = { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath };
 
+  // Folder input (folder-input-brief.md, 2026-08-05 field request): the
+  // FOLDER is the source identity for workdir purposes — `sha1File` wants a
+  // single file's bytes, and the concat that would give one doesn't exist
+  // yet. `concatFolder`'s own manifest (names+sizes+mtimes), not this hash,
+  // is what decides whether a cached concat is still valid.
+  const isFolder = statSync(input).isDirectory();
+  const hash = isFolder
+    ? createHash("sha1").update(input).digest("hex").slice(0, 8)
+    : (await sha1File(input)).slice(0, 8);
+  const work = deriveWorkdir(input, hash, opts.workdir, landscape);
+  await mkdir(work, { recursive: true });
   console.log(`▸ workdir ${work}`);
+
+  if (isFolder) {
+    const sort = opts.sort ?? "name";
+    const result = await concatFolder(tools, input, work, sort, {
+      w: frame.width,
+      h: frame.height,
+    });
+    console.log(
+      `▸ folder: ${result.clips.length} clip(s), sorted by ${sort}, ` +
+        `concat ${result.durationSec.toFixed(1)}s${result.cached ? " (cached)" : ""}`,
+    );
+    if (result.nonVideoCount > 0) {
+      console.log(
+        `  ${result.nonVideoCount} non-video file${result.nonVideoCount === 1 ? "" : "s"} ignored`,
+      );
+    }
+    // Order visible immediately (folder-input-brief.md) — a wrong order is a
+    // silent bug otherwise, invisible until someone watches the whole thing.
+    result.clips.forEach((c, i) => {
+      console.log(`  ${i + 1}. ${c.name} (${c.durationSec.toFixed(2)}s)`);
+    });
+    input = result.path;
+  }
+
   const sourceProbe = await probe(tools, input);
   console.log(
     `▸ source ${sourceProbe.width}x${sourceProbe.height} @ ${sourceProbe.fps.toFixed(2)}fps · ${sourceProbe.duration.toFixed(2)}s`,

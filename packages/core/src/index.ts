@@ -8,6 +8,7 @@ export * from "./producer/index";
 export * from "./timemap";
 export * from "./recut";
 export * from "./ingest";
+export * from "./concat";
 export * from "./transcribe";
 export * from "./analyze";
 export * from "./cutlist";
