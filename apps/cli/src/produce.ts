@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
@@ -97,6 +97,11 @@ import {
   type Transcript,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
+import {
+  strandedOverrideSiblings,
+  strandedPointerLine,
+  workdirBaseName,
+} from "./stranded-overrides";
 import { editHint } from "./interactive/edit-hint";
 import { recordedProduceArgs } from "./replay-argv";
 import { renderCover, renderProduction } from "@ossclip/renderer";
@@ -314,10 +319,9 @@ function deriveWorkdir(
   landscape: boolean,
 ): string {
   const workRoot = workdirOpt ? resolve(workdirOpt) : join(dirname(identity), ".ossclip");
-  return join(
-    workRoot,
-    `${basename(identity).replace(/\.[^.]+$/, "")}-${hash}${landscape ? "-16x9" : ""}`,
-  );
+  // The basename half is shared with the §131 stranded-edits scan so the
+  // scan's matching can never drift from the naming it scans for.
+  return join(workRoot, `${workdirBaseName(identity)}-${hash}${landscape ? "-16x9" : ""}`);
 }
 
 /**
@@ -562,6 +566,36 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const work = deriveWorkdir(input, hash, opts.workdir, landscape);
   await mkdir(work, { recursive: true });
   console.log(`▸ workdir ${work}`);
+
+  // §131 residue: a folder re-key (clips renamed/added/removed → new content
+  // hash) correctly lands in a fresh workdir, but any editor edits saved in
+  // the PREVIOUS workdir's overrides.json don't carry over — and without this
+  // pointer the user sees a clean produce and never learns where those edits
+  // went. Gated on the current workdir lacking overrides.json: a warm re-run
+  // that already has edits needs no pointer. Print-only by design — no
+  // migration, no prompt — and best-effort: a courtesy line must never be the
+  // reason a produce fails.
+  if (isFolder && !existsSync(join(work, "overrides.json"))) {
+    try {
+      const workRoot = dirname(work);
+      const entries = readdirSync(workRoot, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => {
+          const overrides = join(workRoot, d.name, "overrides.json");
+          const st = existsSync(overrides) ? statSync(overrides) : null;
+          return { name: d.name, hasOverrides: st !== null, mtimeMs: st?.mtimeMs ?? 0 };
+        });
+      const stranded = strandedOverrideSiblings({
+        base: workdirBaseName(input),
+        currentHash: hash,
+        entries,
+      });
+      for (const name of stranded) console.log(strandedPointerLine(join(workRoot, name)));
+    } catch {
+      // Racing deletes/permissions while scanning siblings: drop the hint,
+      // keep the run (§131 — the pointer is a courtesy, not a dependency).
+    }
+  }
 
   if (isFolder && folderListing) {
     const sort = opts.sort ?? "name";
