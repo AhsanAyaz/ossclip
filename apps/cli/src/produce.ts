@@ -22,6 +22,8 @@ import {
   checkGrounding,
   rejectCtaKeyword,
   concatFolder,
+  folderManifestKey,
+  listFolderVideos,
   coverHeadline,
   cropFilter,
   detectContentRect,
@@ -219,6 +221,20 @@ function deriveWorkdir(
 }
 
 /**
+ * Default output path when `--out` is not given. MUST be derived from the
+ * ORIGINAL input the user typed, never from `input` after a folder run
+ * reassigns it — review fix on the first cut of folder-input-brief.md: `input`
+ * by render time is `<workdir>/source-concat.mp4`, so deriving the default
+ * from it put `ossclip produce ~/Downloads/MyClips`'s output INSIDE the
+ * hidden `.ossclip` workdir (`.../MyClips-<hash>/source-concat.ossclip.mp4`)
+ * instead of beside the folder (`~/Downloads/MyClips.ossclip.mp4`), where a
+ * file input's equivalent default already lands.
+ */
+export function defaultOutPath(originalInput: string): string {
+  return originalInput.replace(/(\.[^.]+)?$/, ".ossclip.mp4");
+}
+
+/**
  * Frame-area share above which a layout's video slot is the SUBJECT rather
  * than an inset. `video-top` is 42% and full-bleed 100%; the pip bubble is 5%.
  */
@@ -240,8 +256,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const cfg = loadConfig();
   // `let`, not `const`: a folder input is reassigned to the concat
   // intermediate below (folder-input-brief.md) so nothing past that point has
-  // to know a folder was ever involved.
-  let input = resolve(inputArg);
+  // to know a folder was ever involved. `originalInput` keeps what the user
+  // actually typed — review fix: the default --out path and the "beside the
+  // video" image lookup both used to read the REASSIGNED `input`, which for a
+  // folder run is a file inside the hidden workdir, not anything the user
+  // would recognise.
+  const originalInput = resolve(inputArg);
+  let input = originalInput;
   if (!existsSync(input)) throw new Error(`input not found: ${input}`);
 
   // §93b: the window is an editorial judgement, and there is deliberately no
@@ -274,22 +295,36 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   const tools = { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath };
 
-  // Folder input (folder-input-brief.md, 2026-08-05 field request): the
-  // FOLDER is the source identity for workdir purposes — `sha1File` wants a
-  // single file's bytes, and the concat that would give one doesn't exist
-  // yet. `concatFolder`'s own manifest (names+sizes+mtimes), not this hash,
-  // is what decides whether a cached concat is still valid.
+  // Folder input (folder-input-brief.md, 2026-08-05 field request). The
+  // workdir hash is derived from the folder's CONTENT — `folderManifestKey`
+  // over the enumerated clips — not the folder path. Review fix: a path-only
+  // hash is stable across content changes, but everything else this run
+  // caches into the same workdir (audio.wav, transcript.json, the
+  // content-rect cache, the mezzanine) is keyed on EXISTENCE, not content. A
+  // path-only hash meant adding a take rebuilt `source-concat.mp4` correctly
+  // but silently reused all of those against the OLD concat, producing a
+  // video with captions transcribed against a different edit. Hashing the
+  // manifest content gives a folder input the same invariant a file input
+  // already has via `sha1File`: content changes ⇒ a fresh workdir.
   const isFolder = statSync(input).isDirectory();
-  const hash = isFolder
-    ? createHash("sha1").update(input).digest("hex").slice(0, 8)
-    : (await sha1File(input)).slice(0, 8);
+  let folderListing: Awaited<ReturnType<typeof listFolderVideos>> | undefined;
+  let hash: string;
+  if (isFolder) {
+    folderListing = await listFolderVideos(input);
+    hash = createHash("sha1")
+      .update(folderManifestKey(folderListing.entries, opts.sort ?? "name"))
+      .digest("hex")
+      .slice(0, 8);
+  } else {
+    hash = (await sha1File(input)).slice(0, 8);
+  }
   const work = deriveWorkdir(input, hash, opts.workdir, landscape);
   await mkdir(work, { recursive: true });
   console.log(`▸ workdir ${work}`);
 
-  if (isFolder) {
+  if (isFolder && folderListing) {
     const sort = opts.sort ?? "name";
-    const result = await concatFolder(tools, input, work, sort, {
+    const result = await concatFolder(tools, input, folderListing, work, sort, {
       w: frame.width,
       h: frame.height,
     });
@@ -1238,20 +1273,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // render error, so the whole run died at 40% after four minutes of work.
   // The prop is optional and the component already draws a styled
   // placeholder without it, so dropping the bad reference degrades exactly
-  // the way the schema intended. Checked against the two directories that
-  // can become the render's public dir: the workdir (mezzanine path) and
-  // the source's own folder (--no-mezzanine).
+  // the way the schema intended. Checked against the directories that can
+  // become the render's public dir: the workdir (mezzanine path) and the
+  // source's own folder (--no-mezzanine) — which for a FOLDER run is
+  // `dirname(input)` no longer, review fix: `input` was already reassigned
+  // to `source-concat.mp4` inside `work` by this point, so `dirname(input)`
+  // IS `work` and that branch was silently checking the same directory
+  // twice. `originalInput` (the folder itself) is the natural place someone
+  // would actually drop an image for a folder run.
   const srcRejections: Array<{ sceneId: string; src: string }> = [];
+  const sideDirs = isFolder ? [work, originalInput] : [work, dirname(input)];
   for (const holder of [...scenes, ...graphicCues]) {
     const src = holder.props?.src;
     if (typeof src !== "string" || src.length === 0) continue;
-    if (existsSync(join(work, src)) || existsSync(join(dirname(input), src))) continue;
+    if (sideDirs.some((dir) => existsSync(join(dir, src)))) continue;
     delete (holder.props as Record<string, unknown>).src;
     srcRejections.push({ sceneId: holder.id, src });
   }
   for (const r of [...new Map(srcRejections.map((r) => [r.src, r])).values()]) {
     console.log(
-      `  ⚠ image "${r.src}" does not exist beside the video — ` +
+      `  ⚠ image "${r.src}" not found in the workdir or ${isFolder ? "the source folder" : "beside the source video"} — ` +
         "rendering the frame as a placeholder instead",
     );
   }
@@ -1597,7 +1638,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     return { workdir: work, rendered: false };
   }
 
-  const outPath = resolve(opts.out ?? input.replace(/(\.[^.]+)?$/, ".ossclip.mp4"));
+  const outPath = resolve(opts.out ?? defaultOutPath(originalInput));
   const rawPath = join(work, "render-raw.mp4");
   console.log("▸ rendering…");
   let lastPct = -10;

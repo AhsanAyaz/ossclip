@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildConcatFilter, planFolderConcat, type ConcatEntry } from "../src/concat";
+import {
+  assertAllClipsHaveAudio,
+  buildConcatFilter,
+  folderManifestKey,
+  planFolderConcat,
+  type ConcatEntry,
+} from "../src/concat";
 
 /**
  * folder-input-brief.md: pointing `produce` at a folder concats its clips
@@ -81,5 +87,68 @@ describe("buildConcatFilter", () => {
       expect(chain).toContain("aresample=48000");
       expect(chain).toContain("aformat=channel_layouts=stereo");
     }
+  });
+});
+
+describe("folderManifestKey (review fix — workdir must go stale with the folder's content)", () => {
+  const entry = (name: string, mtimeMs: number, size = 100): ConcatEntry => ({ name, mtimeMs, size });
+
+  it("is the SAME key regardless of enumeration order — `readdir` order is OS-dependent", () => {
+    const a = [entry("a.mov", 1), entry("b.mov", 2), entry("c.mov", 3)];
+    const b = [entry("c.mov", 3), entry("a.mov", 1), entry("b.mov", 2)];
+    expect(folderManifestKey(a, "name")).toBe(folderManifestKey(b, "name"));
+  });
+
+  it("changes when a clip is added or removed — the pinned invariant: content change ⇒ different workdir", () => {
+    const before = [entry("a.mov", 1), entry("b.mov", 2)];
+    const after = [entry("a.mov", 1), entry("b.mov", 2), entry("c.mov", 3)];
+    expect(folderManifestKey(before, "name")).not.toBe(folderManifestKey(after, "name"));
+  });
+
+  it("changes when a clip's size or mtime changes — a re-exported take under the same name", () => {
+    const original = [entry("a.mov", 1000, 500)];
+    const resizedClip = [entry("a.mov", 1000, 999)];
+    const retimedClip = [entry("a.mov", 2000, 500)];
+    const key = folderManifestKey(original, "name");
+    expect(folderManifestKey(resizedClip, "name")).not.toBe(key);
+    expect(folderManifestKey(retimedClip, "name")).not.toBe(key);
+  });
+
+  it("changes when --sort flips — the concat's actual byte order changes", () => {
+    const entries = [entry("a.mov", 1), entry("b.mov", 2)];
+    expect(folderManifestKey(entries, "name")).not.toBe(folderManifestKey(entries, "mtime"));
+  });
+});
+
+describe("assertAllClipsHaveAudio", () => {
+  it("passes silently when every clip has an audio stream", () => {
+    expect(() =>
+      assertAllClipsHaveAudio([
+        { name: "a.mov", hasAudio: true },
+        { name: "b.mov", hasAudio: true },
+      ]),
+    ).not.toThrow();
+  });
+
+  // Mocked probe results — a video-only b-roll clip reports hasAudio: false.
+  // buildConcatFilter emits [i:a] unconditionally, so without this guard
+  // ffmpeg would die on a bare stream-specifier error naming neither file.
+  it("throws naming the silent clip, before ffmpeg ever runs", () => {
+    expect(() =>
+      assertAllClipsHaveAudio([
+        { name: "talking-head.mov", hasAudio: true },
+        { name: "broll-silent.mp4", hasAudio: false },
+      ]),
+    ).toThrow(/broll-silent\.mp4/);
+  });
+
+  it("names every silent clip when more than one lacks audio", () => {
+    expect(() =>
+      assertAllClipsHaveAudio([
+        { name: "a.mov", hasAudio: false },
+        { name: "b.mov", hasAudio: true },
+        { name: "c.mov", hasAudio: false },
+      ]),
+    ).toThrow(/a\.mov.*c\.mov|c\.mov.*a\.mov/s);
   });
 });
