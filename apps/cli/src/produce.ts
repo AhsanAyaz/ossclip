@@ -293,6 +293,11 @@ export function planRenderPublicDir(p: {
 /** Fixed subfolder every copied side-image lands in — see `planScreenshotSrcCopy`. */
 export const SIDE_IMAGE_SUBDIR = "side-images";
 
+/** A bare filename: no separator of either flavor, and not a `.`/`..` segment. */
+function isBareSafeName(name: string): boolean {
+  return name.length > 0 && !/[\\/]/.test(name) && name !== "." && name !== "..";
+}
+
 /**
  * Whether an LLM-authored `ScreenshotFrame` `src` is safe to let drive
  * filesystem access AT ALL. Checked BEFORE the accept-list lookup, not just
@@ -306,16 +311,33 @@ export const SIDE_IMAGE_SUBDIR = "side-images";
  * becoming `passwd` is exactly the kind of "looks handled" bug that rule
  * exists to prevent).
  *
+ * ONE exception, and it is exactly one shape: `<SIDE_IMAGE_SUBDIR>/<bare
+ * safe name>` — the self-namespaced form `produce()` itself writes back into
+ * `production.json` post-copy (`planScreenshotSrcCopy`'s `destRel`).
+ * `--scenes <path>` re-ingests a PRIOR run's scenes array as the documented
+ * no-LLM tweak workflow (program.ts: "hand-authored scenes JSON — no LLM in
+ * the loop"), and that array can legitimately already contain this exact
+ * shape from the run it came from. Refusing it here would drop the image to
+ * a placeholder on every `--scenes` re-run of a previously-produced project
+ * — a regression this fix must not introduce while closing the traversal
+ * hole. This is NOT a general "one slash is fine" rule: `side-images/../x`,
+ * `side-images/a/b.png`, and `other/foo.png` all still fail below, since
+ * only a first segment matching the fixed subfolder AND a bare name after
+ * it qualifies.
+ *
  * Deliberately NOT enforced as a zod `.refine` on `ScreenshotFrameProps.src`
- * itself: `produce()` legitimately writes a slash-containing `src` back into
- * `production.json` post-copy (`side-images/<name>`, see
- * `planScreenshotSrcCopy`), so a schema-level ban on separators would reject
- * produce's OWN accepted output the next time it's parsed (the editor
+ * itself: the schema has no notion of "this run's own accepted output," so
+ * it can't distinguish the one safe slash-shape from every unsafe one
+ * without duplicating this exact logic — and getting it wrong there would
+ * reject produce's own accepted output on every future parse (the editor
  * re-parses `production.json` through this same schema). The boundary that
- * needs to refuse the LLM's raw guess is produce()'s, not the schema's.
+ * needs to refuse the LLM's raw guess (and allow its own prior output back
+ * in) is produce()'s, not the schema's.
  */
 export function isSafeScreenshotSrc(src: string): boolean {
-  return !/[\\/]/.test(src) && src !== "." && src !== "..";
+  if (isBareSafeName(src)) return true;
+  const parts = src.split("/");
+  return parts.length === 2 && parts[0] === SIDE_IMAGE_SUBDIR && isBareSafeName(parts[1]!);
 }
 
 /**
@@ -344,6 +366,24 @@ export function planScreenshotSrcCopy(dest: {
 }): "copy" | "skip-identical" | "conflict" {
   if (!dest.exists) return "copy";
   return dest.identical ? "skip-identical" : "conflict";
+}
+
+/**
+ * The served relative URL a copied side-image is rewritten to. MUST be
+ * POSIX-literal — never `path.join()` — because this string is a SERVED
+ * URL, not a filesystem path: it gets written into `holder.props.src` and
+ * read back by Remotion's `staticFile()`, which splits ONLY on `/`
+ * (`static-file.js`: `path.split('/')`). `path.join()` uses the platform
+ * separator, so on Windows this would silently become
+ * `side-images\foo.png`, which `staticFile()` then encodes as ONE opaque
+ * segment (`side-images%5Cfoo.png`) that matches nothing on disk — every
+ * side-image render breaking on Windows, the exact shape of the 0.1.4→0.1.5
+ * cautionary tale (CLAUDE.md's Releases section). Pulled out as its own
+ * function so this literal can be pinned by a test independent of the
+ * platform running that test.
+ */
+export function sideImageDestRel(src: string): string {
+  return `${SIDE_IMAGE_SUBDIR}/${basename(src)}`;
 }
 
 /**
@@ -1512,7 +1552,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       continue;
     }
     if (foundDir === renderPublicDirPath) continue; // already where the render will look
-    const destRel = join(SIDE_IMAGE_SUBDIR, basename(src));
+    // `sideImageDestRel` is POSIX-literal (see its own comment for why);
+    // `destAbs` below is a normal `join()` since it IS a filesystem path,
+    // not a served URL.
+    const destRel = sideImageDestRel(src);
     const destAbs = join(renderPublicDirPath, destRel);
     const sourceAbs = join(foundDir, src);
     const destExists = existsSync(destAbs);

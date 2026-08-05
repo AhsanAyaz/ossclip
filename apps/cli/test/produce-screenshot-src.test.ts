@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSafeScreenshotSrc, planScreenshotSrcCopy } from "../src/produce";
+import { isSafeScreenshotSrc, planScreenshotSrcCopy, sideImageDestRel } from "../src/produce";
 
 /**
  * Final-review fix wave — Important finding on the second pass of Finding 3:
@@ -22,7 +22,7 @@ describe("isSafeScreenshotSrc", () => {
     expect(isSafeScreenshotSrc("file.with.many.dots.jpg")).toBe(true);
   });
 
-  it("refuses a forward-slash path (posix traversal or subfolder reference)", () => {
+  it("refuses a forward-slash path (posix traversal or an arbitrary subfolder)", () => {
     expect(isSafeScreenshotSrc("../../etc/passwd")).toBe(false);
     expect(isSafeScreenshotSrc("images/photo.png")).toBe(false);
     expect(isSafeScreenshotSrc("/etc/passwd")).toBe(false);
@@ -42,6 +42,34 @@ describe("isSafeScreenshotSrc", () => {
     expect(isSafeScreenshotSrc("..png")).toBe(true);
     expect(isSafeScreenshotSrc("v1.2..3.png")).toBe(true);
   });
+
+  /**
+   * Re-review, Important 2: `--scenes <path>` re-ingests a PRIOR run's
+   * scenes array (program.ts: "hand-authored scenes JSON — no LLM in the
+   * loop"), which can legitimately already contain the self-namespaced
+   * shape `produce()` itself writes post-copy (`sideImageDestRel`). Refusing
+   * it here would drop the image to a placeholder on every `--scenes`
+   * re-run of a previously-produced project. The exception is narrow: ONLY
+   * `side-images/<bare-safe-name>` — one separator, first segment exactly
+   * the fixed subfolder — qualifies. Nothing else does, including shapes
+   * that merely start with the subfolder name.
+   */
+  it("accepts exactly the self-namespaced round-trip shape (side-images/<name>)", () => {
+    expect(isSafeScreenshotSrc("side-images/foo.png")).toBe(true);
+    expect(isSafeScreenshotSrc("side-images/CLAUDE.md")).toBe(true);
+  });
+
+  it("refuses traversal even when prefixed with the subfolder name", () => {
+    expect(isSafeScreenshotSrc("side-images/../x")).toBe(false);
+  });
+
+  it("refuses a different subfolder", () => {
+    expect(isSafeScreenshotSrc("other/foo.png")).toBe(false);
+  });
+
+  it("refuses a nested path even under the subfolder", () => {
+    expect(isSafeScreenshotSrc("side-images/a/b.png")).toBe(false);
+  });
 });
 
 describe("planScreenshotSrcCopy", () => {
@@ -55,5 +83,40 @@ describe("planScreenshotSrcCopy", () => {
 
   it("refuses (conflict) when the destination holds different bytes under the same basename", () => {
     expect(planScreenshotSrcCopy({ exists: true, identical: false })).toBe("conflict");
+  });
+
+  /**
+   * Round-trip shape (Important 2): a `--scenes` re-ingested src that is
+   * ALREADY `side-images/<name>` is accepted by `isSafeScreenshotSrc` above,
+   * and produce()'s own loop treats "found in the directory that's already
+   * the render's public dir" as a `continue` before `planScreenshotSrcCopy`
+   * is even consulted — so the plan function itself never needs to special-
+   * case this shape. Documented here as the trace, not a new branch: this
+   * describe block exists so a future reader can see the round-trip was
+   * checked, not just asserted.
+   */
+  it("(trace) the already-in-place case never reaches this function — produce() continues before calling it", () => {
+    // No assertion beyond the two functions above: `isSafeScreenshotSrc`
+    // accepts the shape, and produce()'s `foundDir === renderPublicDirPath`
+    // check (not exercised here — it's IO-backed) is what makes the
+    // already-copied case a no-op rather than a re-copy.
+    expect(isSafeScreenshotSrc("side-images/already-there.png")).toBe(true);
+  });
+});
+
+describe("sideImageDestRel", () => {
+  /**
+   * Important 1: this MUST be a forward-slash literal, not a `path.join()`
+   * result — it's a served relative URL Remotion's `staticFile()` splits on
+   * `/`, not a filesystem path. Asserted against the literal string so this
+   * test fails the same way on every platform, including Windows (where
+   * `path.join()` would have silently produced a backslash).
+   */
+  it("joins with a literal forward slash, independent of platform", () => {
+    expect(sideImageDestRel("foo.png")).toBe("side-images/foo.png");
+  });
+
+  it("uses only the basename, even if given an already-safe self-namespaced src", () => {
+    expect(sideImageDestRel("side-images/foo.png")).toBe("side-images/foo.png");
   });
 });
