@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseWhisperJson, whisperArgs, type WhisperJson } from "../src/transcribe";
+import { parseWhisperJson, parseWhisperOutput, whisperArgs, type WhisperJson } from "../src/transcribe";
 
 /** Trimmed sample of real whisper.cpp `-oj -ml 1` output structure. */
 const sample: WhisperJson = {
@@ -72,6 +72,35 @@ describe("parseWhisperJson", () => {
     expect(t.words.some((w) => w.text.includes("BLANK"))).toBe(false);
   });
 
+  // §130: a word that is nothing but U+FFFD (an unrecoverable byte fragment)
+  // folds its span into a neighbor instead of painting a literal � on screen.
+  it("folds a lone replacement-char-only segment into its neighbor", () => {
+    const t = parseWhisperJson({
+      transcription: [
+        { offsets: { from: 0, to: 300 }, text: " hello" },
+        { offsets: { from: 300, to: 500 }, text: " �" },
+        { offsets: { from: 500, to: 800 }, text: " world" },
+      ],
+    });
+    expect(t.words.map((w) => w.text)).toEqual(["hello", "world"]);
+    // The fragment's span belonged to speech — the previous word absorbs it.
+    expect(t.words[0]).toMatchObject({ start: 0, end: 0.5 });
+  });
+
+  // §130's other field shape: a lone lead byte MID-WORD whose continuation
+  // whisper never emitted at all ("سپی�جس"). The byte is unrecoverable; the
+  // displayable best is the word without the �.
+  it("strips replacement chars embedded in an otherwise real word", () => {
+    const t = parseWhisperJson({
+      transcription: [
+        { offsets: { from: 0, to: 200 }, text: " سپی" },
+        { offsets: { from: 200, to: 200 }, text: "�" },
+        { offsets: { from: 200, to: 400 }, text: "جس" },
+      ],
+    });
+    expect(t.words.map((w) => w.text)).toEqual(["سپیجس"]);
+  });
+
   it("repairs zero-length and inverted timestamps", () => {
     const t = parseWhisperJson({
       transcription: [
@@ -81,5 +110,48 @@ describe("parseWhisperJson", () => {
     });
     expect(t.words[0]!.end).toBeGreaterThan(t.words[0]!.start);
     expect(t.words[1]!.start).toBeGreaterThanOrEqual(t.words[0]!.end);
+  });
+});
+
+describe("parseWhisperOutput — §130 token-split multibyte repair", () => {
+  // Mirrors the field whisper.json byte-for-byte (Urdu field test 2026-08-05,
+  // "ٹاپک"): segment N's text ends on the bare LEAD byte 0xD9, segment N+1
+  // begins with its continuation 0xB9 (together U+0679 ٹ) followed by ا —
+  // the file as a whole is NOT valid UTF-8, and a utf8 read would replace
+  // both halves with U+FFFD before any parser saw them.
+  const splitFixture = Buffer.concat([
+    Buffer.from('{"result":{"language":"ur"},"transcription":[', "utf8"),
+    Buffer.from('{"offsets":{"from":5860,"to":5860},"text":" ', "utf8"),
+    Buffer.from([0xd9]),
+    Buffer.from('"},{"offsets":{"from":5860,"to":6130},"text":"', "utf8"),
+    Buffer.from([0xb9]),
+    Buffer.from('ا"},{"offsets":{"from":6130,"to":6300},"text":"پک"}]}', "utf8"),
+  ]);
+
+  it("heals the observed field shape into the correct word, spanning both segments", () => {
+    const t = parseWhisperOutput(splitFixture);
+    expect(t.language).toBe("ur");
+    expect(t.words.map((w) => w.text)).toEqual(["ٹاپک"]);
+    // Merged word spans the split segments AND the trailing continuations.
+    expect(t.words[0]).toMatchObject({ start: 5.86, end: 6.3 });
+  });
+
+  it("is byte-identical to parseWhisperJson on a valid (pure ASCII) file", () => {
+    const buf = Buffer.from(JSON.stringify(sample), "utf8");
+    expect(parseWhisperOutput(buf)).toEqual(parseWhisperJson(sample));
+  });
+
+  it("folds an unrecoverable dangling byte (no continuing neighbor) instead of shipping �", () => {
+    // A lead byte whose neighbor does NOT continue it: unrepairable, decodes
+    // to U+FFFD, and the FFFD-only word rule folds it into "ok".
+    const buf = Buffer.concat([
+      Buffer.from('{"transcription":[{"offsets":{"from":0,"to":200},"text":" ok"},', "utf8"),
+      Buffer.from('{"offsets":{"from":200,"to":400},"text":" ', "utf8"),
+      Buffer.from([0xd9]),
+      Buffer.from('"},{"offsets":{"from":400,"to":700},"text":" done"}]}', "utf8"),
+    ]);
+    const t = parseWhisperOutput(buf);
+    expect(t.words.map((w) => w.text)).toEqual(["ok", "done"]);
+    expect(t.words[0]).toMatchObject({ start: 0, end: 0.4 });
   });
 });
