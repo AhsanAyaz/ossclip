@@ -77,9 +77,13 @@ to be renumbered twice. A finding takes the next free number when it lands.
   before anything measures them, so the time map and its property-tested
   invariants never learn there was more than one file.
 - **Semantic retake removal** — the *spoken-marker* half shipped in R27 §122
-  (`--blooper-marker`), deterministically. What remains is detecting a flub the
-  speaker did NOT mark, which is inherently semantic and would end the
-  guarantee that the cut is reproducible without an LLM.
+  (`--blooper-marker`), deterministically, and the unmarked half shipped too in
+  R27 §127 (`--collapse-retakes`): consecutive near-identical sentences,
+  collapsed by token similarity, no LLM, guarded against whisper hallucinating
+  a repeat over dead air. What remains is narrower than this item used to
+  claim — only a genuinely REWORDED retake (different words, same idea, so it
+  never clears the similarity floor by design) is still semantic and would end
+  the reproducible-without-an-LLM guarantee if it were ever pursued.
 - **User cuts** — remove a bad bit after generation. Server-side first,
   editor second. `splits` and pinned scene timing are keyed to absolute output
   seconds and would silently drift after a re-cut.

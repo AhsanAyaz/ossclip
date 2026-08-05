@@ -82,9 +82,9 @@ z.enum(["silence", "pause", "filler", "retake", "user", "clip"])
 
 `--clip` is the template and should be followed closely (`packages/core/src/clip.ts`). It does **not** trim the timeline: `boundCutlistToWindow` converts everything outside the window into `remove` segments with `reason: "clip"`, keeping the cutlist a full partition of `[0, duration]` so the TimeMap invariant holds by construction.
 
-- [ ] **a. Emit `Segment[]` with `kind: "remove", reason: "retake"`** folded into the same partition — never a separate trimming pass. Everything downstream (report, TimeMap, scene dropping by vanished anchor, caption re-derivation, `EdlVideo` spans, the editor filmstrip) then works with **zero changes**, exactly as `--clip` does.
-- [ ] **b. Cache the decision and pin it for replay.** `--clip` caches `clipwindow-<key>.json` and writes `--clip-window startWord:endWord` into `command.json` so the editor's Render reproduces the same choice with no LLM call. A detector that re-asks a model on every replay would drift every saved override — the failure §93g exists to prevent.
-- [ ] **c. Refuse rather than guess.** `--clip` refuses without `--produce` and states there is no heuristic fallback. A retake detector should be equally explicit about what it will not do.
+- [x] **a. Emit `Segment[]` with `kind: "remove", reason: "retake"`** folded into the same partition — never a separate trimming pass. Everything downstream (report, TimeMap, scene dropping by vanished anchor, caption re-derivation, `EdlVideo` spans, the editor filmstrip) then works with **zero changes**, exactly as `--clip` does. Shipped R27 §127, `findRetakeGroups` → `buildCutlist`'s new `retakes` arg.
+- [ ] **b. Cache the decision and pin it for replay.** N/A as written — this assumed an LLM call to cache against. §127 shipped deterministic instead: no model, no cache, no drift risk, since re-running the detector on the same transcript always yields the same groups.
+- [ ] **c. Refuse rather than guess.** N/A for the same reason as (b) — nothing here guesses. The opt-in, default-off flag (`--collapse-retakes`) is this item's actual "explicit about what it will not do": nothing collapses unless asked.
 
 ### The decision this forces — make it consciously
 
@@ -97,6 +97,10 @@ Retake detection is inherently semantic. **It is the first thing that would brea
 **Update (R27 §122): the deterministic half shipped, and the guarantee survived.** `--blooper-marker <word>` cuts the attempt a speaker marks OUT LOUD, back to the start of the sentence it spoiled. A spoken marker needs no judgement — the word is in the transcript or it is not — so it is the third option this paragraph did not consider: not "accept a semantic stage", not "approximate the semantics deterministically", but *let the speaker supply the semantics at record time*. `buildCutlist` remains pure; the spans arrive as an argument. Everything predicted above held — `reason: "retake"` folded into the same partition, and report, TimeMap, scene dropping, caption re-derivation and `EdlVideo` all worked with zero changes.
 
 What is left of this item is the case the speaker did NOT mark, which is still semantic and still carries the whole trade-off above. Note that the marker approach makes the trade-off avoidable rather than solved: it asks the user to change how they record. If that proves too much to ask, the semantic detector is back on the table with its guarantee question intact.
+
+**Update (R27 §127): the deterministic formulation this paragraph named — "fuzzy repeated-phrase matching over the transcript" — has shipped, and the guarantee survived again.** `findRetakeGroups` collapses consecutive near-identical sentences by token-sequence similarity (no LLM, no `soundsSimilar` — §125's phonetic false-positive channel stays shut), guarded against a real field failure where whisper hallucinated repeats of an earlier take over dead air: a per-instance silence-fraction check keeps keep-last from ever electing a hallucination over the genuine take. `buildCutlist` stays pure — the spans still arrive as an argument, same shape as §122's `bloops`, now `retakes` beside it. `--collapse-retakes`, opt-in and off by default in v1, same posture as `--blooper-marker`.
+
+What's left of THIS item is narrower than the paragraph above claims: not "the case the speaker did not mark" generally, but specifically a REWORDED retake — different words, same idea — which scores under the similarity floor by design and stays semantic. See PHASE1-FINDINGS.md §127.
 
 ---
 
