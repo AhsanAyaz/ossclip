@@ -63,10 +63,19 @@ export interface BuildCutlistArgs {
   /**
    * Spans the speaker marked as bloopers out loud (R27 §122), from
    * `findBloopSpans`. Passed in rather than detected here so this stays a pure
-   * function of its arguments — and so `--blooper-marker` is the only thing
-   * that can put a `retake` cut in the timeline.
+   * function of its arguments.
    */
   bloops?: readonly { startWord: number; endWord: number; startSec: number; endSec: number }[];
+  /**
+   * Spans `findRetakeGroups` (R27 §127) elected to cut — the deterministic
+   * "keep only the last complete take" detector for the flub the speaker did
+   * NOT mark. Also a `reason: "retake"` cut, and also passed in rather than
+   * detected here, for the same purity reason as `bloops`: `buildCutlist`
+   * still has no judgement of its own about what a bad take looks like, it
+   * just folds whichever spans two independent detectors handed it into the
+   * one partition.
+   */
+  retakes?: readonly { startWord: number; endWord: number; startSec: number; endSec: number }[];
 }
 
 export function buildCutlist({
@@ -75,11 +84,13 @@ export function buildCutlist({
   duration,
   level,
   bloops,
+  retakes,
 }: BuildCutlistArgs): Segment[] {
   const keepAll: Segment[] = [{ srcIn: 0, srcOut: duration, kind: "keep" }];
   // `exact` means exact: it is the escape hatch for "touch nothing", and a
-  // blooper cut is still a cut. --blooper-marker with --cleanup exact is a
-  // contradiction, and the flag the user typed second does not get to win.
+  // blooper or retake cut is still a cut. --blooper-marker or
+  // --collapse-retakes with --cleanup exact is a contradiction, and the flag
+  // the user typed second does not get to win.
   if (level === "exact") return keepAll;
   const policy = POLICIES[level];
   const words = transcript.words;
@@ -101,6 +112,21 @@ export function buildCutlist({
       end: b.endSec,
       reason: "retake",
       confidence: 1,
+      source: "acoustic",
+    });
+  }
+
+  // Same injection, same reason, lower confidence (R27 §127): a marker is the
+  // speaker asserting "this attempt is bad" — confidence 1. A retake group is
+  // this codebase inferring it from token similarity and the hallucination
+  // guard, so it earns 0.9, not 1 — the report and any future confidence-
+  // gated behavior can tell a supplied fact from an inferred one.
+  for (const r of retakes ?? []) {
+    removals.push({
+      start: r.startSec,
+      end: r.endSec,
+      reason: "retake",
+      confidence: 0.9,
       source: "acoustic",
     });
   }

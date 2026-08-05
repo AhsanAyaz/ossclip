@@ -15,8 +15,14 @@ import type { Transcript } from "./schema";
  *
  * A marker the speaker says OUT LOUD is the deterministic subset. It needs no
  * judgement: the word is in the transcript or it is not. So this ships the
- * useful half of the feature and leaves the guarantee intact — the semantic
- * detector remains unbuilt, deliberately.
+ * useful half of the feature and leaves the guarantee intact.
+ *
+ * The OTHER half — the flub the speaker did NOT mark — turned out to have a
+ * deterministic formulation too: `retake.ts` (R27 §127) collapses consecutive
+ * near-identical sentences by token similarity, no LLM, same purity
+ * guarantee. What's left unbuilt is narrower than this comment used to claim:
+ * a genuinely REWORDED retake (different words, same idea) is still semantic,
+ * and stays out of scope on purpose (ROADMAP.md).
  *
  * The pattern, from the take that motivated it:
  *
