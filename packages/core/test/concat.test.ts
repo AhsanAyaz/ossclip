@@ -118,6 +118,24 @@ describe("folderManifestKey (review fix — workdir must go stale with the folde
     const entries = [entry("a.mov", 1), entry("b.mov", 2)];
     expect(folderManifestKey(entries, "name")).not.toBe(folderManifestKey(entries, "mtime"));
   });
+
+  /**
+   * Audit fix: the key used to be a `:`/`|` delimiter join over raw
+   * filenames — user-controlled text that can contain both delimiters — so
+   * two DIFFERENT entry sets could serialize identically and one folder
+   * would silently reuse another's workdir caches. JSON serialization
+   * escapes the filename instead of trusting it.
+   */
+  it("injection shape: delimiter characters in a filename cannot collide two different entry sets", () => {
+    // Under the old `${name}:${size}:${mtimeMs}` join with `|` between
+    // entries, ONE file named "a.mov:1:2|b.mov" (size 3, mtime 4) and TWO
+    // files [a.mov size 1 mtime 2, b.mov size 3 mtime 4] both flattened to
+    // the identical string "a.mov:1:2|b.mov:3:4" — two different folders,
+    // one workdir, every cache silently shared.
+    const one = [entry("a.mov:1:2|b.mov", 4, 3)];
+    const two = [entry("a.mov", 2, 1), entry("b.mov", 4, 3)];
+    expect(folderManifestKey(one, "name")).not.toBe(folderManifestKey(two, "name"));
+  });
 });
 
 describe("assertAllClipsHaveAudio", () => {

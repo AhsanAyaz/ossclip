@@ -72,13 +72,22 @@ export function planFolderConcat(
  * transcribed against the PREVIOUS concat. Hashing the manifest content here
  * — the same invariant a file input already has via `sha1File` — means a
  * changed folder gets a fresh workdir, and every derived cache is fresh too.
+ *
+ * Serialized with JSON.stringify, not a `:`/`|` delimiter join (audit fix):
+ * a filename is user-controlled free text that can itself contain the
+ * delimiters, letting two DIFFERENT entry sets serialize to one identical
+ * key — `a:1` sized 2 and `a` sized `1:2` collide under a `:` join, and a
+ * collision here means one folder silently reuses another's transcript and
+ * mezzanine. JSON escapes the filename instead of trusting it. This changed
+ * every existing folder workdir hash once — a one-time cache invalidation
+ * (fresh workdir, full re-concat/re-transcribe on the next run), accepted as
+ * the cost of an injection-proof key.
  */
 export function folderManifestKey(entries: readonly ConcatEntry[], sort: "name" | "mtime"): string {
   const canonical = [...entries]
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-    .map((e) => `${e.name}:${e.size}:${e.mtimeMs}`)
-    .join("|");
-  return `${sort}|${canonical}`;
+    .map((e) => ({ name: e.name, size: e.size, mtimeMs: e.mtimeMs }));
+  return JSON.stringify({ sort, entries: canonical });
 }
 
 /**
