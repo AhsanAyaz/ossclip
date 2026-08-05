@@ -41,6 +41,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await rm(COMMAND, { force: true });
   await rm(FAKE_RENDER, { force: true });
+  await rm(join(WORKDIR, "renderflow-burst-fake.cjs"), { force: true });
 });
 
 test("a running render survives a refresh, and can be cancelled (R16 §60)", async ({
@@ -75,14 +76,24 @@ test("the render log is a scrollable tail and collapses behind the toggle (R17 �
   page,
 }) => {
   // A burst-printer: more lines at once than the tail box can show, then
-  // stays alive so the run can be cancelled.
+  // stays alive so the run can be cancelled. A script FILE like the first
+  // test's fake, not `node -e` (§129): the render endpoint prepends the
+  // `produce` literal to recorded args that lack it, and with `-e` the
+  // healed argv evaluates the string "produce" and dies with a
+  // ReferenceError instead of printing lines — this exact fixture broke CI
+  // on the §129 release.
+  const burstFake = join(WORKDIR, "renderflow-burst-fake.cjs");
+  await writeFile(
+    burstFake,
+    "for (let i = 0; i < 60; i++) console.log(`line ${i}`); setTimeout(() => {}, 50000);",
+  );
   await writeFile(
     COMMAND,
     JSON.stringify({
       execPath: process.execPath,
       execArgv: [],
-      script: "-e",
-      args: ["for (let i = 0; i < 60; i++) console.log(`line ${i}`); setTimeout(() => {}, 50000);"],
+      script: burstFake,
+      args: ["produce"],
       cwd: WORKDIR,
     }),
   );
