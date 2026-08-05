@@ -106,6 +106,17 @@ describe("findBloopSpans", () => {
     expect(formatBloopSpan(t, span!)).toContain('matched "looker" ~ "blooper"');
   });
 
+  // Field bug, first real run of the feature (§125, PHASE1-FINDINGS.md):
+  // soundsSimilar("builds", "blooper") is true — same "b" onset, score over
+  // the 0.34 floor — even though the words are unrelated and Levenshtein
+  // distance is 6. That arm cut 86.8% of a 125.9s video. Levenshtein alone
+  // (<=2) does not have this failure mode, so the fuzzy arm is now
+  // Levenshtein-only; "builds" must never match a "blooper" marker.
+  it("does not fuzzy-match an unrelated same-onset word ('builds' for 'blooper')", () => {
+    const t = speak("This is fine. Look at how the app builds. This is the good take.");
+    expect(findBloopSpans(t, "blooper")).toEqual([]);
+  });
+
   // Guard: a short marker is too easy to confuse with ordinary words
   // ("cut" ~ "cat"/"but" both sound-alike and are within edit distance 2),
   // so fuzzy matching only turns on once the marker is long enough that a

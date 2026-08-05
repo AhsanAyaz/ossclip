@@ -1,6 +1,6 @@
 import { normalizeToken } from "./analyze";
 import { isSentenceStart } from "./clip";
-import { levenshtein, soundsSimilar } from "./phonetics";
+import { levenshtein } from "./phonetics";
 import type { Transcript } from "./schema";
 
 /**
@@ -70,19 +70,23 @@ interface MarkerMatch {
 /**
  * Whether a transcript word counts as the marker, and how.
  *
- * Exact match (today's rule) always wins first. Past that, two independent
- * fuzzy arms — sound-alike (phonetics.ts, shared with the repair pass) OR a
- * small edit distance — because they catch different ASR failure shapes and
- * neither alone covers "blooper"/"looker": `soundsSimilar` rejects that pair
- * on its onset test (b/l differ), so the edit-distance arm is load-bearing
- * for the field bug this exists to fix.
+ * Exact match (today's rule) always wins first. Past that, the only fuzzy
+ * arm is a small edit distance — NOT `soundsSimilar` (§125,
+ * PHASE1-FINDINGS.md). The first field run of this feature paired the two
+ * arms as designed and got the worst of both: `soundsSimilar("builds",
+ * "blooper")` is true (shared "b" onset, score over its 0.34 floor) and cut
+ * 86.8% of a 125.9s video, while the pair `soundsSimilar` exists to catch —
+ * "looker" for "blooper" — is REJECTED by its own onset test (b/l differ)
+ * and only ever matched via Levenshtein anyway. Sound-alike was admitting
+ * garbage and catching nothing real, so it is gone; Levenshtein alone still
+ * catches "looker" (distance 2) and does not catch "builds" (distance 6).
  */
 function matchMarker(wordText: string, want: string): MarkerMatch | null {
   const norm = normalizeToken(wordText);
   if (!norm) return null;
   if (norm === want) return { surface: norm, exact: true };
   if (want.length < FUZZY_MIN_MARKER_LEN) return null;
-  if (soundsSimilar(norm, want) || levenshtein(norm, want) <= FUZZY_MAX_DISTANCE) {
+  if (levenshtein(norm, want) <= FUZZY_MAX_DISTANCE) {
     return { surface: norm, exact: false };
   }
   return null;
