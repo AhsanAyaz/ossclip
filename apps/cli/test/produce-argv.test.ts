@@ -58,6 +58,7 @@ describe("produceArgv", () => {
             blooperMarker: "blooper",
             collapseRetakes: true,
             sourceIsEdited: true,
+            watermark: true,
             llm: "claude-cli",
           },
         }),
@@ -72,6 +73,7 @@ describe("produceArgv", () => {
       "--blooper-marker", "blooper",
       "--collapse-retakes",
       "--source-is-edited",
+      "--watermark",
       "--llm", "claude-cli",
     ]);
   });
@@ -99,6 +101,14 @@ describe("produceArgv", () => {
 
   it("omits a false --collapse-retakes rather than emitting the flag", () => {
     expect(produceArgv(answers({ extras: { collapseRetakes: false } }))).toEqual([
+      "produce", "./take.mp4",
+    ]);
+  });
+
+  // Off is the watermark's universal default (open-source etiquette: the
+  // credit is opt-in) — the elision rule applies exactly as everywhere else.
+  it("omits a false --watermark rather than emitting the flag", () => {
+    expect(produceArgv(answers({ extras: { watermark: false } }))).toEqual([
       "produce", "./take.mp4",
     ]);
   });

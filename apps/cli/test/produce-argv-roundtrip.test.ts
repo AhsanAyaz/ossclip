@@ -54,6 +54,10 @@ describe("wizard argv survives the real commander parse", () => {
     expect(opts.produce).toBe(false);
     expect(opts.sourceFit).toBe("cover");
     expect(opts.collapseRetakes).toBe(false);
+    // Tri-state, proven against the real program: an untyped watermark must
+    // reach produce as undefined ("let the config decide"), which is what
+    // the positive-before-negative option declaration exists to guarantee.
+    expect(opts.watermark).toBeUndefined();
   });
 
   it("every tier-2 extra lands on the option commander names", async () => {
@@ -74,6 +78,7 @@ describe("wizard argv survives the real commander parse", () => {
             blooperMarker: "blooper",
             collapseRetakes: true,
             sourceIsEdited: true,
+            watermark: true,
             llm: "claude-cli",
           },
         }),
@@ -94,8 +99,17 @@ describe("wizard argv survives the real commander parse", () => {
       blooperMarker: "blooper",
       collapseRetakes: true,
       sourceIsEdited: true,
+      watermark: true,
       llm: "claude-cli",
     });
+  });
+
+  // The tri-state's other two corners, against the real option declarations:
+  // --no-watermark must land as false (it beats a config-on inside produce),
+  // never as undefined or a separate `noWatermark` key.
+  it("--no-watermark reaches produce as watermark: false", async () => {
+    const opts = await parse(["produce", "./take.mp4", "--no-watermark"]);
+    expect(opts.watermark).toBe(false);
   });
 
   it("never offers the clip extra without graphics — produce.ts §93b refuses that combination", () => {

@@ -139,6 +139,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--collapse-retakes` | deterministically collapse consecutive near-identical sentences, keeping only the last complete attempt — no marker needed. Off by default |
 | `--sort <order>` | when `<input>` is a folder: `name` (default, plain codepoint sort, matches `ls`) or `mtime` (oldest first) — the order clips get concatenated in. Ignored for a file input |
 | `--no-cover` / `--cover <path>` | skip, or redirect, the cover image written beside the video |
+| `--watermark` / `--no-watermark` | opt-in credit: a small, low-opacity "made with ossclip" wordmark in the top-left safe area. Off by default for everyone; set `"watermark": true` in `~/.ossclip/config.json` to turn it on once, and `--no-watermark` still wins per run |
 | `--no-render` | stop after writing the props |
 | `--workdir <dir>` | where the cache lives |
 

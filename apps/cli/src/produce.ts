@@ -234,6 +234,14 @@ export interface ProduceOptions {
    */
   clipWindow?: string;
   /**
+   * `--watermark` / `--no-watermark` tri-state: true/false when TYPED,
+   * undefined when not — undefined lets the config's `watermark` key supply
+   * the default (`resolveWatermark`). Opt-in by design: the default is off
+   * for everyone, because a forced watermark on an open-source tool reads as
+   * a free-tier limitation; this is voluntary attribution.
+   */
+  watermark?: boolean;
+  /**
    * `<input>` a DIRECTORY: order its clips before concatenating them into the
    * source produce runs on (folder-input-brief.md). `name` (default) is a
    * plain codepoint sort, matching `ls`; `mtime` is oldest-first. Ignored for
@@ -248,6 +256,23 @@ export interface ProduceOptions {
    * for.
    */
   sortExplicit?: boolean;
+}
+
+/**
+ * The effective watermark switch: a TYPED flag always wins (so
+ * `--no-watermark` beats a config-on), and only then does the config supply
+ * the default. The config side is `=== true`, never truthiness — the value
+ * comes from a hand-editable JSON file loadConfig doesn't zod-parse, and a
+ * typo'd `"watermark": "no"` coercing a credit ON is exactly the
+ * parse-don't-coerce failure CLAUDE.md forbids; for an opt-in credit, off is
+ * the only safe reading of anything malformed. Pure so the whole
+ * flag × config matrix is testable without a config file on disk.
+ */
+export function resolveWatermark(
+  flag: boolean | undefined,
+  configValue: boolean | undefined,
+): boolean {
+  return flag ?? configValue === true;
 }
 
 function sha1File(path: string): Promise<string> {
@@ -1961,6 +1986,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
+  // Resolved HERE, next to the props it feeds, and announced when on — the
+  // one ▸ line is how a config-sourced credit stays visible per run instead
+  // of surprising the author on upload.
+  const watermark = resolveWatermark(opts.watermark, cfg.watermark);
+  if (watermark) {
+    console.log(
+      `▸ watermark: "made with ossclip" in the top-left safe area` +
+        `${opts.watermark === undefined ? " (from config; --no-watermark overrides)" : ""}`,
+    );
+  }
+
   const props = {
     videoFileName: basename(renderVideo),
     spans: [...map.spans],
@@ -2017,6 +2053,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     ...(opts.sourceFit === "contain"
       ? { sourceFit: "contain" as const, sourceSize: content }
       : {}),
+    // Written only when ON, matching the field's absent-means-off contract:
+    // an off run's render-props.json stays byte-identical to a pre-watermark
+    // one, so nothing downstream can tell the feature ever shipped.
+    ...(watermark ? { watermark: true } : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 
@@ -2186,9 +2226,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // recordedProduceArgs prefers the argv the re-entry stashed and falls back
   // to process.argv for a directly typed `ossclip produce …`, which stays
   // byte-identical to what was always recorded.
+  // Watermark pin, same §75 shape: a config-sourced ON (flag untyped) exists
+  // only in THIS machine's ~/.ossclip/config.json — a replay elsewhere would
+  // silently drop the credit. Pinned as the RESOLVED value; a typed flag is
+  // already in the argv and the includes-guard leaves it alone. Off needs no
+  // pin: off is the universal default, so an argv without the flag replays
+  // identically everywhere.
   const recordedArgs = recordedProduceArgs({
     llm: provider ? providerName : undefined,
     clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
+    watermark: watermark || undefined,
   });
   await writeFile(
     join(work, "command.json"),

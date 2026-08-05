@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, EdlVideo, SceneLayer, VideoStage } from "@ossclip/scenes";
+import { CaptionTrack, EdlVideo, SceneLayer, VideoStage, Watermark, showWatermark } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -67,6 +67,13 @@ export interface ProductionCompProps {
    * Requires `sourceSize`; without it there is nothing to fit.
    */
   sourceFit?: "cover" | "contain";
+  /**
+   * OPT-IN "made with ossclip" credit (`--watermark` / config `watermark`).
+   * Optional and absent-means-off so every pre-watermark render-props.json
+   * parses and renders unchanged; strict `=== true` at the render gate
+   * (`showWatermark`) so a hand-edited non-boolean can't coerce a credit on.
+   */
+  watermark?: boolean;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -87,6 +94,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   captionLines,
   sceneCues,
   theme,
+  settings,
   face,
   zoomPlan,
   ctaKeyword,
@@ -96,6 +104,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   sourceSize,
   contentCropMode,
   sourceFit,
+  watermark,
 }) => {
   if (!videoFileName) {
     return (
@@ -148,6 +157,14 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         ctaWindow={ctaWindow}
         sourceTextRegions={sourceTextRegions}
       />
+      {/* Its own TOP layer, above scenes and captions: the credit must never
+          be occluded by a graphic, and living outside SceneLayer keeps it out
+          of the editor's cue-driven world entirely (see Watermark.tsx for the
+          hit-testing reasoning). Sized from `settings` so both shapes place
+          it inside their own safe area. */}
+      {showWatermark(watermark) ? (
+        <Watermark theme={theme} frame={{ width: settings.width, height: settings.height }} />
+      ) : null}
     </AbsoluteFill>
   );
 };

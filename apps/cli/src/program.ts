@@ -249,6 +249,16 @@ export function buildProgram(): Command {
         "the last complete attempt — the flub the speaker did NOT mark. Off by default",
       false,
     )
+    // Declared as the same tri-state pair as --open-editor/--no-open-editor:
+    // positive first so commander's default stays undefined ("not typed"),
+    // which is what lets the config supply the default while a typed
+    // --no-watermark still beats a config-on.
+    .option(
+      "--watermark",
+      'credit the tool: a small "made with ossclip" wordmark in the top-left safe area ' +
+        "(set it once with watermark: true in ~/.ossclip/config.json)",
+    )
+    .option("--no-watermark", "no wordmark, even when the config turns it on")
     .option("--no-cover", "skip the cover image written beside the video")
     .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
     .option("--open-editor", "open the editor when the run finishes")
@@ -345,6 +355,8 @@ export function buildProgram(): Command {
         blooperMarker: opts.blooperMarker,
         collapseRetakes: opts.collapseRetakes,
         sourceFit,
+        // undefined = "not typed", so produce can let the config decide.
+        watermark: opts.watermark,
         cover: opts.cover !== false,
         coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
         clip: opts.clip,

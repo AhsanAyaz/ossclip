@@ -79,6 +79,31 @@ describe("recordedProduceArgs (§129)", () => {
       "3:99",
     ]);
   });
+
+  // The watermark pin (same §75 shape as --llm): a config-sourced ON exists
+  // only in this machine's ~/.ossclip/config.json, so command.json must
+  // carry the resolved flag or a replay elsewhere silently drops the credit.
+  it("pins a config-sourced --watermark into the record", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ watermark: true })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--watermark",
+    ]);
+  });
+
+  it("never doubles a --watermark the user already typed", () => {
+    setReplayArgv(["produce", "./a.mp4", "--watermark"]);
+    const rec = recordedProduceArgs({ watermark: true });
+    expect(rec.filter((a) => a === "--watermark")).toHaveLength(1);
+  });
+
+  // Off is the universal default: no pin is passed, and the record stays
+  // byte-identical to a pre-watermark one.
+  it("pins nothing when the watermark is off", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
+  });
 });
 
 describe("program.ts stashes at re-entry (§129)", () => {

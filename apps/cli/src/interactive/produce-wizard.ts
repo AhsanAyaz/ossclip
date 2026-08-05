@@ -4,12 +4,13 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Thirty flags (plus the positional input path) sorted
- * into three tiers: six prompts asked directly — the input path, plus five
- * flags (--out, --cleanup, --aspect, --produce, --intent) — eight behind one
- * "anything else?" multiselect, and the remaining seventeen stay flags-only:
- * debug/internal surfaces, replay-only fields, or (final-review fix wave,
- * Finding 1) --sort. A folder's clip order only means anything once the
+ * The produce wizard. Thirty-two flags (plus the positional input path)
+ * sorted into three tiers: six prompts asked directly — the input path, plus
+ * five flags (--out, --cleanup, --aspect, --produce, --intent) — nine behind
+ * one "anything else?" multiselect, and the remaining stay flags-only:
+ * debug/internal surfaces, replay-only fields, --no-watermark (the
+ * multiselect only turns the credit ON; off is already the default), or
+ * (final-review fix wave, Finding 1) --sort. A folder's clip order only means anything once the
  * folder has been enumerated, and that enumeration happens inside
  * `produce()` — after the wizard has already returned argv — so there is
  * nothing for a prompt to offer a choice about beforehand. --sort stays
@@ -34,6 +35,7 @@ const EXTRAS = [
     hint: "--collapse-retakes",
   },
   { value: "sourceIsEdited", label: "Source already has burned-in text", hint: "--source-is-edited" },
+  { value: "watermark", label: 'Credit the tool with a small "made with ossclip"', hint: "--watermark" },
   { value: "llm", label: "Choose the LLM provider", hint: "--llm" },
 ] as const;
 
@@ -216,6 +218,7 @@ export async function produceWizard(
   if (chosen.includes("sourceFit")) extras.sourceFit = "contain";
   if (chosen.includes("collapseRetakes")) extras.collapseRetakes = true;
   if (chosen.includes("sourceIsEdited")) extras.sourceIsEdited = true;
+  if (chosen.includes("watermark")) extras.watermark = true;
   if (chosen.includes("speaker")) {
     extras.speaker = unwrap(
       await text({

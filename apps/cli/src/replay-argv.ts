@@ -48,13 +48,25 @@ export function consumeReplayArgv(): string[] | null {
  * `includes` so a flag the user actually typed — or a pin recorded by the
  * run a replay is re-running — is never appended twice.
  */
-export function recordedProduceArgs(pins: { llm?: string; clipWindow?: string }): string[] {
+export function recordedProduceArgs(pins: {
+  llm?: string;
+  clipWindow?: string;
+  watermark?: boolean;
+}): string[] {
   const args = consumeReplayArgv() ?? process.argv.slice(2);
   if (pins.llm !== undefined && !args.includes("--llm")) {
     args.push("--llm", pins.llm);
   }
   if (pins.clipWindow !== undefined && !args.includes("--clip-window")) {
     args.push("--clip-window", pins.clipWindow);
+  }
+  // The config-sourced watermark, pinned like §75 pinned the provider: the
+  // replay may run on a machine whose ~/.ossclip/config.json never turned it
+  // on, and the credit would silently vanish from the re-render. The
+  // --no-watermark guard is belt-and-braces — a typed --no-watermark means
+  // the resolved value was false and no pin is passed at all.
+  if (pins.watermark === true && !args.includes("--watermark") && !args.includes("--no-watermark")) {
+    args.push("--watermark");
   }
   return args;
 }

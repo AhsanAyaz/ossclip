@@ -15,6 +15,10 @@ export interface ProduceExtras {
   blooperMarker?: string;
   collapseRetakes?: boolean;
   sourceIsEdited?: boolean;
+  /** Opt-in "made with ossclip" credit. The wizard only ever turns it ON —
+   * off is the default, and a config-on user who wants it off for one run
+   * types `--no-watermark`, a flags-only surface like --sort. */
+  watermark?: boolean;
   llm?: "claude" | "claude-cli" | "gemini" | "mock";
 }
 
@@ -57,6 +61,7 @@ export function produceArgv(a: ProduceAnswers): string[] {
   if (e.blooperMarker) argv.push("--blooper-marker", e.blooperMarker);
   if (e.collapseRetakes === true) argv.push("--collapse-retakes");
   if (e.sourceIsEdited === true) argv.push("--source-is-edited");
+  if (e.watermark === true) argv.push("--watermark");
   if (e.llm) argv.push("--llm", e.llm);
 
   return argv;

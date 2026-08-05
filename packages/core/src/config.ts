@@ -30,6 +30,14 @@ export interface OssclipConfig {
    * user picks one of its "stop asking" answers.
    */
   openEditorAfterProduce?: OpenEditorPref;
+  /**
+   * Opt-in "made with ossclip" wordmark on every produce run, so voluntary
+   * attribution is a one-time config write instead of a flag remembered per
+   * run. DEFAULT OFF for everyone — a forced watermark on an open-source
+   * tool reads as a free-tier limitation, and this is a credit, not one.
+   * `--watermark` / `--no-watermark` win over this per run.
+   */
+  watermark?: boolean;
   browserExecutable?: string;
   /**
    * USD per million tokens, keyed by model id or family substring — overrides
@@ -108,6 +116,12 @@ export function loadConfig(): OssclipConfig {
     openEditorAfterProduce: (process.env.OSSCLIP_OPEN_EDITOR ??
       fileCfg.openEditorAfterProduce) as OpenEditorPref | undefined,
     browserExecutable: process.env.OSSCLIP_BROWSER ?? fileCfg.browserExecutable,
+    // File-only, like `pricing`: an env spelling would arrive as a string,
+    // and "false" is truthy — parse-don't-coerce says no such trap. The
+    // strict `=== true` check lives at the consumer (produce's
+    // resolveWatermark), so a hand-edited non-boolean stays OFF, the safe
+    // default for a credit.
+    watermark: fileCfg.watermark,
     pricing: fileCfg.pricing,
   };
 }
