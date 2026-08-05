@@ -130,6 +130,105 @@ describe("findRetakeGroups: partial attempts", () => {
     expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That could be the exit condition.");
     expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That could be the exit");
   });
+
+  /**
+   * Audit fix (Important 2): the tests above manufacture real inter-word
+   * gaps, but whisper `-ml 1` emits CONTIGUOUS stamps (`parseWhisperJson`
+   * clamps `next.start = w.end`; FINDINGS §18) — a field probe of a real
+   * transcript measured 241 of 254 inter-word gaps at exactly zero, so the
+   * gap-based restart trigger alone never fires mid-sentence there. The
+   * pause survives in `analysis.silences` instead, stamped INSIDE a
+   * stretched word interval. These fixtures build words the way
+   * `parseWhisperJson` emits them — zero gaps, dead air absorbed into the
+   * stamps — and prove the partial-restart case still fires.
+   */
+  it("contiguous stamps: a restart pause stamped into a word's own tail still splits and collapses", () => {
+    // "That could be the exit [0.5s pause] That could be the exit condition."
+    // — word 4's stamp stretches over the dead air (audio ~1.6-2.0, silence
+    // 2.0-2.5), and every inter-word gap is exactly zero.
+    const words: Word[] = [
+      { text: "That", start: 0.0, end: 0.4 },
+      { text: "could", start: 0.4, end: 0.8 },
+      { text: "be", start: 0.8, end: 1.2 },
+      { text: "the", start: 1.2, end: 1.6 },
+      { text: "exit", start: 1.6, end: 2.5 },
+      { text: "That", start: 2.5, end: 2.9 },
+      { text: "could", start: 2.9, end: 3.3 },
+      { text: "be", start: 3.3, end: 3.7 },
+      { text: "the", start: 3.7, end: 4.1 },
+      { text: "exit", start: 4.1, end: 4.5 },
+      { text: "condition.", start: 4.5, end: 4.9 },
+    ];
+    for (let i = 1; i < words.length; i++) expect(words[i]!.start).toBe(words[i - 1]!.end);
+    const transcript: Transcript = { language: "en", words };
+    const analysis = analyze(transcript, [{ start: 2.0, end: 2.5 }], 5.4);
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That could be the exit");
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That could be the exit condition.");
+  });
+
+  it("contiguous stamps: a pause straddling the boundary of two zero-gap stamps splits after the earlier word", () => {
+    const words: Word[] = [
+      { text: "That", start: 0.0, end: 0.4 },
+      { text: "could", start: 0.4, end: 0.8 },
+      { text: "be", start: 0.8, end: 1.2 },
+      { text: "the", start: 1.2, end: 1.6 },
+      { text: "exit", start: 1.6, end: 2.5 },
+      { text: "That", start: 2.5, end: 2.9 },
+      { text: "could", start: 2.9, end: 3.3 },
+      { text: "be", start: 3.3, end: 3.7 },
+      { text: "the", start: 3.7, end: 4.1 },
+      { text: "exit", start: 4.1, end: 4.5 },
+      { text: "condition.", start: 4.5, end: 4.9 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    // 0.4s of dead air crossing the word-4/word-5 stamp boundary at 2.5 —
+    // neither side alone holds RESTART_SPLIT_MIN_SIL of it.
+    const analysis = analyze(transcript, [{ start: 2.2, end: 2.6 }], 5.4);
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That could be the exit");
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That could be the exit condition.");
+  });
+
+  it("contiguous stamps: a trailing pause stamped into the sentence-final word's tail does NOT fragment the sentence", () => {
+    // The field probe's "Linux."/"gate." shape: the pause AFTER a finished
+    // sentence gets absorbed into the final word's stretched stamp. A split
+    // displaced one word left here would shear "condition." off the second
+    // take, cut the take's body against the first, and leave the orphaned
+    // final word behind — a wrong cut in the middle of a legitimate retake.
+    const words: Word[] = [
+      { text: "That", start: 0.0, end: 0.4 },
+      { text: "is", start: 0.4, end: 0.8 },
+      { text: "the", start: 0.8, end: 1.2 },
+      { text: "exit", start: 1.2, end: 1.6 },
+      { text: "condition.", start: 1.6, end: 2.0 },
+      { text: "That", start: 2.0, end: 2.4 },
+      { text: "is", start: 2.4, end: 2.8 },
+      { text: "the", start: 2.8, end: 3.2 },
+      { text: "exit", start: 3.2, end: 3.6 },
+      // Final word's stamp stretches over the 0.5s pause that follows the
+      // finished sentence (audio ~3.6-4.0, dead air 4.0-4.5).
+      { text: "condition.", start: 3.6, end: 4.5 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const analysis = analyze(transcript, [{ start: 4.0, end: 4.5 }], 5.0);
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    // The whole second take is kept intact — not sheared before "condition."
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That is the exit condition.");
+    expect(g.kept!.startWord).toBe(5);
+    expect(g.kept!.endWord).toBe(9);
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("That is the exit condition.");
+    expect(g.undecided).toEqual([]);
+  });
 });
 
 /**
@@ -166,6 +265,68 @@ describe("findRetakeGroups: a longer continuation is not a retake of a shorter l
       "That is the exit condition. That is the exit condition and there is more context here",
     );
     expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+});
+
+/**
+ * Audit fix (Critical, verified by execution) — the wildcard-bridge failure.
+ * Matching is non-transitive: an abandoned 3-token fragment prefix-scores 1.0
+ * against ANY sentence sharing its opening, so with the old rules it could
+ * become the anchor and bridge two genuinely different sentences into one
+ * chain, and `buildGroup` then cut every chain member without re-checking any
+ * of them against the instance actually kept. Two layers of defense, both
+ * pinned here: (a) an incomplete fragment never becomes the anchor, and (b)
+ * a member is only CUT if it clears RETAKE_SIM_THRESHOLD against the KEPT
+ * instance — below that it goes to `undecided`, report-only.
+ */
+describe("findRetakeGroups: wildcard-bridge and chain-drift (non-transitive matching)", () => {
+  it("bridge shape: an abandoned fragment must not chain two distinct sentences — the distinct one survives", () => {
+    // Executed proof shape: "Let me show you this." / "Let me show" (abandoned,
+    // 0.5s pause) / "Let me show you how deploys work here." — the old anchor
+    // rule made the fragment the anchor, the prefix rule scored the distinct
+    // closing sentence 1.0 against it, and the first REAL sentence was cut at
+    // a printed 50% match.
+    const { transcript, analysis } = speak(
+      "Let me show you this. Let me show Let me show you how deploys work here.",
+      { 7: 0.5 },
+    );
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    // The fragment is a true retake of the first sentence: that pair collapses.
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("Let me show you this.");
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe("Let me show");
+    // The DISTINCT sentence never enters the group at all — not cut, not
+    // undecided, untouched.
+    const touched = [...g.cuts, ...g.undecided];
+    for (const t of touched) expect(t.startWord).toBeLessThan(8);
+    expect(g.undecided).toEqual([]);
+  });
+
+  it("drift shape: no chain member is ever cut below RETAKE_SIM_THRESHOLD against the KEPT instance", () => {
+    // Each adjacent pair clears 0.8, but the endpoints score 0.4 — with the
+    // old buildGroup the first take was cut at a printed 40% match.
+    const { transcript, analysis } = speak(
+      "Alpha bravo charlie delta echo. Alpha bravo charlie delta foxtrot. " +
+        "Alpha bravo charlie golf foxtrot. Alpha bravo hotel golf foxtrot.",
+    );
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    // Keep-last still holds: the final take is the survivor.
+    expect(g.kept!.endWord).toBe(transcript.words.length - 1);
+    // Every actual cut cleared the threshold against the kept instance.
+    for (const c of g.cuts) expect(c.similarity).toBeGreaterThanOrEqual(RETAKE_SIM_THRESHOLD);
+    // The first take (0.4 vs kept) was NOT cut — it drifted out of range and
+    // is reported as undecided instead, with its similarity for the report.
+    expect(g.cuts.some((c) => c.startWord === 0)).toBe(false);
+    const first = g.undecided.find((u) => u.startWord === 0);
+    expect(first).toBeDefined();
+    expect(first!.similarity).toBeLessThan(RETAKE_SIM_THRESHOLD);
+    // The report spares them out loud rather than going silent.
+    const report = formatRetakeGroup(transcript, g);
+    expect(report).toContain("not cut");
   });
 });
 
@@ -348,7 +509,11 @@ describe("findRetakeGroups: hallucination guard", () => {
 
   it("boundary pin: silenceFrac just under HALLUCINATION_SILENCE_FRAC is a normal retake, not a hallucination", () => {
     // 0.64 fraction silence — a real (if gappy) attempt, must be cut as an
-    // ordinary earlier duplicate, not flagged as hallucinated.
+    // ordinary earlier duplicate, not flagged as hallucinated. The gappy
+    // instance is the EARLIER one here (audit fix, §128): a gappy LAST
+    // instance now fails the survivor bar and goes report-only instead — the
+    // shape the survivor-bar tests below pin — so this test keeps the
+    // hallucination boundary itself isolated from that rule.
     const words: Word[] = [
       { text: "That", start: 0, end: 0.3 },
       { text: "is", start: 0.3, end: 0.5 },
@@ -363,14 +528,22 @@ describe("findRetakeGroups: hallucination guard", () => {
     ];
     const transcript: Transcript = { language: "en", words };
     const duration = 3.9;
-    // Second instance spans 2.0-3.4 (1.4s); pack it with 0.64 * 1.4 = 0.896s
-    // of silence via one span landing inside it.
-    const silences: Span[] = [{ start: 2.0, end: 2.896 }];
+    // First instance spans 0-1.4 (1.4s); pack it with 0.64 * 1.4 = 0.896s of
+    // silence via four sub-0.35s spans, so none of them is itself a restart-
+    // split candidate — the fraction is the thing under test, not the split.
+    const silences: Span[] = [
+      { start: 0.05, end: 0.274 },
+      { start: 0.35, end: 0.574 },
+      { start: 0.65, end: 0.874 },
+      { start: 0.95, end: 1.174 },
+    ];
     const analysis = analyze(transcript, silences, duration);
     const g = findRetakeGroups(transcript, analysis)[0]!;
     expect(g.hallucinated).toEqual([]);
     expect(g.cuts).toHaveLength(1);
     expect(g.cuts[0]!.similarity).toBeGreaterThanOrEqual(RETAKE_SIM_THRESHOLD);
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe("That is the exit condition.");
+    expect(g.kept!.startWord).toBe(5);
   });
 
   it("boundary pin: silenceFrac just over HALLUCINATION_SILENCE_FRAC is hallucinated, not cut", () => {
@@ -440,6 +613,52 @@ describe("findRetakeGroups: hallucination guard", () => {
     const report = formatRetakeGroup(transcript, g);
     expect(report).toContain("no cut");
     expect(report).toMatch(/attempt.*"That is the exit condition\."/);
+  });
+
+  /**
+   * Audit fix (Important 3, executed shape): the old survivor scan fell back
+   * to an EARLIER complete instance when the last one failed the bar —
+   * silently inverting keep-last at a printed 100% match, with no report
+   * hint. Decided resolution: when the LAST complete instance fails the bar,
+   * the group goes report-only even if an earlier instance passes — zero
+   * cuts, every instance listed with its silenceFrac and a line saying why
+   * nothing was decided.
+   */
+  it("survivor-bar inversion: last complete at 0.375 with a clean earlier attempt — report-only, nothing cut", () => {
+    const words: Word[] = [
+      { text: "That", start: 0, end: 0.3 },
+      { text: "is", start: 0.3, end: 0.5 },
+      { text: "the", start: 0.5, end: 0.7 },
+      { text: "exit", start: 0.7, end: 1.0 },
+      { text: "condition.", start: 1.0, end: 1.4 },
+      { text: "That", start: 2.0, end: 2.3 },
+      { text: "is", start: 2.3, end: 2.5 },
+      { text: "the", start: 2.5, end: 2.7 },
+      { text: "exit", start: 2.7, end: 3.0 },
+      { text: "condition.", start: 3.0, end: 3.4 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 3.9;
+    // Last instance spans 2.0-3.4 (1.4s): 0.375 * 1.4 = 0.525s of silence,
+    // split across two sub-0.35s spans so neither is a restart-split
+    // candidate — just over the survivor bar. The earlier attempt is clean.
+    const silences: Span[] = [
+      { start: 2.05, end: 2.3125 },
+      { start: 2.6, end: 2.8625 },
+    ];
+    const analysis = analyze(transcript, silences, duration);
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.kept).toBeNull();
+    expect(g.cuts).toEqual([]);
+    expect(g.undecided).toHaveLength(2);
+    const fracs = g.undecided.map((u) => Math.round(u.silenceFrac * 100)).sort((a, b) => a - b);
+    expect(fracs).toEqual([0, 37]); // 0.525/1.4 rounds down a hair in float — still over the 0.35 bar
+    const report = formatRetakeGroup(transcript, g);
+    expect(report).toContain("no cut");
+    expect(report).toMatch(/attempt \(0% silence\): "That is the exit condition\."/);
+    expect(report).toMatch(/attempt \(37% silence\): "That is the exit condition\."/);
   });
 });
 

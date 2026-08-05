@@ -80,21 +80,30 @@ export interface RetakeHallucination extends RetakeInstance {
 /** A real instance reported without a cut/keep decision — see `RetakeGroup.kept`. */
 export interface RetakeUndecided extends RetakeInstance {
   silenceFrac: number;
+  /**
+   * Present when the instance sat in a chain WITH a kept survivor but scored
+   * below RETAKE_SIM_THRESHOLD against it (§128's cut-validation rule): the
+   * report needs the number to say why this member was spared, and
+   * `silenceFrac` isn't the reason in that case — the similarity is.
+   */
+  similarity?: number;
 }
 
 /**
  * One chain of matching attempts at the same line.
  *
- * `kept` is `null` when NO complete instance in the chain clears the
- * RESTART_SPLIT_MIN_SIL survivor bar — never cut, never keep, the same
- * posture the hallucination guard already takes, and for the same reason:
- * electing a "least-bad" survivor here risks keeping the gappiest, least
- * trustworthy instance in the chain over a cleaner earlier one (review fix —
- * the previous last-complete fallback could keep a 0.60-silenceFrac instance
- * and cut a 0.40 one, backwards from what the guard exists to prevent).
+ * `kept` is `null` when the chain's LAST complete instance fails the
+ * RESTART_SPLIT_MIN_SIL survivor bar — including when no complete instance
+ * exists at all. Never cut, never keep, the same posture the hallucination
+ * guard already takes, and for the same reason: electing any OTHER survivor
+ * silently inverts keep-last (audit fix, §128 — a last complete instance at
+ * 0.375 silenceFrac was dropped in favor of an earlier cleaner attempt at a
+ * printed 100% match, with no hint the documented convention had flipped).
  * `cuts` is empty in that case and every real instance in the chain is
  * listed in `undecided` instead, so the report can say WHY nothing was
- * decided rather than going silent.
+ * decided rather than going silent. When a survivor IS kept, `undecided`
+ * holds any chain member that scored below RETAKE_SIM_THRESHOLD against it
+ * (see `buildGroup`) — reported, never cut.
  */
 export interface RetakeGroup {
   kept: RetakeInstance | null;
@@ -251,13 +260,49 @@ function buildInstances(
     // hallucinated stretch is instead emitted whole, as one instance, and
     // caught by the ordinary per-instance hallucination check below.
     const wholeFrac = silenceFraction(analysis.silences, words[sent.start]!.start, words[sent.end]!.end);
-    const splitAfter: number[] = [];
+    const splitAfterSet = new Set<number>();
     if (wholeFrac < HALLUCINATION_SILENCE_FRAC) {
+      // Gap-based boundary: a real inter-word gap, where one exists, is still
+      // direct evidence of a pause. Kept even though it is nearly inert on
+      // field transcripts (below): it costs nothing and the test fixtures
+      // that predate the field probe still describe a legal input shape.
       for (let i = sent.start; i < sent.end; i++) {
         const gapDur = silenceOverlap(analysis.silences, words[i]!.end, words[i + 1]!.start);
-        if (gapDur >= RESTART_SPLIT_MIN_SIL) splitAfter.push(i);
+        if (gapDur >= RESTART_SPLIT_MIN_SIL) splitAfterSet.add(i);
+      }
+      // Stamp-based boundary (§128, audit fix): whisper `-ml 1` emits
+      // contiguous stamps — `parseWhisperJson` clamps `next.start = w.end` —
+      // so on a real transcript ~95% of inter-word gaps are exactly zero and
+      // the gap check above never sees a mid-sentence restart pause. The
+      // pause is still in the audio: stamps stretch over dead air (the same
+      // physics the hallucination guard exploits), so `analysis.silences` is
+      // read directly against the STAMPED word intervals instead. A silence
+      // span overlapping this sentence by at least RESTART_SPLIT_MIN_SIL
+      // marks a candidate split after the last word whose stamp begins
+      // before the silence does — that word's audio is the last thing said
+      // before the pause, whether the dead air was stamped into its own
+      // tail, across two contiguous stamps, or into the next word's head.
+      const sentStartSec = words[sent.start]!.start;
+      const sentEndSec = words[sent.end]!.end;
+      for (const s of analysis.silences) {
+        const lo = Math.max(s.start, sentStartSec);
+        const hi = Math.min(s.end, sentEndSec);
+        if (hi - lo < RESTART_SPLIT_MIN_SIL) continue;
+        // The scan INCLUDES the sentence-final word: a trailing inter-
+        // sentence pause is routinely stamped into that word's stretched
+        // tail (the field probe's "Linux."/"gate." shape), and excluding it
+        // would displace the split one word left — fragmenting a perfectly
+        // good sentence around a pause that is actually AFTER it. A split
+        // that lands after the final word is a no-op and is dropped.
+        let after = -1;
+        for (let i = sent.start; i <= sent.end; i++) {
+          if (words[i]!.start < s.start) after = i;
+          else break;
+        }
+        if (after >= sent.start && after < sent.end) splitAfterSet.add(after);
       }
     }
+    const splitAfter = [...splitAfterSet].sort((a, b) => a - b);
     let fragStart = sent.start;
     for (const at of splitAfter) {
       instances.push(toInstance(fragStart, at, false));
@@ -322,34 +367,58 @@ function toPublic(i: Instance): RetakeInstance {
 }
 
 /**
- * Kept = the LAST live complete instance whose own silenceFrac clears the
- * stricter RESTART_SPLIT_MIN_SIL survivor bar. When NO complete instance
- * clears it — including when the chain has no complete instance at all —
- * the group goes report-only: `kept` is null, nothing cuts, and every real
- * instance is returned in `undecided` with its own silenceFrac. Keep-last is
- * a documented convention, not a proof (PHASE1-FINDINGS.md §128's known
- * limits), and falling back to "last complete regardless" when the bar
- * rejects everyone silently picks the gappiest instance available — exactly
- * the failure the bar exists to catch, just moved one level up.
+ * Kept = the LAST live complete instance, and ONLY if its own silenceFrac
+ * clears the stricter RESTART_SPLIT_MIN_SIL survivor bar. When it fails —
+ * or the chain has no complete instance at all — the group goes report-only:
+ * `kept` is null, nothing cuts, and every real instance is returned in
+ * `undecided` with its own silenceFrac. Never fall back to an EARLIER
+ * complete instance (audit fix, §128): electing one silently inverts
+ * keep-last — a last complete take at silenceFrac 0.375 was dropped for an
+ * earlier cleaner attempt at a printed 100% match, with nothing in the
+ * report saying the documented convention had flipped. Keep-last is a
+ * convention, not a proof (§128's known limits), so when the bar rejects
+ * the one instance the convention names, the honest move is to decide
+ * nothing and say why.
+ *
+ * Cut-validation rule (audit fix, §128 — the wildcard-bridge failure):
+ * chain membership alone is NOT permission to cut. Matching is
+ * non-transitive — a 3-token abandoned fragment scores 1.0 against ANY
+ * sentence sharing its opening (the prefix rule), so a chain can drift or
+ * bridge across genuinely different sentences. Every member is re-scored
+ * against the actual KEPT instance, and only those clearing
+ * RETAKE_SIM_THRESHOLD are cut; the rest go to `undecided` (report-only) —
+ * executed proof: "Let me show you this." / "Let me show—" / "Let me show
+ * you how deploys work here." cut the first REAL, DISTINCT sentence at a
+ * printed 50% match before this rule existed.
  */
 function buildGroup(chain: readonly Instance[], hallucinated: readonly Instance[]): RetakeGroup {
   const completes = chain.filter((i) => i.complete);
-  const kept = [...completes].reverse().find((i) => i.silenceFrac <= RESTART_SPLIT_MIN_SIL);
+  const lastComplete = completes[completes.length - 1];
+  const kept =
+    lastComplete !== undefined && lastComplete.silenceFrac <= RESTART_SPLIT_MIN_SIL
+      ? lastComplete
+      : undefined;
   const hallu: RetakeHallucination[] = hallucinated.map((i) => ({
     ...toPublic(i),
     silenceFrac: i.silenceFrac,
   }));
-  if (!kept) {
+  if (kept === undefined) {
     const undecided: RetakeUndecided[] = chain.map((i) => ({
       ...toPublic(i),
       silenceFrac: i.silenceFrac,
     }));
     return { kept: null, cuts: [], hallucinated: hallu, undecided };
   }
-  const cuts: RetakeCut[] = chain
-    .filter((i) => i !== kept)
-    .map((i) => ({ ...toPublic(i), similarity: rawSimilarity(i, kept) }));
-  return { kept: toPublic(kept), cuts, hallucinated: hallu, undecided: [] };
+  const cuts: RetakeCut[] = [];
+  const undecided: RetakeUndecided[] = [];
+  for (const i of chain) {
+    if (i === kept) continue;
+    const sim = matchScore(i, kept);
+    if (sim !== null) cuts.push({ ...toPublic(i), similarity: sim });
+    else
+      undecided.push({ ...toPublic(i), silenceFrac: i.silenceFrac, similarity: rawSimilarity(i, kept) });
+  }
+  return { kept: toPublic(kept), cuts, hallucinated: hallu, undecided };
 }
 
 /**
@@ -359,10 +428,20 @@ function buildGroup(chain: readonly Instance[], hallucinated: readonly Instance[
  * reason as `findBloopSpans` (§122): the repair pass reads a stray restart as
  * an oddity and would rewrite the very pattern this is looking for.
  *
- * Chaining rule: comparison is always against the last LIVE (non-hallucinated,
- * non-empty) real instance — call it the anchor. Anything that MATCHES the
- * anchor extends the same chain and becomes the new anchor (three-take and
- * beyond). Anything that does NOT match starts a fresh anchor, which is what
+ * Chaining rule: comparison is always against the anchor — the last LIVE
+ * (non-hallucinated, non-empty) COMPLETE instance in the chain, or the
+ * instance that founded the chain when nothing complete has joined yet.
+ * Anything that MATCHES the anchor extends the same chain, and becomes the
+ * new anchor only if it is itself COMPLETE (three-take and beyond). An
+ * incomplete fragment is matchable and cuttable but NEVER becomes the anchor
+ * (audit fix, §128 — the wildcard-bridge failure): its 3-token opening
+ * scores 1.0 against ANY sentence starting the same way, so letting it
+ * anchor turned an abandoned "Let me show—" into a bridge that chained two
+ * genuinely different sentences together and cut one of them. The
+ * partial-then-complete ordering still works: a partial can FOUND a chain as
+ * its original anchor, and the complete take arriving after it matches (the
+ * prefix rule) and takes over as anchor. Anything that does NOT match the
+ * anchor starts a fresh one, which is what
  * makes an unrelated sentence in between BLOCK a chain: the next candidate is
  * compared against the un-matching sentence, not the earlier attempt behind
  * it. Filler-only and marker-only instances (zero tokens after normalizing)
@@ -405,7 +484,10 @@ export function findRetakeGroups(
     if (anchor && matchScore(anchor, inst) !== null) {
       if (chain.length === 0) chain.push(anchor);
       chain.push(inst);
-      anchor = inst;
+      // §128 wildcard-bridge fix: only a COMPLETE instance may take over as
+      // anchor — an incomplete fragment's prefix-matched opening must not
+      // become the thing the NEXT sentence is compared against.
+      if (inst.complete) anchor = inst;
       continue;
     }
     finalize();
@@ -422,11 +504,14 @@ export function findRetakeGroups(
  * silence fraction), quoting the actual words — same audit-trail reasoning as
  * `formatBloopSpan`, sharper here because nothing SAID this was a retake.
  *
- * `group.kept === null` is the report-only case: no complete instance
- * cleared the survivor bar, so nothing was cut OR kept — every real instance
- * is listed with its own silenceFrac instead, same shape as the
- * hallucination lines, so the report says WHY nothing was decided rather
- * than going silent.
+ * `group.kept === null` is the report-only case: the LAST complete attempt
+ * (or the whole chain, when nothing complete exists) failed the survivor
+ * bar, so nothing was cut OR kept — every real instance is listed with its
+ * own silenceFrac instead, same shape as the hallucination lines, so the
+ * report says WHY nothing was decided rather than going silent. With a
+ * survivor, `undecided` members (below-threshold against the kept — §128's
+ * cut-validation rule) are listed with their similarity for the same reason:
+ * a spared member the user can see beats a wrong cut nobody can.
  */
 export function formatRetakeGroup(transcript: Transcript, group: RetakeGroup): string {
   const said = (i: RetakeInstance): string =>
@@ -437,7 +522,7 @@ export function formatRetakeGroup(transcript: Transcript, group: RetakeGroup): s
   const lines: string[] = [];
   if (group.kept === null) {
     lines.push(
-      "no cut: no attempt's own dead-air fraction cleared the survivor bar — reporting every attempt instead of guessing which one is real",
+      "no cut: the last complete attempt's own dead-air fraction failed the survivor bar — reporting every attempt instead of guessing which one is real",
     );
     for (const u of group.undecided) {
       lines.push(`  attempt (${Math.round(u.silenceFrac * 100)}% silence): "${said(u)}"`);
@@ -446,6 +531,11 @@ export function formatRetakeGroup(transcript: Transcript, group: RetakeGroup): s
     lines.push(`kept: "${said(group.kept)}"`);
     for (const c of group.cuts) {
       lines.push(`  cut (${Math.round(c.similarity * 100)}% match): "${said(c)}"`);
+    }
+    for (const u of group.undecided) {
+      lines.push(
+        `  not cut (${Math.round((u.similarity ?? 0) * 100)}% match to the kept take — below the cut floor): "${said(u)}"`,
+      );
     }
   }
   for (const h of group.hallucinated) {
