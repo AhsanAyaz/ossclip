@@ -136,6 +136,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--force-component <id>` | debug: render every graphic with one component (e.g. `FlowDiagram`) to exercise it on real copy |
 | `--source-is-edited` | the source is already an edited reel with burned-in text — keep ossclip's graphics off it (also what enables the source-text scan) |
 | `--blooper-marker <word>` | say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Off unless given |
+| `--collapse-retakes` | deterministically collapse consecutive near-identical sentences, keeping only the last complete attempt — no marker needed. Off by default |
 | `--no-cover` / `--cover <path>` | skip, or redirect, the cover image written beside the video |
 | `--no-render` | stop after writing the props |
 | `--workdir <dir>` | where the cache lives |
