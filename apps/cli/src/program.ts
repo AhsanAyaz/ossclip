@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
@@ -51,31 +51,76 @@ export function buildProgram(): Command {
   // Bare `ossclip` at a TTY opens the menu. Piped or in CI it prints help,
   // byte for byte what it printed before — a front door must not become a
   // hang for a script.
-  program.action(async () => {
-    const { isInteractive } = await import("./interactive/tty");
-    if (!isInteractive()) {
-      program.outputHelp();
-      return;
-    }
-    const { chooseFromMenu, menuArgv } = await import("./interactive/menu");
-    const choice = await chooseFromMenu();
-    const direct = menuArgv(choice);
-    const { renderCommand } = await import("./interactive/render");
-    if (direct !== null) {
-      // Echoed for the same reason the wizard echoes: the README promises
-      // "every choice prints the equivalent command before it runs, so the
-      // menu is also how you learn the flags", and three of the four entries
-      // printed nothing. The menu's whole pedagogical point is this line.
-      console.log(`\n▸ running:\n    ${renderCommand(direct)}\n`);
-      await program.parseAsync(["node", "ossclip", ...direct]);
-      return;
-    }
-    const { produceWizard } = await import("./interactive/produce-wizard");
-    const { loadConfig } = await import("@ossclip/core");
-    const argv = await produceWizard({ speaker: loadConfig().speaker });
-    console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
-    await program.parseAsync(["node", "ossclip", ...argv]);
-  });
+  //
+  // Bare `ossclip <path>` ROUTES (0.1.9 first-contact, 2026-08-05): with no
+  // argument declared here, commander's default allow-excess-args silently
+  // DROPPED the positional — `ossclip "./Anyhropic c Compiler"` opened the
+  // menu as if nothing had been typed, and the user re-answered the wizard's
+  // input prompt by hand, wrongly, with all of ~/Downloads. Commander
+  // dispatches registered subcommand names before this action ever runs, so
+  // `produce`/`edit`/… always win over path interpretation (a folder that
+  // happens to be NAMED `doctor` goes to the subcommand — acceptable);
+  // anything that lands here is a path or a typo, and a typo must be a loud
+  // error naming what was tried, never the menu.
+  program
+    .argument(
+      "[path]",
+      "an existing video file or clips folder — shorthand for `ossclip produce <path>`, " +
+        "with the wizard asking the remaining questions",
+    )
+    .action(async (path: string | undefined) => {
+      const { isInteractive } = await import("./interactive/tty");
+      if (path !== undefined) {
+        if (!existsSync(path)) {
+          throw new Error(
+            `no such file or directory: ${path}\n` +
+              "  bare `ossclip <path>` produces an existing video file or clips folder;\n" +
+              "  run `ossclip --help` for the commands.",
+          );
+        }
+        const { renderCommand } = await import("./interactive/render");
+        // Both branches hand argv back through `program.parseAsync` — the same
+        // re-entry shape as the wizard paths below, for the same reason: the
+        // zod checks in the produce action must run on this input exactly as
+        // they do on a typed command line.
+        if (!isInteractive()) {
+          // No TTY means no wizard for the remaining questions, but the input
+          // IS supplied — a piped `ossclip <path>` is `ossclip produce <path>`.
+          const direct = ["produce", path];
+          console.log(`\n▸ running:\n    ${renderCommand(direct)}\n`);
+          await program.parseAsync(["node", "ossclip", ...direct]);
+          return;
+        }
+        const { produceWizard } = await import("./interactive/produce-wizard");
+        const { loadConfig } = await import("@ossclip/core");
+        const argv = await produceWizard({ speaker: loadConfig().speaker, input: path });
+        console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
+        await program.parseAsync(["node", "ossclip", ...argv]);
+        return;
+      }
+      if (!isInteractive()) {
+        program.outputHelp();
+        return;
+      }
+      const { chooseFromMenu, menuArgv } = await import("./interactive/menu");
+      const choice = await chooseFromMenu();
+      const direct = menuArgv(choice);
+      const { renderCommand } = await import("./interactive/render");
+      if (direct !== null) {
+        // Echoed for the same reason the wizard echoes: the README promises
+        // "every choice prints the equivalent command before it runs, so the
+        // menu is also how you learn the flags", and three of the four entries
+        // printed nothing. The menu's whole pedagogical point is this line.
+        console.log(`\n▸ running:\n    ${renderCommand(direct)}\n`);
+        await program.parseAsync(["node", "ossclip", ...direct]);
+        return;
+      }
+      const { produceWizard } = await import("./interactive/produce-wizard");
+      const { loadConfig } = await import("@ossclip/core");
+      const argv = await produceWizard({ speaker: loadConfig().speaker });
+      console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
+      await program.parseAsync(["node", "ossclip", ...argv]);
+    });
 
   program
     .command("produce")
