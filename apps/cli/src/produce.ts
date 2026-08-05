@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
-import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
@@ -217,6 +217,19 @@ function sha1File(path: string): Promise<string> {
 }
 
 /**
+ * Byte-for-byte comparison, used only to decide `planScreenshotSrcCopy`'s
+ * `identical` input for a same-basename `side-images/` collision. Side
+ * images are screenshots, not multi-gigabyte video — a size check plus a
+ * full read is simpler and strictly more correct than hashing (no collision
+ * risk to reason about) at a cost this call site never notices. IO glue,
+ * kept out of the pure decision function on purpose.
+ */
+function filesIdentical(a: string, b: string): boolean {
+  if (statSync(a).size !== statSync(b).size) return false;
+  return readFileSync(a).equals(readFileSync(b));
+}
+
+/**
  * Where a run's cache/work directory lives, keyed off `identity` — the input
  * file for an ordinary run, or the FOLDER itself for `produce <folder>`
  * (folder-input-brief.md: hashing is the caller's job because the two cases
@@ -275,6 +288,62 @@ export function planRenderPublicDir(p: {
   work: string;
 }): string {
   return !p.inputIsAnalysisInput || p.mezzanineWillBuild ? p.work : dirname(p.input);
+}
+
+/** Fixed subfolder every copied side-image lands in — see `planScreenshotSrcCopy`. */
+export const SIDE_IMAGE_SUBDIR = "side-images";
+
+/**
+ * Whether an LLM-authored `ScreenshotFrame` `src` is safe to let drive
+ * filesystem access AT ALL. Checked BEFORE the accept-list lookup, not just
+ * before the copy — a crafted `src` could otherwise use `existsSync` itself
+ * as a path-existence oracle. `src` is unconstrained free text the producer
+ * invents from the transcript (R22 §112's comment on `ScreenshotFrameProps.
+ * src` — "will happily invent... from the transcript"); a value containing a
+ * path separator or a bare `.`/`..` segment is refused outright, never
+ * sanitized down to a bare name and used anyway (CLAUDE.md: values from
+ * outside are parsed, not coerced — a stripped `../../etc/passwd` silently
+ * becoming `passwd` is exactly the kind of "looks handled" bug that rule
+ * exists to prevent).
+ *
+ * Deliberately NOT enforced as a zod `.refine` on `ScreenshotFrameProps.src`
+ * itself: `produce()` legitimately writes a slash-containing `src` back into
+ * `production.json` post-copy (`side-images/<name>`, see
+ * `planScreenshotSrcCopy`), so a schema-level ban on separators would reject
+ * produce's OWN accepted output the next time it's parsed (the editor
+ * re-parses `production.json` through this same schema). The boundary that
+ * needs to refuse the LLM's raw guess is produce()'s, not the schema's.
+ */
+export function isSafeScreenshotSrc(src: string): boolean {
+  return !/[\\/]/.test(src) && src !== "." && src !== "..";
+}
+
+/**
+ * What to do with an accepted side-image that has to leave `foundDir` and
+ * land in the render's public dir. Landing inside a FIXED `side-images/`
+ * subfolder (`SIDE_IMAGE_SUBDIR`, never the public dir's root) makes a
+ * collision with a reserved pipeline filename (`mezzanine.mp4`,
+ * `source-concat.mp4`, …) impossible BY CONSTRUCTION — those artifacts never
+ * live in that subfolder — rather than something this function has to
+ * detect. Important finding (final-review fix wave, second pass on Finding 3):
+ * the original copy wrote straight to `join(publicDir, src)`, so a `src`
+ * equal to `mezzanine.mp4` silently overwrote the real mezzanine BEFORE its
+ * own `existsSync` guard ran, skipping the build and feeding a still image
+ * to the renderer as `renderVideo`; on a folder run with mezzanine off, the
+ * equivalent collision (`source-concat.mp4`) corrupted the actual analyzed
+ * source for the run and every cache reuse after it. What namespacing
+ * doesn't resolve on its own: whether the (now collision-free) destination
+ * is free, already holds the identical bytes (a re-run, or two scenes
+ * sharing one image — skip the redundant copy, still point `src` at it), or
+ * holds something else under that name (two different images that happen to
+ * share a basename — refuse rather than let the second clobber the first).
+ */
+export function planScreenshotSrcCopy(dest: {
+  exists: boolean;
+  identical: boolean;
+}): "copy" | "skip-identical" | "conflict" {
+  if (!dest.exists) return "copy";
+  return dest.identical ? "skip-identical" : "conflict";
 }
 
 /**
@@ -1407,8 +1476,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // then gets mezzanine'd (the default) was accepted from `dirname(input)`
   // but the mezzanine's public dir is `work` — same failure shape, one
   // branch earlier.
-  const srcRejections: Array<{ sceneId: string; src: string }> = [];
-  const srcCopies: Array<{ src: string; from: string }> = [];
+  //
+  // Second pass (Important, unsanitized copy destination): `src` drove a
+  // read-only `existsSync` before this fix, which was an acceptable risk;
+  // once it also drove `mkdirSync(recursive) + copyFileSync` destinations,
+  // an unconstrained LLM-authored string became a write primitive. Every
+  // `src` is checked with `isSafeScreenshotSrc` BEFORE the lookup (not just
+  // before the copy), and every copy lands under `SIDE_IMAGE_SUBDIR` via
+  // `planScreenshotSrcCopy` — see those two functions for why.
+  const srcRejections: Array<{
+    sceneId: string;
+    src: string;
+    reason: "unsafe" | "not-found" | "conflict";
+  }> = [];
+  const srcCopies: Array<{ src: string; from: string; destRel: string }> = [];
   const sideDirs = isFolder ? [work, originalInput] : [work, dirname(input)];
   const renderPublicDirPath = planRenderPublicDir({
     input,
@@ -1419,26 +1500,55 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   for (const holder of [...scenes, ...graphicCues]) {
     const src = holder.props?.src;
     if (typeof src !== "string" || src.length === 0) continue;
+    if (!isSafeScreenshotSrc(src)) {
+      delete (holder.props as Record<string, unknown>).src;
+      srcRejections.push({ sceneId: holder.id, src, reason: "unsafe" });
+      continue;
+    }
     const foundDir = sideDirs.find((dir) => existsSync(join(dir, src)));
     if (!foundDir) {
       delete (holder.props as Record<string, unknown>).src;
-      srcRejections.push({ sceneId: holder.id, src });
+      srcRejections.push({ sceneId: holder.id, src, reason: "not-found" });
       continue;
     }
-    if (foundDir !== renderPublicDirPath) {
-      mkdirSync(dirname(join(renderPublicDirPath, src)), { recursive: true });
-      copyFileSync(join(foundDir, src), join(renderPublicDirPath, src));
-      srcCopies.push({ src, from: foundDir });
+    if (foundDir === renderPublicDirPath) continue; // already where the render will look
+    const destRel = join(SIDE_IMAGE_SUBDIR, basename(src));
+    const destAbs = join(renderPublicDirPath, destRel);
+    const sourceAbs = join(foundDir, src);
+    const destExists = existsSync(destAbs);
+    const plan = planScreenshotSrcCopy({
+      exists: destExists,
+      identical: destExists && filesIdentical(sourceAbs, destAbs),
+    });
+    if (plan === "conflict") {
+      // A DIFFERENT file already answers to this basename in side-images/ —
+      // refuse rather than let one scene's image silently clobber another's
+      // (same "warn + drop" treatment as not-found, not an overwrite).
+      delete (holder.props as Record<string, unknown>).src;
+      srcRejections.push({ sceneId: holder.id, src, reason: "conflict" });
+      continue;
     }
+    if (plan === "copy") {
+      mkdirSync(dirname(destAbs), { recursive: true });
+      copyFileSync(sourceAbs, destAbs);
+      srcCopies.push({ src, from: foundDir, destRel });
+    }
+    // `skip-identical` and `copy` both end with the file at `destAbs` —
+    // rewrite the prop so `staticFile()` resolves the NEW location, not the
+    // original bare name (which no longer lives at the public dir's root).
+    (holder.props as Record<string, unknown>).src = destRel;
   }
   for (const r of [...new Map(srcRejections.map((r) => [r.src, r])).values()]) {
-    console.log(
-      `  ⚠ image "${r.src}" not found in the workdir or ${isFolder ? "the source folder" : "beside the source video"} — ` +
-        "rendering the frame as a placeholder instead",
-    );
+    const why =
+      r.reason === "unsafe"
+        ? "names a path, not a bare filename — refusing to let it drive a file lookup"
+        : r.reason === "conflict"
+          ? `a DIFFERENT file already answers to "${basename(r.src)}" in ${SIDE_IMAGE_SUBDIR}/`
+          : `not found in the workdir or ${isFolder ? "the source folder" : "beside the source video"}`;
+    console.log(`  ⚠ image "${r.src}" ${why} — rendering the frame as a placeholder instead`);
   }
   for (const c of [...new Map(srcCopies.map((c) => [c.src, c])).values()]) {
-    console.log(`  ▸ image "${c.src}" copied into the render's public dir (found in ${c.from})`);
+    console.log(`  ▸ image "${c.src}" copied into ${c.destRel} (found in ${c.from})`);
   }
 
   const production: Production = {
