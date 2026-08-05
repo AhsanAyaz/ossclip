@@ -315,7 +315,7 @@ export function buildProgram(): Command {
       // run over an Urdu model (Urdu field test 2026-08-05).
       const whisperLanguage =
         opts.whisperLanguage !== undefined
-          ? z.string().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
+          ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
           : undefined;
       const result = await produce(input, {
         out: opts.out,
@@ -380,7 +380,7 @@ export function buildProgram(): Command {
         // Same guard as produce's: empty must error, not become a bare `-l`.
         whisperLanguage:
           opts.whisperLanguage !== undefined
-            ? z.string().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
+            ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
             : undefined,
       });
     });

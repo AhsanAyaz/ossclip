@@ -53,6 +53,19 @@ export function extrasFor(graphics: boolean): (typeof EXTRAS)[number][] {
 /** Select value that routes to the free-text model prompt instead of a name. */
 export const CUSTOM_MODEL = "__custom__";
 
+/**
+ * A model pick reduced to its bare name: basename, minus the optional ggml-
+ * prefix and .bin suffix. Exists because the language prefill classifies on
+ * `.endsWith(".en")`, and an absolute path like /x/ggml-small.en.bin ends in
+ * ".bin" — an English model would have been prefilled `auto` (review fix,
+ * Urdu field test 2026-08-05).
+ */
+export function bareWhisperModelName(nameOrPath: string): string {
+  const base = basename(nameOrPath);
+  const m = /^(?:ggml-)?(.+?)(?:\.bin)?$/.exec(base);
+  return m?.[1] ?? base;
+}
+
 /** The three names `ossclip setup` knows how to download, with their hints. */
 const CANONICAL_MODELS = [
   { value: "base.en", hint: "fastest, least accurate" },
@@ -228,13 +241,17 @@ export async function produceWizard(
       }),
     ) as string;
     if (model === CUSTOM_MODEL) {
-      model = unwrap(
-        await text({
-          message: "Model name or absolute path to a ggml .bin",
-          placeholder: "medium-urdu",
-          validate: (v) => (v ? undefined : "a model name or path is required"),
-        }),
-      ) as string;
+      // Trimmed before the guard: " " passing as truthy would emit a
+      // whitespace --whisper-model that produce.ts then fails to resolve.
+      model = (
+        unwrap(
+          await text({
+            message: "Model name or absolute path to a ggml .bin",
+            placeholder: "medium-urdu",
+            validate: (v) => (v?.trim() ? undefined : "a model name or path is required"),
+          }),
+        ) as string
+      ).trim();
     }
     extras.whisperModel = model;
     // Follow-up under the same extra, like --clip's seconds prompt: a language
@@ -244,14 +261,16 @@ export async function produceWizard(
     // prefill makes plain Enter the safe answer — `auto` lets whisper detect.
     // Empty keeps whisper's en default, and produceArgv's default-elision
     // rule then emits no flag at all.
-    const lang = unwrap(
-      await text({
-        message: "Transcription language code (empty = default en)",
-        placeholder: "ur",
-        initialValue: model.endsWith(".en") ? "" : "auto",
-        defaultValue: "",
-      }),
-    ) as string;
+    const lang = (
+      unwrap(
+        await text({
+          message: "Transcription language code (empty = default en)",
+          placeholder: "ur",
+          initialValue: bareWhisperModelName(model).endsWith(".en") ? "" : "auto",
+          defaultValue: "",
+        }),
+      ) as string
+    ).trim(); // a whitespace answer means "default", not a bogus -l " "
     if (lang) extras.whisperLanguage = lang;
   }
   if (chosen.includes("blooperMarker")) {

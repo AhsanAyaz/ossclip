@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
@@ -116,6 +116,43 @@ export interface ProduceResult {
   workdir: string;
   out?: string;
   rendered: boolean;
+}
+
+/**
+ * What produced the workdir's transcript.json — written beside it as
+ * transcript-key.json (review fix, Urdu field test 2026-08-05). Parsed with
+ * zod like the transcript itself: a hand-edited or truncated key must error,
+ * not silently decide whether a cache is reused.
+ */
+export const TranscriptKeySchema = z.object({
+  model: z.string(),
+  language: z.string().optional(),
+});
+export type TranscriptKey = z.infer<typeof TranscriptKeySchema>;
+
+/**
+ * Whether the cached transcript answers the current request. Pure so all
+ * four corners (matching key, differing key, keyless + default, keyless +
+ * non-default) are testable without a workdir. A missing key means a workdir
+ * from before the key existed; every one of those was transcribed with the
+ * config-default model and no -l, so it is treated as exactly that — old
+ * workdirs must not all re-transcribe spuriously, but a non-default request
+ * against a keyless cache must.
+ */
+export function transcriptCacheReusable(
+  recorded: TranscriptKey | null,
+  requested: TranscriptKey,
+  defaultModel: string,
+): { reuse: boolean; recorded: TranscriptKey } {
+  const effective = recorded ?? { model: defaultModel };
+  return {
+    reuse:
+      effective.model === requested.model &&
+      // "" and absent both mean whisper's en default — program.ts rejects an
+      // empty code, but a key file predating that guard must not wedge.
+      (effective.language ?? "") === (requested.language ?? ""),
+    recorded: effective,
+  };
 }
 
 export interface ProduceOptions {
@@ -569,18 +606,48 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   let transcript: Transcript;
   const transcriptCache = join(work, "transcript.json");
+  // Which model/language WROTE transcript.json, recorded beside it (review
+  // fix, Urdu field test 2026-08-05): the cache used to be reused on
+  // existence alone, so a warm workdir silently served the stale English
+  // transcript on the first `--whisper-language ur` retry — the exact run
+  // the flag exists for — and equally defeated the model A/B the
+  // --whisper-model help text advertises.
+  const transcriptKeyPath = join(work, "transcript-key.json");
+  const requestedKey: TranscriptKey = {
+    model: opts.whisperModel ?? cfg.model,
+    ...(opts.whisperLanguage !== undefined ? { language: opts.whisperLanguage } : {}),
+  };
+  let cacheVerdict: ReturnType<typeof transcriptCacheReusable> | null = null;
+  if (!opts.transcript && existsSync(transcriptCache)) {
+    const recorded = existsSync(transcriptKeyPath)
+      ? TranscriptKeySchema.parse(JSON.parse(await readFile(transcriptKeyPath, "utf8")))
+      : null;
+    cacheVerdict = transcriptCacheReusable(recorded, requestedKey, cfg.model);
+  }
   if (opts.transcript) {
     transcript = TranscriptSchema.parse(JSON.parse(await readFile(resolve(opts.transcript), "utf8")));
     console.log(`▸ transcript injected from ${opts.transcript} (${transcript.words.length} words)`);
-  } else if (existsSync(transcriptCache)) {
+    // An injected transcript came from no whisper run at all, so any key left
+    // by an earlier one would mislabel the cache this branch overwrites below.
+    // Keyless-as-default keeps today's behavior: later default runs reuse it,
+    // and only an explicit model/language request re-transcribes over it.
+    await rm(transcriptKeyPath, { force: true });
+  } else if (cacheVerdict?.reuse) {
     transcript = TranscriptSchema.parse(JSON.parse(await readFile(transcriptCache, "utf8")));
     console.log(`▸ transcript cached (${transcript.words.length} words)`);
   } else {
+    if (cacheVerdict !== null) {
+      const fmt = (k: TranscriptKey) => `${k.model}/lang ${k.language ?? "default"}`;
+      console.log(
+        `▸ transcript cache is for model ${fmt(cacheVerdict.recorded)} — ` +
+          `re-transcribing with ${fmt(requestedKey)}`,
+      );
+    }
     await preflight(
       cfg.whisperPath,
       "Run `ossclip setup`, install whisper.cpp yourself (https://github.com/ggml-org/whisper.cpp), or set OSSCLIP_WHISPER.",
     );
-    const model = opts.whisperModel ?? cfg.model;
+    const model = requestedKey.model;
     const modelPath = isAbsolute(model) ? model : join(cfg.modelDir, `ggml-${model}.bin`);
     if (!existsSync(modelPath)) {
       throw new Error(
@@ -600,6 +667,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       audioPath,
     );
     console.log(`▸ transcribed ${transcript.words.length} words`);
+    await writeFile(transcriptKeyPath, JSON.stringify(requestedKey, null, 2));
   }
   await writeFile(transcriptCache, JSON.stringify(transcript, null, 2));
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { CUSTOM_MODEL, whisperModelChoices } from "../src/interactive/produce-wizard";
+import {
+  CUSTOM_MODEL,
+  bareWhisperModelName,
+  whisperModelChoices,
+} from "../src/interactive/produce-wizard";
 
 /**
  * The modelDir → choices enumeration (Urdu field test 2026-08-05): a
@@ -49,5 +53,27 @@ describe("whisperModelChoices", () => {
     expect(choices.map((c) => c.value)).toEqual([
       "base.en", "small.en", "medium.en", "aa-test", "zz-test", CUSTOM_MODEL,
     ]);
+  });
+});
+
+/**
+ * Review fix (Urdu field test 2026-08-05): the language prefill classified
+ * on `.endsWith(".en")`, so an absolute path to an ENGLISH model —
+ * /x/ggml-small.en.bin, which ends in ".bin" — was prefilled `auto`.
+ */
+describe("bareWhisperModelName", () => {
+  it("strips ggml-/.bin decoration from an absolute path", () => {
+    expect(bareWhisperModelName("/models/ggml-small.en.bin")).toBe("small.en");
+    expect(bareWhisperModelName("/models/ggml-medium-urdu.bin")).toBe("medium-urdu");
+  });
+
+  it("leaves a bare select value untouched", () => {
+    expect(bareWhisperModelName("small.en")).toBe("small.en");
+    expect(bareWhisperModelName("medium-urdu")).toBe("medium-urdu");
+  });
+
+  it("handles partial decoration", () => {
+    expect(bareWhisperModelName("ggml-base.en")).toBe("base.en");
+    expect(bareWhisperModelName("tiny.en.bin")).toBe("tiny.en");
   });
 });
