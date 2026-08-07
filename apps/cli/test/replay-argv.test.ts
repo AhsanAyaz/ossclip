@@ -131,6 +131,45 @@ describe("recordedProduceArgs (§129)", () => {
     expect(replayed.filter((a) => a === "--no-watermark")).toHaveLength(1);
     expect(replayed).not.toContain("--watermark");
   });
+
+  // The captions pin — same both-ways shape as the watermark above, kept
+  // unconditional even though captions' default is config-independent today
+  // (recordedProduceArgs' own comment has the future-proofing case): every
+  // record carries the FLAG's resolved state, on or off.
+  it("pins the resolved captions flag into the record, both directions", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ captions: true })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--captions",
+    ]);
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ captions: false })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--no-captions",
+    ]);
+  });
+
+  it("never doubles a captions flag the user already typed", () => {
+    setReplayArgv(["produce", "./a.mp4", "--no-captions"]);
+    const off = recordedProduceArgs({ captions: false });
+    expect(off.filter((a) => a === "--no-captions")).toHaveLength(1);
+    expect(off).not.toContain("--captions");
+    setReplayArgv(["produce", "./a.mp4", "--captions"]);
+    const on = recordedProduceArgs({ captions: true });
+    expect(on.filter((a) => a === "--captions")).toHaveLength(1);
+    expect(on).not.toContain("--no-captions");
+  });
+
+  // The replay round trip: a --no-captions record re-runs, produce sees
+  // captions: false, pins false again — one flag, forever, never a flip.
+  it("an off-captions record re-records byte-identically", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    const recorded = recordedProduceArgs({ captions: false });
+    setReplayArgv(recorded);
+    expect(recordedProduceArgs({ captions: false })).toEqual(recorded);
+  });
 });
 
 describe("program.ts stashes at re-entry (§129)", () => {

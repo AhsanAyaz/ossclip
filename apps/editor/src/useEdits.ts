@@ -85,6 +85,12 @@ export type EditAction =
   | { type: "patchCaptionStyleAll"; sceneIds: string[]; y?: number; scale?: number }
   | { type: "addSplit"; t: number }
   | { type: "clearTiming"; sceneId: string }
+  /** The global Captions switch (doc-global `captionsHidden`) — one action
+   * for both directions rather than a hide/restore pair, because the UI is
+   * a single checkbox whose next state it already knows; the reducer keeps
+   * the hideScene/restoreScene semantics (write `true` / DELETE the key,
+   * no-op guard) either way. */
+  | { type: "setCaptionsHidden"; hidden: boolean }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
   | { type: "cutChunk"; startSec: number; endSec: number }
@@ -299,6 +305,19 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         ...state.doc,
         splits: [...state.doc.splits, action.t].sort((a, b) => a - b),
       });
+    }
+    case "setCaptionsHidden": {
+      // No-op guard BOTH ways (restoreScene's shape, doubled because one
+      // action serves both directions): re-committing the state the doc is
+      // already in must not mint an undo step for an unchanged document.
+      if (action.hidden === (state.doc.captionsHidden === true)) return state;
+      if (action.hidden) return commit({ ...state.doc, captionsHidden: true });
+      // DELETE the key rather than writing false — the clearVideo/
+      // restoreScene rule: an explicit `captionsHidden: false` is still an
+      // override with nothing to say, and would survive as dead weight in
+      // every overrides.json saved after one toggle round-trip.
+      const { captionsHidden: _dropped, ...rest } = state.doc;
+      return commit(rest);
     }
     case "hideScene": {
       const scene = withScene(state.doc, action.sceneId);
@@ -528,6 +547,7 @@ export function useEdits() {
     patchCaptionStyleAll: (sceneIds: string[], style: { y?: number; scale?: number }) =>
       dispatch({ type: "patchCaptionStyleAll", sceneIds, ...style }),
     addSplit: (t: number) => dispatch({ type: "addSplit", t }),
+    setCaptionsHidden: (hidden: boolean) => dispatch({ type: "setCaptionsHidden", hidden }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
     cutChunk: (startSec: number, endSec: number) => dispatch({ type: "cutChunk", startSec, endSec }),

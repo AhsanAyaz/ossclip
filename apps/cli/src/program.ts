@@ -270,6 +270,20 @@ export function buildProgram(): Command {
         "(set it once with watermark: true in ~/.ossclip/config.json)",
     )
     .option("--no-watermark", "no wordmark, even when the config turns it on")
+    // Same tri-state shape as --watermark above (positive declared first so
+    // commander's default stays undefined = "not typed"), though captions
+    // have no config key to fill the gap: the tri-state exists so
+    // command.json can pin the resolved flag state for replay determinism
+    // (recordedProduceArgs) — a bare boolean default would make "not typed"
+    // and "typed --captions" indistinguishable to the pin.
+    .option(
+      "--captions",
+      "burned-in captions — already the default; exists so a recorded replay can pin the state",
+    )
+    .option(
+      "--no-captions",
+      "no burned-in captions. The CTA keyword styling rides the caption track, so it goes too",
+    )
     .option("--no-cover", "skip the cover image written beside the video")
     .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
     .option("--open-editor", "open the editor when the run finishes")
@@ -372,6 +386,9 @@ export function buildProgram(): Command {
         sourceFit,
         // undefined = "not typed", so produce can let the config decide.
         watermark: opts.watermark,
+        // undefined = "not typed" here too — the default (ON) is applied at
+        // the pin site, not coerced in transit.
+        captions: opts.captions,
         cover: opts.cover !== false,
         coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
         clip: opts.clip,

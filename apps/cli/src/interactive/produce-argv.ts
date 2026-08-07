@@ -19,6 +19,11 @@ export interface ProduceExtras {
    * off is the default, and a config-on user who wants it off for one run
    * types `--no-watermark`, a flags-only surface like --sort. */
   watermark?: boolean;
+  /** Captions tri-state, the watermark's mirror image: ON is the default,
+   * so the wizard only ever turns them OFF (`false` → `--no-captions`) and
+   * the positive `--captions` stays flags-only — it exists for replay
+   * pinning, and emitting it here would restate the default. */
+  captions?: boolean;
   llm?: "claude" | "claude-cli" | "gemini" | "mock";
 }
 
@@ -62,6 +67,9 @@ export function produceArgv(a: ProduceAnswers): string[] {
   if (e.collapseRetakes === true) argv.push("--collapse-retakes");
   if (e.sourceIsEdited === true) argv.push("--source-is-edited");
   if (e.watermark === true) argv.push("--watermark");
+  // Strict `=== false` (never `!e.captions`): undefined means "the default,
+  // on" and must emit nothing per the elision rule above.
+  if (e.captions === false) argv.push("--no-captions");
   if (e.llm) argv.push("--llm", e.llm);
 
   return argv;

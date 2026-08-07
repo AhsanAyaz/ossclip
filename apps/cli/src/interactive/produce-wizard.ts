@@ -4,12 +4,15 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Thirty-two flags (plus the positional input path)
+ * The produce wizard. Thirty-four flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
- * five flags (--out, --cleanup, --aspect, --produce, --intent) — nine behind
+ * five flags (--out, --cleanup, --aspect, --produce, --intent) — ten behind
  * one "anything else?" multiselect, and the remaining stay flags-only:
  * debug/internal surfaces, replay-only fields, --no-watermark (the
- * multiselect only turns the credit ON; off is already the default), or
+ * multiselect only turns the credit ON; off is already the default),
+ * --captions (the mirror case: ON is already the default, so the
+ * multiselect entry is the OFF switch and the positive flag exists only for
+ * replay pinning), or
  * (final-review fix wave, Finding 1) --sort. A folder's clip order only means anything once the
  * folder has been enumerated, and that enumeration happens inside
  * `produce()` — after the wizard has already returned argv — so there is
@@ -35,6 +38,7 @@ const EXTRAS = [
     hint: "--collapse-retakes",
   },
   { value: "sourceIsEdited", label: "Source already has burned-in text", hint: "--source-is-edited" },
+  { value: "captionsOff", label: "Turn the burned-in captions off", hint: "--no-captions" },
   { value: "watermark", label: 'Credit the tool with a small "made with ossclip"', hint: "--watermark" },
   { value: "llm", label: "Choose the LLM provider", hint: "--llm" },
 ] as const;
@@ -235,6 +239,9 @@ export async function produceWizard(
   if (chosen.includes("sourceFit")) extras.sourceFit = "contain";
   if (chosen.includes("collapseRetakes")) extras.collapseRetakes = true;
   if (chosen.includes("sourceIsEdited")) extras.sourceIsEdited = true;
+  // The entry is the OFF switch (captions default ON — see EXTRAS), so a
+  // tick maps to `captions: false` and produceArgv emits `--no-captions`.
+  if (chosen.includes("captionsOff")) extras.captions = false;
   if (chosen.includes("watermark")) extras.watermark = true;
   if (chosen.includes("speaker")) {
     extras.speaker = unwrap(

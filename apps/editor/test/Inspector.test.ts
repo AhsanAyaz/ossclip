@@ -522,3 +522,170 @@ describe("Inspector — user cuts (PLAN 2026-08-04 Task 4c)", () => {
     expect(container.querySelector('[data-testid="restore-chunk"]')).toBeNull();
   });
 });
+
+/**
+ * The no-selection (theme/global) view plus the doc-global Captions toggle.
+ * Its own harness rather than `Harness` above: that one's `selection` prop
+ * is typed non-null because every earlier suite selects something, and the
+ * captions toggle lives precisely where nothing is selected. `initialDoc`
+ * preloads doc-global state (`captionsHidden`) the same mount-once way
+ * `initialCuts`/`initialScenes` do.
+ */
+function GlobalHarness({
+  selection = null,
+  cue = null,
+  captionsHiddenByFlag,
+  initialDoc,
+  onDocChange,
+}: {
+  selection?: { sceneId: string; elementId: string | null } | null;
+  cue?: SceneCue | null;
+  captionsHiddenByFlag?: boolean;
+  initialDoc?: Partial<OverrideDoc>;
+  onDocChange?: (doc: OverrideDoc) => void;
+}) {
+  const edits = useEdits();
+  React.useEffect(() => {
+    if (initialDoc) {
+      edits.load({ theme: {}, scenes: {}, captions: {}, splits: [], cuts: [], ...initialDoc });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  React.useEffect(() => {
+    onDocChange?.(edits.doc);
+  });
+  return React.createElement(Inspector, {
+    selection,
+    cue,
+    frame: { width: 1080, height: 1920 },
+    allSceneIds: ["scene-0"],
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+    captionsHiddenByFlag,
+  });
+}
+
+describe("Inspector — the global Captions toggle (no-selection view)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("renders checked (checked = visible) on a doc that never touched captions", async () => {
+    await act(async () => {
+      root.render(React.createElement(GlobalHarness, {}));
+    });
+    const box = container.querySelector<HTMLInputElement>('[data-testid="captions-visible-toggle"]')!;
+    expect(box).not.toBeNull();
+    expect(box.checked).toBe(true);
+  });
+
+  it("unchecking writes captionsHidden: true; re-checking DELETES the key", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(GlobalHarness, {
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const box = container.querySelector<HTMLInputElement>('[data-testid="captions-visible-toggle"]')!;
+    await act(async () => {
+      box.click();
+    });
+    expect(doc?.captionsHidden).toBe(true);
+    expect(box.checked).toBe(false);
+    await act(async () => {
+      box.click();
+    });
+    // Deleted, not written false — the clearVideo/restoreScene rule the
+    // reducer enforces; the toggle must round-trip back to a clean doc.
+    expect(doc && "captionsHidden" in doc).toBe(false);
+    expect(box.checked).toBe(true);
+  });
+
+  it("reflects a doc loaded with captions already hidden — unchecked on mount", async () => {
+    await act(async () => {
+      root.render(React.createElement(GlobalHarness, { initialDoc: { captionsHidden: true } }));
+    });
+    const box = container.querySelector<HTMLInputElement>('[data-testid="captions-visible-toggle"]')!;
+    expect(box.checked).toBe(false);
+  });
+
+  it("names --no-captions when the last produce pinned the flag — the toggle can't out-vote it", async () => {
+    await act(async () => {
+      root.render(React.createElement(GlobalHarness, { captionsHiddenByFlag: true }));
+    });
+    expect(container.querySelector('[data-testid="captions-flag-note"]')).not.toBeNull();
+  });
+
+  it("no flag note on an ordinary workdir", async () => {
+    await act(async () => {
+      root.render(React.createElement(GlobalHarness, {}));
+    });
+    expect(container.querySelector('[data-testid="captions-flag-note"]')).toBeNull();
+  });
+});
+
+describe("Inspector — per-scene caption controls under a global hide", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("shows the hidden-globally hint, and keeps the sliders usable (hint over disable — see Inspector's own comment)", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(GlobalHarness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          cue: graphicCue,
+          initialDoc: { captionsHidden: true },
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="captions-hidden-hint"]')).not.toBeNull();
+    // Deliberately NOT disabled: "reposition now, un-hide later" is a real
+    // edit the global switch keeps, so the controls stay live.
+    const slider = container.querySelector<HTMLInputElement>('[data-testid="caption-y-slider"]')!;
+    expect(slider).not.toBeNull();
+    expect(slider.disabled).toBe(false);
+  });
+
+  it("no hint when captions are visible", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(GlobalHarness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          cue: graphicCue,
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="captions-hidden-hint"]')).toBeNull();
+  });
+});

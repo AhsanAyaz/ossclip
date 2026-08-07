@@ -451,3 +451,35 @@ describe("pip bubble editing (R14 §52)", () => {
     expect(s.doc.scenes["scene-0"]!.pip).toEqual({ cornerRadius: 0.2 });
   });
 });
+
+describe("setCaptionsHidden (the global Captions toggle)", () => {
+  it("hide writes captionsHidden: true as one undo-able commit", () => {
+    const s = editReducer(initialEditState(), { type: "setCaptionsHidden", hidden: true });
+    expect(s.doc.captionsHidden).toBe(true);
+    expect(s.dirty).toBe(true);
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("show DELETES the key rather than writing false — the clearVideo rule", () => {
+    let s = editReducer(initialEditState(), { type: "setCaptionsHidden", hidden: true });
+    s = editReducer(s, { type: "setCaptionsHidden", hidden: false });
+    expect("captionsHidden" in s.doc).toBe(false);
+  });
+
+  it("no-op guard both ways: re-committing the current state mints no undo step", () => {
+    const fresh = initialEditState();
+    // Already visible — "show" must return the SAME state object, not a
+    // byte-identical copy that pushes a phantom undo entry.
+    expect(editReducer(fresh, { type: "setCaptionsHidden", hidden: false })).toBe(fresh);
+    const hidden = editReducer(fresh, { type: "setCaptionsHidden", hidden: true });
+    expect(editReducer(hidden, { type: "setCaptionsHidden", hidden: true })).toBe(hidden);
+  });
+
+  it("undo/redo walk the toggle like any other edit", () => {
+    let s = editReducer(initialEditState(), { type: "setCaptionsHidden", hidden: true });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.captionsHidden).toBeUndefined();
+    s = editReducer(s, { type: "redo" });
+    expect(s.doc.captionsHidden).toBe(true);
+  });
+});

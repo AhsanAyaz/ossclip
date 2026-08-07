@@ -248,6 +248,15 @@ export interface ProduceOptions {
    */
   watermark?: boolean;
   /**
+   * `--captions` / `--no-captions` tri-state: true/false when TYPED,
+   * undefined when not. Unlike `watermark` above there is no config key —
+   * undefined simply means the default, which is ON. Kept tri-state anyway
+   * so command.json can pin the resolved flag state (`recordedProduceArgs`)
+   * and a future config key or default change can never re-resolve an old
+   * record differently.
+   */
+  captions?: boolean;
+  /**
    * `<input>` a DIRECTORY: order its clips before concatenating them into the
    * source produce runs on (folder-input-brief.md). `name` (default) is a
    * plain codepoint sort, matching `ls`; `mtime` is oldest-first. Ignored for
@@ -279,6 +288,26 @@ export function resolveWatermark(
   configValue: boolean | undefined,
 ): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * Whether captions are hidden this run: the flag saying OFF, or the editor's
+ * doc-global `captionsHidden` override saying hidden. An OR, deliberately
+ * NOT resolveWatermark's flag-beats-config precedence: the override is the
+ * user's own saved edit, not a machine-supplied default a typed flag should
+ * outrank — un-hiding belongs to the editor that wrote the override, so a
+ * typed `--captions` cannot force captions back on over it. Strict
+ * `=== false`/`=== true` on both sides: the override arrives zod-parsed,
+ * but the flag is a tri-state where undefined means "not typed" — and
+ * captions defaulting ON means anything short of an explicit off must read
+ * as visible. Pure so the whole flag × override matrix is testable without
+ * a workdir or an overrides.json on disk.
+ */
+export function resolveCaptionsHidden(
+  flag: boolean | undefined,
+  overrideHidden: boolean | undefined,
+): boolean {
+  return flag === false || overrideHidden === true;
 }
 
 function sha1File(path: string): Promise<string> {
@@ -2032,6 +2061,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
+  // Captions are ON by default and stay so — only the OFF path announces
+  // itself, naming WHICH surface turned them off: a silent-captions upload
+  // must never leave the author guessing whether they typed the flag or the
+  // editor's toggle did it. The flag reason wins the message when both are
+  // true — it is the one visible in the command line being run.
+  const captionsHidden = resolveCaptionsHidden(opts.captions, overrideDoc.captionsHidden);
+  if (captionsHidden) {
+    console.log(
+      opts.captions === false
+        ? "▸ captions: off (--no-captions)"
+        : "▸ captions: hidden by editor override",
+    );
+  }
+
   const props = {
     videoFileName: basename(renderVideo),
     spans: [...map.spans],
@@ -2092,6 +2135,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // an off run's render-props.json stays byte-identical to a pre-watermark
     // one, so nothing downstream can tell the feature ever shipped.
     ...(watermark ? { watermark: true } : {}),
+    // Same absent-means-default contract, polarity flipped (captions default
+    // ON): written only when hidden, so a normal run's render-props.json
+    // stays byte-identical to a pre-feature one. `captionsHiddenByFlag` is
+    // the flag-only part, split out for the EDITOR alone: `captionsHidden`
+    // bakes the override doc in, and the editor re-applies the CURRENT doc
+    // onto pristine bases (see `baseSceneCues` above) — without the split,
+    // its live preview either couldn't take a doc-sourced hide back after
+    // an un-toggle (the add-only trap those bases exist for) or would show
+    // captions that a command.json pinned with --no-captions will never
+    // actually render.
+    ...(captionsHidden ? { captionsHidden: true } : {}),
+    ...(opts.captions === false ? { captionsHiddenByFlag: true } : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 
@@ -2285,10 +2340,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // under a later/foreign config-on, an on-run would silently lose it. The
   // RESOLVED state is always pinned; a typed flag is already in the argv and
   // the includes-guard leaves it alone.
+  // Captions pin: the FLAG's resolved state (`opts.captions ?? true`), never
+  // the override-inclusive `captionsHidden` — overrides.json travels with
+  // the workdir and is re-read on every replay, so pinning --no-captions
+  // because the EDITOR hid them would freeze an edit the user may later
+  // undo in that same editor. See recordedProduceArgs for why the pin is
+  // unconditional even though captions' default is config-independent today.
   const recordedArgs = recordedProduceArgs({
     llm: provider ? providerName : undefined,
     clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
     watermark,
+    captions: opts.captions ?? true,
   });
   await writeFile(
     join(work, "command.json"),

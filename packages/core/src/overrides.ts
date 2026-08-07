@@ -171,6 +171,19 @@ export function captionEditWas(
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */
   theme: ThemeSchema.partial().default({}),
+  /**
+   * Captions OFF for the whole video. Doc-global like `theme`, deliberately
+   * NOT a per-scene key: visibility is one decision about the output —
+   * `captionY`/`captionScale` (per scene, above) style captions, this one
+   * removes the track. Optional with NO default so every overrides.json
+   * written before the key existed parses byte-identically; absent means
+   * visible, and the editor DELETES the key rather than writing `false`
+   * (the clearVideo/restoreScene rule — an explicit false is still an
+   * override with nothing to say). Produce ORs this with `--no-captions`
+   * (`resolveCaptionsHidden`, apps/cli/src/produce.ts): either surface can
+   * hide, neither can force captions back on over the other.
+   */
+  captionsHidden: z.boolean().optional(),
   scenes: z.record(z.string(), SceneOverrideSchema).default({}),
   /** Retyped caption words, keyed by caption-stream word index. */
   captions: z.record(z.string(), CaptionEditSchema).default({}),

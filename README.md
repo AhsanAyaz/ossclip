@@ -140,6 +140,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--sort <order>` | when `<input>` is a folder: `name` (default, plain codepoint sort, matches `ls`) or `mtime` (oldest first) — the order clips get concatenated in. Ignored for a file input |
 | `--no-cover` / `--cover <path>` | skip, or redirect, the cover image written beside the video |
 | `--watermark` / `--no-watermark` | opt-in credit: a small, low-opacity "made with ossclip" wordmark in the top-left safe area. Off by default for everyone; set `"watermark": true` in `~/.ossclip/config.json` to turn it on once, and `--no-watermark` still wins per run |
+| `--no-captions` | turn the burned-in captions off (they are on by default). The CTA keyword styling rides the caption track, so it goes too. The editor's global Captions toggle is the same switch as a saved override — either surface can hide, neither can force them back on over the other |
 | `--no-render` | stop after writing the props |
 | `--workdir <dir>` | where the cache lives |
 

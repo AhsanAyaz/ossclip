@@ -52,6 +52,7 @@ export function recordedProduceArgs(pins: {
   llm?: string;
   clipWindow?: string;
   watermark?: boolean;
+  captions?: boolean;
 }): string[] {
   const args = consumeReplayArgv() ?? process.argv.slice(2);
   if (pins.llm !== undefined && !args.includes("--llm")) {
@@ -73,6 +74,20 @@ export function recordedProduceArgs(pins: {
   // was only ever a nicety.
   if (pins.watermark !== undefined && !args.includes("--watermark") && !args.includes("--no-watermark")) {
     args.push(pins.watermark ? "--watermark" : "--no-watermark");
+  }
+  // The captions flag, pinned both ways like the watermark above — but here
+  // as future-proofing plus consistency rather than a live bug: captions'
+  // default is ON independent of any config today, so an argv without the
+  // flag would currently replay identically everywhere. Pinned anyway
+  // because (a) the watermark review already made "every record carries the
+  // RESOLVED state" §75's rule, and one unpinned tri-state would turn
+  // command.json's contract into per-flag trivia; and (b) the moment a
+  // config key or a changed default ever appears, every unpinned old record
+  // would silently re-resolve under it — the watermark's exact drift, just
+  // deferred. Note this pins the FLAG's state only; the editor's
+  // `captionsHidden` override is not folded in (see produce.ts's call site).
+  if (pins.captions !== undefined && !args.includes("--captions") && !args.includes("--no-captions")) {
+    args.push(pins.captions ? "--captions" : "--no-captions");
   }
   return args;
 }

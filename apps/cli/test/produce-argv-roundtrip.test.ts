@@ -58,6 +58,10 @@ describe("wizard argv survives the real commander parse", () => {
     // reach produce as undefined ("let the config decide"), which is what
     // the positive-before-negative option declaration exists to guarantee.
     expect(opts.watermark).toBeUndefined();
+    // Same declaration shape for captions: untyped must be undefined ("the
+    // default, ON") — a bare-boolean default here would make the pin unable
+    // to tell "not typed" from a typed --captions.
+    expect(opts.captions).toBeUndefined();
   });
 
   it("every tier-2 extra lands on the option commander names", async () => {
@@ -78,6 +82,7 @@ describe("wizard argv survives the real commander parse", () => {
             blooperMarker: "blooper",
             collapseRetakes: true,
             sourceIsEdited: true,
+            captions: false,
             watermark: true,
             llm: "claude-cli",
           },
@@ -99,6 +104,7 @@ describe("wizard argv survives the real commander parse", () => {
       blooperMarker: "blooper",
       collapseRetakes: true,
       sourceIsEdited: true,
+      captions: false,
       watermark: true,
       llm: "claude-cli",
     });
@@ -110,6 +116,15 @@ describe("wizard argv survives the real commander parse", () => {
   it("--no-watermark reaches produce as watermark: false", async () => {
     const opts = await parse(["produce", "./take.mp4", "--no-watermark"]);
     expect(opts.watermark).toBe(false);
+  });
+
+  // The captions tri-state's other two corners, against the real option
+  // declarations: --no-captions must land as captions: false (the only
+  // state resolveCaptionsHidden reads as flag-off), and the pin's
+  // --captions must land as true — never as a separate `noCaptions` key.
+  it("--no-captions reaches produce as captions: false, --captions as true", async () => {
+    expect((await parse(["produce", "./take.mp4", "--no-captions"])).captions).toBe(false);
+    expect((await parse(["produce", "./take.mp4", "--captions"])).captions).toBe(true);
   });
 
   it("never offers the clip extra without graphics — produce.ts §93b refuses that combination", () => {

@@ -58,6 +58,7 @@ describe("produceArgv", () => {
             blooperMarker: "blooper",
             collapseRetakes: true,
             sourceIsEdited: true,
+            captions: false,
             watermark: true,
             llm: "claude-cli",
           },
@@ -74,6 +75,7 @@ describe("produceArgv", () => {
       "--collapse-retakes",
       "--source-is-edited",
       "--watermark",
+      "--no-captions",
       "--llm", "claude-cli",
     ]);
   });
@@ -109,6 +111,19 @@ describe("produceArgv", () => {
   // credit is opt-in) — the elision rule applies exactly as everywhere else.
   it("omits a false --watermark rather than emitting the flag", () => {
     expect(produceArgv(answers({ extras: { watermark: false } }))).toEqual([
+      "produce", "./take.mp4",
+    ]);
+  });
+
+  // Captions are the watermark's mirror: ON is the default, so only `false`
+  // (the wizard's "Turn the burned-in captions off" tick) may emit anything
+  // — and it must be the negative flag. An explicit `true` restates the
+  // default and must emit nothing, per the elision rule.
+  it("emits --no-captions for captions: false, and nothing for true/unset", () => {
+    expect(produceArgv(answers({ extras: { captions: false } }))).toEqual([
+      "produce", "./take.mp4", "--no-captions",
+    ]);
+    expect(produceArgv(answers({ extras: { captions: true } }))).toEqual([
       "produce", "./take.mp4",
     ]);
   });

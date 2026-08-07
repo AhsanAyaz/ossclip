@@ -69,6 +69,14 @@ interface InspectorProps {
   onVideoPreview: (preview: VideoPreview | null) => void;
   /** Run provenance and cost for the no-selection view (R21 §104). */
   runInfo?: RunInfo | null;
+  /**
+   * The last produce was typed with `--no-captions` (render-props'
+   * `captionsHiddenByFlag`). Surfaced so the Captions toggle can say the
+   * honest thing: that pin replays on every Render, so the toggle — which
+   * only writes the OVERRIDE side of the OR — cannot bring captions back
+   * on such a workdir.
+   */
+  captionsHiddenByFlag?: boolean;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -288,6 +296,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   anchorText,
   onVideoPreview,
   runInfo,
+  captionsHiddenByFlag,
 }) => {
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
@@ -881,6 +890,20 @@ export const Inspector: React.FC<InspectorProps> = ({
           return (
             <div style={section}>
               <span style={label}>Captions</span>
+              {/* The honest CHEAP option is this hint, not disabling the
+                  sliders: disabled controls would need the same sentence to
+                  explain themselves anyway, and they would also block the
+                  legitimate "reposition now, un-hide later" prep edit —
+                  these per-scene keys are kept, not cleared, by the global
+                  switch, so editing them while hidden is real work, not a
+                  trap. */}
+              {edits.doc.captionsHidden === true || captionsHiddenByFlag === true ? (
+                <div data-testid="captions-hidden-hint" style={{ fontSize: 12, color: "#FFE14D" }}>
+                  Captions are hidden globally
+                  {captionsHiddenByFlag === true ? " (--no-captions)" : " (Theme panel)"} — these
+                  settings are kept and apply when captions are shown again.
+                </div>
+              ) : null}
               <div style={row}>
                 <span style={label}>
                   position{"  "}
@@ -1112,6 +1135,49 @@ export const Inspector: React.FC<InspectorProps> = ({
           isColor={false}
           onCommit={(v) => patch("fontDisplay", v)}
         />
+      </div>
+      <div style={section}>
+        <span style={label}>Captions</span>
+        {/* Doc-global like the theme tokens above it, which is why it lives
+            on the no-selection panel and not per scene: one switch for the
+            whole video (`captionsHidden`), undo-able like every edit and
+            saved through the same PUT. Checked = visible, so the checkbox
+            reads as the feature ("show captions"), never as the negation
+            the stored key spells. */}
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            color: "#EDEDF2",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            data-testid="captions-visible-toggle"
+            checked={edits.doc.captionsHidden !== true}
+            onChange={(e) => edits.setCaptionsHidden(!e.target.checked)}
+          />
+          Show captions
+        </label>
+        {edits.doc.captionsHidden === true ? (
+          <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+            Hidden everywhere — the CTA keyword styling rides the caption track, so it is hidden
+            too. Per-scene caption position/scale edits are kept.
+          </div>
+        ) : null}
+        {captionsHiddenByFlag === true ? (
+          // The toggle writes only the OVERRIDE half of produce's OR — a
+          // --no-captions pinned into command.json replays on every Render,
+          // and pretending the checkbox could out-vote it would be a lie
+          // the user discovers on upload.
+          <div data-testid="captions-flag-note" style={{ fontSize: 12, color: "#FFE14D" }}>
+            This project was produced with --no-captions, which Render replays — the toggle
+            can't bring captions back here; re-run produce without the flag.
+          </div>
+        ) : null}
       </div>
       {producer || totals ? (
         <div style={section} data-testid="run-info">

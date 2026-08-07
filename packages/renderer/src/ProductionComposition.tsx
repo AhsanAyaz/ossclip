@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, EdlVideo, SceneLayer, VideoStage, Watermark, showWatermark } from "@ossclip/scenes";
+import { CaptionTrack, EdlVideo, SceneLayer, VideoStage, Watermark, showCaptions, showWatermark } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -74,6 +74,15 @@ export interface ProductionCompProps {
    * (`showWatermark`) so a hand-edited non-boolean can't coerce a credit on.
    */
   watermark?: boolean;
+  /**
+   * Global captions OFF switch (`--no-captions` / the editor's doc-global
+   * `captionsHidden` override). Optional and absent-means-VISIBLE — captions
+   * are the default, so every pre-feature render-props.json parses and
+   * renders unchanged; strict `=== true` at the render gate (`showCaptions`)
+   * so a hand-edited non-boolean falls back to visible, never to a silently
+   * missing track.
+   */
+  captionsHidden?: boolean;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -105,6 +114,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   contentCropMode,
   sourceFit,
   watermark,
+  captionsHidden,
 }) => {
   if (!videoFileName) {
     return (
@@ -149,14 +159,23 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         />
       </VideoStage>
       <SceneLayer cues={sceneCues} theme={theme} />
-      <CaptionTrack
-        lines={captionLines}
-        cues={sceneCues}
-        activeColor={theme.accent}
-        ctaKeyword={ctaKeyword}
-        ctaWindow={ctaWindow}
-        sourceTextRegions={sourceTextRegions}
-      />
+      {/* Hidden pulls the WHOLE layer, CTA keyword styling included: the
+          §16/§22 quote-and-capitalize treatment is a styling OF caption
+          words — there is no keyword to emphasize once the track is gone.
+          ACCEPTED trade, and it answers the field question outright: yes,
+          --no-captions (or the editor's Captions toggle) also removes the
+          CTA emphasis, rather than promoting the keyword to some new
+          caption-less overlay this feature never designed. */}
+      {showCaptions(captionsHidden) ? (
+        <CaptionTrack
+          lines={captionLines}
+          cues={sceneCues}
+          activeColor={theme.accent}
+          ctaKeyword={ctaKeyword}
+          ctaWindow={ctaWindow}
+          sourceTextRegions={sourceTextRegions}
+        />
+      ) : null}
       {/* Its own TOP layer, above scenes and captions: the credit must never
           be occluded by a graphic, and living outside SceneLayer keeps it out
           of the editor's cue-driven world entirely (see Watermark.tsx for the

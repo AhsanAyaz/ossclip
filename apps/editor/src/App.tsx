@@ -58,6 +58,15 @@ type RawRenderProps = PlayerProductionProps & {
    * retype layer merges onto (merging onto already-edited lines would trip
    * every edit's own stale-guard). */
   baseCaptionLines?: PlayerProductionProps["captionLines"];
+  /** The flag-only part of the captions switch: true only when the last
+   * produce was typed with `--no-captions`. The baked `captionsHidden` in
+   * these props is the RESOLVED value (flag OR override doc) — the same
+   * already-merged shape the pristine bases above exist to escape — so the
+   * live memo recomposes from this plus the CURRENT doc instead: an
+   * un-toggle can take a doc-sourced hide back, while a flag-sourced hide
+   * stays hidden in the preview exactly as the command.json pin will render
+   * it. */
+  captionsHiddenByFlag?: boolean;
 };
 
 export const App: React.FC = () => {
@@ -573,6 +582,14 @@ export const App: React.FC = () => {
       sceneCues: previewed,
       captionLines: applyCaptionEdits(baseCaptions, edits.doc.captions).lines,
       theme: resolveTheme(baseTheme, edits.doc),
+      // Recomposed, never inherited from the spread above: the baked
+      // `captionsHidden` has the LAST-saved doc merged in (add-only — an
+      // un-toggle would have nothing to take it back), so the CURRENT doc
+      // is OR-ed with the flag-only part instead. Same OR as produce's
+      // `resolveCaptionsHidden`, with `captionsHiddenByFlag` standing in
+      // for the flag (see RawRenderProps).
+      captionsHidden:
+        renderProps.captionsHiddenByFlag === true || edits.doc.captionsHidden === true,
       videoFileName: `/media/${renderProps.videoFileName}`,
     };
   }, [renderProps, edits.doc, videoPreview, graphicPreview]);
@@ -1083,6 +1100,7 @@ export const App: React.FC = () => {
             anchorText={anchorText}
             onVideoPreview={setVideoPreview}
             runInfo={runInfo}
+            captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
           />
         </div>
       </div>

@@ -796,3 +796,25 @@ describe("pip override (R14 §52)", () => {
     );
   });
 });
+
+describe("captionsHidden (doc-global captions OFF switch)", () => {
+  // Back-compat is the schema's contract: every overrides.json written
+  // before this key existed must parse EXACTLY as it always did — no new
+  // key defaulted in, so a round-trip through the schema can't grow the
+  // user's file.
+  it("an old overrides.json parses unchanged, with no captionsHidden defaulted in", () => {
+    const doc = OverrideDocSchema.parse({
+      theme: { accent: "#FFE14D" },
+      scenes: { "scene-0": { props: { value: "1%" } } },
+    });
+    expect(doc.captionsHidden).toBeUndefined();
+    expect("captionsHidden" in doc).toBe(false);
+  });
+
+  it("accepts a boolean and nothing else — hand-editable data is validated", () => {
+    expect(OverrideDocSchema.parse({ captionsHidden: true }).captionsHidden).toBe(true);
+    expect(OverrideDocSchema.parse({ captionsHidden: false }).captionsHidden).toBe(false);
+    // parse-don't-coerce: a typo'd "yes" must refuse loudly, never coerce.
+    expect(OverrideDocSchema.safeParse({ captionsHidden: "yes" }).success).toBe(false);
+  });
+});
