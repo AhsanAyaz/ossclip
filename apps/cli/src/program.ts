@@ -212,8 +212,12 @@ export function buildProgram(): Command {
     .option("--intent <text>", "what the video should be ('educational video about agents…')")
     .option(
       "--llm <provider>",
-      "claude | claude-cli | gemini | mock. Default: claude if ANTHROPIC_API_KEY is set, " +
-        "else claude-cli (your logged-in Claude Code — Pro/Max subscription, no API charges)",
+      // Must state `defaultProviderName`'s real order — the old text omitted
+      // the GEMINI-first branch and promised claude-first (field report
+      // 2026-08-07); the drift test in llm-help.test.ts pins the agreement.
+      "claude | claude-cli | gemini | mock. Default: gemini if GEMINI_API_KEY is set, " +
+        "else claude if ANTHROPIC_API_KEY is set, else claude-cli (your logged-in " +
+        "Claude Code — Pro/Max subscription, no API charges)",
     )
     .option("--llm-model <id>", "override the provider's default model")
     .option(
