@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -39,12 +39,28 @@ const settle = async (page: Page) => {
     .toBe(true);
 };
 
+/**
+ * Seek INTO a block, then select it — two separate gestures since the field
+ * report 2026-08-07 fix: clicking a block only selects, it never moves the
+ * playhead. Tests that need a scene's content ON STAGE therefore park the
+ * playhead first via the ruler (the intentional seek surface), then click
+ * the block — the same two steps a user now takes.
+ */
+const selectBlockAt = async (page: Page, block: Locator, frac = 0.65) => {
+  const b = (await block.boundingBox())!;
+  const ruler = (await page.getByTestId("ruler").boundingBox())!;
+  await page.mouse.click(b.x + b.width * frac, ruler.y + ruler.height / 2);
+  // Click OFF the just-parked playhead: its grab zone sits exactly where the
+  // seek landed and intercepts a center click on the block.
+  await block.click({ position: { x: b.width * 0.3, y: b.height / 2 } });
+};
+
 test("clicks never toggle playback: elements select, the background does nothing (Tasks 2 + R9-1)", async ({
   page,
 }) => {
   await page.goto("/");
   await settle(page);
-  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await selectBlockAt(page, page.locator('[data-testid^="timeline-block-"]').first());
   await page.waitForSelector("[data-edit-id]");
   expect(await isPlaying(page)).toBe(false);
 
@@ -114,8 +130,9 @@ test("the ruler seeks without touching the selection (R9-3)", async ({ page }) =
   await page.goto("/");
   await settle(page);
   // Select a scene first — the point of the ruler is navigating WITHOUT
-  // losing (or changing) this selection.
-  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  // losing (or changing) this selection. Seek into it first: the box below
+  // needs the scene's DOM mounted, and selecting no longer seeks.
+  await selectBlockAt(page, page.locator('[data-testid^="timeline-block-"]').first());
   await expect(page.getByTestId("overlay-box")).toBeVisible();
 
   const ruler = (await page.getByTestId("ruler").boundingBox())!;
@@ -167,37 +184,37 @@ test("decimal scale commits, and the timing section states the window (R9-5+6)",
   expect(doc2.scenes[renderProps.baseSceneCues[0].id].video.scale).toBe(0.7);
 });
 
-test("the timeline scrubs on press-and-drag, and a click inside a block seeks to that point (Tasks 3+4)", async ({
+test("the timeline scrubs on press-and-drag; a click inside a block selects WITHOUT seeking (Task 3 + field report 2026-08-07)", async ({
   page,
 }) => {
   await page.goto("/");
   await settle(page);
   const track = (await page.locator("[data-testid='playhead']").locator("..").boundingBox())!;
 
-  // Task 4: click INSIDE a graphic block, off-centre — the playhead must
-  // land at the CLICKED fraction, not snap to the block's start. By id, not
-  // nth(): derived `take-*` blocks now fill the gaps (Task A), so ordinal
-  // positions name different blocks than they used to.
+  // Field report 2026-08-07 inverted Task 4: a click inside a graphic block
+  // used to ALSO seek to the clicked fraction, which moved the playhead on
+  // every scene selection. Now the click selects (the Inspector's timing
+  // section is the oracle — it renders only for a selected scene) and the
+  // playhead stays parked. By id, not nth(): derived `take-*` blocks fill
+  // the gaps (Task A), so ordinal positions name different blocks.
+  const before = await playheadFrac(page);
   const block = (await page.getByTestId("timeline-block-scene-2").boundingBox())!;
-  const clickX = block.x + block.width * 0.7;
-  await page.mouse.click(clickX, block.y + block.height / 2);
-  const clickedFrac = (clickX - track.x) / track.width;
-  await expect
-    .poll(() => playheadFrac(page))
-    .toBeGreaterThan(clickedFrac - 0.02);
-  expect(await playheadFrac(page)).toBeLessThan(clickedFrac + 0.02);
+  await page.mouse.click(block.x + block.width * 0.7, block.y + block.height / 2);
+  await expect(page.getByTestId("timing-range")).toBeVisible();
+  await page.waitForTimeout(150);
+  expect(Math.abs((await playheadFrac(page)) - before)).toBeLessThan(0.02);
 
   // Task 3: press-and-drag seeking. The 16%-38% stretch used to be a bare
-  // gap; it is now the `take-0` PLAIN block (Task A) — which scrubs exactly
-  // like the bare track did, deliberately: a plain block's window is derived,
-  // so it has no move-drag to start, and the takes cover most of the track
-  // now — losing press-and-drag seeking over them would regress this very
-  // gesture. The playhead follows the pointer continuously, both ways.
+  // gap; it is now the `take-0` PLAIN block (Task A) — which still scrubs,
+  // deliberately: a plain block's window is derived, so it has no move-drag
+  // to start, and the takes cover most of the track now — losing press-and-
+  // drag seeking over them would regress this very gesture. The one change
+  // (field report 2026-08-07): the seek starts once the press TRAVELS past
+  // the click threshold — a bare press-and-release is a selection, so the
+  // playhead must not jump until the pointer actually moves.
   const y = track.y + track.height / 2;
   await page.mouse.move(track.x + track.width * 0.25, y);
   await page.mouse.down();
-  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(0.23);
-  expect(await playheadFrac(page)).toBeLessThan(0.27);
   await page.mouse.move(track.x + track.width * 0.33, y, { steps: 4 });
   await expect.poll(() => playheadFrac(page)).toBeGreaterThan(0.31);
   await page.mouse.move(track.x + track.width * 0.19, y, { steps: 4 });
@@ -284,9 +301,10 @@ test("double-click retypes a caption word in place; the edit lands in overrides.
 }) => {
   await page.goto("/");
   await settle(page);
-  // Park the playhead where a caption line is definitely on screen: click
-  // into the first scene block, which seeks mid-caption.
-  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  // Park the playhead where a caption line is definitely on screen: seek
+  // into the first scene block via the ruler (block clicks select, they no
+  // longer seek — field report 2026-08-07).
+  await selectBlockAt(page, page.locator('[data-testid^="timeline-block-"]').first());
   await page.waitForSelector("[data-caption-word]");
 
   const word = page.locator("[data-caption-word]").first();
@@ -339,9 +357,10 @@ test("drag the picture to pan its framing; the zoom slider commits one undo step
 }) => {
   await page.goto("/");
   await settle(page);
-  // Park inside take-0 and select it — the click seeks into the take, so the
-  // video slot on stage is tagged with its id.
-  await page.getByTestId("timeline-block-take-0").click();
+  // Park inside take-0 (ruler seek — the click only selects now, field
+  // report 2026-08-07) and select it, so the video slot on stage is tagged
+  // with its id.
+  await selectBlockAt(page, page.getByTestId("timeline-block-take-0"));
   await expect(page.getByTestId("zoom-slider")).toBeVisible();
 
   // Drag the PICTURE, well above the strip reserved for the Player's own
@@ -473,7 +492,7 @@ test("drag a corner handle to reshape the graphic box; body clicks still reach e
 }) => {
   await page.goto("/");
   await settle(page);
-  await page.getByTestId("timeline-block-scene-3").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-3"));
   await expect(page.getByTestId("overlay-box")).toBeVisible();
   const handle = page.getByTestId("box-handle-se");
   await expect(handle).toBeVisible();
@@ -503,14 +522,14 @@ test("drag a corner handle to reshape the graphic box; body clicks still reach e
 
   // The regression this feature most threatens: a click INSIDE the box must
   // still fall through to the element underneath it.
-  await page.getByTestId("timeline-block-scene-0").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
   await page.waitForSelector("[data-edit-id]");
   const el = (await page.locator("[data-edit-id]").first().boundingBox())!;
   await page.mouse.click(el.x + el.width / 2, el.y + el.height / 2);
   await expect(page.getByText("Reset element")).toBeVisible();
 
   // Leave no residue for later tests: reset the box and save.
-  await page.getByTestId("timeline-block-scene-3").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-3"));
   await page.getByTestId("reset-box").click();
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
@@ -534,7 +553,7 @@ test("element corner handles resize by drag; the slider drives scale too (R12 §
 }) => {
   await page.goto("/");
   await settle(page);
-  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await selectBlockAt(page, page.locator('[data-testid^="timeline-block-"]').first());
   await page.waitForSelector("[data-edit-id]");
   const el = (await page.locator("[data-edit-id]").first().boundingBox())!;
   await page.mouse.click(el.x + el.width / 2, el.y + el.height / 2);
@@ -573,7 +592,7 @@ test("element text edits live in the panel; the inline double-click input is gon
 }) => {
   await page.goto("/");
   await settle(page);
-  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await selectBlockAt(page, page.locator('[data-testid^="timeline-block-"]').first());
   await page.waitForSelector("[data-edit-id]");
   const el = page.locator("[data-edit-id]").first();
   const elBox = (await el.boundingBox())!;
@@ -608,7 +627,7 @@ test("switching layout never hides the graphic — every option keeps the scene 
   // the sweep pins EVERY option so a future layout can't regress the same way.
   await page.goto("/");
   await settle(page);
-  await page.getByTestId("timeline-block-scene-5").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-5"));
   await expect(page.getByTestId("overlay-box")).toBeVisible();
   const layoutSelect = page.getByTestId("layout-select");
   await expect(layoutSelect).toHaveValue("blurred-behind");
@@ -641,7 +660,7 @@ test("a layout swap re-slots a graphic the pipeline had routed elsewhere (R13)",
   // old layout's routed position inside the new layout's staging.
   await page.goto("/");
   await settle(page);
-  await page.getByTestId("timeline-block-scene-3").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-3"));
   await expect(page.getByTestId("overlay-box")).toBeVisible();
   await page.getByTestId("layout-select").selectOption("blurred-behind");
 
@@ -683,9 +702,10 @@ test("timeline zoom: the track widens, scrolls, and gestures stay calibrated (R1
   expect(scrolled).toBeGreaterThan(viewport.width * 2);
 
   // Gestures stay calibrated on the wide, scrolled track: a click inside a
-  // late block still selects it AND seeks inside ITS window — the same
-  // invariant Tasks 3+4 pinned at zoom 1.
-  await page.getByTestId("timeline-block-scene-5").click();
+  // late block still selects it (clicks no longer seek — field report
+  // 2026-08-07 — so the ruler carries the seek half of the calibration
+  // check, at the same scrolled-content x the block sits at).
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-5"));
   await expect(page.getByTestId("timing-range")).toContainText("27.61s");
   const frac = await playheadFrac(page);
   expect(frac).toBeGreaterThan(27.61 / 31.92458 - 0.01);
@@ -737,7 +757,7 @@ test("caption position: per-scene slider, and Apply to all scenes (R15 §56)", a
   const cleanDoc = await readFile(join(WORKDIR, "overrides.json"), "utf8").catch(() => "");
   await page.goto("/");
   await settle(page);
-  await page.getByTestId("timeline-block-scene-0").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
   const word = page.locator("[data-caption-word]").first();
   await expect(word).toBeVisible();
   const before = (await word.boundingBox())!.y;
@@ -861,8 +881,10 @@ test("the keybinds reference opens with ? and the top-bar button, closes with es
 }) => {
   await page.goto("/");
   await settle(page);
-  // Select FIRST — the modal's backdrop owns clicks while it is open.
-  await page.getByTestId("timeline-block-scene-0").click();
+  // Select FIRST — the modal's backdrop owns clicks while it is open. Seek
+  // into the scene too: the overlay box needs its DOM mounted, and block
+  // clicks no longer seek (field report 2026-08-07).
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
   await expect(page.getByTestId("overlay-box")).toBeVisible();
   await page.keyboard.press("?");
   const modal = page.getByTestId("shortcuts-modal");
@@ -887,9 +909,10 @@ test("⌘B splits the scene at the playhead; undo heals it (R16 §61)", async ({
   await settle(page);
   const blocks = page.locator('[data-testid^="timeline-block-"]');
   const before = await blocks.count();
-  // Click mid-block: selects scene-0 AND seeks to the clicked time (~2.6s),
-  // comfortably clear of both edges.
-  await page.getByTestId("timeline-block-scene-0").click();
+  // Park the playhead mid-scene (~2.6s, comfortably clear of both edges)
+  // and select — two gestures now, the click no longer seeks (field report
+  // 2026-08-07); ⌘B still cuts at the PLAYHEAD, wherever it was parked.
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
   await page.keyboard.press("Meta+b");
   await expect(blocks).toHaveCount(before + 1);
   // The second half is a real, selectable scene named by its start time.
@@ -907,7 +930,10 @@ test("⌥+arrows select the neighbour scene; ⌘+arrows jump to scene starts (R1
 }) => {
   await page.goto("/");
   await settle(page);
-  await page.getByTestId("timeline-block-scene-0").click();
+  // Ruler-seek mid-scene, then select — the click alone no longer moves the
+  // playhead (field report 2026-08-07), and this test's "select ≠ seek"
+  // assertion below needs it parked measurably off zero.
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
   // ⌥→ moves the SELECTION to the next block (the take after scene-0) —
   // the Inspector heading flips from Scene to Take.
   await expect(page.locator("text=Scene").first()).toBeVisible();
@@ -974,7 +1000,7 @@ test("caption scale is a per-scene control like every other scale (R16 §64)", a
 }) => {
   await page.goto("/");
   await settle(page);
-  await page.getByTestId("timeline-block-scene-0").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
   const word = page.locator("[data-caption-word]").first();
   await expect(word).toBeVisible();
   const sizeBefore = await word.evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize));
@@ -996,7 +1022,7 @@ test("a strikethrough line's style is editable: struck, ✗ wrong, ✓ right (R1
   await settle(page);
   // scene-2 is the fixture's StrikethroughReveal: "PROMPT" struck, "RUN
   // AGENTIC LOOPS" plain. Select the PLAIN line.
-  await page.getByTestId("timeline-block-scene-2").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-2"));
   await page.waitForSelector('[data-edit-id="line-1"]');
   const el = (await page.locator('[data-edit-id="line-1"]').boundingBox())!;
   await page.mouse.click(el.x + el.width / 2, el.y + el.height / 2);
@@ -1032,7 +1058,7 @@ test("BulletList: an enumeration component, items editable from the panel (R16 �
   await settle(page);
   // Swap scene-2 to the new component via the R13 component select — the
   // registry defaults render immediately.
-  await page.getByTestId("timeline-block-scene-2").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-2"));
   await page.locator("select").first().selectOption("BulletList");
   await page.waitForSelector('[data-edit-id="item-0"]');
   await expect(page.locator('[data-edit-scene="scene-2"]')).toContainText("▸");
@@ -1061,8 +1087,10 @@ test("a split half inherits the original scene's edits (R16 §68)", async ({ pag
   // The reported flow: style a take's captions, split it, and the RIGHT half
   // used to fall back to default caption placement and scale. nth(1): the
   // FIRST take is the 0.09s sliver before scene-0 — too thin to split and
-  // sitting under the parked playhead's grab zone.
-  await page.locator('[data-testid^="timeline-block-take-"]').nth(1).click();
+  // sitting under the parked playhead's grab zone. Ruler-seek mid-take
+  // first: the click only selects now (field report 2026-08-07), and ⌘B
+  // below cuts at the playhead.
+  await selectBlockAt(page, page.locator('[data-testid^="timeline-block-take-"]').nth(1));
   const scaleSlider = page.getByTestId("caption-scale-slider");
   await scaleSlider.focus();
   await page.keyboard.press("End"); // 3×
@@ -1071,7 +1099,7 @@ test("a split half inherits the original scene's edits (R16 §68)", async ({ pag
   await page.keyboard.press("Home"); // 0.05
 
   // ⌘B works with the slider still focused (§70's yield rule) — the
-  // playhead is already parked mid-take from the block click above.
+  // playhead is already parked mid-take by the ruler seek above.
   const blocks = page.locator('[data-testid^="timeline-block-"]');
   const before = await blocks.count();
   await page.keyboard.press("Meta+b");
@@ -1180,7 +1208,7 @@ test("transcript wraps in place, and the pane is drag-resizable (R16 §65)", asy
 test("pip bubble: roundness and placement are per-scene edits (R14 §52)", async ({ page }) => {
   await page.goto("/");
   await settle(page);
-  await page.getByTestId("timeline-block-scene-5").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-5"));
   await page.getByTestId("layout-select").selectOption("pip-bubble");
 
   // The PiP section appears with the layout switch, and the slot on stage is
@@ -1227,10 +1255,12 @@ test("undo/redo: toolbar buttons and ⌘⇧Z walk the history both ways (R17 §8
   await expect(undoBtn).toBeDisabled();
   await expect(redoBtn).toBeDisabled();
 
-  // One observable edit: split scene-0 at the click position.
+  // One observable edit: split scene-0 at the playhead — parked mid-scene by
+  // the ruler half of selectBlockAt (the block click alone no longer seeks,
+  // field report 2026-08-07, and a split at 0 would produce no new block).
   const blocks = page.locator('[data-testid^="timeline-block-"]');
   const before = await blocks.count();
-  await page.getByTestId("timeline-block-scene-0").click();
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
   await page.keyboard.press("Meta+b");
   await expect(blocks).toHaveCount(before + 1);
   await expect(undoBtn).toBeEnabled();

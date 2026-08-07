@@ -54,7 +54,15 @@ test("caption retype works in landscape, at the SMALL preview that broke it (§5
 
   // Park the playhead on a plain TAKE — full-bleed staging, whose caption
   // anchor (0.7) is the one that lands in the strip on a short preview.
-  await page.locator('[data-testid^="timeline-block-take-"]').first().click();
+  // Ruler seek + click: a block click only selects now (field report
+  // 2026-08-07), it no longer parks the playhead by itself.
+  const takeBlock = page.locator('[data-testid^="timeline-block-take-"]').first();
+  const tb = (await takeBlock.boundingBox())!;
+  const rulerBox = (await page.getByTestId("ruler").boundingBox())!;
+  await page.mouse.click(tb.x + tb.width * 0.65, rulerBox.y + rulerBox.height / 2);
+  // Click OFF the just-parked playhead — its grab zone intercepts a click at
+  // the same x it was parked at.
+  await takeBlock.click({ position: { x: tb.width * 0.3, y: tb.height / 2 } });
   const word = page.locator("[data-caption-word]").first();
   await expect(word).toBeVisible();
   const box = (await word.boundingBox())!;
@@ -69,7 +77,15 @@ test("caption retype works in landscape, at the SMALL preview that broke it (§5
 test("caption position override moves the words in landscape (§56)", async ({ page }) => {
   await page.goto("/");
   await page.waitForSelector('[data-testid^="timeline-block-"]');
-  await page.getByTestId("timeline-block-scene-0").click();
+  // Ruler seek + click — the block click only selects now (field report
+  // 2026-08-07), and this test needs scene-0's captions on stage.
+  const sceneBlock = page.getByTestId("timeline-block-scene-0");
+  const sb = (await sceneBlock.boundingBox())!;
+  const rb = (await page.getByTestId("ruler").boundingBox())!;
+  await page.mouse.click(sb.x + sb.width * 0.65, rb.y + rb.height / 2);
+  // Click OFF the just-parked playhead — its grab zone intercepts a click at
+  // the same x it was parked at.
+  await sceneBlock.click({ position: { x: sb.width * 0.3, y: sb.height / 2 } });
   const word = page.locator("[data-caption-word]").first();
   await expect(word).toBeVisible();
   const before = (await word.boundingBox())!.y;

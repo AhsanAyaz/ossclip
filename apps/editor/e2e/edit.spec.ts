@@ -14,11 +14,20 @@ test("drag an element, save, and the patch lands on disk", async ({ page }) => {
   // productions rarely open on an exact-zero timestamp) and the Player
   // never advances on its own without pressing play — seek to the first
   // scene explicitly so its `data-edit-id` leaves are guaranteed to exist.
-  // This also leaves the whole SCENE selected (no element) — the natural
-  // state a user is in right after picking a scene off the timeline — which
-  // is deliberate: it's the exact situation the click-through-a-scene-box
-  // fix below needs to prove out, with no `Escape` workaround in between.
-  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  // Two gestures since the field report 2026-08-07 fix (a block click only
+  // selects, it never seeks): ruler-seek to the block's midpoint, then click
+  // it. That still leaves the whole SCENE selected (no element) — the
+  // natural state a user is in right after picking a scene off the timeline
+  // — which is deliberate: it's the exact situation the
+  // click-through-a-scene-box fix below needs to prove out, with no
+  // `Escape` workaround in between.
+  const firstBlock = page.locator('[data-testid^="timeline-block-"]').first();
+  const blockBox = (await firstBlock.boundingBox())!;
+  const ruler = (await page.getByTestId("ruler").boundingBox())!;
+  await page.mouse.click(blockBox.x + blockBox.width * 0.65, ruler.y + ruler.height / 2);
+  // Click OFF the just-parked playhead — its grab zone intercepts a click at
+  // the same x it was parked at.
+  await firstBlock.click({ position: { x: blockBox.width * 0.3, y: blockBox.height / 2 } });
   await page.waitForSelector("[data-edit-id]");
 
   const el = page.locator("[data-edit-id]").first();

@@ -114,6 +114,97 @@ function Harness({
   });
 }
 
+/**
+ * Field report 2026-08-07: selecting a TerminalMock `window-N` showed the
+ * element panel with NO text control at all (only Scale/X/Y/Reset/Delete) —
+ * `elementTextOf` refused windows outright, and the window's lines carry no
+ * per-line edit ids to fall back on. A window now edits as a multiline
+ * TEXTAREA (one row per terminal line) committing through
+ * `buildArrayPatch`'s window arm on every change, like every other field.
+ */
+describe("Inspector — TerminalMock window-N text edits via a textarea (field report 2026-08-07)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  const terminalCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "lower-third",
+    component: "TerminalMock",
+    props: { windows: [{ title: "terminal-01", lines: ["$ run", "ok"] }], fanOut: "OUTPUT ×1" },
+    startSec: 0,
+    endSec: 30,
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("renders the window's lines newline-joined in a TEXTAREA, not the single-line input", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: "window-0" },
+          cue: terminalCue,
+        }),
+      );
+    });
+    const field = container.querySelector<HTMLTextAreaElement>('[data-testid="element-text"]')!;
+    expect(field).not.toBeNull();
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field.value).toBe("$ run\nok");
+  });
+
+  it("commits an edit through buildArrayPatch's window arm — newline per line, title untouched", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: "window-0" },
+          cue: terminalCue,
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const field = container.querySelector<HTMLTextAreaElement>('[data-testid="element-text"]')!;
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    await act(async () => {
+      setValue.call(field, "$ build\n$ ship\ndone");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(doc?.scenes["scene-0"]?.props?.windows).toEqual([
+      { title: "terminal-01", lines: ["$ build", "$ ship", "done"] },
+    ]);
+  });
+
+  it("a plain top-level string prop still gets the single-line INPUT — the textarea is windows-only", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: "title" },
+        }),
+      );
+    });
+    const field = container.querySelector<HTMLInputElement>('[data-testid="element-text"]')!;
+    expect(field.tagName).toBe("INPUT");
+    expect(field.value).toBe("SHIP IT");
+  });
+});
+
 describe("Inspector — destructive/mutating buttons blur on click (PLAN 2026-08-04 Task 2, bug 4)", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;

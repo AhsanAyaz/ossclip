@@ -21,7 +21,15 @@ const cue: SceneCue = {
 function Harness({
   cuts,
   spans,
+  cues = [cue],
+  playerRef = { current: null },
+  onSelect = vi.fn(),
 }: {
+  cues?: SceneCue[];
+  /** Loosely typed on purpose: tests hand in a tiny seekTo/eventing stub, not
+   * a whole Remotion player. */
+  playerRef?: { current: unknown };
+  onSelect?: (sel: { sceneId: string; elementId: string | null } | null) => void;
   /** Pre-loaded into `edits.doc.cuts` before Timeline ever renders (mirrors
    * App.tsx's real wiring, `cuts={edits.doc.cuts}`) — NOT a static prop.
    * `restoreChunk`'s effect on the timeline can only be observed if
@@ -52,15 +60,15 @@ function Harness({
     // lives in the app, not just inside Timeline's own DOM.
     React.createElement("input", { "data-testid": "outside-field" }),
     React.createElement(Timeline, {
-      cues: [cue],
+      cues,
       ghosts: [],
       cuts: edits.doc.cuts,
       spans,
       durationSec: 10,
       fps: 30,
-      playerRef: { current: null },
+      playerRef: playerRef as never,
       selection: null,
-      onSelect: vi.fn(),
+      onSelect,
       edits,
     }),
   );
@@ -108,6 +116,121 @@ describe("Timeline — mousedown blurs a stale-focused field (PLAN 2026-08-04 Ta
       block.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 5 }));
     });
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+/**
+ * Field report 2026-08-07: "when I click to select a scene, the play head
+ * moves there as well. Which is incorrect." A block click used to select on
+ * mousedown and then ALSO seek on mouseup (graphic blocks) or seek on the
+ * mousedown itself (plain takes). Selection and seeking are now separate:
+ * a click on ANY block only selects; seeking lives on the intentional
+ * surfaces — the ruler, the bare track background, and a press that
+ * actually TRAVELS over a take (the scrub gesture).
+ */
+describe("Timeline — selecting a block never moves the playhead (field report 2026-08-07)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  const playerStub = () => ({
+    seekTo: vi.fn(),
+    getCurrentFrame: () => 0,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
+
+  const takeCue: SceneCue = {
+    id: "take-0",
+    kind: "plain",
+    layout: "video-top",
+    startSec: 0,
+    endSec: 10,
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const press = (el: HTMLElement, clientX: number) =>
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX }));
+  const release = (clientX: number) =>
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX }));
+
+  it("a click on a GRAPHIC block selects and does not seek", async () => {
+    const player = playerStub();
+    const onSelect = vi.fn();
+    await act(async () => {
+      root.render(React.createElement(Harness, { playerRef: { current: player }, onSelect }));
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-scene-0"]')!;
+    act(() => {
+      press(block, 5);
+      release(5);
+    });
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "scene-0", elementId: null });
+    expect(player.seekTo).not.toHaveBeenCalled();
+  });
+
+  it("a click on a PLAIN take selects and does not seek — the old seek-on-mousedown is gone", async () => {
+    const player = playerStub();
+    const onSelect = vi.fn();
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          cues: [takeCue],
+          playerRef: { current: player },
+          onSelect,
+        }),
+      );
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-take-0"]')!;
+    act(() => {
+      press(block, 5);
+      release(5);
+    });
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "take-0", elementId: null });
+    expect(player.seekTo).not.toHaveBeenCalled();
+  });
+
+  it("a press that TRAVELS over a take still scrubs — the drag gesture survives, only the click-seek is gone", async () => {
+    const player = playerStub();
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, { cues: [takeCue], playerRef: { current: player } }),
+      );
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-take-0"]')!;
+    act(() => {
+      press(block, 5);
+      // Past MOVE_THRESHOLD_PX — the press commits to being a scrub.
+      window.dispatchEvent(
+        new MouseEvent("mousemove", { bubbles: true, cancelable: true, clientX: 40 }),
+      );
+      release(40);
+    });
+    expect(player.seekTo).toHaveBeenCalled();
+  });
+
+  it("the ruler still seeks on a bare click — the intentional seek surface", async () => {
+    const player = playerStub();
+    await act(async () => {
+      root.render(React.createElement(Harness, { playerRef: { current: player } }));
+    });
+    const ruler = container.querySelector<HTMLElement>('[data-testid="ruler"]')!;
+    act(() => {
+      press(ruler, 5);
+      release(5);
+    });
+    expect(player.seekTo).toHaveBeenCalled();
   });
 });
 

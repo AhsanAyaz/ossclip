@@ -70,9 +70,56 @@ describe("elementTextOf — the panel's read direction (R12 §49)", () => {
     expect(elementTextOf("message-0", { keyword: "agents", messages: [{ text: "x" }] })).toBe("agents");
   });
 
-  it("returns null for a window (its lines carry their own ids) and out-of-range indices", () => {
+  it("returns null for an out-of-range index", () => {
     expect(elementTextOf("window-0", { windows: [] })).toBeNull();
     expect(elementTextOf("node-5", { nodes: ["A"] })).toBeNull();
+  });
+});
+
+/**
+ * TerminalMock windows (field report 2026-08-07): `window-N` used to return
+ * null from both helpers — its lines carry no per-line edit ids (only the
+ * window div is tagged, see TerminalMock.tsx), so the Inspector showed NO
+ * text control at all for the one component whose whole point is text. The
+ * window now round-trips as a newline-joined blob: `elementTextOf` joins
+ * `lines`, `buildArrayPatch` splits back, and `title` never rides along.
+ */
+describe("TerminalMock windows — the window-N id family (field report 2026-08-07)", () => {
+  const props = {
+    windows: [
+      { title: "terminal-01", lines: ["$ run", "ok"] },
+      { title: "terminal-02", lines: ["$ test"] },
+    ],
+    fanOut: "OUTPUT ×1",
+  };
+
+  it("reads a window's lines newline-joined for the panel's textarea", () => {
+    expect(elementTextOf("window-0", props)).toBe("$ run\nok");
+    expect(elementTextOf("window-1", props)).toBe("$ test");
+  });
+
+  it("splits the textarea blob back into lines, leaving the title and sibling windows alone", () => {
+    expect(buildArrayPatch("window-0", props, "$ build\n$ ship\ndone")).toEqual({
+      windows: [
+        { title: "terminal-01", lines: ["$ build", "$ ship", "done"] },
+        { title: "terminal-02", lines: ["$ test"] },
+      ],
+    });
+  });
+
+  it("preserves deliberate blank lines — split(\"\\n\") keeps empties", () => {
+    expect(buildArrayPatch("window-1", props, "$ test\n\npassed")).toEqual({
+      windows: [
+        { title: "terminal-01", lines: ["$ run", "ok"] },
+        { title: "terminal-02", lines: ["$ test", "", "passed"] },
+      ],
+    });
+  });
+
+  it("refuses out-of-range and malformed windows", () => {
+    expect(buildArrayPatch("window-2", props, "x")).toBeNull();
+    expect(buildArrayPatch("window-0", { windows: ["not-an-object"] }, "x")).toBeNull();
+    expect(elementTextOf("window-0", { windows: [{ title: "t", lines: [1, 2] }] })).toBeNull();
   });
 });
 
@@ -252,6 +299,105 @@ describe("Overlay's window mousedown listener — the real wiring for bug 6", ()
       );
     });
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+/**
+ * Field report 2026-08-07: double-clicking a caption opened the inline edit
+ * box, but clicking INSIDE it — to place the cursor or select text — closed
+ * it again. The bug-6 blur above fired on every stage mousedown, including
+ * the one that landed on the caption editor itself (App.tsx renders Overlay
+ * INSIDE the stage div, so the editor's fixed-position input is
+ * `stage.contains()`-true); the editor commits-and-closes on blur, so the
+ * click killed the edit the double-click just opened. This drives the REAL
+ * caption flow — dblclick to open, mousedown inside, mousedown away — so
+ * both the fix and bug 6's surviving behavior stay pinned together.
+ */
+describe("caption editor vs. the stage-mousedown blur (field report 2026-08-07)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  function Harness() {
+    const edits = useEdits();
+    const stageRef = useRef<HTMLDivElement>(null);
+    const playerRef = useRef<PlayerRef>(null);
+    // Overlay mounts INSIDE the stage div — App.tsx's real nesting, and the
+    // detail that puts the caption editor's input under the stage listener.
+    return React.createElement(
+      "div",
+      { ref: stageRef, "data-testid": "stage" },
+      React.createElement("div", {
+        "data-testid": "caption-word",
+        "data-caption-word": "0",
+        "data-caption-text": "hello",
+      }),
+      React.createElement("div", { "data-testid": "stage-elsewhere" }),
+      React.createElement(Overlay, {
+        stageRef,
+        selection: null,
+        onSelect: vi.fn(),
+        edits,
+        onSave: vi.fn(),
+        settings: { width: 1080, height: 1920, fps: 30 },
+        cues: [],
+        onToggleHelp: vi.fn(),
+        playerRef,
+        onTransport: vi.fn(),
+        onVideoPreview: vi.fn(),
+        onGraphicPreview: vi.fn(),
+        cue: null,
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("mousedown INSIDE the open caption editor keeps it open and focused; mousedown elsewhere on the stage still commits-and-closes it (bug 6 survives)", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness));
+    });
+    const word = container.querySelector<HTMLElement>('[data-testid="caption-word"]')!;
+    // jsdom has no layout: point the hit-test walk straight at the word so
+    // the dblclick handler resolves it the way `elementBelow` would.
+    document.elementFromPoint = () => word;
+    await act(async () => {
+      word.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+    const editor = container.querySelector<HTMLInputElement>('[data-testid="caption-edit"]')!;
+    expect(editor).not.toBeNull();
+    expect(document.activeElement).toBe(editor);
+
+    // The reported gesture: a click inside the box to place the cursor.
+    await act(async () => {
+      editor.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }),
+      );
+    });
+    expect(container.querySelector('[data-testid="caption-edit"]')).toBe(editor);
+    expect(document.activeElement).toBe(editor);
+
+    // Bug 6 must survive: a mousedown AWAY from the editor still blurs it,
+    // which is exactly the editor's commit-and-close path.
+    document.elementFromPoint = () => null;
+    const elsewhere = container.querySelector<HTMLElement>('[data-testid="stage-elsewhere"]')!;
+    await act(async () => {
+      elsewhere.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }),
+      );
+    });
+    expect(container.querySelector('[data-testid="caption-edit"]')).toBeNull();
+    expect(document.activeElement).not.toBe(editor);
   });
 });
 

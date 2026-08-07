@@ -304,10 +304,14 @@ export const Inspector: React.FC<InspectorProps> = ({
     const transform = cue.elements?.[elementId] ?? {};
     // The panel is where text editing LIVES now (R12 §49) — the inline
     // double-click input painted over the element it edited. `elementTextOf`
-    // also reads the array-backed line-N/node-N/message-N ids, so the panel
-    // covers everything the overlay input could reach (a window-N returns
-    // null — its lines carry their own ids).
+    // also reads the array-backed line-N/node-N/message-N/window-N ids, so
+    // the panel covers everything the overlay input could reach. A window-N
+    // (a TerminalMock window) reads its lines newline-joined and gets a
+    // TEXTAREA below instead of the input: its lines carry no ids of their
+    // own, so the single-line input left TerminalMock the one component
+    // whose text could not be edited at all (field report 2026-08-07).
     const text = cue.props ? elementTextOf(elementId, cue.props) : null;
+    const multiline = /^window-\d+$/.test(elementId);
     return (
       <div>
         <div style={section}>
@@ -362,18 +366,19 @@ export const Inspector: React.FC<InspectorProps> = ({
           <div style={section}>
             <div style={row}>
               <span style={label}>Text</span>
-              <input
-                style={textInput}
-                data-testid="element-text"
-                value={text}
-                onChange={(e) => {
+              {(() => {
+                // Same commit-on-change contract as every other field here
+                // (see `blurTypingElement`'s comment in Overlay.tsx: fields
+                // must never gate their write behind a blur) — shared so the
+                // window textarea can't drift from the input's behavior.
+                const commitText = (value: string) => {
                   const props = cue.props ?? {};
                   // Top-level string props patch directly; array-backed ids
                   // need buildArrayPatch to rewrite the right entry — a bare
                   // { [elementId]: text } there writes a key nothing reads.
                   const patch = /^(line|node|message|window|item)-\d+$/.test(elementId)
-                    ? buildArrayPatch(elementId, props, e.target.value)
-                    : { [elementId]: e.target.value };
+                    ? buildArrayPatch(elementId, props, value)
+                    : { [elementId]: value };
                   if (patch) {
                     edits.patchProps(
                       selection.sceneId,
@@ -381,8 +386,26 @@ export const Inspector: React.FC<InspectorProps> = ({
                       `text:${selection.sceneId}:${elementId}`,
                     );
                   }
-                }}
-              />
+                };
+                return multiline ? (
+                  <textarea
+                    style={{ ...textInput, resize: "vertical", fontFamily: "inherit" }}
+                    data-testid="element-text"
+                    // One row per terminal line (schema caps windows at 6
+                    // lines) so the whole window is visible without a scroll.
+                    rows={Math.min(6, Math.max(2, text.split("\n").length))}
+                    value={text}
+                    onChange={(e) => commitText(e.target.value)}
+                  />
+                ) : (
+                  <input
+                    style={textInput}
+                    data-testid="element-text"
+                    value={text}
+                    onChange={(e) => commitText(e.target.value)}
+                  />
+                );
+              })()}
             </div>
           </div>
         ) : null}

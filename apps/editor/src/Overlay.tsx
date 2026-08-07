@@ -182,8 +182,10 @@ const DYNAMIC_ID = /^(line|node|message|window|item)-(\d+)$/;
  * lives in and return the prop PATCH that rewrites just that entry —
  * `null` if the id doesn't decompose this way, the cue has no matching
  * array, or the index is out of range. `window-N` (a `TerminalMock` window:
- * a title PLUS several lines) has no single string to retype into and is
- * intentionally left unhandled here — callers must refuse it instead.
+ * a title PLUS several lines) edits as one multiline blob — newline per
+ * rendered terminal line, the title left untouched — because its lines
+ * carry no ids of their own, so refusing the window here left TerminalMock
+ * the only component with untouchable text (field report 2026-08-07).
  */
 export function buildArrayPatch(
   elementId: string,
@@ -191,8 +193,8 @@ export function buildArrayPatch(
   text: string,
 ): Record<string, unknown> | null {
   const m = DYNAMIC_ID.exec(elementId);
-  if (!m || m[1] === "window") return null;
-  const kind = m[1] as "line" | "node" | "message" | "item";
+  if (!m) return null;
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window";
   const idx = Number(m[2]);
   // ChatMock's CTA mode (props.keyword set) renders exactly ONE synthetic
   // bubble showing the keyword and ignores `props.messages` entirely
@@ -213,7 +215,15 @@ export function buildArrayPatch(
     return mapped ? { keyword: mapped } : null;
   }
   const field =
-    kind === "line" ? "lines" : kind === "node" ? "nodes" : kind === "item" ? "items" : "messages";
+    kind === "line"
+      ? "lines"
+      : kind === "node"
+        ? "nodes"
+        : kind === "item"
+          ? "items"
+          : kind === "window"
+            ? "windows"
+            : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const next = arr.slice();
@@ -222,6 +232,14 @@ export function buildArrayPatch(
     // FlowDiagram's `nodes` and BulletList's `items` are plain string[] —
     // the whole entry IS the text.
     next[idx] = text;
+  } else if (kind === "window") {
+    // A TerminalMock window's text is its `lines` array, and those lines
+    // carry no per-line edit ids (only the window div is tagged), so the
+    // panel edits the whole window as a newline-joined blob (field report
+    // 2026-08-07). Split preserves empty lines — a blank terminal line is a
+    // thing the author may want — and never touches `title`.
+    if (typeof item !== "object" || item === null) return null;
+    next[idx] = { ...(item as Record<string, unknown>), lines: text.split("\n") };
   } else {
     if (typeof item !== "object" || item === null) return null;
     next[idx] = { ...(item as Record<string, unknown>), text };
@@ -234,8 +252,9 @@ export function buildArrayPatch(
  * (R12 §49). Top-level string props read directly; the array-backed
  * `line-N`/`node-N`/`message-N` ids read out of their arrays; a CTA-mode
  * `message-0` reads the keyword (which is what a patch there writes); a
- * `window-N` (a title plus several lines) has no single string and returns
- * null — its lines carry their own ids. Null means "no text control".
+ * `window-N` (a TerminalMock window) reads its `lines` newline-joined —
+ * the shape the window arm of `buildArrayPatch` writes back (field report
+ * 2026-08-07). Null means "no text control".
  */
 export function elementTextOf(
   elementId: string,
@@ -246,18 +265,31 @@ export function elementTextOf(
     const v = props[elementId];
     return typeof v === "string" ? v : null;
   }
-  if (m[1] === "window") return null;
-  const kind = m[1] as "line" | "node" | "message" | "item";
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window";
   const idx = Number(m[2]);
   if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
     return props.keyword;
   }
   const field =
-    kind === "line" ? "lines" : kind === "node" ? "nodes" : kind === "item" ? "items" : "messages";
+    kind === "line"
+      ? "lines"
+      : kind === "node"
+        ? "nodes"
+        : kind === "item"
+          ? "items"
+          : kind === "window"
+            ? "windows"
+            : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const item = arr[idx];
   if (kind === "node" || kind === "item") return typeof item === "string" ? item : null;
+  if (kind === "window") {
+    const lines = (item as Record<string, unknown> | null)?.lines;
+    return Array.isArray(lines) && lines.every((l) => typeof l === "string")
+      ? lines.join("\n")
+      : null;
+  }
   const text = (item as Record<string, unknown> | null)?.text;
   return typeof text === "string" ? text : null;
 }
@@ -545,6 +577,21 @@ export const Overlay: React.FC<OverlayProps> = ({
       // this listener is global precisely so pass-through works, but it must
       // not react to unrelated clicks.
       if (!stage.contains(e.target as Node)) return;
+      // A mousedown that lands INSIDE the currently-focused field is the
+      // field being USED — placing the cursor, drag-selecting text in the
+      // caption editor — not a click away from it. The caption editor
+      // commits-and-closes on blur, so blurring here killed the edit box the
+      // double-click had just opened (field report 2026-08-07). Return
+      // outright rather than merely skipping the blur: the hit-test below
+      // would otherwise re-resolve whatever sits UNDER the editor and change
+      // the selection mid-edit. (`contains` includes the node itself.)
+      const active = document.activeElement;
+      if (
+        (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) &&
+        active.contains(e.target as Node)
+      ) {
+        return;
+      }
       // Player-area mousedown (bug 6, PLAN 2026-08-04 Task 2): a click on the
       // stage — selecting a scene, dragging an element — should never leave
       // a stale Inspector field eating the keystrokes that follow. See

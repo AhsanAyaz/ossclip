@@ -82,10 +82,12 @@ interface DragState {
 
 /**
  * A press on a block body, before we know whether it is a click or a drag.
- * Below `MOVE_THRESHOLD_PX` of travel it stays a click (select + seek to the
- * CLICKED time — Task 4); past it, it becomes a move drag that shifts the
- * whole block (Task 6). The threshold is what keeps a click that wobbles a
- * pixel from silently writing a `timing` override and pinning the scene.
+ * Below `MOVE_THRESHOLD_PX` of travel it stays a click (select ONLY — the
+ * seek-on-click Task 4 added moved the playhead every time a scene was
+ * selected for editing, field report 2026-08-07); past it, it becomes a
+ * move drag that shifts the whole block (Task 6). The threshold is what
+ * keeps a click that wobbles a pixel from silently writing a `timing`
+ * override and pinning the scene.
  */
 interface BlockPress {
   sceneId: string;
@@ -94,6 +96,14 @@ interface BlockPress {
   /** Content-space start — the delta the move actually uses (see DragState). */
   startContentX: number;
   moved: boolean;
+  /**
+   * A press on a PLAIN take: past the travel threshold it SCRUBS (the takes
+   * cover most of the track, and they can't move — their window is derived)
+   * instead of move-dragging. Threshold-gated like every other press so a
+   * bare click selects WITHOUT seeking (field report 2026-08-07) — the old
+   * seek-on-mousedown moved the playhead on every take selection.
+   */
+  scrub?: boolean;
 }
 
 /** Pixel width of the invisible hit zone at each block edge — wider than the
@@ -416,6 +426,14 @@ export const Timeline: React.FC<TimelineProps> = ({
       if (press && durationSec > 0) {
         if (!press.moved && Math.abs(e.clientX - press.startX) < MOVE_THRESHOLD_PX) return;
         press.moved = true;
+        if (press.scrub) {
+          // A plain take's press past the threshold is a scrub, not a block
+          // move — follow the pointer like the ruler does (field report
+          // 2026-08-07: the seek now waits for real travel, so a click
+          // selects without touching the playhead).
+          seekTrack(e.clientX);
+          return;
+        }
         const track = trackRef.current;
         const r = track?.getBoundingClientRect();
         // CONTENT-space delta (see DragState.startContentX): after a page,
@@ -513,21 +531,24 @@ export const Timeline: React.FC<TimelineProps> = ({
       const press = blockPressRef.current;
       if (press) {
         blockPressRef.current = null;
-        if (press.moved) {
+        if (press.moved && !press.scrub) {
           // The drag became a move (Task 6): commit it. Like an edge drag,
           // this writes `timing` and pins the scene — the badge appears via
-          // the same patch path.
+          // the same patch path. (A scrub press never has a preview to
+          // commit — the guard just makes that explicit.)
           setDragPreview((preview) => {
             if (preview && preview.sceneId === press.sceneId) {
               edits.patchTiming(press.sceneId, preview.startSec, preview.endSec);
             }
             return null;
           });
-        } else {
-          // It stayed a click: seek to the CLICKED time, not the scene's
-          // start (Task 4) — a plain click never writes a timing override.
-          seekTrack(e.clientX);
         }
+        // It stayed a click: the mousedown already selected the block, and
+        // that is ALL a click on a block does. It used to also seek to the
+        // clicked time (Task 4), but selecting a scene to edit it kept
+        // yanking the playhead away from wherever the user had parked it
+        // (field report 2026-08-07). Seeking lives on the intentional
+        // surfaces only: the ruler and the bare track background.
         return;
       }
       const drag = dragRef.current;
@@ -720,26 +741,24 @@ export const Timeline: React.FC<TimelineProps> = ({
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     e.preventDefault();
-                    // Select right away for feedback. A GRAPHIC block then waits
-                    // on travel to decide click-seek vs move-drag (see the window
-                    // mousemove/mouseup pair above). A PLAIN block's window is
-                    // derived, not stored — it can't move, so its press seeks
-                    // immediately and drags as a scrub: the takes now cover most
-                    // of the track, and losing press-and-drag seeking over them
-                    // would regress the very gesture the track was given.
+                    // Select right away for feedback. The press then waits on
+                    // travel (MOVE_THRESHOLD_PX) to decide what it is: a GRAPHIC
+                    // block's drag moves the block, a PLAIN take's drag scrubs
+                    // (its window is derived, not stored — it can't move, and
+                    // the takes cover most of the track, so losing press-and-
+                    // drag seeking over them would regress the very gesture the
+                    // track was given). Below the threshold BOTH stay a bare
+                    // select — no seek: clicking a scene to edit it kept
+                    // yanking the playhead away (field report 2026-08-07).
                     onSelect({ sceneId: cue.id, elementId: null });
-                    if (isPlain) {
-                      seekTrack(e.clientX);
-                      scrubbingRef.current = true;
-                      return;
-                    }
                     blockPressRef.current = {
-                  sceneId: cue.id,
-                  startX: e.clientX,
-                  startContentX:
-                    e.clientX - (trackRef.current?.getBoundingClientRect().left ?? 0),
-                  moved: false,
-                };
+                      sceneId: cue.id,
+                      startX: e.clientX,
+                      startContentX:
+                        e.clientX - (trackRef.current?.getBoundingClientRect().left ?? 0),
+                      moved: false,
+                      scrub: isPlain,
+                    };
                   }}
                   style={{
                     ...block,
