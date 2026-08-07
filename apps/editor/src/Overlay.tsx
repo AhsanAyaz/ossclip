@@ -239,7 +239,17 @@ export function buildArrayPatch(
     // 2026-08-07). Split preserves empty lines — a blank terminal line is a
     // thing the author may want — and never touches `title`.
     if (typeof item !== "object" || item === null) return null;
-    next[idx] = { ...(item as Record<string, unknown>), lines: text.split("\n") };
+    // TerminalMockProps' bounds (max 6 lines of max 40 chars) are enforced
+    // HERE, at commit, because the override merge never re-validates props:
+    // an out-of-schema override renders silently today and a component
+    // swap-away-and-back would drop it. Silent truncation, not rejection,
+    // because this is live typing — a keystroke stream has no single moment
+    // to fail loudly at, unlike a parsed flag (the zod house rule's home).
+    const lines = text
+      .split("\n")
+      .slice(0, 6)
+      .map((l) => l.slice(0, 40));
+    next[idx] = { ...(item as Record<string, unknown>), lines };
   } else {
     if (typeof item !== "object" || item === null) return null;
     next[idx] = { ...(item as Record<string, unknown>), text };

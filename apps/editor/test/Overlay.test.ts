@@ -121,6 +121,24 @@ describe("TerminalMock windows — the window-N id family (field report 2026-08-
     expect(buildArrayPatch("window-0", { windows: ["not-an-object"] }, "x")).toBeNull();
     expect(elementTextOf("window-0", { windows: [{ title: "t", lines: [1, 2] }] })).toBeNull();
   });
+
+  // TerminalMockProps caps windows at 6 lines of 40 chars, and the override
+  // merge never re-validates props — so the COMMIT path is where the bound
+  // lives: a 7th line or a 41st char silently truncates rather than writing
+  // an out-of-schema override that a swap-away-and-back would drop.
+  it("clamps a 7-line blob to the schema's 6 lines", () => {
+    const patch = buildArrayPatch("window-1", props, "1\n2\n3\n4\n5\n6\n7");
+    expect((patch?.windows as Array<{ lines: string[] }>)[1]?.lines).toEqual([
+      "1", "2", "3", "4", "5", "6",
+    ]);
+  });
+
+  it("clamps a 41-char line to the schema's 40", () => {
+    const long = "x".repeat(41);
+    const patch = buildArrayPatch("window-1", props, long);
+    const lines = (patch?.windows as Array<{ lines: string[] }>)[1]?.lines;
+    expect(lines).toEqual(["x".repeat(40)]);
+  });
 });
 
 describe("blurTypingElement — bug 6's fix (PLAN 2026-08-04 Task 2)", () => {

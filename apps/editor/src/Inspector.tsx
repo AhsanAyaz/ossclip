@@ -391,8 +391,9 @@ export const Inspector: React.FC<InspectorProps> = ({
                   <textarea
                     style={{ ...textInput, resize: "vertical", fontFamily: "inherit" }}
                     data-testid="element-text"
-                    // One row per terminal line (schema caps windows at 6
-                    // lines) so the whole window is visible without a scroll.
+                    // One row per terminal line — buildArrayPatch's window
+                    // arm clamps commits to the schema's 6 lines / 40 chars,
+                    // so 6 rows always shows the whole window without scroll.
                     rows={Math.min(6, Math.max(2, text.split("\n").length))}
                     value={text}
                     onChange={(e) => commitText(e.target.value)}
