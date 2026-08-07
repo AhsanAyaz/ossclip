@@ -218,7 +218,14 @@ test("SPACE toggles playback globally, but types a space inside a field (Task 5)
   await expect.poll(() => isPlaying(page)).toBe(false);
 
   // Guard: with focus in an inspector field, SPACE is typing, not transport.
-  const field = page.locator(".sidebar input, input").last();
+  // A NAMED free-text field, not a positional `.last()`: the old locator
+  // grabbed whatever input happened to render last — the captions feature
+  // added a checkbox there (which blurs after toggle per Task 2, making
+  // Space transport again by design), and the nearest text input was a
+  // select-on-focus NumberField that Space wipes. The guard this test pins
+  // is about typing words; fontDisplay is the panel's one true free-text
+  // field.
+  const field = page.getByTestId("theme-fontDisplay");
   await field.click();
   const before = await field.inputValue();
   await page.keyboard.press("Space");

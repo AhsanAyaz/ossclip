@@ -272,6 +272,7 @@ const ThemeField: React.FC<{
         />
       ) : null}
       <input
+        data-testid={`theme-${id}`}
         style={{ ...textInput, flex: 1 }}
         value={value}
         onChange={(e) => onCommit(isColor ? e.target.value : e.target.value)}
