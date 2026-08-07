@@ -632,6 +632,39 @@ describe("Inspector — the global Captions toggle (no-selection view)", () => {
       root.render(React.createElement(GlobalHarness, { captionsHiddenByFlag: true }));
     });
     expect(container.querySelector('[data-testid="captions-flag-note"]')).not.toBeNull();
+    // Review minor 2: flag-hidden with a CLEAN doc must read unchecked AND
+    // disabled — a checked box over a captionless preview was a lie, and
+    // the toggle writes only the override half of the OR, so enabling it
+    // would promise a power it doesn't have.
+    const box = container.querySelector<HTMLInputElement>('[data-testid="captions-visible-toggle"]')!;
+    expect(box.checked).toBe(false);
+    expect(box.disabled).toBe(true);
+  });
+
+  it("under the flag, a doc-hidden entry keeps the box ENABLED so the user's own override stays clearable", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(GlobalHarness, {
+          captionsHiddenByFlag: true,
+          initialDoc: { captionsHidden: true },
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const box = container.querySelector<HTMLInputElement>('[data-testid="captions-visible-toggle"]')!;
+    expect(box.checked).toBe(false);
+    expect(box.disabled).toBe(false);
+    // Clicking clears the DOC override (the key is deleted), then the box
+    // lands on the disabled-by-flag state — the flag still keeps captions off.
+    await act(async () => {
+      box.click();
+    });
+    expect(doc && "captionsHidden" in doc).toBe(false);
+    expect(box.checked).toBe(false);
+    expect(box.disabled).toBe(true);
   });
 
   it("no flag note on an ordinary workdir", async () => {
@@ -687,5 +720,24 @@ describe("Inspector — per-scene caption controls under a global hide", () => {
       );
     });
     expect(container.querySelector('[data-testid="captions-hidden-hint"]')).toBeNull();
+  });
+
+  // Review minor 3: the FLAG-sourced variant of the hint — clean doc, the
+  // last produce typed --no-captions. The hint must show AND name the flag,
+  // not the Theme panel (there is no doc entry for that panel to clear).
+  it("flag-sourced hide: the hint shows and names --no-captions", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(GlobalHarness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          cue: graphicCue,
+          captionsHiddenByFlag: true,
+        }),
+      );
+    });
+    const hint = container.querySelector('[data-testid="captions-hidden-hint"]')!;
+    expect(hint).not.toBeNull();
+    expect(hint.textContent).toContain("--no-captions");
+    expect(hint.textContent).not.toContain("Theme panel");
   });
 });

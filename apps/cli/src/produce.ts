@@ -2036,6 +2036,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // that assembleScenes dropped, and the caption track knows exactly when the
   // ask is on screen. Quoting marks the word you type in the comments — every
   // other time the speaker merely says it, it must render plainly.
+  // Captions are ON by default and stay so — only the OFF path announces
+  // itself, naming WHICH surface turned them off: a silent-captions upload
+  // must never leave the author guessing whether they typed the flag or the
+  // editor's toggle did it. The flag reason wins the message when both are
+  // true — it is the one visible in the command line being run. Resolved
+  // BEFORE the CTA block below, because the CTA line's promise depends on it.
+  const captionsHidden = resolveCaptionsHidden(opts.captions, overrideDoc.captionsHidden);
+  if (captionsHidden) {
+    console.log(
+      opts.captions === false
+        ? "▸ captions: off (--no-captions)"
+        : "▸ captions: hidden by editor override",
+    );
+  }
+
   const ctaCue = [...graphicCues]
     .reverse()
     .find((c) => typeof c.props?.keyword === "string" && (c.props.keyword as string).length > 0);
@@ -2044,9 +2059,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     ? { startSec: ctaCue.startSec, endSec: ctaCue.endSec }
     : undefined;
   if (ctaKeyword) {
+    // Gated on the captions resolution (review minor 1): "styled only at
+    // X–Ys" on a captions-hidden run is a false promise — the styling rides
+    // the caption track (ProductionComposition's mount gate), so the moment
+    // the trade bites is the moment to say so.
     console.log(
-      `▸ CTA keyword "${ctaKeyword}" styled only at ` +
-        `${ctaWindow!.startSec.toFixed(1)}–${ctaWindow!.endSec.toFixed(1)}s`,
+      captionsHidden
+        ? `▸ CTA keyword "${ctaKeyword}" styling skipped — captions hidden`
+        : `▸ CTA keyword "${ctaKeyword}" styled only at ` +
+            `${ctaWindow!.startSec.toFixed(1)}–${ctaWindow!.endSec.toFixed(1)}s`,
     );
   }
 
@@ -2058,20 +2079,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log(
       `▸ watermark: "made with ossclip" in the top-left safe area` +
         `${opts.watermark === undefined ? " (from config; --no-watermark overrides)" : ""}`,
-    );
-  }
-
-  // Captions are ON by default and stay so — only the OFF path announces
-  // itself, naming WHICH surface turned them off: a silent-captions upload
-  // must never leave the author guessing whether they typed the flag or the
-  // editor's toggle did it. The flag reason wins the message when both are
-  // true — it is the one visible in the command line being run.
-  const captionsHidden = resolveCaptionsHidden(opts.captions, overrideDoc.captionsHidden);
-  if (captionsHidden) {
-    console.log(
-      opts.captions === false
-        ? "▸ captions: off (--no-captions)"
-        : "▸ captions: hidden by editor override",
     );
   }
 

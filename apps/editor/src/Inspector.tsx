@@ -1154,10 +1154,19 @@ export const Inspector: React.FC<InspectorProps> = ({
             cursor: "pointer",
           }}
         >
+          {/* Flag-aware (review minor 2): on a --no-captions workdir with a
+              CLEAN doc, a checked box over a captionless preview was a lie —
+              the truthful reading is unchecked+disabled (captions are off,
+              and this toggle writes only the OVERRIDE half of produce's OR,
+              so it cannot turn them on; the flag note below is the reason).
+              A doc-hidden entry keeps its semantics untouched: the box stays
+              ENABLED even under the flag, so the user can still clear their
+              own override — it just lands on the disabled-by-flag state. */}
           <input
             type="checkbox"
             data-testid="captions-visible-toggle"
-            checked={edits.doc.captionsHidden !== true}
+            checked={edits.doc.captionsHidden !== true && captionsHiddenByFlag !== true}
+            disabled={captionsHiddenByFlag === true && edits.doc.captionsHidden !== true}
             onChange={(e) => edits.setCaptionsHidden(!e.target.checked)}
           />
           Show captions
