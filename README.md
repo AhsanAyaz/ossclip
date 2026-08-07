@@ -52,6 +52,8 @@ curl -L -o ~/.ossclip/models/ggml-small.en.bin \
 
 `small.en` is the default model. A mistranscribed word ends up in your captions *and* on a graphic, so accuracy matters more here than speed — which is also why `--produce` runs a repair pass over the transcript before anything is drawn. Compare models on your own footage with `--whisper-model base.en|small.en|medium.en` (~142 MB / ~466 MB / ~1.5 GB; `ossclip setup --model <name>` downloads any of them).
 
+Non-English footage works too: drop any converted whisper.cpp GGML model (Hugging Face fine-tunes included) into `~/.ossclip/models` and it's usable by name — the wizard lists whatever is installed — with `--whisper-language ur|de|auto` so a multilingual model decodes its own language instead of being forced through English. RTL captions (Urdu, Arabic, Hebrew) lay out right-to-left with the word highlight following spoken order — field-proven on a real Urdu run.
+
 ## Quick start
 
 ```sh
@@ -86,9 +88,10 @@ the equivalent command before it runs, so the menu is also how you learn the
 flags.
 
 `ossclip produce` with no file name does the same thing for just the produce
-options. And `ossclip edit` with no path opens a picker over your recent
-runs — you never have to know that produce writes into
-`<your video's folder>/.ossclip/<name>/`.
+options, and `ossclip <path>` — a video file or a folder of clips — jumps
+straight into that wizard with the input pre-filled. `ossclip edit` with no
+path opens a picker over your recent runs — you never have to know that
+produce writes into `<your video's folder>/.ossclip/<name>/`.
 
 ## Editing what it produced
 
@@ -101,6 +104,9 @@ ossclip edit                        # bare: pick from recent projects, or browse
 
 - **Click** an element to select it, **drag** to move, **double-click** to retype.
 - **Timeline**: click a scene to select and seek to that point, press-and-drag to scrub, drag a block body to move it in time, drag its edges to retime it.
+- **Cut anything**: split any take or scene at the playhead (**⌘B**), then **Delete this chunk** — struck-through until the next Render, Restore one click away. Cuts are source-anchored, so re-running produce never drifts your splits, pins, or captions.
+- **Hide any graphic element** — a chat bubble, a bullet, a diagram node — and the scene panel lists what's hidden with a per-element Restore.
+- A global **Show captions** toggle hides the caption track everywhere — instant in the preview, undo-able, and it survives re-produces. On a `--no-captions` run the toggle says the flag owns it.
 - **SPACE** toggles playback, **⌘Z** / **⌘⇧Z** undo and redo (also in the top bar), **⌘S** saves. Press **?** for the full keybinds reference.
 - **Open** in the top bar switches projects in place — recent produce runs plus a folder browser, no server restart.
 
@@ -131,11 +137,12 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--llm <provider>` | `claude` \| `claude-cli` \| `gemini` \| `mock` |
 | `--llm-model <id>` / `--llm-fast-model <id>` | override the editorial / mechanical model. `--llm-fast-model same` disables tiering |
 | `--no-repair` | skip the ASR mishearing repair; captions then show the raw transcription |
-| `--whisper-model <name>` | transcription model for this run |
+| `--whisper-model <name>` | transcription model for this run — a stock name, or any converted GGML model in `~/.ossclip/models` |
+| `--whisper-language <code>` | language for a multilingual model, e.g. `ur`, `de`, `auto` (whisper defaults to `en`) |
 | `--scenes <path>` | hand-authored scenes JSON — no LLM in the loop |
 | `--force-component <id>` | debug: render every graphic with one component (e.g. `FlowDiagram`) to exercise it on real copy |
 | `--source-is-edited` | the source is already an edited reel with burned-in text — keep ossclip's graphics off it (also what enables the source-text scan) |
-| `--blooper-marker <word>` | say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Off unless given |
+| `--blooper-marker <word>` | say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Matching is fuzzy (edit distance), so a whisper mishearing like "looker" for "blooper" still counts — every fuzzy hit is named in the report. Off unless given |
 | `--collapse-retakes` | deterministically collapse consecutive near-identical sentences, keeping only the last complete attempt — no marker needed. Off by default |
 | `--sort <order>` | when `<input>` is a folder: `name` (default, plain codepoint sort, matches `ls`) or `mtime` (oldest first) — the order clips get concatenated in. Ignored for a file input |
 | `--no-cover` / `--cover <path>` | skip, or redirect, the cover image written beside the video |
@@ -202,7 +209,7 @@ Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPE
 - **Frames** on the measured face rather than a constant, including sources that are letterboxed or that change framing mid-take (those get normalized to one field of view before anything else runs).
 - **Plans** scenes from the transcript, then checks its own choices: a layout that would crop the speaker's head is rewritten, and copy that isn't grounded in what was actually said is flagged.
 - **Captions** every word, routed around any text already burned into the source.
-- **Covers** — writes `<out>.cover.jpg` sized for the platform the aspect targets.
+- **Covers** — writes `<out>.cover.jpg` sized for the platform the aspect targets. With `--produce` the cover carries the hook text; without it, the sharpness-scored face frame ships on its own.
 
 > AI can make mistakes. The cut, the captions and every graphic are generated — review the output (the editor and `report.txt` exist for exactly that) before publishing.
 

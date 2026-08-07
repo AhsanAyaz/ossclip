@@ -150,6 +150,7 @@ curl -L -o ~/.ossclip/models/ggml-small.en.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin</code></pre>
 <p><code>ossclip doctor</code> checks all of it — with the per-platform command for anything missing. Binaries can live anywhere: point <code>OSSCLIP_FFMPEG</code> / <code>OSSCLIP_WHISPER</code> (or <code>config.json</code>) at them. Setup and manual install compose — setup only ever fills the gaps doctor would flag.</p>
 <p><code>small.en</code> is the default. A mistranscribed word ends up in your captions <em>and</em> on a graphic, so accuracy beats speed here — and <code>--produce</code> runs a repair pass over the transcript before anything is drawn. <code>ossclip setup --model &lt;name&gt;</code> downloads <code>base.en</code> (~142&nbsp;MB) or <code>medium.en</code> (~1.5&nbsp;GB) instead.</p>
+<p>Non-English footage works too: drop any converted whisper.cpp GGML model (Hugging Face fine-tunes included) into <code>~/.ossclip/models</code> and it's usable by name — the wizard lists whatever is installed — with <code>--whisper-language ur|de|auto</code> so a multilingual model decodes its own language. RTL captions (Urdu, Arabic, Hebrew) lay out right-to-left with the word highlight following spoken order, field-proven on a real Urdu run.</p>
 
 <h2 id="quickstart">Quick start</h2>
 <pre><code># The whole thing: cut + captions + LLM-planned graphics + cover
@@ -163,6 +164,9 @@ ossclip produce input.mp4 --no-render
 
 # Long-form in, one short out: the strongest ~60s window
 ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
+
+# A folder of clips: sorted (--sort name|mtime), normalized, concatenated, produced as one
+ossclip produce ./clips --produce -o out.mp4
 
 # Check the whole toolchain first
 ossclip doctor
@@ -190,7 +194,7 @@ ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
   <li><strong>Captions</strong> — word-timed kinetic captions with an active-word highlight, routed around the platform's safe areas, the active graphic, and any text burned into the source.</li>
   <li><strong>Producer</strong> — the LLM plans a beat sheet and scenes against the component library, steered by a measured framing brief (a wide band never lands on a close-up), grounded against the transcript so a stat it prints is a stat that was said.</li>
   <li><strong>Verify</strong> — layouts that would crop the head are repaired, graphics route around the source's own on-screen text, on-screen copy is reconciled with the captions.</li>
-  <li><strong>Render</strong> — Remotion, locally, plus a cover JPEG at the OUTPUT's aspect: 9:16 framed for the profile grid's square crop, 16:9 framed as a thumbnail shown whole.</li>
+  <li><strong>Render</strong> — Remotion, locally, plus a cover JPEG at the OUTPUT's aspect: 9:16 framed for the profile grid's square crop, 16:9 framed as a thumbnail shown whole. With <code>--produce</code> the cover carries the hook text; without it, the sharpness-scored face frame ships on its own.</li>
 </ul>
 
 <h2 id="workdir">The work directory</h2>
@@ -211,7 +215,8 @@ ossclip edit                        # bare: pick from recent projects, or browse
 <div class="cards">
   <div class="card"><b>Direct manipulation</b><span>Click to select, drag to move, corner handles to resize, panel fields for precision. Graphic boxes, elements, video framing, pip bubble — every element on every component is grabbable.</span></div>
   <div class="card"><b>Timeline</b><span>Zoom 1–16×, scrub, drag blocks in time, resize edges, split at the playhead (⌘B — each half inherits the scene's edits), soft-delete with a way back. The view follows the cursor.</span></div>
-  <div class="card"><b>Captions</b><span>Double-click a word to retype it (1:1 — timings stay). Position and scale per scene, or applied to every scene at once.</span></div>
+  <div class="card"><b>Cut &amp; restore</b><span>Split any take or scene, "Delete this chunk" — struck-through until the next Render, Restore one click away. Cuts are source-anchored, so a re-produce never drifts your splits, pins, or captions. Hidden graphic elements get the same treatment: per-element Restore in the scene panel.</span></div>
+  <div class="card"><b>Captions</b><span>Double-click a word to retype it (1:1 — timings stay). Position and scale per scene, or applied to every scene at once. A global Show-captions toggle hides the track everywhere — instant, undo-able, survives re-produces.</span></div>
   <div class="card"><b>Transcript view</b><span>The whole transcript, searchable — ‹ › chevrons (or Enter/⇧Enter) walk the matches — in a drag-resizable pane that follows playback; click a word to jump the preview, double-click to fix it.</span></div>
   <div class="card"><b>Render from the editor</b><span>Replays the recorded produce invocation — same flags, same provider — with live progress, elapsed time, token/cost lines, cancel, and a collapsible scrolling log. Survives a refresh.</span></div>
   <div class="card"><b>Preview</b><span>Fills the window in either aspect; ⌘+scroll zooms the view 25%–800% — magnify to inspect or shrink to arrange, never an edit — and ⌥-drag pans.</span></div>
@@ -290,11 +295,16 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--source-fit &lt;mode&gt;</td><td><em>cover</em> crops to fill; <em>contain</em> shows the whole frame inset — the landscape-source escape hatch</td></tr>
   <tr><td>--llm &lt;provider&gt;</td><td><em>claude | claude-cli | gemini | mock</em></td></tr>
   <tr><td>--llm-model / --llm-fast-model</td><td>override the editorial / mechanical model (<em>same</em> disables tiering)</td></tr>
-  <tr><td>--whisper-model &lt;name&gt;</td><td>transcription model for this run (<em>base.en | small.en | medium.en</em>)</td></tr>
+  <tr><td>--whisper-model &lt;name&gt;</td><td>transcription model for this run (<em>base.en | small.en | medium.en</em>, or any converted GGML model in <code>~/.ossclip/models</code>)</td></tr>
+  <tr><td>--whisper-language &lt;code&gt;</td><td>language for a multilingual model, e.g. <em>ur | de | auto</em> (whisper defaults to <em>en</em>)</td></tr>
   <tr><td>--no-repair</td><td>skip the ASR mishearing repair</td></tr>
   <tr><td>--scenes &lt;path&gt;</td><td>hand-authored scenes JSON — no LLM in the loop</td></tr>
   <tr><td>--source-is-edited</td><td>the source already has burned-in graphics — keep ossclip's off them <em>(also what turns the source-text scan on)</em></td></tr>
-  <tr><td>--blooper-marker &lt;word&gt;</td><td>say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Off unless given</td></tr>
+  <tr><td>--blooper-marker &lt;word&gt;</td><td>say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Matching is fuzzy (edit distance), so a mishearing like <em>looker</em> still counts — every fuzzy hit is named in the report. Off unless given</td></tr>
+  <tr><td>--collapse-retakes</td><td>deterministically collapse consecutive near-identical sentences, keeping only the last complete attempt — no marker, no LLM. Every kept/cut decision named in the report. Off by default</td></tr>
+  <tr><td>--sort &lt;order&gt;</td><td>folder input only: <em>name</em> (default, plain codepoint sort, matches <code>ls</code>) or <em>mtime</em> (oldest first) — the concatenation order</td></tr>
+  <tr><td>--watermark / --no-watermark</td><td>opt-in credit: a small "made with ossclip" wordmark in the top-left safe area. Off by default; <code>"watermark": true</code> in <code>config.json</code> defaults it on, a typed <em>--no-watermark</em> still wins</td></tr>
+  <tr><td>--no-captions</td><td>no burned-in captions — everything else intact. The CTA keyword styling rides the caption track, so it goes too</td></tr>
   <tr><td>--no-cover / --cover &lt;path&gt;</td><td>skip, or redirect, the cover image</td></tr>
   <tr><td>--no-render</td><td>stop after writing the props</td></tr>
   <tr><td>--workdir &lt;dir&gt;</td><td>where the cache lives</td></tr>
