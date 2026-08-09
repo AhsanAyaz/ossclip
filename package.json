@@ -8,6 +8,7 @@
     "ossclip": "pnpm --filter ossclip exec tsx src/index.ts",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit",
     "fixture": "node scripts/make-fixture.mjs",
+    "bench:pixels": "tsx scripts/bench-pixels.ts",
     "build": "pnpm --filter @ossclip/editor build",
     "release:publish": "pnpm -r publish --access public"
   },
