@@ -100,25 +100,70 @@ describe("ossclip doctor (R18 §90a)", () => {
     expect(seen).toContain("/models/custom.bin");
   });
 
-  it("provider: keys win in detection order, the claude CLI is the fallback", async () => {
-    const viaKey = await runDoctor(CFG, healthy({ env: { ANTHROPIC_API_KEY: "k" } }));
-    expect(byName(viaKey, "LLM provider").detail).toContain("ANTHROPIC_API_KEY");
-    const viaCli = await runDoctor(
+  // Detection order changed 2026-08 (FINDINGS §132, antigravity provider):
+  // subscription CLIs beat ambient env keys, and doctor's provider check
+  // must state the same order auto-detection uses.
+  it("provider: an agy CLI beats every key — the bin is the explicit choice", async () => {
+    const checks = await runDoctor(
       CFG,
-      healthy({ env: {}, binRuns: async (bin) => bin === "claude" || bin !== "nothing" }),
+      healthy({
+        env: { GEMINI_API_KEY: "g", ANTHROPIC_API_KEY: "a" },
+        binRuns: async () => true,
+      }),
     );
-    expect(byName(viaCli, "LLM provider").detail).toContain("claude-cli");
+    expect(byName(checks, "LLM provider").detail).toContain("antigravity");
+  });
+
+  it("provider: agy absent + claude CLI present → claude-cli, before any key", async () => {
+    const checks = await runDoctor(
+      CFG,
+      healthy({ env: { GEMINI_API_KEY: "g" }, binRuns: async (bin) => bin !== "agy" }),
+    );
+    expect(byName(checks, "LLM provider").detail).toContain("claude-cli");
+  });
+
+  it("provider: no CLIs → keys win in their own order", async () => {
+    const noBins = async (bin: string) => bin !== "agy" && bin !== "claude";
+    const viaGemini = await runDoctor(
+      CFG,
+      healthy({ env: { GEMINI_API_KEY: "g", ANTHROPIC_API_KEY: "a" }, binRuns: noBins }),
+    );
+    expect(byName(viaGemini, "LLM provider").detail).toContain("GEMINI_API_KEY");
+    const viaKey = await runDoctor(
+      CFG,
+      healthy({ env: { ANTHROPIC_API_KEY: "k" }, binRuns: noBins }),
+    );
+    expect(byName(viaKey, "LLM provider").detail).toContain("ANTHROPIC_API_KEY");
+  });
+
+  it("provider: OSSCLIP_AGY_BIN is what the probe spawns, not a hardcoded 'agy'", async () => {
+    const probed: string[] = [];
+    await runDoctor(
+      CFG,
+      healthy({
+        env: { OSSCLIP_AGY_BIN: "/custom/agy", OSSCLIP_CLAUDE_BIN: "/custom/claude" },
+        binRuns: async (bin) => {
+          probed.push(bin);
+          return bin === "ffmpeg" || bin === "ffprobe" || bin === "whisper-cli";
+        },
+      }),
+    );
+    expect(probed).toContain("/custom/agy");
+    expect(probed).toContain("/custom/claude");
   });
 
   it("no key and no CLI → the provider check fails, saying produce-only scope", async () => {
     const checks = await runDoctor(
       CFG,
-      healthy({ env: {}, binRuns: async (bin) => bin !== "claude" }),
+      healthy({ env: {}, binRuns: async (bin) => bin !== "claude" && bin !== "agy" }),
     );
     const provider = byName(checks, "LLM provider");
     expect(provider.ok).toBe(false);
     expect(provider.detail).toContain("--produce");
     expect(provider.fix).toContain("ANTHROPIC_API_KEY or GEMINI_API_KEY");
+    // Both subscription ramps are named — Antigravity joined Claude Code
+    // as a keyless fix in the §132 wave.
+    expect(provider.fix).toContain("antigravity.google");
     // The report counts it and points back at the fixes.
     expect(formatDoctor(checks)).toContain("1 check failed");
   });

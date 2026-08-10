@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { saveConfigPatch, type OssclipConfig } from "@ossclip/core";
 import { MODELS, ffmpegAsset, whisperAsset } from "../src/setup/manifest";
 import { formatPlan, planSetup, type SetupProbes } from "../src/setup/plan";
+import { promptForProvider } from "../src/setup/provider";
 import { download } from "../src/setup/download";
 import { tarCandidates } from "../src/setup/extract";
 import { openCommand } from "../src/open";
@@ -165,17 +166,27 @@ describe("setup planner", () => {
   });
 
   it("provider: --skip-llm and a detected provider are both satisfied; neither prompts", async () => {
-    const skipped = await planSetup(CFG, healthy({ env: {} , binRuns: async (b) => b !== "claude"}), {
+    // No agy and no claude (§132: the CLIs are now probed before the keys) —
+    // "missing" must mean ALL four detection branches came up empty.
+    const noCli = async (b: string) => b !== "claude" && b !== "agy";
+    const skipped = await planSetup(CFG, healthy({ env: {}, binRuns: noCli }), {
       ...OPTS,
       skipLlm: true,
     });
     expect(byKind(skipped, "provider").status).toBe("satisfied");
-    const missing = await planSetup(
+    const missing = await planSetup(CFG, healthy({ env: {}, binRuns: noCli }), OPTS);
+    expect(byKind(missing, "provider").status).toBe("prompt");
+  });
+
+  // Lockstep guard for §132: the planner duplicates doctor's detection order,
+  // and the agy CLI must beat a key here exactly as it does there.
+  it("provider: an installed agy CLI satisfies the step even with keys set", async () => {
+    const steps = await planSetup(
       CFG,
-      healthy({ env: {}, binRuns: async (bin) => bin !== "claude" }),
+      healthy({ env: { GEMINI_API_KEY: "g" }, binRuns: async () => true }),
       OPTS,
     );
-    expect(byKind(missing, "provider").status).toBe("prompt");
+    expect(byKind(steps, "provider").detail).toContain("antigravity");
   });
 
   it("the plan discloses the total download size up front", async () => {
@@ -187,6 +198,37 @@ describe("setup planner", () => {
     const text = formatPlan(steps);
     // 120 (ffmpeg linux64) + 9 (whisper) + 466 (small.en)
     expect(text).toContain("total download ~595 MB");
+  });
+});
+
+describe("promptForProvider (the LLM step of setup)", () => {
+  const io = (answers: string[]) => {
+    const said: string[] = [];
+    return {
+      said,
+      ask: async () => answers.shift() ?? "",
+      say: (line: string) => void said.push(line),
+    };
+  };
+
+  // §132: Antigravity is a keyless subscription CLI exactly like Claude Code
+  // — choosing it must save NOTHING. A key invented here would be worse than
+  // no answer: there is no key, and produce finds agy on PATH by itself.
+  it("choice 4 (Antigravity) says nothing-to-save and writes no .env", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-provider-"));
+    const t = io(["4"]);
+    await promptForProvider(t, dir);
+    expect(t.said.join("\n")).toContain("agy CLI on PATH");
+    expect(() => readFileSync(join(dir, ".env"))).toThrow();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("the menu offers Antigravity as choice 4", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-provider-"));
+    const t = io([""]); // just Enter — skip
+    await promptForProvider(t, dir);
+    expect(t.said.some((l) => l.includes("4)") && l.includes("Antigravity"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

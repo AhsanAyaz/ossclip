@@ -77,7 +77,11 @@ describe("model tiering (FINDINGS §37)", () => {
 
   it("wraps by default for providers that have a cheaper sibling", () => {
     expect(createTieredProvider("claude-cli")).toBeInstanceOf(TieredProvider);
+    expect(createTieredProvider("antigravity")).toBeInstanceOf(TieredProvider);
     expect(DEFAULT_FAST_MODEL["claude-cli"]).toBeTruthy();
     expect(DEFAULT_FAST_MODEL.gemini).toBeTruthy();
+    // Pinned exactly: the slug substring-matches the gemini-3.6-flash pricing
+    // family, so mechanical antigravity calls price without table changes.
+    expect(DEFAULT_FAST_MODEL.antigravity).toBe("gemini-3.6-flash-low");
   });
 });

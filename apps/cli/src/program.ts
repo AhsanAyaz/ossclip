@@ -215,9 +215,13 @@ export function buildProgram(): Command {
       // Must state `defaultProviderName`'s real order — the old text omitted
       // the GEMINI-first branch and promised claude-first (field report
       // 2026-08-07); the drift test in llm-help.test.ts pins the agreement.
-      "claude | claude-cli | gemini | mock. Default: gemini if GEMINI_API_KEY is set, " +
-        "else claude if ANTHROPIC_API_KEY is set, else claude-cli (your logged-in " +
-        "Claude Code — Pro/Max subscription, no API charges)",
+      // Order changed 2026-08: subscription CLIs beat ambient env keys
+      // (FINDINGS §132, antigravity provider).
+      "antigravity | claude | claude-cli | gemini | mock. Default: antigravity if the agy " +
+        "CLI is installed (your logged-in Google Antigravity, no API charges), else " +
+        "claude-cli if the claude CLI is installed (your logged-in Claude Code — Pro/Max " +
+        "subscription, no API charges), else gemini if GEMINI_API_KEY is set, else claude " +
+        "if ANTHROPIC_API_KEY is set, else claude-cli",
     )
     .option("--llm-model <id>", "override the provider's default model")
     .option(
@@ -337,7 +341,7 @@ export function buildProgram(): Command {
       if (envFiles.length > 0) console.log(`▸ env: ${envFiles.join(", ")}`);
       const cleanup = CleanupLevelSchema.parse(opts.cleanup);
       const provider = opts.llm
-        ? z.enum(["claude", "claude-cli", "gemini", "mock"]).parse(opts.llm)
+        ? z.enum(["antigravity", "claude", "claude-cli", "gemini", "mock"]).parse(opts.llm)
         : undefined;
       const forceComponent = opts.forceComponent
         ? SceneComponentIdSchema.parse(opts.forceComponent)

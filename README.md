@@ -29,7 +29,7 @@ ossclip setup
 
 `ossclip setup` provisions everything ossclip runs on, into one folder (`~/.ossclip`): a static [ffmpeg](https://ffmpeg.org) build, a prebuilt [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli` (on macOS both come via Homebrew), and the transcription model — `small.en`, ~466 MB, the biggest piece of a ~600 MB total. It shows the plan with sizes and asks before downloading, resumes interrupted downloads, verifies checksums, and **skips anything you already have** — an ffmpeg already on your PATH stays yours. It records absolute paths in `~/.ossclip/config.json`, so nothing edits your PATH. Uninstalling is `npm rm -g ossclip` plus deleting `~/.ossclip`.
 
-Setup also offers to save an LLM key for `--produce` (the graphics planner): a logged-in [Claude Code](https://claude.com/claude-code) is detected automatically, or paste an `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`. Skip it freely — cut + captions run fully local without one.
+Setup also offers to save an LLM key for `--produce` (the graphics planner): a logged-in [Google Antigravity](https://antigravity.google) (`agy`) or [Claude Code](https://claude.com/claude-code) is detected automatically — no key needed — or paste an `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`. Skip it freely — cut + captions run fully local without one.
 
 If anything looks wrong later, one command diagnoses it: `ossclip doctor` prints a line per prerequisite and the exact fix.
 
@@ -134,7 +134,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--cleanup <level>` | `exact` \| `light` \| `standard` \| `aggressive`. How hard to cut silence and fillers |
 | `--aspect <ratio>` | `9:16` (default) or `16:9` — landscape export with landscape-native layouts |
 | `--source-fit <mode>` | `cover` crops to fill; `contain` shows the whole frame inset — the landscape-source escape hatch |
-| `--llm <provider>` | `claude` \| `claude-cli` \| `gemini` \| `mock` |
+| `--llm <provider>` | `antigravity` \| `claude` \| `claude-cli` \| `gemini` \| `mock` |
 | `--llm-model <id>` / `--llm-fast-model <id>` | override the editorial / mechanical model. `--llm-fast-model same` disables tiering |
 | `--no-repair` | skip the ASR mishearing repair; captions then show the raw transcription |
 | `--whisper-model <name>` | transcription model for this run — a stock name, or any converted GGML model in `~/.ossclip/models` |
@@ -155,7 +155,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 
 ### Which model runs
 
-Without `--llm`, ossclip picks in this order: **`GEMINI_API_KEY` → `ANTHROPIC_API_KEY` → the Claude Code CLI**. The CLI path uses your logged-in Pro/Max subscription, so it costs plan usage rather than API credits — the console tells you which path it took.
+Without `--llm`, ossclip picks in this order: **the Google Antigravity CLI (`agy`) → the Claude Code CLI → `GEMINI_API_KEY` → `ANTHROPIC_API_KEY` → the Claude Code CLI as the final fallback**. A logged-in CLI beats an API key on purpose: both CLI paths run on the subscription you already pay for (Antigravity, or Claude Pro/Max) rather than API credits — and the console always tells you which path it took. If you only have a key and no CLI installed, nothing changes for you. On the Antigravity path the editorial call runs whatever default model you configured `agy` with, reported as `antigravity-default` — tokens shown, no cost guess, unless you price it under `pricing` in `~/.ossclip/config.json`.
 
 Calls are **tiered**: the beat sheet (the editorial judgement the video rests on) goes to the main model; mechanical calls (transcript repair aside, which is also editorial) go to a smaller sibling. Override with `--llm-fast-model`.
 
@@ -200,7 +200,7 @@ $OSSCLIP_ENV_FILE   →   .env, walking up from the cwd   →   ~/.ossclip/.env
 GEMINI_API_KEY=…
 ```
 
-Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`.
+Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`, `OSSCLIP_CLAUDE_BIN`, `OSSCLIP_AGY_BIN`.
 
 ## What it does to your footage
 

@@ -23,10 +23,15 @@ export async function promptForProvider(io: ProviderIO, configDir: string): Prom
   io.say("  1) I have an Anthropic API key");
   io.say("  2) I have a Google Gemini API key");
   io.say("  3) I use Claude Code (already logged in — no key needed)");
+  io.say("  4) I use Google Antigravity (agy — already logged in, no key needed)");
   io.say("  Enter) skip for now");
   const choice = (await io.ask("Choice: ")).trim();
   if (choice === "3") {
     io.say("▸ nothing to save — ossclip finds the claude CLI on PATH by itself.");
+    return;
+  }
+  if (choice === "4") {
+    io.say("▸ nothing to save — ossclip finds the agy CLI on PATH by itself.");
     return;
   }
   const envKey = choice === "1" ? "ANTHROPIC_API_KEY" : choice === "2" ? "GEMINI_API_KEY" : null;

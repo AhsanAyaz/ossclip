@@ -80,6 +80,14 @@ describe("produceArgv", () => {
     ]);
   });
 
+  // §132: the wizard's provider select gained antigravity — the emitter must
+  // pass it through like any other ProviderName, no special casing.
+  it("emits --llm antigravity", () => {
+    expect(produceArgv(answers({ extras: { llm: "antigravity" } }))).toEqual([
+      "produce", "./take.mp4", "--llm", "antigravity",
+    ]);
+  });
+
   // The wizard's language follow-up returns "" for "keep whisper's en
   // default" — that answer must not grow the taught command line (Urdu field
   // test 2026-08-05: only a typed code means anything).

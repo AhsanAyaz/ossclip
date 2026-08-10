@@ -157,7 +157,8 @@ export async function setup(opts: SetupCliOptions): Promise<void> {
           } else if (step.status === "prompt") {
             console.log(
               "▸ no LLM provider configured (non-interactive run) — needed for --produce only; " +
-                "set ANTHROPIC_API_KEY or GEMINI_API_KEY when you want it.",
+                "a logged-in Claude Code or Google Antigravity (agy) CLI is picked up automatically, " +
+                "or set ANTHROPIC_API_KEY or GEMINI_API_KEY when you want it.",
             );
           }
           break;

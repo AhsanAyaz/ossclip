@@ -98,6 +98,7 @@ import {
   type Transcript,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
+import { binOnPath, detectionLine } from "./llm-detect";
 import {
   strandedOverrideSiblings,
   strandedPointerLine,
@@ -848,16 +849,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // LLM ran. Everything downstream that a viewer READS — captions, scene copy,
   // the grounding check — uses the repaired transcript instead, so a
   // mishearing can't reach the screen twice in two different spellings.
-  const providerName = opts.provider ?? defaultProviderName();
+  const providerName = opts.provider ?? defaultProviderName(process.env, binOnPath);
   let provider: LlmProvider | null = null;
   const needsLlm = opts.produce === true;
   if (needsLlm) {
+    // Only when auto-detected: a typed --llm needs no explanation. The line
+    // itself lives in llm-detect.ts so a drift test covers every provider —
+    // the inline ternary this replaces printed the ANTHROPIC line for a
+    // gemini-detected run (FINDINGS §132, antigravity provider).
     if (!opts.provider) {
-      console.log(
-        providerName === "claude-cli"
-          ? "▸ no ANTHROPIC_API_KEY — using the Claude Code CLI (subscription auth)"
-          : "▸ ANTHROPIC_API_KEY found — using the Claude API",
-      );
+      console.log(detectionLine(providerName));
     }
     provider = createTieredProvider(providerName, {
       model: opts.llmModel,

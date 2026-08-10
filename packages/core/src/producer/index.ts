@@ -2,6 +2,7 @@ import type { Transcript } from "../schema";
 import type { Scene, SceneComponentId } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
+import { AntigravityProvider } from "./antigravity";
 import { ClaudeCliProvider } from "./claude-cli";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 import { MockProvider } from "./mock";
@@ -27,6 +28,7 @@ export * from "./beats";
 export * from "./scene-props";
 export * from "./repair";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
+export { AntigravityProvider } from "./antigravity";
 export { ClaudeCliProvider } from "./claude-cli";
 export { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 export { MockProvider } from "./mock";
@@ -41,6 +43,11 @@ export function createProvider(name: ProviderName, model?: string): LlmProvider 
       return new ClaudeCliProvider(model);
     case "gemini":
       return new GeminiProvider(model ?? DEFAULT_GEMINI_MODEL);
+    case "antigravity":
+      // Rides agy's cached subscription sign-in. No default model on purpose:
+      // the editorial tier runs whatever the user configured agy itself to
+      // use (FINDINGS §132, antigravity provider).
+      return new AntigravityProvider(model);
     case "mock":
       return new MockProvider();
   }
@@ -57,6 +64,11 @@ export const DEFAULT_FAST_MODEL: Partial<Record<ProviderName, string>> = {
   claude: "claude-haiku-4-5-20251001",
   "claude-cli": "claude-haiku-4-5-20251001",
   gemini: "gemini-3.5-flash-lite",
+  // Substring-matches the `gemini-3.6-flash` pricing family, so mechanical
+  // calls price from the existing table with no changes; the editorial tier
+  // (agy's own default, reported as "antigravity-default") matches nothing and
+  // reports "cost unknown" — the house honesty rule, not an oversight.
+  antigravity: "gemini-3.6-flash-low",
 };
 
 export interface TieringOptions {
@@ -87,17 +99,33 @@ export function createTieredProvider(
 /**
  * Default provider when --llm isn't given, in preference order.
  *
- * Gemini leads on measured evidence, not vendor preference: on the same clip
- * it ran 3,540 input tokens against the Claude CLI's 83,378 — the CLI re-sends
- * its whole harness prefix per invocation — for ~$0.05 against ~$0.85 and 27s
- * against 171s, with editorial output that held up. Both models recovered the
- * mishearing that matters ("coach and" → "code churn"); Claude is stronger only
- * at recovering a mangled PROPER NOUN, which `--speaker` addresses directly.
+ * Subscription CLIs beat ambient env keys (2026-08 decision, FINDINGS §132,
+ * antigravity provider): a logged-in `agy` or `claude` is an explicit,
+ * already-paid choice the user made on this machine, while an API key in the
+ * environment may just be lying around — and picking the key spends real
+ * per-token money the subscription would have covered. agy carries the same
+ * ~24k-token harness baseline per call that claude-cli does, but it is
+ * subscription-covered, so the weight costs nothing.
  *
- * Falling back to the Claude Code CLI last keeps the no-keys-configured path
- * working on a Pro/Max subscription rather than failing.
+ * Among the keys, Gemini leads on measured evidence, not vendor preference: on
+ * the same clip it ran 3,540 input tokens against the Claude CLI's 83,378 —
+ * the CLI re-sends its whole harness prefix per invocation — for ~$0.05
+ * against ~$0.85 and 27s against 171s, with editorial output that held up.
+ * Both models recovered the mishearing that matters ("coach and" → "code
+ * churn"); Claude is stronger only at recovering a mangled PROPER NOUN, which
+ * `--speaker` addresses directly.
+ *
+ * Falling back to the Claude Code CLI last keeps the nothing-configured path
+ * failing with install guidance rather than silence. The `hasBin` default of
+ * `() => false` keeps this pure — callers that can see a filesystem (the CLI)
+ * inject a real checker; everyone else gets the key-order behavior unchanged.
  */
-export function defaultProviderName(env: NodeJS.ProcessEnv = process.env): ProviderName {
+export function defaultProviderName(
+  env: NodeJS.ProcessEnv = process.env,
+  hasBin: (bin: string) => boolean = () => false,
+): ProviderName {
+  if (hasBin(env.OSSCLIP_AGY_BIN ?? "agy")) return "antigravity";
+  if (hasBin(env.OSSCLIP_CLAUDE_BIN ?? "claude")) return "claude-cli";
   if (env.GEMINI_API_KEY) return "gemini";
   if (env.ANTHROPIC_API_KEY) return "claude";
   return "claude-cli";

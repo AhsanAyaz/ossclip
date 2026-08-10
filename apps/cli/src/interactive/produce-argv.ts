@@ -1,3 +1,5 @@
+import type { ProviderName } from "@ossclip/core";
+
 /**
  * Wizard answers → the argv a user could have typed.
  *
@@ -24,7 +26,10 @@ export interface ProduceExtras {
    * the positive `--captions` stays flags-only — it exists for replay
    * pinning, and emitting it here would restate the default. */
   captions?: boolean;
-  llm?: "claude" | "claude-cli" | "gemini" | "mock";
+  /** core's ProviderName, not an inline union — a provider added there must
+   * not be silently unofferable here (the pre-§132 union had already
+   * drifted: it never listed "antigravity"). */
+  llm?: ProviderName;
 }
 
 export interface ProduceAnswers {

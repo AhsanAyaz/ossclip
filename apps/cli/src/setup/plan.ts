@@ -161,15 +161,19 @@ export async function planSetup(
     });
   }
 
-  // Provider, in doctor's detection order. Setup can save a key, but only
-  // ever interactively — never invented, never required (--skip-llm).
-  const provider = p.env.GEMINI_API_KEY
-    ? "gemini (GEMINI_API_KEY is set)"
-    : p.env.ANTHROPIC_API_KEY
-      ? "claude (ANTHROPIC_API_KEY is set)"
-      : (await p.binRuns("claude", "--version"))
-        ? "claude-cli (logged-in Claude Code)"
-        : null;
+  // Provider, in doctor's detection order (agy → claude CLI → gemini key →
+  // anthropic key; subscription CLIs beat ambient keys — FINDINGS §132,
+  // antigravity provider). Setup can save a key, but only ever
+  // interactively — never invented, never required (--skip-llm).
+  const provider = (await p.binRuns(p.env.OSSCLIP_AGY_BIN ?? "agy", "--version"))
+    ? "antigravity (agy CLI on PATH)"
+    : (await p.binRuns(p.env.OSSCLIP_CLAUDE_BIN ?? "claude", "--version"))
+      ? "claude-cli (logged-in Claude Code)"
+      : p.env.GEMINI_API_KEY
+        ? "gemini (GEMINI_API_KEY is set)"
+        : p.env.ANTHROPIC_API_KEY
+          ? "claude (ANTHROPIC_API_KEY is set)"
+          : null;
   if (opts.skipLlm) {
     steps.push({
       kind: "provider",

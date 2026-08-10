@@ -310,6 +310,9 @@ export async function produceWizard(
       await select({
         message: "LLM provider",
         options: [
+          // Listed in auto-detection's own order (FINDINGS §132): the menu
+          // teaching a different ranking than a bare run uses would be drift.
+          { value: "antigravity", label: "antigravity", hint: "your logged-in Google Antigravity (agy), no API charges" },
           { value: "claude-cli", label: "claude-cli", hint: "your logged-in Claude Code, no API charges" },
           { value: "claude", label: "claude", hint: "needs ANTHROPIC_API_KEY" },
           { value: "gemini", label: "gemini", hint: "needs GEMINI_API_KEY" },

@@ -144,27 +144,36 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
         }),
   });
 
-  // Provider, in the same order auto-detection uses (gemini → claude →
-  // claude-cli). Needed for --produce only — the cut+captions path never
-  // touches an LLM — but doctor's contract is "ready for the whole thing".
-  const provider = p.env.GEMINI_API_KEY
-    ? "gemini (GEMINI_API_KEY is set)"
-    : p.env.ANTHROPIC_API_KEY
-      ? "claude (ANTHROPIC_API_KEY is set)"
-      : (await p.binRuns("claude", "--version"))
-        ? "claude-cli (logged-in Claude Code)"
-        : null;
+  // Provider, in the same order auto-detection uses (agy → claude CLI →
+  // gemini key → anthropic key): subscription CLIs beat ambient env keys
+  // since 2026-08 — a logged-in CLI is an explicit, already-paid choice
+  // (FINDINGS §132, antigravity provider). Bin overrides are honored so
+  // doctor probes the same binary produce would spawn. Needed for --produce
+  // only — the cut+captions path never touches an LLM — but doctor's
+  // contract is "ready for the whole thing".
+  const provider = (await p.binRuns(p.env.OSSCLIP_AGY_BIN ?? "agy", "--version"))
+    ? "antigravity (agy CLI on PATH)"
+    : (await p.binRuns(p.env.OSSCLIP_CLAUDE_BIN ?? "claude", "--version"))
+      ? "claude-cli (logged-in Claude Code)"
+      : p.env.GEMINI_API_KEY
+        ? "gemini (GEMINI_API_KEY is set)"
+        : p.env.ANTHROPIC_API_KEY
+          ? "claude (ANTHROPIC_API_KEY is set)"
+          : null;
   checks.push({
     name: "LLM provider",
     ok: provider !== null,
-    detail: provider ?? "no key set and no claude CLI on PATH — needed for --produce; cut+captions works without",
+    detail:
+      provider ??
+      "no agy or claude CLI on PATH and no key set — needed for --produce; cut+captions works without",
     ...(provider !== null
       ? {}
       : {
           fix:
             "run `ossclip setup` (it can save a key for you), or " +
             "export ANTHROPIC_API_KEY or GEMINI_API_KEY (a .env file works — see README), " +
-            "or install Claude Code (https://claude.com/claude-code) and log in",
+            "or install Claude Code (https://claude.com/claude-code) and log in, " +
+            "or install Google Antigravity (https://antigravity.google) and log in",
         }),
   });
 
