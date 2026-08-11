@@ -2,7 +2,11 @@
 
 **A local-first CLI that turns a talking-head take into a finished short.** It cuts silence and filler words, writes word-timed kinetic captions, frames on the measured face, and has an LLM plan **code-rendered on-screen graphics** — title cards, stat cards, diagrams, terminal and chat mockups — from what was actually said.
 
-Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones, on your own key or your existing Claude Code subscription. Vertical 9:16 by default, landscape 16:9 with `--aspect`.
+Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones, on your own key or your existing Claude Code / Google Antigravity subscription. Vertical 9:16 by default, landscape 16:9 with `--aspect`.
+
+![Left: the raw take. Right: the same take after ossclip produce — cut down, reframed on the measured face, word-timed captions](https://raw.githubusercontent.com/AhsanAyaz/ossclip/main/docs/site/assets/before-after.gif)
+
+*Left: the raw take. Right: the same take after `ossclip produce` — cut down, reframed on the measured face, word-timed kinetic captions.*
 
 ![A produced frame](https://raw.githubusercontent.com/AhsanAyaz/ossclip/main/docs/site/assets/render-example.png)
 
@@ -30,6 +34,8 @@ ossclip edit "<work directory>"
 **Scope, honestly:** ossclip is at its best polishing a take you have already cut down. `--clip` selects a single strongest window from long-form input — one clip, not N.
 
 AI can make mistakes: the cut, the captions and every graphic are generated — review the output before publishing.
+
+**Telemetry:** ossclip sends anonymous usage events (counts, durations, provider name) — never footage, transcripts, file names or paths. Turn it off any time with `ossclip telemetry off`, `OSSCLIP_TELEMETRY=0`, or `DO_NOT_TRACK=1`. Full detail in the repo README's Telemetry section.
 
 **Full documentation, flags, keybinds and the findings log:** [github.com/AhsanAyaz/ossclip](https://github.com/AhsanAyaz/ossclip)
 
