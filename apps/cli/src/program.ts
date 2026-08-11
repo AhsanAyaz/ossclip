@@ -475,7 +475,7 @@ export function buildProgram(): Command {
     )
     .action(async (input: string, opts) => {
       const cleanup = CleanupLevelSchema.parse(opts.cleanup);
-      await produce(input, {
+      const result = await produce(input, {
         cleanup,
         transcript: opts.transcript,
         render: false,
@@ -489,6 +489,11 @@ export function buildProgram(): Command {
             ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
             : undefined,
       });
+      telemetry.record("transcribe_completed", {
+        cleanup_level: cleanup,
+        source_duration_bucket: durationBucket(result.sourceDurationSec),
+      });
+      await telemetry.flush();
     });
 
   program
@@ -608,7 +613,13 @@ export function buildProgram(): Command {
     .action(async (opts) => {
       if (envFiles.length > 0) console.log(`▸ env: ${envFiles.join(", ")}`);
       const { setup } = await import("./setup/setup");
-      await setup({ model: opts.model, skipLlm: opts.skipLlm, force: opts.force, yes: opts.yes });
+      const summary = await setup({ model: opts.model, skipLlm: opts.skipLlm, force: opts.force, yes: opts.yes });
+      telemetry.record("setup_completed", {
+        steps_total: summary.stepsTotal,
+        steps_satisfied: summary.stepsSatisfied,
+        steps_failed: summary.stepsFailed,
+      });
+      await telemetry.flush();
     });
 
   program
@@ -623,6 +634,13 @@ export function buildProgram(): Command {
       const { loadConfig } = await import("@ossclip/core");
       const checks = await runDoctor(loadConfig(), realProbes(resolveEditorPageDir()));
       console.log(formatDoctor(checks));
+      const passedCount = checks.filter((c) => c.ok).length;
+      telemetry.record("doctor_run", {
+        checks_total: checks.length,
+        checks_passed: passedCount,
+        checks_failed: checks.length - passedCount,
+      });
+      await telemetry.flush();
       if (checks.some((c) => !c.ok)) process.exit(1);
     });
 

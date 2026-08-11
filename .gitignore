@@ -37,3 +37,5 @@ docs/assets/
 # decision moves to `docs/superpowers/plans/` or the findings log and gets
 # committed like anything else.
 docs/local/
+apps/cli/.posthog-events.json
+apps/cli/.claude/

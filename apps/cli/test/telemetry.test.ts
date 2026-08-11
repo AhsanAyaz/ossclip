@@ -55,13 +55,17 @@ describe("telemetryDisabled precedence (FINDINGS §134)", () => {
     ).toBe(true);
   });
 
-  // THE hermetic-suite invariant: this repo ships with the placeholder, so
-  // every test that builds the real program gets inert telemetry without
-  // mocking anything. If this assertion ever fails, someone pasted a real
-  // key — re-check that the suite still never writes ~/.ossclip or hits the
-  // network before shipping. Do not delete this to make that convenient.
-  it("this build's own key is the placeholder, so default-arg calls are off", () => {
-    expect(telemetryDisabled({}, state())).toBe(true);
+  // THE hermetic-suite invariant, keyed-build form: the real project key is
+  // baked into telemetry.ts, so a bare `telemetryDisabled({}, state())` is
+  // now ON. What keeps every test that builds the real program inert is
+  // vitest.config.ts exporting OSSCLIP_TELEMETRY=0 into the test env — these
+  // two assertions pin both halves. If the first fails, the vitest env line
+  // was removed; if the second fails, the env switch stopped winning —
+  // either way the suite is one step from hitting the live network. Do not
+  // delete this to make that convenient.
+  it("the vitest env forces telemetry off for the whole suite", () => {
+    expect(process.env.OSSCLIP_TELEMETRY).toBe("0");
+    expect(telemetryDisabled(process.env, state({ enabled: true }))).toBe(true);
   });
 
   it("OSSCLIP_TELEMETRY 0/false/off disable; other values do not", () => {
@@ -274,14 +278,14 @@ describe("Telemetry", () => {
     expect(calls).toHaveLength(0);
   });
 
-  // The invariant the whole test suite leans on: with no apiKey injected the
-  // class uses POSTHOG_KEY, which in this repo is the placeholder — so the
-  // Telemetry instances built inside the real program are inert, and no test
-  // needs to mock fetch or guard ~/.ossclip. Removing this test removes the
-  // only named guard on that assumption.
-  it("the placeholder key makes record() a no-op — the hermetic-suite invariant", async () => {
+  // The invariant the whole test suite leans on: the key is real now, so
+  // inertness comes from the vitest env (OSSCLIP_TELEMETRY=0). A Telemetry
+  // built the way the real program builds one — over process.env — must
+  // record nothing and fetch nothing under the suite. Removing this test
+  // removes the only named guard on that assumption.
+  it("record() is a no-op under the suite's forced-off env — the hermetic-suite invariant", async () => {
     const { calls, impl } = fakeFetch();
-    const t = new Telemetry({}, state({ enabled: true }), impl);
+    const t = new Telemetry(process.env, state({ enabled: true }), impl);
     t.record("produce_completed", { duration_ms: 5 });
     await t.flush();
     expect(calls).toHaveLength(0);

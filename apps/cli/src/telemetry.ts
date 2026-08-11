@@ -19,17 +19,23 @@ import { CONFIG_DIR } from "@ossclip/core";
  */
 
 /**
- * Maintainer: paste the PostHog project's WRITE-ONLY key (Project Settings →
- * Project API key, `phc_…`) here before a release that should report. While
- * this is the placeholder, telemetry is a HARD no-op — no state file, no
- * notice, no network (§134) — which is also what keeps the test suite
- * hermetic: every test that builds the real program gets inert telemetry for
- * free. Typed `string`, not the literal, so the `=== POSTHOG_PLACEHOLDER`
- * checks stay ordinary comparisons after the paste.
+ * The baked-in default is the project's WRITE-ONLY ingest key — public by
+ * design (every shipped analytics client carries one; it can only capture,
+ * never read), and baked rather than env-read because ossclip is a
+ * distributed CLI: an end user who installed from npm has no POSTHOG_API_KEY
+ * in their environment, so an env-only key would mean telemetry that never
+ * reports from exactly the machines it exists to count (§134). The env var
+ * still OVERRIDES the default for development against another project.
+ *
+ * With the key real, the test suite's hermeticity comes from vitest.config.ts
+ * exporting OSSCLIP_TELEMETRY=0 into every test process — see the
+ * hermetic-suite tests in telemetry.test.ts. Typed `string`, not the literal,
+ * so the `=== POSTHOG_PLACEHOLDER` checks stay ordinary comparisons.
  */
-export const POSTHOG_KEY: string = "phc_REPLACE_ME";
 export const POSTHOG_PLACEHOLDER = "phc_REPLACE_ME";
-export const POSTHOG_HOST = "https://us.i.posthog.com";
+export const POSTHOG_KEY: string =
+  process.env.POSTHOG_API_KEY ?? "phc_B8y7hMMmHYVEmkUfiLfuBcWoWM5GjbnaT9oBZLZnyPB3";
+export const POSTHOG_HOST: string = process.env.POSTHOG_HOST ?? "https://eu.i.posthog.com";
 
 /**
  * The whole latency budget telemetry is allowed to cost a run: one POST,
@@ -383,6 +389,13 @@ export function bootstrapTelemetry(
   out: (s: string) => void = console.log,
 ): Telemetry {
   if (POSTHOG_KEY === POSTHOG_PLACEHOLDER) {
+    return new Telemetry(env, defaultTelemetryState());
+  }
+  // Env-level off (OSSCLIP_TELEMETRY / DO_NOT_TRACK) returns BEFORE any disk
+  // touch: a run the user switched off must not read or create ~/.ossclip
+  // state — and it is also what keeps the test suite (which exports
+  // OSSCLIP_TELEMETRY=0 from vitest.config.ts) out of the real home dir.
+  if (telemetryDisabled(env, { enabled: true })) {
     return new Telemetry(env, defaultTelemetryState());
   }
   let telemetry: Telemetry;

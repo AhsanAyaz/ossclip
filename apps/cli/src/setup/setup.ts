@@ -38,7 +38,9 @@ const probeBin = (bin: string, arg: string): Promise<boolean> =>
     child.on("exit", () => resolve(true));
   });
 
-export async function setup(opts: SetupCliOptions): Promise<void> {
+export async function setup(
+  opts: SetupCliOptions,
+): Promise<{ stepsTotal: number; stepsSatisfied: number; stepsFailed: number }> {
   const cfg = loadConfig();
   const model = opts.model ?? cfg.model;
   const probes: SetupProbes = {
@@ -70,7 +72,7 @@ export async function setup(opts: SetupCliOptions): Promise<void> {
       const answer = (await rl.question("Proceed? [Y/n] ")).trim().toLowerCase();
       if (answer === "n" || answer === "no") {
         console.log("▸ nothing changed.");
-        return;
+        return { stepsTotal: steps.length, stepsSatisfied: 0, stepsFailed: 0 };
       }
     }
 
@@ -180,6 +182,13 @@ export async function setup(opts: SetupCliOptions): Promise<void> {
   const checks = await runDoctor(loadConfig(), realProbes(resolveEditorPageDir()));
   console.log(formatDoctor(checks));
   if (failures.length > 0) process.exitCode = 1;
+  // The caller (program.ts) owns telemetry; this module stays network-free
+  // beyond its own downloads. It just reports what happened.
+  return {
+    stepsTotal: steps.length,
+    stepsSatisfied: steps.filter((s) => s.status === "satisfied").length,
+    stepsFailed: failures.length,
+  };
 }
 
 /** Download an asset (with resume) and extract it under the managed bin dir. */
