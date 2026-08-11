@@ -33,6 +33,8 @@ Setup also offers to save an LLM key for `--produce` (the graphics planner): a l
 
 If anything looks wrong later, one command diagnoses it: `ossclip doctor` prints a line per prerequisite and the exact fix.
 
+ossclip sends a few anonymous usage events — never footage, transcripts, file names, or paths. The complete event list and the off switches are in [Telemetry](#telemetry).
+
 > **Never used a terminal?** That's fine. Install Node ≥ 22 from [nodejs.org](https://nodejs.org) (a normal click-through installer), open a terminal (macOS: press ⌘-space, type *terminal*; Windows: open the Start menu, type *PowerShell*), paste the two lines above, press Enter, and answer the questions. Expect the downloads to take a few minutes.
 
 Licence note, since setup downloads binaries: the static ffmpeg builds it fetches ([BtbN](https://github.com/BtbN/FFmpeg-Builds)) are GPL, downloaded onto your machine at your request — nothing GPL ships inside the MIT npm package.
@@ -201,6 +203,30 @@ GEMINI_API_KEY=…
 ```
 
 Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`, `OSSCLIP_CLAUDE_BIN`, `OSSCLIP_AGY_BIN`.
+
+## Telemetry
+
+ossclip reports a few **anonymous usage events**, so development effort goes where the tool is actually used. It is on by default, the first run prints a notice saying so, and it is built so nothing about *your* footage can travel. This is the complete list of what is sent:
+
+- `cli_first_run` — once, when the first-run notice is shown
+- `produce_completed` — wall-clock duration, the provider *name* (or `none`), whether `--produce` / `--clip` / a render ran, the aspect, the scene count, and the source length **as a bucket only** (`<1m`, `1-5m`, `5-15m`, `>15m`)
+- `produce_failed` — the error's class name (e.g. `Error`), never its message
+- `editor_opened` — when `ossclip edit` starts its server
+- `rating_submitted` — the 1–5 answer, if you ever give one (asked once, after your third produce; Enter skips, and two skips end the asking)
+
+Every event also carries the ossclip version, OS name, CPU architecture, Node major version, a CI flag, and a random anonymous id.
+
+**Never sent, ever:** footage, transcripts, file names, paths, `--intent` text, prompts, or keys. This is enforced in code, not just policy — an event property whose key so much as *contains* `path`, `file`, `transcript`, `intent`, `prompt`, or `key` is rejected by a guard the test suite pins.
+
+Three off switches, any one of which wins:
+
+```sh
+ossclip telemetry off    # persisted in ~/.ossclip/telemetry.json
+OSSCLIP_TELEMETRY=0      # per shell or per run
+DO_NOT_TRACK=1           # the ecosystem-wide standard, honored too
+```
+
+`ossclip telemetry status` shows the current state, names the switch that is winning when it is off, and prints your anonymous id — a random UUID stored in `~/.ossclip/telemetry.json`, tied to nothing; delete the file and a fresh one is generated.
 
 ## What it does to your footage
 

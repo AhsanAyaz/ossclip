@@ -123,6 +123,16 @@ export interface ProduceResult {
   workdir: string;
   out?: string;
   rendered: boolean;
+  /**
+   * Telemetry inputs (FINDINGS §134), surfaced here so the command layer can
+   * build the event without produce() knowing telemetry exists. The duration
+   * is only ever SENT as a bucket, and the provider is the resolved NAME —
+   * never a key, never a path.
+   */
+  sourceDurationSec: number;
+  sceneCount: number;
+  /** Resolved provider name when the LLM ran; undefined without --produce. */
+  llmProvider?: string;
 }
 
 /**
@@ -2197,7 +2207,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (!opts.render) {
     console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
     console.log(editHint(work));
-    return { workdir: work, rendered: false };
+    return {
+      workdir: work,
+      rendered: false,
+      sourceDurationSec: sourceProbe.duration,
+      sceneCount: scenes.length,
+      llmProvider: provider ? providerName : undefined,
+    };
   }
 
   const outPath = resolve(opts.out ?? defaultOutPath(originalInput));
@@ -2380,5 +2396,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   await recordRecentProject(work);
   console.log(`✓ done → ${outPath}`);
   console.log(editHint(work));
-  return { workdir: work, out: outPath, rendered: true };
+  return {
+    workdir: work,
+    out: outPath,
+    rendered: true,
+    sourceDurationSec: sourceProbe.duration,
+    sceneCount: scenes.length,
+    llmProvider: provider ? providerName : undefined,
+  };
 }

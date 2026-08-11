@@ -8,6 +8,14 @@ import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { produce } from "./produce";
 import { setReplayArgv } from "./replay-argv";
+import {
+  bootstrapTelemetry,
+  durationBucket,
+  loadState,
+  maybeAskRating,
+  saveState,
+  telemetryOffReason,
+} from "./telemetry";
 
 // Before anything reads a provider key (R16 §77) — including the auto-detect
 // order in `defaultProviderName`, which decides which model runs.
@@ -29,6 +37,12 @@ const envFiles = loadEnvFiles();
  */
 export function buildProgram(): Command {
   const program = new Command();
+
+  // Before dispatch, so the one-time first-run notice precedes any command's
+  // own output. Inert in this repo's tests by construction: while POSTHOG_KEY
+  // is the placeholder, bootstrap touches no disk and sends nothing (FINDINGS
+  // §134) — which is what lets every test build the real program unmocked.
+  const telemetry = bootstrapTelemetry();
 
   program
     .name("ossclip")
@@ -364,46 +378,86 @@ export function buildProgram(): Command {
         opts.whisperLanguage !== undefined
           ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
           : undefined;
-      const result = await produce(input, {
-        out: opts.out,
-        cleanup,
-        transcript: opts.transcript,
-        render: opts.render,
-        mezzanine: opts.mezzanine,
-        workdir: opts.workdir,
-        sort,
-        sortExplicit,
-        aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
-        noiseDb: opts.noiseDb,
-        produce: opts.produce,
-        intent: opts.intent,
-        provider,
-        llmModel: opts.llmModel,
-        llmFastModel: opts.llmFastModel,
-        speaker: opts.speaker,
-        scenes: opts.scenes,
-        repair: opts.repair,
-        whisperModel: opts.whisperModel,
-        whisperLanguage,
-        forceComponent,
-        // commander gives `--no-cover` as cover:false and `--cover <path>` as a
-        // string on the same key.
-        sourceIsEdited: opts.sourceIsEdited === true,
-        blooperMarker: opts.blooperMarker,
-        collapseRetakes: opts.collapseRetakes,
-        sourceFit,
-        // undefined = "not typed", so produce can let the config decide.
-        watermark: opts.watermark,
-        // undefined = "not typed" here too — the default (ON) is applied at
-        // the pin site, not coerced in transit.
-        captions: opts.captions,
-        cover: opts.cover !== false,
-        coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
-        clip: opts.clip,
-        clipWindow: opts.clipWindow,
-      });
-      const { offerEditor } = await import("./interactive/offer-editor");
-      await offerEditor(result, { flag: opts.openEditor, port: opts.editorPort });
+      // Wall clock around produce() only — the editor offer below can sit at
+      // an interactive prompt for as long as the user thinks, and think-time
+      // would poison the duration metric (FINDINGS §134).
+      const startedMs = Date.now();
+      try {
+        const result = await produce(input, {
+          out: opts.out,
+          cleanup,
+          transcript: opts.transcript,
+          render: opts.render,
+          mezzanine: opts.mezzanine,
+          workdir: opts.workdir,
+          sort,
+          sortExplicit,
+          aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
+          noiseDb: opts.noiseDb,
+          produce: opts.produce,
+          intent: opts.intent,
+          provider,
+          llmModel: opts.llmModel,
+          llmFastModel: opts.llmFastModel,
+          speaker: opts.speaker,
+          scenes: opts.scenes,
+          repair: opts.repair,
+          whisperModel: opts.whisperModel,
+          whisperLanguage,
+          forceComponent,
+          // commander gives `--no-cover` as cover:false and `--cover <path>` as a
+          // string on the same key.
+          sourceIsEdited: opts.sourceIsEdited === true,
+          blooperMarker: opts.blooperMarker,
+          collapseRetakes: opts.collapseRetakes,
+          sourceFit,
+          // undefined = "not typed", so produce can let the config decide.
+          watermark: opts.watermark,
+          // undefined = "not typed" here too — the default (ON) is applied at
+          // the pin site, not coerced in transit.
+          captions: opts.captions,
+          cover: opts.cover !== false,
+          coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
+          clip: opts.clip,
+          clipWindow: opts.clipWindow,
+        });
+        // Counts, buckets and names only — the duration crosses the wire as a
+        // bucket, and nothing here can carry a path (assertSafeProps enforces
+        // it). Inert while POSTHOG_KEY is the placeholder (FINDINGS §134).
+        telemetry.record("produce_completed", {
+          duration_ms: Date.now() - startedMs,
+          llm_provider: result.llmProvider ?? "none",
+          produced: opts.produce === true,
+          aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
+          clip: opts.clip !== undefined,
+          render: opts.render !== false,
+          source_duration_bucket: durationBucket(result.sourceDurationSec),
+          scenes: result.sceneCount,
+        });
+        if (!telemetry.disabled) {
+          telemetry.state.produceCount += 1;
+          try {
+            saveState(telemetry.state);
+          } catch {
+            // A read-only home dir must never fail the produce that just
+            // succeeded — the rating gate simply advances a run later.
+          }
+        }
+        const { offerEditor } = await import("./interactive/offer-editor");
+        await offerEditor(result, { flag: opts.openEditor, port: opts.editorPort });
+        // Deliberately LAST — after the render summary and the editor offer —
+        // so the one question ossclip ever asks is the last thing on screen.
+        await maybeAskRating(telemetry);
+      } catch (err) {
+        // The constructor NAME only, never the message: error messages
+        // routinely quote the input path, the exact thing §134 forbids.
+        telemetry.record("produce_failed", {
+          error_class: err instanceof Error ? err.constructor.name : "NonError",
+        });
+        throw err;
+      } finally {
+        await telemetry.flush();
+      }
     });
 
   program
@@ -534,6 +588,11 @@ export function buildProgram(): Command {
         const { openInBrowser } = await import("./open");
         openInBrowser(server.url);
       }
+      // Fire-and-forget on purpose: the server keeps the process alive for
+      // the request's lifetime, and awaiting here would put a metrics POST
+      // between the user and their browser opening (FINDINGS §134).
+      telemetry.record("editor_opened", {});
+      void telemetry.flush();
     });
 
   program
@@ -565,6 +624,52 @@ export function buildProgram(): Command {
       const checks = await runDoctor(loadConfig(), realProbes(resolveEditorPageDir()));
       console.log(formatDoctor(checks));
       if (checks.some((c) => !c.ok)) process.exit(1);
+    });
+
+  program
+    .command("telemetry")
+    .description("show or change anonymous usage telemetry — on | off | status")
+    .argument("[action]", "on | off | status (default: status)")
+    .action(async (action: string | undefined) => {
+      // Parsed, not coerced (§93a shape): `ossclip telemetry offf` must be a
+      // loud error naming the typo, never a silent status print.
+      const parsed = z.enum(["on", "off", "status"]).parse(action ?? "status");
+      // A fresh load, not the bootstrap instance's state: with the
+      // placeholder key bootstrap never reads the file, but an EXPLICIT
+      // on/off is the user asking for a persisted preference — it must land
+      // in ~/.ossclip/telemetry.json either way, ready for a keyed build.
+      const state = loadState();
+      if (parsed === "off") {
+        state.enabled = false;
+        saveState(state);
+        console.log("✓ telemetry off — nothing will be sent (saved in ~/.ossclip/telemetry.json)");
+        return;
+      }
+      if (parsed === "on") {
+        state.enabled = true;
+        saveState(state);
+        console.log(
+          "✓ telemetry on — anonymous usage events only; see the README's Telemetry section",
+        );
+        return;
+      }
+      const reason = telemetryOffReason(process.env, state);
+      if (reason === null) {
+        console.log("telemetry: enabled (anonymous usage events only)");
+      } else {
+        // Name the switch that WON, not just the state — three different
+        // offs (env, standard env, config) all look identical otherwise, and
+        // "why is it still off?" needs the answer.
+        const why: Record<typeof reason, string> = {
+          "placeholder-key":
+            "this build ships without a telemetry key — nothing is ever sent or stored",
+          env: `OSSCLIP_TELEMETRY=${process.env.OSSCLIP_TELEMETRY} in the environment`,
+          "do-not-track": `DO_NOT_TRACK=${process.env.DO_NOT_TRACK} in the environment`,
+          config: "`ossclip telemetry off` (saved in ~/.ossclip/telemetry.json)",
+        };
+        console.log(`telemetry: disabled — ${why[reason]}`);
+      }
+      console.log(`anonymous id: ${state.anonymousId}`);
     });
 
   return program;

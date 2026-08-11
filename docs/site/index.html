@@ -113,6 +113,7 @@
   <a href="#layouts">Layouts</a>
   <a href="#flags">produce flags</a>
   <a href="#config">Configuration</a>
+  <a href="#telemetry">Telemetry</a>
   <a href="#licensing">Licensing</a>
 </nav>
 <main>
@@ -293,7 +294,7 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--cleanup &lt;level&gt;</td><td><em>exact | light | standard | aggressive</em> — how hard to cut silence and fillers</td></tr>
   <tr><td>--aspect &lt;ratio&gt;</td><td><em>9:16</em> (default) or <em>16:9</em> — landscape export with landscape-native layouts</td></tr>
   <tr><td>--source-fit &lt;mode&gt;</td><td><em>cover</em> crops to fill; <em>contain</em> shows the whole frame inset — the landscape-source escape hatch</td></tr>
-  <tr><td>--llm &lt;provider&gt;</td><td><em>claude | claude-cli | gemini | mock</em></td></tr>
+  <tr><td>--llm &lt;provider&gt;</td><td><em>antigravity | claude | claude-cli | gemini | mock</em></td></tr>
   <tr><td>--llm-model / --llm-fast-model</td><td>override the editorial / mechanical model (<em>same</em> disables tiering)</td></tr>
   <tr><td>--whisper-model &lt;name&gt;</td><td>transcription model for this run (<em>base.en | small.en | medium.en</em>, or any converted GGML model in <code>~/.ossclip/models</code>)</td></tr>
   <tr><td>--whisper-language &lt;code&gt;</td><td>language for a multilingual model, e.g. <em>ur | de | auto</em> (whisper defaults to <em>en</em>)</td></tr>
@@ -324,6 +325,13 @@ ossclip edit                        # bare: pick from recent projects, or browse
 }</code></pre>
 <p><strong>Provider keys</strong> come from the environment, and ossclip loads <code>.env</code> files before choosing a provider — first hit wins per key, a real environment variable always beats a file: <code>$OSSCLIP_ENV_FILE</code> → <code>.env</code> walking up from the cwd → <code>~/.ossclip/.env</code>.</p>
 <p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>.</p>
+
+<h2 id="telemetry">Telemetry</h2>
+<p>ossclip reports a few <strong>anonymous usage events</strong> — command counts, wall-clock durations, the provider <em>name</em>, the source length as a bucket (<code>&lt;1m</code>…<code>&gt;15m</code>) — so effort goes where the tool is actually used. On by default; the first run prints a notice saying so. <strong>Never sent:</strong> footage, transcripts, file names, paths, <code>--intent</code> text, prompts, or keys — enforced by a guard in the code the test suite pins, not just by policy. The full event list is in the README's Telemetry section.</p>
+<pre><code>ossclip telemetry off    # persisted in ~/.ossclip/telemetry.json
+OSSCLIP_TELEMETRY=0      # per shell or per run
+DO_NOT_TRACK=1           # the ecosystem-wide standard, honored too</code></pre>
+<p><code>ossclip telemetry status</code> shows the current state, names the switch that wins when it is off, and prints the anonymous id — a random UUID in <code>~/.ossclip/telemetry.json</code>, tied to nothing.</p>
 
 <h2 id="licensing">Licensing</h2>
 <p>ossclip's own code is <strong>MIT</strong> — see the repo's <code>LICENSE</code>.</p>
