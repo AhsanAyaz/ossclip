@@ -442,11 +442,21 @@ function toPublic(i: Instance): RetakeInstance {
  * a clause boundary, not an abandoned take: its own sentence continues
  * without it, so it goes to `undecided` (report-only), never `cuts`.
  */
-function buildGroup(chain: readonly Instance[], hallucinated: readonly Instance[]): RetakeGroup {
+function buildGroup(
+  chain: readonly Instance[],
+  hallucinated: readonly Instance[],
+  // The fragment pass keeps its strict bar. The §135 sentence pass gates
+  // survivors at the HALLUCINATION bar instead: a whole sentence carrying
+  // deliberate mid-sentence pauses is ordinary read-aloud delivery — the
+  // field run's kept take sat at 36% dead air, over the fragment bar by one
+  // point, and a textbook retake went report-only for it. Below the
+  // hallucination bar, a sentence-level survivor is a real take.
+  survivorBar: number = RESTART_SPLIT_MIN_SIL,
+): RetakeGroup {
   const completes = chain.filter((i) => i.complete);
   const lastComplete = completes[completes.length - 1];
   const kept =
-    lastComplete !== undefined && lastComplete.silenceFrac <= RESTART_SPLIT_MIN_SIL
+    lastComplete !== undefined && lastComplete.silenceFrac <= survivorBar
       ? lastComplete
       : undefined;
   const hallu: RetakeHallucination[] = hallucinated.map((i) => ({
@@ -554,7 +564,7 @@ export function findRetakeGroups(
     }
   }
   const splitByStartWord = new Map(sentences.map((s) => [s.startWord, s.wasSplit]));
-  for (const g of chainGroups(sentences)) {
+  for (const g of chainGroups(sentences, HALLUCINATION_SILENCE_FRAC)) {
     const members = [g.kept, ...g.cuts, ...g.hallucinated, ...g.undecided].filter(
       (m): m is RetakeInstance => m !== null,
     );
@@ -584,7 +594,7 @@ export function findRetakeGroups(
 }
 
 /** The chaining rule (doc block above), shared by both passes verbatim. */
-function chainGroups(instances: readonly Instance[]): RetakeGroup[] {
+function chainGroups(instances: readonly Instance[], survivorBar?: number): RetakeGroup[] {
   const groups: RetakeGroup[] = [];
 
   let anchor: Instance | null = null;
@@ -593,7 +603,7 @@ function chainGroups(instances: readonly Instance[]): RetakeGroup[] {
 
   const finalize = (): void => {
     if (chain.length >= 2 || (chain.length >= 1 && hallucinated.length > 0)) {
-      groups.push(buildGroup(chain, hallucinated));
+      groups.push(buildGroup(chain, hallucinated, survivorBar));
     }
     chain = [];
     hallucinated = [];

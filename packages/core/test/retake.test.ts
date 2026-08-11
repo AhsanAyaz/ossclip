@@ -442,6 +442,30 @@ describe("findRetakeGroups: VO-paced retakes — a pause INSIDE both takes (§13
     );
   });
 
+  it("a kept take whose deliberate pauses put it over the FRAGMENT survivor bar still wins at sentence level", () => {
+    // The full field shape: the real run's kept candidate carried 36% dead
+    // air — over RESTART_SPLIT_MIN_SIL (0.35), the fragment-pass survivor
+    // bar — purely from deliberate read-aloud pauses, and the group went
+    // report-only. At sentence level a pause is ordinary delivery (§135's
+    // whole premise), so the survivor gate is the HALLUCINATION bar (0.65),
+    // not the fragment bar. Gaps here are sized to land the kept sentence's
+    // silence fraction between the two bars.
+    const { transcript, analysis } = speak(
+      "The kernel I optimized takes half a second. " +
+        "The kernel I optimized takes half a millisecond. " +
+        "This is the good take.",
+      { 5: 3.0, 7: 2.0, 13: 1.6 },
+    );
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.kept).not.toBeNull();
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe(
+      "The kernel I optimized takes half a second.",
+    );
+  });
+
   it("a pause inside only ONE of the two takes also collapses the pair", () => {
     const { transcript, analysis } = speak(
       "The kernel I optimized takes half a second. " +
