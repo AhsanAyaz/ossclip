@@ -415,6 +415,66 @@ describe("findRetakeGroups: abandonment rule (probe C1 — parallel rhetoric acr
   });
 });
 
+describe("findRetakeGroups: VO-paced retakes — a pause INSIDE both takes (§135 field case)", () => {
+  // The 2026-08-11 voice-over recording: "The kernel I optimized takes half
+  // [3s pause] a second." then the corrected "…half [0.8s pause] a
+  // millisecond." Whole-sentence similarity is 0.875 — comfortably a retake —
+  // but the restart split shredded each take into fragments ("…takes half" /
+  // "a second") that never matched across takes, and the detector reported
+  // "no retakes found" on a pair it was built for. Deliberate mid-sentence
+  // pauses are normal read-aloud delivery, not an exotic input.
+  it("field case: mid-sentence pauses in BOTH takes still collapse the pair", () => {
+    const { transcript, analysis } = speak(
+      "The kernel I optimized takes half a second. " +
+        "The kernel I optimized takes half a millisecond. " +
+        "This is the good take.",
+      { 5: 3.0, 7: 2.0, 13: 0.8 },
+    );
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe(
+      "The kernel I optimized takes half a second.",
+    );
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe(
+      "The kernel I optimized takes half a millisecond.",
+    );
+  });
+
+  it("a pause inside only ONE of the two takes also collapses the pair", () => {
+    const { transcript, analysis } = speak(
+      "The kernel I optimized takes half a second. " +
+        "The kernel I optimized takes half a millisecond. " +
+        "This is the good take.",
+      { 5: 3.0, 7: 2.0 },
+    );
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe(
+      "The kernel I optimized takes half a second.",
+    );
+  });
+
+  it("C1 stays intact: parallel rhetoric across a pause still cuts nothing at sentence level", () => {
+    // The §128 probe C1 shape — genuinely different sentences whose openings
+    // repeat on purpose. The sentence-level pass must not resurrect the cut
+    // the fragment pass's abandonment rule exists to prevent: whole-sentence
+    // similarity between "If it fails, we retry." and "If it fails, we give
+    // up." is 0.8-adjacent by construction, so this pins that the pair stays
+    // un-cut whatever the pass ordering does.
+    const { transcript, analysis } = speak("If it fails, we retry. If it fails, we give up.", {
+      8: 0.4,
+    });
+    const groups = findRetakeGroups(transcript, analysis);
+    for (const g of groups) {
+      expect(g.cuts).toHaveLength(0);
+    }
+  });
+});
+
 describe("findRetakeGroups: chaining — what may sit between two attempts", () => {
   it("filler-vs-blocking-sentence: a lone filler bridges the chain, a real sentence blocks it", () => {
     const filler = speak("That is the exit condition. um That is the exit condition.");

@@ -223,13 +223,18 @@ function silenceFraction(silences: readonly Span[], start: number, end: number):
  * sits earlier is never cut, so a spurious split ends at a report line,
  * not a shear through live audio.
  */
+/** An Instance plus whether the restart split fragmented its coarse sentence. */
+interface SentenceInstance extends Instance {
+  wasSplit: boolean;
+}
+
 function buildInstances(
   transcript: Transcript,
   analysis: Pick<Analysis, "silences" | "fillers">,
   transparentMarker?: string,
-): Instance[] {
+): { fragments: Instance[]; sentences: SentenceInstance[] } {
   const words = transcript.words;
-  if (words.length === 0) return [];
+  if (words.length === 0) return { fragments: [], sentences: [] };
   const fillerIndices = new Set(analysis.fillers.map((f) => f.wordIndex));
   const marker = transparentMarker ? normalizeToken(transparentMarker) : undefined;
 
@@ -269,6 +274,7 @@ function buildInstances(
   };
 
   const instances: Instance[] = [];
+  const sentences: SentenceInstance[] = [];
   for (const sent of coarse) {
     // A sentence that is ALREADY silence-dominated end-to-end is the
     // hallucination shape, not the restart shape: whisper sprinkles sparse
@@ -334,8 +340,17 @@ function buildInstances(
     // runs out of words mid-sentence is a trailing abandoned partial, not a
     // finished take, whatever fragment boundary it happens to land on.
     instances.push(toInstance(fragStart, sent.end, isSentenceEnd(transcript, sent.end), true));
+    // The whole coarse sentence, rejoined across its restart splits, for the
+    // §135 sentence-level pass: VO-paced delivery pauses INSIDE a sentence,
+    // so both takes of a genuine retake fragment into pieces that never
+    // match each other. `wasSplit` records whether the split actually fired —
+    // the pass only acts where fragmentation could have hidden a match.
+    sentences.push({
+      ...toInstance(sent.start, sent.end, isSentenceEnd(transcript, sent.end), true),
+      wasSplit: splitAfter.length > 0,
+    });
   }
-  return instances;
+  return { fragments: instances, sentences };
 }
 
 // ---- matching -------------------------------------------------------------
@@ -511,7 +526,65 @@ export function findRetakeGroups(
   analysis: Pick<Analysis, "silences" | "fillers">,
   opts: { transparentMarker?: string } = {},
 ): RetakeGroup[] {
-  const instances = buildInstances(transcript, analysis, opts.transparentMarker);
+  const { fragments, sentences } = buildInstances(transcript, analysis, opts.transparentMarker);
+  const groups = chainGroups(fragments);
+
+  // §135 sentence-level pass — the VO field case. Deliberate mid-sentence
+  // pauses (read-aloud delivery) make the restart split shred BOTH takes of a
+  // genuine retake into fragments that never match each other, and the
+  // fragment pass above reports nothing ("takes half [3s] a second" vs
+  // "…half a millisecond" — whole-sentence similarity 0.875, zero fragment
+  // matches). This pass re-runs the SAME chain algorithm over whole coarse
+  // sentences, then keeps a group only when:
+  //   (a) some member's sentence actually WAS split — unsplit sentences were
+  //       already compared whole by the fragment pass, so acting on them here
+  //       could only second-guess a decision that pass already made; and
+  //   (b) no member's words are claimed by a fragment-pass group — including
+  //       its `undecided` members, so a cut the abandonment/cut-validation
+  //       rules (§128) deliberately DECLINED stays declined.
+  // C1-style parallel rhetoric is safe here by construction: those are
+  // different sentences, and whole-sentence similarity scores the divergence
+  // the fragment prefixes hid.
+  const claimed = new Set<number>();
+  for (const g of groups) {
+    const members = [g.kept, ...g.cuts, ...g.hallucinated, ...g.undecided];
+    for (const m of members) {
+      if (!m) continue;
+      for (let w = m.startWord; w <= m.endWord; w++) claimed.add(w);
+    }
+  }
+  const splitByStartWord = new Map(sentences.map((s) => [s.startWord, s.wasSplit]));
+  for (const g of chainGroups(sentences)) {
+    const members = [g.kept, ...g.cuts, ...g.hallucinated, ...g.undecided].filter(
+      (m): m is RetakeInstance => m !== null,
+    );
+    if (!members.some((m) => splitByStartWord.get(m.startWord))) continue;
+    let overlaps = false;
+    for (const m of members) {
+      for (let w = m.startWord; w <= m.endWord && !overlaps; w++) {
+        if (claimed.has(w)) overlaps = true;
+      }
+    }
+    if (overlaps) continue;
+    groups.push(g);
+  }
+
+  // Two passes can interleave in transcript order — the report reads in
+  // word order, whichever pass found the group.
+  groups.sort((a, b) => {
+    const first = (g: RetakeGroup): number =>
+      Math.min(
+        ...[g.kept, ...g.cuts, ...g.hallucinated, ...g.undecided]
+          .filter((m): m is RetakeInstance => m !== null)
+          .map((m) => m.startWord),
+      );
+    return first(a) - first(b);
+  });
+  return groups;
+}
+
+/** The chaining rule (doc block above), shared by both passes verbatim. */
+function chainGroups(instances: readonly Instance[]): RetakeGroup[] {
   const groups: RetakeGroup[] = [];
 
   let anchor: Instance | null = null;
