@@ -117,6 +117,35 @@ describe("findBloopSpans", () => {
     expect(findBloopSpans(t, "blooper")).toEqual([]);
   });
 
+  // Field bug, third field run (FINDINGS §133): the announce take says the
+  // word "bloopers" as CONTENT — "it removes the bloopers", describing the
+  // feature — and Levenshtein distance to the "blooper" marker is 1, so the
+  // fuzzy arm cut 7.08s of good take back to its sentence start. An
+  // inflection of the marker is a real word the speaker can say on purpose;
+  // only ASR mishearings are fair game for fuzzy. Plain plurals of the
+  // marker (and the marker as plural of a singular said as content) stay
+  // exact-only.
+  it("does not fuzzy-match a plural of the marker spoken as content", () => {
+    const t = speak(
+      "Use your terminal and it automatically removes the bloopers. This is the good take.",
+    );
+    expect(findBloopSpans(t, "blooper")).toEqual([]);
+  });
+
+  it("does not fuzzy-match the singular when the marker itself is plural", () => {
+    const t = speak("This take mentions a blooper as content. This is the good take.");
+    expect(findBloopSpans(t, "bloopers")).toEqual([]);
+  });
+
+  it("still cuts an exact marker even when its plural also appears as content", () => {
+    const t = speak(
+      "It removes the bloopers automatically. I flubbed this sentence blooper. This is the good take.",
+    );
+    const spans = findBloopSpans(t, "blooper");
+    expect(spans).toHaveLength(1);
+    expect(formatBloopSpan(t, spans[0]!)).toBe('"I flubbed this sentence blooper."');
+  });
+
   // Guard: a short marker is too easy to confuse with ordinary words
   // ("cut" ~ "cat"/"but" both sound-alike and are within edit distance 2),
   // so fuzzy matching only turns on once the marker is long enough that a

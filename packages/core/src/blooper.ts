@@ -92,10 +92,23 @@ function matchMarker(wordText: string, want: string): MarkerMatch | null {
   if (!norm) return null;
   if (norm === want) return { surface: norm, exact: true };
   if (want.length < FUZZY_MIN_MARKER_LEN) return null;
+  // A plain English inflection of the marker is a REAL word the speaker can
+  // say on purpose — "it removes the bloopers", describing the feature, sits
+  // at distance 1 from a "blooper" marker and the fuzzy arm cut 7.08s of a
+  // good announce take back to its sentence start (FINDINGS §133). Fuzzy
+  // exists for ASR mishearings of the SPOKEN marker; an inflection is far
+  // more likely content, so it stays exact-only, in both directions.
+  if (isPluralPair(norm, want)) return null;
   if (levenshtein(norm, want) <= FUZZY_MAX_DISTANCE) {
     return { surface: norm, exact: false };
   }
   return null;
+}
+
+/** Whether one token is the plain s/es plural of the other. */
+function isPluralPair(a: string, b: string): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return long === `${short}s` || long === `${short}es`;
 }
 
 /**
