@@ -4,6 +4,7 @@ import { SPLIT_MIN_PIECE_SEC, type SceneCue } from "@ossclip/core/browser";
 import { clampGraphicRect, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import { guideSnap, THRESHOLD_FRAC, type Guide } from "./guides";
+import { captionSrcFromAttribute } from "./captionAnchors";
 import type { GraphicRect, useEdits } from "./useEdits";
 
 export interface Selection {
@@ -1058,17 +1059,13 @@ export const Overlay: React.FC<OverlayProps> = ({
       // shifts every later index, so an edit anchored to one lands on the
       // wrong word (or is dropped by its own guard) after the next re-cut.
       // CaptionTrack OMITS the attribute for a word it cannot anchor, and a
-      // word that cannot be anchored cannot be retyped — bail, do not throw.
-      // `captionKeyFor` (via the reducer) throws on a non-finite anchor by
-      // design, and this handler has no error boundary above it.
-      const raw = word.dataset.captionSrc;
-      // `Number("")` is 0, not NaN — an empty attribute would otherwise read
-      // as a real anchor at the start of the source.
-      const srcStart = raw === undefined || raw === "" ? Number.NaN : Number(raw);
+      // word that cannot be anchored cannot be RETYPED — refuse to open the
+      // editor at all, rather than opening one whose commit would throw.
+      const srcStart = captionSrcFromAttribute(word.dataset.captionSrc);
       // The RAW text, not textContent — the rendered word may be CTA-decorated
       // ("AGENTS"), and the stale-guard must match the stored truth.
       const was = word.dataset.captionText ?? "";
-      if (!Number.isFinite(srcStart) || !was) return;
+      if (srcStart === null || !was) return;
       setCaptionEdit({ srcStart, was, draft: was, rect: word.getBoundingClientRect() });
     };
     window.addEventListener("dblclick", onDoubleClick);

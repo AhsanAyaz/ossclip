@@ -353,6 +353,15 @@ describe("caption editor vs. the stage-mousedown blur (field report 2026-08-07)"
         // below would never open the editor this test is about.
         "data-caption-src": "1.7675",
       }),
+      // A word from a pre-§137 workdir: CaptionTrack omits `data-caption-src`
+      // for anything it cannot anchor, so this is what the DOM really looks
+      // like when the load-path repair could not run (a spans-less or corrupt
+      // render-props.json). Its own test is below.
+      React.createElement("div", {
+        "data-testid": "caption-word-anchorless",
+        "data-caption-word": "1",
+        "data-caption-text": "hello",
+      }),
       React.createElement("div", { "data-testid": "stage-elsewhere" }),
       React.createElement(Overlay, {
         stageRef,
@@ -420,6 +429,28 @@ describe("caption editor vs. the stage-mousedown blur (field report 2026-08-07)"
     });
     expect(container.querySelector('[data-testid="caption-edit"]')).toBeNull();
     expect(document.activeElement).not.toBe(editor);
+  });
+
+  /**
+   * §137 review, Important 2. A caption word with no `data-caption-src` is one
+   * the editor cannot key an edit on — a pre-§137 workdir whose spans could not
+   * be repaired. Opening the box anyway would let the user type a correction
+   * and blur, and the commit would call `captionKeyFor` with a non-finite
+   * anchor: that THROWS by design, from a `window` event handler with no error
+   * boundary above it (`main.tsx` renders `<App/>` bare), so the whole editor
+   * white-screens over a file that merely predates a field. Today's behaviour
+   * on such a workdir is a no-op; the guard is what keeps it one.
+   */
+  it("refuses to open the retype box on a word carrying no source anchor", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness));
+    });
+    const word = container.querySelector<HTMLElement>('[data-testid="caption-word-anchorless"]')!;
+    document.elementFromPoint = () => word;
+    await act(async () => {
+      word.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[data-testid="caption-edit"]')).toBeNull();
   });
 });
 

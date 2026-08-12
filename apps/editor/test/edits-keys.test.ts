@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { OverrideDocSchema, type CaptionLine } from "@ossclip/core/browser";
 import { editReducer, initialEditState } from "../src/useEdits";
-import { anchorCaptionLines } from "../src/captionAnchors";
+import { anchorCaptionLines, captionSrcFromAttribute } from "../src/captionAnchors";
 
 /**
  * §137 Task 5 — the EDITOR side of source-anchored overrides.
@@ -105,6 +105,74 @@ describe("anchorCaptionLines — repairing a pre-§137 render-props.json", () =>
   it("leaves the lines ALONE when spans is absent entirely", () => {
     const out = anchorCaptionLines({ captionLines: [legacy(["Claude", 0.09, 0.47])] });
     expect(out.captionLines).toBeUndefined();
+  });
+
+  it("refuses a NON-EMPTY spans array that still builds an EMPTY map", () => {
+    // §137 review, Important 1. `TimeMap`'s constructor drops any span with
+    // `srcOut <= srcIn`, so this array is non-empty but the map it builds is
+    // not — and an empty map's `toSource` returns 0 for everything. A guard on
+    // `spans.length` passes this straight through and puts the whole video on
+    // `w0`: retyping word 7 would store `w0`/`was: "seven"`, the next load
+    // would match word 0, the guard would mismatch, and the edit would be
+    // dropped. Reachable because render-props.json is an unvalidated cast.
+    const out = anchorCaptionLines({
+      captionLines: [legacy(["Claude", 0.09, 0.47], ["gave", 0.47, 0.78])],
+      spans: [{ srcIn: 5, srcOut: 5, outIn: 0, outOut: 0 }],
+    });
+    expect(out.captionLines).toBeUndefined();
+  });
+
+  it("treats a span set TimeMap refuses to build at all as no repair, not a throw", () => {
+    // Overlapping and backwards spans make the constructor throw. This runs on
+    // the load path, and one of its two callers sits inside a render-poll catch
+    // whose recovery is to restart the interval — a deterministic throw there
+    // retries forever with `render.running` stuck, which the Save guard turns
+    // into a permanent save lockout with unsaved edits still in memory.
+    const lines = [legacy(["Claude", 0.09, 0.47])];
+    const overlapping = () =>
+      anchorCaptionLines({
+        captionLines: lines,
+        spans: [
+          { srcIn: 0, srcOut: 10, outIn: 0, outOut: 10 },
+          { srcIn: 5, srcOut: 20, outIn: 10, outOut: 25 },
+        ],
+      });
+    expect(overlapping).not.toThrow();
+    expect(overlapping().captionLines).toBeUndefined();
+
+    const backwards = () =>
+      anchorCaptionLines({
+        captionLines: lines,
+        spans: [{ srcIn: 10, srcOut: 5, outIn: 0, outOut: 5 }],
+      });
+    expect(backwards).not.toThrow();
+    expect(backwards().captionLines).toBeUndefined();
+  });
+});
+
+/**
+ * The DOM boundary between `CaptionTrack` and `Overlay` (§137). The stage
+ * double-click has no caption lines to consult, so the anchor re-enters the
+ * editor as an attribute string here.
+ */
+describe("captionSrcFromAttribute", () => {
+  it("parses a real anchor, including zero", () => {
+    expect(captionSrcFromAttribute("1.7675")).toBeCloseTo(1.7675, 6);
+    // A word at the very start of the source is anchorable; anything that
+    // treated "0" as falsy would make the first word un-retypable.
+    expect(captionSrcFromAttribute("0")).toBe(0);
+  });
+
+  it("returns null for every shape that means `no anchor`", () => {
+    // CaptionTrack OMITS the attribute for an unanchorable word, so `undefined`
+    // is the normal case, not an error. `Number("")` is 0 — an empty attribute
+    // must not read as an anchor at the start of the source.
+    expect(captionSrcFromAttribute(undefined)).toBeNull();
+    expect(captionSrcFromAttribute("")).toBeNull();
+    expect(captionSrcFromAttribute("   ")).toBeNull();
+    expect(captionSrcFromAttribute("NaN")).toBeNull();
+    expect(captionSrcFromAttribute("Infinity")).toBeNull();
+    expect(captionSrcFromAttribute("not-a-number")).toBeNull();
   });
 
   it("never re-derives an anchor a word already carries", () => {

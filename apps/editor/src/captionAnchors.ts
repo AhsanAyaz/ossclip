@@ -1,4 +1,10 @@
-import { backfillSrcStart, type CaptionLine, type KeptSpan } from "@ossclip/core/browser";
+import {
+  backfillSrcStart,
+  captionAnchorOf,
+  mapFromKeptSpans,
+  type CaptionLine,
+  type KeptSpan,
+} from "@ossclip/core/browser";
 
 /**
  * The parts of `render-props.json` the caption repair reads. Deliberately NOT
@@ -34,21 +40,45 @@ export type AnchoredCaptionLines = Omit<CaptionAnchorSource, "spans">;
  * `baseCaptionLines ?? captionLines`, so leaving the base side unanchored
  * would break the edits at exactly the point they are applied.
  *
- * NO SPANS, NO REPAIR — the constraint carried from Task 1's review, and the
- * reason this is not a one-line call at the fetch. `mapFromKeptSpans([])`
- * yields an empty map whose `toSource` returns 0 for every input, so a
- * spans-less file would backfill the ENTIRE video onto one anchor `w0`, under
- * which a single stored edit rewrites the first word it meets and reports
- * nothing. That is the same one-shared-key failure `captionKeyFor` refuses for
- * `NaN`, dressed up as a successful migration. Anchorless words are the honest
- * outcome instead: they simply cannot carry an edit, and every edit that then
- * finds no home is REPORTED by `applyCaptionEdits`.
+ * NO USABLE MAP, NO REPAIR — the constraint carried from Task 1's review, and
+ * the reason this is not a one-line call at the fetch. An empty `TimeMap`'s
+ * `toSource` returns 0 for every input, so backfilling through one would put
+ * the ENTIRE video on a single anchor `w0`, under which one stored edit
+ * rewrites the first word it meets and reports nothing. That is the same
+ * one-shared-key failure `captionKeyFor` refuses for `NaN`, dressed up as a
+ * successful migration.
+ *
+ * The verdict is taken from the MAP, never from `spans.length` (§137 review):
+ * `TimeMap`'s constructor DROPS any span with `srcOut <= srcIn`, so a
+ * non-empty `[{srcIn: 5, srcOut: 5, …}]` builds an empty map and would have
+ * walked straight through an array-length check into exactly the failure above.
+ * `render-props.json` is consumed as an unvalidated cast, so that shape is
+ * reachable from a hand-edited or truncated file.
+ *
+ * A constructor THROW (overlapping or backwards spans — the same file, the
+ * same lack of a parse) is also "no repair", caught here rather than left to
+ * escape. It is raised on the load path, and one of that path's two callers
+ * sits inside a render-poll catch block whose recovery is to restart the
+ * interval — a deterministic throw there would retry forever with
+ * `render.running` stuck true, which the Save guard turns into a permanent
+ * save lockout with the user's unsaved edits still in memory.
+ *
+ * Anchorless words are the honest outcome in every one of these cases: they
+ * simply cannot carry an edit, and every edit that then finds no home is
+ * REPORTED by `applyCaptionEdits`.
  *
  * Pure — the caller owns the fetch.
  */
 export function anchorCaptionLines(props: CaptionAnchorSource): AnchoredCaptionLines {
   const spans = props.spans;
-  if (spans === undefined || spans.length === 0) return {};
+  if (spans === undefined) return {};
+  let kept: number;
+  try {
+    kept = mapFromKeptSpans(spans).spans.length;
+  } catch {
+    return {};
+  }
+  if (kept === 0) return {};
   const out: AnchoredCaptionLines = {};
   // Each key is set only when the file actually has it, so the result stays
   // safe to spread over the raw props: writing `baseCaptionLines: undefined`
@@ -60,4 +90,29 @@ export function anchorCaptionLines(props: CaptionAnchorSource): AnchoredCaptionL
     out.baseCaptionLines = backfillSrcStart(props.baseCaptionLines, spans);
   }
   return out;
+}
+
+/**
+ * The source anchor a caption word's `data-caption-src` attribute carries, or
+ * `null` when it carries none (§137).
+ *
+ * The DOM is the only channel between `CaptionTrack` (which renders inside the
+ * Player) and `Overlay` (which hit-tests it and holds no caption lines), so
+ * this is where an anchor re-enters the editor as a string. The verdict is
+ * delegated to core's `captionAnchorOf` rather than re-tested here: that is the
+ * single definition of "is this word anchorable", and the emitting side already
+ * gates on it. A second, hand-rolled finiteness check in this exact path is how
+ * the two would drift — and this path must never hand a non-finite value to
+ * `captionKeyFor`, which throws, from a React event handler with no error
+ * boundary above it.
+ *
+ * `Number("")` is 0, not NaN, so an empty attribute is excluded explicitly
+ * rather than left to look like a real anchor at the start of the source.
+ */
+export function captionSrcFromAttribute(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const srcStart = Number(raw);
+  // Only `srcStart` is read by `captionAnchorOf`; the rest of the shape is
+  // what the DOM does not carry and does not need to.
+  return captionAnchorOf({ text: "", start: 0, end: 0, srcStart }) === null ? null : srcStart;
 }

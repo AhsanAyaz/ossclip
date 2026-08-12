@@ -33,5 +33,9 @@ export {
   type CaptionLine,
   type CaptionWord,
 } from "./captions";
-export type { KeptSpan } from "./timemap";
+// `mapFromKeptSpans` is a VALUE export and browser-safe (timemap.ts imports
+// types only). The editor's load-path repair needs the MAP, not the raw span
+// array, to decide whether a repair is possible at all — see
+// `anchorCaptionLines` (§137): a non-empty array can still build an empty map.
+export { mapFromKeptSpans, TimeMap, type KeptSpan } from "./timemap";
 export type { Probe, Production, RenderSettings, Segment, Transcript, Word } from "./schema";

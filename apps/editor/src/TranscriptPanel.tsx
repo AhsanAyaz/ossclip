@@ -28,7 +28,19 @@ export const TranscriptPanel: React.FC<{
   width: number;
 }> = ({ baseLines, liveLines, fps, playerRef, edits, width }) => {
   const [query, setQuery] = useState("");
-  const [editing, setEditing] = useState<{ index: number; draft: string } | null>(null);
+  /**
+   * The open retype box. `srcStart` and `base` are CAPTURED when it opens,
+   * mirroring `Overlay`'s `captionEdit` (§137): the anchor is validated once,
+   * at the double-click, so the commit below cannot be handed an unanchorable
+   * word — and neither field can shift underneath an open editor if a
+   * completed render swaps `liveLines` mid-edit.
+   */
+  const [editing, setEditing] = useState<{
+    index: number;
+    draft: string;
+    srcStart: number;
+    base: string;
+  } | null>(null);
   // The word under the playhead, so reading follows playback. Index only —
   // recomputed on frameupdate but committed to state solely when it changes,
   // or the panel would re-render at the frame rate.
@@ -123,22 +135,31 @@ export const TranscriptPanel: React.FC<{
     scrollToWord(matchList[next]!);
   };
 
-  const commit = (w: (typeof words)[number], draft: string): void => {
-    const text = draft.trim();
-    // A word with no SOURCE anchor cannot carry an edit (§137). Asking
-    // `captionAnchorOf` rather than reading `srcStart` directly is deliberate:
-    // it is core's single definition of "anchorable", and `captionKeyFor` —
-    // which the reducer calls next — THROWS on a non-finite one. This runs in
-    // a React event handler with no error boundary above it, so a throw here
-    // is a crashed editor on any workdir produced before the field existed
-    // (`anchorCaptionLines` on the load path is what normally prevents that,
-    // but it cannot repair a spans-less file). Silently doing nothing is the
-    // lesser evil of the two, and the only one that is not a regression on
-    // today's behaviour.
-    const anchorable = captionAnchorOf(w.word) !== null;
+  const commit = (open: NonNullable<typeof editing>): void => {
+    const text = open.draft.trim();
     // Empty is a cancel: a word cannot be deleted here — 1:1 is the contract.
-    if (text && anchorable) edits.patchCaption(w.word.srcStart, text, w.base);
+    // The anchor needs no re-check: `openRetype` below refuses to open on a
+    // word that has none, so nothing unanchorable can reach `patchCaption`
+    // (which would throw in `captionKeyFor`).
+    if (text) edits.patchCaption(open.srcStart, text, open.base);
     setEditing(null);
+  };
+
+  /**
+   * Open the retype box — or refuse (§137). A word with no SOURCE anchor
+   * cannot carry an edit, and the refusal belongs HERE rather than at the
+   * commit: gating at the commit let the user type a correction, press Enter,
+   * and watch the word revert with no explanation, which is precisely the
+   * silent-discard experience this whole change exists to remove. `Overlay`'s
+   * stage double-click already refuses to open; the two paths agree.
+   *
+   * `captionAnchorOf` is core's single definition of "anchorable" — the same
+   * verdict `CaptionTrack` gates its `data-caption-src` on, so the transcript
+   * and the stage can never disagree about which words are editable.
+   */
+  const openRetype = (w: (typeof words)[number]): void => {
+    if (captionAnchorOf(w.word) === null) return;
+    setEditing({ index: w.index, draft: w.live, srcStart: w.word.srcStart, base: w.base });
   };
 
   return (
@@ -210,8 +231,8 @@ export const TranscriptPanel: React.FC<{
                 data-testid="transcript-edit"
                 style={editInput}
                 value={editing.draft}
-                onChange={(e) => setEditing({ index: w.index, draft: e.target.value })}
-                onBlur={() => commit(w, editing.draft)}
+                onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
+                onBlur={() => commit(editing)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                   if (e.key === "Escape") setEditing(null);
@@ -221,7 +242,7 @@ export const TranscriptPanel: React.FC<{
               <span
                 data-testid={`transcript-word-${w.index}`}
                 onClick={() => playerRef.current?.seekTo(Math.round(w.start * fps))}
-                onDoubleClick={() => setEditing({ index: w.index, draft: w.live })}
+                onDoubleClick={() => openRetype(w)}
                 title={
                   w.live !== w.base
                     ? `edited (was “${w.base}”) — double-click to retype`

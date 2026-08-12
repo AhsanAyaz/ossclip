@@ -67,11 +67,17 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
     { name: "renderflow", testMatch: /renderflow\.spec\.ts/, dependencies: ["landscape"] },
+    // Rewrites the shared render-props.json's `spans` to a real cut (§137), so
+    // source time and output time disagree — the identity-span fixture cannot
+    // tell a source-keyed edit from an output-keyed one. Serialized behind
+    // everything else for the same reason `landscape` is, and last because its
+    // rewrite is the one that changes what other specs would MEASURE.
+    { name: "recut", testMatch: /recut\.spec\.ts/, dependencies: ["renderflow"] },
   ],
   use: {
     baseURL: "http://127.0.0.1:5173",
