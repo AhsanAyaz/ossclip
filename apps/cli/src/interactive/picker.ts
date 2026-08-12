@@ -1,4 +1,4 @@
-import { VIDEO_EXTENSIONS } from "@ossclip/core";
+import { VIDEO_EXTENSIONS, run } from "@ossclip/core";
 import { binOnPath } from "../llm-detect";
 
 /**
@@ -172,4 +172,36 @@ export function pickerCommand(
 export function parsePickerResult(stdout: string): string | undefined {
   const picked = stdout.trim();
   return picked === "" ? undefined : picked;
+}
+
+/**
+ * Open the dialog and wait. The ONLY I/O in this module.
+ *
+ * The notice before the spawn is not decoration: a dialog that opens behind
+ * the terminal is indistinguishable from a hung CLI, and the wait here is
+ * unbounded by design — a human is deciding.
+ *
+ * The returned path is deliberately unvalidated (§136); `validateInputPath`
+ * owns existence and extension for the typed branch and this one alike, so
+ * the two cannot drift apart.
+ */
+export async function pickPath(
+  mode: PickMode,
+  deps: PickerDeps = livePickerDeps(),
+  startDir: string = process.cwd(),
+): Promise<string | undefined> {
+  const { bin, args } = pickerCommand(deps, mode, startDir);
+  console.log("▸ file picker open — look for a new window");
+  try {
+    // allowNonZero: a cancel exits 1 on every backend and is a normal answer.
+    const { stdout } = await run(bin, args, { allowNonZero: true });
+    return parsePickerResult(stdout);
+  } catch {
+    // `run` only rejects when the binary would not start. pickerAvailable
+    // said yes, so this is a broken install or a PATH that changed under us —
+    // fall through to typing rather than failing the whole wizard, the same
+    // call openInBrowser makes about a box with no browser on it.
+    console.log("▸ couldn't open a file picker here — type the path instead");
+    return undefined;
+  }
 }

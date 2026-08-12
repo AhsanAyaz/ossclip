@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { pickerAvailable, pickerCommand, parsePickerResult, type PickerDeps } from "../src/interactive/picker";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  pickPath,
+  pickerAvailable,
+  pickerCommand,
+  parsePickerResult,
+  type PickerDeps,
+} from "../src/interactive/picker";
 
 /**
  * The platform matrix for the native file picker (§136). Same shape as the
@@ -193,5 +202,64 @@ describe("parsePickerResult", () => {
 
   it("keeps spaces inside a path — 2026-08-11 06-50-33.mp4 is a real filename here", () => {
     expect(parsePickerResult("/Users/a/2026-08-11 06-50-33.mp4\n")).toBe("/Users/a/2026-08-11 06-50-33.mp4");
+  });
+});
+
+/**
+ * The spawn is exercised against a stub `zenity` on a temp PATH — same trick
+ * the agy provider tests use (§132). A real dialog cannot be tested: it
+ * blocks on a human.
+ */
+describe("pickPath (spawn)", () => {
+  const dirs: string[] = [];
+  const stub = (body: string): { dir: string; deps: PickerDeps } => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-picker-"));
+    dirs.push(dir);
+    const bin = join(dir, "zenity");
+    writeFileSync(bin, `#!/bin/bash\n${body}\n`);
+    chmodSync(bin, 0o755);
+    return {
+      dir,
+      deps: { platform: "linux", env: { DISPLAY: ":0" }, hasBin: (b) => b === "zenity" },
+    };
+  };
+  // PATH is restored synchronously, before the returned promise settles — safe
+  // because `run` spawns inside its executor, i.e. before pickPath's first
+  // await yields. Restoring in a `.finally` instead would leave a mutated PATH
+  // visible to any test vitest interleaves with this one.
+  const withPath = <T>(dir: string, fn: () => T): T => {
+    const prev = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      return fn();
+    } finally {
+      process.env.PATH = prev;
+    }
+  };
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("returns the picked path", async () => {
+    const { dir, deps } = stub('echo "/home/a/take1.mp4"');
+    await expect(withPath(dir, () => pickPath("file", deps, "/home/a"))).resolves.toBe(
+      "/home/a/take1.mp4",
+    );
+  });
+
+  it("a cancel (exit 1, empty stdout) resolves undefined instead of throwing", async () => {
+    const { dir, deps } = stub("exit 1");
+    await expect(withPath(dir, () => pickPath("file", deps, "/home/a"))).resolves.toBeUndefined();
+  });
+
+  it("a missing binary resolves undefined — never takes the wizard down", async () => {
+    const deps: PickerDeps = {
+      platform: "linux",
+      env: { DISPLAY: ":0" },
+      hasBin: () => true, // claims zenity exists; PATH says otherwise
+    };
+    const empty = mkdtempSync(join(tmpdir(), "ossclip-picker-empty-"));
+    dirs.push(empty);
+    await expect(withPath(empty, () => pickPath("file", deps, "/home/a"))).resolves.toBeUndefined();
   });
 });
