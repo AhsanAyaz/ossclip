@@ -105,6 +105,7 @@ import {
 } from "./stranded-overrides";
 import { editHint } from "./interactive/edit-hint";
 import { reconcileCaptionEdits } from "./caption-report";
+import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
 import { renderCover, renderProduction } from "@ossclip/renderer";
 import {
@@ -2203,41 +2204,29 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // `cutResult.changed` OR a §137 caption-key migration that actually MOVED an
   // edit — the second is why this is no longer a bare cut check. Both are
   // re-anchorings of the user's doc to something the pipeline just recomputed,
-  // and both want the same `.bak`-then-atomic-rename treatment; a separate
-  // write for the migration would be a SECOND sanctioned write, which the
-  // comment above exists to prevent.
+  // and both go through the one sanctioned write; a separate write for the
+  // migration would be a SECOND sanctioned write, which the comment above
+  // exists to prevent.
   //
   // "ACTUALLY MOVED" is load-bearing and was not there at first (final review,
   // Critical 2). Gated on "the migration reported something" instead, this
   // fires on a run that repaired NOTHING — and since a caption migration is
   // independent of the cut, it fires on runs where the pre-§137 gate wrote
-  // nothing at all. On the field workdir that is the first `ossclip produce`
-  // after upgrading: `cutResult.changed` is false, so the write is new, and it
-  // copies the already-damaged `overrides.json` over `overrides.json.bak` —
-  // the user's only pre-cut save, and the only artefact from which their
-  // deleted split half could ever be recovered (`legacySplitId`). No repair,
-  // and the evidence for the other repair gone.
+  // nothing at all.
+  //
+  // THEY DO NOT SHARE THE `.bak`, THOUGH, and that is the rest of the same
+  // finding (final review round 2). `refreshBackup: cutResult.changed`, never
+  // the gate: on the field workdir the caption migration re-anchors THREE
+  // edits, so the gate legitimately fires while `cutResult.changed` is false —
+  // and an unconditional refresh would then copy the already-damaged
+  // `overrides.json` over `overrides.json.bak`, which is that user's only
+  // pre-cut save and the only artefact their deleted split half can still be
+  // recovered from (`legacySplitId`). Repairing the captions would destroy the
+  // evidence for the split. `writeOverrideDoc` carries the full argument for
+  // why a caption-only write has nothing worth backing up.
   if (cutResult.changed || captionKeysReanchored) {
-    // Keep a `.bak` of whatever was on disk first — the same safety net
-    // `saveConfigPatch` keeps for a config file it's about to replace —
-    // before overwriting the user's own data. Atomic write via tmp+rename,
-    // matching the edit server's own `PUT /overrides` handler: the producer
-    // or a live editor session may read this file at any moment, and a
-    // half-written document would be worse than a stale one.
-    try {
-      const raw = await readFile(overridesPath, "utf8");
-      await writeFile(`${overridesPath}.bak`, raw);
-    } catch {
-      // Nothing on disk to back up (first cut ever applied here) — fine.
-    }
-    const tmp = `${overridesPath}.tmp`;
-    await writeFile(tmp, JSON.stringify(overrideDoc, null, 2));
-    await rename(tmp, overridesPath);
-    console.log(
-      `▸ overrides.json re-anchored to ${
-        cutResult.changed ? "the new cut" : "source-time caption keys"
-      } and saved (previous copy kept as .bak)`,
-    );
+    await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
+    console.log(overridesWriteLine(cutResult.changed));
   }
 
   if (!opts.render) {

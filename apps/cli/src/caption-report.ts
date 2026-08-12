@@ -104,7 +104,11 @@ export function captionMigrationLine(u: CaptionKeyMigration["unresolved"][number
       // retype something that is sitting intact in the transcript — and the
       // edit is kept in the doc, so the next run against a different cut may
       // place it without them doing anything at all.
-      return `${head}: the word is still here, but more than ${MIGRATION_SEARCH_RADIUS} words from where the edit was stored, so it was left alone rather than applied to the wrong one — it is kept in overrides.json, and retyping it in the editor re-anchors it for good`;
+      // No promise that retyping fixes it, either: the word this found may
+      // itself be unanchorable (a pre-§137 render-props.json with nothing to
+      // backfill from), and "re-anchors it for good" would be a guarantee this
+      // line cannot make.
+      return `${head}: the word is still here, but more than ${MIGRATION_SEARCH_RADIUS} words from where the edit was stored, so it was left alone rather than applied to the wrong one — it is kept in overrides.json, so retype it in the editor if that is the word you meant`;
     case "ambiguous":
       return `${head}: more than one word says it here, so it was left alone rather than applied to the wrong one — retype the one you meant in the editor`;
     case "unanchorable":

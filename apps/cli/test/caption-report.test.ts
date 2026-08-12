@@ -344,6 +344,24 @@ describe("produce's §137 caption wiring (source-text guard)", () => {
     );
   });
 
+  it("spends the `.bak` on the CUT re-anchoring only, never on the caption one", () => {
+    // Final review round 2. Gating the WRITE on work done left the marquee
+    // case wide open: on the field workdir the caption migration re-anchors
+    // three edits, so the gate fires with `cutResult.changed` false — and an
+    // unconditional backup then copies the damaged doc over the user's only
+    // pre-cut save. `refreshBackup: cutResult.changed` is the whole fix, and
+    // it lives on the one line no test executes. `writeOverrideDoc`'s own
+    // behaviour is tested for real in `overrides-write.test.ts`; this pins
+    // that produce passes it the right flag.
+    // Anchored on the closing brace, not just on the prefix: the mutation
+    // that actually reintroduces the bug is `cutResult.changed ||
+    // captionKeysReanchored` — i.e. the write gate copied into the backup
+    // decision — and a prefix match accepts it happily. (It did, on the first
+    // cut of this assertion.)
+    expect(src).toMatch(/\{\s*refreshBackup:\s*cutResult\.changed\s*\}/);
+    expect(src).not.toMatch(/refreshBackup:\s*true/);
+  });
+
   it("gates that write on work DONE, never on `keysChanged`", () => {
     // Final review, Critical 2. The gate that shipped fired whenever anything
     // was unresolved, so the first produce after upgrading the field workdir

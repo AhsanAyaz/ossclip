@@ -307,10 +307,11 @@ export function migrationLossNotices(
     switch (u.reason) {
       case "out-of-range":
         // The word is on screen, so this must not read like the cut removed
-        // it (final review, Important 2). It also must not read like a loss:
-        // the edit stays in the project, and it is the RETYPE that fixes it
-        // for good rather than a re-run.
-        return `${older}, and the word is still here but too far from where the edit was stored to be sure it is the same one — it was left alone. It is still saved. Retype it here to re-anchor it.`;
+        // it (final review, Important 2). It also must not read like a loss —
+        // the edit stays in the project — nor promise that a retype anchors
+        // it, since the word the search found may itself carry no source
+        // timing (final review round 2).
+        return `${older}, and the word is still here but too far from where the edit was stored to be sure it is the same one — it was left alone. It is still saved. Retype it here if that is the word you meant.`;
       case "ambiguous":
         return `${older}, and more than one word here says it — it was left alone rather than applied to the wrong one. Retype the one you meant.`;
       case "unanchorable":
