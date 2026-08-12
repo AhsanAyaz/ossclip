@@ -72,9 +72,9 @@ ossclip produce input.mp4 --no-render
 ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 
 # Keep your own editor: export the planned cuts as labelled markers instead of rendering
-ossclip analyse input.mp4 --format premiere-xml   # Premiere Pro (File → Import)
-ossclip analyse input.mp4 --format resolve-edl    # Resolve (Timeline Markers from EDL, coloured)
-ossclip analyse input.mp4                         # Final Cut Pro (fcpxml)
+ossclip analyze input.mp4 --format premiere-xml   # Premiere Pro (File → Import)
+ossclip analyze input.mp4 --format resolve-edl    # Resolve (Timeline Markers from EDL, coloured)
+ossclip analyze input.mp4                         # Final Cut Pro (fcpxml)
 ```
 
 ![A produce run in the terminal: transcribe, analyze, cut, captions, scenes, render — each step reporting what it did](./docs/site/assets/render-example.png)
@@ -226,8 +226,8 @@ ossclip reports a few **anonymous usage events**, so development effort goes whe
 - `produce_completed` — wall-clock duration, the provider *name* (or `none`), whether `--produce` / `--clip` / a render ran, the aspect, the scene count, the source length **as a bucket only** (`<1m`, `1-5m`, `5-15m`, `>15m`), which branch of the input prompt supplied the file — a suggestion, the picker, typing, or the command line, as a branch name and never a path — and a per-phase duration **bucket** (`<10s`, `10-60s`, `1-5m`, `5-15m`, `>15m`) for each pipeline phase that ran: transcription, LLM planning, render, ffmpeg
 - `produce_failed` — the error's class name (e.g. `Error`), never its message
 - `transcribe_completed` — for a bare `ossclip transcribe`: the `--cleanup` level by name (`exact` | `light` | `standard` | `aggressive`) and the source length as the same bucket
-- `analyse_completed` — for `ossclip analyse`: the export format name (e.g. `fcpxml`), the `--cleanup` level, the source length bucket, the marker count, and the same per-phase duration buckets
-- `analyse_failed` — the error's class name, never its message
+- `analyze_completed` — for `ossclip analyze`: the export format name (e.g. `fcpxml`), the `--cleanup` level, the source length bucket, the marker count, and the same per-phase duration buckets
+- `analyze_failed` — the error's class name, never its message
 - `editor_opened` — when `ossclip edit` starts its server
 - `setup_completed` — how many steps `ossclip setup` planned, how many were already satisfied, and how many failed — three counts, no step names
 - `doctor_run` — how many checks `ossclip doctor` ran, and how many passed and failed — again counts only, never which check or what it found

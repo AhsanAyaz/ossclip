@@ -6,7 +6,7 @@ import { z } from "zod/v4";
 import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
-import { ExportFormatSchema, runAnalyse } from "./analyse";
+import { ExportFormatSchema, runAnalyze } from "./analyze";
 import { phaseBucketProps } from "./phase-timing";
 import { produce } from "./produce";
 // The one interactive import that is STATIC rather than `await import()`: the
@@ -536,10 +536,13 @@ export function buildProgram(): Command {
     });
 
   program
-    .command("analyse")
-    .alias("analyze")
+    // American spelling is primary (house style, 2026-08-12); the British
+    // alias stays because a command someone has already learned must not
+    // become an "unknown command" over an s/z.
+    .command("analyze")
+    .alias("analyse")
     .description(
-      "analyse a take and export the planned cuts as labelled NLE markers — no render, no LLM " +
+      "analyze a take and export the planned cuts as labelled NLE markers — no render, no LLM " +
         "(FCPXML imports into Resolve and Premiere; review the markers, then cut in your own editor)",
     )
     .argument("<input>", "input video file (or a folder of clips)")
@@ -575,7 +578,7 @@ export function buildProgram(): Command {
       // error naming the flag, never silently export a different file.
       const format = ExportFormatSchema.parse(opts.format);
       try {
-        const result = await runAnalyse(input, {
+        const result = await runAnalyze(input, {
           cleanup,
           format,
           out: opts.out,
@@ -594,7 +597,7 @@ export function buildProgram(): Command {
         });
         // Counts, buckets and names only (§134) — the format is an enum name,
         // never a path; per-phase buckets ride along like produce's.
-        telemetry.record("analyse_completed", {
+        telemetry.record("analyze_completed", {
           format,
           cleanup_level: cleanup,
           source_duration_bucket: durationBucket(result.sourceDurationSec),
@@ -604,7 +607,7 @@ export function buildProgram(): Command {
         });
       } catch (err) {
         // Constructor name only, like produce_failed: messages quote paths.
-        telemetry.record("analyse_failed", {
+        telemetry.record("analyze_failed", {
           error_class: err instanceof Error ? err.constructor.name : "NonError",
         });
         throw err;

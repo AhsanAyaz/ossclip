@@ -13,8 +13,8 @@ import { produce } from "./produce";
 import type { PhaseTimings } from "./phase-timing";
 
 /**
- * `ossclip analyse` (next-directions §2–3; design doc
- * 2026-08-12-analyse-fcpxml-export-design.md): the analyser without the
+ * `ossclip analyze` (next-directions §2–3; design doc
+ * 2026-08-12-analyse-fcpxml-export-design.md): the analyzer without the
  * renderer. §140 measured the render at 85% of wall time on two machines —
  * this command is the product of skipping it: the same pipeline up to the
  * cut report (no LLM, no Remotion), plus an export file an editor's own NLE
@@ -48,7 +48,7 @@ export function defaultExportPath(input: string, format: ExportFormat): string {
   return input.replace(/(\.[^.]+)?$/, `.${FORMAT_EXTENSIONS[format]}`);
 }
 
-export interface AnalyseOptions {
+export interface AnalyzeOptions {
   cleanup: CleanupLevel;
   format: ExportFormat;
   out?: string;
@@ -63,7 +63,7 @@ export interface AnalyseOptions {
   sortExplicit?: boolean;
 }
 
-export interface AnalyseResult {
+export interface AnalyzeResult {
   workdir: string;
   outPath: string;
   /** Suggested-cut markers — one per remove segment. */
@@ -82,10 +82,10 @@ export interface AnalyseResult {
  * run just wrote it — the file is user-visible and hand-editable, and a
  * truncated or tweaked one must error here, not export garbage markers.
  */
-export async function runAnalyse(
+export async function runAnalyze(
   inputArg: string,
-  opts: AnalyseOptions,
-): Promise<AnalyseResult> {
+  opts: AnalyzeOptions,
+): Promise<AnalyzeResult> {
   const result = await produce(inputArg, {
     cleanup: opts.cleanup,
     transcript: opts.transcript,

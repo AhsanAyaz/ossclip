@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ExportFormatSchema, defaultExportPath, runAnalyse } from "../src/analyse";
+import { ExportFormatSchema, defaultExportPath, runAnalyze } from "../src/analyze";
 
 /**
- * `ossclip analyse` (next-directions §2; design doc 2026-08-12): the analyser
+ * `ossclip analyze` (next-directions §2; design doc 2026-08-12): the analyzer
  * without the renderer. Pure parts first; then a behavioural run through the
  * REAL pipeline (produce-timing.test.ts's harness pattern — injected
  * transcript, no LLM, no render) asserting the export actually lands beside
@@ -54,11 +54,11 @@ const hasFfmpeg = (() => {
   }
 })();
 
-describe.skipIf(!hasFfmpeg)("runAnalyse — behavioural", () => {
+describe.skipIf(!hasFfmpeg)("runAnalyze — behavioural", () => {
   let dir: string;
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), "ossclip-analyse-"));
+    dir = mkdtempSync(join(tmpdir(), "ossclip-analyze-"));
     execFileSync("ffmpeg", [
       "-v", "error",
       "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=6",
@@ -92,7 +92,7 @@ describe.skipIf(!hasFfmpeg)("runAnalyse — behavioural", () => {
     async () => {
       const spy = vi.spyOn(console, "log").mockImplementation(() => {});
       try {
-        const result = await runAnalyse(join(dir, "take.mp4"), {
+        const result = await runAnalyze(join(dir, "take.mp4"), {
           cleanup: "standard",
           format: "fcpxml",
           transcript: join(dir, "transcript.json"),
