@@ -8,6 +8,7 @@ import {
   folderManifestKey,
   planFolderConcat,
   probeClipsWithAudioGuard,
+  VIDEO_EXTENSIONS,
   type ConcatEntry,
 } from "../src/concat";
 
@@ -364,5 +365,15 @@ describe("probeClipsWithAudioGuard", () => {
         1,
       ),
     ).rejects.toThrow(/sync throw from b\.mov/);
+  });
+});
+
+describe("VIDEO_EXTENSIONS (§136, shared with the CLI's file picker)", () => {
+  it("is exported so the picker's file filters cannot drift from what concat accepts", () => {
+    expect([...VIDEO_EXTENSIONS]).toEqual(["mov", "mp4", "m4v", "mkv", "webm", "avi"]);
+  });
+
+  it("carries no leading dots — every consumer adds its own separator", () => {
+    for (const ext of VIDEO_EXTENSIONS) expect(ext.startsWith(".")).toBe(false);
   });
 });

@@ -20,7 +20,13 @@ import { run } from "./exec";
  * `listFolderVideos` and `concatFolder` are the only I/O.
  */
 
-const VIDEO_EXTENSIONS = ["mov", "mp4", "m4v", "mkv", "webm", "avi"] as const;
+/**
+ * The extensions a folder input may contain. Exported (§136) because the
+ * CLI's native file picker builds its dialog filters from this list: a
+ * picker that offers a file `concat` will later refuse is a trap, and the
+ * two lists silently diverging is exactly how that ships.
+ */
+export const VIDEO_EXTENSIONS = ["mov", "mp4", "m4v", "mkv", "webm", "avi"] as const;
 const VIDEO_EXTENSION_SET = new Set<string>(VIDEO_EXTENSIONS);
 
 function noVideoFilesError(folder: string): Error {
