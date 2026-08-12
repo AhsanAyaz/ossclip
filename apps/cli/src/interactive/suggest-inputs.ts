@@ -145,6 +145,11 @@ export async function scanLikelyDirs(
         const path = join(dir, name);
         try {
           const st = await stat(path);
+          // A symlink to a DIRECTORY named `takes.mp4` passes the dirent
+          // check above and stats fine; without this it would be offered
+          // carrying the directory's size and mtime. concat.ts:346-353 —
+          // the parity this module claims — resolves and drops it too.
+          if (!st.isFile()) return undefined;
           return { path, mtimeMs: st.mtimeMs, size: st.size };
         } catch {
           // Raced with a delete between readdir and stat, or a dangling

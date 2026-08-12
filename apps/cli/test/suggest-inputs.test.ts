@@ -182,6 +182,10 @@ describe("scanLikelyDirs", () => {
     symlinkSync(join(root, "a.MP4"), join(root, "linked.mov"));
     // Stands in for the readdir/stat delete race: stat throws, one file only.
     symlinkSync(join(root, "gone.mp4"), join(root, "ghost.mp4"));
+    // Following symlinks means the target has to be re-checked: a link to a
+    // DIRECTORY named with a video extension would otherwise be offered,
+    // carrying the directory's size and mtime.
+    symlinkSync(join(root, "nested"), join(root, "takes.mp4"));
 
     const out = await scanLikelyDirs([join(root, "nope"), root]);
     expect(out.map((c) => c.path).sort()).toEqual([join(root, "a.MP4"), join(root, "linked.mov")]);
