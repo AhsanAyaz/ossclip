@@ -328,19 +328,55 @@ describe("Telemetry", () => {
   });
 });
 
+describe("NOTICE and maybeShowNotice", () => {
+  it("names the off switches and says anonymous", () => {
+    expect(NOTICE).toContain("ossclip telemetry off");
+    expect(NOTICE).toContain("OSSCLIP_TELEMETRY=0");
+    expect(NOTICE).toMatch(/anonymous/i);
+    // The privacy floor, stated where the user first sees telemetry exists.
+    expect(NOTICE).toMatch(/never/i);
+  });
+
+  it("prints once, persists the flag, then stays quiet", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-tel-"));
+    const s = state();
+    const out: string[] = [];
+    maybeShowNotice(s, (line) => out.push(line), dir);
+    maybeShowNotice(s, (line) => out.push(line), dir);
+    expect(out).toHaveLength(1);
+    expect(s.noticeShown).toBe(true);
+    expect(loadState(dir).noticeShown).toBe(true);
+  });
+});
+
 /**
  * §136: the picker's whole justification is that typing a path blocked
  * non-technical users. Whether the picker is actually being reached is a
  * question only telemetry can answer — and the prop must survive the privacy
  * guard, which rejects anything that smells like a path.
+ *
+ * KEEP THIS BLOCK LAST IN THE FILE. Importing `../src/program` below runs
+ * program.ts's module-level `loadEnvFiles()`, which mutates `process.env` from
+ * any `.env` in the repo root, an ancestor directory, or ~/.ossclip/.env. That
+ * is harmless for the assertions above only because they all run BEFORE it —
+ * and this is the file whose job is pinning that the suite never reaches the
+ * live network (the hermetic-suite tests near the top). A test appended after
+ * this block that reads `process.env` would pass on CI and fail on any machine
+ * with a repo-root `.env`, with the hermeticity assertion sitting above the
+ * import and never seeing it. Append new telemetry tests ABOVE this comment.
  */
 describe("input_source (§136)", () => {
   // `lastInputSource` is module state that outlives an `it`, so without this
-  // the "argv" default below would pass or fail on test ORDER rather than on
-  // the behaviour — the same reason ask-input.test.ts resets here.
+  // each case would pass or fail on test ORDER rather than on the behaviour —
+  // the same reason ask-input.test.ts resets here.
   beforeEach(() => resetInputSource());
 
-  it("defaults to argv — a typed command line never touches the wizard", () => {
+  // Named for what it actually pins: the `beforeEach` above is what puts the
+  // reading at "argv", so this is `resetInputSource`'s postcondition, NOT the
+  // module initialiser's value. The initialiser is deliberately not tested —
+  // it is not load-bearing, because `buildProgram()` resets before any parse
+  // (program.ts), so production never reads it.
+  it("a reset leaves the reading at argv — the state a fresh run starts from", () => {
     expect(inputSourceUsed()).toBe("argv");
   });
 
@@ -371,26 +407,5 @@ describe("input_source (§136)", () => {
     expect(() => assertSafeProps({ input_path: "/Users/a/take.mp4" })).toThrow(
       /forbidden substring "path"/,
     );
-  });
-});
-
-describe("NOTICE and maybeShowNotice", () => {
-  it("names the off switches and says anonymous", () => {
-    expect(NOTICE).toContain("ossclip telemetry off");
-    expect(NOTICE).toContain("OSSCLIP_TELEMETRY=0");
-    expect(NOTICE).toMatch(/anonymous/i);
-    // The privacy floor, stated where the user first sees telemetry exists.
-    expect(NOTICE).toMatch(/never/i);
-  });
-
-  it("prints once, persists the flag, then stays quiet", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ossclip-tel-"));
-    const s = state();
-    const out: string[] = [];
-    maybeShowNotice(s, (line) => out.push(line), dir);
-    maybeShowNotice(s, (line) => out.push(line), dir);
-    expect(out).toHaveLength(1);
-    expect(s.noticeShown).toBe(true);
-    expect(loadState(dir).noticeShown).toBe(true);
   });
 });

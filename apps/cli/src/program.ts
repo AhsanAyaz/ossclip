@@ -8,12 +8,20 @@ import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { produce } from "./produce";
 // The one interactive import that is STATIC rather than `await import()`: the
-// reset below has to run synchronously while the program is being built, and
-// `buildProgram` cannot await. The graph already loads @ossclip/renderer and
-// @ossclip/scenes eagerly through produce.ts, so clack riding along costs ~14ms
-// on a ~320ms startup — cheap enough not to trade for a racy fire-and-forget
-// import (§136).
-import { resetInputSource } from "./interactive/ask-input";
+// `resetInputSource()` run boundary in `buildProgram` has to run synchronously
+// while the program is being built, and `buildProgram` cannot await. The graph
+// already loads @ossclip/renderer and @ossclip/scenes eagerly through
+// produce.ts, so clack riding along costs ~14ms on a ~320ms startup — cheap
+// enough not to trade for a racy fire-and-forget import (§136).
+//
+// Consequence worth stating for whoever edits ask-input.ts next: this module,
+// and everything it imports (picker.ts, prompts.ts → @clack/prompts,
+// suggest-inputs.ts), is now EAGER on every ossclip invocation — `--version`
+// and `doctor` included. A heavy dependency added there is no longer free.
+// Removing this line to "restore laziness" deletes the run boundary with it:
+// `input_source` would then report the PREVIOUS run's branch, and the only
+// test that notices is the buildProgram case in telemetry.test.ts.
+import { inputSourceUsed, resetInputSource } from "./interactive/ask-input";
 import { setReplayArgv } from "./replay-argv";
 import {
   bootstrapTelemetry,
@@ -441,10 +449,6 @@ export function buildProgram(): Command {
           clip: opts.clip,
           clipWindow: opts.clipWindow,
         });
-        // Dynamic import to match how the wizard itself is loaded, and it is
-        // the SAME module instance either way — so a run that never opened
-        // the wizard correctly reports the "argv" default (§136).
-        const { inputSourceUsed } = await import("./interactive/ask-input");
         // Counts, buckets and names only — the duration crosses the wire as a
         // bucket, and nothing here can carry a path (assertSafeProps enforces
         // it). Inert while POSTHOG_KEY is the placeholder (FINDINGS §134).
