@@ -89,11 +89,12 @@ produced, set up your install, or check what's missing. Every choice prints
 the equivalent command before it runs, so the menu is also how you learn the
 flags.
 
-The first question offers the newest videos in your working directory,
-Downloads and Movies; a **Browse…** row that opens your operating system's
-own file picker; and typing a path. Over SSH, or on a Linux box with no
-`zenity`/`kdialog`, the Browse rows are simply not shown — there is no
-window to open.
+Choose **produce a video** and the wizard's first question offers the newest
+videos in your working directory, Downloads and Movies (Videos on Linux and
+Windows); a **Browse…** row that opens your operating system's own file
+picker; and typing a path. Over SSH on macOS or Windows, or on a Linux box
+with no display or no `zenity`/`kdialog`, the Browse rows are simply not
+shown — there is no window to open.
 
 `ossclip produce` with no file name does the same thing for just the produce
 options, and `ossclip <path>` — a video file or a folder of clips — jumps
@@ -219,7 +220,10 @@ ossclip reports a few **anonymous usage events**, so development effort goes whe
 - `cli_first_run` — once, when the first-run notice is shown
 - `produce_completed` — wall-clock duration, the provider *name* (or `none`), whether `--produce` / `--clip` / a render ran, the aspect, the scene count, the source length **as a bucket only** (`<1m`, `1-5m`, `5-15m`, `>15m`), and which branch of the input prompt supplied the file — a suggestion, the picker, typing, or the command line, as a branch name and never a path
 - `produce_failed` — the error's class name (e.g. `Error`), never its message
+- `transcribe_completed` — for a bare `ossclip transcribe`: the `--cleanup` level by name (`exact` | `light` | `standard` | `aggressive`) and the source length as the same bucket
 - `editor_opened` — when `ossclip edit` starts its server
+- `setup_completed` — how many steps `ossclip setup` planned, how many were already satisfied, and how many failed — three counts, no step names
+- `doctor_run` — how many checks `ossclip doctor` ran, and how many passed and failed — again counts only, never which check or what it found
 - `rating_submitted` — the 1–5 answer, if you ever give one (asked once, after your third produce; Enter skips, and two skips end the asking)
 
 Every event also carries the ossclip version, OS name, CPU architecture, Node major version, a CI flag, and a random anonymous id.

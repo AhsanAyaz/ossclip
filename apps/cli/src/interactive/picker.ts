@@ -193,7 +193,9 @@ export async function pickPath(
   const { bin, args } = pickerCommand(deps, mode, startDir);
   console.log("▸ file picker open — look for a new window");
   try {
-    // allowNonZero: a cancel exits 1 on every backend and is a normal answer.
+    // allowNonZero: a cancel exits non-zero on zenity and kdialog — and 0 with
+    // empty stdout on PowerShell (see parsePickerResult above, and §136). The
+    // flag covers the first shape; emptiness is what actually decides.
     const { stdout } = await run(bin, args, { allowNonZero: true });
     return parsePickerResult(stdout);
   } catch {

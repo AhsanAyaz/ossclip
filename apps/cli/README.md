@@ -31,7 +31,7 @@ ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 ossclip edit "<work directory>"
 ```
 
-**Not sure what to run?** `ossclip` with no arguments opens a menu, and every choice prints the equivalent command before it runs. The first question offers the newest videos in your working directory, Downloads and Movies; a **Browse…** row that opens your operating system's own file picker; and typing a path. Over SSH, or on a Linux box with no `zenity`/`kdialog`, the Browse rows are simply not shown — there is no window to open. `OSSCLIP_NO_PICKER` set to anything hides them too, leaving suggestions and typing.
+**Not sure what to run?** `ossclip` with no arguments opens a menu, and every choice prints the equivalent command before it runs. Choose **produce a video** and the wizard's first question offers the newest videos in your working directory, Downloads and Movies (Videos on Linux and Windows); a **Browse…** row that opens your operating system's own file picker; and typing a path. Over SSH on macOS or Windows, or on a Linux box with no display or no `zenity`/`kdialog`, the Browse rows are simply not shown — there is no window to open. `OSSCLIP_NO_PICKER` set to anything hides them too, leaving suggestions and typing.
 
 **Scope, honestly:** ossclip is at its best polishing a take you have already cut down. `--clip` selects a single strongest window from long-form input — one clip, not N.
 
