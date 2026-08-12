@@ -80,10 +80,17 @@ export function remapOverridesThroughRecut(
     // `reports` is the "a value MOVED" channel (see `RecutRemap`), and a
     // split already past it beforehand is a pre-existing condition — one the
     // editor's own SPLIT_MIN_PIECE_SEC guard refuses to create — that would
-    // otherwise be re-announced on every identity re-cut, forever. The
-    // mirrored guards also make a pure shift unreportable by construction:
-    // when the whole timeline slides, both sides of each comparison slide
-    // with it.
+    // otherwise be re-announced on every identity re-cut, forever.
+    //
+    // The two guards look mirrored and are NOT symmetric about a pure shift,
+    // which is worth stating because reading them as a matched pair invites
+    // "a shift can never be reported" — false at the start. The END bar is
+    // `outputDuration - MIN`, so it slides with the timeline and both sides of
+    // that comparison move together. The START bar is absolute 0 + MIN and
+    // does not slide, so `at < MIN && s.at >= MIN` DOES fire under a pure
+    // shift — and must: trimming 0.6s off the front is exactly what dragged a
+    // split at 0.6s down to 0 in the field case (recut.test.ts, "reports the
+    // split whose remapped `at` can no longer divide anything").
     //
     // `remapPoint` states the new time itself when it snapped this split onto
     // a cut edge; restating it here would read as a second, separate move

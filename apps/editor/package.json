@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "scripts": { "dev": "vite", "build": "vite build" },
+  "scripts": { "dev": "vite", "build": "vite build", "e2e": "playwright test" },
   "dependencies": {
     "@ossclip/core": "workspace:*",
     "@ossclip/renderer": "workspace:*",

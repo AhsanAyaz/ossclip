@@ -70,8 +70,12 @@ describe("CaptionTrack — per-line direction (Urdu field test 2026-08-05)", () 
       React.createElement(CaptionTrack, { lines: [lineOf(["یہ", "ایک", "ٹاپک"])] }),
     );
     // data-caption-word ids must stay 0,1,2 in DOM order: the highlight is
-    // keyed to each word's own start/end times and the editor's retype
-    // override keys on these ids — CSS direction alone reverses the visuals.
+    // keyed to each word's own start/end times, and the attribute is the
+    // editor's hit-test hook for a double-click (Overlay.tsx's
+    // `[data-caption-word]` selector) — CSS direction alone reverses the
+    // visuals. The retype override no longer keys on these ids: it keys on
+    // `data-caption-src`, the word's SOURCE time (§137), because a user cut
+    // shifts every later index.
     const ids = [...markup.matchAll(/data-caption-word="(\d+)"/g)].map((m) => m[1]);
     expect(ids).toEqual(["0", "1", "2"]);
     const texts = [...markup.matchAll(/data-caption-text="([^"]*)"/g)].map((m) => m[1]);

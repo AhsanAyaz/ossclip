@@ -683,8 +683,9 @@ export const App: React.FC = () => {
     });
     // User splits (R16 §61) — after the fill so TAKES split like scenes did
     // above; a no-op here for scene ids, already split by
-    // `splitThenDropHidden`. Before the final pass so edits on the `id@ms`
-    // halves land. The extra dropHiddenCues below catches halves of a TAKE
+    // `splitThenDropHidden`. Before the final pass so edits on the
+    // `id@<split id>` halves land (the suffix is the split's minted id, §137).
+    // The extra dropHiddenCues below catches halves of a TAKE
     // the user deleted, whose id did not exist until the fill just ran.
     const splitted = splitCues(filled, edits.doc.splits);
     const { cues: mergedCues } = applyOverrides(splitted, edits.doc);
@@ -767,7 +768,7 @@ export const App: React.FC = () => {
     );
     // Finding 2, PLAN 2026-08-04 fix wave final review: `ghostCues`'s own
     // doc comment (ghosts.ts) has the full reasoning — this used to filter
-    // for `hidden` on the PRE-split cues, so a hidden `id@ms` half (a
+    // for `hidden` on the PRE-split cues, so a hidden `id@<split id>` half (a
     // sanctioned gesture since Task 1) never matched anything and had no
     // ghost, no Restore, no way back but hand-editing overrides.json.
     return computeGhostCues(baseCues, edits.doc);

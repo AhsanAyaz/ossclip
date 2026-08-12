@@ -356,8 +356,9 @@ function resolveSwappedProps(
 /**
  * The override entry a cue resolves against: its own, layered over its split
  * ROOT's (R16 §68). A split half is still the same scene — captions scaled
- * on the original must render scaled on both halves — so `id@ms` inherits
- * everything from `id`, with two exceptions that describe the WHOLE original
+ * on the original must render scaled on both halves — so `id@<split id>`
+ * inherits everything from `id` (the suffix is the split's own minted id since
+ * §137, not a time), with two exceptions that describe the WHOLE original
  * rather than a piece of it: `timing` (the root's absolute window would undo
  * the split) and `hidden` (deleting the original is not deleting one half).
  * The half's OWN entry wins key by key, and the record-shaped keys merge
@@ -976,7 +977,9 @@ export interface ReclampResult {
 }
 
 /**
- * The scene a cue id belongs to, stripping a split half's `@ms` suffix —
+ * The scene a cue id belongs to, stripping a split half's `@<split id>`
+ * suffix. That suffix is opaque since §137 — a minted id, not a time — so the
+ * `@` is the only thing this can key on; it is the
  * same idiom `splitCues` itself uses to derive a later half's id from its
  * root, and the same one `effectiveOverride` above inlines to find a half's
  * root entry. Two cues sharing a root are the SAME scene, cut in two.

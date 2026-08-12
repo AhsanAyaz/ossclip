@@ -1595,7 +1595,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     clipStarts: map.spans.map((s) => s.outIn),
   });
   // User splits (R16 §61) — after the fill so takes split like scenes, and
-  // before the final override pass so edits on the `id@ms` halves land. A
+  // before the final override pass so edits on the `id@<split id>` halves land
+  // (the suffix is the split's own minted id, §137, not its time). A
   // split whose ROOT was a graphic scene already happened once inside
   // `splitThenDropHidden` above (PLAN 2026-08-04 Task 1) — re-running it here
   // is a no-op for that scene (the split point sits exactly on the joint
@@ -1607,7 +1608,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   }
   const { cues: mergedCues, orphans: rawOrphans } = applyOverrides(split, overrideDoc);
   // Halves of a TAKE the user deleted after splitting: a take id only exists
-  // once the fill above runs, so its `id@ms` half couldn't have been seen by
+  // once the fill above runs, so its `id@<split id>` half couldn't have been seen by
   // `splitThenDropHidden` earlier (that pass only ever saw graphic scenes).
   // Scene halves were already caught above; this is a no-op for them. Same
   // order as the editor's live memo.

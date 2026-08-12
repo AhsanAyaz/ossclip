@@ -1208,3 +1208,112 @@ describe("split times are parsed, never coerced (§137)", () => {
     expect(() => OverrideDocSchema.parse({ splits: [{ at: Number.NaN, id: "1200" }] })).toThrow();
   });
 });
+
+import { backfillSrcStart } from "../src/captions";
+import type { KeptSpan } from "../src/timemap";
+
+/**
+ * The bug this whole section exists for, replayed on the data it happened to.
+ *
+ * Everything above tests the machinery a piece at a time; this is the field
+ * case itself — the user's own `overrides.json.bak` and the `spans` and word
+ * timings from the same workdir's `render-props.json`, so a regression shows
+ * up as THIS user's edits vanishing again rather than as an abstract failure.
+ */
+describe("§137 field case: Starship V2-e89a046b, 2026-08-12", () => {
+  /**
+   * The caption words as they stood AFTER the user's 0.6s cut, from the
+   * workdir's render-props.json — `[text, outputStart]`, in order, starts
+   * rounded to 0.1ms (keys are millisecond-quantised, so the rounding cannot
+   * reach an assertion). The real file splits these across 28 lines; the
+   * migration and the apply both flatten (`lines.flatMap`), so the grouping is
+   * not what this test is about and one line keeps the fixture readable.
+   *
+   * Two facts do the work: the cut removed the word "batch," that used to sit
+   * at index 0, so EVERY stored index is one too high, and no word carries a
+   * `srcStart` at all — the file predates the field.
+   */
+  const WORDS: Array<[string, number]> = [
+    ["status", 0], ["edge,", 1.1225], ["power", 2.4725], ["shell", 2.5025], ["and", 2.6325],
+    ["fish.", 3.4025], ["This", 3.6325], ["Starship", 3.7369], ["59,000", 3.8565],
+    ["stars", 5.3665], ["on", 5.7265], ["GitHub.", 6.3265], ["And", 6.7265], ["this", 6.9765],
+    ["is", 7.3065], ["what", 7.4665], ["it", 7.8565], ["looks", 7.9565], ["like", 8.3665],
+    ["when", 8.7265], ["I'm", 8.9665], ["running", 9.3665], ["it", 9.5865], ["on", 9.7265],
+    ["my", 10.2265], ["terminals.", 10.7265], ["So", 10.7765], ["whether", 10.8965],
+    ["it's", 11.5065], ["Windows,", 11.8565], ["Mac,", 12.6965], ["Linux,", 13.2065],
+    ["it", 13.7265], ["looks", 13.9565], ["the", 14.5365], ["same.", 14.9965],
+    ["you", 15.6188], ["the", 15.6696], ["grid", 16.0096], ["branch,", 16.2296],
+    ["node", 16.8796], ["version,", 17.4196], ["Python", 17.8796], ["version", 18.1496],
+    ["at", 18.4596], ["a", 18.5496], ["glance.", 18.5896], ["And", 18.8796],
+    ["every", 19.1796], ["prompt", 19.6996], ["has", 20.3196], ["the", 20.7196],
+    ["same", 20.9396], ["shell.", 21.5196], ["Comment", 21.8796], ["Starship", 22.2696],
+    ["to", 22.7196], ["get", 22.8396], ["the", 23.0096], ["link", 23.1696], ["in", 23.3896],
+    ["your", 23.4996], ["DM.", 23.7196],
+  ];
+
+  /** The same file's `spans` — three kept ranges, i.e. two earlier cuts plus this one. */
+  const SPANS: KeptSpan[] = [
+    { srcIn: 2.3675, srcOut: 6.104438, outIn: 0, outOut: 3.736938 },
+    { srcIn: 7.010437, srcOut: 18.89225, outIn: 3.736938, outOut: 15.618751 },
+    { srcIn: 19.739188, srcOut: 28.604, outIn: 15.618751, outOut: 24.483563 },
+  ];
+
+  /** `overrides.json.bak`'s `captions`, verbatim — the four retypes that vanished. */
+  const SAVED = {
+    "0": { text: "The same prompt for bash,", was: "batch," },
+    "1": { text: "zsh", was: "status" },
+    "2": { text: ",", was: "edge," },
+    "39": { text: "git", was: "grid" },
+  };
+
+  /** As the editor loads them: no `srcStart` on any word, past the cast. */
+  const legacyLines = [
+    {
+      start: WORDS[0]![1],
+      end: 24.4836,
+      words: WORDS.map(([text, start], i) => ({ text, start, end: WORDS[i + 1]?.[1] ?? 24.4836 })),
+    },
+  ] as unknown as CaptionLine[];
+
+  it("recovers three of the four retypes a 0.6s cut orphaned, and NAMES the fourth", () => {
+    const lines = backfillSrcStart(legacyLines, SPANS);
+
+    const { edits, unresolved } = migrateCaptionKeys(SAVED, lines);
+
+    // Every stored index is one too high, and every one of these was proven
+    // wrong at its own position and then found one word earlier.
+    expect(edits).toEqual({
+      w2368: { text: "zsh", was: "status" },
+      w3490: { text: ",", was: "edge," },
+      w20130: { text: "git", was: "grid" },
+    });
+    // "batch," is the word the cut actually removed, so there is nothing to
+    // re-anchor it to. Reported by name and reason — silence here is what let
+    // the original bug reach a rendered video.
+    expect(unresolved).toEqual([{ key: "0", was: "batch,", reason: "not-found" }]);
+
+    const { lines: out, dropped } = applyCaptionEdits(lines, edits);
+    const words = out.flatMap((l) => l.words).map((w) => w.text);
+    expect(words[0]).toBe("zsh");
+    expect(words[1]).toBe(",");
+    expect(words[38]).toBe("git");
+    // The migration already refused everything it could not place, so nothing
+    // may fall out on the apply side too.
+    expect(dropped).toEqual([]);
+  });
+
+  it("still matches the deleted half the user saved — `scene-0@600` after the upgrade", () => {
+    // The other key space. The doc names its hidden half `scene-0@600`, and
+    // the split it was named after is a bare `0.6`; the upgrade has to derive
+    // exactly "600" or the deletion silently stops applying — this file is why
+    // `legacySplitId` reproduces the ORIGINAL output milliseconds. Where the
+    // re-anchor then MOVES that split is recut.test.ts's half of the case.
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0@600": { hidden: true } },
+      splits: [0.6],
+    });
+
+    expect(doc.splits).toEqual([{ at: 0.6, id: "600" }]);
+    expect(Object.keys(doc.scenes)).toContain(`scene-0@${doc.splits[0]!.id}`);
+  });
+});

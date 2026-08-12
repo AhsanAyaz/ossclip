@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { OverrideDocSchema, type CaptionLine } from "@ossclip/core";
 import {
   appliedCaptionEditCount,
@@ -260,5 +261,48 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
     const out = reconcileCaptionEdits(before, lines(["edge,", 6]));
     expect(out.doc.splits).toEqual(before.splits);
     expect(out.doc.captionsHidden).toBe(true);
+  });
+});
+
+/**
+ * Everything above tests `reconcileCaptionEdits` in isolation. This tests that
+ * `produce.ts` still CALLS it — by reading the source, which is normally the
+ * wrong tool and is the right one here.
+ *
+ * Nothing in this repo invokes `produce()`: a behavioural test of it needs
+ * ffmpeg on PATH, a real transcript, a work directory and a render, and the
+ * editor's `renderflow.spec.ts` "render" is a fake child process. So no test
+ * in the suite executes either of the two lines below. That was measured, not
+ * assumed — DELETING EITHER ONE LEFT THE WHOLE SUITE GREEN, which is one line
+ * away from re-creating the Critical §137 just fixed.
+ *
+ * And what it guards is the failure most deserving of even a crude test:
+ * silent, user-visible data loss. Without the `reconcileCaptionEdits` call a
+ * legacy doc is never migrated, so every retype shows on screen and is absent
+ * from the render. Without `captionKeysChanged` in the write gate the
+ * migration happens and is discarded on exit, and each further run loses a
+ * little more of it for good (a legacy key is found by the word it names, so
+ * the next re-plan that rewrites that word retires it).
+ *
+ * Precedent: `doctor.test.ts`'s version-literal check (R22 §113) — the same
+ * shape, for the same reason. This is a stand-in, not the answer: a real
+ * harness (`produce()` over the `pnpm fixture` video with `--no-render`) would
+ * subsume it.
+ */
+describe("produce's §137 caption wiring (source-text guard)", () => {
+  const src = readFileSync(new URL("../src/produce.ts", import.meta.url), "utf8");
+
+  it("MIGRATES legacy caption keys — `reconcileCaptionEdits` is called, not just imported", () => {
+    // The result must be USED (`= reconcileCaptionEdits(`), so the import line
+    // alone cannot satisfy this: a migration whose output is dropped is the
+    // same silence as no migration at all.
+    expect(src).toMatch(/=\s*reconcileCaptionEdits\(/);
+  });
+
+  it("WRITES the migrated doc back — the save gate is not a bare cut check", () => {
+    // `cutResult.changed` alone was the gate before §137, and a caption-key
+    // migration changes the doc without changing the cut, so the repaired file
+    // never reached disk.
+    expect(src).toMatch(/if\s*\(\s*cutResult\.changed\s*\|\|\s*captionKeysChanged\s*\)/);
   });
 });
