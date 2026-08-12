@@ -89,6 +89,12 @@ produced, set up your install, or check what's missing. Every choice prints
 the equivalent command before it runs, so the menu is also how you learn the
 flags.
 
+The first question offers the newest videos in your working directory,
+Downloads and Movies; a **Browse…** row that opens your operating system's
+own file picker; and typing a path. Over SSH, or on a Linux box with no
+`zenity`/`kdialog`, the Browse rows are simply not shown — there is no
+window to open.
+
 `ossclip produce` with no file name does the same thing for just the produce
 options, and `ossclip <path>` — a video file or a folder of clips — jumps
 straight into that wizard with the input pre-filled. `ossclip edit` with no
@@ -204,12 +210,14 @@ GEMINI_API_KEY=…
 
 Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`, `OSSCLIP_CLAUDE_BIN`, `OSSCLIP_AGY_BIN`.
 
+One more that has no config-file equivalent: `OSSCLIP_NO_PICKER` — set to anything to disable the wizard's native file picker, so the input prompt falls back to suggestions and typing.
+
 ## Telemetry
 
 ossclip reports a few **anonymous usage events**, so development effort goes where the tool is actually used. It is on by default, the first run prints a notice saying so, and it is built so nothing about *your* footage can travel. This is the complete list of what is sent:
 
 - `cli_first_run` — once, when the first-run notice is shown
-- `produce_completed` — wall-clock duration, the provider *name* (or `none`), whether `--produce` / `--clip` / a render ran, the aspect, the scene count, and the source length **as a bucket only** (`<1m`, `1-5m`, `5-15m`, `>15m`)
+- `produce_completed` — wall-clock duration, the provider *name* (or `none`), whether `--produce` / `--clip` / a render ran, the aspect, the scene count, the source length **as a bucket only** (`<1m`, `1-5m`, `5-15m`, `>15m`), and which branch of the input prompt supplied the file — a suggestion, the picker, typing, or the command line, as a branch name and never a path
 - `produce_failed` — the error's class name (e.g. `Error`), never its message
 - `editor_opened` — when `ossclip edit` starts its server
 - `rating_submitted` — the 1–5 answer, if you ever give one (asked once, after your third produce; Enter skips, and two skips end the asking)
