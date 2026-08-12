@@ -38,9 +38,19 @@ export interface CaptionLine {
  * failure the source anchor exists to prevent, arriving silently instead of as
  * a crash.
  *
- * It is recoverable because the same file still carries `spans`: a word's
- * source start is just its output start projected back through the map those
- * spans describe. Pure — the caller owns reading the file.
+ * It is recoverable because the same file still carries `spans`: the word's
+ * output start projected back through the map those spans describe. That is a
+ * BEST-EFFORT recovery, not an inverse — exact for a word whose start survived
+ * the cut uncut, approximate in two cases the file no longer records:
+ *  - at a seam (`outOut_k === outIn_{k+1}`) an output instant has two source
+ *    preimages and `toSource` returns the earlier one (`timemap.ts:21-23`), so
+ *    a word that truly began at `srcIn_{k+1}` lands on the far side of the cut;
+ *  - a word whose start fell INSIDE a removed span was clamped to the nearest
+ *    kept edge by `toOutputClamped` when the file was written, so its source
+ *    instant is simply gone and backfill returns the edge.
+ * Both are the best the data on disk supports — the alternative is no anchor at
+ * all. Words written with a real `srcStart` are never re-derived this way.
+ * Pure — the caller owns reading the file.
  */
 export function backfillSrcStart(
   lines: readonly CaptionLine[],

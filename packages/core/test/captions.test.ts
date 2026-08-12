@@ -139,6 +139,37 @@ describe("backfillSrcStart (§137 — render-props.json predates the field)", ()
     expect(out[0]!.words[0]).toBe(lines[0]!.words[0]); // same object, not a copy
   });
 
+  it("fills only the missing words in a MIXED line, never re-deriving a real anchor", () => {
+    // A half-migrated file (one produce run wrote the field, an older one did
+    // not) falls past the document-wide short-circuit, so the per-word guard is
+    // the only thing standing between a real anchor and projection silently
+    // overwriting it. `alpha` carries 9, which these spans would NEVER produce
+    // — projection says 2.5 — so a recompute is visible rather than plausible.
+    const spans: KeptSpan[] = [{ srcIn: 2, srcOut: 5, outIn: 0, outOut: 3 }];
+    const migrated = { text: "alpha", start: 0.5, end: 0.9, srcStart: 9 };
+    const lines = [
+      { start: 0.5, end: 1.9, words: [migrated, { text: "beta", start: 1.5, end: 1.9 }] },
+    ] as unknown as CaptionLine[];
+
+    const out = backfillSrcStart(lines, spans);
+
+    expect(out[0]!.words[0]!.srcStart).toBe(9); // survives, un-recomputed
+    expect(out[0]!.words[0]).toBe(migrated); // and byte-identical: the same object
+    expect(out[0]!.words[1]!.srcStart).toBeCloseTo(3.5, 6); // the gap is filled
+  });
+
+  it("projects a word in the SECOND kept span, not just the first", () => {
+    // Two spans with a 5s hole between them: a hardcoded `spans[0]` would say
+    // 5.5 here, and single-span fixtures alone could never tell the difference.
+    const spans: KeptSpan[] = [
+      { srcIn: 2, srcOut: 5, outIn: 0, outOut: 3 },
+      { srcIn: 10, srcOut: 12, outIn: 3, outOut: 5 },
+    ];
+    const lines = [legacyLine([{ text: "later", start: 3.5, end: 3.9 }])];
+
+    expect(backfillSrcStart(lines, spans)[0]!.words[0]!.srcStart).toBeCloseTo(10.5, 6);
+  });
+
   it("survives an empty spans array instead of throwing on a truncated file", () => {
     const out = backfillSrcStart([legacyLine([{ text: "alpha", start: 0.5, end: 0.9 }])], []);
     expect(out[0]!.words[0]!.srcStart).toBe(0); // no spans: nothing to project onto
