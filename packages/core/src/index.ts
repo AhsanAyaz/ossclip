@@ -27,5 +27,6 @@ export * from "./face";
 export * from "./cover";
 export * from "./source-text";
 export * from "./report";
+export * from "./export-fcpxml";
 export * from "./config";
 export { run } from "./exec";

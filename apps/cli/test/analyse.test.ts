@@ -1,0 +1,109 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { JSDOM } from "jsdom";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { ExportFormatSchema, defaultExportPath, runAnalyse } from "../src/analyse";
+
+/**
+ * `ossclip analyse` (next-directions §2; design doc 2026-08-12): the analyser
+ * without the renderer. Pure parts first; then a behavioural run through the
+ * REAL pipeline (produce-timing.test.ts's harness pattern — injected
+ * transcript, no LLM, no render) asserting the export actually lands beside
+ * the input and parses.
+ */
+
+describe("ExportFormatSchema", () => {
+  it("accepts fcpxml", () => {
+    expect(ExportFormatSchema.parse("fcpxml")).toBe("fcpxml");
+  });
+
+  it("a typo is an error, never a silent fallback (CLAUDE.md: parse, don't coerce)", () => {
+    expect(() => ExportFormatSchema.parse("fcpxmll")).toThrow();
+    expect(() => ExportFormatSchema.parse("edl")).toThrow();
+  });
+});
+
+describe("defaultExportPath", () => {
+  it("lands beside the input, extension swapped", () => {
+    expect(defaultExportPath("/takes/demo.mp4", "fcpxml")).toBe("/takes/demo.fcpxml");
+  });
+
+  it("an extensionless input just gains the suffix", () => {
+    expect(defaultExportPath("/takes/demo", "fcpxml")).toBe("/takes/demo.fcpxml");
+  });
+});
+
+const hasFfmpeg = (() => {
+  try {
+    execFileSync("ffmpeg", ["-version"], { stdio: "ignore" });
+    execFileSync("ffprobe", ["-version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasFfmpeg)("runAnalyse — behavioural", () => {
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "ossclip-analyse-"));
+    execFileSync("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=6",
+      "-f", "lavfi", "-i",
+      // Two sine bursts with a >1s gap of silence between them — the gap is
+      // what guarantees at least one silence cut for the marker assertion.
+      "aevalsrc=if(lt(mod(t\\,3)\\,1.5)\\,sin(440*2*PI*t)\\,0.001*sin(440*2*PI*t)):d=6",
+      "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+      "-shortest", "-y", join(dir, "take.mp4"),
+    ]);
+    writeFileSync(
+      join(dir, "transcript.json"),
+      JSON.stringify({
+        language: "en",
+        words: [
+          { text: "hello", start: 0.3, end: 0.7 },
+          { text: "there", start: 0.8, end: 1.2 },
+          { text: "again", start: 3.2, end: 3.7 },
+          { text: "friends", start: 3.8, end: 4.3 },
+        ],
+      }),
+    );
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it(
+    "runs the no-render pipeline and writes a parseable FCPXML beside the input",
+    async () => {
+      const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const result = await runAnalyse(join(dir, "take.mp4"), {
+          cleanup: "standard",
+          format: "fcpxml",
+          transcript: join(dir, "transcript.json"),
+          workdir: join(dir, "work"),
+        });
+        expect(result.outPath).toBe(join(dir, "take.fcpxml"));
+        const xml = readFileSync(result.outPath, "utf8");
+        const doc = new JSDOM(xml, { contentType: "text/xml" }).window.document;
+        expect(doc.querySelector("parsererror")).toBeNull();
+        const markers = doc.querySelectorAll("marker");
+        // The synthetic take has real dead air, so the cutlist cannot be empty.
+        expect(markers.length).toBeGreaterThan(0);
+        expect(result.markerCount).toBe(markers.length);
+        // No render, no LLM was involved in getting here.
+        expect(result.phaseTimings.render).toBeUndefined();
+        expect(result.phaseTimings.llm).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    },
+    120_000,
+  );
+});

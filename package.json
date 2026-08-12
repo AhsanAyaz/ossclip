@@ -2,7 +2,7 @@
   "name": "ossclip-monorepo",
   "private": true,
   "version": "0.0.1",
-  "description": "ossclip \u2014 local-first CLI video producer (monorepo)",
+  "description": "ossclip — local-first CLI video producer (monorepo)",
   "scripts": {
     "test": "vitest run",
     "ossclip": "pnpm --filter ossclip exec tsx src/index.ts",
@@ -13,6 +13,7 @@
     "release:publish": "pnpm -r publish --access public"
   },
   "devDependencies": {
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.10.0",
     "fast-check": "^3.23.0",
     "jsdom": "^25.0.0",

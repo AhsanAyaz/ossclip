@@ -27,6 +27,9 @@ ossclip produce input.mp4 -o out.mp4
 # Long-form in, one short out: the strongest ~60s window, chosen by the producer
 ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 
+# Keep your own editor: export the planned cuts as labelled markers, no render, no LLM
+ossclip analyse input.mp4          # writes input.fcpxml — imports into Resolve & Premiere
+
 # Edit what it produced — direct manipulation, in the browser
 ossclip edit "<work directory>"
 ```
