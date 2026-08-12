@@ -1130,8 +1130,10 @@ test("a split half inherits the original scene's edits (R16 §68)", async ({ pag
   await page.keyboard.press("Meta+b");
   await expect(blocks).toHaveCount(before + 1);
 
-  // Select the RIGHT half (the @ms id) — its panel shows the inherited
-  // style, not the defaults.
+  // Select the RIGHT half (the one whose id carries the `@<split id>` suffix;
+  // the suffix is the split's minted id since §137, not its time — which is
+  // why the locator matches on the `@` and nothing more) — its panel shows the
+  // inherited style, not the defaults.
   await page.locator('[data-testid^="timeline-block-take-"][data-testid*="\\@"]').first().click();
   await expect(page.getByTestId("caption-scale-slider")).toHaveValue("3");
   await expect(page.getByTestId("caption-y-slider")).toHaveValue("0.05");

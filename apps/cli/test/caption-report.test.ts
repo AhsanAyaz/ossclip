@@ -272,17 +272,27 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
  * Nothing in this repo invokes `produce()`: a behavioural test of it needs
  * ffmpeg on PATH, a real transcript, a work directory and a render, and the
  * editor's `renderflow.spec.ts` "render" is a fake child process. So no test
- * in the suite executes either of the two lines below. That was measured, not
- * assumed — DELETING EITHER ONE LEFT THE WHOLE SUITE GREEN, which is one line
- * away from re-creating the Critical §137 just fixed.
+ * in the suite executes ANY of the three lines below (`produce.ts:1958-1961`
+ * plus the gate at `:2207`). That was measured, not assumed — deleting any one
+ * of them LEFT THE WHOLE SUITE GREEN, which is one line away from re-creating
+ * the Critical §137 just fixed.
  *
- * And what it guards is the failure most deserving of even a crude test:
- * silent, user-visible data loss. Without the `reconcileCaptionEdits` call a
- * legacy doc is never migrated, so every retype shows on screen and is absent
- * from the render. Without `captionKeysChanged` in the write gate the
- * migration happens and is discarded on exit, and each further run loses a
- * little more of it for good (a legacy key is found by the word it names, so
- * the next re-plan that rewrites that word retires it).
+ * And what they guard is the failure most deserving of even a crude test:
+ * silent, user-visible data loss, in three distinct shapes.
+ *  - No `reconcileCaptionEdits` call: a legacy doc is never migrated, so every
+ *    retype shows on screen and is absent from the render.
+ *  - The call, but no `overrideDoc = captionWork.doc`: WORSE than not calling
+ *    it, and it typechecks, because `captionWork` is still read for its lines,
+ *    its log and `keysChanged`. The migration is computed and thrown away, the
+ *    render still ships without the retypes — and now `keysChanged` is true, so
+ *    the write gate below fires, overwrites the user's `overrides.json.bak`
+ *    with the UN-migrated doc and prints "re-anchored to source-time caption
+ *    keys". A false success line over destroyed evidence (§137 review,
+ *    Important 1).
+ *  - No `captionKeysChanged` in the write gate: the migration happens and is
+ *    discarded on exit, and each further run loses a little more of it for good
+ *    (a legacy key is found by the word it names, so the next re-plan that
+ *    rewrites that word retires it).
  *
  * Precedent: `doctor.test.ts`'s version-literal check (R22 §113) — the same
  * shape, for the same reason. This is a stand-in, not the answer: a real
@@ -293,16 +303,27 @@ describe("produce's §137 caption wiring (source-text guard)", () => {
   const src = readFileSync(new URL("../src/produce.ts", import.meta.url), "utf8");
 
   it("MIGRATES legacy caption keys — `reconcileCaptionEdits` is called, not just imported", () => {
-    // The result must be USED (`= reconcileCaptionEdits(`), so the import line
-    // alone cannot satisfy this: a migration whose output is dropped is the
-    // same silence as no migration at all.
+    // The result must be bound to something (`= reconcileCaptionEdits(`), so
+    // the import line alone cannot satisfy this.
     expect(src).toMatch(/=\s*reconcileCaptionEdits\(/);
+  });
+
+  it("ADOPTS the migrated doc — a result that is computed and not assigned is the same silence", () => {
+    // The assertion above only proves the call happened. Everything downstream
+    // — the render, the orphan reports, the write gate — reads `overrideDoc`,
+    // so this one line is what makes the migration real. Guarded separately
+    // because deleting it passes the call assertion AND typechecks: see the
+    // second bullet above for what that ships.
+    expect(src).toMatch(/overrideDoc\s*=\s*captionWork\.doc/);
   });
 
   it("WRITES the migrated doc back — the save gate is not a bare cut check", () => {
     // `cutResult.changed` alone was the gate before §137, and a caption-key
     // migration changes the doc without changing the cut, so the repaired file
-    // never reached disk.
-    expect(src).toMatch(/if\s*\(\s*cutResult\.changed\s*\|\|\s*captionKeysChanged\s*\)/);
+    // never reached disk. Either operand order satisfies this: what must not
+    // survive is one of them going missing, or the `||` narrowing to `&&`.
+    expect(src).toMatch(
+      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysChanged|captionKeysChanged\s*\|\|\s*cutResult\.changed)\s*\)/,
+    );
   });
 });

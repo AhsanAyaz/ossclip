@@ -19,12 +19,14 @@ import {
  * SPLITS BEFORE filtering for hidden, same reasoning
  * `splitThenDropHidden` (`packages/core/src/overrides.ts`) documents for the
  * live cues: a deleted split half's `hidden` flag lives under its OWN id
- * (`id@ms`) — `effectiveOverride`'s root-inheritance explicitly excludes
+ * (`id@<split id>`, the split's minted id since §137 — NOT its time, which is
+ * the belief that produced that field bug) — `effectiveOverride`'s
+ * root-inheritance explicitly excludes
  * `hidden` from what a half inherits, so there is no fallback to find it by,
  * only a literal entry keyed to the half's own id. That id does not exist in
  * the cue array until `splitCues` runs. Filtering the PRE-split cues (the
  * previous shape of this function) could therefore never find a hidden
- * `id@ms` half at all: no ghost, no Restore, and the window it should have
+ * `id@<split id>` half at all: no ghost, no Restore, and the window it should have
  * shown (the half's OWN, post-split window, not the whole pre-split scene's)
  * was never even computed.
  */

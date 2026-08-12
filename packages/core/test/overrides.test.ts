@@ -611,8 +611,8 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
 
   it("the reported case: a take's caption style reaches the RIGHT half", () => {
     // Caption scale/position on a take only land in the post-split override
-    // pass — the right half's `id@ms` had no entry there, so it rendered at
-    // the defaults while the left half kept the user's style.
+    // pass — the right half's `id@<split id>` had no entry there, so it
+    // rendered at the defaults while the left half kept the user's style.
     const doc = OverrideDocSchema.parse({
       scenes: { "take-0": { captionScale: 0.5, captionY: 0.2, video: { scale: 0.8 } } },
       splits: [4],
