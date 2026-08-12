@@ -32,8 +32,12 @@ export const TranscriptPanel: React.FC<{
    * The open retype box. `srcStart` and `base` are CAPTURED when it opens,
    * mirroring `Overlay`'s `captionEdit` (§137): the anchor is validated once,
    * at the double-click, so the commit below cannot be handed an unanchorable
-   * word — and neither field can shift underneath an open editor if a
-   * completed render swaps `liveLines` mid-edit.
+   * word — and THOSE TWO FIELDS cannot shift underneath an open editor if a
+   * completed render swaps `liveLines` mid-edit. The claim is about them only:
+   * `index` is still positional, so a swap that changes the word COUNT can
+   * still draw the box over a different word, or unmount it without firing
+   * `onBlur`. Pre-existing and out of §137's scope, recorded here so the
+   * capture above is not mistaken for a fix to it.
    */
   const [editing, setEditing] = useState<{
     index: number;

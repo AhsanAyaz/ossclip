@@ -56,12 +56,23 @@ export type AnchoredCaptionLines = Omit<CaptionAnchorSource, "spans">;
  * reachable from a hand-edited or truncated file.
  *
  * A constructor THROW (overlapping or backwards spans — the same file, the
- * same lack of a parse) is also "no repair", caught here rather than left to
- * escape. It is raised on the load path, and one of that path's two callers
- * sits inside a render-poll catch block whose recovery is to restart the
- * interval — a deterministic throw there would retry forever with
- * `render.running` stuck true, which the Save guard turns into a permanent
- * save lockout with the user's unsaved edits still in memory.
+ * same lack of a parse) is also "no repair". Escaping would matter: this is
+ * the load path, and one of its two callers sits inside a render-poll catch
+ * block whose recovery is to restart the interval — a deterministic throw
+ * there would retry forever with `render.running` stuck true, which the Save
+ * guard turns into a permanent save lockout with the user's unsaved edits
+ * still in memory.
+ *
+ * The map built here is a PROBE, not the one that does the work: it is
+ * discarded, and `backfillSrcStart` constructs its own from the same `spans`
+ * (captions.ts). So the `try` below does not wrap the throw site that would
+ * actually fire — it wraps a REHEARSAL of it. That is sound only because
+ * `TimeMap`'s construction is deterministic and side-effect-free on identical
+ * input: whatever this probe survives, the real construction survives too, and
+ * whatever it throws on never reaches the real one because we return first.
+ * Written down rather than tidied away, because it is the assumption the
+ * safety of this function rests on (§137 review round 2 — an earlier version
+ * of this comment claimed the map was built once, which it is not).
  *
  * Anchorless words are the honest outcome in every one of these cases: they
  * simply cannot carry an edit, and every edit that then finds no home is
@@ -74,6 +85,8 @@ export function anchorCaptionLines(props: CaptionAnchorSource): AnchoredCaptionL
   if (spans === undefined) return {};
   let kept: number;
   try {
+    // Probe only — see the "PROBE, not the one that does the work" paragraph
+    // above before assuming this map is reused.
     kept = mapFromKeptSpans(spans).spans.length;
   } catch {
     return {};
