@@ -83,6 +83,31 @@ describe("buildCaptionLines", () => {
   });
 });
 
+describe("CaptionWord.srcStart (§137)", () => {
+  it("carries the SOURCE start, not the output start, so a re-cut cannot move it", () => {
+    // One kept span starting 2.0s into the source: output 0 === source 2.0.
+    // TimeMap's constructor takes a cutlist of `Segment`s and derives the
+    // output side itself — only `kind: "keep"` spans contribute to it.
+    const map = new TimeMap([{ srcIn: 2, srcOut: 5, kind: "keep" } satisfies Segment]);
+    const transcript: Transcript = {
+      language: "en",
+      words: [
+        { text: "alpha", start: 2.5, end: 2.9 },
+        { text: "beta", start: 3.5, end: 3.9 },
+      ],
+    };
+
+    const words = buildCaptionLines(transcript, map).flatMap((l) => l.words);
+
+    expect(words.map((w) => w.text)).toEqual(["alpha", "beta"]);
+    // output times are shifted by the cut...
+    expect(words[0]!.start).toBeCloseTo(0.5, 3);
+    // ...the source anchor is not.
+    expect(words[0]!.srcStart).toBeCloseTo(2.5, 3);
+    expect(words[1]!.srcStart).toBeCloseTo(3.5, 3);
+  });
+});
+
 describe("lineDirection — first-strong-character heuristic (UAX #9 P2/P3)", () => {
   it("resolves a pure Urdu line RTL", () => {
     expect(lineDirection("یہ ایک ٹاپک ہے")).toBe("rtl");

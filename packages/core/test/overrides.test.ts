@@ -378,19 +378,21 @@ describe("per-scene video framing override", () => {
 import { applyCaptionEdits } from "../src/overrides";
 
 describe("applyCaptionEdits (caption retype, scope (a))", () => {
+  // No cutlist is in play here, so this fixture's source and output timelines
+  // are the identity map — `srcStart` equals `start` (§137).
   const lines = [
     { start: 0, end: 1, words: [
-      { text: "double", start: 0, end: 0.5 },
-      { text: "scape", start: 0.5, end: 1 },
+      { text: "double", start: 0, end: 0.5, srcStart: 0 },
+      { text: "scape", start: 0.5, end: 1, srcStart: 0.5 },
     ]},
-    { start: 1, end: 2, words: [{ text: "quits", start: 1, end: 2 }] },
+    { start: 1, end: 2, words: [{ text: "quits", start: 1, end: 2, srcStart: 1 }] },
   ];
 
   it("replaces the word's TEXT and nothing else — timing is the contract", () => {
     const { lines: out, dropped } = applyCaptionEdits(lines, {
       "1": { text: "escape", was: "scape" },
     });
-    expect(out[0]!.words[1]).toEqual({ text: "escape", start: 0.5, end: 1 });
+    expect(out[0]!.words[1]).toEqual({ text: "escape", start: 0.5, end: 1, srcStart: 0.5 });
     expect(out[0]!.words[0]).toEqual(lines[0]!.words[0]);
     expect(dropped).toEqual([]);
   });
@@ -766,7 +768,8 @@ describe("captionEditWas (R15 §59 — re-edit keeps the base guard)", () => {
 
   it("a re-edit round-trips through applyCaptionEdits instead of being dropped", () => {
     const base = [
-      { start: 0, end: 1, words: [{ text: "helo", start: 0, end: 1 }] },
+      // Identity timeline (no cutlist), so `srcStart` is the output start (§137).
+      { start: 0, end: 1, words: [{ text: "helo", start: 0, end: 1, srcStart: 0 }] },
     ];
     const first = { "0": { text: "hello", was: captionEditWas({}, 0, "helo") } };
     const second = {

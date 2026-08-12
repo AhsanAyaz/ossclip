@@ -6,6 +6,13 @@ export interface CaptionWord {
   text: string;
   start: number;
   end: number;
+  /**
+   * The word's start in SOURCE seconds (§137). `start`/`end` above are OUTPUT
+   * times and a re-cut moves them; this does not, which is what lets a caption
+   * edit survive one. The field the edit layer keys on — see
+   * `captionKeyFor` in overrides.ts.
+   */
+  srcStart: number;
 }
 
 export interface CaptionLine {
@@ -65,7 +72,9 @@ export function buildCaptionLines(
   const mapped: CaptionWord[] = [];
   for (const w of transcript.words) {
     const m = map.mapWord(w as Word);
-    if (m) mapped.push({ text: w.text, start: m.start, end: m.end });
+    // `w.start` is source time, `m.start` output — both are needed, and only
+    // the source one is stable across a re-cut (§137).
+    if (m) mapped.push({ text: w.text, start: m.start, end: m.end, srcStart: w.start });
   }
 
   const lines: CaptionLine[] = [];
