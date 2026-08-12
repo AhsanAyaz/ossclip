@@ -206,6 +206,60 @@ describe("remapOverridesThroughRecut — before/after/inside a fresh cut", () =>
   });
 });
 
+describe("remapOverridesThroughRecut — a split the re-cut squeezed below the minimum piece (§137)", () => {
+  it("reports the split whose remapped `at` can no longer divide anything", () => {
+    // The other half of the field case: a split at 0.6s re-anchors to 0 when
+    // 0.6s is cut from the front. `splitCues` then finds no cue satisfying
+    // `at >= startSec + SPLIT_MIN_PIECE_SEC` (output starts at 0, so nothing
+    // can) and skips it — silently, until §137 — orphaning every override on
+    // the half and resurrecting the scene the user deleted.
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = cutOutputRange(oldMap, 0, 0.6);
+    const doc = OverrideDocSchema.parse({ splits: [0.6] });
+    expect(doc.splits[0]!.id).toBe("600");
+
+    const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
+
+    // 0.6s survives the cut (it is the kept edge, not inside it) — so the
+    // ONLY thing said about it is that it is now unusable.
+    expect(out.splits[0]!.at).toBeCloseTo(0, 6);
+    expect(out.splits[0]!.id).toBe("600");
+    expect(reports).toHaveLength(1);
+    expect(reports.join("\n")).toMatch(/split "600".*too close to the start/i);
+  });
+
+  it("says it once, not twice, when the split ALSO landed inside the new cut", () => {
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = cutOutputRange(oldMap, 0.2, 0.8); // 0.5s is inside it
+    const doc = OverrideDocSchema.parse({ splits: [0.5] });
+
+    const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
+
+    expect(out.splits[0]!.at).toBeCloseTo(0.2, 6);
+    // Two DIFFERENT facts — it moved, and where it moved to is unusable —
+    // so two reports. But only the first states the new time: repeating
+    // "0.200s" in both reads as two separate moves of the same split.
+    expect(reports).toHaveLength(2);
+    expect(reports[0]).toMatch(/split "500" at 0\.500s fell inside the new cut — snapped to 0\.200s/);
+    expect(reports[1]).toMatch(/^split "500" is too close to the start/);
+    expect(reports[1]).not.toMatch(/0\.200s/);
+  });
+
+  it("stays quiet about a split that was ALREADY below the minimum and did not move", () => {
+    // A pre-existing sub-minimum split is not news about this re-cut, and
+    // `reports` is the "a value MOVED" channel (see `RecutRemap`). Saying it
+    // anyway would fire on every identity re-cut, for a split the editor's
+    // own SPLIT_MIN_PIECE_SEC guard refuses to create in the first place.
+    const map = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const doc = OverrideDocSchema.parse({ splits: [{ at: 0.1, id: "100" }] });
+
+    const { doc: out, reports } = remapOverridesThroughRecut(doc, map, map);
+
+    expect(out.splits[0]!.at).toBeCloseTo(0.1, 6);
+    expect(reports).toEqual([]);
+  });
+});
+
 describe("remapOverridesThroughRecut — pinned timing (unit)", () => {
   it("re-anchors a pinned scene's absolute window across a recut earlier in the output", () => {
     const oldMap = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);

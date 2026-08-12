@@ -1,4 +1,4 @@
-import type { OverrideDoc } from "./overrides";
+import { SPLIT_MIN_PIECE_SEC, type OverrideDoc } from "./overrides";
 import type { Segment } from "./schema";
 import { mapsClose, TimeMap } from "./timemap";
 
@@ -59,10 +59,33 @@ export function remapOverridesThroughRecut(
   // Only `at` moves: a split's `id` is minted once and never recomputed
   // (§137, `SplitSchema`) — re-deriving it here is what renamed the half and
   // orphaned the overrides on it.
-  const splits = doc.splits.map((s) => ({
-    ...s,
-    at: remapPoint("split", s.at, oldMap, newMap, reports),
-  }));
+  const splits = doc.splits.map((s) => {
+    const before = reports.length;
+    const at = remapPoint(`split "${s.id}"`, s.at, oldMap, newMap, reports);
+    // `splitCues` needs a cue with `at >= startSec + SPLIT_MIN_PIECE_SEC`;
+    // output time starts at 0, so a split closer than that to the start can
+    // match NO cue and is skipped — silently, until §137. The half it used to
+    // name stops existing, every override keyed to it is orphaned, and the
+    // scene the user deleted comes back (the field case: a 0.6s cut pushed a
+    // split at 0.6s to 0). Say so instead.
+    //
+    // Only when this re-cut is what pushed it under: `reports` is the "a
+    // value MOVED" channel (see `RecutRemap`), and a split already below the
+    // bar before the remap is a pre-existing condition — the editor's own
+    // SPLIT_MIN_PIECE_SEC guard refuses to create one — that would otherwise
+    // be re-announced on every identity re-cut, forever.
+    if (at < SPLIT_MIN_PIECE_SEC && s.at >= SPLIT_MIN_PIECE_SEC) {
+      // `remapPoint` states the new time itself when it snapped this split
+      // onto a cut edge; restating it here would read as a second, separate
+      // move rather than the consequence of the one already reported.
+      const where = reports.length > before ? "is" : `is now ${at.toFixed(3)}s —`;
+      reports.push(
+        `split "${s.id}" ${where} too close to the start to divide a scene, ` +
+          `so any edit on its second half will not apply`,
+      );
+    }
+    return { ...s, at };
+  });
 
   // Record-shaped: rebuild key by key rather than mutate, matching every
   // other `OverrideDoc`-shaping function in overrides.ts (e.g.
