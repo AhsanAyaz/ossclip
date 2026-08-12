@@ -72,7 +72,9 @@ ossclip produce input.mp4 --no-render
 ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
 
 # Keep your own editor: export the planned cuts as labelled markers instead of rendering
-ossclip analyse input.mp4          # writes input.fcpxml — imports into Resolve & Premiere
+ossclip analyse input.mp4 --format premiere-xml   # Premiere Pro (File → Import)
+ossclip analyse input.mp4 --format resolve-edl    # Resolve (Timeline Markers from EDL, coloured)
+ossclip analyse input.mp4                         # Final Cut Pro (fcpxml)
 ```
 
 ![A produce run in the terminal: transcribe, analyze, cut, captions, scenes, render — each step reporting what it did](./docs/site/assets/render-example.png)

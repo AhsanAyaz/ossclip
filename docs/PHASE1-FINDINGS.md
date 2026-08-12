@@ -1355,3 +1355,20 @@ Decisions that will get asked about later:
 - **Times are frame-quantized rationals** (`53/30s`, NTSC as `30030/30000s`), never float seconds. `1.77s` is legal FCPXML but frame-misaligned; importers round it silently — quantizing ourselves keeps the marker where the report said it was, with the rounding visible in our code.
 - **The read-back is parsed.** `runAnalyse` re-reads the `production.json` this same run just wrote, through `ProductionSchema.parse` — the file is user-visible and hand-editable, and a truncated one must error, not export garbage markers.
 - **`--format` is a zod enum** — `--format fcpxmll` errors naming the flag (the `--source-fit containn` rule, verbatim). One member today; EDL/OTIO widen the enum, not the parsing.
+
+## 142. One hour of field testing killed the export design's central premise — each NLE needs its own dialect
+
+§141 shipped FCPXML markers on the doc's claim that "both Resolve and Premiere read it." Both halves failed the same afternoon, on the first real file (a 30-minute tutorial take, 127 markers):
+
+- **Resolve** imported the timeline and silently dropped every marker. Verified not-a-display-problem: View → Show Markers → All on, Index → Markers empty. Resolve's FCPXML import has never carried clip markers.
+- **Premiere** refused the file outright — "File format not supported." The format Premiere's import dialog calls "Final Cut Pro XML" is the LEGACY FCP7 interchange (xmeml, `.xml`), which is a different document from modern FCPXML entirely. Modern `.fcpxml` needs Final Cut Pro itself or a paid converter.
+
+So the fix is one exporter per consumer, and the enum widened the way §141's last bullet predicted:
+
+- `fcpxml` — Final Cut Pro, the only NLE that actually reads it.
+- `resolve-edl` — Resolve's own marker-EDL dialect (` |C:ResolveColor<name> |M:<label> |D:<frames>`), imported via Timeline → Import → Timeline Markers from EDL. This dialect carries COLOURS, un-making §141's "no colours" verdict for exactly one consumer: reason → colour (silence Blue, pause Sky, filler Yellow, retake Red, user Green, clip Purple) on top of the label.
+- `premiere-xml` — xmeml v4 with SEQUENCE-level markers; Premiere puts them on the timeline ruler after File → Import. xmeml has no rational time: rate is integer `timebase` + `ntsc` flag (29.97 is "30 TRUE"), positions are frame counts.
+
+Named `resolve-edl`/`premiere-xml`, never bare `edl`: the marker dialect and a future cut EDL must not share a name. Labels in both new formats are ASCII (`-1.77s`, hyphen) where report.txt and FCPXML use the true minus — EDL and xmeml consumers are decades old and a U+2212 is exactly the byte that becomes a silently skipped line.
+
+The meta-lesson is the §117 one again, at the format level: "both NLEs read it" was documentation-derived, not field-derived, and the field disagreed within the hour. The doc's open question about marker colours surviving a "Resolve round trip" was also the WRONG question — the right one was whether the markers arrive at all.

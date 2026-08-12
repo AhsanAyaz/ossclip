@@ -15,19 +15,28 @@ import { ExportFormatSchema, defaultExportPath, runAnalyse } from "../src/analys
  */
 
 describe("ExportFormatSchema", () => {
-  it("accepts fcpxml", () => {
+  it("accepts fcpxml, resolve-edl and premiere-xml", () => {
     expect(ExportFormatSchema.parse("fcpxml")).toBe("fcpxml");
+    expect(ExportFormatSchema.parse("resolve-edl")).toBe("resolve-edl");
+    expect(ExportFormatSchema.parse("premiere-xml")).toBe("premiere-xml");
   });
 
   it("a typo is an error, never a silent fallback (CLAUDE.md: parse, don't coerce)", () => {
     expect(() => ExportFormatSchema.parse("fcpxmll")).toThrow();
+    // Bare "edl" stays an error on purpose: this is Resolve's marker-EDL
+    // dialect, not a cut EDL — when a real cut EDL ships it gets its own
+    // name, and "edl" meaning either would be an ambiguity forever (§142).
     expect(() => ExportFormatSchema.parse("edl")).toThrow();
   });
 });
 
 describe("defaultExportPath", () => {
-  it("lands beside the input, extension swapped", () => {
+  it("lands beside the input, extension swapped per format", () => {
     expect(defaultExportPath("/takes/demo.mp4", "fcpxml")).toBe("/takes/demo.fcpxml");
+    // The FILE extension is .edl — "demo.resolve-edl" would import nowhere.
+    expect(defaultExportPath("/takes/demo.mp4", "resolve-edl")).toBe("/takes/demo.edl");
+    // Premiere's import dialog filters on .xml.
+    expect(defaultExportPath("/takes/demo.mp4", "premiere-xml")).toBe("/takes/demo.xml");
   });
 
   it("an extensionless input just gains the suffix", () => {

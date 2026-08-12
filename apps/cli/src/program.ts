@@ -543,7 +543,12 @@ export function buildProgram(): Command {
         "(FCPXML imports into Resolve and Premiere; review the markers, then cut in your own editor)",
     )
     .argument("<input>", "input video file (or a folder of clips)")
-    .option("--format <format>", "export format: fcpxml", "fcpxml")
+    .option(
+      "--format <format>",
+      "export format: fcpxml (Premiere) | resolve-edl (Resolve coloured timeline markers — " +
+        "its fcpxml import drops markers)",
+      "fcpxml",
+    )
     .option("--out <path>", "export file path (default: <input>.<format>)")
     .option("--cleanup <level>", "exact | light | standard | aggressive", "standard")
     .option("--transcript <path>", "inject a transcript JSON instead of running whisper")

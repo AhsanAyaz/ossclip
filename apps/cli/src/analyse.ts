@@ -4,6 +4,8 @@ import { z } from "zod/v4";
 import {
   ProductionSchema,
   buildFcpxmlMarkers,
+  buildPremiereXmlMarkers,
+  buildResolveMarkerEdl,
   type CleanupLevel,
 } from "@ossclip/core";
 import { produce } from "./produce";
@@ -22,13 +24,27 @@ import type { PhaseTimings } from "./phase-timing";
  * zod enum, not a string: a typo'd `--format fcpxmll` must error naming the
  * choice, never fall back to a default that silently writes the wrong file
  * (CLAUDE.md's `--source-fit containn` rule, verbatim).
+ *
+ * `resolve-edl`, not `edl` (§142): it is Resolve's marker-EDL dialect —
+ * markers with colours, for `Timeline → Import → Timeline Markers from EDL`
+ * — not a cut EDL. A future cut EDL gets its own name; "edl" meaning either
+ * would be a permanent ambiguity. It exists because Resolve's FCPXML import
+ * silently drops clip markers (field-verified the day fcpxml shipped);
+ * Premiere reads the fcpxml markers fine.
  */
-export const ExportFormatSchema = z.enum(["fcpxml"]);
+export const ExportFormatSchema = z.enum(["fcpxml", "resolve-edl", "premiere-xml"]);
 export type ExportFormat = z.infer<typeof ExportFormatSchema>;
+
+/** The FILE extension per format — "demo.resolve-edl" would import nowhere. */
+const FORMAT_EXTENSIONS: Record<ExportFormat, string> = {
+  fcpxml: "fcpxml",
+  "resolve-edl": "edl",
+  "premiere-xml": "xml",
+};
 
 /** Same shape as produce's `defaultOutPath`: beside the input, new extension. */
 export function defaultExportPath(input: string, format: ExportFormat): string {
-  return input.replace(/(\.[^.]+)?$/, `.${format}`);
+  return input.replace(/(\.[^.]+)?$/, `.${FORMAT_EXTENSIONS[format]}`);
 }
 
 export interface AnalyseOptions {
@@ -83,13 +99,26 @@ export async function runAnalyse(
   const production = ProductionSchema.parse(
     JSON.parse(await readFile(join(result.workdir, "production.json"), "utf8")),
   );
-  const xml = buildFcpxmlMarkers(production);
+  // §142, learned the hard way in one field-test hour: each NLE gets its OWN
+  // dialect. Premiere rejects modern fcpxml outright, Resolve's fcpxml import
+  // silently drops markers — so fcpxml is for actual Final Cut Pro.
+  const content =
+    opts.format === "resolve-edl"
+      ? buildResolveMarkerEdl(production)
+      : opts.format === "premiere-xml"
+        ? buildPremiereXmlMarkers(production)
+        : buildFcpxmlMarkers(production);
   const markerCount = (production.cutlist ?? []).filter((s) => s.kind === "remove").length;
   const outPath = resolve(opts.out ?? defaultExportPath(resolve(inputArg), opts.format));
-  await writeFile(outPath, xml);
+  await writeFile(outPath, content);
+  const detail =
+    opts.format === "resolve-edl"
+      ? "in Resolve: Media Pool → right-click your timeline → Timelines → Import → Timeline Markers from EDL"
+      : opts.format === "premiere-xml"
+        ? "in Premiere: File → Import, pick the .xml, relink media if offline"
+        : "for Final Cut Pro; Premiere needs --format premiere-xml, Resolve --format resolve-edl";
   console.log(
-    `✓ ${opts.format} → ${outPath} (${markerCount} marker${markerCount === 1 ? "" : "s"} — ` +
-      "import into Resolve/Premiere and review before cutting)",
+    `✓ ${opts.format} → ${outPath} (${markerCount} marker${markerCount === 1 ? "" : "s"} — ${detail})`,
   );
   return {
     workdir: result.workdir,
