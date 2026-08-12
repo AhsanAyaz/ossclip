@@ -32,6 +32,11 @@ describe("pickerAvailable", () => {
     expect(pickerAvailable(deps({ platform: "win32" }))).toBe(true);
   });
 
+  it("win32: no over SSH — Windows ships an OpenSSH server, and ShowDialog() there hangs forever", () => {
+    expect(pickerAvailable(deps({ platform: "win32", env: { SSH_CONNECTION: "x" } }))).toBe(false);
+    expect(pickerAvailable(deps({ platform: "win32", env: { SSH_TTY: "/dev/pts/0" } }))).toBe(false);
+  });
+
   it("linux: needs BOTH a display and a dialog binary", () => {
     const withZenity = (bin: string) => bin === "zenity";
     expect(pickerAvailable(deps({ platform: "linux", env: { DISPLAY: ":0" }, hasBin: withZenity }))).toBe(true);
@@ -85,6 +90,26 @@ describe("pickerCommand", () => {
     expect(args[3]).not.toContain("$d.FileName");
   });
 
+  it("win32 file: startDir is honoured — Windows was the one platform that ignored it", () => {
+    const { args } = pickerCommand(deps({ platform: "win32" }), "file", "D:\\shoots\\raw");
+    expect(args[3]).toContain("$d.InitialDirectory = 'D:\\shoots\\raw'");
+  });
+
+  it("win32 folder: startDir seeds SelectedPath — the property it also answers in", () => {
+    const { args } = pickerCommand(deps({ platform: "win32" }), "folder", "D:\\shoots\\raw");
+    expect(args[3]).toContain("$d.SelectedPath = 'D:\\shoots\\raw'");
+  });
+
+  it("win32: an apostrophe in the path is doubled — PowerShell's only single-quote escape", () => {
+    const { args } = pickerCommand(deps({ platform: "win32" }), "file", "C:\\Users\\Ahsan's videos");
+    expect(args[3]).toContain("$d.InitialDirectory = 'C:\\Users\\Ahsan''s videos'");
+  });
+
+  it("win32: no startDir sets neither property", () => {
+    expect(pickerCommand(deps({ platform: "win32" }), "file").args[3]).not.toContain("InitialDirectory");
+    expect(pickerCommand(deps({ platform: "win32" }), "folder").args[3]).not.toContain("$d.SelectedPath =");
+  });
+
   it("linux: zenity wins when present, with pipe-separated filter syntax", () => {
     const { bin, args } = pickerCommand(
       deps({ platform: "linux", hasBin: (b) => b === "zenity" }),
@@ -102,6 +127,15 @@ describe("pickerCommand", () => {
     const { args } = pickerCommand(deps({ platform: "linux", hasBin: (b) => b === "zenity" }), "folder");
     expect(args).toContain("--directory");
     expect(args.some((a) => a.startsWith("--file-filter"))).toBe(false);
+  });
+
+  it("linux: BOTH installed still picks zenity — the precedence, not just the fallback", () => {
+    // The single-binary cases above pass under either branch order, so they
+    // do not pin precedence. A GNOME box with kdialog pulled in as some
+    // package's dependency is the machine this protects: it should still get
+    // the GTK dialog.
+    expect(pickerCommand(deps({ platform: "linux", hasBin: () => true }), "file").bin).toBe("zenity");
+    expect(pickerCommand(deps({ platform: "linux", hasBin: () => true }), "folder").bin).toBe("zenity");
   });
 
   it("linux: kdialog uses Qt parentheses, NOT zenity's pipe", () => {

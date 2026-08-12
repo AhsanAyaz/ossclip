@@ -31,6 +31,15 @@ export const livePickerDeps = (): PickerDeps => ({
 const globs = (): string => VIDEO_EXTENSIONS.map((e) => `*.${e}`).join(" ");
 
 /**
+ * A PowerShell single-quoted string has exactly one escape: a literal `'` is
+ * written `''`. Nothing else is special in there — not `$`, not a backtick,
+ * not the `\` that fills every Windows path — which is why single quotes are
+ * what the script uses and why this is the whole escape rather than a table.
+ * `C:\Users\Ahsan's videos` is the case that makes it necessary.
+ */
+const psQuote = (s: string): string => s.replace(/'/g, "''");
+
+/**
  * Is there a dialog to open at all? Probed rather than attempted, because
  * offering a "Browse…" row that cannot work is worse than not offering it —
  * the menu drops the row entirely when this is false.
@@ -38,11 +47,17 @@ const globs = (): string => VIDEO_EXTENSIONS.map((e) => `*.${e}`).join(" ");
 export function pickerAvailable(d: PickerDeps): boolean {
   // Truthiness not presence, matching `isInteractive`'s treatment of CI.
   if (d.env.OSSCLIP_NO_PICKER) return false;
-  // A Mac reached over SSH has no window server for osascript to draw on:
-  // `choose file` fails with -1743 (not authorized) instead of opening.
-  if (d.platform === "darwin") return !d.env.SSH_CONNECTION && !d.env.SSH_TTY;
-  // WinForms ships with Windows itself — nothing to detect.
-  if (d.platform === "win32") return true;
+  // No SSH session gets a dialog, on ANY platform: there is no window server
+  // at the far end to draw on. macOS at least fails loudly — `choose file`
+  // returns -1743 (not authorized) instead of opening. Windows fails the
+  // dangerous way: it ships an in-box OpenSSH server, and ShowDialog() on a
+  // non-interactive window station blocks forever on a window nobody can see.
+  // `run()` has no timeout, so that is a CLI hung until Ctrl-C — the exact
+  // failure the -STA comment below exists to prevent.
+  if (d.env.SSH_CONNECTION || d.env.SSH_TTY) return false;
+  // Nothing left to detect on either: osascript is part of macOS and WinForms
+  // ships with Windows itself.
+  if (d.platform === "darwin" || d.platform === "win32") return true;
   // Linux needs BOTH halves, and the display check is what covers WSL
   // without WSLg: zenity may well be installed there and still draw nowhere.
   if (!d.env.DISPLAY && !d.env.WAYLAND_DISPLAY) return false;
@@ -76,14 +91,28 @@ export function pickerCommand(
     // `powershell -Command` uses by default, and a deadlock here looks
     // exactly like a hung CLI. `powershell` (5.1, in-box) rather than
     // `pwsh`, which is not installed by default.
+    // startDir is honoured here too, under different property names on the
+    // two dialogs. Without it a Windows user standing in D:\shoots\raw opens
+    // at Desktop while darwin, zenity and kdialog all land in the project
+    // folder — the same flag, three platforms agreeing and one not.
+    const start =
+      startDir === undefined
+        ? ""
+        : mode === "folder"
+          ? // FolderBrowserDialog seeds its start folder from SelectedPath —
+            // the same property it hands the answer back in.
+            `$d.SelectedPath = '${psQuote(startDir)}'; `
+          : `$d.InitialDirectory = '${psQuote(startDir)}'; `;
     const script =
       mode === "folder"
         ? "Add-Type -AssemblyName System.Windows.Forms; " +
           "$d = New-Object System.Windows.Forms.FolderBrowserDialog; " +
+          start +
           "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.SelectedPath }"
         : "Add-Type -AssemblyName System.Windows.Forms; " +
           "$d = New-Object System.Windows.Forms.OpenFileDialog; " +
           `$d.Filter = 'Video|${VIDEO_EXTENSIONS.map((e) => `*.${e}`).join(";")}|All files|*.*'; ` +
+          start +
           "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }";
     return { bin: "powershell", args: ["-NoProfile", "-STA", "-Command", script] };
   }
@@ -116,10 +145,18 @@ export function pickerCommand(
 }
 
 /**
- * Cancel is not an error. Dismissing the dialog exits non-zero with empty
- * stdout on all four backends, so emptiness — not the exit code — is the
- * signal, which also means the caller can use `allowNonZero` and never has
- * to tell a cancel apart from a failure by parsing stderr.
+ * Emptiness is the signal: no path came back. Exit codes cannot carry it —
+ * zenity and kdialog exit non-zero when dismissed, but PowerShell exits 0 and
+ * simply emits nothing, because the `if` guarding ShowDialog() just doesn't
+ * fire. So the caller passes `allowNonZero` and reads stdout, on every
+ * platform.
+ *
+ * What "no path came back" does NOT distinguish is a cancel from a silent
+ * backend failure — osascript hitting -1743 in a launchd or tmux context that
+ * sets neither SSH var, or Add-Type failing on a Windows box. That conflation
+ * is deliberate: no backend gives us a reliable way to tell the two apart
+ * (stderr is prose that varies by version and locale), and the caller's
+ * fallback is the typed-path prompt, which is the right next step either way.
  */
 export function parsePickerResult(stdout: string): string | undefined {
   const picked = stdout.trim();
