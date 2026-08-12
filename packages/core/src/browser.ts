@@ -22,6 +22,16 @@ export {
 // lineDirection is a VALUE export but stays browser-safe: captions.ts
 // imports types only. CaptionTrack needs it at render time (Urdu field test
 // 2026-08-05 — RTL lines were laying out LTR).
-export { lineDirection, type CaptionLine, type CaptionWord } from "./captions";
+// `backfillSrcStart` rides along for the same reason: the EDITOR is the load
+// path that has to repair a pre-§137 render-props.json before anything derives
+// a caption key from it (§137), and the editor imports this surface. Pure, and
+// captions.ts stays browser-safe — it imports types plus timemap, which is
+// itself type-only against ./schema.
+export {
+  backfillSrcStart,
+  lineDirection,
+  type CaptionLine,
+  type CaptionWord,
+} from "./captions";
 export type { KeptSpan } from "./timemap";
 export type { Probe, Production, RenderSettings, Segment, Transcript, Word } from "./schema";

@@ -430,22 +430,25 @@ describe("scene splits (R16 §61)", () => {
 });
 
 describe("caption retype re-edit (R15 §59)", () => {
+  // Keyed by the word's SOURCE start since §137 — 4.0s here, where this used
+  // to say `index: 4`. The re-edit semantics below are unchanged; only the
+  // key space moved.
   it("a second edit of the same word keeps the BASE was, so the guard holds", () => {
     let s = editReducer(initialEditState(), {
-      type: "patchCaption", index: 4, text: "hello", was: "helo",
+      type: "patchCaption", srcStart: 4, text: "hello", was: "helo",
     });
     // The re-editor sees the LIVE text ("hello") — the stored guard must
     // stay anchored to the base ("helo") or applyCaptionEdits drops it.
-    s = editReducer(s, { type: "patchCaption", index: 4, text: "hullo", was: "hello" });
-    expect(s.doc.captions["4"]).toEqual({ text: "hullo", was: "helo" });
+    s = editReducer(s, { type: "patchCaption", srcStart: 4, text: "hullo", was: "hello" });
+    expect(s.doc.captions.w4000).toEqual({ text: "hullo", was: "helo" });
   });
 
   it("retyping back to the BASE text clears the override, even via the live text", () => {
     let s = editReducer(initialEditState(), {
-      type: "patchCaption", index: 4, text: "hello", was: "helo",
+      type: "patchCaption", srcStart: 4, text: "hello", was: "helo",
     });
-    s = editReducer(s, { type: "patchCaption", index: 4, text: "helo", was: "hello" });
-    expect("4" in s.doc.captions).toBe(false);
+    s = editReducer(s, { type: "patchCaption", srcStart: 4, text: "helo", was: "hello" });
+    expect("w4000" in s.doc.captions).toBe(false);
   });
 });
 

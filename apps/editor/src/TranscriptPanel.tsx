@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import type { CaptionLine } from "@ossclip/core/browser";
+import { captionAnchorOf, type CaptionLine, type CaptionWord } from "@ossclip/core/browser";
 import type { useEdits } from "./useEdits";
 
 /**
@@ -44,6 +44,10 @@ export const TranscriptPanel: React.FC<{
       start: number;
       end: number;
       lineStart: number;
+      /** The live word itself, carried so a retype can key on its SOURCE
+       * time (§137). The panel's own `index` is a scroll/testid handle and
+       * nothing more — anchoring an edit to it is the bug this replaced. */
+      word: CaptionWord;
     }> = [];
     let index = 0;
     for (let li = 0; li < liveLines.length; li++) {
@@ -61,6 +65,7 @@ export const TranscriptPanel: React.FC<{
           start: w.start,
           end: w.end,
           lineStart: live.start,
+          word: w,
         });
         index++;
       }
@@ -118,10 +123,21 @@ export const TranscriptPanel: React.FC<{
     scrollToWord(matchList[next]!);
   };
 
-  const commit = (index: number, base: string, draft: string): void => {
+  const commit = (w: (typeof words)[number], draft: string): void => {
     const text = draft.trim();
+    // A word with no SOURCE anchor cannot carry an edit (§137). Asking
+    // `captionAnchorOf` rather than reading `srcStart` directly is deliberate:
+    // it is core's single definition of "anchorable", and `captionKeyFor` —
+    // which the reducer calls next — THROWS on a non-finite one. This runs in
+    // a React event handler with no error boundary above it, so a throw here
+    // is a crashed editor on any workdir produced before the field existed
+    // (`anchorCaptionLines` on the load path is what normally prevents that,
+    // but it cannot repair a spans-less file). Silently doing nothing is the
+    // lesser evil of the two, and the only one that is not a regression on
+    // today's behaviour.
+    const anchorable = captionAnchorOf(w.word) !== null;
     // Empty is a cancel: a word cannot be deleted here — 1:1 is the contract.
-    if (text) edits.patchCaption(index, text, base);
+    if (text && anchorable) edits.patchCaption(w.word.srcStart, text, w.base);
     setEditing(null);
   };
 
@@ -195,7 +211,7 @@ export const TranscriptPanel: React.FC<{
                 style={editInput}
                 value={editing.draft}
                 onChange={(e) => setEditing({ index: w.index, draft: e.target.value })}
-                onBlur={() => commit(w.index, w.base, editing.draft)}
+                onBlur={() => commit(w, editing.draft)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                   if (e.key === "Escape") setEditing(null);

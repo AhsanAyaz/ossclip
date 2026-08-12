@@ -26,6 +26,7 @@ import { ProjectPicker } from "./ProjectPicker";
 import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
 import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
+import { anchorCaptionLines } from "./captionAnchors";
 
 /**
  * `<Player>`'s generics require `Props extends Record<string, unknown>`, and
@@ -68,6 +69,26 @@ type RawRenderProps = PlayerProductionProps & {
    * it. */
   captionsHiddenByFlag?: boolean;
 };
+
+/**
+ * The one gate every `render-props.json` the editor accepts passes through
+ * (§137). Caption edits are keyed by the word's SOURCE start, and this file
+ * predates that field — so a workdir produced before the change loads with
+ * words nothing can address: `applyCaptionEdits` skips them and a retype
+ * appears to work, then silently reverts. `anchorCaptionLines` recovers the
+ * anchor from the file's own `spans` (and declines to invent one when there
+ * are none — see its doc comment).
+ *
+ * Applied at the FETCH, not in the `live` memo below, deliberately: the memo
+ * is not the only reader — the Transcript panel takes the same lines
+ * (`baseCaptionLines ?? captionLines`) straight off `renderProps`, and a
+ * repair applied in one place and not the other is how the two panes would
+ * disagree about which word an edit belongs to.
+ */
+const anchored = (props: RawRenderProps): RawRenderProps => ({
+  ...props,
+  ...anchorCaptionLines(props),
+});
 
 export const App: React.FC = () => {
   const edits = useEdits();
@@ -354,7 +375,7 @@ export const App: React.FC = () => {
               overrides?: OverrideDoc;
               canRender?: boolean;
             };
-            setRenderProps(prod.renderProps);
+            setRenderProps(anchored(prod.renderProps));
             setCanRender(Boolean(prod.canRender));
             // Finding 2, PLAN 2026-08-04 Task 4c fix wave — see
             // `renderCompleteReload`'s own doc comment (renderStatus.ts) for
@@ -426,7 +447,7 @@ export const App: React.FC = () => {
       setShowPicker(true);
       return;
     }
-    setRenderProps(body.renderProps!);
+    setRenderProps(anchored(body.renderProps!));
     setWorkdirPath(body.workdir ?? null);
     setCanRender(Boolean(body.canRender));
     edits.load(body.overrides!);

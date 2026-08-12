@@ -581,9 +581,17 @@ export function isLegacyCaptionKey(key: string): boolean {
  * means something and turns the boundary case into "this word can carry no
  * edit" — the edits that then find no home are REPORTED (`found: null` /
  * `unresolved`), which is the honest answer. `backfillSrcStart` on the load
- * path (Task 6) is what makes these words anchorable again.
+ * path is what makes these words anchorable again.
+ *
+ * PUBLIC since §137 Task 5, deliberately: the editor needs the same verdict
+ * before it writes an edit, and a second copy of "is this word anchorable"
+ * living in `apps/editor` is how the two would drift apart. Every caller that
+ * holds a word it did not itself construct should come through here rather
+ * than calling `captionKeyFor` — a `useEdits` retype runs in a React event
+ * handler with no error boundary above it, so a throw there is a crash on any
+ * pre-§137 workdir, not a caught parse failure.
  */
-function captionAnchorOf(word: CaptionWord | undefined): string | null {
+export function captionAnchorOf(word: CaptionWord | undefined): string | null {
   if (!word || !Number.isFinite(word.srcStart)) return null;
   return captionKeyFor(word.srcStart);
 }

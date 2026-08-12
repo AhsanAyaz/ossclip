@@ -348,6 +348,10 @@ describe("caption editor vs. the stage-mousedown blur (field report 2026-08-07)"
         "data-testid": "caption-word",
         "data-caption-word": "0",
         "data-caption-text": "hello",
+        // The SOURCE anchor CaptionTrack emits since §137 — without it the
+        // word is one the editor refuses to retype, and the double-click
+        // below would never open the editor this test is about.
+        "data-caption-src": "1.7675",
       }),
       React.createElement("div", { "data-testid": "stage-elsewhere" }),
       React.createElement(Overlay, {

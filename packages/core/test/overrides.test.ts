@@ -833,7 +833,7 @@ describe("captionsHidden (doc-global captions OFF switch)", () => {
   });
 });
 
-import { captionKeyFor, migrateCaptionKeys } from "../src/overrides";
+import { captionAnchorOf, captionKeyFor, migrateCaptionKeys } from "../src/overrides";
 import type { CaptionLine, CaptionWord } from "../src/captions";
 
 describe("source-anchored caption keys (§137)", () => {
@@ -1074,6 +1074,34 @@ describe("source-anchored caption keys (§137)", () => {
     expect(() => captionKeyFor(Number.NaN)).toThrow(/finite srcStart/);
     expect(() => captionKeyFor(undefined as unknown as number)).toThrow(/finite srcStart/);
     expect(() => captionKeyFor(Number.POSITIVE_INFINITY)).toThrow(/finite srcStart/);
+  });
+});
+
+describe("captionAnchorOf — the tolerant form callers outside core must use (§137)", () => {
+  const word = (srcStart: unknown): CaptionWord =>
+    ({ text: "batch,", start: 1.2, end: 1.5, srcStart }) as CaptionWord;
+
+  it("returns the same key captionKeyFor would, for an anchorable word", () => {
+    expect(captionAnchorOf(word(1.7675))).toBe("w1768");
+    expect(captionAnchorOf(word(1.7675))).toBe(captionKeyFor(1.7675));
+  });
+
+  it("returns null instead of throwing for every shape a pre-§137 file can hold", () => {
+    // The whole reason this is exported (§137 Task 5): the editor calls it
+    // from a React event handler with no error boundary above it, so the
+    // throw `captionKeyFor` owes a programmer error would be a crash on any
+    // workdir produced before the field existed.
+    expect(captionAnchorOf(undefined)).toBeNull();
+    expect(captionAnchorOf(word(undefined))).toBeNull();
+    expect(captionAnchorOf(word(Number.NaN))).toBeNull();
+    expect(captionAnchorOf(word(Number.POSITIVE_INFINITY))).toBeNull();
+  });
+
+  it("treats 0 as a real anchor, not as absent", () => {
+    // A word at the very start of the source is anchorable; a falsy-check
+    // instead of a finite-check would silently make the first word of every
+    // video un-retypable.
+    expect(captionAnchorOf(word(0))).toBe("w0");
   });
 });
 

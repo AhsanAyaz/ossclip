@@ -1,6 +1,11 @@
 import React from "react";
 import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
-import { lineDirection, type CaptionLine, type SceneCue } from "@ossclip/core/browser";
+import {
+  captionAnchorOf,
+  lineDirection,
+  type CaptionLine,
+  type SceneCue,
+} from "@ossclip/core/browser";
 import { safeAreaFor, activeCueAt } from "./stage";
 import { frameWindow } from "./frames";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
@@ -134,6 +139,18 @@ const LineView: React.FC<{
               // and the retype's stale-guard must compare against the truth.
               data-caption-word={wordOffset + i}
               data-caption-text={w.text}
+              // The word's SOURCE start, which is what the edit is keyed on
+              // (§137). These attributes are the whole contract between this
+              // file and the editor's Overlay — it hit-tests the Player's DOM
+              // and holds no caption lines of its own — so the anchor has to
+              // travel the same channel as the text. OMITTED when the word has
+              // no usable anchor (`captionAnchorOf` is core's single definition
+              // of that, so this cannot drift from the apply side): a pre-§137
+              // render-props.json has no `srcStart` at all, and the editor
+              // treats the missing attribute as "this word cannot be retyped".
+              // Never `NaN` — a shared garbage anchor is the failure §137
+              // exists to remove.
+              data-caption-src={captionAnchorOf(w) === null ? undefined : w.srcStart}
               style={{
                 display: "inline-block",
                 // Words are individually hit-testable for the editor (the

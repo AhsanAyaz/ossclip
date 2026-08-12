@@ -1,6 +1,7 @@
 import { useReducer } from "react";
 import {
   captionEditWas,
+  captionKeyFor,
   clearElementTransform,
   clearGraphicRect,
   clearTiming,
@@ -103,7 +104,11 @@ export type EditAction =
   | { type: "clearGraphicRect"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
   | { type: "patchLayout"; sceneId: string; layout: Layout }
-  | { type: "patchCaption"; index: number; text: string; was: string }
+  /** `srcStart` is the word's SOURCE start in seconds — never its position,
+   * and never its OUTPUT start (§137). Callers must have already established
+   * that the word HAS an anchor (`captionAnchorOf`); the reducer derives the
+   * key with `captionKeyFor`, which throws on a non-finite one by design. */
+  | { type: "patchCaption"; srcStart: number; text: string; was: string }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -448,12 +453,11 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // anchored to the truth `applyCaptionEdits` will compare against —
       // without it, editing the same word twice stored the first edit as
       // `was` and the guard dropped the whole edit on the next merge (R15).
-      const key = String(action.index);
-      // Still the POSITIONAL key here: §137 re-keyed the doc to source time
-      // and `captionEditWas` now takes the key rather than an index, but
-      // giving the editor the word's `srcStart` to key on is Task 3's job.
-      // `String(action.index)` keeps this call byte-identical to what it did
-      // before until then.
+      // Keyed by SOURCE time (§137). The positional key this replaced is the
+      // whole bug: a user cut removes a word, every later index shifts by one,
+      // and the `was` guard below then fires on edits that were never stale —
+      // dropping four of the user's retypes into a report nobody printed.
+      const key = captionKeyFor(action.srcStart);
       const was = captionEditWas(state.doc.captions, key, action.was);
       if (action.text === was) {
         const { [key]: _dropped, ...rest } = state.doc.captions;
@@ -571,8 +575,8 @@ export function useEdits() {
     patchComponent: (sceneId: string, component: SceneComponentId) =>
       dispatch({ type: "patchComponent", sceneId, component }),
     patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),
-    patchCaption: (index: number, text: string, was: string) =>
-      dispatch({ type: "patchCaption", index, text, was }),
+    patchCaption: (srcStart: number, text: string, was: string) =>
+      dispatch({ type: "patchCaption", srcStart, text, was }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

@@ -310,6 +310,12 @@ test("double-click retypes a caption word in place; the edit lands in overrides.
   const word = page.locator("[data-caption-word]").first();
   const wordIndex = await word.getAttribute("data-caption-word");
   const was = await word.getAttribute("data-caption-text");
+  // The SOURCE anchor the edit is keyed on (§137). The fixture's
+  // render-props.json predates the field entirely, so this attribute exists
+  // only because the editor's load path backfilled it from the file's spans —
+  // asserting on it therefore covers the repair as well as the key.
+  const srcStart = await word.getAttribute("data-caption-src");
+  expect(srcStart).not.toBeNull();
   const box = (await word.boundingBox())!;
   await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
 
@@ -326,7 +332,12 @@ test("double-click retypes a caption word in place; the edit lands in overrides.
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
-  expect(doc.captions[wordIndex!]).toEqual({ text: "RETYPED", was });
+  // Keyed by source milliseconds, NOT by the word's position — the whole
+  // point of §137. Derived here rather than hardcoded, so a wrong derivation
+  // fails this rather than a changed fixture silently agreeing with it.
+  const key = `w${Math.round(Number(srcStart) * 1000)}`;
+  expect(doc.captions[key]).toEqual({ text: "RETYPED", was });
+  expect(doc.captions[wordIndex!]).toBeUndefined();
 });
 
 test("plain take blocks fill the timeline, select, and hold a framing override (Task A)", async ({
@@ -864,7 +875,21 @@ test("transcript view: search, retype 1:1 through the caption layer, jump (R15 �
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
-  expect(doc.captions["0"]).toEqual({ text: "CLAWD", was: "Claude" });
+  // Source-anchored, not positional (§137). The panel exposes no source time
+  // of its own, so derive it from the same file the editor loaded: this
+  // fixture predates `srcStart` and has ONE identity span
+  // (srcIn 0 → outIn 0), so the backfilled anchor is the word's `start`.
+  // Derived rather than hardcoded, so a wrong derivation fails here instead
+  // of a changed fixture silently agreeing with it.
+  const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
+  const w0 = (renderProps.baseCaptionLines ?? renderProps.captionLines)[0].words[0];
+  const key = `w${Math.round((w0.srcStart ?? w0.start) * 1000)}`;
+  expect(doc.captions[key]).toEqual({ text: "CLAWD", was: "Claude" });
+  // The old positional key must not be written alongside it. NOT an
+  // assertion on the whole map: the workdir is shared across this file's
+  // tests, and the stage-retype test above deliberately leaves its own
+  // source-keyed edit behind.
+  expect(doc.captions["0"]).toBeUndefined();
 
   // Clicking a word jumps the preview to its start.
   await page.getByTestId("transcript-word-5").click();

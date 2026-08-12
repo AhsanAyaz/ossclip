@@ -415,9 +415,11 @@ export const Overlay: React.FC<OverlayProps> = ({
   } | null>(null);
   /** Mirrors the ref's factor so the box outline previews the resize live. */
   const [elResizeFactor, setElResizeFactor] = useState<number | null>(null);
-  /** An in-progress caption word retype (PLAN Task 7, scope (a)). */
+  /** An in-progress caption word retype (PLAN Task 7, scope (a)). Identified
+   * by the word's SOURCE start since §137, not its position — see the
+   * double-click handler below. */
   const [captionEdit, setCaptionEdit] = useState<{
-    index: number;
+    srcStart: number;
     was: string;
     draft: string;
     rect: DOMRect;
@@ -1051,12 +1053,23 @@ export const Overlay: React.FC<OverlayProps> = ({
       );
       if (!word) return;
       e.preventDefault();
-      const index = Number(word.dataset.captionWord);
+      // The word's SOURCE start (§137) — what the edit is keyed on, and the
+      // reason this is no longer the `data-caption-word` index: a user cut
+      // shifts every later index, so an edit anchored to one lands on the
+      // wrong word (or is dropped by its own guard) after the next re-cut.
+      // CaptionTrack OMITS the attribute for a word it cannot anchor, and a
+      // word that cannot be anchored cannot be retyped — bail, do not throw.
+      // `captionKeyFor` (via the reducer) throws on a non-finite anchor by
+      // design, and this handler has no error boundary above it.
+      const raw = word.dataset.captionSrc;
+      // `Number("")` is 0, not NaN — an empty attribute would otherwise read
+      // as a real anchor at the start of the source.
+      const srcStart = raw === undefined || raw === "" ? Number.NaN : Number(raw);
       // The RAW text, not textContent — the rendered word may be CTA-decorated
       // ("AGENTS"), and the stale-guard must match the stored truth.
       const was = word.dataset.captionText ?? "";
-      if (!Number.isFinite(index) || !was) return;
-      setCaptionEdit({ index, was, draft: was, rect: word.getBoundingClientRect() });
+      if (!Number.isFinite(srcStart) || !was) return;
+      setCaptionEdit({ srcStart, was, draft: was, rect: word.getBoundingClientRect() });
     };
     window.addEventListener("dblclick", onDoubleClick);
     return () => window.removeEventListener("dblclick", onDoubleClick);
@@ -1398,7 +1411,7 @@ export const Overlay: React.FC<OverlayProps> = ({
             // the override — the reducer's rule); empty is a cancel, because a
             // caption word cannot be deleted here: 1:1 is the contract that
             // keeps timings and scene anchors intact.
-            if (trimmed) edits.patchCaption(captionEdit.index, trimmed, captionEdit.was);
+            if (trimmed) edits.patchCaption(captionEdit.srcStart, trimmed, captionEdit.was);
             setCaptionEdit(null);
           }}
           onKeyDown={(e) => {
