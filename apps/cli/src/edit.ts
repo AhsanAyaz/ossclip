@@ -470,6 +470,24 @@ export async function startEditServer(
           for await (const c of req) chunks.push(c as Buffer);
           const parsed = OverrideDocSchema.safeParse(JSON.parse(Buffer.concat(chunks).toString()));
           if (!parsed.success) return send(400, { error: parsed.error.message });
+          // NO `.bak` HERE, and that is a decision, not an omission (final
+          // review, Important 5). This write is safe without one only because
+          // it ROUND-TRIPS: whatever the editor loaded, it saves back, plus
+          // the change the user just made. §137 briefly broke that property —
+          // `migrateLoadedDoc` stripped the caption edits the migration could
+          // not place before `edits.load` (which also clears undo), so the
+          // first save after opening a legacy project deleted them
+          // permanently. The fix is in `migrateLoadedDoc`, which now keeps
+          // them, rather than here.
+          //
+          // Adding produce's `.bak` to this handler was the other option and
+          // is actively worse: `overrides.json.bak` is single-generation and
+          // SHARED with produce's write, so a routine ⌘S would spend the one
+          // the user's pre-cut save is sitting in — which on the §137 field
+          // workdir is the only artefact their deleted split half can ever be
+          // recovered from (`legacySplitId`). That is the review's own
+          // Critical 2 reintroduced through the editor.
+          //
           // Atomic: the producer may read this file at any moment, and a
           // half-written document would be worse than a stale one.
           const tmp = `${overridesPath()}.tmp`;

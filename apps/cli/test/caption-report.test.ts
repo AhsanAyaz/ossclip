@@ -4,7 +4,6 @@ import { OverrideDocSchema, type CaptionLine } from "@ossclip/core";
 import {
   appliedCaptionEditCount,
   captionDropLine,
-  captionKeysMigrated,
   captionMigrationLine,
   reanchoredKeyCount,
   reconcileCaptionEdits,
@@ -108,17 +107,39 @@ describe("appliedCaptionEditCount", () => {
 });
 
 describe("captionMigrationLine", () => {
-  const line = (reason: "not-found" | "ambiguous" | "unanchorable" | "collision" | "superseded") =>
+  const REASONS = [
+    "not-found",
+    "out-of-range",
+    "ambiguous",
+    "unanchorable",
+    "collision",
+    "superseded",
+  ] as const;
+  const line = (reason: (typeof REASONS)[number]) =>
     captionMigrationLine({ key: "3", was: "batch,", reason });
 
-  it("names the CAUSE — three of the four leave the word on screen", () => {
+  it("names the CAUSE — four of the five leave the word on screen", () => {
     // Minor 7: one message blaming the cut sends the user hunting for a word
     // that never moved.
     expect(line("not-found")).toContain("no word says it any more");
+    expect(line("out-of-range")).toContain("the word is still here");
     expect(line("ambiguous")).toContain("more than one word says it");
     expect(line("unanchorable")).toContain("no source timing");
     expect(line("collision")).toContain("two stored edits point at the same word");
     expect(line("superseded")).toContain("a newer edit already covers that word");
+  });
+
+  it("blames the cut ONLY for the edit whose word is actually gone", () => {
+    // `out-of-range` is the one added by the final review (Important 2), and
+    // it exists precisely so this sentence stops being shared with it.
+    expect(line("not-found")).toContain("removed it");
+    expect(line("out-of-range")).not.toContain("removed");
+  });
+
+  it("says an out-of-range edit is KEPT, because it is (Critical 1)", () => {
+    // The produce run leaves it in overrides.json, so a user told to "retype
+    // it if you still want it" would be redoing work they still have.
+    expect(line("out-of-range")).toContain("kept in overrides.json");
   });
 
   it("only asks for a retype where a retype is the answer", () => {
@@ -132,40 +153,10 @@ describe("captionMigrationLine", () => {
   });
 
   it("always names the word and the key it was stored under", () => {
-    for (const r of ["not-found", "ambiguous", "unanchorable", "collision", "superseded"] as const) {
+    for (const r of REASONS) {
       expect(line(r)).toContain('"batch,"');
       expect(line(r)).toContain("(3)");
     }
-  });
-});
-
-describe("captionKeysMigrated", () => {
-  const edit = { text: "Bash,", was: "batch," };
-
-  it("is false for a doc that was already source-keyed", () => {
-    // The overwhelmingly common case — it must not trigger a write-back (and
-    // a `.bak`) on every single produce run.
-    expect(captionKeysMigrated({ w1768: edit }, { edits: { w1768: edit }, unresolved: [] })).toBe(
-      false,
-    );
-    expect(captionKeysMigrated({}, { edits: {}, unresolved: [] })).toBe(false);
-  });
-
-  it("is true when a key was rewritten", () => {
-    expect(captionKeysMigrated({ "0": edit }, { edits: { w1768: edit }, unresolved: [] })).toBe(
-      true,
-    );
-  });
-
-  it("is true when an edit fell out, even though no key is new", () => {
-    // Nothing was added, but the doc lost an entry — writing back is what
-    // makes that visible in the file instead of only in the log.
-    expect(
-      captionKeysMigrated(
-        { "0": edit, w1768: edit },
-        { edits: { w1768: edit }, unresolved: [{ key: "0", was: "batch,", reason: "superseded" }] },
-      ),
-    ).toBe(true);
   });
 });
 
@@ -208,7 +199,7 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
     const out = reconcileCaptionEdits(doc({ "1": { text: "Zsh,", was: "edge," } }), lines(["status", 5], ["edge,", 6]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status", "Zsh,"]);
     expect(out.doc.captions).toEqual({ w6000: { text: "Zsh,", was: "edge," } });
-    expect(out.keysChanged).toBe(true);
+    expect(out.reanchored).toBe(true);
     expect(out.log.join("\n")).toContain("re-anchored");
   });
 
@@ -216,38 +207,64 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
     const before = doc({ w6000: { text: "Zsh,", was: "edge," } });
     const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
     expect(out.doc).toEqual(before);
-    expect(out.keysChanged).toBe(false);
+    expect(out.reanchored).toBe(false);
     // One line only: the count. A re-anchor line here would claim a migration
     // that did not happen, on every run, forever.
     expect(out.log).toEqual(["▸ 1 caption word(s) retyped by the editor"]);
   });
 
-  it("reports an edit it could not re-anchor, and drops it from the doc it writes back", () => {
-    const out = reconcileCaptionEdits(doc({ "0": { text: "Zsh", was: "gone" } }), lines(["status", 5]));
-    expect(out.doc.captions).toEqual({});
-    expect(out.keysChanged).toBe(true);
+  it("reports an edit it could not re-anchor, KEEPS it, and does not earn the write", () => {
+    // Final review, Criticals 1 and 2 in one case. This used to return an
+    // EMPTY caption map with `keysChanged: true`: pure destruction, on a run
+    // that repaired nothing — every retype gone from the user's file and the
+    // `.bak` (their last pre-cut copy) spent to record it.
+    const before = doc({ "0": { text: "Zsh", was: "gone" } });
+    const out = reconcileCaptionEdits(before, lines(["status", 5]));
+    expect(out.doc.captions).toEqual({ "0": { text: "Zsh", was: "gone" } });
+    expect(out.reanchored).toBe(false);
     expect(out.log.join("\n")).toContain('"gone"');
     // Never the old misdiagnosis: the doc's key was a POSITION, so nothing was
     // "cut" out from under a source anchor.
     expect(out.log.join("\n")).not.toContain("the cut removed the word");
     // And no "0 caption edit(s) re-anchored" over the top of the explanation:
-    // the doc changed (the edit left it), but nothing was moved.
+    // nothing was moved.
     expect(out.log.join("\n")).not.toContain("re-anchored from word positions");
+    // One report per edit, not two. The unplaceable edit is deliberately kept
+    // OUT of the apply pass (it addresses no word), so `applyCaptionEdits`
+    // cannot report it a second time under a different, wronger sentence.
+    expect(out.log.filter((l) => l.includes('"gone"'))).toHaveLength(1);
   });
 
-  it("a MIXED doc keeps the source-keyed edit, writes back, and claims no re-anchor", () => {
+  it("keeps an out-of-range edit so a later run can still place it", () => {
+    // Drift past `MIGRATION_SEARCH_RADIUS`: the word is on screen, the stored
+    // position is too stale to trust, and the honest outcome is a report plus
+    // a doc that still holds the edit — not a delete (Critical 1).
+    const words: Array<[string, number]> = [
+      ["edge,", 6],
+      ...Array.from({ length: 12 }, (_, i): [string, number] => [`filler${i}`, 7 + i]),
+    ];
+    const before = doc({ "12": { text: "Zsh,", was: "edge," } });
+    const out = reconcileCaptionEdits(before, lines(...words));
+    expect(out.doc.captions).toEqual({ "12": { text: "Zsh,", was: "edge," } });
+    expect(out.reanchored).toBe(false);
+    expect(out.log.join("\n")).toContain("the word is still here");
+  });
+
+  it("a MIXED doc keeps the source-keyed edit, retires the legacy one, and does NOT earn the write", () => {
     // Important 3 reaching produce: a project edited before AND after this
     // change holds both key spaces over one word. The newer edit is the one
-    // that renders, the legacy one is retired by name, and the write-back
-    // happens because the doc really did change — but nothing moved keys, so
-    // the count line stays away.
+    // that renders and the legacy one is retired by name — but nothing MOVED,
+    // so neither the count line nor the write-back fires. The gate is "did
+    // anything re-anchor", not "did the doc change" (final review, Critical
+    // 2): a retirement costs nothing to leave on disk for another run, and an
+    // unnecessary write is one more overwrite of a single-generation `.bak`.
     const out = reconcileCaptionEdits(
       doc({ "0": { text: "Zsh,", was: "edge," }, w6000: { text: "Fish,", was: "edge," } }),
       lines(["edge,", 6]),
     );
     expect(out.doc.captions).toEqual({ w6000: { text: "Fish,", was: "edge," } });
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["Fish,"]);
-    expect(out.keysChanged).toBe(true);
+    expect(out.reanchored).toBe(false);
     expect(out.log.join("\n")).not.toContain("re-anchored from word positions");
     expect(out.log.join("\n")).toContain("a newer edit already covers that word");
   });
@@ -283,13 +300,13 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
  *    retype shows on screen and is absent from the render.
  *  - The call, but no `overrideDoc = captionWork.doc`: WORSE than not calling
  *    it, and it typechecks, because `captionWork` is still read for its lines,
- *    its log and `keysChanged`. The migration is computed and thrown away, the
- *    render still ships without the retypes — and now `keysChanged` is true, so
- *    the write gate below fires, overwrites the user's `overrides.json.bak`
+ *    its log and `reanchored`. The migration is computed and thrown away, the
+ *    render still ships without the retypes — and `reanchored` is still true,
+ *    so the write gate below fires, overwrites the user's `overrides.json.bak`
  *    with the UN-migrated doc and prints "re-anchored to source-time caption
  *    keys". A false success line over destroyed evidence (§137 review,
  *    Important 1).
- *  - No `captionKeysChanged` in the write gate: the migration happens and is
+ *  - No `captionKeysReanchored` in the write gate: the migration happens and is
  *    discarded on exit, and each further run loses a little more of it for good
  *    (a legacy key is found by the word it names, so the next re-plan that
  *    rewrites that word retires it).
@@ -323,7 +340,18 @@ describe("produce's §137 caption wiring (source-text guard)", () => {
     // never reached disk. Either operand order satisfies this: what must not
     // survive is one of them going missing, or the `||` narrowing to `&&`.
     expect(src).toMatch(
-      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysChanged|captionKeysChanged\s*\|\|\s*cutResult\.changed)\s*\)/,
+      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\)/,
     );
+  });
+
+  it("gates that write on work DONE, never on `keysChanged`", () => {
+    // Final review, Critical 2. The gate that shipped fired whenever anything
+    // was unresolved, so the first produce after upgrading the field workdir
+    // wrote on a run that repaired nothing — and spent `overrides.json.bak`,
+    // the user's only pre-cut save, doing it. The variable is now bound to
+    // `captionWork.reanchored`, and this pins that binding: a rename back to
+    // the old predicate has to come past here.
+    expect(src).toMatch(/captionKeysReanchored\s*=\s*captionWork\.reanchored/);
+    expect(src).not.toContain("keysChanged");
   });
 });

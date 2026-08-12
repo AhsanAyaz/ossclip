@@ -1,9 +1,12 @@
 import {
   backfillSrcStart,
   captionAnchorOf,
+  captionEditsToKeep,
+  isLegacyCaptionKey,
   mapFromKeptSpans,
   migrateCaptionKeys,
   type AppliedCaptionEdits,
+  type CaptionEdit,
   type CaptionKeyMigration,
   type CaptionLine,
   type KeptSpan,
@@ -113,9 +116,17 @@ export interface MigratedOverrideDoc {
   doc: OverrideDoc;
   /**
    * Edits `migrateCaptionKeys` refused to place, keyed by the name the user's
-   * file knows them by. They are NOT in `doc` — the migration reports rather
-   * than guesses — so this is the only record they existed, and a caller that
-   * throws it away deletes the user's work without saying so.
+   * file knows them by — what the load-time banner reports.
+   *
+   * They ARE still in `doc`, under those same original keys, since the final
+   * review (Important 5). Stripping them was safe only while the editor never
+   * wrote: `edits.load` clears undo and marks the doc clean, so the first save
+   * after opening a legacy project deleted them from disk permanently, with a
+   * dismissible banner and a `console.warn` as the whole record. Keeping them
+   * restores the property that made `PUT /api/overrides` harmless without a
+   * `.bak` — a save round-trips what the editor loaded — and matches what
+   * `produce` now writes back (`captionEditsToKeep`), so the two paths agree
+   * about which edits a project still holds.
    */
   unresolved: CaptionKeyMigration["unresolved"];
 }
@@ -160,6 +171,17 @@ export interface MigratedOverrideDoc {
  * plan manufactures, and cost the user their current-format edit (§137 Task 6
  * review, Important 3).
  *
+ * WHAT IT WOULD NOT PLACE STAYS IN THE DOC — see `MigratedOverrideDoc` for
+ * why. Those keys are positional, so they address no word and cannot apply;
+ * `sourceKeyedCaptionEdits` below is what keeps them out of the apply pass,
+ * mirroring produce's use of `migration.edits` there.
+ *
+ * THIS PATH SEES LESS DRIFT THAN PRODUCE'S, always. It resolves against the
+ * LAST run's lines with the live memo deliberately not applying `doc.cuts`, so
+ * a stored index that a pending cut will invalidate still exact-hits here —
+ * the preview can show an edit as applied that the render then reports
+ * `out-of-range`. Stated, not closed: see `MIGRATION_SEARCH_RADIUS`.
+ *
  * Pure — the caller owns the fetch.
  */
 export function migrateLoadedDoc(
@@ -168,16 +190,107 @@ export function migrateLoadedDoc(
 ): MigratedOverrideDoc {
   const lines = props.baseCaptionLines ?? props.captionLines ?? [];
   const migrated = migrateCaptionKeys(doc.captions, lines);
-  return { doc: { ...doc, captions: migrated.edits }, unresolved: migrated.unresolved };
+  return {
+    doc: { ...doc, captions: captionEditsToKeep(doc.captions, migrated) },
+    unresolved: migrated.unresolved,
+  };
+}
+
+/**
+ * Just the edits that address a word — the ones the apply pass may see.
+ *
+ * The doc now carries unresolved LEGACY edits through (`migrateLoadedDoc`), and
+ * a positional key matches no anchor, so feeding the raw map to
+ * `applyCaptionEdits` would report every one of them as `found: null` — "no
+ * word in this cut sits at that moment any more", which is the exact
+ * misdiagnosis §137 removed from the CLI's own drop lines, raised on every
+ * render, over edits the load-time banner already named. produce splits the
+ * same two sets by using `migration.edits` for the apply and
+ * `captionEditsToKeep` for the doc; this is that split on the editor side.
+ *
+ * Pure, and a no-op for the overwhelmingly common already-source-keyed doc.
+ */
+export function sourceKeyedCaptionEdits(
+  captions: Record<string, CaptionEdit>,
+): Record<string, CaptionEdit> {
+  const out: Record<string, CaptionEdit> = {};
+  for (const [key, edit] of Object.entries(captions)) {
+    if (!isLegacyCaptionKey(key)) out[key] = edit;
+  }
+  return out;
+}
+
+/**
+ * Caption edits that were in the editor's doc before a render and are not in
+ * the doc it reloads afterwards (final review, Important 4).
+ *
+ * A completed render is the one moment the editor replaces its whole doc with
+ * one it did not write, and until now nothing checked what came back. The
+ * ledger's claim that such losses "are reported in the run log, which the
+ * editor's render panel shows" is FALSE on success: `App.tsx` clears `render`
+ * the moment the exit code is 0, taking the log with it, and the reloaded doc
+ * is already clean — so `unresolved` is empty, `dropped` is empty, and a
+ * retype disappears from the transcript between one frame and the next with
+ * nothing on screen about it.
+ *
+ * BY CONTENT, NOT BY KEY, and that is the whole subtlety: the successful case
+ * is precisely a re-KEY (`"3"` → `"w2368"`), so a key diff would report every
+ * repair as a loss. An edit survived if some entry in the new doc says the
+ * same thing — same replacement text over the same `was`. Counted as a
+ * multiset so that the same retype stored twice, with one of the two dropped,
+ * is still reported once.
+ *
+ * Pure — the caller owns the fetch and the banner.
+ */
+export function vanishedCaptionEdits(
+  before: Record<string, CaptionEdit>,
+  after: Record<string, CaptionEdit>,
+): CaptionEdit[] {
+  // `JSON.stringify` of the PAIR rather than a joined string: a retype's
+  // `text` is free-form user input (the field case's is `"The same prompt for
+  // bash,"`), so any separator character it might contain is one a pair could
+  // forge — `["a", "b|c"]` and `["a|b", "c"]` must not share an identity.
+  const idOf = (e: CaptionEdit): string => JSON.stringify([e.text, e.was]);
+  const survivors = new Map<string, number>();
+  for (const e of Object.values(after)) survivors.set(idOf(e), (survivors.get(idOf(e)) ?? 0) + 1);
+  const lost: CaptionEdit[] = [];
+  for (const e of Object.values(before)) {
+    const left = survivors.get(idOf(e)) ?? 0;
+    if (left > 0) survivors.set(idOf(e), left - 1);
+    else lost.push(e);
+  }
+  return lost;
+}
+
+/**
+ * What the user is told about an edit that did not come back from a render.
+ *
+ * Deliberately does NOT guess at a cause, and does NOT point at
+ * `overrides.json.bak`. All the editor knows is that the doc it now holds is
+ * missing an edit it had — the reason lives in a run log this component has
+ * already discarded — and the `.bak` is only the right advice when the edit
+ * had reached disk at all, which is false for the other way this fires (a
+ * retype made WHILE the render ran, which the reload discards by design).
+ * Naming the words and stating the fact is everything that is actually known.
+ */
+export function renderLossNotices(lost: readonly CaptionEdit[]): string[] {
+  return lost.map(
+    (e) =>
+      `“${e.was}” was retyped as “${e.text}”, and the overrides this render wrote back ` +
+      `no longer have it. Retype it if you still want it.`,
+  );
 }
 
 /**
  * What the user is told about edits the migration could not place (§137).
  *
- * A one-time EVENT — these edits are gone from the doc the editor now holds,
- * so nothing the user does brings them back and nothing later reports them
- * again. Kept separate from `droppedEditNotices` below for exactly that
- * reason: this list is state, that one is a live property of the doc.
+ * A one-time EVENT — this is what the migration decided at LOAD, and nothing
+ * the user does afterwards re-runs it or reports it again. Kept separate from
+ * `droppedEditNotices` below for exactly that reason: this list is state, that
+ * one is a live property of the doc. (Since the final review the edits
+ * themselves are no longer gone — they stay in the doc under their original
+ * keys, inert — so this is a notice about what could not be placed, not about
+ * what was deleted.)
  *
  * ONE SENTENCE PER CAUSE (§137 Task 6 review, Minor 7). An earlier version
  * blamed the cut for all of them, which is wrong for three of the four: an
@@ -192,6 +305,12 @@ export function migrationLossNotices(
   return unresolved.map((u) => {
     const older = `“${u.was}” was retyped in an older version of this project`;
     switch (u.reason) {
+      case "out-of-range":
+        // The word is on screen, so this must not read like the cut removed
+        // it (final review, Important 2). It also must not read like a loss:
+        // the edit stays in the project, and it is the RETYPE that fixes it
+        // for good rather than a re-run.
+        return `${older}, and the word is still here but too far from where the edit was stored to be sure it is the same one — it was left alone. It is still saved. Retype it here to re-anchor it.`;
       case "ambiguous":
         return `${older}, and more than one word here says it — it was left alone rather than applied to the wrong one. Retype the one you meant.`;
       case "unanchorable":

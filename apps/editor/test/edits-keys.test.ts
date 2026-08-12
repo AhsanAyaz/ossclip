@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { OverrideDocSchema, type CaptionLine } from "@ossclip/core/browser";
 import { editReducer, initialEditState } from "../src/useEdits";
 import {
@@ -7,6 +8,9 @@ import {
   droppedEditNotices,
   migrateLoadedDoc,
   migrationLossNotices,
+  renderLossNotices,
+  sourceKeyedCaptionEdits,
+  vanishedCaptionEdits,
 } from "../src/captionAnchors";
 
 /**
@@ -191,13 +195,40 @@ describe("migrateLoadedDoc — upgrading a pre-§137 overrides.json", () => {
     // §137 Task 6's decision, pinned. `apps/cli/src/edit.ts` serves
     // render-props.json exactly as it sits on disk, so a migration bolted on
     // there would see this: every word answers "no anchor", every edit is
-    // reported lost, and the doc comes back empty. A test that only ever ran
-    // against repaired lines would have called that a passing migration.
+    // reported lost, and NOTHING is placed. A test that only ever ran against
+    // repaired lines would have called that a passing migration.
     const props = { captionLines: [legacy(["Claude", 0.09, 0.47], ["gave", 0.47, 0.78])] };
     const doc = OverrideDocSchema.parse({ captions: { "1": { text: "GAVE", was: "gave" } } });
     const out = migrateLoadedDoc(doc, props);
-    expect(out.doc.captions).toEqual({});
     expect(out.unresolved).toEqual([{ key: "1", was: "gave", reason: "unanchorable" }]);
+    // And the edit is still THERE. It used to come back as `{}` — which meant
+    // the very next ⌘S wrote that emptiness to disk, over a project whose only
+    // defect was an old render-props.json (final review, Important 5).
+    expect(out.doc.captions).toEqual({ "1": { text: "GAVE", was: "gave" } });
+  });
+
+  it("KEEPS what it could not place, so a save round-trips it (Important 5)", () => {
+    // `edits.load` marks the doc clean AND clears undo, so a stripped edit had
+    // no route back: dismiss the banner, change anything, save, gone for good.
+    // The doc the editor holds must be a superset of what it loaded.
+    const props = { baseCaptionLines: [anchoredLine("Claude", 0.09, 0.09)] };
+    const doc = OverrideDocSchema.parse({
+      captions: { "7": { text: "GONE", was: "nothing-says-this" } },
+    });
+    const out = migrateLoadedDoc(doc, props);
+    expect(out.doc.captions).toEqual(doc.captions);
+    expect(out.unresolved).toEqual([
+      { key: "7", was: "nothing-says-this", reason: "not-found" },
+    ]);
+  });
+
+  it("still retires a `superseded` legacy duplicate — the one deletion that is not a loss", () => {
+    const props = { baseCaptionLines: [anchoredLine("Claude", 0.09, 0.09)] };
+    const doc = OverrideDocSchema.parse({
+      captions: { "0": { text: "OLD", was: "Claude" }, w90: { text: "NEW", was: "Claude" } },
+    });
+    const out = migrateLoadedDoc(doc, props);
+    expect(out.doc.captions).toEqual({ w90: { text: "NEW", was: "Claude" } });
   });
 
   it("resolves against baseCaptionLines, the lines the edits are actually merged onto", () => {
@@ -229,30 +260,47 @@ describe("migrateLoadedDoc — upgrading a pre-§137 overrides.json", () => {
 });
 
 describe("what the user is told about caption edits that did not land (§137)", () => {
-  const loss = (reason: "not-found" | "ambiguous" | "unanchorable" | "collision" | "superseded") =>
+  const REASONS = [
+    "not-found",
+    "out-of-range",
+    "ambiguous",
+    "unanchorable",
+    "collision",
+    "superseded",
+  ] as const;
+  const loss = (reason: (typeof REASONS)[number]) =>
     migrationLossNotices([{ key: "3", was: "batch,", reason }])[0]!;
 
   it("names the word, whatever the cause", () => {
-    for (const r of ["not-found", "ambiguous", "unanchorable", "collision", "superseded"] as const) {
-      expect(loss(r)).toContain("batch,");
-    }
+    for (const r of REASONS) expect(loss(r)).toContain("batch,");
   });
 
   it("blames the cut ONLY when the word is actually gone (Minor 7)", () => {
-    // The other three leave the word sitting on screen — an earlier version
+    // The other four leave the word sitting on screen — an earlier version
     // told the user it had been cut, which is a search for something that
-    // never moved.
+    // never moved. `out-of-range` is the newest member of that group (final
+    // review, Important 2) and the most misleading one to get wrong: the word
+    // is not merely still on screen, it is still the RIGHT word.
     expect(loss("not-found")).toContain("the cut probably removed it");
+    expect(loss("out-of-range")).not.toContain("cut");
     expect(loss("ambiguous")).not.toContain("cut");
     expect(loss("collision")).not.toContain("cut");
     expect(loss("superseded")).not.toContain("cut");
     expect(loss("unanchorable")).not.toContain("cut");
   });
 
+  it("tells the out-of-range user their edit is still saved", () => {
+    // It is: the doc keeps it (`captionEditsToKeep`). A sentence that read as
+    // a loss would have them redo work they still have.
+    expect(loss("out-of-range")).toContain("still saved");
+    expect(loss("out-of-range")).toContain("too far");
+  });
+
   it("asks for a retype only where a retype is the answer", () => {
     // "Retype", capitalised: every sentence opens with "was retyped in an
-    // older version", so a bare substring match would pass on all five.
+    // older version", so a bare substring match would pass on all of them.
     expect(loss("not-found")).toContain("Retype");
+    expect(loss("out-of-range")).toContain("Retype");
     expect(loss("ambiguous")).toContain("Retype");
     expect(loss("collision")).toContain("Retype");
     // The newer edit was KEPT — there is nothing for the user to redo.
@@ -309,6 +357,110 @@ describe("what the user is told about caption edits that did not land (§137)", 
 });
 
 /**
+ * The doc now carries edits the migration could not place, and they are keyed
+ * by POSITION — so the apply pass has to be handed a narrower set than the doc
+ * (final review, Important 5, second-order).
+ */
+describe("sourceKeyedCaptionEdits", () => {
+  const edit = { text: "Bash,", was: "batch," };
+
+  it("drops the positional keys the apply pass cannot address", () => {
+    // Left in, `applyCaptionEdits` reports each as `found: null` — "no word in
+    // this cut sits at that moment any more" — which is the wrong diagnosis
+    // (the key never named a moment) and a second banner for something the
+    // migration notice already covered.
+    expect(sourceKeyedCaptionEdits({ "0": edit, w1768: edit })).toEqual({ w1768: edit });
+  });
+
+  it("is a no-op for the ordinary source-keyed doc, including w0", () => {
+    const doc = { w0: edit, w1768: edit };
+    expect(sourceKeyedCaptionEdits(doc)).toEqual(doc);
+    expect(sourceKeyedCaptionEdits({})).toEqual({});
+  });
+});
+
+/**
+ * The render is the one moment the editor adopts a doc it did not write, and
+ * on SUCCESS every other channel is already empty: `setRender(null)` throws
+ * away the log that named anything produce dropped, and the reloaded doc is
+ * clean so neither `unresolved` nor `dropped` has anything to say (final
+ * review, Important 4).
+ */
+describe("vanishedCaptionEdits", () => {
+  const zsh = { text: "Zsh,", was: "edge," };
+  const bash = { text: "Bash,", was: "batch," };
+
+  it("says NOTHING about a successful re-key — the whole point of the render", () => {
+    // By content, not by key. A key diff would report every repair this branch
+    // exists to perform as a loss, which is worse than saying nothing.
+    expect(vanishedCaptionEdits({ "1": zsh }, { w6000: zsh })).toEqual([]);
+  });
+
+  it("names an edit that did not come back", () => {
+    expect(vanishedCaptionEdits({ w6000: zsh, w1768: bash }, { w6000: zsh })).toEqual([bash]);
+  });
+
+  it("counts, so one of two identical retypes going missing is still reported", () => {
+    // Two words can carry the same retype over the same `was`; a set-based
+    // check would see the survivor and call the other one fine.
+    const lost = vanishedCaptionEdits({ w1: bash, w2: bash }, { w1: bash });
+    expect(lost).toEqual([bash]);
+  });
+
+  it("treats a CHANGED replacement as a loss — the old text is not on screen any more", () => {
+    expect(vanishedCaptionEdits({ w6000: zsh }, { w6000: { text: "Fish,", was: "edge," } })).toEqual(
+      [zsh],
+    );
+  });
+
+  it("does not let a same-text retype over a DIFFERENT word stand in for the lost one", () => {
+    // Both halves of the pair are the identity, not just the replacement: two
+    // words retyped to the same string are two different edits, and treating
+    // one as the other's survivor loses one silently — the failure mode this
+    // whole diff exists to close.
+    const overEdge = { text: "X", was: "edge," };
+    const overStatus = { text: "X", was: "status" };
+    expect(vanishedCaptionEdits({ w6000: overEdge }, { w5000: overStatus })).toEqual([overEdge]);
+  });
+
+  it("cannot be fooled by a pair that reads the same when joined", () => {
+    // `text` is free-form user input, so any separator it might contain is one
+    // a crafted pair could forge into a false survivor.
+    const a = { text: "a", was: "b,c" };
+    const b = { text: "a,b", was: "c" };
+    expect(vanishedCaptionEdits({ w1: a }, { w1: b })).toEqual([a]);
+  });
+
+  it("says nothing when the doc is untouched, or empty on both sides", () => {
+    expect(vanishedCaptionEdits({ w6000: zsh }, { w6000: zsh })).toEqual([]);
+    expect(vanishedCaptionEdits({}, {})).toEqual([]);
+    expect(vanishedCaptionEdits({}, { w6000: zsh })).toEqual([]);
+  });
+});
+
+describe("renderLossNotices", () => {
+  it("names both the original word and what it was retyped to", () => {
+    const [line] = renderLossNotices([{ text: "Zsh,", was: "edge," }]);
+    expect(line).toContain("edge,");
+    expect(line).toContain("Zsh,");
+  });
+
+  it("invents no cause, and does not send the user to a .bak that may not have it", () => {
+    // The reason is in a run log the component has already discarded, and the
+    // `.bak` only holds the edit if it ever reached disk — false for the other
+    // way this fires (a retype made WHILE the render ran).
+    const [line] = renderLossNotices([{ text: "Zsh,", was: "edge," }]);
+    expect(line).not.toContain("cut");
+    expect(line).not.toContain(".bak");
+    expect(line).toContain("Retype it");
+  });
+
+  it("says nothing when nothing vanished", () => {
+    expect(renderLossNotices([])).toEqual([]);
+  });
+});
+
+/**
  * The DOM boundary between `CaptionTrack` and `Overlay` (§137). The stage
  * double-click has no caption lines to consult, so the anchor re-enters the
  * editor as an attribute string here.
@@ -347,5 +499,46 @@ describe("captionSrcFromAttribute", () => {
       spans: [{ srcIn: 0, srcOut: 31.9, outIn: 0, outOut: 31.9 }],
     });
     expect(out.captionLines![0]!.words[0]!.srcStart).toBe(99);
+  });
+});
+
+/**
+ * The App.tsx side of the render-loss disclosure, guarded by reading the
+ * source — the same crude shape, and the same justification, as produce's
+ * wiring guard in `apps/cli/test/caption-report.test.ts`.
+ *
+ * No test in this repo drives a SUCCESSFUL render: `renderflow.spec.ts`'s two
+ * runs are a slow fake that gets cancelled, so the poll's `exitCode === 0`
+ * branch — the only place the editor adopts a doc it did not write — executes
+ * nowhere. That is precisely the branch the final review found silent
+ * (Important 4): the run log is discarded on success and the reloaded doc is
+ * clean, so the pure functions above can be perfect and the user still sees
+ * nothing. Mounting `<App>` to reach it means jsdom plus `<Player>`, which
+ * `scene-layer-structure.test.ts` already ruled out for this codebase.
+ *
+ * A stand-in for a real test of that branch, not a substitute for one.
+ */
+describe("App.tsx §137 loss wiring (source-text guard)", () => {
+  const src = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  it("DIFFS the reloaded doc against the one the render started with", () => {
+    // Bound to the pre-reload snapshot on one side and the migrated doc on the
+    // other: diffing `migrated.doc` against itself, or against the doc as it
+    // was at mount, both typecheck and both report nothing, forever.
+    expect(src).toMatch(/const\s+before\s*=\s*captionsRef\.current/);
+    expect(src).toMatch(/vanishedCaptionEdits\(\s*before,\s*migrated\.doc\.captions\s*\)/);
+  });
+
+  it("SHOWS what that diff found — a computed list nobody renders is the same silence", () => {
+    expect(src).toMatch(/setRenderCaptionLoss\(\s*lost\s*\)/);
+    expect(src).toMatch(/renderCaptionLoss\.length\s*>\s*0/);
+    expect(src).toMatch(/\.\.\.renderCaptionLoss/);
+  });
+
+  it("keeps positional keys out of the apply pass", () => {
+    // The doc carries edits the migration could not place (Important 5), and
+    // they address no word — passing the raw map here reports every one of
+    // them as cut-removed on every render.
+    expect(src).toMatch(/applyCaptionEdits\(\s*base,\s*sourceKeyedCaptionEdits\(/);
   });
 });

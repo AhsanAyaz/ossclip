@@ -833,7 +833,13 @@ describe("captionsHidden (doc-global captions OFF switch)", () => {
   });
 });
 
-import { captionAnchorOf, captionKeyFor, migrateCaptionKeys } from "../src/overrides";
+import {
+  captionAnchorOf,
+  captionEditsToKeep,
+  captionKeyFor,
+  migrateCaptionKeys,
+  MIGRATION_SEARCH_RADIUS,
+} from "../src/overrides";
 import type { CaptionLine, CaptionWord } from "../src/captions";
 
 describe("source-anchored caption keys (§137)", () => {
@@ -977,6 +983,61 @@ describe("source-anchored caption keys (§137)", () => {
     );
     expect(edits).toEqual({ w6000: { text: "Fish,", was: "edge," } });
     expect(unresolved).toEqual([{ key: "3", was: "edge,", reason: "superseded" }]);
+  });
+
+  /**
+   * The bound the whole upgrade's yield hangs off (final review, Important 2).
+   * Written against the constant rather than against `8`, so changing the
+   * value re-runs the same two questions instead of failing an arithmetic
+   * assertion — what these pin is that there IS a boundary, that it sits
+   * exactly there, and that the far side reports rather than loses.
+   *
+   * The fixture puts the `was` at index 0 and stores the edit at index
+   * `0 + drift`, i.e. a doc whose positions are `drift` words too HIGH —
+   * exactly what a cut removing `drift` caption words leaves behind.
+   */
+  describe(`MIGRATION_SEARCH_RADIUS (${MIGRATION_SEARCH_RADIUS})`, () => {
+    /** `was` at 0, then `n` distinct filler words, all anchorable. */
+    const driftLines = (n: number): CaptionLine[] => [
+      line(["batch,", 1], ...Array.from({ length: n }, (_, i): [string, number] => [`w${i}`, i + 2])),
+    ];
+    const migrateAtDrift = (drift: number) =>
+      migrateCaptionKeys(
+        { [String(drift)]: { text: "bash,", was: "batch," } },
+        driftLines(drift + 1),
+      );
+
+    it("recovers an edit that drifted EXACTLY the radius", () => {
+      const { edits, unresolved } = migrateAtDrift(MIGRATION_SEARCH_RADIUS);
+      expect(edits).toEqual({ w1000: { text: "bash,", was: "batch," } });
+      expect(unresolved).toEqual([]);
+    });
+
+    it("REPORTS one word further as out-of-range — it never says the cut removed it", () => {
+      // Past the radius the word is sitting on screen untouched, so the
+      // `not-found` sentence ("the cut removed it") would send the user to
+      // redo visible work. And `captionEditsToKeep` keeps it, so a later run
+      // with less drift can still place it.
+      const migration = migrateAtDrift(MIGRATION_SEARCH_RADIUS + 1);
+      expect(migration.edits).toEqual({});
+      expect(migration.unresolved).toEqual([
+        { key: String(MIGRATION_SEARCH_RADIUS + 1), was: "batch,", reason: "out-of-range" },
+      ]);
+      expect(captionEditsToKeep({ [String(MIGRATION_SEARCH_RADIUS + 1)]: { text: "bash,", was: "batch," } }, migration)).toEqual({
+        [String(MIGRATION_SEARCH_RADIUS + 1)]: { text: "bash,", was: "batch," },
+      });
+    });
+
+    it("still says `not-found` when the word really is gone, at any distance", () => {
+      // The distinction has to survive the new full scan: `out-of-range` means
+      // the word EXISTS somewhere, and the field case's "batch," genuinely
+      // does not.
+      const { unresolved } = migrateCaptionKeys(
+        { "20": { text: "bash,", was: "batch," } },
+        [line(["status", 1], ["edge,", 2])],
+      );
+      expect(unresolved).toEqual([{ key: "20", was: "batch,", reason: "not-found" }]);
+    });
   });
 
   it("names the cause: a word that is simply gone is `not-found`, not a collision", () => {
@@ -1124,6 +1185,58 @@ describe("captionAnchorOf — the tolerant form callers outside core must use (�
     // instead of a finite-check would silently make the first word of every
     // video un-retypable.
     expect(captionAnchorOf(word(0))).toBe("w0");
+  });
+});
+
+/**
+ * The rule both write-backs share (final review, Critical 1). It used to be
+ * `migration.edits` at each call site, which is a DELETE of every edit the
+ * migration could not place — on a run the user only asked to render.
+ */
+describe("captionEditsToKeep — what survives a migration (§137)", () => {
+  const edit = (was: string) => ({ text: was.toUpperCase(), was });
+
+  it("keeps everything the migration placed", () => {
+    const m = { edits: { w1768: edit("batch,") }, unresolved: [] };
+    expect(captionEditsToKeep({ "0": edit("batch,") }, m)).toEqual({ w1768: edit("batch,") });
+  });
+
+  it("KEEPS an unresolved edit under its original key — a repair it cannot do is not a delete", () => {
+    // The whole finding: next run, against a different cut, this may place.
+    // Deleting it forecloses that permanently and nobody asked for a delete.
+    for (const reason of ["not-found", "out-of-range", "ambiguous", "unanchorable", "collision"] as const) {
+      const before = { "3": edit("batch,") };
+      const m = { edits: {}, unresolved: [{ key: "3", was: "batch,", reason }] };
+      expect(captionEditsToKeep(before, m)).toEqual(before);
+    }
+  });
+
+  it("retires ONLY `superseded` — the one case that is not a loss", () => {
+    // A newer source-keyed edit already covers that word, so keeping the older
+    // legacy duplicate would re-report the same collision forever.
+    const before = { "0": edit("edge,"), w6000: { text: "Fish,", was: "edge," } };
+    const m = {
+      edits: { w6000: { text: "Fish,", was: "edge," } },
+      unresolved: [{ key: "0", was: "edge,", reason: "superseded" as const }],
+    };
+    expect(captionEditsToKeep(before, m)).toEqual({ w6000: { text: "Fish,", was: "edge," } });
+  });
+
+  it("never lets a preserved key overwrite a placed one", () => {
+    // Structural: a preserved key is legacy (a source key always resolves to
+    // itself and wins its anchor), a placed key is always `w<ms>`. Pinned so a
+    // future reason that CAN carry a source key does not silently clobber.
+    const before = { "0": edit("the"), "5": edit("the") };
+    const m = {
+      edits: { w1000: edit("the") },
+      unresolved: [{ key: "5", was: "the", reason: "collision" as const }],
+    };
+    expect(captionEditsToKeep(before, m)).toEqual({ w1000: edit("the"), "5": edit("the") });
+  });
+
+  it("is a no-op for the ordinary already-source-keyed doc", () => {
+    const before = { w6000: edit("edge,") };
+    expect(captionEditsToKeep(before, { edits: before, unresolved: [] })).toEqual(before);
   });
 });
 

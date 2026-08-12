@@ -170,10 +170,21 @@ export function captionEditWas(
 }
 
 /**
- * The id a pre-§137 split gets when it is upgraded: its ORIGINAL output
- * milliseconds. Load-bearing for the migration — a saved doc hiding
- * `scene-0@600` must still match the half after the upgrade, and that only
- * holds if the derived id reproduces the old name exactly.
+ * The id a pre-§137 split gets when it is upgraded: the output milliseconds of
+ * whatever `at` the file holds NOW.
+ *
+ * Load-bearing for the migration — a saved doc hiding `scene-0@600` should
+ * still match that half after the upgrade — but ONLY for a doc that has not
+ * already been through a re-anchoring produce run, and the distinction is not
+ * cosmetic (final review, Important 3). `at` is the one thing a re-cut moves,
+ * so on a doc the §137 bug already damaged this reproduces the CURRENT time,
+ * not the original: the field workdir's live `overrides.json` holds
+ * `splits: [0]`, mints id `"0"`, and its saved `scene-0@600` matches nothing.
+ * There is no better derivation available — the original ms is genuinely gone
+ * from a re-anchored file, and nothing on disk records it — so the honest
+ * statement is that a doc damaged BEFORE this fix landed cannot recover its
+ * split-half overrides, and only `overrides.json.bak` can (which is why
+ * `produce`'s write gate must not spend it; final review, Critical 2).
  */
 export function legacySplitId(at: number): string {
   return String(Math.round(at * 1000));
@@ -597,8 +608,47 @@ export function captionAnchorOf(word: CaptionWord | undefined): string | null {
   return captionKeyFor(word.srcStart);
 }
 
-/** How far either side of the stored index the migration will look for `was`. */
-const MIGRATION_SEARCH_RADIUS = 8;
+/**
+ * How far either side of the stored index the migration will look for `was`
+ * (§137).
+ *
+ * A JUDGEMENT, not a measurement — stated because this is the constant that
+ * decides how much of a user's saved work the one-shot upgrade recovers, and
+ * it shipped with a *what* comment and no *why* (final review, Important 2).
+ * The trade runs in both directions at once: every extra word the scan
+ * considers is another chance that a common word (`the`, `it`) matches by
+ * coincidence, and the ambiguity rule below turns a coincidence into a
+ * REFUSAL. So widening this recovers more far-drifted edits and refuses more
+ * near ones; it is not a free "more is better" dial. Eight words is on the
+ * order of two or three seconds of speech — comfortably past the field case (a
+ * 0.6s trim moved every stored index by one) while still short enough that the
+ * window usually holds a given word once.
+ *
+ * The bound is affordable only because being past it is no longer a LOSS. Such
+ * an edit is reported `out-of-range` — the word is still on screen, merely too
+ * far from where the edit was stored to be sure it is the same one — and both
+ * migration callers carry it through into the doc they keep, so a later run
+ * against a different cut can still place it. Deleting it was the final
+ * review's Critical 1.
+ *
+ * THE TWO MIGRATION PATHS SEE DIFFERENT DRIFT, which is what makes the value
+ * user-visible rather than internal. The editor migrates against the LAST
+ * run's `render-props.json`, and its live preview deliberately never applies
+ * `doc.cuts` (`App.tsx`) — so the positions the doc stored and the positions
+ * it resolves against are the same ones: drift 0, every legacy edit exact-hits
+ * and shows as applied. `produce` migrates against lines built AFTER the
+ * user's new cut, so its drift is the number of caption words that cut
+ * removed. A cut removing more than this many words therefore shows every
+ * retype in the preview and reports them `out-of-range` in the render. Closing
+ * that gap would mean re-implementing the EDL in the browser, which is the one
+ * thing `App.tsx`'s live memo exists to avoid, so the divergence is STATED
+ * rather than fixed — and `out-of-range` plus the write-back's preservation
+ * rule is what keeps it a message instead of vanished work.
+ *
+ * Exported so the report lines can name the bound they hit, and so the
+ * boundary tests are written against the constant rather than against `8`.
+ */
+export const MIGRATION_SEARCH_RADIUS = 8;
 
 /**
  * WHY an edit could not be migrated. Reported rather than folded into one
@@ -607,6 +657,12 @@ const MIGRATION_SEARCH_RADIUS = 8;
  * a word that is still sitting on screen.
  *  - `not-found`: no word here says `was` any more — a cut removed it, or a
  *    re-plan rewrote it.
+ *  - `out-of-range`: a word here DOES say `was`, but only past
+ *    `MIGRATION_SEARCH_RADIUS` from the stored index. Split out of
+ *    `not-found` (final review, Important 2): the two are the same silence to
+ *    the code and opposite advice to the user — one word is gone, the other is
+ *    sitting on screen untouched, and telling that user "the cut removed it"
+ *    sends them to redo work they can still see.
  *  - `ambiguous`: several words nearby say `was` and the search cannot tell
  *    which one the user meant.
  *  - `unanchorable`: the word IS here, but carries no source time to key on —
@@ -619,6 +675,7 @@ const MIGRATION_SEARCH_RADIUS = 8;
  */
 export type CaptionMigrationReason =
   | "not-found"
+  | "out-of-range"
   | "ambiguous"
   | "unanchorable"
   | "collision"
@@ -675,7 +732,19 @@ function resolveCaptionAnchor(
   // Ambiguity is judged on the TEXT matches, before anchors are considered —
   // an unanchorable candidate still means the search could not tell two words
   // apart, so it must not silently narrow the field to one.
-  if (matches.length === 0) return { to: null, reason: "not-found" };
+  if (matches.length === 0) {
+    // Nothing WITHIN the radius — but that is two different facts, and they
+    // owe the user opposite advice (final review, Important 2). A full scan
+    // (only ever on the failure path, so it costs nothing on a healthy doc)
+    // separates "the cut removed this word" from "the word is right there,
+    // further from the stored index than the search is willing to trust". The
+    // second is not re-anchored — past the radius the position record has been
+    // proven wrong by too much for a lone text match to stand in for it — but
+    // it is REPORTED as what it is, and the callers keep the edit in the doc
+    // so a later run can still place it.
+    const elsewhere = words.some((w) => w.text === edit.was);
+    return { to: null, reason: elsewhere ? "out-of-range" : "not-found" };
+  }
   if (matches.length > 1) return { to: null, reason: "ambiguous" };
   return anchorOrUnanchorable(words[matches[0]!]);
 }
@@ -780,6 +849,47 @@ export function migrateCaptionKeys(
     });
   }
   return { edits: out, unresolved };
+}
+
+/**
+ * The caption map to KEEP after a migration: everything it placed, plus every
+ * edit it would not place, left exactly as the user's file holds it.
+ *
+ * `migration.edits` alone is what both callers wrote back at first, and it is
+ * a DELETE (final review, Critical 1): an edit produce cannot anchor this run
+ * may well be anchorable the next one — a different cut, re-planned lines, or
+ * simply a `MIGRATION_SEARCH_RADIUS` the drift no longer exceeds — and
+ * dropping it forecloses that, permanently, on a run the user only asked to
+ * render. Nobody asked for a delete. An unresolved key left in the doc costs
+ * nothing: it addresses no word, so it applies to nothing, and it is reported
+ * by name on every run. That was the pre-§137 status quo for a stale key and
+ * it is the right one.
+ *
+ * `superseded` is the ONE retirement, and it is not a loss: a newer
+ * source-keyed edit already covers that word (see `migrateCaptionKeys`), so
+ * keeping the older legacy duplicate would re-report the same collision on
+ * every run forever with nothing the user could do about it.
+ *
+ * Preserved keys cannot collide with placed ones — a preserved key is legacy
+ * (`/^\d+$/`, since a source key always resolves to itself and wins its
+ * anchor) and a placed key is always `w<ms>`. `before` must have been through
+ * `OverrideDocSchema`, for the `"__proto__"` reason `migrateCaptionKeys`
+ * states.
+ */
+export function captionEditsToKeep(
+  before: Record<string, CaptionEdit>,
+  migration: CaptionKeyMigration,
+): Record<string, CaptionEdit> {
+  const out: Record<string, CaptionEdit> = { ...migration.edits };
+  for (const u of migration.unresolved) {
+    if (u.reason === "superseded") continue;
+    const edit = before[u.key];
+    // Unreachable — `unresolved` is built from `before`'s own entries — but
+    // this is user data on its way back to disk, and a lookup that came back
+    // undefined must not be written into a map typed as `CaptionEdit`.
+    if (edit !== undefined) out[u.key] = edit;
+  }
+  return out;
 }
 
 export interface AppliedCaptionEdits {

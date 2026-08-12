@@ -1952,13 +1952,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // rename, never a second write here. A legacy key's resolvability DECAYS (it
   // is found by the word it names, so the next re-plan that rewrites that word
   // loses it for good), and this is the only durable repair in the product —
-  // the editor's evaporates, as Critical 1 showed. The edits it could not
-  // place leave the doc as the cost of that, so every one is printed by name
-  // below and the pre-migration file survives as `overrides.json.bak`.
+  // the editor's evaporates, as Critical 1 showed. The edits it could NOT
+  // place stay in the doc regardless (`captionEditsToKeep`): they are printed
+  // by name below, and a run that cannot anchor one today is not permission to
+  // delete it — the next run, against a different cut, may place it (final
+  // review, Critical 1).
   const captionWork = reconcileCaptionEdits(overrideDoc, baseCaptionLines);
   overrideDoc = captionWork.doc;
   const captionLines = captionWork.lines;
-  const captionKeysChanged = captionWork.keysChanged;
+  const captionKeysReanchored = captionWork.reanchored;
   for (const line of captionWork.log) console.log(line);
 
   // Micro zoom punches (FINDINGS §15) reversing at real phrase breaks (§18).
@@ -2198,13 +2200,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // next run's `priorMap` then sees drift and re-anchors again, the same
   // recovery path finding 3 already has to support — never a false "nothing
   // changed" that quietly corrupts positions.
-  // `cutResult.changed` OR a §137 caption-key migration — the second is why
-  // this is no longer a bare cut check. Both are re-anchorings of the user's
-  // doc to something the pipeline just recomputed, and both want the same
-  // `.bak`-then-atomic-rename treatment; a separate write for the migration
-  // would be a SECOND sanctioned write, which the comment above exists to
-  // prevent.
-  if (cutResult.changed || captionKeysChanged) {
+  // `cutResult.changed` OR a §137 caption-key migration that actually MOVED an
+  // edit — the second is why this is no longer a bare cut check. Both are
+  // re-anchorings of the user's doc to something the pipeline just recomputed,
+  // and both want the same `.bak`-then-atomic-rename treatment; a separate
+  // write for the migration would be a SECOND sanctioned write, which the
+  // comment above exists to prevent.
+  //
+  // "ACTUALLY MOVED" is load-bearing and was not there at first (final review,
+  // Critical 2). Gated on "the migration reported something" instead, this
+  // fires on a run that repaired NOTHING — and since a caption migration is
+  // independent of the cut, it fires on runs where the pre-§137 gate wrote
+  // nothing at all. On the field workdir that is the first `ossclip produce`
+  // after upgrading: `cutResult.changed` is false, so the write is new, and it
+  // copies the already-damaged `overrides.json` over `overrides.json.bak` —
+  // the user's only pre-cut save, and the only artefact from which their
+  // deleted split half could ever be recovered (`legacySplitId`). No repair,
+  // and the evidence for the other repair gone.
+  if (cutResult.changed || captionKeysReanchored) {
     // Keep a `.bak` of whatever was on disk first — the same safety net
     // `saveConfigPatch` keeps for a config file it's about to replace —
     // before overwriting the user's own data. Atomic write via tmp+rename,

@@ -1,4 +1,10 @@
-import { applyCaptionEdits, isLegacyCaptionKey, migrateCaptionKeys } from "@ossclip/core";
+import {
+  applyCaptionEdits,
+  captionEditsToKeep,
+  isLegacyCaptionKey,
+  migrateCaptionKeys,
+  MIGRATION_SEARCH_RADIUS,
+} from "@ossclip/core";
 import type {
   AppliedCaptionEdits,
   CaptionEdit,
@@ -92,6 +98,13 @@ export function appliedCaptionEditCount(
 export function captionMigrationLine(u: CaptionKeyMigration["unresolved"][number]): string {
   const head = `  ⚠ caption edit "${u.was}" (${u.key}) could not be re-anchored`;
   switch (u.reason) {
+    case "out-of-range":
+      // The word is ON SCREEN. Blaming the cut here (which the shared
+      // `not-found` sentence did until the final review) sends the user to
+      // retype something that is sitting intact in the transcript — and the
+      // edit is kept in the doc, so the next run against a different cut may
+      // place it without them doing anything at all.
+      return `${head}: the word is still here, but more than ${MIGRATION_SEARCH_RADIUS} words from where the edit was stored, so it was left alone rather than applied to the wrong one — it is kept in overrides.json, and retyping it in the editor re-anchors it for good`;
     case "ambiguous":
       return `${head}: more than one word says it here, so it was left alone rather than applied to the wrong one — retype the one you meant in the editor`;
     case "unanchorable":
@@ -123,34 +136,28 @@ export function reanchoredKeyCount(
   return Object.keys(migration.edits).filter((key) => !(key in before)).length;
 }
 
-/**
- * Did the migration change the doc's caption keys — i.e. is the write-back
- * worth its `.bak`?
- *
- * Exact, not a heuristic: with nothing unresolved, `edits` holds one entry per
- * input key, so identical key SETS mean identical maps (the values are carried
- * across untouched). Anything else — a key that was not there before, or an
- * edit that fell out — is a change worth writing back.
- */
-export function captionKeysMigrated(
-  before: Record<string, CaptionEdit>,
-  migration: CaptionKeyMigration,
-): boolean {
-  if (migration.unresolved.length > 0) return true;
-  return reanchoredKeyCount(before, migration) > 0;
-}
-
 export interface CaptionReconciliation {
   /** The doc with its caption keys upgraded — what produce writes back. */
   doc: OverrideDoc;
   /** The caption lines with every edit that could be applied, applied. */
   lines: CaptionLine[];
   /**
-   * Whether the migration changed the doc's caption keys, i.e. whether the
-   * write-back is worth its `.bak`. False for the overwhelmingly common case:
-   * a doc that was already source-keyed.
+   * Whether the migration actually MOVED an edit onto a source anchor — the
+   * write-back gate, and the only thing that earns spending the `.bak`.
+   *
+   * It used to be `captionKeysMigrated`: true whenever anything was
+   * unresolved, including when nothing at all was placed. That is a write with
+   * no repair in it, and on the field workdir (`cutResult.changed` false,
+   * because the cut already carries `src`) it was a NEW write on a run that
+   * previously touched nothing — spending `overrides.json.bak`, the user's
+   * only surviving pre-cut save and the sole route back to the split half they
+   * deleted, on a copy of the already-damaged document (final review, Critical
+   * 2). A run that placed nothing has nothing to write and no business
+   * touching the `.bak`. Renamed as well as re-defined, because "keys changed"
+   * is no longer even true of it: a `superseded` retirement changes the keys
+   * and deliberately does not fire this.
    */
-  keysChanged: boolean;
+  reanchored: boolean;
   /** Everything produce should print about this, in order. */
   log: string[];
 }
@@ -167,6 +174,13 @@ export interface CaptionReconciliation {
  * exactly why this migration belongs in produce even though the same call in
  * the edit server would be inert.
  *
+ * WHAT IS APPLIED AND WHAT IS KEPT ARE DIFFERENT SETS, deliberately (final
+ * review, Critical 1). Only the edits the migration PLACED are applied — an
+ * unresolved key addresses no word, so handing it to `applyCaptionEdits` would
+ * buy nothing but a second, worse-worded report of the same edit. The doc
+ * written back keeps them anyway (`captionEditsToKeep`), because a run that
+ * cannot place an edit today is not a licence to delete it.
+ *
  * The caller must hand a doc that has been through `OverrideDocSchema`
  * (`produce.ts` parses it at the top of the run). On raw `JSON.parse` output a
  * literal `"__proto__"` key would be assigned THROUGH rather than kept, and
@@ -178,12 +192,11 @@ export function reconcileCaptionEdits(
 ): CaptionReconciliation {
   const log: string[] = [];
   const migration = migrateCaptionKeys(doc.captions, baseLines);
-  const keysChanged = captionKeysMigrated(doc.captions, migration);
-  // Gated on the MOVED count, not on `keysChanged`: a doc whose every legacy
-  // edit was unplaceable changes (they leave it) without one edit being
-  // re-anchored, and announcing "0 caption edit(s) re-anchored" above the
-  // lines saying why is noise on the one run where the user is reading
-  // carefully.
+  // The MOVED count is both the log gate and the write gate. As a log gate:
+  // announcing "0 caption edit(s) re-anchored" above the lines saying why is
+  // noise on the one run where the user is reading carefully. As a write gate:
+  // see `CaptionReconciliation.reanchored` — a run that placed nothing must
+  // not spend the `.bak`.
   const reanchored = reanchoredKeyCount(doc.captions, migration);
   if (reanchored > 0) {
     log.push(
@@ -191,10 +204,10 @@ export function reconcileCaptionEdits(
     );
   }
   for (const u of migration.unresolved) log.push(captionMigrationLine(u));
-  const migrated = { ...doc, captions: migration.edits };
-  const { lines, dropped } = applyCaptionEdits(baseLines, migrated.captions);
-  const live = appliedCaptionEditCount(migrated.captions, dropped);
+  const migrated = { ...doc, captions: captionEditsToKeep(doc.captions, migration) };
+  const { lines, dropped } = applyCaptionEdits(baseLines, migration.edits);
+  const live = appliedCaptionEditCount(migration.edits, dropped);
   if (live > 0) log.push(`▸ ${live} caption word(s) retyped by the editor`);
   for (const d of dropped) log.push(captionDropLine(d));
-  return { doc: migrated, lines, keysChanged, log };
+  return { doc: migrated, lines, reanchored: reanchored > 0, log };
 }

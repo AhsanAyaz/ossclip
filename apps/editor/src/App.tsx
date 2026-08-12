@@ -33,6 +33,9 @@ import {
   droppedEditNotices,
   migrateLoadedDoc,
   migrationLossNotices,
+  renderLossNotices,
+  sourceKeyedCaptionEdits,
+  vanishedCaptionEdits,
 } from "./captionAnchors";
 
 /**
@@ -101,12 +104,14 @@ const anchored = (props: RawRenderProps): RawRenderProps => ({
  * The DURABLE half of the disclosure for a caption edit the migration could
  * not place (§137 Task 6 review, Important 5).
  *
- * The banner is dismissible, and the editor's Save writes `overrides.json`
- * with no `.bak` (`edit.ts`'s PUT handler, unlike produce's own write) — so
- * dismiss, change anything, ⌘S, and an edit the user made is gone from disk
- * with the on-screen notice as its only record. That is too thin for an
- * irreversible delete. The console keeps the raw entry, ORIGINAL KEY INCLUDED,
- * which is what someone would need to put it back by hand.
+ * The banner is dismissible and the editor's Save writes `overrides.json` with
+ * no `.bak` (`edit.ts`'s PUT handler, unlike produce's own write), so a
+ * dismissed banner used to be the ONLY record of an edit that the next ⌘S then
+ * deleted from disk for good. `migrateLoadedDoc` no longer strips those edits
+ * from the doc, which is what actually closed that (final review, Important
+ * 5) — a save round-trips them now. This stays regardless: the console keeps
+ * the raw entry, ORIGINAL KEY AND REASON INCLUDED, which is what someone would
+ * need to place it by hand, and it survives the banner being dismissed.
  *
  * Not `setError`: this is not fatal, and the banner is the user-facing half.
  */
@@ -147,6 +152,19 @@ export const App: React.FC = () => {
   const [captionMigrationLoss, setCaptionMigrationLoss] = useState<
     CaptionKeyMigration["unresolved"]
   >([]);
+  // Caption edits that were in the doc before a render and are not in the one
+  // it reloaded (final review, Important 4). Separate state from the migration
+  // losses above because it is a different event with a different sentence,
+  // but rendered through the SAME banner: one place on screen answers "what
+  // happened to my retypes?".
+  const [renderCaptionLoss, setRenderCaptionLoss] = useState<string[]>([]);
+  // The live caption map, for the render-completion diff. A ref for the same
+  // reason `editsDirtyRef` above is one: `beginRenderPoll` is a stable
+  // `useCallback` created at mount, so reading `edits.doc` through its closure
+  // would compare the reloaded doc against the doc as it was when the editor
+  // STARTED — the R16 §73 stale-closure shape this file has been burned on.
+  const captionsRef = useRef(edits.doc.captions);
+  captionsRef.current = edits.doc.captions;
   // The drop notice the user has dismissed, as the exact list they dismissed
   // (see `showDropNotice` below for why it is not a boolean).
   const [dismissedDrops, setDismissedDrops] = useState<string | null>(null);
@@ -428,15 +446,29 @@ export const App: React.FC = () => {
               // back only its cut/split re-anchoring — so this reload needs
               // the same migration the mount path does, against the props it
               // just re-read.
+              const before = captionsRef.current;
               const migrated = migrateLoadedDoc(reload.load, props);
               edits.load(migrated.doc);
               reportCaptionMigrationLoss(migrated.unresolved);
               setCaptionMigrationLoss(migrated.unresolved);
+              // The one moment the editor adopts a doc it did not write
+              // (final review, Important 4). `setRender(null)` two lines below
+              // throws away the run log that named anything produce dropped,
+              // and the doc arriving here is already clean — so `unresolved`
+              // and `dropped` are both empty and a missing retype would
+              // vanish from the transcript with nothing said. Diffed by
+              // CONTENT, so a successful re-key is not mistaken for a loss.
+              const lost = renderLossNotices(vanishedCaptionEdits(before, migrated.doc.captions));
+              // Durable alongside the banner, exactly like the migration
+              // losses: the banner is dismissible, a console line is not.
+              for (const l of lost) console.warn(`ossclip §137: ${l}`);
+              setRenderCaptionLoss(lost);
             } else {
               // No doc came back, so nothing was migrated — and a list left
               // over from the PREVIOUS load would now be describing a doc the
               // editor no longer holds (§137 Task 6 review, Minor 6).
               setCaptionMigrationLoss([]);
+              setRenderCaptionLoss([]);
             }
             if (reload.notifyDiscard) setDirtyDiscardedNotice(true);
             setRender(null);
@@ -500,6 +532,7 @@ export const App: React.FC = () => {
       // page until one is chosen. Any migration loss on screen belongs to the
       // project being left, so it goes with it (§137 Task 6 review, Minor 6).
       setCaptionMigrationLoss([]);
+      setRenderCaptionLoss([]);
       setShowPicker(true);
       return;
     }
@@ -516,6 +549,11 @@ export const App: React.FC = () => {
     edits.load(migrated.doc);
     reportCaptionMigrationLoss(migrated.unresolved);
     setCaptionMigrationLoss(migrated.unresolved);
+    // A render-loss list belongs to the doc that was on screen when that
+    // render finished; a fresh load (mount, or a project switch) is a
+    // different doc, so it goes with the old one — same rule as the line
+    // above (§137 Task 6 review, Minor 6).
+    setRenderCaptionLoss([]);
     // Best-effort — the panel simply omits the section when this fails.
     void fetch("/api/usage")
       .then(async (r) => setRunInfo(r.ok ? ((await r.json()) as RunInfo) : null))
@@ -600,7 +638,13 @@ export const App: React.FC = () => {
     // fetch and the first render.
     if (!renderProps) return { lines: [], dropped: [] };
     const base = renderProps.baseCaptionLines ?? renderProps.captionLines ?? [];
-    return applyCaptionEdits(base, edits.doc.captions);
+    // SOURCE-KEYED ONLY. The doc keeps the edits the load-time migration could
+    // not place (final review, Important 5) and their keys are POSITIONS,
+    // which address no word — passing them here would report each one as "no
+    // word in this cut sits at that moment any more" on every render, which is
+    // both the wrong diagnosis and a second banner for something the migration
+    // notice already named.
+    return applyCaptionEdits(base, sourceKeyedCaptionEdits(edits.doc.captions));
   }, [renderProps, edits.doc.captions]);
 
   // Both halves of what the user is owed about caption edits: the ones the
@@ -1059,22 +1103,26 @@ export const App: React.FC = () => {
           </button>
         </div>
       ) : null}
-      {migrationLossLines.length > 0 ? (
+      {migrationLossLines.length > 0 || renderCaptionLoss.length > 0 ? (
         // §137: caption edits this project's older, position-keyed
-        // overrides.json could not be matched to a word in the current cut.
-        // DISMISSIBLE, like the two notices around it, because it reports a
-        // one-time event — those edits are gone from the doc, so nothing the
-        // user does here will make this list change or come back.
+        // overrides.json could not be matched to a word in the current cut,
+        // and (final review, Important 4) any retype that did not come back
+        // from a completed render. DISMISSIBLE, like the two notices around
+        // it, because both report one-time events — nothing the user does
+        // here re-runs the load migration or the render.
         <div data-testid="caption-migration-notice" style={reanchorNotice}>
           {/* Index keys: two edits can produce the SAME sentence (the same
               word retyped at two moments), and a duplicated React key would
               drop one of the lines the user is being told about. */}
-          {migrationLossLines.map((l, i) => (
+          {[...migrationLossLines, ...renderCaptionLoss].map((l, i) => (
             <div key={i}>{l}</div>
           ))}
           <button
             style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
-            onClick={() => setCaptionMigrationLoss([])}
+            onClick={() => {
+              setCaptionMigrationLoss([]);
+              setRenderCaptionLoss([]);
+            }}
           >
             Dismiss
           </button>
