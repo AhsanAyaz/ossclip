@@ -259,9 +259,29 @@ export async function startEditServer(
             return send(200, { noWorkdir: true, recent: await readRecentProjects(opts.recentDir) });
           }
           const renderProps = JSON.parse(await readFile(propsPath(), "utf8"));
+          // Parsed, never cast — and that parse is also what makes the doc
+          // safe to migrate downstream: a literal `"__proto__"` caption key
+          // survives `JSON.parse` as an own property, and any later pass that
+          // rebuilds the record would assign through it instead of keeping it.
           const overrides = existsSync(overridesPath())
             ? OverrideDocSchema.parse(JSON.parse(await readFile(overridesPath(), "utf8")))
             : emptyOverrideDoc();
+          // §137 DECISION (Task 6): the pre-§137 caption-key migration does
+          // NOT run here. It resolves a positional key by finding the word it
+          // named and taking that word's source anchor — and these render
+          // props are served exactly as they sit on disk, where a pre-§137
+          // file's caption words have no `srcStart` at all. Every word would
+          // answer "no anchor", every edit would land in `unresolved`, and the
+          // migration would report total loss while doing nothing: a call that
+          // passes its own tests and is inert in production.
+          // Anchoring them here instead would mean a second copy of the "no
+          // usable map, no repair" rule (`anchorCaptionLines`, apps/editor) in
+          // this package — the CLI cannot import the editor's source, which it
+          // only ever ships as a built `editor-dist/` — and that rule is
+          // exactly the one §137 refuses to have two of. So the EDITOR owns
+          // the repair, at the one point that holds anchored lines and the doc
+          // at the same time (App.tsx's load path), and it loses no reach:
+          // this endpoint has exactly one consumer.
           return send(200, {
             renderProps,
             overrides,

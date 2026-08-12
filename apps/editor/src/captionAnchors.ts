@@ -2,8 +2,12 @@ import {
   backfillSrcStart,
   captionAnchorOf,
   mapFromKeptSpans,
+  migrateCaptionKeys,
+  type AppliedCaptionEdits,
+  type CaptionKeyMigration,
   type CaptionLine,
   type KeptSpan,
+  type OverrideDoc,
 } from "@ossclip/core/browser";
 
 /**
@@ -103,6 +107,105 @@ export function anchorCaptionLines(props: CaptionAnchorSource): AnchoredCaptionL
     out.baseCaptionLines = backfillSrcStart(props.baseCaptionLines, spans);
   }
   return out;
+}
+
+export interface MigratedOverrideDoc {
+  doc: OverrideDoc;
+  /**
+   * Edits `migrateCaptionKeys` refused to place, keyed by the name the user's
+   * file knows them by. They are NOT in `doc` — the migration reports rather
+   * than guesses — so this is the only record they existed, and a caller that
+   * throws it away deletes the user's work without saying so.
+   */
+  unresolved: CaptionKeyMigration["unresolved"];
+}
+
+/**
+ * Upgrade a loaded override doc's pre-§137 positional caption keys to the
+ * source-time keys everything downstream reads.
+ *
+ * THE OTHER HALF OF THE LOAD-PATH REPAIR, and it must run AFTER
+ * `anchorCaptionLines` on the same props: `migrateCaptionKeys` resolves a
+ * legacy key by finding the word it named and asking for that word's anchor,
+ * so against un-backfilled lines every word answers `null` and the migration
+ * "succeeds" having resolved nothing — every edit into `unresolved`. That
+ * ordering is the whole §137 Task 6 decision: the repair lives HERE, in the
+ * editor, because this is the one place that holds anchored lines. The edit
+ * server (`apps/cli/src/edit.ts`) still serves the render props exactly as
+ * they sit on disk, and a `migrateCaptionKeys` bolted on there would be that
+ * inert no-op.
+ *
+ * The doc must already have been through `OverrideDocSchema` — it has, at
+ * `edit.ts:263`, before it was serialised to this client. Never call this on
+ * raw `JSON.parse` output: a doc holding a literal `"__proto__"` caption key
+ * comes back from `JSON.parse` as an own property, and the plain-object
+ * accumulator inside `migrateCaptionKeys` would assign THROUGH it — zero own
+ * keys out, a mutated prototype, and an empty `unresolved` claiming nothing
+ * was lost. The schema is what strips that.
+ *
+ * The lines are `baseCaptionLines ?? captionLines`, character for character
+ * the expression `App.tsx` merges edits onto and the Transcript panel renders.
+ * Resolving against anything else would key edits to words the guard then
+ * compares against different ones.
+ *
+ * A doc that is already source-keyed passes through unchanged (a non-legacy
+ * key is its own answer, and a Record cannot hold the same key twice, so the
+ * collision rule cannot fire), which is why this is safe to run on every load
+ * rather than sniffing for legacy keys first.
+ *
+ * Pure — the caller owns the fetch.
+ */
+export function migrateLoadedDoc(
+  doc: OverrideDoc,
+  props: CaptionAnchorSource,
+): MigratedOverrideDoc {
+  const lines = props.baseCaptionLines ?? props.captionLines ?? [];
+  const migrated = migrateCaptionKeys(doc.captions, lines);
+  return { doc: { ...doc, captions: migrated.edits }, unresolved: migrated.unresolved };
+}
+
+/**
+ * What the user is told about edits the migration could not place (§137).
+ *
+ * A one-time EVENT — these edits are gone from the doc the editor now holds,
+ * so nothing the user does brings them back and nothing later reports them
+ * again. Kept separate from `droppedEditNotices` below for exactly that
+ * reason: this list is state, that one is a live property of the doc.
+ */
+export function migrationLossNotices(
+  unresolved: CaptionKeyMigration["unresolved"],
+): string[] {
+  return unresolved.map(
+    (u) =>
+      `“${u.was}” was retyped in an older version of this project, and this cut has ` +
+      `no word it can be matched to any more — retype it if you still want it.`,
+  );
+}
+
+/**
+ * What the user is told about edits that did not apply to the lines on screen.
+ *
+ * The editor used to take `applyCaptionEdits(...).lines` and drop `dropped` on
+ * the floor, which is the whole field case: a retype that could not be
+ * anchored simply reverted in front of the user with nothing said. Derived,
+ * never stored — the list is a property of the CURRENT doc and clears itself
+ * when the doc stops holding an edit that cannot land.
+ *
+ * `duplicate-anchor` is deliberately phrased as a note rather than a loss: the
+ * edit applied, to the first word carrying that source moment (two words share
+ * one by design — `captions.ts:44-50`), and telling the user to retype
+ * something already on screen would be worse than saying nothing.
+ */
+export function droppedEditNotices(dropped: AppliedCaptionEdits["dropped"]): string[] {
+  return dropped.map((d) => {
+    if (d.reason === "duplicate-anchor") {
+      return `“${d.expected}” shares its moment with another word — only the first was retyped.`;
+    }
+    if (d.found === null) {
+      return `“${d.expected}” was retyped, but no word in this cut sits at that moment any more.`;
+    }
+    return `“${d.expected}” was retyped, but the transcript says “${d.found}” there now.`;
+  });
 }
 
 /**

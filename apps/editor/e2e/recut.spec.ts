@@ -172,3 +172,36 @@ test("a word BEFORE the cut keys at its UNCHANGED source time — the projection
   expect(doc.captions[sourceKey]).toEqual({ text: "UNCUT", was: word.text });
   expect(doc.captions[offsetKey]).toBeUndefined();
 });
+
+test("a pre-§137 positional edit is migrated on load and shows on its word (§137 Task 6)", async ({
+  page,
+}) => {
+  // The wiring, end to end — and the only test that can see it. The unit
+  // tests prove `anchorCaptionLines` and `migrateLoadedDoc` are each correct;
+  // an App.tsx that simply never called the second would pass every one of
+  // them. This is a doc exactly as a project saved before §137 holds it — the
+  // flat word POSITION as the key — against a workdir whose render-props.json
+  // predates `srcStart` and whose spans carry a real cut, so the load path has
+  // to backfill the anchors AND migrate the key for the edit to appear.
+  //
+  // Written LAST in the last serialized project: it replaces the shared
+  // workdir's overrides.json outright, so nothing after it may depend on what
+  // the tests above saved.
+  const words = await fixtureWords();
+  const index = words.findIndex((w) => w.start > CUT_AT_OUTPUT);
+  const word = words[index]!;
+  await writeFile(
+    join(WORKDIR, "overrides.json"),
+    JSON.stringify({ captions: { [String(index)]: { text: "LEGACY", was: word.text } } }),
+  );
+
+  await page.goto("/");
+  await page.waitForSelector('[data-testid^="timeline-block-"]');
+  await page.getByTestId("transcript-toggle").click();
+  const target = page.getByTestId(`transcript-word-${index}`);
+  await target.scrollIntoViewIfNeeded();
+  await expect(target).toHaveText("LEGACY");
+  // And nothing was reported lost — the edit was placed, not merely survived.
+  await expect(page.getByTestId("caption-migration-notice")).toHaveCount(0);
+  await expect(page.getByTestId("caption-dropped-notice")).toHaveCount(0);
+});

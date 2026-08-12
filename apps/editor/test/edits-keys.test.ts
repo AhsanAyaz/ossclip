@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { OverrideDocSchema, type CaptionLine } from "@ossclip/core/browser";
 import { editReducer, initialEditState } from "../src/useEdits";
-import { anchorCaptionLines, captionSrcFromAttribute } from "../src/captionAnchors";
+import {
+  anchorCaptionLines,
+  captionSrcFromAttribute,
+  droppedEditNotices,
+  migrateLoadedDoc,
+  migrationLossNotices,
+} from "../src/captionAnchors";
 
 /**
  * §137 Task 5 — the EDITOR side of source-anchored overrides.
@@ -147,6 +153,116 @@ describe("anchorCaptionLines — repairing a pre-§137 render-props.json", () =>
       });
     expect(backwards).not.toThrow();
     expect(backwards().captionLines).toBeUndefined();
+  });
+});
+
+/**
+ * The other half of the load-path repair (§137 Task 6): a doc saved before
+ * this change keys its caption edits by POSITION, and any cut shifts them.
+ */
+describe("migrateLoadedDoc — upgrading a pre-§137 overrides.json", () => {
+  /** A line as a legacy render-props.json holds it: no `srcStart` anywhere. */
+  const legacy = (...ws: Array<[string, number, number]>): CaptionLine => ({
+    words: ws.map(([text, start, end]) => ({ text, start, end }) as CaptionLine["words"][number]),
+    start: ws[0]![1],
+    end: ws[ws.length - 1]![2],
+  });
+  const anchoredLine = (text: string, start: number, srcStart: number): CaptionLine => ({
+    words: [{ text, start, end: start + 0.3, srcStart }],
+    start,
+    end: start + 0.3,
+  });
+  // 10s of source removed before the first word: source time and output time
+  // disagree, so a migration that quietly keyed on `start` fails these.
+  const CUT_SPANS = [{ srcIn: 10, srcOut: 41.9, outIn: 0, outOut: 31.9 }];
+
+  it("re-keys a positional edit to the word's SOURCE anchor", () => {
+    const raw = { captionLines: [legacy(["Claude", 0.09, 0.47], ["gave", 0.47, 0.78])], spans: CUT_SPANS };
+    const props = { ...raw, ...anchorCaptionLines(raw) };
+    const doc = OverrideDocSchema.parse({ captions: { "1": { text: "GAVE", was: "gave" } } });
+    const out = migrateLoadedDoc(doc, props);
+    // Output 0.47 through the spans above is source 10.47 — NOT 0.47, which
+    // is what an output-keyed migration would have written.
+    expect(out.doc.captions).toEqual({ w10470: { text: "GAVE", was: "gave" } });
+    expect(out.unresolved).toEqual([]);
+  });
+
+  it("is INERT against un-anchored lines — the reason the server does not do this", () => {
+    // §137 Task 6's decision, pinned. `apps/cli/src/edit.ts` serves
+    // render-props.json exactly as it sits on disk, so a migration bolted on
+    // there would see this: every word answers "no anchor", every edit is
+    // reported lost, and the doc comes back empty. A test that only ever ran
+    // against repaired lines would have called that a passing migration.
+    const props = { captionLines: [legacy(["Claude", 0.09, 0.47], ["gave", 0.47, 0.78])] };
+    const doc = OverrideDocSchema.parse({ captions: { "1": { text: "GAVE", was: "gave" } } });
+    const out = migrateLoadedDoc(doc, props);
+    expect(out.doc.captions).toEqual({});
+    expect(out.unresolved).toEqual([{ key: "1", was: "gave" }]);
+  });
+
+  it("resolves against baseCaptionLines, the lines the edits are actually merged onto", () => {
+    // `captionLines` already has the last run's edits baked in, so the word at
+    // position 0 there says "EDITED" and the `was` guard could never confirm
+    // it. Only the pristine base can, and that is the side App.tsx merges onto.
+    const props = {
+      captionLines: [anchoredLine("EDITED", 0.09, 0.09)],
+      baseCaptionLines: [anchoredLine("Claude", 0.09, 0.09)],
+    };
+    const doc = OverrideDocSchema.parse({ captions: { "0": { text: "CLAWD", was: "Claude" } } });
+    const out = migrateLoadedDoc(doc, props);
+    expect(out.doc.captions).toEqual({ w90: { text: "CLAWD", was: "Claude" } });
+  });
+
+  it("leaves an already source-keyed doc alone, and never touches the rest of it", () => {
+    // Every load runs this, not just legacy ones — so a modern doc has to come
+    // back identical, splits/cuts/theme included.
+    const props = { baseCaptionLines: [anchoredLine("Claude", 0.09, 0.09)] };
+    const doc = OverrideDocSchema.parse({
+      captions: { w90: { text: "CLAWD", was: "Claude" } },
+      splits: [{ at: 5, id: "s1" }],
+      captionsHidden: true,
+    });
+    const out = migrateLoadedDoc(doc, props);
+    expect(out.doc).toEqual(doc);
+    expect(out.unresolved).toEqual([]);
+  });
+});
+
+describe("what the user is told about caption edits that did not land (§137)", () => {
+  it("names the word a migration could not place and says to retype it", () => {
+    expect(migrationLossNotices([{ key: "3", was: "batch," }])).toEqual([
+      expect.stringContaining("batch,"),
+    ]);
+    expect(migrationLossNotices([{ key: "3", was: "batch," }])[0]).toContain("retype it");
+  });
+
+  it("says the word is GONE when nothing carries the anchor any more", () => {
+    // The field case: `found: null` means the cut removed the word. The line
+    // must not read as "the transcript says null there".
+    const [line] = droppedEditNotices([{ key: "w1768", expected: "batch,", found: null }]);
+    expect(line).toContain("batch,");
+    expect(line).toContain("no word in this cut");
+    expect(line).not.toContain("null");
+  });
+
+  it("names the word the transcript holds instead when there is one", () => {
+    const [line] = droppedEditNotices([{ key: "w1768", expected: "batch,", found: "bash," }]);
+    expect(line).toContain("bash,");
+  });
+
+  it("treats a duplicate anchor as a note, not a lost edit", () => {
+    // The edit APPLIED, to the first word carrying that source moment. Telling
+    // the user to retype something already on screen would be worse than
+    // silence.
+    const [line] = droppedEditNotices([
+      { key: "w1768", expected: "batch,", found: "batch,", reason: "duplicate-anchor" },
+    ]);
+    expect(line).toContain("only the first was retyped");
+  });
+
+  it("says nothing at all when nothing was dropped", () => {
+    expect(droppedEditNotices([])).toEqual([]);
+    expect(migrationLossNotices([])).toEqual([]);
   });
 });
 

@@ -12,6 +12,8 @@ import {
   splitCues,
   resolveTheme,
   defaultTheme,
+  type AppliedCaptionEdits,
+  type CaptionKeyMigration,
   type OverrideDoc,
   type SceneCue,
   type Theme,
@@ -26,7 +28,12 @@ import { ProjectPicker } from "./ProjectPicker";
 import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
 import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
-import { anchorCaptionLines } from "./captionAnchors";
+import {
+  anchorCaptionLines,
+  droppedEditNotices,
+  migrateLoadedDoc,
+  migrationLossNotices,
+} from "./captionAnchors";
 
 /**
  * `<Player>`'s generics require `Props extends Record<string, unknown>`, and
@@ -112,6 +119,14 @@ export const App: React.FC = () => {
   // this must never go through `setError`, which is the FATAL, full-screen
   // view below with no dismiss and no state reset.
   const [saveBlockedNotice, setSaveBlockedNotice] = useState(false);
+  // Caption edits the §137 key migration could not place when this doc was
+  // loaded. They are NOT in the doc any more (the migration reports rather
+  // than guesses), so this state is the only record of them — set on every
+  // load, including the reload a finished render triggers, so it never
+  // describes the previous project.
+  const [captionMigrationLoss, setCaptionMigrationLoss] = useState<
+    CaptionKeyMigration["unresolved"]
+  >([]);
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
@@ -375,7 +390,8 @@ export const App: React.FC = () => {
               overrides?: OverrideDoc;
               canRender?: boolean;
             };
-            setRenderProps(anchored(prod.renderProps));
+            const props = anchored(prod.renderProps);
+            setRenderProps(props);
             setCanRender(Boolean(prod.canRender));
             // Finding 2, PLAN 2026-08-04 Task 4c fix wave — see
             // `renderCompleteReload`'s own doc comment (renderStatus.ts) for
@@ -383,7 +399,15 @@ export const App: React.FC = () => {
             // pure decision. `edits.load` is the SAME reload path
             // mount/project-switch already use.
             const reload = renderCompleteReload(prod.overrides, editsDirtyRef.current);
-            if (reload.load) edits.load(reload.load);
+            if (reload.load) {
+              // §137: the doc `produce` just wrote back can still be
+              // positionally keyed — it re-anchors cuts and splits, never
+              // caption keys — so this reload needs the same migration the
+              // mount path does, against the props it just re-read.
+              const migrated = migrateLoadedDoc(reload.load, props);
+              edits.load(migrated.doc);
+              setCaptionMigrationLoss(migrated.unresolved);
+            }
             if (reload.notifyDiscard) setDirtyDiscardedNotice(true);
             setRender(null);
           } else {
@@ -447,10 +471,18 @@ export const App: React.FC = () => {
       setShowPicker(true);
       return;
     }
-    setRenderProps(anchored(body.renderProps!));
+    const props = anchored(body.renderProps!);
+    setRenderProps(props);
     setWorkdirPath(body.workdir ?? null);
     setCanRender(Boolean(body.canRender));
-    edits.load(body.overrides!);
+    // §137: a doc saved before this change keys caption edits by POSITION,
+    // which any cut shifts — every one of them would silently revert on
+    // screen. Upgraded here, against the just-anchored lines, because this is
+    // the only place both halves exist at once (`migrateLoadedDoc`'s comment
+    // has the full ordering argument, and why the server cannot do it).
+    const migrated = migrateLoadedDoc(body.overrides!, props);
+    edits.load(migrated.doc);
+    setCaptionMigrationLoss(migrated.unresolved);
     // Best-effort — the panel simply omits the section when this fails.
     void fetch("/api/usage")
       .then(async (r) => setRunInfo(r.ok ? ((await r.json()) as RunInfo) : null))
@@ -522,6 +554,32 @@ export const App: React.FC = () => {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [edits.dirty, loadProduction],
+  );
+
+  // The retyped caption words, applied once (§137). Hoisted out of the `live`
+  // memo below because `dropped` has to LEAVE this function: the old code
+  // called `applyCaptionEdits(...).lines` inline and discarded the report,
+  // which is precisely why an edit that could not be anchored just reverted
+  // in front of the user with nothing said.
+  const appliedCaptions = useMemo<AppliedCaptionEdits>(() => {
+    // Nothing loaded yet is not "every edit is stale" — reporting against no
+    // lines at all would flash a drop notice for the whole doc between the
+    // fetch and the first render.
+    if (!renderProps) return { lines: [], dropped: [] };
+    const base = renderProps.baseCaptionLines ?? renderProps.captionLines ?? [];
+    return applyCaptionEdits(base, edits.doc.captions);
+  }, [renderProps, edits.doc.captions]);
+
+  // Both halves of what the user is owed about caption edits: the ones the
+  // load-time key migration could not place (an event, held in state) and the
+  // ones that do not fit the lines on screen (a live property of the doc).
+  const migrationLossLines = useMemo(
+    () => migrationLossNotices(captionMigrationLoss),
+    [captionMigrationLoss],
+  );
+  const droppedEditLines = useMemo(
+    () => droppedEditNotices(appliedCaptions.dropped),
+    [appliedCaptions],
   );
 
   // DECIDE (PLAN 2026-08-04 Task 4c): this memo deliberately never reads
@@ -597,11 +655,10 @@ export const App: React.FC = () => {
         c.id === graphicPreview.sceneId ? { ...c, graphicRect: graphicPreview.rect } : c,
       );
     }
-    const baseCaptions = renderProps.baseCaptionLines ?? renderProps.captionLines ?? [];
     return {
       ...renderProps,
       sceneCues: previewed,
-      captionLines: applyCaptionEdits(baseCaptions, edits.doc.captions).lines,
+      captionLines: appliedCaptions.lines,
       theme: resolveTheme(baseTheme, edits.doc),
       // Recomposed, never inherited from the spread above: the baked
       // `captionsHidden` has the LAST-saved doc merged in (add-only — an
@@ -613,7 +670,7 @@ export const App: React.FC = () => {
         renderProps.captionsHiddenByFlag === true || edits.doc.captionsHidden === true,
       videoFileName: `/media/${renderProps.videoFileName}`,
     };
-  }, [renderProps, edits.doc, videoPreview, graphicPreview]);
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptions]);
 
   const onSave = (): void => {
     // Finding 1, PLAN 2026-08-04 fix wave final review (scoped re-review
@@ -951,6 +1008,41 @@ export const App: React.FC = () => {
           >
             Dismiss
           </button>
+        </div>
+      ) : null}
+      {migrationLossLines.length > 0 ? (
+        // §137: caption edits this project's older, position-keyed
+        // overrides.json could not be matched to a word in the current cut.
+        // DISMISSIBLE, like the two notices around it, because it reports a
+        // one-time event — those edits are gone from the doc, so nothing the
+        // user does here will make this list change or come back.
+        <div data-testid="caption-migration-notice" style={reanchorNotice}>
+          {/* Index keys: two edits can produce the SAME sentence (the same
+              word retyped at two moments), and a duplicated React key would
+              drop one of the lines the user is being told about. */}
+          {migrationLossLines.map((l, i) => (
+            <div key={i}>{l}</div>
+          ))}
+          <button
+            style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+            onClick={() => setCaptionMigrationLoss([])}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+      {droppedEditLines.length > 0 ? (
+        // §137, the field case: `applyCaptionEdits`' drop report used to be
+        // discarded here, so a retype that could not land just reverted with
+        // nothing said. NO Dismiss, deliberately — unlike the notices above
+        // this is not an event but a live property of the doc on screen, and
+        // it clears itself the moment the doc stops holding an edit that
+        // cannot be applied (retype the word, or undo the edit).
+        <div data-testid="caption-dropped-notice" style={reanchorNotice}>
+          {/* Index keys — see the note in the notice above. */}
+          {droppedEditLines.map((l, i) => (
+            <div key={i}>{l}</div>
+          ))}
         </div>
       ) : null}
       {saveBlockedNotice ? (

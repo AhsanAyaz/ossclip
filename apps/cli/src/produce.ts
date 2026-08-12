@@ -105,6 +105,7 @@ import {
   workdirBaseName,
 } from "./stranded-overrides";
 import { editHint } from "./interactive/edit-hint";
+import { appliedCaptionEditCount, captionDropLine } from "./caption-report";
 import { recordedProduceArgs } from "./replay-argv";
 import { renderCover, renderProduction } from "@ossclip/renderer";
 import {
@@ -1939,14 +1940,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     baseCaptionLines,
     overrideDoc.captions,
   );
-  const liveCaptionEdits = Object.keys(overrideDoc.captions).length - staleCaptionEdits.length;
+  // §137: both halves of this used to lie. The count was `keys - dropped`,
+  // which `dropped`'s duplicate-anchor entries make an undercount (or a
+  // negative, silenced by the guard below), and the drop line interpolated
+  // `found: null` — the cut-removed case, the very one this plan is about —
+  // into the sentence as the string "null". `caption-report.ts` owns both.
+  const liveCaptionEdits = appliedCaptionEditCount(overrideDoc.captions, staleCaptionEdits);
   if (liveCaptionEdits > 0) console.log(`▸ ${liveCaptionEdits} caption word(s) retyped by the editor`);
-  for (const d of staleCaptionEdits) {
-    console.log(
-      `  ⚠ caption edit at word ${d.key} dropped: expected "${d.expected}" there, ` +
-        `the transcript now has "${d.found}"`,
-    );
-  }
+  for (const d of staleCaptionEdits) console.log(captionDropLine(d));
 
   // Micro zoom punches (FINDINGS §15) reversing at real phrase breaks (§18).
   // Breaths are source-time; TimeMap has no span mapper, so both ends go

@@ -84,6 +84,41 @@ describe("edit server", () => {
     expect(onDisk.scenes["scene-0"].props.value).toBe("999%");
   });
 
+  it("serves a pre-§137 doc as parsed — the caption key migration is the EDITOR's job", async () => {
+    // §137 Task 6's decision, pinned at the endpoint it was made about. The
+    // migration resolves a positional key by taking the source anchor of the
+    // word it named, and THESE ARE THE WORDS IT WOULD ASK: served exactly as
+    // the pre-§137 file holds them, with no `srcStart` on any of them. A
+    // `migrateCaptionKeys` call here would therefore resolve nothing, report
+    // every edit as lost, and return an empty caption map — inert in
+    // production while passing a test written against repaired lines. The
+    // editor backfills these words on load (`anchorCaptionLines`) and
+    // migrates against the result, which is the only place both halves exist.
+    // If the repair ever DOES move server-side, this test is the thing to
+    // change deliberately rather than the thing to notice afterwards.
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({
+        videoFileName: "clip.mp4",
+        sceneCues: [],
+        spans: [{ srcIn: 10, srcOut: 41.9, outIn: 0, outOut: 31.9 }],
+        captionLines: [
+          { words: [{ text: "batch,", start: 0.09, end: 0.47 }], start: 0.09, end: 0.47 },
+        ],
+      }),
+    );
+    await writeFile(
+      join(dir, "overrides.json"),
+      JSON.stringify({ captions: { "0": { text: "Bash,", was: "batch," } } }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/production`)).json();
+    expect(Object.keys(body.overrides.captions)).toEqual(["0"]);
+    expect(body.renderProps.captionLines[0].words[0].srcStart).toBeUndefined();
+  });
+
   it("rejects a malformed override document rather than writing it", async () => {
     const dir = await fixtureWorkdir();
     const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
