@@ -426,6 +426,11 @@ test("Delete turns a scene into a restorable ghost and its window into a take (T
   const block = page.getByTestId("timeline-block-scene-3");
   await block.click();
   await page.keyboard.press("Delete");
+  // Delete now ASKS (§139) — Enter takes the preselected default, which is
+  // the graphic, so everything below this line is unchanged from Task C.
+  await expect(page.getByTestId("delete-scene-modal")).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("delete-scene-modal")).toHaveCount(0);
 
   // The block goes ghost — dashed, still selectable under the same testid —
   // and stays selected, so the Inspector is already offering the way back.

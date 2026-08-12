@@ -29,7 +29,8 @@ const SECTIONS: Array<{ title: string; rows: Array<[keys: string, action: string
     title: "editing",
     rows: [
       ["⌘/ctrl + B", "split the scene at the playhead"],
-      ["delete / backspace", "delete the selected scene (restorable)"],
+      ["delete / backspace", "delete the selected scene — asks graphic or whole take (§139)"],
+      ["enter (in that dialog)", "confirm the highlighted option"],
       ["⌘/ctrl + Z", "undo"],
       ["⌘/ctrl + ⇧ + Z", "redo (⌘Y works too)"],
       ["⌘/ctrl + S", "save"],

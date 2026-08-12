@@ -5,6 +5,7 @@ import { clampGraphicRect, layoutSlots, safeAreaFor } from "@ossclip/renderer/co
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import { guideSnap, THRESHOLD_FRAC, type Guide } from "./guides";
 import { captionSrcFromAttribute } from "./captionAnchors";
+import { deletePlanFor, type DeletePlan } from "./deleteScene";
 import type { GraphicRect, useEdits } from "./useEdits";
 
 export interface Selection {
@@ -88,6 +89,10 @@ interface OverlayProps {
   cues: readonly SceneCue[];
   /** Toggle the keybinds reference (R16 §63) — bound to "?". */
   onToggleHelp: () => void;
+  /** Open the Delete/Backspace confirmation (§139). The modal is App's,
+   * beside the other one, so the backdrop covers the Inspector and timeline
+   * rather than just the stage this Overlay is pinned to. */
+  onRequestDelete: (plan: DeletePlan) => void;
   /**
    * The Player itself, for `getScale()` — the AUTHORITATIVE page-px-per-
    * composition-px factor. The stage div's rect is not it: the Player
@@ -349,6 +354,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   cue,
   cues,
   onToggleHelp,
+  onRequestDelete,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   /** An in-progress drag-to-pan on the video slot (PLAN Task B). `base` is
@@ -1226,24 +1232,27 @@ export const Overlay: React.FC<OverlayProps> = ({
         e.preventDefault();
         onToggleHelp();
       } else if (!mod && (e.key === "Delete" || e.key === "Backspace")) {
-        // Soft-delete the selected GRAPHIC scene (PLAN Task C6). Scene-level
-        // selection only: with an element selected, Backspace is far more
-        // likely aimed at text than at the whole scene. Takes can't be
-        // deleted (their window is derived — there is nothing to remove),
-        // and a ghost is already deleted. Selection is kept so the
-        // Inspector's Restore is one keystroke away from an accidental hit.
+        // ASK, don't delete (§139). This used to soft-delete the graphic
+        // outright (PLAN Task C6) and refuse on a plain take — so one key
+        // did one of two things depending on state the user could not see,
+        // and never offered the cut at all. `deletePlanFor` decides what is
+        // on the table; App owns the modal. Scene-level selection only: with
+        // an element selected, Backspace is far more likely aimed at text
+        // than at the whole scene. Selection is kept across the whole
+        // gesture so the Inspector's Restore is one click away afterwards.
         if (isTypingContext()) return;
         const sel = selectionRef.current;
         if (!sel || sel.elementId !== null) return;
-        if (!cue || cue.kind === "plain" || cue.id !== sel.sceneId) return;
-        if (edits.doc.scenes[sel.sceneId]?.hidden === true) return;
+        if (!cue || cue.id !== sel.sceneId) return;
+        const plan = deletePlanFor(cue, edits.doc);
+        if (!plan) return;
         e.preventDefault();
-        edits.hideScene(sel.sceneId);
+        onRequestDelete(plan);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp]);
+  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp, onRequestDelete]);
 
   return (
     <div

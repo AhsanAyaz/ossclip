@@ -24,6 +24,8 @@ import { Inspector, type RunInfo } from "./Inspector";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
+import { DeleteSceneModal } from "./DeleteSceneModal";
+import type { DeletePlan } from "./deleteScene";
 import { ProjectPicker } from "./ProjectPicker";
 import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
 import { onSaveEffect } from "./save";
@@ -356,6 +358,11 @@ export const App: React.FC = () => {
   }, []);
   // The keybinds reference (R16 §63) — "?" or the top-bar button.
   const [showShortcuts, setShowShortcuts] = useState(false);
+  // The pending Delete/Backspace confirmation (§139), or null. The PLAN is
+  // held, not the scene id: it was computed against the doc at the moment the
+  // key was pressed, and re-deriving it on every render would let an
+  // undo landing behind the open dialog change which options it is offering.
+  const [deletePlan, setDeletePlan] = useState<DeletePlan | null>(null);
   // Render log visibility (R17 §84): the status row always shows; the pinned
   // lines and the scrollable tail collapse behind the chevron.
   const [logsOpen, setLogsOpen] = useState(true);
@@ -992,6 +999,19 @@ export const App: React.FC = () => {
         </button>
       </div>
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
+      {deletePlan ? (
+        <DeleteSceneModal
+          plan={deletePlan}
+          onCancel={() => setDeletePlan(null)}
+          onConfirm={(target) => {
+            // Both arms are ordinary reducer commits, so ⌘Z takes either
+            // back — the modal adds friction, not a second edit mechanism.
+            if (target === "graphic") edits.hideScene(deletePlan.sceneId);
+            else edits.cutChunk(deletePlan.startSec, deletePlan.endSec);
+            setDeletePlan(null);
+          }}
+        />
+      ) : null}
       {showPicker ? (
         <ProjectPicker
           recent={recentProjects}
@@ -1257,6 +1277,7 @@ export const App: React.FC = () => {
               onVideoPreview={setVideoPreview}
               onGraphicPreview={setGraphicPreview}
               onToggleHelp={() => setShowShortcuts((v) => !v)}
+              onRequestDelete={setDeletePlan}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
                 only reachable by keyboard is a rate users lose track of.
