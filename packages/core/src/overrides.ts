@@ -8,7 +8,7 @@ import {
   type Theme,
 } from "./scene-schema";
 import { resolveSceneProps } from "./scene-registry";
-import type { CaptionLine } from "./captions";
+import type { CaptionLine, CaptionWord } from "./captions";
 
 /**
  * The user's edit layer (SPEC: direct manipulation).
@@ -98,8 +98,8 @@ export const SceneOverrideSchema = z.object({
   /**
    * Vertical centre for this scene's captions (R15 §56). NOT part of the
    * top-level `captions` key — that one is the caption TEXT retype map,
-   * keyed by word index; position is a property of the SCENE, where the
-   * timeline selection can address it and "apply to all" can fan it out.
+   * keyed per word; position is a property of the SCENE, where the timeline
+   * selection can address it and "apply to all" can fan it out.
    */
   captionY: z.number().min(0).max(1).optional(),
   /** Caption size multiplier (R16 §64) — same per-scene, fan-out-able shape
@@ -136,12 +136,13 @@ export type SceneOverride = z.infer<typeof SceneOverrideSchema>;
  * One retyped caption word (PLAN 2026-07-29 Task 7, scope (a) — decided with
  * the author: 1:1 in-place retype, timing untouched).
  *
- * Keyed by the word's position in the caption stream, GUARDED by the text
- * that was there when the edit was made — the same verification-anchor
- * pattern as `AppliedRepair.heard` (§17). Captions are derived (repaired
- * transcript through the TimeMap), so a changed cleanup level or repair set
- * can shift positions; the guard means a stale edit is DROPPED WITH A LOG
- * rather than silently landing on the wrong word.
+ * Keyed by the word's SOURCE time since §137 (`captionKeyFor` below — the
+ * original positional key is what a user cut broke), GUARDED by the text that
+ * was there when the edit was made — the same verification-anchor pattern as
+ * `AppliedRepair.heard` (§17). Captions are derived (repaired transcript
+ * through the TimeMap), so a changed cleanup level or repair set can still
+ * re-word the stream under an anchor that survived; the guard means a stale
+ * edit is DROPPED WITH A LOG rather than silently landing on the wrong word.
  */
 export const CaptionEditSchema = z.object({
   /** The replacement text. */
@@ -162,10 +163,10 @@ export type CaptionEdit = z.infer<typeof CaptionEditSchema>;
  */
 export function captionEditWas(
   captions: Record<string, CaptionEdit>,
-  index: number,
+  key: string,
   seen: string,
 ): string {
-  return captions[String(index)]?.was ?? seen;
+  return captions[key]?.was ?? seen;
 }
 
 export const OverrideDocSchema = z.object({
@@ -185,7 +186,7 @@ export const OverrideDocSchema = z.object({
    */
   captionsHidden: z.boolean().optional(),
   scenes: z.record(z.string(), SceneOverrideSchema).default({}),
-  /** Retyped caption words, keyed by caption-stream word index. */
+  /** Retyped caption words, keyed by the word's source time (§137). */
   captions: z.record(z.string(), CaptionEditSchema).default({}),
   /**
    * Scene split points in ABSOLUTE output seconds (R16 §61 — Cmd/Ctrl+B at
@@ -462,17 +463,217 @@ export function splitThenDropHidden(
   return dropHiddenCues(splitCues(cues, doc.splits), doc);
 }
 
+/**
+ * A caption edit's key: the word's source start, quantised to milliseconds
+ * (§137). Positional indices were the original design and a user cut breaks
+ * them — removing one word shifts every later index, so the `was` guard below
+ * fires on every edit and the user's retypes vanish into the report nobody
+ * printed. Source time is the one property of a word that a re-cut cannot
+ * move.
+ *
+ * THROWS on a non-finite `srcStart` rather than minting `wNaN`. The type
+ * promises a number and `captions.ts:33-39` says outright that the promise is
+ * a lie at the render-props boundary — the editor loads that file as an
+ * unvalidated cast, so a pre-§137 workdir yields words with the field absent.
+ * `w${Math.round(NaN * 1000)}` is `"wNaN"` for EVERY word: one shared anchor
+ * for a whole video, under which a single stored edit would rewrite every word
+ * in it. That is the failure this whole change exists to prevent, arriving
+ * silently. Parse, never coerce — and a loud throw is the parse here, since a
+ * missing anchor has no honest fallback. `backfillSrcStart` (Task 6's load
+ * path) is what keeps legacy files from reaching this.
+ */
+export function captionKeyFor(srcStart: number): string {
+  if (!Number.isFinite(srcStart)) {
+    throw new Error(
+      `captionKeyFor: caption words need a finite srcStart (§137), got ${String(srcStart)} — ` +
+        `run backfillSrcStart on lines read from a pre-§137 render-props.json`,
+    );
+  }
+  return `w${Math.round(srcStart * 1000)}`;
+}
+
+/** A pre-§137 key: a bare non-negative integer, i.e. a caption-word position. */
+export function isLegacyCaptionKey(key: string): boolean {
+  return /^\d+$/.test(key);
+}
+
+/**
+ * The anchor a word carries, or null when it carries none.
+ *
+ * `captionKeyFor` THROWS on a non-finite `srcStart` and should: reaching it
+ * with one is a programmer error. A word that simply has no `srcStart` is a
+ * DATA condition, not a programmer error — the render-props boundary is an
+ * unvalidated cast (`captions.ts:33-39`), so a pre-§137 workdir loads with the
+ * field absent on every word (the editor's own e2e fixture is exactly that,
+ * preserved on purpose). The editor calls `applyCaptionEdits` inside a
+ * render-time `useMemo` with no error boundary above it, so a throw down there
+ * white-screens the whole editor over a file that merely predates the field
+ * (§137 review). Distinguishing the two here keeps the parse loud where it
+ * means something and turns the boundary case into "this word can carry no
+ * edit" — the edits that then find no home are REPORTED (`found: null` /
+ * `unresolved`), which is the honest answer. `backfillSrcStart` on the load
+ * path (Task 6) is what makes these words anchorable again.
+ */
+function captionAnchorOf(word: CaptionWord | undefined): string | null {
+  if (!word || !Number.isFinite(word.srcStart)) return null;
+  return captionKeyFor(word.srcStart);
+}
+
+/** How far either side of the stored index the migration will look for `was`. */
+const MIGRATION_SEARCH_RADIUS = 8;
+
+export interface CaptionKeyMigration {
+  edits: Record<string, CaptionEdit>;
+  /**
+   * Edits the migration would not commit — reported, never guessed at: no
+   * anchor could be found for them, or two of them wanted the SAME anchor
+   * (see the collision paragraph in `migrateCaptionKeys`). Keyed by their
+   * ORIGINAL doc key, which is the only name the user's file knows them by.
+   */
+  unresolved: Array<{ key: string; was: string }>;
+}
+
+/**
+ * Where one stored edit wants to land, or null when nothing can be resolved.
+ *
+ * Split out of `migrateCaptionKeys` so every edit can be resolved BEFORE any
+ * of them is written: a collision is only visible once both claims exist, and
+ * a function that writes as it goes cannot see the second claim coming.
+ */
+function resolveCaptionAnchor(
+  key: string,
+  edit: CaptionEdit,
+  words: readonly CaptionWord[],
+): string | null {
+  // Already a source key (or something that is not a position at all) — the
+  // doc's own key stands, and the collision check downstream still applies.
+  if (!isLegacyCaptionKey(key)) return key;
+  const at = Number(key);
+  // The record confirming itself — see `migrateCaptionKeys` for why this
+  // wins ahead of the ambiguity rule rather than through it. A confirmed
+  // position that carries no anchor resolves to NOTHING rather than falling
+  // through to the search: the record already named the word, and letting the
+  // search then pick a same-text word elsewhere would rewrite one the user
+  // did not edit.
+  if (words[at]?.text === edit.was) return captionAnchorOf(words[at]);
+  const matches: number[] = [];
+  for (let d = 1; d <= MIGRATION_SEARCH_RADIUS; d++) {
+    for (const i of [at - d, at + d]) {
+      if (words[i]?.text === edit.was) matches.push(i);
+    }
+  }
+  // Ambiguity is judged on the TEXT matches, before anchors are considered —
+  // an unanchorable candidate still means the search could not tell two words
+  // apart, so it must not silently narrow the field to one.
+  return matches.length === 1 ? captionAnchorOf(words[matches[0]!]) : null;
+}
+
+/**
+ * Upgrade pre-§137 positional keys to source-time keys.
+ *
+ * Position first, and an exact position hit WINS OUTRIGHT — it is not a
+ * guess. The stored index is the position the editor recorded when the user
+ * made the edit, and `was` matching the word now sitting there is that record
+ * confirming itself: two independent facts agreeing. The same word appearing
+ * elsewhere nearby weakens neither, so the ambiguity rule below deliberately
+ * does NOT gate this branch (ruling on the §137 plan, task 2: folding the
+ * exact hit into the candidate scan makes a confirmed record lose to an
+ * unrelated coincidence, and a doc that never drifted at all would stop
+ * migrating because the user happened to edit a repeated word — that breaks
+ * "every existing overrides.json keeps working" for a case where we have the
+ * answer).
+ *
+ * When the word at that position is NOT the edit's `was`, the position has
+ * been PROVEN wrong (a cut removed words before it), so search outward for
+ * the `was`: that recovers the field case rather than discarding work the
+ * user already did. Ambiguity gates that search alone — two candidates a
+ * search genuinely cannot tell apart are reported instead, because a wrong
+ * anchor silently rewrites the wrong word, which is worse than an edit the
+ * user has to redo.
+ *
+ * TWO EDITS RESOLVING TO THE SAME WORD are that same ambiguity one level up,
+ * and both go to `unresolved` — the output is a Record, so writing as we went
+ * would have the second edit silently overwrite the first and report nothing,
+ * which is the very bug this task was opened for. It is not a corner case:
+ *  - an outward search can land on the word another edit exact-hit (`the cat
+ *    sat on a mat`, edits at "0" and "5", both `was: "the"`);
+ *  - until Task 3 re-keys the editor, a doc saved after one migration holds
+ *    BOTH key spaces at once, so `{"0": …, "w6000": …}` over one word is the
+ *    NORMAL intermediate state of this very plan (and JS enumerates
+ *    integer-like keys first, so the passthrough would always have won);
+ *  - two words can share a `srcStart` outright — `backfillSrcStart`
+ *    (`captions.ts:44-50`) maps seam preimages and cut-clamped words onto the
+ *    same source instant BY DESIGN, so duplicate keys are manufactured, not
+ *    float trivia.
+ * Neither edit is guessed at, both are named, and the user can re-apply the
+ * one they meant.
+ */
+export function migrateCaptionKeys(
+  edits: Record<string, CaptionEdit>,
+  lines: readonly CaptionLine[],
+): CaptionKeyMigration {
+  const words = lines.flatMap((l) => l.words);
+  const out: Record<string, CaptionEdit> = {};
+  const unresolved: CaptionKeyMigration["unresolved"] = [];
+
+  // Resolve every edit first, write second — see the collision paragraph.
+  const claims = Object.entries(edits).map(([key, edit]) => ({
+    key,
+    edit,
+    to: resolveCaptionAnchor(key, edit, words),
+  }));
+  const claimants = new Map<string, number>();
+  for (const c of claims) if (c.to !== null) claimants.set(c.to, (claimants.get(c.to) ?? 0) + 1);
+
+  for (const c of claims) {
+    if (c.to !== null && claimants.get(c.to) === 1) out[c.to] = c.edit;
+    else unresolved.push({ key: c.key, was: c.edit.was });
+  }
+  return { edits: out, unresolved };
+}
+
 export interface AppliedCaptionEdits {
   lines: CaptionLine[];
-  /** Edits whose guard failed — the word at that index is not what they knew. */
-  dropped: Array<{ index: number; expected: string; found: string }>;
+  /**
+   * Edits that did not apply. `found: null` means no word carries that source
+   * anchor any more (a cut removed it); a string means the word is there but
+   * says something else (a re-plan changed it).
+   *
+   * `reason` is present ONLY for the third case — a SECOND word carrying an
+   * anchor an earlier word already claimed, which is not a stale edit at all
+   * (the edit may well have applied, to the first word). Written only when it
+   * has something to say, the same rule the override doc's own optional keys
+   * follow; absent means the ordinary stale report `found` already
+   * distinguishes. A key can therefore appear in this array more than once.
+   */
+  dropped: Array<{
+    key: string;
+    expected: string;
+    found: string | null;
+    reason?: "duplicate-anchor";
+  }>;
 }
 
 /**
  * Apply retyped caption words. Text only, never timing — the stamps drive the
  * kinetic highlight and the 1:1 constraint is what keeps scene anchors and
- * §21's copy/caption agreement intact. An edit whose `was` no longer matches
- * is reported, not applied and not silently discarded.
+ * §21's copy/caption agreement intact.
+ *
+ * Keyed by source time since §137, so a user cut earlier in the video no
+ * longer shifts every later edit onto the wrong word. An edit that does not
+ * apply is REPORTED — callers must surface `dropped`; the editor discarding it
+ * is what made this failure invisible in the field case.
+ *
+ * AT MOST ONE WORD per edit — the first carrying the key, and the guard's
+ * verdict on that word is final. Keys are millisecond-quantised, so two words
+ * CAN share one (`captions.ts:44-50`: backfilled seam preimages and
+ * cut-clamped words land on the same source instant by design, and rounding
+ * closes sub-millisecond gaps besides). A plain `.map()` rewrites every word
+ * that matches — fanning one retype out onto a word the user never touched,
+ * which is exactly the "wrong anchor silently rewrites the wrong word" the
+ * migration's ambiguity rule refuses to commit, and a breach of the 1:1
+ * in-place retype contract above. Later claimants are reported with
+ * `reason: "duplicate-anchor"` and left alone rather than edited.
  */
 export function applyCaptionEdits(
   lines: readonly CaptionLine[],
@@ -480,19 +681,40 @@ export function applyCaptionEdits(
 ): AppliedCaptionEdits {
   const dropped: AppliedCaptionEdits["dropped"] = [];
   if (Object.keys(edits).length === 0) return { lines: [...lines], dropped };
-  let index = 0;
+
+  const seen = new Set<string>();
   const out = lines.map((line) => ({
     ...line,
     words: line.words.map((w) => {
-      const edit = edits[String(index++)];
+      // No anchor, no edit — a pre-§137 word cannot be addressed, and this is
+      // the boundary that must not throw (see `captionAnchorOf`). The stored
+      // edits then fall out of the sweep below as `found: null`.
+      const key = captionAnchorOf(w);
+      if (key === null) return w;
+      const edit = edits[key];
       if (!edit) return w;
+      // An earlier word already answered for this anchor — whichever way it
+      // answered. Applying here too would fan one retype onto a second word;
+      // re-running the guard here would let an edit be applied AND reported
+      // dropped for the same key.
+      if (seen.has(key)) {
+        dropped.push({ key, expected: edit.was, found: w.text, reason: "duplicate-anchor" });
+        return w;
+      }
+      seen.add(key);
       if (w.text !== edit.was) {
-        dropped.push({ index: index - 1, expected: edit.was, found: w.text });
+        dropped.push({ key, expected: edit.was, found: w.text });
         return w;
       }
       return { ...w, text: edit.text };
     }),
   }));
+
+  // An anchor no word carries any more — the cut removed the word the user
+  // edited. Silence here is exactly the field case, so say it.
+  for (const [key, edit] of Object.entries(edits)) {
+    if (!seen.has(key)) dropped.push({ key, expected: edit.was, found: null });
+  }
   return { lines: out, dropped };
 }
 

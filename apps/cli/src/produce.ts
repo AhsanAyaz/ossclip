@@ -1943,7 +1943,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (liveCaptionEdits > 0) console.log(`▸ ${liveCaptionEdits} caption word(s) retyped by the editor`);
   for (const d of staleCaptionEdits) {
     console.log(
-      `  ⚠ caption edit at word ${d.index} dropped: expected "${d.expected}" there, ` +
+      `  ⚠ caption edit at word ${d.key} dropped: expected "${d.expected}" there, ` +
         `the transcript now has "${d.found}"`,
     );
   }

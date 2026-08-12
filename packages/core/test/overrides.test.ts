@@ -392,26 +392,27 @@ describe("applyCaptionEdits (caption retype, scope (a))", () => {
 
   it("replaces the word's TEXT and nothing else — timing is the contract", () => {
     const { lines: out, dropped } = applyCaptionEdits(lines, {
-      "1": { text: "escape", was: "scape" },
+      w500: { text: "escape", was: "scape" },
     });
     expect(out[0]!.words[1]).toEqual({ text: "escape", start: 0.5, end: 1, srcStart: 0.5 });
     expect(out[0]!.words[0]).toEqual(lines[0]!.words[0]);
     expect(dropped).toEqual([]);
   });
 
-  it("indexes across LINES — the stream, not the line, is the id space", () => {
-    const { lines: out } = applyCaptionEdits(lines, { "2": { text: "exits", was: "quits" } });
+  it("addresses across LINES — the stream, not the line, is the id space", () => {
+    const { lines: out } = applyCaptionEdits(lines, { w1000: { text: "exits", was: "quits" } });
     expect(out[1]!.words[0]!.text).toBe("exits");
   });
 
   it("drops a stale edit with a report instead of hitting the wrong word", () => {
     // The §17 heard-guard pattern: a cleanup/repair change re-derived the
-    // stream, so index 1 is no longer the word this edit knew.
+    // stream, so the word carrying that source anchor is no longer the one
+    // this edit knew.
     const { lines: out, dropped } = applyCaptionEdits(lines, {
-      "1": { text: "escape", was: "something-else" },
+      w500: { text: "escape", was: "something-else" },
     });
     expect(out[0]!.words[1]!.text).toBe("scape");
-    expect(dropped).toEqual([{ index: 1, expected: "something-else", found: "scape" }]);
+    expect(dropped).toEqual([{ key: "w500", expected: "something-else", found: "scape" }]);
   });
 
   it("no edits is the identity", () => {
@@ -762,10 +763,12 @@ describe("the produce.ts / editor pipeline order (PLAN 2026-08-04 Task 1, bug 3)
 
 describe("captionEditWas (R15 §59 — re-edit keeps the base guard)", () => {
   it("first edit stores what the caller saw; a re-edit keeps the ORIGINAL was", () => {
-    expect(captionEditWas({}, 4, "helo")).toBe("helo");
+    expect(captionEditWas({}, "w4000", "helo")).toBe("helo");
     // The second editor session sees the LIVE (already-edited) text — storing
     // it as `was` would trip applyCaptionEdits' stale-guard against the base.
-    expect(captionEditWas({ "4": { text: "hello", was: "helo" } }, 4, "hello")).toBe("helo");
+    expect(captionEditWas({ w4000: { text: "hello", was: "helo" } }, "w4000", "hello")).toBe(
+      "helo",
+    );
   });
 
   it("a re-edit round-trips through applyCaptionEdits instead of being dropped", () => {
@@ -774,9 +777,9 @@ describe("captionEditWas (R15 §59 — re-edit keeps the base guard)", () => {
       // claim that source and output time coincide (§137).
       { start: 0, end: 1, words: [{ text: "helo", start: 0, end: 1, srcStart: 0 }] },
     ];
-    const first = { "0": { text: "hello", was: captionEditWas({}, 0, "helo") } };
+    const first = { w0: { text: "hello", was: captionEditWas({}, "w0", "helo") } };
     const second = {
-      "0": { text: "hullo", was: captionEditWas(first, 0, "hello") },
+      w0: { text: "hullo", was: captionEditWas(first, "w0", "hello") },
     };
     const { lines, dropped } = applyCaptionEdits(base, second);
     expect(dropped).toEqual([]);
@@ -822,5 +825,249 @@ describe("captionsHidden (doc-global captions OFF switch)", () => {
     expect(OverrideDocSchema.parse({ captionsHidden: false }).captionsHidden).toBe(false);
     // parse-don't-coerce: a typo'd "yes" must refuse loudly, never coerce.
     expect(OverrideDocSchema.safeParse({ captionsHidden: "yes" }).success).toBe(false);
+  });
+});
+
+import { captionKeyFor, migrateCaptionKeys } from "../src/overrides";
+import type { CaptionLine, CaptionWord } from "../src/captions";
+
+describe("source-anchored caption keys (§137)", () => {
+  const line = (...ws: Array<[string, number]>): CaptionLine => ({
+    words: ws.map(([text, srcStart], i) => ({ text, start: i, end: i + 1, srcStart })),
+    start: 0,
+    end: ws.length,
+  });
+
+  it("captionKeyFor is millisecond-quantised source time", () => {
+    expect(captionKeyFor(2.5)).toBe("w2500");
+    expect(captionKeyFor(1.7675)).toBe("w1768");
+    expect(captionKeyFor(0)).toBe("w0");
+  });
+
+  it("applies an edit by source key, wherever the word has moved to", () => {
+    const lines = [line(["status", 5.0], ["edge,", 6.0])];
+    const { lines: out, dropped } = applyCaptionEdits(lines, {
+      w6000: { text: "Zsh,", was: "edge," },
+    });
+    expect(out[0]!.words.map((w) => w.text)).toEqual(["status", "Zsh,"]);
+    expect(dropped).toEqual([]);
+  });
+
+  it("still guards on `was` — a re-plan that changed the word drops the edit", () => {
+    const lines = [line(["something-else", 6.0])];
+    const { lines: out, dropped } = applyCaptionEdits(lines, {
+      w6000: { text: "Zsh,", was: "edge," },
+    });
+    expect(out[0]!.words[0]!.text).toBe("something-else");
+    expect(dropped).toEqual([{ key: "w6000", expected: "edge,", found: "something-else" }]);
+  });
+
+  it("an edit whose word the cut removed is reported, not applied", () => {
+    const lines = [line(["status", 5.0])];
+    const { dropped } = applyCaptionEdits(lines, { w1768: { text: "Bash,", was: "batch," } });
+    expect(dropped).toEqual([{ key: "w1768", expected: "batch,", found: null }]);
+  });
+
+  it("migrates legacy positional keys by position when `was` still matches", () => {
+    const lines = [line(["batch,", 1.7675], ["status", 5.0], ["edge,", 6.0])];
+    const { edits, unresolved } = migrateCaptionKeys(
+      { "0": { text: "Bash,", was: "batch," }, "2": { text: "Zsh,", was: "edge," } },
+      lines,
+    );
+    expect(edits).toEqual({
+      w1768: { text: "Bash,", was: "batch," },
+      w6000: { text: "Zsh,", was: "edge," },
+    });
+    expect(unresolved).toEqual([]);
+  });
+
+  it("RECOVERS a legacy key whose position drifted, by finding its `was` nearby", () => {
+    // The field case: the cut removed "batch,", so every stored index is off
+    // by one. Position 1 now holds "edge,", but the edit's `was` is "status".
+    const lines = [line(["status", 5.0], ["edge,", 6.0], ["power", 7.0])];
+    const { edits, unresolved } = migrateCaptionKeys(
+      { "1": { text: "Zsh", was: "status" } },
+      lines,
+    );
+    expect(edits).toEqual({ w5000: { text: "Zsh", was: "status" } });
+    expect(unresolved).toEqual([]);
+  });
+
+  it("refuses to guess when `was` is ambiguous nearby", () => {
+    // The position must be PROVEN wrong before the search runs: key "3" holds
+    // "cat", not the edit's "the", so the outward walk starts — and finds two
+    // "the"s it cannot tell apart.
+    const lines = [line(["the", 1.0], ["the", 2.0], ["the", 3.0], ["cat", 4.0])];
+    const { edits, unresolved } = migrateCaptionKeys({ "3": { text: "a", was: "the" } }, lines);
+    expect(edits).toEqual({});
+    expect(unresolved).toEqual([{ key: "3", was: "the" }]);
+  });
+
+  it("an exact position hit WINS over an identical word nearby — it is a record, not a guess", () => {
+    // Do not "fix" this back into the ambiguity rule (ruling on §137 task 2):
+    // the stored index is what the editor recorded when the user made the
+    // edit, and the word there BEING `was` is that record confirming itself.
+    // Two more "the"s beside it are coincidence and weaken neither fact —
+    // gating this on them would stop a never-drifted doc from migrating just
+    // because the user edited a common word.
+    const lines = [line(["the", 1.0], ["the", 2.0], ["the", 3.0])];
+    const { edits, unresolved } = migrateCaptionKeys({ "1": { text: "a", was: "the" } }, lines);
+    expect(edits).toEqual({ w2000: { text: "a", was: "the" } });
+    expect(unresolved).toEqual([]);
+  });
+
+  it("leaves already-migrated source keys alone", () => {
+    const lines = [line(["edge,", 6.0])];
+    const already = { w6000: { text: "Zsh,", was: "edge," } };
+    const { edits, unresolved } = migrateCaptionKeys(already, lines);
+    expect(edits).toEqual(already);
+    // Asserted too, or a spurious "unresolved" push would pass this test while
+    // telling the user their untouched edit could not be migrated.
+    expect(unresolved).toEqual([]);
+  });
+
+  it("refuses BOTH edits when two of them resolve to the same word", () => {
+    // `edits` is a Record, so a migration that wrote as it went would have the
+    // second edit silently overwrite the first — one of two retypes gone with
+    // an EMPTY report, the exact bug this task exists to fix. "0" exact-hits
+    // "the" at index 0; "5" finds "mat" at its own position, searches outward,
+    // and lands on that same lone "the".
+    const lines = [
+      line(["the", 1.0], ["cat", 2.0], ["sat", 3.0], ["on", 4.0], ["a", 5.0], ["mat", 6.0]),
+    ];
+    const { edits, unresolved } = migrateCaptionKeys(
+      { "0": { text: "THE", was: "the" }, "5": { text: "A-THE", was: "the" } },
+      lines,
+    );
+    expect(edits).toEqual({});
+    expect(unresolved).toEqual([
+      { key: "0", was: "the" },
+      { key: "5", was: "the" },
+    ]);
+  });
+
+  it("refuses a legacy key colliding with an ALREADY-migrated one — this plan's own halfway state", () => {
+    // Until Task 3 re-keys the editor, a doc saved after one migration holds
+    // both key spaces at once. JS enumerates integer-like keys first, so the
+    // passthrough always won and the migrated edit vanished.
+    const lines = [line(["edge,", 6.0])];
+    const { edits, unresolved } = migrateCaptionKeys(
+      { "0": { text: "Zsh,", was: "edge," }, w6000: { text: "Fish,", was: "edge," } },
+      lines,
+    );
+    expect(edits).toEqual({});
+    expect(unresolved).toEqual([
+      { key: "0", was: "edge," },
+      { key: "w6000", was: "edge," },
+    ]);
+  });
+
+  it("refuses two edits on words that SHARE a source instant", () => {
+    // Not float trivia: `backfillSrcStart` (captions.ts:44-50) maps a seam
+    // preimage and a cut-clamped word onto the same source instant by design,
+    // so the recovery path manufactures duplicate keys.
+    const lines = [line(["hello", 2.5], ["hello", 2.5])];
+    const { edits, unresolved } = migrateCaptionKeys(
+      { "0": { text: "HI", was: "hello" }, "1": { text: "YO", was: "hello" } },
+      lines,
+    );
+    expect(edits).toEqual({});
+    expect(unresolved).toEqual([
+      { key: "0", was: "hello" },
+      { key: "1", was: "hello" },
+    ]);
+  });
+
+  it("applies to AT MOST ONE word when two share a key — no fan-out", () => {
+    // Both round to w2500. A plain .map() rewrote both, so a word the user
+    // never touched changed silently.
+    const lines = [line(["hello", 2.4996], ["hello", 2.5004])];
+    const { lines: out, dropped } = applyCaptionEdits(lines, {
+      w2500: { text: "HI", was: "hello" },
+    });
+    expect(out[0]!.words.map((w) => w.text)).toEqual(["HI", "hello"]);
+    expect(dropped).toEqual([
+      { key: "w2500", expected: "hello", found: "hello", reason: "duplicate-anchor" },
+    ]);
+  });
+
+  it("a shared key whose second word differs is reported, never applied twice", () => {
+    // The mixed case: without the seen-check the edit was BOTH applied (to the
+    // first word) and reported dropped (against the second) for one key.
+    const lines = [line(["hello", 2.4996], ["goodbye", 2.5004])];
+    const { lines: out, dropped } = applyCaptionEdits(lines, {
+      w2500: { text: "HI", was: "hello" },
+    });
+    expect(out[0]!.words.map((w) => w.text)).toEqual(["HI", "goodbye"]);
+    expect(dropped).toEqual([
+      { key: "w2500", expected: "hello", found: "goodbye", reason: "duplicate-anchor" },
+    ]);
+  });
+
+  /**
+   * A pre-§137 line as the editor really loads one: NO `srcStart` at all. The
+   * render-props boundary is an unvalidated cast (captions.ts:33-39), so this
+   * shape typechecks as a `CaptionLine` in production too — the editor's own
+   * e2e fixture (apps/editor/e2e/fixtures/workdir/render-props.json) is
+   * exactly this, kept on purpose as the only checked-in legacy artefact.
+   */
+  const legacyLine = (...ws: Array<[string, number]>): CaptionLine => ({
+    words: ws.map(([text, start]) => ({ text, start, end: start + 0.5 }) as CaptionWord),
+    start: 0,
+    end: ws.length,
+  });
+
+  it("a word with NO srcStart carries no edit — reported, never a white screen", () => {
+    // The §137 review's field case: `captionKeyFor` throwing is right for a
+    // programmer error, but the editor applies edits inside a render-time
+    // useMemo with no error boundary, so throwing on a legacy FILE takes the
+    // whole editor down over data that merely predates the field.
+    const lines = [legacyLine(["hello", 0], ["world", 0.5])];
+    const edits = { w0: { text: "HI", was: "hello" }, w500: { text: "YO", was: "world" } };
+    expect(() => applyCaptionEdits(lines, edits)).not.toThrow();
+    const { lines: out, dropped } = applyCaptionEdits(lines, edits);
+    expect(out).toEqual(lines);
+    expect(dropped).toEqual([
+      { key: "w0", expected: "hello", found: null },
+      { key: "w500", expected: "world", found: null },
+    ]);
+  });
+
+  it("migrates nothing off unanchorable words — every edit comes back unresolved", () => {
+    const lines = [legacyLine(["hello", 0], ["world", 0.5])];
+    const call = () =>
+      migrateCaptionKeys(
+        { "0": { text: "HI", was: "hello" }, "1": { text: "YO", was: "world" } },
+        lines,
+      );
+    expect(call).not.toThrow();
+    const { edits, unresolved } = call();
+    expect(edits).toEqual({});
+    expect(unresolved).toEqual([
+      { key: "0", was: "hello" },
+      { key: "1", was: "world" },
+    ]);
+  });
+
+  it("an unanchorable word found by the SEARCH is unresolved too, not a crash", () => {
+    // The other way into `captionAnchorOf`: position 1 holds "cat", so the
+    // exact hit misses and the outward walk runs — and the lone "hello" it
+    // finds has no srcStart to key on either. Covered separately because the
+    // test above only exercises the exact-hit path, which left this one
+    // silently unguarded (§137 review mutation N9).
+    const lines = [legacyLine(["hello", 0], ["cat", 0.5])];
+    const call = () => migrateCaptionKeys({ "1": { text: "HI", was: "hello" } }, lines);
+    expect(call).not.toThrow();
+    expect(call().edits).toEqual({});
+    expect(call().unresolved).toEqual([{ key: "1", was: "hello" }]);
+  });
+
+  it("REFUSES a non-finite srcStart instead of minting one `wNaN` for the whole video", () => {
+    // The render-props boundary is an unvalidated cast (captions.ts:33-39), so
+    // a pre-§137 file yields words with no srcStart at all. Coerced, every one
+    // of them keys to "wNaN" and a single edit rewrites the entire video.
+    expect(() => captionKeyFor(Number.NaN)).toThrow(/finite srcStart/);
+    expect(() => captionKeyFor(undefined as unknown as number)).toThrow(/finite srcStart/);
+    expect(() => captionKeyFor(Number.POSITIVE_INFINITY)).toThrow(/finite srcStart/);
   });
 });

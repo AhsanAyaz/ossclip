@@ -441,7 +441,12 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // without it, editing the same word twice stored the first edit as
       // `was` and the guard dropped the whole edit on the next merge (R15).
       const key = String(action.index);
-      const was = captionEditWas(state.doc.captions, action.index, action.was);
+      // Still the POSITIONAL key here: §137 re-keyed the doc to source time
+      // and `captionEditWas` now takes the key rather than an index, but
+      // giving the editor the word's `srcStart` to key on is Task 3's job.
+      // `String(action.index)` keeps this call byte-identical to what it did
+      // before until then.
+      const was = captionEditWas(state.doc.captions, key, action.was);
       if (action.text === was) {
         const { [key]: _dropped, ...rest } = state.doc.captions;
         return commit({ ...state.doc, captions: rest });
