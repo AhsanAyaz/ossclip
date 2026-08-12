@@ -128,8 +128,42 @@ describe("buildFcpxmlMarkers", () => {
     expect(doc.querySelector("asset-clip")!.getAttribute("duration")).toBe("1800/30s");
   });
 
-  it("marker duration is exactly one frame", () => {
+  it("markers are SPANS covering the whole suggested cut — the field reversed the 1-frame choice (§142 round 2)", () => {
     const doc = parseXml(buildFcpxmlMarkers(production()));
+    const markers = Array.from(doc.querySelectorAll("marker"));
+    // 0→1.77s at 30fps = 53 frames; 10→10.5s = 15 frames.
+    expect(markers[0]!.getAttribute("duration")).toBe("53/30s");
+    expect(markers[1]!.getAttribute("duration")).toBe("15/30s");
+  });
+
+  it("a sub-frame cut still spans at least one frame — a 0-duration marker is invisible", () => {
+    const p = production();
+    p.cutlist = [
+      { srcIn: 5, srcOut: 5.01, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 5.01, srcOut: 60, kind: "keep" },
+    ];
+    const doc = parseXml(buildFcpxmlMarkers(p));
     expect(doc.querySelector("marker")!.getAttribute("duration")).toBe("1/30s");
+  });
+
+  it("detected-but-kept pauses export as their own markers (§142 round 2)", () => {
+    const p = production();
+    p.analysis = {
+      silences: [],
+      gaps: [],
+      breaths: [],
+      fillers: [],
+      cuttable: [{ start: 20, end: 20.4 }],
+    } as NonNullable<Production["analysis"]>;
+    const doc = parseXml(buildFcpxmlMarkers(p));
+    const names = Array.from(doc.querySelectorAll("marker")).map((m) => m.getAttribute("value"));
+    expect(names).toContain("pause 0.40s (kept)");
+    // Ordered by time: 0, 10, 20.
+    expect(names[2]).toBe("pause 0.40s (kept)");
+  });
+
+  it("no analysis in the production → cut markers only, no crash", () => {
+    const doc = parseXml(buildFcpxmlMarkers(production()));
+    expect(doc.querySelectorAll("marker")).toHaveLength(2);
   });
 });

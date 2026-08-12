@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
+import { keptPauseLabel, keptPauses } from "./export-markers";
 import type { Production, Segment } from "./schema";
 
 /**
@@ -61,23 +62,62 @@ export function buildPremiereXmlMarkers(production: Production): string {
   // razor cuts and ripple deletes and stay on the words they describe. The
   // sequence copies stay too: they are the read-only overview of the
   // untouched take, and the two agree while nothing is edited.
-  const markerXml = (indent: string) =>
-    (production.cutlist ?? [])
+  // SPANS, not points (§142 round 2). The original -1 (point marker) was a
+  // deliberate "a span overstates the suggestion" call — the first real
+  // editor reversed it: she needs the cut's END ("the video resumes from
+  // here") as much as its start, and a span's edges are both. Kept pauses
+  // (export-markers.ts) join the same time-ordered list.
+  const markerItems = [
+    ...(production.cutlist ?? [])
       .filter((s) => s.kind === "remove")
+      .map((s) => ({
+        start: s.srcIn,
+        end: s.srcOut,
+        label: label(s),
+        comment: "ossclip suggested cut — review before applying",
+      })),
+    ...keptPauses(production).map((p) => ({
+      start: p.start,
+      end: p.end,
+      label: keptPauseLabel(p),
+      comment: "ossclip detected pause — kept, below the cut bar",
+    })),
+  ].sort((a, b) => a.start - b.start);
+  const markerXml = (indent: string) =>
+    markerItems
       .map(
-        (s) =>
+        (m) =>
           `${indent}<marker>\n` +
-          `${indent}  <name>${esc(label(s))}</name>\n` +
-          `${indent}  <comment>ossclip suggested cut — review before applying</comment>\n` +
-          `${indent}  <in>${toFrames(s.srcIn)}</in>\n` +
-          // -1: a point marker, not a span — a span would render as a region
-          // Premiere invites you to drag, which overstates the suggestion.
-          `${indent}  <out>-1</out>\n` +
+          `${indent}  <name>${esc(m.label)}</name>\n` +
+          `${indent}  <comment>${esc(m.comment)}</comment>\n` +
+          `${indent}  <in>${toFrames(m.start)}</in>\n` +
+          // At least one frame: a zero-length span is as invisible as the
+          // point markers this replaced.
+          `${indent}  <out>${Math.max(toFrames(m.start) + 1, toFrames(m.end))}</out>\n` +
           `${indent}</marker>`,
       )
       .join("\n");
   const markers = markerXml("    ");
   const clipMarkers = markerXml("            ");
+  // Both clipitems carry both links (xmeml convention): this is what makes
+  // Premiere treat V1+A1 as ONE linked clip instead of two strangers —
+  // field fix 2: without an audio clipitem at all, the sequence imported
+  // silent and the editor had to add and link the audio by hand.
+  const links = (indent: string) =>
+    !probe.hasAudio
+      ? ""
+      : `${indent}<link>\n` +
+    `${indent}  <linkclipref>ci-1</linkclipref>\n` +
+    `${indent}  <mediatype>video</mediatype>\n` +
+    `${indent}  <trackindex>1</trackindex>\n` +
+    `${indent}  <clipindex>1</clipindex>\n` +
+    `${indent}</link>\n` +
+    `${indent}<link>\n` +
+    `${indent}  <linkclipref>ci-2</linkclipref>\n` +
+    `${indent}  <mediatype>audio</mediatype>\n` +
+    `${indent}  <trackindex>1</trackindex>\n` +
+    `${indent}  <clipindex>1</clipindex>\n` +
+    `${indent}</link>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE xmeml>
 <xmeml version="4">
@@ -126,9 +166,33 @@ ${rateXml("              ")}
                 </video>${probe.hasAudio ? "\n                <audio>\n                  <channelcount>2</channelcount>\n                </audio>" : ""}
               </media>
             </file>
-${clipMarkers ? `${clipMarkers}\n` : ""}          </clipitem>
+${clipMarkers ? `${clipMarkers}\n` : ""}${links("            ")}
+          </clipitem>
         </track>
-      </video>
+      </video>${
+        probe.hasAudio
+          ? `
+      <audio>
+        <track>
+          <clipitem id="ci-2">
+            <name>${name}</name>
+            <duration>${durFrames}</duration>
+${rateXml("            ")}
+            <start>0</start>
+            <end>${durFrames}</end>
+            <in>0</in>
+            <out>${durFrames}</out>
+            <file id="f-1"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+${links("            ")}
+          </clipitem>
+        </track>
+      </audio>`
+          : ""
+      }
     </media>
 ${markers ? `${markers}\n` : ""}  </sequence>
 </xmeml>

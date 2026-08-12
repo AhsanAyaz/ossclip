@@ -27,6 +27,7 @@ export * from "./face";
 export * from "./cover";
 export * from "./source-text";
 export * from "./report";
+export * from "./export-markers";
 export * from "./export-fcpxml";
 export * from "./export-edl";
 export * from "./export-premiere-xml";

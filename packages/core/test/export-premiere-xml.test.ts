@@ -44,13 +44,34 @@ describe("buildPremiereXmlMarkers", () => {
     expect(markers).toHaveLength(2);
   });
 
-  it("marker in/out are frames at the source rate; out -1 marks a point, not a span", () => {
+  it("markers are SPANS: in/out are the cut's own frames — the field reversed the point-marker choice (§142 round 2)", () => {
     const doc = parseXml(buildPremiereXmlMarkers(production()));
     const markers = Array.from(doc.querySelectorAll("sequence > marker"));
-    // 0s and 10s at 60fps.
+    // 0→1.77s and 10→10.5s at 60fps.
     expect(markers[0]!.querySelector("in")!.textContent).toBe("0");
+    expect(markers[0]!.querySelector("out")!.textContent).toBe("106");
     expect(markers[1]!.querySelector("in")!.textContent).toBe("600");
-    expect(markers[0]!.querySelector("out")!.textContent).toBe("-1");
+    expect(markers[1]!.querySelector("out")!.textContent).toBe("630");
+  });
+
+  it("detected-but-kept pauses export at BOTH marker levels (§142 round 2)", () => {
+    const p = production();
+    p.analysis = {
+      silences: [],
+      gaps: [],
+      breaths: [],
+      fillers: [],
+      cuttable: [{ start: 20, end: 20.4 }],
+    } as NonNullable<Production["analysis"]>;
+    const doc = parseXml(buildPremiereXmlMarkers(p));
+    const seqNames = Array.from(doc.querySelectorAll("sequence > marker > name")).map(
+      (n) => n.textContent,
+    );
+    const clipNames = Array.from(doc.querySelectorAll("clipitem > marker > name")).map(
+      (n) => n.textContent,
+    );
+    expect(seqNames).toContain("pause 0.40s (kept)");
+    expect(clipNames).toContain("pause 0.40s (kept)");
   });
 
   it("name carries the report vocabulary (ASCII hyphen — xmeml consumers vary)", () => {
@@ -107,6 +128,31 @@ describe("buildPremiereXmlMarkers", () => {
     // Same media-time frames as the sequence markers: the clip's in is 0.
     expect(clipMarkers[1]!.querySelector("in")!.textContent).toBe("600");
     expect(clipMarkers[1]!.querySelector("name")!.textContent).toBe("filler -0.50s (conf 0.80)");
+  });
+
+  it("the sequence has an AUDIO track linked to the same file — without it Premiere imports a silent sequence (field fix 2, Kinza 2026-08-12)", () => {
+    const doc = parseXml(buildPremiereXmlMarkers(production()));
+    const audioClip = doc.querySelector("sequence > media > audio > track > clipitem")!;
+    expect(audioClip).not.toBeNull();
+    // The audio clipitem references the SAME file by id, not a copy — that
+    // is what makes Premiere link A to V instead of importing two clips.
+    expect(audioClip.querySelector("file")!.getAttribute("id")).toBe(
+      doc.querySelector("video clipitem file")!.getAttribute("id"),
+    );
+    expect(audioClip.querySelector("sourcetrack mediatype")!.textContent).toBe("audio");
+    // Explicit link elements tie the pair together for Premiere.
+    const links = Array.from(doc.querySelectorAll("sequence link"));
+    expect(links.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("a source with no audio stream emits no audio track — a silent source must not fabricate one", () => {
+    const p = production();
+    p.source.probe.hasAudio = false;
+    const doc = parseXml(buildPremiereXmlMarkers(p));
+    expect(doc.querySelector("sequence > media > audio > track > clipitem")).toBeNull();
+    // …and the video clipitem must not link to an audio clipitem that
+    // doesn't exist — a dangling linkclipref is undefined importer behavior.
+    expect(doc.querySelector("link")).toBeNull();
   });
 
   it("empty cutlist is a valid sequence with zero markers", () => {

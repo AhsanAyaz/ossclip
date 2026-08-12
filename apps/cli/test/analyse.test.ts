@@ -105,7 +105,11 @@ describe.skipIf(!hasFfmpeg)("runAnalyse — behavioural", () => {
         const markers = doc.querySelectorAll("marker");
         // The synthetic take has real dead air, so the cutlist cannot be empty.
         expect(markers.length).toBeGreaterThan(0);
-        expect(result.markerCount).toBe(markers.length);
+        // Cut markers + kept-pause markers together are what's in the file
+        // (§142 round 2); the counts are surfaced separately so the CLI can
+        // say which is which.
+        expect(result.markerCount + result.pauseCount).toBe(markers.length);
+        expect(result.pauseCount).toBeGreaterThanOrEqual(0);
         // No render, no LLM was involved in getting here.
         expect(result.phaseTimings.render).toBeUndefined();
         expect(result.phaseTimings.llm).toBeUndefined();

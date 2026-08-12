@@ -6,6 +6,7 @@ import {
   buildFcpxmlMarkers,
   buildPremiereXmlMarkers,
   buildResolveMarkerEdl,
+  keptPauses,
   type CleanupLevel,
 } from "@ossclip/core";
 import { produce } from "./produce";
@@ -65,7 +66,11 @@ export interface AnalyseOptions {
 export interface AnalyseResult {
   workdir: string;
   outPath: string;
+  /** Suggested-cut markers — one per remove segment. */
   markerCount: number;
+  /** Informational kept-pause markers (§142 round 2) — counted separately
+   * so the CLI and telemetry can say which is which. */
+  pauseCount: number;
   sourceDurationSec: number;
   phaseTimings: PhaseTimings;
 }
@@ -109,6 +114,7 @@ export async function runAnalyse(
         ? buildPremiereXmlMarkers(production)
         : buildFcpxmlMarkers(production);
   const markerCount = (production.cutlist ?? []).filter((s) => s.kind === "remove").length;
+  const pauseCount = keptPauses(production).length;
   const outPath = resolve(opts.out ?? defaultExportPath(resolve(inputArg), opts.format));
   await writeFile(outPath, content);
   const detail =
@@ -118,12 +124,14 @@ export async function runAnalyse(
         ? "in Premiere: File → Import, pick the .xml, relink media if offline"
         : "for Final Cut Pro; Premiere needs --format premiere-xml, Resolve --format resolve-edl";
   console.log(
-    `✓ ${opts.format} → ${outPath} (${markerCount} marker${markerCount === 1 ? "" : "s"} — ${detail})`,
+    `✓ ${opts.format} → ${outPath} (${markerCount} cut marker${markerCount === 1 ? "" : "s"}` +
+      `${pauseCount > 0 ? ` + ${pauseCount} kept-pause marker${pauseCount === 1 ? "" : "s"}` : ""} — ${detail})`,
   );
   return {
     workdir: result.workdir,
     outPath,
     markerCount,
+    pauseCount,
     sourceDurationSec: result.sourceDurationSec,
     phaseTimings: result.phaseTimings,
   };

@@ -599,6 +599,7 @@ export function buildProgram(): Command {
           cleanup_level: cleanup,
           source_duration_bucket: durationBucket(result.sourceDurationSec),
           markers: result.markerCount,
+          kept_pauses: result.pauseCount,
           ...phaseBucketProps(result.phaseTimings),
         });
       } catch (err) {

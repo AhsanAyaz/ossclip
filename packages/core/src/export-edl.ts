@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { keptPauseLabel, keptPauses } from "./export-markers";
 import type { Production, RemovalReason, Segment } from "./schema";
 
 /**
@@ -55,22 +56,43 @@ function label(seg: Segment): string {
 export function buildResolveMarkerEdl(production: Production): string {
   const { path, probe } = production.source;
   const fps = Math.round(probe.fps);
-  const removals = (production.cutlist ?? []).filter((s) => s.kind === "remove");
+  // SPANS, not 1-frame points (§142 round 2): |D: carries the whole
+  // suggested cut in frames, so Resolve draws the marker across the region —
+  // the field editor needs where content RESUMES as much as where the cut
+  // starts. Kept pauses (export-markers.ts) join the list in Lavender, a
+  // colour no cut reason uses, so suggestion and information stay distinct.
+  const items = [
+    ...(production.cutlist ?? [])
+      .filter((s) => s.kind === "remove")
+      .map((s) => ({
+        start: s.srcIn,
+        end: s.srcOut,
+        colour: REASON_COLOURS[s.reason ?? "user"] ?? "Green",
+        label: label(s),
+      })),
+    ...keptPauses(production).map((p) => ({
+      start: p.start,
+      end: p.end,
+      colour: "Lavender",
+      label: keptPauseLabel(p).replaceAll("|", "/"),
+    })),
+  ].sort((a, b) => a.start - b.start);
   const lines: string[] = [
     `TITLE: ${basename(path)} — ossclip markers`,
     "FCM: NON-DROP FRAME",
     "",
   ];
-  removals.forEach((seg, i) => {
-    const tcIn = framesToTimecode(Math.round(seg.srcIn * fps), fps);
-    const tcOut = framesToTimecode(Math.round(seg.srcIn * fps) + 1, fps);
+  items.forEach((m, i) => {
+    const inFrames = Math.round(m.start * fps);
+    // At least one frame — a zero-length marker is invisible.
+    const durFrames = Math.max(1, Math.round(m.end * fps) - inFrames);
+    const tcIn = framesToTimecode(inFrames, fps);
+    const tcOut = framesToTimecode(inFrames + durFrames, fps);
     // Record TC = source TC: the FCPXML timeline this rides on starts at
     // 00:00:00:00 (tcStart 0), so the marker lands at the source position.
     const num = String(i + 1).padStart(3, "0");
     lines.push(`${num}  001      V     C        ${tcIn} ${tcOut} ${tcIn} ${tcOut}  `);
-    lines.push(
-      ` |C:ResolveColor${REASON_COLOURS[seg.reason ?? "user"] ?? "Green"} |M:${label(seg)} |D:1`,
-    );
+    lines.push(` |C:ResolveColor${m.colour} |M:${m.label} |D:${durFrames}`);
     lines.push("");
   });
   return `${lines.join("\n")}\n`;

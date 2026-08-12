@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
+import { keptPauseLabel, keptPauses } from "./export-markers";
 import type { Production, Segment } from "./schema";
 
 /**
@@ -74,12 +75,26 @@ export function buildFcpxmlMarkers(production: Production): string {
   const fd = fpsToFrameDuration(probe.fps);
   const dur = quantizeToFrame(probe.duration, fd);
   const name = basename(path);
+  // SPANS, not points (§142 round 2): the 1-frame marker was a deliberate
+  // "don't overstate the suggestion" choice, and the first real editor
+  // reversed it — she needs where the cut starts AND where content resumes,
+  // and a span's two edges are exactly that. Kept pauses ride along as their
+  // own markers (see export-markers.ts); one time-ordered list, so the
+  // NLE's marker index reads like the take.
+  const spanFrames = (startSec: number, endSec: number) => {
+    const frames = (sec: number) => Math.round((sec * fd.den) / fd.num);
+    return Math.max(1, frames(endSec) - frames(startSec));
+  };
   const removals = (production.cutlist ?? []).filter((s) => s.kind === "remove");
-  const markers = removals
+  const items = [
+    ...removals.map((s) => ({ start: s.srcIn, end: s.srcOut, label: markerName(s) })),
+    ...keptPauses(production).map((p) => ({ start: p.start, end: p.end, label: keptPauseLabel(p) })),
+  ].sort((a, b) => a.start - b.start);
+  const markers = items
     .map(
-      (s) =>
-        `            <marker start="${quantizeToFrame(s.srcIn, fd)}" ` +
-        `duration="${fd.num}/${fd.den}s" value="${esc(markerName(s))}"/>`,
+      (m) =>
+        `            <marker start="${quantizeToFrame(m.start, fd)}" ` +
+        `duration="${spanFrames(m.start, m.end) * fd.num}/${fd.den}s" value="${esc(m.label)}"/>`,
     )
     .join("\n");
   // pathToFileURL, not string concat: it percent-encodes the characters a

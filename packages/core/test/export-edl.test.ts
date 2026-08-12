@@ -46,21 +46,48 @@ describe("framesToTimecode", () => {
 });
 
 describe("buildResolveMarkerEdl", () => {
-  it("one event per remove segment, source time in record TC, one-frame duration", () => {
+  it("one event per remove segment, spanning the cut in record TC (§142 round 2: spans, not points)", () => {
     const edl = buildResolveMarkerEdl(production());
     const events = edl.split("\n").filter((l) => /^\d{3} /.test(l));
     expect(events).toHaveLength(3);
-    // 1.77s → nothing (that segment starts at 0): first marker at 0.
-    expect(events[0]).toContain("00:00:00:00 00:00:00:01 00:00:00:00 00:00:00:01");
-    // 10s at 60fps = frame 600.
-    expect(events[1]).toContain("00:00:10:00 00:00:10:01 00:00:10:00 00:00:10:01");
+    // 0→1.77s at 60fps = 106 frames → 00:00:01:46.
+    expect(events[0]).toContain("00:00:00:00 00:00:01:46 00:00:00:00 00:00:01:46");
+    // 10→10.5s = frames 600→630.
+    expect(events[1]).toContain("00:00:10:00 00:00:10:30 00:00:10:00 00:00:10:30");
   });
 
-  it("carries the report vocabulary in |M: and maps reason to a Resolve colour in |C:", () => {
+  it("carries the report vocabulary in |M:, reason colour in |C:, and the SPAN in |D: frames", () => {
     const edl = buildResolveMarkerEdl(production());
-    expect(edl).toContain("|C:ResolveColorBlue |M:silence -1.77s (conf 0.95) |D:1");
-    expect(edl).toContain("|C:ResolveColorYellow |M:filler -0.50s (conf 0.80) |D:1");
-    expect(edl).toContain("|C:ResolveColorRed |M:retake -4.00s (conf 0.90) |D:1");
+    expect(edl).toContain("|C:ResolveColorBlue |M:silence -1.77s (conf 0.95) |D:106");
+    expect(edl).toContain("|C:ResolveColorYellow |M:filler -0.50s (conf 0.80) |D:30");
+    expect(edl).toContain("|C:ResolveColorRed |M:retake -4.00s (conf 0.90) |D:240");
+  });
+
+  it("a sub-frame cut still gets |D:1 — a zero-length marker is invisible", () => {
+    const p = production();
+    p.cutlist = [
+      { srcIn: 5, srcOut: 5.001, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 5.001, srcOut: 60, kind: "keep" },
+    ];
+    expect(buildResolveMarkerEdl(p)).toContain("|D:1");
+  });
+
+  it("detected-but-kept pauses export as Lavender markers (§142 round 2)", () => {
+    const p = production();
+    p.analysis = {
+      silences: [],
+      gaps: [],
+      breaths: [],
+      fillers: [],
+      cuttable: [{ start: 30, end: 30.4 }],
+    } as NonNullable<Production["analysis"]>;
+    const edl = buildResolveMarkerEdl(p);
+    expect(edl).toContain("|C:ResolveColorLavender |M:pause 0.40s (kept) |D:24");
+    // Events stay time-ordered and sequentially numbered with the pause added.
+    const events = edl.split("\n").filter((l) => /^\d{3} /.test(l));
+    expect(events).toHaveLength(4);
+    expect(events[3]!.startsWith("004")).toBe(true);
+    expect(events[3]).toContain("00:00:30:00 00:00:30:24");
   });
 
   it("ASCII only in the label — the true minus sign does not survive every EDL parser", () => {
