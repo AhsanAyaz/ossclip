@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildCaptionLines, lineDirection } from "../src/captions";
-import { TimeMap } from "../src/timemap";
+import { backfillSrcStart, buildCaptionLines, lineDirection, type CaptionLine } from "../src/captions";
+import { TimeMap, type KeptSpan } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
 
 describe("buildCaptionLines", () => {
@@ -105,6 +105,43 @@ describe("CaptionWord.srcStart (§137)", () => {
     // ...the source anchor is not.
     expect(words[0]!.srcStart).toBeCloseTo(2.5, 3);
     expect(words[1]!.srcStart).toBeCloseTo(3.5, 3);
+  });
+});
+
+describe("backfillSrcStart (§137 — render-props.json predates the field)", () => {
+  // A legacy file's words carry only {text,start,end}; the cast the editor
+  // loads render props through would let them past the type unchallenged.
+  const legacyLine = (words: { text: string; start: number; end: number }[]): CaptionLine =>
+    ({ start: words[0]!.start, end: words[words.length - 1]!.end, words }) as unknown as CaptionLine;
+
+  it("recovers the source start the file's own spans imply", () => {
+    // The same 2.0s-in kept span, in the form render-props.json stores it.
+    const spans: KeptSpan[] = [{ srcIn: 2, srcOut: 5, outIn: 0, outOut: 3 }];
+    const lines = [legacyLine([{ text: "alpha", start: 0.5, end: 0.9 }])];
+
+    const out = backfillSrcStart(lines, spans);
+
+    expect(out[0]!.words[0]!.srcStart).toBeCloseTo(2.5, 6);
+    expect(out[0]!.words[0]!.start).toBeCloseTo(0.5, 6); // output timing untouched
+  });
+
+  it("leaves an already-migrated line alone rather than recomputing it", () => {
+    // `srcStart` may have come from a map these spans no longer describe, so a
+    // present value wins over anything projection would say (here: 9, not 2.5).
+    const spans: KeptSpan[] = [{ srcIn: 2, srcOut: 5, outIn: 0, outOut: 3 }];
+    const lines: CaptionLine[] = [
+      { start: 0.5, end: 0.9, words: [{ text: "alpha", start: 0.5, end: 0.9, srcStart: 9 }] },
+    ];
+
+    const out = backfillSrcStart(lines, spans);
+
+    expect(out[0]!.words[0]!.srcStart).toBe(9);
+    expect(out[0]!.words[0]).toBe(lines[0]!.words[0]); // same object, not a copy
+  });
+
+  it("survives an empty spans array instead of throwing on a truncated file", () => {
+    const out = backfillSrcStart([legacyLine([{ text: "alpha", start: 0.5, end: 0.9 }])], []);
+    expect(out[0]!.words[0]!.srcStart).toBe(0); // no spans: nothing to project onto
   });
 });
 

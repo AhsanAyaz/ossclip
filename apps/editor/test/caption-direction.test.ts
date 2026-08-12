@@ -25,8 +25,21 @@ vi.mock("remotion", () => ({
 
 const { CaptionTrack } = await import("../../../packages/scenes/src/CaptionTrack");
 
+/**
+ * `srcStart` is distinct per word and never omitted (§137). This file is
+ * outside every tsconfig's `include` (apps/editor's is `["src"]`), so nothing
+ * would flag a missing `srcStart` here — and CaptionTrack owns the word ids
+ * the retype override keys on, so words sharing an absent anchor would make
+ * this test pass vacuously. No map exists in this fixture, so the values are
+ * set equal to `start` purely as a stand-in; they carry no source semantics.
+ */
 const lineOf = (texts: string[], start = 0): CaptionLine => ({
-  words: texts.map((text, i) => ({ text, start: start + i * 0.3, end: start + i * 0.3 + 0.25 })),
+  words: texts.map((text, i) => ({
+    text,
+    start: start + i * 0.3,
+    end: start + i * 0.3 + 0.25,
+    srcStart: start + i * 0.3,
+  })),
   start,
   end: start + texts.length * 0.3,
 });

@@ -1,7 +1,12 @@
 import type { Transcript, Word } from "./schema";
-import type { TimeMap } from "./timemap";
+import { mapFromKeptSpans, type KeptSpan, type TimeMap } from "./timemap";
 
-/** Caption timing lives in OUTPUT time — captions never know about cuts. */
+/**
+ * Caption *timing* lives in OUTPUT time: `start`/`end` are what the renderer
+ * draws against and they know nothing about cuts. `srcStart` is the deliberate
+ * exception (§137) — it is SOURCE time, carried so a re-cut cannot move it.
+ * Never read it as an output instant.
+ */
 export interface CaptionWord {
   text: string;
   start: number;
@@ -19,6 +24,42 @@ export interface CaptionLine {
   words: CaptionWord[];
   start: number;
   end: number;
+}
+
+/**
+ * Fill in `srcStart` for caption lines read back from a `render-props.json`
+ * written before the field existed (§137).
+ *
+ * The type promises `srcStart` on every word, but the on-disk format predates
+ * it and there is no schema at that boundary — the editor loads render props
+ * as an unvalidated cast — so lines that TYPECHECK as `CaptionLine` can still
+ * arrive with the field missing. Without this, every legacy word would key on
+ * the same absent value and a retype would anchor to the wrong word: the exact
+ * failure the source anchor exists to prevent, arriving silently instead of as
+ * a crash.
+ *
+ * It is recoverable because the same file still carries `spans`: a word's
+ * source start is just its output start projected back through the map those
+ * spans describe. Pure — the caller owns reading the file.
+ */
+export function backfillSrcStart(
+  lines: readonly CaptionLine[],
+  spans: readonly KeptSpan[],
+): CaptionLine[] {
+  /** The shape a legacy file actually holds, versus the one the type promises. */
+  type LegacyWord = Omit<CaptionWord, "srcStart"> & { srcStart?: number };
+  const legacy = (line: CaptionLine) => line.words as readonly LegacyWord[];
+  // Nothing to recover from a file already written with the field — and an
+  // existing `srcStart` is never recomputed, because the map that produced it
+  // may not be the one in `spans`.
+  if (lines.every((l) => legacy(l).every((w) => w.srcStart !== undefined))) return [...lines];
+  const map = mapFromKeptSpans(spans);
+  return lines.map((line) => ({
+    ...line,
+    words: legacy(line).map((w) =>
+      w.srcStart === undefined ? { ...w, srcStart: map.toSource(w.start) } : (w as CaptionWord),
+    ),
+  }));
 }
 
 /**

@@ -378,8 +378,10 @@ describe("per-scene video framing override", () => {
 import { applyCaptionEdits } from "../src/overrides";
 
 describe("applyCaptionEdits (caption retype, scope (a))", () => {
-  // No cutlist is in play here, so this fixture's source and output timelines
-  // are the identity map — `srcStart` equals `start` (§137).
+  // This fixture has no cutlist and no `TimeMap`, so nothing here relates
+  // source time to output time at all. `srcStart` is set equal to `start` as
+  // an inert stand-in — NOT because the two coincide (§137). Anything that
+  // needs a source time that genuinely differs must build a map.
   const lines = [
     { start: 0, end: 1, words: [
       { text: "double", start: 0, end: 0.5, srcStart: 0 },
@@ -768,7 +770,8 @@ describe("captionEditWas (R15 §59 — re-edit keeps the base guard)", () => {
 
   it("a re-edit round-trips through applyCaptionEdits instead of being dropped", () => {
     const base = [
-      // Identity timeline (no cutlist), so `srcStart` is the output start (§137).
+      // No map in this fixture either: `srcStart` is an inert stand-in, not a
+      // claim that source and output time coincide (§137).
       { start: 0, end: 1, words: [{ text: "helo", start: 0, end: 1, srcStart: 0 }] },
     ];
     const first = { "0": { text: "hello", was: captionEditWas({}, 0, "helo") } };
