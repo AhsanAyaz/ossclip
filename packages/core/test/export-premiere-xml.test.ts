@@ -100,6 +100,15 @@ describe("buildPremiereXmlMarkers", () => {
     expect(doc.querySelector("clipitem file name")!.textContent).toBe("A & B's <take>.mp4");
   });
 
+  it("markers ALSO live on the clipitem — clip markers are anchored to media time, so they survive the editor's own ripple deletes (Kinza's workflow, §142)", () => {
+    const doc = parseXml(buildPremiereXmlMarkers(production()));
+    const clipMarkers = Array.from(doc.querySelectorAll("clipitem > marker"));
+    expect(clipMarkers).toHaveLength(2);
+    // Same media-time frames as the sequence markers: the clip's in is 0.
+    expect(clipMarkers[1]!.querySelector("in")!.textContent).toBe("600");
+    expect(clipMarkers[1]!.querySelector("name")!.textContent).toBe("filler -0.50s (conf 0.80)");
+  });
+
   it("empty cutlist is a valid sequence with zero markers", () => {
     const doc = parseXml(buildPremiereXmlMarkers(production({ cutlist: [] })));
     expect(doc.querySelectorAll("marker")).toHaveLength(0);

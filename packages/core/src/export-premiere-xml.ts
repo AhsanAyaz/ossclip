@@ -53,20 +53,31 @@ export function buildPremiereXmlMarkers(production: Production): string {
   const name = esc(basename(path));
   const rateXml = (indent: string) =>
     `${indent}<rate>\n${indent}  <timebase>${timebase}</timebase>\n${indent}  <ntsc>${ntscStr}</ntsc>\n${indent}</rate>`;
-  const markers = (production.cutlist ?? [])
-    .filter((s) => s.kind === "remove")
-    .map(
-      (s) =>
-        `    <marker>\n` +
-        `      <name>${esc(label(s))}</name>\n` +
-        `      <comment>ossclip suggested cut — review before applying</comment>\n` +
-        `      <in>${toFrames(s.srcIn)}</in>\n` +
-        // -1: a point marker, not a span — a span would render as a region
-        // Premiere invites you to drag, which overstates the suggestion.
-        `      <out>-1</out>\n` +
-        `    </marker>`,
-    )
-    .join("\n");
+  // Emitted at BOTH levels, deliberately (field feedback, first real editor,
+  // §142). SEQUENCE markers sit at fixed timecode — the moment the editor
+  // ripple-deletes their first blooper, every downstream one points at the
+  // wrong moment, which is exactly why our field editor went back to manual.
+  // CLIP markers are anchored to the clip's MEDIA time, so they ride through
+  // razor cuts and ripple deletes and stay on the words they describe. The
+  // sequence copies stay too: they are the read-only overview of the
+  // untouched take, and the two agree while nothing is edited.
+  const markerXml = (indent: string) =>
+    (production.cutlist ?? [])
+      .filter((s) => s.kind === "remove")
+      .map(
+        (s) =>
+          `${indent}<marker>\n` +
+          `${indent}  <name>${esc(label(s))}</name>\n` +
+          `${indent}  <comment>ossclip suggested cut — review before applying</comment>\n` +
+          `${indent}  <in>${toFrames(s.srcIn)}</in>\n` +
+          // -1: a point marker, not a span — a span would render as a region
+          // Premiere invites you to drag, which overstates the suggestion.
+          `${indent}  <out>-1</out>\n` +
+          `${indent}</marker>`,
+      )
+      .join("\n");
+  const markers = markerXml("    ");
+  const clipMarkers = markerXml("            ");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE xmeml>
 <xmeml version="4">
@@ -115,7 +126,7 @@ ${rateXml("              ")}
                 </video>${probe.hasAudio ? "\n                <audio>\n                  <channelcount>2</channelcount>\n                </audio>" : ""}
               </media>
             </file>
-          </clipitem>
+${clipMarkers ? `${clipMarkers}\n` : ""}          </clipitem>
         </track>
       </video>
     </media>
