@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -407,5 +407,46 @@ describe("input_source (§136)", () => {
     expect(() => assertSafeProps({ input_path: "/Users/a/take.mp4" })).toThrow(
       /forbidden substring "path"/,
     );
+  });
+
+  /**
+   * A source-text drift test, which looks odd until you read `Telemetry.record`
+   * (telemetry.ts): it wraps `buildEvent` — and therefore `assertSafeProps` —
+   * in a bare catch and fails CLOSED. So a prop key renamed to anything
+   * containing a forbidden substring does not drop that prop, it silently drops
+   * the ENTIRE `produce_completed` event, in production, with no log anywhere.
+   * The assertions above cannot see that: they pass a string literal typed in
+   * this file, not the key `program.ts` actually sends. Nothing else pins the
+   * wiring either — deleting `input_source` from the record call kept the whole
+   * suite green (§136, final review).
+   *
+   * The precedent is docs-install.test.ts, which regexes README.md and the docs
+   * site off disk for the same reason: a real single-source mechanism is more
+   * machinery than the problem is worth. This reads the source rather than
+   * importing `program.ts`, so it is also unaffected by the `loadEnvFiles()`
+   * hazard the block comment above describes.
+   */
+  it("the produce_completed props match the source, and all of them clear the privacy floor", () => {
+    const expected = [
+      "duration_ms",
+      "llm_provider",
+      "produced",
+      "aspect",
+      "clip",
+      "render",
+      "source_duration_bucket",
+      "scenes",
+      "input_source",
+    ];
+    const src = readFileSync(new URL("../src/program.ts", import.meta.url), "utf8");
+    const from = src.indexOf('telemetry.record("produce_completed"');
+    expect(from).toBeGreaterThan(-1);
+    const block = src.slice(from, src.indexOf("});", from));
+    const keys = [...block.matchAll(/^\s+(\w+):/gm)].map((m) => m[1] as string);
+    // Containment, not equality: a NEW prop is legitimate and should not need a
+    // test edit — the assertSafeProps call below is what guards it. A deleted
+    // or renamed one is what goes red here.
+    expect(keys).toEqual(expect.arrayContaining(expected));
+    expect(() => assertSafeProps(Object.fromEntries(keys.map((k) => [k, 1])))).not.toThrow();
   });
 });

@@ -220,6 +220,10 @@ describe("askInput (branch logic)", () => {
 
     const h2 = harness({ answers: [BROWSE_FILE], picks: [other] });
     await expect(askInput(h2.deps)).resolves.toBe(other);
+    // The mode mapping, pinned on the file side too: only the folder case was
+    // asserted, so a ternary that always returned "folder" passed the whole
+    // suite while **Browse…** opened a folder chooser (§136, final review).
+    expect(h2.modes).toEqual(["file"]);
     expect(inputSourceUsed()).toBe("picker");
 
     const h3 = harness({ answers: [TYPE_PATH], typed: take });
