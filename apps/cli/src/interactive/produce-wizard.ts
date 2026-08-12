@@ -1,5 +1,6 @@
 import { basename } from "node:path";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { askInput } from "./ask-input";
 import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-argv";
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
@@ -145,27 +146,10 @@ export async function produceWizard(
   // dropped it and asked again — the re-ask is where "./Anyhropic c Compiler"
   // became "./" (all of ~/Downloads). The router checks existence before the
   // wizard ever opens, so a prefilled path skips the prompt entirely.
-  const input =
-    cfg.input ??
-    (unwrap(
-      await text({
-        // Finding 1 (final-review fix wave): `ossclip produce <folder>` shipped
-        // (folder-input-brief.md) but this prompt still rejected a directory —
-        // the wizard was the only way in that couldn't do what the CLI could.
-        // A folder is concatenated by name (codepoint order, like `ls`); --sort
-        // mtime reorders it but stays a typed flag, not a wizard question (see
-        // the file-level comment above for why).
-        message: "Video file, or a folder of clips to concatenate (by name; --sort mtime is a typed flag)",
-        placeholder: "./raw/take1.mp4",
-        validate: (v) => {
-          if (!v) return "a path is required";
-          if (!existsSync(v)) return `no such path: ${v}`;
-          const st = statSync(v);
-          if (!st.isFile() && !st.isDirectory()) return `${v} is neither a video file nor a folder`;
-          return undefined;
-        },
-      }),
-    ) as string);
+  //
+  // Everything else now lives in ask-input.ts (§136): suggestions, the native
+  // picker, and typing, all converging on one validator.
+  const input = cfg.input ?? (await askInput());
 
   const aspect = unwrap(
     await select({
