@@ -197,7 +197,7 @@ describe("migrateLoadedDoc — upgrading a pre-§137 overrides.json", () => {
     const doc = OverrideDocSchema.parse({ captions: { "1": { text: "GAVE", was: "gave" } } });
     const out = migrateLoadedDoc(doc, props);
     expect(out.doc.captions).toEqual({});
-    expect(out.unresolved).toEqual([{ key: "1", was: "gave" }]);
+    expect(out.unresolved).toEqual([{ key: "1", was: "gave", reason: "unanchorable" }]);
   });
 
   it("resolves against baseCaptionLines, the lines the edits are actually merged onto", () => {
@@ -229,11 +229,37 @@ describe("migrateLoadedDoc — upgrading a pre-§137 overrides.json", () => {
 });
 
 describe("what the user is told about caption edits that did not land (§137)", () => {
-  it("names the word a migration could not place and says to retype it", () => {
-    expect(migrationLossNotices([{ key: "3", was: "batch," }])).toEqual([
-      expect.stringContaining("batch,"),
-    ]);
-    expect(migrationLossNotices([{ key: "3", was: "batch," }])[0]).toContain("retype it");
+  const loss = (reason: "not-found" | "ambiguous" | "unanchorable" | "collision" | "superseded") =>
+    migrationLossNotices([{ key: "3", was: "batch,", reason }])[0]!;
+
+  it("names the word, whatever the cause", () => {
+    for (const r of ["not-found", "ambiguous", "unanchorable", "collision", "superseded"] as const) {
+      expect(loss(r)).toContain("batch,");
+    }
+  });
+
+  it("blames the cut ONLY when the word is actually gone (Minor 7)", () => {
+    // The other three leave the word sitting on screen — an earlier version
+    // told the user it had been cut, which is a search for something that
+    // never moved.
+    expect(loss("not-found")).toContain("the cut probably removed it");
+    expect(loss("ambiguous")).not.toContain("cut");
+    expect(loss("collision")).not.toContain("cut");
+    expect(loss("superseded")).not.toContain("cut");
+    expect(loss("unanchorable")).not.toContain("cut");
+  });
+
+  it("asks for a retype only where a retype is the answer", () => {
+    // "Retype", capitalised: every sentence opens with "was retyped in an
+    // older version", so a bare substring match would pass on all five.
+    expect(loss("not-found")).toContain("Retype");
+    expect(loss("ambiguous")).toContain("Retype");
+    expect(loss("collision")).toContain("Retype");
+    // The newer edit was KEPT — there is nothing for the user to redo.
+    expect(loss("superseded")).not.toContain("Retype");
+    // Nor here: no source timing is a defect in the project's files, and the
+    // fix is to re-run produce, not to type the word again.
+    expect(loss("unanchorable")).toContain("Re-run produce");
   });
 
   it("says the word is GONE when nothing carries the anchor any more", () => {
@@ -258,6 +284,22 @@ describe("what the user is told about caption edits that did not land (§137)", 
       { key: "w1768", expected: "batch,", found: "batch,", reason: "duplicate-anchor" },
     ]);
     expect(line).toContain("only the first was retyped");
+  });
+
+  it("says a MIXED doc kept the newer edit rather than losing it (Important 3)", () => {
+    const { doc: out, unresolved } = migrateLoadedDoc(
+      OverrideDocSchema.parse({
+        captions: {
+          "0": { text: "Zsh,", was: "edge," },
+          w6000: { text: "Fish,", was: "edge," },
+        },
+      }),
+      { baseCaptionLines: [{ words: [{ text: "edge,", start: 0, end: 1, srcStart: 6 }], start: 0, end: 1 }] },
+    );
+    // A project edited before AND after this change holds both key spaces over
+    // one word. Refusing both deleted the current-format edit.
+    expect(out.captions).toEqual({ w6000: { text: "Fish,", was: "edge," } });
+    expect(unresolved).toEqual([{ key: "0", was: "edge,", reason: "superseded" }]);
   });
 
   it("says nothing at all when nothing was dropped", () => {

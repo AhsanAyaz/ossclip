@@ -905,7 +905,7 @@ describe("source-anchored caption keys (§137)", () => {
     const lines = [line(["the", 1.0], ["the", 2.0], ["the", 3.0], ["cat", 4.0])];
     const { edits, unresolved } = migrateCaptionKeys({ "3": { text: "a", was: "the" } }, lines);
     expect(edits).toEqual({});
-    expect(unresolved).toEqual([{ key: "3", was: "the" }]);
+    expect(unresolved).toEqual([{ key: "3", was: "the", reason: "ambiguous" }]);
   });
 
   it("an exact position hit WINS over an identical word nearby — it is a record, not a guess", () => {
@@ -946,25 +946,47 @@ describe("source-anchored caption keys (§137)", () => {
     );
     expect(edits).toEqual({});
     expect(unresolved).toEqual([
-      { key: "0", was: "the" },
-      { key: "5", was: "the" },
+      { key: "0", was: "the", reason: "collision" },
+      { key: "5", was: "the", reason: "collision" },
     ]);
   });
 
-  it("refuses a legacy key colliding with an ALREADY-migrated one — this plan's own halfway state", () => {
-    // Until Task 3 re-keys the editor, a doc saved after one migration holds
-    // both key spaces at once. JS enumerates integer-like keys first, so the
-    // passthrough always won and the migrated edit vanished.
+  it("the SOURCE-KEYED edit wins a collision with a legacy one — this plan's own halfway state", () => {
+    // A doc saved before AND after this change holds both key spaces at once,
+    // over the same word. Refusing both (the first cut of this function) threw
+    // away the newer, current-format edit whose anchor was never in doubt —
+    // §137 Task 6 review, Important 3. The legacy claim is the one retired,
+    // and it is reported rather than silently dropped.
     const lines = [line(["edge,", 6.0])];
     const { edits, unresolved } = migrateCaptionKeys(
       { "0": { text: "Zsh,", was: "edge," }, w6000: { text: "Fish,", was: "edge," } },
       lines,
     );
+    expect(edits).toEqual({ w6000: { text: "Fish,", was: "edge," } });
+    expect(unresolved).toEqual([{ key: "0", was: "edge,", reason: "superseded" }]);
+  });
+
+  it("a source-keyed edit wins even when the legacy claim comes from the SEARCH", () => {
+    // Both routes into the same anchor have to lose to the current format, not
+    // just the exact-position one: position 3 holds "cat", so "3" searches
+    // outward, finds the lone "edge," and lands on w6000 — which w6000 owns.
+    const lines = [line(["cat", 1.0], ["dog", 2.0], ["cow", 3.0], ["cat", 4.0], ["edge,", 6.0])];
+    const { edits, unresolved } = migrateCaptionKeys(
+      { "3": { text: "Zsh,", was: "edge," }, w6000: { text: "Fish,", was: "edge," } },
+      lines,
+    );
+    expect(edits).toEqual({ w6000: { text: "Fish,", was: "edge," } });
+    expect(unresolved).toEqual([{ key: "3", was: "edge,", reason: "superseded" }]);
+  });
+
+  it("names the cause: a word that is simply gone is `not-found`, not a collision", () => {
+    // Minor 7 — the four causes need four different things from the user, and
+    // one message blaming the cut sends them looking for a word that is still
+    // on screen.
+    const lines = [line(["status", 5.0])];
+    const { edits, unresolved } = migrateCaptionKeys({ "0": { text: "Zsh", was: "gone" } }, lines);
     expect(edits).toEqual({});
-    expect(unresolved).toEqual([
-      { key: "0", was: "edge," },
-      { key: "w6000", was: "edge," },
-    ]);
+    expect(unresolved).toEqual([{ key: "0", was: "gone", reason: "not-found" }]);
   });
 
   it("refuses two edits on words that SHARE a source instant", () => {
@@ -978,8 +1000,8 @@ describe("source-anchored caption keys (§137)", () => {
     );
     expect(edits).toEqual({});
     expect(unresolved).toEqual([
-      { key: "0", was: "hello" },
-      { key: "1", was: "hello" },
+      { key: "0", was: "hello", reason: "collision" },
+      { key: "1", was: "hello", reason: "collision" },
     ]);
   });
 
@@ -1049,8 +1071,8 @@ describe("source-anchored caption keys (§137)", () => {
     const { edits, unresolved } = call();
     expect(edits).toEqual({});
     expect(unresolved).toEqual([
-      { key: "0", was: "hello" },
-      { key: "1", was: "world" },
+      { key: "0", was: "hello", reason: "unanchorable" },
+      { key: "1", was: "world", reason: "unanchorable" },
     ]);
   });
 
@@ -1064,7 +1086,7 @@ describe("source-anchored caption keys (§137)", () => {
     const call = () => migrateCaptionKeys({ "1": { text: "HI", was: "hello" } }, lines);
     expect(call).not.toThrow();
     expect(call().edits).toEqual({});
-    expect(call().unresolved).toEqual([{ key: "1", was: "hello" }]);
+    expect(call().unresolved).toEqual([{ key: "1", was: "hello", reason: "unanchorable" }]);
   });
 
   it("REFUSES a non-finite srcStart instead of minting one `wNaN` for the whole video", () => {

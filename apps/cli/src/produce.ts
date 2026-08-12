@@ -15,7 +15,6 @@ import {
   applyOverrides,
   applyRepairs,
   assembleScenes,
-  applyCaptionEdits,
   buildCaptionLines,
   buildCutlist,
   buildZoomPlan,
@@ -105,7 +104,7 @@ import {
   workdirBaseName,
 } from "./stranded-overrides";
 import { editHint } from "./interactive/edit-hint";
-import { appliedCaptionEditCount, captionDropLine } from "./caption-report";
+import { reconcileCaptionEdits } from "./caption-report";
 import { recordedProduceArgs } from "./replay-argv";
 import { renderCover, renderProduction } from "@ossclip/renderer";
 import {
@@ -1932,22 +1931,34 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // caption output for zero visual reason (PLAN Task A4.4).
     breakpoints: graphicCues.flatMap((c) => [c.startSec, c.endSec]),
   });
-  // The user's retyped caption words (editor, PLAN 2026-07-29 Task 7 scope
-  // (a)). Guarded per word: a stale edit — the pipeline re-derived a
-  // different word at that position — is dropped LOUDLY, never applied to
-  // the wrong word and never silently forgotten.
-  const { lines: captionLines, dropped: staleCaptionEdits } = applyCaptionEdits(
-    baseCaptionLines,
-    overrideDoc.captions,
-  );
-  // §137: both halves of this used to lie. The count was `keys - dropped`,
-  // which `dropped`'s duplicate-anchor entries make an undercount (or a
-  // negative, silenced by the guard below), and the drop line interpolated
-  // `found: null` — the cut-removed case, the very one this plan is about —
-  // into the sentence as the string "null". `caption-report.ts` owns both.
-  const liveCaptionEdits = appliedCaptionEditCount(overrideDoc.captions, staleCaptionEdits);
-  if (liveCaptionEdits > 0) console.log(`▸ ${liveCaptionEdits} caption word(s) retyped by the editor`);
-  for (const d of staleCaptionEdits) console.log(captionDropLine(d));
+  // §137 (Task 6 review, Critical 1): the caption half of a run — migrate the
+  // doc's keys, apply what applies, and account for the rest — is one pure
+  // pass in `caption-report.ts`, and this is its I/O.
+  //
+  // MIGRATION RUNS HERE, not only in the editor. The editor's is in memory and
+  // `edits.load` leaves the doc CLEAN, so `onRender` (which saves only when
+  // dirty) sends a user who opened an old project, saw every retype come back
+  // on screen, and clicked Render straight into this function with the
+  // untouched legacy doc — and `applyCaptionEdits` matched nothing, so the
+  // render shipped without a single retype after showing a state strictly more
+  // convincing than the truth. None of the reasoning that keeps this call out
+  // of `edit.ts` applies: `buildCaptionLines` just stamped a real `srcStart`
+  // on every word above (`captions.ts:128`), so there is nothing to backfill
+  // and no repair rule to duplicate.
+  //
+  // THE MIGRATED DOC IS WRITTEN BACK — the decision, stated: through the one
+  // sanctioned `overrides.json` write further down, with its `.bak` and atomic
+  // rename, never a second write here. A legacy key's resolvability DECAYS (it
+  // is found by the word it names, so the next re-plan that rewrites that word
+  // loses it for good), and this is the only durable repair in the product —
+  // the editor's evaporates, as Critical 1 showed. The edits it could not
+  // place leave the doc as the cost of that, so every one is printed by name
+  // below and the pre-migration file survives as `overrides.json.bak`.
+  const captionWork = reconcileCaptionEdits(overrideDoc, baseCaptionLines);
+  overrideDoc = captionWork.doc;
+  const captionLines = captionWork.lines;
+  const captionKeysChanged = captionWork.keysChanged;
+  for (const line of captionWork.log) console.log(line);
 
   // Micro zoom punches (FINDINGS §15) reversing at real phrase breaks (§18).
   // Breaths are source-time; TimeMap has no span mapper, so both ends go
@@ -2186,7 +2197,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // next run's `priorMap` then sees drift and re-anchors again, the same
   // recovery path finding 3 already has to support — never a false "nothing
   // changed" that quietly corrupts positions.
-  if (cutResult.changed) {
+  // `cutResult.changed` OR a §137 caption-key migration — the second is why
+  // this is no longer a bare cut check. Both are re-anchorings of the user's
+  // doc to something the pipeline just recomputed, and both want the same
+  // `.bak`-then-atomic-rename treatment; a separate write for the migration
+  // would be a SECOND sanctioned write, which the comment above exists to
+  // prevent.
+  if (cutResult.changed || captionKeysChanged) {
     // Keep a `.bak` of whatever was on disk first — the same safety net
     // `saveConfigPatch` keeps for a config file it's about to replace —
     // before overwriting the user's own data. Atomic write via tmp+rename,
@@ -2202,7 +2219,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const tmp = `${overridesPath}.tmp`;
     await writeFile(tmp, JSON.stringify(overrideDoc, null, 2));
     await rename(tmp, overridesPath);
-    console.log("▸ overrides.json re-anchored to the new cut and saved (previous copy kept as .bak)");
+    console.log(
+      `▸ overrides.json re-anchored to ${
+        cutResult.changed ? "the new cut" : "source-time caption keys"
+      } and saved (previous copy kept as .bak)`,
+    );
   }
 
   if (!opts.render) {

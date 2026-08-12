@@ -1,12 +1,21 @@
-import type { AppliedCaptionEdits, CaptionEdit } from "@ossclip/core";
+import { applyCaptionEdits, isLegacyCaptionKey, migrateCaptionKeys } from "@ossclip/core";
+import type {
+  AppliedCaptionEdits,
+  CaptionEdit,
+  CaptionKeyMigration,
+  CaptionLine,
+  OverrideDoc,
+} from "@ossclip/core";
 
 /**
- * What `produce` says about the caption edits it could not apply (§137).
+ * What `produce` does with the user's retyped caption words, and what it says
+ * about the ones that did not land (§137).
  *
  * Pure, and in its own module rather than inline in `produce.ts`, for the
- * house reason: this is a decision about the user's data (which edits landed,
- * and why the others did not) and it should be testable without standing up a
- * production. `produce.ts` keeps the `console.log`.
+ * house reason: this is a decision about the user's data (which edits are
+ * re-anchored, which are applied, and why the others were not) and a
+ * `produce()` run needs ffmpeg, a transcript and a workdir before it reaches
+ * any of it. `produce.ts` keeps the `console.log` and the file writes.
  */
 
 /** One drop, as a console line. Three cases, and the caller must not merge them. */
@@ -26,6 +35,18 @@ export function captionDropLine(drop: AppliedCaptionEdits["dropped"][number]): s
     );
   }
   if (drop.found === null) {
+    // A key that is a POSITION, not a source anchor, never had a moment to
+    // lose — it is a pre-§137 doc the migration could not upgrade. Saying "the
+    // cut removed it" there sends the user to redo work that is sitting intact
+    // on screen (§137 Task 6 review, Important 2). Reachable whenever an edit
+    // reaches `applyCaptionEdits` without going through `migrateCaptionKeys`.
+    if (isLegacyCaptionKey(drop.key)) {
+      return (
+        `  ⚠ caption edit "${drop.expected}" (position ${drop.key}) not applied: it is keyed ` +
+        `by word POSITION, from a project saved before source anchors, and nothing ` +
+        `re-anchored it — open the project in the editor, or retype it there`
+      );
+    }
     return (
       `  ⚠ caption edit "${drop.expected}" (${drop.key}) dropped: no word starts at that ` +
       `source moment any more — the cut removed the word it was typed over. ` +
@@ -59,4 +80,121 @@ export function appliedCaptionEditCount(
 ): number {
   const failed = new Set(dropped.filter((d) => d.reason === undefined).map((d) => d.key));
   return Object.keys(edits).filter((key) => !failed.has(key)).length;
+}
+
+/**
+ * One console line for a legacy edit the migration would not place (§137).
+ *
+ * One sentence per CAUSE, like the editor's own notice: three of the four
+ * leave the word sitting right there in the transcript, and a single message
+ * blaming the cut would send the user hunting for it.
+ */
+export function captionMigrationLine(u: CaptionKeyMigration["unresolved"][number]): string {
+  const head = `  ⚠ caption edit "${u.was}" (${u.key}) could not be re-anchored`;
+  switch (u.reason) {
+    case "ambiguous":
+      return `${head}: more than one word says it here, so it was left alone rather than applied to the wrong one — retype the one you meant in the editor`;
+    case "unanchorable":
+      return `${head}: the word is here but carries no source timing to key on`;
+    case "collision":
+      return `${head}: two stored edits point at the same word — neither was applied, retype the one you meant in the editor`;
+    case "superseded":
+      return `${head}: a newer edit already covers that word — the newer one was kept`;
+    default:
+      return `${head}: no word says it any more — the cut or a re-plan removed it. Retype it in the editor if you still want it.`;
+  }
+}
+
+/**
+ * How many edits came out under a key they did not go in under — the ones the
+ * migration actually moved.
+ *
+ * NOT `Object.keys(migration.edits).length`, which is what the count in the log
+ * line was first written as: a MIXED doc (`{"0": …, "w6000": …}` over one word)
+ * keeps its already-source-keyed edit and retires the legacy one, so that
+ * count announced "1 caption edit re-anchored" about a key nothing had
+ * touched. A number the user can check against their own file has to be true
+ * for the same reason the drop lines do.
+ */
+export function reanchoredKeyCount(
+  before: Record<string, CaptionEdit>,
+  migration: CaptionKeyMigration,
+): number {
+  return Object.keys(migration.edits).filter((key) => !(key in before)).length;
+}
+
+/**
+ * Did the migration change the doc's caption keys — i.e. is the write-back
+ * worth its `.bak`?
+ *
+ * Exact, not a heuristic: with nothing unresolved, `edits` holds one entry per
+ * input key, so identical key SETS mean identical maps (the values are carried
+ * across untouched). Anything else — a key that was not there before, or an
+ * edit that fell out — is a change worth writing back.
+ */
+export function captionKeysMigrated(
+  before: Record<string, CaptionEdit>,
+  migration: CaptionKeyMigration,
+): boolean {
+  if (migration.unresolved.length > 0) return true;
+  return reanchoredKeyCount(before, migration) > 0;
+}
+
+export interface CaptionReconciliation {
+  /** The doc with its caption keys upgraded — what produce writes back. */
+  doc: OverrideDoc;
+  /** The caption lines with every edit that could be applied, applied. */
+  lines: CaptionLine[];
+  /**
+   * Whether the migration changed the doc's caption keys, i.e. whether the
+   * write-back is worth its `.bak`. False for the overwhelmingly common case:
+   * a doc that was already source-keyed.
+   */
+  keysChanged: boolean;
+  /** Everything produce should print about this, in order. */
+  log: string[];
+}
+
+/**
+ * Migrate, then apply, then account for the difference — the whole caption
+ * half of a produce run, in one pure pass.
+ *
+ * MIGRATE FIRST, and against these same lines: `applyCaptionEdits` addresses
+ * words by source anchor, so a pre-§137 positional key matches nothing at all
+ * and every retype in an old project would be silently absent from the render
+ * (§137 Task 6 review, Critical 1). Nothing needs backfilling here — produce
+ * builds these lines itself, with a real `srcStart` on every word — which is
+ * exactly why this migration belongs in produce even though the same call in
+ * the edit server would be inert.
+ *
+ * The caller must hand a doc that has been through `OverrideDocSchema`
+ * (`produce.ts` parses it at the top of the run). On raw `JSON.parse` output a
+ * literal `"__proto__"` key would be assigned THROUGH rather than kept, and
+ * the migration would report nothing lost while losing it.
+ */
+export function reconcileCaptionEdits(
+  doc: OverrideDoc,
+  baseLines: readonly CaptionLine[],
+): CaptionReconciliation {
+  const log: string[] = [];
+  const migration = migrateCaptionKeys(doc.captions, baseLines);
+  const keysChanged = captionKeysMigrated(doc.captions, migration);
+  // Gated on the MOVED count, not on `keysChanged`: a doc whose every legacy
+  // edit was unplaceable changes (they leave it) without one edit being
+  // re-anchored, and announcing "0 caption edit(s) re-anchored" above the
+  // lines saying why is noise on the one run where the user is reading
+  // carefully.
+  const reanchored = reanchoredKeyCount(doc.captions, migration);
+  if (reanchored > 0) {
+    log.push(
+      `▸ ${reanchored} caption edit(s) re-anchored from word positions to source time (§137)`,
+    );
+  }
+  for (const u of migration.unresolved) log.push(captionMigrationLine(u));
+  const migrated = { ...doc, captions: migration.edits };
+  const { lines, dropped } = applyCaptionEdits(baseLines, migrated.captions);
+  const live = appliedCaptionEditCount(migrated.captions, dropped);
+  if (live > 0) log.push(`▸ ${live} caption word(s) retyped by the editor`);
+  for (const d of dropped) log.push(captionDropLine(d));
+  return { doc: migrated, lines, keysChanged, log };
 }

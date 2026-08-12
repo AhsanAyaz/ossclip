@@ -599,19 +599,51 @@ export function captionAnchorOf(word: CaptionWord | undefined): string | null {
 /** How far either side of the stored index the migration will look for `was`. */
 const MIGRATION_SEARCH_RADIUS = 8;
 
+/**
+ * WHY an edit could not be migrated. Reported rather than folded into one
+ * message (§137 Task 6 review, Minor 7): each cause needs something different
+ * from the user, and blaming the cut for all of them sends someone looking for
+ * a word that is still sitting on screen.
+ *  - `not-found`: no word here says `was` any more — a cut removed it, or a
+ *    re-plan rewrote it.
+ *  - `ambiguous`: several words nearby say `was` and the search cannot tell
+ *    which one the user meant.
+ *  - `unanchorable`: the word IS here, but carries no source time to key on —
+ *    a render-props.json with no usable `spans` to backfill from.
+ *  - `collision`: two legacy edits resolved to the same word; neither can be
+ *    trusted over the other.
+ *  - `superseded`: a legacy edit resolved onto a word an already-source-keyed
+ *    edit holds. The CURRENT-format edit wins and is kept; this is the older
+ *    duplicate being retired, not a loss of the live edit.
+ */
+export type CaptionMigrationReason =
+  | "not-found"
+  | "ambiguous"
+  | "unanchorable"
+  | "collision"
+  | "superseded";
+
 export interface CaptionKeyMigration {
   edits: Record<string, CaptionEdit>;
   /**
-   * Edits the migration would not commit — reported, never guessed at: no
-   * anchor could be found for them, or two of them wanted the SAME anchor
-   * (see the collision paragraph in `migrateCaptionKeys`). Keyed by their
-   * ORIGINAL doc key, which is the only name the user's file knows them by.
+   * Edits the migration would not commit — reported, never guessed at. Keyed
+   * by their ORIGINAL doc key, which is the only name the user's file knows
+   * them by, and carrying WHY (see `CaptionMigrationReason`).
    */
-  unresolved: Array<{ key: string; was: string }>;
+  unresolved: Array<{ key: string; was: string; reason: CaptionMigrationReason }>;
 }
 
 /**
- * Where one stored edit wants to land, or null when nothing can be resolved.
+ * An answer from `resolveCaptionAnchor`: an anchor, or why there is none.
+ * `collision`/`superseded` are excluded because they are not properties of one
+ * edit at all — they need the other claims to be visible first.
+ */
+type AnchorClaim =
+  | { to: string }
+  | { to: null; reason: Exclude<CaptionMigrationReason, "collision" | "superseded"> };
+
+/**
+ * Where one stored edit wants to land, or why it cannot land anywhere.
  *
  * Split out of `migrateCaptionKeys` so every edit can be resolved BEFORE any
  * of them is written: a collision is only visible once both claims exist, and
@@ -621,10 +653,10 @@ function resolveCaptionAnchor(
   key: string,
   edit: CaptionEdit,
   words: readonly CaptionWord[],
-): string | null {
+): AnchorClaim {
   // Already a source key (or something that is not a position at all) — the
   // doc's own key stands, and the collision check downstream still applies.
-  if (!isLegacyCaptionKey(key)) return key;
+  if (!isLegacyCaptionKey(key)) return { to: key };
   const at = Number(key);
   // The record confirming itself — see `migrateCaptionKeys` for why this
   // wins ahead of the ambiguity rule rather than through it. A confirmed
@@ -632,7 +664,7 @@ function resolveCaptionAnchor(
   // through to the search: the record already named the word, and letting the
   // search then pick a same-text word elsewhere would rewrite one the user
   // did not edit.
-  if (words[at]?.text === edit.was) return captionAnchorOf(words[at]);
+  if (words[at]?.text === edit.was) return anchorOrUnanchorable(words[at]);
   const matches: number[] = [];
   for (let d = 1; d <= MIGRATION_SEARCH_RADIUS; d++) {
     for (const i of [at - d, at + d]) {
@@ -642,7 +674,15 @@ function resolveCaptionAnchor(
   // Ambiguity is judged on the TEXT matches, before anchors are considered —
   // an unanchorable candidate still means the search could not tell two words
   // apart, so it must not silently narrow the field to one.
-  return matches.length === 1 ? captionAnchorOf(words[matches[0]!]) : null;
+  if (matches.length === 0) return { to: null, reason: "not-found" };
+  if (matches.length > 1) return { to: null, reason: "ambiguous" };
+  return anchorOrUnanchorable(words[matches[0]!]);
+}
+
+/** The word was FOUND; whether it can be keyed on is a separate question. */
+function anchorOrUnanchorable(word: CaptionWord | undefined): AnchorClaim {
+  const anchor = captionAnchorOf(word);
+  return anchor === null ? { to: null, reason: "unanchorable" } : { to: anchor };
 }
 
 /**
@@ -668,22 +708,31 @@ function resolveCaptionAnchor(
  * anchor silently rewrites the wrong word, which is worse than an edit the
  * user has to redo.
  *
- * TWO EDITS RESOLVING TO THE SAME WORD are that same ambiguity one level up,
- * and both go to `unresolved` — the output is a Record, so writing as we went
- * would have the second edit silently overwrite the first and report nothing,
- * which is the very bug this task was opened for. It is not a corner case:
+ * TWO LEGACY EDITS RESOLVING TO THE SAME WORD are that same ambiguity one
+ * level up, and both go to `unresolved` — the output is a Record, so writing as
+ * we went would have the second edit silently overwrite the first and report
+ * nothing, which is the very bug this task was opened for. It is not a corner
+ * case:
  *  - an outward search can land on the word another edit exact-hit (`the cat
  *    sat on a mat`, edits at "0" and "5", both `was: "the"`);
- *  - until Task 3 re-keys the editor, a doc saved after one migration holds
- *    BOTH key spaces at once, so `{"0": …, "w6000": …}` over one word is the
- *    NORMAL intermediate state of this very plan (and JS enumerates
- *    integer-like keys first, so the passthrough would always have won);
  *  - two words can share a `srcStart` outright — `backfillSrcStart`
  *    (`captions.ts:44-50`) maps seam preimages and cut-clamped words onto the
  *    same source instant BY DESIGN, so duplicate keys are manufactured, not
  *    float trivia.
  * Neither edit is guessed at, both are named, and the user can re-apply the
  * one they meant.
+ *
+ * A LEGACY EDIT COLLIDING WITH AN ALREADY-SOURCE-KEYED ONE is NOT that case,
+ * and refusing both was a real bug (§137 Task 6 review, Important 3): a doc
+ * holding both key spaces at once — `{"0": …, "w6000": …}` over one word — is
+ * the normal shape of any project edited before and after this change, and
+ * treating it as an unbreakable tie DELETED the newer, current-format edit
+ * whose anchor was never in doubt. The source-keyed edit WINS: it is the one
+ * the editor wrote most recently, it names its word directly rather than by a
+ * position something may have shifted, and it is the format everything else
+ * reads. Only the legacy claim is retired, reported as `superseded`. (There
+ * can be at most one source-keyed claimant per anchor: such a claim resolves
+ * to its own key, and a Record cannot hold one key twice.)
  */
 export function migrateCaptionKeys(
   edits: Record<string, CaptionEdit>,
@@ -697,14 +746,37 @@ export function migrateCaptionKeys(
   const claims = Object.entries(edits).map(([key, edit]) => ({
     key,
     edit,
-    to: resolveCaptionAnchor(key, edit, words),
+    legacy: isLegacyCaptionKey(key),
+    claim: resolveCaptionAnchor(key, edit, words),
   }));
-  const claimants = new Map<string, number>();
-  for (const c of claims) if (c.to !== null) claimants.set(c.to, (claimants.get(c.to) ?? 0) + 1);
+  type Claim = (typeof claims)[number];
+  const claimants = new Map<string, Claim[]>();
+  for (const c of claims) {
+    if (c.claim.to === null) continue;
+    const rivals = claimants.get(c.claim.to);
+    if (rivals) rivals.push(c);
+    else claimants.set(c.claim.to, [c]);
+  }
 
   for (const c of claims) {
-    if (c.to !== null && claimants.get(c.to) === 1) out[c.to] = c.edit;
-    else unresolved.push({ key: c.key, was: c.edit.was });
+    if (c.claim.to === null) {
+      unresolved.push({ key: c.key, was: c.edit.was, reason: c.claim.reason });
+      continue;
+    }
+    const rivals = claimants.get(c.claim.to)!;
+    // Identity, not `.key` — the winner has to be THIS claim object, or a
+    // second claimant would write itself in over the one that already won.
+    const winner = rivals.length === 1 ? rivals[0]! : rivals.find((r) => !r.legacy);
+    if (winner === c) {
+      out[c.claim.to] = c.edit;
+      continue;
+    }
+    unresolved.push({
+      key: c.key,
+      was: c.edit.was,
+      // `winner` undefined means every claimant was legacy: a genuine tie.
+      reason: winner === undefined ? "collision" : "superseded",
+    });
   }
   return { edits: out, unresolved };
 }

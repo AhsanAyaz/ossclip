@@ -205,3 +205,40 @@ test("a pre-§137 positional edit is migrated on load and shows on its word (§1
   await expect(page.getByTestId("caption-migration-notice")).toHaveCount(0);
   await expect(page.getByTestId("caption-dropped-notice")).toHaveCount(0);
 });
+
+test("a dropped-edit notice can be dismissed (§137 Task 6 review, Important 4)", async ({
+  page,
+}) => {
+  // The notice was first shipped WITHOUT a Dismiss, on the theory that it
+  // clears itself once the doc stops holding an edit that cannot land. A
+  // `duplicate-anchor` never does — the anchor belongs to the WORDS, so
+  // retyping mints the same key and the second word still carries it — and
+  // `backfillSrcStart` manufactures shared anchors by design at seams and
+  // cut-clamped words, so a legacy workdir could strand a user under a banner
+  // nothing they did would clear. Only the button can be seen from out here:
+  // `droppedEditNotices` is pure and knows nothing about it.
+  //
+  // The drop staged is the stale-text one, not a duplicate anchor: it needs no
+  // particular shape of fixture, and the banner and its button are the same.
+  // Written after the migration test above for the same reason it is last — it
+  // replaces the shared workdir's overrides.json outright.
+  const words = await fixtureWords();
+  const index = words.findIndex((w) => w.start > CUT_AT_OUTPUT);
+  const word = words[index]!;
+  // A CURRENT-format key, so the migration passes it through untouched and the
+  // report comes from `applyCaptionEdits`: the anchor is real, the stored `was`
+  // is not what the word says.
+  const key = `w${Math.round(expectedSrc(word.start) * 1000)}`;
+  await writeFile(
+    join(WORKDIR, "overrides.json"),
+    JSON.stringify({ captions: { [key]: { text: "STALE", was: "nothing-says-this" } } }),
+  );
+
+  await page.goto("/");
+  await page.waitForSelector('[data-testid^="timeline-block-"]');
+  const notice = page.getByTestId("caption-dropped-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("nothing-says-this");
+  await notice.getByRole("button", { name: "Dismiss" }).click();
+  await expect(page.getByTestId("caption-dropped-notice")).toHaveCount(0);
+});

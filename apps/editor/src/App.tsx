@@ -97,6 +97,26 @@ const anchored = (props: RawRenderProps): RawRenderProps => ({
   ...anchorCaptionLines(props),
 });
 
+/**
+ * The DURABLE half of the disclosure for a caption edit the migration could
+ * not place (§137 Task 6 review, Important 5).
+ *
+ * The banner is dismissible, and the editor's Save writes `overrides.json`
+ * with no `.bak` (`edit.ts`'s PUT handler, unlike produce's own write) — so
+ * dismiss, change anything, ⌘S, and an edit the user made is gone from disk
+ * with the on-screen notice as its only record. That is too thin for an
+ * irreversible delete. The console keeps the raw entry, ORIGINAL KEY INCLUDED,
+ * which is what someone would need to put it back by hand.
+ *
+ * Not `setError`: this is not fatal, and the banner is the user-facing half.
+ */
+const reportCaptionMigrationLoss = (unresolved: CaptionKeyMigration["unresolved"]): void => {
+  const lines = migrationLossNotices(unresolved);
+  unresolved.forEach((u, i) => {
+    console.warn(`ossclip §137: dropped caption edit ${JSON.stringify(u)} — ${lines[i]}`);
+  });
+};
+
 export const App: React.FC = () => {
   const edits = useEdits();
   // Finding 2, PLAN 2026-08-04 Task 4c fix wave: `beginRenderPoll` below is a
@@ -127,6 +147,9 @@ export const App: React.FC = () => {
   const [captionMigrationLoss, setCaptionMigrationLoss] = useState<
     CaptionKeyMigration["unresolved"]
   >([]);
+  // The drop notice the user has dismissed, as the exact list they dismissed
+  // (see `showDropNotice` below for why it is not a boolean).
+  const [dismissedDrops, setDismissedDrops] = useState<string | null>(null);
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
@@ -401,12 +424,19 @@ export const App: React.FC = () => {
             const reload = renderCompleteReload(prod.overrides, editsDirtyRef.current);
             if (reload.load) {
               // §137: the doc `produce` just wrote back can still be
-              // positionally keyed — it re-anchors cuts and splits, never
-              // caption keys — so this reload needs the same migration the
-              // mount path does, against the props it just re-read.
+              // positionally keyed — a produce that migrated nothing writes
+              // back only its cut/split re-anchoring — so this reload needs
+              // the same migration the mount path does, against the props it
+              // just re-read.
               const migrated = migrateLoadedDoc(reload.load, props);
               edits.load(migrated.doc);
+              reportCaptionMigrationLoss(migrated.unresolved);
               setCaptionMigrationLoss(migrated.unresolved);
+            } else {
+              // No doc came back, so nothing was migrated — and a list left
+              // over from the PREVIOUS load would now be describing a doc the
+              // editor no longer holds (§137 Task 6 review, Minor 6).
+              setCaptionMigrationLoss([]);
             }
             if (reload.notifyDiscard) setDirtyDiscardedNotice(true);
             setRender(null);
@@ -467,7 +497,9 @@ export const App: React.FC = () => {
     setRecentProjects(body.recent ?? []);
     if (body.noWorkdir) {
       // Bare `ossclip edit` (R17 §83): no project open — the picker IS the
-      // page until one is chosen.
+      // page until one is chosen. Any migration loss on screen belongs to the
+      // project being left, so it goes with it (§137 Task 6 review, Minor 6).
+      setCaptionMigrationLoss([]);
       setShowPicker(true);
       return;
     }
@@ -482,6 +514,7 @@ export const App: React.FC = () => {
     // has the full ordering argument, and why the server cannot do it).
     const migrated = migrateLoadedDoc(body.overrides!, props);
     edits.load(migrated.doc);
+    reportCaptionMigrationLoss(migrated.unresolved);
     setCaptionMigrationLoss(migrated.unresolved);
     // Best-effort — the panel simply omits the section when this fails.
     void fetch("/api/usage")
@@ -581,6 +614,21 @@ export const App: React.FC = () => {
     () => droppedEditNotices(appliedCaptions.dropped),
     [appliedCaptions],
   );
+  // The dismissal is aimed at ONE list, not at the notice forever: a later,
+  // DIFFERENT drop raises it again. Held as the dismissed list itself rather
+  // than a boolean for exactly that (§137 Task 6 review, Important 4 — a
+  // `duplicate-anchor` entry cannot be cleared by retyping, so a
+  // non-dismissible banner can strand a user permanently).
+  const dropNoticeSignature = droppedEditLines.join("\n");
+  const showDropNotice = droppedEditLines.length > 0 && dropNoticeSignature !== dismissedDrops;
+  // Durable alongside the banner, same reasoning as the migration losses: the
+  // banner can be dismissed, the log cannot. Keyed on the signature so it says
+  // each distinct set once rather than on every render.
+  useEffect(() => {
+    if (droppedEditLines.length === 0) return;
+    for (const line of droppedEditLines) console.warn(`ossclip §137: ${line}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dropNoticeSignature]);
 
   // DECIDE (PLAN 2026-08-04 Task 4c): this memo deliberately never reads
   // `edits.doc.cuts`. A cut removes an output-second RANGE and shifts every
@@ -1031,18 +1079,28 @@ export const App: React.FC = () => {
           </button>
         </div>
       ) : null}
-      {droppedEditLines.length > 0 ? (
+      {showDropNotice ? (
         // §137, the field case: `applyCaptionEdits`' drop report used to be
         // discarded here, so a retype that could not land just reverted with
-        // nothing said. NO Dismiss, deliberately — unlike the notices above
-        // this is not an event but a live property of the doc on screen, and
-        // it clears itself the moment the doc stops holding an edit that
-        // cannot be applied (retype the word, or undo the edit).
+        // nothing said. Dismissible — an earlier cut of this was not, on the
+        // theory that the list clears itself once the doc stops holding an
+        // unplaceable edit, which is false for `duplicate-anchor`: retyping
+        // mints the same key and the second word still carries it, so the
+        // entry comes back forever and only deleting the edit ends it (§137
+        // Task 6 review, Important 4). The dismissal covers THIS list only —
+        // a different drop raises the notice again — and `console.warn` keeps
+        // a record either way.
         <div data-testid="caption-dropped-notice" style={reanchorNotice}>
           {/* Index keys — see the note in the notice above. */}
           {droppedEditLines.map((l, i) => (
             <div key={i}>{l}</div>
           ))}
+          <button
+            style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+            onClick={() => setDismissedDrops(dropNoticeSignature)}
+          >
+            Dismiss
+          </button>
         </div>
       ) : null}
       {saveBlockedNotice ? (

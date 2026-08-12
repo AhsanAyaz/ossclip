@@ -148,10 +148,17 @@ export interface MigratedOverrideDoc {
  * Resolving against anything else would key edits to words the guard then
  * compares against different ones.
  *
- * A doc that is already source-keyed passes through unchanged (a non-legacy
- * key is its own answer, and a Record cannot hold the same key twice, so the
- * collision rule cannot fire), which is why this is safe to run on every load
- * rather than sniffing for legacy keys first.
+ * A doc that is already source-keyed passes through unchanged: a non-legacy
+ * key is its own answer, and a Record cannot hold the same key twice, so no
+ * two source-keyed edits can claim one anchor. That is why this is safe to run
+ * on every load rather than sniffing for legacy keys first. It is NOT true of
+ * a MIXED doc — one edited before and after this change, holding `{"0": …,
+ * "w6000": …}` over one word — where both claim the same anchor. There the
+ * source-keyed edit wins and the legacy one is retired as `superseded`
+ * (`migrateCaptionKeys`); an earlier version of this comment claimed the
+ * collision rule "cannot fire", which was false for exactly the doc shape this
+ * plan manufactures, and cost the user their current-format edit (§137 Task 6
+ * review, Important 3).
  *
  * Pure — the caller owns the fetch.
  */
@@ -171,15 +178,32 @@ export function migrateLoadedDoc(
  * so nothing the user does brings them back and nothing later reports them
  * again. Kept separate from `droppedEditNotices` below for exactly that
  * reason: this list is state, that one is a live property of the doc.
+ *
+ * ONE SENTENCE PER CAUSE (§137 Task 6 review, Minor 7). An earlier version
+ * blamed the cut for all of them, which is wrong for three of the four: an
+ * ambiguous or superseded edit's word is still sitting on screen, and an
+ * unanchorable one is a defect in the project's files, not in the cut. Each
+ * cause also asks something different of the user, and only `not-found` and
+ * `ambiguous` ask for a retype at all.
  */
 export function migrationLossNotices(
   unresolved: CaptionKeyMigration["unresolved"],
 ): string[] {
-  return unresolved.map(
-    (u) =>
-      `“${u.was}” was retyped in an older version of this project, and this cut has ` +
-      `no word it can be matched to any more — retype it if you still want it.`,
-  );
+  return unresolved.map((u) => {
+    const older = `“${u.was}” was retyped in an older version of this project`;
+    switch (u.reason) {
+      case "ambiguous":
+        return `${older}, and more than one word here says it — it was left alone rather than applied to the wrong one. Retype the one you meant.`;
+      case "unanchorable":
+        return `${older}, but this project's files carry no source timing for that word, so nothing can be anchored to it. Re-run produce, then retype it.`;
+      case "collision":
+        return `${older} twice, and both point at the same word — neither was applied. Retype the one you meant.`;
+      case "superseded":
+        return `${older} and again since; the newer edit was kept and the older one dropped.`;
+      default:
+        return `${older}, and no word here says it any more — the cut probably removed it. Retype it if you still want it.`;
+    }
+  });
 }
 
 /**
@@ -188,8 +212,17 @@ export function migrationLossNotices(
  * The editor used to take `applyCaptionEdits(...).lines` and drop `dropped` on
  * the floor, which is the whole field case: a retype that could not be
  * anchored simply reverted in front of the user with nothing said. Derived,
- * never stored — the list is a property of the CURRENT doc and clears itself
- * when the doc stops holding an edit that cannot land.
+ * never stored — the list is a property of the CURRENT doc, so it re-evaluates
+ * on every edit.
+ *
+ * IT DOES NOT ALWAYS CLEAR ITSELF, which is why the surface that renders it is
+ * dismissible (§137 Task 6 review, Important 4). A stale `found`-mismatch does
+ * clear when the user retypes or undoes. A `duplicate-anchor` does NOT: the
+ * anchor is a property of the WORDS, so retyping mints the same key again and
+ * the second word still carries it — `overrides.ts:777-780` reports it again,
+ * forever. Only deleting the edit ends it, and `backfillSrcStart` manufactures
+ * shared anchors by design at seams and cut-clamped words, so a legacy workdir
+ * can strand a user under a banner they can do nothing about.
  *
  * `duplicate-anchor` is deliberately phrased as a note rather than a loss: the
  * edit applied, to the first word carrying that source moment (two words share
