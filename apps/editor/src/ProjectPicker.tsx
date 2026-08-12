@@ -14,6 +14,45 @@ import React, { useEffect, useRef, useState } from "react";
 type FsEntry = { name: string; path: string; isWorkdir: boolean };
 type FsListing = { dir: string; parent: string | null; isWorkdir: boolean; entries: FsEntry[] };
 
+/**
+ * Splits a recent project's path into the part worth reading big and the
+ * prefix worth reading small (§138). Recents accumulate under one working
+ * root, so every path shares a long identical head and differs only in its
+ * TAIL — tail-ellipsising the single line (what this used to do) cut off the
+ * only part that told two entries apart. Pure so the boundary is testable
+ * without a DOM.
+ */
+export const splitRecentPath = (path: string, tailSegments = 3): { head: string; tail: string } => {
+  const segments = path.split("/");
+  // A leading "/" yields an empty first segment; it belongs to the head, and
+  // a path with no head at all (a bare name) must still render its tail.
+  if (segments.length <= tailSegments) return { head: "", tail: path };
+  const cut = segments.length - tailSegments;
+  return { head: segments.slice(0, cut).join("/") || "/", tail: segments.slice(cut).join("/") };
+};
+
+/**
+ * Whether a scroll region has more below the fold — i.e. whether the "there
+ * is more" fade should be on. The 1px slack absorbs sub-pixel clientHeight
+ * on fractional-DPI displays, where an at-the-end list reports a scrollTop
+ * a hair short of scrollHeight and would otherwise fade forever.
+ */
+export const isScrollContinuable = (m: {
+  scrollTop: number;
+  clientHeight: number;
+  scrollHeight: number;
+}): boolean => m.scrollTop + m.clientHeight < m.scrollHeight - 1;
+
+/**
+ * Where arrow-key focus lands, clamped rather than wrapped: wrapping from the
+ * last row back to the first in a scroll list reads as a scroll jump, not as
+ * navigation. Returns `current` unchanged when the move would leave the list.
+ */
+export const nextRowIndex = (current: number, delta: number, count: number): number => {
+  if (count <= 0) return -1;
+  return Math.max(0, Math.min(count - 1, current + delta));
+};
+
 export const ProjectPicker: React.FC<{
   recent: string[];
   required: boolean;
@@ -26,19 +65,20 @@ export const ProjectPicker: React.FC<{
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const recentRef = useRef<HTMLDivElement | null>(null);
   // Bottom fade only while the list is actually scrollable and not already
   // at its end — a static fade on a short list would lie about there being
-  // more to see.
+  // more to see. Both lists carry it: the recents list is the one that
+  // overflows first, and it was the one with no affordance at all (§138).
   const [listOverflows, setListOverflows] = useState(false);
+  const [recentOverflows, setRecentOverflows] = useState(false);
 
   const recomputeListOverflow = (): void => {
-    const el = listRef.current;
     // Degrade to no-fade if the ref is unmounted (spec's stated fallback).
-    if (!el) {
-      setListOverflows(false);
-      return;
-    }
-    setListOverflows(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+    setListOverflows(listRef.current ? isScrollContinuable(listRef.current) : false);
+  };
+  const recomputeRecentOverflow = (): void => {
+    setRecentOverflows(recentRef.current ? isScrollContinuable(recentRef.current) : false);
   };
 
   const browse = async (dir?: string): Promise<void> => {
@@ -60,11 +100,15 @@ export const ProjectPicker: React.FC<{
   useEffect(() => {
     // Recompute after every listing change (content height changes) and on
     // window resize (the flex list's clientHeight changes with the window).
-    recomputeListOverflow();
-    window.addEventListener("resize", recomputeListOverflow);
-    return () => window.removeEventListener("resize", recomputeListOverflow);
+    const recompute = (): void => {
+      recomputeListOverflow();
+      recomputeRecentOverflow();
+    };
+    recompute();
+    window.addEventListener("resize", recompute);
+    return () => window.removeEventListener("resize", recompute);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listing]);
+  }, [listing, recent]);
 
   useEffect(() => {
     if (required) return;
@@ -77,6 +121,26 @@ export const ProjectPicker: React.FC<{
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [required, onClose]);
+
+  // Arrow keys walk the rows of whichever list has focus; Enter and Space are
+  // already the <button>'s own business, so they are deliberately not handled
+  // here. focus() scrolls the row into view for free, which is what keeps
+  // keyboard navigation and the scroll region agreeing with each other.
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    const delta = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+    if (delta === 0 && e.key !== "Home" && e.key !== "End") return;
+    const rows = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+    if (rows.length === 0) return;
+    const current = rows.indexOf(document.activeElement as HTMLButtonElement);
+    const target =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? rows.length - 1
+          : nextRowIndex(current, delta, rows.length);
+    e.preventDefault();
+    rows[target]?.focus();
+  };
 
   const open = (path: string): void => {
     setBusy(true);
@@ -116,23 +180,33 @@ export const ProjectPicker: React.FC<{
                 otherwise collapse `browseSection` to zero and push the browse
                 panel past the card, unreachable. */}
             <div
+              ref={recentRef}
               className="ossclip-scroll-list"
-              style={recentList}
+              style={recentOverflows ? { ...recentList, ...bottomFade } : recentList}
+              onScroll={recomputeRecentOverflow}
+              onKeyDown={onListKeyDown}
               data-testid="project-recent-list"
             >
-              {recent.map((p) => (
-                <button
-                  key={p}
-                  data-testid="project-recent"
-                  style={entryButton}
-                  disabled={busy}
-                  onClick={() => open(p)}
-                  title={p}
-                >
-                  <span style={{ color: "#FFE14D", marginRight: 8 }}>▸</span>
-                  {p}
-                </button>
-              ))}
+              {recent.map((p) => {
+                const { head, tail } = splitRecentPath(p);
+                return (
+                  <button
+                    key={p}
+                    data-testid="project-recent"
+                    className="ossclip-picker-row"
+                    style={{ ...entryButton, ...recentRow }}
+                    disabled={busy}
+                    onClick={() => open(p)}
+                    title={p}
+                  >
+                    <span style={{ color: "#FFE14D", flexShrink: 0 }}>▸</span>
+                    <span style={recentText}>
+                      <span style={recentTail}>{tail}</span>
+                      {head ? <span style={recentHead}>{head}</span> : null}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}
@@ -164,34 +238,41 @@ export const ProjectPicker: React.FC<{
                 className="ossclip-scroll-list"
                 style={listOverflows ? { ...entryList, ...bottomFade } : entryList}
                 onScroll={recomputeListOverflow}
+                onKeyDown={onListKeyDown}
                 data-testid="project-fs-list"
               >
                 {listing.parent ? (
                   <button
                     data-testid="project-fs-up"
+                    className="ossclip-picker-row"
                     style={entryButton}
                     disabled={busy}
                     onClick={() => void browse(listing.parent!)}
                   >
-                    ..
+                    <span style={{ color: "#6a6a75", flexShrink: 0 }}>↑</span>
+                    <span style={entryName}>..</span>
                   </button>
                 ) : null}
                 {listing.entries.map((e) => (
                   <button
                     key={e.path}
                     data-testid={e.isWorkdir ? "project-fs-workdir" : "project-fs-dir"}
-                    style={{ ...entryButton, ...(e.isWorkdir ? workdirStyle : {}) }}
+                    className={`ossclip-picker-row${e.isWorkdir ? " is-workdir" : ""}`}
+                    style={entryButton}
                     disabled={busy}
                     // A project opens; an ordinary folder descends. One click
                     // each — the isWorkdir flag decides which it is.
                     onClick={() => (e.isWorkdir ? open(e.path) : void browse(e.path))}
                     title={e.path}
                   >
-                    <span style={{ marginRight: 8, color: e.isWorkdir ? "#FFE14D" : "#6a6a75" }}>
+                    <span style={{ flexShrink: 0, color: e.isWorkdir ? "#FFE14D" : "#6a6a75" }}>
                       {e.isWorkdir ? "▸" : "▪"}
                     </span>
-                    {e.name}
-                    {e.isWorkdir ? <span style={workdirBadge}>project</span> : <span style={{ color: "#55555f" }}>/</span>}
+                    <span style={entryName}>
+                      {e.name}
+                      {e.isWorkdir ? null : <span style={{ color: "#55555f" }}>/</span>}
+                    </span>
+                    {e.isWorkdir ? <span style={workdirBadge}>project</span> : null}
                   </button>
                 ))}
                 {listing.entries.length === 0 ? (
@@ -224,6 +305,10 @@ const panel: React.CSSProperties = {
   width: 620,
   maxWidth: "90vw",
   maxHeight: "82vh",
+  // Without this the 26px padding and 1px border are ADDED to the 82vh cap
+  // (there is no global box-sizing reset), so the card measured 868px against
+  // an 820px budget and hung past the viewport on short windows (§138).
+  boxSizing: "border-box",
   display: "flex",
   flexDirection: "column",
   background: "#12121A",
@@ -316,8 +401,11 @@ const browseSection: React.CSSProperties = {
 // Its own capped scroll region (see the comment at the call site) — a long
 // recents list must not be able to starve the browse section below it.
 const recentList: React.CSSProperties = {
-  maxHeight: 176,
+  // Deliberately not a multiple of the 46px row: a half-height row peeking at
+  // the bottom edge is the cheapest honest "this scrolls" signal there is.
+  maxHeight: 218,
   overflowY: "auto",
+  overscrollBehavior: "contain",
   flexShrink: 0,
   display: "flex",
   flexDirection: "column",
@@ -328,6 +416,9 @@ const entryList: React.CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflowY: "auto",
+  // Reaching the end of this list must not start scrolling the editor behind
+  // the modal — the card has no scroll of its own to hand the gesture to.
+  overscrollBehavior: "contain",
   display: "flex",
   flexDirection: "column",
   gap: 2,
@@ -340,28 +431,74 @@ const bottomFade: React.CSSProperties = {
   WebkitMaskImage: "linear-gradient(to bottom, black calc(100% - 24px), transparent 100%)",
 };
 
+/**
+ * §138, the bug this shape exists to prevent: these rows are flex items in a
+ * column list, and `overflow: hidden` gives a flex item an automatic minimum
+ * size of ZERO. With the default `flex-shrink: 1` the rows therefore absorbed
+ * the overflow themselves — crushing to 18px with the glyphs overlapping —
+ * and the list's `overflow-y: auto` never fired, because scrollHeight never
+ * exceeded clientHeight. `flexShrink: 0` plus a real minHeight is what makes
+ * the content overflow so the container can scroll it. Do not remove either.
+ */
 const entryButton: React.CSSProperties = {
-  display: "block",
+  flexShrink: 0,
+  minHeight: 34,
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
   width: "100%",
+  boxSizing: "border-box",
   textAlign: "left",
   fontFamily: "inherit",
   fontSize: 13,
-  color: "#C9C9D4",
-  background: "transparent",
-  border: "1px solid transparent",
+  lineHeight: 1.4,
+  // color/background/border deliberately live in `.ossclip-picker-row` in
+  // index.css instead of here: an inline declaration outranks any stylesheet
+  // rule short of !important, so a `background: transparent` here would make
+  // the :hover and :focus rules dead code.
   borderRadius: 6,
-  padding: "5px 8px",
+  // Generous enough to be a click target rather than a line of text (the
+  // whole row is the hit area, which is why the padding lives on the button).
+  padding: "6px 10px",
   cursor: "pointer",
+  overflow: "hidden",
+};
+
+const entryName: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
 };
 
-const workdirStyle: React.CSSProperties = {
-  color: "#EDEDF2",
-  background: "#1A1A21",
-  border: "1px solid #2A2A33",
+// Two lines, so the tail can be read at full size while the shared prefix
+// stays available but quiet (see splitRecentPath).
+const recentRow: React.CSSProperties = {
+  minHeight: 46,
+  alignItems: "center",
 };
+
+const recentText: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  minWidth: 0,
+};
+
+const recentTail: React.CSSProperties = {
+  color: "#EDEDF2",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const recentHead: React.CSSProperties = {
+  fontSize: 11,
+  color: "#6a6a75",
+  // The prefix is the throwaway part, so it is the part allowed to ellipsis.
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
 
 const workdirBadge: React.CSSProperties = {
   marginLeft: 10,

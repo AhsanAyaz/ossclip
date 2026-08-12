@@ -18,3 +18,43 @@
   background: #3a3a44;
   border-radius: 4px;
 }
+
+/* Picker rows are a list people click down, so they need the states a link
+ * has and an inline style cannot carry (§138). The row's colours live here
+ * rather than beside its layout in ProjectPicker.tsx for exactly that reason:
+ * an inline `background` outranks every rule below and would make them dead
+ * code. The focus ring is :focus, not :focus-visible — arrow-key navigation
+ * moves focus with a programmatic focus(), which Chromium does not always
+ * count as visible, and a keyboard user would be steering an invisible
+ * cursor. */
+.ossclip-picker-row {
+  color: #c9c9d4;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.ossclip-picker-row.is-workdir {
+  color: #ededf2;
+  background: #1a1a21;
+  border-color: #2a2a33;
+}
+
+.ossclip-picker-row:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ossclip-picker-row:hover:not(:disabled) {
+  background: #1f1f28;
+  border-color: #3a3a48;
+}
+
+.ossclip-picker-row:focus {
+  outline: none;
+  background: #23232e;
+  border-color: #8ab4f8;
+}
+
+.ossclip-picker-row:active:not(:disabled) {
+  background: #2a2a36;
+}
