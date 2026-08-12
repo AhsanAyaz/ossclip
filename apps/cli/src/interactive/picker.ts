@@ -182,20 +182,48 @@ export function parsePickerResult(stdout: string): string | undefined {
 const MAX_STDERR_CHARS = 160;
 
 /**
- * The one line to print when the dialog came back with nothing but did not
- * come back QUIET. The comment above says a cancel cannot be told from a
- * silent backend failure, and that is still true of stdout alone — but stderr
- * separates them well enough for the only purpose that matters, which is
- * telling the user something. All four backends are silent on a real cancel;
- * a failure is prose (`cannot open display`, osascript's -1743, a locked-down
- * `Add-Type`).
+ * AppleScript's user-cancelled error. Escape in `choose file` raises -128,
+ * which osascript writes to STDERR and exits 1 — verified on darwin 25.3.0
+ * (§136): `osascript -e 'error "User canceled." number -128'` prints
+ * `6:22: execution error: User canceled. (-128)`. So on the most common
+ * platform a cancel is the LOUDEST empty-handed return, not the quietest.
+ */
+const OSASCRIPT_CANCEL = /\(-128\)/;
+
+/**
+ * Toolkit chatter, not failure. GTK and Qt print these on a perfectly good
+ * dialog — `Gtk-Message: … Failed to load module "canberra-gtk-module"`,
+ * `Gdk-CRITICAL`, `qt.qpa.wayland:`, `kf.kio…` — and they are still sitting in
+ * stderr when the user cancels. Matched per LINE rather than against the whole
+ * blob, so a real error arriving alongside chatter still surfaces (§136).
+ */
+const BENIGN_STDERR_PREFIXES = ["Gtk-Message:", "Gdk-", "qt.", "kf."];
+
+/**
+ * The one line to print when the dialog came back with nothing and stderr says
+ * something went wrong. `parsePickerResult` above explains why stdout alone
+ * cannot tell a cancel from a silent backend failure; stderr can, but only
+ * after the noise is stripped, and the noise is backend-specific (§136):
  *
- * Without this the user is in a feedback-free loop (§136, final review): a
- * plain `ssh` into a box whose `~/.bashrc` exports `DISPLAY=:0` passes
- * `pickerAvailable`, so `Browse…` is offered, prints "look for a new window",
- * and returns to the menu with no window and no output — identically, forever,
- * on every retry. The return value stays `undefined` either way; it was only
- * ever the silence that was wrong.
+ * - **osascript** is NOT silent on a cancel — it emits error -128 (above).
+ *   This was got wrong once, and the bug was that every Escape in the Finder
+ *   dialog told a user whose picker works perfectly that it was broken.
+ * - **zenity / kdialog** exit 1 with empty stdout and *usually* empty stderr,
+ *   but GTK and Qt leave launch chatter there routinely, cancel or not.
+ * - **PowerShell** is the only one the naive reading holds for: exit 0, empty
+ *   stdout, empty stderr, because the `if` guarding ShowDialog() just does not
+ *   fire.
+ *
+ * Deliberately NOT keyed on the exit code: this function is not given one, and
+ * PowerShell shows why it would be wrong anyway — it exits 0 on a cancel and
+ * would exit 0 on some failures too.
+ *
+ * Without a notice at all the user is in a feedback-free loop (§136, final
+ * review): a plain `ssh` into a box whose `~/.bashrc` exports `DISPLAY=:0`
+ * passes `pickerAvailable`, so `Browse…` is offered, prints "look for a new
+ * window", and returns to the menu with no window and no output — identically,
+ * forever, on every retry. The return value stays `undefined` either way; it
+ * was only ever the silence that was wrong.
  *
  * Pure so the wording is pinned without a dialog, which blocks on a human.
  */
@@ -205,10 +233,15 @@ export function pickerFailureNotice(
   stderr: string,
 ): string | undefined {
   if (parsePickerResult(stdout) !== undefined) return undefined;
-  // First line only: the rest is a stack or a usage dump on every backend
+  if (OSASCRIPT_CANCEL.test(stderr)) return undefined;
+  const real = stderr
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && !BENIGN_STDERR_PREFIXES.some((p) => l.startsWith(p)));
+  // First real line only: the rest is a stack or a usage dump on every backend
   // that produces more than one.
-  const first = stderr.trim().split("\n")[0]?.trim() ?? "";
-  if (first === "") return undefined; // a genuine cancel
+  const first = real[0];
+  if (first === undefined) return undefined; // a genuine cancel
   const detail = first.length > MAX_STDERR_CHARS ? `${first.slice(0, MAX_STDERR_CHARS)}…` : first;
   return `▸ ${bin} could not open a picker: ${detail} — type the path instead`;
 }

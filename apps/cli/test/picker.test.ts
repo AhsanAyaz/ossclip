@@ -227,6 +227,45 @@ describe("pickerFailureNotice", () => {
     expect(pickerFailureNotice("zenity", "\n", "  \n ")).toBeUndefined();
   });
 
+  it("darwin: a cancel is NOISY — osascript writes error -128 to stderr", () => {
+    // The regression this arm exists for. Verified on darwin 25.3.0:
+    // `osascript -e 'error "User canceled." number -128'` exits 1 with exactly
+    // this on stderr, and Escape in `choose file` raises the same -128. Keying
+    // on "stderr is non-empty" alone therefore called every Finder cancel a
+    // broken picker — on the most common platform ossclip runs on (§136).
+    expect(
+      pickerFailureNotice("osascript", "", "6:22: execution error: User canceled. (-128)\n"),
+    ).toBeUndefined();
+  });
+
+  it("linux: GTK chatter on a cancel is noise, not a failure", () => {
+    // The chatter is present on a good run AND on a cancel, so an empty-stdout
+    // return carrying only this is a cancel.
+    expect(
+      pickerFailureNotice(
+        "zenity",
+        "",
+        'Gtk-Message: 12:04:31.882: Failed to load module "canberra-gtk-module"\nGdk-CRITICAL **: gdk_window_thaw_toplevel_updates\n',
+      ),
+    ).toBeUndefined();
+    // kdialog's equivalent, same shape.
+    expect(
+      pickerFailureNotice("kdialog", "", "qt.qpa.wayland: Wayland does not support QWindow::requestActivate()\nkf.kio.core: Invalid URL\n"),
+    ).toBeUndefined();
+  });
+
+  it("a real error mixed IN with the chatter still surfaces, and the chatter does not", () => {
+    // Why the filter is per LINE rather than "does stderr look benign": the
+    // failure case in the wild is chatter first, real error after.
+    const line = pickerFailureNotice(
+      "zenity",
+      "",
+      'Gtk-Message: 12:04:31.882: Failed to load module "canberra-gtk-module"\ncannot open display: :0\n',
+    );
+    expect(line).toContain("cannot open display: :0");
+    expect(line).not.toContain("canberra-gtk-module");
+  });
+
   it("a path came back, so warnings on stderr are none of the user's business", () => {
     // GTK and osascript both chatter on stderr on a perfectly good run.
     expect(
@@ -339,6 +378,19 @@ describe("pickPath (spawn)", () => {
     expect(logs).not.toContain(FALLBACK);
     // …and nothing else either: a cancel is the one empty-handed return that
     // must stay quiet, which is what makes the stderr arm below safe to add.
+    expect(logs.some((l) => l.includes("could not open a picker"))).toBe(false);
+  });
+
+  it("a cancel that CHATTERS on stderr is still a cancel — the shape `exit 1` alone hides", async () => {
+    // The stub above is the one clean shape (exit 1, nothing on stderr), and
+    // real backends rarely produce it: GTK leaves module warnings behind, and
+    // osascript writes error -128 there. Both are empty-stdout-with-stderr,
+    // the state the notice fires on, so the wiring is pinned here and not only
+    // in the pure table above.
+    const { dir, deps } = stub(
+      'echo "Gtk-Message: 12:04:31.882: Failed to load module \\"canberra-gtk-module\\"" >&2; exit 1',
+    );
+    await expect(withPath(dir, () => pickPath("file", deps, "/home/a"))).resolves.toBeUndefined();
     expect(logs.some((l) => l.includes("could not open a picker"))).toBe(false);
   });
 
