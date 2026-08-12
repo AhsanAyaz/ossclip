@@ -211,7 +211,7 @@ GEMINI_API_KEY=…
 
 Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`, `OSSCLIP_CLAUDE_BIN`, `OSSCLIP_AGY_BIN`.
 
-One more that has no config-file equivalent: `OSSCLIP_NO_PICKER` — set to anything to disable the wizard's native file picker, so the input prompt falls back to suggestions and typing.
+One more that has no config-file equivalent: `OSSCLIP_NO_PICKER` — set it to a non-empty value to disable the wizard's native file picker, so the input prompt falls back to suggestions and typing. Truthiness, not presence, the same rule `CI` gets: an empty `OSSCLIP_NO_PICKER=` leaves the picker on.
 
 ## Telemetry
 
