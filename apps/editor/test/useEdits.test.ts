@@ -386,7 +386,7 @@ describe("scene splits (R16 §61)", () => {
   it("addSplit stores sorted, dedupes within a millisecond", () => {
     let s = editReducer(initialEditState(), { type: "addSplit", t: 7.5 });
     s = editReducer(s, { type: "addSplit", t: 2.25 });
-    expect(s.doc.splits).toEqual([2.25, 7.5]);
+    expect(s.doc.splits.map((x) => x.at)).toEqual([2.25, 7.5]);
     // A repeated ⌘B on the same paused frame is one decision.
     expect(editReducer(s, { type: "addSplit", t: 7.5004 })).toBe(s);
   });

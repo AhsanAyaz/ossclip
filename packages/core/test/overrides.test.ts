@@ -152,13 +152,13 @@ describe("override document", () => {
     let doc = OverrideDocSchema.parse({
       scenes: { "take-0": { elements: { title: { hidden: true } } } },
     });
-    let { cues } = applyOverrides(splitCues([take()], [4]), doc);
+    let { cues } = applyOverrides(splitCues([take()], [{ at: 4, id: "4000" }]), doc);
     for (const half of cues) {
       expect(half.elements, half.id).toEqual({ title: { hidden: true } });
     }
     doc = restoreElement(doc, "take-0", "title");
     expect("title" in doc.scenes["take-0"]!.elements).toBe(false);
-    ({ cues } = applyOverrides(splitCues([take()], [4]), doc));
+    ({ cues } = applyOverrides(splitCues([take()], [{ at: 4, id: "4000" }]), doc));
     for (const half of cues) {
       expect(half.elements, half.id).toBeUndefined();
     }
@@ -179,7 +179,7 @@ describe("override document", () => {
     expect("title" in doc.scenes["take-0@4000"]!.elements).toBe(false);
     const halves = splitCues(
       [{ id: "take-0", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10 } as SceneCue],
-      [4],
+      [{ at: 4, id: "4000" }],
     );
     const { cues } = applyOverrides(halves, doc);
     // Both halves now show the ROOT's nudge — nothing left hiding it.
@@ -550,8 +550,8 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
     endSec,
   });
 
-  it("cuts a cue into two halves; the second is named by its start time", () => {
-    const out = splitCues([cue("scene-0")], [2]);
+  it("cuts a cue into two halves; the second is named by the split's id", () => {
+    const out = splitCues([cue("scene-0")], [{ at: 2, id: "2000" }]);
     expect(out.map((c) => [c.id, c.startSec, c.endSec])).toEqual([
       ["scene-0", 0, 2],
       ["scene-0@2000", 2, 5],
@@ -561,13 +561,16 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
   });
 
   it("splits takes exactly like scenes — the feature's real use", () => {
-    const out = splitCues([take("take-0", 0, 10)], [4]);
+    const out = splitCues([take("take-0", 0, 10)], [{ at: 4, id: "4000" }]);
     expect(out.map((c) => c.id)).toEqual(["take-0", "take-0@4000"]);
     expect(out.every((c) => c.kind === "plain")).toBe(true);
   });
 
   it("a second split of the same cue keeps the first half's ids stable", () => {
-    const twice = splitCues([take("take-0", 0, 10)], [6, 3]);
+    const twice = splitCues(
+      [take("take-0", 0, 10)],
+      [{ at: 6, id: "6000" }, { at: 3, id: "3000" }],
+    );
     expect(twice.map((c) => [c.id, c.startSec, c.endSec])).toEqual([
       ["take-0", 0, 3],
       ["take-0@3000", 3, 6],
@@ -576,10 +579,10 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
   });
 
   it("refuses a cut that would mint an unusably thin half", () => {
-    expect(splitCues([cue("scene-0")], [0.1])).toHaveLength(1);
-    expect(splitCues([cue("scene-0")], [5 - 0.1])).toHaveLength(1);
+    expect(splitCues([cue("scene-0")], [{ at: 0.1, id: "100" }])).toHaveLength(1);
+    expect(splitCues([cue("scene-0")], [{ at: 5 - 0.1, id: "4900" }])).toHaveLength(1);
     // …and one that lands on no cue at all (a re-plan moved the material).
-    expect(splitCues([cue("scene-0")], [99])).toHaveLength(1);
+    expect(splitCues([cue("scene-0")], [{ at: 99, id: "99000" }])).toHaveLength(1);
   });
 
   it("overrides land on the half ids through the normal pass", () => {
@@ -1069,5 +1072,48 @@ describe("source-anchored caption keys (§137)", () => {
     expect(() => captionKeyFor(Number.NaN)).toThrow(/finite srcStart/);
     expect(() => captionKeyFor(undefined as unknown as number)).toThrow(/finite srcStart/);
     expect(() => captionKeyFor(Number.POSITIVE_INFINITY)).toThrow(/finite srcStart/);
+  });
+});
+
+describe("stable split ids (§137)", () => {
+  const cue = (id: string, startSec: number, endSec: number): SceneCue =>
+    ({ id, startSec, endSec }) as SceneCue;
+
+  it("a legacy numeric split parses into {at, id} with the id derived from its ORIGINAL ms", () => {
+    // Load-bearing: an existing overrides.json has `scene-0@600` hidden, and
+    // that key must still match after the upgrade.
+    const doc = OverrideDocSchema.parse({ splits: [0.6] });
+    expect(doc.splits).toEqual([{ at: 0.6, id: "600" }]);
+  });
+
+  it("names the second half from the id, not from the split time", () => {
+    const out = splitCues([cue("scene-0", 0, 6)], [{ at: 0.6, id: "600" }]);
+    expect(out.map((c) => c.id)).toEqual(["scene-0", "scene-0@600"]);
+  });
+
+  it("re-anchoring the split time does NOT rename the half — the field-case fix", () => {
+    // Same id, moved earlier by a re-cut. The half keeps its name, so a
+    // `hidden` override on it survives.
+    const out = splitCues([cue("scene-0", 0, 6)], [{ at: 1.2, id: "600" }]);
+    expect(out.map((c) => c.id)).toEqual(["scene-0", "scene-0@600"]);
+    expect(out[1]!.startSec).toBeCloseTo(1.2, 3);
+  });
+
+  it("derives a half id from the ROOT id, never chaining", () => {
+    const out = splitCues(
+      [cue("take-0", 0, 10)],
+      [{ at: 3, id: "3000" }, { at: 6, id: "6000" }],
+    );
+    expect(out.map((c) => c.id)).toEqual(["take-0", "take-0@3000", "take-0@6000"]);
+  });
+
+  it("still hides the half the user deleted, matched by the stable id", () => {
+    const doc = OverrideDocSchema.parse({
+      splits: [{ at: 1.2, id: "600" }],
+      scenes: { "scene-0@600": { hidden: true } },
+    });
+    const { cues, hidden } = splitThenDropHidden([cue("scene-0", 0, 6)], doc);
+    expect(cues.map((c) => c.id)).toEqual(["scene-0"]);
+    expect(hidden).toEqual(["scene-0@600"]);
   });
 });

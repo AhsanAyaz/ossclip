@@ -5,6 +5,7 @@ import {
   clearGraphicRect,
   clearTiming,
   emptyOverrideDoc,
+  legacySplitId,
   restoreElement,
   setElementTransform,
   type ElementTransform,
@@ -300,10 +301,16 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     case "addSplit": {
       // Dedupe within a millisecond: a repeated Cmd+B on the same paused
       // frame is one decision, not a stack of coincident cuts.
-      if (state.doc.splits.some((s) => Math.abs(s - action.t) < 0.001)) return state;
+      if (state.doc.splits.some((s) => Math.abs(s.at - action.t) < 0.001)) return state;
+      // The id is minted HERE, once, and never recomputed (§137) —
+      // `legacySplitId` is the derivation `splitCues` used to do inline, so
+      // a half created now is named exactly as it was before the split
+      // became `{at, id}` data.
       return commit({
         ...state.doc,
-        splits: [...state.doc.splits, action.t].sort((a, b) => a - b),
+        splits: [...state.doc.splits, { at: action.t, id: legacySplitId(action.t) }].sort(
+          (a, b) => a.at - b.at,
+        ),
       });
     }
     case "setCaptionsHidden": {

@@ -79,12 +79,12 @@ describe("formatElapsed", () => {
 
 describe("renderCompleteReload (PLAN 2026-08-04 Task 4c fix wave, review finding 2)", () => {
   it("loads produce's on-disk doc when the caller was CLEAN — no notice", () => {
-    const doc = { ...emptyOverrideDoc(), splits: [4.2] };
+    const doc = { ...emptyOverrideDoc(), splits: [{ at: 4.2, id: "4200" }] };
     expect(renderCompleteReload(doc, false)).toEqual({ load: doc, notifyDiscard: false });
   });
 
   it("STILL loads produce's on-disk doc when the caller was DIRTY — produce's write-back always wins, no field-level merge", () => {
-    const doc = { ...emptyOverrideDoc(), splits: [4.2] };
+    const doc = { ...emptyOverrideDoc(), splits: [{ at: 4.2, id: "4200" }] };
     const result = renderCompleteReload(doc, true);
     expect(result.load).toBe(doc); // same reference — nothing merged into it
     expect(result.notifyDiscard).toBe(true);

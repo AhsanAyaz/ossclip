@@ -169,6 +169,24 @@ export function captionEditWas(
   return captions[key]?.was ?? seen;
 }
 
+/**
+ * The id a pre-§137 split gets when it is upgraded: its ORIGINAL output
+ * milliseconds. Load-bearing for the migration — a saved doc hiding
+ * `scene-0@600` must still match the half after the upgrade, and that only
+ * holds if the derived id reproduces the old name exactly.
+ */
+export function legacySplitId(at: number): string {
+  return String(Math.round(at * 1000));
+}
+
+export const SplitSchema = z.union([
+  z.object({ at: z.number().nonnegative(), id: z.string().min(1) }),
+  // Legacy: a bare number, upgraded in place so every overrides.json written
+  // before §137 parses and keeps its split-half overrides attached.
+  z.number().nonnegative().transform((at) => ({ at, id: legacySplitId(at) })),
+]);
+export type Split = z.infer<typeof SplitSchema>;
+
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */
   theme: ThemeSchema.partial().default({}),
@@ -189,13 +207,19 @@ export const OverrideDocSchema = z.object({
   /** Retyped caption words, keyed by the word's source time (§137). */
   captions: z.record(z.string(), CaptionEditSchema).default({}),
   /**
-   * Scene split points in ABSOLUTE output seconds (R16 §61 — Cmd/Ctrl+B at
-   * the playhead). Time-anchored rather than scene-anchored on purpose: a
-   * re-plan can rename or move scenes, and a split is a decision about a
-   * MOMENT of the output. Applied by `splitCues` after the plain fill, so a
-   * split lands on graphic cues and takes alike.
+   * Scene split points. `at` is ABSOLUTE output seconds (R16 §61 — Cmd/Ctrl+B
+   * at the playhead) and moves when a re-cut re-anchors the doc; `id` is
+   * minted once when the split is created and NEVER recomputed (§137). The
+   * split half is named `${rootId}@${id}`, so re-anchoring `at` cannot rename
+   * the half out from under a `hidden` (or any other) override on it — the
+   * bug that resurrected a deleted scene in the field case.
+   *
+   * `at` stays time-anchored rather than scene-anchored on purpose: a re-plan
+   * can rename or move scenes, and WHERE to cut is a decision about a MOMENT
+   * of the output. Applied by `splitCues` after the plain fill, so a split
+   * lands on graphic cues and takes alike.
    */
-  splits: z.array(z.number().nonnegative()).default([]),
+  splits: z.array(SplitSchema).default([]),
   /**
    * User cuts — ranges of the OUTPUT to remove, in the output seconds of the
    * CURRENT render-props (what the user saw when they cut) (PLAN 2026-08-04
@@ -379,10 +403,14 @@ export const SPLIT_MIN_PIECE_SEC = 0.3;
  * Cut cues at the stored split points (R16 §61).
  *
  * Both halves keep everything but their window; the half STARTING at the
- * split takes the id `${id}@${ms}` — named by its start time, so edits on it
- * stay attached while the split exists, survive further splits of the same
- * original cue, and are reported as orphans (never misapplied) if the split
- * is removed. Runs AFTER `fillPlainCues` so takes split like scenes do, and
+ * split takes the id `${rootId}@${split.id}` — named by the split's OWN
+ * minted id (§137), so edits on it stay attached while the split exists,
+ * survive further splits of the same original cue, and are reported as
+ * orphans (never misapplied) if the split is removed. The id used to be
+ * recomputed from the split's CURRENT start time, which meant a re-cut
+ * re-anchoring `at` renamed the half and orphaned every override on it —
+ * the field case where a deleted scene came back after a 0.6s cut.
+ * Runs AFTER `fillPlainCues` so takes split like scenes do, and
  * BEFORE the final override pass so the halves' own edits (framing, timing,
  * elements) land on them. A split that misses every cue — after a re-plan
  * moved the material — is skipped; the time stays in the doc, harmless.
@@ -390,23 +418,25 @@ export const SPLIT_MIN_PIECE_SEC = 0.3;
  * intro animation (a Sequence restarts at its own frame 0) — acceptable for
  * the feature's real use, cutting takes and re-timing halves.
  */
-export function splitCues(cues: readonly SceneCue[], times: readonly number[]): SceneCue[] {
+export function splitCues(cues: readonly SceneCue[], splits: readonly Split[]): SceneCue[] {
   const out = [...cues];
-  for (const t of [...times].sort((a, b) => a - b)) {
+  for (const s of [...splits].sort((a, b) => a.at - b.at)) {
     const i = out.findIndex(
-      (c) => t >= c.startSec + SPLIT_MIN_PIECE_SEC && t <= c.endSec - SPLIT_MIN_PIECE_SEC,
+      (c) => s.at >= c.startSec + SPLIT_MIN_PIECE_SEC && s.at <= c.endSec - SPLIT_MIN_PIECE_SEC,
     );
     if (i === -1) continue;
     const cue = out[i]!;
     // Derive from the ROOT id, not the (possibly already-split) cue id:
     // `take-0@6000`, never `take-0@3000@6000` — so a half's id depends only
-    // on the original cue and its own start time, and adding an EARLIER
+    // on the original cue and the split that made it, and adding an EARLIER
     // split cannot rename later halves out from under their edits.
     out.splice(
       i,
       1,
-      { ...cue, endSec: t },
-      { ...cue, id: `${cue.id.split("@")[0]}@${Math.round(t * 1000)}`, startSec: t },
+      { ...cue, endSec: s.at },
+      // The suffix comes from the SPLIT's own id, not from `s.at` — that is
+      // the §137 fix.
+      { ...cue, id: `${cue.id.split("@")[0]}@${s.id}`, startSec: s.at },
     );
   }
   return out;

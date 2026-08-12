@@ -56,7 +56,13 @@ export function remapOverridesThroughRecut(
 ): RecutRemap {
   const reports: string[] = [];
 
-  const splits = doc.splits.map((t) => remapPoint("split", t, oldMap, newMap, reports));
+  // Only `at` moves: a split's `id` is minted once and never recomputed
+  // (§137, `SplitSchema`) — re-deriving it here is what renamed the half and
+  // orphaned the overrides on it.
+  const splits = doc.splits.map((s) => ({
+    ...s,
+    at: remapPoint("split", s.at, oldMap, newMap, reports),
+  }));
 
   // Record-shaped: rebuild key by key rather than mutate, matching every
   // other `OverrideDoc`-shaping function in overrides.ts (e.g.

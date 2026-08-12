@@ -89,7 +89,7 @@ describe("remapOverridesThroughRecut — identity re-cut", () => {
 
           expect(reports).toEqual([]);
           expect(out.splits).toHaveLength(splits.length);
-          out.splits.forEach((s, i) => expect(s).toBeCloseTo(splits[i]!, 6));
+          out.splits.forEach((s, i) => expect(s.at).toBeCloseTo(splits[i]!, 6));
           expect(out.scenes.s!.timing!.startSec).toBeCloseTo(pinStart, 6);
           expect(out.scenes.s!.timing!.endSec).toBeCloseTo(map.outputDuration, 6);
           // Same reference, not just an equal value — proof nothing here
@@ -132,7 +132,7 @@ describe("remapOverridesThroughRecut — before/after/inside a fresh cut", () =>
 
         const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
 
-        expect(out.splits[0]).toBeCloseTo(t, 6);
+        expect(out.splits[0]!.at).toBeCloseTo(t, 6);
         expect(reports).toEqual([]);
       }),
     );
@@ -154,7 +154,7 @@ describe("remapOverridesThroughRecut — before/after/inside a fresh cut", () =>
 
         const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
 
-        expect(out.splits[0]).toBeCloseTo(t - (cutEnd - cutStart), 6);
+        expect(out.splits[0]!.at).toBeCloseTo(t - (cutEnd - cutStart), 6);
         expect(reports).toEqual([]);
       }),
     );
@@ -178,7 +178,7 @@ describe("remapOverridesThroughRecut — before/after/inside a fresh cut", () =>
         // sits flush against that point) — so the edge is exactly cutStart,
         // regardless of which of the two neighbouring kept spans
         // `toOutputClamped` snaps to.
-        expect(out.splits[0]).toBeCloseTo(cutStart, 6);
+        expect(out.splits[0]!.at).toBeCloseTo(cutStart, 6);
         expect(reports.length).toBe(1);
       }),
     );
@@ -485,7 +485,7 @@ describe("applyUserCuts", () => {
 
     expect(result.changed).toBe(true);
     expect(result.reports).toEqual([]);
-    expect(result.doc.splits[0]).toBeCloseTo(36, 6); // 40 - 4
+    expect(result.doc.splits[0]!.at).toBeCloseTo(36, 6); // 40 - 4
   });
 
   it("re-anchors a pin the cut swallowed and reports it", () => {
@@ -533,7 +533,7 @@ describe("applyUserCuts", () => {
 
     const initialDoc = OverrideDocSchema.parse({ cuts: [{ startSec: 20, endSec: 24 }], splits: [40] });
     const run1 = applyUserCuts(initialDoc, cutlist, map, map);
-    expect(run1.doc.splits[0]).toBeCloseTo(36, 6);
+    expect(run1.doc.splits[0]!.at).toBeCloseTo(36, 6);
 
     // Restore: the editor removes the cut, everything else (including the
     // now-re-anchored split) is whatever run1 wrote back.
@@ -545,7 +545,7 @@ describe("applyUserCuts", () => {
     // cut frame) to source, then through `map` (the full, uncut frame) back
     // to output: source = 24 + (36-20) = 40 (past the old cut in the short
     // frame's second span); `map` is identity, so output = source = 40.
-    expect(run2.doc.splits[0]).toBeCloseTo(40, 6);
+    expect(run2.doc.splits[0]!.at).toBeCloseTo(40, 6);
   });
 
   // The other half of finding 3's parenthetical: automatic-cutlist drift
@@ -571,7 +571,7 @@ describe("applyUserCuts", () => {
 
     expect(result.changed).toBe(true);
     expect(result.reports).toEqual([]); // a clean shift, nothing clamped
-    expect(result.doc.splits[0]).toBeCloseTo(35, 6); // 40 - 5, the drift
+    expect(result.doc.splits[0]!.at).toBeCloseTo(35, 6); // 40 - 5, the drift
   });
 
   it("tolerates float noise between priorMap and map without marking `changed`", () => {
