@@ -37,6 +37,28 @@ describe("pickerAvailable", () => {
     expect(pickerAvailable(deps({ platform: "win32", env: { SSH_TTY: "/dev/pts/0" } }))).toBe(false);
   });
 
+  it("linux: SSH does NOT disqualify it — `ssh -X` forwards a real display", () => {
+    // The SSH check is a proxy for the signal darwin and win32 lack. Linux
+    // has the signal, and X11 forwarding sets it truthfully: zenity draws on
+    // the caller's local screen. Applying the proxy here would override
+    // evidence with a guess and break a working setup.
+    expect(
+      pickerAvailable(
+        deps({
+          platform: "linux",
+          env: { DISPLAY: "localhost:10.0", SSH_CONNECTION: "1.2.3.4 22 5.6.7.8 22" },
+          hasBin: (b) => b === "zenity",
+        }),
+      ),
+    ).toBe(true);
+    // …but SSH with no forwarded display is still a no, on the display check.
+    expect(
+      pickerAvailable(
+        deps({ platform: "linux", env: { SSH_CONNECTION: "x" }, hasBin: (b) => b === "zenity" }),
+      ),
+    ).toBe(false);
+  });
+
   it("linux: needs BOTH a display and a dialog binary", () => {
     const withZenity = (bin: string) => bin === "zenity";
     expect(pickerAvailable(deps({ platform: "linux", env: { DISPLAY: ":0" }, hasBin: withZenity }))).toBe(true);

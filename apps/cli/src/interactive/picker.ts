@@ -47,18 +47,29 @@ const psQuote = (s: string): string => s.replace(/'/g, "''");
 export function pickerAvailable(d: PickerDeps): boolean {
   // Truthiness not presence, matching `isInteractive`'s treatment of CI.
   if (d.env.OSSCLIP_NO_PICKER) return false;
-  // No SSH session gets a dialog, on ANY platform: there is no window server
-  // at the far end to draw on. macOS at least fails loudly — `choose file`
-  // returns -1743 (not authorized) instead of opening. Windows fails the
-  // dangerous way: it ships an in-box OpenSSH server, and ShowDialog() on a
-  // non-interactive window station blocks forever on a window nobody can see.
-  // `run()` has no timeout, so that is a CLI hung until Ctrl-C — the exact
-  // failure the -STA comment below exists to prevent.
-  if (d.env.SSH_CONNECTION || d.env.SSH_TTY) return false;
-  // Nothing left to detect on either: osascript is part of macOS and WinForms
-  // ships with Windows itself.
-  if (d.platform === "darwin" || d.platform === "win32") return true;
-  // Linux needs BOTH halves, and the display check is what covers WSL
+  // "Am I over SSH" is a PROXY for a signal these two platforms don't have
+  // (§136): neither macOS nor Windows exposes anything that says whether a
+  // reachable window server exists, so the remote-session hint is the best
+  // available stand-in. It has to be applied here, not just on darwin: macOS
+  // fails loudly — `choose file` returns -1743 (not authorized) — but Windows
+  // fails the dangerous way. It ships an in-box OpenSSH server, and
+  // ShowDialog() on a non-interactive window station blocks forever on a
+  // window nobody can see. `run()` has no timeout, so that is a CLI hung
+  // until Ctrl-C, the exact failure the -STA comment below exists to prevent.
+  //
+  // Note this deliberately does NOT cover Linux, which is handled below.
+  // osascript and WinForms are always installed, so there is nothing else to
+  // detect on either.
+  if (d.platform === "darwin" || d.platform === "win32") {
+    return !d.env.SSH_CONNECTION && !d.env.SSH_TTY;
+  }
+  // Linux is exempt from the SSH proxy above because it HAS the real signal.
+  // `ssh -X` sets DISPLAY=localhost:10.0 and zenity genuinely draws on the
+  // caller's local screen through the tunnel — a configuration that works.
+  // Layering the proxy on top of the evidence would override that evidence
+  // with a guess and break it.
+  //
+  // Both halves are required, and the display check is also what covers WSL
   // without WSLg: zenity may well be installed there and still draw nowhere.
   if (!d.env.DISPLAY && !d.env.WAYLAND_DISPLAY) return false;
   return d.hasBin("zenity") || d.hasBin("kdialog");
