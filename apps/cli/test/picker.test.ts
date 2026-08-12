@@ -1,7 +1,7 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   pickPath,
   pickerAvailable,
@@ -206,50 +206,100 @@ describe("parsePickerResult", () => {
 });
 
 /**
- * The spawn is exercised against a stub `zenity` on a temp PATH — same trick
- * the agy provider tests use (§132). A real dialog cannot be tested: it
- * blocks on a human.
+ * The spawn is exercised against a stub `zenity`: a real dialog cannot be
+ * tested, because it blocks on a human (§136).
+ *
+ * The stub is reached by mutating `process.env.PATH`, which is heavier than
+ * anything else in the repo does — the agy provider tests inject the binary
+ * path instead, and these are the only PATH writes here. PATH is the only
+ * seam available: `pickerCommand` emits a bare binary name so the OS resolves
+ * it, and `run` offers no env or cwd option to redirect that. Read this as
+ * local necessity, not as a licence to mutate PATH elsewhere.
  */
 describe("pickPath (spawn)", () => {
+  // The exact line pickPath prints when the binary would not start. Asserting
+  // on its absence is what separates a cancel from a spawn failure — both
+  // resolve undefined, so the return value alone cannot tell them apart.
+  const FALLBACK = "▸ couldn't open a file picker here — type the path instead";
   const dirs: string[] = [];
-  const stub = (body: string): { dir: string; deps: PickerDeps } => {
+  let logs: string[] = [];
+
+  const stub = (body: string): { dir: string; argv: () => string[]; deps: PickerDeps } => {
     const dir = mkdtempSync(join(tmpdir(), "ossclip-picker-"));
     dirs.push(dir);
+    const argvFile = join(dir, "argv");
     const bin = join(dir, "zenity");
-    writeFileSync(bin, `#!/bin/bash\n${body}\n`);
+    // Every stub records its argv before running its body: that recording is
+    // the only thing pinning that pickPath forwards `mode` and `startDir` into
+    // pickerCommand. Both are optional there, so dropping them typechecks
+    // clean and silently opens every dialog at the wrong directory.
+    // One arg per line — args contain spaces (`--file-filter=Video | *.mov …`)
+    // but never newlines.
+    writeFileSync(bin, `#!/bin/bash\nprintf '%s\\n' "$@" > "${argvFile}"\n${body}\n`);
     chmodSync(bin, 0o755);
     return {
       dir,
+      argv: () => readFileSync(argvFile, "utf8").split("\n").filter(Boolean),
       deps: { platform: "linux", env: { DISPLAY: ":0" }, hasBin: (b) => b === "zenity" },
     };
   };
-  // PATH is restored synchronously, before the returned promise settles — safe
-  // because `run` spawns inside its executor, i.e. before pickPath's first
-  // await yields. Restoring in a `.finally` instead would leave a mutated PATH
-  // visible to any test vitest interleaves with this one.
-  const withPath = <T>(dir: string, fn: () => T): T => {
+
+  const withPath = async <T>(dir: string, fn: () => Promise<T>): Promise<T> => {
     const prev = process.env.PATH;
     process.env.PATH = dir;
     try {
-      return fn();
+      // Awaited INSIDE the try so the mutated PATH outlives the spawn no
+      // matter when it happens. `run` spawns synchronously in its promise
+      // executor today, so a sync restore would also work — but only today: a
+      // single `await` added ahead of that spawn (a timeout is the obvious
+      // candidate) would have the stub vanish from PATH, and the cancel test
+      // below would go green down the spawn-failure path while testing
+      // nothing. Holding PATH across the await is safe because vitest runs a
+      // file's `it`s sequentially and none of these are `test.concurrent`.
+      return await fn();
     } finally {
       process.env.PATH = prev;
     }
   };
+
+  beforeEach(() => {
+    logs = [];
+    vi.spyOn(console, "log").mockImplementation((...parts: unknown[]) => {
+      logs.push(parts.join(" "));
+    });
+  });
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  it("returns the picked path", async () => {
-    const { dir, deps } = stub('echo "/home/a/take1.mp4"');
+  it("returns the picked path, and forwards mode and startDir into the command", async () => {
+    const { dir, argv, deps } = stub('echo "/home/a/take1.mp4"');
     await expect(withPath(dir, () => pickPath("file", deps, "/home/a"))).resolves.toBe(
       "/home/a/take1.mp4",
     );
+    // startDir actually reached the dialog — trailing slash and all.
+    expect(argv()).toContain("--filename=/home/a/");
+    expect(argv()).toContain("--file-selection");
+    expect(argv()).not.toContain("--directory");
+  });
+
+  it("folder mode reaches the dialog as --directory", async () => {
+    const { dir, argv, deps } = stub('echo "/home/a/clips"');
+    await expect(withPath(dir, () => pickPath("folder", deps, "/home/a"))).resolves.toBe(
+      "/home/a/clips",
+    );
+    expect(argv()).toContain("--directory");
   });
 
   it("a cancel (exit 1, empty stdout) resolves undefined instead of throwing", async () => {
     const { dir, deps } = stub("exit 1");
     await expect(withPath(dir, () => pickPath("file", deps, "/home/a"))).resolves.toBeUndefined();
+    // The point of the test. Without `allowNonZero`, a dismissed dialog would
+    // reject, land in the catch, and still resolve undefined — telling a user
+    // whose picker works perfectly that it is broken. Only the missing
+    // fallback line proves the cancel came back down the resolve path.
+    expect(logs).not.toContain(FALLBACK);
   });
 
   it("a missing binary resolves undefined — never takes the wizard down", async () => {
@@ -261,5 +311,7 @@ describe("pickPath (spawn)", () => {
     const empty = mkdtempSync(join(tmpdir(), "ossclip-picker-empty-"));
     dirs.push(empty);
     await expect(withPath(empty, () => pickPath("file", deps, "/home/a"))).resolves.toBeUndefined();
+    // …and here the same undefined DOES come with the fallback line.
+    expect(logs).toContain(FALLBACK);
   });
 });
