@@ -351,6 +351,18 @@ describe("input_source (§136)", () => {
     expect(inputSourceUsed()).toBe("suggestion");
   });
 
+  // The run boundary, pinned: `buildProgram` is where a run starts, because
+  // every wizard route re-enters the produce action via parseAsync (§129) and
+  // a reset there would erase the branch askInput just recorded. Delete the
+  // `resetInputSource()` call in program.ts and this is what goes red — the
+  // second produce in a batch would otherwise report the first one's branch.
+  it("building a program starts a fresh run — the previous run's branch does not leak", async () => {
+    noteInputSource("picker");
+    const { buildProgram } = await import("../src/program");
+    buildProgram();
+    expect(inputSourceUsed()).toBe("argv");
+  });
+
   it("the prop name survives assertSafeProps — it names a branch, not a path", () => {
     expect(() => assertSafeProps({ input_source: "picker" })).not.toThrow();
   });

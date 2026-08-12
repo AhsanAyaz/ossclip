@@ -7,6 +7,13 @@ import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { produce } from "./produce";
+// The one interactive import that is STATIC rather than `await import()`: the
+// reset below has to run synchronously while the program is being built, and
+// `buildProgram` cannot await. The graph already loads @ossclip/renderer and
+// @ossclip/scenes eagerly through produce.ts, so clack riding along costs ~14ms
+// on a ~320ms startup — cheap enough not to trade for a racy fire-and-forget
+// import (§136).
+import { resetInputSource } from "./interactive/ask-input";
 import { setReplayArgv } from "./replay-argv";
 import {
   bootstrapTelemetry,
@@ -37,6 +44,19 @@ const envFiles = loadEnvFiles();
  */
 export function buildProgram(): Command {
   const program = new Command();
+
+  // §136: the input-source telemetry is module state, so something has to say
+  // when a RUN begins. Not the produce action — every wizard route re-enters
+  // that same action through `program.parseAsync` (§129), so a reset there
+  // fires on the re-entered parse, AFTER `askInput` recorded the branch, and
+  // `input_source` would read "argv" for every wizard run: the feature would
+  // measure exactly nothing. Nor is the process the boundary — a batch or REPL
+  // driver runs produce more than once, and the second run would report the
+  // first one's branch. The PROGRAM CONSTRUCTION is the boundary: commander 12
+  // keeps option state across parseAsync calls (see the bare-`produce` refusal
+  // below), so any batch has to rebuild the program per run anyway, which makes
+  // one reset per `buildProgram` exactly one per run in both cases.
+  resetInputSource();
 
   // Before dispatch, so the one-time first-run notice precedes any command's
   // own output. Inert in this repo's tests by construction: while POSTHOG_KEY
