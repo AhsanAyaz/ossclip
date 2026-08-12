@@ -180,12 +180,51 @@ export function legacySplitId(at: number): string {
 }
 
 export const SplitSchema = z.union([
-  z.object({ at: z.number().nonnegative(), id: z.string().min(1) }),
+  // `.finite()` is stated rather than assumed. JSON has no Infinity literal
+  // but an overflowing one (`1e400`) parses to it, and a non-finite `at`
+  // would derive `id: "Infinity"` — one shared name for every such split,
+  // the same garbage-derived-key failure `captionKeyFor` refuses for caption
+  // words. zod v4's `z.number()` already rejects non-finite where v3's did
+  // not, so this is a requirement written down at the site instead of a
+  // default that has already changed once underneath this file.
+  z.object({ at: z.number().finite().nonnegative(), id: z.string().min(1) }),
   // Legacy: a bare number, upgraded in place so every overrides.json written
   // before §137 parses and keeps its split-half overrides attached.
-  z.number().nonnegative().transform((at) => ({ at, id: legacySplitId(at) })),
+  z.number().finite().nonnegative().transform((at) => ({ at, id: legacySplitId(at) })),
 ]);
 export type Split = z.infer<typeof SplitSchema>;
+
+/**
+ * A split id that no split in `existing` already holds.
+ *
+ * Uniqueness is load-bearing (§137): the id is the ONLY thing tying an
+ * override to a split half — `splitCues` names the half `${rootId}@${id}` and
+ * `dropHiddenCues` filters on that exact string — so two splits sharing an id
+ * mint two cues with one name, and deleting one half deletes both, as does
+ * any framing or timing edit on it.
+ *
+ * Decoupling `id` from `at` is what made this reachable. While the id was
+ * recomputed from the time, two ids could only collide if two splits sat
+ * within 0.5ms of each other, which `SPLIT_MIN_PIECE_SEC` forbids. Now a
+ * split minted at 1.2s and re-anchored to 0.6s by a re-cut still holds
+ * `"1200"`, so ⌘B at 1.2s again asks for an id that is taken — and
+ * `addSplit`'s dedupe cannot see it, because that compares `at` and 0.6 is
+ * nowhere near 1.2.
+ *
+ * The suffix is a COUNTER, deliberately, not a nonce or a timestamp: this
+ * value is persisted in the user's `overrides.json` and names a cue, so it
+ * has to be reproducible from the doc alone.
+ */
+export function mintSplitId(at: number, existing: readonly Split[]): string {
+  const base = legacySplitId(at);
+  const taken = new Set(existing.map((s) => s.id));
+  if (!taken.has(base)) return base;
+  // Starts at 2 so the first collision reads as "the second `1200`".
+  for (let n = 2; ; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
 
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */

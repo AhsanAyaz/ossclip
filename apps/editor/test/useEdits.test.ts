@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { OverrideDocSchema, splitCues, type SceneCue } from "@ossclip/core/browser";
 import { COALESCE_MS, editReducer, initialEditState } from "../src/useEdits";
 
 describe("edit state", () => {
@@ -383,12 +384,42 @@ describe("caption position and size (R15 §56 / R16 §64)", () => {
 });
 
 describe("scene splits (R16 §61)", () => {
+  /** One take long enough to survive two splits and `SPLIT_MIN_PIECE_SEC`. */
+  const splitTarget = (): SceneCue =>
+    ({ id: "scene-0", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10 }) as SceneCue;
+
   it("addSplit stores sorted, dedupes within a millisecond", () => {
     let s = editReducer(initialEditState(), { type: "addSplit", t: 7.5 });
     s = editReducer(s, { type: "addSplit", t: 2.25 });
     expect(s.doc.splits.map((x) => x.at)).toEqual([2.25, 7.5]);
+    // Every split leaves here NAMEABLE. The exact value is §137's business
+    // (`legacySplitId`), but an empty id would name the half `scene-0@` and
+    // is only caught by the server's `safeParse` on Save, as a 400.
+    expect(s.doc.splits.every((x) => x.id.length > 0)).toBe(true);
     // A repeated ⌘B on the same paused frame is one decision.
     expect(editReducer(s, { type: "addSplit", t: 7.5004 })).toBe(s);
+  });
+
+  it("a re-anchored split's old time coming round again gets its OWN id (§137)", () => {
+    // The four-step field sequence: ⌘B at 1.2s mints `{at: 1.2, id: "1200"}`;
+    // a 0.6s cut re-anchors it to `{at: 0.6, id: "1200"}` (the id is data now
+    // and deliberately does NOT move); the user then presses ⌘B at 1.2s
+    // again. The `.at` dedupe cannot see the collision — 0.6 is nowhere near
+    // 1.2 — so a time-derived id would mint a SECOND "1200" and `splitCues`
+    // would emit two cues both named `scene-0@1200`. `dropHiddenCues` filters
+    // by exact id, so deleting one of those halves deletes both.
+    let s = editReducer(initialEditState(), {
+      type: "load",
+      doc: OverrideDocSchema.parse({ splits: [{ at: 0.6, id: "1200" }] }),
+    });
+    s = editReducer(s, { type: "addSplit", t: 1.2 });
+
+    expect(s.doc.splits).toHaveLength(2);
+    expect(new Set(s.doc.splits.map((x) => x.id)).size).toBe(2);
+
+    const halves = splitCues([splitTarget()], s.doc.splits);
+    expect(halves).toHaveLength(3);
+    expect(new Set(halves.map((c) => c.id)).size).toBe(3);
   });
 
   it("splits undo like any other edit", () => {

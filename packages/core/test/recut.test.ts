@@ -155,6 +155,10 @@ describe("remapOverridesThroughRecut — before/after/inside a fresh cut", () =>
         const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
 
         expect(out.splits[0]!.at).toBeCloseTo(t - (cutEnd - cutStart), 6);
+        // `at` moved; `id` MUST NOT (§137). Recomputing it from the remapped
+        // time is the field bug — it renames `${root}@${id}` and orphans
+        // every override on that half.
+        expect(out.splits[0]!.id).toBe(doc.splits[0]!.id);
         expect(reports).toEqual([]);
       }),
     );
@@ -182,6 +186,23 @@ describe("remapOverridesThroughRecut — before/after/inside a fresh cut", () =>
         expect(reports.length).toBe(1);
       }),
     );
+  });
+
+  it("the field case, concretely: `at` moves from 1.2 to 0.6 and the id stays \"1200\" (§137)", () => {
+    // The bug this plan exists for, in one assertion. A split minted at
+    // 1.2s names its half `scene-0@1200`; a 0.6s cut before it re-anchors
+    // the split to 0.6s. Deriving the id from the CURRENT time would rename
+    // the half to `scene-0@600`, orphaning the `hidden` override the user
+    // saved against it — the deleted scene came back in the render.
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = cutOutputRange(oldMap, 0, 0.6);
+    const doc = OverrideDocSchema.parse({ splits: [1.2] });
+    expect(doc.splits[0]!.id).toBe("1200");
+
+    const { doc: out } = remapOverridesThroughRecut(doc, oldMap, newMap);
+
+    expect(out.splits[0]!.at).toBeCloseTo(0.6, 6);
+    expect(out.splits[0]!.id).toBe("1200");
   });
 });
 

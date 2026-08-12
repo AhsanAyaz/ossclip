@@ -4,6 +4,8 @@ import {
   applyOverrides,
   captionEditWas,
   clearGraphicRect,
+  legacySplitId,
+  mintSplitId,
   splitCues,
   splitThenDropHidden,
   dropHiddenCues,
@@ -1115,5 +1117,44 @@ describe("stable split ids (§137)", () => {
     const { cues, hidden } = splitThenDropHidden([cue("scene-0", 0, 6)], doc);
     expect(cues.map((c) => c.id)).toEqual(["scene-0"]);
     expect(hidden).toEqual(["scene-0@600"]);
+  });
+});
+
+describe("minting a split id (§137)", () => {
+  it("mints exactly the legacy id when nothing holds it — a first split is unchanged", () => {
+    expect(mintSplitId(1.2, [])).toBe("1200");
+    expect(mintSplitId(1.2, [{ at: 4, id: "4000" }])).toBe("1200");
+    // Same derivation `legacySplitId` guarantees for the migration, so a
+    // split made today and one upgraded from disk are named alike.
+    expect(mintSplitId(0.6, [])).toBe(legacySplitId(0.6));
+  });
+
+  it("disambiguates against a RE-ANCHORED split that still holds that id", () => {
+    // The whole point of §137 is that `id` does NOT move with `at`, so the
+    // time a split was minted from can come round again.
+    expect(mintSplitId(1.2, [{ at: 0.6, id: "1200" }])).toBe("1200-2");
+    expect(mintSplitId(1.2, [{ at: 0.6, id: "1200" }, { at: 0.9, id: "1200-2" }])).toBe("1200-3");
+  });
+
+  it("is deterministic — the same doc mints the same id every time", () => {
+    // Persisted data: a random or clock-derived suffix would make a half's
+    // name unreproducible, which is the property this whole task restored.
+    const existing = [{ at: 0.6, id: "1200" }];
+    expect(mintSplitId(1.2, existing)).toBe(mintSplitId(1.2, existing));
+  });
+});
+
+describe("split times are parsed, never coerced (§137)", () => {
+  it("REFUSES a non-finite split time instead of deriving `id: \"Infinity\"`", () => {
+    // `1e400` is how a non-finite number actually reaches us: JSON has no
+    // Infinity literal, but an overflowing one parses to it. `nonnegative()`
+    // alone admits it, and the derived id would be the string "Infinity" —
+    // one shared name for every such split, the same garbage-key failure
+    // `captionKeyFor` refuses for caption words.
+    expect(() => OverrideDocSchema.parse(JSON.parse('{"splits":[1e400]}'))).toThrow();
+    expect(() =>
+      OverrideDocSchema.parse({ splits: [{ at: Number.POSITIVE_INFINITY, id: "1200" }] }),
+    ).toThrow();
+    expect(() => OverrideDocSchema.parse({ splits: [{ at: Number.NaN, id: "1200" }] })).toThrow();
   });
 });
