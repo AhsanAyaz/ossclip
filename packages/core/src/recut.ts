@@ -62,25 +62,47 @@ export function remapOverridesThroughRecut(
   const splits = doc.splits.map((s) => {
     const before = reports.length;
     const at = remapPoint(`split "${s.id}"`, s.at, oldMap, newMap, reports);
-    // `splitCues` needs a cue with `at >= startSec + SPLIT_MIN_PIECE_SEC`;
-    // output time starts at 0, so a split closer than that to the start can
-    // match NO cue and is skipped — silently, until §137. The half it used to
-    // name stops existing, every override keyed to it is orphaned, and the
-    // scene the user deleted comes back (the field case: a 0.6s cut pushed a
-    // split at 0.6s to 0). Say so instead.
+    // `splitCues` needs a cue with `at >= startSec + SPLIT_MIN_PIECE_SEC` AND
+    // `at <= endSec - SPLIT_MIN_PIECE_SEC`. Output time runs [0,
+    // outputDuration] and every cue lives inside it, so a split closer than
+    // that to EITHER end can match no cue at all and is skipped: the half it
+    // named stops existing, every override keyed to it is orphaned, and the
+    // scene the user deleted comes back. Before §137 the only trace of that
+    // was produce.ts's generic `edit for scene-0@600 dropped — the plan no
+    // longer has that scene`, which blames the plan and names neither the
+    // split nor the re-cut that moved it. Name both.
     //
-    // Only when this re-cut is what pushed it under: `reports` is the "a
-    // value MOVED" channel (see `RecutRemap`), and a split already below the
-    // bar before the remap is a pre-existing condition — the editor's own
-    // SPLIT_MIN_PIECE_SEC guard refuses to create one — that would otherwise
-    // be re-announced on every identity re-cut, forever.
+    // Start: the field case — a 0.6s cut pushed a split at 0.6s to 0.
+    // End: `at` need not move at all; cutting the tail moves `outputDuration`
+    // out from under it (a split at 9.5s of 10s, with 9.6–10.0 cut).
+    //
+    // Both fire only when THIS re-cut is what pushed the split past the bar:
+    // `reports` is the "a value MOVED" channel (see `RecutRemap`), and a
+    // split already past it beforehand is a pre-existing condition — one the
+    // editor's own SPLIT_MIN_PIECE_SEC guard refuses to create — that would
+    // otherwise be re-announced on every identity re-cut, forever. The
+    // mirrored guards also make a pure shift unreportable by construction:
+    // when the whole timeline slides, both sides of each comparison slide
+    // with it.
+    //
+    // `remapPoint` states the new time itself when it snapped this split onto
+    // a cut edge; restating it here would read as a second, separate move
+    // rather than the consequence of the one already reported.
+    const where = reports.length > before ? "is" : `is now ${at.toFixed(3)}s —`;
     if (at < SPLIT_MIN_PIECE_SEC && s.at >= SPLIT_MIN_PIECE_SEC) {
-      // `remapPoint` states the new time itself when it snapped this split
-      // onto a cut edge; restating it here would read as a second, separate
-      // move rather than the consequence of the one already reported.
-      const where = reports.length > before ? "is" : `is now ${at.toFixed(3)}s —`;
       reports.push(
         `split "${s.id}" ${where} too close to the start to divide a scene, ` +
+          `so any edit on its second half will not apply`,
+      );
+      // `else`, not a second `if`: an output shorter than two minimum pieces
+      // trips both bars for the same split, and one line already says it can
+      // no longer divide anything — two would read as two problems.
+    } else if (
+      at > newMap.outputDuration - SPLIT_MIN_PIECE_SEC &&
+      s.at <= oldMap.outputDuration - SPLIT_MIN_PIECE_SEC
+    ) {
+      reports.push(
+        `split "${s.id}" ${where} too close to the end to divide a scene, ` +
           `so any edit on its second half will not apply`,
       );
     }

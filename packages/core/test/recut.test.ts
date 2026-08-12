@@ -211,8 +211,10 @@ describe("remapOverridesThroughRecut — a split the re-cut squeezed below the m
     // The other half of the field case: a split at 0.6s re-anchors to 0 when
     // 0.6s is cut from the front. `splitCues` then finds no cue satisfying
     // `at >= startSec + SPLIT_MIN_PIECE_SEC` (output starts at 0, so nothing
-    // can) and skips it — silently, until §137 — orphaning every override on
-    // the half and resurrecting the scene the user deleted.
+    // can) and skips it, orphaning every override on the half and
+    // resurrecting the scene the user deleted. Before §137 the only trace was
+    // produce.ts's generic `edit for scene-0@600 dropped — the plan no longer
+    // has that scene`, which blames the plan and never names the split.
     const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
     const newMap = cutOutputRange(oldMap, 0, 0.6);
     const doc = OverrideDocSchema.parse({ splits: [0.6] });
@@ -243,6 +245,38 @@ describe("remapOverridesThroughRecut — a split the re-cut squeezed below the m
     expect(reports[0]).toMatch(/split "500" at 0\.500s fell inside the new cut — snapped to 0\.200s/);
     expect(reports[1]).toMatch(/^split "500" is too close to the start/);
     expect(reports[1]).not.toMatch(/0\.200s/);
+  });
+
+  it("reports the split the re-cut left too close to the END of the output", () => {
+    // The same failure at the other end of the timeline, and just as
+    // reachable: nothing before the split moves, so `at` does not change at
+    // all — what changes is `outputDuration` underneath it. A split at 9.5s
+    // in a 10s output is fine; cut 9.6–10.0 and no cue can satisfy
+    // `at <= endSec - SPLIT_MIN_PIECE_SEC` (9.3) any more, so `take-0@9500`
+    // is never minted and the `hidden` on it is orphaned.
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = cutOutputRange(oldMap, 9.6, 10);
+    const doc = OverrideDocSchema.parse({ splits: [9.5] });
+    expect(doc.splits[0]!.id).toBe("9500");
+
+    const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
+
+    expect(newMap.outputDuration).toBeCloseTo(9.6, 6);
+    expect(out.splits[0]!.at).toBeCloseTo(9.5, 6); // unmoved — the END moved
+    expect(out.splits[0]!.id).toBe("9500");
+    expect(reports).toHaveLength(1);
+    expect(reports.join("\n")).toMatch(/split "9500".*too close to the end/i);
+  });
+
+  it("stays quiet about a split that was ALREADY past the end bar and did not move", () => {
+    // The end-side twin of the pre-existing-condition rule below.
+    const map = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const doc = OverrideDocSchema.parse({ splits: [{ at: 9.9, id: "9900" }] });
+
+    const { doc: out, reports } = remapOverridesThroughRecut(doc, map, map);
+
+    expect(out.splits[0]!.at).toBeCloseTo(9.9, 6);
+    expect(reports).toEqual([]);
   });
 
   it("stays quiet about a split that was ALREADY below the minimum and did not move", () => {
