@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { livePickerDeps, pickPath, pickerAvailable } from "./picker";
+import { livePickerDeps, pickPath, pickerAvailable, type PickMode } from "./picker";
 import { assertInteractive, select, text, unwrap } from "./prompts";
 import { rankSuggestions, scanLikelyDirs, type Suggestion } from "./suggest-inputs";
 
@@ -70,9 +70,61 @@ export function inputSourceUsed(): InputSource | "argv" {
   return lastInputSource;
 }
 
-const typePath = async (): Promise<string> =>
+/**
+ * Module state outlives a single wizard, and "argv" is a real answer — the
+ * value the telemetry reads when `ossclip <path>` prefilled the input and
+ * `askInput` never ran. So a second run in the same process (a batch or REPL
+ * caller, and every test file, where module state persists across `it`s)
+ * would report the PREVIOUS run's branch with nothing to signal the staleness.
+ * Reset at the start of a run — or of a test — rather than trusting one
+ * invocation per process.
+ */
+export function resetInputSource(): void {
+  lastInputSource = "argv";
+}
+
+/**
+ * The seam. Same shape and same reason as `PickerDeps` (picker.ts) and
+ * `TtyDeps` (tty.ts): the branch logic is what has rules worth pinning — a
+ * cancelled dialog re-asks, every branch validates, each sets its own source —
+ * and none of that is reachable through a real `select` blocking on a human.
+ * `pickPath` is tested the same way through its own injected deps.
+ *
+ * Structural signatures rather than `typeof select`: clack's are generic, and
+ * a fake cannot satisfy an unresolved type parameter. Narrowing here is what
+ * makes the fakes writable, exactly as `PickerDeps` declares `hasBin` rather
+ * than `typeof binOnPath`.
+ */
+export interface AskInputDeps {
+  /** Probed once per run, not per loop — no dialog appears mid-prompt. */
+  canBrowse: boolean;
+  suggest: () => Promise<Suggestion[]>;
+  pick: (mode: PickMode) => Promise<string | undefined>;
+  select: (opts: {
+    message: string;
+    options: { value: string; label: string; hint?: string }[];
+  }) => Promise<string | symbol>;
+  text: (opts: {
+    message: string;
+    placeholder?: string;
+    validate?: (v: string | undefined) => string | undefined;
+  }) => Promise<string | symbol>;
+  /** Injected because the guard itself takes an injected check (tty.ts:58). */
+  assertInteractive: () => void;
+}
+
+export const liveAskInputDeps = (): AskInputDeps => ({
+  canBrowse: pickerAvailable(livePickerDeps()),
+  suggest: async () => rankSuggestions(await scanLikelyDirs(), Date.now(), homedir()),
+  pick: (mode) => pickPath(mode),
+  select,
+  text,
+  assertInteractive: () => assertInteractive("input prompt"),
+});
+
+const typePath = async (deps: AskInputDeps): Promise<string> =>
   unwrap(
-    await text({
+    await deps.text({
       // Finding 1 (final-review fix wave): `ossclip produce <folder>` shipped
       // (folder-input-brief.md) but this prompt still rejected a directory —
       // the wizard was the only way in that couldn't do what the CLI could.
@@ -85,16 +137,16 @@ const typePath = async (): Promise<string> =>
     }),
   ) as string;
 
-export async function askInput(): Promise<string> {
-  assertInteractive("input prompt");
-  const canBrowse = pickerAvailable(livePickerDeps());
-  const suggestions = rankSuggestions(await scanLikelyDirs(), Date.now(), homedir());
+export async function askInput(deps: AskInputDeps = liveAskInputDeps()): Promise<string> {
+  deps.assertInteractive();
+  const canBrowse = deps.canBrowse;
+  const suggestions = await deps.suggest();
 
   // Nothing found and nowhere to browse: a one-row menu is pure noise, so go
   // straight to the prompt this whole unit replaced.
   if (suggestions.length === 0 && !canBrowse) {
     noteInputSource("typed");
-    return typePath();
+    return typePath(deps);
   }
 
   // Loops rather than returns, because cancelling the OS dialog must land
@@ -102,16 +154,16 @@ export async function askInput(): Promise<string> {
   // "abandon the run". Ctrl-C at the menu still exits via `unwrap`.
   for (;;) {
     const choice = unwrap(
-      await select({ message: "Which video?", options: inputChoices(suggestions, canBrowse) }),
+      await deps.select({ message: "Which video?", options: inputChoices(suggestions, canBrowse) }),
     ) as string;
 
     if (choice === TYPE_PATH) {
       noteInputSource("typed");
-      return typePath();
+      return typePath(deps);
     }
 
     if (choice === BROWSE_FILE || choice === BROWSE_FOLDER) {
-      const picked = await pickPath(choice === BROWSE_FOLDER ? "folder" : "file");
+      const picked = await deps.pick(choice === BROWSE_FOLDER ? "folder" : "file");
       // An empty result conflates "cancelled" with "the backend failed
       // silently" — no backend distinguishes them reliably (picker.ts), and
       // `pickPath` has already printed the fallback notice in the failure
