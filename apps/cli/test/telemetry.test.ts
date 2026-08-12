@@ -1,7 +1,12 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  inputSourceUsed,
+  noteInputSource,
+  resetInputSource,
+} from "../src/interactive/ask-input";
 import {
   FLUSH_TIMEOUT_MS,
   FORBIDDEN_PROP_KEYS,
@@ -320,6 +325,40 @@ describe("Telemetry", () => {
     await t.flush();
     const body = JSON.parse(String(calls[0].init.body)) as { batch: { event: string }[] };
     expect(body.batch.map((e) => e.event)).toEqual(["good_event"]);
+  });
+});
+
+/**
+ * §136: the picker's whole justification is that typing a path blocked
+ * non-technical users. Whether the picker is actually being reached is a
+ * question only telemetry can answer — and the prop must survive the privacy
+ * guard, which rejects anything that smells like a path.
+ */
+describe("input_source (§136)", () => {
+  // `lastInputSource` is module state that outlives an `it`, so without this
+  // the "argv" default below would pass or fail on test ORDER rather than on
+  // the behaviour — the same reason ask-input.test.ts resets here.
+  beforeEach(() => resetInputSource());
+
+  it("defaults to argv — a typed command line never touches the wizard", () => {
+    expect(inputSourceUsed()).toBe("argv");
+  });
+
+  it("records the branch the wizard took", () => {
+    noteInputSource("picker");
+    expect(inputSourceUsed()).toBe("picker");
+    noteInputSource("suggestion");
+    expect(inputSourceUsed()).toBe("suggestion");
+  });
+
+  it("the prop name survives assertSafeProps — it names a branch, not a path", () => {
+    expect(() => assertSafeProps({ input_source: "picker" })).not.toThrow();
+  });
+
+  it("the obvious wrong version of this prop is still rejected", () => {
+    expect(() => assertSafeProps({ input_path: "/Users/a/take.mp4" })).toThrow(
+      /forbidden substring "path"/,
+    );
   });
 });
 

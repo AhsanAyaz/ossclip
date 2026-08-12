@@ -421,6 +421,10 @@ export function buildProgram(): Command {
           clip: opts.clip,
           clipWindow: opts.clipWindow,
         });
+        // Dynamic import to match how the wizard itself is loaded, and it is
+        // the SAME module instance either way — so a run that never opened
+        // the wizard correctly reports the "argv" default (§136).
+        const { inputSourceUsed } = await import("./interactive/ask-input");
         // Counts, buckets and names only — the duration crosses the wire as a
         // bucket, and nothing here can carry a path (assertSafeProps enforces
         // it). Inert while POSTHOG_KEY is the placeholder (FINDINGS §134).
@@ -433,6 +437,10 @@ export function buildProgram(): Command {
           render: opts.render !== false,
           source_duration_bucket: durationBucket(result.sourceDurationSec),
           scenes: result.sceneCount,
+          // Which branch of the input prompt was used — a branch name, never
+          // the path itself (§136). The picker exists because typing a path
+          // blocked non-technical users; this is how we find out if it helped.
+          input_source: inputSourceUsed(),
         });
         if (!telemetry.disabled) {
           telemetry.state.produceCount += 1;
