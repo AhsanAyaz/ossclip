@@ -175,6 +175,45 @@ export function parsePickerResult(stdout: string): string | undefined {
 }
 
 /**
+ * How much of stderr a user is shown. A zenity or osascript failure is one
+ * short sentence, but a PowerShell one is a multi-line exception with a
+ * banner, and pasting that above a wizard prompt is its own kind of unusable.
+ */
+const MAX_STDERR_CHARS = 160;
+
+/**
+ * The one line to print when the dialog came back with nothing but did not
+ * come back QUIET. The comment above says a cancel cannot be told from a
+ * silent backend failure, and that is still true of stdout alone — but stderr
+ * separates them well enough for the only purpose that matters, which is
+ * telling the user something. All four backends are silent on a real cancel;
+ * a failure is prose (`cannot open display`, osascript's -1743, a locked-down
+ * `Add-Type`).
+ *
+ * Without this the user is in a feedback-free loop (§136, final review): a
+ * plain `ssh` into a box whose `~/.bashrc` exports `DISPLAY=:0` passes
+ * `pickerAvailable`, so `Browse…` is offered, prints "look for a new window",
+ * and returns to the menu with no window and no output — identically, forever,
+ * on every retry. The return value stays `undefined` either way; it was only
+ * ever the silence that was wrong.
+ *
+ * Pure so the wording is pinned without a dialog, which blocks on a human.
+ */
+export function pickerFailureNotice(
+  bin: string,
+  stdout: string,
+  stderr: string,
+): string | undefined {
+  if (parsePickerResult(stdout) !== undefined) return undefined;
+  // First line only: the rest is a stack or a usage dump on every backend
+  // that produces more than one.
+  const first = stderr.trim().split("\n")[0]?.trim() ?? "";
+  if (first === "") return undefined; // a genuine cancel
+  const detail = first.length > MAX_STDERR_CHARS ? `${first.slice(0, MAX_STDERR_CHARS)}…` : first;
+  return `▸ ${bin} could not open a picker: ${detail} — type the path instead`;
+}
+
+/**
  * Open the dialog and wait. The ONLY I/O in this module.
  *
  * The notice before the spawn is not decoration: a dialog that opens behind
@@ -196,7 +235,12 @@ export async function pickPath(
     // allowNonZero: a cancel exits non-zero on zenity and kdialog — and 0 with
     // empty stdout on PowerShell (see parsePickerResult above, and §136). The
     // flag covers the first shape; emptiness is what actually decides.
-    const { stdout } = await run(bin, args, { allowNonZero: true });
+    const { stdout, stderr } = await run(bin, args, { allowNonZero: true });
+    // A backend that started and then failed says so on stderr and nowhere
+    // else. Say it back, or the user is told to look for a window that will
+    // never appear and is given nothing to act on (§136).
+    const notice = pickerFailureNotice(bin, stdout, stderr);
+    if (notice !== undefined) console.log(notice);
     return parsePickerResult(stdout);
   } catch {
     // `run` only rejects when the binary would not start. pickerAvailable

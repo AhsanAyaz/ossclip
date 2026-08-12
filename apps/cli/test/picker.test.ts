@@ -6,6 +6,7 @@ import {
   pickPath,
   pickerAvailable,
   pickerCommand,
+  pickerFailureNotice,
   parsePickerResult,
   type PickerDeps,
 } from "../src/interactive/picker";
@@ -206,6 +207,42 @@ describe("parsePickerResult", () => {
 });
 
 /**
+ * The other half of "empty stdout": whether the human said no or the backend
+ * broke. Both resolve undefined and always will — what is pinned here is that
+ * the second one is not SILENT (§136, final review).
+ */
+describe("pickerFailureNotice", () => {
+  it("empty stdout with stderr is a failure, and names the backend and the reason", () => {
+    const line = pickerFailureNotice("zenity", "", "cannot open display: :0\n");
+    expect(line).toContain("zenity");
+    expect(line).toContain("cannot open display: :0");
+    expect(line).toContain("type the path instead");
+  });
+
+  it("empty stdout with empty stderr is a CANCEL — nothing is printed", () => {
+    // The exact state the cancel test below occupies. A notice here would tell
+    // a user whose picker works perfectly that it is broken, every time they
+    // press Escape.
+    expect(pickerFailureNotice("zenity", "", "")).toBeUndefined();
+    expect(pickerFailureNotice("zenity", "\n", "  \n ")).toBeUndefined();
+  });
+
+  it("a path came back, so warnings on stderr are none of the user's business", () => {
+    // GTK and osascript both chatter on stderr on a perfectly good run.
+    expect(
+      pickerFailureNotice("zenity", "/home/a/take1.mp4\n", "Gtk-Message: failed to load module\n"),
+    ).toBeUndefined();
+  });
+
+  it("first line only, and capped — PowerShell answers a failure with an exception dump", () => {
+    const line = pickerFailureNotice("powershell", "", `${"x".repeat(400)}\nAt line:1 char:1\n`);
+    expect(line).not.toContain("At line:1");
+    expect(line).toContain("…");
+    expect(line?.length).toBeLessThan(240);
+  });
+});
+
+/**
  * The spawn is exercised against a stub `zenity`: a real dialog cannot be
  * tested, because it blocks on a human (§136).
  *
@@ -300,6 +337,20 @@ describe("pickPath (spawn)", () => {
     // whose picker works perfectly that it is broken. Only the missing
     // fallback line proves the cancel came back down the resolve path.
     expect(logs).not.toContain(FALLBACK);
+    // …and nothing else either: a cancel is the one empty-handed return that
+    // must stay quiet, which is what makes the stderr arm below safe to add.
+    expect(logs.some((l) => l.includes("could not open a picker"))).toBe(false);
+  });
+
+  it("a backend that STARTS and then fails says why — the feedback-free loop (§136)", async () => {
+    // zenity with a stale DISPLAY after a plain `ssh` is the reproducer: it
+    // starts, exits 1 with prose on stderr and nothing on stdout, and before
+    // this the user went back to the menu having been told to look for a
+    // window that would never appear — identically on every retry, forever.
+    const { dir, deps } = stub('echo "cannot open display: :0" >&2; exit 1');
+    await expect(withPath(dir, () => pickPath("file", deps, "/home/a"))).resolves.toBeUndefined();
+    // undefined is still correct — the control flow was never the bug.
+    expect(logs.some((l) => l.includes("cannot open display: :0"))).toBe(true);
   });
 
   it("a missing binary resolves undefined — never takes the wizard down", async () => {
