@@ -6,6 +6,8 @@ import { z } from "zod/v4";
 import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
+import { ExportFormatSchema, runAnalyse } from "./analyse";
+import { phaseBucketProps } from "./phase-timing";
 import { produce } from "./produce";
 // The one interactive import that is STATIC rather than `await import()`: the
 // `resetInputSource()` run boundary in `buildProgram` has to run synchronously
@@ -461,6 +463,11 @@ export function buildProgram(): Command {
           render: opts.render !== false,
           source_duration_bucket: durationBucket(result.sourceDurationSec),
           scenes: result.sceneCount,
+          // Per-phase buckets (§140), one `<phase>_bucket` per phase that
+          // ran — bucketed in phaseBucketProps, never raw ms. Spread keys are
+          // invisible to telemetry.test.ts's source-text drift check, so the
+          // §134 pin for these lives in phase-timing.test.ts instead.
+          ...phaseBucketProps(result.phaseTimings),
           // Which branch of the input prompt was used — a branch name, never
           // the path itself (§136). The picker exists because typing a path
           // blocked non-technical users; this is how we find out if it helped.
@@ -526,6 +533,78 @@ export function buildProgram(): Command {
         source_duration_bucket: durationBucket(result.sourceDurationSec),
       });
       await telemetry.flush();
+    });
+
+  program
+    .command("analyse")
+    .alias("analyze")
+    .description(
+      "analyse a take and export the planned cuts as labelled NLE markers — no render, no LLM " +
+        "(FCPXML imports into Resolve and Premiere; review the markers, then cut in your own editor)",
+    )
+    .argument("<input>", "input video file (or a folder of clips)")
+    .option("--format <format>", "export format: fcpxml", "fcpxml")
+    .option("--out <path>", "export file path (default: <input>.<format>)")
+    .option("--cleanup <level>", "exact | light | standard | aggressive", "standard")
+    .option("--transcript <path>", "inject a transcript JSON instead of running whisper")
+    .option("--noise-db <db>", "override the measured silence threshold, e.g. -30", parseFloat)
+    .option("--workdir <dir>", "cache/work directory")
+    .option("--whisper-model <name>", "transcription model for this run, e.g. base.en | small.en")
+    .option(
+      "--whisper-language <code>",
+      "transcription language code for a multilingual model, e.g. ur | de | auto (whisper defaults to en)",
+    )
+    .option(
+      "--blooper-marker <word>",
+      "mark the flubbed take wherever you say this word out loud (e.g. blooper). Off unless given",
+    )
+    .option(
+      "--collapse-retakes",
+      "also mark consecutive near-identical sentences, keeping only the last complete attempt",
+      false,
+    )
+    .option("--sort <order>", "folder input: clip order, name | mtime", "name")
+    .action(async (input: string, opts, command) => {
+      const cleanup = CleanupLevelSchema.parse(opts.cleanup);
+      // Same parse-don't-coerce guard as --source-fit: a typo'd format must
+      // error naming the flag, never silently export a different file.
+      const format = ExportFormatSchema.parse(opts.format);
+      try {
+        const result = await runAnalyse(input, {
+          cleanup,
+          format,
+          out: opts.out,
+          transcript: opts.transcript,
+          workdir: opts.workdir,
+          noiseDb: opts.noiseDb,
+          whisperModel: opts.whisperModel,
+          whisperLanguage:
+            opts.whisperLanguage !== undefined
+              ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
+              : undefined,
+          blooperMarker: opts.blooperMarker,
+          collapseRetakes: opts.collapseRetakes,
+          sort: opts.sort === "mtime" ? "mtime" : "name",
+          sortExplicit: command.getOptionValueSource("sort") === "cli",
+        });
+        // Counts, buckets and names only (§134) — the format is an enum name,
+        // never a path; per-phase buckets ride along like produce's.
+        telemetry.record("analyse_completed", {
+          format,
+          cleanup_level: cleanup,
+          source_duration_bucket: durationBucket(result.sourceDurationSec),
+          markers: result.markerCount,
+          ...phaseBucketProps(result.phaseTimings),
+        });
+      } catch (err) {
+        // Constructor name only, like produce_failed: messages quote paths.
+        telemetry.record("analyse_failed", {
+          error_class: err instanceof Error ? err.constructor.name : "NonError",
+        });
+        throw err;
+      } finally {
+        await telemetry.flush();
+      }
     });
 
   program

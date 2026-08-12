@@ -98,6 +98,7 @@ import {
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { binOnPath, detectionLine } from "./llm-detect";
+import { PhaseTimer, formatPhaseLine, type PhaseTimings } from "./phase-timing";
 import {
   strandedOverrideSiblings,
   strandedPointerLine,
@@ -134,6 +135,13 @@ export interface ProduceResult {
   sceneCount: number;
   /** Resolved provider name when the LLM ran; undefined without --produce. */
   llmProvider?: string;
+  /**
+   * Milliseconds per attributed phase (FINDINGS §140) — same contract as the
+   * fields above: produce() surfaces the raw numbers, the command layer
+   * buckets them before anything crosses the wire (`phaseBucketProps`). A
+   * phase that never ran (cached transcript, --no-render) is absent, not 0.
+   */
+  phaseTimings: PhaseTimings;
 }
 
 /**
@@ -532,6 +540,10 @@ async function preflight(bin: string, hint: string): Promise<void> {
 }
 
 export async function produce(inputArg: string, opts: ProduceOptions): Promise<ProduceResult> {
+  // First line on purpose: totalMs is the same wall clock program.ts wraps
+  // around this call for duration_ms, so `other` in the printed breakdown is
+  // genuinely "everything this run did that isn't an attributed phase" (§140).
+  const phases = new PhaseTimer();
   const cfg = loadConfig();
   // `let`, not `const`: a folder input is reassigned to the concat
   // intermediate below (folder-input-brief.md) so nothing past that point has
@@ -641,10 +653,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   if (isFolder && folderListing) {
     const sort = opts.sort ?? "name";
-    const result = await concatFolder(tools, input, folderListing, work, sort, {
-      w: frame.width,
-      h: frame.height,
-    });
+    const result = await phases.time("ffmpeg", () =>
+      concatFolder(tools, input, folderListing!, work, sort, {
+        w: frame.width,
+        h: frame.height,
+      }),
+    );
     console.log(
       `▸ folder: ${result.clips.length} clip(s), sorted by ${sort}, ` +
         `concat ${result.durationSec.toFixed(1)}s${result.cached ? " (cached)" : ""}`,
@@ -758,14 +772,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       );
     }
     console.log(`▸ transcribing (${basename(modelPath)})…`);
-    transcript = await runWhisper(
-      {
-        whisperPath: cfg.whisperPath,
-        modelPath,
-        outBase: join(work, "whisper"),
-        language: opts.whisperLanguage,
-      },
-      audioPath,
+    transcript = await phases.time("transcribe", () =>
+      runWhisper(
+        {
+          whisperPath: cfg.whisperPath,
+          modelPath,
+          outBase: join(work, "whisper"),
+          language: opts.whisperLanguage,
+        },
+        audioPath,
+      ),
     );
     console.log(`▸ transcribed ${transcript.words.length} words`);
     await writeFile(transcriptKeyPath, JSON.stringify(requestedKey, null, 2));
@@ -901,14 +917,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       ).transcript;
       console.log(`▸ repairs cached (${repairs.filter((r) => r.applied).length})`);
     } else {
-      const result = await repairTranscript(provider, rawTranscript, {
-        speaker: opts.speaker ?? cfg.speaker,
-        // A repair may not merge words across a cut.
-        isCut: (startSec, endSec) =>
-          cutlist.some(
-            (s) => s.kind === "remove" && s.srcIn < endSec && s.srcOut > startSec,
-          ),
-      });
+      const result = await phases.time("llm", () =>
+        repairTranscript(provider!, rawTranscript, {
+          speaker: opts.speaker ?? cfg.speaker,
+          // A repair may not merge words across a cut.
+          isCut: (startSec, endSec) =>
+            cutlist.some(
+              (s) => s.kind === "remove" && s.srcIn < endSec && s.srcOut > startSec,
+            ),
+        }),
+      );
       transcript = result.transcript;
       repairs = result.applied;
       if (result.error) {
@@ -1055,16 +1073,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         console.log("▸ clip window cached");
       } else {
         console.log(`▸ selecting the strongest ~${clipTargetSec}s window (${providerName})…`);
-        clipFresh = await produceScenes(provider, {
-          transcript,
-          outputDuration: clipTargetSec,
-          intent: opts.intent,
-          speaker: opts.speaker ?? cfg.speaker,
-          forceComponent: opts.forceComponent,
-          framing: framingCtx,
-          clip: { targetSec: clipTargetSec },
-          aspect: landscape ? "16:9" : "9:16",
-        });
+        clipFresh = await phases.time("llm", () =>
+          produceScenes(provider!, {
+            transcript,
+            outputDuration: clipTargetSec!,
+            intent: opts.intent,
+            speaker: opts.speaker ?? cfg.speaker,
+            forceComponent: opts.forceComponent,
+            framing: framingCtx,
+            clip: { targetSec: clipTargetSec! },
+            aspect: landscape ? "16:9" : "9:16",
+          }),
+        );
         clipWindow = clipFresh.clip!.window;
         for (const note of clipFresh.clip!.notes) console.log(`  ▸ ${note}`);
         await writeFile(clipWindowCache, JSON.stringify(clipWindow, null, 2));
@@ -1180,15 +1200,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     } else {
       console.log(`▸ producing scenes (${providerName})…`);
       if (opts.forceComponent) console.log(`▸ forcing every graphic to ${opts.forceComponent}`);
-      const result = await produceScenes(provider, {
-        transcript,
-        outputDuration: map.outputDuration,
-        intent: opts.intent,
-        speaker: opts.speaker ?? cfg.speaker,
-        forceComponent: opts.forceComponent,
-        framing: framingCtx,
-        aspect: landscape ? "16:9" : "9:16",
-      });
+      const result = await phases.time("llm", () =>
+        produceScenes(provider!, {
+          transcript,
+          outputDuration: map.outputDuration,
+          intent: opts.intent,
+          speaker: opts.speaker ?? cfg.speaker,
+          forceComponent: opts.forceComponent,
+          framing: framingCtx,
+          aspect: landscape ? "16:9" : "9:16",
+        }),
+      );
       scenes = result.scenes;
       beatSheet = { hook: result.beatSheet.hook, coverText: result.beatSheet.coverText };
       console.log(`▸ hook: ${result.beatSheet.hook}`);
@@ -2230,6 +2252,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   }
 
   if (!opts.render) {
+    // §140: the breakdown goes above the closing lines on both exits, so the
+    // last thing on screen stays the success line and the edit hint.
+    console.log(formatPhaseLine(phases.timings(), phases.totalMs()));
     console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
     console.log(editHint(work));
     return {
@@ -2238,6 +2263,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       sourceDurationSec: sourceProbe.duration,
       sceneCount: scenes.length,
       llmProvider: provider ? providerName : undefined,
+      phaseTimings: phases.timings(),
     };
   }
 
@@ -2245,21 +2271,23 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const rawPath = join(work, "render-raw.mp4");
   console.log("▸ rendering…");
   let lastPct = -10;
-  await renderProduction(props, {
-    publicDir: dirname(renderVideo),
-    outPath: rawPath,
-    browserExecutable: cfg.browserExecutable,
-    onProgress: (p) => {
-      const pct = Math.floor(p * 100);
-      if (pct >= lastPct + 10) {
-        lastPct = pct;
-        process.stdout.write(`  ${pct}%\n`);
-      }
-    },
-  });
+  await phases.time("render", () =>
+    renderProduction(props, {
+      publicDir: dirname(renderVideo),
+      outPath: rawPath,
+      browserExecutable: cfg.browserExecutable,
+      onProgress: (p) => {
+        const pct = Math.floor(p * 100);
+        if (pct >= lastPct + 10) {
+          lastPct = pct;
+          process.stdout.write(`  ${pct}%\n`);
+        }
+      },
+    }),
+  );
   console.log("▸ normalizing loudness…");
   const normPath = join(work, "render-norm.mp4");
-  await loudnorm(tools, rawPath, normPath);
+  await phases.time("ffmpeg", () => loudnorm(tools, rawPath, normPath));
   await rename(normPath, outPath);
 
   // ---- Cover image (FINDINGS §31) -----------------------------------------
@@ -2419,6 +2447,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // Every produce run is a project the picker should offer (R17 §83) —
   // best-effort, so a read-only home dir never fails the render.
   await recordRecentProject(work);
+  // §140, same placement as the --no-render exit: breakdown, then the
+  // success line and the hint keep the bottom of the screen.
+  console.log(formatPhaseLine(phases.timings(), phases.totalMs()));
   console.log(`✓ done → ${outPath}`);
   console.log(editHint(work));
   return {
@@ -2428,5 +2459,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     sourceDurationSec: sourceProbe.duration,
     sceneCount: scenes.length,
     llmProvider: provider ? providerName : undefined,
+    phaseTimings: phases.timings(),
   };
 }
