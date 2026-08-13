@@ -112,6 +112,7 @@
   <a href="#components">Scene components</a>
   <a href="#layouts">Layouts</a>
   <a href="#flags">produce flags</a>
+  <a href="#analyze">analyze</a>
   <a href="#config">Configuration</a>
   <a href="#telemetry">Telemetry</a>
   <a href="#licensing">Licensing</a>
@@ -165,6 +166,11 @@ ossclip produce input.mp4 --no-render
 
 # Long-form in, one short out: the strongest ~60s window
 ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4
+
+# Keep your own editor: export the planned cuts as labelled markers — no LLM, no render
+ossclip analyze input.mp4 --format premiere-xml   # Premiere Pro
+ossclip analyze input.mp4 --format resolve-edl    # DaVinci Resolve (coloured)
+ossclip analyze input.mp4                         # Final Cut Pro (fcpxml)
 
 # A folder of clips: sorted (--sort name|mtime), normalized, concatenated, produced as one
 ossclip produce ./clips --produce -o out.mp4
@@ -310,6 +316,17 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--no-render</td><td>stop after writing the props</td></tr>
   <tr><td>--workdir &lt;dir&gt;</td><td>where the cache lives</td></tr>
 </table>
+
+<h2 id="analyze">analyze — cut suggestions in your own editor</h2>
+<p>For editors who already have a workflow and just want the analysis: <code>ossclip analyze &lt;input&gt;</code> runs the pipeline up to the cut report — <strong>no LLM, no render</strong>, so it finishes in roughly transcription time — and writes a marker file your NLE imports. Every marker is a <strong>span</strong> covering the whole suggested cut (where it starts <em>and</em> where content resumes), named in the report's vocabulary: <code>silence −1.77s (conf 0.95)</code>. Nothing is cut for you — they are labels to review. Pauses the analyzer <em>detected but kept</em> export too (<code>pause 0.40s (kept)</code>), so a gap you can see in your waveform is never unexplained.</p>
+<p>Each NLE reads a different dialect — Premiere does not read modern fcpxml at all, and Resolve's fcpxml import silently drops markers — so pick the format for yours:</p>
+<table>
+  <tr><th>format</th><th>for</th><th>how to import</th></tr>
+  <tr><td>--format premiere-xml</td><td>Premiere Pro</td><td>File → Import → pick the <code>.xml</code>; relink the media if it shows offline. Markers land at the sequence level <em>and</em> on the clip — the clip-level ones are anchored to the footage, so they survive your own razor cuts and ripple deletes</td></tr>
+  <tr><td>--format resolve-edl</td><td>DaVinci Resolve</td><td>import the timeline first, then Media Pool → right-click the timeline → Timelines → Import → <strong>Timeline Markers from EDL</strong>. Colour-coded by reason: silence Blue, pause Sky, filler Yellow, retake Red, kept pauses Lavender</td></tr>
+  <tr><td>--format fcpxml (default)</td><td>Final Cut Pro</td><td>File → Import → XML</td></tr>
+</table>
+<p><code>--out &lt;path&gt;</code> overrides the destination (default: beside the input). The analysis flags above — <code>--cleanup</code>, <code>--blooper-marker</code>, <code>--collapse-retakes</code>, <code>--whisper-model</code> — all apply. <code>analyse</code> works too.</p>
 
 <h2 id="config">Configuration</h2>
 <p><code>~/.ossclip/config.json</code> — all optional:</p>

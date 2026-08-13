@@ -135,6 +135,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `setup` | install ffmpeg, whisper.cpp and the model into `~/.ossclip` — the one-command onboarding (`--model <name>`, `--skip-llm`, `--force`, `--yes`) |
 | `doctor` | check every prerequisite and print the exact fix for anything missing |
 | `transcribe <input>` | stops after the transcript and cut report — no render |
+| `analyze <input>` | the analyzer without the renderer: exports the planned cuts as labelled span markers for your own NLE (`--format premiere-xml \| resolve-edl \| fcpxml`) — no LLM, no render. `analyse` works too. See [analyze](#analyze--cut-suggestions-in-your-own-editor) |
 | `studio <render-props.json>` | opens Remotion Studio on a produced composition, for visual debugging |
 
 ### `produce` flags worth knowing
@@ -166,6 +167,20 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--workdir <dir>` | where the cache lives |
 
 `--collapse-retakes` on a folder run only catches a retake that's back-to-back near-identical *lines* — within one clip, or across a clip boundary when each clip is essentially a single line — because the chain it looks for requires every consecutive sentence to match, not just "clip N as a whole resembles clip N − 1"; a whole clip re-recorded as a multi-sentence retake of the previous one will not collapse (R27 §128's chaining rule).
+
+### `analyze` — cut suggestions in your own editor
+
+For editors who already have a workflow and just want the analysis: `ossclip analyze` runs the pipeline up to the cut report — **no LLM, no render**, so it finishes in roughly transcription time — and writes a marker file your NLE imports. Every marker is a **span** covering the whole suggested cut (where it starts *and* where content resumes), named in the cut report's vocabulary: `silence −1.77s (conf 0.95)`, `retake −4.25s (conf 0.90)`. Nothing is cut for you — they are labels to review.
+
+Each NLE reads a different dialect, so pick the format for yours (this matters: Premiere does not read modern fcpxml at all, and Resolve's fcpxml import silently drops markers):
+
+| format | for | how to import |
+| --- | --- | --- |
+| `premiere-xml` | Premiere Pro | File → Import → pick the `.xml`; relink the media if it shows offline. Markers land at the sequence level *and* on the clip itself — the clip-level ones are anchored to the footage, so they stay on the right words even after your own razor cuts and ripple deletes |
+| `resolve-edl` | DaVinci Resolve | import the timeline first (any way you like), then Media Pool → right-click the timeline → Timelines → Import → **Timeline Markers from EDL** → pick the `.edl`. Colour-coded by reason: silence Blue, pause Sky, filler Yellow, retake Red |
+| `fcpxml` (default) | Final Cut Pro | File → Import → XML |
+
+Pauses the analyzer *detected but kept* (below the cut bar) are exported too — `pause 0.40s (kept)`, Lavender in Resolve — so a gap you can see in your waveform is never unexplained. `--out <path>` overrides the destination (default: beside the input, e.g. `take.xml`); the analysis flags above (`--cleanup`, `--blooper-marker`, `--collapse-retakes`, `--whisper-model`, …) all apply. Everything here was shaped by a working editor's feedback on real footage — FINDINGS §142.
 
 ### Which model runs
 

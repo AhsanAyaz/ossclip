@@ -38,6 +38,8 @@ ossclip edit "<work directory>"
 
 **Scope, honestly:** ossclip is at its best polishing a take you have already cut down. `--clip` selects a single strongest window from long-form input — one clip, not N.
 
+**Keep your own editor:** `ossclip analyze` exports every suggested cut as a labelled span marker — reason, duration, confidence — in the dialect your NLE actually reads (`premiere-xml`, `resolve-edl` with colours, or `fcpxml` for Final Cut). Review the markers, cut in your own timeline; nothing is applied for you. Import steps per NLE are in the repo README.
+
 AI can make mistakes: the cut, the captions and every graphic are generated — review the output before publishing.
 
 **Telemetry:** ossclip sends anonymous usage events (counts, durations, provider name) — never footage, transcripts, file names or paths. Turn it off any time with `ossclip telemetry off`, `OSSCLIP_TELEMETRY=0`, or `DO_NOT_TRACK=1`. Full detail in the repo README's Telemetry section.
