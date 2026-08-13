@@ -260,6 +260,15 @@ export interface ProduceOptions {
    */
   clipWindow?: string;
   /**
+   * `--no-zoom` (field complaint 2026-08-13): switches off BOTH automatic
+   * camera-motion drivers — the idle push (zoom.ts) and EdlVideo's cut
+   * punch-in — in one flag. The per-scene editor switch (`autoZoom`) already
+   * existed, but the complaint was a whole take whose compounded motion
+   * cropped the crown on a close-up, and per-scene relief for a global
+   * problem is the wrong shape. `false` when typed; undefined means on.
+   */
+  zoom?: boolean;
+  /**
    * `--watermark` / `--no-watermark` tri-state: true/false when TYPED,
    * undefined when not — undefined lets the config's `watermark` key supply
    * the default (`resolveWatermark`). Opt-in by design: the default is off
@@ -1993,12 +2002,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // One move per cut-free clip: ramp in, then hold. The clip starts ARE the
   // cuts — every point the source jumps — so a take that removed nothing is
   // one clip and gets exactly one slow push.
+  const zoomOff = opts.zoom === false;
   const zoom = buildZoomPlan(map.outputDuration, {
     clipStarts: map.spans.map((s) => s.outIn),
   });
   console.log(
-    `▸ zoom: ${zoom.clips} clip(s), ${zoom.rampSec}s push then hold ` +
-      `(${zoom.segments.length} segments)`,
+    zoomOff
+      ? "▸ zoom: off (--no-zoom) — static camera; jump cuts land unconcealed"
+      : `▸ zoom: ${zoom.clips} clip(s), ${zoom.rampSec}s push then hold ` +
+          `(${zoom.segments.length} segments)`,
   );
 
   // ---- Per-scene framing (plan step D) ------------------------------------
@@ -2163,7 +2175,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           sourceAspect: content.height > 0 ? content.width / content.height : undefined,
         }
       : null,
-    zoomPlan: zoom.segments,
+    // Emptied, not flattened-to-1: a plan of flat segments still reads as "a
+    // plan exists" to every consumer, and the point of the flag is that no
+    // motion layer exists at all.
+    zoomPlan: zoomOff ? [] : zoom.segments,
+    // Written only when OFF (watermark's absent-means-default contract): the
+    // composition reads it to neutralise the cut punch-in — the second
+    // motion driver, which zoomPlan alone can't reach.
+    ...(zoomOff ? { staticCamera: true } : {}),
     ctaKeyword,
     ctaWindow,
     sourceTextRegions: textRegions,

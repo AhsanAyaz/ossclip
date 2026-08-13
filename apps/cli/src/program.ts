@@ -337,6 +337,11 @@ export function buildProgram(): Command {
       "no burned-in captions. The CTA keyword styling rides the caption track, so it goes too",
     )
     .option("--no-cover", "skip the cover image written beside the video")
+    .option(
+      "--no-zoom",
+      "static camera: no idle push, no cut punch-in — for close framings where " +
+        "any motion crops the head. Per-scene control stays in the editor (autoZoom)",
+    )
     .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
     .option("--open-editor", "open the editor when the run finishes")
     .option(
@@ -441,6 +446,8 @@ export function buildProgram(): Command {
           blooperMarker: opts.blooperMarker,
           collapseRetakes: opts.collapseRetakes,
           sourceFit,
+          // commander's --no-zoom default is true; produce only acts on false.
+          zoom: opts.zoom,
           // undefined = "not typed", so produce can let the config decide.
           watermark: opts.watermark,
           // undefined = "not typed" here too — the default (ON) is applied at

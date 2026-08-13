@@ -83,6 +83,14 @@ export interface ProductionCompProps {
    * missing track.
    */
   captionsHidden?: boolean;
+  /**
+   * `--no-zoom` (2026-08-13): kills the SECOND motion driver — EdlVideo's
+   * cut punch-in — which an emptied `zoomPlan` can't reach. Optional and
+   * absent-means-off (motion is the default), so every pre-flag
+   * render-props.json parses and renders unchanged; strict `=== true` at
+   * the spread below, same posture as `watermark`.
+   */
+  staticCamera?: boolean;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -115,6 +123,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   sourceFit,
   watermark,
   captionsHidden,
+  staticCamera,
 }) => {
   if (!videoFileName) {
     return (
@@ -156,6 +165,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
           src={src}
           spans={spans}
           {...(sourceFit === "contain" ? { punchInScale: 1, background: "transparent" } : {})}
+          {...(staticCamera === true ? { punchInScale: 1 } : {})}
         />
       </VideoStage>
       <SceneLayer cues={sceneCues} theme={theme} />
