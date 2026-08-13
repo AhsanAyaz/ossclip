@@ -81,6 +81,8 @@ ossclip analyze input.mp4                         # Final Cut Pro (fcpxml)
 
 <p align="center"><em>One <code>ossclip produce</code> run, end to end — every stage says what it did and why, and the cut report is written beside the video.</em></p>
 
+Step-by-step walkthroughs — first short, NLE marker export, long-form clipping, non-English footage — live in the docs site's [Tutorials section](https://ahsanayaz.github.io/ossclip/#tutorials).
+
 Every run writes a **work directory** next to the input (`<input dir>/.ossclip/<name>-<hash>/`, the hash taken from the source's *content* — so the same footage reuses its cache, `--workdir` starts a separate project, and deleting the directory forces a clean run) holding the transcript, the analysis, `production.json`, `render-props.json`, `report.txt`, `usage.json`, and the cached LLM plan. It is a cache: delete it to force a clean run, keep it and re-runs are near-instant.
 
 ### Not sure what to run?

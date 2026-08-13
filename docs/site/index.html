@@ -101,6 +101,7 @@
   <div class="group">start</div>
   <a href="#install">Install</a>
   <a href="#quickstart">Quick start</a>
+  <a href="#tutorials">Tutorials</a>
   <div class="group">concepts</div>
   <a href="#pipeline">How it works</a>
   <a href="#workdir">The work directory</a>
@@ -183,6 +184,55 @@ ossclip edit "&lt;work directory&gt;"
 
 # Landscape (YouTube/desktop) instead of the 9:16 default
 ossclip produce input.mp4 --produce --aspect 16:9 -o out.mp4</code></pre>
+
+<h2 id="tutorials">Tutorials</h2>
+<p>Four walkthroughs, one per use case. Each is the shortest honest path — real commands, what you'll see, and the trap you'd otherwise hit. All of them assume <a href="#install">install</a> is done and <code>ossclip doctor</code> is green.</p>
+
+<h3 id="tut-first-short">1 · Your first short</h3>
+<p>You have a talking-head take (30–70&nbsp;s is the sweet spot). You want the finished vertical short.</p>
+<pre><code># The whole pipeline: cut, captions, graphics, cover
+ossclip produce take.mp4 --produce -o short.mp4</code></pre>
+<ol>
+  <li>The run narrates itself: transcription, the measured silence threshold, every cut with a reason, the LLM's beat sheet, then the render. The same account is written to <code>report.txt</code> beside the video.</li>
+  <li>First runs are dominated by the render — measured at ~85% of wall time. A 7-minute take is roughly a coffee; re-runs answer from the work directory's cache and are near-instant.</li>
+  <li>When it finishes you get <code>short.mp4</code>, a cover JPEG, and an offer to open the editor. Take it: drag what the cut got wrong, retype a caption, delete a scene — your edits live in <code>overrides.json</code> and survive every re-run.</li>
+</ol>
+<div class="note"><strong>No LLM key? Drop <code>--produce</code>.</strong> Cut + captions run fully local, no network. And if you're unsure of any flag, run bare <code>ossclip</code> — the wizard asks, then prints the exact command it's about to run, which is also how you learn the flags.</div>
+
+<h3 id="tut-markers">2 · Keep your own editor: the cuts as markers</h3>
+<p>You (or your editor) already cut in Premiere, Resolve, or Final&nbsp;Cut, and want ossclip's analysis without its rendering. <code>analyze</code> runs the pipeline to the cut report — no LLM, no render, roughly transcription time — and writes a marker file. Every marker is a <em>span</em>: where the cut starts <em>and</em> where content resumes, named like <code>silence -1.77s (conf 0.95)</code>. Nothing is applied for you.</p>
+<pre><code>ossclip analyze take.mp4 --format premiere-xml   # Premiere Pro
+ossclip analyze take.mp4 --format resolve-edl    # DaVinci Resolve
+ossclip analyze take.mp4                         # Final Cut Pro (fcpxml)</code></pre>
+<p><strong>The format choice is the feature</strong> — these three are not interchangeable: Premiere does not read modern fcpxml at all, and Resolve's fcpxml import silently drops markers.</p>
+<ul>
+  <li><strong>Premiere:</strong> File → Import → the <code>.xml</code>; relink the media if it shows offline. Markers arrive at the sequence level <em>and</em> on the clip itself — the clip-level ones are anchored to the footage, so they stay on the right words through your own razor cuts and ripple deletes. Work clip-markers-first if you remove as you go.</li>
+  <li><strong>Resolve:</strong> get the timeline in however you like, then Media&nbsp;Pool → right-click the timeline → Timelines → Import → <strong>Timeline Markers from EDL</strong> → the <code>.edl</code>. Colour-coded: silence <em>Blue</em>, pause <em>Sky</em>, filler <em>Yellow</em>, retake <em>Red</em>. (Plain File&nbsp;→&nbsp;Import conforms the EDL into a new timeline of one-frame clips — wrong menu, known trap.)</li>
+  <li><strong>Final Cut:</strong> File → Import → XML.</li>
+</ul>
+<div class="note"><strong>Lavender markers are information, not suggestions:</strong> pauses the analyzer detected but the cut rules kept (<code>pause 0.40s (kept)</code>) — so a gap you can see in your waveform is never unexplained. Say a marker word on camera (<code>--blooper-marker blooper</code>) and flubbed takes arrive marked too.</div>
+
+<h3 id="tut-clip">3 · One strong short from a long take</h3>
+<p>Twenty minutes of podcast in, one ~60-second short out — the window chosen editorially, not by trimming from the front.</p>
+<pre><code>ossclip produce podcast.mp4 --produce --clip 60 -o clip.mp4</code></pre>
+<ol>
+  <li>The producer picks the strongest ~60&nbsp;s in the same editorial call that plans the graphics, snapped to sentence boundaries. The report says which window, its share of the take, and the model's stated reason — a tool that discards 19 of 20 minutes owes you that account.</li>
+  <li>The chosen window is pinned into <code>command.json</code>, so the editor's re-render replays the <em>same</em> window with zero LLM calls — it can never drift to a different clip between renders.</li>
+  <li>One clip, not N — multi-clip is not built. A source already at or under the target just produces whole.</li>
+</ol>
+
+<h3 id="tut-nonenglish">4 · Non-English footage</h3>
+<p>Any converted whisper.cpp GGML model works, Hugging Face fine-tunes included. Urdu, field-tested end to end:</p>
+<pre><code># 1. Drop the model into the models folder (any GGML fine-tune)
+curl -L -o ~/.ossclip/models/ggml-medium-urdu.bin &lt;model URL&gt;
+
+# 2. Name the model AND the language — both flags matter
+ossclip produce take.mp4 --whisper-model medium-urdu --whisper-language ur -o out.mp4</code></pre>
+<ul>
+  <li><strong>Don't skip <code>--whisper-language</code>:</strong> whisper defaults to English decoding, and a multilingual model forced through English produces garbage, not a warning. <code>auto</code> works when the take mixes languages.</li>
+  <li>RTL captions (Urdu, Arabic, Hebrew) lay out right-to-left with the active-word highlight following spoken order.</li>
+  <li>The work directory records which model and language wrote its transcript — switching models re-transcribes instead of silently serving the cached English text, so A/B-ing <code>base.en</code> vs <code>small.en</code> vs a fine-tune on your own footage is just re-running with a different <code>--whisper-model</code>.</li>
+</ul>
 
 <h2 id="pipeline">How it works</h2>
 <div class="pipeline">
