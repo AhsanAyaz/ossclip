@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import { keptPauseLabel, keptPauses } from "./export-markers";
+import { esc, xmemlRate, xmemlRateXml } from "./export-xmeml-util";
 import type { Production, Segment } from "./schema";
 
 /**
@@ -16,28 +17,6 @@ import type { Production, Segment } from "./schema";
  * Same house split as the other two exporters: Production in, string out.
  */
 
-/**
- * xmeml has no rational time: a rate is an integer `timebase` plus an `ntsc`
- * flag, and every position is a frame count at that timebase. 29.97 is
- * "30 TRUE" — the flag, not the number, is where the 1001 lives.
- */
-export function xmemlRate(fps: number): { timebase: number; ntsc: boolean } {
-  const rounded = Math.round(fps);
-  // The NTSC family sits ~0.1% under its integer; a probe float lands close
-  // to the exact rational, never on the integer itself.
-  const ntsc = Math.abs(fps - rounded) > 0.001;
-  return { timebase: ntsc ? Math.ceil(fps) : rounded, ntsc };
-}
-
-function esc(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
-}
-
 /** ASCII hyphen like the EDL label — xmeml consumers are as old as it is. */
 function label(seg: Segment): string {
   const dur = (seg.srcOut - seg.srcIn).toFixed(2);
@@ -48,12 +27,10 @@ function label(seg: Segment): string {
 export function buildPremiereXmlMarkers(production: Production): string {
   const { path, probe } = production.source;
   const { timebase, ntsc } = xmemlRate(probe.fps);
-  const ntscStr = ntsc ? "TRUE" : "FALSE";
   const toFrames = (sec: number) => Math.round(sec * probe.fps);
   const durFrames = toFrames(probe.duration);
   const name = esc(basename(path));
-  const rateXml = (indent: string) =>
-    `${indent}<rate>\n${indent}  <timebase>${timebase}</timebase>\n${indent}  <ntsc>${ntscStr}</ntsc>\n${indent}</rate>`;
+  const rateXml = (indent: string) => xmemlRateXml(indent, timebase, ntsc);
   // Emitted at BOTH levels, deliberately (field feedback, first real editor,
   // §142). SEQUENCE markers sit at fixed timecode — the moment the editor
   // ripple-deletes their first blooper, every downstream one points at the

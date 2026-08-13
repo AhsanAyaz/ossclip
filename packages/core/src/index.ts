@@ -31,5 +31,7 @@ export * from "./export-markers";
 export * from "./export-fcpxml";
 export * from "./export-edl";
 export * from "./export-premiere-xml";
+export * from "./export-premiere-project";
+export * from "./export-xmeml-util";
 export * from "./config";
 export { run } from "./exec";

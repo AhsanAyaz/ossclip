@@ -15,10 +15,11 @@ import { ExportFormatSchema, defaultExportPath, runAnalyze } from "../src/analyz
  */
 
 describe("ExportFormatSchema", () => {
-  it("accepts fcpxml, resolve-edl and premiere-xml", () => {
+  it("accepts fcpxml, resolve-edl, premiere-xml and premiere-project", () => {
     expect(ExportFormatSchema.parse("fcpxml")).toBe("fcpxml");
     expect(ExportFormatSchema.parse("resolve-edl")).toBe("resolve-edl");
     expect(ExportFormatSchema.parse("premiere-xml")).toBe("premiere-xml");
+    expect(ExportFormatSchema.parse("premiere-project")).toBe("premiere-project");
   });
 
   it("a typo is an error, never a silent fallback (CLAUDE.md: parse, don't coerce)", () => {
@@ -37,6 +38,10 @@ describe("defaultExportPath", () => {
     expect(defaultExportPath("/takes/demo.mp4", "resolve-edl")).toBe("/takes/demo.edl");
     // Premiere's import dialog filters on .xml.
     expect(defaultExportPath("/takes/demo.mp4", "premiere-xml")).toBe("/takes/demo.xml");
+    // The pre-cut project is also xmeml, so also .xml; the SRT sidecar is derived.
+    // Distinct from premiere-xml's default: both are importable .xml, but a
+    // shared default path would silently clobber yesterday's marker export.
+    expect(defaultExportPath("/takes/demo.mp4", "premiere-project")).toBe("/takes/demo.project.xml");
   });
 
   it("an extensionless input just gains the suffix", () => {
@@ -113,6 +118,36 @@ describe.skipIf(!hasFfmpeg)("runAnalyze — behavioural", () => {
         // No render, no LLM was involved in getting here.
         expect(result.phaseTimings.render).toBeUndefined();
         expect(result.phaseTimings.llm).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    },
+    120_000,
+  );
+
+  it(
+    "premiere-project writes BOTH files: an xmeml with the cuts applied and an SRT sidecar",
+    async () => {
+      const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const result = await runAnalyze(join(dir, "take.mp4"), {
+          cleanup: "standard",
+          format: "premiere-project",
+          transcript: join(dir, "transcript.json"),
+          workdir: join(dir, "work-project"),
+        });
+        expect(result.outPath).toBe(join(dir, "take.project.xml"));
+        expect(result.srtPath).toBe(join(dir, "take.project.srt"));
+        const xml = readFileSync(result.outPath, "utf8");
+        const doc = new JSDOM(xml, { contentType: "text/xml" }).window.document;
+        expect(doc.querySelector("parsererror")).toBeNull();
+        // Cuts APPLIED: the silence gap guarantees at least two kept spans,
+        // each a clipitem carrying the Basic Motion transform.
+        const clips = doc.querySelectorAll("video > track > clipitem");
+        expect(clips.length).toBeGreaterThan(1);
+        expect(doc.querySelector("effectid")!.textContent).toBe("basic");
+        const srt = readFileSync(result.srtPath!, "utf8");
+        expect(srt).toMatch(/\d+\n\d\d:\d\d:\d\d,\d\d\d --> /);
       } finally {
         spy.mockRestore();
       }

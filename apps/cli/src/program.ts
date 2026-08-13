@@ -555,8 +555,9 @@ export function buildProgram(): Command {
     .argument("<input>", "input video file (or a folder of clips)")
     .option(
       "--format <format>",
-      "export format: fcpxml (Premiere) | resolve-edl (Resolve coloured timeline markers — " +
-        "its fcpxml import drops markers)",
+      "export format: fcpxml (Final Cut Pro) | premiere-xml (Premiere markers) | " +
+        "premiere-project (Premiere, cuts applied + camera keyframes + .srt captions sidecar) | " +
+        "resolve-edl (Resolve coloured timeline markers — its fcpxml import drops markers)",
       "fcpxml",
     )
     .option("--out <path>", "export file path (default: <input>.<format>)")
