@@ -13,7 +13,7 @@ import { binOnPath } from "../llm-detect";
  * this shape exists to prevent.
  */
 
-export type PickMode = "file" | "folder";
+export type PickMode = "file" | "folder" | "save";
 
 export interface PickerDeps {
   platform: NodeJS.Platform;
@@ -86,14 +86,19 @@ export function pickerCommand(
     // the alternative and is NOT used: its mkv coverage is unconfirmed, and
     // mkv is in VIDEO_EXTENSIONS.
     const types = VIDEO_EXTENSIONS.map((e) => `"${e}"`).join(",");
-    const clause =
-      mode === "folder"
-        ? 'choose folder with prompt "Pick a folder of clips"'
-        : `choose file with prompt "Pick your video" of type {${types}}`;
-    // startDir is always process.cwd(), never user text — but JSON.stringify
-    // still escapes it, because AppleScript string syntax is close enough to
-    // JSON's that this is the cheap correct thing rather than concatenation.
-    const loc = startDir === undefined ? "" : ` default location POSIX file ${JSON.stringify(startDir)}`;
+    let clause = `choose file with prompt "Pick your video" of type {${types}}`;
+    let loc = "";
+    if (mode === "folder") {
+      clause = 'choose folder with prompt "Pick a folder of clips"';
+      loc = startDir === undefined ? "" : ` default location POSIX file ${JSON.stringify(startDir)}`;
+    } else if (mode === "save") {
+      const defaultName = startDir && !startDir.endsWith("/") ? startDir.split("/").pop()! : "video.ossclip.mp4";
+      const dir = startDir && !startDir.endsWith("/") ? startDir.slice(0, startDir.lastIndexOf("/")) : (startDir ?? "");
+      const dirClause = dir ? ` default location POSIX file ${JSON.stringify(dir)}` : "";
+      clause = `choose file name with prompt "Save rendered video as" default name ${JSON.stringify(defaultName)}${dirClause}`;
+    } else {
+      loc = startDir === undefined ? "" : ` default location POSIX file ${JSON.stringify(startDir)}`;
+    }
     return { bin: "osascript", args: ["-e", `POSIX path of (${clause}${loc})`] };
   }
 
@@ -102,29 +107,34 @@ export function pickerCommand(
     // `powershell -Command` uses by default, and a deadlock here looks
     // exactly like a hung CLI. `powershell` (5.1, in-box) rather than
     // `pwsh`, which is not installed by default.
-    // startDir is honoured here too, under different property names on the
-    // two dialogs. Without it a Windows user standing in D:\shoots\raw opens
-    // at Desktop while darwin, zenity and kdialog all land in the project
-    // folder — the same flag, three platforms agreeing and one not.
+    const defaultName = startDir ? startDir.split(/[\\/]/).pop()! : "video.ossclip.mp4";
+    const dir = startDir ? startDir.slice(0, Math.max(startDir.lastIndexOf("\\"), startDir.lastIndexOf("/"))) : "";
     const start =
       startDir === undefined
         ? ""
         : mode === "folder"
-          ? // FolderBrowserDialog seeds its start folder from SelectedPath —
-            // the same property it hands the answer back in.
-            `$d.SelectedPath = '${psQuote(startDir)}'; `
-          : `$d.InitialDirectory = '${psQuote(startDir)}'; `;
+          ? `$d.SelectedPath = '${psQuote(startDir)}'; `
+          : mode === "save"
+            ? `$d.InitialDirectory = '${psQuote(dir || startDir)}'; `
+            : `$d.InitialDirectory = '${psQuote(startDir)}'; `;
     const script =
       mode === "folder"
         ? "Add-Type -AssemblyName System.Windows.Forms; " +
           "$d = New-Object System.Windows.Forms.FolderBrowserDialog; " +
           start +
           "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.SelectedPath }"
-        : "Add-Type -AssemblyName System.Windows.Forms; " +
-          "$d = New-Object System.Windows.Forms.OpenFileDialog; " +
-          `$d.Filter = 'Video|${VIDEO_EXTENSIONS.map((e) => `*.${e}`).join(";")}|All files|*.*'; ` +
-          start +
-          "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }";
+        : mode === "save"
+          ? "Add-Type -AssemblyName System.Windows.Forms; " +
+            "$d = New-Object System.Windows.Forms.SaveFileDialog; " +
+            `$d.FileName = '${psQuote(defaultName)}'; ` +
+            `$d.Filter = 'Video|${VIDEO_EXTENSIONS.map((e) => `*.${e}`).join(";")}|All files|*.*'; ` +
+            start +
+            "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"
+          : "Add-Type -AssemblyName System.Windows.Forms; " +
+            "$d = New-Object System.Windows.Forms.OpenFileDialog; " +
+            `$d.Filter = 'Video|${VIDEO_EXTENSIONS.map((e) => `*.${e}`).join(";")}|All files|*.*'; ` +
+            start +
+            "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }";
     return { bin: "powershell", args: ["-NoProfile", "-STA", "-Command", script] };
   }
 
@@ -134,13 +144,18 @@ export function pickerCommand(
   if (d.hasBin("zenity")) {
     const args = [
       "--file-selection",
-      mode === "folder" ? "--title=Pick a folder of clips" : "--title=Pick your video",
+      mode === "folder"
+        ? "--title=Pick a folder of clips"
+        : mode === "save"
+          ? "--title=Save rendered video as"
+          : "--title=Pick your video",
     ];
     if (mode === "folder") args.push("--directory");
+    else if (mode === "save") args.push("--save", "--confirm-overwrite", `--file-filter=Video | ${globs()}`, "--file-filter=All files | *");
     else args.push(`--file-filter=Video | ${globs()}`, "--file-filter=All files | *");
-    // The trailing slash is what makes zenity read this as a starting
-    // DIRECTORY rather than a pre-filled filename.
-    if (startDir !== undefined) args.push(`--filename=${startDir}/`);
+    if (startDir !== undefined) {
+      args.push(mode === "save" ? `--filename=${startDir}` : `--filename=${startDir}/`);
+    }
     return { bin: "zenity", args };
   }
 
@@ -148,6 +163,12 @@ export function pickerCommand(
     // --getexistingdirectory accepts a start dir and nothing else; passing a
     // filter here is an error, not an ignored argument.
     return { bin: "kdialog", args: ["--getexistingdirectory", startDir ?? "."] };
+  }
+  if (mode === "save") {
+    return {
+      bin: "kdialog",
+      args: ["--getsavefilename", startDir ?? ".", `Video files(${globs()})`],
+    };
   }
   return {
     bin: "kdialog",

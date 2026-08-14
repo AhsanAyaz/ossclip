@@ -5,7 +5,7 @@
   "description": "ossclip — local-first CLI video producer (monorepo)",
   "scripts": {
     "test": "vitest run",
-    "ossclip": "pnpm --filter ossclip exec tsx src/index.ts",
+    "ossclip": "tsx apps/cli/src/index.ts",
     "typecheck": "pnpm -r --parallel exec tsc --noEmit",
     "fixture": "node scripts/make-fixture.mjs",
     "bench:pixels": "tsx scripts/bench-pixels.ts",

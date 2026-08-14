@@ -64,11 +64,11 @@ export const DEFAULT_FAST_MODEL: Partial<Record<ProviderName, string>> = {
   claude: "claude-haiku-4-5-20251001",
   "claude-cli": "claude-haiku-4-5-20251001",
   gemini: "gemini-3.5-flash-lite",
-  // Substring-matches the `gemini-3.6-flash` pricing family, so mechanical
+  // Substring-matches the `gemini-3.7-flash` pricing family, so mechanical
   // calls price from the existing table with no changes; the editorial tier
   // (agy's own default, reported as "antigravity-default") matches nothing and
   // reports "cost unknown" — the house honesty rule, not an oversight.
-  antigravity: "gemini-3.6-flash-low",
+  antigravity: "gemini-3.7-flash-low",
 };
 
 export interface TieringOptions {

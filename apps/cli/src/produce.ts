@@ -105,6 +105,8 @@ import {
   workdirBaseName,
 } from "./stranded-overrides";
 import { editHint } from "./interactive/edit-hint";
+import { isInteractive } from "./interactive/tty";
+import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from "./ui/animation";
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
@@ -554,6 +556,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // genuinely "everything this run did that isn't an attributed phase" (§140).
   const phases = new PhaseTimer();
   const cfg = loadConfig();
+  const baseCwd = process.env.INIT_CWD ?? process.cwd();
   // `let`, not `const`: a folder input is reassigned to the concat
   // intermediate below (folder-input-brief.md) so nothing past that point has
   // to know a folder was ever involved. `originalInput` keeps what the user
@@ -561,7 +564,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // video" image lookup both used to read the REASSIGNED `input`, which for a
   // folder run is a file inside the hidden workdir, not anything the user
   // would recognise.
-  const originalInput = resolve(inputArg);
+  const originalInput = isAbsolute(inputArg) ? inputArg : resolve(baseCwd, inputArg);
   let input = originalInput;
   if (!existsSync(input)) throw new Error(`input not found: ${input}`);
 
@@ -709,15 +712,31 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   const audioPath = join(work, "audio.wav");
   if (!existsSync(audioPath)) {
-    console.log("▸ extracting audio…");
+    const audioExtractAnim = isInteractive()
+      ? new StageAnimator(
+          "AUDIO STREAM",
+          "Extracting 16kHz uncompressed audio stream from source...",
+          "audio",
+        ).start()
+      : null;
+    if (!audioExtractAnim) console.log("▸ extracting audio…");
     await extractAudio(tools, input, audioPath);
+    if (audioExtractAnim) audioExtractAnim.stop();
   }
 
   // Letterbox detection (PLAN Task 7): a file's frame is not always its
   // picture — bars baked into the pixels wasted most of the video slot on one
   // real clip. Measured once, before anything geometric; every downstream
   // pass crops to the content rect so the bars stop existing.
+  const letterboxAnim = isInteractive()
+    ? new StageAnimator(
+        "LETTERBOX SCANNER",
+        "Scanning video for letterbox black bars & content boundaries...",
+        "render",
+      ).start()
+    : null;
   const detection = await detectContentRect(tools, input, sourceProbe, { cacheDir: work });
+  if (letterboxAnim) letterboxAnim.stop();
   const contentTimeline = detection.timeline;
   const cropVf = cropFilter(detection.uniform);
   if (detection.uniform && !detection.uniform.full) {
@@ -780,7 +799,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           `  curl -L -o ${modelPath} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${model}.bin`,
       );
     }
-    console.log(`▸ transcribing (${basename(modelPath)})…`);
+    const whisperAnim = isInteractive()
+      ? new StageAnimator(
+          "WHISPER ASR",
+          `Transcribing audio stream with ${basename(modelPath)}...`,
+          "whisper",
+        ).start()
+      : null;
+    if (!whisperAnim) console.log(`▸ transcribing (${basename(modelPath)})…`);
     transcript = await phases.time("transcribe", () =>
       runWhisper(
         {
@@ -792,6 +818,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         audioPath,
       ),
     );
+    if (whisperAnim) whisperAnim.stop();
     console.log(`▸ transcribed ${transcript.words.length} words`);
     await writeFile(transcriptKeyPath, JSON.stringify(requestedKey, null, 2));
   }
@@ -802,11 +829,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     `▸ levels: floor ${levels.floorDb.toFixed(1)} dB · speech ${levels.speechDb.toFixed(1)} dB ` +
       `→ silence threshold ${levels.thresholdDb.toFixed(1)} dB`,
   );
-  console.log("▸ analyzing silences…");
+  const silencesAnim = isInteractive()
+    ? new StageAnimator(
+        "AUDIO SPECTRUM",
+        "Analyzing speech cadence and silence thresholds...",
+        "audio",
+      ).start()
+    : null;
+  if (!silencesAnim) console.log("▸ analyzing silences…");
   const silences = await detectSilences(
     { ffmpegPath: cfg.ffmpegPath, noiseDb: opts.noiseDb ?? levels.thresholdDb },
     audioPath,
   );
+  if (silencesAnim) silencesAnim.stop();
   // `let`, not `const` (R19 §93): a clip run re-derives all three from the
   // transcript sliced to the chosen window, further down.
   let analysis: Analysis = analyze(transcript, silences, sourceProbe.duration, levels);
@@ -926,6 +961,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       ).transcript;
       console.log(`▸ repairs cached (${repairs.filter((r) => r.applied).length})`);
     } else {
+      const repairAnim = isInteractive()
+        ? new StageAnimator(
+            "PHONETIC REPAIR",
+            `Correcting ASR mishearings with ${providerName === "gemini" ? "Gemini 3.7 Flash" : providerName}...`,
+            "ai",
+          ).start()
+        : null;
       const result = await phases.time("llm", () =>
         repairTranscript(provider!, rawTranscript, {
           speaker: opts.speaker ?? cfg.speaker,
@@ -936,6 +978,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             ),
         }),
       );
+      if (repairAnim) repairAnim.stop();
       transcript = result.transcript;
       repairs = result.applied;
       if (result.error) {
@@ -992,6 +1035,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // across mixed framings averages two coordinate systems and points the
     // crop at neither (the old C5 gap; it put the eyes at the top of the
     // frame on the motivating clip).
+    const faceMeasureAnim = isInteractive()
+      ? new StageAnimator(
+          "FACE TRACKING & FRAMING",
+          `Measuring face geometry across ${contentTimeline.length} shot segments...`,
+          "render",
+        ).start()
+      : null;
     const segmentFaces = await measureFaceInWindows(
       tools,
       input,
@@ -1002,6 +1052,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       })),
       { workDir: work },
     );
+    if (faceMeasureAnim) faceMeasureAnim.stop();
     framingPlan = planNormalization(contentTimeline, segmentFaces, frame);
   }
 
@@ -1206,8 +1257,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         graphicsLine = cached.graphics;
         beatIssues = cached.issues ?? [];
       }
-    } else {
-      console.log(`▸ producing scenes (${providerName})…`);
+      const aiAnim = isInteractive()
+        ? new StageAnimator(
+            "AI SCENE SYNTHESIZER",
+            `Planning editorial beats & graphics with ${providerName === "gemini" ? "Gemini 3.7 Flash" : providerName}...`,
+            "ai",
+          ).start()
+        : null;
+      if (!aiAnim) console.log(`▸ producing scenes (${providerName})…`);
       if (opts.forceComponent) console.log(`▸ forcing every graphic to ${opts.forceComponent}`);
       const result = await phases.time("llm", () =>
         produceScenes(provider!, {
@@ -1220,6 +1277,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           aspect: landscape ? "16:9" : "9:16",
         }),
       );
+      if (aiAnim) aiAnim.stop();
       scenes = result.scenes;
       beatSheet = { hook: result.beatSheet.hook, coverText: result.beatSheet.coverText };
       console.log(`▸ hook: ${result.beatSheet.hook}`);
@@ -1465,12 +1523,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // Face measurement (FINDINGS §13): one static crop offset per source,
   // measured rather than guessed; cached in the workdir like the transcript.
   const faceSamples = 9;
+  const faceSampleAnim = isInteractive()
+    ? new StageAnimator(
+        "FACE POSITIONING",
+        `Sampling ${faceSamples} frames for speaker eye-line & crop framing...`,
+        "render",
+      ).start()
+    : null;
   const faceBox = await measureFace(tools, analysisInput, analysisProbe.duration, {
     cacheDir: work,
     cropVf: analysisCropVf,
     cacheTag,
     samples: faceSamples,
   });
+  if (faceSampleAnim) faceSampleAnim.stop();
   console.log(
     faceBox
       ? `▸ face at ${(faceBox.centerYFrac * 100).toFixed(0)}% down the frame, ` +
@@ -2081,12 +2147,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (mezzanineWillBuild) {
     const mezz = join(work, contentRect.full ? "mezzanine.mp4" : "mezzanine-content.mp4");
     if (!existsSync(mezz)) {
-      console.log(
-        contentRect.full
-          ? "▸ building mezzanine (dense keyframes)…"
-          : "▸ building mezzanine (dense keyframes, letterbox bars trimmed)…",
-      );
+      const mezzAnim = isInteractive()
+        ? new StageAnimator(
+            "MEZZANINE ENCODE",
+            contentRect.full
+              ? "Building dense-keyframe mezzanine stream..."
+              : "Building dense-keyframe mezzanine stream (trimming letterbox)...",
+            "render",
+          ).start()
+        : null;
+      if (!mezzAnim) {
+        console.log(
+          contentRect.full
+            ? "▸ building mezzanine (dense keyframes)…"
+            : "▸ building mezzanine (dense keyframes, letterbox bars trimmed)…",
+        );
+      }
       await makeMezzanine(tools, input, mezz, { cropVf: cropVf || undefined });
+      if (mezzAnim) mezzAnim.stop();
     }
     renderVideo = mezz;
   }
@@ -2286,9 +2364,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     };
   }
 
-  const outPath = resolve(opts.out ?? defaultOutPath(originalInput));
+  const outPath = opts.out
+    ? isAbsolute(opts.out)
+      ? opts.out
+      : resolve(baseCwd, opts.out)
+    : resolve(defaultOutPath(originalInput));
   const rawPath = join(work, "render-raw.mp4");
-  console.log("▸ rendering…");
+  const interactive = isInteractive();
+  let renderHud: RenderTimelineHUD | null = null;
+  if (interactive) {
+    renderHud = new RenderTimelineHUD({
+      totalDurationSec: map.outputDuration,
+      sceneNames: scenes.map((s) => s.component),
+      fps: 30,
+      aspect: landscape ? "16:9" : "9:16",
+    }).start();
+  } else {
+    console.log("▸ rendering…");
+  }
   let lastPct = -10;
   await phases.time("render", () =>
     renderProduction(props, {
@@ -2296,17 +2389,31 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       outPath: rawPath,
       browserExecutable: cfg.browserExecutable,
       onProgress: (p) => {
-        const pct = Math.floor(p * 100);
-        if (pct >= lastPct + 10) {
-          lastPct = pct;
-          process.stdout.write(`  ${pct}%\n`);
+        if (renderHud) {
+          renderHud.setProgress(p);
+        } else {
+          const pct = Math.floor(p * 100);
+          if (pct >= lastPct + 10) {
+            lastPct = pct;
+            process.stdout.write(`  ${pct}%\n`);
+          }
         }
       },
     }),
   );
-  console.log("▸ normalizing loudness…");
+  if (renderHud) renderHud.stop();
+
+  const masterAnim = interactive
+    ? new StageAnimator(
+        "MASTERING",
+        "Dual-pass loudness normalization (EBU R128 broadcast standard)...",
+        "master",
+      ).start()
+    : null;
+  if (!masterAnim) console.log("▸ normalizing loudness…");
   const normPath = join(work, "render-norm.mp4");
   await phases.time("ffmpeg", () => loudnorm(tools, rawPath, normPath));
+  if (masterAnim) masterAnim.stop();
   await rename(normPath, outPath);
 
   // ---- Cover image (FINDINGS §31) -----------------------------------------
@@ -2466,10 +2573,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // Every produce run is a project the picker should offer (R17 §83) —
   // best-effort, so a read-only home dir never fails the render.
   await recordRecentProject(work);
-  // §140, same placement as the --no-render exit: breakdown, then the
-  // success line and the hint keep the bottom of the screen.
   console.log(formatPhaseLine(phases.timings(), phases.totalMs()));
   console.log(`✓ done → ${outPath}`);
+  if (isInteractive()) {
+    printProductionCompleteBanner({
+      outPath,
+      coverPath: opts.cover !== false ? (typeof opts.cover === "string" ? opts.cover : outPath.replace(/(\.[^.]+)?$/, ".cover.jpg")) : undefined,
+      sourceDurationSec: sourceProbe.duration,
+      outputDurationSec: map.outputDuration,
+      sceneCount: scenes.length,
+      llmProvider: provider ? providerName : undefined,
+      renderTimeSec: phases.timings().render ? phases.timings().render! / 1000 : undefined,
+    });
+  }
   console.log(editHint(work));
   return {
     workdir: work,

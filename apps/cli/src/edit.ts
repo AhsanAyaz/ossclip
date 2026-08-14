@@ -289,6 +289,20 @@ export async function startEditServer(
             videoFileName: renderProps.videoFileName,
             // Whether the Render button has a recorded invocation to replay.
             canRender: existsSync(commandPath()),
+            defaultOutPath: (() => {
+              try {
+                if (existsSync(commandPath())) {
+                  const cmd = JSON.parse(readFileSync(commandPath(), "utf8")) as { args?: string[] };
+                  if (Array.isArray(cmd.args)) {
+                    const idx = cmd.args.findIndex((a) => a === "-o" || a === "--out");
+                    if (idx !== -1 && cmd.args[idx + 1]) return cmd.args[idx + 1];
+                  }
+                }
+              } catch {
+                // ignore
+              }
+              return undefined;
+            })(),
             // Recents ride along here too, so the top bar's Open picker has
             // a list without a second endpoint.
             recent: await readRecentProjects(opts.recentDir),
@@ -345,6 +359,28 @@ export async function startEditServer(
           return send(200, { ok: true, workdir });
         }
 
+        if (url.pathname === "/api/pick-save-path" && req.method === "POST") {
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          let defaultPath: string | undefined;
+          try {
+            const raw = Buffer.concat(chunks).toString();
+            if (raw.trim()) {
+              const body = JSON.parse(raw) as { defaultPath?: string };
+              if (typeof body.defaultPath === "string") defaultPath = body.defaultPath;
+            }
+          } catch {
+            // ignore
+          }
+          let startLoc = defaultPath;
+          if (!startLoc && workdir) {
+            startLoc = dirname(workdir);
+          }
+          const { pickPath, livePickerDeps } = await import("./interactive/picker");
+          const picked = await pickPath("save", livePickerDeps(), startLoc);
+          return send(200, { path: picked ?? null });
+        }
+
         if (url.pathname === "/api/fs" && req.method === "GET") {
           // The picker's folder browser (R17 §83): directories only, with
           // "this one is a project" flagged. Local tool on a local loopback
@@ -394,8 +430,6 @@ export async function startEditServer(
         }
 
         if (url.pathname === "/api/render" && req.method === "POST") {
-          // Replays ONLY the argv `produce` recorded — the request body is
-          // never read, let alone executed.
           if (!workdir) return send(409, { error: "no workdir open" });
           if (renderChild) return send(409, { error: "a render is already running" });
           if (!existsSync(commandPath())) {
@@ -404,6 +438,20 @@ export async function startEditServer(
                 "no command.json in this workdir — run `ossclip produce` once from " +
                 "the terminal so the invocation is recorded, then Render can replay it",
             });
+          }
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          let customOut: string | undefined;
+          try {
+            const raw = Buffer.concat(chunks).toString();
+            if (raw.trim()) {
+              const body = JSON.parse(raw) as { out?: string };
+              if (typeof body.out === "string" && body.out.trim()) {
+                customOut = body.out.trim();
+              }
+            }
+          } catch {
+            // ignore
           }
           const parsed = CommandSchema.safeParse(
             JSON.parse(await readFile(commandPath(), "utf8")),
@@ -420,7 +468,19 @@ export async function startEditServer(
           // reconstruct the command that ran. A modern record — and a legacy
           // directly-typed `ossclip produce …` — already starts with it and
           // is untouched.
-          const args = cmd.args[0] === "produce" ? cmd.args : ["produce", ...cmd.args];
+          let args = cmd.args[0] === "produce" ? [...cmd.args] : ["produce", ...cmd.args];
+          if (customOut) {
+            const filteredArgs: string[] = [];
+            for (let i = 0; i < args.length; i++) {
+              if (args[i] === "-o" || args[i] === "--out") {
+                i++;
+              } else {
+                filteredArgs.push(args[i]!);
+              }
+            }
+            filteredArgs.push("--out", customOut);
+            args = filteredArgs;
+          }
           renderLines = [];
           renderExit = null;
           renderStartedAt = Date.now();

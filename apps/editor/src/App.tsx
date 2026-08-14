@@ -27,6 +27,7 @@ import { ShortcutsModal } from "./ShortcutsModal";
 import { DeleteSceneModal } from "./DeleteSceneModal";
 import type { DeletePlan } from "./deleteScene";
 import { ProjectPicker } from "./ProjectPicker";
+import { RenderModal } from "./RenderModal";
 import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
 import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
@@ -200,6 +201,8 @@ export const App: React.FC = () => {
     /** The run ended because the user cancelled it — not a failure (R16). */
     cancelled?: boolean;
   } | null>(null);
+  const [showRenderModal, setShowRenderModal] = useState(false);
+  const [defaultOutPath, setDefaultOutPath] = useState<string | undefined>();
   const renderPollRef = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -529,10 +532,12 @@ export const App: React.FC = () => {
       renderProps?: RawRenderProps;
       overrides?: OverrideDoc;
       canRender?: boolean;
+      defaultOutPath?: string;
       workdir?: string;
       noWorkdir?: boolean;
       recent?: string[];
     };
+    if (body.defaultOutPath) setDefaultOutPath(body.defaultOutPath);
     setRecentProjects(body.recent ?? []);
     if (body.noWorkdir) {
       // Bare `ossclip edit` (R17 §83): no project open — the picker IS the
@@ -793,20 +798,27 @@ export const App: React.FC = () => {
   // renderProps swap in while the CURRENT override doc, undo history and
   // selection are all KEPT (no edits.load — the server's doc is exactly what
   // was just saved). On failure the log panel stays up with the tail.
-  const onRender = useCallback(async (): Promise<void> => {
-    try {
-      if (edits.dirty) await edits.save();
-      const res = await fetch("/api/render", { method: "POST" });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `render failed to start: ${res.status}`);
+  const onRender = useCallback(
+    async (customOut?: string): Promise<void> => {
+      try {
+        if (edits.dirty) await edits.save();
+        const res = await fetch("/api/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(customOut ? { out: customOut } : {}),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `render failed to start: ${res.status}`);
+        }
+        setRender({ running: true, lines: [], startedAt: Date.now() });
+        beginRenderPoll();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
       }
-      setRender({ running: true, lines: [], startedAt: Date.now() });
-      beginRenderPoll();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [edits, beginRenderPoll]);
+    },
+    [edits, beginRenderPoll],
+  );
 
   // Deleted scenes, at their override-applied timing — the Timeline draws
   // them as restorable ghosts (PLAN Task C5), and selecting one resolves to
@@ -963,25 +975,46 @@ export const App: React.FC = () => {
           >
             Save
           </button>
-          <button
-            data-testid="render-button"
-            style={ghostButton}
-            onClick={() => void onRender()}
-            disabled={!canRender || render?.running === true}
-            title={
-              canRender
-                ? // R12: say what this actually does — it REPLAYS the last
-                  // completed produce (command.json), so pipeline-level flags
-                  // (source fit, cleanup, provider) come from that run; your
-                  // saved edits are re-applied on top.
-                  "Saves if needed, then replays the last completed produce command — " +
-                  "pipeline flags come from that run; your saved edits apply on top"
-                : "No command.json in this workdir — run `ossclip produce` once in a " +
-                  "terminal; it records the invocation and Render replays it"
-            }
-          >
-            {render?.running ? "Rendering…" : "Render"}
-          </button>
+          <div style={{ display: "inline-flex", alignItems: "center" }}>
+            <button
+              data-testid="render-button"
+              style={{
+                ...ghostButton,
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: 0,
+                borderRight: "none",
+              }}
+              onClick={() => void onRender()}
+              disabled={!canRender || render?.running === true}
+              title={
+                canRender
+                  ? // R12: say what this actually does — it REPLAYS the last
+                    // completed produce (command.json), so pipeline-level flags
+                    // (source fit, cleanup, provider) come from that run; your
+                    // saved edits are re-applied on top.
+                    "Saves if needed, then replays the last completed produce command — " +
+                    "pipeline flags come from that run; your saved edits apply on top"
+                  : "No command.json in this workdir — run `ossclip produce` once in a " +
+                    "terminal; it records the invocation and Render replays it"
+              }
+            >
+              {render?.running ? "Rendering…" : "Render"}
+            </button>
+            <button
+              data-testid="render-destination-button"
+              style={{
+                ...ghostButton,
+                borderTopLeftRadius: 0,
+                borderBottomLeftRadius: 0,
+                padding: "7px 8px",
+              }}
+              onClick={() => setShowRenderModal(true)}
+              disabled={!canRender || render?.running === true}
+              title="Choose export file destination (Browse…)"
+            >
+              ▾
+            </button>
+          </div>
         </div>
         <span
           style={{ ...statusText, color: edits.dirty ? "#FFE14D" : "#5FBF77" }}
@@ -999,6 +1032,16 @@ export const App: React.FC = () => {
         </button>
       </div>
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
+      {showRenderModal ? (
+        <RenderModal
+          defaultOutPath={defaultOutPath}
+          onCancel={() => setShowRenderModal(false)}
+          onConfirm={(customOut) => {
+            setShowRenderModal(false);
+            void onRender(customOut);
+          }}
+        />
+      ) : null}
       {deletePlan ? (
         <DeleteSceneModal
           plan={deletePlan}

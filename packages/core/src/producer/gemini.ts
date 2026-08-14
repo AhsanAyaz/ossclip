@@ -2,7 +2,7 @@ import { z } from "zod/v4";
 import type { LlmProvider } from "./provider";
 import { estimateTokens, type LlmUsage } from "./usage";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.7-flash";
 
 /**
  * Convert a zod-derived JSON Schema into Gemini's `responseSchema` dialect

@@ -69,6 +69,9 @@ export const DEFAULT_PRICING: Record<string, ModelPrice> = {
   haiku: { inputPerMTok: 1, outputPerMTok: 5 },
   "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },
   "gemini-2.5-flash": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+  // Gemini 3.7 Flash: $0.75 in / $3.75 out per 1M tokens (active rate)
+  "gemini-3.7-flash": { inputPerMTok: 0.75, outputPerMTok: 3.75 },
+  "gemini-3.7-flash-lite": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
   "gemini-3.6-flash": { inputPerMTok: 1.5, outputPerMTok: 7.5 },
   "gemini-3.5-flash-lite": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
 };
