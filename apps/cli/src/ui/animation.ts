@@ -215,12 +215,11 @@ export class StageAnimator {
         `${ansi.green}${eq}${ansi.reset} ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
         `  ${ansi.cyan}${dots}${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset}`;
     } else if (this.type === "audio") {
-      const synth = renderSynthWave(this.frameIndex, 14);
+      const synth = renderSynthWave(this.frameIndex, 12);
       visual =
         `${ansi.bold}${ansi.brightYellow}🔊 ANALOG SYNTH AUDIO OSCILLOSCOPE${ansi.reset} ` +
         `[${synth}] ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
-        `  ${ansi.brightYellow}▸${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset} ` +
-        `${ansi.dim}48kHz 24-bit PCM │ EBU R128 (-14.0 LUFS)${ansi.reset}`;
+        `  ${ansi.brightYellow}▸${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset}`;
     } else if (this.type === "master") {
       const dots = SPINNERS.dots[this.frameIndex % SPINNERS.dots.length];
       visual =
@@ -236,7 +235,12 @@ export class StageAnimator {
     }
 
     this.clearRenderedLines();
-    const lines = visual.split("\n");
+    const rawLines = visual.split("\n");
+    const lines = rawLines.map((l) => {
+      const vis = stripAnsi(l);
+      if (vis.length <= maxVisualWidth) return l;
+      return l.slice(0, maxVisualWidth - 3) + "..." + ansi.reset;
+    });
     for (const l of lines) {
       process.stdout.write(`${l}\n`);
     }
