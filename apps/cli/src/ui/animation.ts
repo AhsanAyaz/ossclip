@@ -59,7 +59,15 @@ export function formatTimecode(seconds: number, fps = 30): string {
 }
 
 /**
- * Unicode Audio Waves & Braille spinners.
+ * Strip ANSI escape codes to calculate visual string width.
+ */
+export function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+}
+
+/**
+ * Unicode Audio Waves, Synth Oscilloscope & Braille spinners.
  */
 const AUDIO_WAVE_CHARS = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const SPINNERS = {
@@ -69,6 +77,28 @@ const SPINNERS = {
   equalizer: [" ▂▃▅▆▇█", "▂▃▅▆▇█ ", "▃▅▆▇█ ▂", "▅▆▇█ ▂▃", "▆▇█ ▂▃▅", "▇█ ▂▃▅▆", "█ ▂▃▅▆▇"],
   neural: ["◈◇◇◇", "◇◈◇◇", "◇◇◈◇", "◇◇◇◈", "◇◇◈◇", "◇◈◇◇"],
 };
+
+/**
+ * Render an organic multi-harmonic analog synthesizer oscilloscope wave.
+ */
+export function renderSynthWave(frame: number, width = 16): string {
+  const BRAILLE_WAVE = ["⣀", "⠤", "⠒", "⠊", "⠉", "⠑", "⠒", "⠤", "⣀", "⡀", "⠄", "⠂", "⠁", "⠈", "⠐", "⠠", "⢀"];
+  let wave = "";
+  for (let i = 0; i < width; i++) {
+    const phase = frame * 0.25 + i * 0.45;
+    const harmonic = Math.sin(phase) * 0.65 + Math.sin(phase * 2.1 + frame * 0.1) * 0.35;
+    const normalized = Math.max(0, Math.min(1, (harmonic + 1) / 2));
+    const idx = Math.floor(normalized * (BRAILLE_WAVE.length - 1));
+    const char = BRAILLE_WAVE[idx];
+
+    // Phosphor glow gradient: Neon Amber to Electric Cyan
+    const r = Math.round(255 - normalized * 180);
+    const g = Math.round(160 + normalized * 70);
+    const b = Math.round(40 + normalized * 210);
+    wave += `${ansi.rgb(r, g, b)}${char}`;
+  }
+  return wave + ansi.reset;
+}
 
 /**
  * Generate a dynamic gradient progress bar with customizable character resolution.
@@ -163,44 +193,46 @@ export class StageAnimator {
     const cols = Math.min(100, process.stdout.columns || 80);
 
     let visual = "";
+    const maxVisualWidth = Math.max(40, (process.stdout.columns || 80) - 4);
+    const clamp = (s: string) => {
+      const plain = stripAnsi(s);
+      if (plain.length <= maxVisualWidth) return s;
+      return s.slice(0, maxVisualWidth - 3) + "...";
+    };
+
     if (this.type === "ai") {
       const spinner = SPINNERS.neural[this.frameIndex % SPINNERS.neural.length];
       const dots = SPINNERS.dots[this.frameIndex % SPINNERS.dots.length];
       visual =
         `${ansi.bold}${ansi.brightMagenta}⚡ GEMINI 3.7 FLASH // NEURAL SCENE PLANNER${ansi.reset} ` +
         `${ansi.cyan}[${spinner}]${ansi.reset} ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
-        `  ${ansi.brightCyan}${dots}${ansi.reset} ${ansi.brightWhite}${this.subtitle}${ansi.reset}`;
+        `  ${ansi.brightCyan}${dots}${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset}`;
     } else if (this.type === "whisper") {
       const dots = SPINNERS.dots[this.frameIndex % SPINNERS.dots.length];
       const eq = SPINNERS.equalizer[this.frameIndex % SPINNERS.equalizer.length];
       visual =
         `${ansi.bold}${ansi.brightCyan}🎙️  WHISPER ASR ENGINE // NEURAL PHONEME STREAM${ansi.reset} ` +
         `${ansi.green}${eq}${ansi.reset} ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
-        `  ${ansi.cyan}${dots}${ansi.reset} ${ansi.brightWhite}${this.subtitle}${ansi.reset}`;
+        `  ${ansi.cyan}${dots}${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset}`;
     } else if (this.type === "audio") {
-      const eq = SPINNERS.equalizer[this.frameIndex % SPINNERS.equalizer.length];
-      const wave = Array.from({ length: 14 }, (_, i) => {
-        const h = Math.abs(Math.sin((this.frameIndex + i * 2) * 0.35));
-        const idx = Math.floor(h * (AUDIO_WAVE_CHARS.length - 1));
-        return AUDIO_WAVE_CHARS[idx];
-      }).join("");
+      const synth = renderSynthWave(this.frameIndex, 14);
       visual =
-        `${ansi.bold}${ansi.brightYellow}🔊 AUDIO ANALYSIS & LEVELING${ansi.reset} ` +
-        `${ansi.yellow}[${wave}]${ansi.reset} ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
-        `  ${ansi.brightYellow}▸${ansi.reset} ${ansi.brightWhite}${this.subtitle}${ansi.reset} ` +
-        `${ansi.dim}VU L/R: -14.0 LUFS broadcast target${ansi.reset}`;
+        `${ansi.bold}${ansi.brightYellow}🔊 ANALOG SYNTH AUDIO OSCILLOSCOPE${ansi.reset} ` +
+        `[${synth}] ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
+        `  ${ansi.brightYellow}▸${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset} ` +
+        `${ansi.dim}48kHz 24-bit PCM │ EBU R128 (-14.0 LUFS)${ansi.reset}`;
     } else if (this.type === "master") {
       const dots = SPINNERS.dots[this.frameIndex % SPINNERS.dots.length];
       visual =
         `${ansi.bold}${ansi.brightGreen}🎛️  MASTERING AUDIO // EBU R128 DUAL-PASS LOUDNORM${ansi.reset} ` +
         `${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
-        `  ${ansi.brightGreen}${dots}${ansi.reset} ${ansi.brightWhite}${this.subtitle}${ansi.reset}`;
+        `  ${ansi.brightGreen}${dots}${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset}`;
     } else {
       const film = SPINNERS.filmReel[this.frameIndex % SPINNERS.filmReel.length];
       visual =
         `${ansi.bold}${ansi.brightCyan}🎞️  ${this.title}${ansi.reset} ` +
         `${ansi.brightYellow}${film}${ansi.reset} ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
-        `  ${ansi.brightWhite}${this.subtitle}${ansi.reset}`;
+        `  ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset}`;
     }
 
     this.clearRenderedLines();
@@ -213,7 +245,7 @@ export class StageAnimator {
 
   private clearRenderedLines(): void {
     if (this.linesRendered > 0) {
-      process.stdout.write(ansi.up(this.linesRendered));
+      process.stdout.write(ansi.up(this.linesRendered) + "\r");
       for (let i = 0; i < this.linesRendered; i++) {
         process.stdout.write(ansi.clearLine);
         if (i < this.linesRendered - 1) process.stdout.write("\n");
@@ -279,7 +311,6 @@ export class RenderTimelineHUD {
   public setProgress(progress: number): void {
     this.currentProgress = Math.max(0, Math.min(1, progress));
     this.lastUpdateMs = Date.now();
-    if (this.isTty) this.render();
   }
 
   private tick(): void {
@@ -296,18 +327,19 @@ export class RenderTimelineHUD {
     const renderedFrames = Math.round(progress * totalFrames);
     const renderFps = (renderedFrames / elapsedSec).toFixed(1);
     const realtimeMultiplier = (renderedFrames / (elapsedSec * this.fps)).toFixed(2);
-    const etaSec = progress > 0.02 ? Math.max(0, (elapsedSec / progress) * (1 - progress)).toFixed(1) : "calculating...";
+    const etaSec = progress > 0.02 ? Math.max(0, (elapsedSec / progress) * (1 - progress)).toFixed(1) : "...";
 
     const currentTimecode = formatTimecode(progress * this.totalDurationSec, this.fps);
     const totalTimecode = formatTimecode(this.totalDurationSec, this.fps);
 
-    const termWidth = Math.max(60, Math.min(100, process.stdout.columns || 80));
-    const barWidth = Math.max(20, Math.min(36, termWidth - 46));
+    // Compute exact bounded terminal box dimensions (guaranteed never to wrap)
+    const termCols = Math.min(74, Math.max(50, (process.stdout.columns || 80) - 2));
+    const innerWidth = termCols - 4; // between ║ ... ║
+    const barWidth = Math.max(12, Math.min(22, innerWidth - 28));
 
     // Dynamic track representation
     const reel = SPINNERS.filmReel[this.frameCount % SPINNERS.filmReel.length];
-    const wave1 = SPINNERS.equalizer[this.frameCount % SPINNERS.equalizer.length];
-    const wave2 = SPINNERS.equalizer[(this.frameCount + 3) % SPINNERS.equalizer.length];
+    const synthWaveA1 = renderSynthWave(this.frameCount, 12);
 
     // Identify active scene
     let activeSceneLabel = "Main Composition";
@@ -322,17 +354,27 @@ export class RenderTimelineHUD {
     const pctString = (progress * 100).toFixed(1).padStart(5, " ");
     const bar = renderProgressBar(progress, barWidth, { gradient: "cyberpunk" });
 
+    const padLine = (content: string) => {
+      const vis = stripAnsi(content).length;
+      const pad = Math.max(0, innerWidth - vis);
+      return `${ansi.bold}║${ansi.reset} ${content}${" ".repeat(pad)} ${ansi.bold}║${ansi.reset}`;
+    };
+
+    const headerContent = `${ansi.yellow}${reel}${ansi.reset} ${ansi.bold}${ansi.brightCyan}${currentTimecode}${ansi.reset} / ${ansi.dim}${totalTimecode}${ansi.reset} │ ${ansi.brightMagenta}${this.aspect}${ansi.reset} │ ${ansi.green}${realtimeMultiplier}x Speed${ansi.reset}`;
+    const trackV1Content = `${ansi.brightWhite}V1:${ansi.reset} [${bar}] ${ansi.bold}${ansi.brightYellow}${pctString}%${ansi.reset} │ Frame: ${renderedFrames}/${totalFrames}`;
+    const trackA1Content = `${ansi.brightWhite}A1:${ansi.reset} [${synthWaveA1}] │ ${renderFps}fps │ ETA:${ansi.brightYellow}${etaSec}s${ansi.reset}`;
+    const sceneContent = `${ansi.dim}Scene:${ansi.reset} ${ansi.brightMagenta}${activeSceneLabel.slice(0, innerWidth - 8)}${ansi.reset}`;
+
+    const topBorder = `${ansi.bold}${ansi.brightCyan}╔══ 🎞️  REMOTION RENDER ENGINE ${"═".repeat(Math.max(2, innerWidth - 27))}╗${ansi.reset}`;
+    const bottomBorder = `${ansi.bold}${ansi.brightCyan}╚${"═".repeat(innerWidth + 2)}╝${ansi.reset}`;
+
     const lines = [
-      `${ansi.bold}${ansi.brightCyan}╔══ 🎞️  REMOTION MULTI-THREADED RENDER ENGINE ═══════════════════════════╗${ansi.reset}`,
-      `${ansi.bold}║${ansi.reset} ${ansi.yellow}${reel}${ansi.reset} ${ansi.brightWhite}TIMECODE:${ansi.reset} ${ansi.bold}${ansi.brightCyan}${currentTimecode}${ansi.reset} / ${ansi.dim}${totalTimecode}${ansi.reset} ` +
-        `│ ${ansi.brightMagenta}${this.aspect}${ansi.reset} @ ${this.fps}fps │ ${ansi.green}${realtimeMultiplier}x Speed${ansi.reset}`,
-      `${ansi.bold}║${ansi.reset} ${ansi.brightWhite}TRACK V1:${ansi.reset} [${bar}] ${ansi.bold}${ansi.brightYellow}${pctString}%${ansi.reset}`,
-      `${ansi.bold}║${ansi.reset} ${ansi.brightWhite}TRACK A1:${ansi.reset} ${ansi.cyan}${wave1}${wave2}${wave1}${wave2}${wave1}${ansi.reset} ` +
-        `${ansi.dim}│ Frame:${ansi.reset} ${ansi.brightWhite}${renderedFrames}/${totalFrames}${ansi.reset} ` +
-        `${ansi.dim}│ Speed:${ansi.reset} ${ansi.brightGreen}${renderFps} fps${ansi.reset} ` +
-        `${ansi.dim}│ ETA:${ansi.reset} ${ansi.brightYellow}${etaSec}s${ansi.reset}`,
-      `${ansi.bold}║${ansi.reset} ${ansi.dim}▶ Active:${ansi.reset} ${ansi.brightMagenta}${activeSceneLabel}${ansi.reset}`,
-      `${ansi.bold}${ansi.brightCyan}╚════════════════════════════════════════════════════════════════════════╝${ansi.reset}`,
+      topBorder,
+      padLine(headerContent),
+      padLine(trackV1Content),
+      padLine(trackA1Content),
+      padLine(sceneContent),
+      bottomBorder,
     ];
 
     this.clearRenderedLines();
@@ -344,7 +386,7 @@ export class RenderTimelineHUD {
 
   private clearRenderedLines(): void {
     if (this.linesRendered > 0) {
-      process.stdout.write(ansi.up(this.linesRendered));
+      process.stdout.write(ansi.up(this.linesRendered) + "\r");
       for (let i = 0; i < this.linesRendered; i++) {
         process.stdout.write(ansi.clearLine);
         if (i < this.linesRendered - 1) process.stdout.write("\n");

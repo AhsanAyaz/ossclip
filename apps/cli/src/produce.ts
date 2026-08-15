@@ -1257,6 +1257,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         graphicsLine = cached.graphics;
         beatIssues = cached.issues ?? [];
       }
+    } else {
       const aiAnim = isInteractive()
         ? new StageAnimator(
             "AI SCENE SYNTHESIZER",
