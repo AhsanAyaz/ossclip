@@ -48,6 +48,13 @@ export interface ZoomPlan {
   segments: ZoomSegment[];
   /** How many cut-free clips the plan covers — logged, never inferred. */
   clips: number;
+  /**
+   * The allowedClips split, carried on the plan so the CLI log reports the
+   * counts the plan actually acted on instead of re-deriving them (and
+   * possibly disagreeing after the boundary cleaning).
+   */
+  zoomedClips: number;
+  staticClips: number;
   /** The ramp actually used, so the log can't drift from the behaviour. */
   rampSec: number;
 }
@@ -63,6 +70,18 @@ export interface ZoomPlanOptions {
   clipStarts?: readonly number[];
   /** Seconds the push takes to arrive before it holds. */
   rampSec?: number;
+  /**
+   * Per-clip zoom permission, PARALLEL TO `clipStarts` by index. User
+   * decision 2026-08-16 — "Face-only. If there's anything else, then no
+   * zoom": the always-on idle push visibly SLID screen-recording content,
+   * so a clip whose subject is not a face gets NO segments at all rather
+   * than a flat one. `zoomScaleAt` answers 1 outside the plan, and the
+   * premiere export's `zoomKeyframesFor` collapses a segment-free span to a
+   * plain scale-1 value, so downstream needs zero changes. Entries missing
+   * off the end of a short mask read as allowed, and an absent mask is
+   * today's plan exactly — pre-F1 callers are byte-identical.
+   */
+  allowedClips?: readonly boolean[];
 }
 
 /**
@@ -83,13 +102,32 @@ export const ZOOM_MAX_SCALE = 1.05;
  */
 export const ZOOM_RAMP_SEC = 8;
 
-/** Clip starts, cleaned: in range, unique, sorted, and always including 0. */
-function clipBoundaries(starts: readonly number[] | undefined, duration: number): number[] {
-  const seen = new Set<number>([0]);
-  for (const t of starts ?? []) {
-    if (Number.isFinite(t) && t > 0 && t < duration) seen.add(t);
-  }
-  return [...seen].sort((a, b) => a - b);
+/**
+ * Clip starts, cleaned — in range, unique, sorted, always including 0 — each
+ * carrying its `allowedClips` verdict. The verdict is paired with its start
+ * BY INDEX before any of the cleaning, so dedupe/sort can never shift a
+ * verdict onto a different clip; duplicated starts are one clip and OR their
+ * verdicts (any pairing that vouches "face" wins — losing the push on a face
+ * clip is the regression, holding still an extra clip is merely conservative
+ * the wrong way). The synthetic 0 boundary is allowed unless the caller's
+ * own list contains a 0 that says otherwise. Missing mask entries read as
+ * allowed (`!== false`), which is also what makes an absent mask identical
+ * to the pre-mask contract.
+ */
+function clipBoundaries(
+  starts: readonly number[] | undefined,
+  allowed: readonly boolean[] | undefined,
+  duration: number,
+): Array<{ start: number; allowed: boolean }> {
+  const byStart = new Map<number, boolean>();
+  (starts ?? []).forEach((t, i) => {
+    if (!Number.isFinite(t) || t < 0 || t >= duration) return;
+    byStart.set(t, (byStart.get(t) ?? false) || allowed?.[i] !== false);
+  });
+  if (!byStart.has(0)) byStart.set(0, true);
+  return [...byStart.entries()]
+    .map(([start, ok]) => ({ start, allowed: ok }))
+    .sort((a, b) => a.start - b.start);
 }
 
 export function buildZoomPlan(
@@ -98,14 +136,21 @@ export function buildZoomPlan(
 ): ZoomPlan {
   const maxScale = opts.maxScale ?? ZOOM_MAX_SCALE;
   const rampSec = opts.rampSec ?? ZOOM_RAMP_SEC;
-  if (outputDurationSec <= 0) return { segments: [], clips: 0, rampSec };
+  if (outputDurationSec <= 0) {
+    return { segments: [], clips: 0, zoomedClips: 0, staticClips: 0, rampSec };
+  }
 
-  const starts = clipBoundaries(opts.clipStarts, outputDurationSec);
+  const starts = clipBoundaries(opts.clipStarts, opts.allowedClips, outputDurationSec);
   const segments: ZoomSegment[] = [];
+  const staticClips = starts.filter((s) => !s.allowed).length;
 
   for (let i = 0; i < starts.length; i++) {
-    const start = starts[i]!;
-    const end = i + 1 < starts.length ? starts[i + 1]! : outputDurationSec;
+    const { start, allowed } = starts[i]!;
+    // A disallowed clip emits NOTHING — not a flat segment. `zoomScaleAt`
+    // returns 1 for any instant no segment claims (zoom.ts's own "1 outside
+    // the plan" contract), so a hole in the plan IS the static camera.
+    if (!allowed) continue;
+    const end = i + 1 < starts.length ? starts[i + 1]!.start : outputDurationSec;
     const length = end - start;
     if (length <= 1e-9) continue;
 
@@ -120,7 +165,13 @@ export function buildZoomPlan(
     }
   }
 
-  return { segments, clips: starts.length, rampSec };
+  return {
+    segments,
+    clips: starts.length,
+    zoomedClips: starts.length - staticClips,
+    staticClips,
+    rampSec,
+  };
 }
 
 /**

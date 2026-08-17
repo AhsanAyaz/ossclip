@@ -56,10 +56,12 @@ describe("produceArgv", () => {
             whisperModel: "medium.en",
             whisperLanguage: "ur",
             blooperMarker: "blooper",
-            collapseRetakes: true,
             sourceIsEdited: true,
             captions: false,
             watermark: true,
+            jumpCuts: false,
+            youtube: true,
+            portrait: "/me.jpg",
             llm: "claude-cli",
           },
         }),
@@ -72,10 +74,12 @@ describe("produceArgv", () => {
       "--whisper-model", "medium.en",
       "--whisper-language", "ur",
       "--blooper-marker", "blooper",
-      "--collapse-retakes",
       "--source-is-edited",
       "--watermark",
       "--no-captions",
+      "--no-jump-cuts",
+      "--youtube",
+      "--portrait", "/me.jpg",
       "--llm", "claude-cli",
     ]);
   });
@@ -109,9 +113,13 @@ describe("produceArgv", () => {
     ]);
   });
 
-  it("omits a false --collapse-retakes rather than emitting the flag", () => {
-    expect(produceArgv(answers({ extras: { collapseRetakes: false } }))).toEqual([
-      "produce", "./take.mp4",
+  // 2026-08-16 gate decision: retake collapse rides --blooper-marker
+  // automatically (inferredRetakesEnabled, produce.ts), so ProduceExtras no
+  // longer HAS a collapseRetakes field — the wizard structurally cannot emit
+  // the legacy flag. A marker answer alone must teach only --blooper-marker.
+  it("never emits --collapse-retakes — a marker answer teaches only --blooper-marker", () => {
+    expect(produceArgv(answers({ extras: { blooperMarker: "blooper" } }))).toEqual([
+      "produce", "./take.mp4", "--blooper-marker", "blooper",
     ]);
   });
 
@@ -134,5 +142,64 @@ describe("produceArgv", () => {
     expect(produceArgv(answers({ extras: { captions: true } }))).toEqual([
       "produce", "./take.mp4",
     ]);
+  });
+
+  // The youtube pack shares the watermark's polarity: off is the universal
+  // default, so only the wizard's ON tick emits — and a false must emit
+  // nothing per the elision rule (the OFF spelling --no-youtube is
+  // flags-only). The portrait rides only with a value: the wizard's empty
+  // follow-up answer never sets the field, and a bare --portrait with no
+  // path would be a commander error anyway.
+  it("emits --youtube only for true, --portrait only with a path", () => {
+    expect(produceArgv(answers({ extras: { youtube: true } }))).toEqual([
+      "produce", "./take.mp4", "--youtube",
+    ]);
+    expect(produceArgv(answers({ extras: { youtube: false } }))).toEqual([
+      "produce", "./take.mp4",
+    ]);
+    expect(
+      produceArgv(answers({ extras: { youtube: true, portrait: "~/Pictures/me.jpg" } })),
+    ).toEqual(["produce", "./take.mp4", "--youtube", "--portrait", "~/Pictures/me.jpg"]);
+  });
+
+  // The youtube follow-ups (thumbnail UX, 2026-08-16) share the portrait's
+  // rule: only a value emits — the wizard already dropped empty answers, and
+  // an unset field means "the config decides" per the elision rule.
+  it("emits --audience and --thumbnail-brief only with values, in prompt order", () => {
+    expect(
+      produceArgv(
+        answers({
+          extras: {
+            youtube: true,
+            audience: "junior web devs",
+            portrait: "/me.jpg",
+            thumbnailBrief: "always show the terminal",
+          },
+        }),
+      ),
+    ).toEqual([
+      "produce", "./take.mp4",
+      "--youtube",
+      "--audience", "junior web devs",
+      "--portrait", "/me.jpg",
+      "--thumbnail-brief", "always show the terminal",
+    ]);
+    expect(produceArgv(answers({ extras: { youtube: true, audience: "" } }))).toEqual([
+      "produce", "./take.mp4", "--youtube",
+    ]);
+  });
+
+  // Jump cuts share captions' polarity: auto (unset) already punches, so
+  // only the wizard's OFF tick may emit anything — and only the negative
+  // spelling. `true` restates the default (and force is flags-only), so it
+  // must emit nothing per the elision rule.
+  it("emits --no-jump-cuts for jumpCuts: false, and nothing for true/unset", () => {
+    expect(produceArgv(answers({ extras: { jumpCuts: false } }))).toEqual([
+      "produce", "./take.mp4", "--no-jump-cuts",
+    ]);
+    expect(produceArgv(answers({ extras: { jumpCuts: true } }))).toEqual([
+      "produce", "./take.mp4",
+    ]);
+    expect(produceArgv(answers())).toEqual(["produce", "./take.mp4"]);
   });
 });

@@ -20,6 +20,21 @@ import type { Analysis, Span, Transcript } from "./schema";
  * (edit distance over the token stream, not the letters) rather than a single
  * fuzzy-string threshold: it tolerates the fuzzy word or two `soundsSimilar`
  * chased, without opening the same phonetic false-positive channel.
+ *
+ * The exact-prefix restart pass (2026-08-16 field case) deliberately NARROWS
+ * a §128 protection rather than repealing it. §128 (PHASE1-FINDINGS.md,
+ * "128. Retake collapse without a spoken marker") records the verified repro
+ * where "Let me show you this." scored a spurious 1.0 against its own longer
+ * continuation and the LONGER, more complete side got cut — which is why
+ * complete-vs-complete comparison is full-sequence and a shorter complete
+ * sentence never prefix-matches forward. The field flub this pass exists for
+ * is the opposite shape: "You can use OpenAI." → [pause] → "You can use
+ * OpenAI models and whatnot." — ASR punctuated the abandoned attempt as
+ * complete, so the protection above (correctly) refuses the match, and the
+ * flub ships. The pass cuts ONLY the strictly-shorter EARLIER sentence, only
+ * on an EXACT token prefix, and only with a real pause at the boundary —
+ * three conditions the §128 incident's cut (of the longer side, on a fuzzy
+ * score, with no pause requirement) would fail.
  */
 
 /** Sequence similarity floor for two attempts to count as the same line. */
@@ -58,6 +73,25 @@ export const HALLUCINATION_SILENCE_FRAC = 0.65;
  * be at this boundary, so the same threshold gates both: not tuned twice.
  */
 export const RESTART_SPLIT_MIN_SIL = 0.35;
+/**
+ * How far INTO the next sentence's stamped words the exact-prefix pass looks
+ * for the restart pause. Stamp-stretch physics again (§18): the pause between
+ * the abandoned "You can use OpenAI." and its restart was the silence
+ * 201.52–201.93 — INSIDE the stamped span of the restart sentence
+ * (201.0–203.08), not in the inter-sentence gap, because whisper stretched
+ * the restart's opening words back over the dead air. So the window is
+ * [A.endSec, B.startSec + this], measured with `silenceOverlap` against real
+ * silence spans, never against word-stamp gaps (which are ~always zero).
+ */
+export const PREFIX_RESTART_SIL_WINDOW = 1.0;
+/**
+ * Confidence `produce.ts` assigns an exact-prefix restart cut in the
+ * cutlist: below the 0.9 an ordinary similarity-matched retake earns,
+ * because the evidence is structural (prefix + pause) rather than a scored
+ * near-identical repeat — the report and any confidence-gated behavior can
+ * tell the two rules apart.
+ */
+export const RESTART_PREFIX_CONFIDENCE = 0.85;
 
 /** A span of transcript, in word indices (inclusive) and source seconds. */
 export interface RetakeInstance {
@@ -119,6 +153,13 @@ export interface RetakeGroup {
   cuts: RetakeCut[];
   hallucinated: RetakeHallucination[];
   undecided: RetakeUndecided[];
+  /**
+   * Which pass decided this group, when it was not the ordinary similarity
+   * chain: "exact-prefix" is the restart pass (module doc) — the report
+   * prints the structural evidence instead of a match percentage, because
+   * "100% match" would misdescribe a rule that never scored anything.
+   */
+  rule?: "exact-prefix";
 }
 
 // ---- token comparison -------------------------------------------------
@@ -577,9 +618,63 @@ export function findRetakeGroups(
     }
     if (overlaps) continue;
     groups.push(g);
+    // The sentence pass's members join the claimed set too: the exact-prefix
+    // pass below must not re-decide words either earlier pass already
+    // decided — including spares, so a declined cut stays declined.
+    for (const m of members) {
+      for (let w = m.startWord; w <= m.endWord; w++) claimed.add(w);
+    }
   }
 
-  // Two passes can interleave in transcript order — the report reads in
+  // Exact-prefix restart pass (2026-08-16 field case; module doc has the
+  // §128-narrowing rationale). The flub: sentence A is an EXACT token prefix
+  // of the immediately following sentence B, strictly shorter, with a real
+  // pause (>= RESTART_SPLIT_MIN_SIL of silence) at the restart boundary. ASR
+  // punctuated A as complete ("You can use OpenAI."), so the similarity
+  // passes above score A-vs-B honestly divergent (1 - 3/7 ≈ 0.57) and
+  // correctly decline — completeness is no defense here, which is why A may
+  // be complete. Adjacency skips zero-token sentences, the same
+  // filler/marker transparency the chaining rule grants.
+  const live = sentences.filter((s) => s.tokens.length > 0);
+  for (let k = 0; k + 1 < live.length; k++) {
+    const a = live[k]!;
+    const b = live[k + 1]!;
+    if (a.hallucinated || b.hallucinated) continue;
+    if (a.tokens.length < RETAKE_MIN_TOKENS) continue;
+    if (a.tokens.length >= b.tokens.length) continue;
+    if (!a.tokens.every((tok, j) => tokensEqual(tok, b.tokens[j]!))) continue;
+    // The pause: ONE silence overlapping [A.end, B.start + window] by at
+    // least RESTART_SPLIT_MIN_SIL — see PREFIX_RESTART_SIL_WINDOW for why
+    // the window reaches INTO B's stamped words and why word gaps are
+    // useless here. Per-silence, not summed: three 0.1s breath gaps across
+    // the window are ordinary delivery, not a restart pause.
+    const windowEnd = b.startSec + PREFIX_RESTART_SIL_WINDOW;
+    const paused = analysis.silences.some(
+      (s) => silenceOverlap([s], a.endSec, windowEnd) >= RESTART_SPLIT_MIN_SIL,
+    );
+    if (!paused) continue;
+    // Claimed dedupe, same set as the sentence pass: a word either earlier
+    // pass already cut, kept OR deliberately spared is not re-decidable.
+    let overlaps = false;
+    for (const m of [a, b]) {
+      for (let w = m.startWord; w <= m.endWord && !overlaps; w++) {
+        if (claimed.has(w)) overlaps = true;
+      }
+    }
+    if (overlaps) continue;
+    groups.push({
+      kept: toPublic(b),
+      cuts: [{ ...toPublic(a), similarity: prefixSimilarity(a.tokens, b.tokens) }],
+      hallucinated: [],
+      undecided: [],
+      rule: "exact-prefix",
+    });
+    for (const m of [a, b]) {
+      for (let w = m.startWord; w <= m.endWord; w++) claimed.add(w);
+    }
+  }
+
+  // The passes can interleave in transcript order — the report reads in
   // word order, whichever pass found the group.
   groups.sort((a, b) => {
     const first = (g: RetakeGroup): number =>
@@ -667,7 +762,14 @@ export function formatRetakeGroup(transcript: Transcript, group: RetakeGroup): s
   } else {
     lines.push(`kept: "${said(group.kept)}"`);
     for (const c of group.cuts) {
-      lines.push(`  cut (${Math.round(c.similarity * 100)}% match): "${said(c)}"`);
+      // An exact-prefix cut was never scored — printing a percentage would
+      // claim evidence the rule doesn't have. Name the structural evidence
+      // (prefix + pause) instead.
+      lines.push(
+        group.rule === "exact-prefix"
+          ? `  cut (exact-prefix restart, ≥0.35s pause): "${said(c)}"`
+          : `  cut (${Math.round(c.similarity * 100)}% match): "${said(c)}"`,
+      );
     }
     for (const u of group.undecided) {
       const pct = Math.round((u.similarity ?? 0) * 100);

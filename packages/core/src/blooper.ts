@@ -1,7 +1,7 @@
 import { normalizeToken } from "./analyze";
 import { isSentenceStart } from "./clip";
 import { levenshtein } from "./phonetics";
-import type { Transcript } from "./schema";
+import type { Span, Transcript } from "./schema";
 
 /**
  * Blooper removal by SPOKEN MARKER (R27 §122).
@@ -55,7 +55,39 @@ export interface BloopSpan {
    * silently cutting a good take (Task 3, editor-dogfood-fixes plan).
    */
   matched: string[];
+  /**
+   * True when the sentence-start backscan hit MAX_WALKBACK_SEC before it
+   * found punctuation — the span was cut short of a real sentence boundary
+   * and the report must say so out loud (`formatBloopSpan`).
+   */
+  truncated?: boolean;
 }
+
+/**
+ * How far past the marker word's STAMPED end a silence may start and still be
+ * treated as the marker's own trailing dead air. Whisper's `-ml 1` stamps
+ * stretch over pauses (§18, PHASE1-FINDINGS.md), so the stamped end of a
+ * spoken marker routinely lands BEFORE its acoustic end — the 2026-08-16
+ * incident: "blooper." stamped to end at 670.0 while the audio ran to ~670.4
+ * (proven by the bracketing silences 668.09–669.3 and 670.4–671.68), so 0.4s
+ * of audible "blooper" leaked into the output at ~10:02. Extending the cut
+ * through any silence starting within this window swallows the acoustic tail
+ * — and the debris sliver ("And", 670.0–670.4) whisper stamped between the
+ * marker and the pause. 0.75s is deliberately wider than the observed 0.4s
+ * stretch but well under the shortest gap a speaker leaves before a real
+ * next take.
+ */
+const MAX_MARKER_BLEED_SEC = 0.75;
+
+/**
+ * Ceiling on the sentence-start backscan, in source seconds. An ASR stretch
+ * with no terminal punctuation (rambling delivery, a non-English fine-tune,
+ * a hallucinated run-on) lets the scan walk back through MINUTES of good
+ * take from one spoken marker — the same failure shape as §133's 7.08s fuzzy
+ * cut, unbounded. 30s is longer than any real single-sentence flub and short
+ * enough that a capped cut is reviewable in the report.
+ */
+const MAX_WALKBACK_SEC = 30;
 
 // Fuzzy matching only turns on once the marker is long enough that a false
 // positive is unlikely — a short marker like "cut" sound-alikes ("cat") and
@@ -120,9 +152,18 @@ function isPluralPair(a: string, b: string): boolean {
  * marker of at least `FUZZY_MIN_MARKER_LEN` characters also matches an ASR
  * mishearing — see `matchMarker`.
  *
+ * `silences` (source seconds, `analysis.silences`' shape) lets a span's end
+ * extend through the marker's own trailing dead air — the §18 stamp-stretch
+ * bleed `MAX_MARKER_BLEED_SEC` documents. Omitting it reproduces the
+ * stamped-end behavior exactly.
+ *
  * Returns spans in transcript order, non-overlapping.
  */
-export function findBloopSpans(transcript: Transcript, marker: string): BloopSpan[] {
+export function findBloopSpans(
+  transcript: Transcript,
+  marker: string,
+  silences?: readonly Span[],
+): BloopSpan[] {
   const want = normalizeToken(marker);
   if (!want) return [];
   const words = transcript.words;
@@ -138,31 +179,67 @@ export function findBloopSpans(transcript: Transcript, marker: string): BloopSpa
 
     // Walk back over the attempt this marker spoiled, to the start of its
     // sentence. The marker's own text usually ENDS a sentence ("blooper."), so
-    // the scan starts at the word before it.
+    // the scan starts at the word before it. Capped at MAX_WALKBACK_SEC of
+    // source time (rationale on the constant); a capped span is flagged so
+    // the report can shout about it.
     let start = i;
-    while (start > 0 && !isSentenceStart(transcript, start)) start--;
+    let truncated = false;
+    while (start > 0 && !isSentenceStart(transcript, start)) {
+      if (words[i]!.end - words[start - 1]!.start > MAX_WALKBACK_SEC) {
+        truncated = true;
+        break;
+      }
+      start--;
+    }
+
+    // Extend the end through the marker's trailing dead air (2026-08-16
+    // incident, see MAX_MARKER_BLEED_SEC): repeatedly absorb any silence that
+    // starts within the bleed window and ends past the current end. The loop
+    // re-scans because absorbing one silence can bring the next within reach
+    // — the chained-silence shape.
+    let endSec = words[i]!.end;
+    if (silences && silences.length > 0) {
+      let extended = true;
+      while (extended) {
+        extended = false;
+        for (const s of silences) {
+          if (s.start <= endSec + MAX_MARKER_BLEED_SEC && s.end > endSec) {
+            endSec = s.end;
+            extended = true;
+          }
+        }
+      }
+    }
 
     // Consecutive attempts: if everything between the previous span's end and
     // this attempt's start is already being dropped, merge rather than leave a
-    // one-word island of a sentence nobody finished.
+    // one-word island of a sentence nobody finished. The seconds arm exists
+    // because the previous span's EXTENDED end can reach past word stamps the
+    // index arm never sees — the incident's "And" debris sat between two
+    // attempts that were not word-index adjacent once the first end grew.
     const prev = spans[spans.length - 1];
     let markers = 1;
     let matched = match.exact ? [] : [match.surface];
-    if (prev && start <= prev.endWord + 1) {
+    if (prev && (start <= prev.endWord + 1 || words[start]!.start <= prev.endSec)) {
       spans.pop();
       start = prev.startWord;
       markers = prev.markers + 1;
       matched = [...prev.matched, ...matched];
+      truncated = truncated || prev.truncated === true;
+      // A merged span must never shrink: the previous extension already
+      // proved that audio dead.
+      endSec = Math.max(endSec, prev.endSec);
     }
 
     spans.push({
       startWord: start,
       endWord: i,
       startSec: words[start]!.start,
-      endSec: words[i]!.end,
+      endSec,
       markers,
       marker: want,
       matched,
+      ...(truncated ? { truncated: true } : {}),
     });
   }
   return spans;
@@ -187,5 +264,11 @@ export function formatBloopSpan(transcript: Transcript, span: BloopSpan): string
     span.matched.length > 0
       ? " " + span.matched.map((m) => `matched "${m}" ~ "${span.marker}"`).join(", ")
       : "";
-  return `"${said}"${attempts}${fuzzy}`;
+  // A capped walk-back is a cut whose start the code chose by fiat, not by
+  // punctuation — the one case where the span boundary is a guess, so the
+  // report line must be loud about it.
+  const capped = span.truncated
+    ? " (walk-back capped at 30s — unpunctuated stretch; check this cut)"
+    : "";
+  return `"${said}"${attempts}${fuzzy}${capped}`;
 }

@@ -96,6 +96,24 @@ describe("punchScales", () => {
     ];
     expect(punchScales(spans, 1.2, 0.05)).toEqual([1, 1.2]);
   });
+
+  // The allowed mask (Task 6), lockstep with scenes' punchScalesFor — same
+  // span fixture, same expected scales, in punch-plan.test.ts over there.
+  it("a masked span punches at 1 without re-phasing the toggle; a short mask reads as allowed", () => {
+    const spans: KeptSpan[] = [
+      { srcIn: 0, srcOut: 2, outIn: 0, outOut: 2 },
+      { srcIn: 2.1, srcOut: 4, outIn: 2, outOut: 3.9 },
+      { srcIn: 4.2, srcOut: 6, outIn: 3.9, outOut: 5.7 },
+      { srcIn: 6.15, srcOut: 8, outIn: 5.7, outOut: 7.55 },
+      { srcIn: 8.3, srcOut: 10, outIn: 7.55, outOut: 9.25 },
+    ];
+    // Span 2 masked, span 4 still punches: the toggle flips on every
+    // qualifying gap regardless of the mask (stable indexing).
+    expect(punchScales(spans, 1.015, 0.15, [true, true, false, true, true])).toEqual([
+      1, 1, 1, 1, 1.015,
+    ]);
+    expect(punchScales(spans, 1.015, 0.15, [true, true])).toEqual([1, 1, 1.015, 1, 1.015]);
+  });
 });
 
 describe("coverTransform", () => {
@@ -157,6 +175,39 @@ describe("zoomKeyframesFor", () => {
       { tSec: 0, scale: 1 },
       { tSec: 10, scale: 1 },
     ]);
+  });
+
+  it("a span the face-only zoom gate left segment-free is a flat hold at 1 — F1 needs zero exporter changes", () => {
+    // buildZoomPlan's allowedClips (zoom.ts) emits NOTHING for a
+    // screen-subject clip: only the first clip's segments exist here. The
+    // span filter is strict (`endSec > outIn`), so the first clip's hold
+    // ending exactly at outIn=10 is NOT consulted and the static span reads
+    // scale 1 throughout — the `still` collapse below then writes one plain
+    // <value>, no keyframes.
+    const gated: ZoomSegment[] = [
+      { startSec: 0, endSec: 8, from: 1, to: 1.05 },
+      { startSec: 8, endSec: 10, from: 1.05, to: 1.05 },
+    ];
+    expect(zoomKeyframesFor(SPANS[1]!, gated)).toEqual([
+      { tSec: 10, scale: 1 },
+      { tSec: 18, scale: 1 },
+    ]);
+    // End-to-end through the emitter: the gated span gets a static cover
+    // value while the allowed span keeps its keyframed push.
+    const doc = parseXml(build({ zoomPlan: gated }).xml);
+    const clips = Array.from(doc.querySelectorAll("video > track > clipitem"));
+    const scaleParam = (clip: Element) =>
+      Array.from(clip.querySelectorAll("parameter")).find(
+        (p) => p.querySelector("parameterid")?.textContent === "scale",
+      )!;
+    expect(scaleParam(clips[0]!).querySelectorAll("keyframe").length).toBeGreaterThan(0);
+    const staticScale = scaleParam(clips[1]!);
+    expect(staticScale.querySelector("keyframe")).toBeNull();
+    // Legacy 1.07 punch (no punch plan passed) on the bare cover scale.
+    expect(Number(staticScale.querySelector("value")!.textContent)).toBeCloseTo(
+      (1600 / 9) * 1.07,
+      3,
+    );
   });
 });
 
@@ -251,6 +302,27 @@ describe("buildPremiereProject", () => {
     expect(v2[0]!.when).toBe(0);
     expect(v2[0]!.value).toBeCloseTo((1600 / 9) * 1.07, 3);
     expect(v2[v2.length - 1]!.value).toBeCloseTo((1600 / 9) * 1.07 * 1.05, 3);
+  });
+
+  it("render-props' punch plan drives the export: its scale on allowed punched spans, base on masked ones", () => {
+    const staticScales = (xml: string) =>
+      Array.from(parseXml(xml).querySelectorAll("parameter"))
+        .filter((p) => p.querySelector("parameterid")?.textContent === "scale")
+        .map((p) => Number(p.querySelector("value")!.textContent));
+    // Clip 2 is the punched turn (the 1s gap toggles) and its mask allows:
+    // it exports at the PLAN's 1.015, not the legacy 1.07.
+    const allowed = staticScales(
+      build({ punch: { scale: 1.015, allowed: [true, true] }, zoomPlan: [] }).xml,
+    );
+    expect(allowed[0]).toBeCloseTo(1600 / 9, 3);
+    expect(allowed[1]).toBeCloseTo((1600 / 9) * 1.015, 3);
+    // Same parity, mask false on the punched span: bare cover scale — the
+    // render's EdlVideo suppressed it, so the export must too.
+    const masked = staticScales(
+      build({ punch: { scale: 1.015, allowed: [true, false] }, zoomPlan: [] }).xml,
+    );
+    expect(masked[0]).toBeCloseTo(1600 / 9, 3);
+    expect(masked[1]).toBeCloseTo(1600 / 9, 3);
   });
 
   it("staticCamera disables BOTH motion layers: static scale, no keyframes, no punch", () => {

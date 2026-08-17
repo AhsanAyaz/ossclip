@@ -14,8 +14,11 @@ export interface ProduceExtras {
   speaker?: string;
   whisperModel?: string;
   whisperLanguage?: string;
+  // No `collapseRetakes` (2026-08-16): retake collapse runs automatically
+  // with --blooper-marker (inferredRetakesEnabled, produce.ts), so the
+  // wizard never emits the legacy --collapse-retakes flag — it survives only
+  // as a parseable no-op for recorded command.json replays.
   blooperMarker?: string;
-  collapseRetakes?: boolean;
   sourceIsEdited?: boolean;
   /** Opt-in "made with ossclip" credit. The wizard only ever turns it ON —
    * off is the default, and a config-on user who wants it off for one run
@@ -26,6 +29,27 @@ export interface ProduceExtras {
    * the positive `--captions` stays flags-only — it exists for replay
    * pinning, and emitting it here would restate the default. */
   captions?: boolean;
+  /** Jump-cut punch tri-state, captions' twin polarity: auto (unset) already
+   * punches face-only takes, so the wizard only ever turns it OFF (`false` →
+   * `--no-jump-cuts`) and the positive `--add-jump-cuts` stays flags-only —
+   * it exists to beat a future config-off, and emitting it here would
+   * restate the default. */
+  jumpCuts?: boolean;
+  /** The YouTube pack (Y2): the wizard only ever turns it ON — off is the
+   * default, and a config-on user who wants it off for one run types
+   * `--no-youtube`, flags-only like `--no-watermark`. */
+  youtube?: boolean;
+  /** Portrait photo path for the pack's AI thumbnail — the youtube entry's
+   * follow-up prompt; empty answers never reach here (the wizard skips the
+   * flag and the frame-grab cover stands). */
+  portrait?: string;
+  /** Who the channel is for — the youtube entry's first follow-up, skipped
+   * when the config's `audience` already answers it. Empty answers never
+   * reach here (default-elision: the config decides). */
+  audience?: string;
+  /** The durable thumbnail steer — the youtube entry's optional follow-up;
+   * empty answers never reach here, same elision as `audience`. */
+  thumbnailBrief?: string;
   /** core's ProviderName, not an inline union — a provider added there must
    * not be silently unofferable here (the pre-§132 union had already
    * drifted: it never listed "antigravity"). */
@@ -69,12 +93,25 @@ export function produceArgv(a: ProduceAnswers): string[] {
   // no flag whose value equals the default.
   if (e.whisperLanguage) argv.push("--whisper-language", e.whisperLanguage);
   if (e.blooperMarker) argv.push("--blooper-marker", e.blooperMarker);
-  if (e.collapseRetakes === true) argv.push("--collapse-retakes");
   if (e.sourceIsEdited === true) argv.push("--source-is-edited");
   if (e.watermark === true) argv.push("--watermark");
   // Strict `=== false` (never `!e.captions`): undefined means "the default,
   // on" and must emit nothing per the elision rule above.
   if (e.captions === false) argv.push("--no-captions");
+  // Same strict rule: only the wizard's OFF tick emits, and only the
+  // negative spelling — auto must stay an ABSENT flag, or the taught
+  // command line restates a default.
+  if (e.jumpCuts === false) argv.push("--no-jump-cuts");
+  // Watermark's shape: only the ON tick emits (off is the default, elided),
+  // and the portrait only rides along with a value — the wizard already
+  // dropped empty answers.
+  if (e.youtube === true) argv.push("--youtube");
+  // The youtube follow-ups ride only with a value, portrait's exact rule:
+  // the wizard already dropped empty answers, and an unset field means "the
+  // config decides" — emitting a bare flag would be a commander error.
+  if (e.audience) argv.push("--audience", e.audience);
+  if (e.portrait) argv.push("--portrait", e.portrait);
+  if (e.thumbnailBrief) argv.push("--thumbnail-brief", e.thumbnailBrief);
   if (e.llm) argv.push("--llm", e.llm);
 
   return argv;

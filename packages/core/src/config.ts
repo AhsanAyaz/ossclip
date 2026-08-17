@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ModelPrice } from "./producer/usage";
+import type { Theme } from "./scene-schema";
 
 /** Whether a finished `produce` offers to open the editor. */
 export type OpenEditorPref = "ask" | "always" | "never";
@@ -18,6 +19,24 @@ export interface OssclipConfig {
    * sheet always uses the main model. "same" disables tiering (FINDINGS §37).
    */
   fastModel?: string;
+  /**
+   * Download URLs for models the ggerganov mirror doesn't host, keyed by the
+   * bare model name — a user's own fine-tune needs one line:
+   * `"modelSources": {"my-model": "https://…/ggml-my-model.bin"}`. Wins over
+   * the curated table and the default mirror (`modelUrl` in the CLI's setup
+   * manifest). File-only like `dictionary`; validated at the consumer
+   * (`validModelSources`), so a hand-edited non-record is one warning and an
+   * ignored key, never a crash or a coerced URL.
+   */
+  modelSources?: Record<string, string>;
+  /**
+   * Default whisper language code ("ur", "auto", …) — the durable spelling
+   * of `--whisper-language` for someone whose recordings are always in one
+   * language. The flag beats this per run, and this beats the model table's
+   * implied language. File-only like `audience`; validated at the consumer
+   * (`resolveWhisperLanguage` in produce.ts), never coerced.
+   */
+  language?: string;
   /**
    * Who is in the video — "Ahsan, host of the Code with Ahsan channel".
    * Lets the repair pass recognise a mangled proper noun instead of inventing
@@ -38,7 +57,72 @@ export interface OssclipConfig {
    * `--watermark` / `--no-watermark` win over this per run.
    */
   watermark?: boolean;
+  /**
+   * Terms of art the speaker uses — "JSON", "ossclip", "Genkit" — biasing
+   * transcription (whisper `--prompt`), vouching repair corrections, and
+   * canonicalizing caption casing on every run (F4, 2026-08-16: "Jason" for
+   * JSON). `--dictionary` on a run wholesale replaces this, never merges.
+   * File-only like `watermark`; validated at the consumer
+   * (`validDictionary` in produce.ts), so a hand-edited non-array is one
+   * warning and an ignored key, never a crash or a coerced term.
+   */
+  dictionary?: string[];
+  /**
+   * Global base-theme overrides — caption/graphic colors and fonts applied to
+   * every run (F6, 2026-08-16). Partial on purpose: set `accent` alone and
+   * every other token keeps its default. Precedence per run:
+   * overrides.json (the editor's per-project doc) > this > defaultTheme.
+   * File-only; validated at the consumer (`configuredBaseTheme` in
+   * produce.ts) all-or-nothing, so one malformed key voids the whole theme
+   * with a warning instead of silently half-applying.
+   */
+  theme?: Partial<Theme>;
+  /**
+   * Run the `--youtube` pack (SEO metadata + AI thumbnail) on every produce,
+   * so the preference is a one-time config write like `watermark`.
+   * `--youtube` / `--no-youtube` win over this per run (`resolveYoutube`).
+   */
+  youtube?: boolean;
+  /**
+   * Path to the creator's portrait photo, fed to the AI thumbnail as the
+   * likeness reference — a path in the config like `browserExecutable`, set
+   * once rather than typed per run. `--portrait` wins over this. Existence
+   * is checked where the thumbnail is generated, not at load: an absent file
+   * there means a loud skip and the frame-grab cover stands.
+   */
+  portrait?: string;
+  /**
+   * Who watches the channel — "junior web devs learning AI tooling". Feeds
+   * BOTH the `--youtube` pack prompt (titles/tags for the right viewer) and
+   * the AI thumbnail's concept call, so it is set once here rather than
+   * retyped per run. `--audience` wins over this per run. File-only like
+   * `portrait`; validated at the consumer (`typeof === "string"` at use),
+   * never coerced.
+   */
+  audience?: string;
+  /**
+   * The durable thumbnail steer — "always show the terminal, never stock
+   * imagery". Fed to the AI thumbnail's concept call as a must-honor creator
+   * brief on every run. `--thumbnail-brief` wins over this per run.
+   * File-only like `audience`, validated the same way at use.
+   */
+  thumbnailBrief?: string;
+  /**
+   * Image model for the AI thumbnail (Y3). Overrides the built-in default
+   * slug; the GEMINI_API_KEY itself stays in the environment — secrets never
+   * live in config.json (env.ts's documented rule).
+   */
+  thumbnailModel?: string;
   browserExecutable?: string;
+  /**
+   * Browser tabs the render runs in parallel (2026-08-17 render-speed pass).
+   * Unset means cpus-2 with a floor of 2 — the render is decode-bound, and
+   * two cores stay free for OffthreadVideo's ffmpeg extract workers. File-only
+   * like `dictionary`; validated at the consumer (`resolveRenderConcurrency`
+   * in produce.ts) as a positive integer, so a hand-edited `"4"` or `-1` is
+   * one warning and the default, never a coerced tab count.
+   */
+  renderConcurrency?: number;
   /**
    * USD per million tokens, keyed by model id or family substring — overrides
    * the built-in assumptions in `producer/usage.ts` so a run's cost line
@@ -122,6 +206,32 @@ export function loadConfig(): OssclipConfig {
     // resolveWatermark), so a hand-edited non-boolean stays OFF, the safe
     // default for a credit.
     watermark: fileCfg.watermark,
+    // File-only for the same reason as `watermark`: these are structured
+    // values a hand-editable JSON file supplies, and parse-don't-coerce says
+    // the strict checks live at the consumer — `validDictionary` /
+    // `configuredBaseTheme` in produce.ts — where a malformed value earns a
+    // warning naming the problem and the safe default, never a coercion.
+    dictionary: fileCfg.dictionary,
+    theme: fileCfg.theme,
+    // File-only, the same posture: both are validated where they are USED —
+    // `validModelSources` / `resolveWhisperLanguage` — so a hand-edited
+    // non-record or non-string earns one warning there, never a coercion.
+    modelSources: fileCfg.modelSources,
+    language: fileCfg.language,
+    // File-only, the `watermark` posture again: `youtube` gets the strict
+    // `=== true` check at its consumer (produce's resolveYoutube), and
+    // `portrait`/`thumbnailModel` are validated where they are USED — a
+    // malformed value earns a loud skip there, never a coercion here.
+    youtube: fileCfg.youtube,
+    // File-only, the `dictionary` posture: a structured value from hand-edited
+    // JSON, validated where it is USED (`resolveRenderConcurrency`) — a
+    // malformed count earns one warning there and the cpus-2 default, never a
+    // coerced concurrency.
+    renderConcurrency: fileCfg.renderConcurrency,
+    portrait: fileCfg.portrait,
+    audience: fileCfg.audience,
+    thumbnailBrief: fileCfg.thumbnailBrief,
+    thumbnailModel: fileCfg.thumbnailModel,
     pricing: fileCfg.pricing,
   };
 }

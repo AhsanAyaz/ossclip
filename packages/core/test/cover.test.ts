@@ -51,6 +51,39 @@ describe("cover frame scoring (FINDINGS §31)", () => {
   });
 });
 
+describe("cover subject gate (2026-08-16 — the Facebook-reel stranger's face)", () => {
+  // A face×2 score hunts ANY face: on a 21-minute screen recording a reel
+  // playing inside the recorded screen won the cover. On a screen-subject
+  // take a face in frame is content, not the speaker.
+  const blurryFace = { timeSec: 5, durationSec: 10, sharpness: 10, hasFace: true, maxSharpness: 100 };
+  const sharpNoFace = { timeSec: 5, durationSec: 10, sharpness: 100, hasFace: false, maxSharpness: 100 };
+
+  it('under "face" the face still wins — talking-head runs are unchanged', () => {
+    expect(scoreCandidate({ ...blurryFace, subject: "face" })).toBeGreaterThan(
+      scoreCandidate({ ...sharpNoFace, subject: "face" }),
+    );
+    // …and an omitted subject means "face": the pre-fix default, verbatim.
+    expect(scoreCandidate(blurryFace)).toBe(scoreCandidate({ ...blurryFace, subject: "face" }));
+  });
+
+  it('under "screen" the face carries NO weight — the sharpest frame wins', () => {
+    expect(scoreCandidate({ ...sharpNoFace, subject: "screen" })).toBeGreaterThan(
+      scoreCandidate({ ...blurryFace, subject: "screen" }),
+    );
+    // A face is not a penalty either: equally sharp frames tie.
+    expect(scoreCandidate({ ...sharpNoFace, subject: "screen" })).toBe(
+      scoreCandidate({ ...sharpNoFace, hasFace: true, subject: "screen" }),
+    );
+  });
+
+  it('under "screen" earliness still breaks sharpness ties', () => {
+    const base = { durationSec: 10, sharpness: 50, hasFace: true, maxSharpness: 100, subject: "screen" as const };
+    expect(scoreCandidate({ ...base, timeSec: 1 })).toBeGreaterThan(
+      scoreCandidate({ ...base, timeSec: 9 }),
+    );
+  });
+});
+
 const words = (s: string) => s.split(/\s+/).filter(Boolean).length;
 
 describe("cover headline cap (FINDINGS §35)", () => {

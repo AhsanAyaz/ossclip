@@ -86,21 +86,107 @@ export async function extractAudio(tools: IngestTools, src: string, outWav: stri
 }
 
 /**
+ * Headroom over the exact displayed size so a zoomed span never renders from
+ * below-native pixels (2026-08-17 render-speed pass). The two motion drivers
+ * stack to at most ZOOM_MAX_SCALE (1.05) × FACE_PUNCH_SCALE (1.015) ≈ 1.066
+ * on any frame a new run emits, so 1.1 covers the worst momentary
+ * magnification with margin. (The legacy punch-less contract renders 1.07 —
+ * still under 1.1 — and pre-existing render-props keep their own full-res
+ * mezzanine anyway; see `mezzanineFileName`.)
+ */
+export const MEZZANINE_SCALE_MARGIN = 1.1;
+
+export interface MezzanineScale {
+  width: number;
+  height: number;
+  fps: number;
+}
+
+/** Nearest even dimension — yuv420 chroma subsampling needs both axes even. */
+function evenDim(v: number): number {
+  return Math.max(2, 2 * Math.round(v / 2));
+}
+
+/**
+ * The size and rate the mezzanine should be encoded at, or null when the
+ * source is already no larger than the render needs (2026-08-17 render-speed
+ * pass). Remotion's OffthreadVideo extracts EVERY sampled frame via ffmpeg
+ * on the CPU, so decode cost scales with pixels × fps — a 3456x2234@60
+ * source feeding a 1920x1080@30 render pays ~4.6× the pixels and 2× the
+ * frames the render ever shows.
+ *
+ * The target is the size at which the source is DISPLAYED: for `cover` the
+ * larger frame/source axis ratio (overflow is cropped, not shown), for
+ * `contain` the smaller (the whole frame fits inside). That target gets
+ * MEZZANINE_SCALE_MARGIN of headroom for the motion drivers, is rounded
+ * even for yuv420, and is capped at native — scaling UP would soften every
+ * frame for zero decode saved.
+ *
+ * fps: min(source, output) — frames the render never samples are pure decode
+ * waste. Safe because EDL `srcIn`/`srcOut` are SECONDS, not frame indexes:
+ * a 60→30 resample moves a cut boundary by at most 1/60s, the same
+ * magnitude whisper's word stamps already jitter by.
+ */
+export function mezzanineScale(
+  source: { width: number; height: number; fps: number },
+  frame: { width: number; height: number; fps: number },
+  sourceFit: "cover" | "contain",
+): MezzanineScale | null {
+  if (source.width <= 0 || source.height <= 0) return null;
+  const displayed =
+    sourceFit === "contain"
+      ? Math.min(frame.width / source.width, frame.height / source.height)
+      : Math.max(frame.width / source.width, frame.height / source.height);
+  const k = Math.min(1, displayed * MEZZANINE_SCALE_MARGIN);
+  // At the cap, keep the source's exact dims — even-rounding a size that is
+  // not being resampled would manufacture a 1px no-op rescale.
+  const width = k < 1 ? evenDim(source.width * k) : source.width;
+  const height = k < 1 ? evenDim(source.height * k) : source.height;
+  const fps = Math.min(source.fps, frame.fps);
+  if (width === source.width && height === source.height && fps >= source.fps) return null;
+  return { width, height, fps };
+}
+
+/**
+ * The mezzanine's filename, which IS its cache key: mezzanines are
+ * existence-keyed in the workdir, so the scale decision must live in the
+ * name — a pre-pass full-res `mezzanine.mp4` must never satisfy a run that
+ * will emit mezzanine-sized framing windows (they would land on a file with
+ * ~1.6× their pixel space and crop the wrong picture). Unscaled runs keep
+ * the legacy names so existing workdir caches stay valid; a scaled run
+ * rebuilds once under its own name and old workdirs' render-props keep
+ * referencing (and rendering from) the file they were emitted against.
+ */
+export function mezzanineFileName(cropped: boolean, scale: MezzanineScale | null): string {
+  const base = cropped ? "mezzanine-content" : "mezzanine";
+  if (!scale) return `${base}.mp4`;
+  return `${base}-${scale.width}x${scale.height}@${Math.round(scale.fps)}.mp4`;
+}
+
+/**
  * Re-encode with dense keyframes so EDL playback (<OffthreadVideo> with many
  * small trims) seeks fast. Optional — most sources play fine untouched —
  * EXCEPT when the source is letterboxed: then this pass also trims the baked
  * bars (`crop`), so everything downstream sees the picture, not picture+bars
  * (PLAN Task 7), and the pass stops being optional.
+ *
+ * `scale` (from `mezzanineScale`) downsizes to display size in the SAME
+ * pass, crop first — the scale dims are computed on the post-crop picture.
  */
 export async function makeMezzanine(
   tools: IngestTools,
   src: string,
   out: string,
-  opts: { cropVf?: string } = {},
+  opts: { cropVf?: string; scale?: MezzanineScale } = {},
 ): Promise<void> {
+  const vf = [
+    ...(opts.cropVf ? [opts.cropVf] : []),
+    ...(opts.scale ? [`scale=${opts.scale.width}:${opts.scale.height}`] : []),
+  ].join(",");
   await run(tools.ffmpegPath, [
     "-y", "-i", src,
-    ...(opts.cropVf ? ["-vf", opts.cropVf] : []),
+    ...(vf ? ["-vf", vf] : []),
+    ...(opts.scale ? ["-r", String(opts.scale.fps)] : []),
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "30", "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-b:a", "192k",
     out,

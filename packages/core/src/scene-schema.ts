@@ -186,6 +186,16 @@ export const FaceCropSchema = z.object({
    * phone footage, wrong for a webcam recording or a screen capture.
    */
   sourceAspect: z.number().positive().optional(),
+  /**
+   * What the measured face IS: the frame's subject, or an incidental face in
+   * a frame that is really about something else (2026-08-16 incident: a
+   * screen recording's camera PiP, 12% of frame height at the bottom-right,
+   * dragged the cover crop to the frame bottom and decapitated the speaker
+   * everywhere they appeared full-frame). "screen" tells the stage to center
+   * the cover instead of biasing toward the face. Absent means "face" — every
+   * pre-existing render-props keeps its old behavior.
+   */
+  subject: z.enum(["face", "screen"]).optional(),
 });
 export type FaceCrop = z.infer<typeof FaceCropSchema>;
 

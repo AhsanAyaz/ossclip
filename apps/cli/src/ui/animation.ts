@@ -424,6 +424,10 @@ export class RenderTimelineHUD {
 export function printProductionCompleteBanner(summary: {
   outPath: string;
   coverPath?: string;
+  /** The `<out>.youtube.md` SEO pack, when the run wrote one (Y2). */
+  youtubePath?: string;
+  /** The `<out>.thumbnail.png` AI thumbnail, when the run wrote one (Y3). */
+  thumbnailPath?: string;
   sourceDurationSec: number;
   outputDurationSec: number;
   sceneCount: number;
@@ -450,6 +454,12 @@ export function printProductionCompleteBanner(summary: {
     `${ansi.bold}║${ansi.reset}  ${ansi.brightCyan}▸ Video:${ansi.reset}   ${ansi.bold}${ansi.brightWhite}${summary.outPath}${ansi.reset}`,
     ...(summary.coverPath
       ? [`${ansi.bold}║${ansi.reset}  ${ansi.brightMagenta}▸ Cover:${ansi.reset}   ${ansi.white}${summary.coverPath}${ansi.reset}`]
+      : []),
+    ...(summary.youtubePath
+      ? [`${ansi.bold}║${ansi.reset}  ${ansi.brightRed}▸ YouTube:${ansi.reset} ${ansi.white}${summary.youtubePath}${ansi.reset}`]
+      : []),
+    ...(summary.thumbnailPath
+      ? [`${ansi.bold}║${ansi.reset}  ${ansi.brightYellow}▸ Thumb:${ansi.reset}   ${ansi.white}${summary.thumbnailPath}${ansi.reset}`]
       : []),
     `${ansi.bold}║${ansi.reset}  ${ansi.green}▸ Engine:${ansi.reset}  ${ansi.bold}${ansi.brightCyan}${providerLabel}${ansi.reset} + ${ansi.brightWhite}Remotion${ansi.reset} + ${ansi.brightWhite}Whisper.cpp${ansi.reset}`,
     `${ansi.bold}║${ansi.reset}  ${ansi.yellow}▸ Cut:${ansi.reset}     ${ansi.bold}${summary.outputDurationSec.toFixed(1)}s${ansi.reset} (trimmed from ${summary.sourceDurationSec.toFixed(1)}s · ${ansi.green}-${cutPct}% dead air/flubs${ansi.reset})`,

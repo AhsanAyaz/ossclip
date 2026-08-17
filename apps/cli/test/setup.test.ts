@@ -331,4 +331,25 @@ describe("openCommand (the `open` spawn crashed everywhere but macOS)", () => {
       args: ["/c", "start", "", "http://u"],
     });
   });
+
+  // The thumbnail confirm reuses the same opener for FILE paths (viewer, not
+  // browser) — every platform's opener treats them identically, so the rows
+  // pin that a path rides through verbatim, exactly like a URL.
+  it("opens file paths through the same per-platform opener", () => {
+    expect(openCommand("/tmp/final.thumbnail.png", "darwin")).toEqual({
+      bin: "open",
+      args: ["/tmp/final.thumbnail.png"],
+    });
+    expect(openCommand("/tmp/final.thumbnail.png", "linux")).toEqual({
+      bin: "xdg-open",
+      args: ["/tmp/final.thumbnail.png"],
+    });
+    // A path with spaces is why the empty title arg is load-bearing: spawn
+    // quotes the spaced arg, and without the empty string `start` would read
+    // the quoted path as its window title and open nothing.
+    expect(openCommand("C:\\out\\my talk.thumbnail.png", "win32")).toEqual({
+      bin: "cmd",
+      args: ["/c", "start", "", "C:\\out\\my talk.thumbnail.png"],
+    });
+  });
 });

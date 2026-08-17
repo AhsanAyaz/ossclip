@@ -1,11 +1,16 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   contentRectAt,
   contentRectTimeline,
   cropFilter,
+  materializeTimeline,
   parseCropdetect,
   stableContentRect,
 } from "../src/content-rect";
+import { detectContentRect } from "../src/content-rect-detect";
 
 const CROPDETECT_LINE =
   "[Parsed_cropdetect_1 @ 0x55e] x1:0 x2:1439 y1:874 y2:1683 w:1440 h:810 x:0 y:874 " +
@@ -242,6 +247,119 @@ describe("contentRectAt", () => {
 
   it("an empty timeline is the full frame", () => {
     expect(contentRectAt([], 3, { width: W, height: H }).full).toBe(true);
+  });
+});
+
+/**
+ * 2026-08-16 landscape screen-recording over-crop. A 72px dark strip (2.08%
+ * inset, 1px past SNAP_FRAC's 69.1px tolerance) plus a 15.4s/1435s outlier
+ * segment classified a uniform take as "mixed framing", sent it into
+ * normalization, and destroyed 55% of the picture. The fix is a second
+ * judgement on top of the measured timeline: a rect difference must AMOUNT TO
+ * something before it is believed as a framing change.
+ */
+describe("materializeTimeline (2026-08-16 incident)", () => {
+  /** Contiguous segments from a list of [durationSec, rect] pairs. */
+  const seq = (
+    parts: Array<[number, { x: number; y: number; w: number; h: number; full: boolean }]>,
+  ) => {
+    let t = 0;
+    return parts.map(([dur, rect]) => {
+      const seg = { startSec: t, endSec: t + dur, rect };
+      t += dur;
+      return seg;
+    });
+  };
+
+  it("a 2% dark strip on one side is not a framing change (2026-08-16 incident)", () => {
+    // The incident geometry: 3456x2234 frame, cropdetect flickering between
+    // the full frame and a rect missing a 72px strip on the right.
+    const W = 3456;
+    const H = 2234;
+    const FULL = { x: 0, y: 0, w: W, h: H, full: true };
+    const STRIP = { x: 0, y: 0, w: 3384, h: H, full: false };
+    const out = materializeTimeline(
+      seq([[100, FULL], [100, STRIP], [100, FULL], [100, STRIP], [100, FULL]]),
+      W,
+      H,
+      500,
+    );
+    expect(out).toEqual([{ startSec: 0, endSec: 500, rect: FULL }]);
+  });
+
+  it("a real letterboxed strip stays material", () => {
+    // The 144bbfb motivating geometry: 1440x2560 portrait frame, landscape
+    // strip with black baked in above and below — 34% inset per side, nothing
+    // like measurement jitter. Over-hardening here would regress Task C.
+    const W = 1440;
+    const H = 2560;
+    const FULL = { x: 0, y: 0, w: W, h: H, full: true };
+    const STRIP = { x: 0, y: 876, w: W, h: 808, full: false };
+    const out = materializeTimeline(
+      seq([[20, STRIP], [20, FULL], [20, STRIP]]),
+      W,
+      H,
+      60,
+    );
+    expect(out).toHaveLength(3);
+    expect(out[0]!.rect).toEqual(STRIP);
+    expect(out[1]!.rect).toEqual(FULL);
+    expect(out[2]!.rect).toEqual(STRIP);
+  });
+
+  it("a framing class under 5% of runtime is absorbed", () => {
+    // The incident's second trigger: one 15.4s dark segment in 1435s (1.1%)
+    // whose rect is geometrically plausible (17.6% inset — material on its
+    // own) but too brief to be a real framing change. It survived the
+    // per-run guards and went on to set the canvas aspect for the whole take.
+    const W = 3456;
+    const H = 2234;
+    const FULL = { x: 0, y: 0, w: W, h: H, full: true };
+    const ODD = { x: 0, y: 0, w: 2848, h: H, full: false };
+    const out = materializeTimeline(
+      seq([[710, FULL], [15, ODD], [710, FULL]]),
+      W,
+      H,
+      1435,
+    );
+    expect(out).toEqual([{ startSec: 0, endSec: 1435, rect: FULL }]);
+  });
+
+  it("an empty timeline passes through untouched", () => {
+    expect(materializeTimeline([], 1440, 2560, 30)).toEqual([]);
+  });
+});
+
+describe("detectContentRect sees the materialized timeline", () => {
+  it("a cached jittery timeline re-classifies as uniform without a re-measure", async () => {
+    // The replay regression: the incident's content-rect.json (cache v3)
+    // stores the RAW jittery timeline. Materialization happens on top of the
+    // cache read, so the broken workdir heals with no CACHE_VERSION bump —
+    // ffmpeg must never run here (the stub path would throw if spawned).
+    const W = 3456;
+    const H = 2234;
+    const FULL = { x: 0, y: 0, w: W, h: H, full: true };
+    const STRIP = { x: 0, y: 0, w: 3384, h: H, full: false };
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-content-rect-"));
+    writeFileSync(
+      join(dir, "content-rect.json"),
+      JSON.stringify({
+        version: 3,
+        timeline: [
+          { startSec: 0, endSec: 100, rect: FULL },
+          { startSec: 100, endSec: 200, rect: STRIP },
+          { startSec: 200, endSec: 300, rect: FULL },
+        ],
+      }),
+    );
+    const detection = await detectContentRect(
+      { ffmpegPath: join(dir, "ffmpeg-must-not-run") },
+      join(dir, "missing.mp4"),
+      { width: W, height: H, duration: 300 },
+      { cacheDir: dir },
+    );
+    expect(detection.timeline).toEqual([{ startSec: 0, endSec: 300, rect: FULL }]);
+    expect(detection.uniform).toEqual(FULL);
   });
 });
 

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
 import type { OssclipConfig } from "@ossclip/core";
+import { modelUrl, validModelSources, whisperModelPath } from "./setup/manifest";
 
 /**
  * `ossclip doctor` (R18 §90a): check every prerequisite and print the exact
@@ -126,9 +126,11 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
         }),
   });
 
-  // Same resolution `produce` uses: an absolute model is a file path, a bare
-  // name resolves inside modelDir as ggml-<name>.bin.
-  const modelPath = isAbsolute(cfg.model) ? cfg.model : join(cfg.modelDir, `ggml-${cfg.model}.bin`);
+  // Same resolution `produce` uses (whisperModelPath — one rule, three
+  // sites), and the same URL source: the fix line used to hold its own copy
+  // of the ggerganov URL, which 404'd for curated/custom names and the
+  // `curl -L` then saved the 404 HTML as a fake model.
+  const modelPath = whisperModelPath(cfg.model, cfg.modelDir);
   const modelOk = p.exists(modelPath);
   checks.push({
     name: `whisper model (${cfg.model})`,
@@ -139,7 +141,7 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
       : {
           fix: viaSetup(
             `mkdir -p ${cfg.modelDir} && curl -L -o ${modelPath} ` +
-              `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${cfg.model}.bin`,
+              modelUrl(cfg.model, validModelSources(cfg.modelSources)),
           ),
         }),
   });

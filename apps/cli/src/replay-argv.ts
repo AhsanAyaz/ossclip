@@ -17,6 +17,10 @@
  * the direct path byte-identical to what it always wrote.
  */
 
+// Type-only, so no runtime edge back into produce.ts (which imports this
+// module): the tri-state's vocabulary belongs to its resolver.
+import type { JumpCutsMode } from "./produce";
+
 let stashed: string[] | null = null;
 
 /**
@@ -53,6 +57,16 @@ export function recordedProduceArgs(pins: {
   clipWindow?: string;
   watermark?: boolean;
   captions?: boolean;
+  jumpCuts?: JumpCutsMode;
+  /** The RESOLVED dictionary terms — pinned only when non-empty. */
+  dictionary?: string[];
+  youtube?: boolean;
+  /** The RESOLVED portrait path — a path, never a secret. */
+  portrait?: string;
+  /** The RESOLVED audience text — pinned only when non-empty. */
+  audience?: string;
+  /** The RESOLVED thumbnail brief — pinned only when non-empty. */
+  thumbnailBrief?: string;
 }): string[] {
   const args = consumeReplayArgv() ?? process.argv.slice(2);
   if (pins.llm !== undefined && !args.includes("--llm")) {
@@ -88,6 +102,67 @@ export function recordedProduceArgs(pins: {
   // `captionsHidden` override is not folded in (see produce.ts's call site).
   if (pins.captions !== undefined && !args.includes("--captions") && !args.includes("--no-captions")) {
     args.push(pins.captions ? "--captions" : "--no-captions");
+  }
+  // The jump-cuts pin covers the two TYPED states only — force spells
+  // --add-jump-cuts, off spells --no-jump-cuts, and either typed flag
+  // settles the tri-state, so the includes-guard checks BOTH spellings
+  // before appending either. "auto" stays UNPINNED, which is the captions
+  // rationale run in reverse: there is no flag that SPELLS auto to pin
+  // with, and with no config input today an argv carrying neither flag
+  // replays as auto identically everywhere. The captions comment's warning
+  // still applies — the day a jumpCuts config key lands, auto records made
+  // after it must pin their resolved on/off like the watermark's, and the
+  // old unpinned auto records are the accepted cost of a flag pair that
+  // reserves both spellings for the typed states.
+  if (
+    pins.jumpCuts !== undefined &&
+    pins.jumpCuts !== "auto" &&
+    !args.includes("--add-jump-cuts") &&
+    !args.includes("--no-jump-cuts")
+  ) {
+    args.push(pins.jumpCuts === "force" ? "--add-jump-cuts" : "--no-jump-cuts");
+  }
+  // The dictionary pin (review finding, F4 follow-up): the resolved terms may
+  // have come from ~/.ossclip/config.json, and the dictionary feeds the
+  // whisper prompt, the repair vouched set and caption casing — so an
+  // unpinned record replays a DIFFERENT transcript the moment that config is
+  // edited. Comma-joined into one value, the exact spelling `--dictionary`
+  // takes (dictionaryFlag re-splits and trims on replay). Empty stays
+  // unpinned: there is no flag spelling for "no terms", and `--dictionary ""`
+  // would split to [] anyway — an argv without the flag replays as "config
+  // decides", the accepted cost mirroring jump-cuts' unpinnable auto.
+  if (pins.dictionary !== undefined && pins.dictionary.length > 0 && !args.includes("--dictionary")) {
+    args.push("--dictionary", pins.dictionary.join(", "));
+  }
+  // The youtube pin — the watermark's rationale verbatim: its effective
+  // default is config-dependent (`youtube: true` in ~/.ossclip/config.json),
+  // so every record carries the RESOLVED state in BOTH directions, or a
+  // later config edit silently changes what the editor's Render writes
+  // beside the replayed video.
+  if (pins.youtube !== undefined && !args.includes("--youtube") && !args.includes("--no-youtube")) {
+    args.push(pins.youtube ? "--youtube" : "--no-youtube");
+  }
+  // The portrait pin: the resolved PATH (never a secret — the API key stays
+  // in the environment), so a replay renders the thumbnail from the same
+  // face the run did even after the config's `portrait` moves.
+  if (pins.portrait !== undefined && !args.includes("--portrait")) {
+    args.push("--portrait", pins.portrait);
+  }
+  // Audience and thumbnail-brief pins, the portrait's rationale exactly: the
+  // resolved values may have come from ~/.ossclip/config.json, and both steer
+  // LLM prompts (the youtube pack, the thumbnail concept) — an unpinned
+  // record would replay different metadata after a config edit. Empty stays
+  // unpinned, the dictionary's rule: there is no flag spelling for "no
+  // steer", and an argv without the flag replays as "config decides".
+  if (pins.audience !== undefined && pins.audience.length > 0 && !args.includes("--audience")) {
+    args.push("--audience", pins.audience);
+  }
+  if (
+    pins.thumbnailBrief !== undefined &&
+    pins.thumbnailBrief.length > 0 &&
+    !args.includes("--thumbnail-brief")
+  ) {
+    args.push("--thumbnail-brief", pins.thumbnailBrief);
   }
   return args;
 }

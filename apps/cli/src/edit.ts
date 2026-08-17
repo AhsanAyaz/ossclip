@@ -1,12 +1,46 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod/v4";
-import { OverrideDocSchema, emptyOverrideDoc } from "@ossclip/core";
+import {
+  OverrideDocSchema,
+  THUMBNAIL_APPROVED_BASENAME,
+  YOUTUBE_APPROVED_BASENAME,
+  YoutubePackSchema,
+  formatYoutubeMarkdown,
+  trimTagsToLimit,
+  type YoutubePack,
+  ThumbnailConceptApprovedSchema,
+  ThumbnailConceptSchema,
+  approvedOverlayText,
+  buildThumbnailPrompt,
+  emptyOverrideDoc,
+  // Static import is fine here: the @google/genai SDK load is LAZY inside
+  // this function (core's near-zero-dep rule), so the server pays for it
+  // only when a regenerate actually runs.
+  generateThumbnailImage,
+  loadConfig,
+  PORTRAIT_MIME_TYPES,
+  portraitMimeType,
+  thumbnailImageCacheName,
+  type GenerateThumbnailImageOptions,
+  type ThumbnailConcept,
+  type ThumbnailConceptApproved,
+} from "@ossclip/core";
+import { artifactPath, expandHome } from "./paths";
+import {
+  PORTRAIT_OVERRIDE_BASENAME,
+  portraitExtensionForMime,
+  portraitOverridePath,
+  resolvePortrait,
+  type ResolvedPortrait,
+} from "./portrait-override";
+import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
 
 /**
  * Where the built editor page lives (R18 §90b): `editor-dist/` inside this
@@ -192,7 +226,18 @@ function sendFile(
 
 export async function startEditServer(
   workdirArg?: string,
-  opts: { port?: number; pageDir?: string; recentDir?: string } = {},
+  opts: {
+    port?: number;
+    pageDir?: string;
+    recentDir?: string;
+    /** The image-generation seam (thumbnailStep's `generate` shape) — tests
+     * inject a stub and never import @google/genai. */
+    generateThumbnail?: (o: GenerateThumbnailImageOptions) => Promise<Uint8Array>;
+    /** Config seam for the thumbnail panel — tests inject `() => ({})` so a
+     * run never reads the runner's real ~/.ossclip/config.json (the
+     * `recentDir` rule applied to reads). */
+    loadCfg?: () => { youtube?: unknown; portrait?: unknown; thumbnailModel?: unknown };
+  } = {},
 ): Promise<EditServer> {
   // MUTABLE since R17 §83: the server can start with no project (the page
   // shows a picker) and switch projects without restarting. Every workdir-
@@ -220,6 +265,130 @@ export async function startEditServer(
     await recordRecentProject(dir, opts.recentDir);
   };
   if (workdirArg !== undefined) await openWorkdir(workdirArg);
+
+  // ---- AI thumbnail (editor panel, 2026-08-17) ----------------------------
+  // The panel round-trips through the workdir's approval file
+  // (thumbnail-concept-approved.json), NOT overrides.json: the approval file
+  // is the contract thumbnailStep already honors on every CLI replay, so an
+  // edit persisted there survives into future renders with zero new plumbing.
+  const approvedConceptPath = (): string => join(workdir!, THUMBNAIL_APPROVED_BASENAME);
+  // One image call at a time — it costs money, and a double-click must not
+  // buy two.
+  let thumbnailBusy = false;
+  /** command.json's recorded invocation, or null when absent/corrupt — the
+   * thumbnail panel degrades to the config fallback rather than 500ing. */
+  const readCommandRecord = async (): Promise<z.infer<typeof CommandSchema> | null> => {
+    if (!existsSync(commandPath())) return null;
+    try {
+      const parsed = CommandSchema.safeParse(JSON.parse(await readFile(commandPath(), "utf8")));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  };
+  /** `<out><ext>` from the recorded out (the top-level `out` when recorded,
+   * else the argv's -o/--out resolved against the recorded cwd — the
+   * replay's own resolution), or null when no out was ever recorded. Shared
+   * by the thumbnail dest and the youtube markdown — one spelling of the
+   * out-resolution rule, not two. */
+  const recordedArtifactPath = async (ext: string): Promise<string | null> => {
+    const cmd = await readCommandRecord();
+    if (!cmd) return null;
+    const out = cmd.out ?? lastFlagValue(cmd.args, ["-o", "--out"]);
+    if (out === undefined) return null;
+    return artifactPath(resolve(cmd.cwd, expandHome(out)), ext);
+  };
+  const thumbnailDestPath = (): Promise<string | null> => recordedArtifactPath(".thumbnail.png");
+  /** Newest workdir file passing `test`, by mtime — the cache fallbacks. */
+  const newestWorkdirFile = async (test: (name: string) => boolean): Promise<string | null> => {
+    const names = (await readdir(workdir!)).filter(test);
+    const paths = names
+      .map((n) => join(workdir!, n))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    return paths[0] ?? null;
+  };
+  /** The image the panel shows: the destination copy when it exists, else
+   * the newest workdir cache — a --no-render run (or a moved output) still
+   * has the cache to show. */
+  const currentThumbnailImage = async (): Promise<string | null> => {
+    const dest = await thumbnailDestPath();
+    if (dest !== null && existsSync(dest)) return dest;
+    return newestWorkdirFile((n) => n.startsWith("thumbnail-") && n.endsWith(".png"));
+  };
+  /** The approved file, parsed — null when absent or corrupt (a corrupt
+   * decision file must not brick the panel; the next regenerate atomically
+   * replaces it). */
+  const readApprovedConcept = async (): Promise<ThumbnailConceptApproved | null> => {
+    if (!existsSync(approvedConceptPath())) return null;
+    try {
+      const parsed = ThumbnailConceptApprovedSchema.safeParse(
+        JSON.parse(await readFile(approvedConceptPath(), "utf8")),
+      );
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  };
+  // ---- Portrait override (editor face swap, 2026-08-17) -------------------
+  // A per-project `portrait-override.<ext>` in the workdir that outranks the
+  // pin and the config (portrait-override.ts has the precedence argument).
+  // Decoded size cap for an uploaded portrait — generous for a headshot, but
+  // a bound: this whole body is buffered in memory before the write.
+  const PORTRAIT_MAX_BYTES = 15 * 1024 * 1024;
+  /** The portrait a render would use right now — resolvePortrait is the same
+   * helper thumbnailPanelState runs, so the portrait-image endpoint and the
+   * DELETE response can never disagree with the panel state. */
+  const resolveServerPortrait = async (): Promise<ResolvedPortrait | undefined> => {
+    const cmd = await readCommandRecord();
+    return resolvePortrait({
+      overridePath: portraitOverridePath(workdir!),
+      flagPortrait: lastFlagValue(cmd?.args ?? [], ["--portrait"]),
+      cfgPortrait: (opts.loadCfg ?? loadConfig)().portrait,
+    });
+  };
+  /** The GET/POST/DELETE responses' portrait block: where to fetch the
+   * resolved portrait and which precedence level won — null when none
+   * resolved or the resolved path points at nothing. mtime as the ts, the
+   * thumbnail imageUrl's own cache-busting rule. */
+  const portraitResponse = (resolved: ResolvedPortrait | undefined): { url: string; source: string } | null =>
+    resolved !== undefined && existsSync(resolved.path)
+      ? {
+          url: `/api/thumbnail/portrait-image?ts=${Math.round(statSync(resolved.path).mtimeMs)}`,
+          source: resolved.source,
+        }
+      : null;
+
+  // ---- YouTube SEO pack (editor panel, 2026-08-17) ------------------------
+  // The thumbnail block's approval-file contract applied to the pack: the
+  // panel round-trips through youtube-pack-approved.json, which produce's Y2
+  // block honors VERBATIM on every replay — an edit persisted there survives
+  // into future renders with zero new plumbing.
+  const approvedPackPath = (): string => join(workdir!, YOUTUBE_APPROVED_BASENAME);
+  /** The pack the panel shows: the approved file first (the user's
+   * decision), else the newest valid `youtube-<key>.json` cache (what the
+   * last produce generated), else null — the run never generated metadata.
+   * Lenient reads throughout, the GET-path posture: a corrupt file is
+   * skipped, never a 500. */
+  const currentYoutubePack = async (): Promise<YoutubePack | null> => {
+    const caches = (await readdir(workdir!))
+      // The approved basename itself matches the `youtube-` prefix — exclude
+      // it from the cache list so it can't be read twice with two postures.
+      .filter(
+        (n) => n.startsWith("youtube-") && n.endsWith(".json") && n !== YOUTUBE_APPROVED_BASENAME,
+      )
+      .map((n) => join(workdir!, n))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    const candidates = existsSync(approvedPackPath()) ? [approvedPackPath(), ...caches] : caches;
+    for (const path of candidates) {
+      try {
+        const parsed = YoutubePackSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
+        if (parsed.success) return parsed.data;
+      } catch {
+        // skip a corrupt file
+      }
+    }
+    return null;
+  };
 
   // One render at a time (R11 Task 4.2). The child is killed on server
   // close so a Ctrl-C on the edit server never orphans an ffmpeg.
@@ -554,6 +723,329 @@ export async function startEditServer(
           await writeFile(tmp, JSON.stringify(parsed.data, null, 2));
           await rename(tmp, overridesPath());
           return send(200, { ok: true });
+        }
+
+        if (url.pathname === "/api/thumbnail" && req.method === "GET") {
+          // The panel's one status call (2026-08-17): availability, the
+          // concept to prefill, and where the current image is. All reads —
+          // the panel owns no state on the server.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const cmd = await readCommandRecord();
+          const approved = await readApprovedConcept();
+          const approvedSkip = approved !== null && "skip" in approved;
+          let concept: ThumbnailConcept | null = approved !== null && !("skip" in approved) ? approved : null;
+          if (concept === null) {
+            // No approval on file — prefill from the newest concept cache, so
+            // the panel starts from what the last produce actually prompted
+            // with. Opportunistic: a corrupt cache is skipped, never a 500.
+            const names = (await readdir(workdir)).filter(
+              (n) =>
+                n.startsWith("thumbnail-concept-") &&
+                n.endsWith(".json") &&
+                n !== THUMBNAIL_APPROVED_BASENAME,
+            );
+            const byNewest = names
+              .map((n) => join(workdir!, n))
+              .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+            for (const cache of byNewest) {
+              try {
+                const parsed = ThumbnailConceptSchema.safeParse(
+                  JSON.parse(await readFile(cache, "utf8")),
+                );
+                if (parsed.success) {
+                  concept = parsed.data;
+                  break;
+                }
+              } catch {
+                // skip a corrupt cache file
+              }
+            }
+          }
+          const image = await currentThumbnailImage();
+          const key = process.env.GEMINI_API_KEY;
+          const state = thumbnailPanelState({
+            commandArgs: cmd?.args ?? null,
+            cfg: (opts.loadCfg ?? loadConfig)(),
+            hasKey: key !== undefined && key !== "",
+            approvedSkip,
+            hasConcept: concept !== null,
+            hasImage: image !== null,
+            portraitExists: existsSync,
+            ...(portraitOverridePath(workdir) !== null
+              ? { overridePortraitPath: portraitOverridePath(workdir)! }
+              : {}),
+          });
+          return send(200, {
+            status: state.status,
+            ...(state.reason !== undefined ? { reason: state.reason } : {}),
+            concept,
+            // mtime as the ts so the URL changes exactly when the file does —
+            // the panel appends it verbatim and the browser cache stays out
+            // of the way.
+            imageUrl:
+              image !== null
+                ? `/api/thumbnail/image?ts=${Math.round(statSync(image).mtimeMs)}`
+                : null,
+            model: state.model,
+            // The swap strip's state: which portrait a render would use and
+            // where to preview it. Built from the SAME resolution the state
+            // above ran, via portraitResponse's existence check.
+            portrait: portraitResponse(
+              state.portraitPath !== undefined && state.portraitSource !== undefined
+                ? { path: state.portraitPath, source: state.portraitSource }
+                : undefined,
+            ),
+          });
+        }
+
+        if (url.pathname === "/api/thumbnail/image" && req.method === "GET") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const image = await currentThumbnailImage();
+          if (image === null) return send(404, { error: "no thumbnail image" });
+          // Whole-file read rather than sendFile: a thumbnail is ~1-2MB and
+          // this response wants a no-store header — a regenerate REPLACES the
+          // file behind a URL the panel busts with ?ts, and a cached 200
+          // would show the old image against the new ts on some proxies.
+          const bytes = await readFile(image);
+          res.writeHead(200, {
+            "content-type": "image/png",
+            "cache-control": "no-store",
+            "content-length": String(bytes.length),
+          });
+          res.end(bytes);
+          return;
+        }
+
+        if (url.pathname === "/api/thumbnail/portrait-image" && req.method === "GET") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const resolved = await resolveServerPortrait();
+          if (resolved === undefined || !existsSync(resolved.path)) {
+            return send(404, { error: "no portrait resolved for this project" });
+          }
+          // Whole-file read + no-store, the thumbnail image endpoint's exact
+          // posture: a swap REPLACES the file behind a URL the panel busts
+          // with ?ts, and a cached 200 would show the old face.
+          const bytes = await readFile(resolved.path);
+          res.writeHead(200, {
+            "content-type": portraitMimeType(resolved.path) ?? "application/octet-stream",
+            "cache-control": "no-store",
+            "content-length": String(bytes.length),
+          });
+          res.end(bytes);
+          return;
+        }
+
+        if (url.pathname === "/api/thumbnail/portrait" && req.method === "POST") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          const parsed = z
+            .object({ data: z.string().min(1), mimeType: z.string() })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: "expected { data: base64, mimeType }" });
+          // The extension comes from the SAME table portraitMimeType reads,
+          // so an accepted upload can never later be an "unsupported portrait
+          // format" skip. The 400 names the accepted set — the exact-set
+          // posture the CLI's own skip message uses.
+          const ext = portraitExtensionForMime(parsed.data.mimeType);
+          if (ext === undefined) {
+            const accepted = [...new Set(Object.values(PORTRAIT_MIME_TYPES))].join(", ");
+            return send(400, {
+              error: `unsupported portrait mimeType "${parsed.data.mimeType}" — accepted: ${accepted}`,
+            });
+          }
+          const bytes = Buffer.from(parsed.data.data, "base64");
+          if (bytes.length === 0) return send(400, { error: "portrait data decoded to zero bytes" });
+          if (bytes.length > PORTRAIT_MAX_BYTES) {
+            return send(400, {
+              error: `portrait too large (${(bytes.length / (1024 * 1024)).toFixed(1)}MB) — the override is capped at 15MB`,
+            });
+          }
+          // ONE override, ever: drop any other-extension override BEFORE the
+          // write, not after — in the between-window the resolution falls back
+          // to the flag/config portrait, which beats portraitOverridePath's
+          // table-order pick serving the STALE face next to the new one.
+          for (const other of Object.keys(PORTRAIT_MIME_TYPES)) {
+            if (other === ext) continue;
+            const stale = join(workdir, `${PORTRAIT_OVERRIDE_BASENAME}.${other}`);
+            if (existsSync(stale)) await unlink(stale);
+          }
+          // Atomic like the overrides write: a produce replay may resolve the
+          // portrait at any moment, and half a face is worse than the old one.
+          const dest = join(workdir, `${PORTRAIT_OVERRIDE_BASENAME}.${ext}`);
+          const tmp = `${dest}.tmp`;
+          await writeFile(tmp, bytes);
+          await rename(tmp, dest);
+          // No auto-regenerate: an image call costs money, and swap → edit
+          // text → ONE Regenerate is the intended loop. The panel just
+          // updates its strip from this response.
+          return send(200, { ok: true, portrait: portraitResponse({ path: dest, source: "override" }) });
+        }
+
+        if (url.pathname === "/api/thumbnail/portrait" && req.method === "DELETE") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          // Every extension, not just the resolved one — a hand-copied second
+          // override must not survive a "Use default".
+          for (const ext of Object.keys(PORTRAIT_MIME_TYPES)) {
+            const path = join(workdir, `${PORTRAIT_OVERRIDE_BASENAME}.${ext}`);
+            if (existsSync(path)) await unlink(path);
+          }
+          // Respond with the re-resolved state — the flag/config fallback the
+          // project now renders with, or null when there never was one.
+          return send(200, { ok: true, portrait: portraitResponse(await resolveServerPortrait()) });
+        }
+
+        if (url.pathname === "/api/thumbnail/regenerate" && req.method === "POST") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          // An image call costs money — one at a time, a second is a 409
+          // like a second render.
+          if (thumbnailBusy) return send(409, { error: "a thumbnail generation is already running" });
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          const parsed = z
+            .object({ concept: ThumbnailConceptSchema })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: parsed.error.message });
+          // The §35 word cap, thumbnailStep's exact treatment via the shared
+          // helper — the capped text is what the approval file, the prompt
+          // AND the image cache key all hold.
+          const concept: ThumbnailConcept = {
+            ...parsed.data.concept,
+            overlayText: approvedOverlayText(parsed.data.concept.overlayText),
+          };
+          const cmd = await readCommandRecord();
+          const key = process.env.GEMINI_API_KEY;
+          const state = thumbnailPanelState({
+            commandArgs: cmd?.args ?? null,
+            cfg: (opts.loadCfg ?? loadConfig)(),
+            hasKey: key !== undefined && key !== "",
+            // Only availability matters here — a skip file does not block a
+            // regenerate (writing the approved concept below REPLACES the
+            // skip, which is exactly what the user is asking for), and the
+            // has-concept/has-image distinction is a GET-only nicety.
+            approvedSkip: false,
+            hasConcept: true,
+            hasImage: true,
+            portraitExists: existsSync,
+            // The swapped face rides the same resolution here as the GET —
+            // regenerating with the config headshot after a swap would be
+            // the panel lying about its own strip.
+            ...(portraitOverridePath(workdir) !== null
+              ? { overridePortraitPath: portraitOverridePath(workdir)! }
+              : {}),
+          });
+          if (state.status === "unavailable") {
+            // Precondition, not a generation failure — 412 like a render
+            // without command.json.
+            return send(412, {
+              error:
+                `thumbnail unavailable (${state.reason}) — it needs a produce run with ` +
+                "--youtube, a portrait photo and GEMINI_API_KEY in the environment",
+            });
+          }
+          const portraitPath = state.portraitPath!;
+          const mimeType = portraitMimeType(portraitPath);
+          if (mimeType === undefined) {
+            return send(412, {
+              error: `unsupported portrait format "${portraitPath}" — use png, jpg, jpeg or webp`,
+            });
+          }
+          // Persist the edited concept BEFORE generating (the approval-file
+          // contract): the edit is the user's decision, and it must survive
+          // both a failed generation and every future CLI replay —
+          // thumbnailStep reads this file verbatim and never asks a model
+          // again. Atomic like the overrides write: produce may read it at
+          // any moment.
+          const tmp = `${approvedConceptPath()}.tmp`;
+          await writeFile(tmp, JSON.stringify(concept, null, 2));
+          await rename(tmp, approvedConceptPath());
+          thumbnailBusy = true;
+          try {
+            const portraitBytes = await readFile(portraitPath);
+            let bytes: Uint8Array;
+            try {
+              bytes = await (opts.generateThumbnail ?? generateThumbnailImage)({
+                apiKey: key!,
+                model: state.model,
+                prompt: buildThumbnailPrompt(concept, true),
+                portrait: { data: portraitBytes.toString("base64"), mimeType },
+              });
+            } catch (err) {
+              // 200 with ok:false — the panel shows this inline, and the API
+              // message rides VERBATIM (§132 posture: the model slug is
+              // user-specified, its rejection is deterministic, no
+              // paraphrase). The approved concept above is already on disk.
+              return send(200, {
+                ok: false,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+            // The same cache name thumbnailStep would compute for this exact
+            // concept, so a later produce replay is a cache hit, not a second
+            // paid call — then the destination copy, when an out is recorded.
+            const cache = join(
+              workdir,
+              thumbnailImageCacheName(
+                state.model,
+                concept,
+                createHash("sha1").update(portraitBytes).digest("hex"),
+              ),
+            );
+            await writeFile(cache, bytes);
+            const dest = await thumbnailDestPath();
+            if (dest !== null) await copyFile(cache, dest);
+            return send(200, { ok: true, imageUrl: `/api/thumbnail/image?ts=${Date.now()}` });
+          } finally {
+            thumbnailBusy = false;
+          }
+        }
+
+        if (url.pathname === "/api/youtube" && req.method === "GET") {
+          // The SEO panel's one status call (2026-08-17): the pack to
+          // prefill and where the markdown lands. All reads — the panel owns
+          // no state on the server.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const pack = await currentYoutubePack();
+          return send(200, {
+            available: pack !== null,
+            // no-pack is the ONE reason: the run never generated metadata
+            // (no --youtube, no provider, or the call failed) — the panel
+            // copy names the fix.
+            ...(pack === null ? { reason: "no-pack" as const } : {}),
+            pack,
+            mdPath: await recordedArtifactPath(".youtube.md"),
+          });
+        }
+
+        if (url.pathname === "/api/youtube" && req.method === "PUT") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          const parsed = z
+            .object({ pack: YoutubePackSchema })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: parsed.error.message });
+          // generateYoutubePack's own post-parse guard applied to the edit:
+          // the schema cannot express the 500-char joined cap, and dropping
+          // tags from the end is cheaper than refusing the whole save.
+          const pack: YoutubePack = {
+            ...parsed.data.pack,
+            tags: trimTagsToLimit(parsed.data.pack.tags),
+          };
+          // The approval-file contract (the thumbnail regenerate above): the
+          // edit is the user's decision, and produce's Y2 block reads this
+          // file verbatim instead of ever asking a model again. Atomic like
+          // the overrides write — produce may read it at any moment.
+          const tmp = `${approvedPackPath()}.tmp`;
+          await writeFile(tmp, JSON.stringify(pack, null, 2));
+          await rename(tmp, approvedPackPath());
+          // Rewrite the paste-ready markdown NOW when the recorded out says
+          // where it lives; skipped silently otherwise, with mdPath: null as
+          // the response's note — the file regenerates on the next produce
+          // from the approved pack anyway.
+          const mdPath = await recordedArtifactPath(".youtube.md");
+          if (mdPath !== null) await writeFile(mdPath, formatYoutubeMarkdown(pack));
+          return send(200, { ok: true, mdPath });
         }
 
         if (url.pathname.startsWith("/media/")) {

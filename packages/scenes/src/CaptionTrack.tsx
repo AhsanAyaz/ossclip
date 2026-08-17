@@ -1,12 +1,24 @@
 import React from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
+import {
+  AbsoluteFill,
+  Sequence,
+  continueRender,
+  delayRender,
+  staticFile,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
 import {
   captionAnchorOf,
+  captionsNeedNastaliq,
   lineDirection,
+  NASTALIQ_FONT_NAME,
+  NASTALIQ_FONT_REL,
   type CaptionLine,
   type SceneCue,
+  type Theme,
 } from "@ossclip/core/browser";
-import { safeAreaFor, activeCueAt } from "./stage";
+import { safeAreaFor, activeCueAt, captionFontSizeFor, type FrameSize } from "./stage";
 import { frameWindow } from "./frames";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
 import { CAPTION_POP_SEC, easeOutQuad } from "./motion";
@@ -17,8 +29,16 @@ export interface CaptionTrackProps {
   cues?: SceneCue[];
   /** Vertical center of the caption block, as a fraction of frame height. */
   verticalAnchor?: number;
+  /** Explicit size wins outright; unset = frame-derived (`captionFontSizeFor`). */
   fontSizePx?: number;
   activeColor?: string;
+  /**
+   * Design tokens for the caption type (F6, 2026-08-16): `fontDisplay` and
+   * `fg` replace the historical literals so a config theme reaches the
+   * captions. Optional and absent-means-the-old-literals (`captionTypography`)
+   * so pre-theme callers and render-props render unchanged.
+   */
+  theme?: Theme;
   /**
    * The comment-CTA word: at the moment it is ASKED FOR, the caption word
    * renders quoted and capitalized — reinforcing the ask for muted viewers
@@ -68,6 +88,116 @@ export function inCtaWindow(
   );
 }
 
+/** The size a line renders at: an explicit prop wins outright, else the frame default. */
+export function resolveCaptionFontSize(
+  fontSizePx: number | undefined,
+  frame: FrameSize,
+): number {
+  return fontSizePx ?? captionFontSizeFor(frame);
+}
+
+/**
+ * Stroke width for a caption font size. The historical 10px stroke was tuned
+ * against 64px portrait type; fixed at 10 it swallows the smaller landscape
+ * letterforms (44px default, 2026-08-16), so it rides the font instead.
+ * Portrait output is byte-identical: 64 → 10.
+ */
+export function captionStrokePx(fontSizePx: number): number {
+  return (fontSizePx * 10) / 64;
+}
+
+/**
+ * Caption typography from the theme (F6, 2026-08-16). The fallbacks ARE the
+ * historical literals, so a themeless caller (pre-theme render-props, the
+ * editor before it passes one) renders byte-identically — and the default
+ * theme differs from them only in spelling white as #FFFFFF, the same color.
+ * The stroke's rgba is deliberately NOT themed: it is an outline for
+ * contrast against arbitrary video, not a palette color, and a light theme
+ * fg with a theme-matched light stroke would erase caption legibility.
+ * Pure — the theme prop's honored/absent matrix is testable without Remotion.
+ */
+export function captionTypography(theme: Theme | undefined): {
+  fontFamily: string;
+  color: string;
+} {
+  return {
+    fontFamily:
+      theme?.fontDisplay ?? "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
+    color: theme?.fg ?? "white",
+  };
+}
+
+/**
+ * Per-line font stack (bundled Nastaliq, 2026-08-17). An RTL line leads with
+ * the bundled Noto Nastaliq Urdu; an LTR line keeps the resolved base stack
+ * BYTE-IDENTICAL, so Latin captions cannot change appearance. PREPENDED, not
+ * replacing: a config theme's `fontDisplay` (F6) stays the rest of the stack,
+ * so an RTL line still falls back to the user's own fonts for anything
+ * Nastaliq lacks. Within an RTL line, embedded Latin loanwords and digits DO
+ * render in Nastaliq's own Latin glyphs (verified against the v3.007 TTF's
+ * cmap: A–z and 0–9 are covered) — accepted, since one face per line keeps
+ * the weight consistent through a code-switched Urdu line.
+ */
+export function captionFontFamilyFor(
+  direction: "rtl" | "ltr",
+  baseFontFamily: string,
+): string {
+  return direction === "rtl" ? `'${NASTALIQ_FONT_NAME}', ${baseFontFamily}` : baseFontFamily;
+}
+
+/**
+ * Per-line line-height. Nastaliq's diagonal stacking runs far above and below
+ * the Latin baseline — the bundled face declares ascender−descender = 2.5×
+ * its em (read from the v3.007 TTF's hhea table; Inter is ~1.2×) — so at the
+ * historical 1.15 a wrapped Urdu line's stacks collide with the row beneath.
+ * RTL lines get 1.9: glyphs are never CLIPPED (nothing here sets
+ * overflow:hidden — the box is just spacing), and most caption lines are a
+ * single ≤3-word row, so going all the way to the font's own 2.5 would only
+ * push a rare two-row line out of its safe-area band. LTR lines keep 1.15,
+ * the byte-identical historical value.
+ */
+export function captionLineHeightFor(direction: "rtl" | "ltr"): number {
+  return direction === "rtl" ? 1.9 : 1.15;
+}
+
+/**
+ * Registers the bundled Nastaliq face for this render. FontFace + delayRender
+ * rather than a <style> @font-face: the render seeks and screenshots, so a
+ * lazily-fetched stylesheet font can miss the first captioned frames — the
+ * same no-wall-clock reasoning as the word-pop animation above. Mounted only
+ * when a line actually lays out RTL (`captionsNeedNastaliq`, the predicate
+ * produce's font copy shares), so pure-Latin runs fetch nothing. A load
+ * FAILURE continues the render on the fallback stack instead of cancelling:
+ * captions are the accessibility layer, and a wrong font still beats a dead
+ * render.
+ */
+const NastaliqFontLoader: React.FC = () => {
+  const [handle] = React.useState(() => delayRender(`load ${NASTALIQ_FONT_NAME}`));
+  React.useEffect(() => {
+    let done = false;
+    const finish = () => {
+      if (!done) {
+        done = true;
+        continueRender(handle);
+      }
+    };
+    const face = new FontFace(
+      NASTALIQ_FONT_NAME,
+      `url("${staticFile(NASTALIQ_FONT_REL)}") format("truetype")`,
+      // The captions render at fontWeight 900; declaring the (nominally 700)
+      // Bold face AS 900 makes it the exact match there, so the browser never
+      // synthetic-bolds Nastaliq's already-dense strokes on top.
+      { weight: "900" },
+    );
+    face.load().then((loaded) => {
+      document.fonts.add(loaded);
+      finish();
+    }, finish);
+    return finish;
+  }, [handle]);
+  return null;
+};
+
 const LineView: React.FC<{
   line: CaptionLine;
   /** This line's first word's index in the WHOLE caption stream — the id the
@@ -76,9 +206,22 @@ const LineView: React.FC<{
   verticalAnchor: number;
   fontSizePx: number;
   activeColor: string;
+  /** Resolved by `captionTypography` in the parent — one resolution per track. */
+  fontFamily: string;
+  textColor: string;
   ctaKeyword?: string;
   ctaWindow?: { startSec: number; endSec: number };
-}> = ({ line, wordOffset, verticalAnchor, fontSizePx, activeColor, ctaKeyword, ctaWindow }) => {
+}> = ({
+  line,
+  wordOffset,
+  verticalAnchor,
+  fontSizePx,
+  activeColor,
+  fontFamily,
+  textColor,
+  ctaKeyword,
+  ctaWindow,
+}) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const safeArea = safeAreaFor({ width, height });
@@ -109,16 +252,20 @@ const LineView: React.FC<{
           // Keep caption text clear of the platform's right-hand action rail.
           paddingLeft: `${safeArea.left * 100}%`,
           paddingRight: `${safeArea.right * 100}%`,
-          fontFamily:
-            "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
+          // Direction-keyed (bundled Nastaliq, 2026-08-17): RTL lines lead
+          // with the bundled face and get its deeper line box; LTR lines are
+          // byte-identical to before — see the two helpers for the metrics.
+          fontFamily: captionFontFamilyFor(direction, fontFamily),
           fontWeight: 900,
           fontSize: fontSizePx,
-          lineHeight: 1.15,
+          lineHeight: captionLineHeightFor(direction),
           textAlign: "center",
-          color: "white",
-          WebkitTextStroke: "10px rgba(0,0,0,0.85)",
+          color: textColor,
+          WebkitTextStroke: `${captionStrokePx(fontSizePx)}px rgba(0,0,0,0.85)`,
           paintOrder: "stroke fill",
-          textShadow: "0 4px 24px rgba(0,0,0,0.55)",
+          // Shadow blur rides the font for the same reason as the stroke
+          // (portrait byte-identical: 64 → 24).
+          textShadow: `0 4px ${(fontSizePx * 24) / 64}px rgba(0,0,0,0.55)`,
         }}
       >
         {line.words.map((w, i) => {
@@ -161,7 +308,7 @@ const LineView: React.FC<{
                 // Colour stays keyed to the window, not the ramp: colour has
                 // no in-between worth animating, and lerping it would fight
                 // the stroke.
-                color: inWindow ? activeColor : "white",
+                color: inWindow ? activeColor : textColor,
               }}
             >
               {/* Per WORD, not per line: a line straddling the cue boundary
@@ -184,14 +331,19 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   lines,
   cues = [],
   verticalAnchor = 0.76,
-  fontSizePx = 64,
+  fontSizePx,
   activeColor = "#FFE14D",
+  theme,
   ctaKeyword,
   ctaWindow,
   sourceTextRegions = [],
 }) => {
   const { fps, width, height } = useVideoConfig();
   const frame = { width, height };
+  // Frame-derived default (2026-08-16): an explicit prop still wins outright.
+  const resolvedFont = resolveCaptionFontSize(fontSizePx, frame);
+  // One resolution for the whole track — every line shares the theme's type.
+  const { fontFamily, color: textColor } = captionTypography(theme);
   // Each line's first-word index in the whole stream, so a word's id is
   // stable regardless of which line the layout put it on.
   const offsets: number[] = [];
@@ -202,6 +354,10 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   }
   return (
     <AbsoluteFill>
+      {/* Mounted once for the whole track, and only when some line is RTL —
+          the same predicate produce keys the font copy on, so the fetch and
+          the file can't disagree. */}
+      {captionsNeedNastaliq(lines) ? <NastaliqFontLoader /> : null}
       {lines.map((line, i) => {
         const active = cues.length > 0 ? activeCueAt(cues, line.start) : null;
         // ONE rect-aware path for every line (R11 Task 2b). The old split —
@@ -237,8 +393,10 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
               verticalAnchor={anchor}
               // Per-scene size multiplier (R16 §64) — resolved per line like
               // the anchor, from the cue the line starts under.
-              fontSizePx={fontSizePx * (active?.captionScale ?? 1)}
+              fontSizePx={resolvedFont * (active?.captionScale ?? 1)}
               activeColor={activeColor}
+              fontFamily={fontFamily}
+              textColor={textColor}
               ctaKeyword={ctaKeyword}
               ctaWindow={ctaWindow}
             />

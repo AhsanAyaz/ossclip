@@ -401,3 +401,46 @@ describe("speaker-vouched corrections (FINDINGS §39)", () => {
     expect(applied[0]!.applied).toBe(false);
   });
 });
+
+describe("dictionary-vouched corrections (F4, 2026-08-16)", () => {
+  // soundsSimilar("boss", "ossclip") is false, so this correction lives or
+  // dies on the vouched-set exemption alone — the speaker-vouched shape with
+  // the vouching coming from the dictionary instead.
+  const transcript = mk(["the", "boss", "tool", "renders", "reels"]);
+  const proposal = [{ startWord: 1, endWord: 1, heard: "boss", correction: "ossclip" }];
+
+  it("names the vouched terms in the prompt when a dictionary is given", () => {
+    const p = buildRepairUserPrompt(transcript, undefined, ["JSON", "ossclip"]);
+    expect(p).toContain("Vouched terms the speaker uses");
+    expect(p).toContain("JSON, ossclip");
+  });
+
+  it("says nothing about vouched terms without a dictionary", () => {
+    expect(buildRepairUserPrompt(transcript)).not.toContain("Vouched terms");
+  });
+
+  it("refuses a correction the phonetic gate rejects when nothing vouched for it", () => {
+    const { applied } = applyRepairs(transcript, proposal);
+    expect(applied[0]!.applied).toBe(false);
+    expect(applied[0]!.rejected).toMatch(/does not sound like/);
+  });
+
+  it("allows it when every word of the correction is a dictionary term", () => {
+    const { applied, transcript: out } = applyRepairs(transcript, proposal, {
+      dictionary: ["ossclip"],
+    });
+    expect(applied[0]!.applied).toBe(true);
+    expect(out.words[1]!.text).toBe("ossclip");
+  });
+
+  it("keeps the gate on a correction only PARTLY made of dictionary terms", () => {
+    // "tool" is not in the dictionary, so the correction is not fully vouched
+    // and the ordinary guards still govern.
+    const { applied } = applyRepairs(
+      transcript,
+      [{ startWord: 1, endWord: 1, heard: "boss", correction: "ossclip tool" }],
+      { dictionary: ["ossclip"] },
+    );
+    expect(applied[0]!.applied).toBe(false);
+  });
+});

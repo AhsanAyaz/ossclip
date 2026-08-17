@@ -18,6 +18,7 @@ export {
   cropFilter,
   type ContentRect,
   type ContentRectSegment,
+  type FramingSegment,
 } from "./content-rect";
 // lineDirection is a VALUE export but stays browser-safe: captions.ts
 // imports types only. CaptionTrack needs it at render time (Urdu field test
@@ -27,9 +28,16 @@ export {
 // a caption key from it (§137), and the editor imports this surface. Pure, and
 // captions.ts stays browser-safe — it imports types plus timemap, which is
 // itself type-only against ./schema.
+// The Nastaliq trio rides the same browser-safe surface: CaptionTrack needs
+// the family name + served path for its @font-face, and `captionsNeedNastaliq`
+// is the ONE predicate produce and the render share for "does this caption
+// set need the bundled font" (2026-08-17 — two conditions would drift).
 export {
   backfillSrcStart,
+  captionsNeedNastaliq,
   lineDirection,
+  NASTALIQ_FONT_NAME,
+  NASTALIQ_FONT_REL,
   type CaptionLine,
   type CaptionWord,
 } from "./captions";

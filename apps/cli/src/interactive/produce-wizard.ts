@@ -1,19 +1,27 @@
-import { basename } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
+import { saveConfigPatch, type OssclipConfig } from "@ossclip/core";
+import { MODELS, bareWhisperModelName, modelImpliedLanguage } from "../setup/manifest";
+import { defaultOutPath } from "../produce";
+import { expandHome } from "../paths";
 import { askInput } from "./ask-input";
+import { pickSavePath } from "./pick-save-path";
 import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-argv";
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Thirty-four flags (plus the positional input path)
+ * The produce wizard. Forty-one flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
- * five flags (--out, --cleanup, --aspect, --produce, --intent) — ten behind
- * one "anything else?" multiselect, and the remaining stay flags-only:
+ * five flags (--out, --cleanup, --aspect, --produce, --intent) — eleven
+ * behind one "anything else?" multiselect, and the remaining stay flags-only:
  * debug/internal surfaces, replay-only fields, --no-watermark (the
  * multiselect only turns the credit ON; off is already the default),
+ * --no-youtube (the same shape: the pack entry only turns it ON),
  * --captions (the mirror case: ON is already the default, so the
  * multiselect entry is the OFF switch and the positive flag exists only for
- * replay pinning), or
+ * replay pinning), --add-jump-cuts (same mirror: auto already punches, the
+ * multiselect entry is the OFF switch, and the force flag exists to beat a
+ * future config-off), or
  * (final-review fix wave, Finding 1) --sort. A folder's clip order only means anything once the
  * folder has been enumerated, and that enumeration happens inside
  * `produce()` — after the wizard has already returned argv — so there is
@@ -32,15 +40,23 @@ const EXTRAS = [
   { value: "sourceFit", label: "Show the whole frame instead of cropping", hint: "--source-fit contain" },
   { value: "speaker", label: "Say who is on camera", hint: "--speaker" },
   { value: "whisperModel", label: "Pick a transcription model", hint: "--whisper-model" },
+  // Retake collapse is deliberately NOT an entry (2026-08-16): it runs
+  // automatically with --blooper-marker and never otherwise
+  // (inferredRetakesEnabled, produce.ts), and the user asked for it not to
+  // be exposed as its own knob — the marker entry above IS the switch.
   { value: "blooperMarker", label: "Cut flubbed takes on a spoken word", hint: "--blooper-marker" },
-  {
-    value: "collapseRetakes",
-    label: "Collapse repeated takes automatically",
-    hint: "--collapse-retakes",
-  },
   { value: "sourceIsEdited", label: "Source already has burned-in text", hint: "--source-is-edited" },
   { value: "captionsOff", label: "Turn the burned-in captions off", hint: "--no-captions" },
+  { value: "jumpCutsOff", label: "No punch-in zooms at cuts", hint: "--no-jump-cuts" },
   { value: "watermark", label: 'Credit the tool with a small "made with ossclip"', hint: "--watermark" },
+  // The hint says the approval part out loud (thumbnail UX, 2026-08-16):
+  // ticking this adds an interactive stop before the render, and a surprise
+  // prompt mid-run reads as a hang to someone who didn't expect it.
+  {
+    value: "youtube",
+    label: "YouTube pack: SEO metadata + AI thumbnail",
+    hint: "--youtube · you approve the thumbnail concept before render",
+  },
   { value: "llm", label: "Choose the LLM provider", hint: "--llm" },
 ] as const;
 
@@ -74,21 +90,77 @@ export function extrasFor(
   );
 }
 
+/**
+ * Which follow-up prompts the youtube extra asks, given what the config
+ * already supplies — `watermarkFromConfig`'s gating idea applied to the
+ * follow-up tier: a question whose answer is already in
+ * ~/.ossclip/config.json is noise, not a prompt (the flag still overrides
+ * the config for a one-off; that is a typed-flags surface, not a wizard
+ * one). `typeof`+trim, not truthiness: config.json is hand-edited and
+ * unparsed, and a `"audience": true` typo must mean "still ask", never a
+ * skipped question over a bogus value. Pure so the gating matrix is
+ * testable without a TTY.
+ */
+export function youtubeFollowups(cfg: {
+  audience?: string;
+  portrait?: string;
+  thumbnailBrief?: string;
+}): Array<"audience" | "portrait" | "brief"> {
+  const asks: Array<"audience" | "portrait" | "brief"> = [];
+  if (typeof cfg.audience !== "string" || cfg.audience.trim() === "") asks.push("audience");
+  if (typeof cfg.portrait !== "string" || cfg.portrait.trim() === "") asks.push("portrait");
+  if (typeof cfg.thumbnailBrief !== "string" || cfg.thumbnailBrief.trim() === "") {
+    asks.push("brief");
+  }
+  return asks;
+}
+
+/**
+ * The config patch a yes to "remember these for future runs?" writes, or
+ * null when nothing was freshly typed — null means the offer never appears.
+ * Only answers TYPED into this run's follow-ups qualify: a key the config
+ * already supplies was never asked (youtubeFollowups gates the prompts on
+ * exactly that), and the same gate here keeps a future re-ask from letting a
+ * wizard answer silently clobber a hand-edited config.json. Portrait is
+ * stored as the expandHome-expanded absolute path — a `~` string in
+ * config.json would work today (produce.ts expands the config value too, see
+ * its own comment at the thumbnail step), but an absolute path in a
+ * hand-edited file is self-documenting about which home it meant. Pure, with
+ * `home` injectable like expandHome's own, so the matrix is testable without
+ * a TTY or the real homedir.
+ *
+ * Wizard-only by placement: flag-driven runs never reach this — power users
+ * have config, and an interactive prompt at the end of a scripted run would
+ * break the script.
+ */
+export function rememberPatch(
+  typed: { audience?: string; portrait?: string; thumbnailBrief?: string },
+  cfg: { audience?: string; portrait?: string; thumbnailBrief?: string },
+  home?: string,
+): Partial<OssclipConfig> | null {
+  const asked = new Set(youtubeFollowups(cfg));
+  // Same typeof+trim rule as youtubeFollowups: a whitespace answer was
+  // already dropped by the prompts, but a durable config write deserves the
+  // same parse-don't-coerce guard as the read side.
+  const fresh = (v: string | undefined): v is string =>
+    typeof v === "string" && v.trim() !== "";
+  const patch: Partial<OssclipConfig> = {};
+  if (asked.has("audience") && fresh(typed.audience)) patch.audience = typed.audience;
+  if (asked.has("portrait") && fresh(typed.portrait)) {
+    patch.portrait = resolve(expandHome(typed.portrait, home));
+  }
+  if (asked.has("brief") && fresh(typed.thumbnailBrief)) {
+    patch.thumbnailBrief = typed.thumbnailBrief;
+  }
+  return Object.keys(patch).length === 0 ? null : patch;
+}
+
 /** Select value that routes to the free-text model prompt instead of a name. */
 export const CUSTOM_MODEL = "__custom__";
 
-/**
- * A model pick reduced to its bare name: basename, minus the optional ggml-
- * prefix and .bin suffix. Exists because the language prefill classifies on
- * `.endsWith(".en")`, and an absolute path like /x/ggml-small.en.bin ends in
- * ".bin" — an English model would have been prefilled `auto` (review fix,
- * Urdu field test 2026-08-05).
- */
-export function bareWhisperModelName(nameOrPath: string): string {
-  const base = basename(nameOrPath);
-  const m = /^(?:ggml-)?(.+?)(?:\.bin)?$/.exec(base);
-  return m?.[1] ?? base;
-}
+// Moved to the setup manifest (its language/URL tables need the same
+// stripping); re-exported so this module's callers and tests keep one home.
+export { bareWhisperModelName };
 
 /** The three names `ossclip setup` knows how to download, with their hints. */
 const CANONICAL_MODELS = [
@@ -123,8 +195,24 @@ export function whisperModelChoices(
     label: c.value,
     hint: installed.has(c.value) ? c.hint : `${c.hint} · will need download`,
   }));
-  const canonical = new Set<string>(CANONICAL_MODELS.map((c) => c.value));
-  for (const name of [...installed].filter((n) => !canonical.has(n)).sort()) {
+  // Curated fine-tunes (a manifest `url` marks one): listed like the
+  // canonicals whether or not downloaded — setup can fetch them now, so the
+  // wizard must be able to name them (the one-command experience the curated
+  // table exists for), with the provenance note as the hint.
+  const curated = Object.entries(MODELS).filter(
+    ([name, info]) => info.url !== undefined && !CANONICAL_MODELS.some((c) => c.value === name),
+  );
+  for (const [name, info] of curated) {
+    choices.push({
+      value: name,
+      label: name,
+      hint:
+        (info.note ?? "curated fine-tune") +
+        (installed.has(name) ? "" : " · will need download"),
+    });
+  }
+  const listed = new Set(choices.map((c) => c.value));
+  for (const name of [...installed].filter((n) => !listed.has(n)).sort()) {
     choices.push({ value: name, label: name, hint: "installed" });
   }
   choices.push({
@@ -135,8 +223,30 @@ export function whisperModelChoices(
   return choices;
 }
 
+/**
+ * The language follow-up's prefill for a picked model. The curated table's
+ * own language wins — `medium-urdu` prefills `ur`, so plain Enter runs the
+ * fine-tune with the code it was trained for instead of the `auto` detect
+ * gamble. Otherwise the standing heuristic: a non-.en pick is multilingual
+ * by construction, so `auto` lets whisper detect; `.en` keeps whisper's en
+ * default (empty = no flag, produceArgv's default-elision rule).
+ */
+export function whisperLanguagePrefill(model: string): string {
+  return modelImpliedLanguage(model) ?? (bareWhisperModelName(model).endsWith(".en") ? "" : "auto");
+}
+
 export async function produceWizard(
-  cfg: { speaker?: string; modelDir?: string; input?: string; watermark?: boolean } = {},
+  cfg: {
+    speaker?: string;
+    modelDir?: string;
+    input?: string;
+    watermark?: boolean;
+    /** Gate the youtube follow-ups (youtubeFollowups): ask only what the
+     * config doesn't already answer. */
+    audience?: string;
+    portrait?: string;
+    thumbnailBrief?: string;
+  } = {},
 ): Promise<string[]> {
   assertInteractive("produce wizard");
   intro("ossclip produce");
@@ -190,10 +300,18 @@ export async function produceWizard(
       ) as string)
     : undefined;
 
-  const defaultOut = `${basename(input).replace(/\.[^.]+$/, "")}.ossclip.mp4`;
-  const out = unwrap(
-    await text({ message: "Output file", placeholder: defaultOut, defaultValue: "" }),
-  ) as string;
+  // Folder walk instead of the raw text prompt (2026-08-16 `~`-path
+  // incident, pick-save-path.ts). The default name comes from produce's own
+  // `defaultOutPath`, not this file's old duplicate regex, so the fast-path
+  // row names exactly the file a flag-less run writes; picking that row
+  // returns undefined and the elision rule below emits no --out at all.
+  // Resolved first because a typed relative input must anchor the walk (and
+  // the default's folder) to cwd, not to wherever `dirname` lands.
+  const resolvedInput = resolve(input);
+  const out = await pickSavePath({
+    startDir: dirname(resolvedInput),
+    defaultName: basename(defaultOutPath(resolvedInput)),
+  });
 
   const chosen = unwrap(
     await multiselect({
@@ -221,12 +339,93 @@ export async function produceWizard(
     );
   }
   if (chosen.includes("sourceFit")) extras.sourceFit = "contain";
-  if (chosen.includes("collapseRetakes")) extras.collapseRetakes = true;
   if (chosen.includes("sourceIsEdited")) extras.sourceIsEdited = true;
   // The entry is the OFF switch (captions default ON — see EXTRAS), so a
   // tick maps to `captions: false` and produceArgv emits `--no-captions`.
   if (chosen.includes("captionsOff")) extras.captions = false;
+  // Same OFF-switch shape (the punch defaults ON, face-only): a tick maps
+  // to `jumpCuts: false` and produceArgv emits `--no-jump-cuts`.
+  if (chosen.includes("jumpCutsOff")) extras.jumpCuts = false;
   if (chosen.includes("watermark")) extras.watermark = true;
+  if (chosen.includes("youtube")) {
+    extras.youtube = true;
+    // Follow-ups under the same extra, like --clip's seconds prompt — but
+    // gated on the config (youtubeFollowups): a question whose answer is
+    // already in ~/.ossclip/config.json is never re-asked. All three trim,
+    // like the language follow-up: a whitespace answer must not become a
+    // bogus flag value, and an empty answer means "no flag" (the config, or
+    // nothing, decides).
+    const followups = youtubeFollowups(cfg);
+    if (followups.includes("audience")) {
+      const audience = (
+        unwrap(
+          await text({
+            message: "Who is this channel for?",
+            placeholder: "junior web devs learning AI tooling",
+            defaultValue: "",
+          }),
+        ) as string
+      ).trim();
+      if (audience) extras.audience = audience;
+    }
+    if (followups.includes("portrait")) {
+      // The portrait only means anything to the pack's AI thumbnail.
+      // Optional — empty skips the flag, and the thumbnail falls back to
+      // the frame-grab cover.
+      const portrait = (
+        unwrap(
+          await text({
+            message: "Portrait photo for the AI thumbnail (empty = use the frame-grab cover)",
+            placeholder: "~/Pictures/me.jpg",
+            defaultValue: "",
+          }),
+        ) as string
+      ).trim();
+      if (portrait) extras.portrait = portrait;
+    }
+    if (followups.includes("brief")) {
+      const brief = (
+        unwrap(
+          await text({
+            message: "Anything the thumbnail must get right? (optional)",
+            placeholder: "always show the terminal, never stock imagery",
+            defaultValue: "",
+          }),
+        ) as string
+      ).trim();
+      if (brief) extras.thumbnailBrief = brief;
+    }
+    // Offer to persist the fresh answers (UX completion, 2026-08-17): all
+    // three are durable channel facts, and before this the wizard re-asked
+    // them every run until the user hand-edited ~/.ossclip/config.json. The
+    // write is an ADDITION for the NEXT run (loadConfig picks it up), never a
+    // substitute for the flags: this run's argv below still carries the typed
+    // values, so the printed command stays replayable on a machine without
+    // the config. The decision itself lives in rememberPatch, tested without
+    // a TTY — this block is only the I/O around it, offer-editor's split.
+    const patch = rememberPatch(
+      {
+        audience: extras.audience,
+        portrait: extras.portrait,
+        thumbnailBrief: extras.thumbnailBrief,
+      },
+      cfg,
+    );
+    if (patch !== null) {
+      const remember = unwrap(
+        await confirm({
+          message: "Remember these for future runs? (saves to ~/.ossclip/config.json)",
+          initialValue: true,
+        }),
+      ) as boolean;
+      if (remember) {
+        const path = saveConfigPatch(patch);
+        // Say where the answers went — offer-editor's rule: a preference
+        // saved silently is one the user cannot find again to take back.
+        console.log(`▸ saved ${Object.keys(patch).join(", ")} to ${path}`);
+      }
+    }
+  }
   if (chosen.includes("speaker")) {
     extras.speaker = unwrap(
       await text({
@@ -268,16 +467,16 @@ export async function produceWizard(
     // Follow-up under the same extra, like --clip's seconds prompt: a language
     // only means anything once a model is being picked, and a multilingual
     // fine-tune silently decodes English without it (Urdu field test
-    // 2026-08-05). A non-.en pick is multilingual by construction, so the
-    // prefill makes plain Enter the safe answer — `auto` lets whisper detect.
-    // Empty keeps whisper's en default, and produceArgv's default-elision
-    // rule then emits no flag at all.
+    // 2026-08-05). The prefill (whisperLanguagePrefill) makes plain Enter the
+    // safe answer: a curated fine-tune's own language, else `auto` for a
+    // non-.en pick. Empty keeps whisper's en default, and produceArgv's
+    // default-elision rule then emits no flag at all.
     const lang = (
       unwrap(
         await text({
           message: "Transcription language code (empty = default en)",
           placeholder: "ur",
-          initialValue: bareWhisperModelName(model).endsWith(".en") ? "" : "auto",
+          initialValue: whisperLanguagePrefill(model),
           defaultValue: "",
         }),
       ) as string
@@ -312,7 +511,9 @@ export async function produceWizard(
     cleanup,
     graphics,
     intent,
-    out: out || undefined,
+    // Already `string | undefined`: pickSavePath's use-default row IS the
+    // old empty answer — no --out, produce derives its own default.
+    out,
     extras,
   });
 }

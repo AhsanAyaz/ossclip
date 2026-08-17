@@ -28,6 +28,8 @@ import { DeleteSceneModal } from "./DeleteSceneModal";
 import type { DeletePlan } from "./deleteScene";
 import { ProjectPicker } from "./ProjectPicker";
 import { RenderModal } from "./RenderModal";
+import { ThumbnailPanel } from "./ThumbnailPanel";
+import { YoutubePanel } from "./YoutubePanel";
 import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
 import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
@@ -361,6 +363,32 @@ export const App: React.FC = () => {
   }, []);
   // The keybinds reference (R16 §63) — "?" or the top-bar button.
   const [showShortcuts, setShowShortcuts] = useState(false);
+  // The AI thumbnail panel (2026-08-17). Not part of useEdits/overrides on
+  // purpose: the thumbnail round-trips through the workdir's approval file
+  // (thumbnail-concept-approved.json — the contract the CLI's thumbnailStep
+  // honors on replay), not overrides.json, so the panel talks to its own
+  // endpoints and owns no doc state (see ThumbnailPanel.tsx).
+  const [showThumbnail, setShowThumbnail] = useState(false);
+  // The SEO pack panel (2026-08-17) — the same approval-file posture, aimed
+  // at youtube-pack-approved.json (see YoutubePanel.tsx). Both panels open
+  // from the ONE "YouTube ▾" top-bar menu; the menu renders even when both
+  // are unavailable — each panel explains its own state, which is simpler
+  // than the top bar second-guessing two availability calls.
+  const [showYoutubeSeo, setShowYoutubeSeo] = useState(false);
+  const [showYoutubeMenu, setShowYoutubeMenu] = useState(false);
+  useEffect(() => {
+    if (!showYoutubeMenu) return;
+    // Esc closes the menu the way it closes the panels (capture-phase, so
+    // the app-level shortcuts under it never see the press).
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setShowYoutubeMenu(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [showYoutubeMenu]);
   // The pending Delete/Backspace confirmation (§139), or null. The PLAN is
   // held, not the scene id: it was computed against the doc at the moment the
   // key was pressed, and re-deriving it on every render would let an
@@ -958,6 +986,58 @@ export const App: React.FC = () => {
           >
             Transcript
           </button>
+          {/* One menu for the --youtube extras (2026-08-17): the thumbnail
+              and the SEO pack are two panels over one feature, and two
+              top-bar buttons were the bar's first scaling failure. */}
+          <div style={{ position: "relative" }}>
+            <button
+              data-testid="youtube-menu"
+              style={{
+                ...ghostButton,
+                ...(showYoutubeMenu || showThumbnail || showYoutubeSeo
+                  ? { borderColor: "#5b8cff" }
+                  : {}),
+              }}
+              onClick={() => setShowYoutubeMenu((v) => !v)}
+              title="AI thumbnail and SEO metadata for the YouTube upload"
+              aria-haspopup="menu"
+              aria-expanded={showYoutubeMenu}
+            >
+              YouTube ▾
+            </button>
+            {showYoutubeMenu ? (
+              <>
+                {/* Click-away closer UNDER the menu — the RenderModal
+                    backdrop idea without the dimming, since this is a menu,
+                    not a dialog. */}
+                <div style={menuBackdrop} onMouseDown={() => setShowYoutubeMenu(false)} />
+                <div style={menuPopover} role="menu">
+                  <button
+                    data-testid="youtube-menu-thumbnail"
+                    style={menuItem}
+                    role="menuitem"
+                    onClick={() => {
+                      setShowYoutubeMenu(false);
+                      setShowThumbnail(true);
+                    }}
+                  >
+                    Thumbnail
+                  </button>
+                  <button
+                    data-testid="youtube-menu-seo"
+                    style={menuItem}
+                    role="menuitem"
+                    onClick={() => {
+                      setShowYoutubeMenu(false);
+                      setShowYoutubeSeo(true);
+                    }}
+                  >
+                    SEO metadata
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
           <button
             style={{ ...ghostButton, ...(edits.dirty ? primaryButton : {}) }}
             onClick={onSave}
@@ -1032,6 +1112,8 @@ export const App: React.FC = () => {
         </button>
       </div>
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
+      {showThumbnail ? <ThumbnailPanel onClose={() => setShowThumbnail(false)} /> : null}
+      {showYoutubeSeo ? <YoutubePanel onClose={() => setShowYoutubeSeo(false)} /> : null}
       {showRenderModal ? (
         <RenderModal
           defaultOutPath={defaultOutPath}
@@ -1527,6 +1609,42 @@ const primaryButton: React.CSSProperties = {
   background: "#FFE14D",
   color: "#0B0B0E",
   border: "1px solid #FFE14D",
+};
+
+// The "YouTube ▾" menu chrome. zIndex above the transparent click-away
+// layer, both above the stage but below the modal backdrops (40) so an open
+// panel always covers a stale menu.
+const menuBackdrop: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 30,
+};
+
+const menuPopover: React.CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 4px)",
+  left: 0,
+  zIndex: 31,
+  minWidth: 150,
+  background: "#1A1A21",
+  border: "1px solid #2A2A33",
+  borderRadius: 6,
+  padding: 4,
+  boxShadow: "0 10px 24px rgba(0,0,0,0.5)",
+  display: "flex",
+  flexDirection: "column",
+};
+
+const menuItem: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: "#EDEDF2",
+  background: "transparent",
+  border: "none",
+  borderRadius: 4,
+  padding: "8px 10px",
+  cursor: "pointer",
+  textAlign: "left",
 };
 
 const mainRow: React.CSSProperties = {

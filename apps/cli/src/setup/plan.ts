@@ -1,6 +1,14 @@
 import { isAbsolute, join } from "node:path";
 import type { OssclipConfig } from "@ossclip/core";
-import { type BinaryAsset, MODELS, ffmpegAsset, modelUrl, whisperAsset } from "./manifest";
+import {
+  type BinaryAsset,
+  MODELS,
+  ffmpegAsset,
+  modelUrl,
+  validModelSources,
+  whisperAsset,
+  whisperModelPath,
+} from "./manifest";
 
 /**
  * The planning half of `ossclip setup` — pure over injected probes, like
@@ -137,11 +145,11 @@ export async function planSetup(
     }
   }
 
-  // The model: same resolution produce and doctor use — absolute is a file
-  // path, a bare name lives in modelDir as ggml-<name>.bin. `--force` never
-  // re-downloads a present model; a corrupt one is deleted by hand.
+  // The model: same resolution produce and doctor use (whisperModelPath).
+  // `--force` never re-downloads a present model; a corrupt one is deleted
+  // by hand.
   const model = opts.model;
-  const modelPath = isAbsolute(model) ? model : join(cfg.modelDir, `ggml-${model}.bin`);
+  const modelPath = whisperModelPath(model, cfg.modelDir);
   const known = MODELS[model];
   if (p.exists(modelPath)) {
     steps.push({ kind: "model", status: "satisfied", detail: modelPath });
@@ -156,7 +164,10 @@ export async function planSetup(
     steps.push({
       kind: "model",
       status: "download",
-      detail: `${modelUrl(model)} → ${modelPath}`,
+      // The config's modelSources beats the curated/default hosts here for
+      // the same reason it does at download time — the plan must name the
+      // URL setup will actually fetch.
+      detail: `${modelUrl(model, validModelSources(cfg.modelSources))} → ${modelPath}`,
       sizeMB: known?.sizeMB,
     });
   }

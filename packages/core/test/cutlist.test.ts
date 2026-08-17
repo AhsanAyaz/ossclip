@@ -422,3 +422,134 @@ describe("§124's fold does not eat a filler light promises to keep (fix wave fi
     expect(removals).toHaveLength(1);
   });
 });
+
+/**
+ * 2026-08-16 incident, the sliver half: after the marker-terminated blooper
+ * cut, whisper's debris "And" (670.0–670.4) survived as a 0.4s worded keep
+ * between the retake cut and the silence cut that followed —
+ * `hasProtectedWordInside` (correctly) blocks the wordless fold, so the
+ * one-word shard of an abandoned sentence shipped as a choppy blip.
+ * MIN_KEEP_AFTER_RETAKE (0.35) licenses the fold ONLY when a flanking
+ * removal is a `retake` cut; silence/silence worded gaps keep the full §124
+ * protection.
+ */
+describe("worded sliver fold next to a retake cut (MIN_KEEP_AFTER_RETAKE, 2026-08-16)", () => {
+  /** Retake cut, debris word, then an acoustic pause — the incident's shape. */
+  function retakeThenSilence(debris: Word) {
+    const words: Word[] = [
+      { text: "keep", start: 0, end: 0.4 },
+      { text: "Wrong", start: 1.0, end: 1.4 },
+      { text: "take", start: 1.4, end: 1.8 },
+      debris,
+      { text: "good", start: 5.7, end: 6.1 },
+      { text: "after.", start: 6.1, end: 6.5 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 6.5;
+    const silences: Span[] = [{ start: debris.end, end: 5.6 }];
+    const analysis = analyze(transcript, silences, duration);
+    const retakes = [{ startWord: 1, endWord: 2, startSec: 1.0, endSec: 4.0 }];
+    return { transcript, analysis, duration, retakes };
+  }
+
+  it("folds a worded gap ≤0.35s when the earlier flank is a retake cut — the debris word goes", () => {
+    // Debris "And" 4.0–4.25; silence removal starts 4.25+0.088=4.338, so the
+    // worded keep-gap after the retake cut's 4.0 end is 0.338s ≤ 0.35.
+    const debris: Word = { text: "And", start: 4.0, end: 4.25 };
+    const { transcript, analysis, duration, retakes } = retakeThenSilence(debris);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard", retakes });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals, "retake cut and silence cut must fold across the debris word").toHaveLength(1);
+    const map = new TimeMap(cutlist);
+    expect(map.mapWord(debris), "the debris word is inside the folded cut").toBeNull();
+    expect(map.mapWord(transcript.words[4]!), "the good take survives").not.toBeNull();
+  });
+
+  it("keeps a worded gap LONGER than 0.35s even next to a retake cut", () => {
+    // Same geometry, debris stretched to 4.0–4.5: gap 4.0→4.588 = 0.588s.
+    // Past the cap, a worded gap is content again, retake flank or not.
+    const debris: Word = { text: "And", start: 4.0, end: 4.5 };
+    const { transcript, analysis, duration, retakes } = retakeThenSilence(debris);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard", retakes });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals).toHaveLength(2);
+    const map = new TimeMap(cutlist);
+    expect(map.mapWord(debris)).not.toBeNull();
+  });
+
+  it("folds when the retake cut is the LATER flank too", () => {
+    // Mirrored order: silence removal first, then the retake cut, worded
+    // 0.28s gap ("So" debris) between them — the `r.reason` arm.
+    const words: Word[] = [
+      { text: "before", start: 0, end: 0.4 },
+      { text: "So", start: 2.0, end: 2.1 },
+      { text: "Wrong", start: 2.15, end: 2.6 },
+      { text: "take", start: 2.6, end: 3.0 },
+      { text: "after.", start: 6.0, end: 6.4 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 6.4;
+    const silences: Span[] = [{ start: 0.4, end: 2.0 }];
+    const analysis = analyze(transcript, silences, duration);
+    const retakes = [{ startWord: 2, endWord: 3, startSec: 2.15, endSec: 5.0 }];
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard", retakes });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals).toHaveLength(1);
+    const map = new TimeMap(cutlist);
+    expect(map.mapWord(words[1]!), "the debris 'So' folds into the cut").toBeNull();
+  });
+
+  it("PIN: a worded gap between two SILENCE removals never folds, whatever its length", () => {
+    // The §124-adjacent protection this fold must not erode: "no" sits in a
+    // 0.35s worded gap between two silence cuts — no retake flank, no
+    // license, the word survives.
+    const words: Word[] = [
+      { text: "before", start: 0, end: 0.4 },
+      { text: "no", start: 4.02, end: 4.11 },
+      { text: "after", start: 8.0, end: 8.4 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const duration = 8.4;
+    const silences: Span[] = [
+      { start: 0.4, end: 4.0 },
+      { start: 4.13, end: 8.0 },
+    ];
+    const analysis = analyze(transcript, silences, duration);
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard" });
+    const removals = cutlist.filter((s) => s.kind === "remove");
+    expect(removals, "silence/silence worded gaps stay protected").toHaveLength(2);
+    const map = new TimeMap(cutlist);
+    expect(map.mapWord(words[1]!)).not.toBeNull();
+  });
+});
+
+describe("retake confidence plumbing (exact-prefix restart, 2026-08-16)", () => {
+  const words: Word[] = [
+    { text: "keep", start: 0, end: 0.4 },
+    { text: "Wrong", start: 1.0, end: 1.4 },
+    { text: "take.", start: 1.4, end: 1.8 },
+    { text: "after.", start: 4.0, end: 4.4 },
+  ];
+  const transcript: Transcript = { language: "en", words };
+  const duration = 4.4;
+  const analysis = analyze(transcript, [], duration);
+  const span = { startWord: 1, endWord: 2, startSec: 1.0, endSec: 1.8 };
+
+  it("defaults an entry without confidence to 0.9 — the pre-existing behavior", () => {
+    const cutlist = buildCutlist({ transcript, analysis, duration, level: "standard", retakes: [span] });
+    const retake = cutlist.find((s) => s.kind === "remove" && s.reason === "retake");
+    expect(retake?.confidence).toBe(0.9);
+  });
+
+  it("honors a supplied confidence — 0.85 for an exact-prefix restart cut", () => {
+    const cutlist = buildCutlist({
+      transcript,
+      analysis,
+      duration,
+      level: "standard",
+      retakes: [{ ...span, confidence: 0.85 }],
+    });
+    const retake = cutlist.find((s) => s.kind === "remove" && s.reason === "retake");
+    expect(retake?.confidence).toBe(0.85);
+  });
+});

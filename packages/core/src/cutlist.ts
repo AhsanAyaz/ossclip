@@ -42,6 +42,18 @@ const SILENCE_PAD_IN = 0.06;
 const SILENCE_PAD_OUT = 0.1;
 /** Kept fragments shorter than this (holding no word) are folded into the cut. */
 const MIN_KEEP = 0.25;
+/**
+ * A WORDED kept gap up to this long is still folded when a flanking removal
+ * is a `retake` cut (2026-08-16 incident): whisper stamped a debris "And" at
+ * 670.0–670.4 between a marker-terminated blooper cut and the silence cut
+ * that followed, and `hasProtectedWordInside` — correctly — refused the
+ * wordless fold, so a 0.4s one-word sliver of an abandoned sentence shipped
+ * as a choppy blip. A retake cut already means "this whole attempt is
+ * unusable", so a sub-0.35s word fragment glued to it is debris of that same
+ * attempt, not content. Silence/silence neighbors get NO such license: their
+ * worded gaps stay protected exactly as §124's follow-up demands.
+ */
+const MIN_KEEP_AFTER_RETAKE = 0.35;
 
 interface Removal {
   start: number;
@@ -74,8 +86,19 @@ export interface BuildCutlistArgs {
    * still has no judgement of its own about what a bad take looks like, it
    * just folds whichever spans two independent detectors handed it into the
    * one partition.
+   *
+   * `confidence` optionally overrides the 0.9 default below — the
+   * exact-prefix restart rule (retake.ts, RESTART_PREFIX_CONFIDENCE) earns
+   * 0.85, one notch less than a full similarity match, and the caller is the
+   * one who knows which rule found the span.
    */
-  retakes?: readonly { startWord: number; endWord: number; startSec: number; endSec: number }[];
+  retakes?: readonly {
+    startWord: number;
+    endWord: number;
+    startSec: number;
+    endSec: number;
+    confidence?: number;
+  }[];
 }
 
 export function buildCutlist({
@@ -88,9 +111,9 @@ export function buildCutlist({
 }: BuildCutlistArgs): Segment[] {
   const keepAll: Segment[] = [{ srcIn: 0, srcOut: duration, kind: "keep" }];
   // `exact` means exact: it is the escape hatch for "touch nothing", and a
-  // blooper or retake cut is still a cut. --blooper-marker or
-  // --collapse-retakes with --cleanup exact is a contradiction, and the flag
-  // the user typed second does not get to win.
+  // blooper or retake cut is still a cut. --blooper-marker (which also
+  // switches on retake collapse, 2026-08-16 gate) with --cleanup exact is a
+  // contradiction, and the flag the user typed second does not get to win.
   if (level === "exact") return keepAll;
   const policy = POLICIES[level];
   const words = transcript.words;
@@ -126,7 +149,7 @@ export function buildCutlist({
       start: r.startSec,
       end: r.endSec,
       reason: "retake",
-      confidence: 0.9,
+      confidence: r.confidence ?? 0.9,
       source: "acoustic",
     });
   }
@@ -268,7 +291,16 @@ export function buildCutlist({
     const overlapping = prev !== undefined && gap <= 1e-6;
     const wordless = prev !== undefined && !hasProtectedWordInside(prev.end, r.start);
     const foldableGap = wordless && gap <= Math.max(MIN_KEEP, policy.pauseMin);
-    if (prev && (overlapping || foldableGap)) {
+    // The one exception to word protection (MIN_KEEP_AFTER_RETAKE's why): a
+    // worded sliver this short survives only between two cuts, and when one
+    // of those cuts is a retake the sliver is debris of the discarded
+    // attempt. Requires the retake FLANK, not just the length — a worded gap
+    // between two silence removals must never fold, whatever its size.
+    const retakeSliver =
+      prev !== undefined &&
+      gap <= MIN_KEEP_AFTER_RETAKE &&
+      (prev.reason === "retake" || r.reason === "retake");
+    if (prev && (overlapping || foldableGap || retakeSliver)) {
       const prevDur = prev.end - prev.start;
       const curDur = r.end - r.start;
       prev.end = Math.max(prev.end, r.end);

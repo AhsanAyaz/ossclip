@@ -1,9 +1,16 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { CONFIG_DIR, loadConfig, saveConfigPatch, type OssclipConfig } from "@ossclip/core";
-import { MODELS, WHISPER_BUILD_HINT, modelUrl, type BinaryAsset } from "./manifest";
+import {
+  MODELS,
+  WHISPER_BUILD_HINT,
+  modelUrl,
+  validModelSources,
+  whisperModelPath,
+  type BinaryAsset,
+} from "./manifest";
 import { formatPlan, managedBinDir, planSetup, type SetupProbes, type SetupStep } from "./plan";
 import { download, progressLine } from "./download";
 import { extractArchive, findFile, markExecutable } from "./extract";
@@ -130,17 +137,31 @@ export async function setup(
           break;
         case "model":
           if (step.status === "download") {
-            const modelPath = isAbsolute(model)
-              ? model
-              : join(cfg.modelDir, `ggml-${model}.bin`);
+            const modelPath = whisperModelPath(model, cfg.modelDir);
             const info = MODELS[model];
+            // Provenance out loud for a curated fine-tune — the user is about
+            // to fetch a community model, and the note says whose.
+            if (info?.note) console.log(`▸ ${model}: ${info.note}`);
             if (!info) {
               console.log(
                 `▸ ${model} isn't in the pinned table — downloading without a checksum.`,
               );
+            } else if (!info.sha1) {
+              // A curated entry can predate its published checksum (the URL
+              // is pinned before the upstream upload settles) — disclose the
+              // unverified download the same way an off-table name does.
+              console.log(`▸ ${model} has no pinned checksum yet — downloading without one.`);
             }
-            console.log(`▸ downloading ggml-${model}.bin${info ? ` (~${info.sizeMB} MB)` : ""}…`);
-            await download(modelUrl(model), modelPath, {
+            const sources = validModelSources(cfg.modelSources);
+            if (cfg.modelSources !== undefined && sources === undefined) {
+              console.log(
+                "⚠ config modelSources ignored — expected an object of name → URL strings",
+              );
+            }
+            console.log(
+              `▸ downloading ggml-${model}.bin${info?.sizeMB ? ` (~${info.sizeMB} MB)` : ""}…`,
+            );
+            await download(modelUrl(model, sources), modelPath, {
               sha1: info?.sha1,
               onProgress: progressLine(`ggml-${model}.bin`),
             });

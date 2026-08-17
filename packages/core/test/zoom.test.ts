@@ -136,3 +136,107 @@ describe("zoom plan invariants", () => {
     for (const { s } of samples(p.segments, 30)) expect(s).toBeCloseTo(1, 9);
   });
 });
+
+/**
+ * Face-only gating (user decision 2026-08-16: "Face-only. If there's
+ * anything else, then no zoom"). The complaint was the idle push visibly
+ * SLIDING screen-recording content — so a clip whose subject is not a face
+ * emits NO segments, and `zoomScaleAt`'s "1 outside the plan" contract makes
+ * the hole render as a static camera with zero downstream changes.
+ */
+describe("allowedClips gating", () => {
+  it("an allowed clip still ramps and holds; a disallowed one emits nothing", () => {
+    const plan = buildZoomPlan(40, { clipStarts: [0, 20], allowedClips: [true, false] });
+    expect(zoomScaleAt(plan.segments, ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+    expect(zoomScaleAt(plan.segments, 19.99)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+    // No segment claims the disallowed clip's range at all.
+    expect(plan.segments.every((s) => s.endSec <= 20 + 1e-9)).toBe(true);
+    for (const t of [20.01, 24, 28, 39.99]) {
+      expect(zoomScaleAt(plan.segments, t)).toBe(1);
+    }
+  });
+
+  it("an INTERIOR disallowed clip is 1 from its very first instant — the reset must not arrive a frame late", () => {
+    const plan = buildZoomPlan(60, {
+      clipStarts: [0, 20, 40],
+      allowedClips: [true, false, true],
+    });
+    // Half-open matching: t=20 belongs to the (segment-free) static clip.
+    expect(zoomScaleAt(plan.segments, 20)).toBe(1);
+    expect(zoomScaleAt(plan.segments, 30)).toBe(1);
+    // The clip after the hole ramps independently.
+    expect(zoomScaleAt(plan.segments, 40)).toBeCloseTo(1, 6);
+    expect(zoomScaleAt(plan.segments, 40 + ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+  });
+
+  it("every clip disallowed emits an empty plan and the scale is 1 everywhere", () => {
+    const plan = buildZoomPlan(30, { clipStarts: [0, 10], allowedClips: [false, false] });
+    expect(plan.segments).toEqual([]);
+    for (const { s } of samples(plan.segments, 30)) expect(s).toBe(1);
+    expect(plan.zoomedClips).toBe(0);
+    expect(plan.staticClips).toBe(2);
+  });
+
+  it("reports the zoomed/static split so the CLI log can't claim something else", () => {
+    const plan = buildZoomPlan(60, {
+      clipStarts: [0, 20, 40],
+      allowedClips: [true, false, true],
+    });
+    expect(plan.clips).toBe(3);
+    expect(plan.zoomedClips).toBe(2);
+    expect(plan.staticClips).toBe(1);
+  });
+
+  it("an ABSENT mask is byte-identical to an all-true one — pre-mask callers unchanged", () => {
+    const bare = buildZoomPlan(DURATION, { clipStarts: [0, 25, 41] });
+    const allTrue = buildZoomPlan(DURATION, {
+      clipStarts: [0, 25, 41],
+      allowedClips: [true, true, true],
+    });
+    expect(allTrue).toEqual(bare);
+    expect(bare.zoomedClips).toBe(3);
+    expect(bare.staticClips).toBe(0);
+  });
+
+  it("a mask SHORTER than clipStarts reads missing entries as allowed — pinned", () => {
+    const plan = buildZoomPlan(30, { clipStarts: [0, 10, 20], allowedClips: [false] });
+    expect(plan.staticClips).toBe(1);
+    expect(plan.zoomedClips).toBe(2);
+    expect(zoomScaleAt(plan.segments, 5)).toBe(1);
+    expect(zoomScaleAt(plan.segments, 10 + ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+  });
+
+  it("verdicts pair with their start BEFORE cleaning: duplicated starts OR their verdicts", () => {
+    // The dedupe collapses the two 10s into one clip; either pairing vouching
+    // "face" keeps the push — losing it on a face clip is the regression.
+    const plan = buildZoomPlan(30, {
+      clipStarts: [0, 10, 10],
+      allowedClips: [true, false, true],
+    });
+    expect(plan.clips).toBe(2);
+    expect(plan.staticClips).toBe(0);
+    expect(zoomScaleAt(plan.segments, 10 + ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+    // Both pairings disallow → the clip is static.
+    const both = buildZoomPlan(30, {
+      clipStarts: [0, 10, 10],
+      allowedClips: [true, false, false],
+    });
+    expect(both.staticClips).toBe(1);
+    expect(zoomScaleAt(both.segments, 15)).toBe(1);
+  });
+
+  it("the t=0 clip takes the verdict of the pair whose start IS 0, else allowed", () => {
+    // clipStarts carries an explicit 0 saying "screen" — the first clip
+    // holds still.
+    const explicit = buildZoomPlan(30, { clipStarts: [0, 15], allowedClips: [false, true] });
+    expect(zoomScaleAt(explicit.segments, 5)).toBe(1);
+    expect(explicit.staticClips).toBe(1);
+    // No pair claims 0 (the boundary is synthetic) — the lead-in clip is
+    // allowed, missing-means-allowed applied to a start nobody listed.
+    const synthetic = buildZoomPlan(30, { clipStarts: [15], allowedClips: [false] });
+    expect(zoomScaleAt(synthetic.segments, ZOOM_RAMP_SEC)).toBeCloseTo(ZOOM_MAX_SCALE, 6);
+    expect(zoomScaleAt(synthetic.segments, 20)).toBe(1);
+    expect(synthetic.zoomedClips).toBe(1);
+    expect(synthetic.staticClips).toBe(1);
+  });
+});

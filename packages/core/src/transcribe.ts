@@ -169,6 +169,15 @@ export interface WhisperOptions {
    * stay byte-identical to what English-suffixed models always got.
    */
   language?: string;
+  /**
+   * Initial decoder prompt (`--prompt`), used to bias recognition toward the
+   * user's vocabulary (F4 dictionary, 2026-08-16: "Jason" for JSON). Left
+   * unset, the spawned args stay byte-identical to every pre-dictionary run.
+   * Known risk (documented in the flag's help): a whisper-cli built before
+   * the flag existed rejects it with its own loud error — accepted over
+   * silently dropping the user's terms.
+   */
+  prompt?: string;
 }
 
 /**
@@ -186,7 +195,20 @@ export function whisperArgs(opts: WhisperOptions, wavPath: string): string[] {
     "--no-prints",
   ];
   if (opts.language !== undefined) args.push("-l", opts.language);
+  if (opts.prompt !== undefined) args.push("--prompt", opts.prompt);
   return args;
+}
+
+/**
+ * The `--prompt` text for a user dictionary. whisper.cpp treats the prompt as
+ * preceding context, so a plain vocabulary list is enough to bias the decoder
+ * toward these spellings ("Jason" → "JSON", 2026-08-16 field report). Pure
+ * and undefined-for-empty so the no-dictionary invocation stays byte-identical
+ * to what every run before the flag got.
+ */
+export function whisperPromptFor(dictionary: readonly string[]): string | undefined {
+  if (dictionary.length === 0) return undefined;
+  return `Vocabulary: ${dictionary.join(", ")}.`;
 }
 
 export async function runWhisper(opts: WhisperOptions, wavPath: string): Promise<Transcript> {

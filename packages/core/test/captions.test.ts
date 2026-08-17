@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { backfillSrcStart, buildCaptionLines, lineDirection, type CaptionLine } from "../src/captions";
+import {
+  backfillSrcStart,
+  buildCaptionLines,
+  captionsNeedNastaliq,
+  lineDirection,
+  MAX_CAPTION_WORD_LEAD_SEC,
+  type CaptionLine,
+} from "../src/captions";
 import { TimeMap, type KeptSpan } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
 
@@ -66,6 +73,106 @@ describe("buildCaptionLines", () => {
     expect(lines).toHaveLength(2); // would be one line without the boundary
     expect(lines[0]!.end).toBeLessThanOrEqual(0.5 + 1e-9); // hold clamped at the boundary
     expect(lines[1]!.start).toBeCloseTo(0.6, 6);
+  });
+
+  it("6-word landscape packing still flushes at graphic-cue boundaries (2026-08-16 v2 review)", () => {
+    // Six words that would pack into ONE line under {maxWordsPerLine: 6,
+    // maxLineDuration: 2.4} — the landscape options — with a graphic-cue
+    // boundary between words 3 and 4. Wider packing raises how often a line
+    // COULD span a boundary, so the §6b flush must keep winning: a line
+    // crossing a layout change sits in the wrong layout's caption band.
+    const transcript: Transcript = {
+      language: "en",
+      words: Array.from({ length: 6 }, (_, i) => ({
+        text: `w${i}`,
+        start: i * 0.3,
+        // Short words so none physically SPANS the 0.8s boundary — a word
+        // that does stays readable past it by design (the flush-time clamp's
+        // own single-word rule), which is not what this test is pinning.
+        end: i * 0.3 + 0.15,
+      })),
+    };
+    const opts = { maxWordsPerLine: 6, maxLineDuration: 2.4 };
+    // Without the boundary the six words are one line — the packing works…
+    expect(buildCaptionLines(transcript, identity(3), opts)).toHaveLength(1);
+    // …and with it they split there, hold clamped, exactly as at 3 words.
+    const lines = buildCaptionLines(transcript, identity(3), { ...opts, breakpoints: [0.8] });
+    expect(lines.map((l) => l.words.length)).toEqual([3, 3]);
+    expect(lines[0]!.end).toBeLessThanOrEqual(0.8 + 1e-9);
+  });
+
+  describe("MAX_CAPTION_WORD_LEAD_SEC — §18 stamp-stretch clamp (field case 2026-08-17)", () => {
+    // The incident's shape: 21s of played-back video audio (no speech, so no
+    // silence to cut) stamped into "Okay,"'s interval by whisper's contiguous
+    // stamps. Its stamped start smeared back to ~100 while it was spoken near
+    // 121.5 — the END stamp is the acoustic truth.
+    const incident: Transcript = {
+      language: "en",
+      words: [
+        { text: "before,", start: 99.5, end: 100 },
+        { text: "Okay,", start: 100, end: 121.5 },
+      ],
+    };
+
+    it("clamps the display start toward the end stamp, and the packer breaks the line at the clamped gap", () => {
+      const lines = buildCaptionLines(incident, identity(122));
+      // Clamped gap 19.5s > 0.6 maxGap → the stretched word gets its own line,
+      // so nothing renders during the dead span.
+      expect(lines).toHaveLength(2);
+      const okay = lines[1]!;
+      expect(okay.start).toBeCloseTo(119.5, 6); // 121.5 − 2, not the stamped 100
+      // The previous line does NOT stretch to fill: hold only (100 + 0.35).
+      expect(lines[0]!.end).toBeCloseTo(100.35, 6);
+      // Nothing on screen in (100.35, 119.5).
+      expect(lines[0]!.end).toBeLessThanOrEqual(100.35 + 1e-9);
+      expect(okay.start).toBeGreaterThanOrEqual(119.5 - 1e-9);
+    });
+
+    it("karaoke word timing uses the clamped start — the highlight cannot precede its line", () => {
+      const lines = buildCaptionLines(incident, identity(122));
+      const okay = lines[1]!.words[0]!;
+      expect(okay.start).toBeCloseTo(119.5, 6);
+      expect(okay.start).toBeGreaterThanOrEqual(lines[1]!.start - 1e-9);
+      // The §137 anchor keeps the RAW source stamp — a caption edit made
+      // before this clamp existed still keys to the same word.
+      expect(okay.srcStart).toBe(100);
+    });
+
+    it("leaves a stamp of exactly MAX_CAPTION_WORD_LEAD_SEC untouched", () => {
+      const transcript: Transcript = {
+        language: "en",
+        words: [{ text: "slow", start: 10, end: 10 + MAX_CAPTION_WORD_LEAD_SEC }],
+      };
+      const word = buildCaptionLines(transcript, identity(13))[0]!.words[0]!;
+      expect(word.start).toBe(10); // max(10, 12 − 2) — the boundary is inclusive
+    });
+
+    it("changes NOTHING for normal sub-2s stamps — the 7-word fixture's full result is pinned", () => {
+      // Byte-for-byte pin of the pre-clamp output (same expressions the
+      // fixture uses, so float identity holds): any drift in an ordinary
+      // transcript means the clamp leaked past the stretched-stamp case.
+      const transcript: Transcript = {
+        language: "en",
+        words: Array.from({ length: 7 }, (_, i) => ({
+          text: `w${i}`,
+          start: i * 0.3,
+          end: i * 0.3 + 0.25,
+        })),
+      };
+      const word = (i: number) => ({
+        text: `w${i}`,
+        start: i * 0.3,
+        end: i * 0.3 + 0.25,
+        srcStart: i * 0.3,
+      });
+      expect(buildCaptionLines(transcript, identity(3), { maxWordsPerLine: 3 })).toEqual([
+        // Holds clamp to the next line's start (3·0.3, 6·0.3); the last line
+        // keeps its full hold under the 3s output duration.
+        { words: [word(0), word(1), word(2)], start: 0 * 0.3, end: 3 * 0.3 },
+        { words: [word(3), word(4), word(5)], start: 3 * 0.3, end: 6 * 0.3 },
+        { words: [word(6)], start: 6 * 0.3, end: 6 * 0.3 + 0.25 + 0.35 },
+      ]);
+    });
   });
 
   it("never extends a line past the next line or the output end", () => {
@@ -204,5 +311,30 @@ describe("lineDirection — first-strong-character heuristic (UAX #9 P2/P3)", ()
 
   it("resolves Hebrew RTL too, not just Arabic script", () => {
     expect(lineDirection("שלום עולם")).toBe("rtl");
+  });
+});
+
+describe("captionsNeedNastaliq — the ONE font-staging predicate (2026-08-17)", () => {
+  const line = (...texts: string[]): CaptionLine => ({
+    words: texts.map((text, i) => ({ text, start: i, end: i + 0.5, srcStart: i })),
+    start: 0,
+    end: texts.length,
+  });
+
+  it("false for a pure-Latin caption set — those renders must stay byte-identical", () => {
+    expect(captionsNeedNastaliq([])).toBe(false);
+    expect(captionsNeedNastaliq([line("this", "is", "a"), line("topic")])).toBe(false);
+  });
+
+  it("true when ANY line lays out RTL, even one among Latin lines", () => {
+    expect(captionsNeedNastaliq([line("this", "is"), line("یہ", "ایک")])).toBe(true);
+  });
+
+  it("agrees with lineDirection on the code-switched edge — a leading-Latin line is LTR", () => {
+    // Same first-strong rule per line: if lineDirection says LTR, this must
+    // not stage a font that line will never ask for.
+    expect(captionsNeedNastaliq([line("Fulfillment", "کیا", "ہے")])).toBe(
+      lineDirection("Fulfillment کیا ہے") === "rtl",
+    );
   });
 });

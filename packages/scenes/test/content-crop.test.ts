@@ -191,3 +191,112 @@ describe("sourceFitBox (--source-fit contain)", () => {
     );
   });
 });
+
+import { activeCropBox, framingWindowAtOutput } from "../src/content-crop";
+import type { FramingSegment } from "@ossclip/core";
+
+describe("framingWindowAtOutput + activeCropBox (2026-08-16 non-destructive framing)", () => {
+  const slot = { width: 1080, height: 1920 };
+  const noCuts = [{ outIn: 0, outOut: 20, srcIn: 0, srcOut: 20 }];
+  /** A "screen" plan whose window IS the frame — the plan that changes nothing. */
+  const screenSeg: FramingSegment = {
+    startSec: 0,
+    endSec: 20,
+    window: { x: 0, y: 0, w: SOURCE.width, h: SOURCE.height },
+    subject: "screen",
+    bias: { x: 0.5, y: 0.5 },
+  };
+
+  it("a screen full-rect window renders identical to plain centred cover", () => {
+    // The props-based successor to the destructive normalization bake must
+    // reduce to the untouched path when the plan asks for nothing: a full
+    // window, centred. The 0.2/0.9 stage face bias below is deliberately NOT
+    // 0.5 — the plan's own bias wins, so it must not leak into the box.
+    const viaFraming = activeCropBox(
+      [screenSeg], undefined, noCuts, 3, SOURCE, "cover", slot, 0.2, 0.9,
+    );
+    expect(viaFraming).toEqual(contentCoverBox(SOURCE, FULL, slot));
+  });
+
+  it("a face window covers the slot with the head at its bias point", () => {
+    const window = { x: 200, y: 300, w: 900, h: 1280 };
+    const seg: FramingSegment = {
+      startSec: 0, endSec: 20, window, subject: "face", bias: { x: 0.4, y: 0.3 },
+    };
+    const box = activeCropBox([seg], undefined, noCuts, 1, SOURCE, "cover", slot, 0.5, 0.5)!;
+    // Same math as handing the window straight to contentCoverBox with the
+    // segment's bias as the anchor fractions…
+    expect(box).toEqual(contentCoverBox(SOURCE, window, slot, 0.4, 0.3));
+    // …and concretely: cover scale k = max(1080/900, 1920/1280) = 1.5, so the
+    // slot shows a 720px-wide window of the 900px rect. The 180px of leftover
+    // window width is spent at bias.x = 0.4:
+    const k = box.width / SOURCE.width;
+    expect(k).toBeCloseTo(1.5, 9);
+    const visibleX = -box.left / k;
+    expect(visibleX).toBeCloseTo(window.x + (window.w - slot.width / k) * 0.4, 6);
+    // Vertically the window fits exactly, so nothing depends on bias.y here.
+    expect(-box.top / k).toBeCloseTo(window.y, 6);
+  });
+
+  it("framingTimeline wins over contentTimeline when both are present", () => {
+    const contentTimeline = [
+      { startSec: 0, endSec: 2.5, rect: { ...STRIP, full: false } },
+      { startSec: 2.5, endSec: 14.5, rect: { ...FULL, full: true } },
+    ];
+    const window = { x: 100, y: 900, w: 1200, h: 700 };
+    const framing: FramingSegment[] = [
+      { startSec: 0, endSec: 20, window, subject: "face", bias: { x: 0.5, y: 0.5 } },
+    ];
+    // At t=1 the content timeline says STRIP; the plan's window wins anyway —
+    // it was computed FROM that timeline and already accounts for the bars.
+    const both = activeCropBox(framing, contentTimeline, noCuts, 1, SOURCE, "cover", slot, 0.5, 0.5);
+    expect(both).toEqual(contentCoverBox(SOURCE, window, slot, 0.5, 0.5));
+    expect(both).not.toEqual(contentBox("cover", SOURCE, STRIP, slot, 0.5, 0.5));
+    // At t=8 the content rect is FULL (the legacy passthrough) — the plan
+    // still applies rather than falling back to null.
+    expect(
+      activeCropBox(framing, contentTimeline, noCuts, 8, SOURCE, "cover", slot, 0.5, 0.5),
+    ).toEqual(contentCoverBox(SOURCE, window, slot, 0.5, 0.5));
+    // Without the plan the same call is the pre-existing content-crop path.
+    expect(
+      activeCropBox(undefined, contentTimeline, noCuts, 1, SOURCE, "cover", slot, 0.5, 0.5),
+    ).toEqual(contentBox("cover", SOURCE, STRIP, slot, 0.5, 0.5));
+  });
+
+  it("no plan, a uniform timeline, or a missing sourceSize is the legacy passthrough", () => {
+    // null = the byte-identical inset:0 box every existing render-props takes.
+    expect(activeCropBox(undefined, undefined, noCuts, 1, SOURCE, "cover", slot, 0.5, 0.5)).toBeNull();
+    // A single-segment content timeline means uniform framing — ffmpeg already
+    // cropped it into the mezzanine, and cropping again would trim twice.
+    const uniform = [{ startSec: 0, endSec: 20, rect: { ...STRIP, full: false } }];
+    expect(activeCropBox(undefined, uniform, noCuts, 1, SOURCE, "cover", slot, 0.5, 0.5)).toBeNull();
+    // Both paths window the SOURCE frame; without its size there is nothing
+    // to window, plan or not.
+    expect(activeCropBox([screenSeg], undefined, noCuts, 1, undefined, "cover", slot, 0.5, 0.5)).toBeNull();
+    expect(activeCropBox([], [], noCuts, 1, SOURCE, "cover", slot, 0.5, 0.5)).toBeNull();
+  });
+
+  it("maps through the kept spans and clamps at the timeline's edges, like contentRectAtOutput", () => {
+    const a: FramingSegment = {
+      startSec: 5, endSec: 10,
+      window: { x: 0, y: 0, w: 720, h: 1280 }, subject: "face", bias: { x: 0.5, y: 0.5 },
+    };
+    const b: FramingSegment = {
+      startSec: 10, endSec: 15,
+      window: { x: 700, y: 0, w: 720, h: 1280 }, subject: "face", bias: { x: 0.5, y: 0.5 },
+    };
+    const spans = [
+      { outIn: 0, outOut: 3, srcIn: 6, srcOut: 9 },
+      { outIn: 3, outOut: 6, srcIn: 11, srcOut: 14 },
+    ];
+    // Output 1 → source 7 (segment a); output 4 → source 12 (segment b).
+    expect(framingWindowAtOutput([a, b], spans, 1)).toBe(a);
+    expect(framingWindowAtOutput([a, b], spans, 4)).toBe(b);
+    // Outside the timeline: clamp to the nearest segment, never flash the
+    // unframed picture for a boundary rounding error.
+    expect(framingWindowAtOutput([a, b], [], 0)).toBe(a);
+    expect(framingWindowAtOutput([a, b], [], 99)).toBe(b);
+    // No plan at all is null — the legacy passthrough, not a synthetic window.
+    expect(framingWindowAtOutput([], spans, 1)).toBeNull();
+  });
+});

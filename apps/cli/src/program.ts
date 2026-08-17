@@ -7,8 +7,9 @@ import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { ExportFormatSchema, runAnalyze } from "./analyze";
+import { expandHome } from "./paths";
 import { phaseBucketProps } from "./phase-timing";
-import { produce } from "./produce";
+import { dictionaryFlag, jumpCutsFlag, produce } from "./produce";
 // The one interactive import that is STATIC rather than `await import()`: the
 // `resetInputSource()` run boundary in `buildProgram` has to run synchronously
 // while the program is being built, and `buildProgram` cannot await. The graph
@@ -160,6 +161,11 @@ export function buildProgram(): Command {
           modelDir: cfg.modelDir,
           input: path,
           watermark: cfg.watermark,
+          // The youtube follow-ups skip what the config already supplies
+          // (youtubeFollowups) — same reason speaker prefills above.
+          audience: cfg.audience,
+          portrait: cfg.portrait,
+          thumbnailBrief: cfg.thumbnailBrief,
         });
         console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
         setReplayArgv(argv); // §129
@@ -195,6 +201,9 @@ export function buildProgram(): Command {
         speaker: cfg.speaker,
         modelDir: cfg.modelDir,
         watermark: cfg.watermark,
+        audience: cfg.audience,
+        portrait: cfg.portrait,
+        thumbnailBrief: cfg.thumbnailBrief,
       });
       console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
       setReplayArgv(argv); // §129
@@ -286,6 +295,17 @@ export function buildProgram(): Command {
       "--whisper-language <code>",
       "transcription language code for a multilingual model, e.g. ur | de | auto (whisper defaults to en)",
     )
+    // COMMA-SEPARATED in one value, not variadic: a variadic option swallows
+    // the optional positional [input] whenever the flag precedes the path,
+    // and commander offers no way to give the positional priority.
+    .option(
+      "--dictionary <terms>",
+      'comma-separated terms of art the speaker uses, e.g. "JSON, ossclip, Genkit" — ' +
+        "biases transcription toward these spellings, vouches them for repair, and " +
+        "canonicalizes their casing in captions. Replaces the config's dictionary for " +
+        "this run. Needs a whisper-cli new enough to know --prompt (older builds " +
+        "reject it with their own error)",
+    )
     .option(
       "--force-component <id>",
       "debug: render every graphic with this component (e.g. FlowDiagram) to exercise it on real copy",
@@ -308,8 +328,9 @@ export function buildProgram(): Command {
     )
     .option(
       "--collapse-retakes",
-      "deterministically collapse consecutive near-identical sentences, keeping only " +
-        "the last complete attempt — the flub the speaker did NOT mark. Off by default",
+      "legacy no-op: retake collapsing runs automatically with --blooper-marker " +
+        "(bloopers and retakes go hand-in-hand — no marker, no retake cuts). " +
+        "Kept parseable so recorded command.json replays don't error",
       false,
     )
     // Declared as the same tri-state pair as --open-editor/--no-open-editor:
@@ -323,6 +344,35 @@ export function buildProgram(): Command {
     )
     .option("--no-watermark", "no wordmark, even when the config turns it on")
     // Same tri-state shape as --watermark above (positive declared first so
+    // commander's default stays undefined = "not typed"): the config's
+    // `youtube` key supplies the default (resolveYoutube), and a typed
+    // --no-youtube still beats a config-on.
+    .option(
+      "--youtube",
+      "write a YouTube pack beside the video: SEO title options, description, hashtags " +
+        "and comma-separated tags (<out>.youtube.md), plus an AI thumbnail " +
+        "(set it once with youtube: true in ~/.ossclip/config.json)",
+    )
+    .option("--no-youtube", "no YouTube pack, even when the config turns it on")
+    .option(
+      "--portrait <path>",
+      "your portrait photo, the likeness reference for the --youtube AI thumbnail " +
+        "(default: `portrait` in ~/.ossclip/config.json; without one the frame-grab " +
+        "cover stands)",
+    )
+    .option(
+      "--audience <text>",
+      'who watches the channel, e.g. "junior web devs learning AI tooling" — steers ' +
+        "the --youtube pack's titles/tags and the AI thumbnail's concept " +
+        "(default: `audience` in ~/.ossclip/config.json)",
+    )
+    .option(
+      "--thumbnail-brief <text>",
+      "a standing instruction the AI thumbnail concept must honor, e.g. " +
+        '"always show the terminal, never stock imagery" ' +
+        "(default: `thumbnailBrief` in ~/.ossclip/config.json)",
+    )
+    // Same tri-state shape as --watermark above (positive declared first so
     // commander's default stays undefined = "not typed"), though captions
     // have no config key to fill the gap: the tri-state exists so
     // command.json can pin the resolved flag state for replay determinism
@@ -335,6 +385,24 @@ export function buildProgram(): Command {
     .option(
       "--no-captions",
       "no burned-in captions. The CTA keyword styling rides the caption track, so it goes too",
+    )
+    // A tri-state like --watermark/--captions above, but on TWO commander
+    // keys instead of one: the positive is spelled --add-jump-cuts (bare
+    // "--jump-cuts" would read as adding CUTS, not the concealing zooms), so
+    // commander cannot fold the pair onto one key — --no-jump-cuts creates
+    // `jumpCuts` defaulting TRUE, --add-jump-cuts lands on `addJumpCuts`,
+    // and the action below reunites them via jumpCutsFlag, reading
+    // getOptionValueSource to tell a typed --no-jump-cuts from the default.
+    .option(
+      "--add-jump-cuts",
+      "force the subtle punch-in zooms that conceal jump cuts (already the default). " +
+        "The face-only guard still applies — a screen share is never punched, because " +
+        "the zoom slides its content — this only beats a config that turns them off",
+    )
+    .option(
+      "--no-jump-cuts",
+      "no punch-in zooms at cut boundaries. Narrower than --no-zoom, which kills ALL " +
+        "camera motion (the idle push included), not just the cut punch-in",
     )
     .option("--no-cover", "skip the cover image written beside the video")
     .option(
@@ -377,6 +445,9 @@ export function buildProgram(): Command {
           speaker: cfg.speaker,
           modelDir: cfg.modelDir,
           watermark: cfg.watermark,
+          audience: cfg.audience,
+          portrait: cfg.portrait,
+          thumbnailBrief: cfg.thumbnailBrief,
         });
         console.log(`\n▸ running:\n    ${renderCommand(argv)}\n`);
         // Re-entering the SAME parse the flags take: the zod checks below run
@@ -413,6 +484,15 @@ export function buildProgram(): Command {
         opts.whisperLanguage !== undefined
           ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
           : undefined;
+      // --add-jump-cuts / --no-jump-cuts land on DIFFERENT commander keys
+      // (see the option declarations for why the pair can't share one);
+      // jumpCutsFlag reunites them into the tri-state ProduceOptions
+      // carries, and throws on the contradiction of typing both — the same
+      // loud-error posture as every parse above.
+      const jumpCuts = jumpCutsFlag(
+        opts.addJumpCuts,
+        command.getOptionValueSource("jumpCuts") === "cli",
+      );
       // Wall clock around produce() only — the editor offer below can sit at
       // an interactive prompt for as long as the user thinks, and think-time
       // would poison the duration metric (FINDINGS §134).
@@ -439,6 +519,9 @@ export function buildProgram(): Command {
           repair: opts.repair,
           whisperModel: opts.whisperModel,
           whisperLanguage,
+          // Split/trim/drop-empties (dictionaryFlag) — undefined stays
+          // undefined so the config's dictionary can supply the default.
+          dictionary: dictionaryFlag(opts.dictionary),
           forceComponent,
           // commander gives `--no-cover` as cover:false and `--cover <path>` as a
           // string on the same key.
@@ -450,9 +533,22 @@ export function buildProgram(): Command {
           zoom: opts.zoom,
           // undefined = "not typed", so produce can let the config decide.
           watermark: opts.watermark,
+          // The same tri-state contract as watermark, resolved by
+          // resolveYoutube at the use site; --portrait rides along untyped =
+          // undefined so the config's path can supply it.
+          youtube: opts.youtube,
+          portrait: opts.portrait,
+          // Typed-beats-config strings like --portrait: untyped = undefined
+          // lets the config's `audience`/`thumbnailBrief` supply them; the
+          // `typeof === "string"` validation lives at the use site.
+          audience: opts.audience,
+          thumbnailBrief: opts.thumbnailBrief,
           // undefined = "not typed" here too — the default (ON) is applied at
           // the pin site, not coerced in transit.
           captions: opts.captions,
+          // The reunited tri-state (jumpCutsFlag above): undefined = "not
+          // typed" = auto, the face-only default.
+          jumpCuts,
           cover: opts.cover !== false,
           coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
           clip: opts.clip,
@@ -576,7 +672,7 @@ export function buildProgram(): Command {
     )
     .option(
       "--collapse-retakes",
-      "also mark consecutive near-identical sentences, keeping only the last complete attempt",
+      "legacy no-op: retake marking runs automatically with --blooper-marker",
       false,
     )
     .option("--sort <order>", "folder input: clip order, name | mtime", "name")
@@ -630,8 +726,10 @@ export function buildProgram(): Command {
     .argument("<renderProps>", "path to a work dir's render-props.json")
     .option("--video-dir <dir>", "directory containing the source video (public dir)")
     .action(async (renderProps: string, opts) => {
-      const propsPath = resolve(renderProps);
-      const publicDir = opts.videoDir ? resolve(opts.videoDir) : dirname(propsPath);
+      // expandHome before resolve on both user-typed paths (2026-08-16 rule,
+      // paths.ts) — a `~/` here must not resolve against cwd.
+      const propsPath = resolve(expandHome(renderProps));
+      const publicDir = opts.videoDir ? resolve(expandHome(opts.videoDir)) : dirname(propsPath);
       // Resolve Remotion's CLI through module resolution instead of spawning
       // `pnpm` — a global `npm i -g ossclip` has no pnpm and no workspace, and
       // Windows would need the .cmd shim. `@remotion/cli` is a dependency of

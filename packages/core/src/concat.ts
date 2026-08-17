@@ -424,11 +424,11 @@ export async function concatFolder(
 
   const filter = buildConcatFilter(order.length, target);
   const inputArgs = order.flatMap((name) => ["-i", join(folder, name)]);
-  // Encode to a sibling temp path, rename only on success — same reasoning as
-  // `bakeNormalizedSource` in normalize.ts (R27 §125): ffmpeg writes the
-  // container header as it goes, so a bake that dies mid-graph leaves a file
-  // with no `moov` atom, and a cache keyed on EXISTENCE would reuse that
-  // corpse forever. Rename is atomic on a POSIX filesystem.
+  // Encode to a sibling temp path, rename only on success (R27 §125, learned
+  // on the since-removed normalization bake): ffmpeg writes the container
+  // header as it goes, so an encode that dies mid-graph leaves a file with no
+  // `moov` atom, and a cache keyed on EXISTENCE would reuse that corpse
+  // forever. Rename is atomic on a POSIX filesystem.
   const partial = `${outPath}.partial.mp4`;
   try {
     await run(tools.ffmpegPath, [

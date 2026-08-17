@@ -141,6 +141,14 @@ export function objectPosYFor(
   face: FaceCrop,
   frame: FrameSize = PORTRAIT_FRAME,
 ): number {
+  // A face that is not the frame's SUBJECT must not steer the crop
+  // (2026-08-16 incident: the global face median landed on a screen
+  // recording's camera PiP — 12% of frame height, bottom-right — and pinned
+  // objectPosY to 1.0, cutting off the top 28% of every full-frame stretch).
+  // "screen" means the measured face is incidental: centre the cover instead.
+  // Strict equality — absent means "face", so every pre-existing
+  // render-props keeps its old behaviour byte-for-byte.
+  if (face.subject === "screen") return 0.5;
   const slotH = rect.h * frame.height;
   const displayedH = displayedHeight(rect, face, frame);
   const overflow = displayedH - slotH;
@@ -254,6 +262,10 @@ export function objectPosXFor(
   face: FaceCrop,
   frame: FrameSize = PORTRAIT_FRAME,
 ): number {
+  // Same subject guard as `objectPosYFor` (2026-08-16 incident): a "screen"
+  // frame's incidental face — a camera PiP in a corner — must not drag the
+  // horizontal window to that corner. Strict equality; absent means "face".
+  if (face.subject === "screen") return 0.5;
   const slotW = rect.w * frame.width;
   const slotH = rect.h * frame.height;
   const displayedW = Math.max(slotW, slotH * (face.sourceAspect ?? frame.width / frame.height));
@@ -381,6 +393,17 @@ export const COVER_TEXT_RECT: Rect = (() => {
 /** Approximate half-height of a caption line block, for free-band math/tests. */
 export const CAPTION_HALF_BAND = 0.045;
 
+/**
+ * Default caption font size for a frame. Portrait keeps the historical 64px
+ * (≈3.3% of a 1080x1920 frame's height); the same 64 in 1920x1080 is 5.9% of
+ * frame height and reads as a billboard (user complaint 2026-08-16), so
+ * landscape drops to 44 (≈4% of 1080). An explicit `fontSizePx` prop on
+ * CaptionTrack still wins over this default.
+ */
+export function captionFontSizeFor(frame: FrameSize): number {
+  return frame.width > frame.height ? 44 : 64;
+}
+
 /** A vertical interval in frame fractions. */
 export interface Band {
   start: number;
@@ -504,12 +527,18 @@ export function layoutSlots(
     avoidSlicingText(objectPosYFor(rect, face, frame), rect, face, textBands, frame);
   const posX = (rect: Rect) => objectPosXFor(rect, face, frame);
   const landscape = frame.width > frame.height;
+  // Landscape anchors sit LOWER than portrait's (user screenshot 2026-08-16:
+  // the frame-agnostic anchors below put landscape captions mid-frame — 0.7
+  // of a 16:9 frame is chest height, not a lower third). The legal ceiling is
+  // 0.835 = 1 − LANDSCAPE_SAFE_AREA.bottom (0.12) − CAPTION_HALF_BAND
+  // (0.045); each landscape anchor stays under it. Portrait literals are
+  // unchanged.
   switch (layout) {
     case "full-bleed":
       return {
         video: { rect: FULL, cornerRadius: 0, blurPx: 0, dim: 0, opacity: 1, objectPosY: posY(FULL), objectPosX: posX(FULL) },
         graphic: null,
-        captionAnchor: 0.7,
+        captionAnchor: landscape ? 0.80 : 0.7,
       };
     case "lower-third": {
       // Broadcast lower third: the picture stays whole; the card sits in the
@@ -565,7 +594,7 @@ export function layoutSlots(
           objectPosY: posY(PIP_RECT), objectPosX: posX(PIP_RECT),
         },
         graphic: { x: 0.06, y: 0.14, w: 0.78, h: 0.42 },
-        captionAnchor: 0.61,
+        captionAnchor: landscape ? 0.78 : 0.61,
       };
     case "graphic-only":
       return {
@@ -578,13 +607,13 @@ export function layoutSlots(
           objectPosY: posY(PIP_RECT), objectPosX: posX(PIP_RECT),
         },
         graphic: { x: 0.04, y: 0.14, w: 0.8, h: 0.54 },
-        captionAnchor: 0.73,
+        captionAnchor: landscape ? 0.80 : 0.73,
       };
     case "blurred-behind":
       return {
         video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1, objectPosY: posY(FULL), objectPosX: posX(FULL) },
         graphic: { x: 0.07, y: 0.24, w: 0.77, h: 0.36 },
-        captionAnchor: 0.69,
+        captionAnchor: landscape ? 0.80 : 0.69,
       };
   }
 }
@@ -733,12 +762,49 @@ export function videoSlotAt(
 }
 
 /**
+ * The CSS transform for the user's per-scene crop correction, composed with
+ * the idle zoom (multiplicative — VideoStage's §15 comment owns the why).
+ *
+ * Extracted pure to pin the compose-on-top contract of the render-time
+ * framing plan (2026-08-16): VideoStage applies this transform on the wrapper
+ * AROUND the framing crop box (`activeCropBox`), and the two are sealed off
+ * from each other by construction — this function's inputs are ONLY the zoom
+ * and the user's scale/dx/dy, and `activeCropBox` never sees an override. That
+ * separation is what makes the editor's "Reset framing" mean "return exactly
+ * to auto framing" instead of "return to auto framing as bent by the crop".
+ */
+export function contentTransformFor(
+  zoom: number,
+  userScale: number,
+  userDx: number,
+  userDy: number,
+): string | undefined {
+  return (
+    [
+      userDx !== 0 || userDy !== 0 ? `translate(${userDx}px, ${userDy}px)` : "",
+      zoom * userScale !== 1 ? `scale(${zoom * userScale})` : "",
+    ]
+      .filter(Boolean)
+      .join(" ") || undefined
+  );
+}
+
+/**
  * Caption anchor at time t. Resolved from the settled layout at the line's
  * start (never animated — a caption sliding mid-word reads as a bug).
+ *
+ * Frame-aware since 2026-08-16: anchors differ per frame shape, so a 16:9
+ * caller must pass its frame rather than inherit the portrait default.
  */
-export function captionAnchorAt(cues: readonly SceneCue[], tSec: number): number {
+export function captionAnchorAt(
+  cues: readonly SceneCue[],
+  tSec: number,
+  frame: FrameSize = PORTRAIT_FRAME,
+): number {
   const cue = activeCueAt(cues, tSec);
-  return cue ? layoutSlots(cue.layout).captionAnchor : layoutSlots("full-bleed").captionAnchor;
+  return cue
+    ? layoutSlots(cue.layout, DEFAULT_FACE, [], frame).captionAnchor
+    : layoutSlots("full-bleed", DEFAULT_FACE, [], frame).captionAnchor;
 }
 
 function backdropTarget(layout: Layout): number {

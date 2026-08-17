@@ -170,6 +170,178 @@ describe("recordedProduceArgs (§129)", () => {
     setReplayArgv(recorded);
     expect(recordedProduceArgs({ captions: false })).toEqual(recorded);
   });
+
+  // The jump-cuts pin covers the two TYPED states; "auto" has no flag
+  // spelling to pin with and (no config input today) an argv carrying
+  // neither flag replays as auto identically everywhere.
+  it("pins force as --add-jump-cuts and off as --no-jump-cuts; auto appends nothing", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ jumpCuts: "force" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--add-jump-cuts",
+    ]);
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ jumpCuts: "off" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--no-jump-cuts",
+    ]);
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ jumpCuts: "auto" })).toEqual(["produce", "./a.mp4"]);
+  });
+
+  // The youtube pin — the watermark's config-dependent-default rationale
+  // verbatim: `youtube: true` in ~/.ossclip/config.json supplies the
+  // effective default, so command.json must carry the RESOLVED state in
+  // BOTH directions or a later config edit changes what Render replays.
+  it("pins the resolved youtube flag into the record, both directions", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ youtube: true })).toEqual(["produce", "./a.mp4", "--youtube"]);
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ youtube: false })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--no-youtube",
+    ]);
+  });
+
+  it("never doubles a youtube flag the user already typed — either spelling settles the pin", () => {
+    setReplayArgv(["produce", "./a.mp4", "--youtube"]);
+    const on = recordedProduceArgs({ youtube: true });
+    expect(on.filter((a) => a === "--youtube")).toHaveLength(1);
+    expect(on).not.toContain("--no-youtube");
+    setReplayArgv(["produce", "./a.mp4", "--no-youtube"]);
+    const off = recordedProduceArgs({ youtube: false });
+    expect(off.filter((a) => a === "--no-youtube")).toHaveLength(1);
+    expect(off).not.toContain("--youtube");
+  });
+
+  // The portrait pin: the RESOLVED path (which may have come from the
+  // config) — a path only, never a secret; the thumbnail's API key stays in
+  // the environment.
+  it("pins a config-resolved --portrait, and never doubles a typed one", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ portrait: "/me.jpg" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--portrait",
+      "/me.jpg",
+    ]);
+    setReplayArgv(["produce", "./a.mp4", "--portrait", "/other.jpg"]);
+    const typed = recordedProduceArgs({ portrait: "/other.jpg" });
+    expect(typed.filter((a) => a === "--portrait")).toHaveLength(1);
+    // No resolved portrait (no flag, no config key) pins nothing — there is
+    // no negative spelling to record.
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ portrait: undefined })).toEqual(["produce", "./a.mp4"]);
+  });
+
+  // The audience/thumbnail-brief pins (thumbnail UX, 2026-08-16): the
+  // portrait's rationale — the resolved text may come from the config, and
+  // both steer LLM prompts, so an unpinned record replays different metadata
+  // after a config edit. Empty stays unpinned (the dictionary's rule: no
+  // flag spelling for "no steer").
+  it("pins resolved --audience and --thumbnail-brief when non-empty, never doubled", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(
+      recordedProduceArgs({ audience: "junior devs", thumbnailBrief: "show the terminal" }),
+    ).toEqual([
+      "produce",
+      "./a.mp4",
+      "--audience",
+      "junior devs",
+      "--thumbnail-brief",
+      "show the terminal",
+    ]);
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ audience: "", thumbnailBrief: "" })).toEqual([
+      "produce",
+      "./a.mp4",
+    ]);
+    setReplayArgv([
+      "produce", "./a.mp4", "--audience", "junior devs", "--thumbnail-brief", "show the terminal",
+    ]);
+    const typed = recordedProduceArgs({
+      audience: "junior devs",
+      thumbnailBrief: "show the terminal",
+    });
+    expect(typed.filter((a) => a === "--audience")).toHaveLength(1);
+    expect(typed.filter((a) => a === "--thumbnail-brief")).toHaveLength(1);
+  });
+
+  // The replay round trip, the dictionary's shape: a pinned record re-parses
+  // to the same resolved text, so a re-record is byte-identical.
+  it("an audience/brief record re-records byte-identically", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    const recorded = recordedProduceArgs({
+      audience: "junior devs",
+      thumbnailBrief: "show the terminal",
+    });
+    setReplayArgv(recorded);
+    expect(
+      recordedProduceArgs({ audience: "junior devs", thumbnailBrief: "show the terminal" }),
+    ).toEqual(recorded);
+  });
+
+  // The dictionary pin (F4 review follow-up): the resolved terms may come
+  // from the config, and they change the transcript itself (whisper prompt,
+  // repair vouching, caption casing) — an unpinned record would replay a
+  // different edit after a config edit. Comma-joined into the one value
+  // --dictionary takes.
+  it("pins the resolved dictionary as one comma-joined value", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ dictionary: ["JSON", "ossclip"] })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--dictionary",
+      "JSON, ossclip",
+    ]);
+  });
+
+  it("an empty dictionary pins nothing, and a typed --dictionary is never doubled", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ dictionary: [] })).toEqual(["produce", "./a.mp4"]);
+    setReplayArgv(["produce", "./a.mp4", "--dictionary", "JSON, ossclip"]);
+    const typed = recordedProduceArgs({ dictionary: ["JSON", "ossclip"] });
+    expect(typed.filter((a) => a === "--dictionary")).toHaveLength(1);
+    expect(typed).toEqual(["produce", "./a.mp4", "--dictionary", "JSON, ossclip"]);
+  });
+
+  // The replay round trip, captions' shape: the pinned value re-parses to
+  // the same resolved terms (dictionaryFlag splits/trims), so a re-record is
+  // byte-identical — a config edit between runs cannot drift the replay.
+  it("a dictionary record re-records byte-identically", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    const recorded = recordedProduceArgs({ dictionary: ["JSON", "ossclip"] });
+    setReplayArgv(recorded);
+    expect(recordedProduceArgs({ dictionary: ["JSON", "ossclip"] })).toEqual(recorded);
+  });
+
+  it("never doubles a jump-cuts flag the user already typed — either spelling settles the pin", () => {
+    setReplayArgv(["produce", "./a.mp4", "--add-jump-cuts"]);
+    const force = recordedProduceArgs({ jumpCuts: "force" });
+    expect(force.filter((a) => a === "--add-jump-cuts")).toHaveLength(1);
+    expect(force).not.toContain("--no-jump-cuts");
+    setReplayArgv(["produce", "./a.mp4", "--no-jump-cuts"]);
+    const off = recordedProduceArgs({ jumpCuts: "off" });
+    expect(off.filter((a) => a === "--no-jump-cuts")).toHaveLength(1);
+    expect(off).not.toContain("--add-jump-cuts");
+  });
+
+  // The replay round trip, same shape as the captions one above: a typed
+  // flag in the record resolves to the same mode on re-run, so the
+  // re-record is byte-identical in both typed directions.
+  it("a jump-cuts record re-records byte-identically, both directions", () => {
+    setReplayArgv(["produce", "./a.mp4", "--no-jump-cuts"]);
+    const off = recordedProduceArgs({ jumpCuts: "off" });
+    setReplayArgv(off);
+    expect(recordedProduceArgs({ jumpCuts: "off" })).toEqual(off);
+    setReplayArgv(["produce", "./a.mp4", "--add-jump-cuts"]);
+    const force = recordedProduceArgs({ jumpCuts: "force" });
+    setReplayArgv(force);
+    expect(recordedProduceArgs({ jumpCuts: "force" })).toEqual(force);
+  });
 });
 
 describe("program.ts stashes at re-entry (§129)", () => {

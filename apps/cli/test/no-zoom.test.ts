@@ -82,10 +82,17 @@ describe.skipIf(!hasFfmpeg)("--no-zoom", () => {
   );
 
   it(
-    "default keeps the idle plan and writes NO staticCamera key — absent means default, byte-compatible with pre-flag props",
+    "default writes NO staticCamera key — absent means default, byte-compatible with pre-flag props",
     async () => {
       const props = await run(undefined, "work-on");
-      expect(props.zoomPlan.length).toBeGreaterThan(0);
+      // The plan is EMPTY here — but by the face-only gate, not the flag.
+      // This fixture is testsrc2, a face-less screen-subject take, and since
+      // F1 (user decision 2026-08-16: "Face-only. If there's anything else,
+      // then no zoom") a screen-subject clip emits no idle-push segments.
+      // What distinguishes the default run from --no-zoom is exactly the
+      // staticCamera key: absent means the motion drivers exist and were
+      // gated, present-true means the flag killed them both.
+      expect(props.zoomPlan).toEqual([]);
       expect("staticCamera" in props).toBe(false);
     },
     120_000,

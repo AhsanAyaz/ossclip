@@ -136,9 +136,17 @@ export function laplacianVariance(pixels: Uint8Array, w: number, h: number): num
 }
 
 /**
- * Score a candidate. A face is close to mandatory — a cover without the
- * speaker is a cover for a different video — and among frames that have one,
- * sharpness decides. Earlier frames win ties so the cover matches the opening.
+ * Score a candidate. On a "face" take a face is close to mandatory — a cover
+ * without the speaker is a cover for a different video — and among frames
+ * that have one, sharpness decides. Earlier frames win ties so the cover
+ * matches the opening.
+ *
+ * On a "screen" take the face weight drops to ZERO (2026-08-16): a Facebook
+ * reel playing inside a 21-minute screen recording put a STRANGER'S face on
+ * the cover, because face×2 hunts any face at all and on a screen-subject
+ * take every face in frame is content, not the speaker. Sharpness and
+ * earliness alone pick that cover. Default "face" so portrait/talking-head
+ * runs score exactly as before.
  */
 export function scoreCandidate(c: {
   timeSec: number;
@@ -146,11 +154,13 @@ export function scoreCandidate(c: {
   sharpness: number;
   hasFace: boolean;
   maxSharpness: number;
+  subject?: "face" | "screen";
 }): number {
+  const faceWeight = c.subject === "screen" ? 0 : 2;
   const face = c.hasFace ? 1 : 0;
   const sharp = c.maxSharpness > 0 ? c.sharpness / c.maxSharpness : 0;
   const earliness = 1 - Math.min(1, c.timeSec / Math.max(1e-6, c.durationSec));
-  return face * 2 + sharp + earliness * 0.3;
+  return face * faceWeight + sharp + earliness * 0.3;
 }
 
 export interface PickCoverOptions {
@@ -172,6 +182,12 @@ export interface PickCoverOptions {
    * canvas that is two-thirds baked-in black bar.
    */
   cropVf?: string;
+  /**
+   * The take's whole-frame subject (`faceSubject`'s verdict). "screen" zeroes
+   * the face weight in `scoreCandidate` — see its doc comment for the
+   * 2026-08-16 stranger's-face incident. Default "face".
+   */
+  subject?: "face" | "screen";
 }
 
 /**
@@ -229,7 +245,7 @@ export async function pickCoverFrame(
   for (const r of raw) {
     candidates.push({
       ...r,
-      score: scoreCandidate({ ...r, durationSec: window, maxSharpness }),
+      score: scoreCandidate({ ...r, durationSec: window, maxSharpness, subject: opts.subject }),
     });
   }
   candidates.sort((a, b) => b.score - a.score);

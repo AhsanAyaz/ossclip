@@ -39,22 +39,34 @@ export interface PremiereProjectInput {
   zoomPlan: readonly ZoomSegment[];
   /** render-props' flag: true disables BOTH motion layers (zoom AND punch). */
   staticCamera?: boolean;
+  /**
+   * render-props' `punch` — the face-only jump-cut plan (2026-08-16, scenes'
+   * punch-plan.ts): its scale replaces the legacy 1.07 and its mask gates
+   * which spans punch. Absent means the LEGACY contract, so a pre-feature
+   * workdir exports exactly the camera its render had.
+   */
+  punch?: { scale: number; allowed: readonly boolean[] } | null;
   /** The OUTPUT frame (production.render), e.g. 1080×1920. */
   frame: { width: number; height: number };
 }
 
 /**
- * The render's jump-cut concealer, replicated from EdlVideo.tsx:41-51 — the
- * alternating toggle, the srcIn−prev.srcOut gap, and the INCLUSIVE >=
- * threshold must all match, or the exported project punches different clips
- * than the render did. Defaults mirror EdlVideoProps; they are parameters so
- * a drift in either place shows up as a failing hand-computed test, not a
- * silent divergence.
+ * The render's jump-cut concealer, replicated from scenes' `punchScalesFor`
+ * (punch-plan.ts, the loop EdlVideo renders) — the alternating toggle, the
+ * srcIn−prev.srcOut gap, and the INCLUSIVE >= threshold must all match, or
+ * the exported project punches different clips than the render did. The
+ * `allowed` mask must match too, down to the parity rule: the toggle flips
+ * on EVERY qualifying gap, masked spans included (stable indexing), and a
+ * masked span renders its punched turn at 1. `allowed[i] !== false` so a
+ * short mask reads as allowed, same as no mask at all. Defaults mirror
+ * EdlVideoProps; they are parameters so a drift in either place shows up as
+ * a failing hand-computed test, not a silent divergence.
  */
 export function punchScales(
   spans: readonly KeptSpan[],
   punchInScale = 1.07,
   punchThresholdSec = 0.15,
+  allowed?: readonly boolean[] | null,
 ): number[] {
   const out: number[] = [];
   let punched = false;
@@ -62,7 +74,7 @@ export function punchScales(
     const prev = spans[i - 1];
     const gap = prev ? spans[i]!.srcIn - prev.srcOut : 0;
     if (i > 0 && gap >= punchThresholdSec) punched = !punched;
-    out.push(punched ? punchInScale : 1);
+    out.push(punched && (!allowed || allowed[i] !== false) ? punchInScale : 1);
   }
   return out;
 }
@@ -174,7 +186,7 @@ export function srtFromCaptionLines(lines: readonly SrtLine[]): string {
 const fmt = (n: number): string => String(Number(n.toFixed(4)));
 
 export function buildPremiereProject(input: PremiereProjectInput): { xml: string; srt: string } {
-  const { production, spans, captionLines, zoomPlan, staticCamera, frame } = input;
+  const { production, spans, captionLines, zoomPlan, staticCamera, punch, frame } = input;
   const { path, probe } = production.source;
   // The whole document runs at the SOURCE rate (the marker exporter's
   // precedent): clip in/out and sequence start/end share one timebase, so no
@@ -189,7 +201,12 @@ export function buildPremiereProject(input: PremiereProjectInput): { xml: string
   const cover = coverTransform(probe, production.source.face, frame);
   // staticCamera kills BOTH motion drivers (produce's render-props contract:
   // zoomPlan alone can't reach the punch) — cover-crop is all that remains.
-  const punches = staticCamera ? spans.map(() => 1) : punchScales(spans);
+  // Otherwise the punch plan's scale and mask apply when present; `punch?.`
+  // collapses both absent and null to undefined, which punchScales reads as
+  // the legacy 1.07-everywhere the render itself falls back to.
+  const punches = staticCamera
+    ? spans.map(() => 1)
+    : punchScales(spans, punch?.scale, undefined, punch?.allowed);
 
   // Per-clip frame geometry. A sub-frame span still occupies one frame on
   // both axes — a zero-length clipitem is undefined importer behavior, same

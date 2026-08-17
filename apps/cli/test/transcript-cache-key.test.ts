@@ -58,4 +58,36 @@ describe("transcriptCacheReusable", () => {
       transcriptCacheReusable({ model: DEFAULT, language: "" }, { model: DEFAULT }, DEFAULT).reuse,
     ).toBe(true);
   });
+
+  // The dictionary becomes whisper's --prompt (F4, 2026-08-16), so a changed
+  // vocabulary changes what the decoder emits — same re-key rule as the model.
+  it("re-transcribes when the dictionary changes — added, removed, or reworded", () => {
+    const dict = (dictionary?: string[]) => ({ model: DEFAULT, ...(dictionary ? { dictionary } : {}) });
+    expect(transcriptCacheReusable(dict(), dict(["JSON"]), DEFAULT).reuse).toBe(false);
+    expect(transcriptCacheReusable(dict(["JSON"]), dict(), DEFAULT).reuse).toBe(false);
+    expect(transcriptCacheReusable(dict(["JSON"]), dict(["JSON", "ossclip"]), DEFAULT).reuse).toBe(false);
+    // ORDER-SENSITIVE by choice: a reordered list is a different --prompt
+    // text verbatim, so it is a different decoder input.
+    expect(
+      transcriptCacheReusable(dict(["ossclip", "JSON"]), dict(["JSON", "ossclip"]), DEFAULT).reuse,
+    ).toBe(false);
+  });
+
+  it("reuses when the dictionaries match — and absent matches absent", () => {
+    expect(
+      transcriptCacheReusable(
+        { model: DEFAULT, dictionary: ["JSON", "ossclip"] },
+        { model: DEFAULT, dictionary: ["JSON", "ossclip"] },
+        DEFAULT,
+      ).reuse,
+    ).toBe(true);
+    // Pre-dictionary key files (no `dictionary` at all) must keep reusing
+    // under a no-dictionary request — old workdirs must not re-transcribe.
+    expect(transcriptCacheReusable({ model: DEFAULT }, { model: DEFAULT }, DEFAULT).reuse).toBe(true);
+    // requestedKey omits an empty list rather than writing []; a hand-edited
+    // [] means the same "no biasing" as absent.
+    expect(
+      transcriptCacheReusable({ model: DEFAULT, dictionary: [] }, { model: DEFAULT }, DEFAULT).reuse,
+    ).toBe(true);
+  });
 });

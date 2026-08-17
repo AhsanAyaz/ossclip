@@ -25,6 +25,7 @@ import {
 export * from "./provider";
 export * from "./usage";
 export * from "./beats";
+export * from "./youtube";
 export * from "./scene-props";
 export * from "./repair";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";

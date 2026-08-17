@@ -13,6 +13,9 @@
  * platform×arch resolves to either an asset or an explicit manual hint.
  */
 
+import { basename, isAbsolute, join } from "node:path";
+import { z } from "zod/v4";
+
 export interface BinaryAsset {
   url: string;
   sha256: string;
@@ -135,10 +138,24 @@ export function whisperAsset(platform: NodeJS.Platform, arch: string): BinaryAss
  * models/README.md — upstream publishes SHA-1, so that's what we verify;
  * it's an integrity check against truncated downloads, not a security
  * boundary (the download is already pinned to a host and path over HTTPS).
+ *
+ * Curated fine-tunes ride the same table: `url` points at their own host
+ * (ggerganov's mirror only carries the stock models — the old hardcoded URL
+ * 404'd for every custom name, and the suggested `curl -L` then saved the
+ * 404 HTML as a fake model), and `language` records what the fine-tune
+ * decodes so produce can imply `-l` when nothing else sets one (an Urdu
+ * fine-tune without `-l ur` silently decodes English garbage — Urdu field
+ * test 2026-08-05).
  */
 export interface ModelInfo {
-  sizeMB: number;
-  sha1: string;
+  sizeMB?: number;
+  sha1?: string;
+  /** Direct download URL for models the ggerganov mirror doesn't host. */
+  url?: string;
+  /** The language the fine-tune decodes — implied `-l` when neither flag nor config sets one. */
+  language?: string;
+  /** Provenance, printed by setup at download time and shown as the wizard hint. */
+  note?: string;
 }
 
 export const MODELS: Record<string, ModelInfo> = {
@@ -146,10 +163,82 @@ export const MODELS: Record<string, ModelInfo> = {
   "base.en": { sizeMB: 142, sha1: "137c40403d78fd54d454da0f9bd998f78703390c" },
   "small.en": { sizeMB: 466, sha1: "db8a495a91d927739e50b3fc1cc4c6b8f6c2d022" },
   "medium.en": { sizeMB: 1536, sha1: "8c30f0e44ce9560643ebd10bbe50cd20eafd3723" },
+  // URL pending the author's upload (2026-08-17) — sha1 added when the file
+  // is published; setup already warns-and-continues without a checksum.
+  "medium-urdu": {
+    sizeMB: 1463,
+    // sha1 computed 2026-08-17 from the author's converted file BEFORE the HF
+    // upload — same bytes, so the pin is valid the moment the file publishes,
+    // and a corrupted/tampered mirror download fails the checksum loudly.
+    sha1: "59769d590f62eeeb3bc3f5b82ce8c03b6e96831e",
+    language: "ur",
+    note: "community Urdu fine-tune (Abdul145/whisper-medium-urdu-custom, Apache-2.0), converted to GGML",
+    url: "https://huggingface.co/CodeWithAhsan/whisper-medium-urdu-ggml/resolve/main/ggml-medium-urdu.bin",
+  },
 };
 
-export function modelUrl(name: string): string {
-  return `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${name}.bin`;
+/**
+ * A model pick reduced to its bare name: basename, minus the optional ggml-
+ * prefix and .bin suffix. Exists because classifying on the raw value
+ * misreads paths — an absolute /x/ggml-small.en.bin ends in ".bin", so the
+ * wizard's `.endsWith(".en")` language heuristic prefilled `auto` for an
+ * ENGLISH model (review fix, Urdu field test 2026-08-05) — and the MODELS
+ * lookups below must find `medium-urdu` inside either spelling.
+ */
+export function bareWhisperModelName(nameOrPath: string): string {
+  const base = basename(nameOrPath);
+  const m = /^(?:ggml-)?(.+?)(?:\.bin)?$/.exec(base);
+  return m?.[1] ?? base;
+}
+
+/**
+ * The language a model pick implies when the user set none: the curated
+ * table's `language`, keyed on the bare name so `--whisper-model medium-urdu`
+ * and an absolute /x/ggml-medium-urdu.bin both resolve it. Undefined for
+ * stock models and unknown fine-tunes — whisper's own en default stands.
+ */
+export function modelImpliedLanguage(nameOrPath: string): string | undefined {
+  return MODELS[bareWhisperModelName(nameOrPath)]?.language;
+}
+
+/**
+ * THE model-download URL — the single source produce's missing-model error,
+ * doctor's fix line, and setup's download all read (they used to hold string
+ * dupes of the ggerganov URL, which 404'd for any custom name). Precedence:
+ * the config's `modelSources` entry (a user's own fine-tune is one config
+ * line) > the curated table's `url` > the ggerganov default mirror.
+ */
+export function modelUrl(name: string, sources?: Record<string, string>): string {
+  return (
+    sources?.[name] ??
+    MODELS[name]?.url ??
+    `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${name}.bin`
+  );
+}
+
+/**
+ * The one model-path resolution rule, extracted from its three duplicated
+ * sites (produce's transcription step, doctor's model check, setup's plan):
+ * an absolute model is a file path used verbatim, a bare name lives in
+ * modelDir as ggml-<name>.bin.
+ */
+export function whisperModelPath(model: string, modelDir: string): string {
+  return isAbsolute(model) ? model : join(modelDir, `ggml-${model}.bin`);
+}
+
+/**
+ * Consumer-side vetting for the config's `modelSources` key — the
+ * `validDictionary` posture (produce.ts) applied to a record: the value
+ * comes from a hand-editable JSON file loadConfig doesn't zod-parse, so a
+ * non-object, a non-string URL, or a URL that trims to nothing means the
+ * whole key is ignored (`undefined`) and the call site warns once.
+ * All-or-nothing on purpose: half a typo'd map would download some models
+ * from a source the user never reviewed.
+ */
+export function validModelSources(value: unknown): Record<string, string> | undefined {
+  const parsed = z.record(z.string(), z.string().trim().min(1)).safeParse(value);
+  if (!parsed.success || Object.keys(parsed.data).length === 0) return undefined;
+  return parsed.data;
 }
 
 /** The exact build recipe printed when no prebuilt fits — one copy, not four. */

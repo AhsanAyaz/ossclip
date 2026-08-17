@@ -17,7 +17,9 @@ import {
   avoidSlicingText,
   backdropOpacityAt,
   captionAnchorAt,
+  captionFontSizeFor,
   clampGraphicRect,
+  contentTransformFor,
   FULL_BLEED_GRAPHIC_SLOT,
   LANDSCAPE_FRAME,
   LANDSCAPE_SAFE_AREA,
@@ -173,6 +175,51 @@ describe("layoutSlots", () => {
         expect(alt, `${id} lists its own default as an alternate`).not.toBe(meta.defaultLayout);
       }
     }
+  });
+});
+
+describe("landscape caption anchors (user screenshot 2026-08-16)", () => {
+  // The frame-agnostic anchors put landscape captions mid-frame — 0.7 of a
+  // 16:9 frame is chest height, not a lower third. Pin BOTH sides of every
+  // branch: the portrait literals must stay byte-identical, and each
+  // landscape anchor sits lower but under the legal ceiling
+  // 0.835 = 1 − LANDSCAPE_SAFE_AREA.bottom − CAPTION_HALF_BAND.
+  const CEILING = 1 - LANDSCAPE_SAFE_AREA.bottom - CAPTION_HALF_BAND;
+  const CASES = [
+    { layout: "full-bleed", portrait: 0.7, landscape: 0.8 },
+    { layout: "pip-bubble", portrait: 0.61, landscape: 0.78 },
+    { layout: "graphic-only", portrait: 0.73, landscape: 0.8 },
+    { layout: "blurred-behind", portrait: 0.69, landscape: 0.8 },
+  ] as const;
+
+  it("pins the portrait literals and the lowered landscape anchors", () => {
+    for (const { layout, portrait, landscape } of CASES) {
+      expect(layoutSlots(layout, DEFAULT_FACE, [], PORTRAIT_FRAME).captionAnchor, layout).toBe(
+        portrait,
+      );
+      const l = layoutSlots(layout, DEFAULT_FACE, [], LANDSCAPE_FRAME).captionAnchor;
+      expect(l, layout).toBe(landscape);
+      expect(l, layout).toBeGreaterThanOrEqual(portrait);
+    }
+  });
+
+  it("EVERY layout's landscape anchor stays under the ceiling — branched or not", () => {
+    // lower-third and the splits branched before this change; the ceiling is
+    // the shared invariant all of them answer to.
+    for (const layout of LayoutSchema.options) {
+      const a = layoutSlots(layout, DEFAULT_FACE, [], LANDSCAPE_FRAME).captionAnchor;
+      expect(a, layout).toBeLessThanOrEqual(CEILING + 1e-9);
+    }
+  });
+});
+
+describe("captionFontSizeFor", () => {
+  it("keeps the historical 64 in portrait and drops to 44 in landscape", () => {
+    // 64 ≈ 3.3% of a 1080x1920 frame's height; the same 64 in 1920x1080 is
+    // 5.9% and reads as a billboard (user complaint 2026-08-16). 44 ≈ 4% of
+    // 1080 — lower-third scale, not billboard scale.
+    expect(captionFontSizeFor(PORTRAIT_FRAME)).toBe(64);
+    expect(captionFontSizeFor(LANDSCAPE_FRAME)).toBe(44);
   });
 });
 
@@ -387,6 +434,15 @@ describe("caption + backdrop timelines", () => {
     expect(captionAnchorAt(cues, 1)).toBe(layoutSlots("full-bleed").captionAnchor);
     expect(captionAnchorAt(cues, 4)).toBe(layoutSlots("graphic-only").captionAnchor);
     expect(captionAnchorAt(cues, 8)).toBe(layoutSlots("full-bleed").captionAnchor);
+  });
+  it("captionAnchorAt honors the frame; omitting it still means portrait", () => {
+    expect(captionAnchorAt(cues, 4, LANDSCAPE_FRAME)).toBe(
+      layoutSlots("graphic-only", DEFAULT_FACE, [], LANDSCAPE_FRAME).captionAnchor,
+    );
+    expect(captionAnchorAt(cues, 8, LANDSCAPE_FRAME)).toBe(
+      layoutSlots("full-bleed", DEFAULT_FACE, [], LANDSCAPE_FRAME).captionAnchor,
+    );
+    expect(captionAnchorAt(cues, 4)).toBe(layoutSlots("graphic-only").captionAnchor);
   });
   it("backdrop fades in and out around the cue", () => {
     expect(backdropOpacityAt(cues, 1)).toBe(0);
@@ -765,5 +821,76 @@ describe("landscape frame (R15)", () => {
     expect(layoutSlots("video-top", face)).toEqual(
       layoutSlots("video-top", face, [], PORTRAIT_FRAME),
     );
+  });
+});
+
+describe("objectPos subject guard (2026-08-16 incident)", () => {
+  const FULL_RECT = { x: 0, y: 0, w: 1, h: 1 };
+  // The incident's measured face: a screen recording's camera PiP — 11.9% of
+  // frame height, sitting bottom-right — in a 3456×2234 (1.547:1) source.
+  const pipFace = {
+    centerYFrac: 0.76,
+    sizeFrac: 0.119,
+    centerXFrac: 0.88,
+    sourceAspect: 3456 / 2234,
+  };
+
+  it("without a subject, the PiP face pins the crop to the frame bottom — the incident", () => {
+    // 1.547 source cover-cropped into 16:9 overflows vertically; the chin
+    // constraint pushes the offset past the overflow and clamps to 1.0,
+    // which is exactly what cut the top 28% of every full-frame stretch.
+    // Pinned as the OLD behaviour: absent subject must keep it byte-for-byte
+    // so every existing render-props renders unchanged.
+    expect(objectPosYFor(FULL_RECT, pipFace, LANDSCAPE_FRAME)).toBe(1);
+  });
+
+  it("subject 'screen' centres both axes — a face that is not the subject must not steer the crop", () => {
+    const screenFace = { ...pipFace, subject: "screen" as const };
+    expect(objectPosYFor(FULL_RECT, screenFace, LANDSCAPE_FRAME)).toBe(0.5);
+    // Portrait frame makes the source width-overflow, so without the guard X
+    // would chase centerXFrac 0.88 into the corner.
+    expect(objectPosXFor(FULL_RECT, screenFace, PORTRAIT_FRAME)).toBe(0.5);
+    expect(objectPosXFor(FULL_RECT, pipFace, PORTRAIT_FRAME)).not.toBe(0.5);
+  });
+
+  it("absent subject keeps the old face-biased values byte-for-byte, and 'face' is its synonym", () => {
+    const band = { x: 0, y: 0, w: 1, h: 0.42 }; // the video-top slot
+    const face = { centerYFrac: 0.38, sizeFrac: 0.22 };
+    // Exact pre-guard numbers, hand-derived from the §13 interval math —
+    // pinned as literals so a regression here cannot hide behind "the
+    // function agrees with itself".
+    expect(objectPosYFor(band, face)).toBeCloseTo(0.2629310344827586, 12);
+    const wide = { centerYFrac: 0.38, sizeFrac: 0.22, centerXFrac: 0.7, sourceAspect: 16 / 9 };
+    expect(objectPosXFor(FULL_RECT, wide)).toBeCloseTo(0.7925714285714286, 12);
+    // An explicit "face" subject is the absent default spelled out.
+    expect(objectPosYFor(band, { ...face, subject: "face" as const })).toBe(
+      objectPosYFor(band, face),
+    );
+    expect(objectPosXFor(FULL_RECT, { ...wide, subject: "face" as const })).toBe(
+      objectPosXFor(FULL_RECT, wide),
+    );
+  });
+});
+
+describe("contentTransformFor (user override composes ON TOP of the framing crop)", () => {
+  // VideoStage applies this transform on the wrapper AROUND ContentCrop, and
+  // the seal is structural: this function's inputs are only zoom + the user's
+  // scale/dx/dy, and `activeCropBox` (content-crop.ts) takes no override at
+  // all — so neither concern can consume the other, and "Reset framing"
+  // returns exactly to the automatic framing.
+  it("a no-op correction is NO transform — the legacy DOM stays byte-identical", () => {
+    expect(contentTransformFor(1, 1, 0, 0)).toBeUndefined();
+  });
+
+  it("zoom and user scale compose multiplicatively, translate applied first", () => {
+    expect(contentTransformFor(2, 1.5, 12, -8)).toBe("translate(12px, -8px) scale(3)");
+  });
+
+  it("the idle zoom alone flows through the same wrapper channel", () => {
+    expect(contentTransformFor(1.05, 1, 0, 0)).toBe("scale(1.05)");
+  });
+
+  it("a pure translate does not emit a redundant scale(1)", () => {
+    expect(contentTransformFor(1, 1, 5, 0)).toBe("translate(5px, 0px)");
   });
 });

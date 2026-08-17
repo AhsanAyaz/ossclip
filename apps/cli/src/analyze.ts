@@ -10,6 +10,7 @@ import {
   keptPauses,
   type CleanupLevel,
 } from "@ossclip/core";
+import { expandHome } from "./paths";
 import { produce } from "./produce";
 import type { PhaseTimings } from "./phase-timing";
 
@@ -93,6 +94,13 @@ export const RenderPropsExportSchema = z.object({
   // Written only when the camera is OFF (produce's absent-means-default
   // contract) — absent must read as "motion on".
   staticCamera: z.boolean().optional(),
+  // The face-only jump-cut plan (2026-08-16, Task 6). Absent means the
+  // LEGACY 1.07-everywhere punch — every pre-feature workdir exports the
+  // camera its render had. A present-but-mangled plan ERRORS here rather
+  // than falling back: unlike the renderer (which can only degrade
+  // gracefully mid-frame, punchPropsFor → legacy), this export can refuse
+  // with a field name, the posture the schema's own doc comment demands.
+  punch: z.object({ scale: z.number(), allowed: z.array(z.boolean()) }).optional(),
 });
 
 /** Same shape as produce's `defaultOutPath`: beside the input, new extension. */
@@ -160,7 +168,14 @@ export async function runAnalyze(
   );
   const markerCount = (production.cutlist ?? []).filter((s) => s.kind === "remove").length;
   const pauseCount = keptPauses(production).length;
-  const outPath = resolve(opts.out ?? defaultExportPath(resolve(inputArg), opts.format));
+  // expandHome on both user-typed halves (2026-08-16 rule, paths.ts): a
+  // `~/` --out or input must not resolve against cwd. produce() expands the
+  // input it received on its own; this line's derivations are separate reads.
+  const outPath = resolve(
+    opts.out !== undefined
+      ? expandHome(opts.out)
+      : defaultExportPath(resolve(expandHome(inputArg)), opts.format),
+  );
 
   if (opts.format === "premiere-project") {
     // The project export reads render-props.json, not just production.json:
@@ -176,6 +191,7 @@ export async function runAnalyze(
       captionLines: props.captionLines,
       zoomPlan: props.zoomPlan,
       staticCamera: props.staticCamera,
+      punch: props.punch,
       // The OUTPUT frame — production.render already carries --aspect.
       frame: { width: production.render.width, height: production.render.height },
     });

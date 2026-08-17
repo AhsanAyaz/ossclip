@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { run } from "./exec";
 import {
   contentRectTimeline,
+  materializeTimeline,
   parseCropdetect,
   pickTransition,
   type ContentRect,
@@ -70,7 +71,7 @@ export async function detectContentRect(
       timeline?: ContentRectSegment[];
     };
     if (cached.version === CACHE_VERSION && cached.timeline?.length) {
-      return withUniform(cached.timeline);
+      return withUniform(cached.timeline, probe);
     }
   }
 
@@ -95,7 +96,7 @@ export async function detectContentRect(
   if (cachePath) {
     await writeFile(cachePath, JSON.stringify({ version: CACHE_VERSION, timeline }, null, 2));
   }
-  return withUniform(timeline);
+  return withUniform(timeline, probe);
 }
 
 /** How far around a coarse boundary the refinement pass looks. Must exceed the
@@ -152,8 +153,19 @@ async function refineBoundaries(
   }
 }
 
-function withUniform(timeline: ContentRectSegment[]): ContentRectDetection {
-  return { timeline, uniform: timeline.length === 1 ? timeline[0]!.rect : null };
+function withUniform(
+  timeline: ContentRectSegment[],
+  probe: { width: number; height: number; duration: number },
+): ContentRectDetection {
+  // Materialize BEFORE the single-segment uniform test, and on the cache-hit
+  // path too: the cache stores the RAW measurement, so re-judging it here is
+  // what lets the 2026-08-16 incident's cached content-rect.json re-classify
+  // as uniform on replay without a CACHE_VERSION bump (no re-measure).
+  const materialized = materializeTimeline(timeline, probe.width, probe.height, probe.duration);
+  return {
+    timeline: materialized,
+    uniform: materialized.length === 1 ? materialized[0]!.rect : null,
+  };
 }
 
 /** Total source seconds the framing is NOT the full frame — for reporting. */

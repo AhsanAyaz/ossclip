@@ -1,7 +1,9 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import type { GenerateThumbnailImageOptions } from "@ossclip/core";
 import { startEditServer } from "../src/edit";
 
 let close: (() => void) | undefined;
@@ -413,5 +415,616 @@ describe("project open and switch (R17 §83)", () => {
     expect(body.entries.map((e) => e.name)).toEqual(["zzz-proj", "aaa-plain"]);
     expect(body.entries[0]!.isWorkdir).toBe(true);
     expect(body.entries[1]!.isWorkdir).toBe(false);
+  });
+});
+
+describe("AI thumbnail endpoints (2026-08-17)", () => {
+  // EVERY server here injects `loadCfg: () => ({})` — the panel's config
+  // fallback must never read the runner's real ~/.ossclip/config.json (the
+  // SHARED_RECENTS rule applied to reads).
+  const noCfg = (): Record<string, never> => ({});
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** A workdir whose command.json pins --youtube + a portrait that exists,
+   * plus a recorded out — the fully-configured baseline. */
+  async function thumbnailWorkdir(): Promise<{ dir: string; portrait: string; out: string }> {
+    const dir = await fixtureWorkdir();
+    const portrait = join(dir, "portrait.png");
+    await writeFile(portrait, "not-a-real-png");
+    const out = join(dir, "final.mp4");
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4", "--youtube", "--portrait", portrait],
+        cwd: dir,
+        out,
+      }),
+    );
+    return { dir, portrait, out };
+  }
+
+  it("409 with no workdir open, like every workdir endpoint", async () => {
+    const server = await startEditServer(undefined, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+    });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/thumbnail`)).status).toBe(409);
+    expect((await fetch(`${server.url}/api/thumbnail/image`)).status).toBe(409);
+    expect(
+      (await fetch(`${server.url}/api/thumbnail/regenerate`, { method: "POST" })).status,
+    ).toBe(409);
+  });
+
+  it("a pinned --no-youtube reads unavailable/no-youtube — the pin is the replay truth", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4", "--no-youtube"],
+        cwd: dir,
+      }),
+    );
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(body).toMatchObject({ status: "unavailable", reason: "no-youtube", concept: null });
+    expect(body.imageUrl).toBeNull();
+    // Regenerate against an unavailable project is a precondition failure —
+    // 412 like a render without command.json, never a paid call.
+    const regen = await fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ concept: { scene: "s", overlayText: "o", styleNotes: "n" } }),
+    });
+    expect(regen.status).toBe(412);
+  });
+
+  it("fully configured but nothing generated yet: ready/never-generated, null concept and image", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await thumbnailWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(body).toMatchObject({ status: "ready", reason: "never-generated", concept: null });
+    expect(body.imageUrl).toBeNull();
+    expect(typeof body.model).toBe("string");
+    expect((await fetch(`${server.url}/api/thumbnail/image`)).status).toBe(404);
+  });
+
+  it("the approved concept wins the prefill; a {skip:true} file reads as skipped", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await thumbnailWorkdir();
+    const concept = { scene: "a terminal", overlayText: "SHIP IT", styleNotes: "dark" };
+    // A cache the approved file must outrank — the approval is the user's
+    // decision, the cache is only what the last produce prompted with.
+    await writeFile(join(dir, "thumbnail-concept-aaaaaaaa.json"), JSON.stringify({
+      scene: "cached scene", overlayText: "CACHED", styleNotes: "cached",
+    }));
+    await writeFile(join(dir, "thumbnail-concept-approved.json"), JSON.stringify(concept));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(body.status).toBe("ready");
+    expect(body.concept).toEqual(concept);
+
+    await writeFile(join(dir, "thumbnail-concept-approved.json"), JSON.stringify({ skip: true }));
+    const skipped = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(skipped).toMatchObject({ status: "skipped", reason: "skip-file" });
+    // With the approval now a skip, the cache is the prefill again.
+    expect(skipped.concept).toEqual({
+      scene: "cached scene",
+      overlayText: "CACHED",
+      styleNotes: "cached",
+    });
+  });
+
+  it("regenerate: persists the approved concept, writes the cache and <out>.thumbnail.png", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir, out } = await thumbnailWorkdir();
+    const calls: GenerateThumbnailImageOptions[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      generateThumbnail: async (o) => {
+        calls.push(o);
+        return new Uint8Array([137, 80, 78, 71]);
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        concept: { scene: "a glowing terminal", overlayText: "AGENTS EXPLAINED", styleNotes: "dark blue" },
+      }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.imageUrl).toMatch(/^\/api\/thumbnail\/image\?ts=\d+$/);
+    // The approval-file contract: the edit is on disk for future CLI replays.
+    const approved = JSON.parse(await readFile(join(dir, "thumbnail-concept-approved.json"), "utf8"));
+    expect(approved.overlayText).toBe("AGENTS EXPLAINED");
+    // The generate call carried the key, the portrait bytes and the concept.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.apiKey).toBe("test-key");
+    expect(calls[0]!.prompt).toContain("AGENTS EXPLAINED");
+    expect(calls[0]!.portrait).toEqual({
+      data: Buffer.from("not-a-real-png").toString("base64"),
+      mimeType: "image/png",
+    });
+    // Destination copy beside the recorded out.
+    const dest = join(dir, "final.thumbnail.png");
+    expect(existsSync(dest)).toBe(true);
+    expect([...(await readFile(dest))]).toEqual([137, 80, 78, 71]);
+    // The image endpoint serves it, no-store.
+    const img = await fetch(`${server.url}/api/thumbnail/image`);
+    expect(img.status).toBe(200);
+    expect(img.headers.get("content-type")).toBe("image/png");
+    expect(img.headers.get("cache-control")).toBe("no-store");
+    expect([...new Uint8Array(await img.arrayBuffer())]).toEqual([137, 80, 78, 71]);
+    // And the panel state now reports it.
+    const state = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(state.status).toBe("ready");
+    expect(state.imageUrl).toMatch(/^\/api\/thumbnail\/image\?ts=\d+$/);
+  });
+
+  it("regenerate word-caps the overlay before persisting — thumbnailStep parity", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await thumbnailWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      generateThumbnail: async () => new Uint8Array([1]),
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        concept: {
+          scene: "s",
+          overlayText: "this framework changes absolutely everything about how teams ship",
+          styleNotes: "n",
+        },
+      }),
+    });
+    expect((await res.json()).ok).toBe(true);
+    const approved = JSON.parse(await readFile(join(dir, "thumbnail-concept-approved.json"), "utf8"));
+    expect(approved.overlayText.split(" ").length).toBeLessThanOrEqual(9);
+  });
+
+  it("a generation failure is 200/ok:false with the message VERBATIM, and the edit survives", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await thumbnailWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      generateThumbnail: async () => {
+        throw new Error("models/nope is not found");
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ concept: { scene: "s", overlayText: "OK THEN", styleNotes: "n" } }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ ok: false, error: "models/nope is not found" });
+    // Persisted BEFORE the failed generation — the user's decision stands.
+    const approved = JSON.parse(await readFile(join(dir, "thumbnail-concept-approved.json"), "utf8"));
+    expect(approved.overlayText).toBe("OK THEN");
+    expect(existsSync(join(dir, "final.thumbnail.png"))).toBe(false);
+  });
+
+  it("a malformed body is a 400, never a paid call", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await thumbnailWorkdir();
+    let called = false;
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      generateThumbnail: async () => {
+        called = true;
+        return new Uint8Array([1]);
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ concept: { scene: "only a scene" } }),
+    });
+    expect(res.status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it("409 while a generation is already in flight — an image call costs money", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await thumbnailWorkdir();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => (started = r));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      generateThumbnail: async () => {
+        started();
+        await gate;
+        return new Uint8Array([1]);
+      },
+    });
+    close = server.close;
+    const conceptBody = JSON.stringify({
+      concept: { scene: "s", overlayText: "GO", styleNotes: "n" },
+    });
+    const first = fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: conceptBody,
+    });
+    // Deterministic, not a sleep: the second request goes out only once the
+    // first is provably inside the generate call.
+    await startedP;
+    const second = await fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: conceptBody,
+    });
+    expect(second.status).toBe(409);
+    release();
+    expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+describe("portrait override endpoints (editor face swap, 2026-08-17)", () => {
+  const noCfg = (): Record<string, never> => ({});
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** thumbnailWorkdir's shape, restated: a pinned --youtube + --portrait
+   * baseline the override must OUTRANK. */
+  async function portraitWorkdir(): Promise<{ dir: string; portrait: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-edit-"));
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({ videoFileName: "clip.mp4", sceneCues: [], captionLines: [], spans: [] }),
+    );
+    const portrait = join(dir, "portrait.png");
+    await writeFile(portrait, "default-face-bytes");
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4", "--youtube", "--portrait", portrait],
+        cwd: dir,
+        out: join(dir, "final.mp4"),
+      }),
+    );
+    return { dir, portrait };
+  }
+
+  const serve = async (dir: string, generateThumbnail?: (o: GenerateThumbnailImageOptions) => Promise<Uint8Array>) => {
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      ...(generateThumbnail ? { generateThumbnail } : {}),
+    });
+    close = server.close;
+    return server;
+  };
+
+  it("GET /api/thumbnail reports the flag portrait, and portrait-image serves it no-store", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await portraitWorkdir();
+    const server = await serve(dir);
+    const body = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(body.portrait.source).toBe("flag");
+    expect(body.portrait.url).toMatch(/^\/api\/thumbnail\/portrait-image\?ts=\d+$/);
+    const img = await fetch(`${server.url}${body.portrait.url}`);
+    expect(img.status).toBe(200);
+    expect(img.headers.get("content-type")).toBe("image/png");
+    expect(img.headers.get("cache-control")).toBe("no-store");
+    expect(Buffer.from(await img.arrayBuffer()).toString()).toBe("default-face-bytes");
+  });
+
+  it("no portrait anywhere: GET reports null and portrait-image 404s", async () => {
+    const dir = await fixtureWorkdir();
+    const server = await serve(dir);
+    const body = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(body.portrait).toBeNull();
+    expect((await fetch(`${server.url}/api/thumbnail/portrait-image`)).status).toBe(404);
+  });
+
+  it("POST swaps the face: override wins the GET, feeds portrait-image AND the regenerate", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await portraitWorkdir();
+    const calls: GenerateThumbnailImageOptions[] = [];
+    const server = await serve(dir, async (o) => {
+      calls.push(o);
+      return new Uint8Array([1]);
+    });
+    const res = await fetch(`${server.url}/api/thumbnail/portrait`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        data: Buffer.from("swapped-face-bytes").toString("base64"),
+        mimeType: "image/jpeg",
+      }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.portrait.source).toBe("override");
+    // image/jpeg lands as .jpg — portraitExtensionForMime's tiebreak.
+    const override = join(dir, "portrait-override.jpg");
+    expect(await readFile(override, "utf8")).toBe("swapped-face-bytes");
+    // No stray .tmp left behind by the atomic write.
+    expect(existsSync(`${override}.tmp`)).toBe(false);
+    // The GET now reports the override, and portrait-image serves ITS bytes.
+    const state = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(state.portrait.source).toBe("override");
+    const img = await fetch(`${server.url}${state.portrait.url}`);
+    expect(img.headers.get("content-type")).toBe("image/jpeg");
+    expect(Buffer.from(await img.arrayBuffer()).toString()).toBe("swapped-face-bytes");
+    // A regenerate prompts with the SWAPPED face, not the pinned one — and
+    // since thumbnailImageCacheName keys on the portrait BYTES' sha1, the
+    // swap misses the old cache naturally.
+    const regen = await fetch(`${server.url}/api/thumbnail/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ concept: { scene: "s", overlayText: "GO", styleNotes: "n" } }),
+    });
+    expect(((await regen.json()) as { ok: boolean }).ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.portrait).toEqual({
+      data: Buffer.from("swapped-face-bytes").toString("base64"),
+      mimeType: "image/jpeg",
+    });
+  });
+
+  it("one override, ever: a new upload with a different type removes the old extension", async () => {
+    const { dir } = await portraitWorkdir();
+    const server = await serve(dir);
+    const post = (mimeType: string): Promise<Response> =>
+      fetch(`${server.url}/api/thumbnail/portrait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: Buffer.from("x").toString("base64"), mimeType }),
+      });
+    expect((await post("image/png")).status).toBe(200);
+    expect(existsSync(join(dir, "portrait-override.png"))).toBe(true);
+    expect((await post("image/webp")).status).toBe(200);
+    expect(existsSync(join(dir, "portrait-override.png"))).toBe(false);
+    expect(existsSync(join(dir, "portrait-override.webp"))).toBe(true);
+  });
+
+  it("400 on a mime outside the table, naming the accepted set — no file written", async () => {
+    const { dir } = await portraitWorkdir();
+    const server = await serve(dir);
+    const res = await fetch(`${server.url}/api/thumbnail/portrait`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data: Buffer.from("x").toString("base64"), mimeType: "image/gif" }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("image/gif");
+    expect(body.error).toContain("image/png, image/jpeg, image/webp");
+    expect(existsSync(join(dir, "portrait-override.gif"))).toBe(false);
+  });
+
+  it("400 over the 15MB decoded cap, and on a malformed body", async () => {
+    const { dir } = await portraitWorkdir();
+    const server = await serve(dir);
+    const huge = await fetch(`${server.url}/api/thumbnail/portrait`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        data: Buffer.alloc(15 * 1024 * 1024 + 1).toString("base64"),
+        mimeType: "image/png",
+      }),
+    });
+    expect(huge.status).toBe(400);
+    expect(((await huge.json()) as { error: string }).error).toContain("15MB");
+    expect(existsSync(join(dir, "portrait-override.png"))).toBe(false);
+    const malformed = await fetch(`${server.url}/api/thumbnail/portrait`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mimeType: "image/png" }),
+    });
+    expect(malformed.status).toBe(400);
+  });
+
+  it("DELETE reverts to the flag/config portrait — or to none when there never was one", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    const { dir } = await portraitWorkdir();
+    const server = await serve(dir);
+    await fetch(`${server.url}/api/thumbnail/portrait`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ data: Buffer.from("x").toString("base64"), mimeType: "image/png" }),
+    });
+    const res = await fetch(`${server.url}/api/thumbnail/portrait`, { method: "DELETE" });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    // Re-resolved: the pinned --portrait is the fallback headshot again.
+    expect(body.portrait.source).toBe("flag");
+    expect(existsSync(join(dir, "portrait-override.png"))).toBe(false);
+    const state = await (await fetch(`${server.url}/api/thumbnail`)).json();
+    expect(state.portrait.source).toBe("flag");
+  });
+
+  it("409 with no workdir open, like every workdir endpoint", async () => {
+    const server = await startEditServer(undefined, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+    });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/thumbnail/portrait-image`)).status).toBe(409);
+    expect(
+      (await fetch(`${server.url}/api/thumbnail/portrait`, { method: "POST" })).status,
+    ).toBe(409);
+    expect(
+      (await fetch(`${server.url}/api/thumbnail/portrait`, { method: "DELETE" })).status,
+    ).toBe(409);
+  });
+});
+
+describe("YouTube SEO pack endpoints (2026-08-17)", () => {
+  const validPack = {
+    titles: ["How agents actually work", "5 agent mistakes", "Agents in 8 minutes"],
+    description: "The one agent pattern nobody explains.\n\n#agents",
+    hashtags: ["#agents", "#llm"],
+    tags: ["ai agents", "llm tutorial"],
+  };
+
+  /** A workdir with a recorded out, so the markdown has somewhere to land. */
+  async function youtubeWorkdir(): Promise<{ dir: string; out: string }> {
+    const dir = await fixtureWorkdir();
+    const out = join(dir, "final.mp4");
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4", "--youtube"],
+        cwd: dir,
+        out,
+      }),
+    );
+    return { dir, out };
+  }
+
+  it("409 with no workdir open, like every workdir endpoint", async () => {
+    const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/youtube`)).status).toBe(409);
+    expect((await fetch(`${server.url}/api/youtube`, { method: "PUT" })).status).toBe(409);
+  });
+
+  it("no pack anywhere: available false, reason no-pack — the run never generated metadata", async () => {
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/youtube`)).json();
+    expect(body).toEqual({ available: false, reason: "no-pack", pack: null, mdPath: null });
+  });
+
+  it("the approved file outranks a NEWER cache — the approval is the user's decision", async () => {
+    const { dir, out } = await youtubeWorkdir();
+    const approved = { ...validPack, titles: ["edited", "by the", "user"] };
+    await writeFile(join(dir, "youtube-pack-approved.json"), JSON.stringify(approved));
+    // Written AFTER the approved file, so it is the newer of the two by
+    // mtime — the approved file must still win on rank, not on recency.
+    await writeFile(join(dir, "youtube-aaaaaaaa.json"), JSON.stringify(validPack));
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/youtube`)).json();
+    expect(body.available).toBe(true);
+    expect(body.pack.titles).toEqual(["edited", "by the", "user"]);
+    expect(body.mdPath).toBe(join(dir, "final.youtube.md"));
+  });
+
+  it("a corrupt approved file degrades to the cache, never a 500 (read-side leniency)", async () => {
+    const { dir } = await youtubeWorkdir();
+    await writeFile(join(dir, "youtube-pack-approved.json"), "{not json");
+    await writeFile(join(dir, "youtube-aaaaaaaa.json"), JSON.stringify(validPack));
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/youtube`)).json();
+    expect(body.available).toBe(true);
+    expect(body.pack).toEqual(validPack);
+  });
+
+  it("PUT validates, trims tags to the 500 budget, persists the approval and rewrites the markdown", async () => {
+    const { dir } = await youtubeWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    // Two tags at the budget plus one over it — the trailing tag must go
+    // (trimTagsToLimit drops from the END, relevance order).
+    const tags = ["a".repeat(249), "b".repeat(249), "over-budget"];
+    const res = await fetch(`${server.url}/api/youtube`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pack: { ...validPack, tags } }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.mdPath).toBe(join(dir, "final.youtube.md"));
+    // The approval-file contract: on disk for produce's Y2 block to honor.
+    const approved = JSON.parse(await readFile(join(dir, "youtube-pack-approved.json"), "utf8"));
+    expect(approved.titles).toEqual(validPack.titles);
+    expect(approved.tags).toEqual(tags.slice(0, 2));
+    // The paste-ready markdown is rewritten NOW, from the trimmed pack.
+    const md = await readFile(join(dir, "final.youtube.md"), "utf8");
+    expect(md).toContain("How agents actually work");
+    expect(md).not.toContain("over-budget");
+    // And the GET reflects the save immediately.
+    const state = await (await fetch(`${server.url}/api/youtube`)).json();
+    expect(state.pack.tags).toEqual(tags.slice(0, 2));
+  });
+
+  it("PUT without a recorded out still saves the approval — mdPath null is the note", async () => {
+    const dir = await fixtureWorkdir(); // no command.json at all
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/youtube`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pack: validPack }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ ok: true, mdPath: null });
+    expect(existsSync(join(dir, "youtube-pack-approved.json"))).toBe(true);
+  });
+
+  it("a malformed pack is a 400, never written", async () => {
+    const { dir } = await youtubeWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/youtube`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      // Two titles — under the schema's 3-5 bound the UI also enforces.
+      body: JSON.stringify({ pack: { ...validPack, titles: ["one", "two"] } }),
+    });
+    expect(res.status).toBe(400);
+    expect(existsSync(join(dir, "youtube-pack-approved.json"))).toBe(false);
   });
 });

@@ -831,6 +831,181 @@ describe("findRetakeGroups: hallucination guard", () => {
   });
 });
 
+/**
+ * Exact-prefix restart pass (2026-08-16 field case, output ~3:18): the
+ * speaker flubbed "You can use OpenAI." — ASR punctuated the abandoned
+ * attempt as COMPLETE — paused, and restarted with "You can use OpenAI
+ * models and whatnot." Complete-vs-complete comparison scores the pair
+ * honestly divergent (1 − 3/7 ≈ 0.57) and the §128 protection (module doc)
+ * correctly refuses the match, so the flub shipped. The pass cuts only the
+ * strictly-shorter EARLIER sentence, only on an exact token prefix, and only
+ * with a ≥RESTART_SPLIT_MIN_SIL silence in [A.end, B.start +
+ * PREFIX_RESTART_SIL_WINDOW] — the window reaches INTO B's stamped words
+ * because the incident's pause (silence 201.52–201.93) sat inside B's
+ * stretched opening stamps (201.0–203.08), stamp-stretch physics again.
+ */
+describe("findRetakeGroups: exact-prefix restart pass (2026-08-16 incident)", () => {
+  /** The incident fixture, verbatim geometry. */
+  function incident(silences: Span[]) {
+    const words: Word[] = [
+      // A: "You can use OpenAI." 200.0–200.53, complete per ASR.
+      { text: "You", start: 200.0, end: 200.13 },
+      { text: "can", start: 200.13, end: 200.27 },
+      { text: "use", start: 200.27, end: 200.4 },
+      { text: "OpenAI.", start: 200.4, end: 200.53 },
+      // B: "You can use OpenAI models and whatnot." 201.0–203.08.
+      { text: "You", start: 201.0, end: 201.297 },
+      { text: "can", start: 201.297, end: 201.594 },
+      { text: "use", start: 201.594, end: 201.891 },
+      { text: "OpenAI", start: 201.891, end: 202.188 },
+      { text: "models", start: 202.188, end: 202.485 },
+      { text: "and", start: 202.485, end: 202.782 },
+      { text: "whatnot.", start: 202.782, end: 203.08 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const analysis = analyze(transcript, silences, 204);
+    return { transcript, analysis };
+  }
+
+  it("incident verbatim: cuts the shorter earlier A, keeps B, tagged exact-prefix", () => {
+    const { transcript, analysis } = incident([{ start: 201.52, end: 201.93 }]);
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    const g = groups[0]!;
+    expect(g.rule).toBe("exact-prefix");
+    expect(wordsIn(transcript, g.kept!.startWord, g.kept!.endWord)).toBe(
+      "You can use OpenAI models and whatnot.",
+    );
+    expect(g.cuts).toHaveLength(1);
+    expect(wordsIn(transcript, g.cuts[0]!.startWord, g.cuts[0]!.endWord)).toBe(
+      "You can use OpenAI.",
+    );
+    // The report prints the structural evidence, never a bogus "100% match".
+    const report = formatRetakeGroup(transcript, g);
+    expect(report).toContain('cut (exact-prefix restart, ≥0.35s pause): "You can use OpenAI."');
+    expect(report).toContain('kept: "You can use OpenAI models and whatnot."');
+  });
+
+  it("no pause, no cut: the same pair without the silence stays untouched", () => {
+    const { transcript, analysis } = incident([]);
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  it("a pause OUTSIDE [A.end, B.start + 1.0s] does not license the cut", () => {
+    // Silence entirely after B — real dead air, wrong place: the restart
+    // evidence has to sit at the A→B boundary, not anywhere nearby.
+    const { transcript, analysis } = incident([{ start: 203.3, end: 203.9 }]);
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  it("a non-prefix earlier sentence is never cut, pause or not", () => {
+    const words: Word[] = [
+      { text: "You", start: 200.0, end: 200.13 },
+      { text: "can", start: 200.13, end: 200.27 },
+      { text: "use", start: 200.27, end: 200.4 },
+      { text: "Claude.", start: 200.4, end: 200.53 },
+      { text: "You", start: 201.0, end: 201.297 },
+      { text: "can", start: 201.297, end: 201.594 },
+      { text: "use", start: 201.594, end: 201.891 },
+      { text: "OpenAI", start: 201.891, end: 202.188 },
+      { text: "models", start: 202.188, end: 202.485 },
+      { text: "and", start: 202.485, end: 202.782 },
+      { text: "whatnot.", start: 202.782, end: 203.08 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const analysis = analyze(transcript, [{ start: 201.52, end: 201.93 }], 204);
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  it("equal token counts are never an exact-prefix pair — strictly shorter only", () => {
+    // Same length, one differing final token: 0.75 similarity keeps the
+    // ordinary passes out, and the equal length keeps the prefix pass out.
+    const words: Word[] = [
+      { text: "You", start: 200.0, end: 200.13 },
+      { text: "can", start: 200.13, end: 200.27 },
+      { text: "use", start: 200.27, end: 200.4 },
+      { text: "OpenAI.", start: 200.4, end: 200.53 },
+      { text: "You", start: 201.0, end: 201.3 },
+      { text: "can", start: 201.3, end: 201.94 },
+      { text: "use", start: 201.94, end: 202.2 },
+      { text: "Claude.", start: 202.2, end: 202.5 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const analysis = analyze(transcript, [{ start: 201.52, end: 201.93 }], 203);
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  /**
+   * The §128 protection this pass NARROWS but must not repeal: the verified
+   * repro where the prefix rule's old misuse cut the LONGER continuation.
+   * The exact-prefix pass points the other way (it can only cut the shorter
+   * EARLIER side), and its pause requirement isn't met by ordinary breath
+   * gaps — the reviewer-repro test above ("a longer continuation is not a
+   * retake of a shorter line") stays green alongside this pin.
+   */
+  it("§128 pin: 'Let me show you this.' followed by its longer continuation still cuts NOTHING", () => {
+    const { transcript, analysis } = speak(
+      "Let me show you this. Let me show you this whole thing in detail",
+    );
+    expect(findRetakeGroups(transcript, analysis)).toEqual([]);
+  });
+
+  it("claimed dedupe: a sentence already decided by the similarity pass is not re-decided", () => {
+    // A1 and A2 are verbatim retakes — the ordinary pass cuts A1 and keeps
+    // A2, claiming both. A2 is ALSO an exact prefix of B with a pause in the
+    // window, but a word an earlier pass decided (even as "kept") is not
+    // re-decidable: one group, no exact-prefix rule, B untouched.
+    const words: Word[] = [
+      { text: "You", start: 100.0, end: 100.13 },
+      { text: "can", start: 100.13, end: 100.27 },
+      { text: "use", start: 100.27, end: 100.4 },
+      { text: "OpenAI.", start: 100.4, end: 100.53 },
+      { text: "You", start: 100.8, end: 100.93 },
+      { text: "can", start: 100.93, end: 101.07 },
+      { text: "use", start: 101.07, end: 101.2 },
+      { text: "OpenAI.", start: 101.2, end: 101.33 },
+      { text: "You", start: 102.0, end: 102.297 },
+      { text: "can", start: 102.297, end: 102.594 },
+      { text: "use", start: 102.594, end: 102.891 },
+      { text: "OpenAI", start: 102.891, end: 103.188 },
+      { text: "models", start: 103.188, end: 103.485 },
+      { text: "and", start: 103.485, end: 103.782 },
+      { text: "whatnot.", start: 103.782, end: 104.08 },
+    ];
+    const transcript: Transcript = { language: "en", words };
+    const analysis = analyze(transcript, [{ start: 102.52, end: 102.93 }], 105);
+    const groups = findRetakeGroups(transcript, analysis);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.rule).toBeUndefined();
+    expect(wordsIn(transcript, groups[0]!.kept!.startWord, groups[0]!.kept!.endWord)).toBe(
+      "You can use OpenAI.",
+    );
+    // B never enters any group.
+    for (const g of groups) {
+      const members = [g.kept, ...g.cuts, ...g.hallucinated, ...g.undecided];
+      for (const m of members) {
+        if (m) expect(m.endWord).toBeLessThan(8);
+      }
+    }
+  });
+
+  it("exact-prefix cuts flow through buildCutlist like any other retake", () => {
+    const { transcript, analysis } = incident([{ start: 201.52, end: 201.93 }]);
+    const groups = findRetakeGroups(transcript, analysis);
+    const cut = buildCutlist({
+      transcript,
+      analysis,
+      duration: 204,
+      level: "standard",
+      retakes: groups.flatMap((g) => g.cuts),
+    });
+    const map = new TimeMap(cut);
+    // A is gone; B survives whole.
+    for (let i = 0; i <= 3; i++) expect(map.mapWord(transcript.words[i]!)).toBeNull();
+    for (let i = 4; i <= 10; i++) expect(map.mapWord(transcript.words[i]!)).not.toBeNull();
+  });
+});
+
 describe("formatRetakeGroup", () => {
   it("quotes kept, cut (with similarity) and hallucinated (with silenceFrac) lines", () => {
     const { transcript, analysis } = speak(

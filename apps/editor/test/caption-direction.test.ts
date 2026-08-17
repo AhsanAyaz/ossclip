@@ -21,6 +21,12 @@ vi.mock("remotion", () => ({
   Sequence: ({ children }: any) => React.createElement(React.Fragment, null, children),
   useCurrentFrame: () => 0,
   useVideoConfig: () => ({ fps: 30, width: 1080, height: 1920, durationInFrames: 900 }),
+  // The bundled-Nastaliq loader (2026-08-17) mounts for these RTL fixtures
+  // and takes a delayRender handle in useState — renderToStaticMarkup never
+  // runs its effect, so inert stubs are all it touches here.
+  staticFile: (p: string) => `/${p}`,
+  delayRender: () => 0,
+  continueRender: () => {},
 }));
 
 const { CaptionTrack } = await import("../../../packages/scenes/src/CaptionTrack");

@@ -64,4 +64,15 @@ describe("published package contents (R22 §111)", () => {
     expect(existsSync(join(PKG_ROOT, "assets/facefinder"))).toBe(true);
     expect(filesField()).toContain("assets");
   });
+
+  it("the bundled Nastaliq caption font, WITH its OFL license text beside it", () => {
+    // fonts.ts loads the ttf at runtime (the generic scan above covers it);
+    // OFL.txt is loaded by nothing but is a LICENSE obligation — the OFL
+    // permits redistribution only with the license text included, so a
+    // tarball with the font and without the file is a compliance bug the
+    // generic scan can't see.
+    expect(existsSync(join(PKG_ROOT, "assets/fonts/NotoNastaliqUrdu-Bold.ttf"))).toBe(true);
+    expect(existsSync(join(PKG_ROOT, "assets/fonts/OFL.txt"))).toBe(true);
+    expect(filesField()).toContain("assets");
+  });
 });

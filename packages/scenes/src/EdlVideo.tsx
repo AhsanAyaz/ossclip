@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import type { KeptSpan } from "@ossclip/core/browser";
 import { frameWindow } from "./frames";
+import { punchScalesFor, type PunchPlan } from "./punch-plan";
 
 export interface EdlVideoProps {
   src: string;
@@ -9,6 +10,14 @@ export interface EdlVideoProps {
   spans: KeptSpan[];
   /** Scale applied on alternating segments to conceal jump cuts. */
   punchInScale?: number;
+  /**
+   * The face-only punch plan from render-props (punch-plan.ts). When present
+   * its scale replaces `punchInScale` and its mask gates which spans render
+   * it; absent/null is the LEGACY contract — `punchInScale` everywhere — so
+   * every pre-feature render-props renders unchanged. Callers gate the raw
+   * JSON through `punchPropsFor` first (parse, never coerce).
+   */
+  punch?: PunchPlan | null;
   /** Removed gaps shorter than this don't toggle the punch-in (cut is invisible anyway). */
   punchThresholdSec?: number;
   /** Audio micro-fade at each cut boundary, in seconds. */
@@ -32,23 +41,20 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
   src,
   spans,
   punchInScale = 1.07,
+  punch = null,
   punchThresholdSec = 0.15,
   audioFadeSec = 0.01,
   background = "black",
 }) => {
   const { fps } = useVideoConfig();
 
-  const scales = useMemo(() => {
-    const out: number[] = [];
-    let punched = false;
-    for (let i = 0; i < spans.length; i++) {
-      const prev = spans[i - 1];
-      const gap = prev ? spans[i]!.srcIn - prev.srcOut : 0;
-      if (i > 0 && gap >= punchThresholdSec) punched = !punched;
-      out.push(punched ? punchInScale : 1);
-    }
-    return out;
-  }, [spans, punchInScale, punchThresholdSec]);
+  // Extracted to punch-plan.ts so the mask/parity interaction is testable
+  // without mounting a composition; the loop there is the reference
+  // implementation the Premiere export mirrors.
+  const scales = useMemo(
+    () => punchScalesFor(spans, punch, punchInScale, punchThresholdSec),
+    [spans, punch, punchInScale, punchThresholdSec],
+  );
 
   const fadeFrames = Math.max(1, Math.round(audioFadeSec * fps));
 

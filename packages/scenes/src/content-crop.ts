@@ -1,4 +1,9 @@
-import { contentRectAt, type ContentRect, type ContentRectSegment } from "@ossclip/core/browser";
+import {
+  contentRectAt,
+  type ContentRect,
+  type ContentRectSegment,
+  type FramingSegment,
+} from "@ossclip/core/browser";
 
 /**
  * Rendering a source whose framing changes mid-take (PLAN Task C).
@@ -176,4 +181,74 @@ export function contentRectAtOutput(
     return { x: 0, y: 0, w: source.width, h: source.height, full: true };
   }
   return contentRectAt(timeline, sourceTimeAt(spans, outSec), source);
+}
+
+/**
+ * The framing segment to render at an OUTPUT time — the props-based successor
+ * to the destructive normalization bake (2026-08-16 incident: the bake
+ * crop+scale+re-encoded the mezzanine, irreversibly; expressed as data, the
+ * same window renders as a per-frame box the editor can see and counteract).
+ *
+ * Mirrors `contentRectAtOutput` exactly: the same span→source time mapping,
+ * and the same edge clamping `contentRectAt` does — a time outside the
+ * timeline resolves to its nearest segment, so a rounding error at a boundary
+ * cannot flash the unframed picture back for one frame. Null only when there
+ * is no plan at all, which is the legacy passthrough.
+ */
+export function framingWindowAtOutput(
+  timeline: readonly FramingSegment[],
+  spans: readonly SpanLike[],
+  outSec: number,
+): FramingSegment | null {
+  if (timeline.length === 0) return null;
+  const srcSec = sourceTimeAt(spans, outSec);
+  if (srcSec < timeline[0]!.startSec) return timeline[0]!;
+  for (const seg of timeline) {
+    if (srcSec >= seg.startSec && srcSec < seg.endSec) return seg;
+  }
+  return timeline[timeline.length - 1]!;
+}
+
+/**
+ * Which crop applies at this output moment, as the box to render — or null
+ * for the byte-identical passthrough every legacy render-props takes.
+ *
+ * Precedence: a framing plan wins over the letterbox content timeline. The
+ * plan was computed FROM that timeline and already accounts for the bars, so
+ * consulting both would crop the same pixels twice. A framing window renders
+ * through `contentCoverBox` with the segment's own bias as the anchor
+ * fractions — NOT the stage's face bias, which the plan already spent — so a
+ * "screen" full-rect window with a 0.5/0.5 bias reduces to plain centred
+ * cover: the same "one code path" property the module doc promises for
+ * content rects, and the reason the common case cannot drift.
+ *
+ * Pure and JSX-free on purpose: this IS the precedence decision, and it has
+ * to be testable without mounting a Remotion composition (house rule — pure
+ * logic separated from I/O).
+ */
+export function activeCropBox(
+  framing: readonly FramingSegment[] | undefined,
+  timeline: readonly ContentRectSegment[] | undefined,
+  spans: readonly SpanLike[],
+  outSec: number,
+  source: { width: number; height: number } | undefined,
+  mode: ContentCropMode,
+  slot: { width: number; height: number },
+  posX: number,
+  posY: number,
+): CoverBox | null {
+  // Both paths window the SOURCE frame; without its dimensions there is
+  // nothing to window — the same guard VideoStage always applied.
+  if (!source) return null;
+  if (framing && framing.length > 0) {
+    const seg = framingWindowAtOutput(framing, spans, outSec);
+    if (seg) return contentCoverBox(source, seg.window, slot, seg.bias.x, seg.bias.y);
+  }
+  // A single-segment content timeline means UNIFORM framing, which ffmpeg
+  // already cropped into the mezzanine — cropping again here would trim the
+  // same bars twice (the VideoStage guard, kept verbatim in this extraction).
+  if (!timeline || timeline.length < 2) return null;
+  const rect = contentRectAtOutput(timeline, spans, outSec, source);
+  if (rect.full) return null;
+  return contentBox(mode, source, rect, slot, posX, posY);
 }

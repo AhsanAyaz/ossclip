@@ -154,6 +154,75 @@ export interface ContentRectSegment {
 }
 
 /**
+ * One stretch of the RENDER-TIME framing plan — the props-based successor to
+ * the destructive normalization bake (2026-08-16 incident: the bake's crop
+ * could only be undone by deleting the re-encoded file; expressed as data,
+ * the same window renders as a transform the editor can see and counteract).
+ * Emitted into render-props.json as `framingTimeline`; absent means "no plan"
+ * and every pre-existing render-props renders unchanged.
+ */
+export interface FramingSegment {
+  /** Source seconds — intersects the content timeline and kept spans directly. */
+  startSec: number;
+  endSec: number;
+  /** Crop window in SOURCE pixels, all windows sharing one aspect. */
+  window: { x: number; y: number; w: number; h: number };
+  /** What the window is anchored on; "screen" windows are centered clips. */
+  subject: "face" | "screen";
+  /** The subject's anchor point inside the window, 0..1 both axes. */
+  bias: { x: number; y: number };
+}
+
+/**
+ * Rescale framing windows from TRUE source pixels into the pixel space of a
+ * display-sized mezzanine (2026-08-17 render-speed pass). `planNormalization`
+ * keeps working in true source pixels — analysis runs on the source — and
+ * the render-props emission scales the windows so window space === the space
+ * of the file the render actually plays. Per-axis factors, not one scalar:
+ * yuv420 even-rounding makes the two axes' ratios differ by a fraction of a
+ * percent, and scaling both by one axis's factor could push a right-edge
+ * window past the scaled file's width. Times, subject and bias are
+ * scale-invariant and pass through untouched.
+ */
+export function scaleFramingWindows(
+  timeline: readonly FramingSegment[],
+  factor: { x: number; y: number },
+): FramingSegment[] {
+  return timeline.map((s) => ({
+    ...s,
+    window: {
+      x: s.window.x * factor.x,
+      y: s.window.y * factor.y,
+      w: s.window.w * factor.x,
+      h: s.window.h * factor.y,
+    },
+  }));
+}
+
+/**
+ * The same rescale for the fit-fallback's content timeline — its rects are
+ * source pixels too, and they reach the renderer only alongside a
+ * `sourceSize` that must describe the played file (see the render-props
+ * emission in produce.ts). `full` survives the scale: it means "this rect IS
+ * the whole frame", which a uniform resample does not change.
+ */
+export function scaleContentTimeline(
+  timeline: readonly ContentRectSegment[],
+  factor: { x: number; y: number },
+): ContentRectSegment[] {
+  return timeline.map((s) => ({
+    ...s,
+    rect: {
+      ...s.rect,
+      x: s.rect.x * factor.x,
+      y: s.rect.y * factor.y,
+      w: s.rect.w * factor.x,
+      h: s.rect.h * factor.y,
+    },
+  }));
+}
+
+/**
  * A framing run must survive BOTH of these to be believed. Together they are
  * what replaces the union rule's protection (PLAN Task C, step C2).
  *
@@ -268,6 +337,148 @@ export function contentRectTimeline(
     endSec: i === merged.length - 1 ? durationSec : (r.to + merged[i + 1]!.from) / 2,
     rect: r.rect,
   }));
+}
+
+/**
+ * Materiality thresholds (2026-08-16 landscape screen-recording over-crop — a
+ * 72px dark strip (2.08% inset, 1px past SNAP_FRAC's 69.1px tolerance) plus a
+ * 15.4s/1435s outlier segment destroyed 55% of the picture).
+ *
+ * SNAP_FRAC decides whether a bar is worth TRIMMING; this bound decides
+ * whether a rect difference is worth calling a FRAMING CHANGE — a far more
+ * destructive claim, because a mixed-framing verdict sends the whole take
+ * into normalization. The incident's jitter measured 2.0–2.3% per side, so
+ * the bound sits at 3.5%: comfortably above jitter, comfortably below any
+ * real letterbox (the motivating 144bbfb strip insets 34% per side).
+ */
+export const MATERIAL_INSET_FRAC = 0.035;
+
+/**
+ * A rect keeping at least this share of the frame's area, at (within
+ * MATERIAL_ASPECT_TOL of) the frame's own aspect, is the frame minus
+ * measurement noise — treating it as a distinct framing would re-crop every
+ * downstream geometry to chase pixels nobody can see missing.
+ */
+export const MATERIAL_AREA_FRAC = 0.92;
+const MATERIAL_ASPECT_TOL = 0.05;
+
+/**
+ * A framing class — every segment sharing one rect, contiguous or not —
+ * totalling under this share of the runtime is an anomaly, not a framing
+ * change. MIN_RUN_SEC only guards a single run; the incident's 15.4s outlier
+ * (1.1% of 1435s) sailed past it and single-handedly set the canvas aspect
+ * for the whole take.
+ */
+export const MIN_FRAMING_CLASS_FRAC = 0.05;
+
+/**
+ * Re-judge a measured timeline against what a framing change must AMOUNT TO
+ * before it is believed (2026-08-16 incident above).
+ *
+ * Two passes. First, per segment: a rect whose every side inset is under
+ * MATERIAL_INSET_FRAC, or that keeps MATERIAL_AREA_FRAC of the frame at the
+ * frame's own aspect, is reclassified as the full frame — it differs from the
+ * frame by less than a framing change is worth. Second, per CLASS: framing
+ * classes totalling under MIN_FRAMING_CLASS_FRAC of the runtime are absorbed
+ * into their longer neighbour, same shape as the run-absorption loop in
+ * `contentRectTimeline` (drop one, retry until stable, then merge agreeing
+ * neighbours). A uniform source comes out as exactly one segment.
+ *
+ * Pure — applied on top of the cached raw timeline, so an already-measured
+ * source re-classifies on replay without a cache version bump.
+ */
+export function materializeTimeline(
+  timeline: readonly ContentRectSegment[],
+  width: number,
+  height: number,
+  durationSec: number,
+): ContentRectSegment[] {
+  if (timeline.length === 0 || width <= 0 || height <= 0) {
+    return timeline.map((s) => ({ ...s }));
+  }
+  const whole: ContentRect = { x: 0, y: 0, w: width, h: height, full: true };
+  const frameAspect = width / height;
+
+  const immaterial = (r: ContentRect): boolean => {
+    if (r.full) return true;
+    const insets = [
+      r.x / width,
+      r.y / height,
+      (width - (r.x + r.w)) / width,
+      (height - (r.y + r.h)) / height,
+    ];
+    if (insets.every((f) => f < MATERIAL_INSET_FRAC)) return true;
+    const areaFrac = (r.w * r.h) / (width * height);
+    const aspectDelta = Math.abs(r.w / r.h - frameAspect) / frameAspect;
+    return areaFrac >= MATERIAL_AREA_FRAC && aspectDelta < MATERIAL_ASPECT_TOL;
+  };
+
+  const segs = timeline.map((s) => ({
+    startSec: s.startSec,
+    endSec: s.endSec,
+    rect: immaterial(s.rect) ? whole : s.rect,
+  }));
+
+  // Duration of each segment's whole CLASS — the outlier that motivated this
+  // appeared as one contiguous run, but a strip flickering in and out would
+  // split into several, and each alone dodging the threshold must not let the
+  // class as a whole survive.
+  const classTotals = (list: typeof segs): number[] => {
+    const reps: ContentRect[] = [];
+    const totals: number[] = [];
+    const ids = list.map((s) => {
+      let id = reps.findIndex((r) => sameFraming(r, s.rect, width, height));
+      if (id === -1) {
+        id = reps.length;
+        reps.push(s.rect);
+        totals.push(0);
+      }
+      totals[id]! += s.endSec - s.startSec;
+      return id;
+    });
+    return ids.map((id) => totals[id]!);
+  };
+
+  // Absorb, then retry until stable: dropping one segment changes its
+  // neighbours' class totals and can make them adjacent and mergeable.
+  let changed = true;
+  while (changed && segs.length > 1) {
+    changed = false;
+    const totals = classTotals(segs);
+    for (let i = 0; i < segs.length; i++) {
+      if (totals[i]! >= MIN_FRAMING_CLASS_FRAC * durationSec) continue;
+      const r = segs[i]!;
+      // Absorb into the LONGER neighbour — the one more likely to be the truth.
+      const prev = segs[i - 1];
+      const next = segs[i + 1];
+      const into = !prev
+        ? next
+        : !next
+          ? prev
+          : prev.endSec - prev.startSec >= next.endSec - next.startSec
+            ? prev
+            : next;
+      if (!into) continue;
+      into.startSec = Math.min(into.startSec, r.startSec);
+      into.endSec = Math.max(into.endSec, r.endSec);
+      segs.splice(i, 1);
+      changed = true;
+      break;
+    }
+  }
+
+  // Merge neighbours that now agree, so a source whose every segment was
+  // reclassified collapses to the single-segment (uniform) shape callers test.
+  const merged: typeof segs = [];
+  for (const s of segs) {
+    const last = merged[merged.length - 1];
+    if (last && sameFraming(last.rect, s.rect, width, height)) {
+      last.endSec = Math.max(last.endSec, s.endSec);
+    } else {
+      merged.push({ ...s });
+    }
+  }
+  return merged;
 }
 
 /**

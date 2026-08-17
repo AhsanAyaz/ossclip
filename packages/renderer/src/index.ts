@@ -47,6 +47,16 @@ export async function renderProduction(
     outputLocation: opts.outPath,
     inputProps,
     browserExecutable: opts.browserExecutable,
+    // VideoToolbox on macOS lifts the x264 CPU tax off the encode half of a
+    // decode-bound render; "if-possible" falls back silently to software
+    // everywhere else (2026-08-17 render-speed pass; option name and values
+    // verified against @remotion/renderer 4.0.499's HardwareAccelerationOption).
+    hardwareAcceleration: "if-possible",
+    // Screenshot TRANSPORT only — the ENCODED output's quality is set by the
+    // codec settings above. The PNG default was lossless but 3-5x slower to
+    // screenshot and pipe per frame, for fidelity h264 then threw away.
+    imageFormat: "jpeg",
+    jpegQuality: 90,
     concurrency: opts.concurrency,
     onProgress: opts.onProgress
       ? ({ progress }) => opts.onProgress!(progress)

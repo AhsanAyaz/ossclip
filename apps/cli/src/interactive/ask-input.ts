@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { expandHome } from "../paths";
 import { livePickerDeps, pickPath, pickerAvailable, type PickMode } from "./picker";
 import { assertInteractive, select, text, unwrap } from "./prompts";
 import { rankSuggestions, scanLikelyDirs, type Suggestion } from "./suggest-inputs";
@@ -122,8 +123,8 @@ export const liveAskInputDeps = (): AskInputDeps => ({
   assertInteractive: () => assertInteractive("input prompt"),
 });
 
-const typePath = async (deps: AskInputDeps): Promise<string> =>
-  unwrap(
+const typePath = async (deps: AskInputDeps): Promise<string> => {
+  const typed = unwrap(
     await deps.text({
       // Finding 1 (final-review fix wave): `ossclip produce <folder>` shipped
       // (folder-input-brief.md) but this prompt still rejected a directory —
@@ -133,9 +134,16 @@ const typePath = async (deps: AskInputDeps): Promise<string> =>
       // the file-level comment in produce-wizard.ts for why).
       message: "Video file, or a folder of clips to concatenate (by name; --sort mtime is a typed flag)",
       placeholder: "./raw/take1.mp4",
-      validate: validateInputPath,
+      // expandHome BEFORE the exists check (2026-08-16 incident, paths.ts):
+      // no shell expands a wizard text input, so a typed `~/Videos/x.mov`
+      // must validate as the home path, not fail as `<cwd>/~/...`.
+      validate: (v) => validateInputPath(v === undefined ? v : expandHome(v)),
     }),
   ) as string;
+  // The expanded path is also what the wizard emits into argv — downstream
+  // (produce, replay recording) must never see the literal `~`.
+  return expandHome(typed);
+};
 
 export async function askInput(deps: AskInputDeps = liveAskInputDeps()): Promise<string> {
   deps.assertInteractive();

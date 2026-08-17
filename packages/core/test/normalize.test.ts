@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   assessCueFraming,
+  FACE_ONLY_MIN_FRAC,
+  HEAD_WINDOW_MARGIN,
   MAX_FACE_FRACTION,
+  MAX_MEAN_AREA_DISCARD,
   MAX_NORMALIZE_UPSCALE,
-  normalizationFilterGraph,
+  MAX_SCREEN_AREA_DISCARD,
   planNormalization,
+  segmentIsFaceOnly,
 } from "../src/normalize";
 import { ZOOM_MAX_SCALE } from "../src/zoom";
 import { pickTransition, type ContentRectSegment } from "../src/content-rect";
@@ -41,7 +45,12 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
   it("picks the tightest field of view as the canvas", () => {
     const plan = planNormalization(timeline, [null, null, null], OUT);
     expect(plan.canvas).toEqual({ width: 1440, height: 808 });
-    expect(plan.ok).toBe(true);
+    // Since 5a an all-null timeline is all SCREEN subjects, and cropping the
+    // full-bleed stretches to the strip discards 68% of them — the geometry
+    // above is still planned, but the screen-loss gate refuses to apply it.
+    // The face-only motivating measurements (which do pass) are pinned in
+    // "still passes the quality gate on the author's own measurements".
+    expect(plan.ok).toBe(false);
   });
 
   it("every window has the canvas aspect — a boundary cannot change the framing", () => {
@@ -105,8 +114,11 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
 
   it("never crops tighter than the safety ceiling, however small the faces", () => {
     // Every segment wide open: equalizing "up" to a big common fraction would
-    // crop everything to a close-up. The ceiling forbids it.
-    const faces = [sized(0.2), sized(0.18), sized(0.22)];
+    // crop everything to a close-up. The ceiling forbids it. The fractions
+    // were 0.18-0.22 before 5a; sub-0.22 faces are SCREEN subjects now and
+    // never face-cropped at all (pinned by the PiP tests below), so these are
+    // small-but-real talking heads just past the face-only threshold.
+    const faces = [sized(0.25), sized(0.23), sized(0.26)];
     const plan = planNormalization(timeline, faces, OUT);
     for (const s of subjectOnCanvas(plan, faces)) {
       expect(s).toBeLessThanOrEqual(MAX_FACE_FRACTION + 1e-9);
@@ -186,8 +198,12 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
   it("an unmeasured segment centres its window rather than guessing", () => {
     const plan = planNormalization(timeline, [null, null, null], OUT);
     const w = plan.segments[1]!.window;
-    // Face defaults to the rect centre, target defaults to 0.45 high.
-    expect(w.y).toBe(Math.floor((H / 2 - 0.45 * 808) / 2) * 2);
+    // TRULY centred since 5a: an unmeasured segment is a screen subject and
+    // gets no face placement at all. (Before 5a it was placed as if a face sat
+    // 0.45 down the window — a guess about a face nobody measured.)
+    expect(w.y).toBe(Math.floor((H - 808) / 2 / 2) * 2);
+    expect(plan.subject[1]).toBe("screen");
+    expect(plan.bias[1]).toEqual({ x: 0.5, y: 0.5 });
   });
 
   it("keeps offsets and sizes even for yuv420 encoders", () => {
@@ -201,10 +217,15 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
     }
   });
 
-  it("the motivating clip passes the quality gate at ×2.38", () => {
+  it("the motivating clip's upscale of ×2.38 passes the softness ceiling", () => {
     const plan = planNormalization(timeline, [null, null, null], OUT);
     expect(plan.coverUpscale).toBeCloseTo(1920 / 808, 2);
-    expect(plan.ok).toBe(true);
+    expect(plan.coverUpscale).toBeLessThanOrEqual(MAX_NORMALIZE_UPSCALE);
+    // ok is nevertheless false since 5a: with no faces measured these are all
+    // screen subjects, and the screen-loss gate refuses to crop the full-bleed
+    // stretches to the strip. The clip's real (face-only) measurements pass in
+    // "still passes the quality gate on the author's own measurements".
+    expect(plan.ok).toBe(false);
   });
 
   it("refuses a strip too small to fake a full-frame shot from", () => {
@@ -220,42 +241,173 @@ describe("planNormalization (option (a) — one framing for the whole take)", ()
   });
 });
 
-describe("normalizationFilterGraph", () => {
-  it("trims, crops, scales and concats every segment in order", () => {
+describe("duration weighting + picture-loss gate (2026-08-16 incident)", () => {
+  it("a sub-5% framing class cannot set the canvas aspect", () => {
+    // The real take: 1435s of a 3456x2234 screen recording, almost all of it
+    // at rect 3384x2234 (a 72px dark strip shaved off), plus one 15.4s dark
+    // segment at 2848x2234. The face is the camera PiP (sizeFrac 0.119), so
+    // every window clamps at its own rect height — and the old plain min let
+    // the 1.1% outlier set canvas aspect 2848/2234 = 1.2748 for the whole
+    // video, baking away 28% of source width.
+    const wide = { x: 0, y: 0, w: 3384, h: 2234, full: false };
+    const dark = { x: 0, y: 0, w: 2848, h: 2234, full: false };
+    const pip = (): WindowFace => ({
+      centerXFrac: 0.88,
+      centerYFrac: 0.76,
+      sizeFrac: 0.119,
+      sizeFracMax: 0.119,
+      framesDetected: 3,
+      framesSampled: 4,
+    });
     const plan = planNormalization(
-      [seg(0, 10, STRIP), seg(10, 20, FULL), seg(20, 30, STRIP)],
-      [null, null, null],
-      OUT,
+      [seg(0, 700, wide), seg(700, 715.4, dark), seg(715.4, 1435, wide)],
+      [pip(), pip(), pip()],
+      { width: 1920, height: 1080 },
     );
-    const graph = normalizationFilterGraph(plan);
-    expect(graph).toContain("trim=start=0.000:end=10.000");
-    expect(graph).toContain("trim=start=10.000:end=20.000");
-    expect(graph).toContain("crop=1440:808:0:876");
-    expect(graph).toContain("scale=1440:808");
-    expect(graph).toContain("[v0][v1][v2]concat=n=3:v=1:a=0[v]");
-    // Every trim resets its timestamps, or concat would stack the offsets.
-    expect(graph.match(/setpts=PTS-STARTPTS/g)).toHaveLength(3);
+    // The material class's own aspect (~1.515), not the outlier's 1.2748.
+    expect(plan.canvas.width / plan.canvas.height).toBeGreaterThanOrEqual(1.5);
+    // The outlier still gets a window — clamped inside its own rect.
+    const outlier = plan.segments[1]!.window;
+    expect(outlier.w).toBeLessThanOrEqual(2848);
+    expect(outlier.h).toBeLessThanOrEqual(2234);
+    expect(plan.areaDiscardWeighted).toBeLessThanOrEqual(MAX_MEAN_AREA_DISCARD);
+    expect(plan.ok).toBe(true);
   });
 
-  it("pins SAR on every segment, or concat refuses the whole bake (R27 §125)", () => {
-    // Segments are scaled to ONE canvas from DIFFERENT crops, and ffmpeg
-    // derives a sample aspect from that ratio — 946x1682 -> 860x1530 gives SAR
-    // 1683:1682, 932x1660 gives 1377:1376. concat requires identical SAR and
-    // aborts when they disagree, so a take whose framing varies (the only
-    // take normalization runs on) would not render at all.
+  it("refuses a plan that discards more than half the picture", () => {
+    // Constructed directly: a portrait class (1000x2000) holding 80% of the
+    // runtime forced through a 2:1 canvas keeps only a 1000x500 band — 75% of
+    // its area gone, 0.6 duration-weighted. coverUpscale is 2.16, a PASS
+    // under the old gate: it measured softness, never loss.
+    const portrait = { x: 0, y: 0, w: 1000, h: 2000, full: false };
+    const wide = { x: 0, y: 0, w: 2000, h: 1000, full: false };
     const plan = planNormalization(
-      [seg(0, 10, STRIP), seg(10, 20, FULL), seg(20, 30, STRIP)],
-      [null, null, null],
-      OUT,
+      [seg(0, 80, portrait), seg(80, 100, wide)],
+      [null, null],
+      { width: 1920, height: 1080 },
     );
-    const graph = normalizationFilterGraph(plan);
-    expect(graph.match(/setsar=1/g)).toHaveLength(plan.segments.length);
-    // On each segment the pin must come AFTER the scale that introduced the skew.
-    for (const part of graph.split(";").filter((p) => p.includes("scale="))) {
-      expect(part.indexOf("setsar=1")).toBeGreaterThan(part.indexOf("scale="));
-    }
+    expect(plan.coverUpscale).toBeLessThanOrEqual(MAX_NORMALIZE_UPSCALE);
+    expect(plan.areaDiscardWeighted).toBeGreaterThan(MAX_MEAN_AREA_DISCARD);
+    expect(plan.ok).toBe(false);
   });
 });
+
+describe("face-only subjects + non-destructive screen windows (Task 5a)", () => {
+  /** The incident source: 3456x2234 screen recording with a camera PiP. */
+  const wide = { x: 0, y: 0, w: 3384, h: 2234, full: false };
+  const dark = { x: 0, y: 0, w: 2848, h: 2234, full: false };
+  const OUT_169 = { width: 1920, height: 1080 };
+  const pip = (): WindowFace => ({
+    centerXFrac: 0.88,
+    centerYFrac: 0.76,
+    sizeFrac: 0.119,
+    sizeFracMax: 0.119,
+    framesDetected: 3,
+    framesSampled: 4,
+  });
+  const incident = [seg(0, 700, wide), seg(700, 715.4, dark), seg(715.4, 1435, wide)];
+
+  const sized = (sizeFrac: number, centerYFrac = 0.4): WindowFace => ({
+    centerXFrac: 0.5,
+    centerYFrac,
+    sizeFrac,
+    sizeFracMax: sizeFrac,
+    framesDetected: 3,
+    framesSampled: 4,
+  });
+
+  it("segmentIsFaceOnly wants a real, confidently-detected talking head", () => {
+    expect(segmentIsFaceOnly(null)).toBe(false);
+    expect(segmentIsFaceOnly(pip())).toBe(false); // 0.119 < 0.22
+    expect(segmentIsFaceOnly(sized(0.28))).toBe(true);
+    expect(segmentIsFaceOnly(sized(FACE_ONLY_MIN_FRAC))).toBe(true); // inclusive
+    // A big face the detector saw in 1 of 4 looks is not evidence to reframe on.
+    expect(segmentIsFaceOnly({ ...sized(0.4), framesDetected: 1, framesSampled: 4 })).toBe(false);
+  });
+
+  it("a PiP face (0.119) never gets a face-anchored window (2026-08-16 incident)", () => {
+    const plan = planNormalization(incident, [pip(), pip(), pip()], OUT_169);
+    expect(plan.subject).toEqual(["screen", "screen", "screen"]);
+    // Centered aspect clip of its own rect — for the material class that IS
+    // the whole rect, not a window chasing the PiP into the bottom-right.
+    expect(plan.segments[0]!.window).toMatchObject({ x: 0, y: 0, w: 3384, h: 2234 });
+    expect(plan.segments[2]!.window).toMatchObject({ x: 0, y: 0, w: 3384, h: 2234 });
+    for (const b of plan.bias) expect(b).toEqual({ x: 0.5, y: 0.5 });
+  });
+
+  it("a 0.28 talking head gets a face-anchored window", () => {
+    const timeline = [seg(0, 10, STRIP), seg(10, 20, FULL), seg(20, 30, STRIP)];
+    const faces = [sized(0.5), sized(0.28), sized(0.5)];
+    const plan = planNormalization(timeline, faces, OUT);
+    expect(plan.subject).toEqual(["face", "face", "face"]);
+    // Sized on the face: 0.28 of the rect scaled to the 0.5 target, not the
+    // rect-shaped fallback height.
+    expect(plan.segments[1]!.window.h).toBe(2 * Math.floor((0.28 * H) / 0.5 / 2));
+  });
+
+  it("screen segments keep (essentially) their full rect", () => {
+    const plan = planNormalization(incident, [pip(), pip(), pip()], OUT_169);
+    // The material class loses nothing at all; only the 1.1% dark sliver is
+    // clipped to the shared aspect, and the mean gate bounds that.
+    for (const i of [0, 2]) {
+      const r = incident[i]!.rect;
+      const w = plan.segments[i]!.window;
+      expect(1 - (w.w * w.h) / (r.w * r.h)).toBeLessThanOrEqual(MAX_SCREEN_AREA_DISCARD);
+    }
+    expect(plan.ok).toBe(true);
+  });
+
+  it("the head window keeps the 1% margin above crown and below chin", () => {
+    // Strips put the face LOW (0.9), so the shared placement drags the
+    // full-bleed window far above its face and the head slide must pull it
+    // back down — past the chin AND the margin below it.
+    const timeline = [seg(0, 10, STRIP), seg(10, 20, FULL), seg(20, 30, STRIP)];
+    const faces = [sized(0.5, 0.9), sized(0.3, 0.5), sized(0.5, 0.9)];
+    const plan = planNormalization(timeline, faces, OUT);
+    const w = plan.segments[1]!.window;
+    const faceY = 0.5 * H;
+    const headTop = faceY - 0.85 * (0.3 * H);
+    const headBottom = faceY + 0.7 * (0.3 * H);
+    const margin = HEAD_WINDOW_MARGIN * w.h;
+    // Whole head inside, with the ~1% breathing room on both sides (±2px for
+    // yuv420 evenness). Without the margin the slide stops exactly at the
+    // chin, ~15px short of this.
+    expect(w.y).toBeLessThanOrEqual(headTop - margin + 2);
+    expect(w.y + w.h).toBeGreaterThanOrEqual(headBottom + margin - 2);
+  });
+
+  it("bias reports the face position inside its own window", () => {
+    const timeline = [seg(0, 10, STRIP), seg(10, 20, FULL), seg(20, 30, STRIP)];
+    const faces = [sized(0.5, 0.9), sized(0.3, 0.5), sized(0.5, 0.9)];
+    const plan = planNormalization(timeline, faces, OUT);
+    const w = plan.segments[1]!.window;
+    const faceX = 0.5 * W;
+    const faceY = 0.5 * H;
+    expect(plan.bias[1]!.x).toBeCloseTo((faceX - w.x) / w.w, 6);
+    expect(plan.bias[1]!.y).toBeCloseTo((faceY - w.y) / w.h, 6);
+    // The slide moved the window, so the face is NOT at the window centre —
+    // bias is a measurement of the plan, not a constant.
+    expect(plan.bias[1]!.y).toBeGreaterThan(0.55);
+  });
+
+  it("a screen window forced below 90% of its rect area refuses the plan", () => {
+    // Two material screen classes whose aspects disagree: clipping the 1.6
+    // rect to the shared 2.0 aspect keeps only 80% of it. The old gates both
+    // pass (upscale 1.35, weighted mean 0.1) — only the per-segment screen
+    // bound catches that a fifth of someone's screen content is gone.
+    const wideRect = { x: 0, y: 0, w: 2000, h: 1000, full: false };
+    const narrow = { x: 0, y: 0, w: 1600, h: 1000, full: false };
+    const plan = planNormalization(
+      [seg(0, 50, wideRect), seg(50, 100, narrow)],
+      [null, null],
+      OUT_169,
+    );
+    expect(plan.coverUpscale).toBeLessThanOrEqual(MAX_NORMALIZE_UPSCALE);
+    expect(plan.areaDiscardWeighted).toBeLessThanOrEqual(MAX_MEAN_AREA_DISCARD);
+    expect(plan.ok).toBe(false);
+  });
+});
+
 
 describe("pickTransition (boundary refinement)", () => {
   const sample = (tSec: number, rect: { x: number; y: number; w: number; h: number }) => ({

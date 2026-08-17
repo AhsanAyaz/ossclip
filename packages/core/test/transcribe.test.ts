@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseWhisperJson, parseWhisperOutput, whisperArgs, type WhisperJson } from "../src/transcribe";
+import {
+  parseWhisperJson,
+  parseWhisperOutput,
+  whisperArgs,
+  whisperPromptFor,
+  type WhisperJson,
+} from "../src/transcribe";
 
 /** Trimmed sample of real whisper.cpp `-oj -ml 1` output structure. */
 const sample: WhisperJson = {
@@ -46,6 +52,39 @@ describe("whisperArgs", () => {
       "--no-prints",
       "-l", "ur",
     ]);
+  });
+
+  // No prompt = byte-identical args — same contract as the -l conditional:
+  // the dictionary must never perturb a run that has none (F4, 2026-08-16).
+  it("passes no --prompt when the prompt is unset", () => {
+    expect(whisperArgs(opts, "/w/audio.wav")).not.toContain("--prompt");
+  });
+
+  it("appends --prompt <text> when set, after the fixed args and the language", () => {
+    expect(
+      whisperArgs({ ...opts, language: "ur", prompt: "Vocabulary: JSON." }, "/w/audio.wav"),
+    ).toEqual([
+      "-m", "/m/ggml-small.en.bin",
+      "-f", "/w/audio.wav",
+      "-oj",
+      "-of", "/w/whisper",
+      "-ml", "1",
+      "--no-prints",
+      "-l", "ur",
+      "--prompt", "Vocabulary: JSON.",
+    ]);
+  });
+});
+
+describe("whisperPromptFor (F4 dictionary, 2026-08-16)", () => {
+  it("is undefined for an empty dictionary — so the args stay byte-identical", () => {
+    expect(whisperPromptFor([])).toBeUndefined();
+  });
+
+  it("lists the terms verbatim, comma-joined, as a vocabulary sentence", () => {
+    expect(whisperPromptFor(["JSON", "ossclip", "Genkit"])).toBe(
+      "Vocabulary: JSON, ossclip, Genkit.",
+    );
   });
 });
 

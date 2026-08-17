@@ -76,7 +76,11 @@ A correction must sound essentially identical to what was heard. If a span is no
 
 For each fix give the word-index span, the exact text you are replacing (\`heard\`), and the corrected text.`;
 
-export function buildRepairUserPrompt(transcript: Transcript, speaker?: string): string {
+export function buildRepairUserPrompt(
+  transcript: Transcript,
+  speaker?: string,
+  dictionary?: readonly string[],
+): string {
   const words = transcript.words.map((w, i) => `[${i}]${w.text}`).join(" ");
   return (
     (speaker
@@ -88,6 +92,13 @@ export function buildRepairUserPrompt(transcript: Transcript, speaker?: string):
         // catch it. Naming the speaker turns a guess into a lookup.
         `About the speaker (use this to recognise names the recognizer mangled, ` +
         `never to introduce facts): ${speaker}\n\n`
+      : "") +
+    (dictionary && dictionary.length > 0
+      ? // The user's dictionary (F4, 2026-08-16): same failure class as the
+        // speaker hint — "Jason" for JSON is a lookup once the model knows
+        // the term, a guess otherwise.
+        `Vouched terms the speaker uses — prefer these spellings when the ` +
+        `audio matches: ${dictionary.join(", ")}\n\n`
       : "") +
     `Word-indexed transcript (indices refer to THIS list):\n${words}\n\n` +
     `Report only spans that are clearly mishearings.`
@@ -171,6 +182,13 @@ export interface ApplyRepairsOptions {
    * phonetic gate. Everything else about it is still checked.
    */
   speaker?: string;
+  /**
+   * The user's dictionary (F4, 2026-08-16) — vouched the same way the
+   * speaker hint is: terms the user typed themselves join the vouched set,
+   * so a fully-vouched correction ("Jason" → "JSON") may pass the phonetic
+   * gate. Every other guard still applies.
+   */
+  dictionary?: readonly string[];
 }
 
 export function applyRepairs(
@@ -180,18 +198,23 @@ export function applyRepairs(
 ): { transcript: Transcript; applied: AppliedRepair[] } {
   const maxIndex = transcript.words.length - 1;
   /**
-   * Names the user vouched for via `--speaker`. A recognizer that turned
-   * "Ahsan" into the initialism "SM" produces a correction no phonetic
-   * measure will accept — and refusing it leaves the wrong name in the
-   * captions, which is the failure the hint exists to prevent. So a correction
-   * built ENTIRELY from words the user supplied is exempt from that one gate.
-   * Every other guard still applies, and the exemption can only ever
-   * substitute text the user typed themselves.
+   * Words the user vouched for — via `--speaker` and, since F4 (2026-08-16),
+   * via the dictionary. A recognizer that turned "Ahsan" into the initialism
+   * "SM" produces a correction no phonetic measure will accept — and refusing
+   * it leaves the wrong name in the captions, which is the failure the hint
+   * exists to prevent. So a correction built ENTIRELY from words the user
+   * supplied is exempt from that one gate. Every other guard still applies,
+   * and the exemption can only ever substitute text the user typed themselves.
    */
-  const speakerWords = new Set(norm(opts.speaker ?? "").split(" ").filter(Boolean));
-  const speakerVouched = (correction: string): boolean => {
+  const vouchedWords = new Set(
+    [
+      ...norm(opts.speaker ?? "").split(" "),
+      ...(opts.dictionary ?? []).flatMap((term) => norm(term).split(" ")),
+    ].filter(Boolean),
+  );
+  const userVouched = (correction: string): boolean => {
     const tokens = norm(correction).split(" ").filter(Boolean);
-    return tokens.length > 0 && tokens.every((t) => speakerWords.has(t));
+    return tokens.length > 0 && tokens.every((t) => vouchedWords.has(t));
   };
   const results: AppliedRepair[] = [];
   const accepted: Array<{ startWord: number; endWord: number; tokens: string[] }> = [];
@@ -285,7 +308,7 @@ export function applyRepairs(
       record(`"${r.correction}" is too different in length from "${actual}"`);
       continue;
     }
-    if (!soundsSimilar(actual, r.correction) && !speakerVouched(r.correction)) {
+    if (!soundsSimilar(actual, r.correction) && !userVouched(r.correction)) {
       // The gate that keeps this a repair pass and not a rewrite pass.
       record(`"${r.correction}" does not sound like "${actual}" — rewrite, not a repair`);
       continue;
@@ -340,7 +363,7 @@ export async function repairTranscript(
     try {
       const result = await provider.complete({
         system: REPAIR_SYSTEM,
-        user: buildRepairUserPrompt(transcript, opts.speaker),
+        user: buildRepairUserPrompt(transcript, opts.speaker, opts.dictionary),
         schema: TranscriptRepairSchema,
         schemaName: "transcript_repair",
         // EDITORIAL on purpose, despite looking mechanical. Measured on the real

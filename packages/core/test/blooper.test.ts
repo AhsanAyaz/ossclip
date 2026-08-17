@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { findBloopSpans, formatBloopSpan } from "../src/blooper";
 import { buildCutlist } from "../src/cutlist";
 import { TimeMap } from "../src/timemap";
-import type { Analysis, Transcript } from "../src/schema";
+import type { Analysis, Span, Transcript, Word } from "../src/schema";
 
 /**
  * R27 §122. The speaker marks a flub by saying a word out loud. That is the
@@ -153,6 +153,129 @@ describe("findBloopSpans", () => {
   it("keeps a short marker exact-only — no fuzzy match for 'cut'", () => {
     const t = speak("Say the word but. Then say cat too. Nobody said the marker.");
     expect(findBloopSpans(t, "cut")).toEqual([]);
+  });
+});
+
+/**
+ * 2026-08-16 incident (output ~10:02): whisper's stamp-stretch (§18) put the
+ * stamped end of the spoken "blooper." at 670.0 while the audio ran to
+ * ~670.4 — proven by the bracketing silences 668.09–669.3 and 670.4–671.68 —
+ * so 0.4s of audible "blooper" leaked past the cut, plus a debris "And"
+ * whisper stamped over the tail. The `silences` argument lets the span end
+ * extend through the marker's own trailing dead air (MAX_MARKER_BLEED_SEC).
+ * The fixture also doubles as the clip-run offset case: word stamps sit deep
+ * in source time (66x s) exactly like a sliced transcript, whose words keep
+ * SOURCE seconds — full-source silences are the correct pairing at both
+ * produce.ts call sites.
+ */
+describe("findBloopSpans: end bleed through trailing silence (2026-08-16 incident)", () => {
+  const incidentWords: Word[] = [
+    { text: "Keep", start: 665.0, end: 665.4 },
+    { text: "this.", start: 665.4, end: 666.0 },
+    { text: "That", start: 666.0, end: 666.5 },
+    { text: "was", start: 666.5, end: 667.0 },
+    { text: "wrong", start: 667.0, end: 668.09 },
+    // Stamped end 670.0; acoustic end ~670.4 — the leak.
+    { text: "blooper.", start: 669.3, end: 670.0 },
+    // Debris whisper stamped over the marker's acoustic tail.
+    { text: "And", start: 670.0, end: 670.4 },
+    { text: "the", start: 671.68, end: 672.0 },
+    { text: "good", start: 672.0, end: 672.4 },
+    { text: "take.", start: 672.4, end: 673.0 },
+  ];
+  const incident: Transcript = { language: "en", words: incidentWords };
+  const incidentSilences: Span[] = [
+    { start: 668.09, end: 669.3 },
+    { start: 670.4, end: 671.68 },
+  ];
+
+  it("incident numbers, exact: stamped end 670.0 extends through the 670.4–671.68 silence to 671.68", () => {
+    const spans = findBloopSpans(incident, "blooper", incidentSilences);
+    expect(spans).toHaveLength(1);
+    const s = spans[0]!;
+    expect(s.startSec).toBe(666.0);
+    expect(s.endSec).toBe(671.68);
+    // The debris "And" (670.0–670.4) now sits INSIDE the cut seconds even
+    // though it is past endWord — the seconds are what buildCutlist removes.
+    expect(s.endWord).toBe(5);
+  });
+
+  it("does not absorb a silence past the bleed window", () => {
+    // Same shape, but the trailing silence starts 0.76s after the stamped
+    // end — past MAX_MARKER_BLEED_SEC (0.75). A pause that far out is the
+    // gap before the NEXT take, not the marker's own tail.
+    const far: Span[] = [{ start: 670.76, end: 671.68 }];
+    const [s] = findBloopSpans(incident, "blooper", far);
+    expect(s!.endSec).toBe(670.0);
+  });
+
+  it("chains through consecutive silences when each lands inside the extended window", () => {
+    // Absorbing the first silence brings the second within the 0.75s bleed
+    // window of the NEW end — the extension must re-scan, not single-pass.
+    const chained: Span[] = [
+      { start: 670.4, end: 671.0 },
+      { start: 671.5, end: 672.3 },
+    ];
+    const [s] = findBloopSpans(incident, "blooper", chained);
+    expect(s!.endSec).toBe(672.3);
+  });
+
+  it("behaves byte-identically to today when no silences are passed", () => {
+    expect(findBloopSpans(incident, "blooper", [])).toEqual(findBloopSpans(incident, "blooper"));
+    const [s] = findBloopSpans(incident, "blooper");
+    expect(s!.endSec).toBe(670.0);
+  });
+
+  it("merges a following attempt whose sentence start sits at or before the EXTENDED end (seconds, not word indices)", () => {
+    // The debris word ends its own "sentence" ("And."), so the next
+    // attempt's walk-back stops AFTER it — the spans are not word-index
+    // adjacent, and only the extended endSec (11.0, through the 10.4–11.0
+    // silence) reaches the second attempt's first word at 11.0.
+    const words: Word[] = [
+      { text: "Wrong", start: 9.0, end: 9.5 },
+      { text: "blooper.", start: 9.5, end: 10.0 },
+      { text: "And.", start: 10.0, end: 10.4 },
+      { text: "Also", start: 11.0, end: 11.4 },
+      { text: "bad", start: 11.4, end: 11.8 },
+      { text: "blooper.", start: 11.8, end: 12.3 },
+      { text: "Good.", start: 13.5, end: 14.0 },
+    ];
+    const t: Transcript = { language: "en", words };
+    const silences: Span[] = [{ start: 10.4, end: 11.0 }];
+    const spans = findBloopSpans(t, "blooper", silences);
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.markers).toBe(2);
+    expect(spans[0]!.startWord).toBe(0);
+    expect(spans[0]!.endWord).toBe(5);
+    // Without the silence, the same transcript stays two separate spans —
+    // the seconds arm never fires on unextended ends here, so the old
+    // word-adjacency behavior is untouched.
+    expect(findBloopSpans(t, "blooper")).toHaveLength(2);
+  });
+});
+
+describe("findBloopSpans: walk-back cap (MAX_WALKBACK_SEC)", () => {
+  it("caps an unpunctuated backscan at 30s, flags the span, and the report line shouts", () => {
+    // 70 words with no terminal punctuation anywhere — an ASR run-on. The
+    // scan must stop ~30s back from the marker's end instead of eating the
+    // whole take back to word 0.
+    const t = speak("la ".repeat(70).trim() + " blooper.");
+    const [span, ...rest] = findBloopSpans(t, "blooper");
+    expect(rest).toEqual([]);
+    expect(span!.truncated).toBe(true);
+    expect(span!.startWord).toBeGreaterThan(0);
+    // The span's own extent respects the cap.
+    expect(span!.endSec - span!.startSec).toBeLessThanOrEqual(30);
+    expect(formatBloopSpan(t, span!)).toContain(
+      "(walk-back capped at 30s — unpunctuated stretch; check this cut)",
+    );
+  });
+
+  it("an ordinary punctuated flub is not flagged", () => {
+    const t = speak("This is fine. I meant to say something else blooper. This is the good take.");
+    const [span] = findBloopSpans(t, "blooper");
+    expect(span!.truncated).toBeUndefined();
+    expect(formatBloopSpan(t, span!)).not.toContain("capped");
   });
 });
 

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { cpus } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
@@ -17,6 +18,11 @@ import {
   assembleScenes,
   buildCaptionLines,
   buildCutlist,
+  canonicalizeDictionaryCasing,
+  captionsNeedNastaliq,
+  NASTALIQ_FONT_NAME,
+  NASTALIQ_FONT_REL,
+  nastaliqFontFile,
   buildZoomPlan,
   checkGrounding,
   rejectCtaKeyword,
@@ -48,18 +54,50 @@ import {
   formatBloopSpan,
   findRetakeGroups,
   formatRetakeGroup,
+  RESTART_PREFIX_CONFIDENCE,
+  type RetakeGroup,
   formatUsageLine,
   formatUsageReport,
+  formatYoutubeMarkdown,
+  generateYoutubePack,
+  stampedTranscript,
+  YOUTUBE_APPROVED_BASENAME,
+  YOUTUBE_PROMPT_VERSION,
+  YoutubePackSchema,
+  type YoutubePack,
+  THUMBNAIL_APPROVED_BASENAME,
+  THUMBNAIL_MODEL_DEFAULT,
+  ThumbnailConceptApprovedSchema,
+  ThumbnailConceptSchema,
+  type ThumbnailConcept,
+  type GenerateThumbnailImageOptions,
+  approvedOverlayText,
+  buildThumbnailPrompt,
+  generateThumbnailConcept,
+  generateThumbnailImage,
+  portraitMimeType,
+  thumbnailDecision,
+  thumbnailImageCacheName,
   applyUserCuts,
   loadConfig,
   loudnorm,
   MAX_NORMALIZE_UPSCALE,
+  MAX_MEAN_AREA_DISCARD,
+  FACE_ONLY_MIN_FRAC,
+  FACE_MIN_DETECTION_RATIO,
   ZOOM_MAX_SCALE,
   assessCueFraming,
-  bakeNormalizedSource,
   planNormalization,
+  segmentIsFaceOnly,
+  type WindowFace,
+  type FaceBox,
+  type FramingSegment,
   type NormalizePlan,
   makeMezzanine,
+  mezzanineFileName,
+  mezzanineScale,
+  scaleContentTimeline,
+  scaleFramingWindows,
   measureFace,
   measureFaceInWindows,
   pickCoverFrame,
@@ -72,7 +110,10 @@ import {
   resolveTheme,
   run,
   runWhisper,
+  whisperPromptFor,
   scanSourceText,
+  ThemeSchema,
+  type Theme,
   appendUsageRun,
   OverrideDocSchema,
   CLIP_SNAP_TOLERANCE,
@@ -88,6 +129,7 @@ import {
   type BeatsValidationIssue,
   type CleanupLevel,
   type ClipWindow,
+  type Layout,
   type LlmProvider,
   type Production,
   type ProviderName,
@@ -98,6 +140,12 @@ import {
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { binOnPath, detectionLine } from "./llm-detect";
+import {
+  modelImpliedLanguage,
+  modelUrl,
+  validModelSources,
+  whisperModelPath,
+} from "./setup/manifest";
 import { PhaseTimer, formatPhaseLine, type PhaseTimings } from "./phase-timing";
 import {
   strandedOverrideSiblings,
@@ -105,6 +153,9 @@ import {
   workdirBaseName,
 } from "./stranded-overrides";
 import { editHint } from "./interactive/edit-hint";
+import { artifactPath, ensureParentDir, expandHome, moveFile } from "./paths";
+import { portraitOverridePath, resolvePortrait } from "./portrait-override";
+import { approveThumbnailConcept, thumbnailRetryLoop } from "./interactive/thumbnail-approve";
 import { isInteractive } from "./interactive/tty";
 import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from "./ui/animation";
 import { reconcileCaptionEdits } from "./caption-report";
@@ -112,6 +163,7 @@ import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
 import { renderCover, renderProduction } from "@ossclip/renderer";
 import {
+  DEFAULT_FACE,
   coverTextRect,
   layoutSlots,
   regionsDuring,
@@ -155,6 +207,13 @@ export interface ProduceResult {
 export const TranscriptKeySchema = z.object({
   model: z.string(),
   language: z.string().optional(),
+  /**
+   * The dictionary the whisper `--prompt` was biased with (F4, 2026-08-16) —
+   * a changed vocabulary changes what whisper decodes, so it re-keys the
+   * cache exactly like the model does. Absent (old key files, no-dictionary
+   * runs) means "no biasing".
+   */
+  dictionary: z.array(z.string()).optional(),
 });
 export type TranscriptKey = z.infer<typeof TranscriptKeySchema>;
 
@@ -178,7 +237,14 @@ export function transcriptCacheReusable(
       effective.model === requested.model &&
       // "" and absent both mean whisper's en default — program.ts rejects an
       // empty code, but a key file predating that guard must not wedge.
-      (effective.language ?? "") === (requested.language ?? ""),
+      (effective.language ?? "") === (requested.language ?? "") &&
+      // ORDER-SENSITIVE by choice: the dictionary becomes whisper's --prompt
+      // text verbatim, so a reordered list genuinely is a different decoder
+      // input — treating it as equal would serve a transcript biased by a
+      // prompt this run never sent. Absent and [] compare equal (both mean
+      // "no biasing"), so pre-dictionary key files reuse under a
+      // no-dictionary request.
+      JSON.stringify(effective.dictionary ?? []) === JSON.stringify(requested.dictionary ?? []),
     recorded: effective,
   };
 }
@@ -214,6 +280,13 @@ export interface ProduceOptions {
    * decodes garbage (Urdu field test 2026-08-05).
    */
   whisperLanguage?: string;
+  /**
+   * Vocabulary terms for this run (`--dictionary`, F4 2026-08-16), already
+   * split/trimmed by the action. Wholesale beats the config's `dictionary`
+   * — typed-beats-config like the watermark, and never merged: a per-run
+   * list is a deliberate substitution, not an addition.
+   */
+  dictionary?: string[];
   /** Debug: force every graphic moment to this component. */
   forceComponent?: SceneComponentId;
   /** Write a cover image beside the video (default on). */
@@ -228,11 +301,11 @@ export interface ProduceOptions {
    */
   blooperMarker?: string;
   /**
-   * `--collapse-retakes` (R27 §128): deterministically collapse consecutive
-   * near-identical sentences — the flub the speaker did NOT mark out loud.
-   * Opt-in, default off for v1: the promotion criterion is clean field runs
-   * recorded in this same report appendix, the mechanism this whole findings
-   * doc uses to decide when an opt-in flag has earned default-on.
+   * `--collapse-retakes` — legacy no-op (2026-08-16). Retake collapse (R27
+   * §128) now runs automatically whenever `--blooper-marker` is given and
+   * never otherwise (`inferredRetakesEnabled` quotes the user's rule). The
+   * flag stays parseable so old command.json replays don't error; typing it
+   * without a marker earns a notice instead of a silent ignore.
    */
   collapseRetakes?: boolean;
   /**
@@ -279,6 +352,33 @@ export interface ProduceOptions {
    */
   watermark?: boolean;
   /**
+   * `--youtube` / `--no-youtube` tri-state, the watermark's exact contract:
+   * true/false when TYPED, undefined when not — undefined lets the config's
+   * `youtube` key supply the default (`resolveYoutube`). One flag covers the
+   * whole pack (SEO metadata + AI thumbnail) by user decision 2026-08-16.
+   */
+  youtube?: boolean;
+  /**
+   * `--portrait <path>`: the creator's portrait photo, the likeness
+   * reference for the `--youtube` AI thumbnail. Typed-beats-config like the
+   * dictionary; validated at USE (the thumbnail step), where an absent file
+   * is a loud skip and the frame-grab cover stands.
+   */
+  portrait?: string;
+  /**
+   * `--audience <text>`: who watches the channel, steering BOTH the youtube
+   * pack's titles/tags and the thumbnail concept. Typed-beats-config like
+   * `--portrait`; the config's `audience` supplies the default, validated
+   * with `typeof === "string"` at use.
+   */
+  audience?: string;
+  /**
+   * `--thumbnail-brief <text>`: the durable thumbnail steer, fed to the
+   * concept call as a must-honor creator brief. Same typed-beats-config
+   * contract as `audience` (config key `thumbnailBrief`).
+   */
+  thumbnailBrief?: string;
+  /**
    * `--captions` / `--no-captions` tri-state: true/false when TYPED,
    * undefined when not. Unlike `watermark` above there is no config key —
    * undefined simply means the default, which is ON. Kept tri-state anyway
@@ -287,6 +387,15 @@ export interface ProduceOptions {
    * record differently.
    */
   captions?: boolean;
+  /**
+   * `--add-jump-cuts` / `--no-jump-cuts` tri-state: true/false when TYPED,
+   * undefined when not ("auto", the default — punch, face-only). Resolved by
+   * `resolveJumpCuts`; scope is the cut punch-in ONLY, narrower than `zoom`,
+   * which kills every motion driver at once. Note `true` does NOT override
+   * the face-only guard (`punchPlanFor` has the why) — it exists to beat a
+   * future config-off, nothing else.
+   */
+  jumpCuts?: boolean;
   /**
    * `<input>` a DIRECTORY: order its clips before concatenating them into the
    * source produce runs on (folder-input-brief.md). `name` (default) is a
@@ -322,6 +431,688 @@ export function resolveWatermark(
 }
 
 /**
+ * The effective `--youtube` switch — resolveWatermark's semantics verbatim:
+ * a TYPED flag always wins (so `--no-youtube` beats a config-on), and only
+ * then does the config supply the default. The config side is `=== true`,
+ * never truthiness, for the same parse-don't-coerce reason: the value comes
+ * from a hand-editable JSON file loadConfig doesn't zod-parse, and a typo'd
+ * `"youtube": "no"` must not switch a metadata+thumbnail pipeline ON. Off is
+ * the only safe reading of anything malformed for an opt-in extra. Pure so
+ * the flag × config matrix is testable without a config file on disk.
+ */
+export function resolveYoutube(
+  flag: boolean | undefined,
+  configValue: boolean | undefined,
+): boolean {
+  return flag ?? configValue === true;
+}
+
+/**
+ * How many browser tabs the render runs in parallel (2026-08-17 render-speed
+ * pass). Default is cpus-2 with a floor of 2: the render is decode-bound —
+ * every tab waits on OffthreadVideo's ffmpeg extract workers — so saturating
+ * all cores with tabs starves the very processes the tabs block on. The
+ * config's `renderConcurrency` overrides for machines where that guess is
+ * wrong; validated here at the consumer (the `dictionary` posture: the value
+ * comes from hand-editable JSON loadConfig doesn't zod-parse), a positive
+ * integer or one warning and the default — never a coerced tab count. Pure
+ * so the config × cpu matrix is testable without a config file or real
+ * cpus().
+ */
+export function resolveRenderConcurrency(
+  configValue: unknown,
+  cpuCount: number,
+): { concurrency: number; warning?: string } {
+  const fallback = Math.max(2, cpuCount - 2);
+  if (configValue === undefined) return { concurrency: fallback };
+  if (typeof configValue === "number" && Number.isInteger(configValue) && configValue > 0) {
+    return { concurrency: configValue };
+  }
+  return {
+    concurrency: fallback,
+    warning: "⚠ config renderConcurrency ignored — expected a positive integer",
+  };
+}
+
+// Moved to paths.ts (2026-08-17, editor thumbnail panel): the edit server
+// derives `<out>.thumbnail.png` from command.json's recorded out and must not
+// import this module — produce.ts imports edit.ts (recordRecentProject), so
+// the reverse edge would be a cycle, and this module's import graph drags the
+// whole renderer into a server that is deliberately dependency-free.
+// Re-exported so existing importers (tests) keep their path.
+export { artifactPath } from "./paths";
+
+/**
+ * `--dictionary "JSON, ossclip"` → `["JSON", "ossclip"]`. Comma-separated in
+ * ONE value because a variadic option fights the optional positional
+ * `[input]` (see program.ts); split/trim/drop-empties here so a trailing
+ * comma or doubled space never becomes an empty term in the whisper prompt.
+ * `undefined` in, `undefined` out — "not typed" must survive to let the
+ * config supply the dictionary. Pure so the split matrix is testable without
+ * commander.
+ */
+export function dictionaryFlag(value: string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  return value
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Consumer-side validation for the config's `dictionary` key — the
+ * `watermark` posture applied to an array: the value comes from a
+ * hand-editable JSON file loadConfig doesn't zod-parse, so a non-array, a
+ * number in the list, or a term that trims to nothing means the whole key is
+ * ignored (`undefined`) and the call site prints one warning naming the
+ * problem. All-or-nothing on purpose: silently keeping the salvageable half
+ * of a typo'd list would bias whisper with a vocabulary the user never
+ * reviewed. Pure so the matrix is testable without a config file on disk.
+ */
+export function validDictionary(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  if (!value.every((t) => typeof t === "string" && t.trim().length > 0)) return undefined;
+  return value.map((t: string) => t.trim());
+}
+
+/**
+ * The effective whisper `-l` for a run — typed-beats-config precedence like
+ * `--dictionary`, with a third rung under both: the curated model table's
+ * implied language (`modelImpliedLanguage`), so `--whisper-model medium-urdu`
+ * alone decodes Urdu instead of silently decoding English garbage (the Urdu
+ * field test's exact first-run failure, 2026-08-05). The config side is
+ * typeof+trim, never truthiness — `language` comes from a hand-editable JSON
+ * file loadConfig doesn't zod-parse, and a malformed value earns one warning
+ * and falls through, never a coerced `-l`. `source` rides along so the call
+ * site can say where a non-flag language came from. Pure so the whole
+ * flag × config × model matrix is testable without a config file on disk.
+ */
+export function resolveWhisperLanguage(
+  flag: string | undefined,
+  configValue: unknown,
+  modelImplied: string | undefined,
+): { language: string | undefined; source: "flag" | "config" | "model" | null; warning?: string } {
+  if (flag !== undefined) return { language: flag, source: "flag" };
+  const configOk = typeof configValue === "string" && configValue.trim().length > 0;
+  const warning =
+    configValue !== undefined && !configOk
+      ? "⚠ config language ignored — expected a non-empty language code string"
+      : undefined;
+  if (configOk) return { language: (configValue as string).trim(), source: "config" };
+  if (modelImplied !== undefined) return { language: modelImplied, source: "model", ...(warning ? { warning } : {}) };
+  return { language: undefined, source: null, ...(warning ? { warning } : {}) };
+}
+
+/**
+ * The BASE theme a run starts from: the config's `theme` merged over
+ * `defaultTheme` (F6, 2026-08-16). Precedence overall is overrides.json >
+ * config theme > defaultTheme — this helper builds the bottom two layers,
+ * and it must feed BOTH `resolveTheme`'s base and props.baseTheme: the
+ * editor re-applies overrides onto `baseTheme`, so a reset there must fall
+ * back to the user's global colors, not to factory defaults.
+ *
+ * All-or-nothing: `ThemeSchema.partial().safeParse` — one malformed key (a
+ * numeric `accent`, an unknown-shaped value) voids the WHOLE config theme
+ * with a warning naming the issue, because half-applying a palette the
+ * schema rejected would render colors the user never chose. The warning is
+ * RETURNED, not printed — pure, so the precedence matrix is testable without
+ * a config file or a captured console.
+ */
+export function configuredBaseTheme(cfgTheme: unknown): { theme: Theme; warning?: string } {
+  if (cfgTheme === undefined) return { theme: defaultTheme };
+  const parsed = ThemeSchema.partial().strict().safeParse(cfgTheme);
+  if (!parsed.success) {
+    return {
+      theme: defaultTheme,
+      warning:
+        `⚠ config theme ignored — ${parsed.error.issues
+          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+    };
+  }
+  // Re-parse the merge so zod's defaults fill anything the partial left out —
+  // the same construction defaultTheme itself uses.
+  return { theme: ThemeSchema.parse({ ...defaultTheme, ...parsed.data }) };
+}
+
+/**
+ * The concept cache's filename: keyed on who is asked, with what steer,
+ * about which words (the Y2 pack-key shape) — audience/brief/titleAngle are
+ * steer, so a changed one regenerates. ONE function shared by thumbnailStep
+ * and the pre-render approval step, so the approval's cache seed can never
+ * drift from the file the step would write. Pure so the key's inputs are
+ * pinned by a test.
+ */
+export function thumbnailConceptCacheName(parts: {
+  providerName: string;
+  llmModel?: string;
+  intent?: string;
+  hook?: string;
+  audience?: string;
+  brief?: string;
+  titleAngle?: string;
+  transcriptWords: readonly string[];
+}): string {
+  const key = createHash("sha1")
+    .update(
+      JSON.stringify([
+        parts.providerName,
+        parts.llmModel ?? "",
+        parts.intent ?? "",
+        parts.hook ?? "",
+        parts.audience ?? "",
+        parts.brief ?? "",
+        parts.titleAngle ?? "",
+        parts.transcriptWords,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
+  return `thumbnail-concept-${key}.json`;
+}
+
+/**
+ * The workdir's approved YouTube pack, or undefined. The Y2 block checks
+ * this FIRST (editor SEO panel, 2026-08-17 — thumbnailStep's approval-file
+ * contract applied to the pack): once the editor persisted an edited pack,
+ * a cache lookup or a fresh LLM call would silently discard the user's
+ * words. Exported so the honor/leniency matrix is testable with a temp dir.
+ *
+ * Read-side leniency, unlike thumbnailStep's hard `.parse`: a corrupt
+ * decision file here warns and falls through to the generate path — the pack
+ * is a sidecar on a render that must not die over it (§112), and the next
+ * editor save atomically replaces the file anyway.
+ */
+export async function readApprovedYoutubePack(
+  work: string,
+  log: (line: string) => void = console.log,
+): Promise<YoutubePack | undefined> {
+  const path = join(work, YOUTUBE_APPROVED_BASENAME);
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = YoutubePackSchema.safeParse(JSON.parse(await readFile(path, "utf8")));
+    if (parsed.success) return parsed.data;
+    log(`  ⚠ ${YOUTUBE_APPROVED_BASENAME} is not a valid pack — regenerating instead`);
+  } catch {
+    log(`  ⚠ ${YOUTUBE_APPROVED_BASENAME} is not valid JSON — regenerating instead`);
+  }
+  return undefined;
+}
+
+/** Everything the AI thumbnail step (Y3) needs, gathered for testability. */
+export interface ThumbnailStepArgs {
+  /** The resolved `--youtube` switch — off means the whole step is silent. */
+  youtube: boolean;
+  /** Resolved `--portrait` / config path; existence is checked HERE. */
+  portraitPath: string | undefined;
+  /** GEMINI_API_KEY — env-only, never config (env.ts secrets rule). */
+  apiKey: string | undefined;
+  /** The image model slug (config `thumbnailModel` or the default). */
+  model: string;
+  work: string;
+  outPath: string;
+  /** The run's text provider — the concept call rides it, tier editorial. */
+  provider: LlmProvider | undefined;
+  providerName: string;
+  llmModel: string | undefined;
+  intent: string | undefined;
+  hook: string | undefined;
+  /** Resolved `--audience` / config — who the channel is for. */
+  audience?: string;
+  /** Resolved `--thumbnail-brief` / config — the durable must-honor steer. */
+  brief?: string;
+  /**
+   * The youtube pack's first title, when the pack generated before this step
+   * — the thumbnail must tell the same story as the title it ships under.
+   */
+  titleAngle?: string;
+  transcriptWords: readonly string[];
+  /**
+   * The image-generation seam, pickCoverFrame's `detectFace` shape: tests
+   * inject a stub here and therefore never import @google/genai.
+   */
+  generate?: (opts: GenerateThumbnailImageOptions) => Promise<Uint8Array>;
+  /** Phase-timing wrapper for the concept LLM call; identity by default. */
+  time?: <T>(fn: () => Promise<T>) => Promise<T>;
+  log?: (line: string) => void;
+}
+
+/**
+ * What a successful thumbnail step hands back — more than the path, because
+ * the post-generation retry loop ("regenerate with a note", 2026-08-16
+ * thumbnail UX) reuses the exact concept, cache file and portrait bytes this
+ * step generated with. Re-deriving any of them in the loop would let the two
+ * drift (a different cache key regenerating a file the loop then never
+ * overwrites).
+ */
+export interface ThumbnailStepResult {
+  /** The written `<out>.thumbnail.png`. */
+  path: string;
+  /** The concept the image was prompted with — unchanged across retries. */
+  concept: ThumbnailConcept;
+  /** The workdir image cache the retry loop overwrites in place. */
+  imageCachePath: string;
+  /** The portrait as the inlineData shape the generate seam takes. */
+  portrait: { data: string; mimeType: string };
+}
+
+/**
+ * The `--youtube` AI thumbnail orchestration (Y3, 2026-08-16): decide,
+ * concept, image, copy beside the output. Extracted from `produce()` so the
+ * cache/degrade matrix is testable with an injected `generate` and a temp
+ * dir — no SDK, no network.
+ *
+ * Additive to the cover pipeline by contract: EVERY exit short of success is
+ * one loud line and `undefined`, and the frame-grab cover stands. Returns
+ * the written `<out>.thumbnail.png` path (plus the retry loop's inputs) on
+ * success.
+ */
+export async function thumbnailStep(args: ThumbnailStepArgs): Promise<ThumbnailStepResult | undefined> {
+  const {
+    generate = generateThumbnailImage,
+    time = <T>(fn: () => Promise<T>) => fn(),
+    log = console.log,
+  } = args;
+  const portraitExists = args.portraitPath ? existsSync(args.portraitPath) : false;
+  const decision = thumbnailDecision(
+    args.youtube,
+    args.portraitPath,
+    args.apiKey !== undefined && args.apiKey !== "",
+    portraitExists,
+  );
+  if (decision !== "generate") {
+    // youtube-off is the one silent exit: the user never opted in, so there
+    // is nothing to explain. Every other skip is a run the user configured
+    // for a thumbnail and didn't get one — say why, once.
+    if (decision !== "skip-no-youtube") {
+      const reason =
+        decision === "skip-no-portrait"
+          ? "no portrait — set `portrait` in ~/.ossclip/config.json or pass --portrait"
+          : decision === "skip-no-key"
+            ? "GEMINI_API_KEY not set"
+            : `portrait not found: ${args.portraitPath}`;
+      log(`▸ thumbnail: skipped (${reason}) — frame-grab cover stands`);
+    }
+    return undefined;
+  }
+  // The pre-render approval file, checked FIRST (2026-08-16 thumbnail UX):
+  // the user approved — or explicitly skipped — this exact concept before
+  // the render, so asking a model again here would discard their edit. The
+  // skip variant is a LOUD skip: unlike youtube-off, the user opted in and
+  // then declined this one thumbnail, and the line says how to revisit.
+  const approvedPath = join(args.work, THUMBNAIL_APPROVED_BASENAME);
+  let approved: ThumbnailConcept | undefined;
+  if (existsSync(approvedPath)) {
+    const parsed = ThumbnailConceptApprovedSchema.parse(
+      JSON.parse(await readFile(approvedPath, "utf8")),
+    );
+    if ("skip" in parsed) {
+      log(
+        `▸ thumbnail: skipped (declined at concept approval — delete ` +
+          `${THUMBNAIL_APPROVED_BASENAME} in the workdir to revisit) — frame-grab cover stands`,
+      );
+      return undefined;
+    }
+    approved = parsed;
+  }
+  const mimeType = portraitMimeType(args.portraitPath!);
+  if (!mimeType) {
+    log(
+      `▸ thumbnail: skipped (unsupported portrait format "${args.portraitPath}" — ` +
+        "use png, jpg, jpeg or webp) — frame-grab cover stands",
+    );
+    return undefined;
+  }
+  let concept: ThumbnailConcept;
+  if (approved) {
+    // No concept call, no concept cache — the approved file IS the concept.
+    concept = approved;
+    log("▸ thumbnail: using the approved concept");
+  } else {
+    if (!args.provider) {
+      // The concept call rides the run's text provider (Y2's exactly); the
+      // IMAGE key alone cannot write the concept, so no provider means no
+      // thumbnail — loud, because the youtube gate was on.
+      log("▸ thumbnail: skipped (no LLM provider for the concept) — frame-grab cover stands");
+      return undefined;
+    }
+
+    // Concept cache (thumbnailConceptCacheName has the key's rationale).
+    // Failures are never cached (§106).
+    const conceptCache = join(args.work, thumbnailConceptCacheName(args));
+    if (existsSync(conceptCache)) {
+      concept = ThumbnailConceptSchema.parse(JSON.parse(await readFile(conceptCache, "utf8")));
+      log("▸ thumbnail: concept cached");
+    } else {
+      try {
+        const fresh = await time(() =>
+          generateThumbnailConcept(args.provider!, {
+            hook: args.hook,
+            intent: args.intent,
+            audience: args.audience,
+            brief: args.brief,
+            titleAngle: args.titleAngle,
+            transcriptText: args.transcriptWords.join(" "),
+          }),
+        );
+        // The schema caps CHARACTERS; approvedOverlayText caps WORDS (§35 —
+        // overlay text at thumbnail size has a cover banner's 4-9 word
+        // ceiling). Capped BEFORE caching so the cache and the image key hold
+        // what is used.
+        concept = { ...fresh, overlayText: approvedOverlayText(fresh.overlayText) };
+        await writeFile(conceptCache, JSON.stringify(concept, null, 2));
+      } catch (err) {
+        log(
+          `▸ thumbnail: concept failed (${err instanceof Error ? err.message : String(err)}) ` +
+            "— frame-grab cover stands",
+        );
+        return undefined;
+      }
+    }
+  }
+
+  // Image cache — thumbnailImageCacheName has the key's rationale, and it is
+  // shared with the editor's regenerate endpoint so the two callers can never
+  // cache past each other.
+  const portraitBytes = await readFile(args.portraitPath!);
+  const imageCache = join(
+    args.work,
+    thumbnailImageCacheName(
+      args.model,
+      concept,
+      createHash("sha1").update(portraitBytes).digest("hex"),
+    ),
+  );
+  if (existsSync(imageCache)) {
+    log("▸ thumbnail: image cached");
+  } else {
+    try {
+      const bytes = await generate({
+        apiKey: args.apiKey!,
+        model: args.model,
+        prompt: buildThumbnailPrompt(concept, true),
+        portrait: { data: portraitBytes.toString("base64"), mimeType },
+      });
+      await writeFile(imageCache, bytes);
+    } catch (err) {
+      // NEVER cache a failure (§106), never fail the produce that just
+      // rendered. The message rides VERBATIM — the model slug is
+      // user-specified, and an unknown-model rejection is deterministic, so
+      // no retry and no paraphrase (§132 posture).
+      log(
+        `▸ thumbnail: generation failed (${err instanceof Error ? err.message : String(err)}) ` +
+          "— frame-grab cover stands",
+      );
+      return undefined;
+    }
+  }
+  const dest = artifactPath(args.outPath, ".thumbnail.png");
+  await copyFile(imageCache, dest);
+  log(`✓ thumbnail → ${dest}`);
+  return {
+    path: dest,
+    concept,
+    imageCachePath: imageCache,
+    portrait: { data: portraitBytes.toString("base64"), mimeType },
+  };
+}
+
+/**
+ * Whether inferred retake collapse (findRetakeGroups, R27 §128) runs at all.
+ * Gated on the blooper marker, NOT on `--collapse-retakes` — user decision,
+ * verbatim (2026-08-16): "Bloopers and retakes go hand-in-hand. Do not do
+ * retakes without bloopers... If blooper is there, we do it, else we don't."
+ * A marker the speaker says out loud is the signal that this recording style
+ * leaves flubs in the take; without it, inferred cutting has no such
+ * license. `--collapse-retakes` stays parseable (old command.json replays)
+ * but inert. Trim-empty counts as absent: findBloopSpans refuses a blank
+ * marker for the same reason. Pure so the gate matrix is testable without a
+ * run.
+ */
+export function inferredRetakesEnabled(blooperMarker: string | undefined): boolean {
+  return typeof blooperMarker === "string" && blooperMarker.trim().length > 0;
+}
+
+/**
+ * RetakeGroup cuts → `buildCutlist`'s `retakes` entries. The exact-prefix
+ * restart rule carries RESTART_PREFIX_CONFIDENCE (0.85) instead of the 0.9
+ * default a similarity-matched retake earns — the group's `rule` is the only
+ * place that distinction lives, and it's dropped by the flatMap, so the
+ * confidence has to be attached here. Pure so the mapping is testable
+ * without a run.
+ */
+export function retakeCutsFor(
+  groups: readonly RetakeGroup[],
+): { startWord: number; endWord: number; startSec: number; endSec: number; confidence?: number }[] {
+  return groups.flatMap((g) =>
+    g.cuts.map((c) =>
+      g.rule === "exact-prefix" ? { ...c, confidence: RESTART_PREFIX_CONFIDENCE } : c,
+    ),
+  );
+}
+
+/**
+ * How much of the source a cover crop into `frame` keeps, and on which axis.
+ * Cover scales the picture until BOTH frame axes are filled, then trims
+ * whichever source axis overflows: a source wider than the frame loses width
+ * (kept = frameAspect / contentAspect), a narrower one loses height (the
+ * inverse). `null` means either nothing is trimmed (matching aspects) or a
+ * dimension is degenerate and no claim can be made. Orientation-neutral on
+ * purpose: the old call-site warning was gated on `!landscape`, assuming a
+ * 16:9 output never meaningfully crops a 16:9-ish source — and the
+ * 2026-08-16 incident was exactly that, a 1.547:1 screen recording in a 16:9
+ * frame with 13% of the height silently gone (28% post-normalization) and no
+ * line in the log ever mentioning it. Pure so the whole orientation matrix
+ * is testable without probing a real video.
+ */
+export function coverKeepFraction(
+  content: { width: number; height: number },
+  frame: { width: number; height: number },
+): { axis: "width" | "height"; kept: number } | null {
+  if (content.width <= 0 || content.height <= 0 || frame.width <= 0 || frame.height <= 0) {
+    return null;
+  }
+  const contentAspect = content.width / content.height;
+  const frameAspect = frame.width / frame.height;
+  if (contentAspect > frameAspect) return { axis: "width", kept: frameAspect / contentAspect };
+  if (contentAspect < frameAspect) return { axis: "height", kept: contentAspect / frameAspect };
+  return null;
+}
+
+/**
+ * What the whole-take face measurement says the frame's SUBJECT is — the
+ * same rule `segmentIsFaceOnly` (core) applies per segment, here on the
+ * global median box that feeds `face` in render-props. "screen" tells the
+ * stage's cover bias to stay centered instead of chasing the face: in the
+ * 2026-08-16 incident the global 9-sample median landed on the camera PiP
+ * (sizeFrac 0.119, bottom-right) and pinned objectPosY to 1.0, cutting the
+ * speaker's head off at the top of every full-frame stretch — a PiP-sized
+ * face must not steer the cover. Accepts `measureFace`'s own return shape
+ * (null = no face found at all), and reads null the way segmentIsFaceOnly
+ * does: no face, one below FACE_ONLY_MIN_FRAC, or one seen in under
+ * FACE_MIN_DETECTION_RATIO of the samples means the picture is the subject.
+ * Pure so the classification matrix is testable without a video or the
+ * detector.
+ */
+export function faceSubject(faceBox: FaceBox | null): "face" | "screen" {
+  if (!faceBox) return "screen";
+  if (faceBox.sizeFrac < FACE_ONLY_MIN_FRAC) return "screen";
+  return faceBox.framesSampled > 0 &&
+    faceBox.framesDetected / faceBox.framesSampled >= FACE_MIN_DETECTION_RATIO
+    ? "face"
+    : "screen";
+}
+
+/**
+ * Reunites commander's two jump-cut keys into the one tri-state
+ * `ProduceOptions.jumpCuts`. Unlike the watermark pair — one key, positive
+ * declared first so the untyped default stays undefined — this pair's
+ * positive is spelled `--add-jump-cuts` (bare "--jump-cuts" reads as adding
+ * CUTS, not the zooms that conceal them), and commander only folds a
+ * negative onto the key its exact positive spelling owns: `--no-jump-cuts`
+ * alone creates `jumpCuts` defaulting TRUE, while `--add-jump-cuts` lands on
+ * `addJumpCuts`. So "typed --no-jump-cuts" is indistinguishable from "not
+ * typed" by value — the caller passes commander's getOptionValueSource
+ * verdict instead. Both typed is a contradiction and must be a loud error,
+ * never a precedence rule the user has to memorize. Pure so the whole
+ * flag matrix is testable without commander in the loop.
+ */
+export function jumpCutsFlag(
+  addJumpCuts: boolean | undefined,
+  noJumpCutsTyped: boolean,
+): boolean | undefined {
+  if (addJumpCuts === true && noJumpCutsTyped) {
+    throw new Error("--add-jump-cuts contradicts --no-jump-cuts — pass at most one");
+  }
+  if (addJumpCuts === true) return true;
+  return noJumpCutsTyped ? false : undefined;
+}
+
+/**
+ * The effective jump-cut punch mode from the tri-state flag. "auto" (not
+ * typed) and "force" (--add-jump-cuts) punch identically TODAY — the split
+ * exists so a future config key can turn the default off while a typed
+ * --add-jump-cuts still beats it, resolveWatermark's flag-beats-config
+ * precedence declared before the config side even exists. Pure so the
+ * matrix is testable without a flag parse.
+ */
+export type JumpCutsMode = "off" | "auto" | "force";
+
+export function resolveJumpCuts(flag: boolean | undefined): JumpCutsMode {
+  if (flag === true) return "force";
+  if (flag === false) return "off";
+  return "auto";
+}
+
+/**
+ * The punch scale for spans the plan allows — ~1.5%, replacing the legacy 7%
+ * (user decision 2026-08-16, "minimal, ~1%"): the 1.07 punch visibly SLID
+ * screen content sideways at every cut on the incident's screen recording,
+ * and even on a talking head a 7% lurch reads as the camera stumbling. Big
+ * enough to break up the jump, small enough to pass as sensor noise.
+ */
+export const FACE_PUNCH_SCALE = 1.015;
+
+/**
+ * The framing subject at a SOURCE time — which of the plan's segments owns
+ * `srcSec`, with the same edge clamping as scenes' `framingWindowAtOutput`:
+ * a time before the first segment reads as the first, after the last as the
+ * last, so a span whose in-point rounds a hair past a boundary still gets a
+ * segment's verdict rather than a hole. An empty timeline reads as "screen"
+ * — no punch — because with no plan there is no evidence the frame is just
+ * a face, and the guard's failure mode (sliding a screen share) is the
+ * worse of the two. Pure so the lookup is testable against a fixture.
+ */
+export function framingSubjectAt(
+  timeline: readonly FramingSegment[],
+  srcSec: number,
+): "face" | "screen" {
+  if (timeline.length === 0) return "screen";
+  if (srcSec < timeline[0]!.startSec) return timeline[0]!.subject;
+  for (const seg of timeline) {
+    if (srcSec >= seg.startSec && srcSec < seg.endSec) return seg.subject;
+  }
+  return timeline[timeline.length - 1]!.subject;
+}
+
+/**
+ * The per-span jump-cut punch plan `render-props.punch` carries. THE
+ * FACE-ONLY GUARD HOLDS IN EVERY MODE, "force" included: punching a screen
+ * share slides its content — text visibly drifting is WORSE than the jump
+ * the punch would conceal — so `--add-jump-cuts` overrides a (future)
+ * config-off, never the guard. `spanIsFaceOnly` comes per span from the
+ * framing timeline's subject at the span's source in-point, or from the
+ * global `faceSubject` verdict when no plan exists. Mode "off" still emits
+ * a full all-false mask rather than nothing: an ABSENT `punch` key is the
+ * legacy 1.07-everywhere contract, the opposite of off. Pure so the
+ * mode × subject matrix is testable without a produce run.
+ */
+export function punchPlanFor(
+  spans: readonly KeptSpan[],
+  mode: JumpCutsMode,
+  spanIsFaceOnly: readonly boolean[],
+): { scale: number; allowed: boolean[] } {
+  if (mode === "off") return { scale: 1, allowed: spans.map(() => false) };
+  return {
+    scale: FACE_PUNCH_SCALE,
+    allowed: spans.map((_, i) => spanIsFaceOnly[i] === true),
+  };
+}
+
+/**
+ * One face-only verdict per kept span, read where that span BEGINS — the
+ * frame at the cut is what any motion driver scales. With a framing plan the
+ * verdict is the plan's per-segment subject at the span's source in-point;
+ * without one every span shares the global `faceSubject` verdict. Hoisted to
+ * ONE mask because TWO motion drivers consume it — the jump-cut punch
+ * (`punchPlanFor.allowed`) and the idle zoom (`buildZoomPlan.allowedClips`,
+ * user decision 2026-08-16: "Face-only. If there's anything else, then no
+ * zoom" — the idle push visibly SLID screen-recording content) — and they
+ * must never disagree about who the subject is: a span the punch holds still
+ * but the idle zoom pushes would slide the very content the guard exists to
+ * protect. Pure so the timeline × subject matrix is testable without a
+ * produce run.
+ */
+export function spanFaceMask(
+  spans: readonly KeptSpan[],
+  framingTimeline: readonly FramingSegment[] | null,
+  globalSubject: "face" | "screen",
+): boolean[] {
+  return spans.map(
+    (sp) =>
+      (framingTimeline ? framingSubjectAt(framingTimeline, sp.srcIn) : globalSubject) === "face",
+  );
+}
+
+/**
+ * The measurement windows for a MEASURED per-span mask — each kept span's
+ * SOURCE range over the full frame (`cropVf: ""`, the shape
+ * `measureFaceInWindows` takes). This path only runs when no framing plan
+ * exists, i.e. the content rects are uniform, so there is no per-segment
+ * rect to crop to first. Pure so the span→window mapping is testable
+ * without ffmpeg.
+ */
+export function spanFaceWindows(
+  spans: readonly KeptSpan[],
+): Array<{ startSec: number; endSec: number; cropVf: string }> {
+  return spans.map((sp) => ({ startSec: sp.srcIn, endSec: sp.srcOut, cropVf: "" }));
+}
+
+/**
+ * `spanFaceMask`'s sibling for the no-plan path, from MEASURED faces
+ * (2026-08-16 v2 review): a screen recording with full-frame webcam
+ * stretches has uniform content rects, so no framing plan exists and the
+ * old fallback let the GLOBAL `faceSubject` verdict — "screen", because the
+ * whole-take median landed on the 0.119 PiP — speak for every span. The
+ * face-only stretches therefore got no punch concealment (raw jump cuts
+ * visible on the face) and no idle zoom. With no plan to supply subjects,
+ * the mask must be measured per span; the verdict rule is core's own
+ * `segmentIsFaceOnly`, the same one the framing plan applies per segment.
+ * `faces` is parallel to the spans that produced the windows. Pure so the
+ * wiring is testable without spawning ffmpeg.
+ */
+export function spanFaceMaskFromFaces(faces: ReadonlyArray<WindowFace | null>): boolean[] {
+  return faces.map((f) => segmentIsFaceOnly(f));
+}
+
+/**
+ * Cache key for the measured per-span mask: the spans' SOURCE ranges plus
+ * the source content hash. `measureFaceInWindows` itself does not cache
+ * (its other caller feeds a bake output that is cached downstream), and a
+ * ~55-span take is a few hundred single-frame ffmpeg spawns — too much to
+ * repeat on every warm re-run. Keyed on source ranges so a re-cut
+ * re-measures, and on the source identity so a same-shape cut of a
+ * different take cannot borrow verdicts. Pure so the key's inputs are
+ * pinned by a test.
+ */
+export function spanFaceCacheKey(spans: readonly KeptSpan[], sourceHash: string): string {
+  return createHash("sha1")
+    .update(JSON.stringify([sourceHash, spans.map((sp) => [sp.srcIn, sp.srcOut])]))
+    .digest("hex")
+    .slice(0, 12);
+}
+
+/**
  * Whether captions are hidden this run: the flag saying OFF, or the editor's
  * doc-global `captionsHidden` override saying hidden. An OR, deliberately
  * NOT resolveWatermark's flag-beats-config precedence: the override is the
@@ -339,6 +1130,28 @@ export function resolveCaptionsHidden(
   overrideHidden: boolean | undefined,
 ): boolean {
   return flag === false || overrideHidden === true;
+}
+
+/**
+ * Caption packing per orientation (2026-08-16 v2 review, user screenshot:
+ * "we can actually even have more letters at a time on the screen").
+ * Landscape draws captions at 44px on a 1920px frame against portrait's
+ * 64px on 1080px (`captionFontSizeFor`) — roughly 2.6× the horizontal text
+ * budget (1920/44 ≈ 44 character-widths vs 1080/64 ≈ 17) — so the portrait
+ * default's 3-word lines look sparse there; landscape packs 6 words over
+ * 2.4s, double the core defaults. Portrait returns those defaults VERBATIM
+ * — stated explicitly at the call site rather than changed in captions.ts,
+ * because the core defaults are portrait's contract and its output must
+ * stay byte-identical. Pure so the matrix is testable without a produce
+ * run.
+ */
+export function captionPackingFor(landscape: boolean): {
+  maxWordsPerLine: number;
+  maxLineDuration: number;
+} {
+  return landscape
+    ? { maxWordsPerLine: 6, maxLineDuration: 2.4 }
+    : { maxWordsPerLine: 3, maxLineDuration: 1.2 };
 }
 
 function sha1File(path: string): Promise<string> {
@@ -411,9 +1224,12 @@ export function defaultOutPath(originalInput: string): string {
  * directory (a folder run's clips folder, or — the reviewer's pre-existing
  * "latent" case — a file run's own folder once a mezzanine gets built)
  * passes the accept check and then 404s inside the render, after the run has
- * already spent the minutes getting there. `analysisInput` becomes something
- * other than `input` only via the framing bake, and that bake always writes
- * into `work`; the mezzanine build is the other path into `work`.
+ * already spent the minutes getting there. The framing bake was the one path
+ * that ever analysed a file other than `input` (always written into `work`);
+ * since framing became render-props (2026-08-16) the caller passes
+ * `inputIsAnalysisInput: true`, and the parameter survives as the contract —
+ * any future non-input analysis file must live in `work` — with the
+ * mezzanine build as the remaining path into `work`.
  */
 export function planRenderPublicDir(p: {
   input: string;
@@ -538,6 +1354,33 @@ export function sideImageDestRel(src: string): string {
  */
 const PRIMARY_VIDEO_SLOT_AREA = 0.2;
 
+/**
+ * Every layout's video-slot shape for the producer's framing brief: aspect
+ * in OUTPUT pixels, plus whether the slot is the SUBJECT (see
+ * PRIMARY_VIDEO_SLOT_AREA above) rather than an inset. `frame` must reach
+ * layoutSlots itself, not just the pixel multiply: layoutSlots defaults to
+ * PORTRAIT_FRAME, and the R15 split layouts change GEOMETRY with orientation
+ * — split-left is a {w:1, h:0.5} stack in portrait but a {w:0.5, h:1} side
+ * panel in landscape — so omitting it fed portrait slot fractions times
+ * landscape pixel dims to the brief, marking the wrong layouts UNAVAILABLE
+ * on every 16:9 run (latent since R15 landscape support; surfaced by the
+ * 2026-08-16 incident audit). Pure so both orientations are testable
+ * without an LLM run.
+ */
+export function layoutSlotAspects(frame: {
+  width: number;
+  height: number;
+}): { layout: Layout; slotAspect: number; primary: boolean }[] {
+  return LayoutSchema.options.map((layout) => {
+    const v = layoutSlots(layout, DEFAULT_FACE, [], frame).video;
+    return {
+      layout,
+      slotAspect: (v.rect.w * frame.width) / (v.rect.h * frame.height),
+      primary: v.opacity > 0 && v.rect.w * v.rect.h >= PRIMARY_VIDEO_SLOT_AREA,
+    };
+  });
+}
+
 async function preflight(bin: string, hint: string): Promise<void> {
   try {
     await run(bin, ["-version"], { allowNonZero: true });
@@ -564,7 +1407,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // video" image lookup both used to read the REASSIGNED `input`, which for a
   // folder run is a file inside the hidden workdir, not anything the user
   // would recognise.
-  const originalInput = isAbsolute(inputArg) ? inputArg : resolve(baseCwd, inputArg);
+  // expandHome first (2026-08-16 incident, see paths.ts): a `~/` path that
+  // reaches us unexpanded — the wizard's text prompts, a quoted argv — must
+  // never be resolved against cwd.
+  const originalInput = isAbsolute(inputArg)
+    ? inputArg
+    : resolve(baseCwd, expandHome(inputArg));
   let input = originalInput;
   if (!existsSync(input)) throw new Error(`input not found: ${input}`);
 
@@ -588,6 +1436,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     throw new Error("--clip-window is recorded by --clip runs for replay — pass --clip too.");
   }
 
+  // Resolved HERE, not at the render section (2026-08-16 field incident): a
+  // bad out path must fail (or be healed) in the first second, not at the
+  // rename after a 50-minute render — a wizard-typed `~/Downloads/...`
+  // resolved against cwd and the end-of-run rename ENOENT'd because the
+  // parent never existed. mkdir over refusal: the path is the user's explicit
+  // intent and creating a folder is what they'd do by hand; a genuinely
+  // un-creatable path (permissions) still fails loudly, now upfront.
+  const outArg = opts.out !== undefined ? expandHome(opts.out) : undefined;
+  const outPath = outArg
+    ? isAbsolute(outArg)
+      ? outArg
+      : resolve(baseCwd, outArg)
+    : resolve(defaultOutPath(originalInput));
+  ensureParentDir(outPath);
+
   await preflight(cfg.ffmpegPath, "Run `ossclip setup`, install ffmpeg yourself (brew/apt/winget), or set OSSCLIP_FFMPEG.");
   await preflight(cfg.ffprobePath, "Run `ossclip setup`, install ffmpeg (provides ffprobe), or set OSSCLIP_FFPROBE.");
 
@@ -597,6 +1460,23 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const frame = landscape ? { width: 1920, height: 1080 } : { width: 1080, height: 1920 };
 
   const tools = { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath };
+
+  // Resolved ONCE for the whole run — whisper biasing, repair vouching and
+  // caption casing must all see the same list, or the passes disagree about
+  // what a term is spelled like. A typed --dictionary wholesale beats the
+  // config (resolveWatermark's typed-beats-config precedence, no merging).
+  const configDictionary = validDictionary(cfg.dictionary);
+  if (opts.dictionary === undefined && cfg.dictionary !== undefined && configDictionary === undefined) {
+    console.log("⚠ config dictionary ignored — expected an array of non-empty strings");
+  }
+  const dictionary = opts.dictionary ?? configDictionary ?? [];
+  if (dictionary.length > 0) console.log(`▸ dictionary: ${dictionary.join(", ")}`);
+
+  // The run's base theme (F6): config theme over defaultTheme, resolved once
+  // and used for BOTH resolveTheme's base and props.baseTheme below — the
+  // editor's reset must land on the user's global colors, not the factory's.
+  const { theme: configBaseTheme, warning: themeWarning } = configuredBaseTheme(cfg.theme);
+  if (themeWarning) console.log(themeWarning);
 
   // Folder input (folder-input-brief.md, 2026-08-05 field request). The
   // workdir hash is derived from the folder's CONTENT — `folderManifestKey`
@@ -629,7 +1509,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   } else {
     hash = (await sha1File(input)).slice(0, 8);
   }
-  const work = deriveWorkdir(input, hash, opts.workdir, landscape);
+  // expandHome at the call site so deriveWorkdir stays homedir-free.
+  const work = deriveWorkdir(
+    input,
+    hash,
+    opts.workdir !== undefined ? expandHome(opts.workdir) : undefined,
+    landscape,
+  );
   await mkdir(work, { recursive: true });
   console.log(`▸ workdir ${work}`);
 
@@ -756,9 +1642,31 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // the flag exists for — and equally defeated the model A/B the
   // --whisper-model help text advertises.
   const transcriptKeyPath = join(work, "transcript-key.json");
+  const requestedModel = opts.whisperModel ?? cfg.model;
+  // Flag > config > the curated table's model-implied language (a non-English
+  // fine-tune without `-l` decodes garbage — Urdu field test 2026-08-05).
+  // Resolved BEFORE the key so a config/model-sourced language re-keys the
+  // cache exactly like the typed flag does.
+  const whisperLang = resolveWhisperLanguage(
+    opts.whisperLanguage,
+    cfg.language,
+    modelImpliedLanguage(requestedModel),
+  );
+  if (whisperLang.warning) console.log(whisperLang.warning);
+  if (whisperLang.source === "config" || whisperLang.source === "model") {
+    console.log(
+      `▸ whisper language: ${whisperLang.language} ` +
+        `(from ${whisperLang.source === "config" ? "config" : `model ${requestedModel}`}; ` +
+        `--whisper-language overrides)`,
+    );
+  }
   const requestedKey: TranscriptKey = {
-    model: opts.whisperModel ?? cfg.model,
-    ...(opts.whisperLanguage !== undefined ? { language: opts.whisperLanguage } : {}),
+    model: requestedModel,
+    ...(whisperLang.language !== undefined ? { language: whisperLang.language } : {}),
+    // Omitted when empty, not written as [] — pre-dictionary key files have
+    // no `dictionary` at all, and transcriptCacheReusable reads absent and
+    // empty as the same "no biasing", so old workdirs must not re-transcribe.
+    ...(dictionary.length > 0 ? { dictionary } : {}),
   };
   let cacheVerdict: ReturnType<typeof transcriptCacheReusable> | null = null;
   if (!opts.transcript && existsSync(transcriptCache)) {
@@ -768,7 +1676,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     cacheVerdict = transcriptCacheReusable(recorded, requestedKey, cfg.model);
   }
   if (opts.transcript) {
-    transcript = TranscriptSchema.parse(JSON.parse(await readFile(resolve(opts.transcript), "utf8")));
+    // expandHome before resolve — same 2026-08-16 rule as --out (paths.ts).
+    transcript = TranscriptSchema.parse(
+      JSON.parse(await readFile(resolve(expandHome(opts.transcript)), "utf8")),
+    );
     console.log(`▸ transcript injected from ${opts.transcript} (${transcript.words.length} words)`);
     // An injected transcript came from no whisper run at all, so any key left
     // by an earlier one would mislabel the cache this branch overwrites below.
@@ -791,12 +1702,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       "Run `ossclip setup`, install whisper.cpp yourself (https://github.com/ggml-org/whisper.cpp), or set OSSCLIP_WHISPER.",
     );
     const model = requestedKey.model;
-    const modelPath = isAbsolute(model) ? model : join(cfg.modelDir, `ggml-${model}.bin`);
+    // whisperModelPath/modelUrl are THE resolution and URL sources (shared
+    // with doctor and setup) — this error used to hold its own copy of the
+    // ggerganov URL, which 404'd for curated/custom names and the suggested
+    // `curl -L` then saved the 404 HTML as a fake model.
+    const modelPath = whisperModelPath(model, cfg.modelDir);
     if (!existsSync(modelPath)) {
       throw new Error(
         `whisper model not found at ${modelPath}.\n` +
           `Run \`ossclip setup${model === cfg.model ? "" : ` --model ${model}`}\` to download it — or manually:\n` +
-          `  curl -L -o ${modelPath} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${model}.bin`,
+          `  curl -L -o ${modelPath} ${modelUrl(model, validModelSources(cfg.modelSources))}`,
       );
     }
     const whisperAnim = isInteractive()
@@ -813,7 +1728,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           whisperPath: cfg.whisperPath,
           modelPath,
           outBase: join(work, "whisper"),
-          language: opts.whisperLanguage,
+          // The RESOLVED language, not the raw flag — a config/model-implied
+          // code must reach the spawn exactly as it reached the cache key.
+          language: requestedKey.language,
+          // Vocabulary biasing (F4) — undefined for an empty dictionary, so
+          // the spawned args stay byte-identical to every pre-dictionary run.
+          prompt: whisperPromptFor(dictionary),
         },
         audioPath,
       ),
@@ -849,7 +1769,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // repair — the repair pass reads a bare "blooper." as an oddity and has
   // already been observed proposing "break loop." for it. Detecting first
   // means the marker cannot be rewritten out from under the detector.
-  let bloops = opts.blooperMarker ? findBloopSpans(transcript, opts.blooperMarker) : [];
+  // `silences` rides along so the cut can extend through the marker's own
+  // trailing dead air — §18 stamp-stretch put the stamped end of a spoken
+  // "blooper." 0.4s before its acoustic end (2026-08-16 incident, see
+  // MAX_MARKER_BLEED_SEC in blooper.ts).
+  let bloops = opts.blooperMarker ? findBloopSpans(transcript, opts.blooperMarker, silences) : [];
   if (opts.blooperMarker) {
     console.log(
       bloops.length > 0
@@ -861,24 +1785,30 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // Deterministic retake collapse (R27 §128) — the flub the speaker did NOT
   // mark. Same RAW-transcript-before-repair ordering as the blooper marker
   // above and for the same reason: repair reading a stray restart as an
-  // oddity would rewrite the exact pattern this looks for.
-  let retakeGroups = opts.collapseRetakes
+  // oddity would rewrite the exact pattern this looks for. Gated on the
+  // marker, not --collapse-retakes (inferredRetakesEnabled has the user's
+  // verbatim rule); the legacy flag typed alone earns a notice, not silence.
+  const retakesEnabled = inferredRetakesEnabled(opts.blooperMarker);
+  if (opts.collapseRetakes && !retakesEnabled) {
+    console.log("▸ collapse-retakes: skipped — retake detection runs only with --blooper-marker");
+  }
+  let retakeGroups = retakesEnabled
     ? findRetakeGroups(transcript, analysis, { transparentMarker: opts.blooperMarker })
     : [];
-  let retakes = retakeGroups.flatMap((g) => g.cuts);
-  if (opts.collapseRetakes) {
+  let retakes = retakeCutsFor(retakeGroups);
+  if (retakesEnabled) {
     // `exact` never cuts anything — buildCutlist's own early return collapses
     // to one whole-duration `keep` regardless of what's in `retakes` — so
     // "N group(s), M take(s) cut" here was a claim the run never honored.
     // Same fact `valveFired` below already checks; gated the same way
     // (final-review fix wave, cheap minor b).
     if (opts.cleanup === "exact") {
-      console.log("▸ collapse-retakes: --cleanup exact wins — nothing cut");
+      console.log("▸ retakes: --cleanup exact wins — nothing cut");
     } else {
       console.log(
         retakeGroups.length > 0
-          ? `▸ collapse-retakes: ${retakeGroups.length} group(s), ${retakes.length} take(s) cut`
-          : "▸ collapse-retakes: no retakes found",
+          ? `▸ retakes: ${retakeGroups.length} group(s), ${retakes.length} take(s) cut`
+          : "▸ retakes: none found",
       );
       for (const g of retakeGroups) {
         for (const line of formatRetakeGroup(transcript, g).split("\n")) console.log(`  ▸ ${line}`);
@@ -910,7 +1840,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const valveFired = opts.cleanup !== "exact" && cutlist.length === 1 && cutlist[0]!.kind === "keep";
   if (retakes.length > 0 && valveFired) {
     console.log(
-      "  ⚠ collapse-retakes found a retake, but the sanity valve reset the whole cutlist — nothing was cut",
+      "  ⚠ retake collapse found a retake, but the sanity valve reset the whole cutlist — nothing was cut",
     );
   }
 
@@ -922,7 +1852,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // mishearing can't reach the screen twice in two different spellings.
   const providerName = opts.provider ?? defaultProviderName(process.env, binOnPath);
   let provider: LlmProvider | null = null;
-  const needsLlm = opts.produce === true;
+  // --youtube brings its own provider (field gap, 2026-08-16): the user's
+  // real command was `--youtube --llm antigravity` WITHOUT --produce, and the
+  // pack skipped with "needs an LLM provider" — a flag that exists to call an
+  // LLM must count as opting into one. This also turns transcript repair on
+  // for such runs, which is the dictionary's caption-side fix ("Jason" →
+  // "JSON") — biasing whisper alone does not correct what ASR already heard.
+  const needsLlm = opts.produce === true || resolveYoutube(opts.youtube, cfg.youtube);
   if (needsLlm) {
     // Only when auto-detected: a typed --llm needs no explanation. The line
     // itself lives in llm-detect.ts so a drift test covers every provider —
@@ -947,6 +1883,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           opts.llmModel,
           opts.llmFastModel ?? cfg.fastModel,
           opts.speaker ?? cfg.speaker,
+          // The dictionary changes both the prompt and the vouched set (F4),
+          // so cached repairs from a different vocabulary must not be reused.
+          dictionary,
           rawTranscript.words.map((w) => w.text),
         ]),
       )
@@ -958,6 +1897,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       transcript = applyRepairs(
         rawTranscript,
         repairs.filter((r) => r.applied),
+        // The vouched set must survive the cache: a dictionary-vouched
+        // correction re-runs applyRepairs' guards here, and without the
+        // dictionary the phonetic gate would refuse on replay what it
+        // accepted on the first run.
+        { dictionary },
       ).transcript;
       console.log(`▸ repairs cached (${repairs.filter((r) => r.applied).length})`);
     } else {
@@ -971,6 +1915,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       const result = await phases.time("llm", () =>
         repairTranscript(provider!, rawTranscript, {
           speaker: opts.speaker ?? cfg.speaker,
+          // Vouched terms (F4): named in the prompt AND exempt, when a
+          // correction is built entirely of them, from the phonetic gate.
+          dictionary,
           // A repair may not merge words across a cut.
           isCut: (startSec, endSec) =>
             cutlist.some(
@@ -1009,12 +1956,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // ---- Framing measurement (PLAN Tasks A+B) --------------------------------
   /**
    * Mixed framing (option (a), decided with the author 2026-07-28): a source
-   * that alternates framings is NORMALIZED — every segment cropped to the
-   * tightest field of view the take ever shows, placed on that segment's own
-   * measured face, and baked into one uniform file. The PLAN is computed here,
-   * before the producer, because the producer needs the framing brief: which
-   * word ranges are close shots, and which layouts those rule out. The BAKE
-   * itself runs after the scenes exist.
+   * that alternates framings gets ONE field of view — every segment windowed
+   * to the tightest framing the take ever shows, placed on that segment's own
+   * measured face. The PLAN is computed here, before the producer, because
+   * the producer needs the framing brief: which word ranges are close shots,
+   * and which layouts those rule out. The plan used to be BAKED into a
+   * re-encoded file after the scenes existed; since 2026-08-16 it is emitted
+   * as `framingTimeline` render-props instead (see the props assembly below).
    */
   let framingPlan: NormalizePlan | null = null;
   if (!detection.uniform) {
@@ -1071,9 +2019,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
    * `production.json`, the report, and the command.json pin below. */
   let clipWindow: ClipWindow | null = null;
   if (opts.scenes) {
-    scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(resolve(opts.scenes), "utf8")));
+    // expandHome before resolve — same 2026-08-16 rule as --out (paths.ts).
+    scenes = z.array(SceneSchema).parse(
+      JSON.parse(await readFile(resolve(expandHome(opts.scenes)), "utf8")),
+    );
     console.log(`▸ scenes injected from ${opts.scenes} (${scenes.length})`);
-  } else if (provider) {
+  } else if (provider && opts.produce === true) {
+    // `opts.produce`, not bare `provider` (2026-08-16): --youtube now brings
+    // a provider for its metadata/repair, and the bare-provider gate silently
+    // turned GRAPHICS on for a run that never asked for them — 12 surprise
+    // scenes on a plain-cut video. A provider is a capability; --produce is
+    // the consent.
     // Keyed on the repaired transcript's TEXT, not its word count: a repair
     // that swaps "coach and" for "code churn" leaves the count identical, and
     // a count-keyed cache would silently replan from the stale wording.
@@ -1090,14 +2046,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             faceFracOfCanvas: framingPlan.faceFracOfCanvas[i] ?? 0,
           })),
           canvasAspect: framingPlan.canvas.width / framingPlan.canvas.height,
-          layouts: LayoutSchema.options.map((layout) => {
-            const v = layoutSlots(layout).video;
-            return {
-              layout,
-              slotAspect: (v.rect.w * frame.width) / (v.rect.h * frame.height),
-              primary: v.opacity > 0 && v.rect.w * v.rect.h >= PRIMARY_VIDEO_SLOT_AREA,
-            };
-          }),
+          layouts: layoutSlotAspects(frame),
           zoom: ZOOM_MAX_SCALE,
         }
       : undefined;
@@ -1166,11 +2115,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       analysis = analyze(rawTranscript, silences, sourceProbe.duration, levels);
       // Re-detect on the SLICE: word indices moved, so the spans found against
       // the full take no longer address the same words.
-      bloops = opts.blooperMarker ? findBloopSpans(rawTranscript, opts.blooperMarker) : [];
-      retakeGroups = opts.collapseRetakes
+      // Full-source `silences` on a sliced transcript is correct on purpose:
+      // sliceRawTranscript keeps SOURCE seconds on every word stamp, so the
+      // bleed extension compares like with like.
+      bloops = opts.blooperMarker
+        ? findBloopSpans(rawTranscript, opts.blooperMarker, silences)
+        : [];
+      retakeGroups = retakesEnabled
         ? findRetakeGroups(rawTranscript, analysis, { transparentMarker: opts.blooperMarker })
         : [];
-      retakes = retakeGroups.flatMap((g) => g.cuts);
+      retakes = retakeCutsFor(retakeGroups);
       cutlist = boundCutlistToWindow(
         buildCutlist({
           transcript: rawTranscript,
@@ -1358,6 +2312,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     }
   }
 
+  // Deterministic dictionary casing (F4) — LAST word edit before the caption
+  // build: after the repair reassignment and reconcileCopy above, so nothing
+  // can lower-case a term back after this. Exact-token matches only ("json."
+  // → "JSON."; "Jason" stays — phonetic judgement is the repair pass's job,
+  // see dictionary.ts). `rawTranscript` stays untouched on purpose:
+  // production.json stores the RAW words that `analysis`/`cutlist` index.
+  transcript = canonicalizeDictionaryCasing(transcript, dictionary);
+
   // Landscape keeps the frame whole (R15): the split-screen layouts are
   // vertical-format answers, and applying them to 16:9 crops the picture into
   // a letterbox for no gain. Remapped here — before assembly — so cues,
@@ -1472,45 +2434,49 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
 
-  // ---- Framing bake (plan step C / option (a)) ----------------------------
-  // The MEASUREMENT ran before the producer (Tasks A+B need it in the beat-
-  // sheet prompt); the BAKE stays here, after the scenes exist, so a future
-  // scene-aware bake has the cues in scope. Moving measurement up changes no
-  // edit decision — the cut is still computed on raw ASR above.
-  let analysisInput = input;
-  let analysisProbe = sourceProbe;
-  let analysisCropVf = cropVf;
-  let cacheTag = "";
+  // ---- Framing plan → props (2026-08-16 incident) --------------------------
+  // The plan used to be BAKED here: every window cropped, scaled and
+  // re-encoded into a content-<hash>.mp4 that replaced the source for the
+  // whole rest of the pipeline. That was irreversible — a bad crop's only
+  // remedy was deleting the baked file — and invisible: the bake path also
+  // suppressed the `sourceSize` keys in render-props, so the editor could
+  // not even see the crop it was fighting. The plan now travels as DATA
+  // (`framingTimeline`, emitted with the props below) and the renderer
+  // applies each window as a transform the editor can see and counteract.
+  // Old workdirs' baked content-*.mp4 stay on disk, inert: their own
+  // render-props reference them by name and must keep rendering.
   let fitFallback = false;
   if (framingPlan) {
     const plan = framingPlan;
     if (plan.ok) {
-      const planHash = createHash("sha1").update(JSON.stringify(plan)).digest("hex").slice(0, 8);
-      const baked = join(work, `content-${planHash}.mp4`);
-      if (!existsSync(baked)) {
-        console.log(
-          `▸ normalizing framing: one ${plan.canvas.width}×${plan.canvas.height} field of view ` +
-            `across ${plan.segments.length} segments (upscale ×${plan.coverUpscale.toFixed(2)})…`,
-        );
-        await bakeNormalizedSource(tools, input, plan, baked);
-      } else {
-        console.log(`▸ normalized framing cached (${basename(baked)})`);
-      }
-      analysisInput = baked;
-      analysisProbe = await probe(tools, baked);
-      analysisCropVf = "";
-      cacheTag = basename(baked);
+      console.log(
+        `▸ framing: ${plan.segments.length} windows rendered from props (no re-encode)`,
+      );
     } else {
       fitFallback = true;
+      // A refusal names the number that tripped the gate. The upscale bound
+      // is softness; the discard bound is picture loss — the 2026-08-16
+      // incident's plan discarded 37% of the frame area and the old log
+      // (upscale-only) never said so. The per-segment screen-loss bound has
+      // no single headline number, so it reads as the residual case.
+      const why = [
+        ...(plan.coverUpscale > MAX_NORMALIZE_UPSCALE
+          ? [`would upscale ×${plan.coverUpscale.toFixed(2)} > ${MAX_NORMALIZE_UPSCALE}`]
+          : []),
+        ...(plan.areaDiscardWeighted > MAX_MEAN_AREA_DISCARD
+          ? [`would discard ${(plan.areaDiscardWeighted * 100).toFixed(0)}% of the picture`]
+          : []),
+      ];
       console.log(
-        `  ⚠ strip too small to unify (would upscale ×${plan.coverUpscale.toFixed(2)} > ` +
-          `${MAX_NORMALIZE_UPSCALE}) — letterboxed stretches render FITTED at natural size; ` +
+        `  ⚠ strip too small to unify (${
+          why.length > 0 ? why.join("; ") : "a screen segment would lose its content"
+        }) — letterboxed stretches render FITTED at natural size; ` +
           `framing will visibly change at ${contentTimeline.length - 1} boundaries`,
       );
     }
   }
   const contentRect: ContentRect = detection.uniform ?? {
-    x: 0, y: 0, w: analysisProbe.width, h: analysisProbe.height, full: true,
+    x: 0, y: 0, w: sourceProbe.width, h: sourceProbe.height, full: true,
   };
   /** The picture's dimensions — what every geometric consumer reasons about. */
   const content = { width: contentRect.w, height: contentRect.h };
@@ -1519,7 +2485,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // not two independent copies of the same condition that could silently
   // drift apart (Finding 3, final-review fix wave: that drift is exactly
   // what let an accepted image 404 inside Remotion's staticFile()).
-  const mezzanineWillBuild = analysisInput === input && (opts.mezzanine || !contentRect.full);
+  // The old `analysisInput === input` term is gone WITH the bake: the bake
+  // was the only thing that ever pointed analysis at a different file, so
+  // with framing as props the analysis input IS the source, always.
+  const mezzanineWillBuild = opts.mezzanine || !contentRect.full;
 
   // Face measurement (FINDINGS §13): one static crop offset per source,
   // measured rather than guessed; cached in the workdir like the transcript.
@@ -1531,10 +2500,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         "render",
       ).start()
     : null;
-  const faceBox = await measureFace(tools, analysisInput, analysisProbe.duration, {
+  const faceBox = await measureFace(tools, input, sourceProbe.duration, {
     cacheDir: work,
-    cropVf: analysisCropVf,
-    cacheTag,
+    cropVf,
     samples: faceSamples,
   });
   if (faceSampleAnim) faceSampleAnim.stop();
@@ -1550,21 +2518,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           "the crop may be wrong, check the output",
   );
 
-  // A landscape source loses most of its width to the vertical frame, and how
-  // much is arithmetic, not opinion: cover-cropping displays the picture at
-  // `height × aspect` and keeps only the frame's width of it. Said out loud
-  // because the result LOOKS deliberate — a tight talking head — and nothing
-  // else in the run would mention that the desk, the screen and the second
-  // person are simply gone.
-  if (!landscape && opts.sourceFit !== "contain" && content.height > 0) {
-    const displayedW = frame.height * (content.width / content.height);
-    if (displayedW > frame.width * 1.05) {
-      console.log(
-        `▸ source is ${(content.width / content.height).toFixed(2)}:1 — a full-frame crop keeps ` +
-          `${((frame.width / displayedW) * 100).toFixed(0)}% of its width. ` +
-          "Use --source-fit contain to show the whole frame instead.",
-      );
-    }
+  // Whatever the source's aspect doesn't share with the frame, a cover crop
+  // trims — and how much is arithmetic, not opinion. Said out loud because
+  // the result LOOKS deliberate — a tight talking head — and nothing else in
+  // the run would mention that the desk, the screen and the second person
+  // are simply gone. Orientation-neutral on purpose: the old `!landscape`
+  // gate assumed a 16:9 output never crops a 16:9-ish source, and the
+  // 2026-08-16 incident (a 1.547:1 screen recording in a 16:9 frame — 13% of
+  // the height silently gone, 28% post-normalization) shipped without a word.
+  const coverKeep = coverKeepFraction(content, frame);
+  if (opts.sourceFit !== "contain" && coverKeep && coverKeep.kept < 0.95) {
+    console.log(
+      `▸ source is ${(content.width / content.height).toFixed(2)}:1 — a full-frame crop keeps ` +
+        `${(coverKeep.kept * 100).toFixed(0)}% of its ${coverKeep.axis}. ` +
+        "Use --source-fit contain to show the whole frame instead.",
+    );
   }
 
   // ---- Route around the source's own burned-in text (FINDINGS §26) --------
@@ -1582,11 +2550,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // face. Routing around a hazard only pays when there is a hazard, and only
   // the user knows whether their source is already edited.
   const sourceText = opts.sourceIsEdited
-    ? await scanSourceText(tools, analysisInput, analysisProbe.duration, {
+    ? await scanSourceText(tools, input, sourceProbe.duration, {
         cacheDir: work,
         assumeEdited: true,
-        cropVf: analysisCropVf,
-        cacheTag,
+        cropVf,
       })
     : { regions: [], assumed: false, framesSampled: 0 };
   if (sourceText.regions.length > 0) {
@@ -1666,7 +2633,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (hiddenIds.length > 0) {
     console.log(`▸ ${hiddenIds.length} scene(s) hidden by the edit layer: ${hiddenIds.join(", ")}`);
   }
-  const theme = resolveTheme(defaultTheme, overrideDoc);
+  // Config theme as the BASE (F6): overrides.json > config theme >
+  // defaultTheme. The same `configBaseTheme` feeds props.baseTheme below.
+  const theme = resolveTheme(configBaseTheme, overrideDoc);
 
   // A pin freezes a scene's ABSOLUTE time against whatever its neighbours'
   // timing was when it was set. This same plan may since have re-anchored
@@ -1825,7 +2794,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const sideDirs = isFolder ? [work, originalInput] : [work, dirname(input)];
   const renderPublicDirPath = planRenderPublicDir({
     input,
-    inputIsAnalysisInput: analysisInput === input,
+    // Literal since the framing bake became render-props (2026-08-16): the
+    // bake was the only path that ever analysed a file other than the input.
+    // The parameter (and its platform matrix test) stays, because it encodes
+    // the contract "a non-input analysis file must live in `work`" — the
+    // thing any future re-introduction of such a file has to get right.
+    inputIsAnalysisInput: true,
     mezzanineWillBuild,
     work,
   });
@@ -1952,11 +2926,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // §128: same reasoning as §122's block above, for the flub the speaker did
   // NOT say a marker over — kept / cut (with similarity) / ignored as a
   // hallucination (with its silence fraction), in the words `report.txt`
-  // already trusts. Also the record `--collapse-retakes`'s opt-in default
-  // is promoted from: a clean run here is the evidence.
+  // already trusts. Runs automatically with --blooper-marker (2026-08-16
+  // gate decision, inferredRetakesEnabled); a clean run recorded here is
+  // still the promotion evidence the §128 appendix asks for.
   if (retakeGroups.length > 0) {
     report +=
-      "\nretakes collapsed (--collapse-retakes — FINDINGS §128):\n" +
+      "\nretakes collapsed (runs with --blooper-marker — FINDINGS §128):\n" +
       retakeGroups.map((g) => formatRetakeGroup(rawTranscript, g)).join("\n") +
       "\n";
   }
@@ -2030,6 +3005,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // the fill's derived boundaries re-split caption lines would change
     // caption output for zero visual reason (PLAN Task A4.4).
     breakpoints: graphicCues.flatMap((c) => [c.startSec, c.endSec]),
+    // Orientation-dependent packing (captionPackingFor has the budget math):
+    // portrait gets the core defaults verbatim, landscape doubles them.
+    ...captionPackingFor(landscape),
   });
   // §137 (Task 6 review, Critical 1): the caption half of a run — migrate the
   // doc's keys, apply what applies, and account for the rest — is one pure
@@ -2062,21 +3040,111 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const captionKeysReanchored = captionWork.reanchored;
   for (const line of captionWork.log) console.log(line);
 
+  // Const re-binding of the accepted plan so its narrowing survives into the
+  // `framingTimeline` map closure below — `framingPlan` is a `let`, and TS
+  // drops a `let`'s narrowing inside callbacks.
+  const acceptedFramingPlan = framingPlan?.ok ? framingPlan : null;
+  // Hoisted out of the props spread because TWO consumers need it: the
+  // render-props emission below and the per-span subject mask both motion
+  // drivers gate on. Skipped under `--source-fit contain` — contain shows the
+  // WHOLE frame, and a framing plan's cover windows would fight it — so the
+  // subject gate reads the same timeline the renderer will actually see.
+  const framingTimeline: FramingSegment[] | null =
+    acceptedFramingPlan && opts.sourceFit !== "contain"
+      ? acceptedFramingPlan.segments.map(
+          (s, i): FramingSegment => ({
+            startSec: s.startSec,
+            endSec: s.endSec,
+            window: s.window,
+            subject: acceptedFramingPlan.subject[i] ?? "screen",
+            bias: acceptedFramingPlan.bias[i] ?? { x: 0.5, y: 0.5 },
+          }),
+        )
+      : null;
+  const jumpCutsMode = resolveJumpCuts(opts.jumpCuts);
+  const globalSubject = faceSubject(faceBox);
+  // ONE verdict array feeds BOTH motion drivers (spanFaceMask has the why) —
+  // computed before either plan so neither can be built from a stale or
+  // re-derived copy that disagrees with the other.
+  //
+  // 2026-08-16 v2 review: with NO framing plan (uniform content rects) the
+  // old flat `spanFaceMask(…, null, globalSubject)` let the whole-take PiP
+  // verdict speak for the full-frame face stretches inside a screen
+  // recording, so those spans lost punch concealment and idle zoom — the
+  // mask must be MEASURED per span instead (spanFaceMaskFromFaces has the
+  // full why). Cached: `measureFaceInWindows` itself does not cache, and a
+  // ~55-span take is a few hundred single-frame ffmpeg spawns.
+  let spanIsFaceOnly: boolean[];
+  if (framingTimeline) {
+    spanIsFaceOnly = spanFaceMask(map.spans, framingTimeline, globalSubject);
+  } else {
+    const spanFaceCache = join(work, `face-spans-${spanFaceCacheKey(map.spans, hash)}.json`);
+    let measured: boolean[] | null = null;
+    if (existsSync(spanFaceCache)) {
+      measured = z.array(z.boolean()).length(map.spans.length)
+        .parse(JSON.parse(await readFile(spanFaceCache, "utf8")));
+    } else {
+      const maskAnim = isInteractive()
+        ? new StageAnimator(
+            "SUBJECT TRACKING",
+            `Measuring who the subject is across ${map.spans.length} kept spans...`,
+            "render",
+          ).start()
+        : null;
+      try {
+        const spanFaces = await measureFaceInWindows(
+          tools,
+          input,
+          spanFaceWindows(map.spans),
+          { workDir: work },
+        );
+        measured = spanFaceMaskFromFaces(spanFaces);
+        await writeFile(spanFaceCache, JSON.stringify(measured));
+      } catch (err) {
+        // NEVER cache a FAILURE (§106) — and the punch/zoom are polish, not
+        // the product, so a dead measurement falls back to the whole-take
+        // verdict (the pre-2026-08-16 behavior) rather than killing the run.
+        console.log(
+          `  ⚠ per-span face measurement failed (${err instanceof Error ? err.message : String(err)})` +
+            " — every span shares the whole-take verdict this run",
+        );
+      } finally {
+        if (maskAnim) maskAnim.stop();
+      }
+    }
+    spanIsFaceOnly = measured ?? spanFaceMask(map.spans, null, globalSubject);
+    if (measured) {
+      const faceSpans = measured.filter(Boolean).length;
+      console.log(
+        `▸ subject per span (measured): ${faceSpans} face-only, ` +
+          `${measured.length - faceSpans} screen`,
+      );
+    }
+  }
+  // The jump-cut punch plan (Task 6): mode from the flag pair, gated per
+  // span by who the subject is where that span BEGINS — the frame at the
+  // cut is what the punch scales. Without a framing plan every span shares
+  // the whole-take verdict, the same `face.subject` the stage bias reads.
+  const punch = punchPlanFor(map.spans, jumpCutsMode, spanIsFaceOnly);
+
   // Micro zoom punches (FINDINGS §15) reversing at real phrase breaks (§18).
   // Breaths are source-time; TimeMap has no span mapper, so both ends go
   // through toOutputClamped — a pause that was cut collapses to one instant,
   // which is still a boundary (a jump cut is a phrase break too).
   // One move per cut-free clip: ramp in, then hold. The clip starts ARE the
   // cuts — every point the source jumps — so a take that removed nothing is
-  // one clip and gets exactly one slow push.
+  // one clip and gets exactly one slow push. Face-only since 2026-08-16
+  // (same mask as the punch): a screen-subject clip gets NO push at all.
   const zoomOff = opts.zoom === false;
   const zoom = buildZoomPlan(map.outputDuration, {
     clipStarts: map.spans.map((s) => s.outIn),
+    allowedClips: spanIsFaceOnly,
   });
   console.log(
     zoomOff
       ? "▸ zoom: off (--no-zoom) — static camera; jump cuts land unconcealed"
-      : `▸ zoom: ${zoom.clips} clip(s), ${zoom.rampSec}s push then hold ` +
+      : `▸ zoom: ${zoom.zoomedClips} clip(s) zoomed, ${zoom.staticClips} static ` +
+          `(screen subject), ${zoom.rampSec}s push then hold ` +
           `(${zoom.segments.length} segments)`,
   );
 
@@ -2101,7 +3169,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // same head-fits rule would report a defect for working as designed.
     const issues = assessCueFraming(
       graphicCues.flatMap((c) => {
-        const v = layoutSlots(c.layout).video;
+        // `frame` must reach layoutSlots, not just the pixel multiply below —
+        // it defaults to PORTRAIT_FRAME, and the R15 split layouts change
+        // geometry with orientation (split-left: {w:1, h:0.5} stacked in
+        // portrait, {w:0.5, h:1} side panel in landscape), so omitting it
+        // judged 16:9 cues against portrait slot shapes. Latent since R15
+        // landscape support; see layoutSlotAspects for the twin brief-side bug.
+        const v = layoutSlots(c.layout, DEFAULT_FACE, [], frame).video;
         if (v.opacity <= 0 || v.rect.w * v.rect.h < PRIMARY_VIDEO_SLOT_AREA) return [];
         return [{
           id: c.id,
@@ -2133,20 +3207,35 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     }
   }
 
-  let renderVideo = analysisInput;
+  let renderVideo = input;
   // A letterboxed source MUST go through the re-encode even under
   // --no-mezzanine: the bars are pixels in the file, and cropping them here is
   // what lets every layout and zoom downstream treat the picture as the frame.
   // The cropped file gets its own name so a pre-crop cache is never reused.
-  // A NORMALIZED source skips this outright: the bake already carries the
-  // mezzanine's encode settings, and re-encoding it would be a second
-  // generation of loss for nothing.
   // `mezzanineWillBuild` (computed once, above, with `contentRect`) — not a
   // second copy of this condition — so this can't drift from what
   // `planRenderPublicDir` already decided the accepted-image check against
   // (Finding 3, final-review fix wave).
+  // Display-sized mezzanine (2026-08-17 render-speed pass): computed on the
+  // POST-CROP picture (the crop runs first in the same ffmpeg pass, so
+  // `contentRect` IS what the scale filter sees) against the OUTPUT
+  // frame+fps. Deliberately null when no mezzanine will build (--no-mezzanine
+  // on a bar-free source): there is no re-encode to scale, the render plays
+  // the source itself, and the window emissions below must then stay in true
+  // source pixels — which the identity `mezzFactor` below guarantees.
+  const mezzScale = mezzanineWillBuild
+    ? mezzanineScale(
+        { width: contentRect.w, height: contentRect.h, fps: sourceProbe.fps },
+        production.render,
+        opts.sourceFit ?? "cover",
+      )
+    : null;
   if (mezzanineWillBuild) {
-    const mezz = join(work, contentRect.full ? "mezzanine.mp4" : "mezzanine-content.mp4");
+    // The scale decision rides the FILENAME (`mezzanineFileName` has the
+    // why): mezzanine caching is existence-keyed, so a pre-pass full-res
+    // mezzanine.mp4 must not satisfy a run that emits mezzanine-sized
+    // windows — the scaled file rebuilds once under its own name.
+    const mezz = join(work, mezzanineFileName(!contentRect.full, mezzScale));
     if (!existsSync(mezz)) {
       const mezzAnim = isInteractive()
         ? new StageAnimator(
@@ -2164,11 +3253,41 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             : "▸ building mezzanine (dense keyframes, letterbox bars trimmed)…",
         );
       }
-      await makeMezzanine(tools, input, mezz, { cropVf: cropVf || undefined });
+      await makeMezzanine(tools, input, mezz, {
+        cropVf: cropVf || undefined,
+        scale: mezzScale ?? undefined,
+      });
       if (mezzAnim) mezzAnim.stop();
+    }
+    if (mezzScale) {
+      console.log(
+        `▸ mezzanine: ${contentRect.w}x${contentRect.h}@${Math.round(sourceProbe.fps)} → ` +
+          `${mezzScale.width}x${mezzScale.height}@${Math.round(mezzScale.fps)} ` +
+          `(render-sized — decode is the render bottleneck)`,
+      );
     }
     renderVideo = mezz;
   }
+  // Window space must equal PLAYED-FILE space: the renderer's crop math
+  // (`contentCoverBox` et al.) positions windows against the file it plays,
+  // so a scaled mezzanine needs every pixel-space emission below scaled by
+  // the same factor. Derived from the actual scaled dims — per axis, because
+  // yuv420 even-rounding makes the two ratios differ by a hair — and
+  // identity whenever the render plays an unscaled file (no mezzanine, or a
+  // source already at display size). `playedFullFrame` is the matching
+  // `sourceSize`: the framing/fit paths only ever fire with a FULL-frame
+  // mezzanine (mixed framing ⇒ no uniform crop), so its base is the source's
+  // own dims. Face fractions, `sourceAspect` and `sourceTextRegions` are
+  // ratios/fractions — scale-invariant, untouched. The Premiere project
+  // export stays in TRUE source space by construction: it cuts the ORIGINAL
+  // file (`production.source`, path + probe) and consumes only seconds and
+  // scales from render-props (spans, zoomPlan, punch), never these windows.
+  const mezzFactor = mezzScale
+    ? { x: mezzScale.width / contentRect.w, y: mezzScale.height / contentRect.h }
+    : { x: 1, y: 1 };
+  const playedFullFrame = mezzScale
+    ? { width: mezzScale.width, height: mezzScale.height }
+    : null;
 
   // Comment-CTA keyword (FINDINGS §16), scoped to the ask (FINDINGS §22).
   // Read off the timed CUE, not the untimed scene: the cue carries the same
@@ -2188,6 +3307,33 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       opts.captions === false
         ? "▸ captions: off (--no-captions)"
         : "▸ captions: hidden by editor override",
+    );
+  }
+
+  // Bundled Nastaliq for RTL captions (2026-08-17): the render must not
+  // depend on the machine having an Arabic-script font — a Linux box has
+  // none, and macOS/Windows each substitute a different one, so identical
+  // render-props drew three different Urdu caption sets. Gated on the SAME
+  // predicate CaptionTrack keys its @font-face on (`captionsNeedNastaliq`),
+  // so pure-Latin runs copy nothing and render byte-identically. Staged into
+  // the render's public dir AND the workdir when they differ (a
+  // --no-mezzanine file run serves the render from the source's own folder,
+  // but `ossclip edit` serves from the workdir — program.ts's
+  // `dirname(propsPath)` — and both mounts fetch the same served URL).
+  // `join` is correct here where NASTALIQ_FONT_REL itself must stay
+  // POSIX-literal: these are filesystem paths, the REL is the served URL
+  // (sideImageDestRel's Windows lesson).
+  if (!captionsHidden && captionsNeedNastaliq(captionLines)) {
+    const fontSrc = nastaliqFontFile();
+    for (const dir of new Set([renderPublicDirPath, work])) {
+      const dest = join(dir, NASTALIQ_FONT_REL);
+      if (!existsSync(dest)) {
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(fontSrc, dest);
+      }
+    }
+    console.log(
+      `▸ captions: RTL lines detected — bundled ${NASTALIQ_FONT_NAME} staged as ${NASTALIQ_FONT_REL}`,
     );
   }
 
@@ -2236,7 +3382,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // editing session would have nothing to fall back to and render as if
     // it never happened, even though `overrides.json` on disk is correct.
     baseSceneCues: routed.cues,
-    baseTheme: defaultTheme,
+    // The CONFIG base, not defaultTheme (F6): the editor re-applies its
+    // overrides onto this, so a theme reset there must land on the user's
+    // global colors — falling to factory defaults would silently discard
+    // ~/.ossclip/config.json's theme the first time anyone touched a color.
+    baseTheme: configBaseTheme,
     baseCaptionLines,
     settings: production.render,
     outputDurationSec: map.outputDuration,
@@ -2250,8 +3400,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           centerXFrac: faceBox.centerXFrac,
           sizeFrac: faceBox.sizeFrac,
           // The CONTENT's shape, not the container's — with bars trimmed the
-          // rendered video IS the content rect (PLAN Task 7).
+          // rendered video IS the content rect (PLAN Task 7). Since the
+          // framing bake became props (2026-08-16), this is always the RAW
+          // source's picture: `content` derives from `sourceProbe`, never
+          // from a re-encoded canvas, so a framing plan no longer distorts
+          // the aspect the stage crops against.
           sourceAspect: content.height > 0 ? content.width / content.height : undefined,
+          // Whether the face IS the subject, by the same rule the framing
+          // plan applies per segment. 2026-08-16 incident: the global
+          // 9-sample median landed on the camera PiP and pinned objectPosY
+          // to 1.0, decapitating the speaker at the top of the frame — a
+          // PiP-sized face must not steer the cover. Absent (old props)
+          // means "face", so pre-existing render-props render unchanged.
+          subject: faceSubject(faceBox),
         }
       : null,
     // Emptied, not flattened-to-1: a plan of flat segments still reads as "a
@@ -2265,25 +3426,57 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     ctaKeyword,
     ctaWindow,
     sourceTextRegions: textRegions,
-    // Sent ONLY on the fit fallback (option (b)): a normalized mixed source is
-    // already one uniform file, and a uniform source had its bars cropped into
-    // the mezzanine — cropping either again at render time would eat the
-    // picture twice.
+    // Sent ONLY on the fit fallback (option (b)): a plan-framed mixed source
+    // carries its windows in `framingTimeline` below, and a uniform source
+    // had its bars cropped into the mezzanine — cropping either again at
+    // render time would eat the picture twice. Rects and sourceSize are in
+    // PLAYED-FILE pixels (`mezzFactor`/`playedFullFrame` above): the renderer
+    // windows the file it plays, which a display-sized mezzanine has resampled.
     ...(fitFallback
       ? {
-          contentTimeline,
-          sourceSize: { width: sourceProbe.width, height: sourceProbe.height },
+          contentTimeline: scaleContentTimeline(contentTimeline, mezzFactor),
+          sourceSize:
+            playedFullFrame ?? { width: sourceProbe.width, height: sourceProbe.height },
           contentCropMode: "fit" as const,
         }
       : {}),
+    // The accepted framing plan, as DATA (2026-08-16 incident: the bake this
+    // replaces was irreversible — deleting the re-encoded content-<hash>.mp4
+    // was the only remedy — and it suppressed these very keys, so the editor
+    // could not even see the crop). Mutually exclusive with the fit-fallback
+    // spread by construction (`fitFallback` ⇔ `!plan.ok`), so `sourceSize`
+    // is emitted by exactly one of them. Skipped under `--source-fit
+    // contain`: contain shows the WHOLE frame, and a framing plan's cover
+    // windows would fight it — the explicit flag wins over the inferred plan.
+    ...(framingTimeline
+      ? {
+          // The plan's windows are TRUE source pixels (planNormalization
+          // analyses the source); scaled here, at emission, into the pixel
+          // space of the file the render plays — a display-sized mezzanine
+          // resamples that space by `mezzFactor` (identity when unscaled).
+          framingTimeline: scaleFramingWindows(framingTimeline, mezzFactor),
+          // The PLAYED file's size — the scaled windows are in its pixels.
+          sourceSize:
+            playedFullFrame ?? { width: sourceProbe.width, height: sourceProbe.height },
+        }
+      : {}),
+    // ALWAYS written, never absent-when-default like the flags around it:
+    // an ABSENT `punch` is the LEGACY contract — EdlVideo's 1.07 punch on
+    // every alternating span — kept so every pre-feature render-props.json
+    // renders byte-identical to what it always did. Presence, even an
+    // all-false "off" mask, is what opts a render into the face-only 1.015
+    // behavior (punchPlanFor has the guard's why).
+    punch,
     // `--source-fit contain`: show the whole frame instead of cropping it.
     // The size sent is the PICTURE's, not the container's — with bars trimmed
     // into the mezzanine the rendered video IS the content rect, and fitting
     // against the container's shape would inset a frame that no longer exists.
     // Listed after the fit fallback so it wins on a source that is both mixed
-    // and asked to be shown whole.
+    // and asked to be shown whole. `playedFullFrame` when the mezzanine is
+    // display-sized: it is that same picture, post-resample — the file the
+    // renderer fits.
     ...(opts.sourceFit === "contain"
-      ? { sourceFit: "contain" as const, sourceSize: content }
+      ? { sourceFit: "contain" as const, sourceSize: playedFullFrame ?? content }
       : {}),
     // Written only when ON, matching the field's absent-means-off contract:
     // an off run's render-props.json stays byte-identical to a pre-watermark
@@ -2365,13 +3558,112 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     };
   }
 
-  const outPath = opts.out
-    ? isAbsolute(opts.out)
-      ? opts.out
-      : resolve(baseCwd, opts.out)
-    : resolve(defaultOutPath(originalInput));
+  // outPath was resolved (and its parent healed) at produce start — see the
+  // 2026-08-16 fail-fast block up top.
   const rawPath = join(work, "render-raw.mp4");
   const interactive = isInteractive();
+
+  // ---- Thumbnail concept approval (thumbnail UX, 2026-08-16) --------------
+  // BEFORE the render kickoff, after scene planning: the concept is the one
+  // creative judgement the user previously only discovered after a
+  // multi-minute render. Interactive runs approve (or edit, or skip) it
+  // here; the file it writes is what thumbnailStep honors after render — and
+  // what a non-TTY replay (the editor's Render) reuses, which is the whole
+  // persistence story.
+  //
+  // Resolved HERE rather than at the pack section below so the gate and the
+  // post-render consumers read one answer. Typed-beats-config, `typeof` not
+  // truthiness (the `portrait` posture): config.json is hand-edited and
+  // unparsed, and a `"audience": true` typo must resolve to "no audience".
+  const youtube = resolveYoutube(opts.youtube, cfg.youtube);
+  // resolvePortrait (portrait-override.ts) carries the expandHome treatment
+  // of the flag and config paths, and puts the workdir's portrait-override
+  // ABOVE both (editor face swap, 2026-08-17): a per-project expression
+  // chosen in the editor must survive CLI re-renders — the flag/config
+  // portrait is the fallback headshot, and a replay silently reverting the
+  // swapped face would undo the one thing the swap exists for.
+  const portrait = resolvePortrait({
+    overridePath: portraitOverridePath(work),
+    flagPortrait: opts.portrait,
+    cfgPortrait: cfg.portrait,
+  })?.path;
+  const audience = opts.audience ?? (typeof cfg.audience === "string" ? cfg.audience : undefined);
+  const thumbnailBrief =
+    opts.thumbnailBrief ?? (typeof cfg.thumbnailBrief === "string" ? cfg.thumbnailBrief : undefined);
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const approvedConceptPath = join(work, THUMBNAIL_APPROVED_BASENAME);
+  // The gate reuses thumbnailDecision (plus the mime check) so the prompt
+  // never asks about a thumbnail the post-render step would skip anyway.
+  const thumbnailWouldGenerate =
+    provider != null &&
+    portrait !== undefined &&
+    thumbnailDecision(
+      youtube,
+      portrait,
+      geminiKey !== undefined && geminiKey !== "",
+      existsSync(portrait),
+    ) === "generate" &&
+    portraitMimeType(portrait) !== undefined;
+  if (interactive && thumbnailWouldGenerate) {
+    if (existsSync(approvedConceptPath)) {
+      // A decision already on file IS the answer — re-asking a question the
+      // user settled would make every warm re-run nag. The line names the
+      // escape hatch instead.
+      console.log(
+        `▸ thumbnail: concept already decided (${THUMBNAIL_APPROVED_BASENAME} — delete it to revisit)`,
+      );
+    } else {
+      // Seed from the concept cache when this exact steer was asked before
+      // (a prior non-TTY run) — no titleAngle: the pack generates after
+      // render, so the pre-render call cannot carry it and passes the hook
+      // instead (see generateConcept below).
+      const conceptCache = join(
+        work,
+        thumbnailConceptCacheName({
+          providerName,
+          llmModel: opts.llmModel,
+          intent: opts.intent,
+          hook: beatSheet?.hook,
+          audience,
+          brief: thumbnailBrief,
+          transcriptWords: transcript.words.map((w) => w.text),
+        }),
+      );
+      const initial = existsSync(conceptCache)
+        ? ThumbnailConceptSchema.parse(JSON.parse(await readFile(conceptCache, "utf8")))
+        : undefined;
+      try {
+        const approved = await approveThumbnailConcept({
+          initial,
+          generateConcept: async (note) => {
+            const fresh = await phases.time("llm", () =>
+              generateThumbnailConcept(provider!, {
+                hook: beatSheet?.hook,
+                intent: opts.intent,
+                audience,
+                brief: thumbnailBrief,
+                note,
+                transcriptText: transcript.words.map((w) => w.text).join(" "),
+              }),
+            );
+            // The §35 word cap, thumbnailStep's exact treatment — approved
+            // text must be the text the image is prompted with.
+            return { ...fresh, overlayText: approvedOverlayText(fresh.overlayText) };
+          },
+        });
+        await writeFile(approvedConceptPath, JSON.stringify(approved, null, 2));
+      } catch (err) {
+        // A concept-call failure must not block the render the user is
+        // waiting on (§112 posture) — no approved file is written, and the
+        // post-render step retries the concept on its own.
+        console.log(
+          `▸ thumbnail: concept approval unavailable (${err instanceof Error ? err.message : String(err)}) ` +
+            "— the post-render step will try again",
+        );
+      }
+    }
+  }
+
   let renderHud: RenderTimelineHUD | null = null;
   if (interactive) {
     renderHud = new RenderTimelineHUD({
@@ -2384,11 +3676,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log("▸ rendering…");
   }
   let lastPct = -10;
+  // cpus-2 with a floor of 2 (resolveRenderConcurrency has the why: leave
+  // cores for the ffmpeg decode workers every tab waits on). Resolved here,
+  // next to the call it feeds, so the warning prints once per run.
+  const renderConcurrency = resolveRenderConcurrency(cfg.renderConcurrency, cpus().length);
+  if (renderConcurrency.warning) console.log(renderConcurrency.warning);
   await phases.time("render", () =>
     renderProduction(props, {
       publicDir: dirname(renderVideo),
       outPath: rawPath,
       browserExecutable: cfg.browserExecutable,
+      concurrency: renderConcurrency.concurrency,
       onProgress: (p) => {
         if (renderHud) {
           renderHud.setProgress(p);
@@ -2415,7 +3713,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const normPath = join(work, "render-norm.mp4");
   await phases.time("ffmpeg", () => loudnorm(tools, rawPath, normPath));
   if (masterAnim) masterAnim.stop();
-  await rename(normPath, outPath);
+  // moveFile, not fs rename: an --out on another volume (external drive)
+  // throws EXDEV at the very end of the run — the sibling trap to the
+  // ENOENT ensureParentDir prevents upfront (paths.ts).
+  await moveFile(normPath, outPath);
 
   // ---- Cover image (FINDINGS §31) -----------------------------------------
   // A separate file, not a burned-in intro: both platforms accept a custom
@@ -2432,9 +3733,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const cover = coverDecision(opts.cover !== false, coverText);
     if (cover !== "none") {
       const detector = await createFaceDetector();
-      const pick = await pickCoverFrame(tools, analysisInput, analysisProbe.duration, {
+      const pick = await pickCoverFrame(tools, input, sourceProbe.duration, {
         cacheDir: work,
-        cropVf: analysisCropVf,
+        cropVf,
+        // On a screen-subject take the face weight is zeroed (2026-08-16: a
+        // Facebook reel face visible IN the screen recording won the cover
+        // — scoreCandidate has the incident). Same whole-take verdict the
+        // stage bias and the span mask fallback read.
+        subject: faceSubject(faceBox),
         detectFace: (pixels, w, h) => {
           const d = detector(pixels, w, h);
           // pico returns [row, col, size, score] in detection-frame pixels,
@@ -2450,13 +3756,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         await run(cfg.ffmpegPath, [
           "-v", "error",
           "-ss", pick.timeSec.toFixed(3),
-          "-i", analysisInput,
+          "-i", input,
           "-frames:v", "1",
-          "-vf", `${analysisCropVf ? `${analysisCropVf},` : ""}scale=${frame.width}:${frame.height}:force_original_aspect_ratio=increase,crop=${frame.width}:${frame.height}`,
+          "-vf", `${cropVf ? `${cropVf},` : ""}scale=${frame.width}:${frame.height}:force_original_aspect_ratio=increase,crop=${frame.width}:${frame.height}`,
           "-y", join(work, frameName),
         ]);
+        // expandHome on the user half only — the artifactPath default derives
+        // from the already-expanded outPath (2026-08-16, paths.ts).
         const coverPath = resolve(
-          opts.coverPath ?? outPath.replace(/(\.[^.]+)?$/, ".cover.jpg"),
+          opts.coverPath !== undefined
+            ? expandHome(opts.coverPath)
+            : artifactPath(outPath, ".cover.jpg"),
         );
         // The §34 dedupe check and the band-placement log exist only to
         // route a banner around the frame's contents — a textless cover
@@ -2497,6 +3807,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           {
             frameFileName: frameName,
             text: bannerText,
+            // The RESOLVED theme — so the cover's banner already carries the
+            // config theme (F6) via resolveTheme's base, no separate wiring.
             theme,
             face: pick.face,
             // The cover is the OUTPUT's thumbnail — a landscape render gets a
@@ -2508,6 +3820,148 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         );
         console.log(`✓ cover → ${coverPath}`);
       }
+    }
+  }
+
+  // ---- YouTube pack (Y2, 2026-08-16) --------------------------------------
+  // AFTER the cover block and additive to it: the pack never changes the
+  // video or the cover, it only writes siblings — so a failure here degrades
+  // to "no metadata file" on a render that already succeeded, never a dead
+  // run (§112 posture). `youtube`/`portrait`/`audience`/`thumbnailBrief`
+  // were resolved before the render kickoff — the concept-approval gate and
+  // this section must read one answer.
+  let youtubeMdPath: string | undefined;
+  let thumbnailPath: string | undefined;
+  // The pack's FIRST title, when it generated — the thumbnail concept's
+  // titleAngle, so thumbnail and title tell one story. (The pre-render
+  // approval could not carry it: the pack writes here, after render.)
+  let packTitle: string | undefined;
+  if (youtube) {
+    // The approved file wins outright (readApprovedYoutubePack): no cache
+    // lookup, no LLM call — and no provider needed, so an edited pack still
+    // writes its markdown on a --youtube run that carries no --produce.
+    let pack: YoutubePack | undefined = await readApprovedYoutubePack(work);
+    if (pack) {
+      console.log(
+        "▸ youtube: metadata from your edited pack " +
+          `(delete ${YOUTUBE_APPROVED_BASENAME} to regenerate)`,
+      );
+    } else if (!provider) {
+      // The metadata call rides the run's LLM provider; a run without one
+      // (no --produce) has nothing to call. Said out loud rather than
+      // silently — the user typed/configured --youtube. The thumbnail (Y3)
+      // is a separate API keyed by GEMINI_API_KEY and still attempts.
+      console.log("▸ youtube: metadata needs an LLM provider — skipped (thumbnail unaffected)");
+    } else {
+      // Beat-sheet cache shape: keyed on everything that changes the answer —
+      // who is asked, with what editorial steer, about which words.
+      const packKey = createHash("sha1")
+        .update(
+          JSON.stringify([
+            // Prompt changes change the answer (the §78 posture): the v2
+            // rewrite must not serve a pack cached under v1's questions.
+            YOUTUBE_PROMPT_VERSION,
+            providerName,
+            opts.llmModel ?? "",
+            opts.intent ?? "",
+            // Steer, so part of the key — a changed audience is a different
+            // pack, not a cache hit.
+            audience ?? "",
+            transcript.words.map((w) => w.text),
+            // The stamped transcript's [m:ss] marks come from the CUT MAP,
+            // not the words — a re-cut with identical words moves every
+            // chapter stamp, and a word-only key would serve the stale
+            // chapters (v2 review gap, 2026-08-17). Spans, rounded to ms,
+            // pin the timeline the stamps were computed on.
+            map.spans.map((s) => [Math.round(s.srcIn * 1000), Math.round(s.outIn * 1000)]),
+          ]),
+        )
+        .digest("hex")
+        .slice(0, 8);
+      const packCache = join(work, `youtube-${packKey}.json`);
+      if (existsSync(packCache)) {
+        pack = YoutubePackSchema.parse(JSON.parse(await readFile(packCache, "utf8")));
+        console.log("▸ youtube: metadata cached");
+      } else {
+        try {
+          pack = await phases.time("llm", () =>
+            generateYoutubePack(provider!, {
+              // Sentence lines stamped with OUTPUT-clock times (prompt v2):
+              // the words carry SOURCE seconds and `map` translates them, so
+              // the chapters the model returns are measured, not guessed —
+              // the one thing a paste-a-transcript prompt tool cannot do.
+              transcriptText: stampedTranscript(transcript.words, map),
+              intent: opts.intent,
+              hook: beatSheet?.hook,
+              coverText: beatSheet?.coverText,
+              audience,
+              durationSec: map.outputDuration,
+            }),
+          );
+          await writeFile(packCache, JSON.stringify(pack, null, 2));
+        } catch (err) {
+          // NEVER cache a failure (§106), and never fail the produce that
+          // just rendered over a metadata sidecar: one loud line, the video
+          // and cover stand, the next run retries the call.
+          console.log(
+            `  ⚠ youtube metadata unavailable: ${err instanceof Error ? err.message : String(err)}\n` +
+              "    (not cached — the next run retries the pass)",
+          );
+        }
+      }
+    }
+    if (pack) {
+      youtubeMdPath = artifactPath(outPath, ".youtube.md");
+      await writeFile(youtubeMdPath, formatYoutubeMarkdown(pack));
+      console.log(`✓ youtube pack → ${youtubeMdPath}`);
+      packTitle = pack.titles[0];
+    }
+    // ---- AI thumbnail (Y3, 2026-08-16) ------------------------------------
+    // Shares the gate and `portrait` above but not the provider's KEY — its
+    // credential is GEMINI_API_KEY, env-only (secrets never in config.json,
+    // env.ts:7-9 rule; env-file loading already ran at CLI entry), so a
+    // metadata skip must not skip it. The concept call does still need the
+    // run's text provider; thumbnailStep says so out loud when it's absent.
+    // Consumer-side validation, the `portrait` posture above: config.json
+    // is hand-edited and unparsed, so a non-string `thumbnailModel` falls
+    // back to the default rather than reaching the API as garbage.
+    const thumbnailModel =
+      typeof cfg.thumbnailModel === "string" ? cfg.thumbnailModel : THUMBNAIL_MODEL_DEFAULT;
+    const thumbnail = await thumbnailStep({
+      youtube,
+      portraitPath: portrait,
+      apiKey: geminiKey,
+      model: thumbnailModel,
+      work,
+      outPath,
+      // The run's provider is `LlmProvider | null`; the step's "absent" is
+      // undefined, matching thumbnailDecision's optional-argument shape.
+      provider: provider ?? undefined,
+      providerName,
+      llmModel: opts.llmModel,
+      intent: opts.intent,
+      hook: beatSheet?.hook,
+      audience,
+      brief: thumbnailBrief,
+      titleAngle: packTitle,
+      transcriptWords: transcript.words.map((w) => w.text),
+      time: (fn) => phases.time("llm", fn),
+    });
+    thumbnailPath = thumbnail?.path;
+    if (thumbnail && interactive && geminiKey) {
+      // Post-generation retry (thumbnail UX, 2026-08-16): the image call is
+      // seconds where the render was minutes, so an unwanted result is cheap
+      // to redo NOW — the concept stays fixed, only the image re-rolls with
+      // the user's note.
+      await thumbnailRetryLoop({
+        imagePath: thumbnail.path,
+        imageCachePath: thumbnail.imageCachePath,
+        concept: thumbnail.concept,
+        apiKey: geminiKey,
+        model: thumbnailModel,
+        portrait: thumbnail.portrait,
+        generate: generateThumbnailImage,
+      });
     }
   }
   // Record THIS invocation so the editor's Render button can replay it (R11
@@ -2550,11 +4004,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // because the EDITOR hid them would freeze an edit the user may later
   // undo in that same editor. See recordedProduceArgs for why the pin is
   // unconditional even though captions' default is config-independent today.
+  // Jump-cuts pin: the RESOLVED mode, but only its typed states reach the
+  // argv — "auto" has no flag spelling and stays unpinned (see
+  // recordedProduceArgs for why that is safe today).
+  // Youtube pin: the watermark's config-dependent-default rationale exactly —
+  // resolved both ways, so a later config edit can't flip what Render
+  // replays. Portrait and dictionary pin the RESOLVED values (a path and
+  // terms, never a secret) for the same reason; recordedProduceArgs owns
+  // the non-empty/includes guards.
   const recordedArgs = recordedProduceArgs({
     llm: provider ? providerName : undefined,
     clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
     watermark,
     captions: opts.captions ?? true,
+    jumpCuts: jumpCutsMode,
+    dictionary,
+    youtube,
+    portrait,
+    audience,
+    thumbnailBrief,
   });
   await writeFile(
     join(work, "command.json"),
@@ -2579,7 +4047,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (isInteractive()) {
     printProductionCompleteBanner({
       outPath,
-      coverPath: opts.cover !== false ? (typeof opts.cover === "string" ? opts.cover : outPath.replace(/(\.[^.]+)?$/, ".cover.jpg")) : undefined,
+      // `opts.coverPath ?? artifactPath(...)`, matching the cover write above.
+      // The old check here was `typeof opts.cover === "string"` — stale since
+      // the cover/coverPath split, so an explicit --cover <path> banner'd the
+      // default path instead of the file actually written.
+      coverPath: opts.cover !== false ? opts.coverPath ?? artifactPath(outPath, ".cover.jpg") : undefined,
+      youtubePath: youtubeMdPath,
+      thumbnailPath,
       sourceDurationSec: sourceProbe.duration,
       outputDurationSec: map.outputDuration,
       sceneCount: scenes.length,

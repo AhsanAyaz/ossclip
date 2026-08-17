@@ -92,6 +92,31 @@ export function lineDirection(text: string): "rtl" | "ltr" {
   return "ltr";
 }
 
+/**
+ * The bundled Nastaliq face (Urdu captions, 2026-08-17): rendering must not
+ * depend on the render machine having an Arabic-script font — a Linux CI box
+ * has none, and macOS/Windows each substitute a DIFFERENT one, so the same
+ * render-props drew three different caption sets. The family name is what
+ * the render-side @font-face registers; the REL path is the served URL under
+ * the render's public dir, POSIX-literal like `sideImageDestRel` (produce.ts:
+ * `staticFile()` splits only on `/`, so `path.join` would break every
+ * Windows render of it).
+ */
+export const NASTALIQ_FONT_NAME = "Noto Nastaliq Urdu";
+export const NASTALIQ_FONT_REL = "fonts/NotoNastaliqUrdu-Bold.ttf";
+
+/**
+ * Whether this caption set needs the bundled Nastaliq face at all — some
+ * line lays out RTL. ONE predicate shared by produce (copies the font into
+ * the public dir) and CaptionTrack (injects the @font-face): if the two
+ * sides tested different conditions, one could fetch a file the other never
+ * wrote. Pure-Latin runs — the overwhelmingly common case — copy nothing and
+ * fetch nothing, so their renders stay byte-identical.
+ */
+export function captionsNeedNastaliq(lines: readonly CaptionLine[]): boolean {
+  return lines.some((l) => lineDirection(l.words.map((w) => w.text).join(" ")) === "rtl");
+}
+
 export interface CaptionOptions {
   maxWordsPerLine?: number;
   maxLineDuration?: number;
@@ -109,6 +134,18 @@ export interface CaptionOptions {
   breakpoints?: number[];
 }
 
+/**
+ * No spoken word takes this long; a stamped interval longer than it is the
+ * §18 contiguous-stamp stretch (`parseWhisperJson` clamps
+ * `next.start = w.end`, so non-speech audio is smeared into the next word's
+ * START — field case 2026-08-17: 21s of played-back video audio put "Okay,"
+ * on screen 21 seconds early). The END stamp is the trustworthy edge — clamp
+ * the start toward it. Display-only: cuts, analysis and the transcript
+ * itself never see this, and `srcStart` keeps the RAW source stamp so the
+ * §137 edit anchor does not move.
+ */
+export const MAX_CAPTION_WORD_LEAD_SEC = 2;
+
 export function buildCaptionLines(
   transcript: Transcript,
   map: TimeMap,
@@ -124,8 +161,14 @@ export function buildCaptionLines(
   for (const w of transcript.words) {
     const m = map.mapWord(w as Word);
     // `w.start` is source time, `m.start` output — both are needed, and only
-    // the source one is stable across a re-cut (§137).
-    if (m) mapped.push({ text: w.text, start: m.start, end: m.end, srcStart: w.start });
+    // the source one is stable across a re-cut (§137). The display start is
+    // clamped toward the end stamp (MAX_CAPTION_WORD_LEAD_SEC above); the
+    // clamped gap to the previous word then exceeds `maxGap`, so the packer
+    // naturally breaks the line and nothing renders during the dead span.
+    if (m) {
+      const start = Math.max(m.start, m.end - MAX_CAPTION_WORD_LEAD_SEC);
+      mapped.push({ text: w.text, start, end: m.end, srcStart: w.start });
+    }
   }
 
   const lines: CaptionLine[] = [];

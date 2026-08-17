@@ -1,11 +1,12 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, EdlVideo, SceneLayer, VideoStage, Watermark, showCaptions, showWatermark } from "@ossclip/scenes";
+import { CaptionTrack, EdlVideo, SceneLayer, VideoStage, Watermark, punchPropsFor, showCaptions, showWatermark, type PunchPlan } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
   type ContentRectSegment,
   type FaceCrop,
+  type FramingSegment,
   type KeptSpan,
   type RenderSettings,
   type SceneCue,
@@ -56,6 +57,15 @@ export interface ProductionCompProps {
    * cropped into the mezzanine and must not be cropped again here.
    */
   contentTimeline?: ContentRectSegment[];
+  /**
+   * The render-time framing plan over SOURCE time (2026-08-16 incident) —
+   * the props-based successor to the destructive normalization bake, which
+   * crop+scale+re-encoded the mezzanine irreversibly. Windows are SOURCE
+   * pixels, all sharing one aspect; preferred over `contentTimeline` when
+   * both are present. Optional and absent-means-none, so every pre-existing
+   * render-props.json parses and renders unchanged.
+   */
+  framingTimeline?: FramingSegment[];
   /** The source's own pixel dimensions, which the timeline is measured in. */
   sourceSize?: { width: number; height: number };
   /** How letterboxed stretches render: cover (default) or fit (option (b)). */
@@ -91,6 +101,15 @@ export interface ProductionCompProps {
    * the spread below, same posture as `watermark`.
    */
   staticCamera?: boolean;
+  /**
+   * The face-only jump-cut punch plan (2026-08-16 incident, Task 6): one
+   * scale plus a per-span mask of the spans allowed to render it. Optional
+   * and ABSENT-MEANS-LEGACY — the 1.07 punch on every alternating span —
+   * so every pre-feature render-props.json renders unchanged; the shape is
+   * gated through `punchPropsFor` below (parse, never coerce), so a
+   * hand-mangled plan also falls back to legacy rather than NaN scales.
+   */
+  punch?: PunchPlan;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -118,12 +137,14 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   ctaWindow,
   sourceTextRegions,
   contentTimeline,
+  framingTimeline,
   sourceSize,
   contentCropMode,
   sourceFit,
   watermark,
   captionsHidden,
   staticCamera,
+  punch,
 }) => {
   if (!videoFileName) {
     return (
@@ -142,6 +163,13 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
     );
   }
   const src = /^https?:\/\//.test(videoFileName) ? videoFileName : staticFile(videoFileName);
+  // The punch plan is dropped — not just rescaled — under contain/static:
+  // both already force punchInScale 1 in the spreads below, and a plan
+  // passed alongside would override that base scale inside EdlVideo. The
+  // suppression has to live here for the same reason the spreads do:
+  // EdlVideo has no idea what shape its slot is or that the camera is off.
+  const punchPlan =
+    sourceFit === "contain" || staticCamera === true ? null : punchPropsFor(punch);
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
       <VideoStage
@@ -151,6 +179,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         zoomPlan={zoomPlan}
         sourceTextRegions={sourceTextRegions}
         contentTimeline={contentTimeline}
+        framingTimeline={framingTimeline}
         spans={spans}
         sourceSize={sourceSize}
         contentCropMode={contentCropMode}
@@ -164,6 +193,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         <EdlVideo
           src={src}
           spans={spans}
+          {...(punchPlan ? { punch: punchPlan } : {})}
           {...(sourceFit === "contain" ? { punchInScale: 1, background: "transparent" } : {})}
           {...(staticCamera === true ? { punchInScale: 1 } : {})}
         />
@@ -181,6 +211,11 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
           lines={captionLines}
           cues={sceneCues}
           activeColor={theme.accent}
+          // fontDisplay/fg for the caption type (F6) — the accent above was
+          // always themed; this completes the set so a config theme reaches
+          // every caption color except the contrast stroke (see
+          // captionTypography for why the stroke stays fixed).
+          theme={theme}
           ctaKeyword={ctaKeyword}
           ctaWindow={ctaWindow}
           sourceTextRegions={sourceTextRegions}

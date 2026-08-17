@@ -3,15 +3,15 @@ import { AbsoluteFill, useCurrentFrame, useVideoConfig } from "remotion";
 import type {
   ContentRectSegment,
   FaceCrop,
+  FramingSegment,
   SceneCue,
   Theme,
   ZoomSegment,
 } from "@ossclip/core/browser";
 import { zoomScaleAt } from "@ossclip/core/browser";
-import { activeCueAt, backdropOpacityAt, videoSlotAt } from "./stage";
+import { activeCueAt, backdropOpacityAt, contentTransformFor, videoSlotAt } from "./stage";
 import {
-  contentBox,
-  contentRectAtOutput,
+  activeCropBox,
   sourceFitBox,
   type ContentCropMode,
   type SourceFit,
@@ -43,6 +43,14 @@ export const VideoStage: React.FC<{
    * timeline for it would crop the same bars twice.
    */
   contentTimeline?: ContentRectSegment[];
+  /**
+   * The render-time framing plan over SOURCE time — the props-based successor
+   * to the destructive normalization bake (2026-08-16 incident). Preferred
+   * over `contentTimeline` when present: the plan was computed FROM that
+   * timeline and already accounts for the bars. Absent means no plan, so
+   * every pre-existing render-props renders unchanged.
+   */
+  framingTimeline?: FramingSegment[];
   /** Kept spans, needed to read the timeline's SOURCE clock at an output time. */
   spans?: SpanLike[];
   /** The source's own pixel dimensions — the frame the timeline is measured in. */
@@ -68,6 +76,7 @@ export const VideoStage: React.FC<{
   zoomPlan,
   sourceTextRegions,
   contentTimeline,
+  framingTimeline,
   spans,
   sourceSize,
   contentCropMode = "cover",
@@ -117,13 +126,10 @@ export const VideoStage: React.FC<{
   const userScale = userVideo?.scale ?? 1;
   const userDx = userVideo?.dx ?? 0;
   const userDy = userVideo?.dy ?? 0;
-  const contentTransform =
-    [
-      userDx !== 0 || userDy !== 0 ? `translate(${userDx}px, ${userDy}px)` : "",
-      zoom * userScale !== 1 ? `scale(${zoom * userScale})` : "",
-    ]
-      .filter(Boolean)
-      .join(" ") || undefined;
+  // Built OUTSIDE the crop on purpose: the transform wraps ContentCrop below,
+  // so a user correction composes ON TOP of the framing plan instead of being
+  // consumed by it (see contentTransformFor's contract).
+  const contentTransform = contentTransformFor(zoom, userScale, userDx, userDy);
 
   return (
     <AbsoluteFill>
@@ -182,6 +188,7 @@ export const VideoStage: React.FC<{
           ) : (
             <ContentCrop
               timeline={contentTimeline}
+              framing={framingTimeline}
               spans={spans}
               sourceSize={sourceSize}
               mode={contentCropMode}
@@ -229,9 +236,14 @@ const FitBox: React.FC<{
  * covers the slot. The resulting box carries the source's own aspect ratio, so
  * the video's `object-fit: cover` has no overflow left to crop and its
  * `object-position` becomes a no-op — the bias has already been spent here.
+ *
+ * A `framing` plan (2026-08-16) takes the same box-shaped path with its own
+ * windows and bias; the which-crop-wins decision lives in `activeCropBox`, a
+ * pure function, so this component stays a dumb box painter.
  */
 const ContentCrop: React.FC<{
   timeline?: ContentRectSegment[];
+  framing?: FramingSegment[];
   spans?: SpanLike[];
   sourceSize?: { width: number; height: number };
   mode: ContentCropMode;
@@ -240,14 +252,9 @@ const ContentCrop: React.FC<{
   posX: number;
   posY: number;
   children: React.ReactNode;
-}> = ({ timeline, spans, sourceSize, mode, tSec, slot, posX, posY, children }) => {
-  const passthrough = <div style={{ position: "absolute", inset: 0 }}>{children}</div>;
-  if (!timeline || timeline.length < 2 || !sourceSize) return passthrough;
-
-  const rect = contentRectAtOutput(timeline, spans ?? [], tSec, sourceSize);
-  if (rect.full) return passthrough;
-
-  const box = contentBox(mode, sourceSize, rect, slot, posX, posY);
+}> = ({ timeline, framing, spans, sourceSize, mode, tSec, slot, posX, posY, children }) => {
+  const box = activeCropBox(framing, timeline, spans ?? [], tSec, sourceSize, mode, slot, posX, posY);
+  if (!box) return <div style={{ position: "absolute", inset: 0 }}>{children}</div>;
   return (
     <div
       style={{
