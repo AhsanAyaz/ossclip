@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 
 /**
  * Open a target — URL or file path, every platform's opener treats them
@@ -44,5 +45,42 @@ export function openInViewer(path: string, platform: NodeJS.Platform = process.p
   const child = spawn(bin, args, { stdio: "ignore", detached: false });
   child.on("error", () => {
     console.log(`▸ could not open viewer — ${path}`);
+  });
+}
+
+/**
+ * REVEAL a file in the platform's file manager — select it, don't launch it.
+ * openCommand on a finished render would start PLAYING the video; the ask
+ * here is "show me where it landed". Syntax verified 2026-08-18, not guessed
+ * (the picker matrix's convention):
+ * - darwin: `open -R <file>` selects it in a Finder window.
+ * - win32: `explorer /select,<file>` — the switch and the path are ONE
+ *   comma-joined, unquoted argument. explorer.exe does its own command-line
+ *   parsing; passed as two arguments (or with the path quoted) it ignores
+ *   the switch and opens the default folder instead of selecting.
+ * - else: no cross-file-manager "select" verb exists on Linux, so open the
+ *   CONTAINING directory via xdg-open — the file is at least on screen.
+ */
+export function revealCommand(
+  file: string,
+  platform: NodeJS.Platform,
+): { bin: string; args: string[] } {
+  if (platform === "darwin") return { bin: "open", args: ["-R", file] };
+  if (platform === "win32") return { bin: "explorer", args: ["/select," + file] };
+  return { bin: "xdg-open", args: [dirname(file)] };
+}
+
+/** Same failure posture as openInBrowser (the 0.1.4 lesson: an unhandled
+ * 'error' event on a missing opener took the whole edit server down):
+ * swallow the spawn error and print the path — reveal is a courtesy, and a
+ * headless box without a file manager is a normal place to run this. */
+export function revealInFileManager(
+  file: string,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const { bin, args } = revealCommand(file, platform);
+  const child = spawn(bin, args, { stdio: "ignore", detached: false });
+  child.on("error", () => {
+    console.log(`▸ couldn't open a file manager here — the output is at ${file}`);
   });
 }

@@ -4,25 +4,25 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, renderStill, selectComposition } from "@remotion/renderer";
 import { COMPOSITION_ID } from "./Root";
 import { COVER_ID } from "./CoverComposition";
+import { renderMediaOptions } from "./render-options";
+import type { RenderJobOptions } from "./render-options";
 import type { ProductionCompProps } from "./ProductionComposition";
 import type { CoverCompProps } from "./CoverComposition";
 
 export type { ProductionCompProps } from "./ProductionComposition";
 export type { CoverCompProps } from "./CoverComposition";
+export type { RenderJobOptions } from "./render-options";
+export { DEFAULT_OFFTHREAD_VIDEO_CACHE_BYTES, renderMediaOptions } from "./render-options";
+// Re-exported so the CLI can build a cancel signal without depending on
+// @remotion/renderer directly — @ossclip/renderer is the only door onto
+// Remotion this repo opens (2026-08-19 Ctrl-C fix).
+export { makeCancelSignal } from "@remotion/renderer";
+export type { CancelSignal } from "@remotion/renderer";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** Entry point path — also used by `ossclip studio` to launch Remotion Studio. */
 export const STUDIO_ENTRY = join(HERE, "entry.tsx");
-
-export interface RenderJobOptions {
-  /** Directory served as the bundle's public dir (must contain the video). */
-  publicDir: string;
-  outPath: string;
-  browserExecutable?: string;
-  concurrency?: number;
-  onProgress?: (fraction: number) => void;
-}
 
 export async function renderProduction(
   props: ProductionCompProps,
@@ -39,29 +39,9 @@ export async function renderProduction(
     inputProps,
     browserExecutable: opts.browserExecutable,
   });
-  await renderMedia({
-    composition,
-    serveUrl,
-    codec: "h264",
-    audioCodec: "aac",
-    outputLocation: opts.outPath,
-    inputProps,
-    browserExecutable: opts.browserExecutable,
-    // VideoToolbox on macOS lifts the x264 CPU tax off the encode half of a
-    // decode-bound render; "if-possible" falls back silently to software
-    // everywhere else (2026-08-17 render-speed pass; option name and values
-    // verified against @remotion/renderer 4.0.499's HardwareAccelerationOption).
-    hardwareAcceleration: "if-possible",
-    // Screenshot TRANSPORT only — the ENCODED output's quality is set by the
-    // codec settings above. The PNG default was lossless but 3-5x slower to
-    // screenshot and pipe per frame, for fidelity h264 then threw away.
-    imageFormat: "jpeg",
-    jpegQuality: 90,
-    concurrency: opts.concurrency,
-    onProgress: opts.onProgress
-      ? ({ progress }) => opts.onProgress!(progress)
-      : undefined,
-  });
+  // Every non-I/O decision lives in renderMediaOptions (render-options.ts) so
+  // the memory bound and the cancel signal are testable without a browser.
+  await renderMedia(renderMediaOptions({ composition, serveUrl, inputProps, opts }));
 }
 
 /**

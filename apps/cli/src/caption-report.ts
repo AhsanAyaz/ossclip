@@ -1,5 +1,8 @@
 import {
   applyCaptionEdits,
+  applyCaptionRangeEdits,
+  applyCaptionWordHides,
+  applyCaptionLineTiming,
   captionEditsToKeep,
   isLegacyCaptionKey,
   migrateCaptionKeys,
@@ -62,6 +65,95 @@ export function captionDropLine(drop: AppliedCaptionEdits["dropped"][number]): s
   return (
     `  ⚠ caption edit "${drop.expected}" (${drop.key}) dropped: the transcript now says ` +
     `"${drop.found}" there`
+  );
+}
+
+/**
+ * One console line for a HIDE that did not land (§59b, revisited 2026-08-18).
+ * Same three cases as `captionDropLine` — `applyCaptionWordHides` reports in
+ * the identical shape — but its own function rather than a flag on that one:
+ * "hidden word" has to lead every sentence (the user's gesture was a delete,
+ * not a retype, and the fix is to re-select and hide, not to retype), and no
+ * legacy-key branch exists here because `captionWordsHidden` never had a
+ * positional-key era (`OverrideDocSchema`'s own note).
+ */
+export function captionHideDropLine(drop: AppliedCaptionEdits["dropped"][number]): string {
+  if (drop.reason === "duplicate-anchor") {
+    // A note about reach, not a failure — the hide applied, to the FIRST word
+    // carrying this anchor (two words share one source instant by design,
+    // captions.ts:44-50).
+    return (
+      `  ⚠ hidden word "${drop.expected}" (${drop.key}): a second word shares that ` +
+      `source moment and was left visible — only the first was hidden`
+    );
+  }
+  if (drop.found === null) {
+    return (
+      `  ⚠ hidden word "${drop.expected}" (${drop.key}) dropped: no word starts at that ` +
+      `source moment any more — the cut removed the word it hid, so there is ` +
+      `nothing left to hide`
+    );
+  }
+  return (
+    `  ⚠ hidden word "${drop.expected}" (${drop.key}) dropped: the transcript now says ` +
+    `"${drop.found}" there — it was left visible rather than hiding a different word`
+  );
+}
+
+/**
+ * One console line for a RANGE rewrite that did not land (2026-08-18). Its
+ * own function for the captionHideDropLine reason: the gesture was a
+ * free-text rewrite and the fix is to re-select and Edit; `expected` is the
+ * WHOLE run's joined `was` (the layer's whole-run guard drops the entire
+ * entry rather than guessing at part of it), and `key` is the composite
+ * `${fromKey}..${toKey}` pair. No legacy-key branch: `captionRangeEdits`
+ * postdates §137, so a positional-key era never existed for it.
+ */
+export function captionRangeDropLine(drop: AppliedCaptionEdits["dropped"][number]): string {
+  if (drop.reason === "duplicate-anchor") {
+    return (
+      `  ⚠ range edit "${drop.expected}" (${drop.key}): an earlier range edit already ` +
+      `rewrote the word it starts on — only the first applied`
+    );
+  }
+  if (drop.found === null) {
+    return (
+      `  ⚠ range edit "${drop.expected}" (${drop.key}) dropped: its words no longer sit at ` +
+      `those source moments — a cut or re-plan removed the run it rewrote. Re-select and ` +
+      `Edit in the editor if you still want it.`
+    );
+  }
+  return (
+    `  ⚠ range edit "${drop.expected}" (${drop.key}) dropped: the transcript now says ` +
+    `"${drop.found}" there — the whole rewrite was left unapplied rather than guessing at part of it`
+  );
+}
+
+/**
+ * One console line for a LINE TIMING nudge that did not land (2026-08-18).
+ * Its own function for the captionHideDropLine reason: the gesture was a
+ * re-time of when a caption appears and the fix is to re-make the nudge, not
+ * retype. Only TWO cases — `applyCaptionLineTiming` carries no `was` guard
+ * (timing is text-orthogonal, its own doc comment), so the "transcript says
+ * something else" sentence has no counterpart here, and `expected` is always
+ * `""`, which is why these lines name the moment by key rather than quoting a
+ * word. The key is the LINE's first word's source anchor, so the sentences
+ * say "caption timing", not "word". No legacy-key branch:
+ * `captionLineTiming` postdates §137.
+ */
+export function captionTimingDropLine(drop: AppliedCaptionEdits["dropped"][number]): string {
+  if (drop.reason === "duplicate-anchor") {
+    // A note about reach, not a failure — the nudge applied, to the FIRST
+    // line starting on this anchor (two words share one source instant by
+    // design, captions.ts:44-50).
+    return (
+      `  ⚠ caption timing (${drop.key}): a second caption starts on that source moment and ` +
+      `kept its window — only the first was re-timed`
+    );
+  }
+  return (
+    `  ⚠ caption timing (${drop.key}) dropped: no caption starts at that source moment any ` +
+    `more — the cut removed the caption whose timing was nudged`
   );
 }
 
@@ -143,7 +235,9 @@ export function reanchoredKeyCount(
 export interface CaptionReconciliation {
   /** The doc with its caption keys upgraded — what produce writes back. */
   doc: OverrideDoc;
-  /** The caption lines with every edit that could be applied, applied. */
+  /** The caption lines with every edit, range rewrite, hide AND line-timing
+   * nudge that could apply, applied — post-timing, exactly what the render
+   * should show. */
   lines: CaptionLine[];
   /**
    * Whether the migration actually MOVED an edit onto a source anchor — the
@@ -213,5 +307,38 @@ export function reconcileCaptionEdits(
   const live = appliedCaptionEditCount(migration.edits, dropped);
   if (live > 0) log.push(`▸ ${live} caption word(s) retyped by the editor`);
   for (const d of dropped) log.push(captionDropLine(d));
-  return { doc: migrated, lines, reanchored: reanchored > 0, log };
+  // Range rewrites BETWEEN retypes and hides — `applyCaptionLayers`' one
+  // authoritative order, still composed manually here because this path's
+  // edits layer is the MIGRATED set (see the hides comment below). No key
+  // migration for ranges either: `captionRangeEdits` postdates §137, and the
+  // write-back above spreads it through untouched. The applied count is a
+  // plain subtraction — unlike the per-word layers, `applyCaptionRangeEdits`
+  // reports each entry at most once (its own doc comment), so the
+  // `appliedCaptionEditCount` machinery is not needed.
+  const ranges = applyCaptionRangeEdits(lines, doc.captionRangeEdits);
+  const rewritten = doc.captionRangeEdits.length - ranges.dropped.length;
+  if (rewritten > 0) log.push(`▸ ${rewritten} caption range(s) rewritten by the editor`);
+  for (const d of ranges.dropped) log.push(captionRangeDropLine(d));
+  // Hides AFTER retypes and range rewrites — `applyCaptionLayers`' one
+  // authoritative order (a hide's `was` is the LIVE post-retype text),
+  // composed manually here rather than through the composer because this
+  // path's edits layer is the MIGRATED set, not `doc.captions` — the
+  // composer takes a doc whole and would re-apply the unresolved legacy keys
+  // the migration just set aside. No key migration for hides:
+  // `captionWordsHidden` never had a positional-key era (`OverrideDocSchema`'s
+  // own note), and the write-back above spreads it through untouched.
+  const hides = applyCaptionWordHides(ranges.lines, doc.captionWordsHidden);
+  for (const d of hides.dropped) log.push(captionHideDropLine(d));
+  // LINE timing LAST — `applyCaptionLayers`' one authoritative order: nudges
+  // move the seams between SURVIVING lines, so they run on the post-hide
+  // lines. No key migration here either: `captionLineTiming` postdates §137,
+  // and the write-back above spreads it through untouched. The applied count
+  // is keys minus drops, like the range layer's subtraction — cheap, and only
+  // ever an UNDERcount when a duplicate anchor reports a nudge that in fact
+  // applied to its first claimant.
+  const timed = applyCaptionLineTiming(hides.lines, doc.captionLineTiming);
+  const nudged = Object.keys(doc.captionLineTiming).length - timed.dropped.length;
+  if (nudged > 0) log.push(`▸ ${nudged} caption timing nudge(s) applied`);
+  for (const d of timed.dropped) log.push(captionTimingDropLine(d));
+  return { doc: migrated, lines: timed.lines, reanchored: reanchored > 0, log };
 }

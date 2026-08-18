@@ -182,6 +182,11 @@ export interface MigratedOverrideDoc {
  * the preview can show an edit as applied that the render then reports
  * `out-of-range`. Stated, not closed: see `MIGRATION_SEARCH_RADIUS`.
  *
+ * ONLY `captions` is migrated. `captionWordsHidden` and `captionRangeEdits`
+ * never had a positional-key era (both postdate §137), so the `...doc` spread
+ * below carrying them through untouched is the correct handling, not an
+ * omission.
+ *
  * Pure — the caller owns the fetch.
  */
 export function migrateLoadedDoc(
@@ -239,6 +244,14 @@ export function sourceKeyedCaptionEdits(
  * same thing — same replacement text over the same `was`. Counted as a
  * multiset so that the same retype stored twice, with one of the two dropped,
  * is still reported once.
+ *
+ * `captionWordsHidden`, `captionRangeEdits` and `captionLineTiming` are
+ * deliberately OUT of this diff's scope: produce legitimately retires a hide
+ * whose word its own cut removed (`pruneHidesInsideCuts` — the cut supersedes
+ * the hide), so a naive "it was there before and not after" diff over those
+ * fields would raise a false loss alarm on every render that applies a word
+ * cut. `doc.captions` has no such sanctioned produce-side retirement, which
+ * is what makes this diff sound for it and only it.
  *
  * Pure — the caller owns the fetch and the banner.
  */
@@ -358,6 +371,72 @@ export function droppedEditNotices(dropped: AppliedCaptionEdits["dropped"]): str
       return `“${d.expected}” was retyped, but no word in this cut sits at that moment any more.`;
     }
     return `“${d.expected}” was retyped, but the transcript says “${d.found}” there now.`;
+  });
+}
+
+/**
+ * The hide layer's own drop notices (§59b, revisited 2026-08-18) — separate
+ * from `droppedEditNotices` rather than a flag on it because the two send the
+ * user to different gestures: a missed retype asks to be retyped, a missed
+ * hide asks to be re-selected and hidden (or restored, if the intent is gone
+ * with the word). Same three cases as `applyCaptionWordHides` reports:
+ *  - `found: null`: no word carries that anchor any more — a later cut
+ *    removed the word the user hid, so there is nothing left to hide.
+ *  - a string: the word at that moment says something else now (a re-plan or
+ *    un-retype changed it) — the hide was left unapplied rather than deleting
+ *    a word the user never pointed at.
+ *  - `duplicate-anchor`: the hide applied, to the first word carrying that
+ *    source moment; a note about reach, phrased like the retype one.
+ */
+export function droppedHideNotices(dropped: AppliedCaptionEdits["dropped"]): string[] {
+  return dropped.map((d) => {
+    if (d.reason === "duplicate-anchor") {
+      return `“${d.expected}” shares its moment with another word — only the first was hidden from the captions.`;
+    }
+    if (d.found === null) {
+      return `“${d.expected}” was hidden from the captions, but no word in this cut sits at that moment any more — the hidden word no longer exists.`;
+    }
+    return `“${d.expected}” was hidden from the captions, but the transcript says “${d.found}” there now — it was left visible rather than hiding a different word.`;
+  });
+}
+
+/**
+ * The RANGE layer's drop notices (2026-08-18) — the hide-notices pattern, a
+ * third function rather than a flag on either sibling because the fix gesture
+ * differs again: a missed rewrite asks to be re-selected and Edited. The
+ * `expected` here is the whole run's joined `was` (the layer's whole-run
+ * guard drops the entire edit rather than guessing at part of it), so the
+ * sentences quote a phrase, not a word.
+ */
+export function droppedRangeNotices(dropped: AppliedCaptionEdits["dropped"]): string[] {
+  return dropped.map((d) => {
+    if (d.reason === "duplicate-anchor") {
+      return `“${d.expected}” was rewritten, but an earlier rewrite already claimed the word it starts on — only the first applied.`;
+    }
+    if (d.found === null) {
+      return `“${d.expected}” was rewritten, but its words no longer sit at those source moments — re-select and Edit if you still want it.`;
+    }
+    return `“${d.expected}” was rewritten, but the transcript says “${d.found}” there now — the whole rewrite was left unapplied rather than guessing at part of it.`;
+  });
+}
+
+/**
+ * The LINE TIMING layer's drop notices (2026-08-18) — the hide-notices
+ * pattern, a fourth function because the gesture differs again: a lost nudge
+ * asks to be re-made on whatever caption replaced the moment, not retyped or
+ * re-hidden. Only TWO cases, not three: `applyCaptionLineTiming` deliberately
+ * carries no `was` guard (timing is text-orthogonal — its own doc comment),
+ * so there is no "the transcript says something else there" sentence, and
+ * `expected` is always `""`, which is why these sentences name the moment by
+ * key rather than quoting a word. The key is the LINE's first word's source
+ * anchor, so the sentences say "caption", not "word".
+ */
+export function droppedLineTimingNotices(dropped: AppliedCaptionEdits["dropped"]): string[] {
+  return dropped.map((d) => {
+    if (d.reason === "duplicate-anchor") {
+      return `A re-timed caption (${d.key}) starts on the same moment as another — only the first was re-timed.`;
+    }
+    return `A re-timed caption (${d.key}) no longer exists — the cut removed it, so its timing nudge was dropped.`;
   });
 }
 

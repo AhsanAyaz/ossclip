@@ -19,6 +19,25 @@
   border-radius: 4px;
 }
 
+/* The transcript's drag-select preview, in the SAME yellow the committed
+ * band is painted in (TranscriptPanel's `selectedStyle`). Without it the drag
+ * showed the UA's blue highlight and the mouseup replaced it with yellow — a
+ * colour flash at the end of every selection, on the one gesture that must
+ * feel native. Scoped to the body's descendants (the words), never the pane's
+ * inputs; ::selection cannot be an inline style, which is why it lives here
+ * (§138). The -moz- twin is not an alias: Firefox implements only the
+ * prefixed form, and a comma-joined selector list is dropped WHOLE by any
+ * engine that fails to parse one of its members. */
+[data-testid="transcript-body"] ::selection {
+  background: #ffe14d;
+  color: #111;
+}
+
+[data-testid="transcript-body"] ::-moz-selection {
+  background: #ffe14d;
+  color: #111;
+}
+
 /* Picker rows are a list people click down, so they need the states a link
  * has and an inline style cannot carry (§138). The row's colours live here
  * rather than beside its layout in ProjectPicker.tsx for exactly that reason:

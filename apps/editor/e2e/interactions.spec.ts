@@ -862,8 +862,12 @@ test("transcript view: search, retype 1:1 through the caption layer, jump (R15 �
   await settle(page);
   await page.getByTestId("transcript-toggle").click();
   await expect(page.getByTestId("transcript-panel")).toBeVisible();
-  // The scope contract is stated where the edits happen (§59b).
-  await expect(page.getByTestId("transcript-panel")).toContainText("1:1 retype only");
+  // The ONE-LINE hint (2026-08-18) — the full scope contract collapsed
+  // behind the panel's ? toggle, so the always-visible text is just the
+  // three gestures.
+  await expect(page.getByTestId("transcript-panel")).toContainText(
+    "Click to jump · double-click to retype · drag to select",
+  );
 
   // Search narrows by highlight; the first fixture word is "Claude".
   await page.getByTestId("transcript-search").fill("claude");
@@ -1197,7 +1201,11 @@ test("transcript wraps in place, and the pane is drag-resizable (R16 §65)", asy
   await expect(body).toBeVisible();
   // The §65 report: caption lines rendered as unbreakable inline runs (no
   // whitespace between the word spans) and ran off the pane's right edge
-  // behind a horizontal scrollbar. With real spaces they wrap in place.
+  // behind a horizontal scrollbar. With real spaces they wrap in place —
+  // and they stay real after 2026-08-18 round 3 moved each space INSIDE
+  // the preceding span (to paint the selection band continuously): break
+  // opportunities are the space characters, not the node boundaries, so
+  // this assertion is the guard that the move kept the wrapping.
   expect(
     await body.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     "transcript must wrap, not scroll sideways",

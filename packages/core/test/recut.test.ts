@@ -3,6 +3,7 @@ import fc from "fast-check";
 import { TimeMap } from "../src/timemap";
 import {
   applyUserCuts,
+  pruneHidesInsideCuts,
   remapOverridesThroughRecut,
   resolveCutSourceRanges,
   subtractRangesFromCutlist,
@@ -694,5 +695,72 @@ describe("applyUserCuts", () => {
     const result = applyUserCuts(doc, cutlist, map, priorMap);
 
     expect(result.changed).toBe(false);
+  });
+});
+
+describe("pruneHidesInsideCuts (§59b revisited — the cut supersedes the hide)", () => {
+  // A 10–20s source removal between two keeps — the shape a produced
+  // "captions + video" delete leaves in the final cutlist.
+  const cutlist: Segment[] = [
+    { srcIn: 0, srcOut: 10, kind: "keep" },
+    { srcIn: 10, srcOut: 20, kind: "remove", reason: "user" },
+    { srcIn: 20, srcOut: 60, kind: "keep" },
+  ];
+
+  it("retires a hide whose source instant is inside a removed segment", () => {
+    const doc = OverrideDocSchema.parse({
+      captionWordsHidden: { w15000: { was: "gone" }, w25000: { was: "kept" } },
+    });
+    const { doc: pruned, pruned: keys } = pruneHidesInsideCuts(doc, cutlist);
+    expect(keys).toEqual(["w15000"]);
+    expect(pruned.captionWordsHidden).toEqual({ w25000: { was: "kept" } });
+  });
+
+  it("retires a hide sitting EXACTLY on srcIn, keeps one on srcOut — the half-open interval", () => {
+    // The srcIn edge is where the FIRST word of a captions+video delete lands
+    // (its srcStart round-trips through the TimeMap to the resolved cut's own
+    // srcIn) and mapWord drops that word — a strictly-inside test left the
+    // gesture's own first hide dangling as a permanent found:null report. The
+    // srcOut edge belongs to the NEXT kept span: buildCaptionLines can still
+    // emit that word, so its hide is still doing work.
+    const doc = OverrideDocSchema.parse({
+      captionWordsHidden: { w10000: { was: "start-edge" }, w20000: { was: "end-edge" } },
+    });
+    const { doc: pruned, pruned: keys } = pruneHidesInsideCuts(doc, cutlist);
+    expect(keys).toEqual(["w10000"]);
+    expect(pruned.captionWordsHidden).toEqual({ w20000: { was: "end-edge" } });
+  });
+
+  it("never prunes against a KEEP segment, whatever the numbers say", () => {
+    const doc = OverrideDocSchema.parse({ captionWordsHidden: { w5000: { was: "spoken" } } });
+    const { pruned: keys } = pruneHidesInsideCuts(doc, cutlist);
+    expect(keys).toEqual([]);
+  });
+
+  it("leaves the rest of the doc untouched, and returns the SAME doc when nothing pruned", () => {
+    const doc = OverrideDocSchema.parse({
+      captions: { w1000: { text: "Bash,", was: "batch," } },
+      captionWordsHidden: { w15000: { was: "gone" } },
+      cuts: [{ startSec: 1, endSec: 2 }],
+      splits: [30],
+    });
+    const result = pruneHidesInsideCuts(doc, cutlist);
+    // Everything except the pruned record is carried through verbatim.
+    expect(result.doc.captions).toEqual(doc.captions);
+    expect(result.doc.cuts).toEqual(doc.cuts);
+    expect(result.doc.splits).toEqual(doc.splits);
+    // Nothing to prune → the identity doc, so callers gating a file write on
+    // `pruned.length` never see a rebuilt-but-equal object either.
+    const untouched = OverrideDocSchema.parse({ captionWordsHidden: { w25000: { was: "kept" } } });
+    expect(pruneHidesInsideCuts(untouched, cutlist).doc).toBe(untouched);
+  });
+
+  it("keeps an entry whose key it cannot parse rather than deleting it", () => {
+    // Malformed keys should not exist, but a hand-edited overrides.json is
+    // user data — never deleted over a key this function cannot read.
+    const doc = OverrideDocSchema.parse({ captionWordsHidden: { wat: { was: "??" } } });
+    const { doc: pruned, pruned: keys } = pruneHidesInsideCuts(doc, cutlist);
+    expect(keys).toEqual([]);
+    expect(pruned.captionWordsHidden).toEqual({ wat: { was: "??" } });
   });
 });

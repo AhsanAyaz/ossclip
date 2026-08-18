@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   assertAllClipsHaveAudio,
@@ -6,6 +9,10 @@ import {
   buildConcatFilter,
   evaluateAudioProbes,
   folderManifestKey,
+  isOssclipOutputName,
+  listFolderVideos,
+  outInsideInputFolderMessage,
+  outPathInsideInput,
   planFolderConcat,
   probeClipsWithAudioGuard,
   VIDEO_EXTENSIONS,
@@ -365,6 +372,105 @@ describe("probeClipsWithAudioGuard", () => {
         1,
       ),
     ).rejects.toThrow(/sync throw from b\.mov/);
+  });
+});
+
+// 2026-08-18 field cascade: an --out pointed INSIDE the input folder became a
+// 7th source clip on the next run — new content hash, fresh workdir, EMPTY
+// overrides — so the render silently dropped the user's saved edits and the
+// output duration doubled, three runs in a row. These pin the gate's pure
+// halves: the containment predicate, the shared refusal text, and the
+// defense-in-depth name filter behind them.
+describe("outPathInsideInput", () => {
+  it("catches an out directly inside the folder", () => {
+    expect(outPathInsideInput("/a/Clips/out.mp4", "/a/Clips")).toBe(true);
+  });
+
+  it("catches an out nested deeper inside the folder", () => {
+    expect(outPathInsideInput("/a/Clips/renders/out.mp4", "/a/Clips")).toBe(true);
+  });
+
+  it("allows the default out shape, beside the folder", () => {
+    expect(outPathInsideInput("/a/Clips.ossclip.mp4", "/a/Clips")).toBe(false);
+  });
+
+  it("is NOT fooled by a sibling that merely shares a prefix — the startsWith trap", () => {
+    // The exact hole a string-prefix check has (edit.ts's isInside doc):
+    // "/a/Clips2".startsWith("/a/Clips") is true, but the path is a sibling.
+    expect(outPathInsideInput("/a/Clips2/out.mp4", "/a/Clips")).toBe(false);
+    expect(outPathInsideInput("/a/Clips-old/out.mp4", "/a/Clips")).toBe(false);
+  });
+
+  it("treats the folder itself as inside — an out that IS the folder is never writable anyway", () => {
+    expect(outPathInsideInput("/a/Clips", "/a/Clips")).toBe(true);
+  });
+
+  it("resolves relative paths against cwd before judging containment", () => {
+    expect(outPathInsideInput("out.mp4", process.cwd())).toBe(true);
+    expect(outPathInsideInput("../out.mp4", process.cwd())).toBe(false);
+    expect(outPathInsideInput(join(process.cwd(), "clips/out.mp4"), "clips")).toBe(true);
+  });
+
+  it("does NOT expand `~` — that is the call site's job (paths.ts, 2026-08-16 rule)", () => {
+    // A literal "~" is just a relative segment here: both sides resolve
+    // under cwd/~, so they agree with each other — but neither means the
+    // home directory. produce and edit.ts both expandHome BEFORE calling.
+    expect(outPathInsideInput("~/out.mp4", "~")).toBe(true);
+    expect(outPathInsideInput("~/out.mp4", resolve(process.cwd(), "~"))).toBe(true);
+  });
+});
+
+describe("outInsideInputFolderMessage", () => {
+  it("names the actual risk and suggests the beside-the-folder default", () => {
+    const msg = outInsideInputFolderMessage("/a/Clips");
+    expect(msg).toMatch(/ingest this output as a source clip/);
+    expect(msg).toMatch(/abandoning your edits/);
+    // The suggestion is defaultOutPath's shape: beside the folder.
+    expect(msg).toContain("--out /a/Clips.ossclip.mp4");
+  });
+
+  it("suggests a BESIDE-the-folder path even for a trailing-slash folder", () => {
+    // Field case 2026-08-18 (second report): the suggestion was built with
+    // the same trailing-slash-blind regex as the old defaultOutPath, so the
+    // refusal recommended `…/Clips/.ossclip.mp4` — the exact inside-the-
+    // folder path it had just refused.
+    expect(outInsideInputFolderMessage("/a/Clips/")).toContain("--out /a/Clips.ossclip.mp4");
+  });
+
+  it("strips at most the LAST dot-segment of a dotted folder name, like defaultOutPath", () => {
+    expect(outInsideInputFolderMessage("/a/Anthropic v1.2")).toContain(
+      "--out /a/Anthropic v1.ossclip.mp4",
+    );
+  });
+});
+
+describe("isOssclipOutputName", () => {
+  it("matches produce's own output shapes wherever the marker sits", () => {
+    expect(isOssclipOutputName("X.ossclip.mp4")).toBe(true);
+    expect(isOssclipOutputName("X.ossclip_fixed.mp4")).toBe(true);
+    expect(isOssclipOutputName("X.ossclip.mp4.partial.mp4")).toBe(true);
+  });
+
+  it("leaves ordinary clip names alone — including ones containing 'ossclip' without the dot", () => {
+    expect(isOssclipOutputName("clip1.mov")).toBe(false);
+    expect(isOssclipOutputName("my ossclip demo.mov")).toBe(false);
+  });
+});
+
+describe("listFolderVideos skips ossclip outputs (defense-in-depth, 2026-08-18)", () => {
+  it("never lets a prior output into the entries — or into the workdir hash they feed", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-concat-scan-"));
+    await writeFile(join(dir, "clip1.mov"), "a");
+    await writeFile(join(dir, "clip2.mov"), "b");
+    await writeFile(join(dir, "X.ossclip.mp4"), "c");
+    await writeFile(join(dir, "X.ossclip_fixed.mp4"), "d");
+    await writeFile(join(dir, "notes.txt"), "e");
+    const listing = await listFolderVideos(dir);
+    expect(listing.entries.map((e) => e.name).sort()).toEqual(["clip1.mov", "clip2.mov"]);
+    // Counted apart from non-videos: the console notice for each says a
+    // different thing ("ignored" vs "skipped ossclip output").
+    expect(listing.ossclipOutputCount).toBe(2);
+    expect(listing.nonVideoCount).toBe(1);
   });
 });
 

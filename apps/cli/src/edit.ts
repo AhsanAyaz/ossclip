@@ -25,6 +25,8 @@ import {
   // only when a regenerate actually runs.
   generateThumbnailImage,
   loadConfig,
+  outInsideInputFolderMessage,
+  outPathInsideInput,
   PORTRAIT_MIME_TYPES,
   portraitMimeType,
   thumbnailImageCacheName,
@@ -32,6 +34,11 @@ import {
   type ThumbnailConcept,
   type ThumbnailConceptApproved,
 } from "@ossclip/core";
+// Static, unlike the picker's `await import` above its call site: the picker
+// drags in @ossclip/core's process runner and llm-detect, worth deferring off
+// server startup — open.ts is node:child_process + node:path and pure command
+// building, with nothing to defer.
+import { revealInFileManager } from "./open";
 import { artifactPath, expandHome } from "./paths";
 import {
   PORTRAIT_OVERRIDE_BASENAME,
@@ -140,6 +147,12 @@ const MIME: Record<string, string> = {
   ".css": "text/css",
   ".json": "application/json",
   ".mp4": "video/mp4",
+  // The caption timing editor's waveform fetches `/media/audio.wav` (produce
+  // writes it into every workdir). `fetch` + `decodeAudioData` would accept
+  // the octet-stream fallback, but a future `<audio>` element would not, so
+  // the type is stated while the change is one line rather than a debugging
+  // session.
+  ".wav": "audio/wav",
 };
 
 /**
@@ -237,6 +250,10 @@ export async function startEditServer(
      * run never reads the runner's real ~/.ossclip/config.json (the
      * `recentDir` rule applied to reads). */
     loadCfg?: () => { youtube?: unknown; portrait?: unknown; thumbnailModel?: unknown };
+    /** File-manager reveal seam (the `generateThumbnail` pattern) — tests
+     * observe the revealed path instead of popping a real Finder/Explorer
+     * window on the runner. */
+    reveal?: (path: string) => void;
   } = {},
 ): Promise<EditServer> {
   // MUTABLE since R17 §83: the server can start with no project (the page
@@ -286,17 +303,25 @@ export async function startEditServer(
       return null;
     }
   };
-  /** `<out><ext>` from the recorded out (the top-level `out` when recorded,
-   * else the argv's -o/--out resolved against the recorded cwd — the
-   * replay's own resolution), or null when no out was ever recorded. Shared
-   * by the thumbnail dest and the youtube markdown — one spelling of the
-   * out-resolution rule, not two. */
+  /** The recorded out as an absolute path (the top-level `out` when
+   * recorded, else the argv's -o/--out resolved against the recorded cwd —
+   * the replay's own resolution), or null when no out was ever recorded.
+   * ONE spelling of the out-resolution rule: the artifact paths below and
+   * the reveal endpoint both derive from it, so they can never disagree
+   * about which file a replay writes. */
+  const recordedOutPath = (cmd: z.infer<typeof CommandSchema>): string | null => {
+    const out = cmd.out ?? lastFlagValue(cmd.args, ["-o", "--out"]);
+    if (out === undefined) return null;
+    return resolve(cmd.cwd, expandHome(out));
+  };
+  /** `<out><ext>` from the recorded out, or null when no out was ever
+   * recorded. Shared by the thumbnail dest and the youtube markdown. */
   const recordedArtifactPath = async (ext: string): Promise<string | null> => {
     const cmd = await readCommandRecord();
     if (!cmd) return null;
-    const out = cmd.out ?? lastFlagValue(cmd.args, ["-o", "--out"]);
-    if (out === undefined) return null;
-    return artifactPath(resolve(cmd.cwd, expandHome(out)), ext);
+    const out = recordedOutPath(cmd);
+    if (out === null) return null;
+    return artifactPath(out, ext);
   };
   const thumbnailDestPath = (): Promise<string | null> => recordedArtifactPath(".thumbnail.png");
   /** Newest workdir file passing `test`, by mtime — the cache fallbacks. */
@@ -638,6 +663,28 @@ export async function startEditServer(
           // directly-typed `ossclip produce …` — already starts with it and
           // is untouched.
           let args = cmd.args[0] === "produce" ? [...cmd.args] : ["produce", ...cmd.args];
+          // 2026-08-18 field cascade: mirror produce's own inside-the-input
+          // refusal at this boundary, so the failure is a 400 the page can
+          // show instead of a spawned child dying in the log tail. The input
+          // is derived from the RECORDED command only — the security stance
+          // above: beyond the out path it already controls, nothing the
+          // client sent may steer what this endpoint checks or touches.
+          // args[1] after the §129 heal is the recorded input positional;
+          // when a record put flags before the input, or the input no longer
+          // stats, the gate stays open and produce's own refusal still
+          // protects the replay.
+          if (customOut !== undefined && args[1] !== undefined) {
+            const inputAbs = resolve(cmd.cwd, expandHome(args[1]));
+            let inputIsFolder = false;
+            try {
+              inputIsFolder = statSync(inputAbs).isDirectory();
+            } catch {
+              // input gone/unreadable — the replay will fail on its own terms
+            }
+            if (inputIsFolder && outPathInsideInput(resolve(cmd.cwd, expandHome(customOut)), inputAbs)) {
+              return send(400, { error: outInsideInputFolderMessage(inputAbs) });
+            }
+          }
           if (customOut) {
             const filteredArgs: string[] = [];
             for (let i = 0; i < args.length; i++) {
@@ -657,6 +704,12 @@ export async function startEditServer(
           const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...args], {
             cwd: cmd.cwd,
             stdio: ["ignore", "pipe", "pipe"],
+            // Which workdir's command.json this replay came from (2026-08-18
+            // field cascade, part 3): a re-keyed folder input makes produce
+            // derive a DIFFERENT workdir, silently abandoning the overrides
+            // saved here — produce compares against this and prints a loud ⚠
+            // into the log tail (replayWorkdirWarning, produce.ts).
+            env: { ...process.env, OSSCLIP_REPLAY_WORKDIR: workdir! },
           });
           renderChild = child;
           child.stdout?.on("data", pushLines);
@@ -691,6 +744,29 @@ export async function startEditServer(
             startedAt: renderStartedAt,
             cancelled: renderCancelled,
           });
+        }
+
+        if (url.pathname === "/api/reveal-output" && req.method === "POST") {
+          // Show the finished render in the file manager (2026-08-18). The
+          // path comes from command.json's recorded out and NOWHERE else —
+          // the request body is deliberately never read. The security stance
+          // at the top of this file: this server binds locally, but an
+          // endpoint that reveals (and one day might do more to) a
+          // client-named path is the same door as spawning a client-supplied
+          // command.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const cmd = await readCommandRecord();
+          const out = cmd === null ? null : recordedOutPath(cmd);
+          if (out === null) {
+            return send(412, { error: "no recorded output path in this workdir" });
+          }
+          if (!existsSync(out)) {
+            // Recorded but not rendered yet (or moved since) — a 404 the
+            // page treats as "nothing to show", not a failure.
+            return send(404, { error: `no output at ${out} yet` });
+          }
+          (opts.reveal ?? revealInFileManager)(out);
+          return send(200, { ok: true, path: out });
         }
 
         if (url.pathname === "/api/overrides" && req.method === "PUT") {

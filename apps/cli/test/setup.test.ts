@@ -8,7 +8,7 @@ import { formatPlan, planSetup, type SetupProbes } from "../src/setup/plan";
 import { promptForProvider } from "../src/setup/provider";
 import { download } from "../src/setup/download";
 import { tarCandidates } from "../src/setup/extract";
-import { openCommand } from "../src/open";
+import { openCommand, revealCommand } from "../src/open";
 
 const CFG: OssclipConfig = {
   ffmpegPath: "ffmpeg",
@@ -350,6 +350,44 @@ describe("openCommand (the `open` spawn crashed everywhere but macOS)", () => {
     expect(openCommand("C:\\out\\my talk.thumbnail.png", "win32")).toEqual({
       bin: "cmd",
       args: ["/c", "start", "", "C:\\out\\my talk.thumbnail.png"],
+    });
+  });
+});
+
+// The whole cross-platform decision asserted here, the picker matrix's
+// convention (§136): a Linux or Windows user must never be the one who
+// discovers the command was wrong — 0.1.4's `ossclip edit` crash is the
+// cautionary tale. Syntax facts pinned below were verified 2026-08-18, not
+// guessed.
+describe("revealCommand (select the render output, don't launch it)", () => {
+  it("darwin: `open -R` reveals in Finder instead of playing the video", () => {
+    expect(revealCommand("/out/final.mp4", "darwin")).toEqual({
+      bin: "open",
+      args: ["-R", "/out/final.mp4"],
+    });
+  });
+
+  it("win32: `/select,` and the path are ONE comma-joined, unquoted argument", () => {
+    // explorer.exe does its own command-line parsing: split into two
+    // arguments (or with the path quoted) it ignores the switch and opens
+    // the default folder instead of selecting the file.
+    expect(revealCommand("C:\\out\\final.mp4", "win32")).toEqual({
+      bin: "explorer",
+      args: ["/select,C:\\out\\final.mp4"],
+    });
+  });
+
+  it("win32: a spaced path STAYS one argument — no quoting added around it", () => {
+    expect(revealCommand("C:\\out\\my talk.mp4", "win32")).toEqual({
+      bin: "explorer",
+      args: ["/select,C:\\out\\my talk.mp4"],
+    });
+  });
+
+  it("linux: opens the CONTAINING directory — no portable select verb exists across file managers", () => {
+    expect(revealCommand("/home/u/out/final.mp4", "linux")).toEqual({
+      bin: "xdg-open",
+      args: ["/home/u/out"],
     });
   });
 });

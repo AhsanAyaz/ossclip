@@ -444,3 +444,90 @@ describe("dictionary-vouched corrections (F4, 2026-08-16)", () => {
     expect(applied[0]!.applied).toBe(false);
   });
 });
+
+describe("non-Latin transcripts (2026-08-18 Urdu field case)", () => {
+  // Every one of 11 repairs in a real Urdu run was refused as "identical to
+  // what was heard": norm() stripped everything but [a-z0-9], so both sides
+  // normalized to "" and compared equal. The same "" also made locate() match
+  // the first span it tried without verifying it. Both are pinned here.
+  const urdu: Transcript = {
+    language: "ur",
+    words: ["ہماری", "پرسٹ", "ہیک", "اٹان", "آن", "سائٹ", "ان", "کراچی"].map((text, i) => ({
+      text,
+      start: i * 0.5,
+      end: (i + 1) * 0.5,
+    })),
+  };
+
+  it("applies a genuinely different Urdu correction", () => {
+    const { transcript, applied } = applyRepairs(urdu, [
+      { startWord: 1, endWord: 1, heard: "پرسٹ", correction: "فرسٹ" },
+    ]);
+    expect(applied[0]).toMatchObject({ applied: true });
+    expect(transcript.words[1]!.text).toBe("فرسٹ");
+  });
+
+  it("applies the recorded 'ہیک اٹان' → 'ہیکاتھون' (hackathon), merging two words into one", () => {
+    const { transcript, applied } = applyRepairs(urdu, [
+      // The model quoted two words but claimed a one-word span, exactly as in
+      // the field data — locate() has to widen to the quote's own width.
+      { startWord: 2, endWord: 2, heard: "ہیک اٹان", correction: "ہیکاتھون" },
+    ]);
+    expect(applied[0]).toMatchObject({ applied: true, startWord: 2, endWord: 3 });
+    expect(transcript.words.map((w) => w.text)).toEqual([
+      "ہماری", "پرسٹ", "ہیکاتھون", "آن", "سائٹ", "ان", "کراچی",
+    ]);
+    // The merged word keeps the original span's outer boundaries.
+    expect(transcript.words[2]).toMatchObject({ start: 1, end: 2 });
+  });
+
+  it("still refuses an Urdu correction identical to what was heard", () => {
+    const { applied } = applyRepairs(urdu, [
+      { startWord: 1, endWord: 1, heard: "پرسٹ", correction: "پرسٹ" },
+    ]);
+    expect(applied[0]!.rejected).toMatch(/identical/);
+  });
+
+  it("treats invisible Arabic marks as no change at all", () => {
+    // U+064E (harakat) on the correction only: same word, and a repair pass
+    // must not put a diacritic on screen and call it a fix.
+    const { applied } = applyRepairs(urdu, [
+      { startWord: 1, endWord: 1, heard: "پرسٹ", correction: "پَرسٹ" },
+    ]);
+    expect(applied[0]!.rejected).toMatch(/identical/);
+  });
+
+  it("locate() re-derives a wrong index from the Urdu quote", () => {
+    const { applied, transcript } = applyRepairs(urdu, [
+      { startWord: 4, endWord: 4, heard: "پرسٹ", correction: "فرسٹ" },
+    ]);
+    expect(applied[0]).toMatchObject({ applied: true, startWord: 1, endWord: 1 });
+    expect(transcript.words[4]!.text).toBe("آن"); // the claimed index is untouched
+  });
+
+  it("locate() returns null when the Urdu quote is nowhere — it used to match anything", () => {
+    const { applied, transcript } = applyRepairs(urdu, [
+      { startWord: 1, endWord: 1, heard: "بالکل مختلف", correction: "کچھ اور" },
+    ]);
+    expect(applied[0]!.applied).toBe(false);
+    expect(applied[0]!.rejected).toMatch(/no span near/);
+    expect(transcript.words).toEqual(urdu.words);
+  });
+
+  it("a quote that normalizes to nothing anchors nothing", () => {
+    const { applied } = applyRepairs(urdu, [
+      { startWord: 1, endWord: 1, heard: "؟؟", correction: "فرسٹ" },
+    ]);
+    expect(applied[0]!.rejected).toMatch(/no span near/);
+  });
+
+  it("refuses an Urdu rewrite that sounds nothing like the span", () => {
+    // The gate that did not exist before: with both keys empty, soundsSimilar
+    // answered `"" === ""` and would have waved this through.
+    const { applied } = applyRepairs(urdu, [
+      { startWord: 7, endWord: 7, heard: "کراچی", correction: "اسٹاک ہوم" },
+    ]);
+    expect(applied[0]!.applied).toBe(false);
+    expect(applied[0]!.rejected).toMatch(/does not sound like/);
+  });
+});

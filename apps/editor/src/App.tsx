@@ -5,6 +5,9 @@ import type { AnyZodObject } from "remotion";
 import { ProductionComposition, type ProductionCompProps } from "@ossclip/renderer/composition";
 import {
   applyCaptionEdits,
+  applyCaptionRangeEdits,
+  applyCaptionWordHides,
+  applyCaptionLineTiming,
   applyOverrides,
   dropHiddenCues,
   splitThenDropHidden,
@@ -26,16 +29,28 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { DeleteSceneModal } from "./DeleteSceneModal";
 import type { DeletePlan } from "./deleteScene";
+import { DeleteWordsModal } from "./DeleteWordsModal";
+import type { DeleteWordsPlan } from "./deleteWords";
 import { ProjectPicker } from "./ProjectPicker";
 import { RenderModal } from "./RenderModal";
 import { ThumbnailPanel } from "./ThumbnailPanel";
 import { YoutubePanel } from "./YoutubePanel";
-import { formatElapsed, pinnedInfoLines, renderCompleteReload, renderProgress } from "./renderStatus";
+import {
+  formatElapsed,
+  pinnedInfoLines,
+  renderCompleteReload,
+  renderProgress,
+  resumeRenderState,
+  type RenderState,
+} from "./renderStatus";
 import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
 import {
   anchorCaptionLines,
   droppedEditNotices,
+  droppedHideNotices,
+  droppedRangeNotices,
+  droppedLineTimingNotices,
   migrateLoadedDoc,
   migrationLossNotices,
   renderLossNotices,
@@ -149,6 +164,14 @@ export const App: React.FC = () => {
   // this must never go through `setError`, which is the FATAL, full-screen
   // view below with no dismiss and no state reset.
   const [saveBlockedNotice, setSaveBlockedNotice] = useState(false);
+  // A render that REFUSED to start — the /api/render 400 (custom out inside
+  // the folder input, 2026-08-18 field cascade), a 409/412, or the pre-start
+  // save failing. The `saveBlockedNotice` posture, and for its reason: a
+  // refusal is routine and the editor must stay usable after it, so this is
+  // a dismissible banner, never `setError`'s FATAL full-screen view. A
+  // banner rather than an inline RenderModal error because the plain Render
+  // button hits this path too, with no modal open to show anything in.
+  const [renderRefusedNotice, setRenderRefusedNotice] = useState<string | null>(null);
   // Caption edits the §137 key migration could not place when this doc was
   // loaded. They are NOT in the doc any more (the migration reports rather
   // than guesses), so this state is the only record of them — set on every
@@ -194,15 +217,10 @@ export const App: React.FC = () => {
   // Render-from-the-editor (R11 Task 4): whether the server has a recorded
   // invocation to replay, and the in-flight run's state while it does.
   const [canRender, setCanRender] = useState(false);
-  const [render, setRender] = useState<{
-    running: boolean;
-    lines: string[];
-    failed?: number;
-    /** Server-side spawn time — the elapsed clock's origin (R13). */
-    startedAt?: number | null;
-    /** The run ended because the user cancelled it — not a failure (R16). */
-    cancelled?: boolean;
-  } | null>(null);
+  // The state shape lives in renderStatus.ts beside `resumeRenderState`,
+  // which rebuilds it after a page reload — one definition, not a drifting
+  // inline copy (2026-08-18).
+  const [render, setRender] = useState<RenderState | null>(null);
   const [showRenderModal, setShowRenderModal] = useState(false);
   const [defaultOutPath, setDefaultOutPath] = useState<string | undefined>();
   const renderPollRef = useRef<number | null>(null);
@@ -394,6 +412,11 @@ export const App: React.FC = () => {
   // key was pressed, and re-deriving it on every render would let an
   // undo landing behind the open dialog change which options it is offering.
   const [deletePlan, setDeletePlan] = useState<DeletePlan | null>(null);
+  // The transcript's pending word-delete confirmation (§59b revisited) —
+  // the PLAN is held for the same reason as `deletePlan` above: it was
+  // computed against the doc at the gesture, and re-deriving it per render
+  // would let an undo behind the open dialog change its options.
+  const [deleteWordsPlan, setDeleteWordsPlan] = useState<DeleteWordsPlan | null>(null);
   // Render log visibility (R17 §84): the status row always shows; the pinned
   // lines and the scrollable tail collapse behind the chevron.
   const [logsOpen, setLogsOpen] = useState(true);
@@ -490,12 +513,13 @@ export const App: React.FC = () => {
               reportCaptionMigrationLoss(migrated.unresolved);
               setCaptionMigrationLoss(migrated.unresolved);
               // The one moment the editor adopts a doc it did not write
-              // (final review, Important 4). `setRender(null)` two lines below
-              // throws away the run log that named anything produce dropped,
-              // and the doc arriving here is already clean — so `unresolved`
-              // and `dropped` are both empty and a missing retype would
-              // vanish from the transcript with nothing said. Diffed by
-              // CONTENT, so a successful re-key is not mistaken for a loss.
+              // (final review, Important 4). The run log survives below now
+              // (2026-08-18), but a produce-dropped retype is still buried
+              // mid-scroll in it, and the doc arriving here is already clean
+              // — so `unresolved` and `dropped` are both empty and a missing
+              // retype would otherwise vanish from the transcript with
+              // nothing said. Diffed by CONTENT, so a successful re-key is
+              // not mistaken for a loss.
               const lost = renderLossNotices(vanishedCaptionEdits(before, migrated.doc.captions));
               // Durable alongside the banner, exactly like the migration
               // losses: the banner is dismissible, a console line is not.
@@ -509,7 +533,25 @@ export const App: React.FC = () => {
               setRenderCaptionLoss([]);
             }
             if (reload.notifyDiscard) setDirtyDiscardedNotice(true);
-            setRender(null);
+            // The panel STAYS, flipped to the success row (2026-08-18):
+            // `setRender(null)` here dropped the run log — provider, cost,
+            // any §137 drop it named — the instant the render landed.
+            // `finishedAt` stamps the elapsed clock's END; rendering it from
+            // Date.now() would keep counting long after the run stopped.
+            setRender((prev) => ({
+              running: false,
+              lines: body.lines ?? [],
+              succeeded: true,
+              startedAt: body.startedAt ?? prev?.startedAt,
+              finishedAt: Date.now(),
+            }));
+            // The user asked for the output's folder to open when the render
+            // lands. Fire-and-forget: a 404/412 (nothing recorded, file
+            // moved) is silently fine — reveal is a courtesy, not a step.
+            // LIVE completions only, structurally: the reload-resumed
+            // terminal state never enters this poll branch (`resumed`'s doc,
+            // renderStatus.ts).
+            void fetch("/api/reveal-output", { method: "POST" }).catch(() => {});
           } else {
             setRender({
               running: false,
@@ -600,20 +642,27 @@ export const App: React.FC = () => {
       .catch(() => setRunInfo(null));
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
-    // progress, no logs, and no way to cancel it from the UI.
+    // progress, no logs, and no way to cancel it from the UI. Since
+    // 2026-08-18 a FINISHED run comes back too: the server keeps the last
+    // run's ring buffer until the next render starts, and only restoring
+    // the running case meant the reload you did to check on a render
+    // reported nothing at all once it had ended.
     const s = await fetch("/api/render/status");
     const status = (await s.json()) as {
       running: boolean;
+      exitCode: number | null;
       lines?: string[];
       startedAt?: number | null;
+      cancelled?: boolean;
     };
-    if (status.running) {
-      setRender({
-        running: true,
-        lines: status.lines ?? [],
-        startedAt: status.startedAt,
-      });
-      beginRenderPoll();
+    const resumed = resumeRenderState(status);
+    if (resumed) {
+      setRender(resumed);
+      if (resumed.running) beginRenderPoll();
+      // A terminal restore lands COLLAPSED: the row already summarizes the
+      // outcome, and greeting a reload with a wall of an old run's log
+      // would bury the editor it came back for. The chevron reopens it.
+      else setLogsOpen(false);
     }
     // `edits.load` closes over the mount-time hook object, but it only
     // dispatches — the reducer instance is stable, so the stale closure is
@@ -687,6 +736,54 @@ export const App: React.FC = () => {
     return applyCaptionEdits(base, sourceKeyedCaptionEdits(edits.doc.captions));
   }, [renderProps, edits.doc.captions]);
 
+  // The RANGE layer, on top of the per-word retypes — `applyCaptionLayers`'
+  // order, still composed manually here (the legacy-key filtering above is
+  // why the composer can't be handed the doc whole). This intermediate —
+  // post-range, PRE-hide — is what the Transcript panel renders: range edits
+  // change word COUNT, so a panel fed pre-range lines would have flat
+  // indices and text that diverge from the run the user just typed, while a
+  // hidden word must still render struck-through (the pre-hide rule below).
+  const appliedCaptionRanges = useMemo<AppliedCaptionEdits>(() => {
+    // The same null-props guard as `appliedCaptions`, for the same reason:
+    // nothing loaded yet is not "every rewrite is stale" — during a project
+    // switch the OLD doc is still in state while `renderProps` is null, and
+    // running the layer against zero lines would report every entry
+    // `found: null`: a false whole-doc drop-banner flash.
+    if (!renderProps) return { lines: [], dropped: [] };
+    return applyCaptionRangeEdits(appliedCaptions.lines, edits.doc.captionRangeEdits);
+  }, [renderProps, appliedCaptions, edits.doc.captionRangeEdits]);
+
+  // The hide layer, applied ON TOP of the rewritten lines — `applyCaptionLayers`'
+  // one authoritative order (edits → ranges → hides), composed manually here
+  // rather than through the composer for two reasons: the edits layer must be
+  // the SOURCE-KEYED subset (the legacy-key filtering `appliedCaptions`
+  // explains above, which a doc handed whole to the composer would bypass),
+  // and the transcript needs the intermediate PRE-hide lines, which the
+  // composer does not return. The order itself is load-bearing: a hide's
+  // `was` records the LIVE post-retype text the user saw when they deleted
+  // the word, so hides run after retypes or every hide on a retyped word
+  // would stale against the base text.
+  const appliedCaptionHides = useMemo<AppliedCaptionEdits>(() => {
+    // `appliedCaptionRanges`' null-props guard, one layer down — a hide
+    // reported against no lines at all is the same false drop flash.
+    if (!renderProps) return { lines: [], dropped: [] };
+    return applyCaptionWordHides(appliedCaptionRanges.lines, edits.doc.captionWordsHidden);
+  }, [renderProps, appliedCaptionRanges, edits.doc.captionWordsHidden]);
+
+  // The LINE TIMING layer, LAST — `applyCaptionLayers`' order (edits → ranges
+  // → hides → line timing): it moves the SEAMS between surviving lines, so it
+  // runs on the post-hide lines (a hide can re-base a line's window or remove
+  // the line outright). The Transcript panel keeps receiving the post-range/
+  // PRE-hide lines above; it reads `edits.doc.captionLineTiming` itself for
+  // the timing UI, so this memo feeds only the Player and the drop banner.
+  const appliedCaptionTiming = useMemo<AppliedCaptionEdits>(() => {
+    // The same null-props guard as the three layers above, for the same
+    // reason: nothing loaded yet is not "every nudge is stale" — reporting
+    // against zero lines would flash a false whole-doc drop banner.
+    if (!renderProps) return { lines: [], dropped: [] };
+    return applyCaptionLineTiming(appliedCaptionHides.lines, edits.doc.captionLineTiming);
+  }, [renderProps, appliedCaptionHides, edits.doc.captionLineTiming]);
+
   // Both halves of what the user is owed about caption edits: the ones the
   // load-time key migration could not place (an event, held in state) and the
   // ones that do not fit the lines on screen (a live property of the doc).
@@ -695,8 +792,18 @@ export const App: React.FC = () => {
     [captionMigrationLoss],
   );
   const droppedEditLines = useMemo(
-    () => droppedEditNotices(appliedCaptions.dropped),
-    [appliedCaptions],
+    // All three caption layers' reports through the one dismissible banner —
+    // a range rewrite or hide that could not land is the same silent-revert
+    // failure §137 removed for retypes, each with its own phrasing because
+    // the fix gesture differs (retype / re-select and Edit / re-select and
+    // hide).
+    () => [
+      ...droppedEditNotices(appliedCaptions.dropped),
+      ...droppedRangeNotices(appliedCaptionRanges.dropped),
+      ...droppedHideNotices(appliedCaptionHides.dropped),
+      ...droppedLineTimingNotices(appliedCaptionTiming.dropped),
+    ],
+    [appliedCaptions, appliedCaptionRanges, appliedCaptionHides, appliedCaptionTiming],
   );
   // The dismissal is aimed at ONE list, not at the notice forever: a later,
   // DIFFERENT drop raises it again. Held as the dismissed list itself rather
@@ -791,7 +898,12 @@ export const App: React.FC = () => {
     return {
       ...renderProps,
       sceneCues: previewed,
-      captionLines: appliedCaptions.lines,
+      // POST-timing lines (post-hide until 2026-08-18): a caption-only word
+      // hide or timing nudge previews instantly, unlike the cuts this memo
+      // refuses to apply (the DECIDE note above) — both reshape nothing but
+      // the caption stream itself, no EDL, no re-cut, so the browser can show
+      // exactly what produce will render.
+      captionLines: appliedCaptionTiming.lines,
       theme: resolveTheme(baseTheme, edits.doc),
       // Recomposed, never inherited from the spread above: the baked
       // `captionsHidden` has the LAST-saved doc merged in (add-only — an
@@ -803,7 +915,7 @@ export const App: React.FC = () => {
         renderProps.captionsHiddenByFlag === true || edits.doc.captionsHidden === true,
       videoFileName: `/media/${renderProps.videoFileName}`,
     };
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptions]);
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming]);
 
   const onSave = (): void => {
     // Finding 1, PLAN 2026-08-04 fix wave final review (scoped re-review
@@ -840,9 +952,15 @@ export const App: React.FC = () => {
           throw new Error(body.error ?? `render failed to start: ${res.status}`);
         }
         setRender({ running: true, lines: [], startedAt: Date.now() });
+        setRenderRefusedNotice(null);
         beginRenderPoll();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        // Non-fatal by design (2026-08-18): the 400 the render endpoint
+        // returns for an out inside the folder input used to route through
+        // `setError` — the FATAL full-screen view — turning a refusal that
+        // exists to PROTECT the project into a dead editor. The notice's own
+        // doc comment (by its useState above) has the banner-vs-modal call.
+        setRenderRefusedNotice(err instanceof Error ? err.message : String(err));
       }
     },
     [edits, beginRenderPoll],
@@ -928,6 +1046,21 @@ export const App: React.FC = () => {
     ? Math.max(220, Math.min(stageAvail.w, stageAvail.h * aspect))
     : 380;
   const playerW = Math.round(fitW * viewZoom);
+
+  // ONE toggle, rendered inside whichever status row is up (2026-08-18): it
+  // used to live inside the `render.running` row only, so a finished run's
+  // log — the state that most needs re-reading — had no way open. The three
+  // rows are mutually exclusive, so the testid stays unique for the e2e.
+  const renderLogsToggle = (
+    <button
+      data-testid="render-logs-toggle"
+      style={{ ...ghostButton, padding: "2px 8px" }}
+      onClick={() => setLogsOpen((v) => !v)}
+      title={logsOpen ? "Collapse the log" : "Expand the log"}
+    >
+      {logsOpen ? "▾ logs" : "▸ logs"}
+    </button>
+  );
 
   return (
     <div style={shell}>
@@ -1137,6 +1270,26 @@ export const App: React.FC = () => {
           }}
         />
       ) : null}
+      {deleteWordsPlan ? (
+        <DeleteWordsModal
+          plan={deleteWordsPlan}
+          onCancel={() => setDeleteWordsPlan(null)}
+          onConfirm={(target) => {
+            // Ordinary reducer commits both ways, so ⌘Z takes either back —
+            // the DeleteSceneModal rule: friction, not a second edit
+            // mechanism. `cutWords` is ONE commit for hide + cut, so the
+            // whole gesture is one undo step.
+            if (target === "caption") edits.hideCaptionWords(deleteWordsPlan.words);
+            else
+              edits.cutWords(
+                deleteWordsPlan.words,
+                deleteWordsPlan.startSec,
+                deleteWordsPlan.endSec,
+              );
+            setDeleteWordsPlan(null);
+          }}
+        />
+      ) : null}
       {showPicker ? (
         <ProjectPicker
           recent={recentProjects}
@@ -1168,6 +1321,37 @@ export const App: React.FC = () => {
               >
                 Dismiss
               </button>
+              <span style={{ marginLeft: 6 }}>{renderLogsToggle}</span>
+            </div>
+          ) : null}
+          {render.succeeded ? (
+            // The success row (2026-08-18): the run's log — provider, cost,
+            // anything §137 dropped — stays readable until dismissed instead
+            // of vanishing the instant the render lands. Elapsed only when
+            // this page WATCHED the run end (`finishedAt`); a reload-resumed
+            // success has no honest end stamp and shows none.
+            <div data-testid="render-succeeded" style={renderStatusRow}>
+              <span style={{ color: "#5FBF77" }}>
+                ✓ done
+                {render.startedAt != null && render.finishedAt !== undefined
+                  ? ` · ${formatElapsed(render.startedAt, render.finishedAt)}`
+                  : ""}
+              </span>
+              <button
+                data-testid="render-open-folder"
+                style={{ ...ghostButton, padding: "2px 8px" }}
+                onClick={() => void fetch("/api/reveal-output", { method: "POST" }).catch(() => {})}
+                title="Reveal the rendered file in your file manager"
+              >
+                Open folder
+              </button>
+              <button
+                style={{ ...ghostButton, padding: "2px 8px" }}
+                onClick={() => setRender(null)}
+              >
+                Dismiss
+              </button>
+              {renderLogsToggle}
             </div>
           ) : null}
           {render.running ? (
@@ -1206,14 +1390,7 @@ export const App: React.FC = () => {
               >
                 Cancel
               </button>
-              <button
-                data-testid="render-logs-toggle"
-                style={{ ...ghostButton, padding: "2px 8px" }}
-                onClick={() => setLogsOpen((v) => !v)}
-                title={logsOpen ? "Collapse the log" : "Expand the log"}
-              >
-                {logsOpen ? "▾ logs" : "▸ logs"}
-              </button>
+              {renderLogsToggle}
             </div>
           ) : null}
           {logsOpen ? (
@@ -1315,15 +1492,37 @@ export const App: React.FC = () => {
           </button>
         </div>
       ) : null}
+      {renderRefusedNotice !== null ? (
+        // A render that refused to start (2026-08-18) — same chrome and same
+        // non-fatal posture as the save-blocked notice above; the useState's
+        // doc comment has the reasoning.
+        <div data-testid="render-refused-notice" style={reanchorNotice}>
+          Render didn't start: {renderRefusedNotice}
+          <button
+            style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+            onClick={() => setRenderRefusedNotice(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div style={mainRow}>
         {showTranscript ? (
           <>
             <TranscriptPanel
               baseLines={renderProps?.baseCaptionLines ?? renderProps?.captionLines ?? []}
-              liveLines={live.captionLines}
+              // POST-range, PRE-hide lines, deliberately not
+              // `live.captionLines` (post-hide) and no longer the edits-only
+              // set: range edits change word COUNT, so the panel must see
+              // them or its flat indices and text diverge from what the user
+              // just typed. A hidden word still renders — struck-through,
+              // ready to select and Restore — and the panel derives which
+              // words are hidden from `edits.doc.captionWordsHidden` itself.
+              liveLines={appliedCaptionRanges.lines}
               fps={live.settings.fps}
               playerRef={playerRef}
               edits={edits}
+              onDeleteWords={setDeleteWordsPlan}
               width={transcriptWidth}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the

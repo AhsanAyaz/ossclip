@@ -76,3 +76,62 @@ export function renderCompleteReload(
   if (!overrides) return { load: null, notifyDiscard: false };
   return { load: overrides, notifyDiscard: wasDirty };
 }
+
+/** The render panel's state — App's `render` slot; null means no panel. */
+export interface RenderState {
+  running: boolean;
+  lines: string[];
+  /** Non-null exit code when the run failed — the failure row's copy. */
+  failed?: number;
+  /** Server-side spawn time — the elapsed clock's origin (R13). */
+  startedAt?: number | null;
+  /** The run ended because the user cancelled it — not a failure (R16). */
+  cancelled?: boolean;
+  /** The run finished cleanly — the success row (2026-08-18: `setRender(null)`
+   * on success threw the whole log away, as the Important-4 comment beside
+   * it in App.tsx admitted outright). */
+  succeeded?: boolean;
+  /** When the exit was OBSERVED — the success row's elapsed clock stops here
+   * instead of ticking on with Date.now() after the run already ended. */
+  finishedAt?: number;
+  /** Restored from the server after a page reload, not observed live. The
+   * auto-reveal (Step 4) keys off its absence: a render finishing while you
+   * watch opens the output's folder; reopening the editor hours later must
+   * not pop a file-manager window over whatever you're doing. */
+  resumed?: boolean;
+}
+
+/**
+ * What the mount-time `/api/render/status` probe should put in the panel
+ * (2026-08-18). The server keeps the last run's ring buffer until the NEXT
+ * render starts, so a reload used to resume only a RUNNING render and
+ * silently discard a finished one's log — the run you reloaded to check on
+ * reported nothing. Three shapes: still running (resume the poll), terminal
+ * success, terminal failure/cancel. Null when there is nothing to show —
+ * no run ever started (exitCode null) or one ran but captured no lines,
+ * where an empty panel would be chrome without content.
+ */
+export function resumeRenderState(status: {
+  running: boolean;
+  exitCode: number | null;
+  lines?: string[];
+  startedAt?: number | null;
+  cancelled?: boolean;
+}): RenderState | null {
+  const lines = status.lines ?? [];
+  if (status.running) {
+    return { running: true, lines, startedAt: status.startedAt, resumed: true };
+  }
+  if (status.exitCode === null || lines.length === 0) return null;
+  if (status.exitCode === 0) {
+    return { running: false, lines, succeeded: true, startedAt: status.startedAt, resumed: true };
+  }
+  return {
+    running: false,
+    lines,
+    failed: status.exitCode,
+    cancelled: status.cancelled,
+    startedAt: status.startedAt,
+    resumed: true,
+  };
+}

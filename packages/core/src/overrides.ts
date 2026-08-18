@@ -153,6 +153,37 @@ export const CaptionEditSchema = z.object({
 export type CaptionEdit = z.infer<typeof CaptionEditSchema>;
 
 /**
+ * A free-text rewrite of a contiguous caption word RUN (2026-08-18) — the one
+ * deliberate relaxation of the 1:1 retype contract, for range edits only.
+ * Single-word retype (`CaptionEditSchema` above) is untouched, and
+ * `transcript.words` is NEVER spliced — scene anchors are raw indices into it
+ * — so everything happens on the derived `CaptionLine[]`
+ * (`applyCaptionRangeEdits` below).
+ *
+ * Endpoints are anchored by §137 source-time keys (`captionKeyFor`), so a
+ * user cut elsewhere cannot shift the run. `was` is the NFC-normalized,
+ * space-joined BASE text of the run — the `captionEditWas` base-truth rule,
+ * run-wide: the reducer scrubs every per-word retype inside the interval in
+ * the same commit that stores the entry, so the run `applyCaptionRangeEdits`
+ * reads at apply time IS the base run, and a live (post-retype) join would
+ * fail the guard forever. A WHOLE-RUN stale guard: if any word in the run is
+ * re-worded or cut later, the entire edit is reported dropped, never
+ * partially guessed at. Identity is the `(fromKey, toKey)`
+ * pair — retyping the run back to its `was` DELETES the entry (the
+ * clearVideo/`patchCaption` rule). An array like `cuts`, `.default([])` so
+ * every pre-existing overrides.json parses byte-identically. NEVER
+ * legacy-keyed: the field postdates §137, so `migrateCaptionKeys` must not
+ * process it — there are no positional range edits to upgrade.
+ */
+export const CaptionRangeEditSchema = z.object({
+  fromKey: z.string().regex(/^w\d+$/),
+  toKey: z.string().regex(/^w\d+$/),
+  text: z.string().min(1).max(400),
+  was: z.string(),
+});
+export type CaptionRangeEdit = z.infer<typeof CaptionRangeEditSchema>;
+
+/**
  * The `was` a caption edit should store (R15 §59). The FIRST edit's `was` is
  * the base truth (the word as transcribed); every later re-edit of the same
  * index sees the LIVE (already-edited) text, and storing that as `was` would
@@ -167,6 +198,25 @@ export function captionEditWas(
   seen: string,
 ): string {
   return captions[key]?.was ?? seen;
+}
+
+/**
+ * The `was` a RANGE edit should store — `captionEditWas` for the
+ * `(fromKey, toKey)` pair. The first edit's `was` is the base truth; a
+ * re-edit of the SAME run (its endpoints are re-minted verbatim, see
+ * `applyCaptionRangeEdits`' srcStart minting) sees the LIVE, already-rewritten
+ * text, and storing that as `was` would stale the guard against the base
+ * lines the next apply runs on. Preserving the existing pair's `was` keeps
+ * the guard anchored to the base — and makes "retyped back to the original"
+ * detectable, which is when the entry should clear entirely.
+ */
+export function captionRangeEditWas(
+  rangeEdits: readonly CaptionRangeEdit[],
+  fromKey: string,
+  toKey: string,
+  seen: string,
+): string {
+  return rangeEdits.find((e) => e.fromKey === fromKey && e.toKey === toKey)?.was ?? seen;
 }
 
 /**
@@ -256,6 +306,76 @@ export const OverrideDocSchema = z.object({
   scenes: z.record(z.string(), SceneOverrideSchema).default({}),
   /** Retyped caption words, keyed by the word's source time (§137). */
   captions: z.record(z.string(), CaptionEditSchema).default({}),
+  /**
+   * Per-word caption HIDES ("delete word from captions") — non-destructive:
+   * the word stays in the transcript and in the video's audio; only the
+   * rendered caption drops it. Keyed by the word's source time
+   * (`captionKeyFor`, §137) like `captions` above, so a user cut never
+   * shifts a hide onto a different word. `was` is the LIVE (post-retype)
+   * text at hide time — hides apply AFTER retypes (`applyCaptionLayers`
+   * below) — the same stale-guard contract as `CaptionEditSchema.was`:
+   * a re-derived stream under a surviving anchor drops the hide WITH A
+   * REPORT rather than deleting the wrong word. Restore DELETES the key
+   * (the restoreScene/captionsHidden rule — an entry with nothing to say is
+   * still an override), and `.default({})` keeps every pre-existing
+   * overrides.json parsing byte-identically. This field NEVER existed in
+   * the legacy positional-key era, so `migrateCaptionKeys` must NOT process
+   * it — there are no legacy hides to upgrade.
+   */
+  captionWordsHidden: z.record(z.string(), z.object({ was: z.string() })).default({}),
+  /**
+   * Multi-word free-text rewrites — see `CaptionRangeEditSchema` for the
+   * whole contract (endpoint anchoring, the whole-run `was` guard, identity
+   * by pair, why it is never legacy-keyed). Applied between per-word retypes
+   * and hides (`applyCaptionLayers`).
+   */
+  captionRangeEdits: z.array(CaptionRangeEditSchema).default([]),
+  /**
+   * Per-LINE caption TIMING nudges — "when does this caption appear, and when
+   * does it leave". Stored as DELTAS against the DERIVED window (`lead` moves
+   * the line's OPENING seam, `tail` its CLOSING seam), keyed by the LINE's
+   * FIRST WORD's SOURCE time (`captionKeyFor`, §137). Deltas over source keys
+   * make the record recut-immune for free: a recut rebuilds every derived
+   * `start`/`end` through the new TimeMap and the deltas simply re-apply on
+   * top — zero work in `remapOverridesThroughRecut`, the same property every
+   * other caption record leans on (captions.ts:14-20: `srcStart` is the one
+   * field a re-cut cannot move). Restore DELETES the key, and a patch whose
+   * deltas are both under 1ms in magnitude also deletes (the clearVideo/
+   * patchCaption clear-override rule — a nudge of nothing is still an
+   * override). `.default({})` keeps every pre-existing overrides.json parsing
+   * byte-identically, and the field NEVER existed in the legacy
+   * positional-key era, so `migrateCaptionKeys` must not process it.
+   *
+   * PER LINE, NOT PER WORD, and that is the whole point of the field. It
+   * replaces `captionWordTiming` (deleted 2026-08-18), which stored the same
+   * shape against individual WORDS and was measured to be MATHEMATICALLY
+   * INERT: on a live workdir (117 lines / 301 words) 116/116 inter-line gaps
+   * were exactly 0.0, 184/184 intra-line word boundaries exactly 0.0,
+   * `line.start === words[0].start` 117/117 and `line.end === lastWord.end`
+   * 117/117 — `transcribe.ts` chains words (`next.start = w.end`) and
+   * `captions.ts:203-213`'s hold pass clamps each line's end to the next
+   * line's start, so the caption stream is a GAP-FREE PARTITION. A per-word
+   * clamp of `[max(lineStart, prevEnd), min(lineEnd, nextStart)]` therefore
+   * collapsed to exactly `[w.start, w.end]` for EVERY word: the user dragged,
+   * every stored delta came back zero, and the reducer's sub-ms rule deleted
+   * them again. Do not reintroduce word-level clamping against a packed
+   * stream. Word stamps also only drive the karaoke highlight INSIDE a line's
+   * `<Sequence>` window (CaptionTrack.tsx:228-229, 387) — "when a caption
+   * appears" IS `line.start`/`line.end`, so timing has to move LINE windows.
+   * The ±30s range is per SEAM, which is why it is wider than the old
+   * per-word ±10s: a line may be dragged well clear of its neighbours, and
+   * `applyCaptionLineTiming`'s sweep — not the schema — is what keeps seams
+   * ordered and inside the track.
+   */
+  captionLineTiming: z
+    .record(
+      z.string(),
+      z.object({
+        lead: z.number().min(-30).max(30),
+        tail: z.number().min(-30).max(30),
+      }),
+    )
+    .default({}),
   /**
    * Scene split points. `at` is ABSOLUTE output seconds (R16 §61 — Cmd/Ctrl+B
    * at the playhead) and moves when a re-cut re-anchors the doc; `id` is
@@ -976,6 +1096,586 @@ export function applyCaptionEdits(
     if (!seen.has(key)) dropped.push({ key, expected: edit.was, found: null });
   }
   return { lines: out, dropped };
+}
+
+/**
+ * Re-time replacement tokens over ONE line's stretch of a rewritten run —
+ * `repair.ts`'s `retime` model (producer/repair.ts:137-154), restated here
+ * for CaptionWords: stamps distributed across the window weighted by token
+ * length + 1, strictly increasing, the last token's `end` pinned to the
+ * window end so the run never leaks past the span it replaced. The measured
+ * window edges (first run word's start, last run word's end) are kept;
+ * only the interior boundaries are interpolated — interpolated boundaries
+ * are a guess, and `retime`'s comment is explicit that a guess must never
+ * displace a measurement, which is why the equal-count fast path in
+ * `applyCaptionRangeEdits` below bypasses this entirely.
+ */
+function retimeCaptionTokens(
+  tokens: readonly string[],
+  windowStart: number,
+  windowEnd: number,
+  srcStarts: readonly number[],
+): CaptionWord[] {
+  const weights = tokens.map((t) => t.length + 1);
+  const total = weights.reduce((a, b) => a + b, 0);
+  const out: CaptionWord[] = [];
+  let cursor = windowStart;
+  for (let i = 0; i < tokens.length; i++) {
+    const share = ((windowEnd - windowStart) * weights[i]!) / total;
+    const end = i === tokens.length - 1 ? windowEnd : cursor + share;
+    out.push({ text: tokens[i]!, start: cursor, end, srcStart: srcStarts[i]! });
+    cursor = end;
+  }
+  return out;
+}
+
+/**
+ * Apply the free-text RANGE rewrites (`captionRangeEdits`) — the one layer
+ * allowed to change word COUNT, which is why it exists at all: everything it
+ * reshapes is the derived `CaptionLine[]`, never `transcript.words` (scene
+ * anchors are raw indices into that array — splicing it is the forbidden
+ * operation this whole edit family is built around).
+ *
+ * Same reporting shape as `applyCaptionEdits`; drop `key`s are the COMPOSITE
+ * `${fromKey}..${toKey}` — the pair is the entry's identity, and either half
+ * alone names only an endpoint. Each entry drops AT MOST ONCE (unlike the
+ * per-word layers, where one key can be reported per extra claimant), which
+ * is what lets `reconcileCaptionEdits` count applied entries by subtraction.
+ *
+ * Locating: `fromKey`'s first claimant across the flat word order (the
+ * per-word first-claimant rule — ms-quantised keys CAN collide,
+ * captions.ts:44-50), then a FORWARD walk to `toKey`; a missing endpoint, or
+ * a `toKey` that only occurs before `fromKey`, is `found: null`. An entry
+ * whose pair was already applied, or whose `fromKey` an earlier range edit's
+ * run consumed, is `duplicate-anchor` — reachable only in a hand-edited doc,
+ * since the reducer scrubs overlapping entries at creation, and reported
+ * rather than guessed at like every other collision in this file.
+ *
+ * The whole-run stale guard: the run's live texts, NFC-normalized and
+ * space-joined, must equal `was` byte for byte, or the WHOLE edit drops with
+ * the joined text as `found` — never a partial rewrite of the words that
+ * still match (a half-applied rewrite reads as garbage, and there is no
+ * per-word truth to fall back on once the counts differ).
+ *
+ * Retiming across lines: the run may span several lines, and their `start`/
+ * `end` WINDOWS are deliberately not re-packed — Sequence windows and
+ * `buildCaptionLines`' breakpoint semantics stay exactly as produced.
+ * Replacement tokens are distributed across the affected lines
+ * proportionally to each line's share of the run's summed word duration,
+ * rounded by largest remainder (deterministic — earlier line wins a tie) so
+ * every token lands somewhere and the totals match. Within a line the stamps
+ * follow `retimeCaptionTokens` above; a token count equal to the run's word
+ * count skips all of it and keeps the measured per-word stamps AND srcStarts
+ * verbatim (measured ASR boundaries beat interpolation — `retime`'s rule).
+ * A line allotted zero tokens loses its run words, and if that empties it
+ * the line is omitted (the `applyCaptionWordHides` rule — no zero-word
+ * Sequence).
+ *
+ * srcStart minting for count-changed runs: linear across `[fromSrc, toSrc]`
+ * (the endpoints' own source starts), endpoints re-minted verbatim — which
+ * is what lets the user select a rewritten run again and edit it (its
+ * endpoints still answer to the same pair). Strictly increasing whenever the
+ * span is non-degenerate; when the span is too short for 1ms-distinct
+ * quantised keys (`captionKeyFor` rounds to ms), later words SHARE quantised
+ * keys — an accepted, documented duplicate-anchor case the existing
+ * machinery reports if a per-word edit ever targets one.
+ */
+export function applyCaptionRangeEdits(
+  lines: readonly CaptionLine[],
+  rangeEdits: readonly CaptionRangeEdit[],
+): AppliedCaptionEdits {
+  const dropped: AppliedCaptionEdits["dropped"] = [];
+  if (rangeEdits.length === 0) return { lines: [...lines], dropped };
+
+  let out: CaptionLine[] = [...lines];
+  const seenPairs = new Set<string>();
+  const consumed = new Set<string>();
+
+  for (const entry of rangeEdits) {
+    const key = `${entry.fromKey}..${entry.toKey}`;
+    // Flatten the CURRENT lines — edits apply sequentially, so a later entry
+    // addresses the stream as the earlier ones left it (that is how a
+    // re-minted endpoint stays addressable at all).
+    const flat: Array<{ line: number; word: number; w: CaptionWord }> = [];
+    for (let li = 0; li < out.length; li++) {
+      for (let wi = 0; wi < out[li]!.words.length; wi++) {
+        flat.push({ line: li, word: wi, w: out[li]!.words[wi]! });
+      }
+    }
+    const fromIdx = flat.findIndex((f) => captionAnchorOf(f.w) === entry.fromKey);
+    if (seenPairs.has(key) || consumed.has(entry.fromKey)) {
+      dropped.push({
+        key,
+        expected: entry.was,
+        found: fromIdx === -1 ? null : flat[fromIdx]!.w.text,
+        reason: "duplicate-anchor",
+      });
+      continue;
+    }
+    if (fromIdx === -1) {
+      dropped.push({ key, expected: entry.was, found: null });
+      continue;
+    }
+    // FORWARD only: a toKey sitting before fromKey is a run that crosses a
+    // gap the stream no longer bridges — `found: null`, never a guess.
+    let toIdx = -1;
+    for (let i = fromIdx; i < flat.length; i++) {
+      if (captionAnchorOf(flat[i]!.w) === entry.toKey) {
+        toIdx = i;
+        break;
+      }
+    }
+    if (toIdx === -1) {
+      dropped.push({ key, expected: entry.was, found: null });
+      continue;
+    }
+    const run = flat.slice(fromIdx, toIdx + 1);
+    const joined = run
+      .map((f) => f.w.text)
+      .join(" ")
+      .normalize("NFC");
+    if (joined !== entry.was.normalize("NFC")) {
+      dropped.push({ key, expected: entry.was, found: joined });
+      continue;
+    }
+    const tokens = entry.text.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) {
+      // Defensive: zod's min(1) admits a whitespace-only string, and a run
+      // rewritten to NOTHING is a delete, which is the hide layer's job —
+      // treated as a stale-style drop rather than silently emptying the run.
+      dropped.push({ key, expected: entry.was, found: joined });
+      continue;
+    }
+    seenPairs.add(key);
+    for (const f of run) {
+      const a = captionAnchorOf(f.w);
+      if (a !== null) consumed.add(a);
+    }
+
+    if (tokens.length === run.length) {
+      // Equal count: keep the measured stamps AND srcStarts verbatim —
+      // `retime`'s fast path, for its reason (measured ASR onsets beat any
+      // interpolation, and verbatim srcStarts keep every anchor addressable).
+      const replaced = new Map(run.map((f, i) => [`${f.line}:${f.word}`, tokens[i]!]));
+      out = out.map((line, li) => ({
+        ...line,
+        words: line.words.map((w, wi) => {
+          const text = replaced.get(`${li}:${wi}`);
+          return text === undefined ? w : { ...w, text };
+        }),
+      }));
+      continue;
+    }
+
+    // Count changed: distribute tokens across the affected lines by each
+    // line's share of the run's total duration, largest-remainder rounded.
+    const lineOrder: number[] = [];
+    const runByLine = new Map<number, { first: number; last: number; words: CaptionWord[] }>();
+    for (const f of run) {
+      const seg = runByLine.get(f.line);
+      if (seg) {
+        seg.last = f.word;
+        seg.words.push(f.w);
+      } else {
+        lineOrder.push(f.line);
+        runByLine.set(f.line, { first: f.word, last: f.word, words: [f.w] });
+      }
+    }
+    const shares = lineOrder.map((li) =>
+      runByLine.get(li)!.words.reduce((a, w) => a + (w.end - w.start), 0),
+    );
+    const totalShare = shares.reduce((a, b) => a + b, 0);
+    // Zero total duration (every run word zero-width) has no proportion to
+    // honor — fall back to equal weights so the rounding below still lands
+    // every token somewhere deterministic.
+    const weights = totalShare > 0 ? shares : shares.map(() => 1);
+    const weightTotal = totalShare > 0 ? totalShare : shares.length;
+    const quotas = weights.map((s) => (tokens.length * s) / weightTotal);
+    const counts = quotas.map((q) => Math.floor(q));
+    let leftover = tokens.length - counts.reduce((a, b) => a + b, 0);
+    // Largest remainder first; ties break to the EARLIER line — stated so
+    // the distribution is reproducible from the doc alone, like every other
+    // persisted derivation in this file.
+    const byRemainder = quotas
+      .map((q, i) => ({ i, rem: q - Math.floor(q) }))
+      .sort((a, b) => b.rem - a.rem || a.i - b.i);
+    for (let k = 0; leftover > 0; k = (k + 1) % byRemainder.length) {
+      counts[byRemainder[k]!.i]!++;
+      leftover--;
+    }
+
+    const fromSrc = run[0]!.w.srcStart;
+    const toSrc = run[run.length - 1]!.w.srcStart;
+    const srcStarts = tokens.map((_, j) =>
+      tokens.length === 1 ? fromSrc : fromSrc + ((toSrc - fromSrc) * j) / (tokens.length - 1),
+    );
+
+    let tokenCursor = 0;
+    const next: CaptionLine[] = [];
+    for (let li = 0; li < out.length; li++) {
+      const line = out[li]!;
+      const seg = runByLine.get(li);
+      if (!seg) {
+        next.push(line);
+        continue;
+      }
+      const n = counts[lineOrder.indexOf(li)]!;
+      const lineTokens = tokens.slice(tokenCursor, tokenCursor + n);
+      const lineSrcs = srcStarts.slice(tokenCursor, tokenCursor + n);
+      tokenCursor += n;
+      const minted =
+        n === 0
+          ? []
+          : retimeCaptionTokens(
+              lineTokens,
+              seg.words[0]!.start,
+              seg.words[seg.words.length - 1]!.end,
+              lineSrcs,
+            );
+      const words = [...line.words.slice(0, seg.first), ...minted, ...line.words.slice(seg.last + 1)];
+      // Window untouched (the no-re-pack rule above); an emptied line is
+      // omitted, same as `applyCaptionWordHides`.
+      if (words.length === 0) continue;
+      next.push({ ...line, words });
+    }
+    out = next;
+  }
+  return { lines: out, dropped };
+}
+
+/**
+ * Drop hidden caption words (the `captionWordsHidden` layer). Same reporting
+ * shape as `applyCaptionEdits` — callers must surface `dropped` for the same
+ * reason: a hide that silently fails looks like the editor forgot it.
+ *
+ * Runs on the DERIVED `CaptionLine[]`, never on `transcript.words` — scene
+ * anchors are raw word INDICES into the transcript, so splicing a word out of
+ * it would shift every later anchor onto the wrong word: the forbidden
+ * operation this whole layer exists to avoid. The transcript stays intact;
+ * only the rendered caption stream loses the word.
+ *
+ * Line WINDOWS are recomputed here, deliberately: `buildCaptionLines` derives
+ * `start` from the first word and `end` from the last word plus a hold
+ * (captions.ts:203-213), so hiding a boundary word would otherwise leave the
+ * line lingering on screen over silence — up for the hidden first word's
+ * duration, or held past the hidden last word's end. A hidden FIRST word moves
+ * `start` to the first survivor; a hidden LAST word re-bases the packer's hold
+ * delta onto whichever word is now last (clamped so the line never ends before
+ * its own last word); middle hides leave the window alone. A line whose words
+ * are ALL hidden is omitted entirely, so the downstream CaptionTrack emits no
+ * Sequence for it.
+ *
+ * `was` is the LIVE (post-retype) text at hide time — hides apply AFTER
+ * retypes (`applyCaptionLayers` below) — so un-retyping a word under a hide
+ * stales the hide, and it is REPORTED rather than guessed at. Same
+ * first-claimant rule as `applyCaptionEdits`: ms-quantised keys CAN collide
+ * (`captions.ts:44-50` manufactures duplicates by design), and one hide must
+ * remove one word, not every word sharing its instant.
+ */
+export function applyCaptionWordHides(
+  lines: readonly CaptionLine[],
+  hides: Record<string, { was: string }>,
+): AppliedCaptionEdits {
+  const dropped: AppliedCaptionEdits["dropped"] = [];
+  if (Object.keys(hides).length === 0) return { lines: [...lines], dropped };
+
+  const seen = new Set<string>();
+  const out: CaptionLine[] = [];
+  for (const line of lines) {
+    const kept: CaptionWord[] = [];
+    for (const w of line.words) {
+      // No anchor, no hide — same boundary rule as `applyCaptionEdits`: a
+      // pre-§137 word cannot be addressed, and the stored hides then fall out
+      // of the sweep below as `found: null`.
+      const key = captionAnchorOf(w);
+      const hide = key === null ? undefined : hides[key];
+      if (key === null || !hide) {
+        kept.push(w);
+        continue;
+      }
+      // An earlier word already answered for this anchor — whichever way it
+      // answered. Hiding here too would fan one delete onto a second word.
+      if (seen.has(key)) {
+        dropped.push({ key, expected: hide.was, found: w.text, reason: "duplicate-anchor" });
+        kept.push(w);
+        continue;
+      }
+      seen.add(key);
+      if (w.text !== hide.was) {
+        dropped.push({ key, expected: hide.was, found: w.text });
+        kept.push(w);
+        continue;
+      }
+      // Matched: the word is dropped from the line.
+    }
+    if (kept.length === line.words.length) {
+      out.push(line);
+      continue;
+    }
+    // Every word hidden — the line goes with them, rather than a zero-word
+    // line the CaptionTrack would still mount a Sequence for.
+    if (kept.length === 0) continue;
+    const lastOriginal = line.words[line.words.length - 1]!;
+    const firstKept = kept[0]!;
+    const lastKept = kept[kept.length - 1]!;
+    const start = firstKept === line.words[0] ? line.start : firstKept.start;
+    // The packer's hold delta (captions.ts:203-213) rides on whichever word
+    // is now last; clamped so the line never ends before its own last word
+    // (the delta can be negative when the hold was clamped to outputDuration).
+    const end =
+      lastKept === lastOriginal
+        ? line.end
+        : Math.max(lastKept.end, lastKept.end + (line.end - lastOriginal.end));
+    out.push({ words: kept, start, end });
+  }
+
+  // An anchor no word carries any more — a later cut removed the word the
+  // user hid. Silence here is the field-case failure mode, so say it.
+  for (const [key, hide] of Object.entries(hides)) {
+    if (!seen.has(key)) dropped.push({ key, expected: hide.was, found: null });
+  }
+  return { lines: out, dropped };
+}
+
+/**
+ * The floor a caption's window may shrink to. A caption nobody can read is a
+ * delete wearing a timing nudge's clothes — deletes are the hide layer's
+ * gesture, with its own guard and report. Also the minimum SPACING between
+ * two seams, which is what keeps §115 (`packages/scenes/src/frames.ts`) true:
+ * 50ms is more than one frame at any fps this renders at, so two adjacent
+ * windows can never round onto the same frame.
+ *
+ * (Was `MIN_TIMED_WORD_SEC`, the same 0.05 measured against a WORD, until the
+ * per-word layer was found inert — see `captionLineTiming`'s docstring.)
+ *
+ * Exported for the EDITOR's drag bounds (`captionDragBounds`,
+ * apps/editor/src/TranscriptPanel.tsx): the popover has to stop a drag exactly
+ * where this sweep would, and a second copy of the floor in the browser is how
+ * the two would drift apart.
+ */
+export const MIN_CAPTION_SEC = 0.05;
+
+/**
+ * Re-time a line's words from one window onto another, PROPORTIONALLY — the
+ * arithmetic that keeps the karaoke highlight in sync when a line's
+ * `<Sequence>` window moves under it (`CaptionTrack.tsx:228-229, 387` reads
+ * the word stamps INSIDE the window; a window moved without them would light
+ * the wrong words up, or none).
+ *
+ * The source is the WINDOW, not the words' own span: on the packed stream
+ * both are the same interval (`line.start === words[0].start` and
+ * `line.end === lastWord.end`, measured 117/117 — `captionLineTiming`'s
+ * docstring), and on a line that DOES carry lead-in or hold (the hide layer
+ * can re-base either edge) mapping the window preserves that slack instead of
+ * stretching the words over it.
+ *
+ * Pure and exported so a caller previewing a drag and the apply pass below
+ * share ONE piece of arithmetic (the openCommand/openInBrowser split).
+ * Identity when the source window is degenerate — a zero-width or inverted
+ * span has no ratio to scale by, and `0/0` would put NaN stamps in the render
+ * props. The caller owns `toStart < toEnd`; a target handed backwards would
+ * mirror the word order, which `applyCaptionLineTiming`'s seam sweep makes
+ * unreachable.
+ */
+export function scaleWordsIntoWindow(
+  words: readonly CaptionWord[],
+  fromStart: number,
+  fromEnd: number,
+  toStart: number,
+  toEnd: number,
+): CaptionWord[] {
+  const span = fromEnd - fromStart;
+  if (!(span > 0)) return words.map((w) => ({ ...w }));
+  const ratio = (toEnd - toStart) / span;
+  const at = (t: number): number => toStart + (t - fromStart) * ratio;
+  return words.map((w) => ({ ...w, start: at(w.start), end: at(w.end) }));
+}
+
+/**
+ * Apply per-LINE caption TIMING nudges (`captionLineTiming`) — the LAST
+ * layer, after hides, because it must operate on the SURVIVING lines: a hide
+ * can move a line's window (or remove the line entirely), and a nudge stored
+ * on a line the hides emptied has no window to move (it falls out of the
+ * sweep as `found: null`, like every other orphaned caption record).
+ *
+ * SEAMS, NOT WINDOWS. Caption lines PARTITION the timeline — the packer
+ * chains words (`transcribe.ts`: `next.start = w.end`) and clamps each line's
+ * end to the next line's start (`captions.ts:203-213`), so on a real
+ * transcript every inter-line gap is exactly zero (measured 116/116, see
+ * `captionLineTiming`). The boundaries are therefore SEAMS: `s_0` is the
+ * track's opening, `s_i` the boundary between line i-1 and line i, `s_n` the
+ * track's close, and line i's window is `[s_i, s_{i+1}]`. A `lead` moves the
+ * line's OPENING seam, a `tail` its CLOSING one, and the neighbour on the
+ * other side of that seam follows — one edit, two windows.
+ *
+ * This REPLACES the old "LINE WINDOWS NEVER CHANGE" rule, which existed to
+ * protect §115 (`packages/scenes/src/frames.ts:1-21` — no two lines may share
+ * a frame). Moving seams keeps §115 true BY CONSTRUCTION instead: the sweep
+ * below leaves the seam array STRICTLY INCREASING with at least
+ * `MIN_CAPTION_SEC` between neighbours, and windows cut from an ordered seam
+ * array cannot overlap. Never move one window independently — that is the
+ * operation §115 forbids, and the reason this function edits the seams and
+ * derives the windows rather than the other way round.
+ *
+ * THE SWEEP, left to right: every seam is clamped into the track's ORIGINAL
+ * outer bounds `[s_0, s_n]` and then pushed to at least
+ * `MIN_CAPTION_SEC` past its predecessor (a backward pass pulls seams back if
+ * a track too short to hold every line at the floor made the forward pass run
+ * into the end). A seam may take time FROM a neighbour; it may never cross
+ * one, and the outer bounds never GROW — a caption must not appear before the
+ * first caption of the track or linger past the last, where there is no
+ * output left to show it over.
+ *
+ * BOTH SIDES OF ONE SEAM: line i's `tail` and line i+1's `lead` address the
+ * same seam. The LATER line's `lead` wins, deterministically — the UI writes
+ * both sides of a drag consistently, so this only decides hand-edited docs,
+ * and a stated winner beats an order-of-iteration accident. (A stored
+ * `lead: 0` still claims its seam; an entry the user cleared is DELETED from
+ * the doc, not written as zeros.)
+ *
+ * Lines whose window the sweep did not move are returned VERBATIM — including
+ * their word stamps — so a nudge on one caption cannot perturb the rest of
+ * the track. The ones that did move (the nudged line AND whichever neighbour
+ * shares the moved seam) have their words scaled into the new window by
+ * `scaleWordsIntoWindow`.
+ *
+ * DELIBERATELY NO `was` GUARD, unlike `captionWordsHidden`: timing is
+ * text-orthogonal — a retype under a timing nudge changes what the caption
+ * says, not when it is said, and staleness on text would drop nudges the user
+ * never un-meant. `expected` in the drop reports is therefore always `""`
+ * (the record stores no text to expect). Same first-claimant rule as every
+ * per-word layer: ms-quantised anchors CAN collide (captions.ts:44-50), and
+ * one nudge must move one line.
+ */
+export function applyCaptionLineTiming(
+  lines: readonly CaptionLine[],
+  timing: Record<string, { lead: number; tail: number }>,
+): AppliedCaptionEdits {
+  const dropped: AppliedCaptionEdits["dropped"] = [];
+  if (lines.length === 0 || Object.keys(timing).length === 0) {
+    return { lines: [...lines], dropped };
+  }
+
+  const n = lines.length;
+  // The seam array, `n + 1` boundaries for `n` lines. An interior seam is read
+  // off the LATER line's start: on the packed stream that IS the earlier
+  // line's end, and on a gapped one (hand-edited, or a hide that re-based an
+  // edge) taking the later start is what keeps an untouched pair's gap intact
+  // below — an unmoved seam rebuilds nothing.
+  const base = [lines[0]!.start, ...lines.slice(1).map((l) => l.start), lines[n - 1]!.end];
+  const seams = [...base];
+
+  const seen = new Set<string>();
+  for (let i = 0; i < n; i++) {
+    const line = lines[i]!;
+    // No anchor, no nudge — the same boundary rule as `applyCaptionEdits`: a
+    // pre-§137 word cannot be addressed, and the stored nudges then fall out
+    // of the sweep below as `found: null`.
+    const key = captionAnchorOf(line.words[0]);
+    const entry = key === null ? undefined : timing[key];
+    if (key === null || !entry) continue;
+    // An earlier line already answered for this anchor — nudging here too
+    // would fan one nudge onto a second line.
+    if (seen.has(key)) {
+      dropped.push({ key, expected: "", found: line.words[0]!.text, reason: "duplicate-anchor" });
+      continue;
+    }
+    seen.add(key);
+    // Deltas ride on the line's OWN edges, so a gapped stream moves the edge
+    // the user dragged rather than the neighbour's. Tail first, then lead:
+    // lines are visited in order, so line i+1's lead lands on the shared seam
+    // AFTER line i's tail — the documented "later lead wins".
+    seams[i + 1] = line.end + entry.tail;
+    seams[i] = line.start + entry.lead;
+  }
+
+  const lo = base[0]!;
+  const hi = base[n]!;
+  for (let i = 0; i <= n; i++) seams[i] = Math.min(Math.max(seams[i]!, lo), hi);
+  for (let i = 1; i <= n; i++) {
+    seams[i] = Math.min(Math.max(seams[i]!, seams[i - 1]! + MIN_CAPTION_SEC), hi);
+  }
+  // The forward pass caps at `hi`, so a track with less room than
+  // `n * MIN_CAPTION_SEC` can leave the tail seams piled on the end. Pull the
+  // earlier ones back (never before `lo`) so the array stays ordered.
+  for (let i = n - 1; i >= 0; i--) {
+    seams[i] = Math.max(Math.min(seams[i]!, seams[i + 1]! - MIN_CAPTION_SEC), lo);
+  }
+
+  const out = lines.map((line, i) => {
+    const startMoved = seams[i] !== base[i];
+    const endMoved = seams[i + 1] !== base[i + 1];
+    if (!startMoved && !endMoved) return line;
+    const start = startMoved ? seams[i]! : line.start;
+    // A line whose own end sits BEFORE the seam after it (only possible on a
+    // gapped stream) would invert when its start moves into that gap. The
+    // floor applies to the window as well as to the seams — and it can never
+    // reach the next line, because the sweep already left `start` at least
+    // `MIN_CAPTION_SEC` short of the next seam.
+    const end = endMoved ? seams[i + 1]! : Math.max(line.end, start + MIN_CAPTION_SEC);
+    return {
+      ...line,
+      start,
+      end,
+      words: scaleWordsIntoWindow(line.words, line.start, line.end, start, end),
+    };
+  });
+
+  // An anchor no line starts on any more — a later cut removed the word the
+  // line was keyed to, or a hide emptied the line. Silence here is the
+  // field-case failure mode, so say it.
+  for (const key of Object.keys(timing)) {
+    if (!seen.has(key)) dropped.push({ key, expected: "", found: null });
+  }
+  return { lines: out, dropped };
+}
+
+export interface AppliedCaptionLayers {
+  lines: CaptionLine[];
+  /** Every layer's drop reports, tagged with which layer refused them. */
+  dropped: Array<
+    AppliedCaptionEdits["dropped"][number] & { layer: "edit" | "range" | "hide" | "timing" }
+  >;
+}
+
+/**
+ * The caption edit layers, composed in their ONE authoritative order — the
+ * single chokepoint both the editor preview and produce consume, so the two
+ * can never disagree about caption content.
+ *
+ * Per-word edits → RANGE edits → hides → LINE TIMING. Edits BEFORE hides is the
+ * `was` contract: a hide's `was` records the LIVE text the user saw when they
+ * deleted the word, which is the post-retype text — running hides first
+ * would stale every hide sitting on a retyped word. Range edits sit between
+ * the two, but the order barely earns the word: the reducer's creation-time
+ * scrubbing (`useEdits`' `patchCaptionRange`) removes every per-word edit
+ * and hide inside a new range's interval, so a LIVE range edit never
+ * coexists with either inside its own words — the order only matters for
+ * hand-edited docs, where the layers' own guards report rather than guess.
+ * Timing runs LAST because it must see the surviving LINES: the hide layer
+ * re-bases a line's window onto its surviving words and drops a line whose
+ * words are all hidden, and a nudge on a line that no longer exists has no
+ * window to move (`applyCaptionLineTiming`). Drop reports carry which layer
+ * refused them, since "the retype missed", "the rewrite missed" and "the
+ * delete missed" send the user to different gestures.
+ */
+export function applyCaptionLayers(
+  lines: readonly CaptionLine[],
+  doc: OverrideDoc,
+): AppliedCaptionLayers {
+  const edited = applyCaptionEdits(lines, doc.captions);
+  const ranged = applyCaptionRangeEdits(edited.lines, doc.captionRangeEdits);
+  const hidden = applyCaptionWordHides(ranged.lines, doc.captionWordsHidden);
+  const timed = applyCaptionLineTiming(hidden.lines, doc.captionLineTiming);
+  return {
+    lines: timed.lines,
+    dropped: [
+      ...edited.dropped.map((d) => ({ ...d, layer: "edit" as const })),
+      ...ranged.dropped.map((d) => ({ ...d, layer: "range" as const })),
+      ...hidden.dropped.map((d) => ({ ...d, layer: "hide" as const })),
+      ...timed.dropped.map((d) => ({ ...d, layer: "timing" as const })),
+    ],
+  };
 }
 
 /** Theme tokens the user set, over whatever the production already had. */

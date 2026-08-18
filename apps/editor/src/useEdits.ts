@@ -2,6 +2,8 @@ import { useReducer } from "react";
 import {
   captionEditWas,
   captionKeyFor,
+  captionRangeEditWas,
+  isLegacyCaptionKey,
   clearElementTransform,
   clearGraphicRect,
   clearTiming,
@@ -109,6 +111,84 @@ export type EditAction =
    * that the word HAS an anchor (`captionAnchorOf`); the reducer derives the
    * key with `captionKeyFor`, which throws on a non-finite one by design. */
   | { type: "patchCaption"; srcStart: number; text: string; was: string }
+  /** Free-text rewrite of a contiguous word RUN (`captionRangeEdits`) — the
+   * one gesture allowed to change word count. `fromSrcStart`/`toSrcStart`
+   * are the endpoints' SOURCE starts (§137, the `patchCaption` anchor
+   * contract — callers pre-validate with `captionAnchorOf`); `was` is the
+   * NFC-joined BASE texts of the run — never the live (post-retype) join.
+   * The reducer scrubs every per-word retype inside the interval in the
+   * SAME commit, so at apply time the edits layer no longer rewrites
+   * anything inside it and the whole-run guard compares against the base
+   * run — a live-joined `was` carrying a retype would fail that guard
+   * forever (the `captionEditWas` base-truth rule, applied run-wide). */
+  | {
+      type: "patchCaptionRange";
+      fromSrcStart: number;
+      toSrcStart: number;
+      text: string;
+      was: string;
+    }
+  /** "Apply to all (n)" for a single-token, single-word rewrite: fold the
+   * `patchCaption` case's semantics over EVERY entry against one draft doc —
+   * per-key `captionEditWas`, clear-when-text===was — in ONE commit, because
+   * "retype every 'helo'" is one gesture and must be one undo step (the
+   * `patchCaptionStyleAll` precedent). Same anchor contract as `patchCaption`;
+   * each entry's `was` is that occurrence's own BASE text. */
+  | {
+      type: "patchCaptionAllOccurrences";
+      entries: Array<{ srcStart: number; was: string }>;
+      text: string;
+    }
+  /** The multi-word sibling: fold `patchCaptionRange`'s FULL per-interval
+   * logic (scrub of captions + hides + overlapping entries, then append;
+   * text===was deletes the pair's entry) over every occurrence on one draft
+   * doc, ONE commit — one undo step for the whole gesture, selection and
+   * occurrences together. Entry `was` values are BASE-joined runs, the same
+   * base-truth rule as `patchCaptionRange`'s own docstring. */
+  | {
+      type: "patchCaptionRangeAllOccurrences";
+      entries: Array<{ fromSrcStart: number; toSrcStart: number; was: string }>;
+      text: string;
+    }
+  /** Per-LINE caption TIMING nudge (`captionLineTiming`) — `lead` moves a
+   * caption line's OPENING seam, `tail` its CLOSING one, both DELTAS in
+   * seconds against the line's derived window, keyed by the LINE's FIRST
+   * WORD's SOURCE time (§137, the `patchCaption` anchor contract — callers
+   * pre-validate with `captionAnchorOf`, and `captionKeyFor` throwing on a
+   * non-finite `srcStart` is by design).
+   *
+   * BULK BY CONSTRUCTION, with no single-line sibling: one seam is shared by
+   * two lines (`applyCaptionLineTiming`), so a drag legitimately writes both
+   * sides at once and that is ONE gesture — one undo step (the
+   * `hideCaptionWords`/`patchCaptionStyleAll` precedent; a per-line dispatch
+   * would make the user press undo twice to put one seam back). Per entry:
+   * both deltas under 1ms in magnitude DELETES that key (a line dragged back
+   * to base clears itself — the clearVideo/patchCaption clear-override rule),
+   * everything else writes, and a fold that changes nothing returns the SAME
+   * state rather than minting a phantom undo step. */
+  | {
+      type: "patchCaptionLineTiming";
+      entries: Array<{ srcStart: number; lead: number; tail: number }>;
+    }
+  /** Hide the selection's words from the captions in ONE commit — one gesture,
+   * one undo step (the `patchCaptionStyleAll` precedent). Same anchor contract
+   * as `patchCaption` above: callers pre-validate with `captionAnchorOf`, and
+   * the reducer's `captionKeyFor` throwing on a non-finite `srcStart` is by
+   * design. `was` is the LIVE (post-retype) text — hides apply after retypes
+   * (`applyCaptionLayers`). */
+  | { type: "hideCaptionWords"; words: Array<{ srcStart: number; was: string }> }
+  /** The way back: DELETE the keys (restoreScene's rule), one commit. */
+  | { type: "restoreCaptionWords"; srcStarts: number[] }
+  /** "Remove captions + video" for a word selection (§59b revisited) — the
+   * hide entries AND a `cuts` entry, in ONE commit. Same anchor contract as
+   * `hideCaptionWords` above; `startSec`/`endSec` are output seconds of the
+   * current render-props frame, same as `cutChunk`. */
+  | {
+      type: "cutWords";
+      words: Array<{ srcStart: number; was: string }>;
+      startSec: number;
+      endSec: number;
+    }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -468,6 +548,263 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         captions: { ...state.doc.captions, [key]: { text: action.text, was } },
       });
     }
+    case "patchCaptionRange": {
+      const fromKey = captionKeyFor(action.fromSrcStart);
+      const toKey = captionKeyFor(action.toSrcStart);
+      const text = action.text.trim();
+      // Empty is a cancel, never stored: rewriting a run to nothing is a
+      // DELETE, which is the hide layer's gesture, with its own confirm.
+      if (!text) return state;
+      // The captionEditWas rule, per PAIR: a re-edit of the same run sees the
+      // LIVE (already-rewritten) text, and storing that as `was` would stale
+      // the guard against the base lines. The base truth survives re-edits —
+      // and the ACTION's own `was` must already be the BASE-joined run text
+      // (the action docstring's contract): the scrub below removes every
+      // per-word retype inside the interval in this same commit, so the run
+      // `applyCaptionRangeEdits`' whole-run guard reads IS the base run. A
+      // live-joined `was` (containing a retype) would drop the edit
+      // permanently on the very next apply. Same-pair inheritance here still
+      // wins whenever an entry for the pair exists.
+      const was = captionRangeEditWas(state.doc.captionRangeEdits, fromKey, toKey, action.was);
+      if (text === was) {
+        // Retyped back to the original: DELETE the entry (the clearVideo/
+        // patchCaption rule — an override restating the base is still an
+        // override), or no-op when there is nothing to delete.
+        const rest = state.doc.captionRangeEdits.filter(
+          (e) => e.fromKey !== fromKey || e.toKey !== toKey,
+        );
+        if (rest.length === state.doc.captionRangeEdits.length) return state;
+        return commit({ ...state.doc, captionRangeEdits: rest });
+      }
+      // ONE commit: scrub, then append. A range edit re-mints the words
+      // inside its interval with synthetic anchors on every apply — a
+      // per-word edit or hide keyed to a pre-rewrite anchor inside it would
+      // dangle as a permanent drop report, and two overlapping range edits
+      // would fight over the same words — so the new gesture SUPERSEDES all
+      // of them (the cuts-supersede-hides philosophy, `pruneHidesInsideCuts`).
+      const lo = Math.min(Math.round(action.fromSrcStart * 1000), Math.round(action.toSrcStart * 1000));
+      const hi = Math.max(Math.round(action.fromSrcStart * 1000), Math.round(action.toSrcStart * 1000));
+      const inInterval = (key: string): boolean => {
+        // A LEGACY positional key ("0", "17") is never source-time
+        // addressable: `migrateLoadedDoc` preserves the ones it could not
+        // place in the doc for write-back, and `Number(key.slice(1))` would
+        // misread position 17 as 7ms — silently deleting an edit this scrub
+        // cannot honestly locate. Parse, never coerce (CLAUDE.md): only §137
+        // `w<ms>` keys carry an interval-testable instant. Hides can never
+        // be legacy (the layer postdates §137), but the guard covers both
+        // maps below so the invariant is stated once, here, rather than
+        // depending on each map's history.
+        if (isLegacyCaptionKey(key)) return false;
+        const ms = Number(key.slice(1));
+        return ms >= lo && ms <= hi;
+      };
+      const captions = Object.fromEntries(
+        Object.entries(state.doc.captions).filter(([key]) => !inInterval(key)),
+      );
+      const captionWordsHidden = Object.fromEntries(
+        Object.entries(state.doc.captionWordsHidden).filter(([key]) => !inInterval(key)),
+      );
+      const captionRangeEdits = [
+        ...state.doc.captionRangeEdits.filter((e) => {
+          const eLo = Math.min(Number(e.fromKey.slice(1)), Number(e.toKey.slice(1)));
+          const eHi = Math.max(Number(e.fromKey.slice(1)), Number(e.toKey.slice(1)));
+          return eHi < lo || eLo > hi;
+        }),
+        { fromKey, toKey, text, was },
+      ];
+      return commit({ ...state.doc, captions, captionWordsHidden, captionRangeEdits });
+    }
+    case "patchCaptionAllOccurrences": {
+      // The `patchCaption` case's semantics, folded over every entry against
+      // ONE draft map (see the action docstring): per-key `captionEditWas`
+      // keeps each occurrence's guard anchored to ITS base text, and
+      // text===was clears that key (the clearVideo rule) instead of storing
+      // an override restating the base.
+      let captions = state.doc.captions;
+      let changed = false;
+      for (const entry of action.entries) {
+        const key = captionKeyFor(entry.srcStart);
+        const was = captionEditWas(captions, key, entry.was);
+        if (action.text === was) {
+          if (!(key in captions)) continue;
+          const { [key]: _dropped, ...rest } = captions;
+          captions = rest;
+          changed = true;
+          continue;
+        }
+        const prev = captions[key];
+        if (prev !== undefined && prev.text === action.text && prev.was === was) continue;
+        captions = { ...captions, [key]: { text: action.text, was } };
+        changed = true;
+      }
+      // An unchanged document must not mint an undo step (the restoreScene
+      // no-op-guard shape) — unlike single `patchCaption`, a bulk apply can
+      // legitimately find every occurrence already carrying the text.
+      if (!changed) return state;
+      return commit({ ...state.doc, captions });
+    }
+    case "patchCaptionRangeAllOccurrences": {
+      const text = action.text.trim();
+      // Empty is a cancel, the `patchCaptionRange` rule — deleting runs is
+      // the hide layer's gesture, with its own confirm.
+      if (!text) return state;
+      let doc = state.doc;
+      let changed = false;
+      for (const entry of action.entries) {
+        // `patchCaptionRange`'s full per-interval logic, on the DRAFT doc so
+        // each occurrence's scrub sees the previous occurrences' work — one
+        // commit at the end (the action docstring's one-gesture rule).
+        const fromKey = captionKeyFor(entry.fromSrcStart);
+        const toKey = captionKeyFor(entry.toSrcStart);
+        const was = captionRangeEditWas(doc.captionRangeEdits, fromKey, toKey, entry.was);
+        if (text === was) {
+          // Back to the base run: DELETE this pair's entry (the clearVideo/
+          // patchCaption rule), or skip when there is nothing to delete.
+          const rest = doc.captionRangeEdits.filter(
+            (e) => e.fromKey !== fromKey || e.toKey !== toKey,
+          );
+          if (rest.length === doc.captionRangeEdits.length) continue;
+          doc = { ...doc, captionRangeEdits: rest };
+          changed = true;
+          continue;
+        }
+        const lo = Math.min(
+          Math.round(entry.fromSrcStart * 1000),
+          Math.round(entry.toSrcStart * 1000),
+        );
+        const hi = Math.max(
+          Math.round(entry.fromSrcStart * 1000),
+          Math.round(entry.toSrcStart * 1000),
+        );
+        const inInterval = (key: string): boolean => {
+          // Parse, never coerce (the `patchCaptionRange` legacy-key guard,
+          // the F7 lesson): a positional key ("17") is not source-time
+          // addressable and must survive the scrub verbatim.
+          if (isLegacyCaptionKey(key)) return false;
+          const ms = Number(key.slice(1));
+          return ms >= lo && ms <= hi;
+        };
+        doc = {
+          ...doc,
+          captions: Object.fromEntries(
+            Object.entries(doc.captions).filter(([key]) => !inInterval(key)),
+          ),
+          captionWordsHidden: Object.fromEntries(
+            Object.entries(doc.captionWordsHidden).filter(([key]) => !inInterval(key)),
+          ),
+          captionRangeEdits: [
+            ...doc.captionRangeEdits.filter((e) => {
+              const eLo = Math.min(Number(e.fromKey.slice(1)), Number(e.toKey.slice(1)));
+              const eHi = Math.max(Number(e.fromKey.slice(1)), Number(e.toKey.slice(1)));
+              return eHi < lo || eLo > hi;
+            }),
+            { fromKey, toKey, text, was },
+          ],
+        };
+        changed = true;
+      }
+      if (!changed) return state;
+      return commit(doc);
+    }
+    case "patchCaptionLineTiming": {
+      // Every entry folded onto ONE draft record and committed once (see the
+      // action docstring) — the `hideCaptionWords`/`patchCaptionAllOccurrences`
+      // shape.
+      let timing = state.doc.captionLineTiming;
+      let changed = false;
+      for (const entry of action.entries) {
+        const key = captionKeyFor(entry.srcStart);
+        // Sub-millisecond both ways is "no nudge": DELETE the key rather than
+        // storing deltas the render could never show (the clearVideo/
+        // patchCaption rule). One drag writes both sides of a seam, so a
+        // gesture legitimately mixes a real delta on the line the user moved
+        // with a cleared one on the neighbour it moved back to base.
+        if (Math.abs(entry.lead) < 0.001 && Math.abs(entry.tail) < 0.001) {
+          if (!(key in timing)) continue;
+          const { [key]: _dropped, ...rest } = timing;
+          timing = rest;
+          changed = true;
+          continue;
+        }
+        // Already carrying exactly these deltas — a drag that ends where it
+        // started must not mint an undo step (the `patchCaptionAllOccurrences`
+        // guard; a re-drag routinely re-sends a neighbour's unchanged deltas).
+        const prev = timing[key];
+        if (prev !== undefined && prev.lead === entry.lead && prev.tail === entry.tail) continue;
+        timing = { ...timing, [key]: { lead: entry.lead, tail: entry.tail } };
+        changed = true;
+      }
+      // An unchanged document must not mint an undo step (the restoreScene
+      // no-op-guard shape).
+      if (!changed) return state;
+      return commit({ ...state.doc, captionLineTiming: timing });
+    }
+    case "hideCaptionWords": {
+      // ONE commit for the whole selection, however many words it holds —
+      // "delete these four words" is one gesture and must be one undo step,
+      // the same reasoning as patchCaptionStyleAll's bulk write.
+      const hidden = { ...state.doc.captionWordsHidden };
+      let added = false;
+      for (const w of action.words) {
+        const key = captionKeyFor(w.srcStart);
+        // A key already present keeps its stored `was`: hiding an
+        // already-hidden word again (a selection that swept over one) must not
+        // overwrite the original guard text with whatever the caller saw —
+        // same instinct as `captionEditWas` keeping the first edit's `was`.
+        if (key in hidden) continue;
+        hidden[key] = { was: w.was };
+        added = true;
+      }
+      // Every word was already hidden — an unchanged document must not mint
+      // an undo step (the restoreScene no-op-guard shape).
+      if (!added) return state;
+      return commit({ ...state.doc, captionWordsHidden: hidden });
+    }
+    case "restoreCaptionWords": {
+      // DELETE the keys, never write a false-ish value — the restoreScene/
+      // captionsHidden rule: an entry with nothing to say is still an
+      // override, dead weight in every overrides.json saved after it.
+      const hidden = { ...state.doc.captionWordsHidden };
+      let removed = false;
+      for (const srcStart of action.srcStarts) {
+        const key = captionKeyFor(srcStart);
+        if (!(key in hidden)) continue;
+        delete hidden[key];
+        removed = true;
+      }
+      if (!removed) return state;
+      return commit({ ...state.doc, captionWordsHidden: hidden });
+    }
+    case "cutWords": {
+      // "This word is gone" is ONE gesture, so BOTH layers land in ONE
+      // commit (one undo step — the hideCaptionWords/patchCaptionStyleAll
+      // rule): the hide entries make the caption disappear NOW (the live
+      // preview deliberately never applies `doc.cuts` — App.tsx's `live`
+      // memo has the why), and the cut removes the time range on the next
+      // produce/Render. Produce then retires hide entries the applied cut
+      // made redundant (`pruneHidesInsideCuts`, packages/core/src/recut.ts),
+      // so the doc does not accumulate dead keys.
+      const hidden = { ...state.doc.captionWordsHidden };
+      for (const w of action.words) {
+        const key = captionKeyFor(w.srcStart);
+        // A key already present keeps its stored `was` — the same
+        // first-guard-wins rule as `hideCaptionWords` above.
+        if (key in hidden) continue;
+        hidden[key] = { was: w.was };
+      }
+      // Writes ONLY `{startSec, endSec}` — never a `src` — and the filter
+      // replaces ONLY an existing SRC-LESS entry at this exact window: see
+      // `cutChunk` above for the whole argument (a src-anchored entry
+      // sharing the window is a settled, independent decision).
+      const cuts = state.doc.cuts.filter(
+        (c) => c.src !== undefined || c.startSec !== action.startSec || c.endSec !== action.endSec,
+      );
+      return commit({
+        ...state.doc,
+        captionWordsHidden: hidden,
+        cuts: [...cuts, { startSec: action.startSec, endSec: action.endSec }],
+      });
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -577,6 +914,23 @@ export function useEdits() {
     patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),
     patchCaption: (srcStart: number, text: string, was: string) =>
       dispatch({ type: "patchCaption", srcStart, text, was }),
+    patchCaptionRange: (fromSrcStart: number, toSrcStart: number, text: string, was: string) =>
+      dispatch({ type: "patchCaptionRange", fromSrcStart, toSrcStart, text, was }),
+    patchCaptionAllOccurrences: (entries: Array<{ srcStart: number; was: string }>, text: string) =>
+      dispatch({ type: "patchCaptionAllOccurrences", entries, text }),
+    patchCaptionRangeAllOccurrences: (
+      entries: Array<{ fromSrcStart: number; toSrcStart: number; was: string }>,
+      text: string,
+    ) => dispatch({ type: "patchCaptionRangeAllOccurrences", entries, text }),
+    patchCaptionLineTiming: (
+      entries: Array<{ srcStart: number; lead: number; tail: number }>,
+    ) => dispatch({ type: "patchCaptionLineTiming", entries }),
+    hideCaptionWords: (words: Array<{ srcStart: number; was: string }>) =>
+      dispatch({ type: "hideCaptionWords", words }),
+    restoreCaptionWords: (srcStarts: number[]) =>
+      dispatch({ type: "restoreCaptionWords", srcStarts }),
+    cutWords: (words: Array<{ srcStart: number; was: string }>, startSec: number, endSec: number) =>
+      dispatch({ type: "cutWords", words, startSec, endSec }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

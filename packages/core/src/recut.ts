@@ -391,3 +391,53 @@ export function applyUserCuts(
     removedSec,
   };
 }
+
+/** What `pruneHidesInsideCuts` hands back: the doc (same reference when
+ * nothing was pruned — the caller's changed-gate reads `pruned.length`), and
+ * the retired keys so produce can SAY what it retired. */
+export interface PrunedHides {
+  doc: OverrideDoc;
+  pruned: string[];
+}
+
+/**
+ * Retire `captionWordsHidden` entries whose word the final cutlist REMOVES
+ * (§59b revisited 2026-08-18 — the "captions + video" delete gesture writes
+ * both a hide and a cut in one commit).
+ *
+ * Once the cut lands, `buildCaptionLines` drops the word before the hide
+ * layer ever sees it, so the hide key would report `found: null` ("the cut
+ * removed it", `captionHideDropLine`) on every subsequent run forever — the
+ * cut SUPERSEDES the hide, the same superseded philosophy `overrides.ts`'s
+ * caption-key migration applies. Hides whose source instant is OUTSIDE every
+ * removed segment are kept verbatim.
+ *
+ * HALF-OPEN interval (`srcIn <= src < srcOut`), on purpose — the two edges
+ * are NOT symmetric. A word starting exactly at `srcIn` IS cut: that is
+ * precisely where the FIRST word of a captions+video delete lands (its
+ * srcStart round-trips through the TimeMap to the resolved cut's own srcIn),
+ * and `mapWord` clamps that instant into the removal and drops the word — a
+ * strictly-inside test never retired the gesture's own first hide, leaving
+ * it a permanent `found: null` drop report. A word starting exactly at
+ * `srcOut` belongs to the NEXT kept span (`buildCaptionLines` still emits it
+ * — a seam instant has a kept-side preimage, `timemap.ts`), so its hide is
+ * still doing work and must survive.
+ */
+export function pruneHidesInsideCuts(doc: OverrideDoc, cutlist: readonly Segment[]): PrunedHides {
+  const pruned: string[] = [];
+  const kept: OverrideDoc["captionWordsHidden"] = {};
+  for (const [key, entry] of Object.entries(doc.captionWordsHidden)) {
+    // `captionKeyFor`'s quantization inverted (`w${Math.round(sec * 1000)}`,
+    // overrides.ts): the key IS the word's source instant, ms-quantized. A
+    // malformed key parses to NaN, every comparison below is false, and the
+    // entry is kept — never deleted over a key this function cannot read.
+    const srcSec = parseInt(key.slice(1), 10) / 1000;
+    const removed = cutlist.some(
+      (seg) => seg.kind === "remove" && srcSec >= seg.srcIn && srcSec < seg.srcOut,
+    );
+    if (removed) pruned.push(key);
+    else kept[key] = entry;
+  }
+  if (pruned.length === 0) return { doc, pruned };
+  return { doc: { ...doc, captionWordsHidden: kept }, pruned };
+}

@@ -281,6 +281,201 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
   });
 });
 
+describe("reconcileCaptionEdits — the caption word-hide layer (§59b, revisited 2026-08-18)", () => {
+  const lines = (...ws: Array<[string, number]>): CaptionLine[] => [
+    {
+      words: ws.map(([text, srcStart], i) => ({ text, start: i, end: i + 1, srcStart })),
+      start: 0,
+      end: ws.length,
+    },
+  ];
+
+  it("drops a hidden word from the returned captionLines and writes the doc back untouched", () => {
+    const before = OverrideDocSchema.parse({ captionWordsHidden: { w6000: { was: "edge," } } });
+    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status"]);
+    // The write-back carries the hide layer through as-is — hides never had a
+    // positional-key era, so there is nothing for the migration to touch.
+    expect(out.doc.captionWordsHidden).toEqual({ w6000: { was: "edge," } });
+    // A hide alone earns no write: nothing re-anchored.
+    expect(out.reanchored).toBe(false);
+  });
+
+  it("applies hides AFTER retypes — a hide whose `was` is the post-retype text lands", () => {
+    // The layering contract (`applyCaptionLayers`): the user retyped "edge,"
+    // to "Zsh," and THEN hid the word they saw, so the hide's `was` is the
+    // live text. Hides running first would stale it against the base.
+    const before = OverrideDocSchema.parse({
+      captions: { w6000: { text: "Zsh,", was: "edge," } },
+      captionWordsHidden: { w6000: { was: "Zsh," } },
+    });
+    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status"]);
+    expect(out.log.join("\n")).not.toContain("hidden word");
+  });
+
+  it("reports a stale hide — text changed — with the hidden-word prefix, and keeps the word", () => {
+    const before = OverrideDocSchema.parse({ captionWordsHidden: { w6000: { was: "edge," } } });
+    const out = reconcileCaptionEdits(before, lines(["hedge,", 6]));
+    // Left visible rather than deleting a word the user never pointed at.
+    expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["hedge,"]);
+    const log = out.log.join("\n");
+    expect(log).toContain('hidden word "edge,"');
+    expect(log).toContain('"hedge,"');
+  });
+
+  it("reports a hide whose word the cut removed — nothing left to hide", () => {
+    const before = OverrideDocSchema.parse({ captionWordsHidden: { w6000: { was: "edge," } } });
+    const out = reconcileCaptionEdits(before, lines(["status", 5]));
+    expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status"]);
+    const log = out.log.join("\n");
+    expect(log).toContain('hidden word "edge,"');
+    expect(log).toContain("nothing left to hide");
+    expect(log).not.toContain("null");
+  });
+});
+
+describe("reconcileCaptionEdits — the caption RANGE-edit layer (2026-08-18)", () => {
+  const lines = (...ws: Array<[string, number]>): CaptionLine[] => [
+    {
+      words: ws.map(([text, srcStart], i) => ({ text, start: i, end: i + 1, srcStart })),
+      start: 0,
+      end: ws.length,
+    },
+  ];
+
+  it("applies a range rewrite in the produce path, logs it, and carries the array through the write-back", () => {
+    const before = OverrideDocSchema.parse({
+      captionRangeEdits: [
+        { fromKey: "w5000", toKey: "w6000", text: "one two three", was: "status edge," },
+      ],
+    });
+    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["one", "two", "three"]);
+    expect(out.log.join("\n")).toContain("1 caption range(s) rewritten by the editor");
+    // The write-back spreads the array through untouched — range edits never
+    // had a positional-key era, so the migration must not touch them.
+    expect(out.doc.captionRangeEdits).toEqual(before.captionRangeEdits);
+    // A range edit alone earns no write: nothing re-anchored.
+    expect(out.reanchored).toBe(false);
+  });
+
+  it("applies range rewrites AFTER retypes — a run whose `was` is the post-retype text lands", () => {
+    // The layering contract (`applyCaptionLayers`): the user retyped "edge,"
+    // to "Zsh," and then rewrote the run they SAW, so the run's `was` holds
+    // the live text. Ranges running first would stale it against the base.
+    const before = OverrideDocSchema.parse({
+      captions: { w6000: { text: "Zsh,", was: "edge," } },
+      captionRangeEdits: [
+        { fromKey: "w5000", toKey: "w6000", text: "rewritten run", was: "status Zsh," },
+      ],
+    });
+    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["rewritten", "run"]);
+    expect(out.log.join("\n")).not.toContain("range edit");
+  });
+
+  it("logs a stale range rewrite with the range prefix and leaves the run alone", () => {
+    const before = OverrideDocSchema.parse({
+      captionRangeEdits: [
+        { fromKey: "w5000", toKey: "w6000", text: "x y", was: "not the run" },
+      ],
+    });
+    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status", "edge,"]);
+    const log = out.log.join("\n");
+    expect(log).toContain('range edit "not the run"');
+    expect(log).toContain("w5000..w6000");
+    // The rewrite failed WHOLE — no count line claiming it landed.
+    expect(log).not.toContain("rewritten by the editor");
+    // The doc keeps the entry: a run that cannot place it today is not a
+    // licence to delete it (the captionEditsToKeep philosophy).
+    expect(out.doc.captionRangeEdits).toEqual(before.captionRangeEdits);
+  });
+
+  it("logs a range rewrite whose run the cut removed — found: null, no 'null' in the sentence", () => {
+    const before = OverrideDocSchema.parse({
+      captionRangeEdits: [
+        { fromKey: "w5000", toKey: "w9000", text: "x y", was: "status gone" },
+      ],
+    });
+    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const log = out.log.join("\n");
+    expect(log).toContain('range edit "status gone"');
+    expect(log).toContain("no longer sit at those source moments");
+    expect(log).not.toContain("null");
+  });
+});
+
+describe("reconcileCaptionEdits — the caption LINE TIMING layer (2026-08-18)", () => {
+  // A PACKED pair of lines, the shape a real caption stream has: no gap
+  // between them, each line starting on its first word and ending on its last
+  // (`applyCaptionLineTiming`'s docstring has the measurements).
+  const lines = (): CaptionLine[] => [
+    {
+      words: [
+        { text: "status", start: 0, end: 0.6, srcStart: 5 },
+        { text: "edge,", start: 0.6, end: 1, srcStart: 6 },
+      ],
+      start: 0,
+      end: 1,
+    },
+    {
+      words: [{ text: "here", start: 1, end: 2, srcStart: 9 }],
+      start: 1,
+      end: 2,
+    },
+  ];
+
+  it("applies a nudge to the returned lines, logs the count, and writes the doc back untouched", () => {
+    const before = OverrideDocSchema.parse({
+      captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
+    });
+    const out = reconcileCaptionEdits(before, lines());
+    // The seam between the two lines moved, so BOTH windows did.
+    expect(out.lines[1]!.start).toBeCloseTo(0.7, 10);
+    expect(out.lines[0]!.end).toBeCloseTo(0.7, 10);
+    expect(out.log.join("\n")).toContain("1 caption timing nudge(s) applied");
+    // The write-back carries the timing layer through as-is — nudges never
+    // had a positional-key era, so there is nothing for the migration to
+    // touch.
+    expect(out.doc.captionLineTiming).toEqual({ w9000: { lead: -0.3, tail: 0 } });
+    // A nudge alone earns no write: nothing re-anchored.
+    expect(out.reanchored).toBe(false);
+  });
+
+  it("applies timing AFTER hides — a nudge on a line the hides emptied reports as dropped", () => {
+    // The layering contract (`applyCaptionLayers`): timing moves the seams
+    // between SURVIVING lines, so a nudge whose line the hide layer removed
+    // has nothing left to move — reported, never guessed at.
+    const before = OverrideDocSchema.parse({
+      captionWordsHidden: { w9000: { was: "here" } },
+      captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
+    });
+    const out = reconcileCaptionEdits(before, lines());
+    expect(out.lines).toHaveLength(1);
+    const log = out.log.join("\n");
+    expect(log).toContain("caption timing (w9000)");
+    expect(log).not.toContain("timing nudge(s) applied");
+  });
+
+  it("logs a nudge whose caption the cut removed with the caption-timing prefix, no 'null'", () => {
+    const before = OverrideDocSchema.parse({
+      captionLineTiming: { w99000: { lead: 0.1, tail: 0.1 } },
+    });
+    const out = reconcileCaptionEdits(before, lines());
+    const log = out.log.join("\n");
+    expect(log).toContain("caption timing (w99000)");
+    expect(log).toContain("no caption starts at that source moment");
+    expect(log).not.toContain("null");
+    // The failed nudge must not be counted as applied.
+    expect(log).not.toContain("timing nudge(s) applied");
+    // The doc keeps the entry: a run that cannot place it today is not a
+    // licence to delete it (the captionEditsToKeep philosophy).
+    expect(out.doc.captionLineTiming).toEqual(before.captionLineTiming);
+  });
+});
+
 /**
  * Everything above tests `reconcileCaptionEdits` in isolation. This tests that
  * `produce.ts` still CALLS it — by reading the source, which is normally the
@@ -339,9 +534,22 @@ describe("produce's §137 caption wiring (source-text guard)", () => {
     // migration changes the doc without changing the cut, so the repaired file
     // never reached disk. Either operand order satisfies this: what must not
     // survive is one of them going missing, or the `||` narrowing to `&&`.
+    // `hidesPruned` joined the gate with the §59b-revisited word delete — a
+    // pruned hide is a doc change with neither a cut change nor a migration
+    // behind it, the identical shape — so the regex requires all three.
     expect(src).toMatch(
-      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\)/,
+      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\|\|\s*hidesPruned\s*\)/,
     );
+  });
+
+  it("PRUNES hides the final cutlist removed — `pruneHidesInsideCuts` is called AND adopted", () => {
+    // Same two-part shape as the reconcile assertions above, for the same
+    // reason: computing the prune and dropping the result typechecks, still
+    // reads the pruned list for the log line, and ships a doc that reports
+    // "the cut removed it" (`captionHideDropLine`) on every run forever —
+    // the exact permanent noise the prune exists to retire.
+    expect(src).toMatch(/=\s*pruneHidesInsideCuts\(/);
+    expect(src).toMatch(/overrideDoc\s*=\s*hidePrune\.doc/);
   });
 
   it("spends the `.bak` on the CUT re-anchoring only, never on the caption one", () => {

@@ -78,6 +78,51 @@ function repairSplitSegments(json: WhisperJson): WhisperJson {
   };
 }
 
+/**
+ * Run length at which a stack of zero-length words at ONE instant stops being
+ * a rounding artifact and becomes a repetition-loop hallucination. Real speech
+ * never emits 8 tokens at a single instant; the field case emitted 118.
+ */
+export const REPETITION_BURST_MIN = 8;
+
+/**
+ * Drop whisper repetition-loop bursts (field case 2026-08-18): an Urdu take
+ * re-decoded a whole phrase as 118 CONSECUTIVE tokens all stamped
+ * `from === to === 31040` — zero length, at one instant. The stamp repair
+ * below then fans such a burst out into 118 fabricated 50ms words marching
+ * forward from 31.04s, so the phrase ships TWICE in the captions (31.04s and
+ * 33.54s) and a fifth of the transcript carries the tell-tale exactly-0.05s
+ * duration. `-mc 0` in whisperArgs is the decoder-side mitigation for the same
+ * failure; it did not prevent this occurrence, and it can never repair an
+ * already-cached transcript.json — hence a parse-side guard too.
+ *
+ * A burst is a MAXIMAL run of consecutive zero-length/inverted words sharing
+ * one `start`. Equality is exact, not epsilon: these stamps are integer
+ * milliseconds divided by 1000, so members of one burst are the same double
+ * bit-for-bit, and a tolerance would only start swallowing real neighbors.
+ * Runs shorter than REPETITION_BURST_MIN fall through untouched — a lone
+ * zero-length stamp is a rounding artifact, not a hallucination. The drop is
+ * silent by design: this function is pure and total, and there is no logging
+ * channel in the parse path to warn on.
+ */
+export function dropRepetitionBursts(words: readonly Word[]): Word[] {
+  const out: Word[] = [];
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i]!;
+    if (w.end > w.start) {
+      out.push(w);
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < words.length && words[j]!.end <= words[j]!.start && words[j]!.start === w.start) j++;
+    if (j - i < REPETITION_BURST_MIN) for (let k = i; k < j; k++) out.push(words[k]!);
+    i = j;
+  }
+  return out;
+}
+
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
@@ -115,11 +160,19 @@ export function parseWhisperJson(json: WhisperJson): Transcript {
     if (!raw || !raw.trim()) continue;
     const text = raw.trim();
     if (NOISE_TOKEN.test(text)) continue;
+    // A word already CLOSED by Arabic-script sentence punctuation refuses
+    // continuations (field case 2026-08-18): whisper emits `۔` and the next
+    // sentence's first token with no leading whitespace, and the plain
+    // whitespace rule fused them into one unsplittable word ("ہوں۔اس").
+    // Deliberately NOT the Latin `.`/`!`/`?` — whisper tokenizes decimals
+    // ("3", ".", "5") and abbreviations as bare continuations too, and
+    // splitting those would shred "3.5" into two words. ۔ (U+06D4) and
+    // ؟ (U+061F) have no such second job.
     const startsWord = /^\s/.test(raw) || words.length === 0;
     const start = seg.offsets.from / 1000;
     const end = seg.offsets.to / 1000;
     const last = words[words.length - 1];
-    if (!startsWord && last) {
+    if (!startsWord && last && !/[۔؟]$/.test(last.text)) {
       last.text += text;
       last.end = Math.max(last.end, end);
     } else {
@@ -146,14 +199,18 @@ export function parseWhisperJson(json: WhisperJson): Transcript {
     else if (next) next.start = Math.min(next.start, w.start);
     words.splice(i, 1);
   }
+  // BEFORE the repair loop, never after: the repair rewrites every burst
+  // member into a distinct monotone stamp, so once it has run the shared
+  // timestamp — the only evidence a burst existed — is gone.
+  const kept = dropRepetitionBursts(words);
   // Whisper occasionally emits zero-length or inverted stamps; repair minimally.
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i]!;
+  for (let i = 0; i < kept.length; i++) {
+    const w = kept[i]!;
     if (w.end <= w.start) w.end = w.start + 0.05;
-    const next = words[i + 1];
+    const next = kept[i + 1];
     if (next && next.start < w.end) next.start = w.end;
   }
-  return { language: json.result?.language ?? "en", words };
+  return { language: json.result?.language ?? "en", words: kept };
 }
 
 export interface WhisperOptions {
@@ -192,6 +249,15 @@ export function whisperArgs(opts: WhisperOptions, wavPath: string): string[] {
     "-oj",
     "-of", opts.outBase,
     "-ml", "1",
+    // No text context across 30s decode windows (field case 2026-08-18): an
+    // Urdu take hit whisper's repetition loop — a whole sentence re-decoded
+    // as 261 zero-duration tokens — and carrying the previous window's text
+    // into the decoder is the known trigger. `-mc 0` is the standard
+    // mitigation and leaves `--prompt` (the dictionary bias) untouched.
+    // Cached transcript.json files decoded without it are knowingly still
+    // reused (transcriptCacheReusable's no-spurious-retranscribe rule);
+    // delete a workdir's transcript.json to re-decode with it.
+    "-mc", "0",
     "--no-prints",
   ];
   if (opts.language !== undefined) args.push("-l", opts.language);

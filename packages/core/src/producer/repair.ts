@@ -1,7 +1,7 @@
 import { z } from "zod/v4";
 import type { Transcript, Word } from "../schema";
 import type { Scene } from "../scene-schema";
-import { soundsSimilar } from "../phonetics";
+import { normalizeForCompare, soundsSimilar } from "../phonetics";
 import type { LlmProvider } from "./provider";
 
 /**
@@ -105,15 +105,18 @@ export function buildRepairUserPrompt(
   );
 }
 
-/** Comparable form: case- and punctuation-insensitive. */
-function norm(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .split(/\s+/)
-    .filter(Boolean)
-    .join(" ");
-}
+/**
+ * Comparable form: case- and punctuation-insensitive, in any script.
+ *
+ * This was a second, Latin-only copy (`[^a-z0-9\s]`) of what is now
+ * `normalizeForCompare`. The two drifted in the worst possible way: on an Urdu
+ * transcript every string normalized to "", so `norm(actual) ===
+ * norm(r.correction)` was true for every proposal and all 11 repairs in a real
+ * run were refused as "identical to what was heard" (2026-08-18) — while
+ * `locate()`, comparing "" to "", "matched" the first span it tried without
+ * verifying anything. One shared helper so they cannot drift again.
+ */
+const norm = normalizeForCompare;
 
 function spanText(transcript: Transcript, startWord: number, endWord: number): string {
   return transcript.words
@@ -228,6 +231,12 @@ export function applyRepairs(
    */
   const locate = (r: TranscriptRepair): { startWord: number; endWord: number } | null => {
     const want = norm(r.heard);
+    // A quote that normalizes to nothing is not an anchor: "" compares equal
+    // to the first span whose own normalisation is empty, so the search would
+    // "find" a span it never verified. That was live for every non-Latin
+    // transcript until norm() was fixed above; refuse it explicitly so it
+    // cannot come back through some other all-punctuation quote.
+    if (want.length === 0) return null;
     // Widths to try, in order of trust. The QUOTED TEXT is the reliable part
     // of a proposal, so its own token count leads; the claimed span is a
     // fallback for a quote whose normalisation splits differently. Trusting

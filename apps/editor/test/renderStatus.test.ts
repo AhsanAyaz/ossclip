@@ -4,6 +4,7 @@ import {
   pinnedInfoLines,
   renderCompleteReload,
   renderProgress,
+  resumeRenderState,
 } from "../src/renderStatus";
 import { emptyOverrideDoc } from "@ossclip/core/browser";
 
@@ -93,5 +94,64 @@ describe("renderCompleteReload (PLAN 2026-08-04 Task 4c fix wave, review finding
   it("does nothing when the response carried no overrides at all (a workdir with none yet)", () => {
     expect(renderCompleteReload(undefined, true)).toEqual({ load: null, notifyDiscard: false });
     expect(renderCompleteReload(undefined, false)).toEqual({ load: null, notifyDiscard: false });
+  });
+});
+
+describe("resumeRenderState (2026-08-18: a reload used to discard a finished run's log)", () => {
+  it("resumes a RUNNING render, marked resumed, ready for the poll", () => {
+    expect(
+      resumeRenderState({ running: true, exitCode: null, lines: RUN, startedAt: 1_000 }),
+    ).toEqual({ running: true, lines: RUN, startedAt: 1_000, resumed: true });
+  });
+
+  it("restores a finished run as a SUCCESS terminal state — no finishedAt, a reload has no honest end stamp", () => {
+    const state = resumeRenderState({
+      running: false,
+      exitCode: 0,
+      lines: RUN,
+      startedAt: 1_000,
+    });
+    expect(state).toEqual({
+      running: false,
+      lines: RUN,
+      succeeded: true,
+      startedAt: 1_000,
+      resumed: true,
+    });
+    // The auto-reveal guard: a restored success must never read as live.
+    expect(state?.resumed).toBe(true);
+    expect(state?.finishedAt).toBeUndefined();
+  });
+
+  it("restores a failed run with its exit code, and a cancel as cancelled", () => {
+    expect(
+      resumeRenderState({ running: false, exitCode: 1, lines: RUN, startedAt: 1_000 }),
+    ).toEqual({
+      running: false,
+      lines: RUN,
+      failed: 1,
+      cancelled: undefined,
+      startedAt: 1_000,
+      resumed: true,
+    });
+    expect(
+      resumeRenderState({
+        running: false,
+        exitCode: 143,
+        lines: RUN,
+        startedAt: 1_000,
+        cancelled: true,
+      }),
+    ).toMatchObject({ failed: 143, cancelled: true, resumed: true });
+  });
+
+  it("restores nothing when no run ever started (exitCode null, idle)", () => {
+    expect(resumeRenderState({ running: false, exitCode: null, lines: [] })).toBeNull();
+    expect(resumeRenderState({ running: false, exitCode: null })).toBeNull();
+  });
+
+  it("restores nothing when a run exited but captured no lines — an empty panel is chrome without content", () => {
+    expect(resumeRenderState({ running: false, exitCode: 0, lines: [] })).toBeNull();
+    expect(resumeRenderState({ running: false, exitCode: 1 })).toBeNull();
   });
 });

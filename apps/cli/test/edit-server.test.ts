@@ -68,7 +68,16 @@ describe("edit server", () => {
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body.renderProps.videoFileName).toBe("clip.mp4");
-    expect(body.overrides).toEqual({ theme: {}, scenes: {}, captions: {}, splits: [], cuts: [] });
+    expect(body.overrides).toEqual({
+      theme: {},
+      scenes: {},
+      captions: {},
+      captionWordsHidden: {},
+      captionRangeEdits: [],
+      captionLineTiming: {},
+      splits: [],
+      cuts: [],
+    });
   });
 
   it("saves overrides to disk", async () => {
@@ -263,6 +272,74 @@ describe("edit server", () => {
     expect(JSON.parse(argvLine!)).toEqual(["produce", "./folder", "--llm", "mock"]);
   });
 
+  // 2026-08-18 field cascade: a custom out INSIDE a recorded FOLDER input
+  // means the next produce ingests the output as a source clip, re-keys the
+  // workdir and silently abandons the saved edits. The endpoint mirrors
+  // produce's own refusal so the failure is a 400 the page can show, not a
+  // spawned child dying in the log tail. The input is derived from the
+  // RECORDED command only — never the request body.
+  it("400s a custom out inside a recorded folder input, spawning nothing", async () => {
+    const dir = await fixtureWorkdir();
+    const clips = join(dir, "clips");
+    await mkdir(clips);
+    await recordCommand(dir, "console.log('must never run')", ["produce", clips, "--llm", "mock"]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/render`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ out: join(clips, "final.mp4") }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/ingest this output as a source clip/);
+    // Refused at the gate — no child was spawned.
+    const status = await (await fetch(`${server.url}/api/render/status`)).json();
+    expect(status.running).toBe(false);
+  });
+
+  it("a custom out BESIDE the recorded folder passes through to the spawn", async () => {
+    const dir = await fixtureWorkdir();
+    const clips = join(dir, "clips");
+    await mkdir(clips);
+    await recordCommand(dir, "console.log(JSON.stringify(process.argv.slice(2)))", [
+      "produce",
+      clips,
+      "--llm",
+      "mock",
+    ]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    // The default out shape itself: a sibling sharing the folder's prefix,
+    // which a naive startsWith containment check would wrongly refuse.
+    const out = join(dir, "clips.ossclip.mp4");
+    const res = await fetch(`${server.url}/api/render`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ out }),
+    });
+    expect(res.status).toBe(202);
+    const status = await awaitRenderExit(server.url);
+    expect(status.exitCode).toBe(0);
+    const argvLine = status.lines.find((l) => l.startsWith("["));
+    expect(argvLine).toBeDefined();
+    expect(JSON.parse(argvLine!)).toEqual(["produce", clips, "--llm", "mock", "--out", out]);
+  });
+
+  it("tells the child which workdir it is replaying (OSSCLIP_REPLAY_WORKDIR)", async () => {
+    // Part 3 of the same field cascade: produce compares this against the
+    // workdir it derives and warns when the folder re-keyed — the edits in
+    // THIS workdir's overrides.json would not apply to that render.
+    const dir = await fixtureWorkdir();
+    await recordCommand(dir, "console.log('replaying: ' + process.env.OSSCLIP_REPLAY_WORKDIR)");
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    const status = await awaitRenderExit(server.url);
+    expect(status.exitCode).toBe(0);
+    expect(status.lines.join("\n")).toContain(`replaying: ${dir}`);
+  });
+
   it("cancel kills the child and the status says CANCELLED, not failed (R16 §60)", async () => {
     const dir = await fixtureWorkdir();
     await recordCommand(dir, "setTimeout(() => {}, 10000)");
@@ -307,6 +384,110 @@ describe("edit server", () => {
     expect(res.headers.get("accept-ranges")).toBe("bytes");
     const body = await res.text();
     expect(body).toBe(CLIP_CONTENT.slice(0, 4));
+  });
+
+  it("serves audio.wav as audio/wav — the timing editor's waveform source", async () => {
+    // produce writes `audio.wav` into every workdir, and the caption timing
+    // editor fetches it through /media. octet-stream happens to satisfy
+    // fetch + decodeAudioData, but not a future <audio> element, so the
+    // type is pinned here.
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "audio.wav"), "not-a-real-wav");
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/media/audio.wav`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/wav");
+    expect(await res.text()).toBe("not-a-real-wav");
+  });
+});
+
+describe("reveal output (/api/reveal-output, 2026-08-18)", () => {
+  // Every test injects the `reveal` seam (the `generateThumbnail` pattern) —
+  // the live path would pop a real Finder/Explorer window on the runner.
+
+  it("412 with no command.json, and with a record that carries no out", async () => {
+    const dir = await fixtureWorkdir();
+    const revealed: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      reveal: (p) => revealed.push(p),
+    });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/reveal-output`, { method: "POST" })).status).toBe(412);
+    // A record without -o/--out (and no top-level out) has nothing to reveal
+    // either — same 412, not a guess at produce's default out.
+    await recordCommand(dir, "console.log('hi')");
+    expect((await fetch(`${server.url}/api/reveal-output`, { method: "POST" })).status).toBe(412);
+    expect(revealed).toEqual([]);
+  });
+
+  it("404 when an out is recorded but nothing has been rendered there yet", async () => {
+    const dir = await fixtureWorkdir();
+    await recordCommand(dir, "console.log('hi')", [
+      "produce",
+      "clip.mp4",
+      "-o",
+      join(dir, "final.mp4"),
+    ]);
+    const revealed: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      reveal: (p) => revealed.push(p),
+    });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/reveal-output`, { method: "POST" })).status).toBe(404);
+    expect(revealed).toEqual([]);
+  });
+
+  it("reveals the recorded out when the file exists", async () => {
+    const dir = await fixtureWorkdir();
+    const out = join(dir, "final.mp4");
+    await writeFile(out, "rendered");
+    // The argv spelling — a legacy record without the top-level `out` field
+    // still resolves through -o against the recorded cwd (recordedOutPath's
+    // one spelling of the rule).
+    await recordCommand(dir, "console.log('hi')", ["produce", "clip.mp4", "-o", "final.mp4"]);
+    const revealed: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      reveal: (p) => revealed.push(p),
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/reveal-output`, { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, path: out });
+    expect(revealed).toEqual([out]);
+  });
+
+  it("NEVER takes a path from the request body — the recorded out wins", async () => {
+    // The security stance at the top of edit.ts: this server binds locally,
+    // but an endpoint acting on a client-named path is the same door as
+    // spawning a client-supplied command. The decoy EXISTS, so a body-reading
+    // implementation would happily 200 on it — only ignoring the body
+    // reveals the recorded out instead.
+    const dir = await fixtureWorkdir();
+    const out = join(dir, "final.mp4");
+    await writeFile(out, "rendered");
+    await recordCommand(dir, "console.log('hi')", ["produce", "clip.mp4", "-o", out]);
+    const revealed: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      reveal: (p) => revealed.push(p),
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/reveal-output`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: join(dir, "clip.mp4") }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).path).toBe(out);
+    expect(revealed).toEqual([out]);
   });
 });
 

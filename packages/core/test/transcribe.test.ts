@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  dropRepetitionBursts,
   parseWhisperJson,
   parseWhisperOutput,
+  REPETITION_BURST_MIN,
   whisperArgs,
   whisperPromptFor,
   type WhisperJson,
@@ -24,6 +26,14 @@ const sample: WhisperJson = {
   ],
 };
 
+/**
+ * A whisper repetition loop as it appears in whisper.json: `n` consecutive
+ * word-starting tokens all stamped `from === to === ms` (field case
+ * 2026-08-18 — 118 of them at 31040ms).
+ */
+const burstTokens = (n: number, ms: number): WhisperJson["transcription"] =>
+  Array.from({ length: n }, (_, i) => ({ offsets: { from: ms, to: ms }, text: ` بار${i}` }));
+
 describe("whisperArgs", () => {
   const opts = { whisperPath: "/bin/whisper-cli", modelPath: "/m/ggml-small.en.bin", outBase: "/w/whisper" };
 
@@ -36,6 +46,7 @@ describe("whisperArgs", () => {
       "-oj",
       "-of", "/w/whisper",
       "-ml", "1",
+      "-mc", "0",
       "--no-prints",
     ]);
   });
@@ -49,6 +60,7 @@ describe("whisperArgs", () => {
       "-oj",
       "-of", "/w/whisper",
       "-ml", "1",
+      "-mc", "0",
       "--no-prints",
       "-l", "ur",
     ]);
@@ -69,6 +81,7 @@ describe("whisperArgs", () => {
       "-oj",
       "-of", "/w/whisper",
       "-ml", "1",
+      "-mc", "0",
       "--no-prints",
       "-l", "ur",
       "--prompt", "Vocabulary: JSON.",
@@ -92,6 +105,39 @@ describe("parseWhisperJson", () => {
   it("merges sub-word continuations into whole words", () => {
     const t = parseWhisperJson(sample);
     expect(t.words.map((w) => w.text)).toEqual(["Hello", "everyone,", "it's", "working", "done"]);
+  });
+
+  it("starts a new word after ۔/؟ even without whitespace — the merged-sentence field case", () => {
+    // Real shape from the 2026-08-18 Urdu field file: whisper emits the
+    // sentence stop and the next sentence's first token as bare
+    // continuations ("ہوں" + "۔" + "اس"), and the whitespace rule alone
+    // fused all three into "ہوں۔اس".
+    const t = parseWhisperJson({
+      result: { language: "ur" },
+      transcription: [
+        { offsets: { from: 720, to: 1000 }, text: " ہوں" },
+        { offsets: { from: 1000, to: 1160 }, text: "۔" },
+        { offsets: { from: 1160, to: 1400 }, text: "اس" },
+        { offsets: { from: 1400, to: 1700 }, text: " تصویر" },
+        { offsets: { from: 1700, to: 1900 }, text: "؟" },
+        { offsets: { from: 1900, to: 2100 }, text: "کیا" },
+      ],
+    });
+    expect(t.words.map((w) => w.text)).toEqual(["ہوں۔", "اس", "تصویر؟", "کیا"]);
+    // The split word keeps the continuation token's own stamps.
+    expect(t.words[1]).toMatchObject({ start: 1.16, end: 1.4 });
+  });
+
+  it("does NOT split on Latin punctuation — decimals tokenize as bare continuations", () => {
+    const t = parseWhisperJson({
+      result: { language: "en" },
+      transcription: [
+        { offsets: { from: 0, to: 200 }, text: " 3" },
+        { offsets: { from: 200, to: 250 }, text: "." },
+        { offsets: { from: 250, to: 400 }, text: "5" },
+      ],
+    });
+    expect(t.words.map((w) => w.text)).toEqual(["3.5"]);
   });
 
   it("converts millisecond offsets to seconds and keeps monotonic stamps", () => {
@@ -140,6 +186,8 @@ describe("parseWhisperJson", () => {
     expect(t.words.map((w) => w.text)).toEqual(["سپیجس"]);
   });
 
+  // Two tokens, one of them zero-length: BELOW the burst threshold, so this
+  // must still repair rather than drop — the boundary the guard must not move.
   it("repairs zero-length and inverted timestamps", () => {
     const t = parseWhisperJson({
       transcription: [
@@ -147,8 +195,104 @@ describe("parseWhisperJson", () => {
         { offsets: { from: 90, to: 400 }, text: " b" },
       ],
     });
+    expect(t.words.map((w) => w.text)).toEqual(["a", "b"]);
     expect(t.words[0]!.end).toBeGreaterThan(t.words[0]!.start);
     expect(t.words[1]!.start).toBeGreaterThanOrEqual(t.words[0]!.end);
+  });
+
+  // Field case 2026-08-18: 118 consecutive tokens all stamped from===to===31040.
+  it("drops a repetition burst and leaves its neighbors' stamps intact", () => {
+    const t = parseWhisperJson({
+      result: { language: "ur" },
+      transcription: [
+        { offsets: { from: 30700, to: 31040 }, text: " پہلے" },
+        ...burstTokens(10, 31040),
+        { offsets: { from: 33540, to: 33900 }, text: " بعد" },
+      ],
+    });
+    expect(t.words.map((w) => w.text)).toEqual(["پہلے", "بعد"]);
+    expect(t.words[0]).toMatchObject({ start: 30.7, end: 31.04 });
+    // Without the guard the burst fanned out to 33.54s and the real word here
+    // got shoved forward; its own stamps must survive the drop untouched.
+    expect(t.words[1]).toMatchObject({ start: 33.54, end: 33.9 });
+    for (let i = 0; i < t.words.length - 1; i++) {
+      expect(t.words[i + 1]!.start).toBeGreaterThanOrEqual(t.words[i]!.end);
+    }
+  });
+
+  it(`keeps a run of ${REPETITION_BURST_MIN - 1} and drops a run of ${REPETITION_BURST_MIN}`, () => {
+    const kept = parseWhisperJson({
+      transcription: [
+        { offsets: { from: 0, to: 500 }, text: " a" },
+        ...burstTokens(REPETITION_BURST_MIN - 1, 31040),
+      ],
+    });
+    expect(kept.words).toHaveLength(REPETITION_BURST_MIN);
+    const dropped = parseWhisperJson({
+      transcription: [
+        { offsets: { from: 0, to: 500 }, text: " a" },
+        ...burstTokens(REPETITION_BURST_MIN, 31040),
+      ],
+    });
+    expect(dropped.words.map((w) => w.text)).toEqual(["a"]);
+  });
+
+  // A burst must share ONE instant. Zero-length stamps that keep marching
+  // forward are ordinary rounding artifacts, however many of them there are.
+  it("does not drop zero-length tokens at DIFFERENT timestamps", () => {
+    const t = parseWhisperJson({
+      transcription: Array.from({ length: REPETITION_BURST_MIN + 4 }, (_, i) => ({
+        offsets: { from: 1000 + i * 60, to: 1000 + i * 60 },
+        text: ` w${i}`,
+      })),
+    });
+    expect(t.words).toHaveLength(REPETITION_BURST_MIN + 4);
+    for (const w of t.words) expect(w.end).toBeGreaterThan(w.start);
+  });
+});
+
+describe("dropRepetitionBursts (field case 2026-08-18)", () => {
+  const zero = (start: number, text = "x") => ({ text, start, end: start });
+
+  it("keeps words that already have a real duration", () => {
+    const words = [
+      { text: "a", start: 0, end: 0.5 },
+      { text: "b", start: 0.5, end: 1 },
+    ];
+    expect(dropRepetitionBursts(words)).toEqual(words);
+  });
+
+  it("drops only the burst, not the words around it", () => {
+    const before = { text: "before", start: 30.7, end: 31.04 };
+    const after = { text: "after", start: 33.54, end: 33.9 };
+    const burst = Array.from({ length: 118 }, (_, i) => zero(31.04, `t${i}`));
+    expect(dropRepetitionBursts([before, ...burst, after])).toEqual([before, after]);
+  });
+
+  it("keeps a run one short of the threshold", () => {
+    const run = Array.from({ length: REPETITION_BURST_MIN - 1 }, (_, i) => zero(31.04, `t${i}`));
+    expect(dropRepetitionBursts(run)).toHaveLength(REPETITION_BURST_MIN - 1);
+  });
+
+  it("keeps an isolated zero-length word for the repair pass to fix", () => {
+    expect(dropRepetitionBursts([zero(1.5)])).toEqual([zero(1.5)]);
+  });
+
+  it("treats two adjacent same-length runs at different instants separately", () => {
+    // Neither run reaches the threshold on its own; adjacency must not fuse
+    // them, because a burst is defined by a SHARED instant.
+    const a = Array.from({ length: REPETITION_BURST_MIN - 1 }, (_, i) => zero(5, `a${i}`));
+    const b = Array.from({ length: REPETITION_BURST_MIN - 1 }, (_, i) => zero(6, `b${i}`));
+    expect(dropRepetitionBursts([...a, ...b])).toHaveLength((REPETITION_BURST_MIN - 1) * 2);
+  });
+
+  it("drops an inverted-stamp burst too (end < start, one instant)", () => {
+    const burst = Array.from({ length: REPETITION_BURST_MIN }, (_, i) => ({
+      text: `t${i}`,
+      start: 31.04,
+      end: 30.9,
+    }));
+    expect(dropRepetitionBursts(burst)).toEqual([]);
   });
 });
 

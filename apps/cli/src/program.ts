@@ -40,6 +40,27 @@ import {
 const envFiles = loadEnvFiles();
 
 /**
+ * `--concurrency <n>` → a positive whole number of browser tabs (§93a: reject
+ * rather than coerce, the `--clip` idiom). A typo'd `--concurrency 4x` must
+ * not become NaN and reach Remotion as "however many you like" — the flag
+ * exists precisely because the automatic count killed a browser (2026-08-19
+ * field case; `resolveRenderConcurrency` has it). `Number`, not `parseInt`,
+ * so "4.5" and "" are errors rather than a silent 4 and a silent 0.
+ *
+ * Exported so the rejection matrix is testable without commander's exit
+ * behaviour in the way.
+ */
+export function concurrencyFlag(v: string): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new InvalidArgumentError(
+      `--concurrency wants a positive whole number of browser tabs, got "${v}"`,
+    );
+  }
+  return n;
+}
+
+/**
  * Every command this CLI has, built onto a fresh instance.
  *
  * Exported so the wizard's drift guard (test/produce-argv-roundtrip.test.ts)
@@ -418,6 +439,20 @@ export function buildProgram(): Command {
     )
     .option("--editor-port <n>", "port for the editor started by --open-editor",
       (v) => Number.parseInt(v, 10), 5174)
+    // No default: undefined = "not typed" is what lets the config's
+    // renderConcurrency (and then the cpus-2 guess) supply the value —
+    // resolveRenderConcurrency owns the precedence. Recorded runs need nothing
+    // special to replay it: command.json stores the argv verbatim
+    // (recordedProduceArgs), so a typed --concurrency is already in there, and
+    // the editor's Render replays it through THIS parse.
+    .option(
+      "--concurrency <n>",
+      "how many browser tabs render frames in parallel (default: CPU cores - 2, " +
+        "floor 2). Turn it DOWN if the render logs 'The browser crashed while " +
+        "rendering frame N' — that is the whole browser running out of memory, " +
+        "not one frame failing",
+      concurrencyFlag,
+    )
     .action(async (input: string | undefined, opts, command: Command) => {
       if (input === undefined) {
         // commander 12's parseAsync does not reset option state between calls,
@@ -553,6 +588,9 @@ export function buildProgram(): Command {
           coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
           clip: opts.clip,
           clipWindow: opts.clipWindow,
+          // Validated by concurrencyFlag at parse time; undefined = "not
+          // typed", which is what lets the config supply it.
+          concurrency: opts.concurrency,
         });
         // Counts, buckets and names only — the duration crosses the wire as a
         // bucket, and nothing here can carry a path (assertSafeProps enforces

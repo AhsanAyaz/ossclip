@@ -29,6 +29,8 @@ import {
   concatFolder,
   folderManifestKey,
   listFolderVideos,
+  outInsideInputFolderMessage,
+  outPathInsideInput,
   coverDecision,
   coverHeadline,
   cropFilter,
@@ -79,6 +81,7 @@ import {
   thumbnailDecision,
   thumbnailImageCacheName,
   applyUserCuts,
+  pruneHidesInsideCuts,
   loadConfig,
   loudnorm,
   MAX_NORMALIZE_UPSCALE,
@@ -132,6 +135,7 @@ import {
   type Layout,
   type LlmProvider,
   type Production,
+  ossclipOutputPathFor,
   type ProviderName,
   type Scene,
   type SceneComponentId,
@@ -161,7 +165,7 @@ import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from 
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
-import { renderCover, renderProduction } from "@ossclip/renderer";
+import { makeCancelSignal, renderCover, renderProduction } from "@ossclip/renderer";
 import {
   DEFAULT_FACE,
   coverTextRect,
@@ -322,6 +326,13 @@ export interface ProduceOptions {
    */
   aspect?: "9:16" | "16:9";
   /**
+   * `--concurrency <n>`: how many browser tabs the render opens at once,
+   * beating the config's `renderConcurrency` and the cpus-2 default
+   * (`resolveRenderConcurrency`). Already validated by commander
+   * (`concurrencyFlag`), so a number here is always a positive integer.
+   */
+  concurrency?: number;
+  /**
    * `--clip <seconds>` (R19 §93): produce only the strongest ~N-second window
    * of a long take, chosen by the producer in the same editorial call as the
    * beat sheet. Requires `--produce`; a source already at or under the target
@@ -449,21 +460,37 @@ export function resolveYoutube(
 
 /**
  * How many browser tabs the render runs in parallel (2026-08-17 render-speed
- * pass). Default is cpus-2 with a floor of 2: the render is decode-bound —
- * every tab waits on OffthreadVideo's ffmpeg extract workers — so saturating
- * all cores with tabs starves the very processes the tabs block on. The
- * config's `renderConcurrency` overrides for machines where that guess is
- * wrong; validated here at the consumer (the `dictionary` posture: the value
- * comes from hand-editable JSON loadConfig doesn't zod-parse), a positive
- * integer or one warning and the default — never a coerced tab count. Pure
- * so the config × cpu matrix is testable without a config file or real
+ * pass). Precedence: `--concurrency` beats the config's `renderConcurrency`
+ * beats the cpus-2 default (floor 2). The default is cpus-2 because the
+ * render is decode-bound — every tab waits on OffthreadVideo's ffmpeg extract
+ * workers — so saturating all cores with tabs starves the very processes the
+ * tabs block on.
+ *
+ * The flag exists because cpus-2 is a CPU guess with no memory term in it
+ * (2026-08-19 field case): a 14-core / 36GB Mac resolved to 12 tabs on a
+ * 1080×1920 source and Chrome died WHOLE, twelve in-flight frames at a time.
+ * `offthreadVideoCacheSizeInBytes` bounds the cache side of that
+ * (render-options.ts); this is the hatch for the tab side, typed per run
+ * rather than edited into a config file mid-investigation.
+ *
+ * The flag arrives already validated by commander (`concurrencyFlag` in
+ * program.ts rejects a non-positive/non-integer at the front door, §93a), so
+ * only the config value is checked here — the `dictionary` posture, since it
+ * comes from hand-editable JSON loadConfig doesn't zod-parse: a positive
+ * integer, or one warning and the default, never a coerced tab count. Pure so
+ * the flag × config × cpu matrix is testable without a config file or real
  * cpus().
  */
 export function resolveRenderConcurrency(
+  flagValue: number | undefined,
   configValue: unknown,
   cpuCount: number,
 ): { concurrency: number; warning?: string } {
   const fallback = Math.max(2, cpuCount - 2);
+  // Typed-beats-config, and typed also beats a MALFORMED config: the user
+  // asking for 4 tabs on the command line gets 4, not a warning about a
+  // config key they did not touch this run.
+  if (flagValue !== undefined) return { concurrency: flagValue };
   if (configValue === undefined) return { concurrency: fallback };
   if (typeof configValue === "number" && Number.isInteger(configValue) && configValue > 0) {
     return { concurrency: configValue };
@@ -471,6 +498,46 @@ export function resolveRenderConcurrency(
   return {
     concurrency: fallback,
     warning: "⚠ config renderConcurrency ignored — expected a positive integer",
+  };
+}
+
+/** What a signal that interrupted the render phase costs the caller. */
+export interface RenderCancellation {
+  /** Partial render output to delete before exiting. */
+  removePaths: string[];
+  /** Shell convention: 128 + the signal's number (SIGINT 2, SIGTERM 15). */
+  exitCode: number;
+  message: string;
+}
+
+/**
+ * The decision half of Ctrl-C-cancels-the-render (2026-08-19 field report:
+ * "Cancelling rerendering doesn't work" — nothing in the CLI handled SIGINT,
+ * and no cancelSignal reached Remotion, so the browser and its ffmpeg
+ * children kept going after the process was told to stop). The signal wiring
+ * itself is I/O and lives at the render call site; what to delete and what to
+ * exit with is decided here so it can be tested without a real render.
+ *
+ * `rawPath` is the workdir's `render-raw.mp4`, which a finished run
+ * loudnorms and only THEN moves to the user's --out — so a cancel never has
+ * an output file to mistake for a finished render. The raw partial is deleted
+ * anyway: it is a truncated mp4 sitting in the workdir under the name the
+ * next run reads, and a stale one there is the kind of thing that gets picked
+ * up by hand and mailed to someone.
+ *
+ * Non-zero exit, because a cancelled render did not produce the video the
+ * caller asked for — but 130/143 rather than 1, so a script can tell a
+ * deliberate stop from a failure (the same distinction the editor's
+ * /api/render/cancel draws, R16 §60).
+ */
+export function renderCancellation(
+  signal: "SIGINT" | "SIGTERM",
+  rawPath: string,
+): RenderCancellation {
+  return {
+    removePaths: [rawPath],
+    exitCode: signal === "SIGINT" ? 130 : 143,
+    message: "▸ cancelled — partial output discarded",
   };
 }
 
@@ -1209,7 +1276,34 @@ function deriveWorkdir(
  * file input's equivalent default already lands.
  */
 export function defaultOutPath(originalInput: string): string {
-  return originalInput.replace(/(\.[^.]+)?$/, ".ossclip.mp4");
+  // Delegates to core so the refusal message's suggestion and the actual
+  // default can never drift apart (and both strip the tab-completed trailing
+  // slash — the 2026-08-18 hidden-dotfile-inside-the-folder field case).
+  return ossclipOutputPathFor(originalInput);
+}
+
+/**
+ * The ⚠ line a REPLAYED produce prints when it keys to a different workdir
+ * than the one the editor launched it for (2026-08-18 field cascade, part
+ * 3): the edit server sets OSSCLIP_REPLAY_WORKDIR to the workdir whose
+ * command.json it is replaying; if the run then derives another workdir —
+ * the folder's content changed since the record — the edits saved in the
+ * old workdir's overrides.json silently stop applying, and nothing else in
+ * the run says so. Pure (drift decision in, line out) so the comparison is
+ * testable without spawning a replay; null when this isn't a replay or
+ * nothing drifted.
+ */
+export function replayWorkdirWarning(
+  replayedWorkdir: string | undefined,
+  derivedWorkdir: string,
+): string | null {
+  if (replayedWorkdir === undefined || replayedWorkdir === "") return null;
+  if (resolve(replayedWorkdir) === resolve(derivedWorkdir)) return null;
+  return (
+    `⚠ this run's workdir differs from the one the editor replayed — edits ` +
+    `saved in ${join(replayedWorkdir, "overrides.json")} will NOT apply to ` +
+    `this render (the input's content changed since that command was recorded)`
+  );
 }
 
 /**
@@ -1415,6 +1509,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     : resolve(baseCwd, expandHome(inputArg));
   let input = originalInput;
   if (!existsSync(input)) throw new Error(`input not found: ${input}`);
+  // Decided once, here — the out-path gate below and the folder pipeline
+  // further down must read the same answer to "is this a folder run".
+  const isFolder = statSync(input).isDirectory();
 
   // §93b: the window is an editorial judgement, and there is deliberately no
   // heuristic fallback — an automatically-guessed 60 seconds reads as a bug,
@@ -1449,6 +1546,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       ? outArg
       : resolve(baseCwd, outArg)
     : resolve(defaultOutPath(originalInput));
+  // 2026-08-18 field cascade: an --out pointed INSIDE the input folder became
+  // a 7th source clip on the next run — new content hash, fresh workdir,
+  // EMPTY overrides — so the render silently dropped the user's saved edits
+  // and the output duration doubled, three runs in a row. Refused BEFORE
+  // ensureParentDir so the gate can't first mkdir a stray subfolder inside
+  // the very input it is about to refuse. (Unreachable via the default out —
+  // defaultOutPath lands BESIDE the folder — so only a typed --out can trip
+  // it.)
+  if (isFolder && outPathInsideInput(outPath, originalInput)) {
+    throw new Error(outInsideInputFolderMessage(originalInput));
+  }
   ensureParentDir(outPath);
 
   await preflight(cfg.ffmpegPath, "Run `ossclip setup`, install ffmpeg yourself (brew/apt/winget), or set OSSCLIP_FFMPEG.");
@@ -1489,7 +1597,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // video with captions transcribed against a different edit. Hashing the
   // manifest content gives a folder input the same invariant a file input
   // already has via `sha1File`: content changes ⇒ a fresh workdir.
-  const isFolder = statSync(input).isDirectory();
+  // (`isFolder` itself is decided up top, beside the out-path gate.)
   // Final-review fix wave, cheap minor c: --sort only means anything for a
   // folder input; on a file it did nothing, silently. Gated on `sortExplicit`
   // (whether the user TYPED it) rather than on `opts.sort` itself, since
@@ -1518,6 +1626,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   );
   await mkdir(work, { recursive: true });
   console.log(`▸ workdir ${work}`);
+  // See replayWorkdirWarning — set only by the edit server's /api/render
+  // spawn, so a terminal run never sees it.
+  const replayWarning = replayWorkdirWarning(process.env.OSSCLIP_REPLAY_WORKDIR, work);
+  if (replayWarning !== null) console.log(replayWarning);
 
   // §131 residue: a folder re-key (clips renamed/added/removed → new content
   // hash) correctly lands in a fresh workdir, but any editor edits saved in
@@ -1564,6 +1676,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (result.nonVideoCount > 0) {
       console.log(
         `  ${result.nonVideoCount} non-video file${result.nonVideoCount === 1 ? "" : "s"} ignored`,
+      );
+    }
+    // Loud, not folded into the non-video count (2026-08-18 field cascade):
+    // an ossclip output sitting in the clips folder means an earlier run
+    // wrote it there, and the user should learn that before it surprises
+    // them elsewhere. The filter itself is pure (isOssclipOutputName) and
+    // runs inside listFolderVideos, before the workdir hash is derived.
+    if (result.ossclipOutputCount > 0) {
+      console.log(
+        `▸ folder: skipped ${result.ossclipOutputCount} ossclip output ` +
+          `file${result.ossclipOutputCount === 1 ? "" : "s"}`,
       );
     }
     // Order visible immediately (folder-input-brief.md) — a wrong order is a
@@ -1893,17 +2016,37 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       .slice(0, 8);
     const repairCache = join(work, `repairs-${rawKey}.json`);
     if (existsSync(repairCache)) {
-      repairs = JSON.parse(await readFile(repairCache, "utf8")) as AppliedRepair[];
-      transcript = applyRepairs(
+      const cached = JSON.parse(await readFile(repairCache, "utf8")) as AppliedRepair[];
+      // Re-DECIDE from the cached PROPOSALS; never replay the stored verdicts
+      // (field case 2026-08-18). What this cache exists to avoid is the LLM
+      // CALL — the gates are code, and code gets fixed. Filtering to
+      // `r.applied` here meant a gate fix could never reach a workdir that had
+      // already cached a refusal: the Urdu run whose 11 correct repairs stayed
+      // refused after the Latin-only `norm` was fixed, because produce replayed
+      // the old verdicts instead of recomputing them. The vouched set rides
+      // along for the same reason it always did — a dictionary-vouched
+      // correction must clear the phonetic gate on replay too.
+      const decided = applyRepairs(
         rawTranscript,
-        repairs.filter((r) => r.applied),
-        // The vouched set must survive the cache: a dictionary-vouched
-        // correction re-runs applyRepairs' guards here, and without the
-        // dictionary the phonetic gate would refuse on replay what it
-        // accepted on the first run.
+        cached.map(({ startWord, endWord, heard, correction }) => ({
+          startWord,
+          endWord,
+          heard,
+          correction,
+        })),
         { dictionary },
-      ).transcript;
-      console.log(`▸ repairs cached (${repairs.filter((r) => r.applied).length})`);
+      );
+      repairs = decided.applied;
+      transcript = decided.transcript;
+      const now = repairs.filter((r) => r.applied).length;
+      const before = cached.filter((r) => r.applied).length;
+      // Re-decided verdicts are the truth from here on: persist them so the
+      // report, the next run and this run cannot disagree about what applied.
+      if (now !== before) await writeFile(repairCache, JSON.stringify(repairs, null, 2));
+      console.log(
+        `▸ repairs cached (${now} applied of ${cached.length} proposed` +
+          `${now === before ? "" : `, re-decided from ${before}`})`,
+      );
     } else {
       const repairAnim = isInteractive()
         ? new StageAnimator(
@@ -2430,6 +2573,23 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // `overrides.json` write — gated on `changed` — happens further down,
   // beside `render-props.json`'s own write (see the comment there for why).
   for (const r of cutResult.reports) console.log(`  ⚠ ${r}`);
+
+  // Retire hides whose words this run's FINAL cutlist removes (§59b
+  // revisited): the "captions + video" delete writes a hide (instant
+  // preview) plus a cut (this run), and once the cut lands the cut
+  // supersedes the hide — see `pruneHidesInsideCuts`. Pruned HERE, before
+  // `reconcileCaptionEdits` applies the hide layer, so the retired keys
+  // never surface as "the cut removed it" drop lines on this or any later
+  // run. The doc write itself goes through the one sanctioned overrides.json
+  // write further down, gated alongside `cutResult.changed`.
+  const hidePrune = pruneHidesInsideCuts(overrideDoc, cutlist);
+  overrideDoc = hidePrune.doc;
+  const hidesPruned = hidePrune.pruned.length > 0;
+  if (hidesPruned) {
+    console.log(
+      `▸ captions: ${hidePrune.pruned.length} hidden-word override(s) retired — their words are cut`,
+    );
+  }
 
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
@@ -3537,7 +3697,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // recovered from (`legacySplitId`). Repairing the captions would destroy the
   // evidence for the split. `writeOverrideDoc` carries the full argument for
   // why a caption-only write has nothing worth backing up.
-  if (cutResult.changed || captionKeysReanchored) {
+  // `hidesPruned` joins the gate for the same reason `captionKeysReanchored`
+  // did: a hide retired by its own cut (`pruneHidesInsideCuts`) changes the
+  // doc without changing the cut entries, and skipping the write would
+  // re-report "the cut removed it" on every later run. It does NOT spend the
+  // `.bak` — retiring a redundant key is not the cut re-anchoring the backup
+  // exists to survive.
+  if (cutResult.changed || captionKeysReanchored || hidesPruned) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
     console.log(overridesWriteLine(cutResult.changed));
   }
@@ -3664,6 +3830,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     }
   }
 
+  // --concurrency, else config renderConcurrency, else cpus-2 with a floor of
+  // 2 (resolveRenderConcurrency has the precedence and the why: leave cores
+  // for the ffmpeg decode workers every tab waits on). Resolved BEFORE the log
+  // line below so the count can go INTO it — the 2026-08-19 whole-browser OOM
+  // took a machine spec and arithmetic to diagnose, because no line of the
+  // render's own output ever said how many tabs it opened.
+  const renderConcurrency = resolveRenderConcurrency(
+    opts.concurrency,
+    cfg.renderConcurrency,
+    cpus().length,
+  );
+  if (renderConcurrency.warning) console.log(renderConcurrency.warning);
   let renderHud: RenderTimelineHUD | null = null;
   if (interactive) {
     renderHud = new RenderTimelineHUD({
@@ -3673,33 +3851,73 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       aspect: landscape ? "16:9" : "9:16",
     }).start();
   } else {
-    console.log("▸ rendering…");
+    console.log(`▸ rendering… (${renderConcurrency.concurrency} parallel tabs)`);
   }
   let lastPct = -10;
-  // cpus-2 with a floor of 2 (resolveRenderConcurrency has the why: leave
-  // cores for the ffmpeg decode workers every tab waits on). Resolved here,
-  // next to the call it feeds, so the warning prints once per run.
-  const renderConcurrency = resolveRenderConcurrency(cfg.renderConcurrency, cpus().length);
-  if (renderConcurrency.warning) console.log(renderConcurrency.warning);
-  await phases.time("render", () =>
-    renderProduction(props, {
-      publicDir: dirname(renderVideo),
-      outPath: rawPath,
-      browserExecutable: cfg.browserExecutable,
-      concurrency: renderConcurrency.concurrency,
-      onProgress: (p) => {
-        if (renderHud) {
-          renderHud.setProgress(p);
-        } else {
-          const pct = Math.floor(p * 100);
-          if (pct >= lastPct + 10) {
-            lastPct = pct;
-            process.stdout.write(`  ${pct}%\n`);
+  // Ctrl-C must actually stop the render (2026-08-19 field report). Remotion
+  // owns a browser and ffmpeg children that outlive a bare process death, so
+  // stopping means handing renderMedia a cancelSignal and firing it — node's
+  // default SIGINT handling would leave those orphaned.
+  //
+  // Registered around the RENDER PHASE ONLY, and removed in the finally: a
+  // handler that outlived this phase would swallow Ctrl-C during the LLM and
+  // whisper phases, which exit promptly today and must keep doing so.
+  //
+  // SIGTERM is wired for the same reason as SIGINT, plus one of its own: the
+  // editor's /api/render/cancel (edit.ts) kills this process as a child, and
+  // before this handler that kill left the browser behind. That path is
+  // otherwise untouched — it already reports its own cancel.
+  const renderCancel = makeCancelSignal();
+  // An array, not a `let`: the handler assigns from inside a closure, and TS's
+  // flow analysis would still read a `let` as null in the catch below (it
+  // narrowed the branch to `never`). First signal wins — hammering Ctrl-C must
+  // not rewrite the verdict while the teardown is already running.
+  const cancellations: RenderCancellation[] = [];
+  const onCancelSignal = (signal: "SIGINT" | "SIGTERM") => {
+    if (cancellations.length === 0) cancellations.push(renderCancellation(signal, rawPath));
+    renderCancel.cancel();
+  };
+  const onSigint = () => onCancelSignal("SIGINT");
+  const onSigterm = () => onCancelSignal("SIGTERM");
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  try {
+    await phases.time("render", () =>
+      renderProduction(props, {
+        publicDir: dirname(renderVideo),
+        outPath: rawPath,
+        browserExecutable: cfg.browserExecutable,
+        concurrency: renderConcurrency.concurrency,
+        cancelSignal: renderCancel.cancelSignal,
+        onProgress: (p) => {
+          if (renderHud) {
+            renderHud.setProgress(p);
+          } else {
+            const pct = Math.floor(p * 100);
+            if (pct >= lastPct + 10) {
+              lastPct = pct;
+              process.stdout.write(`  ${pct}%\n`);
+            }
           }
-        }
-      },
-    }),
-  );
+        },
+      }),
+    );
+  } catch (err) {
+    // A cancelled renderMedia rejects like any other failure; only the
+    // handler above can tell the two apart.
+    const cancellation = cancellations[0];
+    if (!cancellation) throw err;
+    if (renderHud) renderHud.stop();
+    for (const path of cancellation.removePaths) await rm(path, { force: true });
+    console.log(cancellation.message);
+    // Exits here rather than throwing: program.ts's catch would record this as
+    // produce_failed and print "✗ <message>", dressing a deliberate stop as a
+    // bug (R16 §60's distinction).
+    process.exit(cancellation.exitCode);
+  } finally {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  }
   if (renderHud) renderHud.stop();
 
   const masterAnim = interactive

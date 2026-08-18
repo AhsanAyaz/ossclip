@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod/v4";
 import { probe, type IngestTools } from "./ingest";
 import { run } from "./exec";
@@ -40,6 +40,78 @@ export interface ConcatEntry {
   name: string;
   mtimeMs: number;
   size: number;
+}
+
+/**
+ * Whether a produce output path lands INSIDE the folder being produced.
+ * 2026-08-18 field cascade: a folder input's clips are re-enumerated on
+ * EVERY run, so an `--out` written into that folder became a 7th "source
+ * clip" on the next run — the folder-content hash changed, produce minted a
+ * fresh workdir with EMPTY overrides, and the render silently dropped the
+ * user's saved edits while the output's duration doubled. It cascaded three
+ * times before the doubling duration was connected to the out path.
+ *
+ * Containment via `path.relative`, the same idiom as edit.ts's `isInside`:
+ * a `startsWith` string-prefix test has no separator boundary and is fooled
+ * by a sibling folder that merely shares a prefix (`/a/Clips` vs
+ * `/a/Clips-old/out.mp4`) — `child` is inside `parent` iff the relative path
+ * from one to the other never has to climb out with `..`. Both arguments are
+ * resolved here so a relative path is judged against cwd; `~` expansion is
+ * the CALLER's job (the 2026-08-16 rule in the CLI's paths.ts — expandHome
+ * at the call site — which also keeps core homedir-free).
+ */
+export function outPathInsideInput(outPath: string, inputDir: string): boolean {
+  const rel = relative(resolve(inputDir), resolve(outPath));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * The refusal for `outPathInsideInput`, shared verbatim by produce's own
+ * gate and the edit server's `/api/render` 400 — one message, one place, so
+ * the two boundaries can never describe the same hazard differently. Names
+ * the actual risk (the field cascade above) rather than just "invalid path",
+ * and suggests the exact default a flag-less run would pick (produce's
+ * `defaultOutPath` shape: at most the LAST dot-segment replaced).
+ */
+/**
+ * The default output path for an input: beside it, `.ossclip.mp4` suffix.
+ * Trailing separators are stripped FIRST (2026-08-18 field case, second
+ * report): shells tab-complete folders with the slash, and the bare regex
+ * appended after it — the "default" landed INSIDE the folder as a hidden
+ * `.ossclip.mp4` dotfile, the exact self-ingesting shape
+ * `outPathInsideInput` exists to refuse. One definition shared by produce's
+ * `defaultOutPath` and the refusal message below, so the suggestion can
+ * never disagree with what omitting `--out` actually does.
+ */
+export function ossclipOutputPathFor(input: string): string {
+  return input.replace(/[/\\]+$/, "").replace(/(\.[^.]+)?$/, ".ossclip.mp4");
+}
+
+export function outInsideInputFolderMessage(folder: string): string {
+  const suggestion = ossclipOutputPathFor(folder);
+  return (
+    `refusing to write the output inside the input folder ${folder} — the next ` +
+    `run would ingest this output as a source clip and re-plan from scratch, ` +
+    `abandoning your edits (the folder's content hash changes, so produce mints ` +
+    `a fresh workdir with empty overrides). Write it beside the folder instead, ` +
+    `e.g. --out ${suggestion}`
+  );
+}
+
+/**
+ * Defense-in-depth BEHIND the out-path refusal above (same 2026-08-18 field
+ * cascade): a produce output already sitting in the folder — written by a
+ * pre-fix run, or moved there by hand — must never be ingested as a source
+ * clip, and must be filtered BEFORE `folderManifestKey` sees the entries so
+ * its presence can't re-key the workdir either. Matches any name carrying
+ * the `.ossclip` marker: `X.ossclip.mp4`, `X.ossclip_fixed.mp4`, and
+ * `X.ossclip.mp4.partial.mp4` leftovers all qualify (bare `.ossclip.mp4` is
+ * a dotfile and already skipped upstream). A custom-named output
+ * (`--out final.mp4`) is undetectable here — the out-path refusal is the
+ * real gate; this only keeps a pre-fix folder from compounding further.
+ */
+export function isOssclipOutputName(name: string): boolean {
+  return name.includes(".ossclip");
 }
 
 /**
@@ -321,6 +393,8 @@ export interface FolderListing {
   entries: ConcatEntry[];
   /** Files skipped for not matching a video extension (dotfiles excluded). */
   nonVideoCount: number;
+  /** Video files skipped as produce's own outputs (`isOssclipOutputName`). */
+  ossclipOutputCount: number;
 }
 
 /**
@@ -339,6 +413,7 @@ export interface FolderListing {
 export async function listFolderVideos(folder: string): Promise<FolderListing> {
   const dirents = await readdir(folder, { withFileTypes: true });
   let nonVideoCount = 0;
+  let ossclipOutputCount = 0;
   const entries: ConcatEntry[] = [];
   for (const d of dirents) {
     if (d.name.startsWith(".")) continue;
@@ -357,11 +432,19 @@ export async function listFolderVideos(folder: string): Promise<FolderListing> {
       nonVideoCount++;
       continue;
     }
+    // Skipped HERE, before the entries ever exist — never in concatFolder —
+    // so an ossclip output left in the folder can neither become a source
+    // clip nor perturb the workdir hash `folderManifestKey` derives from
+    // this listing (2026-08-18 field cascade, see isOssclipOutputName).
+    if (isOssclipOutputName(d.name)) {
+      ossclipOutputCount++;
+      continue;
+    }
     const st = await stat(join(folder, d.name));
     entries.push({ name: d.name, mtimeMs: st.mtimeMs, size: st.size });
   }
   if (entries.length === 0) throw noVideoFilesError(folder);
-  return { entries, nonVideoCount };
+  return { entries, nonVideoCount, ossclipOutputCount };
 }
 
 export interface FolderConcatResult {
@@ -371,6 +454,8 @@ export interface FolderConcatResult {
   clips: Array<{ name: string; durationSec: number }>;
   /** Files skipped for not matching a video extension. */
   nonVideoCount: number;
+  /** Video files skipped as produce's own outputs (`isOssclipOutputName`). */
+  ossclipOutputCount: number;
   /** True when the existing `source-concat.mp4` was reused, not rebuilt. */
   cached: boolean;
   /** The concat's own total duration (ffprobe'd from the output). */
@@ -393,7 +478,7 @@ export async function concatFolder(
   sort: "name" | "mtime",
   target: { w: number; h: number },
 ): Promise<FolderConcatResult> {
-  const { entries: current, nonVideoCount } = listing;
+  const { entries: current, nonVideoCount, ossclipOutputCount } = listing;
   if (current.length === 0) throw noVideoFilesError(folder);
   const order = planFolderConcat(current, sort);
 
@@ -408,6 +493,7 @@ export async function concatFolder(
         path: outPath,
         clips: order.map((name) => ({ name, durationSec: byName.get(name)!.durationSec })),
         nonVideoCount,
+        ossclipOutputCount,
         cached: true,
         durationSec: outProbe.duration,
       };
@@ -461,6 +547,7 @@ export async function concatFolder(
     path: outPath,
     clips: order.map((name, i) => ({ name, durationSec: probes[i]!.duration })),
     nonVideoCount,
+    ossclipOutputCount,
     cached: false,
     durationSec: outProbe.duration,
   };
