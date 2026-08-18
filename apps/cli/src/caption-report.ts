@@ -171,9 +171,14 @@ export function captionTimingDropLine(drop: AppliedCaptionEdits["dropped"][numbe
  * marked `seen` by the first word carrying it, and that word either applied
  * the edit or was reported with `reason` ABSENT. So an edit landed exactly
  * when nothing was reported for its key without a `reason`.
+ *
+ * `applyCaptionWordHides` and `applyCaptionLineTiming` are built to the same
+ * contract (first claimant applies, extras get `duplicate-anchor`, unmatched
+ * keys get a reason-less drop), so this counts for those layers too — hence
+ * the record's value type is unconstrained: only the KEYS are read.
  */
 export function appliedCaptionEditCount(
-  edits: Record<string, CaptionEdit>,
+  edits: Readonly<Record<string, unknown>>,
   dropped: AppliedCaptionEdits["dropped"],
 ): number {
   const failed = new Set(dropped.filter((d) => d.reason === undefined).map((d) => d.key));
@@ -332,12 +337,18 @@ export function reconcileCaptionEdits(
   // LINE timing LAST — `applyCaptionLayers`' one authoritative order: nudges
   // move the seams between SURVIVING lines, so they run on the post-hide
   // lines. No key migration here either: `captionLineTiming` postdates §137,
-  // and the write-back above spreads it through untouched. The applied count
-  // is keys minus drops, like the range layer's subtraction — cheap, and only
-  // ever an UNDERcount when a duplicate anchor reports a nudge that in fact
-  // applied to its first claimant.
+  // and the write-back above spreads it through untouched.
+  //
+  // Counted with `appliedCaptionEditCount`, NOT by subtracting drops (§137's
+  // lesson, re-learned in the 2026-08-19 review): `applyCaptionLineTiming`
+  // pushes a `duplicate-anchor` drop per EXTRA line claiming the anchor
+  // (overrides.ts), so one key with two claimants subtracted to `1 - 1 = 0`
+  // and with three to `-1` — and the `> 0` gate below then erased the line
+  // ENTIRELY for a nudge that had in fact applied to its first claimant. The
+  // range layer's plain subtraction stays, because that layer reports each
+  // entry at most once; this one does not.
   const timed = applyCaptionLineTiming(hides.lines, doc.captionLineTiming);
-  const nudged = Object.keys(doc.captionLineTiming).length - timed.dropped.length;
+  const nudged = appliedCaptionEditCount(doc.captionLineTiming, timed.dropped);
   if (nudged > 0) log.push(`▸ ${nudged} caption timing nudge(s) applied`);
   for (const d of timed.dropped) log.push(captionTimingDropLine(d));
   return { doc: migrated, lines: timed.lines, reanchored: reanchored > 0, log };

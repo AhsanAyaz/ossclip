@@ -727,6 +727,76 @@ describe("patchCaptionRange — multi-word free-text rewrite (2026-08-18)", () =
     expect(s.doc.captionRangeEdits).toEqual([]);
   });
 
+  /**
+   * The line-timing layer joins the same scrub (2026-08-19 review). Its keys
+   * are a line's FIRST word's anchor, so a rewrite covering that word
+   * re-mints it: the nudge then addresses a word no line begins on, core
+   * reports `found: null` forever, and the drop banner blames a cut. Nothing
+   * else in the doc prunes these records.
+   */
+  it("scrub-on-create: removes line-timing nudges INSIDE the interval, keeps the ones outside", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaptionLineTiming",
+      entries: [
+        // Keyed to a line whose first word sits INSIDE the rewritten run…
+        { srcStart: 5, lead: -0.2, tail: 0 },
+        // …and one whose first word is well outside it.
+        { srcStart: 9, lead: 0.1, tail: 0.1 },
+      ],
+    });
+    const depth = s.past.length;
+    s = editReducer(s, {
+      type: "patchCaptionRange", fromSrcStart: 4, toSrcStart: 6, text: "new run", was: "a c e",
+    });
+    expect(s.doc.captionLineTiming).toEqual({ w9000: { lead: 0.1, tail: 0.1 } });
+    // ONE commit for the whole scrub — the nudge goes with the rewrite it
+    // could no longer address, in the same undo step.
+    expect(s.past).toHaveLength(depth + 1);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.captionLineTiming).toEqual({
+      w5000: { lead: -0.2, tail: 0 },
+      w9000: { lead: 0.1, tail: 0.1 },
+    });
+  });
+
+  it("the bulk range apply scrubs line-timing per occurrence too", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaptionLineTiming",
+      entries: [
+        { srcStart: 5, lead: -0.2, tail: 0 },
+        { srcStart: 12, lead: 0.3, tail: 0 },
+        { srcStart: 20, lead: 0.1, tail: 0 },
+      ],
+    });
+    s = editReducer(s, {
+      type: "patchCaptionRangeAllOccurrences",
+      entries: [
+        { fromSrcStart: 4, toSrcStart: 6, was: "a c e" },
+        { fromSrcStart: 11, toSrcStart: 13, was: "a c e" },
+      ],
+      text: "new run",
+    });
+    // Only the nudge outside every rewritten interval survives.
+    expect(s.doc.captionLineTiming).toEqual({ w20000: { lead: 0.1, tail: 0 } });
+  });
+
+  it("the LINE-TIMING scrub never coerces legacy positional keys either", () => {
+    // The `patchCaptionRange` legacy guard covers all three maps: a bare
+    // positional key is not source-time addressable, and `Number("17")`
+    // would read position 17 as 7ms — inside a low interval — deleting a
+    // record this scrub cannot honestly locate.
+    const loaded = editReducer(initialEditState(), {
+      type: "load",
+      doc: OverrideDocSchema.parse({
+        captionLineTiming: { "17": { lead: 0.1, tail: 0 }, w500: { lead: 0.2, tail: 0 } },
+      }),
+    });
+    const s = editReducer(loaded, {
+      type: "patchCaptionRange", fromSrcStart: 0, toSrcStart: 0.9, text: "new", was: "a b",
+    });
+    expect(s.doc.captionLineTiming).toEqual({ "17": { lead: 0.1, tail: 0 } });
+  });
+
   it("the interval scrub never coerces LEGACY positional keys — preserved for write-back", () => {
     // `migrateLoadedDoc` keeps the positional edits it could not place IN
     // the doc, under their original bare-integer keys ("0", "17"), so a save

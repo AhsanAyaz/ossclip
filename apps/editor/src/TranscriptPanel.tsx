@@ -25,35 +25,50 @@ const TIMING_CANVAS_H = 48;
 const TIMING_WIN_PAD_SEC = 1;
 
 /**
- * Lazy singleton loader for the SOURCE audio the waveform strip draws.
+ * Lazy loader for the SOURCE audio the waveform strip draws.
  * `/media/audio.wav` exists in every produced workdir (produce stages it for
  * the render), and it is SOURCE-time audio — the popover maps its output-time
  * span onto it via the word's own `srcStart` (see the draw effect). Fetched
- * and decoded ONCE per page, module-level, because every popover open reads
- * the same file. Purely decorative, the `useTakeThumbs` posture
- * (Timeline.tsx): any failure — jsdom's missing AudioContext, a 404 on a
- * hand-built workdir, a codec refusal — resolves null and the popover draws
- * a flat strip; nothing here may throw in a gesture's path.
+ * and decoded ONCE per WORKDIR, module-level, because every popover open in
+ * one project reads the same file. Purely decorative, the `useTakeThumbs`
+ * posture (Timeline.tsx): any failure — jsdom's missing AudioContext, a 404
+ * on a hand-built workdir, a codec refusal — resolves null and the popover
+ * draws a flat strip; nothing here may throw in a gesture's path.
+ *
+ * KEYED BY WORKDIR, not a bare singleton (2026-08-19 review): `/media/*`
+ * resolves against the server's CURRENT workdir and project switches happen
+ * in-page (R17 §83), so a cache that outlived the project aligned project B's
+ * captions against project A's waveform — silently, because the strip is
+ * decorative and nothing on screen names which audio it drew.
  */
-let sourceAudioPromise: Promise<{ channel: Float32Array; sampleRate: number } | null> | null = null;
-const loadSourceAudio = (): Promise<{ channel: Float32Array; sampleRate: number } | null> => {
-  if (sourceAudioPromise === null) {
-    sourceAudioPromise = (async () => {
-      if (typeof AudioContext === "undefined" || typeof fetch === "undefined") return null;
-      const res = await fetch("/media/audio.wav");
-      if (!res.ok) return null;
-      const buf = await res.arrayBuffer();
-      const ctx = new AudioContext();
-      try {
-        const decoded = await ctx.decodeAudioData(buf);
-        // Channel 0 copied out so the whole AudioBuffer can be collected.
-        return { channel: decoded.getChannelData(0).slice(), sampleRate: decoded.sampleRate };
-      } finally {
-        void ctx.close();
-      }
-    })().catch(() => null);
+let sourceAudio: {
+  /** The workdir this decode belongs to; null is "no project open". */
+  key: string | null;
+  promise: Promise<{ channel: Float32Array; sampleRate: number } | null>;
+} | null = null;
+export const loadSourceAudio = (
+  workdir: string | null,
+): Promise<{ channel: Float32Array; sampleRate: number } | null> => {
+  if (sourceAudio === null || sourceAudio.key !== workdir) {
+    sourceAudio = {
+      key: workdir,
+      promise: (async () => {
+        if (typeof AudioContext === "undefined" || typeof fetch === "undefined") return null;
+        const res = await fetch("/media/audio.wav");
+        if (!res.ok) return null;
+        const buf = await res.arrayBuffer();
+        const ctx = new AudioContext();
+        try {
+          const decoded = await ctx.decodeAudioData(buf);
+          // Channel 0 copied out so the whole AudioBuffer can be collected.
+          return { channel: decoded.getChannelData(0).slice(), sampleRate: decoded.sampleRate };
+        } finally {
+          void ctx.close();
+        }
+      })().catch(() => null),
+    };
   }
-  return sourceAudioPromise;
+  return sourceAudio.promise;
 };
 
 /** The gap between the anchor word and the floating surface, px. */
@@ -154,11 +169,26 @@ export interface TimingLine {
  * the field bug, and its shape in the code was `runDragBounds`, which bounded
  * a WORD run by its own line and its own immediate neighbours.
  *
- * A seam may take time FROM a neighbour — "this caption comes in too late" IS
- * a request for the previous caption's last moments — but it may never cross
- * one, so each neighbour keeps `MIN_CAPTION_SEC` of itself. That floor is
- * `applyCaptionLineTiming`'s own; it is restated here so the DRAG stops where
- * the sweep would rather than snapping back on release.
+ * A SHARED boundary may take time from the neighbour it is shared with —
+ * "this caption comes in too late" IS a request for the previous caption's
+ * last moments — but it may never cross one, so that neighbour keeps
+ * `MIN_CAPTION_SEC` of itself. That floor is `applyCaptionLineTiming`'s own;
+ * it is restated here so the DRAG stops where the sweep would rather than
+ * snapping back on release.
+ *
+ * ACROSS A GAP THE BOUND IS THE NEIGHBOUR'S OWN ADJACENT EDGE (2026-08-19
+ * review). A gap means there is no shared boundary on that side: the caption
+ * is moving into empty space and the neighbour does not follow it
+ * (`captionTimingEntries`' coincidence rule), so a drag may CONSUME the gap
+ * and stops at `prev.end` / `next.start` — which is exactly where core's
+ * sweep blocks it (`applyCaptionLineTiming`: ordering is enforced against the
+ * neighbour's OWN edge). Without this the handle kept travelling while the
+ * previewed edge sat still, and past `next.start` the forward pass would have
+ * PUSHED the untouched neighbour instead.
+ *
+ * On a packed stream every boundary is coincident, so both bounds are the
+ * `MIN_CAPTION_SEC` ones and the behaviour is bit-identical to before — which
+ * is the check that this is safe (the packed drag tests are unchanged).
  *
  * The track's own outer seams are the fallback at either end: a caption must
  * not appear before the first caption of the track or linger past the last
@@ -166,14 +196,27 @@ export interface TimingLine {
  */
 export const captionDragBounds = (m: {
   /** The caption line BEFORE the group; null when the group opens the track. */
-  prev: { start: number } | null;
+  prev: { start: number; end: number } | null;
   /** The caption line AFTER the group; null when the group closes it. */
-  next: { end: number } | null;
+  next: { start: number; end: number } | null;
+  /** The group's own DERIVED window — coincidence is tested against it, the
+   * same INPUT-edge test core makes. */
+  span: { start: number; end: number };
   /** The track's first and last seam. */
   track: { start: number; end: number };
 }): { lo: number; hi: number } => ({
-  lo: m.prev === null ? m.track.start : m.prev.start + MIN_CAPTION_SEC,
-  hi: m.next === null ? m.track.end : m.next.end - MIN_CAPTION_SEC,
+  lo:
+    m.prev === null
+      ? m.track.start
+      : m.prev.end === m.span.start
+        ? m.prev.start + MIN_CAPTION_SEC
+        : m.prev.end,
+  hi:
+    m.next === null
+      ? m.track.end
+      : m.next.start === m.span.end
+        ? m.next.end - MIN_CAPTION_SEC
+        : m.next.start,
 });
 
 /** A span forced inside `[lo, hi]`, end never before start. Used for the SEED
@@ -245,17 +288,33 @@ export const dragCaptionSpan = (m: {
  * apply pass and an unwritten interior seam would sit still while the outer
  * two moved — the group would visibly bunch up against one edge.
  *
- * THE TOUCHED NEIGHBOUR IS WRITTEN TOO. Caption lines partition the timeline,
- * so the group's opening seam IS the previous caption's closing seam
- * (`applyCaptionLineTiming`: one edit, two windows). Recording only the
- * group's side leaves the doc saying the previous caption still ends where it
- * used to — core resolves that in the group's favour ("the later line's lead
- * wins"), but a popover reopened on the NEIGHBOUR would then seed from a
- * stale `tail` and snap the seam back. Its own far-side delta (`prev.lead`,
- * `next.tail`) is carried through untouched: this gesture has nothing to say
- * about it, and a zero there would drag a neighbour's own earlier nudge back
- * to base. A neighbour that ends up with two sub-ms deltas is DELETED by the
- * reducer, which is the correct record of "this seam is where it was derived".
+ * A SHARED BOUNDARY'S NEIGHBOUR IS WRITTEN TOO. On the packed stream caption
+ * lines partition the timeline, so the group's opening seam IS the previous
+ * caption's closing seam (`applyCaptionLineTiming`: one edit, two windows).
+ * Recording only the group's side leaves the doc saying the previous caption
+ * still ends where it used to — core resolves that in the group's favour
+ * ("the later line's lead wins"), but a popover reopened on the NEIGHBOUR
+ * would then seed from a stale `tail` and snap the seam back. Its own
+ * far-side delta (`prev.lead`, `next.tail`) is carried through untouched:
+ * this gesture has nothing to say about it, and a zero there would drag a
+ * neighbour's own earlier nudge back to base. A neighbour that ends up with
+ * two sub-ms deltas is DELETED by the reducer, which is the correct record of
+ * "this seam is where it was derived".
+ *
+ * ONLY WHERE THE BOUNDARY WAS ALREADY COINCIDENT, though (2026-08-19 review).
+ * The model the gesture means is "dragging a caption's edge moves the
+ * boundary it SHARES with its neighbour"; a GAP on that side means there is
+ * no shared boundary — the caption is moving into empty space, and nothing
+ * else should follow it. Writing the neighbour unconditionally assumed the
+ * partition and moved captions the user never touched: on `[0,2] [3,5]
+ * [6,8]`, a lead-only drag of the middle line wrote `next.lead = -1` and
+ * dragged the untouched third caption a full second early, its words stretched
+ * 2x by `scaleWordsIntoWindow`, with nothing reported. This is exactly the
+ * rule core adopted for the same reason (a neighbour's edge follows only if it
+ * was already coincident; a nudge past a neighbour is blocked, never pushes),
+ * so the editor and core now express ONE model instead of two. Coincidence is
+ * tested against the INPUT edges, like core's, and on a packed stream every
+ * boundary is coincident — behaviour there is bit-identical.
  */
 export const captionTimingEntries = (m: {
   /** The dragged caption lines, in order. */
@@ -281,14 +340,17 @@ export const captionTimingEntries = (m: {
     lead: at(l.start) - l.start,
     tail: at(l.end) - l.end,
   }));
-  if (m.prev !== null) {
+  // The coincidence test, per side: only a boundary the two lines already
+  // SHARED travels with the drag (see the docstring — and `applyCaptionLine
+  // Timing`'s own `lines[i + 1].start === line.end` test, which this mirrors).
+  if (m.prev !== null && m.prev.end === m.span.start) {
     out.unshift({
       srcStart: m.prev.srcStart,
       lead: m.prev.lead,
       tail: m.newSpan.start - m.prev.end,
     });
   }
-  if (m.next !== null) {
+  if (m.next !== null && m.next.start === m.span.end) {
     out.push({ srcStart: m.next.srcStart, lead: m.newSpan.end - m.next.start, tail: m.next.tail });
   }
   return out;
@@ -322,6 +384,56 @@ export const timingLineAt = (lines: readonly CaptionLine[], i: number): TimingLi
 };
 
 /**
+ * For each PRE-hide line (`liveLines`, what the panel renders), the index of
+ * the POST-hide line (`timingLines`, what core times) it became — or null
+ * when the hide layer removed the line outright.
+ *
+ * The panel renders pre-hide lines on purpose (hidden words stay on screen,
+ * struck through, so they can be selected and restored), but
+ * `applyCaptionLineTiming` runs on the POST-hide lines and keys every entry
+ * by the surviving line's FIRST word (App.tsx's layer order). Hiding a
+ * caption's first word therefore re-keys the caption: a nudge captured
+ * against the pre-hide line stored the HIDDEN word's anchor, no line began on
+ * it, core reported `found: null`, and the caption never moved — while the
+ * panel still painted the "timing adjusted" marker and resumed the next drag
+ * from that orphaned entry (2026-08-19 review, the HIGH finding).
+ *
+ * Matched by ANCHOR, in ORDER, never positionally: hides only remove words
+ * (and lines that lost all of them), so the post-hide lines are a SUBSEQUENCE
+ * of the pre-hide ones, and a shared anchor between two lines is enough to
+ * pair them. The ordered walk is what keeps MANUFACTURED duplicate anchors
+ * (`backfillSrcStart`, captions.ts:44-50 — two words, one instant) from
+ * pairing a line with a namesake elsewhere in the track.
+ */
+export const postHideLineIndices = (
+  liveLines: readonly CaptionLine[],
+  timingLines: readonly CaptionLine[],
+): Array<number | null> => {
+  const out: Array<number | null> = [];
+  let j = 0;
+  for (const line of liveLines) {
+    const anchors = new Set(
+      line.words.map((w) => captionAnchorOf(w)).filter((a): a is string => a !== null),
+    );
+    const post = timingLines[j];
+    // A line whose words are ALL anchorless (a pre-§137 workdir) matches
+    // nothing and maps to null — `openTiming` refuses such a group anyway,
+    // for the same §137 reason.
+    const shared = (w: CaptionWord): boolean => {
+      const anchor = captionAnchorOf(w);
+      return anchor !== null && anchors.has(anchor);
+    };
+    if (post !== undefined && post.words.some(shared)) {
+      out.push(j);
+      j++;
+    } else {
+      out.push(null);
+    }
+  }
+  return out;
+};
+
+/**
  * The transcript view (R15 §59): every caption word in one scrollable,
  * searchable list — find a word, fix it, jump the preview to it.
  *
@@ -352,6 +464,12 @@ export const TranscriptPanel: React.FC<{
   baseLines: CaptionLine[];
   /** The live merged lines — what the preview shows, edits included. */
   liveLines: CaptionLine[];
+  /** The POST-hide lines — the exact track `applyCaptionLineTiming` runs on
+   * (App.tsx's layer order). Only the TIMING surfaces read these: the panel
+   * still RENDERS `liveLines` so a hidden word stays on screen struck
+   * through, but a nudge captured against a pre-hide line can be keyed to a
+   * word core will never see (`postHideLineIndices` has the full why). */
+  timingLines: CaptionLine[];
   fps: number;
   playerRef: React.RefObject<PlayerRef | null>;
   edits: ReturnType<typeof useEdits>;
@@ -363,7 +481,22 @@ export const TranscriptPanel: React.FC<{
   onDeleteWords: (plan: DeleteWordsPlan) => void;
   /** Pane width in px — owned by App, dragged via the divider (R16 §65). */
   width: number;
-}> = ({ baseLines, liveLines, fps, playerRef, edits, onDeleteWords, width }) => {
+  /** The open project's workdir, or null when none is. Only the waveform
+   * cache reads it: `/media/*` resolves against the server's CURRENT
+   * workdir, so a decode belongs to the project it was fetched under
+   * (`loadSourceAudio`). */
+  workdir: string | null;
+}> = ({
+  baseLines,
+  liveLines,
+  timingLines,
+  fps,
+  playerRef,
+  edits,
+  onDeleteWords,
+  width,
+  workdir,
+}) => {
   const [query, setQuery] = useState("");
   /**
    * The open retype box. `srcStart` and `base` are CAPTURED when it opens,
@@ -411,6 +544,18 @@ export const TranscriptPanel: React.FC<{
     fromSrcStart: number;
     toSrcStart: number;
     was: string;
+    /**
+     * The same base run, UN-normalized — for the one-token route only
+     * (`commitRange`), which stores a PER-WORD retype (2026-08-19 review).
+     * The two layers guard differently: `applyCaptionRangeEdits` normalizes
+     * BOTH sides of its whole-run comparison, but `applyCaptionEdits`
+     * compares raw (`w.text !== edit.was`), and a caption word's text is
+     * whatever the ASR produced. On decomposed Arabic — the very form this
+     * file NFC-normalizes its search box for — an NFC `was` matches no word
+     * on the line, so the edit can never apply: the word reverts and the
+     * "could not be placed" banner fires on a run the user is looking at.
+     */
+    rawWas: string;
     /** True when the box was opened over an EXISTING range entry — the
      * commit must then stay a range edit even for a one-token draft, or a
      * `patchCaption` would write a per-word retype inside the live entry's
@@ -869,7 +1014,13 @@ export const TranscriptPanel: React.FC<{
   // reflows the wrap under the anchor word; `rangeEditing`/`timing` are deps
   // because those two surfaces REPLACE the bar at this anchor and are much
   // taller — without a re-measure they inherited the bar's placement and
-  // hung off the bottom of the pane.
+  // hung off the bottom of the pane. `editing` joined them (2026-08-19
+  // review): the retype input replaces its word's SPAN, so the anchor this
+  // effect measures is gone while the box is open, and without the dep a
+  // stale `menuPos` kept the bar floating over the input — where clicking
+  // Delete blurred the box (committing the retype through `onBlur`) and
+  // opened the delete confirm in the same gesture. The bar's render gate
+  // hides it outright; this keeps the position from surviving the box.
   //
   // Two passes by construction (2026-08-18 round 5, replacing the EST_W
   // guess): pass one has no mounted surface to measure, so it places on a
@@ -919,7 +1070,7 @@ export const TranscriptPanel: React.FC<{
     setMenuPos((prev) =>
       prev !== null && prev.top === next.top && prev.left === next.left ? prev : next,
     );
-  }, [selLo, selHi, width, rangeEditing, timing, menuPos]);
+  }, [selLo, selHi, width, editing, rangeEditing, timing, menuPos]);
 
   // The Delete ▾ flyout never outlives the selection it was opened for — a
   // flyout that survived a selection change would offer its rows for words
@@ -1042,6 +1193,10 @@ export const TranscriptPanel: React.FC<{
           .map((w) => w.base)
           .join(" ")
           .normalize("NFC"),
+        // Unused on this branch (`covered` always routes to the range layer,
+        // which normalizes both sides) — carried so the capture has one
+        // shape and the one-token route can never read an undefined field.
+        rawWas: run.map((w) => w.base).join(" "),
         covered: true,
         // The EXPANDED selection just set above — the staleness sweep
         // compares against what the next render derives from it.
@@ -1073,6 +1228,9 @@ export const TranscriptPanel: React.FC<{
         .map((w) => w.base)
         .join(" ")
         .normalize("NFC"),
+      // The RAW base run for the one-token route — the per-word layer
+      // compares bytes (see `rawWas`).
+      rawWas: selected.map((w) => w.base).join(" "),
       covered: false,
       selLo: selLo!,
       selHi: selHi!,
@@ -1089,8 +1247,10 @@ export const TranscriptPanel: React.FC<{
         // One uncovered word rewritten to one token is a plain 1:1 retype —
         // routing it to `patchCaption` keeps the stricter contract (and its
         // clear-on-retype-back rule) instead of minting a degenerate range
-        // entry for what never stopped being a retype.
-        edits.patchCaption(open.fromSrcStart, text, open.was);
+        // entry for what never stopped being a retype. The RAW base text
+        // goes with it: the per-word layer's guard is a byte comparison
+        // (`rawWas`), unlike the range layer's normalized one.
+        edits.patchCaption(open.fromSrcStart, text, open.rawWas);
       } else {
         edits.patchCaptionRange(open.fromSrcStart, open.toSrcStart, text, open.was);
       }
@@ -1116,8 +1276,11 @@ export const TranscriptPanel: React.FC<{
       if (!open.covered && open.fromSrcStart === open.toSrcStart && tokens.length === 1) {
         edits.patchCaptionAllOccurrences(
           [
-            { srcStart: open.fromSrcStart, was: open.was },
-            ...occurrences.map((o) => ({ srcStart: o.fromSrcStart, was: o.was })),
+            // RAW base texts on this route, the `commitRange` rule: every
+            // one of these becomes a per-word entry whose guard compares
+            // bytes against the caption word (`rawWas`).
+            { srcStart: open.fromSrcStart, was: open.rawWas },
+            ...occurrences.map((o) => ({ srcStart: o.fromSrcStart, was: o.rawWas })),
           ],
           text,
         );
@@ -1159,13 +1322,24 @@ export const TranscriptPanel: React.FC<{
     setSel(null);
   };
 
-  /** The stored nudge a CAPTION carries, if any — keyed by the line's first
-   * word (`applyCaptionLineTiming`). One lookup feeds the per-word marker,
-   * its title suffix, and `openTiming`'s resume. */
+  /** Each RENDERED line's index in the timed (post-hide) track — the one
+   * translation every timing surface goes through (`postHideLineIndices`). */
+  const timedLineIndex = useMemo(
+    () => postHideLineIndices(liveLines, timingLines),
+    [liveLines, timingLines],
+  );
+
+  /** The stored nudge a CAPTION carries, if any — keyed by the POST-HIDE
+   * line's first word, which is what `applyCaptionLineTiming` keys on. One
+   * lookup feeds the per-word marker, its title suffix, and `openTiming`'s
+   * resume, so all three agree with the doc even when a hide re-keyed the
+   * caption. */
   const timingEntryOfLine = (
     lineIndex: number,
   ): { lead: number; tail: number } | undefined => {
-    const key = captionAnchorOf(liveLines[lineIndex]?.words[0]);
+    const timed = timedLineIndex[lineIndex] ?? null;
+    if (timed === null) return undefined;
+    const key = captionAnchorOf(timingLines[timed]?.words[0]);
     return key === null ? undefined : edits.doc.captionLineTiming[key];
   };
 
@@ -1190,9 +1364,17 @@ export const TranscriptPanel: React.FC<{
     // SNAP TO CAPTIONS: a nudge moves LINE windows, so the word selection is
     // widened to the lines its words sit in. The selection is a contiguous
     // flat-index range, so its lines are a contiguous line range.
-    const track = liveLines;
-    const from = selected[0]!.lineIndex;
-    const to = selected[selected.length - 1]!.lineIndex;
+    //
+    // The track is the POST-HIDE one — the lines core will actually time
+    // (`postHideLineIndices`) — so the selection's RENDERED line indices are
+    // translated into it. A caption the hide layer removed entirely maps to
+    // null and the gesture is REFUSED, the §137 posture every sibling takes:
+    // there is no line left to nudge, and an Apply keyed to a word core never
+    // sees is the silent no-op this translation exists to remove.
+    const track = timingLines;
+    const from = timedLineIndex[selected[0]!.lineIndex] ?? null;
+    const to = timedLineIndex[selected[selected.length - 1]!.lineIndex] ?? null;
+    if (from === null || to === null) return;
     const lines: TimingLine[] = [];
     for (let i = from; i <= to; i++) {
       const line = timingLineAt(track, i);
@@ -1210,6 +1392,9 @@ export const TranscriptPanel: React.FC<{
     const bounds = captionDragBounds({
       prev: from > 0 ? track[from - 1]! : null,
       next: to < track.length - 1 ? track[to + 1]! : null,
+      // The group's derived window decides which side, if either, shares a
+      // boundary with its neighbour (`captionDragBounds`' coincidence test).
+      span,
       track: { start: track[0]!.start, end: track[track.length - 1]!.end },
     });
     setTiming({
@@ -1331,19 +1516,27 @@ export const TranscriptPanel: React.FC<{
     };
   }, [timing, timingCaptions]);
 
-  // Kick the singleton audio load the first time a popover opens — not at
-  // mount, because most sessions never open one and the decode holds the
-  // whole channel in memory.
+  // A decoded waveform belongs to the project it was fetched under: a switch
+  // (R17 §83, in-page) drops it, or the next popover would draw project A's
+  // audio under project B's captions. The module cache is keyed the same way
+  // (`loadSourceAudio`); this is the panel's own copy of it.
+  useEffect(() => {
+    setAudio(null);
+  }, [workdir]);
+
+  // Kick the audio load the first time a popover opens — not at mount,
+  // because most sessions never open one and the decode holds the whole
+  // channel in memory.
   useEffect(() => {
     if (timing === null || audio !== null) return;
     let cancelled = false;
-    void loadSourceAudio().then((a) => {
+    void loadSourceAudio(workdir).then((a) => {
       if (!cancelled && a !== null) setAudio(a);
     });
     return () => {
       cancelled = true;
     };
-  }, [timing, audio]);
+  }, [timing, audio, workdir]);
 
   /**
    * OUTPUT seconds → x over the strip, the ONE mapping the draw effect, the
@@ -1555,6 +1748,26 @@ export const TranscriptPanel: React.FC<{
     player.addEventListener("frameupdate", onFrame);
     return () => player.removeEventListener("frameupdate", onFrame);
   }, [timingPlaying, timedSpan, fps, playerRef]);
+
+  // The flag follows the REAL player, not just this popover's own button
+  // (2026-08-19 review): the global Space transport pauses playback without
+  // going through `toggleTimingPlay`, and a `timingPlaying` left true kept
+  // the span-end watcher above armed — so resuming with Space stopped
+  // ORDINARY playback dead at `timedSpan.end` with nothing on screen to
+  // explain it, while the button still read "Pause". Only PAUSE is mirrored:
+  // the watcher's contract is "attached while the popover's own Play is
+  // live", so an external play must not arm it.
+  //
+  // No dep array, the App.tsx:444 idiom for the same reason — `playerRef`
+  // fills after the first render that has props, so the subscription
+  // re-attaches until there is a player to attach to.
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    const onPause = (): void => setTimingPlaying(false);
+    player.addEventListener("pause", onPause);
+    return () => player.removeEventListener("pause", onPause);
+  });
 
   // EVERY close path pauses a live span play — Apply, Cancel, Escape, and
   // the selection-change sweep all just `setTiming(null)`, so the pause
@@ -1867,7 +2080,11 @@ export const TranscriptPanel: React.FC<{
             shift-click can keep extending the selection — Escape, the
             selection clearing, a word-count change and the gestures
             themselves are the close paths. */}
-        {sel !== null && menuPos !== null && rangeEditing === null && timing === null ? (
+        {sel !== null &&
+        menuPos !== null &&
+        editing === null &&
+        rangeEditing === null &&
+        timing === null ? (
           <div
             data-testid="transcript-selection-menu"
             role="menu"

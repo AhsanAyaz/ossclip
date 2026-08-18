@@ -604,6 +604,17 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       const captionWordsHidden = Object.fromEntries(
         Object.entries(state.doc.captionWordsHidden).filter(([key]) => !inInterval(key)),
       );
+      // The LINE TIMING layer scrubs on the same interval (2026-08-19
+      // review). Its keys are a line's FIRST word's anchor, so a rewrite
+      // covering that word re-mints it and the nudge dangles forever: core
+      // reports `found: null` and the banner misdiagnoses it as "the cut
+      // removed the caption you nudged" — nothing else prunes these records
+      // anywhere. A nudge on a line whose first word survives OUTSIDE the
+      // interval keeps its key and rides along, which is correct: that
+      // caption is still there and still moved.
+      const captionLineTiming = Object.fromEntries(
+        Object.entries(state.doc.captionLineTiming).filter(([key]) => !inInterval(key)),
+      );
       const captionRangeEdits = [
         ...state.doc.captionRangeEdits.filter((e) => {
           const eLo = Math.min(Number(e.fromKey.slice(1)), Number(e.toKey.slice(1)));
@@ -612,7 +623,13 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         }),
         { fromKey, toKey, text, was },
       ];
-      return commit({ ...state.doc, captions, captionWordsHidden, captionRangeEdits });
+      return commit({
+        ...state.doc,
+        captions,
+        captionWordsHidden,
+        captionLineTiming,
+        captionRangeEdits,
+      });
     }
     case "patchCaptionAllOccurrences": {
       // The `patchCaption` case's semantics, folded over every entry against
@@ -691,6 +708,12 @@ export function editReducer(state: EditState, action: EditAction): EditState {
           ),
           captionWordsHidden: Object.fromEntries(
             Object.entries(doc.captionWordsHidden).filter(([key]) => !inInterval(key)),
+          ),
+          // The line-timing scrub, per occurrence — `patchCaptionRange`'s
+          // rule and its full why: a re-minted first word leaves the nudge
+          // keyed to a word no line begins on, dangling forever.
+          captionLineTiming: Object.fromEntries(
+            Object.entries(doc.captionLineTiming).filter(([key]) => !inInterval(key)),
           ),
           captionRangeEdits: [
             ...doc.captionRangeEdits.filter((e) => {

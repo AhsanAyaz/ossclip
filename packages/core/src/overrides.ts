@@ -1440,10 +1440,10 @@ export function applyCaptionWordHides(
 /**
  * The floor a caption's window may shrink to. A caption nobody can read is a
  * delete wearing a timing nudge's clothes — deletes are the hide layer's
- * gesture, with its own guard and report. Also the minimum SPACING between
- * two seams, which is what keeps §115 (`packages/scenes/src/frames.ts`) true:
- * 50ms is more than one frame at any fps this renders at, so two adjacent
- * windows can never round onto the same frame.
+ * gesture, with its own guard and report. Also the minimum WIDTH of every
+ * line's window, which is what keeps §115 (`packages/scenes/src/frames.ts`)
+ * true: 50ms is more than one frame at any fps this renders at, so two
+ * adjacent windows can never round onto the same frame.
  *
  * (Was `MIN_TIMED_WORD_SEC`, the same 0.05 measured against a WORD, until the
  * per-word layer was found inert — see `captionLineTiming`'s docstring.)
@@ -1474,7 +1474,7 @@ export const MIN_CAPTION_SEC = 0.05;
  * Identity when the source window is degenerate — a zero-width or inverted
  * span has no ratio to scale by, and `0/0` would put NaN stamps in the render
  * props. The caller owns `toStart < toEnd`; a target handed backwards would
- * mirror the word order, which `applyCaptionLineTiming`'s seam sweep makes
+ * mirror the word order, which `applyCaptionLineTiming`'s edge sweep makes
  * unreachable.
  */
 export function scaleWordsIntoWindow(
@@ -1498,45 +1498,58 @@ export function scaleWordsIntoWindow(
  * on a line the hides emptied has no window to move (it falls out of the
  * sweep as `found: null`, like every other orphaned caption record).
  *
- * SEAMS, NOT WINDOWS. Caption lines PARTITION the timeline — the packer
- * chains words (`transcribe.ts`: `next.start = w.end`) and clamps each line's
- * end to the next line's start (`captions.ts:203-213`), so on a real
- * transcript every inter-line gap is exactly zero (measured 116/116, see
- * `captionLineTiming`). The boundaries are therefore SEAMS: `s_0` is the
- * track's opening, `s_i` the boundary between line i-1 and line i, `s_n` the
- * track's close, and line i's window is `[s_i, s_{i+1}]`. A `lead` moves the
- * line's OPENING seam, a `tail` its CLOSING one, and the neighbour on the
- * other side of that seam follows — one edit, two windows.
+ * EDGES, NOT ONE SHARED SEAM. Each line owns its `[start, end]` pair, and a
+ * line's END and the next line's START are two separate numbers here — even
+ * though on a real transcript they are always equal, because the packer chains
+ * words (`transcribe.ts`: `next.start = w.end`) and clamps each line's end to
+ * the next line's start (`captions.ts:203-213`), giving inter-line gaps of
+ * exactly zero (measured 116/116, see `captionLineTiming`). A nudge CLOSES the
+ * two onto one value only when they were already COINCIDENT: that is what
+ * makes a lead on the packed stream move both sides of the boundary, one edit
+ * and two windows, exactly as before.
  *
- * This REPLACES the old "LINE WINDOWS NEVER CHANGE" rule, which existed to
- * protect §115 (`packages/scenes/src/frames.ts:1-21` — no two lines may share
- * a frame). Moving seams keeps §115 true BY CONSTRUCTION instead: the sweep
- * below leaves the seam array STRICTLY INCREASING with at least
- * `MIN_CAPTION_SEC` between neighbours, and windows cut from an ordered seam
- * array cannot overlap. Never move one window independently — that is the
- * operation §115 forbids, and the reason this function edits the seams and
- * derives the windows rather than the other way round.
+ * They are two numbers because GAPS ARE REAL: `applyCaptionWordHides` re-bases
+ * a line's window onto its surviving words, `MAX_CAPTION_WORD_LEAD_SEC`
+ * (captions.ts:147, 169) clamps a word's display start, and an overrides.json
+ * can be hand-edited. This code
+ * used to hold ONE `seams` array whose interior entry was read off the later
+ * line's start, conflating the two: with lines `[0,2] [2,4] [5,6]`, a
+ * lead-only drag of the middle line (`{lead: -0.05, tail: 0}`, exactly what
+ * the editor writes) rebuilt the UNTOUCHED third caption as `[4,6]` — a full
+ * second early, its words stretched 2x by `scaleWordsIntoWindow`, with no drop
+ * reported (review 2026-08-19).
  *
- * THE SWEEP, left to right: every seam is clamped into the track's ORIGINAL
- * outer bounds `[s_0, s_n]` and then pushed to at least
- * `MIN_CAPTION_SEC` past its predecessor (a backward pass pulls seams back if
+ * The edge model still protects §115 (`packages/scenes/src/frames.ts:1-21` —
+ * no two lines may share a frame) BY CONSTRUCTION, which is what the old "LINE
+ * WINDOWS NEVER CHANGE" rule existed for: the sweep below leaves the edges
+ * ORDERED (`start_0 <= end_0 <= start_1 <= ... <= end_n-1`) with every window
+ * at least `MIN_CAPTION_SEC` wide, and ordered non-overlapping windows at
+ * least 50ms wide cannot round onto a shared frame.
+ *
+ * THE SWEEP, forward: every edge is clamped into the track's ORIGINAL outer
+ * bounds, no line may open before the previous line CLOSED, and no window may
+ * be narrower than `MIN_CAPTION_SEC`. A backward pass then pulls lines left if
  * a track too short to hold every line at the floor made the forward pass run
- * into the end). A seam may take time FROM a neighbour; it may never cross
- * one, and the outer bounds never GROW — a caption must not appear before the
- * first caption of the track or linger past the last, where there is no
- * output left to show it over.
+ * into the end. Ordering is enforced against the NEIGHBOUR'S OWN edge, never a
+ * derived seam: a nudge that runs past it is BLOCKED there rather than pushing
+ * it, so a gap gets consumed but no untouched caption ever moves. (A nudge
+ * takes time FROM a neighbour only through the coincidence rule above — the
+ * packed case, where the two share the boundary being dragged.) The outer
+ * bounds never GROW: a caption must not appear before the first caption of the
+ * track or linger past the last, where there is no output left to show it
+ * over.
  *
- * BOTH SIDES OF ONE SEAM: line i's `tail` and line i+1's `lead` address the
- * same seam. The LATER line's `lead` wins, deterministically — the UI writes
- * both sides of a drag consistently, so this only decides hand-edited docs,
- * and a stated winner beats an order-of-iteration accident. (A stored
- * `lead: 0` still claims its seam; an entry the user cleared is DELETED from
- * the doc, not written as zeros.)
+ * BOTH SIDES OF ONE BOUNDARY: line i's `tail` and line i+1's `lead` address
+ * the same coincident boundary. The LATER line's `lead` wins,
+ * deterministically — the UI writes both sides of a drag consistently, so this
+ * only decides hand-edited docs, and a stated winner beats an
+ * order-of-iteration accident. (A stored `lead: 0` still claims its edge; an
+ * entry the user cleared is DELETED from the doc, not written as zeros.)
  *
  * Lines whose window the sweep did not move are returned VERBATIM — including
  * their word stamps — so a nudge on one caption cannot perturb the rest of
- * the track. The ones that did move (the nudged line AND whichever neighbour
- * shares the moved seam) have their words scaled into the new window by
+ * the track. The ones that did move (the nudged line AND, on a coincident
+ * boundary, its neighbour) have their words scaled into the new window by
  * `scaleWordsIntoWindow`.
  *
  * DELIBERATELY NO `was` GUARD, unlike `captionWordsHidden`: timing is
@@ -1552,18 +1565,25 @@ export function applyCaptionLineTiming(
   timing: Record<string, { lead: number; tail: number }>,
 ): AppliedCaptionEdits {
   const dropped: AppliedCaptionEdits["dropped"] = [];
-  if (lines.length === 0 || Object.keys(timing).length === 0) {
-    return { lines: [...lines], dropped };
-  }
-
   const n = lines.length;
-  // The seam array, `n + 1` boundaries for `n` lines. An interior seam is read
-  // off the LATER line's start: on the packed stream that IS the earlier
-  // line's end, and on a gapped one (hand-edited, or a hide that re-based an
-  // edge) taking the later start is what keeps an untouched pair's gap intact
-  // below — an unmoved seam rebuilds nothing.
-  const base = [lines[0]!.start, ...lines.slice(1).map((l) => l.start), lines[n - 1]!.end];
-  const seams = [...base];
+  // NO LINES is not "no nudges to report": every stored key is an anchor that
+  // no line starts on, which is exactly the `found: null` case the sweep at
+  // the bottom exists to say out loud, and what this function's own docstring
+  // promises. `applyCaptionEdits` and `applyCaptionWordHides` never took this
+  // shortcut either. The editor's false-banner guard lives at the CALLER
+  // (`App.tsx`: `if (!renderProps) return { lines: [], dropped: [] }`), where
+  // "nothing loaded yet" is distinguishable from "this cut has no captions" —
+  // silence here instead let produce report nudges as applied that never were.
+  if (n === 0) {
+    for (const key of Object.keys(timing)) dropped.push({ key, expected: "", found: null });
+    return { lines: [], dropped };
+  }
+  if (Object.keys(timing).length === 0) return { lines: [...lines], dropped };
+
+  // One `[start, end]` pair PER LINE — never a shared seam array (see the
+  // docstring: the conflation moved untouched captions on a gapped stream).
+  const starts = lines.map((l) => l.start);
+  const ends = lines.map((l) => l.end);
 
   const seen = new Set<string>();
   for (let i = 0; i < n; i++) {
@@ -1583,36 +1603,44 @@ export function applyCaptionLineTiming(
     seen.add(key);
     // Deltas ride on the line's OWN edges, so a gapped stream moves the edge
     // the user dragged rather than the neighbour's. Tail first, then lead:
-    // lines are visited in order, so line i+1's lead lands on the shared seam
-    // AFTER line i's tail — the documented "later lead wins".
-    seams[i + 1] = line.end + entry.tail;
-    seams[i] = line.start + entry.lead;
+    // lines are visited in order, so line i+1's lead lands on a shared
+    // boundary AFTER line i's tail — the documented "later lead wins".
+    ends[i] = line.end + entry.tail;
+    // COINCIDENCE, tested against the ORIGINAL edges: only a boundary the two
+    // lines already SHARED travels with the nudge (the packed stream, where
+    // every one of them is shared). Across a gap the neighbour stays where it
+    // is — the sweep below still stops the moved edge from crossing it.
+    // Assigning the same number, not recomputing it, keeps the two exactly
+    // equal: a float `+ delta` computed twice can differ in the last bit, and
+    // an unequal pair is an overlap the sweep would then have to fix.
+    if (i + 1 < n && lines[i + 1]!.start === line.end) starts[i + 1] = ends[i]!;
+    starts[i] = line.start + entry.lead;
+    if (i > 0 && lines[i - 1]!.end === line.start) ends[i - 1] = starts[i]!;
   }
 
-  const lo = base[0]!;
-  const hi = base[n]!;
-  for (let i = 0; i <= n; i++) seams[i] = Math.min(Math.max(seams[i]!, lo), hi);
-  for (let i = 1; i <= n; i++) {
-    seams[i] = Math.min(Math.max(seams[i]!, seams[i - 1]! + MIN_CAPTION_SEC), hi);
+  const lo = lines[0]!.start;
+  const hi = lines[n - 1]!.end;
+  // Forward: into the track's bounds, never opening before the previous line
+  // CLOSED (its own edge, not a derived seam), never narrower than the floor.
+  for (let i = 0; i < n; i++) {
+    const floor = i === 0 ? lo : Math.max(lo, ends[i - 1]!);
+    starts[i] = Math.min(Math.max(starts[i]!, floor), hi);
+    ends[i] = Math.min(Math.max(ends[i]!, starts[i]! + MIN_CAPTION_SEC), hi);
   }
   // The forward pass caps at `hi`, so a track with less room than
-  // `n * MIN_CAPTION_SEC` can leave the tail seams piled on the end. Pull the
-  // earlier ones back (never before `lo`) so the array stays ordered.
+  // `n * MIN_CAPTION_SEC` can leave the last lines piled on the end. Pull them
+  // back (never before `lo`) so the edges stay ordered.
   for (let i = n - 1; i >= 0; i--) {
-    seams[i] = Math.max(Math.min(seams[i]!, seams[i + 1]! - MIN_CAPTION_SEC), lo);
+    const ceil = i === n - 1 ? hi : Math.min(hi, starts[i + 1]!);
+    ends[i] = Math.max(Math.min(ends[i]!, ceil), lo);
+    starts[i] = Math.max(Math.min(starts[i]!, ends[i]! - MIN_CAPTION_SEC), lo);
   }
 
   const out = lines.map((line, i) => {
-    const startMoved = seams[i] !== base[i];
-    const endMoved = seams[i + 1] !== base[i + 1];
-    if (!startMoved && !endMoved) return line;
-    const start = startMoved ? seams[i]! : line.start;
-    // A line whose own end sits BEFORE the seam after it (only possible on a
-    // gapped stream) would invert when its start moves into that gap. The
-    // floor applies to the window as well as to the seams — and it can never
-    // reach the next line, because the sweep already left `start` at least
-    // `MIN_CAPTION_SEC` short of the next seam.
-    const end = endMoved ? seams[i + 1]! : Math.max(line.end, start + MIN_CAPTION_SEC);
+    const start = starts[i]!;
+    const end = ends[i]!;
+    // Neither edge moved: VERBATIM, same reference and same word stamps.
+    if (start === line.start && end === line.end) return line;
     return {
       ...line,
       start,

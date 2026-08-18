@@ -36,6 +36,13 @@ export interface Occurrence {
   fromSrcStart: number;
   toSrcStart: number;
   was: string;
+  /** The same base run UN-normalized, for the SINGLE-word route only: that
+   * one commits per-word entries, and `applyCaptionEdits` compares its `was`
+   * to the caption word RAW (`w.text !== edit.was`) where
+   * `applyCaptionRangeEdits` normalizes both sides. A decomposed-Arabic word
+   * given an NFC `was` matches nothing and the retype can never apply
+   * (2026-08-19 review). */
+  rawWas: string;
 }
 
 /**
@@ -102,6 +109,7 @@ export function findOccurrences(
           .map((w) => w.base)
           .join(" ")
           .normalize("NFC"),
+        rawWas: window.map((w) => w.base).join(" "),
       });
       // Greedy: never offer two windows claiming the same word (see the
       // exclusion list above).

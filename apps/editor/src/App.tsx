@@ -40,6 +40,7 @@ import {
   pinnedInfoLines,
   renderCompleteReload,
   renderProgress,
+  resumedRenderStateApplies,
   resumeRenderState,
   type RenderState,
 } from "./renderStatus";
@@ -214,6 +215,12 @@ export const App: React.FC = () => {
   const [showPicker, setShowPicker] = useState(false);
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
   const [workdirPath, setWorkdirPath] = useState<string | null>(null);
+  /** The workdir the LAST `/api/production` load ran against — a ref, not
+   * state, because `loadProduction` has to read it inside its own async body
+   * before the render that a `setState` would schedule. It exists solely so
+   * the render-status resume can tell a mount from a project SWITCH
+   * (`resumedRenderStateApplies`). */
+  const loadedWorkdirRef = useRef<string | null>(null);
   // Render-from-the-editor (R11 Task 4): whether the server has a recorded
   // invocation to replay, and the in-flight run's state while it does.
   const [canRender, setCanRender] = useState(false);
@@ -620,7 +627,10 @@ export const App: React.FC = () => {
     }
     const props = anchored(body.renderProps!);
     setRenderProps(props);
-    setWorkdirPath(body.workdir ?? null);
+    const prevWorkdir = loadedWorkdirRef.current;
+    const nextWorkdir = body.workdir ?? null;
+    loadedWorkdirRef.current = nextWorkdir;
+    setWorkdirPath(nextWorkdir);
     setCanRender(Boolean(body.canRender));
     // §137: a doc saved before this change keys caption edits by POSITION,
     // which any cut shifts — every one of them would silently revert on
@@ -646,7 +656,9 @@ export const App: React.FC = () => {
     // 2026-08-18 a FINISHED run comes back too: the server keeps the last
     // run's ring buffer until the next render starts, and only restoring
     // the running case meant the reload you did to check on a render
-    // reported nothing at all once it had ended.
+    // reported nothing at all once it had ended. That ring buffer is exactly
+    // why the resume must be refused on a project SWITCH — it outlives the
+    // project it belongs to (`resumedRenderStateApplies` has the field case).
     const s = await fetch("/api/render/status");
     const status = (await s.json()) as {
       running: boolean;
@@ -655,7 +667,9 @@ export const App: React.FC = () => {
       startedAt?: number | null;
       cancelled?: boolean;
     };
-    const resumed = resumeRenderState(status);
+    const resumed = resumedRenderStateApplies(prevWorkdir, nextWorkdir)
+      ? resumeRenderState(status)
+      : null;
     if (resumed) {
       setRender(resumed);
       if (resumed.running) beginRenderPoll();
@@ -1519,11 +1533,20 @@ export const App: React.FC = () => {
               // ready to select and Restore — and the panel derives which
               // words are hidden from `edits.doc.captionWordsHidden` itself.
               liveLines={appliedCaptionRanges.lines}
+              // The POST-hide lines the TIMING layer runs on, alongside the
+              // pre-hide ones the panel renders: `applyCaptionLineTiming`
+              // keys every entry by the SURVIVING line's first word, so a
+              // nudge captured against the pre-hide stream could be keyed to
+              // a hidden word core never sees (`postHideLineIndices`).
+              timingLines={appliedCaptionHides.lines}
               fps={live.settings.fps}
               playerRef={playerRef}
               edits={edits}
               onDeleteWords={setDeleteWordsPlan}
               width={transcriptWidth}
+              // `/media/*` resolves against the CURRENT workdir, so the
+              // waveform cache is keyed by it (`loadSourceAudio`).
+              workdir={workdirPath}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}

@@ -755,6 +755,25 @@ describe("pruneHidesInsideCuts (§59b revisited — the cut supersedes the hide)
     expect(pruneHidesInsideCuts(untouched, cutlist).doc).toBe(untouched);
   });
 
+  it("keeps a LEGACY positional key an early cut would otherwise swallow", () => {
+    // `captionWordsHidden` is an unpinned `z.record`, so a hand-edited or
+    // pre-§137 doc can carry a positional key. "17" slices to "7" → 7ms →
+    // inside the 0–10s cut below, and the entry would be deleted with nothing
+    // said, over an instant it never named. The editor guards the identical
+    // case (`apps/editor/src/useEdits.ts:587-600`): parse, never coerce.
+    const early: Segment[] = [
+      { srcIn: 0, srcOut: 10, kind: "remove", reason: "user" },
+      { srcIn: 10, srcOut: 60, kind: "keep" },
+    ];
+    const doc = OverrideDocSchema.parse({
+      captionWordsHidden: { "17": { was: "positional" }, w5000: { was: "cut" } },
+    });
+    const { doc: pruned, pruned: keys } = pruneHidesInsideCuts(doc, early);
+    // Only the source-keyed hide is retired; the legacy one survives verbatim.
+    expect(keys).toEqual(["w5000"]);
+    expect(pruned.captionWordsHidden).toEqual({ "17": { was: "positional" } });
+  });
+
   it("keeps an entry whose key it cannot parse rather than deleting it", () => {
     // Malformed keys should not exist, but a hand-edited overrides.json is
     // user data — never deleted over a key this function cannot read.

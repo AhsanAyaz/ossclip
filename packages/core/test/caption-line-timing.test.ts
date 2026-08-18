@@ -300,26 +300,68 @@ describe("applyCaptionLineTiming — a GAPPED stream (hand-edited, or hide-short
     { start: 4, end: 5, words: [{ text: "c", start: 4, end: 5, srcStart: 14 }] },
   ];
 
-  it("leaves an untouched pair's gap alone, and closes only the seam that moved", () => {
+  it("moves ONLY the nudged line when its lead lands inside the gap ahead of it", () => {
     const lines = gapped();
     const { lines: out } = applyCaptionLineTiming(lines, { [LINE_C]: { lead: -0.5, tail: 0 } });
-    // The A|B seam never moved, so that pair keeps its silence verbatim.
+    // C's start (4) and B's end (3) are two different numbers, so a lead that
+    // opens C at 3.5 lands in the SILENCE — B is not stretched to meet it, and
+    // neither is A.
     expect(out[0]).toBe(lines[0]);
-    expect(out[1]!.start).toBe(2);
-    // The B|C seam did, so both sides of it meet on the new boundary.
-    expect(out[1]!.end).toBeCloseTo(3.5, 10);
+    expect(out[1]).toBe(lines[1]);
     expect(out[2]!.start).toBeCloseTo(3.5, 10);
+    expect(out[2]!.end).toBe(5);
+  });
+
+  it("BLOCKS a lead at the previous line's own end instead of pushing it", () => {
+    // C's lead asks for 2, which is inside B's window. Ordering is enforced
+    // against B's OWN end (3): the gap is consumed, C opens where B closes,
+    // and B — a caption the user never touched — does not move.
+    const lines = gapped();
+    const { lines: out } = applyCaptionLineTiming(lines, { [LINE_C]: { lead: -2, tail: 0 } });
+    expect(out[0]).toBe(lines[0]);
+    expect(out[1]).toBe(lines[1]);
+    expect(out[2]!.start).toBe(3);
+    expect(out[2]!.end).toBe(5);
   });
 
   it("never inverts a line whose start is dragged into the gap ahead of it", () => {
-    // B's own end (3) is BEFORE the seam after it (4), so a +1.5 lead moves
-    // its start past its own end. The floor applies to the window too, and it
-    // still cannot reach C.
-    const { lines: out } = applyCaptionLineTiming(gapped(), { [LINE_B]: { lead: 1.5, tail: 0 } });
+    // B's own end (3) is BEFORE C's start (4), so a +1.5 lead moves its start
+    // past its own end. The floor applies to the window, and it still cannot
+    // reach C.
+    const lines = gapped();
+    const { lines: out } = applyCaptionLineTiming(lines, { [LINE_B]: { lead: 1.5, tail: 0 } });
     expect(out[1]!.start).toBeCloseTo(3.5, 10);
     expect(out[1]!.end).toBeCloseTo(3.55, 10);
     expect(out[1]!.end).toBeLessThanOrEqual(out[2]!.start);
-    expect(out[0]!.end).toBeCloseTo(3.5, 10);
+    // A is on the far side of a gap: it keeps its own end, verbatim.
+    expect(out[0]).toBe(lines[0]);
+  });
+
+  it("leaves the caption AFTER the gap alone on a lead-only drag (the live probe)", () => {
+    // The exact regression that killed the shared seam array (review
+    // 2026-08-19): `[0,2] [2,4] [5,6]`, `{lead: -0.05, tail: 0}` on the middle
+    // line — what the editor writes for a lead-only drag. The old model read
+    // the boundary after line B off C's start (5) while the entry loop wrote
+    // B's own end (4) into it, so C was rebuilt as [4,6]: a full second early,
+    // its single word stretched 2x, and nothing reported.
+    const lines: CaptionLine[] = [
+      { start: 0, end: 2, words: [{ text: "a", start: 0, end: 2, srcStart: 10 }] },
+      { start: 2, end: 4, words: [{ text: "b", start: 2, end: 4, srcStart: 12 }] },
+      { start: 5, end: 6, words: [{ text: "c", start: 5, end: 6, srcStart: 14 }] },
+    ];
+    const { lines: out, dropped } = applyCaptionLineTiming(lines, {
+      [LINE_B]: { lead: -0.05, tail: 0 },
+    });
+    expect(dropped).toEqual([]);
+    // A shares the boundary B's lead moved (2 === 2), so it follows.
+    expect(out[0]!.start).toBe(0);
+    expect(out[0]!.end).toBeCloseTo(1.95, 10);
+    expect(out[1]!.start).toBeCloseTo(1.95, 10);
+    expect(out[1]!.end).toBe(4);
+    // C shares nothing with B. It must come back untouched — window AND word
+    // stamps.
+    expect(out[2]).toBe(lines[2]);
+    expect(out[2]!.words).toEqual([{ text: "c", start: 5, end: 6, srcStart: 14 }]);
   });
 });
 
@@ -387,14 +429,27 @@ describe("applyCaptionLineTiming — the reporting contract", () => {
     expect(dropped).toEqual([]);
   });
 
-  it("no LINES is the identity fast path too — a nudge against nothing reports nothing", () => {
-    // The App's null-render-props guard leans on this: a whole-doc drop report
-    // against zero lines would flash a false banner.
+  it("no LINES still REPORTS every stored nudge — an anchor nothing starts on", () => {
+    // The empty-lines early return used to skip the sweep, contradicting this
+    // function's own docstring and letting produce print "N nudges applied"
+    // for a run where none were. The editor's false-banner guard is at the
+    // CALLER (App.tsx's `if (!renderProps)`), which is what distinguishes
+    // "nothing loaded yet" from "this cut has no captions" — and the sibling
+    // layers (`applyCaptionEdits`, `applyCaptionWordHides`) never took the
+    // shortcut either.
     const { lines: out, dropped } = applyCaptionLineTiming([], {
       [LINE_A]: { lead: 0.2, tail: 0 },
+      [LINE_B]: { lead: 0, tail: -0.3 },
     });
     expect(out).toEqual([]);
-    expect(dropped).toEqual([]);
+    expect(dropped).toEqual([
+      { key: LINE_A, expected: "", found: null },
+      { key: LINE_B, expected: "", found: null },
+    ]);
+  });
+
+  it("no lines AND no nudges reports nothing", () => {
+    expect(applyCaptionLineTiming([], {})).toEqual({ lines: [], dropped: [] });
   });
 });
 
@@ -514,11 +569,16 @@ describe("applyCaptionLayers — line timing is the LAST layer", () => {
     });
     const { lines: out, dropped } = applyCaptionLayers(lines, doc);
     expect(out[0]!.words.map((w) => w.text)).toEqual(["one"]);
-    // The seam between the two lines is line 2's start (1.5 after the nudge),
-    // and line 1's post-hide end follows it — proof the layer ran on the
-    // post-hide windows, not the derived ones.
+    // The hide left line 1 ending at 1.0 against line 2's start of 2.0 — a
+    // GAP — so the nudge moves line 2's start into it and NOTHING else. That
+    // the nudge starts from 2.0 (not the pre-hide window) is the proof the
+    // layer ran last, on the post-hide lines; that line 1 keeps its re-based
+    // end of 1.0 is the proof the two edges are separate numbers (the shared
+    // seam array stretched this untouched caption to 1.5).
     expect(out[1]!.start).toBeCloseTo(1.5, 10);
-    expect(out[0]!.end).toBeCloseTo(1.5, 10);
+    expect(out[1]!.end).toBe(4);
+    expect(out[0]!.start).toBe(0);
+    expect(out[0]!.end).toBe(1);
     expect(dropped).toEqual([]);
   });
 

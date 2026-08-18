@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile, rm } from "node:fs/promises";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { cpus } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
@@ -166,6 +174,7 @@ import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
 import { makeCancelSignal, renderCover, renderProduction } from "@ossclip/renderer";
+import type { RenderPhase } from "@ossclip/renderer";
 import {
   DEFAULT_FACE,
   coverTextRect,
@@ -539,6 +548,79 @@ export function renderCancellation(
     exitCode: signal === "SIGINT" ? 130 : 143,
     message: "▸ cancelled — partial output discarded",
   };
+}
+
+/**
+ * Where the run is when a signal lands, collapsed to the three cases that
+ * behave differently. `RenderPhase`'s "bundling" and "selecting" both collapse
+ * to "pre-render": neither takes a cancelSignal, so neither can be stopped
+ * cooperatively. "post-render" is the window between `renderMedia` resolving
+ * and the handlers coming off in the `finally`.
+ */
+export type RenderSignalPhase = "pre-render" | "rendering" | "post-render";
+
+/** Map the renderer's phase report onto what a signal can do about it. */
+export function renderSignalPhaseOf(phase: RenderPhase): RenderSignalPhase {
+  return phase === "rendering" ? "rendering" : "pre-render";
+}
+
+/** What the SIGINT/SIGTERM handler should do about the signal it just got. */
+export interface RenderSignalAction {
+  /** Fire the Remotion cancel signal. Free, and only `renderMedia` listens. */
+  cancel: boolean;
+  /**
+   * Tear down and `process.exit` from INSIDE the handler, because nothing
+   * downstream is going to stop on its own.
+   */
+  exitNow: boolean;
+  /** Printed above the cancellation message when the exit needs explaining. */
+  note?: string;
+}
+
+/**
+ * The decision half of "Ctrl-C must never be a no-op" (2026-08-19 review of
+ * the cancel feature). Registering a SIGINT listener SUPPRESSES node's default
+ * terminate, so the cancel feature as first written made Ctrl-C *worse* than
+ * before it existed in every phase the cancelSignal does not reach:
+ *
+ *  - "pre-render" — `bundle()` and `selectComposition()` take no cancelSignal
+ *    in @remotion/renderer 4.0.499 (verified against the installed types; see
+ *    RenderPhase in @ossclip/renderer). A cold bundle is tens of seconds, and
+ *    minutes when Chrome is downloaded on first run, and for all of it Ctrl-C
+ *    did NOTHING while the terminal looked hung. The handler must exit itself.
+ *    That can orphan the Chrome `selectComposition` opened — but a bare Ctrl-C
+ *    before the cancel feature did exactly the same, so it is not a
+ *    regression, and a terminal that ignores Ctrl-C is worse than a stray
+ *    browser process.
+ *  - "rendering" — the one phase that IS cooperative: fire the signal and let
+ *    Remotion tear the browser and its ffmpeg children down.
+ *  - "post-render" — HONORED, not ignored: the caller stops before mastering
+ *    and discards the raw render (see the tail check at the render call site).
+ *
+ * SECOND SIGNAL ALWAYS EXITS, in every phase. If Remotion's teardown wedges,
+ * the user's only remaining move must not be `kill -9` from another terminal.
+ */
+export function renderSignalAction(
+  phase: RenderSignalPhase,
+  signalCount: number,
+): RenderSignalAction {
+  if (signalCount >= 2) {
+    return {
+      cancel: true,
+      exitNow: true,
+      note: "▸ second signal — exiting without waiting for the render to shut down",
+    };
+  }
+  if (phase === "pre-render") {
+    return {
+      cancel: true,
+      exitNow: true,
+      note:
+        "▸ cancelled while preparing the render — that phase cannot be interrupted " +
+        "cleanly, so stopping the process",
+    };
+  }
+  return { cancel: true, exitNow: false };
 }
 
 // Moved to paths.ts (2026-08-17, editor thumbnail panel): the edit server
@@ -3866,16 +3948,41 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // SIGTERM is wired for the same reason as SIGINT, plus one of its own: the
   // editor's /api/render/cancel (edit.ts) kills this process as a child, and
   // before this handler that kill left the browser behind. That path is
-  // otherwise untouched — it already reports its own cancel.
+  // otherwise untouched — it already reports its own cancel. It also inherits
+  // the dead-window fix below: the editor's Cancel button now kills the child
+  // DURING bundling too, where the SIGTERM used to be swallowed and
+  // /api/render kept answering 409 until the bundle finished on its own.
   const renderCancel = makeCancelSignal();
   // An array, not a `let`: the handler assigns from inside a closure, and TS's
   // flow analysis would still read a `let` as null in the catch below (it
   // narrowed the branch to `never`). First signal wins — hammering Ctrl-C must
   // not rewrite the verdict while the teardown is already running.
   const cancellations: RenderCancellation[] = [];
+  // Where renderProduction is, so the handler knows whether the cancel signal
+  // has anyone listening (renderSignalAction has the whole reasoning).
+  // "pre-render" from the start: the handlers go on before the call.
+  let signalPhase: RenderSignalPhase = "pre-render";
+  let signalCount = 0;
+  // Shared by all three places a cancel is finalised — the handler, the
+  // rejected-render catch, and the post-render tail check.
+  const finishCancel = (c: RenderCancellation, note?: string): never => {
+    if (renderHud) renderHud.stop();
+    if (note) console.log(note);
+    // rmSync, not fs/promises rm: the handler path calls this and exits on the
+    // next statement, and an awaited unlink would never get its turn.
+    for (const path of c.removePaths) rmSync(path, { force: true });
+    console.log(c.message);
+    // Exits here rather than throwing: program.ts's catch would record this as
+    // produce_failed and print "✗ <message>", dressing a deliberate stop as a
+    // bug (R16 §60's distinction).
+    process.exit(c.exitCode);
+  };
   const onCancelSignal = (signal: "SIGINT" | "SIGTERM") => {
+    signalCount += 1;
     if (cancellations.length === 0) cancellations.push(renderCancellation(signal, rawPath));
-    renderCancel.cancel();
+    const action = renderSignalAction(signalPhase, signalCount);
+    if (action.cancel) renderCancel.cancel();
+    if (action.exitNow) finishCancel(cancellations[0]!, action.note);
   };
   const onSigint = () => onCancelSignal("SIGINT");
   const onSigterm = () => onCancelSignal("SIGTERM");
@@ -3889,6 +3996,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         browserExecutable: cfg.browserExecutable,
         concurrency: renderConcurrency.concurrency,
         cancelSignal: renderCancel.cancelSignal,
+        onPhase: (phase: RenderPhase) => {
+          signalPhase = renderSignalPhaseOf(phase);
+        },
         onProgress: (p) => {
           if (renderHud) {
             renderHud.setProgress(p);
@@ -3902,22 +4012,30 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         },
       }),
     );
+    // renderMedia resolved, so nothing is left to cancel cooperatively. Not a
+    // phase the handler can exit from either — see the tail check below.
+    signalPhase = "post-render";
   } catch (err) {
     // A cancelled renderMedia rejects like any other failure; only the
     // handler above can tell the two apart.
     const cancellation = cancellations[0];
     if (!cancellation) throw err;
-    if (renderHud) renderHud.stop();
-    for (const path of cancellation.removePaths) await rm(path, { force: true });
-    console.log(cancellation.message);
-    // Exits here rather than throwing: program.ts's catch would record this as
-    // produce_failed and print "✗ <message>", dressing a deliberate stop as a
-    // bug (R16 §60's distinction).
-    process.exit(cancellation.exitCode);
+    finishCancel(cancellation);
   } finally {
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
   }
+  // The TAIL CASE (2026-08-19 review): a signal landing after renderMedia
+  // resolved but before the `finally` above took the handlers off used to be
+  // swallowed outright — nothing threw, the run went on to loudnorm and
+  // mastering, and the user got a complete video having pressed Ctrl-C. We
+  // HONOR it: the user asked to stop, and stopping here costs only the
+  // mastering pass, whereas ignoring it hands them the file they just said
+  // they did not want. Nothing has been written to --out yet (moveFile is
+  // below), so honoring here is still "no output", the same promise every
+  // other cancel makes.
+  const tailCancellation = cancellations[0];
+  if (tailCancellation) finishCancel(tailCancellation);
   if (renderHud) renderHud.stop();
 
   const masterAnim = interactive

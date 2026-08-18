@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderCancellation } from "../src/produce";
+import { renderCancellation, renderSignalAction, renderSignalPhaseOf } from "../src/produce";
 
 /**
  * 2026-08-19 field report: "Cancelling rerendering doesn't work". Nothing in
@@ -35,5 +35,61 @@ describe("renderCancellation", () => {
     expect(renderCancellation("SIGTERM", "/w/raw.mp4").message).toBe(
       "▸ cancelled — partial output discarded",
     );
+  });
+});
+
+/**
+ * 2026-08-19 review of the fix above: the handler covered the whole render
+ * phase but the cancelSignal only reaches `renderMedia`, and `bundle()` and
+ * `selectComposition()` run FIRST. Registering a SIGINT listener suppresses
+ * node's default terminate, so during a cold bundle — tens of seconds, minutes
+ * when Chrome is downloaded on first run — Ctrl-C did nothing at all and the
+ * terminal looked hung. That is a REGRESSION the cancel feature introduced:
+ * before it, Ctrl-C killed the process there.
+ */
+describe("renderSignalPhaseOf", () => {
+  it("treats bundling and selecting alike — neither takes a cancelSignal in 4.0.499", () => {
+    expect(renderSignalPhaseOf("bundling")).toBe("pre-render");
+    expect(renderSignalPhaseOf("selecting")).toBe("pre-render");
+  });
+
+  it("is only 'rendering' once renderMedia is the call in flight", () => {
+    expect(renderSignalPhaseOf("rendering")).toBe("rendering");
+  });
+});
+
+describe("renderSignalAction", () => {
+  it("EXITS from the handler during the phases nothing is listening in", () => {
+    const a = renderSignalAction("pre-render", 1);
+    expect(a.exitNow).toBe(true);
+    // The signal is fired anyway: free, and it covers a renderMedia that
+    // starts between the decision and the exit.
+    expect(a.cancel).toBe(true);
+    expect(a.note).toContain("cancelled while preparing the render");
+  });
+
+  it("lets Remotion tear itself down during the render — the cooperative phase", () => {
+    // A hard exit here would orphan the browser and its ffmpeg children, which
+    // is the whole reason the cancelSignal exists.
+    expect(renderSignalAction("rendering", 1)).toEqual({ cancel: true, exitNow: false });
+  });
+
+  it("exits on a SECOND signal in every phase — Ctrl-C must never wedge", () => {
+    // If Remotion's teardown hangs, the user's next move must not have to be
+    // `kill -9` from another terminal.
+    for (const phase of ["pre-render", "rendering", "post-render"] as const) {
+      const a = renderSignalAction(phase, 2);
+      expect(a.exitNow).toBe(true);
+      expect(a.note).toContain("second signal");
+    }
+  });
+
+  it("HONORS a signal that lands after the render finished, rather than exiting mid-handler", () => {
+    // The tail case: a signal between `renderMedia` resolving and the
+    // handlers coming off used to be swallowed outright — the run went on to
+    // master and produced a complete video having eaten the user's Ctrl-C.
+    // The caller stops before mastering instead; the handler itself does not
+    // need to exit, because control is already on its way back to that check.
+    expect(renderSignalAction("post-render", 1)).toEqual({ cancel: true, exitNow: false });
   });
 });

@@ -111,6 +111,29 @@ export interface RenderState {
  * no run ever started (exitCode null) or one ran but captured no lines,
  * where an empty panel would be chrome without content.
  */
+/**
+ * Whether a `/api/render/status` resume belongs to the project now on screen
+ * (2026-08-19 review). `resumeRenderState` is documented mount-only, but the
+ * load it lives in runs on every project SWITCH too (R17 §83), and the server
+ * keeps the last run's ring buffer until the NEXT render starts — so
+ * rendering project A to completion and then opening project B replayed A's
+ * "✓ done" row, its log and its cost lines under B, with "Open folder"
+ * resolving against B's workdir.
+ *
+ * The server's status carries no workdir, so the client decides by the only
+ * fact it has: which workdir the PAGE last loaded. Nothing loaded yet
+ * (`prev === null` — mount, or the first project opened from the bare picker)
+ * is the mount case the resume was written for. A load that CHANGES the
+ * workdir is a switch, and whatever the server is still holding belongs to
+ * the project being left.
+ */
+export function resumedRenderStateApplies(
+  prevWorkdir: string | null,
+  nextWorkdir: string | null,
+): boolean {
+  return prevWorkdir === null || prevWorkdir === nextWorkdir;
+}
+
 export function resumeRenderState(status: {
   running: boolean;
   exitCode: number | null;

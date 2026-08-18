@@ -4,6 +4,7 @@ import {
   pinnedInfoLines,
   renderCompleteReload,
   renderProgress,
+  resumedRenderStateApplies,
   resumeRenderState,
 } from "../src/renderStatus";
 import { emptyOverrideDoc } from "@ossclip/core/browser";
@@ -153,5 +154,30 @@ describe("resumeRenderState (2026-08-18: a reload used to discard a finished run
   it("restores nothing when a run exited but captured no lines — an empty panel is chrome without content", () => {
     expect(resumeRenderState({ running: false, exitCode: 0, lines: [] })).toBeNull();
     expect(resumeRenderState({ running: false, exitCode: 1 })).toBeNull();
+  });
+});
+
+/**
+ * The resume is documented mount-only, but the load it lives in also runs on
+ * every project switch (R17 §83) and the server holds the last run's ring
+ * buffer until the NEXT render starts. Rendering project A to completion and
+ * then opening project B replayed A's "✓ done" row, its log and its cost
+ * lines under B — with "Open folder" resolving against B's workdir
+ * (2026-08-19 review).
+ */
+describe("resumedRenderStateApplies", () => {
+  it("applies on the FIRST load — mount, or the first project opened from the picker", () => {
+    expect(resumedRenderStateApplies(null, "/w/a")).toBe(true);
+    expect(resumedRenderStateApplies(null, null)).toBe(true);
+  });
+
+  it("applies on a reload of the SAME project — the case the resume exists for", () => {
+    expect(resumedRenderStateApplies("/w/a", "/w/a")).toBe(true);
+  });
+
+  it("refuses on a SWITCH — whatever the server still holds belongs to the project being left", () => {
+    expect(resumedRenderStateApplies("/w/a", "/w/b")).toBe(false);
+    // Switching to the picker (no workdir) is a switch too.
+    expect(resumedRenderStateApplies("/w/a", null)).toBe(false);
   });
 });

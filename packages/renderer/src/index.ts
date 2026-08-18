@@ -11,7 +11,7 @@ import type { CoverCompProps } from "./CoverComposition";
 
 export type { ProductionCompProps } from "./ProductionComposition";
 export type { CoverCompProps } from "./CoverComposition";
-export type { RenderJobOptions } from "./render-options";
+export type { RenderJobOptions, RenderPhase } from "./render-options";
 export { DEFAULT_OFFTHREAD_VIDEO_CACHE_BYTES, renderMediaOptions } from "./render-options";
 // Re-exported so the CLI can build a cancel signal without depending on
 // @remotion/renderer directly — @ossclip/renderer is the only door onto
@@ -28,17 +28,26 @@ export async function renderProduction(
   props: ProductionCompProps,
   opts: RenderJobOptions,
 ): Promise<void> {
+  // The phase report exists because `opts.cancelSignal` only reaches
+  // `renderMedia` — neither `bundle()` nor `selectComposition()` accepts one
+  // in 4.0.499 (see RenderPhase in render-options.ts for how that was
+  // verified). A caller that traps SIGINT must therefore terminate the
+  // process ITSELF while these two run, and it can only know to do that if it
+  // is told which phase is in flight.
+  opts.onPhase?.("bundling");
   const serveUrl = await bundle({
     entryPoint: STUDIO_ENTRY,
     publicDir: opts.publicDir,
   });
   const inputProps = props as unknown as Record<string, unknown>;
+  opts.onPhase?.("selecting");
   const composition = await selectComposition({
     serveUrl,
     id: COMPOSITION_ID,
     inputProps,
     browserExecutable: opts.browserExecutable,
   });
+  opts.onPhase?.("rendering");
   // Every non-I/O decision lives in renderMediaOptions (render-options.ts) so
   // the memory bound and the cancel signal are testable without a browser.
   await renderMedia(renderMediaOptions({ composition, serveUrl, inputProps, opts }));

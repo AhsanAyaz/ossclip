@@ -37,8 +37,8 @@ describe("findOccurrences — single word", () => {
       ["hello", 13],
     ]);
     expect(findOccurrences(words, 0, 0, none)).toEqual([
-      { fromSrcStart: 12, toSrcStart: 12, was: "hello" },
-      { fromSrcStart: 13, toSrcStart: 13, was: "hello" },
+      { fromSrcStart: 12, toSrcStart: 12, was: "hello", rawWas: "hello" },
+      { fromSrcStart: 13, toSrcStart: 13, was: "hello", rawWas: "hello" },
     ]);
   });
 
@@ -57,8 +57,11 @@ describe("findOccurrences — single word", () => {
       [decomposed, 12],
     ]);
     expect(findOccurrences(words, 0, 0, none)).toEqual([
-      // `was` is NFC-normalized too — the reducer's guards compare bytes.
-      { fromSrcStart: 12, toSrcStart: 12, was: composed },
+      // `was` is NFC-normalized — the RANGE layer normalizes both sides of
+      // its whole-run guard. `rawWas` is the base text VERBATIM, for the
+      // single-word route: `applyCaptionEdits` compares bytes, so an NFC
+      // `was` would never match this decomposed word (2026-08-19 review).
+      { fromSrcStart: 12, toSrcStart: 12, was: composed, rawWas: decomposed },
     ]);
   });
 
@@ -72,7 +75,7 @@ describe("findOccurrences — single word", () => {
       ["foo", 9],
     ]);
     expect(findOccurrences(words, 0, 0, none)).toEqual([
-      { fromSrcStart: 9, toSrcStart: 9, was: "foo" },
+      { fromSrcStart: 9, toSrcStart: 9, was: "foo", rawWas: "foo" },
     ]);
   });
 });
@@ -91,7 +94,7 @@ describe("findOccurrences — multi-word runs", () => {
       ["world", 14],
     ]);
     expect(findOccurrences(words, 0, 1, none)).toEqual([
-      { fromSrcStart: 13, toSrcStart: 14, was: "helo world" },
+      { fromSrcStart: 13, toSrcStart: 14, was: "helo world", rawWas: "helo world" },
     ]);
   });
 
@@ -107,7 +110,7 @@ describe("findOccurrences — multi-word runs", () => {
       ["b", 14],
     ]);
     expect(findOccurrences(words, 0, 1, none)).toEqual([
-      { fromSrcStart: 13, toSrcStart: 14, was: "a b" },
+      { fromSrcStart: 13, toSrcStart: 14, was: "a b", rawWas: "a b" },
     ]);
   });
 
@@ -125,8 +128,8 @@ describe("findOccurrences — multi-word runs", () => {
       ["a", 15],
     ]);
     expect(findOccurrences(words, 0, 1, none)).toEqual([
-      { fromSrcStart: 12, toSrcStart: 13, was: "a a" },
-      { fromSrcStart: 14, toSrcStart: 15, was: "a a" },
+      { fromSrcStart: 12, toSrcStart: 13, was: "a a", rawWas: "a a" },
+      { fromSrcStart: 14, toSrcStart: 15, was: "a a", rawWas: "a a" },
     ]);
   });
 });
@@ -167,7 +170,7 @@ describe("findOccurrences — exclusions", () => {
     const entry: CaptionRangeEdit = { fromKey: "w12000", toKey: "w12000", text: "a", was: "q" };
     const covering = (w: CaptionWord) => (w.srcStart === 12 ? entry : undefined);
     expect(findOccurrences(words, 0, 0, covering)).toEqual([
-      { fromSrcStart: 13, toSrcStart: 13, was: "a" },
+      { fromSrcStart: 13, toSrcStart: 13, was: "a", rawWas: "a" },
     ]);
   });
 

@@ -474,6 +474,54 @@ describe("reconcileCaptionEdits — the caption LINE TIMING layer (2026-08-18)",
     // licence to delete it (the captionEditsToKeep philosophy).
     expect(out.doc.captionLineTiming).toEqual(before.captionLineTiming);
   });
+
+  /**
+   * The count must not be able to erase itself (2026-08-19 review).
+   * `applyCaptionLineTiming` pushes one `duplicate-anchor` drop per EXTRA line
+   * claiming the anchor, so the old `keys - drops` arithmetic hit 0 with one
+   * duplicate and went NEGATIVE with two — and the `> 0` gate then printed
+   * NOTHING about a nudge that had applied. Same failure §137 already fixed
+   * for retypes, which is why both now go through `appliedCaptionEditCount`.
+   */
+  const claimants = (n: number): CaptionLine[] => {
+    // One opening line on a different anchor, then `n` lines that all start on
+    // source second 9 — ms-quantised anchors really do collide
+    // (captions.ts:44-50), which is why the layer has a first-claimant rule.
+    const out: CaptionLine[] = [
+      { words: [{ text: "status", start: 0, end: 1, srcStart: 5 }], start: 0, end: 1 },
+    ];
+    for (let i = 0; i < n; i++) {
+      out.push({
+        words: [{ text: "here", start: i + 1, end: i + 2, srcStart: 9 }],
+        start: i + 1,
+        end: i + 2,
+      });
+    }
+    return out;
+  };
+
+  it("still counts a nudge whose anchor a SECOND caption also claims", () => {
+    const before = OverrideDocSchema.parse({
+      captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
+    });
+    const out = reconcileCaptionEdits(before, claimants(2));
+    // It applied — to the FIRST claimant, whose opening seam moved.
+    expect(out.lines[1]!.start).toBeCloseTo(0.7, 10);
+    const log = out.log.join("\n");
+    expect(log).toContain("1 caption timing nudge(s) applied");
+    // And the duplicate is still reported as reach, not as a failure.
+    expect(log).toContain("only the first was re-timed");
+  });
+
+  it("still counts a nudge two other captions claim — the old subtraction went NEGATIVE", () => {
+    const before = OverrideDocSchema.parse({
+      captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
+    });
+    const out = reconcileCaptionEdits(before, claimants(3));
+    expect(out.lines[1]!.start).toBeCloseTo(0.7, 10);
+    // `1 - 2 = -1` under the old count, which the `> 0` gate swallowed whole.
+    expect(out.log.join("\n")).toContain("1 caption timing nudge(s) applied");
+  });
 });
 
 /**

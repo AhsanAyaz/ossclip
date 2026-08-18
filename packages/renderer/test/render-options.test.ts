@@ -60,6 +60,19 @@ describe("renderMediaOptions", () => {
     expect(o.hardwareAcceleration).toBe("if-possible");
   });
 
+  it("does not pass onPhase to renderMedia — it is the CALLER's, not Remotion's", () => {
+    // `onPhase` exists because bundle() and selectComposition() take no
+    // cancelSignal in 4.0.499, so the CLI has to answer for a signal itself
+    // during those two (RenderPhase's comment has the verification). Remotion
+    // has no such option; leaking it into the options object would be a
+    // silently-ignored key at best.
+    const o = renderMediaOptions({
+      ...base,
+      opts: { publicDir: "/pub", outPath: "/o.mp4", onPhase: () => {} },
+    });
+    expect(o).not.toHaveProperty("onPhase");
+  });
+
   it("maps Remotion's progress payload down to a fraction", () => {
     const seen: number[] = [];
     const o = renderMediaOptions({

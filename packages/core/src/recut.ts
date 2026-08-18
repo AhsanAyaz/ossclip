@@ -410,7 +410,8 @@ export interface PrunedHides {
  * removed it", `captionHideDropLine`) on every subsequent run forever — the
  * cut SUPERSEDES the hide, the same superseded philosophy `overrides.ts`'s
  * caption-key migration applies. Hides whose source instant is OUTSIDE every
- * removed segment are kept verbatim.
+ * removed segment are kept verbatim — as are keys that are not §137 `w<ms>`
+ * anchors at all, which name no instant this can test (see the guard below).
  *
  * HALF-OPEN interval (`srcIn <= src < srcOut`), on purpose — the two edges
  * are NOT symmetric. A word starting exactly at `srcIn` IS cut: that is
@@ -427,10 +428,20 @@ export function pruneHidesInsideCuts(doc: OverrideDoc, cutlist: readonly Segment
   const pruned: string[] = [];
   const kept: OverrideDoc["captionWordsHidden"] = {};
   for (const [key, entry] of Object.entries(doc.captionWordsHidden)) {
+    // SOURCE-KEYED ONLY, parsed and not coerced. `captionWordsHidden` is an
+    // unpinned `z.record` (unlike `CaptionRangeEditSchema`'s `/^w\d+$/`), so a
+    // hand-edited or legacy-keyed doc reaches here: a POSITIONAL key like "17"
+    // would slice to "7", parse as 7ms, land inside any early cut and be
+    // deleted with nothing said. The editor guards the identical case and
+    // states the rule (`apps/editor/src/useEdits.ts:587-600`): only §137
+    // `w<ms>` keys carry an interval-testable instant, and an entry this
+    // function cannot honestly locate is KEPT.
+    if (!/^w\d+$/.test(key)) {
+      kept[key] = entry;
+      continue;
+    }
     // `captionKeyFor`'s quantization inverted (`w${Math.round(sec * 1000)}`,
-    // overrides.ts): the key IS the word's source instant, ms-quantized. A
-    // malformed key parses to NaN, every comparison below is false, and the
-    // entry is kept — never deleted over a key this function cannot read.
+    // overrides.ts): the key IS the word's source instant, ms-quantized.
     const srcSec = parseInt(key.slice(1), 10) / 1000;
     const removed = cutlist.some(
       (seg) => seg.kind === "remove" && srcSec >= seg.srcIn && srcSec < seg.srcOut,

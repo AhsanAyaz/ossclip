@@ -3,13 +3,20 @@ import React, { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import type { PlayerRef } from "@remotion/player";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CaptionLine } from "@ossclip/core/browser";
+import {
+  applyCaptionLineTiming,
+  applyCaptionWordHides,
+  captionKeyFor,
+  type CaptionLine,
+} from "@ossclip/core/browser";
 import {
   captionDragBounds,
   captionTimingEntries,
   clampCaptionSpan,
   dragCaptionSpan,
+  loadSourceAudio,
   menuPlacement,
+  postHideLineIndices,
   TranscriptPanel,
 } from "../src/TranscriptPanel";
 import type { DeleteWordsPlan } from "../src/deleteWords";
@@ -65,6 +72,10 @@ describe("TranscriptPanel retype guard (§137)", () => {
       React.createElement(TranscriptPanel, {
         baseLines: lines,
         liveLines: lines,
+        // No hides in this harness, so the timed track IS the rendered one —
+        // App passes the post-hide lines (`postHideLineIndices`).
+        timingLines: lines,
+        workdir: null,
         fps: 30,
         playerRef,
         edits,
@@ -167,6 +178,9 @@ describe("TranscriptPanel direction and search normalization", () => {
     return React.createElement(TranscriptPanel, {
       baseLines: lines,
       liveLines: lines,
+      // No hides here, so the timed (post-hide) track IS the rendered one.
+      timingLines: lines,
+      workdir: null,
       fps: 30,
       playerRef,
       edits,
@@ -332,6 +346,10 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
       React.createElement(TranscriptPanel, {
         baseLines: baseLines ?? lines,
         liveLines: lines,
+        // No hides in this harness, so the timed track IS the rendered one —
+        // App passes the post-hide lines (`postHideLineIndices`).
+        timingLines: lines,
+        workdir: null,
         fps: 30,
         playerRef,
         edits,
@@ -736,6 +754,99 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
     expect(captionsDoc()).toEqual({ w11000: { text: "hello", was: "helo" } });
   });
 
+  /**
+   * The two caption layers guard differently, and the one-token Edit route
+   * writes to the STRICTER one (2026-08-19 review). `applyCaptionRangeEdits`
+   * normalizes both sides of its whole-run comparison; `applyCaptionEdits`
+   * compares raw (`w.text !== edit.was`). Storing the NFC join on the
+   * per-word route therefore minted an entry that can never match a
+   * decomposed word — it reverts on the next apply and the "could not be
+   * placed" banner fires, on the exact text this file normalizes its search
+   * box for.
+   */
+  it("a one-token Edit on a DECOMPOSED word stores the word's RAW text as `was`", async () => {
+    // One glyph, two encodings: composed آ (U+0622) vs alef + madda
+    // (U+0627 U+0653). Escapes, never literals — a literal lets any tool
+    // that normalizes on save rewrite this test into a tautology.
+    const decomposed = "\u0627\u0653\u0645";
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", decomposed])] }));
+    });
+    await click(word(1));
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="transcript-edit-range"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await commitRangeDraft("x");
+    expect(rangeDoc()).toEqual([]);
+    // VERBATIM the caption word's own bytes — what core will compare against.
+    expect(captionsDoc()).toEqual({ w11000: { text: "x", was: decomposed } });
+    expect(captionsDoc().w11000.was).not.toBe(decomposed.normalize("NFC"));
+  });
+
+  it("Apply to all on a decomposed word stores the RAW base for EVERY occurrence", async () => {
+    // The bulk route lands in `patchCaptionAllOccurrences` — the same
+    // per-word layer, so the same raw-`was` rule, for the selection's own
+    // entry AND for each occurrence the sweep found.
+    const decomposed = "\u0627\u0653\u0645";
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", decomposed, "b", decomposed])] }));
+    });
+    await click(word(1));
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="transcript-edit-range"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    const draft = container.querySelector<HTMLTextAreaElement>(
+      '[data-testid="transcript-range-edit"]',
+    )!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(
+        draft,
+        "x",
+      );
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="transcript-apply-all"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(rangeDoc()).toEqual([]);
+    expect(captionsDoc()).toEqual({
+      w11000: { text: "x", was: decomposed },
+      w13000: { text: "x", was: decomposed },
+    });
+  });
+
+  /**
+   * The bar and the retype box share one anchor, and the bar is NOT a
+   * backdrop-covered menu: left on screen over an open input, its Delete
+   * item blurred the box — committing the retype through `onBlur` — and
+   * opened the delete confirm in the same click (2026-08-19 review).
+   */
+  it("the selection bar is GONE while the retype box is open", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["alpha", "beta"])] }));
+    });
+    await click(word(1));
+    expect(menu()).not.toBeNull();
+    await act(async () => {
+      word(1).dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[data-testid="transcript-edit"]')).not.toBeNull();
+    expect(menu()).toBeNull();
+    // Escape closes the box; the selection — and with it the bar — survives.
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="transcript-edit"]')!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(menu()).not.toBeNull();
+  });
+
   it("click seeks with CEIL — the quantized playhead may not land in the PREVIOUS word", async () => {
     const seeks: number[] = [];
     // 50ms words (the degenerate-ASR repair shape): word 1 starts at 0.05s,
@@ -1119,6 +1230,8 @@ describe("TranscriptPanel hint and help toggle", () => {
     return React.createElement(TranscriptPanel, {
       baseLines: [line(["a", "b"])],
       liveLines: [line(["a", "b"])],
+      timingLines: [line(["a", "b"])],
+      workdir: null,
       fps: 30,
       playerRef,
       edits,
@@ -1214,6 +1327,9 @@ describe("TranscriptPanel base lookup by anchor (range edits)", () => {
     return React.createElement(TranscriptPanel, {
       baseLines,
       liveLines,
+      // No hides in this harness: the timed track is the rendered one.
+      timingLines: liveLines,
+      workdir: null,
       fps: 30,
       playerRef,
       edits,
@@ -1350,6 +1466,9 @@ describe("TranscriptPanel re-editing a rewritten run", () => {
       React.createElement(TranscriptPanel, {
         baseLines,
         liveLines,
+        // No hides here: the timed (post-hide) track is the rendered one.
+        timingLines: liveLines,
+        workdir: null,
         fps: 30,
         playerRef,
         edits,
@@ -1542,6 +1661,7 @@ describe("TranscriptPanel timing popover", () => {
     onPlay,
     onPause,
     onFrame,
+    onPauseEvent,
   }: {
     lines: CaptionLine[];
     /** Pre-stored LINE timing entries — the marker test needs the doc primed
@@ -1554,18 +1674,25 @@ describe("TranscriptPanel timing popover", () => {
      * listener — the panel's playhead follow and the popover's span-end
      * watcher both subscribe, and a real player fires both. */
     onFrame?: (fire: (frame: number) => void) => void;
+    /** Hands the test a fire() for the player's own `pause` EVENT — what the
+     * global Space transport produces without going through the popover's
+     * button (App.tsx:444 mirrors the same two events). */
+    onPauseEvent?: (fire: () => void) => void;
   }) {
     const edits = useEdits();
     const frameCbs = useRef(new Set<(e: { detail: { frame: number } }) => void>());
+    const pauseCbs = useRef(new Set<() => void>());
     const playerRef = useRef({
       seekTo: seekTo ?? (() => {}),
       play: onPlay ?? (() => {}),
       pause: onPause ?? (() => {}),
       addEventListener: (name: string, cb: (e: { detail: { frame: number } }) => void) => {
         if (name === "frameupdate") frameCbs.current.add(cb);
+        if (name === "pause") pauseCbs.current.add(cb as unknown as () => void);
       },
       removeEventListener: (name: string, cb: (e: { detail: { frame: number } }) => void) => {
         if (name === "frameupdate") frameCbs.current.delete(cb);
+        if (name === "pause") pauseCbs.current.delete(cb as unknown as () => void);
       },
     } as unknown as PlayerRef);
     React.useEffect(() => {
@@ -1574,6 +1701,9 @@ describe("TranscriptPanel timing popover", () => {
       onFrame?.((frame) => {
         for (const cb of [...frameCbs.current]) cb({ detail: { frame } });
       });
+      onPauseEvent?.(() => {
+        for (const cb of [...pauseCbs.current]) cb();
+      });
     });
     const seeded = useRef(false);
     React.useEffect(() => {
@@ -1581,6 +1711,12 @@ describe("TranscriptPanel timing popover", () => {
       seeded.current = true;
       edits.patchCaptionLineTiming(seeds);
     });
+    // App's own layer order, collapsed to the two layers this suite
+    // exercises: the panel RENDERS the pre-hide lines (a hidden word stays on
+    // screen, struck through) while `applyCaptionLineTiming` runs on the
+    // POST-hide ones, which is the whole reason `timingLines` is a separate
+    // prop.
+    const timingLines = applyCaptionWordHides(lines, edits.doc.captionWordsHidden).lines;
     return React.createElement(
       "div",
       null,
@@ -1589,6 +1725,19 @@ describe("TranscriptPanel timing popover", () => {
       React.createElement("div", {
         "data-testid": "timing-doc",
         children: JSON.stringify(edits.doc.captionLineTiming),
+      }),
+      // What the RENDER will actually show: core's own apply pass over the
+      // timed track. A stored entry that addresses no post-hide line leaves
+      // this identical to the input, which is the "it looks stored but the
+      // caption never moves" failure in its observable form.
+      React.createElement("div", {
+        "data-testid": "timed-lines",
+        children: JSON.stringify(
+          applyCaptionLineTiming(timingLines, edits.doc.captionLineTiming).lines.map((l) => [
+            Number(l.start.toFixed(4)),
+            Number(l.end.toFixed(4)),
+          ]),
+        ),
       }),
       // A caption drag's promise is ONE undo step for the whole gesture —
       // both sides of the seam included — which only the hook's own undo can
@@ -1603,6 +1752,8 @@ describe("TranscriptPanel timing popover", () => {
         // post-range, pre-hide lines) — the derived windows the deltas are
         // measured against.
         liveLines: lines,
+        timingLines,
+        workdir: null,
         fps: 30,
         playerRef,
         edits,
@@ -1626,6 +1777,9 @@ describe("TranscriptPanel timing popover", () => {
   const menu = () => container.querySelector('[data-testid="transcript-selection-menu"]');
   const timingDoc = () =>
     JSON.parse(container.querySelector('[data-testid="timing-doc"]')!.textContent!);
+  /** The timed track core would render — `[start, end]` per post-hide line. */
+  const timedLines = (): Array<[number, number]> =>
+    JSON.parse(container.querySelector('[data-testid="timed-lines"]')!.textContent!);
   /** Open the popover over word `i` — select it, then hit Timing. */
   const openOn = async (i: number) => {
     await click(word(i));
@@ -1988,6 +2142,109 @@ describe("TranscriptPanel timing popover", () => {
       expect(word(i).title).not.toContain("timing adjusted");
     }
   });
+
+  /**
+   * THE post-hide regression (2026-08-19 review). The panel renders the
+   * PRE-hide lines and core times the POST-hide ones, so hiding a caption's
+   * first word RE-KEYS that caption. A capture taken against the rendered
+   * lines stored the hidden word's anchor: core reported `found: null`, the
+   * caption never moved, and the panel still painted the "timing adjusted"
+   * marker and resumed the next drag from the orphaned entry — it looked
+   * stored and did nothing.
+   */
+  it("nudging a caption whose FIRST word is hidden keys the POST-hide line — and the caption moves", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: packed() }));
+    });
+    // Hide caption B's first word ("three", w11200): post-hide, caption B
+    // begins on "four" (w11800) and that is the key core will look for.
+    await click(word(2));
+    await clickTestid("transcript-delete-menu");
+    await clickTestid("transcript-hide");
+    const before = timedLines();
+    // Nudge the caption via its surviving word.
+    await openOn(3);
+    await dragHandle("transcript-timing-handle-lead", 100, 90);
+    await clickTestid("transcript-timing-apply");
+
+    const doc = timingDoc();
+    // Keyed to a line that EXISTS post-hide — never to the hidden word.
+    expect(Object.keys(doc)).toContain("w11800");
+    expect(Object.keys(doc)).not.toContain(LINE_B);
+    // …and the caption actually moves when core applies it. The stored key
+    // is only worth anything if the render sees it.
+    const after = timedLines();
+    expect(after).not.toEqual(before);
+    expect(after[1]![0]).toBeLessThan(before[1]![0]);
+  });
+
+  it("the hidden-first-word caption's marker reads the POST-hide entry too", async () => {
+    // The doc is seeded on the SURVIVING first word, which is what an Apply
+    // now writes: every rendered word of that caption — the hidden one
+    // included — must find it, or the marker and the doc disagree.
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          lines: packed(),
+          seeds: [{ srcStart: 11.8, lead: 0.08, tail: -0.02 }],
+        }),
+      );
+    });
+    await click(word(2));
+    await clickTestid("transcript-delete-menu");
+    await clickTestid("transcript-hide");
+    for (const i of [2, 3]) {
+      expect(word(i).style.borderBottom).toContain("dotted");
+      expect(word(i).title).toContain("caption timing adjusted (80ms in / -20ms out)");
+    }
+    // Caption A never moved.
+    expect(word(0).style.borderBottom).toBe("");
+  });
+
+  /**
+   * The span-end watcher is armed by the popover's own Play and by nothing
+   * else (its docstring). `timingPlaying` used to be set only by that button,
+   * so the global Space transport could pause and resume underneath it: the
+   * watcher stayed armed and stopped ORDINARY playback dead at the caption's
+   * end, with no visible cause and a button still reading "Pause"
+   * (2026-08-19 review).
+   */
+  it("an EXTERNAL pause disarms the span-end watcher and honestly reads Play", async () => {
+    let pauses = 0;
+    let fire: ((frame: number) => void) | null = null;
+    let firePause: (() => void) | null = null;
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          lines: packed(),
+          onPause: () => pauses++,
+          onFrame: (f: (frame: number) => void) => {
+            fire = f;
+          },
+          onPauseEvent: (f: () => void) => {
+            firePause = f;
+          },
+        }),
+      );
+    });
+    await openOn(2);
+    await clickTestid("transcript-timing-play");
+    const playButton = () =>
+      container.querySelector('[data-testid="transcript-timing-play"]')!.textContent;
+    expect(playButton()).toBe("Pause");
+    // The global transport pauses the PLAYER; the panel hears its event.
+    await act(async () => {
+      firePause!();
+    });
+    expect(playButton()).toBe("Play");
+    // Resumed with Space, playback runs THROUGH the caption's end — the
+    // popover no longer reaches in and pauses it.
+    await act(async () => {
+      fire!(75); // 2.5s ≥ caption B's 2.4s end
+    });
+    expect(pauses).toBe(0);
+    expect(popover()).not.toBeNull();
+  });
 });
 
 /**
@@ -2023,6 +2280,9 @@ describe("TranscriptPanel native drag-select", () => {
     return React.createElement(TranscriptPanel, {
       baseLines: lines,
       liveLines: lines,
+      // No hides here, so the timed (post-hide) track IS the rendered one.
+      timingLines: lines,
+      workdir: null,
       fps: 30,
       playerRef,
       edits,
@@ -2195,6 +2455,101 @@ describe("menuPlacement", () => {
 });
 
 /**
+ * The RENDERED-line → TIMED-line translation (2026-08-19 review). Pure, and
+ * tested here rather than through the panel for the `menuPlacement` reason:
+ * this is the whole decision, and the panel can only show one of its
+ * consequences at a time.
+ */
+describe("postHideLineIndices", () => {
+  const line = (words: Array<[string, number]>): CaptionLine => ({
+    start: words[0]![1],
+    end: words[words.length - 1]![1] + 1,
+    words: words.map(([text, srcStart]) => ({
+      text,
+      start: srcStart,
+      end: srcStart + 1,
+      srcStart,
+    })),
+  });
+
+  it("is the identity when nothing is hidden", () => {
+    const lines = [line([["a", 1]]), line([["b", 2]]), line([["c", 3]])];
+    expect(postHideLineIndices(lines, lines)).toEqual([0, 1, 2]);
+  });
+
+  it("pairs a line whose FIRST word was hidden — the caption survives, re-keyed", () => {
+    const pre = [line([["a", 1], ["b", 2]]), line([["c", 3], ["d", 4]])];
+    const post = [pre[0]!, line([["d", 4]])];
+    expect(postHideLineIndices(pre, post)).toEqual([0, 1]);
+  });
+
+  it("maps a line the hides EMPTIED to null, and the rest keep their real indices", () => {
+    const pre = [line([["a", 1]]), line([["b", 2]]), line([["c", 3]])];
+    // The middle caption lost every word: post-hide it is gone, and caption
+    // C — index 2 on screen — is index 1 in the timed track.
+    const post = [pre[0]!, pre[2]!];
+    expect(postHideLineIndices(pre, post)).toEqual([0, null, 1]);
+  });
+
+  it("pairs in ORDER, so a MANUFACTURED duplicate anchor cannot claim a namesake's line", () => {
+    // `backfillSrcStart` manufactures shared source instants (captions.ts:
+    // 44-50): two lines can legitimately open on the same anchor. An
+    // anchor-keyed map would pair the second with the first's line.
+    const pre = [line([["x", 5]]), line([["y", 6]]), line([["x", 5]])];
+    const post = [pre[0]!, pre[2]!];
+    expect(postHideLineIndices(pre, post)).toEqual([0, null, 1]);
+  });
+
+  it("maps an ANCHORLESS line to null rather than guessing — the §137 posture", () => {
+    const anchorless: CaptionLine = {
+      start: 0,
+      end: 1,
+      words: [{ text: "old", start: 0, end: 1 } as CaptionLine["words"][number]],
+    };
+    expect(postHideLineIndices([anchorless], [anchorless])).toEqual([null]);
+  });
+});
+
+/**
+ * The waveform cache belongs to ONE project: `/media/*` resolves against the
+ * server's CURRENT workdir, and switches happen in-page (R17 §83), so a bare
+ * module singleton aligned project B's captions against project A's audio.
+ */
+describe("loadSourceAudio", () => {
+  it("re-fetches when the workdir changes, and only then", async () => {
+    const g = globalThis as unknown as { fetch?: unknown; AudioContext?: unknown };
+    const origFetch = g.fetch;
+    const origAudioContext = g.AudioContext;
+    const fetched: string[] = [];
+    g.fetch = async (url: string) => {
+      fetched.push(url);
+      return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+    };
+    g.AudioContext = class {
+      async decodeAudioData() {
+        return { getChannelData: () => new Float32Array([0.5]), sampleRate: 48000 };
+      }
+      async close() {}
+    };
+    try {
+      await loadSourceAudio("/w/a");
+      await loadSourceAudio("/w/a");
+      // One decode per project, however many popovers open in it.
+      expect(fetched.length).toBe(1);
+      await loadSourceAudio("/w/b");
+      expect(fetched.length).toBe(2);
+      // Switching BACK re-fetches too: the cache holds one project's decode,
+      // never a map that outlives the projects in it.
+      await loadSourceAudio("/w/a");
+      expect(fetched.length).toBe(3);
+    } finally {
+      g.fetch = origFetch;
+      g.AudioContext = origAudioContext;
+    }
+  });
+});
+
+/**
  * The caption drag's arithmetic — the `menuPlacement` split again: the whole
  * decision is pure, and the window listener only feeds it pixels. Every value
  * below is in the DERIVED (pre-timing) space `captionLineTiming`'s deltas are
@@ -2205,14 +2560,18 @@ describe("captionDragBounds / clampCaptionSpan / dragCaptionSpan / captionTiming
   /** `MIN_CAPTION_SEC`, restated: the tests name the number the sweep uses. */
   const MIN = 0.05;
 
+  /** The middle caption of the packed track, and its two neighbours. */
+  const SPAN = { start: 1.2, end: 2.4 };
+
   it("bounds the drag by the NEIGHBOURS, not by the dragged captions", () => {
     // The whole reason the tool works on a packed stream: bounds taken from
     // the group's own window would be `[1.2, 2.4]` — every drag clamped to
     // identity, which is the field bug.
     expect(
       captionDragBounds({
-        prev: { start: 0 },
-        next: { end: 3.6 },
+        prev: { start: 0, end: 1.2 },
+        next: { start: 2.4, end: 3.6 },
+        span: SPAN,
         track: { start: 0, end: 3.6 },
       }),
     ).toEqual({ lo: 0 + MIN, hi: 3.6 - MIN });
@@ -2222,11 +2581,51 @@ describe("captionDragBounds / clampCaptionSpan / dragCaptionSpan / captionTiming
     // A caption must not appear before the first caption of the track or
     // linger past the last — the sweep's non-growing outer bounds.
     expect(
-      captionDragBounds({ prev: null, next: { end: 3.6 }, track: { start: 0, end: 3.6 } }),
+      captionDragBounds({
+        prev: null,
+        next: { start: 2.4, end: 3.6 },
+        span: SPAN,
+        track: { start: 0, end: 3.6 },
+      }),
     ).toEqual({ lo: 0, hi: 3.6 - MIN });
     expect(
-      captionDragBounds({ prev: { start: 1.2 }, next: null, track: { start: 0, end: 3.6 } }),
-    ).toEqual({ lo: 1.2 + MIN, hi: 3.6 });
+      captionDragBounds({
+        prev: { start: 0, end: 1.2 },
+        next: null,
+        span: SPAN,
+        track: { start: 0, end: 3.6 },
+      }),
+    ).toEqual({ lo: 0 + MIN, hi: 3.6 });
+  });
+
+  it("bounds a GAPPED side at the neighbour's OWN adjacent edge — the gap is consumable, the neighbour is not", () => {
+    // `[0, 2] [3, 5] [6, 8]`: neither boundary is shared, so neither
+    // neighbour follows the drag (`captionTimingEntries`' coincidence rule)
+    // and core's sweep blocks the moved edge at the neighbour's own edge.
+    // Bounding at `prev.start + MIN` would let the handle travel to 0.05
+    // while the previewed edge sat still at 2.
+    expect(
+      captionDragBounds({
+        prev: { start: 0, end: 2 },
+        next: { start: 6, end: 8 },
+        span: { start: 3, end: 5 },
+        track: { start: 0, end: 8 },
+      }),
+    ).toEqual({ lo: 2, hi: 6 });
+  });
+
+  it("mixes the two rules per SIDE — a shared boundary on one side, a gap on the other", () => {
+    // `[0, 3] [3, 5] [6, 8]`: the opening boundary is shared (the previous
+    // caption's last moments are on offer, down to its own floor); the
+    // closing one is not (the drag stops at the third caption's start).
+    expect(
+      captionDragBounds({
+        prev: { start: 0, end: 3 },
+        next: { start: 6, end: 8 },
+        span: { start: 3, end: 5 },
+        track: { start: 0, end: 8 },
+      }),
+    ).toEqual({ lo: 0 + MIN, hi: 6 });
   });
 
   it("clampCaptionSpan forces a seed inside the window, end never before start", () => {
@@ -2388,6 +2787,105 @@ describe("captionDragBounds / clampCaptionSpan / dragCaptionSpan / captionTiming
 });
 
 /**
+ * The GAPPED track (2026-08-19 review). The entry builder used to assume the
+ * partition and write both neighbours unconditionally, so a lead-only drag on
+ * a track with gaps moved captions the user never touched — the editor-side
+ * twin of the bug core fixed in its own sweep. The model both sides now state:
+ * dragging a caption's edge moves the boundary it SHARES with its neighbour,
+ * and a gap means there is no shared boundary on that side.
+ *
+ * Asserted THROUGH core's real apply pass, not just on the entries: the point
+ * of the rule is that the editor and core express one model, which only the
+ * composed result can show. The fixture is `[0, 2] [3, 5] [6, 8]` — the shape
+ * `applyCaptionWordHides` produces when a hide re-bases a line's window.
+ */
+describe("captionTimingEntries on a GAPPED track", () => {
+  const L = (start: number, end: number, srcStart: number, text: string): CaptionLine => ({
+    start,
+    end,
+    words: [{ text, start, end, srcStart }],
+  });
+  const lines = [L(0, 2, 10, "a"), L(3, 5, 13, "b"), L(6, 8, 16, "c")];
+  const span = { start: 3, end: 5 };
+  /** The middle caption's drag, through the same three steps the popover
+   * takes: entries → record → core's apply. */
+  const applied = (newSpan: { start: number; end: number }) => {
+    const entries = captionTimingEntries({
+      lines: [{ srcStart: 13, start: 3, end: 5 }],
+      span,
+      newSpan,
+      prev: { srcStart: 10, end: 2, lead: 0 },
+      next: { srcStart: 16, start: 6, tail: 0 },
+    });
+    const record: Record<string, { lead: number; tail: number }> = {};
+    for (const e of entries) record[captionKeyFor(e.srcStart)] = { lead: e.lead, tail: e.tail };
+    const out = applyCaptionLineTiming(lines, record);
+    return {
+      entries,
+      windows: out.lines.map((l) => [Number(l.start.toFixed(4)), Number(l.end.toFixed(4))]),
+      dropped: out.dropped,
+    };
+  };
+
+  it("writes NO neighbour entry across a gap — a lead-only drag moves the dragged caption ALONE", () => {
+    const { entries, windows, dropped } = applied({ start: 2.5, end: 5 });
+    // One entry: the caption the user dragged. The old builder wrote three,
+    // and the two extras were the untouched neighbours.
+    expect(entries.map((e) => e.srcStart)).toEqual([13]);
+    // A and C stay EXACTLY where they were; B took the gap it moved into.
+    expect(windows).toEqual([
+      [0, 2],
+      [2.5, 5],
+      [6, 8],
+    ]);
+    expect(dropped).toEqual([]);
+  });
+
+  it("a drag into the neighbour is BLOCKED at its own edge — the preview and the applied result agree", () => {
+    // The bound stops the handle at 2 (`captionDragBounds`' gapped side);
+    // even a hand-edited target past it can only reach the same place,
+    // because core's sweep blocks the edge against the neighbour's own.
+    const { windows } = applied({ start: 1, end: 5 });
+    expect(windows[0]).toEqual([0, 2]);
+    expect(windows[1]).toEqual([2, 5]);
+    expect(windows[2]).toEqual([6, 8]);
+  });
+
+  it("a tail drag toward a gapped neighbour never PUSHES it later", () => {
+    const { entries, windows } = applied({ start: 3, end: 5.5 });
+    expect(entries.map((e) => e.srcStart)).toEqual([13]);
+    expect(windows).toEqual([
+      [0, 2],
+      [3, 5.5],
+      [6, 8],
+    ]);
+  });
+
+  it("still writes the neighbour where the boundary IS shared — one side gapped, one side not", () => {
+    // `[0, 3] [3, 5] [6, 8]`: the opening boundary is shared, so the previous
+    // caption's closing edge travels with the drag (one edit, two windows);
+    // the closing boundary is a gap, so the third caption is left alone.
+    const mixed = [L(0, 3, 10, "a"), L(3, 5, 13, "b"), L(6, 8, 16, "c")];
+    const entries = captionTimingEntries({
+      lines: [{ srcStart: 13, start: 3, end: 5 }],
+      span,
+      newSpan: { start: 2.5, end: 5 },
+      prev: { srcStart: 10, end: 3, lead: 0 },
+      next: { srcStart: 16, start: 6, tail: 0 },
+    });
+    expect(entries.map((e) => e.srcStart)).toEqual([10, 13]);
+    const record: Record<string, { lead: number; tail: number }> = {};
+    for (const e of entries) record[captionKeyFor(e.srcStart)] = { lead: e.lead, tail: e.tail };
+    const out = applyCaptionLineTiming(mixed, record);
+    expect(out.lines.map((l) => [l.start, l.end])).toEqual([
+      [0, 2.5],
+      [2.5, 5],
+      [6, 8],
+    ]);
+  });
+});
+
+/**
  * The bar as CHROME (2026-08-18 round 5). Two field reports: an Urdu
  * transcript reversed the whole button row (`word 1 · Delete · Timing ·
  * Edit`) because the bar inherits the body's `dir="rtl"`, and the bar's
@@ -2459,6 +2957,9 @@ describe("TranscriptPanel bar chrome and placement", () => {
     return React.createElement(TranscriptPanel, {
       baseLines: lines,
       liveLines: lines,
+      // No hides here, so the timed (post-hide) track IS the rendered one.
+      timingLines: lines,
+      workdir: null,
       fps: 30,
       playerRef,
       edits,
@@ -2697,6 +3198,9 @@ describe("TranscriptPanel timing handle drag", () => {
     return React.createElement(TranscriptPanel, {
       baseLines: lines,
       liveLines: lines,
+      // No hides here, so the timed (post-hide) track IS the rendered one.
+      timingLines: lines,
+      workdir: null,
       fps: 30,
       playerRef,
       edits,
