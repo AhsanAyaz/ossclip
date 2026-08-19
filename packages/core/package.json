@@ -1,6 +1,6 @@
 {
   "name": "@ossclip/core",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "ossclip's framework-free pipeline: schema, transcription, analysis, cutlist, captions, framing, and the LLM producer",
   "type": "module",
   "license": "MIT",
