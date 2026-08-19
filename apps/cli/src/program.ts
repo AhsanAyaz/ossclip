@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
-import { CleanupLevelSchema, SceneComponentIdSchema } from "@ossclip/core";
+import { CleanupLevelSchema, COVER_MAX_WORDS, SceneComponentIdSchema } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { ExportFormatSchema, runAnalyze } from "./analyze";
@@ -58,6 +58,42 @@ export function concurrencyFlag(v: string): number {
     );
   }
   return n;
+}
+
+/**
+ * `<command> [workdir]` → the workdir the user meant.
+ *
+ * ONE spelling of the probe → resolve → pick ladder, because `edit` and
+ * `cover` both need it and two copies drift: the reported failure it exists
+ * for is `ossclip edit <video folder>` when produce wrote into
+ * `<video folder>/.ossclip/<name>/`, and a `cover` that resolved differently
+ * would rebuild a cover for a run the user is not looking at.
+ *
+ * `command` is threaded so the no-TTY candidate list names the command that
+ * was actually run, not always `edit`.
+ *
+ * Every import here is dynamic on purpose: the interactive stack is not
+ * loaded on invocations that never reach a picker, which is what keeps CLI
+ * startup cheap.
+ */
+async function resolveWorkdirArgument(typed: string, command: string): Promise<string> {
+  const { probeWorkdir } = await import("./interactive/workdir-probe");
+  const { resolveWorkdir, candidateListMessage } = await import("./interactive/resolve-workdir");
+  const { isInteractive } = await import("./interactive/tty");
+  const { dir, probe } = await probeWorkdir(typed);
+  const resolution = resolveWorkdir(dir, probe);
+  if (resolution.kind === "none") throw new Error(resolution.message);
+  if (resolution.kind === "choose") {
+    if (!isInteractive()) {
+      throw new Error(candidateListMessage(dir, resolution.candidates, command));
+    }
+    const { pickWorkdir } = await import("./interactive/pick-workdir");
+    return await pickWorkdir(resolution.candidates);
+  }
+  // Say so when the path was not the one typed — a silent redirect leaves the
+  // user with the wrong mental model of where things live.
+  if (resolution.via === "nested") console.log(`▸ resolved ${typed} → ${resolution.workdir}`);
+  return resolution.workdir;
 }
 
 /**
@@ -432,6 +468,11 @@ export function buildProgram(): Command {
         "any motion crops the head. Per-scene control stays in the editor (autoZoom)",
     )
     .option("--cover <path>", "cover image output path (default: <out>.cover.jpg)")
+    .option(
+      "--cover-text-reset",
+      "use this run's generated cover headline even if `ossclip cover --text` set one — " +
+        "that headline is user-owned and kept by default (deleting cover.json does the same)",
+    )
     .option("--open-editor", "open the editor when the run finishes")
     .option(
       "--no-open-editor",
@@ -586,6 +627,9 @@ export function buildProgram(): Command {
           jumpCuts,
           cover: opts.cover !== false,
           coverPath: typeof opts.cover === "string" ? opts.cover : undefined,
+          // A separate key from --cover: this one is about the TEXT, and the
+          // cover/coverPath pair already shares one.
+          coverTextReset: opts.coverTextReset === true,
           clip: opts.clip,
           clipWindow: opts.clipWindow,
           // Validated by concurrencyFlag at parse time; undefined = "not
@@ -829,27 +873,8 @@ export function buildProgram(): Command {
       // With no argument the editor opens on its own project picker (R17 §83).
       // With one, resolve what the user MEANT: `ossclip edit <video folder>`
       // was the reported failure, and produce's output lives one level down.
-      let target: string | undefined = workdir;
-      if (workdir !== undefined) {
-        const { probeWorkdir } = await import("./interactive/workdir-probe");
-        const { resolveWorkdir, candidateListMessage } = await import("./interactive/resolve-workdir");
-        const { isInteractive } = await import("./interactive/tty");
-        const { dir, probe } = await probeWorkdir(workdir);
-        const resolution = resolveWorkdir(dir, probe);
-        if (resolution.kind === "none") throw new Error(resolution.message);
-        if (resolution.kind === "choose") {
-          if (!isInteractive()) {
-            throw new Error(candidateListMessage(dir, resolution.candidates));
-          }
-          const { pickWorkdir } = await import("./interactive/pick-workdir");
-          target = await pickWorkdir(resolution.candidates);
-        } else {
-          target = resolution.workdir;
-          // Say so when the path was not the one typed — a silent redirect
-          // leaves the user with the wrong mental model of where things live.
-          if (resolution.via === "nested") console.log(`▸ resolved ${workdir} → ${target}`);
-        }
-      }
+      const target =
+        workdir === undefined ? undefined : await resolveWorkdirArgument(workdir, "edit");
 
       const server = await startEditServer(target, { port: opts.port, pageDir });
       console.log(`▸ editor at ${server.url}`);
@@ -862,6 +887,64 @@ export function buildProgram(): Command {
       // between the user and their browser opening (FINDINGS §134).
       telemetry.record("editor_opened", {});
       void telemetry.flush();
+    });
+
+  program
+    .command("cover")
+    .description(
+      "regenerate a produced workdir's cover image — a new headline or a new frame, " +
+        "in seconds, with no video re-render",
+    )
+    // Optional, like `edit`'s: with no argument this resolves the run under
+    // the CURRENT directory, so `cd`-ing to the video's folder is enough.
+    .argument("[workdir]", "a work directory, or the folder you produced in")
+    .option(
+      "--text <headline>",
+      `banner headline. Capped at ${COVER_MAX_WORDS} words like produce's (§35), and the ` +
+        "trimmed result is printed. Omitted keeps the headline this cover already has",
+    )
+    .option(
+      "--at <seconds>",
+      "take the frame from this timestamp. Omitted re-uses the still the last cover was " +
+        "built from — the cheap path, which runs no ffmpeg at all",
+    )
+    .option(
+      "--from <video>",
+      "which video --at reads: `final` (default) is the FINISHED render, so the frame " +
+        "carries the burned-in captions, graphics and watermark; `source` is the original " +
+        "take, framed the way produce framed it",
+      "final",
+    )
+    .option(
+      "--out <path>",
+      "write the JPEG here for THIS run only; a one-off destination that does not change " +
+        "where this project's cover lives (that stays where this workdir's last cover went, " +
+        "else <out>.cover.jpg)",
+    )
+    .action(async (workdir: string | undefined, opts) => {
+      const { parseCoverFlags, regenerateCover } = await import("./cover");
+      // Parsed before anything touches disk: a typo'd `--from finall` must be
+      // an error naming the flag, not a cover quietly rebuilt from the wrong
+      // video (the --source-fit rule above).
+      const flags = parseCoverFlags(opts);
+
+      // The `edit` action's ladder, literally the same one: produce writes
+      // into <video's folder>/.ossclip/<name>/, and `ossclip cover
+      // ~/Downloads/MyClips` has to find that nested run exactly as `edit`
+      // does. With no argument, the current directory is the target.
+      const target = await resolveWorkdirArgument(workdir ?? ".", "cover");
+
+      // A thin shell by design: every decision lives in regenerateCover, so
+      // the editor's /api/cover/regenerate is the same code and not a second
+      // spelling of it.
+      await regenerateCover(target, {
+        text: flags.text,
+        atSec: flags.atSec,
+        from: flags.from,
+        // Raw: `coverDestination` owns the tilde expansion and the cwd
+        // anchor, so there is one site applying `expandHome` to the user half.
+        outPath: flags.outPath,
+      });
     });
 
   program

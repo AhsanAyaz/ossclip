@@ -35,6 +35,7 @@ import { ProjectPicker } from "./ProjectPicker";
 import { RenderModal } from "./RenderModal";
 import { ThumbnailPanel } from "./ThumbnailPanel";
 import { YoutubePanel } from "./YoutubePanel";
+import { CoverPanel } from "./CoverPanel";
 import {
   formatElapsed,
   pinnedInfoLines,
@@ -401,6 +402,12 @@ export const App: React.FC = () => {
   // than the top bar second-guessing two availability calls.
   const [showYoutubeSeo, setShowYoutubeSeo] = useState(false);
   const [showYoutubeMenu, setShowYoutubeMenu] = useState(false);
+  // The cover panel (2026-08-19) — same posture again, aimed at the workdir's
+  // cover.json (see CoverPanel.tsx). Its OWN top-bar button, deliberately not
+  // an item in the YouTube menu: a cover is written on every produce whether
+  // or not --youtube ran, and filing it under YouTube would tell users it
+  // belongs to a feature they may never turn on.
+  const [showCover, setShowCover] = useState(false);
   useEffect(() => {
     if (!showYoutubeMenu) return;
     // Esc closes the menu the way it closes the panels (capture-phase, so
@@ -1133,6 +1140,14 @@ export const App: React.FC = () => {
           >
             Transcript
           </button>
+          <button
+            data-testid="cover-button"
+            style={{ ...ghostButton, ...(showCover ? { borderColor: "#5b8cff" } : {}) }}
+            onClick={() => setShowCover(true)}
+            title="Retype the cover headline or re-cut its frame — seconds, no re-render"
+          >
+            Cover
+          </button>
           {/* One menu for the --youtube extras (2026-08-17): the thumbnail
               and the SEO pack are two panels over one feature, and two
               top-bar buttons were the bar's first scaling failure. */}
@@ -1261,6 +1276,19 @@ export const App: React.FC = () => {
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
       {showThumbnail ? <ThumbnailPanel onClose={() => setShowThumbnail(false)} /> : null}
       {showYoutubeSeo ? <YoutubePanel onClose={() => setShowYoutubeSeo(false)} /> : null}
+      {showCover ? (
+        <CoverPanel
+          onClose={() => setShowCover(false)}
+          // A GETTER, read on click: App does not re-render per frame, so a
+          // number prop would freeze at whatever the playhead was when the
+          // panel opened. The Player's frame IS output time (the finished
+          // mp4's own timeline), which is why the seconds go through to
+          // `atSec` with no mapping — see CoverPanel's prop doc.
+          playheadSec={() =>
+            (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps
+          }
+        />
+      ) : null}
       {showRenderModal ? (
         <RenderModal
           defaultOutPath={defaultOutPath}

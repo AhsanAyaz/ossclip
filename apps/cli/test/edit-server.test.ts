@@ -1,6 +1,6 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
-import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { GenerateThumbnailImageOptions } from "@ossclip/core";
@@ -1207,5 +1207,324 @@ describe("YouTube SEO pack endpoints (2026-08-17)", () => {
     });
     expect(res.status).toBe(400);
     expect(existsSync(join(dir, "youtube-pack-approved.json"))).toBe(false);
+  });
+});
+
+describe("cover endpoints (editor panel, 2026-08-19)", () => {
+  // EVERY server here injects a `renderCover` seam. Without one
+  // `regenerateCover` lazily imports @ossclip/renderer and boots a headless
+  // browser — this suite must never do that, which is the whole reason the
+  // seam exists (the `generateThumbnail` rule).
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+
+  /** A produced workdir with a recorded out — the baseline a cover needs a
+   * destination from. */
+  async function coverWorkdir(): Promise<{ dir: string; out: string; coverOut: string }> {
+    const dir = await fixtureWorkdir();
+    const out = join(dir, "final.mp4");
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4"],
+        cwd: dir,
+        out,
+      }),
+    );
+    return { dir, out, coverOut: join(dir, "final.cover.jpg") };
+  }
+
+  /** The `cover.json` a produce run leaves behind, plus the still it names —
+   * together they are the cheap path: a text change runs no ffmpeg at all. */
+  async function writeProvenance(
+    dir: string,
+    coverOut: string,
+    over: Record<string, unknown> = {},
+  ): Promise<void> {
+    await writeFile(join(dir, "cover-frame.png"), "not-a-real-png");
+    await writeFile(
+      join(dir, "cover.json"),
+      JSON.stringify({
+        version: 1,
+        text: "SHIP IT",
+        textSource: "beatsheet",
+        frame: {
+          source: "source",
+          timeSec: 4.2,
+          face: null,
+          hasFace: false,
+          sharpness: 812.3,
+          fileName: "cover-frame.png",
+          sourceVideo: "clip.mp4",
+          cropVf: null,
+        },
+        size: { width: 1080, height: 1920 },
+        out: coverOut,
+        ...over,
+      }),
+    );
+  }
+
+  it("409 with no workdir open, like every workdir endpoint", async () => {
+    const server = await startEditServer(undefined, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {},
+    });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/cover`)).status).toBe(409);
+    expect((await fetch(`${server.url}/api/cover/image`)).status).toBe(409);
+    expect((await fetch(`${server.url}/api/cover/regenerate`, { method: "POST" })).status).toBe(409);
+  });
+
+  it("a produced workdir reports its provenance and a ?ts-busted image URL", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    await writeProvenance(dir, coverOut);
+    await writeFile(coverOut, JPEG);
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {},
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/cover`)).json();
+    expect(body.status).toBe("ready");
+    expect(body.reason).toBeUndefined();
+    expect(body.provenance).toMatchObject({ text: "SHIP IT", textSource: "beatsheet" });
+    expect(body.provenance.frame).toMatchObject({ source: "source", timeSec: 4.2 });
+    expect(body.outPath).toBe(coverOut);
+    // The ts is the FILE's mtime, not now() — the URL changes exactly when
+    // the file does.
+    expect(body.imageUrl).toBe(
+      `/api/cover/image?ts=${Math.round(statSync(coverOut).mtimeMs)}`,
+    );
+    const img = await fetch(`${server.url}/api/cover/image`);
+    expect(img.status).toBe(200);
+    expect(img.headers.get("content-type")).toBe("image/jpeg");
+    expect(img.headers.get("cache-control")).toBe("no-store");
+    expect([...new Uint8Array(await img.arrayBuffer())]).toEqual([...JPEG]);
+  });
+
+  it("a pre-feature workdir: no cover.json, but the recorded out still names a destination", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {},
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/cover`)).json();
+    // Ready, not unavailable: §corr.3 — the final mp4 plus render-props.json
+    // are enough to rebuild a cover with no provenance at all.
+    expect(body).toMatchObject({ status: "ready", reason: "never-rendered", provenance: null });
+    expect(body.outPath).toBe(coverOut);
+    expect(body.imageUrl).toBeNull();
+    expect((await fetch(`${server.url}/api/cover/image`)).status).toBe(404);
+  });
+
+  it("no cover.json AND no recorded out is unavailable — there is nowhere to write", async () => {
+    const dir = await fixtureWorkdir(); // no command.json at all
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {},
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/cover`)).json();
+    expect(body).toMatchObject({ status: "unavailable", reason: "no-destination", outPath: null });
+  });
+
+  it("regenerate: renders through the seam, rewrites cover.json, busts the image URL", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    await writeProvenance(dir, coverOut);
+    const calls: Array<{ frameFileName: string; text: string; outPath: string; publicDir: string }> =
+      [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async (props, o) => {
+        calls.push({
+          frameFileName: props.frameFileName,
+          text: props.text,
+          outPath: o.outPath,
+          publicDir: o.publicDir,
+        });
+        await writeFile(o.outPath, JPEG);
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/cover/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "CWA SHIP KARACHI 2026" }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    // The cheap path: it re-used the still already on disk rather than
+    // extracting a frame, and the render got the workdir as its publicDir.
+    expect(calls).toEqual([
+      {
+        frameFileName: "cover-frame.png",
+        text: "CWA SHIP KARACHI 2026",
+        outPath: coverOut,
+        publicDir: dir,
+      },
+    ]);
+    // Provenance rewritten with what the render actually used — and the
+    // headline is now user-owned, so a later produce keeps it.
+    const written = JSON.parse(await readFile(join(dir, "cover.json"), "utf8"));
+    expect(written).toMatchObject({ text: "CWA SHIP KARACHI 2026", textSource: "user" });
+    expect(written.frame).toMatchObject({ fileName: "cover-frame.png", timeSec: 4.2 });
+    expect(body.provenance).toEqual(written);
+    expect(body.imageUrl).toBe(`/api/cover/image?ts=${Math.round(statSync(coverOut).mtimeMs)}`);
+    // The panel shows what the CLI prints — a trim, a re-pick — rather than
+    // discovering it in the image.
+    expect(Array.isArray(body.notes)).toBe(true);
+  });
+
+  it("regenerate reports a §35 trim in its notes rather than shipping it silently", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    await writeProvenance(dir, coverOut);
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async (_props, o) => {
+        await writeFile(o.outPath, JPEG);
+      },
+    });
+    close = server.close;
+    const body = await (
+      await fetch(`${server.url}/api/cover/regenerate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: "THE ONE THING NOBODY TELLS YOU ABOUT THE FUTURE OF WORK",
+        }),
+      })
+    ).json();
+    expect(body.ok).toBe(true);
+    expect(body.notes.join("\n")).toContain("trimmed to fit the 9-word cap");
+    expect(body.provenance.text.split(" ")).toHaveLength(9);
+  });
+
+  it("NEVER takes a path from the request body — every path is derived server-side", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    await writeProvenance(dir, coverOut);
+    const evil = join(dir, "evil.jpg");
+    const destinations: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async (_props, o) => {
+        destinations.push(o.outPath);
+        await writeFile(o.outPath, JPEG);
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/cover/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      // Every spelling of "write it over here instead" the option surface has:
+      // regenerateCover really does take an `outPath`, and `ossclip cover
+      // --out` really does pass one — this endpoint deliberately does not.
+      body: JSON.stringify({
+        text: "PWNED",
+        outPath: evil,
+        out: evil,
+        publicDir: "/etc",
+        frameFileName: "/etc/passwd",
+      }),
+    });
+    expect((await res.json()).ok).toBe(true);
+    // The render landed at the destination cover.json names, not the body's.
+    expect(destinations).toEqual([coverOut]);
+    expect(existsSync(evil)).toBe(false);
+    expect(JSON.parse(await readFile(join(dir, "cover.json"), "utf8")).out).toBe(coverOut);
+  });
+
+  it("a typo'd `from` and a negative `atSec` are 400s, and nothing renders", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    await writeProvenance(dir, coverOut);
+    let called = false;
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {
+        called = true;
+      },
+    });
+    close = server.close;
+    // `finall` silently falling back to "final" would rebuild the cover from
+    // the wrong video and say nothing — CLAUDE.md's --source-fit rule.
+    for (const body of [{ from: "finall" }, { atSec: -3 }, { atSec: "12" }]) {
+      const res = await fetch(`${server.url}/api/cover/regenerate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(called).toBe(false);
+  });
+
+  it("a regeneration that fails is 200/ok:false with the message VERBATIM", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    // Provenance whose still is NOT on disk — the cheap path has nothing to
+    // re-use, and the message names the fix.
+    await writeProvenance(dir, coverOut);
+    await unlink(join(dir, "cover-frame.png"));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {},
+    });
+    close = server.close;
+    const body = await (
+      await fetch(`${server.url}/api/cover/regenerate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "NEW" }),
+      })
+    ).json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("cover-frame.png");
+  });
+
+  it("409 while a regeneration is already in flight", async () => {
+    const { dir, coverOut } = await coverWorkdir();
+    await writeProvenance(dir, coverOut);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => (started = r));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async (_props, o) => {
+        started();
+        await gate;
+        await writeFile(o.outPath, JPEG);
+      },
+    });
+    close = server.close;
+    const first = fetch(`${server.url}/api/cover/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "ONE" }),
+    });
+    // Deterministic, not a sleep: the second request goes out only once the
+    // first is provably inside the render.
+    await startedP;
+    const second = await fetch(`${server.url}/api/cover/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "TWO" }),
+    });
+    expect(second.status).toBe(409);
+    release();
+    expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
   });
 });

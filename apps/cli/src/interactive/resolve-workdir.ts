@@ -106,10 +106,19 @@ export function resolveWorkdir(
  * interactive picker cannot run. Each line is rendered through
  * renderCommand so a path containing a space pastes into a shell as ONE
  * argument — an unquoted list defeats the only thing this branch is for.
+ *
+ * `command` is the subcommand the user actually ran: this ladder is shared
+ * with `ossclip cover`, and printing `ossclip edit <path>` to someone who
+ * typed `cover` sends them to a different command than the one they wanted.
+ * Defaults to "edit", the only caller when this was written.
  */
-export function candidateListMessage(dir: string, candidates: Candidate[]): string {
+export function candidateListMessage(
+  dir: string,
+  candidates: Candidate[],
+  command: string = "edit",
+): string {
   return (
     `several produce runs under ${dir} — name one:\n` +
-    candidates.map((c) => `  ${renderCommand(["edit", c.path])}`).join("\n")
+    candidates.map((c) => `  ${renderCommand([command, c.path])}`).join("\n")
   );
 }

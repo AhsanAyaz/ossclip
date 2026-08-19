@@ -29,7 +29,9 @@ import {
   outPathInsideInput,
   PORTRAIT_MIME_TYPES,
   portraitMimeType,
+  readCoverProvenance,
   thumbnailImageCacheName,
+  type CoverProvenance,
   type GenerateThumbnailImageOptions,
   type ThumbnailConcept,
   type ThumbnailConceptApproved,
@@ -39,7 +41,23 @@ import {
 // server startup — open.ts is node:child_process + node:path and pure command
 // building, with nothing to defer.
 import { revealInFileManager } from "./open";
-import { artifactPath, expandHome } from "./paths";
+// The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
+// cover` needs the same out-resolution rule this server's thumbnail dest,
+// youtube markdown and reveal endpoint derive from, and two spellings of it
+// could disagree about which file a replay writes. cover.ts stays free of a
+// static @ossclip/renderer import for exactly this reason.
+import {
+  CoverAtSecondsSchema,
+  CoverFromSchema,
+  RecordedCommandSchema,
+  readRecordedCommand,
+  recordedArtifactPath as recordedArtifactPathIn,
+  recordedOutPath,
+  regenerateCover,
+  type CoverSeams,
+  type RecordedCommand,
+} from "./cover";
+import { expandHome } from "./paths";
 import {
   PORTRAIT_OVERRIDE_BASENAME,
   portraitExtensionForMime,
@@ -80,21 +98,6 @@ export function resolveEditorPageDir(): string | null {
  * behind and owns exactly one file — `overrides.json`. The render endpoint
  * replays the invocation `produce` recorded, never anything a client sent.
  */
-
-/**
- * The invocation `produce` recorded into the workdir (R11 Task 4.1).
- * Validated on read — it's a file on disk like any other user data — and the
- * ONLY thing `/api/render` will ever spawn: this server binds locally, but
- * accepting a client-supplied command would make it a remote shell.
- */
-const CommandSchema = z.object({
-  execPath: z.string(),
-  execArgv: z.array(z.string()).default([]),
-  script: z.string(),
-  args: z.array(z.string()),
-  cwd: z.string(),
-  out: z.string().optional(),
-});
 
 /** Ring-buffer cap for captured render output. */
 const RENDER_LOG_LINES = 200;
@@ -254,6 +257,13 @@ export async function startEditServer(
      * observe the revealed path instead of popping a real Finder/Explorer
      * window on the runner. */
     reveal?: (path: string) => void;
+    /**
+     * The cover render seam, exactly like `generateThumbnail` above. Without
+     * it `regenerateCover` lazily imports @ossclip/renderer and boots a
+     * headless browser — which `edit-server.test.ts` must never do, and which
+     * is also why cover.ts keeps that import lazy in the first place.
+     */
+    renderCover?: CoverSeams["renderCover"];
   } = {},
 ): Promise<EditServer> {
   // MUTABLE since R17 §83: the server can start with no project (the page
@@ -293,36 +303,13 @@ export async function startEditServer(
   // buy two.
   let thumbnailBusy = false;
   /** command.json's recorded invocation, or null when absent/corrupt — the
-   * thumbnail panel degrades to the config fallback rather than 500ing. */
-  const readCommandRecord = async (): Promise<z.infer<typeof CommandSchema> | null> => {
-    if (!existsSync(commandPath())) return null;
-    try {
-      const parsed = CommandSchema.safeParse(JSON.parse(await readFile(commandPath(), "utf8")));
-      return parsed.success ? parsed.data : null;
-    } catch {
-      return null;
-    }
-  };
-  /** The recorded out as an absolute path (the top-level `out` when
-   * recorded, else the argv's -o/--out resolved against the recorded cwd —
-   * the replay's own resolution), or null when no out was ever recorded.
-   * ONE spelling of the out-resolution rule: the artifact paths below and
-   * the reveal endpoint both derive from it, so they can never disagree
-   * about which file a replay writes. */
-  const recordedOutPath = (cmd: z.infer<typeof CommandSchema>): string | null => {
-    const out = cmd.out ?? lastFlagValue(cmd.args, ["-o", "--out"]);
-    if (out === undefined) return null;
-    return resolve(cmd.cwd, expandHome(out));
-  };
+   * thumbnail panel degrades to the config fallback rather than 500ing.
+   * Bound to the CURRENT workdir; the rule itself lives in cover.ts. */
+  const readCommandRecord = (): Promise<RecordedCommand | null> => readRecordedCommand(workdir!);
   /** `<out><ext>` from the recorded out, or null when no out was ever
    * recorded. Shared by the thumbnail dest and the youtube markdown. */
-  const recordedArtifactPath = async (ext: string): Promise<string | null> => {
-    const cmd = await readCommandRecord();
-    if (!cmd) return null;
-    const out = recordedOutPath(cmd);
-    if (out === null) return null;
-    return artifactPath(out, ext);
-  };
+  const recordedArtifactPath = (ext: string): Promise<string | null> =>
+    recordedArtifactPathIn(workdir!, ext);
   const thumbnailDestPath = (): Promise<string | null> => recordedArtifactPath(".thumbnail.png");
   /** Newest workdir file passing `test`, by mtime — the cache fallbacks. */
   const newestWorkdirFile = async (test: (name: string) => boolean): Promise<string | null> => {
@@ -354,6 +341,33 @@ export async function startEditServer(
       return null;
     }
   };
+  // ---- Cover regeneration (editor panel, 2026-08-19) ----------------------
+  // The cover is written on EVERY produce, `--youtube` or not, so this is not
+  // a YouTube-menu concern — it has its own top-bar button in the page. The
+  // panel round-trips through the workdir's `cover.json`, which is the same
+  // provenance `ossclip cover` reads and produce honours (`textSource:
+  // "user"`), so an edit made here survives into future renders with no new
+  // plumbing — the thumbnail block's approval-file contract, applied.
+  //
+  // One regeneration at a time: it can shell out to ffmpeg and it boots a
+  // headless browser, and a double-click must not run two renders at the same
+  // destination. `thumbnailBusy`'s rule, for the same reason.
+  let coverBusy = false;
+  /** Where the JPEG lives right now: the destination the last cover used,
+   * else `<recorded out>.cover.jpg`. Existence is the caller's check — a
+   * recorded destination that was never rendered is a real state (the panel
+   * shows a placeholder), not an error. */
+  const currentCoverImage = async (provenance: CoverProvenance | null): Promise<string | null> => {
+    if (provenance !== null && existsSync(provenance.out)) return provenance.out;
+    const dest = await recordedArtifactPath(".cover.jpg");
+    return dest !== null && existsSync(dest) ? dest : null;
+  };
+  /** mtime as the ts so the URL changes exactly when the file does — the
+   * thumbnail imageUrl's own cache-busting rule (a regenerate REPLACES the
+   * file behind this URL). */
+  const coverImageUrl = (image: string | null): string | null =>
+    image === null ? null : `/api/cover/image?ts=${Math.round(statSync(image).mtimeMs)}`;
+
   // ---- Portrait override (editor face swap, 2026-08-17) -------------------
   // A per-project `portrait-override.<ext>` in the workdir that outranks the
   // pin and the config (portrait-override.ts has the precedence argument).
@@ -647,7 +661,7 @@ export async function startEditServer(
           } catch {
             // ignore
           }
-          const parsed = CommandSchema.safeParse(
+          const parsed = RecordedCommandSchema.safeParse(
             JSON.parse(await readFile(commandPath(), "utf8")),
           );
           if (!parsed.success) return send(500, { error: `command.json is not valid: ${parsed.error.message}` });
@@ -1122,6 +1136,109 @@ export async function startEditServer(
           const mdPath = await recordedArtifactPath(".youtube.md");
           if (mdPath !== null) await writeFile(mdPath, formatYoutubeMarkdown(pack));
           return send(200, { ok: true, mdPath });
+        }
+
+        if (url.pathname === "/api/cover" && req.method === "GET") {
+          // The cover panel's one status call (2026-08-19): the provenance to
+          // prefill and where the current image is. All reads — the panel
+          // owns no state on the server.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const provenance = await readCoverProvenance(workdir);
+          const image = await currentCoverImage(provenance);
+          // Where a regeneration would WRITE. `coverDestination`'s canonical
+          // ladder: the destination the last cover used, else
+          // `<recorded out>.cover.jpg`. Neither means regenerateCover would
+          // throw for want of a destination, and the panel says so up front
+          // rather than after a click.
+          const outPath = provenance?.out ?? (await recordedArtifactPath(".cover.jpg"));
+          return send(200, {
+            status: outPath === null ? "unavailable" : "ready",
+            ...(outPath === null
+              ? { reason: "no-destination" as const }
+              : image === null
+                ? { reason: "never-rendered" as const }
+                : {}),
+            provenance,
+            outPath,
+            imageUrl: coverImageUrl(image),
+          });
+        }
+
+        if (url.pathname === "/api/cover/image" && req.method === "GET") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const image = await currentCoverImage(await readCoverProvenance(workdir));
+          if (image === null) return send(404, { error: "no cover image" });
+          // Whole-file read + no-store, the thumbnail image endpoint's exact
+          // posture and for the same reason: a regenerate REPLACES the file
+          // behind a URL the panel busts with ?ts, and a cached 200 would show
+          // the old cover against the new ts on some proxies.
+          const bytes = await readFile(image);
+          res.writeHead(200, {
+            "content-type": "image/jpeg",
+            "cache-control": "no-store",
+            "content-length": String(bytes.length),
+          });
+          res.end(bytes);
+          return;
+        }
+
+        if (url.pathname === "/api/cover/regenerate" && req.method === "POST") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          // A regeneration can shell out to ffmpeg and it boots a headless
+          // browser — one at a time, a second is a 409 like a second render.
+          if (coverBusy) return send(409, { error: "a cover regeneration is already running" });
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          // Three steerable values and NOTHING else. `atSec` rides the CLI's
+          // own schema so a negative seek is refused at both surfaces, and
+          // `from` rides the enum so a typo'd "finall" is a 400 rather than a
+          // cover quietly rebuilt from the wrong video (CLAUDE.md's
+          // --source-fit rule). Unknown keys are stripped by the parse, which
+          // is the load-bearing half of the paragraph below.
+          const parsed = z
+            .object({
+              text: z.string().optional(),
+              atSec: CoverAtSecondsSchema.optional(),
+              from: CoverFromSchema.optional(),
+            })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: parsed.error.message });
+          coverBusy = true;
+          try {
+            // Every PATH is derived server-side — from command.json,
+            // cover.json and render-props.json — and never from the body: the
+            // stance the render and reveal endpoints already hold. This server
+            // binds locally, but an endpoint that WRITES a file wherever a
+            // client names is the same door as spawning a client-supplied
+            // command. Note the absent `outPath`: it exists on
+            // CoverRegenerateOptions for `ossclip cover --out`, and passing
+            // one through from here is exactly the bug this omission prevents.
+            const notes: string[] = [];
+            const provenance = await regenerateCover(
+              workdir,
+              { text: parsed.data.text, atSec: parsed.data.atSec, from: parsed.data.from },
+              { renderCover: opts.renderCover, log: (line) => notes.push(line) },
+            );
+            const image = await currentCoverImage(provenance);
+            // The notes ride back so the panel can show what the CLI PRINTS —
+            // a headline trimmed to nine words, or a re-picked frame. Silence
+            // on either is how a user ships a cover they did not write.
+            return send(200, {
+              ok: true,
+              provenance,
+              notes,
+              outPath: provenance.out,
+              imageUrl: coverImageUrl(image),
+            });
+          } catch (err) {
+            // 200 with ok:false, the thumbnail regenerate's posture: these
+            // failures are user-actionable sentences ("is the timestamp past
+            // the end?", "--from source needs cover.json") and the panel shows
+            // them inline VERBATIM rather than as a dead 500.
+            return send(200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+          } finally {
+            coverBusy = false;
+          }
         }
 
         if (url.pathname.startsWith("/media/")) {

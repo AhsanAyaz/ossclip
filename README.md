@@ -124,6 +124,7 @@ ossclip edit                        # bare: pick from recent projects, or browse
 - **Hide any graphic element** — a chat bubble, a bullet, a diagram node — and the scene panel lists what's hidden with a per-element Restore.
 - A global **Show captions** toggle hides the caption track everywhere — instant in the preview, undo-able, and it survives re-produces. On a `--no-captions` run the toggle says the flag owns it.
 - **SPACE** toggles playback, **⌘Z** / **⌘⇧Z** undo and redo (also in the top bar), **⌘S** saves. Press **?** for the full keybinds reference.
+- **Cover** in the top bar retypes the cover headline or re-cuts its frame — **Use current playhead** takes the frame you are looking at. Rebuilds in seconds; the video itself is never touched. Same thing `ossclip cover` does from a terminal.
 - **Open** in the top bar switches projects in place — recent produce runs plus a folder browser, no server restart.
 
 Edits land in `<workdir>/overrides.json` — a file the producer never writes. Re-running `produce` re-plans the video and **keeps your edits**.
@@ -134,6 +135,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | --- | --- |
 | `produce <input>` | the full pipeline: transcribe → analyze → cut → captions → scenes → render (+ cover). `<input>` can be a single video file, or a folder of clips — concatenated in order (by name, or `--sort mtime`) before anything else runs |
 | `edit [workdir]` | direct-manipulation editor; bare `edit` opens a project picker |
+| `cover [workdir]` | rebuild the cover image — a new headline (`--text`) or a new frame (`--at <seconds>`, `--from final \| source`) — in seconds, with no video re-render. `--at` omitted re-uses the still the last cover was built from and runs no ffmpeg at all. Your headline is remembered: a later `produce` keeps it instead of the generated one (`--cover-text-reset` opts back in). Bare `cover` resolves the run under the current directory, like `edit` |
 | `setup` | install ffmpeg, whisper.cpp and the model into `~/.ossclip` — the one-command onboarding (`--model <name>`, `--skip-llm`, `--force`, `--yes`) |
 | `doctor` | check every prerequisite and print the exact fix for anything missing |
 | `transcribe <input>` | stops after the transcript and cut report — no render |

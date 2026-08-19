@@ -147,6 +147,19 @@ describe("wizard argv survives the real commander parse", () => {
     expect(opts.collapseRetakes).toBe(true);
   });
 
+  // --cover-text-reset (2026-08-19): a plain opt-in flag, NOT a tri-state —
+  // "not typed" means "keep the user's headline", which is the default and
+  // needs no third state. Its own key, because --cover/--no-cover already
+  // share one with the cover's output PATH.
+  it("--cover-text-reset lands on its own key; untyped stays undefined", async () => {
+    expect((await parse(["produce", "./take.mp4", "--cover-text-reset"])).coverTextReset).toBe(true);
+    expect((await parse(["produce", "./take.mp4"])).coverTextReset).toBeUndefined();
+    // The cover flags stay independent: neither touches the other's key.
+    const both = await parse(["produce", "./take.mp4", "--cover", "/c.jpg", "--cover-text-reset"]);
+    expect(both.cover).toBe("/c.jpg");
+    expect(both.coverTextReset).toBe(true);
+  });
+
   // The tri-state's other two corners, against the real option declarations:
   // --no-watermark must land as false (it beats a config-on inside produce),
   // never as undefined or a separate `noWatermark` key.

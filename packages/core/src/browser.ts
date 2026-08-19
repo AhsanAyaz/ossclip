@@ -46,4 +46,10 @@ export {
 // array, to decide whether a repair is possible at all — see
 // `anchorCaptionLines` (§137): a non-empty array can still build an empty map.
 export { mapFromKeptSpans, TimeMap, type KeptSpan } from "./timemap";
+// The §35 cover word cap. The editor's CoverPanel shows the trimmed headline
+// live as you type, and restating the trimming rules there would drift from
+// the one the regenerate endpoint actually renders with. Imported from
+// ./cover-headline, NOT ./cover — that module is node all the way down
+// (node:fs, ./exec), which is exactly what this surface exists to keep out.
+export { COVER_MAX_WORDS, coverHeadline } from "./cover-headline";
 export type { Probe, Production, RenderSettings, Segment, Transcript, Word } from "./schema";

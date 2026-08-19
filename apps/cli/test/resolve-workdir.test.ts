@@ -121,4 +121,13 @@ describe("candidateListMessage", () => {
     ]);
     expect(msg).toContain("ossclip edit '/v/My Videos/.ossclip/take-a'");
   });
+
+  // `ossclip cover ~/Downloads` used to print instructions to run `edit` —
+  // a different command than the one the user ran, on a workdir they were
+  // trying to re-cover.
+  it("names the command that was actually run", () => {
+    const msg = candidateListMessage("/v", [{ path: "/v/.ossclip/new", mtimeMs: 9 }], "cover");
+    expect(msg).toContain("  ossclip cover /v/.ossclip/new");
+    expect(msg).not.toContain("ossclip edit");
+  });
 });

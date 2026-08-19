@@ -39,8 +39,11 @@ import {
   listFolderVideos,
   outInsideInputFolderMessage,
   outPathInsideInput,
+  COVER_PROVENANCE_BASENAME,
   coverDecision,
   coverHeadline,
+  readCoverProvenance,
+  writeCoverProvenance,
   cropFilter,
   detectContentRect,
   letterboxedSeconds,
@@ -165,6 +168,13 @@ import {
   workdirBaseName,
 } from "./stranded-overrides";
 import { editHint } from "./interactive/edit-hint";
+import {
+  COVER_FRAME_BASENAME,
+  buildCoverRender,
+  coverBannerText,
+  coverTextHold,
+  provenanceVideoPath,
+} from "./cover";
 import { artifactPath, ensureParentDir, expandHome, moveFile } from "./paths";
 import { portraitOverridePath, resolvePortrait } from "./portrait-override";
 import { approveThumbnailConcept, thumbnailRetryLoop } from "./interactive/thumbnail-approve";
@@ -306,6 +316,12 @@ export interface ProduceOptions {
   cover?: boolean;
   /** Explicit cover output path, overriding <out>.cover.jpg. */
   coverPath?: string;
+  /**
+   * `--cover-text-reset` — opt back into the GENERATED cover headline on a
+   * workdir whose `cover.json` holds a user-typed one (`coverTextHold`).
+   * Deleting `cover.json` does the same thing.
+   */
+  coverTextReset?: boolean;
   /** Treat the source as an already-edited reel with burned-in graphics. */
   sourceIsEdited?: boolean;
   /**
@@ -4061,7 +4077,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   {
     // §35's cap applies here too: a cached beat sheet from before the fix, or
     // the hook fallback, must not slip a 13-word paragraph onto a thumbnail.
-    const coverText = coverHeadline(beatSheet?.coverText ?? beatSheet?.hook ?? "");
+    const generatedCoverText = coverHeadline(beatSheet?.coverText ?? beatSheet?.hook ?? "");
+    // A headline someone typed (`ossclip cover --text`, or the editor) is a
+    // user-owned file, exactly like overrides.json and the approved thumbnail
+    // concept: this run does NOT quietly replace it with a fresh beat sheet's
+    // coverText. Read before the decision below, because it decides the text
+    // the decision is made about.
+    const priorCover = await readCoverProvenance(work);
+    const heldCover = coverTextHold({
+      generated: generatedCoverText,
+      persisted: priorCover,
+      reset: opts.coverTextReset === true,
+    });
+    if (heldCover.message) console.log(heldCover.message);
+    const coverText = heldCover.text;
     // Urdu field run 2026-08-05: a run without --produce has no hook text,
     // and skipping the cover for that threw away the part that never needed
     // text — the sharpness-scored face frame. No headline now means a bare
@@ -4088,7 +4117,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       if (!pick) {
         console.log("▸ no usable cover frame found — skipping cover");
       } else {
-        const frameName = "cover-frame.png";
+        const frameName = COVER_FRAME_BASENAME;
         await run(cfg.ffmpegPath, [
           "-v", "error",
           "-ss", pick.timeSec.toFixed(3),
@@ -4122,16 +4151,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             `▸ cover from ${pick.timeSec.toFixed(1)}s ` +
               `(${pick.hasFace ? "face" : "no face"}, sharpness ${pick.sharpness.toFixed(0)})…`,
           );
-          if (sourceTitled) {
-            console.log("  ▸ source already has a title in this frame — shipping it without a banner");
-          } else if (pick.face) {
+          // …unless the headline is the user's own, which §34 does not get to
+          // erase (cover.ts's coverBannerText has the reasoning). Unchanged
+          // for a generated headline, including the line it prints.
+          const banner = coverBannerText({
+            text: coverText,
+            textSource: heldCover.textSource,
+            sourceTitled,
+          });
+          if (banner.note) console.log(banner.note);
+          // The band log is about routing a banner around the face, so it
+          // follows whether there IS a banner — for a §34-suppressed cover
+          // there is none, for a surviving user headline there is.
+          if (banner.text !== "" && pick.face) {
             const band = coverTextRect(pick.face, frame);
             console.log(
               `  ▸ banner in the ${band.y + band.h / 2 < pick.face.centerYFrac ? "band above" : "band below"} ` +
                 `the face (${(band.y * 100).toFixed(0)}-${((band.y + band.h) * 100).toFixed(0)}%)`,
             );
           }
-          bannerText = sourceTitled ? "" : coverText;
+          bannerText = banner.text;
         } else {
           console.log(
             `▸ cover from ${pick.timeSec.toFixed(1)}s ` +
@@ -4139,22 +4178,71 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
               `— no banner text (run --produce for one)`,
           );
         }
-        await renderCover(
-          {
-            frameFileName: frameName,
-            text: bannerText,
-            // The RESOLVED theme — so the cover's banner already carries the
-            // config theme (F6) via resolveTheme's base, no separate wiring.
-            theme,
-            face: pick.face,
-            // The cover is the OUTPUT's thumbnail — a landscape render gets a
-            // landscape cover (R16 §76). The still was already extracted at
-            // this size; only the composition disagreed.
-            frame: { width: frame.width, height: frame.height },
-          },
-          { publicDir: work, outPath: coverPath, browserExecutable: cfg.browserExecutable },
-        );
+        // The shared builder, not an inline props literal: `ossclip cover`
+        // and the editor's regenerate endpoint call the same one, and two
+        // spellings of these arguments drifting apart is the defect that
+        // whole feature exists to prevent (cover.ts).
+        const coverRender = buildCoverRender({
+          frameFileName: frameName,
+          text: bannerText,
+          // The RESOLVED theme — so the cover's banner already carries the
+          // config theme (F6) via resolveTheme's base, no separate wiring.
+          theme,
+          face: pick.face,
+          // The cover is the OUTPUT's thumbnail — a landscape render gets a
+          // landscape cover (R16 §76). The still was already extracted at
+          // this size; only the composition disagreed.
+          frame: { width: frame.width, height: frame.height },
+          publicDir: work,
+          outPath: coverPath,
+          browserExecutable: cfg.browserExecutable,
+        });
+        await renderCover(coverRender.props, coverRender.opts);
         console.log(`✓ cover → ${coverPath}`);
+        // Provenance, so the next headline change costs seconds instead of a
+        // full re-render. Written AFTER the render succeeded and describing
+        // what that render actually used — `pick.face` is the cover-crop
+        // geometry nothing else on disk carries, and `cropVf` is not
+        // reconstructible from the workdir either.
+        //
+        // Additive by contract (§112, the posture the YouTube pack block
+        // below states): the video and the cover are already on disk, so a
+        // failed sidecar write is one loud line, never a dead run.
+        try {
+          await writeCoverProvenance(work, {
+            version: 1,
+            text: bannerText,
+            // "user" only when THIS run kept a headline someone typed
+            // (coverTextHold above) — produce itself never authors one.
+            textSource: heldCover.textSource,
+            frame: {
+              // produce keeps picking from the SOURCE — zero perturbation for
+              // existing users. `ossclip cover` is the one that defaults to
+              // the finished render.
+              source: "source",
+              timeSec: pick.timeSec,
+              face: pick.face ?? null,
+              hasFace: pick.hasFace,
+              sharpness: pick.sharpness,
+              fileName: frameName,
+              // Workdir-relative when the video IS a workdir intermediate (a
+              // folder run's concat mezzanine), absolute otherwise — the rule
+              // `ossclip cover` reads it back with.
+              sourceVideo: provenanceVideoPath(work, input),
+              // cropFilter returns "" for an uncropped source; null says "no
+              // crop" without a caller having to know that convention.
+              cropVf: cropVf || null,
+            },
+            size: { width: frame.width, height: frame.height },
+            out: coverPath,
+          });
+        } catch (err) {
+          console.log(
+            `  ⚠ could not write ${COVER_PROVENANCE_BASENAME} ` +
+              `(${err instanceof Error ? err.message : String(err)}) — ` +
+              `the cover shipped; a later headline change will re-pick the frame`,
+          );
+        }
       }
     }
   }
