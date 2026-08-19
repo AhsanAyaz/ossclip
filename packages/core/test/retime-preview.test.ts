@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CaptionLine } from "../src/captions";
 import {
+  cutRangeToOldClock,
   livePreviewMap,
   previewClockMappers,
   retimeForPreview,
@@ -244,5 +245,68 @@ describe("previewClockMappers (step 4 follow-up: the point mappers App threads t
     for (const t of [0, 2, 4.9, 5, 6.5, 8]) {
       expect(m.fromLive(m.toLive(t))).toBeCloseTo(t, 9);
     }
+  });
+
+  it("hasOldClockPreimage: false exactly inside revived material, true elsewhere — and always true for the identity pair", () => {
+    const m = previewClockMappers(clocks);
+    // Before the revived pause and after it: real old-clock moments.
+    expect(m.hasOldClockPreimage(3)).toBe(true);
+    expect(m.hasOldClockPreimage(8)).toBe(true);
+    // Inside the revived pause (live 5..7 is source 5..7, which the old map
+    // removed): no preimage — the WRITE guard's refusal case.
+    expect(m.hasOldClockPreimage(6)).toBe(false);
+    // The identity pair never refuses — no veto, nothing revived.
+    const identity = previewClockMappers(null);
+    for (const t of [0, 3, 6, 100]) expect(identity.hasOldClockPreimage(t)).toBe(true);
+  });
+
+  it("hasOldClockPreimage: an instant exactly AT a seam counts as having one — toOutput's inclusive-edge containment (timemap.ts), pinned", () => {
+    const m = previewClockMappers(clocks);
+    // Live 5 is source 5 (the kept span's srcOut) and live 7 is source 7
+    // (the next span's srcIn) — both edges the old map still contains, so a
+    // split exactly at the seam is a moment the last render can express.
+    expect(m.hasOldClockPreimage(5)).toBe(true);
+    expect(m.hasOldClockPreimage(7)).toBe(true);
+  });
+});
+
+describe("cutRangeToOldClock (the WRITE direction's range half — cutChunk's boundary)", () => {
+  const clocks = livePreviewMap(proposal, { reasons: { pause: false } }, [], oldSpans)!;
+  const mappers = previewClockMappers(clocks);
+
+  it("identity mappers answer exact with the inputs untouched — the no-veto regression anchor", () => {
+    const range = cutRangeToOldClock(previewClockMappers(null), 2.345, 6.789);
+    expect(range).toEqual({ kind: "exact", startSec: 2.345, endSec: 6.789 });
+  });
+
+  it("a window entirely in kept material maps exactly: live seconds in, the last render's own seconds out", () => {
+    // Live 8..9 is source 8..9, which the old clock kept at 6..7 — the
+    // hand-mapped case: everything past the revived 2s pause sits exactly
+    // the revived seconds later on the live clock.
+    expect(cutRangeToOldClock(mappers, 8, 9)).toEqual({ kind: "exact", startSec: 6, endSec: 7 });
+  });
+
+  it("a window straddling a revived edge SHRINKS to what the old clock can express, and says so", () => {
+    // Live 4..6: the start is a real old moment (4), the end sits inside the
+    // revived pause and clamps to the seam (old 5) — the cut proceeds on the
+    // shrunk window rather than being refused, and the report records the
+    // trim (remapPoint's "nothing moves without saying so").
+    const range = cutRangeToOldClock(mappers, 4, 6);
+    expect(range.kind).toBe("shrunk");
+    if (range.kind !== "shrunk") throw new Error("unreachable");
+    expect(range.startSec).toBeCloseTo(4, 9);
+    expect(range.endSec).toBeCloseTo(5, 9);
+    expect(range.report).toContain("trimmed to the last render's");
+  });
+
+  it("a window entirely inside revived material is degenerate — both ends clamp to the same seam", () => {
+    expect(cutRangeToOldClock(mappers, 5.5, 6.5)).toEqual({ kind: "degenerate" });
+  });
+
+  it("a window covering the revived span seam to seam is degenerate too — each seam HAS a preimage, but the same one twice (the width-first check order)", () => {
+    // Live 5..7 is exactly the revived pause: hasOldClockPreimage answers
+    // true at BOTH ends (the inclusive-seam semantics pinned above), yet the
+    // mapped window is the single old instant 5..5 — nothing left to cut.
+    expect(cutRangeToOldClock(mappers, 5, 7)).toEqual({ kind: "degenerate" });
   });
 });

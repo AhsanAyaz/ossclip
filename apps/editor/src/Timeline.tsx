@@ -77,6 +77,20 @@ interface TimelineProps {
   /** Output→source time, through the spans — a filmstrip frame must come
    * from the SOURCE second actually playing at that point of the cut. */
   toSourceSec?: (outSec: number) => number;
+  /**
+   * OLD-clock output seconds → the live (player) clock this ruler draws
+   * (cut review step 4 follow-up, the struck band's DISPLAY half): a
+   * NOT-YET-APPLIED cut's `startSec`/`endSec` speak the LAST RENDER's own
+   * output seconds (the `OverrideDocSchema.cuts` contract the writers now
+   * hold to), but under a live cleanup veto `durationSec`/`spans` here are
+   * the re-cut NEW clock — unmapped, a band past a revived pause strikes
+   * through content the revived seconds off its true window. App threads
+   * `previewClockMappers(liveRecut).toLive`, exact for every live veto
+   * (vetoes only ADD time back). Identity default, same back-compat rule as
+   * `toSourceSec`; the APPLIED-cut seam never needs it — that one places by
+   * `src` through the live `spans` already.
+   */
+  toLive?: (sec: number) => number;
 }
 
 interface DragState {
@@ -229,6 +243,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   edits,
   videoSrc,
   toSourceSec,
+  toLive = (sec: number): number => sec,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -886,14 +901,19 @@ export const Timeline: React.FC<TimelineProps> = ({
 
               if (!cut.src) {
                 // NOT YET APPLIED: the material is genuinely still on
-                // screen, at `startSec`/`endSec` in THIS render-props' own
-                // frame — today's struck band + Restore, unchanged. Both
-                // ends clamp into [0, durationSec] (the review's "clamp all
-                // cut visuals to the timeline width regardless") in case an
-                // EARLIER produce run already shortened the timeline out
-                // from under a cut nobody has restored yet.
-                const clampedStart = Math.min(Math.max(cut.startSec, 0), durationSec);
-                const clampedEnd = Math.min(Math.max(cut.endSec, 0), durationSec);
+                // screen, at `startSec`/`endSec` in the LAST RENDER's own
+                // frame — drawn at `toLive(...)` (the prop doc: under a live
+                // veto this ruler is the re-cut NEW clock, and the unmapped
+                // band struck through content the revived seconds off), the
+                // identity when no veto is live. Both ends then clamp into
+                // [0, durationSec] (the review's "clamp all cut visuals to
+                // the timeline width regardless") in case an EARLIER produce
+                // run already shortened the timeline out from under a cut
+                // nobody has restored yet. The key/testid keep the DOC's own
+                // numbers — they identify the entry, not its pixels, and the
+                // no-veto path must stay bit-identical.
+                const clampedStart = Math.min(Math.max(toLive(cut.startSec), 0), durationSec);
+                const clampedEnd = Math.min(Math.max(toLive(cut.endSec), 0), durationSec);
                 const left = pct(clampedStart);
                 const width =
                   durationSec > 0

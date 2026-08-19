@@ -2,7 +2,16 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyOverrides, defaultTheme, type OverrideDoc, type SceneCue } from "@ossclip/core/browser";
+import {
+  applyOverrides,
+  defaultTheme,
+  livePreviewMap,
+  previewClockMappers,
+  type KeptSpan,
+  type OverrideDoc,
+  type SceneCue,
+  type Segment,
+} from "@ossclip/core/browser";
 import { Inspector } from "../src/Inspector";
 import { useEdits } from "../src/useEdits";
 
@@ -46,6 +55,9 @@ function Harness({
   initialScenes,
   onSelect = () => {},
   onDocChange,
+  fromLive,
+  hasOldClockPreimage,
+  onClockRefused,
 }: {
   selection: { sceneId: string; elementId: string | null };
   cue?: SceneCue;
@@ -77,6 +89,12 @@ function Harness({
   /** Fires on every render with the CURRENT `edits.doc` — the only way this
    * Harness exposes the real reducer state to a test's assertions. */
   onDocChange?: (doc: OverrideDoc) => void;
+  /** The cut button's write boundary under a live cleanup veto (step 4
+   * follow-up) — omitted everywhere else, so every pre-existing test pins
+   * the identity-default (no-veto) path. */
+  fromLive?: (sec: number) => number;
+  hasOldClockPreimage?: (sec: number) => boolean;
+  onClockRefused?: (message: string) => void;
 }) {
   const edits = useEdits();
   React.useEffect(() => {
@@ -111,6 +129,9 @@ function Harness({
     onSelect,
     resolvedTheme: defaultTheme,
     onVideoPreview: vi.fn(),
+    fromLive,
+    hasOldClockPreimage,
+    onClockRefused,
   });
 }
 
@@ -611,6 +632,108 @@ describe("Inspector — user cuts (PLAN 2026-08-04 Task 4c)", () => {
     });
     expect(container.querySelector('[data-testid="cut-chunk"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="restore-chunk"]')).toBeNull();
+  });
+});
+
+/**
+ * "Delete this chunk" under a LIVE cleanup veto (cut review step 4
+ * follow-up, WRITE direction): the cue window speaks the player's re-cut
+ * NEW clock, but a fresh `cuts[]` entry speaks the LAST RENDER's output
+ * seconds. The mappers are the real ones — `livePreviewMap` +
+ * `previewClockMappers`, produce's own functions — over the canonical
+ * one-vetoed-pause case (source 5..7 revived; old clock 8s, live clock
+ * 10s), so every expected number is hand-mappable: live t past the pause is
+ * old t − 2.
+ */
+describe("Inspector — Delete this chunk converts to the OLD clock under a live veto (step 4 follow-up)", () => {
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 7, srcOut: 10, kind: "keep" },
+  ];
+  const oldSpans: KeptSpan[] = [
+    { srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 },
+    { srcIn: 7, srcOut: 10, outIn: 5, outOut: 8 },
+  ];
+  const mappers = previewClockMappers(
+    livePreviewMap(proposal, { reasons: { pause: false } }, [], oldSpans),
+  );
+  /** A take at a LIVE-clock window — what App's retimed cues hand Inspector. */
+  const liveTake = (startSec: number, endSec: number): SceneCue => ({
+    id: "take-0",
+    kind: "plain",
+    layout: "video-top",
+    startSec,
+    endSec,
+  });
+
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  const mount = async (cue: SceneCue, onClockRefused: (m: string) => void, capture: { doc?: OverrideDoc }) => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "take-0", elementId: null },
+          cue,
+          fromLive: mappers.fromLive,
+          hasOldClockPreimage: mappers.hasOldClockPreimage,
+          onClockRefused,
+          onDocChange: (doc) => {
+            capture.doc = doc;
+          },
+        }),
+      );
+    });
+  };
+
+  it("a window in kept material writes the last render's own seconds — live 8..9 stores 6..7", async () => {
+    const refused = vi.fn();
+    const capture: { doc?: OverrideDoc } = {};
+    await mount(liveTake(8, 9), refused, capture);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
+    });
+    expect(capture.doc!.cuts).toEqual([{ startSec: 6, endSec: 7 }]);
+    expect(refused).not.toHaveBeenCalled();
+  });
+
+  it("a window entirely inside revived material refuses out loud and writes nothing", async () => {
+    const refused = vi.fn();
+    const capture: { doc?: OverrideDoc } = {};
+    await mount(liveTake(5.5, 6.5), refused, capture);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
+    });
+    expect(refused).toHaveBeenCalledWith(expect.stringContaining("isn't in the last render yet"));
+    expect(capture.doc!.cuts).toEqual([]);
+  });
+
+  it("a window straddling a revived edge proceeds SHRUNK and says so on the console — live 4..6 stores 4..5", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const refused = vi.fn();
+    const capture: { doc?: OverrideDoc } = {};
+    await mount(liveTake(4, 6), refused, capture);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
+    });
+    expect(capture.doc!.cuts).toEqual([{ startSec: 4, endSec: 5 }]);
+    expect(refused).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("ossclip cut preview: cut"));
   });
 });
 

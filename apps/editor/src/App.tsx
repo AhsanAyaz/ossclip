@@ -15,6 +15,7 @@ import {
   splitCues,
   resolveTheme,
   defaultTheme,
+  cutRangeToOldClock,
   livePreviewMap,
   mapFromKeptSpans,
   mapsClose,
@@ -183,6 +184,16 @@ export const App: React.FC = () => {
   // banner rather than an inline RenderModal error because the plain Render
   // button hits this path too, with no modal open to show anything in.
   const [renderRefusedNotice, setRenderRefusedNotice] = useState<string | null>(null);
+  // A gesture the OLD clock cannot express (cut review step 4 follow-up,
+  // WRITE direction): a ⌘B split or a cut aimed at REVIVED material — a
+  // vetoed pause the last render cut away, so the moment has no old-clock
+  // preimage for the doc's own time slots (`splits[].at`,
+  // `cuts[].startSec/endSec` both speak the last render's output seconds).
+  // Refused OUT LOUD rather than silently clamped to the seam — relocating a
+  // user's split unasked is the silent-overwrite class the override doc
+  // fights. Same posture as the two notices above, and for the same reason:
+  // routine, dismissible, never `setError`'s fatal full-screen view.
+  const [clockRefusedNotice, setClockRefusedNotice] = useState<string | null>(null);
   // Caption edits the §137 key migration could not place when this doc was
   // loaded. They are NOT in the doc any more (the migration reports rather
   // than guesses), so this state is the only record of them — set on every
@@ -1462,8 +1473,29 @@ export const App: React.FC = () => {
           onConfirm={(target) => {
             // Both arms are ordinary reducer commits, so ⌘Z takes either
             // back — the modal adds friction, not a second edit mechanism.
-            if (target === "graphic") edits.hideScene(deletePlan.sceneId);
-            else edits.cutChunk(deletePlan.startSec, deletePlan.endSec);
+            if (target === "graphic") {
+              edits.hideScene(deletePlan.sceneId);
+            } else {
+              // The plan's window came off a retimed cue — the LIVE clock —
+              // but a fresh `cuts[]` entry speaks the LAST RENDER's output
+              // seconds (the `OverrideDocSchema.cuts` contract), so it
+              // converts here, at the write boundary, exactly as the
+              // Inspector's own "Delete this chunk" does (same helper, so
+              // the shrink/refuse verdict cannot drift between the two).
+              // Identity when no veto is live — the values pass untouched.
+              const range = cutRangeToOldClock(clock, deletePlan.startSec, deletePlan.endSec);
+              if (range.kind === "degenerate") {
+                setClockRefusedNotice(
+                  "Can't cut this window: it isn't in the last render yet — render once (or re-remove the pause) to cut it.",
+                );
+              } else {
+                // A window that merely shrinks at a revived edge proceeds
+                // and says so — the console, the retime reports' own
+                // channel (this gesture has no quieter one today).
+                if (range.kind === "shrunk") console.warn(`ossclip cut preview: ${range.report}`);
+                edits.cutChunk(range.startSec, range.endSec);
+              }
+            }
             setDeletePlan(null);
           }}
         />
@@ -1704,6 +1736,20 @@ export const App: React.FC = () => {
           </button>
         </div>
       ) : null}
+      {clockRefusedNotice !== null ? (
+        // A split/cut aimed at revived material (step 4 follow-up) — same
+        // chrome and same non-fatal posture as the render refusal above; the
+        // useState's doc comment has the reasoning.
+        <div data-testid="clock-refused-notice" style={reanchorNotice}>
+          {clockRefusedNotice}
+          <button
+            style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+            onClick={() => setClockRefusedNotice(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div style={mainRow}>
         {showTranscript ? (
           <>
@@ -1815,6 +1861,12 @@ export const App: React.FC = () => {
               onGraphicPreview={setGraphicPreview}
               onToggleHelp={() => setShowShortcuts((v) => !v)}
               onRequestDelete={setDeletePlan}
+              // ⌘B's write boundary (step 4 follow-up): the playhead is on
+              // the live clock, `splits[].at` on the old — the Overlay prop
+              // docs own the argument; identity when no veto is live.
+              fromLive={clock.fromLive}
+              hasOldClockPreimage={clock.hasOldClockPreimage}
+              onClockRefused={setClockRefusedNotice}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
                 only reachable by keyboard is a rate users lose track of.
@@ -1879,6 +1931,13 @@ export const App: React.FC = () => {
             onVideoPreview={setVideoPreview}
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
+            // "Delete this chunk"'s write boundary (step 4 follow-up): the
+            // cue window is on the live clock, a fresh `cuts[]` entry on the
+            // old — the Inspector prop docs own the argument; identity when
+            // no veto is live.
+            fromLive={clock.fromLive}
+            hasOldClockPreimage={clock.hasOldClockPreimage}
+            onClockRefused={setClockRefusedNotice}
           />
         </div>
       </div>
@@ -1902,6 +1961,10 @@ export const App: React.FC = () => {
         onSelect={setSelection}
         edits={edits}
         videoSrc={live.videoFileName}
+        // The struck band's DISPLAY half (step 4 follow-up): a fresh cut's
+        // doc window is old-clock, this ruler is the live one — the Timeline
+        // prop doc owns the argument; identity when no veto is live.
+        toLive={clock.toLive}
         toSourceSec={(outSec) => {
           // Output→source through the spans (R20 §97) — the filmstrip frame
           // must be the source second actually playing there, not the raw

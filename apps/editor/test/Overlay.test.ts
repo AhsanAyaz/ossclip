@@ -3,6 +3,14 @@ import React, { act, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { PlayerRef } from "@remotion/player";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  livePreviewMap,
+  previewClockMappers,
+  type KeptSpan,
+  type OverrideDoc,
+  type SceneCue,
+  type Segment,
+} from "@ossclip/core/browser";
 import { Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
 import { onSaveEffect } from "../src/save";
@@ -610,5 +618,165 @@ describe("⌘S while a render is running — the real onSave wiring (PLAN 2026-0
     expect(
       container.querySelector('[data-testid="save-blocked-notice"]')!.getAttribute("data-value"),
     ).toBe("hidden");
+  });
+});
+
+/**
+ * ⌘B under a LIVE cleanup veto (cut review step 4 follow-up, WRITE
+ * direction): the playhead speaks the player's re-cut NEW clock, but
+ * `splits[].at` speaks the LAST RENDER's output seconds. Mounted like the
+ * ⌘S suite above — a real keydown at `window`, a real `useEdits` reducer —
+ * with the REAL mappers (`livePreviewMap` + `previewClockMappers`, produce's
+ * own functions) over the canonical one-vetoed-pause case: source 5..7
+ * revived, old clock 8s, live clock 10s, so live t past the pause is old
+ * t − 2 by hand.
+ */
+describe("⌘B split under a live cleanup veto — old-clock write, revived-material refusal (step 4 follow-up)", () => {
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 7, srcOut: 10, kind: "keep" },
+  ];
+  const oldSpans: KeptSpan[] = [
+    { srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 },
+    { srcIn: 7, srcOut: 10, outIn: 5, outOut: 8 },
+  ];
+  const mappers = previewClockMappers(
+    livePreviewMap(proposal, { reasons: { pause: false } }, [], oldSpans),
+  );
+  /** One take covering the whole live clock, so any mid-timeline playhead
+   * clears the SPLIT_MIN_PIECE_SEC edge guard — that guard is not under
+   * test here. */
+  const take: SceneCue = {
+    id: "take-0",
+    kind: "plain",
+    layout: "video-top",
+    startSec: 0,
+    endSec: 10,
+  };
+  const FPS = 30;
+
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  function SplitHarness({
+    playheadSec,
+    withMappers,
+    onClockRefused,
+    onDocChange,
+  }: {
+    playheadSec: number;
+    /** Omitted = the identity-default (no-veto) path — the regression anchor. */
+    withMappers?: boolean;
+    onClockRefused?: (message: string) => void;
+    onDocChange?: (doc: OverrideDoc) => void;
+  }) {
+    const edits = useEdits();
+    const stageRef = useRef<HTMLDivElement>(null);
+    // The ⌘B handler only reads `getCurrentFrame()` — a tiny stub, the
+    // Timeline tests' own posture, not a whole Remotion player.
+    const playerRef = useRef<PlayerRef>({
+      getCurrentFrame: () => Math.round(playheadSec * FPS),
+    } as unknown as PlayerRef);
+    React.useEffect(() => {
+      onDocChange?.(edits.doc);
+    });
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("div", { ref: stageRef, "data-testid": "stage" }),
+      React.createElement(Overlay, {
+        stageRef,
+        selection: null,
+        onSelect: vi.fn(),
+        edits,
+        onSave: vi.fn(),
+        settings: { width: 1080, height: 1920, fps: FPS },
+        cues: [take],
+        onToggleHelp: vi.fn(),
+        playerRef,
+        onTransport: vi.fn(),
+        onVideoPreview: vi.fn(),
+        onGraphicPreview: vi.fn(),
+        cue: null,
+        ...(withMappers
+          ? {
+              fromLive: mappers.fromLive,
+              hasOldClockPreimage: mappers.hasOldClockPreimage,
+            }
+          : {}),
+        onClockRefused,
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    document.elementFromPoint = () => null;
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const cmdB = () =>
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "b", metaKey: true, bubbles: true, cancelable: true }),
+      );
+    });
+
+  it("no veto (identity defaults): the playhead second is stored bit-identically to before", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(SplitHarness, { playheadSec: 4, onDocChange: (d) => (doc = d) }),
+      );
+    });
+    await cmdB();
+    expect(doc!.splits).toHaveLength(1);
+    expect(doc!.splits[0]!.at).toBe(4);
+  });
+
+  it("live veto, playhead in kept material: stores the last render's own second — live 8 stores 6", async () => {
+    const refused = vi.fn();
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(SplitHarness, {
+          playheadSec: 8,
+          withMappers: true,
+          onClockRefused: refused,
+          onDocChange: (d) => (doc = d),
+        }),
+      );
+    });
+    await cmdB();
+    expect(doc!.splits).toHaveLength(1);
+    expect(doc!.splits[0]!.at).toBe(6);
+    expect(refused).not.toHaveBeenCalled();
+  });
+
+  it("live veto, playhead inside REVIVED material: refuses out loud, writes nothing", async () => {
+    const refused = vi.fn();
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(SplitHarness, {
+          playheadSec: 6,
+          withMappers: true,
+          onClockRefused: refused,
+          onDocChange: (d) => (doc = d),
+        }),
+      );
+    });
+    await cmdB();
+    expect(refused).toHaveBeenCalledWith(expect.stringContaining("isn't in the last render yet"));
+    expect(doc!.splits).toEqual([]);
   });
 });

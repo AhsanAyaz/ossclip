@@ -2,7 +2,13 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
+import {
+  livePreviewMap,
+  previewClockMappers,
+  type KeptSpan,
+  type SceneCue,
+  type Segment,
+} from "@ossclip/core/browser";
 import { Timeline } from "../src/Timeline";
 import { useEdits } from "../src/useEdits";
 
@@ -24,6 +30,7 @@ function Harness({
   cues = [cue],
   playerRef = { current: null },
   onSelect = vi.fn(),
+  toLive,
 }: {
   cues?: SceneCue[];
   /** Loosely typed on purpose: tests hand in a tiny seekTo/eventing stub, not
@@ -37,6 +44,10 @@ function Harness({
    * `cuts` prop would make the seam immortal no matter what the click does. */
   cuts?: { startSec: number; endSec: number; src?: { startSec: number; endSec: number } }[];
   spans?: KeptSpan[];
+  /** The struck band's display mapping under a live cleanup veto (step 4
+   * follow-up) — omitted everywhere else, so every pre-existing test pins
+   * the identity-default (no-veto) path. */
+  toLive?: (sec: number) => number;
 } = {}) {
   const edits = useEdits();
   React.useEffect(() => {
@@ -70,6 +81,7 @@ function Harness({
       selection: null,
       onSelect,
       edits,
+      toLive,
     }),
   );
 }
@@ -288,6 +300,39 @@ describe("Timeline — user cuts render as a dead-region overlay (PLAN 2026-08-0
     expect(bands).toHaveLength(2);
     const overlay = container.querySelector<HTMLElement>('[data-testid="timeline-cut-1-2"]')!;
     expect(overlay.style.pointerEvents).toBe("none");
+  });
+
+  it("draws a NOT-YET-APPLIED band at toLive(docTime) under a live veto — old-clock window, live ruler (step 4 follow-up)", async () => {
+    // The real mappers, produce's own functions end to end — not a stub —
+    // so this pins the same walk App threads: a 2s pause at source 1..3 is
+    // vetoed, the last render's spans kept [0,1]+[3,11], and the Harness's
+    // 10s ruler is the LIVE (revived) clock. The doc cut [2, 4] speaks the
+    // OLD clock (source 4..6), which the live ruler holds at 4..6 — 40%/20%
+    // of 10s, NOT the unmapped 20%/20% the identity test above pins for the
+    // no-veto path.
+    const proposal: Segment[] = [
+      { srcIn: 0, srcOut: 1, kind: "keep" },
+      { srcIn: 1, srcOut: 3, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 3, srcOut: 11, kind: "keep" },
+    ];
+    const oldSpans: KeptSpan[] = [
+      { srcIn: 0, srcOut: 1, outIn: 0, outOut: 1 },
+      { srcIn: 3, srcOut: 11, outIn: 1, outOut: 9 },
+    ];
+    const { toLive } = previewClockMappers(
+      livePreviewMap(proposal, { reasons: { pause: false } }, [], oldSpans),
+    );
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, { cuts: [{ startSec: 2, endSec: 4 }], toLive }),
+      );
+    });
+    // The testid keeps the DOC's own numbers — it identifies the entry, not
+    // its pixels — while the geometry is the mapped window.
+    const overlay = container.querySelector<HTMLElement>('[data-testid="timeline-cut-2-4"]')!;
+    expect(overlay).not.toBeNull();
+    expect(overlay.style.left).toBe("40%");
+    expect(overlay.style.width).toBe("20%");
   });
 
   it("clamps a stale (past-duration) NOT-YET-APPLIED cut to the timeline's own bounds (review finding 1)", async () => {

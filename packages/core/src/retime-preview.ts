@@ -117,6 +117,22 @@ export interface PreviewClockMappers {
    * nearest kept edge (`toOutputClamped`'s documented role), the closest
    * moment the old clock can honestly name. */
   fromLive: (sec: number) => number;
+  /** Whether a live instant EXISTS on the old clock at all — false exactly
+   * when `fromLive` would have to clamp: the moment sits inside REVIVED
+   * material (a vetoed removal the last render cut away). The WRITE-direction
+   * guard (the follow-up to `fromLive`'s read direction): the doc's own time
+   * slots speak the OLD clock (`splits[].at` per SplitSchema, a fresh cut's
+   * `startSec`/`endSec` per the `cuts` schema comment — overrides.ts), and a
+   * writer facing a moment this answers false for must refuse OUT LOUD
+   * rather than let the clamp silently relocate the user's gesture to the
+   * seam — the recut.ts "reported, never silently dropped" rule, applied
+   * before the write instead of after. Asked as its own question, not an ad
+   * hoc float comparison of `toLive(fromLive(sec))` against `sec` at some
+   * caller-invented tolerance. An instant exactly AT a seam counts as HAVING
+   * a preimage: `toOutput`'s containment is inclusive of both span edges
+   * (timemap.ts), so the seam moment is one the last render still contained.
+   * Always true for the identity pair — no veto, nothing revived. */
+  hasOldClockPreimage: (sec: number) => boolean;
 }
 
 /**
@@ -129,7 +145,7 @@ export interface PreviewClockMappers {
 export function previewClockMappers(clocks: LivePreviewClocks | null): PreviewClockMappers {
   if (clocks === null) {
     const identity = (sec: number): number => sec;
-    return { toLive: identity, fromLive: identity };
+    return { toLive: identity, fromLive: identity, hasOldClockPreimage: () => true };
   }
   const { oldMap, newMap } = clocks;
   return {
@@ -141,6 +157,68 @@ export function previewClockMappers(clocks: LivePreviewClocks | null): PreviewCl
       const src = newMap.toSource(sec);
       return oldMap.toOutput(src) ?? oldMap.toOutputClamped(src);
     },
+    // `fromLive`'s exact half, asked as a question: `toOutput` is null
+    // precisely when the source instant fell in a region the old map removed
+    // — i.e. the live moment is inside revived material (its own doc comment
+    // above pins the inclusive-seam semantics).
+    hasOldClockPreimage: (sec) => oldMap.toOutput(newMap.toSource(sec)) !== null,
+  };
+}
+
+/** `cutRangeToOldClock`'s verdict on a live-clock window headed for a doc
+ * `cuts[]` slot. `exact`/`shrunk` carry OLD-clock seconds ready to store;
+ * `shrunk` also carries a report (the `remapPoint` posture — a moved value
+ * says so) for the caller's feedback channel; `degenerate` means the window
+ * has NO old-clock extent at all and the write must be refused out loud. */
+export type OldClockCutRange =
+  | { kind: "exact"; startSec: number; endSec: number }
+  | { kind: "shrunk"; startSec: number; endSec: number; report: string }
+  | { kind: "degenerate" };
+
+/**
+ * Convert a cut gesture's LIVE-clock window into the OLD-clock window the
+ * doc's `cuts[]` slots speak (the schema comment on `OverrideDocSchema.cuts`:
+ * a fresh cut's `startSec`/`endSec` are drawn against the LAST render-props'
+ * frame — produce resolves `src` by mapping them through the PRIOR TimeMap,
+ * so a new-clock number stored there lands the cut the revived seconds off).
+ *
+ * Endpoints inside revived material clamp to the nearest kept edge
+ * (`fromLive`'s doc): when only ONE edge clamps the range SHRINKS there and
+ * the cut proceeds on what the old clock can express — the source range
+ * produce resolves from the shrunk window still spans the revived material
+ * BETWEEN the endpoints (a contiguous source interval), so only the revived
+ * sliver past the clamped edge is lost, and the report says so. When the
+ * whole window collapses to one point — both endpoints inside one revived
+ * region, or the window exactly covering it seam to seam (each seam HAS a
+ * preimage, but the same one twice) — there is nothing left to cut and the
+ * verdict is `degenerate`: refuse, the ⌘B-split posture, never a silent
+ * zero-length entry. Checked on the mapped WIDTH first, before the preimage
+ * question, for exactly that seam-to-seam case. The module `EPS`, not 0: the
+ * mapped ends ride TimeMap arithmetic, and a real cut is never under a
+ * microsecond.
+ *
+ * Identity mappers (no live veto) always answer `exact` with the input
+ * values untouched — the no-veto regression anchor.
+ */
+export function cutRangeToOldClock(
+  mappers: Pick<PreviewClockMappers, "fromLive" | "hasOldClockPreimage">,
+  startSec: number,
+  endSec: number,
+): OldClockCutRange {
+  const mappedStart = mappers.fromLive(startSec);
+  const mappedEnd = mappers.fromLive(endSec);
+  if (mappedEnd - mappedStart < EPS) return { kind: "degenerate" };
+  if (mappers.hasOldClockPreimage(startSec) && mappers.hasOldClockPreimage(endSec)) {
+    return { kind: "exact", startSec: mappedStart, endSec: mappedEnd };
+  }
+  return {
+    kind: "shrunk",
+    startSec: mappedStart,
+    endSec: mappedEnd,
+    report:
+      `cut ${startSec.toFixed(3)}s–${endSec.toFixed(3)}s trimmed to the last render's ` +
+      `${mappedStart.toFixed(3)}s–${mappedEnd.toFixed(3)}s — the revived material at its ` +
+      `edge isn't in the last render yet`,
   };
 }
 

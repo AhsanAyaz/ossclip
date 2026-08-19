@@ -83,11 +83,17 @@ export {
 // speak in single instants — transcript seeks, ghost bands, the cover
 // panel's playhead — need the same walk as a point function, identity when
 // no re-cut is live, threaded by App so no consumer learns the machinery.
+// `cutRangeToOldClock` is the WRITE direction's range half (the follow-up's
+// follow-up): a cut gesture's live window converted to the old-clock frame
+// `doc.cuts` speaks, shared by the Inspector's button and App's delete
+// modal so the shrink/refuse verdict cannot drift between the two.
 export {
+  cutRangeToOldClock,
   livePreviewMap,
   previewClockMappers,
   retimeForPreview,
   type LivePreviewClocks,
+  type OldClockCutRange,
   type PreviewClockMappers,
   type RetimeablePreviewProps,
   type RetimedPreviewFields,
