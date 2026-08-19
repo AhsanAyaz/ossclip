@@ -596,6 +596,10 @@ export function buildProgram(): Command {
           transcript: opts.transcript,
           // The reviewFlag resolution, not opts.render: --review implies off.
           render,
+          // Only phrases the no-render exit ("the editor is opening" instead
+          // of the --no-render skip + edit hint) — the render/openEditor
+          // consequences are already resolved above.
+          review: opts.review === true,
           mezzanine: opts.mezzanine,
           workdir: opts.workdir,
           sort,

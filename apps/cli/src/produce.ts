@@ -91,6 +91,8 @@ import {
   portraitMimeType,
   thumbnailDecision,
   thumbnailImageCacheName,
+  applyCleanupChoices,
+  vetoedRemovals,
   applyUserCuts,
   pruneHidesInsideCuts,
   loadConfig,
@@ -277,6 +279,14 @@ export interface ProduceOptions {
   cleanup: CleanupLevel;
   transcript?: string;
   render: boolean;
+  /**
+   * This run is a `--review` (cut review step 1/3): `render` is already
+   * false (reviewFlag resolved that in the action) and the editor opens on
+   * the workdir afterwards. Produce only reads it to phrase the no-render
+   * exit — "the editor is opening" instead of the `--no-render` skip line
+   * plus an `ossclip edit` hint for an editor that is about to open itself.
+   */
+  review?: boolean;
   mezzanine: boolean;
   workdir?: string;
   inspect?: boolean;
@@ -1172,6 +1182,29 @@ export function reviewFlag(
     throw new Error("--review contradicts --no-open-editor — reviewing means opening the editor");
   }
   return { render: false, openEditor: true };
+}
+
+/**
+ * The one loud line for cleanup vetoes actually changing this run's cut (cut
+ * review step 3) — the `▸ N user cut(s) removed …` voice, inverted: per
+ * declined reason, how many removals came back and how much source time they
+ * restore. Pure so the whole phrasing is assertable without running produce;
+ * callers only print it when `vetoed` is non-empty (a silent no-change run
+ * must stay silent, like the user-cut line's own `cuts.length > 0` gate).
+ */
+export function cleanupChoicesLine(vetoed: readonly Segment[], outputDuration: number): string {
+  const byReason = new Map<string, { count: number; sec: number }>();
+  for (const seg of vetoed) {
+    const key = seg.reason ?? "unlabeled";
+    const entry = byReason.get(key) ?? { count: 0, sec: 0 };
+    entry.count += 1;
+    entry.sec += seg.srcOut - seg.srcIn;
+    byReason.set(key, entry);
+  }
+  const parts = [...byReason.entries()].map(
+    ([reason, { count, sec }]) => `${count} ${reason} removal(s) (+${sec.toFixed(1)}s)`,
+  );
+  return `▸ cleanup choices kept ${parts.join(", ")} — ${outputDuration.toFixed(1)}s output`;
 }
 
 /**
@@ -2657,6 +2690,28 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     }
     overrideDoc = parsed.data;
   }
+  // ---- Cleanup choices: the user's veto over the AUTOMATIC cutlist (cut
+  // review step 3) ------------------------------------------------------
+  // Applied here — the same load `cuts` rides, before `applyUserCuts` — and
+  // in exactly this order on purpose: cleanup vetoes reshape the PROPOSAL,
+  // then user cuts subtract from the result as they always did, so a user
+  // cut drawn over a vetoed pause still cuts (an explicit user action
+  // outranks a veto). The proposal itself is captured FIRST for
+  // `production.json`'s `cutlistProposed` — the resolution is lossy (a
+  // vetoed removal merges into a plain keep), and the editor's checkboxes
+  // re-derive the veto state from proposal + choices through the same
+  // `applyCleanupChoices` this run used (ProductionSchema has the full why).
+  // Consumers of `map` ABOVE this point (the repair pass's isCut guard, the
+  // producer's outputDuration hint) saw the pre-veto map: both are
+  // conservative uses — a refused word-merge across a span that comes back,
+  // a duration hint a few seconds short — never a wrong cut.
+  const cutlistProposed = cutlist;
+  const cleanupVetoed = vetoedRemovals(cutlist, overrideDoc.cleanup);
+  if (cleanupVetoed.length > 0) {
+    cutlist = applyCleanupChoices(cutlist, overrideDoc.cleanup);
+    map = new TimeMap(cutlist);
+    console.log(cleanupChoicesLine(cleanupVetoed, map.outputDuration));
+  }
   // `applyUserCuts`'s `priorMap`: a cut's `startSec`/`endSec` (when it has
   // no `src` yet) and any already-re-anchored splits/pins are expressed
   // relative to whatever render-props the user was LAST looking at, not the
@@ -3175,7 +3230,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     transcript: rawTranscript,
     repairs: repairs.length > 0 ? repairs : undefined,
     analysis,
+    // The APPLIED truth vs the PROPOSAL — see ProductionSchema for why both
+    // are recorded: `cutlist` keeps the report/exporters honest about what
+    // happened; `cutlistProposed` keeps the declined categories recoverable
+    // for the editor (a vetoed removal merges into a plain keep, so the
+    // resolved list alone cannot name what was declined).
     cutlist,
+    cutlistProposed,
     ...(clipWindow && clipTargetSec !== undefined
       ? { clip: { targetSec: clipTargetSec, ...clipWindow } }
       : {}),
@@ -3958,8 +4019,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // §140: the breakdown goes above the closing lines on both exits, so the
     // last thing on screen stays the success line and the edit hint.
     console.log(formatPhaseLine(phases.timings(), phases.totalMs()));
-    console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
-    console.log(editHint(work));
+    if (opts.review === true) {
+      // --review (step 1's report, fixed in step 3): the editor opens itself
+      // right after this return, so the --no-render skip line plus an
+      // `ossclip edit …` hint would tell the user to do what is already
+      // happening. One line that says what comes next instead.
+      console.log("▸ review: opening the editor — render once from its Render button");
+    } else {
+      console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
+      console.log(editHint(work));
+    }
     return {
       workdir: work,
       rendered: false,

@@ -7,6 +7,7 @@ import {
   type SceneComponentId,
   type Theme,
 } from "./scene-schema";
+import { RemovalReasonSchema } from "./schema";
 import { resolveSceneProps } from "./scene-registry";
 import type { CaptionLine, CaptionWord } from "./captions";
 
@@ -435,6 +436,42 @@ export const OverrideDocSchema = z.object({
       }),
     )
     .default([]),
+  /**
+   * The user's VETO over the automatic cutlist (cut review step 3). `cuts`
+   * above is the user ADDING a removal; this is the user DECLINING one the
+   * pipeline proposed — opposite directions, deliberately not merged.
+   * Consumed by `applyCleanupChoices` (cutlist.ts, which owns the matching
+   * semantics), in produce and in the editor alike.
+   *
+   * `reasons` are the category master switches ("keep all pauses"). Only
+   * `false` is ever WRITTEN — a `true` entry restates the default, and the
+   * editor DELETES the key instead (the `hidden`/`captionsHidden` rule: an
+   * override with nothing to say). A `true` on disk is still parsed and
+   * means default, tolerantly. `user` and `clip` keys parse but are inert
+   * (`cleanupVetoable`): declining your own cut is Restore on the cut, and
+   * "keeping" the --clip window's removal would silently un-clip the video.
+   *
+   * `kept` are individual vetoes, in SOURCE seconds — and that anchoring is
+   * the whole trick, same as `cuts[].src` above: a bare output-seconds pair
+   * is meaningless once its own re-cut has happened, while source time is
+   * stable across every re-cut. This layer is therefore RECUT-IMMUNE BY
+   * CONSTRUCTION and — unlike `splits` and `scenes[*].timing` — needs NO
+   * entry in `remapOverridesThroughRecut`. Matching against the (possibly
+   * re-produced) cutlist is by OVERLAP, never float equality of endpoints;
+   * `vetoedRemovals` (cutlist.ts) states why.
+   *
+   * Optional-with-default like `splits`/`cuts`, so every overrides.json
+   * written before the key existed parses byte-identically; absent means
+   * today's behaviour exactly.
+   */
+  cleanup: z
+    .object({
+      reasons: z.partialRecord(RemovalReasonSchema, z.boolean()).default({}),
+      kept: z
+        .array(z.object({ srcIn: z.number().nonnegative(), srcOut: z.number().nonnegative() }))
+        .default([]),
+    })
+    .default({ reasons: {}, kept: [] }),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 

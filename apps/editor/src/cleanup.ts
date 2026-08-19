@@ -1,12 +1,21 @@
-import type { KeptSpan, RemovalReason, Segment } from "@ossclip/core/browser";
+import {
+  cleanupVetoable,
+  vetoedRemovals,
+  type CleanupChoices,
+  type KeptSpan,
+  type RemovalReason,
+  type Segment,
+} from "@ossclip/core/browser";
 import { sourceToOutputClamped } from "./timing";
 
 /**
  * One removal from produce's cutlist, resolved to where it shows on the
- * timeline (cut review step 2). An APPLIED removal occupies zero width in
- * OUTPUT time — it is a seam between two kept spans, not a band — so all the
- * timeline needs is an output-time position, a colour, and a label. Display
- * only: nothing here is clickable or writable in this step.
+ * timeline (cut review step 2, toggleable since step 3). An APPLIED removal
+ * occupies zero width in OUTPUT time — it is a seam between two kept spans,
+ * not a band — so all the timeline needs is an output-time position, a
+ * colour, and a label. Since step 3 the cutlist here is the PROPOSAL
+ * (`production.cutlistProposed` via GET /api/cleanup), so a VETOED removal
+ * still has a seam — hollow/dimmed, saying it comes back on the next render.
  */
 export interface RemovalSeam {
   /** SOURCE range produce removed — identity for keys/testids, stable across recuts. */
@@ -26,6 +35,21 @@ export interface RemovalSeam {
    * stays individually hoverable instead of the last one painted winning.
    */
   stackIndex: number;
+  /**
+   * Whether a click may toggle this removal's veto (cut review step 3) —
+   * core's `cleanupVetoable`, carried onto the seam so the Timeline never
+   * attaches a handler that would write an inert `kept` entry for a `user`
+   * or `clip` span (`applyCleanupChoices` skips those by contract).
+   */
+  vetoable: boolean;
+  /**
+   * The user has DECLINED this removal (category switch or individual veto)
+   * — computed through core's `vetoedRemovals`, the same predicate produce
+   * re-keeps with, so the seam can never show a veto the render would not
+   * honour. Marks rather than applies: the current preview still plays the
+   * cut; the material returns on the next produce/Render.
+   */
+  vetoed: boolean;
 }
 
 /**
@@ -82,8 +106,13 @@ const SAME_SEAM_EPS = 1e-6;
 export function removalSeams(
   cutlist: readonly Segment[],
   spans: readonly KeptSpan[],
+  choices?: CleanupChoices,
 ): RemovalSeam[] {
   if (spans.length === 0) return [];
+  // Core's own predicate (cut review step 3), by segment identity over this
+  // very array — the one implementation produce re-keeps with, so the seam
+  // state and the render cannot disagree.
+  const vetoed = new Set(vetoedRemovals(cutlist, choices));
   const seams: RemovalSeam[] = [];
   for (const seg of cutlist) {
     // Zero-width removes carry no material — nothing was removed there, so
@@ -101,7 +130,57 @@ export function removalSeams(
       label: removalLabel(seg),
       color: seg.reason ? REMOVAL_REASON_COLOR[seg.reason] : REMOVAL_NO_REASON_COLOR,
       stackIndex,
+      vetoable: cleanupVetoable(seg.reason),
+      vetoed: vetoed.has(seg),
     });
   }
   return seams;
+}
+
+/** The panel checkbox's noun — plural, sentence-leading ("Pauses — 14
+ * removals · 31.2s"). TOTAL over the vocabulary like `REMOVAL_REASON_COLOR`,
+ * and for the same reason: a new reason must fail typecheck here, not render
+ * a checkbox with no name. `user`/`clip` get labels for completeness even
+ * though `cleanupReasonSummaries` never surfaces them (they are not
+ * vetoable). */
+export const REMOVAL_REASON_LABEL: Record<RemovalReason, string> = {
+  silence: "Silences",
+  pause: "Pauses",
+  filler: "Fillers",
+  retake: "Retakes",
+  user: "Your cuts",
+  clip: "Clip window",
+};
+
+/** One CleanupPanel checkbox row: a VETOABLE reason present in the proposal,
+ * with what declining it would restore. */
+export interface CleanupReasonSummary {
+  reason: RemovalReason;
+  /** How many removal spans carry this reason. */
+  count: number;
+  /** Their summed SOURCE duration — what "keep all" restores, in seconds. */
+  seconds: number;
+}
+
+/**
+ * Per-reason totals over the proposal's removals — the CleanupPanel's rows.
+ * Only reasons PRESENT get a row (never a dead checkbox for an absent
+ * reason), and only VETOABLE ones (`cleanupVetoable`): a checkbox for `user`
+ * or `clip` would offer a decline `applyCleanupChoices` is contracted to
+ * ignore. Rows come out in the colour map's vocabulary order, so the panel
+ * is stable across runs whatever order the spans sit in.
+ */
+export function cleanupReasonSummaries(cutlist: readonly Segment[]): CleanupReasonSummary[] {
+  const byReason = new Map<RemovalReason, CleanupReasonSummary>();
+  for (const seg of cutlist) {
+    if (seg.kind !== "remove" || seg.reason === undefined || !cleanupVetoable(seg.reason)) continue;
+    if (seg.srcOut <= seg.srcIn) continue;
+    const entry = byReason.get(seg.reason) ?? { reason: seg.reason, count: 0, seconds: 0 };
+    entry.count += 1;
+    entry.seconds += seg.srcOut - seg.srcIn;
+    byReason.set(seg.reason, entry);
+  }
+  return (Object.keys(REMOVAL_REASON_COLOR) as RemovalReason[])
+    .map((reason) => byReason.get(reason))
+    .filter((s): s is CleanupReasonSummary => s !== undefined);
 }

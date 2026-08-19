@@ -147,7 +147,26 @@ export const ProductionSchema = z.object({
     )
     .optional(),
   analysis: AnalysisSchema.optional(),
+  /**
+   * What this run ACTUALLY cut — post cleanup-choices, post user cuts. Every
+   * consumer that treats the cutlist as the applied truth (`formatCutReport`,
+   * the four NLE exporters, `analyze`'s marker count) reads this one, which
+   * is why it stays the resolved list rather than the proposal: recording the
+   * proposal here would make each of them re-apply the choices or lie.
+   */
   cutlist: z.array(SegmentSchema).optional(),
+  /**
+   * The automatic PROPOSAL (cut review step 3) — `buildCutlist`'s output
+   * before `applyCleanupChoices` vetoes and before user cuts subtract. Kept
+   * alongside because the resolution is lossy: a vetoed removal merges into
+   * a plain keep, so `cutlist` alone cannot tell the editor which categories
+   * the user declined — its checkboxes and seams re-derive the veto state
+   * from THIS list + `overrides.json`'s `cleanup`, through the same
+   * `applyCleanupChoices` produce ran. Optional: pre-step-3 files predate it
+   * and must still parse (readers fall back to `cutlist`, which back then
+   * WAS the proposal plus user cuts).
+   */
+  cutlistProposed: z.array(SegmentSchema).optional(),
   /**
    * Present on a `--clip` run (R19 §93): the target and the resolved window.
    * `startWord`/`endWord` are indices into the PRE-slice repaired transcript

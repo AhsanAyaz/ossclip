@@ -77,6 +77,7 @@ describe("edit server", () => {
       captionLineTiming: {},
       splits: [],
       cuts: [],
+      cleanup: { reasons: {}, kept: [] },
     });
   });
 
@@ -1549,6 +1550,30 @@ describe("GET /api/cleanup (cut review step 2, 2026-08-19)", () => {
     const { status, cutlist: served } = await cleanupOf(server.url);
     expect(status).toBe(200);
     expect(served).toEqual(cutlist);
+  });
+
+  it("prefers cutlistProposed over cutlist (cut review step 3) — a declined pause must stay visible", async () => {
+    // The resolved `cutlist` has already merged a vetoed removal into a plain
+    // keep, so serving it would hide the very veto the checkboxes exist to
+    // show; the PROPOSAL is what the editor reasons about, with the user's
+    // `cleanup` choices applied client-side through the same pure function
+    // produce ran.
+    const dir = await fixtureWorkdir();
+    const cutlistProposed = [
+      { srcIn: 0, srcOut: 8, kind: "keep" },
+      { srcIn: 8, srcOut: 11, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 11, srcOut: 20, kind: "keep" },
+    ];
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        cutlist: [{ srcIn: 0, srcOut: 20, kind: "keep" }],
+        cutlistProposed,
+      }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await cleanupOf(server.url)).cutlist).toEqual(cutlistProposed);
   });
 
   it("a hand-edited bad span drops ALONE — the rest of the cutlist survives it", async () => {

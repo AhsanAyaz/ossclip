@@ -329,3 +329,112 @@ export function buildCutlist({
 
   return segments;
 }
+
+/**
+ * The user's veto layer over the automatic cutlist (cut review step 3):
+ * `buildCutlist` PROPOSES removals, this is how the user DECLINES some of
+ * them — per category ("keep all pauses") and per individual span. Persisted
+ * as `overrides.json`'s `cleanup` key (`OverrideDocSchema.cleanup`, which
+ * owns the on-disk contract); this structural interface is what the pure
+ * functions below accept, so this module stays free of zod and of the
+ * overrides module — callable from produce AND from the editor bundle with
+ * nothing but the schema's own types.
+ */
+export interface CleanupChoices {
+  /**
+   * Category master switches. `false` = do not remove this reason's spans;
+   * absent (or a tolerated `true` on disk) = the default, remove as proposed.
+   */
+  reasons?: Partial<Record<RemovalReason, boolean>>;
+  /** Individual vetoes, SOURCE seconds — see `vetoedRemovals` for the
+   * overlap-based matching rule. */
+  kept?: readonly { srcIn: number; srcOut: number }[];
+}
+
+/**
+ * Whether a removal reason CAN be declined at all. `user` cuts come from the
+ * `cuts[]` array — declining your own cut is Restore on the cut, an existing
+ * gesture, and a second way to undo it would leave the entry behind as dead
+ * weight (there is no "not cut" state for a `cuts` entry to hold, per its
+ * schema comment). `clip` is the `--clip` window, a selection decision, not a
+ * cleanup — "keeping" a clip removal would silently un-clip the video. One
+ * predicate, exported, so produce, the panel's checkboxes and the timeline's
+ * seam handler cannot disagree about what is toggleable.
+ */
+export function cleanupVetoable(reason: RemovalReason | undefined): boolean {
+  return reason !== "user" && reason !== "clip";
+}
+
+/**
+ * The `remove` spans of `cutlist` that `choices` declines — the shared
+ * predicate under `applyCleanupChoices` (which re-keeps exactly these) and
+ * the editor's vetoed-seam state / produce's "kept N pause removal(s)" line
+ * (which both NAME them). One list, computed once, so what the seam shows as
+ * "will be kept" and what the render actually keeps cannot drift.
+ *
+ * Individual vetoes match by OVERLAP, deliberately NOT by float equality of
+ * endpoints: a re-produce can shift a removal's boundary by a frame (a
+ * changed silence threshold, a repair that re-stamps a word), and an
+ * exact-match veto that silently stops matching is the failure mode — the
+ * pause the user declined would quietly start being cut again. A partial
+ * overlap re-keeps the WHOLE removal span: a removal is one decision, not
+ * divisible.
+ */
+export function vetoedRemovals(
+  cutlist: readonly Segment[],
+  choices: CleanupChoices | undefined,
+): Segment[] {
+  if (!choices) return [];
+  const kept = choices.kept ?? [];
+  return cutlist.filter(
+    (seg) =>
+      seg.kind === "remove" &&
+      cleanupVetoable(seg.reason) &&
+      ((seg.reason !== undefined && choices.reasons?.[seg.reason] === false) ||
+        kept.some((k) => k.srcIn < seg.srcOut && k.srcOut > seg.srcIn)),
+  );
+}
+
+/**
+ * Apply the user's cleanup choices to the automatic cutlist: every vetoed
+ * removal (see `vetoedRemovals`) becomes a keep again, and adjacent keeps
+ * merge so the result stays the same canonical shape `buildCutlist` emits —
+ * a full partition of the input's range with no gaps, no overlaps, monotonic
+ * (the invariants `TimeMap`'s constructor checks). The partition holds BY
+ * CONSTRUCTION: spans are only relabelled and merged, never moved, so the
+ * covered range cannot change.
+ *
+ * `undefined`/empty choices return the input content unchanged — the
+ * regression anchor: an overrides.json with no `cleanup` key must produce a
+ * byte-identical render.
+ *
+ * ONE implementation, two callers (the `buildCoverRender` pattern): produce
+ * calls this between `buildCutlist` and the `TimeMap`; the editor calls it
+ * (via `@ossclip/core/browser`) to mark vetoed seams. A preview that
+ * disagrees with the render is worse than no preview.
+ */
+export function applyCleanupChoices(
+  cutlist: readonly Segment[],
+  choices: CleanupChoices | undefined,
+): Segment[] {
+  const vetoed = new Set(vetoedRemovals(cutlist, choices));
+  if (vetoed.size === 0) return [...cutlist];
+  const out: Segment[] = [];
+  for (const seg of cutlist) {
+    // A re-kept span drops `reason`/`confidence` — they described a removal
+    // that is no longer happening, and a keep carrying "pause" would read as
+    // a seventh segment kind everywhere the partition is consumed.
+    const next: Segment = vetoed.has(seg)
+      ? { srcIn: seg.srcIn, srcOut: seg.srcOut, kind: "keep" }
+      : seg;
+    const prev = out[out.length - 1];
+    if (prev !== undefined && prev.kind === "keep" && next.kind === "keep") {
+      // Merge in place — `prev` is always this function's own object (pushed
+      // below as a fresh literal when it is a keep), never the caller's.
+      prev.srcOut = next.srcOut;
+      continue;
+    }
+    out.push(next.kind === "keep" ? { srcIn: next.srcIn, srcOut: next.srcOut, kind: "keep" } : next);
+  }
+  return out;
+}

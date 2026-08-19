@@ -52,14 +52,31 @@ export { mapFromKeptSpans, TimeMap, type KeptSpan } from "./timemap";
 // ./cover-headline, NOT ./cover — that module is node all the way down
 // (node:fs, ./exec), which is exactly what this surface exists to keep out.
 export { COVER_MAX_WORDS, coverHeadline } from "./cover-headline";
+// The cleanup veto layer (cut review step 3), VALUE exports and browser-safe:
+// cutlist.ts imports nothing but types from ./schema — verified before this
+// export, zero node built-ins in its graph. The editor marks vetoed seams
+// with the SAME `applyCleanupChoices` produce renders with (the
+// buildCoverRender one-implementation-two-callers pattern); a browser copy is
+// how the preview and the render would drift. `buildCutlist` itself rides
+// along in the module graph but stays unexported here on purpose — the
+// editor must never rebuild the proposal, only apply choices to the one
+// produce recorded.
+export {
+  applyCleanupChoices,
+  cleanupVetoable,
+  vetoedRemovals,
+  type CleanupChoices,
+} from "./cutlist";
 export type {
   Probe,
   Production,
   // `RemovalReason` rides along with `Segment` (cut review step 2): the
   // editor's reason→colour map is a `Record<RemovalReason, string>` precisely
   // so a NEW reason in the vocabulary fails typecheck in the editor instead
-  // of silently drawing an uncoloured seam. Type-only — erases at compile
-  // time, so this surface stays free of the schema module at runtime.
+  // of silently drawing an uncoloured seam. (Since step 3 the schema module
+  // is in the runtime graph anyway — ./overrides imports RemovalReasonSchema
+  // for the `cleanup` key — but schema.ts is zod + scene-schema only, both
+  // already on this surface, so it stays browser-safe.)
   RemovalReason,
   RenderSettings,
   Segment,

@@ -54,11 +54,12 @@ interface TimelineProps {
    */
   spans?: readonly KeptSpan[];
   /**
-   * Produce's labeled cutlist (`production.json`, via GET /api/cleanup) —
-   * cut review step 2, display only. Every `remove` span draws as a
-   * reason-coloured seam marker at its output position; nothing here is
-   * clickable and nothing writes back yet (the veto layer is step 3).
-   * Optional/defaulted like `cuts`/`spans` so existing callers keep
+   * Produce's labeled cutlist PROPOSAL (`production.cutlistProposed`, via
+   * GET /api/cleanup) — cut review step 2's seams, toggleable since step 3.
+   * Every `remove` span draws as a reason-coloured seam marker at its output
+   * position; clicking a vetoable one toggles its veto (`edits.toggleKept`),
+   * and a vetoed seam renders hollow — the removal comes back on the next
+   * render. Optional/defaulted like `cuts`/`spans` so existing callers keep
    * compiling unchanged.
    */
   cleanup?: readonly Segment[];
@@ -958,34 +959,75 @@ export const Timeline: React.FC<TimelineProps> = ({
                 </div>
               );
             })}
-            {removalSeams(cleanup, spans).map((seam) => {
+            {removalSeams(cleanup, spans, edits.doc.cleanup).map((seam) => {
               // Produce's own removals (cut review step 2): every cut the
-              // pipeline made, as a reason-coloured seam at the output
-              // instant where the material USED to be — same seam-not-band
+              // pipeline PROPOSED, as a reason-coloured seam at the output
+              // instant where the material used to be — same seam-not-band
               // logic as the applied user cut above (a removal has zero
               // output width by definition), and `removalSeams` inherits its
-              // "no spans, no seam" rule too. DISPLAY ONLY: hover discloses
-              // reason + removed duration via `title`; there is no handler
-              // and no stopPropagation, so a press falls through to the
-              // track's own seek exactly as if the marker weren't there.
+              // "no spans, no seam" rule too. Since step 3 a VETOABLE seam
+              // takes a click: toggleKept writes/removes the SOURCE-second
+              // veto (`cleanup.kept`), same mousedown idiom as the restore
+              // seam above — and stays one zIndex BELOW it, so where a
+              // user's applied cut and a pipeline removal coincide the
+              // actionable Restore keeps winning the pointer. A vetoed seam
+              // renders HOLLOW (outline, no fill) and dimmed: the honest
+              // marks-rather-than-applies state — the current preview still
+              // plays the cut, the material returns on the next render.
+              // `user`/`clip` seams stay handler-less hover disclosures, as
+              // in step 2: `applyCleanupChoices` would ignore a veto on them
+              // by contract, so offering the click would write dead weight.
               // Coincident seams (adjacent removals with different reasons)
               // fan out rightward by `stackIndex` so each stays hoverable.
               const leftPct =
                 durationSec > 0
                   ? Math.min(100, Math.max(0, (seam.outSec / durationSec) * 100))
                   : 0;
+              const title = seam.vetoed
+                ? `${seam.label} — declined: will be kept on next render (click to re-remove)`
+                : seam.vetoable
+                  ? `${seam.label} — click to keep this on the next render`
+                  : seam.label;
               return (
                 <div
                   key={`removal-${seam.srcIn}-${seam.srcOut}`}
                   data-testid={`timeline-removal-${seam.srcIn}-${seam.srcOut}`}
-                  title={seam.label}
+                  {...(seam.vetoed ? { "data-vetoed": "true" } : {})}
+                  title={title}
+                  {...(seam.vetoable
+                    ? {
+                        onMouseDown: (e: React.MouseEvent) => {
+                          // The restore seam's own idiom: act on mousedown,
+                          // stopPropagation so the track underneath doesn't
+                          // also seek-and-scrub.
+                          e.stopPropagation();
+                          e.preventDefault();
+                          edits.toggleKept(seam.srcIn, seam.srcOut);
+                        },
+                      }
+                    : {})}
                   style={{
                     ...removalSeamHit,
+                    ...(seam.vetoable ? { cursor: "pointer" } : {}),
                     left: `${leftPct}%`,
                     marginLeft: -3 + seam.stackIndex * 7,
                   }}
                 >
-                  <div style={{ ...removalSeamLine, background: seam.color }} />
+                  <div
+                    style={
+                      seam.vetoed
+                        ? // Hollow + dimmed: the veto's own look — an outline
+                          // where the filled tick was, so "declined" reads at
+                          // a glance without hovering.
+                          {
+                            ...removalSeamLine,
+                            background: "transparent",
+                            border: `1px solid ${seam.color}`,
+                            opacity: 0.55,
+                          }
+                        : { ...removalSeamLine, background: seam.color }
+                    }
+                  />
                 </div>
               );
             })}
@@ -1240,12 +1282,13 @@ const cutSeamLine: React.CSSProperties = {
   pointerEvents: "none",
 };
 
-/** A produce-removal seam's hover zone (cut review step 2). Narrower than the
- * restore seam's 12px — it is NOT a click target, only a hover disclosure —
+/** A produce-removal seam's hit zone (cut review step 2, clickable for
+ * vetoable reasons since step 3). Narrower than the restore seam's 12px —
+ * the veto toggle is a smaller decision than restoring a user's own cut —
  * and one level BELOW it (zIndex 3 vs 4): where a user's applied cut and a
  * pipeline removal coincide, the actionable Restore must win the pointer.
- * `pointerEvents: "auto"` only so the `title` tooltip fires; no handler, so
- * presses bubble through to the track's seek untouched. */
+ * `cursor: pointer` is added per-seam at the call site, only when the seam
+ * actually takes a click (`user`/`clip` seams remain hover disclosures). */
 const removalSeamHit: React.CSSProperties = {
   position: "absolute",
   top: -4,

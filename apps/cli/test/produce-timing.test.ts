@@ -101,4 +101,38 @@ describe.skipIf(!hasFfmpeg)("produce() — behavioural harness", () => {
     },
     120_000,
   );
+
+  it(
+    "a --review run says the editor is opening instead of the --no-render skip + edit hint",
+    async () => {
+      // Step 1's report flagged the redundancy: on --review the editor opens
+      // itself right after produce returns, so "skipping render" plus an
+      // `ossclip edit …` hint told the user to do what was already happening.
+      // Warm re-run of the same workdir, so this costs the caches, not a
+      // second full analysis.
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+        logs.push(args.join(" "));
+      });
+      try {
+        const result = await produce(clips, {
+          cleanup: "standard",
+          render: false,
+          review: true,
+          mezzanine: false,
+          transcript: join(dir, "transcript.json"),
+          workdir: join(dir, "work"),
+        });
+        expect(result.rendered).toBe(false);
+        expect(
+          logs.find((l) => l.includes("review: opening the editor")),
+        ).toBeDefined();
+        expect(logs.find((l) => l.includes("skipping render (--no-render)"))).toBeUndefined();
+        expect(logs.find((l) => l.startsWith("▸ edit it:"))).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    },
+    120_000,
+  );
 });

@@ -114,3 +114,137 @@ describe("REMOVAL_REASON_COLOR", () => {
     }
   });
 });
+
+import {
+  applyCleanupChoices as coreApplyCleanupChoices,
+  TimeMap as CoreTimeMap,
+} from "@ossclip/core";
+import {
+  applyCleanupChoices,
+  mapFromKeptSpans,
+  vetoedRemovals,
+  type CleanupChoices,
+} from "@ossclip/core/browser";
+import { REMOVAL_REASON_LABEL, cleanupReasonSummaries } from "../src/cleanup";
+
+describe("removalSeams veto state (cut review step 3)", () => {
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 8, kind: "keep" },
+    remove(8, 11, "pause"),
+    { srcIn: 11, srcOut: 20, kind: "keep" },
+    remove(20, 21, "user"),
+    { srcIn: 21, srcOut: 25, kind: "keep" },
+  ];
+
+  it("marks a category-declined seam vetoed, through core's own predicate", () => {
+    const seams = removalSeams(proposal, spans, { reasons: { pause: false } });
+    expect(seams.find((s) => s.reason === "pause")?.vetoed).toBe(true);
+    expect(seams.find((s) => s.reason === "user")?.vetoed).toBe(false);
+  });
+
+  it("marks an individually-kept seam vetoed by OVERLAP, and no choices means nothing vetoed", () => {
+    const seams = removalSeams(proposal, spans, { kept: [{ srcIn: 10.9, srcOut: 11.05 }] });
+    expect(seams.find((s) => s.reason === "pause")?.vetoed).toBe(true);
+    expect(removalSeams(proposal, spans).every((s) => !s.vetoed)).toBe(true);
+  });
+
+  it("user and clip seams are not vetoable — the Timeline must not offer the click", () => {
+    const seams = removalSeams(
+      [...proposal, remove(25, 27, "clip")],
+      [...spans, { srcIn: 21, srcOut: 25, outIn: 17, outOut: 21 }],
+      { reasons: {}, kept: [] },
+    );
+    expect(seams.find((s) => s.reason === "pause")?.vetoable).toBe(true);
+    expect(seams.find((s) => s.reason === "user")?.vetoable).toBe(false);
+    expect(seams.find((s) => s.reason === "clip")?.vetoable).toBe(false);
+  });
+});
+
+describe("cleanupReasonSummaries (the CleanupPanel's rows)", () => {
+  it("one row per VETOABLE reason present, with count and summed source seconds", () => {
+    const rows = cleanupReasonSummaries([
+      { srcIn: 0, srcOut: 5, kind: "keep" },
+      remove(5, 7.5, "pause"),
+      remove(9, 9.5, "filler"),
+      remove(12, 13, "pause"),
+    ]);
+    expect(rows).toEqual([
+      { reason: "pause", count: 2, seconds: 3.5 },
+      { reason: "filler", count: 1, seconds: 0.5 },
+    ]);
+  });
+
+  it("never a dead checkbox: absent reasons get no row, and user/clip never do", () => {
+    const rows = cleanupReasonSummaries([
+      { srcIn: 0, srcOut: 5, kind: "keep" },
+      remove(5, 6, "user"),
+      remove(6, 8, "clip"),
+    ]);
+    expect(rows).toEqual([]);
+  });
+
+  it("REMOVAL_REASON_LABEL is total over the vocabulary, like the colour map", () => {
+    expect(Object.keys(REMOVAL_REASON_LABEL).sort()).toEqual(
+      [...RemovalReasonSchema.options].sort(),
+    );
+  });
+});
+
+describe("the agreement test: produce's spans and the editor's are the SAME computation", () => {
+  // The buildCoverRender one-test-both-callers pattern: produce imports
+  // `applyCleanupChoices` from @ossclip/core, the editor from
+  // @ossclip/core/browser. Both entry points must serve the ONE function —
+  // a re-export that ever became a wrapper (or a second implementation)
+  // could apply choices differently on each side, and a preview that
+  // disagrees with the render is worse than no preview.
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 8, kind: "keep" },
+    remove(8, 11, "pause"),
+    { srcIn: 11, srcOut: 14, kind: "keep" },
+    remove(14, 14.5, "filler"),
+    { srcIn: 14.5, srcOut: 20, kind: "keep" },
+  ];
+  const choices: CleanupChoices = {
+    reasons: { filler: false },
+    kept: [{ srcIn: 8.02, srcOut: 10.9 }],
+  };
+
+  it("both entry points serve the identical function object", () => {
+    expect(applyCleanupChoices).toBe(coreApplyCleanupChoices);
+  });
+
+  it("produce's keep-spans (TimeMap over choices) equal the editor's, byte for byte", () => {
+    // Produce's side: applyCleanupChoices -> new TimeMap(...), exactly as
+    // produce.ts runs between buildCutlist and the map rebuild.
+    const produceSpans = new CoreTimeMap(coreApplyCleanupChoices(proposal, choices)).spans;
+    // The editor's side: the browser export, through the browser-safe map
+    // builder the live preview would use (step 4's ingredient).
+    const editorSpans = mapFromKeptSpans(
+      applyCleanupChoices(proposal, choices)
+        .filter((s) => s.kind === "keep")
+        .map((s, i, keeps) => {
+          const outIn = keeps.slice(0, i).reduce((acc, k) => acc + (k.srcOut - k.srcIn), 0);
+          return { srcIn: s.srcIn, srcOut: s.srcOut, outIn, outOut: outIn + (s.srcOut - s.srcIn) };
+        }),
+    ).spans;
+    expect(editorSpans).toEqual(produceSpans);
+    // Spelled out, because "equal to each other" would also pass if both
+    // were wrong (the buildCoverRender test's own rule): both vetoes landed —
+    // the pause via its kept range, the filler via its category switch.
+    expect(produceSpans).toEqual([{ srcIn: 0, srcOut: 20, outIn: 0, outOut: 20 }]);
+  });
+
+  it("the seams the editor marks vetoed are exactly the removals produce re-keeps", () => {
+    const vetoed = vetoedRemovals(proposal, choices);
+    const resolved = coreApplyCleanupChoices(proposal, choices);
+    const markedVetoed = removalSeams(proposal, spans, choices)
+      .filter((s) => s.vetoed)
+      .map((s) => [s.srcIn, s.srcOut]);
+    expect(markedVetoed).toEqual(vetoed.map((s) => [s.srcIn, s.srcOut]));
+    // And each of those spans really is kept in produce's resolution.
+    for (const [srcIn, srcOut] of markedVetoed) {
+      const mid = (srcIn + srcOut) / 2;
+      expect(resolved.find((s) => s.srcIn <= mid && mid < s.srcOut)?.kind).toBe("keep");
+    }
+  });
+});

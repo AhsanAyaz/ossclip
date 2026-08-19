@@ -35,6 +35,7 @@ import type { DeleteWordsPlan } from "./deleteWords";
 import { ProjectPicker } from "./ProjectPicker";
 import { RenderModal } from "./RenderModal";
 import { ThumbnailPanel } from "./ThumbnailPanel";
+import { CleanupPanel } from "./CleanupPanel";
 import { YoutubePanel } from "./YoutubePanel";
 import { CoverPanel } from "./CoverPanel";
 import {
@@ -202,10 +203,13 @@ export const App: React.FC = () => {
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
-  // Produce's labeled cutlist (cut review step 2) — read-only display data,
-  // fetched per project open like `runInfo` above, NOT part of `edits`: it is
-  // the pipeline's record of what it removed, not something the user edits
-  // (the veto layer is step 3). Timeline draws it as reason-coloured seams.
+  // Produce's labeled cutlist PROPOSAL (cut review steps 2+3) — read-only
+  // display data, fetched per project open like `runInfo` above, NOT part of
+  // `edits`: it is the pipeline's record of what it PROPOSED to remove; the
+  // user's response to it lives in `edits.doc.cleanup` (the veto layer), and
+  // the two only meet through `applyCleanupChoices`/`vetoedRemovals` — the
+  // same pure functions produce renders with. Timeline draws it as
+  // reason-coloured seams; CleanupPanel derives its per-reason checkboxes.
   const [cleanupCutlist, setCleanupCutlist] = useState<Segment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -414,6 +418,11 @@ export const App: React.FC = () => {
   // or not --youtube ran, and filing it under YouTube would tell users it
   // belongs to a feature they may never turn on.
   const [showCover, setShowCover] = useState(false);
+  // The cleanup review panel (cut review step 3) — UNLIKE the three panels
+  // above it edits the overrides doc (cleanup.reasons through useEdits), so
+  // undo/redo/dirty/save all apply to its checkboxes; only the open/closed
+  // state lives here.
+  const [showCleanup, setShowCleanup] = useState(false);
   useEffect(() => {
     if (!showYoutubeMenu) return;
     // Esc closes the menu the way it closes the panels (capture-phase, so
@@ -1165,6 +1174,17 @@ export const App: React.FC = () => {
           >
             Cover
           </button>
+          {/* Cut review step 3 — the Cover button precedent: its own top-bar
+              button, not a menu item, because reviewing the cut is a
+              first-class pass over every produce run. */}
+          <button
+            data-testid="cleanup-button"
+            style={{ ...ghostButton, ...(showCleanup ? { borderColor: "#5b8cff" } : {}) }}
+            onClick={() => setShowCleanup(true)}
+            title="Review what produce removed — keep whole categories; applies on the next render"
+          >
+            Cleanup
+          </button>
           {/* One menu for the --youtube extras (2026-08-17): the thumbnail
               and the SEO pack are two panels over one feature, and two
               top-bar buttons were the bar's first scaling failure. */}
@@ -1292,6 +1312,13 @@ export const App: React.FC = () => {
       </div>
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
       {showThumbnail ? <ThumbnailPanel onClose={() => setShowThumbnail(false)} /> : null}
+      {showCleanup ? (
+        <CleanupPanel
+          cutlist={cleanupCutlist}
+          edits={edits}
+          onClose={() => setShowCleanup(false)}
+        />
+      ) : null}
       {showYoutubeSeo ? <YoutubePanel onClose={() => setShowYoutubeSeo(false)} /> : null}
       {showCover ? (
         <CoverPanel

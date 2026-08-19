@@ -1430,3 +1430,43 @@ describe("§137 field case: Starship V2-e89a046b, 2026-08-12", () => {
     expect(Object.keys(doc.scenes)).toContain(`scene-0@${doc.splits[0]!.id}`);
   });
 });
+
+describe("cleanup (the veto layer over the automatic cutlist, cut review step 3)", () => {
+  it("absent defaults to empty choices — the splits/cuts optional-with-default shape", () => {
+    const doc = OverrideDocSchema.parse({});
+    expect(doc.cleanup).toEqual({ reasons: {}, kept: [] });
+  });
+
+  it("a written veto round-trips: only false is ever written, true is tolerated and means default", () => {
+    const doc = OverrideDocSchema.parse({
+      cleanup: { reasons: { pause: false, retake: true }, kept: [{ srcIn: 12.4, srcOut: 13.1 }] },
+    });
+    expect(doc.cleanup.reasons.pause).toBe(false);
+    // Tolerated on disk (a hand edit, or an older writer) — parsed, kept,
+    // and inert: vetoedRemovals only ever tests `=== false`.
+    expect(doc.cleanup.reasons.retake).toBe(true);
+    expect(doc.cleanup.kept).toEqual([{ srcIn: 12.4, srcOut: 13.1 }]);
+  });
+
+  it("a typo'd reason key refuses loudly — parse, never coerce (the --source-fit containn rule)", () => {
+    expect(
+      OverrideDocSchema.safeParse({ cleanup: { reasons: { pauses: false } } }).success,
+    ).toBe(false);
+  });
+
+  it("kept ranges are validated numbers — a string srcIn must refuse, not NaN its way into a veto", () => {
+    expect(
+      OverrideDocSchema.safeParse({ cleanup: { kept: [{ srcIn: "12.4", srcOut: 13.1 }] } }).success,
+    ).toBe(false);
+    expect(
+      OverrideDocSchema.safeParse({ cleanup: { kept: [{ srcIn: -1, srcOut: 2 }] } }).success,
+    ).toBe(false);
+  });
+
+  it("a partial cleanup object fills the missing half — reasons alone, kept alone", () => {
+    expect(OverrideDocSchema.parse({ cleanup: { reasons: { filler: false } } }).cleanup.kept).toEqual([]);
+    expect(
+      OverrideDocSchema.parse({ cleanup: { kept: [{ srcIn: 1, srcOut: 2 }] } }).cleanup.reasons,
+    ).toEqual({});
+  });
+});

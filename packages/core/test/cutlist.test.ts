@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { analyze } from "../src/analyze";
-import { buildCutlist } from "../src/cutlist";
+import {
+  applyCleanupChoices,
+  buildCutlist,
+  cleanupVetoable,
+  vetoedRemovals,
+} from "../src/cutlist";
+import { subtractRangesFromCutlist } from "../src/recut";
 import { TimeMap } from "../src/timemap";
-import type { Span, Transcript, Word } from "../src/schema";
+import type { Segment, Span, Transcript, Word } from "../src/schema";
 
 /** Build words back-to-back with given (text, duration, gapAfter) triples. */
 function makeWords(triples: Array<[string, number, number]>, leadIn = 0): Word[] {
@@ -551,5 +557,132 @@ describe("retake confidence plumbing (exact-prefix restart, 2026-08-16)", () => 
     });
     const retake = cutlist.find((s) => s.kind === "remove" && s.reason === "retake");
     expect(retake?.confidence).toBe(0.85);
+  });
+});
+
+describe("applyCleanupChoices (the cleanup veto layer, cut review step 3)", () => {
+  /** A canonical proposal: keeps and removals of every vetoable reason plus
+   * a user cut and a clip bound, hand-built so each srcIn/srcOut is exact. */
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 2, kind: "remove", reason: "clip", confidence: 1 },
+    { srcIn: 2, srcOut: 8, kind: "keep" },
+    { srcIn: 8, srcOut: 11, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 11, srcOut: 14, kind: "keep" },
+    { srcIn: 14, srcOut: 14.5, kind: "remove", reason: "filler", confidence: 0.8 },
+    { srcIn: 14.5, srcOut: 18, kind: "keep" },
+    { srcIn: 18, srcOut: 19, kind: "remove", reason: "user", confidence: 1 },
+    { srcIn: 19, srcOut: 22, kind: "keep" },
+    { srcIn: 22, srcOut: 23, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 23, srcOut: 25, kind: "keep" },
+  ];
+
+  /** The invariant the task pins explicitly: the result is still a full
+   * partition of the input's range — contiguous, monotonic, no overlaps —
+   * and TimeMap's own constructor checks accept it. */
+  const expectPartition = (segments: Segment[], srcIn: number, srcOut: number): void => {
+    expect(segments[0]!.srcIn).toBe(srcIn);
+    expect(segments[segments.length - 1]!.srcOut).toBe(srcOut);
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i]!;
+      expect(seg.srcOut).toBeGreaterThanOrEqual(seg.srcIn);
+      if (i > 0) expect(seg.srcIn).toBe(segments[i - 1]!.srcOut);
+    }
+    // The constructor throws on overlap/inversion — building one IS the check.
+    expect(() => new TimeMap(segments)).not.toThrow();
+  };
+
+  it("undefined and empty choices return the input content unchanged — the regression anchor", () => {
+    expect(applyCleanupChoices(proposal, undefined)).toEqual(proposal);
+    expect(applyCleanupChoices(proposal, {})).toEqual(proposal);
+    expect(applyCleanupChoices(proposal, { reasons: {}, kept: [] })).toEqual(proposal);
+    // A tolerated on-disk `true` is the default, not a veto (schema comment).
+    expect(applyCleanupChoices(proposal, { reasons: { pause: true } })).toEqual(proposal);
+  });
+
+  it("a disabled reason re-keeps exactly its spans, and adjacent keeps merge", () => {
+    const out = applyCleanupChoices(proposal, { reasons: { pause: false } });
+    // BOTH pause removals gone; their material is back inside merged keeps.
+    expect(out.filter((s) => s.kind === "remove" && s.reason === "pause")).toEqual([]);
+    expect(out).toContainEqual({ srcIn: 2, srcOut: 14, kind: "keep" });
+    expect(out).toContainEqual({ srcIn: 19, srcOut: 25, kind: "keep" });
+    // Everything NOT vetoed is untouched — filler, user, clip all still cut.
+    expect(out.filter((s) => s.kind === "remove").map((s) => s.reason)).toEqual([
+      "clip",
+      "filler",
+      "user",
+    ]);
+    expectPartition(out, 0, 25);
+    // The restored time shows up in the map: 4s of pauses came back.
+    expect(new TimeMap(out).outputDuration).toBeCloseTo(new TimeMap(proposal).outputDuration + 4, 6);
+  });
+
+  it("an individual veto matches by OVERLAP, not endpoint equality — a re-produce can shift a boundary", () => {
+    // The veto was written against the 8..11 pause; the boundary then drifted
+    // a frame (8.033). An exact-match veto would silently stop matching —
+    // the failure mode the overlap rule exists to prevent.
+    const drifted = proposal.map((s) =>
+      s.srcIn === 8 ? { ...s, srcIn: 8.033 } : s.srcIn === 2 ? { ...s, srcOut: 8.033 } : s,
+    );
+    const out = applyCleanupChoices(drifted, { kept: [{ srcIn: 8, srcOut: 11 }] });
+    expect(out).toContainEqual({ srcIn: 2, srcOut: 14, kind: "keep" });
+    expectPartition(out, 0, 25);
+  });
+
+  it("a PARTIAL overlap re-keeps the WHOLE removal span — a removal is one decision, not divisible", () => {
+    const out = applyCleanupChoices(proposal, { kept: [{ srcIn: 10.9, srcOut: 11.05 }] });
+    // The whole 8..11 pause is back, not just the 0.1s the veto touched.
+    expect(out).toContainEqual({ srcIn: 2, srcOut: 14, kind: "keep" });
+    // The 22..23 pause it never touched is untouched.
+    expect(out).toContainEqual(proposal[8]);
+    expectPartition(out, 0, 25);
+  });
+
+  it("never touches user or clip spans — neither the category switch nor a kept range", () => {
+    const out = applyCleanupChoices(proposal, {
+      // Inert by contract: declining your own cut is Restore on the cut, and
+      // "keeping" the --clip window's removal would un-clip the video.
+      reasons: { user: false, clip: false },
+      kept: [
+        { srcIn: 18, srcOut: 19 },
+        { srcIn: 0, srcOut: 2 },
+      ],
+    });
+    expect(out).toEqual(proposal);
+  });
+
+  it("vetoedRemovals names exactly the spans applyCleanupChoices re-keeps — one predicate, both answers", () => {
+    const choices = { reasons: { filler: false as const }, kept: [{ srcIn: 8, srcOut: 11 }] };
+    const vetoed = vetoedRemovals(proposal, choices);
+    expect(vetoed).toEqual([proposal[2], proposal[4]]);
+    const out = applyCleanupChoices(proposal, choices);
+    for (const seg of vetoed) {
+      // Each vetoed span's midpoint is now inside a keep.
+      const mid = (seg.srcIn + seg.srcOut) / 2;
+      const holder = out.find((s) => s.srcIn <= mid && mid < s.srcOut);
+      expect(holder?.kind).toBe("keep");
+    }
+  });
+
+  it("user cuts subtract AFTER choices — a user cut over a vetoed pause still cuts (produce's ordering)", () => {
+    // The exact sequence produce runs: proposal -> applyCleanupChoices ->
+    // subtractRangesFromCutlist(resolved user src ranges). An explicit user
+    // action outranks a veto.
+    const resolved = applyCleanupChoices(proposal, { reasons: { pause: false } });
+    const out = subtractRangesFromCutlist(resolved, [{ start: 9, end: 10 }]);
+    // The vetoed pause's material is back EXCEPT where the user cut it.
+    expect(out).toContainEqual({ srcIn: 2, srcOut: 9, kind: "keep" });
+    expect(out).toContainEqual({ srcIn: 9, srcOut: 10, kind: "remove", reason: "user", confidence: 1 });
+    expect(out).toContainEqual({ srcIn: 10, srcOut: 14, kind: "keep" });
+    expectPartition(out, 0, 25);
+  });
+
+  it("cleanupVetoable is the one spelling of what can be declined", () => {
+    expect(cleanupVetoable("silence")).toBe(true);
+    expect(cleanupVetoable("pause")).toBe(true);
+    expect(cleanupVetoable("filler")).toBe(true);
+    expect(cleanupVetoable("retake")).toBe(true);
+    expect(cleanupVetoable(undefined)).toBe(true);
+    expect(cleanupVetoable("user")).toBe(false);
+    expect(cleanupVetoable("clip")).toBe(false);
   });
 });

@@ -551,26 +551,35 @@ export async function startEditServer(
         }
 
         if (url.pathname === "/api/cleanup" && req.method === "GET") {
-          // The labeled removals (cut review step 2): produce already writes
-          // every cut it made — silences, pauses, fillers, retakes — into
-          // production.json's `cutlist`, a full partition of the SOURCE
-          // timeline; the editor only has to display them. Same lenient-read
-          // posture as /api/usage above: a missing or corrupt production.json
-          // degrades to an empty cutlist, never a 500 — the timeline simply
-          // draws no removal seams.
+          // The labeled removals: since cut review step 3 this serves the
+          // PROPOSAL (`cutlistProposed` — the automatic cutlist before the
+          // user's cleanup vetoes and user cuts), because that is what the
+          // editor's checkboxes and seams reason about: a DECLINED pause has
+          // already merged into a plain keep in the resolved `cutlist`, so
+          // serving that would make the veto invisible the moment it worked.
+          // The fallback to `cutlist` keeps pre-step-3 workdirs drawing their
+          // seams — back then the recorded cutlist WAS the proposal (plus
+          // applied user cuts, whose seams the applied-cut restore marker
+          // draws independently anyway). Same lenient-read posture as
+          // /api/usage above: a missing or corrupt production.json degrades
+          // to an empty cutlist, never a 500 — the timeline simply draws no
+          // removal seams.
           if (!workdir) return send(409, { error: "no workdir open" });
           let cutlist: Segment[] = [];
           try {
             const production = JSON.parse(
               await readFile(join(workdir, "production.json"), "utf8"),
-            ) as { cutlist?: unknown };
-            if (Array.isArray(production.cutlist)) {
+            ) as { cutlist?: unknown; cutlistProposed?: unknown };
+            const source = Array.isArray(production.cutlistProposed)
+              ? production.cutlistProposed
+              : production.cutlist;
+            if (Array.isArray(source)) {
               // Each span parses ALONE: a hand-edited production.json with
               // one bad span (a string srcIn, a negative time) drops that
               // span and keeps the rest, instead of either 500ing or letting
               // a NaN through to position a seam off-screen. zod parse, not
               // a cast — the house rule for anything a user can have edited.
-              cutlist = production.cutlist.flatMap((s) => {
+              cutlist = source.flatMap((s) => {
                 const parsed = SegmentSchema.safeParse(s);
                 return parsed.success ? [parsed.data] : [];
               });
