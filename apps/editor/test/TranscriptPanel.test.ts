@@ -218,11 +218,15 @@ describe("TranscriptPanel direction and search normalization", () => {
     expect(body.getAttribute("dir")).toBe("ltr");
   });
 
-  it("keeps the §65 spaces — TRAILING inside each span now, never as bare nodes between them", async () => {
-    // 2026-08-18 round 3: the inter-word space moved INSIDE the preceding
-    // word's span so the selection band paints continuously. §65's wrapping
-    // survives because break opportunities are the space CHARACTERS, not
-    // node boundaries — but they must still be real whitespace, not margins.
+  it("keeps the §65 spaces as BARE text nodes BETWEEN the spans, never inside them", async () => {
+    // The §65 guard. The space moved INSIDE the preceding span for one
+    // release (2026-08-18 round 3, to paint the selection band across the
+    // gap) and is back out: a trailing space at the end of a visual line
+    // HANGS and costs no width, but inside a padded inline box the box keeps
+    // it — the e2e wrap assertion measured scrollWidth 289 vs clientWidth 285
+    // on the fixture, exactly one space (CI run 32195920547). The band is
+    // bridged by `selectedStyle`'s box-shadow instead, which paints outside
+    // the border box and adds nothing to `scrollWidth`.
     await act(async () => {
       root.render(React.createElement(Harness, { lines: [line(["سلام", "دنیا"])] }));
     });
@@ -230,10 +234,12 @@ describe("TranscriptPanel direction and search normalization", () => {
     const bareSpaces = Array.from(body.childNodes).filter(
       (n) => n.nodeType === Node.TEXT_NODE && n.textContent === " ",
     );
-    expect(bareSpaces).toHaveLength(0);
-    // Every span but the transcript's LAST carries the trailing space.
+    // One per inter-word gap — real whitespace, not a margin (§65: margins
+    // are not line-break opportunities).
+    expect(bareSpaces).toHaveLength(1);
+    // No span carries whitespace of its own.
     const spans = Array.from(body.querySelectorAll('[data-testid^="transcript-word-"]'));
-    expect(spans.map((s) => s.textContent)).toEqual(["سلام ", "دنیا"]);
+    expect(spans.map((s) => s.textContent)).toEqual(["سلام", "دنیا"]);
     expect(body.textContent).toBe("سلام دنیا");
   });
 
@@ -558,8 +564,9 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
     });
     expect(hiddenDoc()).toEqual({ w10000: { was: "a" } });
     const w = word(0);
-    // Trailing space inside the span (round 3) — word 0 is not the last.
-    expect(w.textContent).toBe("a ");
+    // The span holds the word and nothing else — the §65 space is a bare
+    // text node beside it.
+    expect(w.textContent).toBe("a");
     expect(w.style.textDecoration).toBe("line-through");
     expect(w.title).toBe("hidden from captions — select and Restore");
   });
@@ -1077,13 +1084,25 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
     await click(word(0));
     await click(word(1), true);
     for (const i of [0, 1]) {
-      // The band color on the span itself — and because the inter-word
-      // space is INSIDE the span, the gap between words paints too.
+      // The band color on the span itself.
       expect(word(i).style.background.toLowerCase()).toMatch(/ffe14d|255,\s*225,\s*77/);
       expect(word(i).style.outline).toBe("");
-      expect(word(i).textContent!.endsWith(" ")).toBe(true);
+      // The gap between two selected words is a BARE space node (§65), so
+      // the band is bridged by a box-shadow — 4px each side, the `word`
+      // style's own horizontal padding, so each span's bridge meets its
+      // neighbour's. Guarded here because the shadow is the ONLY thing
+      // keeping the band continuous: without it the selection re-stripes
+      // per word, silently. It paints outside the border box, so unlike the
+      // trailing-space-inside-the-span version it costs no layout width
+      // (the §65 wrap guard, CI run 32195920547).
+      const shadow = word(i).style.boxShadow.toLowerCase();
+      expect(shadow).toMatch(/-4px 0(px)? 0(px)? 0(px)? (#ffe14d|rgb\(255,\s*225,\s*77\))/);
+      expect(shadow).toMatch(/(^|,\s*)4px 0(px)? 0(px)? 0(px)? (#ffe14d|rgb\(255,\s*225,\s*77\))/);
     }
     expect(word(2).style.background).toBe("");
+    // No stray bridge on an UNSELECTED word — it would paint yellow into the
+    // gap beside a word that is not in the band.
+    expect(word(2).style.boxShadow).toBe("");
   });
 
   it("the playhead word is UNDERLINED — and composes with the selection band", async () => {

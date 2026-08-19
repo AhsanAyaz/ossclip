@@ -1968,108 +1968,119 @@ export const TranscriptPanel: React.FC<{
                 : w.live !== w.base
                   ? `edited (was “${w.base}”) — double-click to retype`
                   : "click to jump · double-click to retype";
-          return editing?.index === w.index ? (
-              <input
-                key={w.index}
-                autoFocus
-                data-testid="transcript-edit"
-                style={editInput}
-                value={editing.draft}
-                onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
-                onBlur={() => commit(editing)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  if (e.key === "Escape") setEditing(null);
-                }}
-              />
-            ) : (
-              <span
-                key={w.index}
-                data-testid={`transcript-word-${w.index}`}
-                onClick={(e) => {
-                  // An open range editor closes BEFORE the selection moves
-                  // (field bug 2026-08-18 round 3): the popover is anchored
-                  // to the selection, so a moved selection re-rendered it at
-                  // the NEW words while it still held its stale capture —
-                  // Apply then rewrote the PREVIOUS run while visually
-                  // pointing at the new one. The `rangeEditing.selLo` sweep
-                  // above backstops any path this misses. The timing popover
-                  // closes for the same reason — explicitly, because a click
-                  // on the SAME word leaves selLo/selHi unchanged and the
-                  // selection-change sweep never fires.
-                  if (rangeEditing !== null) setRangeEditing(null);
-                  if (timing !== null) setTiming(null);
-                  if (e.shiftKey) {
-                    // Extend the selection (create one if none) and SUPPRESS
-                    // the seek: extending a range is a selection gesture, and
-                    // yanking the playhead to every shift-click would scrub
-                    // the preview across the video while the user is only
-                    // marking words.
-                    setSel((prev) =>
-                      prev === null
-                        ? { anchor: w.index, focus: w.index }
-                        : { ...prev, focus: w.index },
-                    );
-                    return;
+          return (
+            <React.Fragment key={w.index}>
+              {/* A REAL space between word spans, not a margin: margins are
+                  not line-break opportunities, and without whitespace the
+                  browser treated each caption line as one unbreakable inline
+                  run — wrapping only at in-text hyphens while everything else
+                  ran off the pane's right edge (the §65 report).
+
+                  It lived INSIDE the preceding span for one release
+                  (2026-08-18 round 3, to paint the selection band across the
+                  gap) and was REVERTED here: a trailing space at the end of a
+                  visual line normally HANGS and adds nothing to the line's
+                  width, but inside a padded inline box the box keeps it and
+                  extends past the content edge. Measured on the e2e fixture
+                  at 1280×720, the body scrolled sideways — scrollWidth 289 vs
+                  clientWidth 285, exactly one space — and §65's wrap guard
+                  failed (CI run 32195920547). The band is continuous again
+                  via `selectedStyle`'s box-shadow, which paints over the bare
+                  space without occupying layout. */}
+              {i > 0 ? " " : null}
+              {editing?.index === w.index ? (
+                <input
+                  autoFocus
+                  data-testid="transcript-edit"
+                  style={editInput}
+                  value={editing.draft}
+                  onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
+                  onBlur={() => commit(editing)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                    if (e.key === "Escape") setEditing(null);
+                  }}
+                />
+              ) : (
+                <span
+                  data-testid={`transcript-word-${w.index}`}
+                  onClick={(e) => {
+                    // An open range editor closes BEFORE the selection moves
+                    // (field bug 2026-08-18 round 3): the popover is anchored
+                    // to the selection, so a moved selection re-rendered it at
+                    // the NEW words while it still held its stale capture —
+                    // Apply then rewrote the PREVIOUS run while visually
+                    // pointing at the new one. The `rangeEditing.selLo` sweep
+                    // above backstops any path this misses. The timing popover
+                    // closes for the same reason — explicitly, because a click
+                    // on the SAME word leaves selLo/selHi unchanged and the
+                    // selection-change sweep never fires.
+                    if (rangeEditing !== null) setRangeEditing(null);
+                    if (timing !== null) setTiming(null);
+                    if (e.shiftKey) {
+                      // Extend the selection (create one if none) and SUPPRESS
+                      // the seek: extending a range is a selection gesture, and
+                      // yanking the playhead to every shift-click would scrub
+                      // the preview across the video while the user is only
+                      // marking words.
+                      setSel((prev) =>
+                        prev === null
+                          ? { anchor: w.index, focus: w.index }
+                          : { ...prev, focus: w.index },
+                      );
+                      return;
+                    }
+                    // CEIL, not round (field case 2026-08-18): rounding down
+                    // can land the quantized playhead a fraction BEFORE
+                    // `w.start`, inside the PREVIOUS word's window — the
+                    // frameupdate hit test then highlights the neighbour while
+                    // the click selected this word, and the two boxes read as a
+                    // double selection. Constant with degenerate ASR stamps
+                    // (whisper's zero-length runs repair to 50ms words, finer
+                    // than a 33ms frame is round-safe for).
+                    playerRef.current?.seekTo(Math.ceil(w.start * fps));
+                    setSel({ anchor: w.index, focus: w.index });
+                  }}
+                  onDoubleClick={() => openRetype(w)}
+                  title={
+                    timedEntry === undefined
+                      ? baseTitle
+                      : // ms readout, the doc's own unit rounded for humans —
+                        // `in` is the caption's opening seam, `out` its closing
+                        // one, which is what `lead`/`tail` mean now they move
+                        // LINE windows.
+                        `${baseTitle} · caption timing adjusted (${Math.round(timedEntry.lead * 1000)}ms in / ${Math.round(timedEntry.tail * 1000)}ms out) — Timing to change`
                   }
-                  // CEIL, not round (field case 2026-08-18): rounding down
-                  // can land the quantized playhead a fraction BEFORE
-                  // `w.start`, inside the PREVIOUS word's window — the
-                  // frameupdate hit test then highlights the neighbour while
-                  // the click selected this word, and the two boxes read as a
-                  // double selection. Constant with degenerate ASR stamps
-                  // (whisper's zero-length runs repair to 50ms words, finer
-                  // than a 33ms frame is round-safe for).
-                  playerRef.current?.seekTo(Math.ceil(w.start * fps));
-                  setSel({ anchor: w.index, focus: w.index });
-                }}
-                onDoubleClick={() => openRetype(w)}
-                title={
-                  timedEntry === undefined
-                    ? baseTitle
-                    : // ms readout, the doc's own unit rounded for humans —
-                      // `in` is the caption's opening seam, `out` its closing
-                      // one, which is what `lead`/`tail` mean now they move
-                      // LINE windows.
-                      `${baseTitle} · caption timing adjusted (${Math.round(timedEntry.lead * 1000)}ms in / ${Math.round(timedEntry.tail * 1000)}ms out) — Timing to change`
-                }
-                style={{
-                  ...word,
-                  // A dotted BORDER, never textDecoration: underline is the
-                  // playhead marker (`currentStyle`) and line-through the
-                  // hide marker (`hiddenStyle`) — a border composes with
-                  // both where a second textDecoration would clobber them.
-                  ...(timedEntry !== undefined ? timedWordStyle : {}),
-                  // Hidden and selected layer UNDER the find/edited/current
-                  // styles: a search hit or the playhead landing on a hidden
-                  // word must still read as a hit, and the strike-through
-                  // survives regardless (nothing above sets textDecoration).
-                  ...(isHidden(w) ? hiddenStyle : {}),
-                  // `editedStyle` layers UNDER the selection band (2026-08-18
-                  // round 3): its edited tint is the same yellow the band is
-                  // now painted in, so spreading it above `selectedStyle`
-                  // rendered edited words yellow-on-yellow — invisible while
-                  // selected. The band's own #111 wins; the tint returns the
-                  // moment the word is deselected.
-                  ...(w.live !== w.base || w.synthetic ? editedStyle : {}),
-                  ...(selLo !== null && w.index >= selLo && w.index <= selHi! ? selectedStyle : {}),
-                  ...(matches?.has(w.index) ? matchStyle : {}),
-                  ...(matchList[matchCursor] === w.index ? currentMatchStyle : {}),
-                  ...(currentIndex === w.index ? currentStyle : {}),
-                }}
-              >
-                {/* The inter-word space lives INSIDE the span (2026-08-18
-                    round 3; it was a bare text node BETWEEN spans before —
-                    the §65 wrap fix). Break opportunities are the space
-                    CHARACTERS, not node boundaries, so §65's wrapping
-                    survives the move — and the space now paints under
-                    `selectedStyle`, which is what makes the selection band
-                    CONTINUOUS instead of striped per word. A margin would
-                    do neither (§65: margins are not break opportunities). */}
-                {w.live}
-                {i < words.length - 1 ? " " : ""}
-              </span>
-            );
+                  style={{
+                    ...word,
+                    // A dotted BORDER, never textDecoration: underline is the
+                    // playhead marker (`currentStyle`) and line-through the
+                    // hide marker (`hiddenStyle`) — a border composes with
+                    // both where a second textDecoration would clobber them.
+                    ...(timedEntry !== undefined ? timedWordStyle : {}),
+                    // Hidden and selected layer UNDER the find/edited/current
+                    // styles: a search hit or the playhead landing on a hidden
+                    // word must still read as a hit, and the strike-through
+                    // survives regardless (nothing above sets textDecoration).
+                    ...(isHidden(w) ? hiddenStyle : {}),
+                    // `editedStyle` layers UNDER the selection band (2026-08-18
+                    // round 3): its edited tint is the same yellow the band is
+                    // now painted in, so spreading it above `selectedStyle`
+                    // rendered edited words yellow-on-yellow — invisible while
+                    // selected. The band's own #111 wins; the tint returns the
+                    // moment the word is deselected.
+                    ...(w.live !== w.base || w.synthetic ? editedStyle : {}),
+                    ...(selLo !== null && w.index >= selLo && w.index <= selHi! ? selectedStyle : {}),
+                    ...(matches?.has(w.index) ? matchStyle : {}),
+                    ...(matchList[matchCursor] === w.index ? currentMatchStyle : {}),
+                    ...(currentIndex === w.index ? currentStyle : {}),
+                  }}
+                >
+                  {w.live}
+                </span>
+              )}
+            </React.Fragment>
+          );
         })}
         {/* The selection bar (2026-08-18 round 3) — a compact HORIZONTAL
             row (Edit · Timing · Delete ▾ · count), rendered INSIDE the
@@ -2565,14 +2576,16 @@ const word: React.CSSProperties = {
   cursor: "pointer",
   borderRadius: 3,
   // Wider than the original 1px 2px: short Urdu words made tiny hit targets.
+  // The HORIZONTAL 4px is load-bearing beyond the hit target: `selectedStyle`
+  // sizes its band-bridging box-shadow to it, so changing it here restripes
+  // the selection band unless the shadow moves with it.
   padding: "2px 4px",
   // Each word is its own bidi run, so an embedded Latin loanword or digit
   // run cannot visually reorder its neighbors — visual word order per
   // wrapped line equals logical (DOM) order, mirrored under rtl, and the
   // click lands on the word the eye targets. The literal spaces (the §65
-  // wrap fix — now the TRAILING character inside each span, 2026-08-18
-  // round 3) stay directionally neutral inside the isolates and remain
-  // line-break opportunities.
+  // wrap fix — bare text nodes BETWEEN the spans) sit outside the isolates
+  // and remain line-break opportunities.
   unicodeBidi: "isolate",
 };
 
@@ -2618,14 +2631,27 @@ const currentStyle: React.CSSProperties = {
 };
 
 /** Selected range — ONE continuous yellow band (2026-08-18 round 3, the
- * Opus look): the inter-word space renders INSIDE each span now, so the
- * gaps paint too. Deliberately NO outline and radius 0: per-word outlines
- * plus unstyled gaps at lineHeight 2 read as a checkerboard field, not a
- * selection, and rounded corners re-stripe the band at every span edge. */
+ * Opus look). Deliberately NO outline and radius 0: per-word outlines plus
+ * unstyled gaps at lineHeight 2 read as a checkerboard field, not a
+ * selection, and rounded corners re-stripe the band at every span edge.
+ *
+ * The band bridges the BARE inter-word space (§65) with a box-shadow rather
+ * than by swallowing the space into the span, which is what the round-3
+ * version did and what broke §65's wrap guard — a trailing space inside a
+ * padded inline box no longer hangs, and the body scrolled sideways by
+ * exactly one space width (CI run 32195920547; the word map has the
+ * measurement). A box-shadow paints OUTSIDE the border box and contributes
+ * nothing to `scrollWidth`, so it satisfies both. The 4px offsets are the
+ * `word` style's own horizontal padding: each span's bridge reaches from its
+ * padding edge to where its neighbour's begins, so consecutive selected
+ * words meet exactly. On the word that ENDS a visual line the right-hand
+ * bridge paints past the pane edge, where the body's `overflowX: "hidden"`
+ * clips it — clipped ink, never a scrollbar. */
 const selectedStyle: React.CSSProperties = {
   background: "#FFE14D",
   color: "#111",
   borderRadius: 0,
+  boxShadow: "-4px 0 0 0 #FFE14D, 4px 0 0 0 #FFE14D",
 };
 
 /** Hidden from the captions (§59b, revisited 2026-08-18): struck-through and
