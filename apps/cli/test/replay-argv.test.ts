@@ -329,6 +329,50 @@ describe("recordedProduceArgs (§129)", () => {
     expect(off).not.toContain("--add-jump-cuts");
   });
 
+  // The --review/--no-render strip (cut-review step 1): command.json's one
+  // consumer is the editor's Render button, and a record carrying either
+  // flag replays as a run that skips the render again — --review would also
+  // spawn a SECOND editor from inside the replay child. The record is the
+  // invocation the user wants Render to run.
+  it("strips --review and --no-render at record so the replay actually renders", () => {
+    setReplayArgv(["produce", "./a.mp4", "--review", "--llm", "mock"]);
+    const review = recordedProduceArgs({ llm: "mock" });
+    expect(review).toEqual(["produce", "./a.mp4", "--llm", "mock"]);
+    setReplayArgv(["produce", "./a.mp4", "--no-render"]);
+    expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
+    // Typed together (agreement, not a contradiction) both still go.
+    setReplayArgv(["produce", "./a.mp4", "--review", "--no-render"]);
+    const both = recordedProduceArgs({});
+    expect(both).not.toContain("--review");
+    expect(both).not.toContain("--no-render");
+    expect(both).toEqual(["produce", "./a.mp4"]);
+  });
+
+  it("strips --no-render from the direct process.argv fallback too", () => {
+    const original = process.argv;
+    process.argv = [
+      "/usr/bin/node",
+      "/usr/local/bin/ossclip",
+      "produce",
+      "./take.mp4",
+      "--no-render",
+      "--llm",
+      "mock",
+    ];
+    try {
+      // No stash — the direct path records process.argv.slice(2), minus the
+      // two render-skipping flags.
+      expect(recordedProduceArgs({ llm: "mock" })).toEqual([
+        "produce",
+        "./take.mp4",
+        "--llm",
+        "mock",
+      ]);
+    } finally {
+      process.argv = original;
+    }
+  });
+
   // The replay round trip, same shape as the captions one above: a typed
   // flag in the record resolves to the same mode on re-run, so the
   // re-record is byte-identical in both typed directions.

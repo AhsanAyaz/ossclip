@@ -68,7 +68,17 @@ export function recordedProduceArgs(pins: {
   /** The RESOLVED thumbnail brief — pinned only when non-empty. */
   thumbnailBrief?: string;
 }): string[] {
-  const args = consumeReplayArgv() ?? process.argv.slice(2);
+  // --review and --no-render are stripped at record (cut-review step 1):
+  // command.json exists for exactly one consumer — the editor's Render
+  // button, which replays this argv to produce the video — and a record
+  // carrying --no-render would replay as a run that skips the render again,
+  // while a recorded --review would ALSO spawn a second editor from inside
+  // the replay child. Record the invocation the user wants Render to run.
+  // Both are bare boolean flags, so a value-free filter cannot orphan an
+  // option's argument.
+  const args = (consumeReplayArgv() ?? process.argv.slice(2)).filter(
+    (a) => a !== "--review" && a !== "--no-render",
+  );
   if (pins.llm !== undefined && !args.includes("--llm")) {
     args.push("--llm", pins.llm);
   }

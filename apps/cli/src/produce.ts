@@ -1150,6 +1150,31 @@ export function resolveJumpCuts(flag: boolean | undefined): JumpCutsMode {
 }
 
 /**
+ * Resolves `--review` against the two flags it overlaps: produce without
+ * rendering, then open the editor to review the cut — so the ONE render
+ * happens from the editor's Render button, not before the user could look.
+ *
+ * `--review --no-render` is agreement, not a contradiction — both point the
+ * same way (don't render here), unlike the jump-cuts pair — so it resolves
+ * silently. `--review --no-open-editor` IS the contradiction (reviewing is
+ * opening the editor) and follows jumpCutsFlag's rule: a loud error, never a
+ * precedence the user has to memorize. Without --review everything passes
+ * through untouched, tri-states included. Pure so the whole matrix is
+ * assertable without commander or a TTY.
+ */
+export function reviewFlag(
+  review: boolean,
+  render: boolean,
+  openEditor: boolean | undefined,
+): { render: boolean; openEditor: boolean | undefined } {
+  if (!review) return { render, openEditor };
+  if (openEditor === false) {
+    throw new Error("--review contradicts --no-open-editor — reviewing means opening the editor");
+  }
+  return { render: false, openEditor: true };
+}
+
+/**
  * The punch scale for spans the plan allows — ~1.5%, replacing the legacy 7%
  * (user decision 2026-08-16, "minimal, ~1%"): the 1.07 punch visibly SLID
  * screen content sideways at every cut on the incident's screen recording,
@@ -3806,6 +3831,129 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log(overridesWriteLine(cutResult.changed));
   }
 
+  // Resolved HERE — above the --no-render exit rather than at the thumbnail
+  // gate / pack section below — so the gate, the post-render consumers AND
+  // the command.json record (which both exits now write) all read one
+  // answer. Typed-beats-config, `typeof` not truthiness (the `portrait`
+  // posture): config.json is hand-edited and unparsed, and a
+  // `"audience": true` typo must resolve to "no audience".
+  const youtube = resolveYoutube(opts.youtube, cfg.youtube);
+  // resolvePortrait (portrait-override.ts) carries the expandHome treatment
+  // of the flag and config paths, and puts the workdir's portrait-override
+  // ABOVE both (editor face swap, 2026-08-17): a per-project expression
+  // chosen in the editor must survive CLI re-renders — the flag/config
+  // portrait is the fallback headshot, and a replay silently reverting the
+  // swapped face would undo the one thing the swap exists for.
+  const portrait = resolvePortrait({
+    overridePath: portraitOverridePath(work),
+    flagPortrait: opts.portrait,
+    cfgPortrait: cfg.portrait,
+  })?.path;
+  const audience = opts.audience ?? (typeof cfg.audience === "string" ? cfg.audience : undefined);
+  const thumbnailBrief =
+    opts.thumbnailBrief ?? (typeof cfg.thumbnailBrief === "string" ? cfg.thumbnailBrief : undefined);
+
+  // Record THIS invocation so the editor's Render button can replay it (R11
+  // Task 4). Nothing else can reconstruct it — production.json has the
+  // source path, cleanup and intent, but not --produce, --out or the LLM
+  // flags — and guessing would silently render a different video than the
+  // one on screen. execArgv carries the module loader (tsx in dev), so the
+  // replay works from source and from a compiled build alike.
+  //
+  // Written BEFORE the render/no-render fork, not after the render (cut-review
+  // step 1): a --no-render workdir used to carry NO command.json at all, so
+  // the editor's Render button 412'd with "run `ossclip produce` once from
+  // the terminal" — a dead end that made `--review` (produce without
+  // rendering, review in the editor, render ONCE from its Render button)
+  // impossible. Every pin below is resolved by this point, so the record is
+  // byte-identical to what the post-render write produced; the side effect is
+  // that a crashed render now leaves a record its own Render button can
+  // retry. recordedProduceArgs strips --review/--no-render at record, so the
+  // replay actually renders instead of looping.
+  //
+  // The provider may have been AUTO-DETECTED from this shell's environment
+  // (a GEMINI_/ANTHROPIC_ key exported here). The editor's Render replays
+  // this argv from the EDIT SERVER's environment, which may not have that
+  // key — and the auto-detection would then silently pick a DIFFERENT
+  // provider (R16 §75). Pin the RESOLVED choice into the recorded args —
+  // never the key itself; secrets stay out of the workdir — so a replay
+  // uses the same configuration or fails loudly asking for it.
+  // §93g: pin the RESOLVED window, exactly as §75 pinned the provider. The
+  // editor's Render replays this argv; if replay re-asked the model and got a
+  // slightly different window, every saved override — anchored to scene ids
+  // and word indices — would land on the wrong words. The word range, not
+  // just `--clip 60`, is what makes replay deterministic with zero LLM calls.
+  //
+  // §129: NOT process.argv. A wizard or bare-path run re-enters commander
+  // with a BUILT argv while process.argv still holds the original invocation
+  // (`ossclip <path>`, no `produce` literal, none of the wizard's answers) —
+  // recording process.argv shipped a command that replays as
+  // `ossclip <path> --llm …` and dies on "unknown option '--llm'".
+  // recordedProduceArgs prefers the argv the re-entry stashed and falls back
+  // to process.argv for a directly typed `ossclip produce …`, which stays
+  // byte-identical to what was always recorded.
+  // Watermark pin, same §75 shape, and in BOTH directions (review,
+  // Important): the effective default comes from THIS machine's
+  // ~/.ossclip/config.json, so an unpinned record replays differently
+  // wherever that config differs — an off-run would silently gain a credit
+  // under a later/foreign config-on, an on-run would silently lose it. The
+  // RESOLVED state is always pinned; a typed flag is already in the argv and
+  // the includes-guard leaves it alone.
+  // Captions pin: the FLAG's resolved state (`opts.captions ?? true`), never
+  // the override-inclusive `captionsHidden` — overrides.json travels with
+  // the workdir and is re-read on every replay, so pinning --no-captions
+  // because the EDITOR hid them would freeze an edit the user may later
+  // undo in that same editor. See recordedProduceArgs for why the pin is
+  // unconditional even though captions' default is config-independent today.
+  // Jump-cuts pin: the RESOLVED mode, but only its typed states reach the
+  // argv — "auto" has no flag spelling and stays unpinned (see
+  // recordedProduceArgs for why that is safe today).
+  // Youtube pin: the watermark's config-dependent-default rationale exactly —
+  // resolved both ways, so a later config edit can't flip what Render
+  // replays. Portrait and dictionary pin the RESOLVED values (a path and
+  // terms, never a secret) for the same reason; recordedProduceArgs owns
+  // the non-empty/includes guards.
+  const recordedArgs = recordedProduceArgs({
+    llm: provider ? providerName : undefined,
+    clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
+    watermark,
+    captions: opts.captions ?? true,
+    jumpCuts: jumpCutsMode,
+    dictionary,
+    youtube,
+    portrait,
+    audience,
+    thumbnailBrief,
+  });
+  // produce is the ONLY command that may write command.json — edit.ts's §129
+  // heal prepends the "produce" literal to any record that doesn't start
+  // with it, so a record made by `transcribe`/`analyze` (which run this same
+  // pipeline with render: false, and used to be kept out by the write
+  // sitting after the early return below) would heal into
+  // `produce transcribe …` and replay garbage. Their argv cannot start with
+  // "produce" (§129: the stash mirrors the parse that ran, and only
+  // produce's re-entries stash), which is the gate.
+  if (recordedArgs[0] === "produce") {
+    await writeFile(
+      join(work, "command.json"),
+      JSON.stringify(
+        {
+          execPath: process.execPath,
+          execArgv: process.execArgv,
+          script: process.argv[1],
+          args: recordedArgs,
+          cwd: process.cwd(),
+          out: outPath,
+        },
+        null,
+        2,
+      ),
+    );
+    // Every produce run is a project the picker should offer (R17 §83) —
+    // best-effort, so a read-only home dir never fails the render.
+    await recordRecentProject(work);
+  }
+
   if (!opts.render) {
     // §140: the breakdown goes above the closing lines on both exits, so the
     // last thing on screen stays the success line and the edit hint.
@@ -3833,27 +3981,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // multi-minute render. Interactive runs approve (or edit, or skip) it
   // here; the file it writes is what thumbnailStep honors after render — and
   // what a non-TTY replay (the editor's Render) reuses, which is the whole
-  // persistence story.
-  //
-  // Resolved HERE rather than at the pack section below so the gate and the
-  // post-render consumers read one answer. Typed-beats-config, `typeof` not
-  // truthiness (the `portrait` posture): config.json is hand-edited and
-  // unparsed, and a `"audience": true` typo must resolve to "no audience".
-  const youtube = resolveYoutube(opts.youtube, cfg.youtube);
-  // resolvePortrait (portrait-override.ts) carries the expandHome treatment
-  // of the flag and config paths, and puts the workdir's portrait-override
-  // ABOVE both (editor face swap, 2026-08-17): a per-project expression
-  // chosen in the editor must survive CLI re-renders — the flag/config
-  // portrait is the fallback headshot, and a replay silently reverting the
-  // swapped face would undo the one thing the swap exists for.
-  const portrait = resolvePortrait({
-    overridePath: portraitOverridePath(work),
-    flagPortrait: opts.portrait,
-    cfgPortrait: cfg.portrait,
-  })?.path;
-  const audience = opts.audience ?? (typeof cfg.audience === "string" ? cfg.audience : undefined);
-  const thumbnailBrief =
-    opts.thumbnailBrief ?? (typeof cfg.thumbnailBrief === "string" ? cfg.thumbnailBrief : undefined);
+  // persistence story. The youtube/portrait/audience/brief resolutions this
+  // gate reads moved above the --no-render exit (cut-review step 1) so the
+  // command.json record pins the same answers on both exits.
   const geminiKey = process.env.GEMINI_API_KEY;
   const approvedConceptPath = join(work, THUMBNAIL_APPROVED_BASENAME);
   // The gate reuses thumbnailDecision (plus the mime check) so the prompt
@@ -4388,84 +4518,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       });
     }
   }
-  // Record THIS invocation so the editor's Render button can replay it (R11
-  // Task 4). Nothing else can reconstruct it — production.json has the
-  // source path, cleanup and intent, but not --produce, --out or the LLM
-  // flags — and guessing would silently render a different video than the
-  // one on screen. execArgv carries the module loader (tsx in dev), so the
-  // replay works from source and from a compiled build alike.
-  // The provider may have been AUTO-DETECTED from this shell's environment
-  // (a GEMINI_/ANTHROPIC_ key exported here). The editor's Render replays
-  // this argv from the EDIT SERVER's environment, which may not have that
-  // key — and the auto-detection would then silently pick a DIFFERENT
-  // provider (R16 §75). Pin the RESOLVED choice into the recorded args —
-  // never the key itself; secrets stay out of the workdir — so a replay
-  // uses the same configuration or fails loudly asking for it.
-  // §93g: pin the RESOLVED window, exactly as §75 pinned the provider. The
-  // editor's Render replays this argv; if replay re-asked the model and got a
-  // slightly different window, every saved override — anchored to scene ids
-  // and word indices — would land on the wrong words. The word range, not
-  // just `--clip 60`, is what makes replay deterministic with zero LLM calls.
-  //
-  // §129: NOT process.argv. A wizard or bare-path run re-enters commander
-  // with a BUILT argv while process.argv still holds the original invocation
-  // (`ossclip <path>`, no `produce` literal, none of the wizard's answers) —
-  // recording process.argv shipped a command that replays as
-  // `ossclip <path> --llm …` and dies on "unknown option '--llm'".
-  // recordedProduceArgs prefers the argv the re-entry stashed and falls back
-  // to process.argv for a directly typed `ossclip produce …`, which stays
-  // byte-identical to what was always recorded.
-  // Watermark pin, same §75 shape, and in BOTH directions (review,
-  // Important): the effective default comes from THIS machine's
-  // ~/.ossclip/config.json, so an unpinned record replays differently
-  // wherever that config differs — an off-run would silently gain a credit
-  // under a later/foreign config-on, an on-run would silently lose it. The
-  // RESOLVED state is always pinned; a typed flag is already in the argv and
-  // the includes-guard leaves it alone.
-  // Captions pin: the FLAG's resolved state (`opts.captions ?? true`), never
-  // the override-inclusive `captionsHidden` — overrides.json travels with
-  // the workdir and is re-read on every replay, so pinning --no-captions
-  // because the EDITOR hid them would freeze an edit the user may later
-  // undo in that same editor. See recordedProduceArgs for why the pin is
-  // unconditional even though captions' default is config-independent today.
-  // Jump-cuts pin: the RESOLVED mode, but only its typed states reach the
-  // argv — "auto" has no flag spelling and stays unpinned (see
-  // recordedProduceArgs for why that is safe today).
-  // Youtube pin: the watermark's config-dependent-default rationale exactly —
-  // resolved both ways, so a later config edit can't flip what Render
-  // replays. Portrait and dictionary pin the RESOLVED values (a path and
-  // terms, never a secret) for the same reason; recordedProduceArgs owns
-  // the non-empty/includes guards.
-  const recordedArgs = recordedProduceArgs({
-    llm: provider ? providerName : undefined,
-    clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
-    watermark,
-    captions: opts.captions ?? true,
-    jumpCuts: jumpCutsMode,
-    dictionary,
-    youtube,
-    portrait,
-    audience,
-    thumbnailBrief,
-  });
-  await writeFile(
-    join(work, "command.json"),
-    JSON.stringify(
-      {
-        execPath: process.execPath,
-        execArgv: process.execArgv,
-        script: process.argv[1],
-        args: recordedArgs,
-        cwd: process.cwd(),
-        out: outPath,
-      },
-      null,
-      2,
-    ),
-  );
-  // Every produce run is a project the picker should offer (R17 §83) —
-  // best-effort, so a read-only home dir never fails the render.
-  await recordRecentProject(work);
+  // command.json was recorded above the --no-render exit (cut-review step 1)
+  // — see the block before that fork for the §75/§93g/§129 pinning story.
   console.log(formatPhaseLine(phases.timings(), phases.totalMs()));
   console.log(`✓ done → ${outPath}`);
   if (isInteractive()) {
