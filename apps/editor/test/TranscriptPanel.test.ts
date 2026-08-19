@@ -7,7 +7,11 @@ import {
   applyCaptionLineTiming,
   applyCaptionWordHides,
   captionKeyFor,
+  livePreviewMap,
+  previewClockMappers,
+  TimeMap,
   type CaptionLine,
+  type Segment,
 } from "@ossclip/core/browser";
 import {
   captionDragBounds,
@@ -310,6 +314,7 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
     seekTo,
     onDeleteWords,
     onFrame,
+    toPlayerSec,
   }: {
     lines: CaptionLine[];
     /** Pristine pre-edit lines when they differ from the live ones — the
@@ -322,6 +327,10 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
      * playhead — the underline-composition assertions need `currentIndex`
      * set, and only the player event sets it. */
     onFrame?: (fire: (frame: number) => void) => void;
+    /** The live-clock mapping App threads under a cleanup veto (step 4
+     * follow-up); absent takes the panel's own identity default, exactly
+     * like a session with no veto. */
+    toPlayerSec?: (sec: number) => number;
   }) {
     const edits = useEdits();
     // A fake player rather than a null ref: the seek-suppression assertion
@@ -368,6 +377,7 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
           edits.hideCaptionWords(plan.words);
         },
         width: 300,
+        ...(toPlayerSec ? { toPlayerSec } : {}),
       }),
     );
   }
@@ -437,6 +447,67 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
     // Backwards past the anchor: [0, 1], still contiguous.
     await click(word(0), true);
     expect(menu()!.textContent).toContain("2 words");
+  });
+
+  it("a word click seeks THROUGH the live-clock mapping — old + revived past a kept pause (step 4 follow-up)", async () => {
+    // The real mapping, end to end: produce proposed a 2s pause at source
+    // 5..7 and the last render cut it (oldSpans); the user vetoes it, so the
+    // player is on the NEW clock while the panel's word times stay on the
+    // old one (the pre-retime `appliedCaptionRanges` stream, App.tsx).
+    const proposal: Segment[] = [
+      { srcIn: 0, srcOut: 5, kind: "keep" },
+      { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 7, srcOut: 10, kind: "keep" },
+    ];
+    const clocks = livePreviewMap(
+      proposal,
+      { reasons: { pause: false } },
+      [],
+      new TimeMap(proposal).spans,
+    )!;
+    expect(clocks).not.toBeNull();
+    const m = previewClockMappers(clocks);
+    const straddle: CaptionLine = {
+      words: [
+        { text: "early", start: 3, end: 3.3, srcStart: 3 },
+        { text: "late", start: 6, end: 6.3, srcStart: 8 },
+      ],
+      start: 3,
+      end: 6.3,
+    };
+    const seeks: number[] = [];
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          lines: [straddle],
+          seekTo: (f: number) => seeks.push(f),
+          toPlayerSec: m.toLive,
+        }),
+      );
+    });
+    // "late" sits past the revived pause: old output 6 is source 8, which
+    // the new clock plays at 8 — the unmapped seek (ceil(6 × 30) = 180)
+    // landed exactly the revived 2s early.
+    await click(word(1));
+    expect(seeks).toEqual([Math.ceil(8 * 30)]);
+    // "early" precedes the pause and does not move.
+    await click(word(0));
+    expect(seeks).toEqual([Math.ceil(8 * 30), Math.ceil(3 * 30)]);
+  });
+
+  it("without the mapping the seek is bit-identical to before — the identity default (step 4 follow-up)", async () => {
+    const seeks: number[] = [];
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          lines: [line(["a", "b", "c"])],
+          seekTo: (f: number) => seeks.push(f),
+        }),
+      );
+    });
+    await click(word(1));
+    // The exact pre-change expression: Math.ceil(w.start * fps).
+    expect(seeks).toEqual([Math.ceil(0.3 * 30)]);
   });
 
   it("shift-click never seeks — extending a selection must not yank the playhead", async () => {

@@ -79,10 +79,16 @@ export {
 // `subtractRangesFromCutlist` sequence produce runs and re-times every prop
 // through the SAME `remapPoint` produce re-anchors with — one implementation,
 // two callers, so the preview cannot drift from the render.
+// `previewClockMappers` rides along (step 4 follow-up): the surfaces that
+// speak in single instants — transcript seeks, ghost bands, the cover
+// panel's playhead — need the same walk as a point function, identity when
+// no re-cut is live, threaded by App so no consumer learns the machinery.
 export {
   livePreviewMap,
+  previewClockMappers,
   retimeForPreview,
   type LivePreviewClocks,
+  type PreviewClockMappers,
   type RetimeablePreviewProps,
   type RetimedPreviewFields,
 } from "./retime-preview";

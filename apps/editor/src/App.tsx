@@ -18,6 +18,7 @@ import {
   livePreviewMap,
   mapFromKeptSpans,
   mapsClose,
+  previewClockMappers,
   retimeForPreview,
   type AppliedCaptionEdits,
   type LivePreviewClocks,
@@ -892,6 +893,17 @@ export const App: React.FC = () => {
     );
   }, [renderProps, cleanupCutlist, edits.doc.cleanup, edits.doc.cuts]);
 
+  // The two clocks as POINT mappers (step 4 follow-up): `retimeForPreview`
+  // below moves the player's PROPS onto the new clock in one batch, but three
+  // surfaces still spoke single instants against the OLD one — the
+  // transcript's word times, the ghost cues' windows, and the cover panel's
+  // playhead — each offset by exactly the revived seconds before it while a
+  // veto was live. One derivation, threaded as plain functions, so no
+  // consumer learns the recut machinery; identity (literally `(sec) => sec`)
+  // whenever `liveRecut` is null, the same regression anchor as the memo
+  // below — a session with no veto computes bit-identical values to before.
+  const clock = useMemo(() => previewClockMappers(liveRecut), [liveRecut]);
+
   // DECIDE (PLAN 2026-08-04 Task 4c, revised by cut review step 4): this
   // memo still never applies `edits.doc.cuts` — but the original refusal
   // gave two reasons, and only one survived. "The editor has no client-side
@@ -1109,8 +1121,12 @@ export const App: React.FC = () => {
     // for `hidden` on the PRE-split cues, so a hidden `id@<split id>` half (a
     // sanctioned gesture since Task 1) never matched anything and had no
     // ghost, no Restore, no way back but hand-editing overrides.json.
-    return computeGhostCues(baseCues, edits.doc);
-  }, [renderProps, edits.doc]);
+    // `clock.toLive` (step 4 follow-up): the base cues are old-clock times,
+    // and the Timeline draws these bands on the live (possibly re-cut)
+    // timeline — unmapped, every ghost past a revived pause sat the revived
+    // seconds off its true window.
+    return computeGhostCues(baseCues, edits.doc, clock.toLive);
+  }, [renderProps, edits.doc, clock]);
 
   const selectedCue = useMemo(
     () =>
@@ -1407,11 +1423,25 @@ export const App: React.FC = () => {
           onClose={() => setShowCover(false)}
           // A GETTER, read on click: App does not re-render per frame, so a
           // number prop would freeze at whatever the playhead was when the
-          // panel opened. The Player's frame IS output time (the finished
-          // mp4's own timeline), which is why the seconds go through to
-          // `atSec` with no mapping — see CoverPanel's prop doc.
+          // panel opened. Mapped through `clock.fromLive` — the REVERSE
+          // direction of every other surface's mapping, deliberately: the
+          // server extracts the `--from final` frame from the FINISHED
+          // RENDERED mp4 (cover.ts seeks `timeSec` into it), and that file's
+          // timeline is the OLD clock — the last render's own output time —
+          // while a live veto puts the player on the new one. Unmapped, the
+          // grabbed frame sat exactly the revived seconds early; a playhead
+          // INSIDE revived material has no frame in that mp4 at all and
+          // clamps to the nearest kept edge (`fromLive`'s doc). `--from
+          // source` instead seeks the ORIGINAL take in SOURCE seconds; the
+          // panel has always sent last-render output seconds for that case
+          // too (its prop doc), and `fromLive` preserves exactly that value —
+          // the pre-existing source-case semantics are unchanged. Identity
+          // when no veto is live, so the seconds go through untouched — see
+          // CoverPanel's prop doc.
           playheadSec={() =>
-            (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps
+            clock.fromLive(
+              (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps,
+            )
           }
         />
       ) : null}
@@ -1701,6 +1731,12 @@ export const App: React.FC = () => {
               // `/media/*` resolves against the CURRENT workdir, so the
               // waveform cache is keyed by it (`loadSourceAudio`).
               workdir={workdirPath}
+              // Step 4 follow-up: the panel's lines are pre-retime (old
+              // clock) BY DESIGN — see the liveLines comment above — so its
+              // seeks and playhead reads convert at the boundary instead.
+              // Identity when no veto is live (the panel's own prop doc).
+              toPlayerSec={clock.toLive}
+              fromPlayerSec={clock.fromLive}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}

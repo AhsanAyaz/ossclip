@@ -486,6 +486,22 @@ export const TranscriptPanel: React.FC<{
    * workdir, so a decode belongs to the project it was fetched under
    * (`loadSourceAudio`). */
   workdir: string | null;
+  /** Caption-line output seconds → the player's ACTUAL clock (cut review
+   * step 4 follow-up). This panel's word times are the last render's output
+   * clock — `liveLines` is the pre-retime `appliedCaptionRanges` stream, by
+   * App.tsx's own design — but under a live cleanup re-cut the player plays
+   * the NEW clock, so an unmapped seek on any word past a revived pause
+   * landed exactly the revived seconds early. App threads
+   * `previewClockMappers(liveRecut).toLive`; the default is the identity so
+   * the no-veto path (and every existing harness) computes bit-identical
+   * frames to before — the panel never learns the recut machinery. */
+  toPlayerSec?: (sec: number) => number;
+  /** The reverse — the player's clock → these lines' own output seconds —
+   * for READING the playhead against the words (the follow-along highlight).
+   * Inside revived material the mapping clamps to the nearest old-clock kept
+   * edge (`previewClockMappers.fromLive`), which the hit test below treats
+   * like any other between-words instant: the highlight simply holds. */
+  fromPlayerSec?: (sec: number) => number;
 }> = ({
   baseLines,
   liveLines,
@@ -496,6 +512,8 @@ export const TranscriptPanel: React.FC<{
   onDeleteWords,
   width,
   workdir,
+  toPlayerSec = (sec: number): number => sec,
+  fromPlayerSec = (sec: number): number => sec,
 }) => {
   const [query, setQuery] = useState("");
   /**
@@ -824,13 +842,17 @@ export const TranscriptPanel: React.FC<{
     const player = playerRef.current;
     if (!player) return;
     const onFrame = (e: { detail: { frame: number } }) => {
-      const t = e.detail.frame / fps;
+      // The player's frame is on ITS clock; the words are on the lines' own
+      // (the `toPlayerSec` prop doc) — map back before the hit test or the
+      // follow-along highlight sits the revived seconds behind playback
+      // whenever a cleanup veto is live.
+      const t = fromPlayerSec(e.detail.frame / fps);
       const hit = words.find((w) => t >= w.start && t < w.end);
       setCurrentIndex((prev) => (hit ? (hit.index === prev ? prev : hit.index) : prev));
     };
     player.addEventListener("frameupdate", onFrame);
     return () => player.removeEventListener("frameupdate", onFrame);
-  }, [playerRef, fps, words]);
+  }, [playerRef, fps, words, fromPlayerSec]);
 
   // The view follows the cursor (R16 §72): while playback reads through the
   // transcript, the highlighted word stays in view. `nearest` scrolls only
@@ -1725,7 +1747,10 @@ export const TranscriptPanel: React.FC<{
     }
     // CEIL, the word-click rule above: rounding down can land the quantized
     // playhead a fraction before the span, in the previous word's window.
-    player.seekTo(Math.ceil(timedSpan.start * fps));
+    // Mapped onto the player's clock FIRST (the `toPlayerSec` prop doc), then
+    // quantized — ceiling the old-clock frame would carry the rounding onto
+    // the wrong clock.
+    player.seekTo(Math.ceil(toPlayerSec(timedSpan.start) * fps));
     player.play();
     setTimingPlaying(true);
   };
@@ -1738,7 +1763,10 @@ export const TranscriptPanel: React.FC<{
     if (!timingPlaying || timedSpan === null) return;
     const player = playerRef.current;
     if (!player) return;
-    const endSec = timedSpan.end;
+    // The far edge, mapped once onto the player's clock (the `toPlayerSec`
+    // prop doc) — comparing the player's own frames against an old-clock
+    // edge would stop the span-play the revived seconds early.
+    const endSec = toPlayerSec(timedSpan.end);
     const onFrame = (e: { detail: { frame: number } }): void => {
       if (e.detail.frame / fps >= endSec) {
         player.pause();
@@ -1747,7 +1775,7 @@ export const TranscriptPanel: React.FC<{
     };
     player.addEventListener("frameupdate", onFrame);
     return () => player.removeEventListener("frameupdate", onFrame);
-  }, [timingPlaying, timedSpan, fps, playerRef]);
+  }, [timingPlaying, timedSpan, fps, playerRef, toPlayerSec]);
 
   // The flag follows the REAL player, not just this popover's own button
   // (2026-08-19 review): the global Space transport pauses playback without
@@ -2037,8 +2065,12 @@ export const TranscriptPanel: React.FC<{
                     // the click selected this word, and the two boxes read as a
                     // double selection. Constant with degenerate ASR stamps
                     // (whisper's zero-length runs repair to 50ms words, finer
-                    // than a 33ms frame is round-safe for).
-                    playerRef.current?.seekTo(Math.ceil(w.start * fps));
+                    // than a 33ms frame is round-safe for). Mapped onto the
+                    // player's clock FIRST (the `toPlayerSec` prop doc): under
+                    // a live cleanup re-cut `w.start` is an old-clock time,
+                    // and the unmapped seek landed exactly the revived
+                    // seconds early for every word past a kept pause.
+                    playerRef.current?.seekTo(Math.ceil(toPlayerSec(w.start) * fps));
                     setSel({ anchor: w.index, focus: w.index });
                   }}
                   onDoubleClick={() => openRetype(w)}

@@ -94,6 +94,56 @@ export function livePreviewMap(
   }
 }
 
+/**
+ * The two clocks as POINT mappers, one per direction. `retimeForPreview`
+ * below moves the player's PROPS onto the new clock in one batch, but the
+ * editor also has surfaces that read or write a SINGLE instant at a gesture
+ * — the transcript's click-to-seek, the timeline's ghost bands, the cover
+ * panel's playhead — and each of those needs the same old-output → source →
+ * new-output walk as a plain function it can be handed without knowing the
+ * recut machinery behind it.
+ */
+export interface PreviewClockMappers {
+  /** OLD-clock output seconds (the last render's own timeline — what the
+   * render props, the ghost cues and the pre-retime caption lines are timed
+   * in) → the clock the player is actually on. Exact for every live veto:
+   * vetoes only ever ADD time back, so every old moment survives on the new
+   * clock (`retimeForPreview`'s direction argument); the clamp behind it
+   * only fires for the retracted-veto shape the retime already reports. */
+  toLive: (sec: number) => number;
+  /** The reverse: the player's clock → the last render's own output seconds.
+   * A live moment inside REVIVED material has no old-clock preimage at all —
+   * the rendered mp4 never contained that frame — so it clamps to the
+   * nearest kept edge (`toOutputClamped`'s documented role), the closest
+   * moment the old clock can honestly name. */
+  fromLive: (sec: number) => number;
+}
+
+/**
+ * The mappers for the current live re-cut — or the IDENTITY pair when there
+ * is none (`clocks === null`, `livePreviewMap`'s own identity signal). The
+ * identity is literally `(sec) => sec`, so a consumer's no-veto path computes
+ * bit-identical values to what it computed before the mapping existed — the
+ * same regression anchor the `live` memo's null branch holds to.
+ */
+export function previewClockMappers(clocks: LivePreviewClocks | null): PreviewClockMappers {
+  if (clocks === null) {
+    const identity = (sec: number): number => sec;
+    return { toLive: identity, fromLive: identity };
+  }
+  const { oldMap, newMap } = clocks;
+  return {
+    toLive: (sec) => {
+      const src = oldMap.toSource(sec);
+      return newMap.toOutput(src) ?? newMap.toOutputClamped(src);
+    },
+    fromLive: (sec) => {
+      const src = newMap.toSource(sec);
+      return oldMap.toOutput(src) ?? oldMap.toOutputClamped(src);
+    },
+  };
+}
+
 /** The output-timed subset of the render props the retime reads. Structural
  * on purpose — the renderer's `ProductionCompProps` satisfies it without
  * core importing the renderer package. */

@@ -29,9 +29,25 @@ import {
  * `id@<split id>` half at all: no ghost, no Restore, and the window it should have
  * shown (the half's OWN, post-split window, not the whole pre-split scene's)
  * was never even computed.
+ *
+ * `toLive` (cut review step 4 follow-up): the base cues are timed against the
+ * LAST RENDER's output clock, but under a live cleanup re-cut the Timeline
+ * draws — and the player plays — the NEW clock, so an unmapped ghost sat
+ * exactly the revived seconds off its true window. App threads
+ * `previewClockMappers(liveRecut).toLive`, which is the literal identity when
+ * no re-cut is live — the default here, so a two-argument call (and every
+ * pre-step-4 test) keeps today's values bit for bit. The two ends map exactly,
+ * never clamped: vetoes only ADD time back, so every old-clock moment
+ * survives on the new clock (the `retimeForPreview` direction argument).
  */
-export function ghostCues(cues: readonly SceneCue[], doc: OverrideDoc): SceneCue[] {
+export function ghostCues(
+  cues: readonly SceneCue[],
+  doc: OverrideDoc,
+  toLive: (sec: number) => number = (sec) => sec,
+): SceneCue[] {
   const { cues: applied } = applyOverrides(cues, doc);
   const splitted = splitCues(applied, doc.splits);
-  return splitted.filter((c) => doc.scenes[c.id]?.hidden === true);
+  return splitted
+    .filter((c) => doc.scenes[c.id]?.hidden === true)
+    .map((c) => ({ ...c, startSec: toLive(c.startSec), endSec: toLive(c.endSec) }));
 }

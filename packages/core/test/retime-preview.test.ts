@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { CaptionLine } from "../src/captions";
-import { livePreviewMap, retimeForPreview, type RetimeablePreviewProps } from "../src/retime-preview";
+import {
+  livePreviewMap,
+  previewClockMappers,
+  retimeForPreview,
+  type RetimeablePreviewProps,
+} from "../src/retime-preview";
 import type { SceneCue } from "../src/scene-schema";
 import type { Segment } from "../src/schema";
 import { mapFromKeptSpans, TimeMap } from "../src/timemap";
@@ -201,5 +206,43 @@ describe("retimeForPreview (every output-timed prop onto the new clock)", () => 
     );
     expect(fields.captionLines[0]!.words[0]!.start).toBeCloseTo(5, 9);
     expect(reports.length).toBeGreaterThan(0);
+  });
+});
+
+describe("previewClockMappers (step 4 follow-up: the point mappers App threads to its surfaces)", () => {
+  const clocks = livePreviewMap(proposal, { reasons: { pause: false } }, [], oldSpans)!;
+
+  it("null clocks are the literal identity, both directions — the no-veto regression anchor", () => {
+    const m = previewClockMappers(null);
+    for (const t of [0, 0.3, 1.234, 8, 100]) {
+      expect(m.toLive(t)).toBe(t);
+      expect(m.fromLive(t)).toBe(t);
+    }
+  });
+
+  it("toLive: a moment past the revived pause lands old + revived on the new clock; before it, unmoved", () => {
+    const m = previewClockMappers(clocks);
+    // Old output 6 is source 8 — past the revived 2s pause, so the same
+    // source instant sits exactly the revived seconds later. This is the
+    // transcript's click-to-seek and the timeline's ghost bands: a word (or
+    // ghost edge) after a kept pause seeks/draws at old + revived.
+    expect(m.toLive(6)).toBeCloseTo(8, 9);
+    expect(m.toLive(3)).toBeCloseTo(3, 9);
+  });
+
+  it("fromLive: the cover direction — a live playhead names the frame the RENDERED mp4 actually has", () => {
+    // The REVERSE of toLive, deliberately: the cover server extracts the
+    // `--from final` frame from the finished mp4, whose timeline is the OLD
+    // clock, so the live playhead must come BACK to it (App.tsx's CoverPanel
+    // call site owns the full argument).
+    const m = previewClockMappers(clocks);
+    expect(m.fromLive(8)).toBeCloseTo(6, 9);
+    // Inside the revived pause the rendered mp4 has no frame at all — the
+    // nearest kept edge is the closest one it can honestly serve.
+    expect(m.fromLive(6)).toBeCloseTo(5, 9);
+    // And the two are inverses over every moment the old clock can express.
+    for (const t of [0, 2, 4.9, 5, 6.5, 8]) {
+      expect(m.fromLive(m.toLive(t))).toBeCloseTo(t, 9);
+    }
   });
 });

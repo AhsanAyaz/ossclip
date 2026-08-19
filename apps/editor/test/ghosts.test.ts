@@ -78,3 +78,25 @@ describe("ghostCues (PLAN 2026-08-04 fix wave, final review finding 2)", () => {
     expect(state.doc.scenes["scene-6"]?.hidden).toBe(true);
   });
 });
+
+describe("ghostCues under a live re-cut (cut review step 4 follow-up)", () => {
+  it("ghost windows ride the toLive mapping App threads — old-clock cues, live-clock bands", () => {
+    // The base cues are timed against the LAST RENDER's clock; the Timeline
+    // draws on the live (re-cut) one. A +2s shift stands in for
+    // `previewClockMappers(liveRecut).toLive` — a revived 2s pause before
+    // the scene — under which an unmapped ghost sat exactly 2s off its
+    // true window.
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-5": { hidden: true } } });
+    const ghosts = ghostCues([before(), splitScene()], doc, (sec) => sec + 2);
+    expect(ghosts.map((c) => c.id)).toEqual(["scene-5"]);
+    expect(ghosts[0]!.startSec).toBe(2);
+    expect(ghosts[0]!.endSec).toBe(32);
+  });
+
+  it("the omitted mapping is the identity — the two-argument call keeps today's windows bit for bit", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-5": { hidden: true } } });
+    expect(ghostCues([before(), splitScene()], doc)).toEqual(
+      ghostCues([before(), splitScene()], doc, (sec) => sec),
+    );
+  });
+});
