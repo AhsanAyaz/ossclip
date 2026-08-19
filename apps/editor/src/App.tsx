@@ -19,6 +19,7 @@ import {
   type CaptionKeyMigration,
   type OverrideDoc,
   type SceneCue,
+  type Segment,
   type Theme,
 } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
@@ -201,6 +202,11 @@ export const App: React.FC = () => {
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
+  // Produce's labeled cutlist (cut review step 2) — read-only display data,
+  // fetched per project open like `runInfo` above, NOT part of `edits`: it is
+  // the pipeline's record of what it removed, not something the user edits
+  // (the veto layer is step 3). Timeline draws it as reason-coloured seams.
+  const [cleanupCutlist, setCleanupCutlist] = useState<Segment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -657,6 +663,17 @@ export const App: React.FC = () => {
     void fetch("/api/usage")
       .then(async (r) => setRunInfo(r.ok ? ((await r.json()) as RunInfo) : null))
       .catch(() => setRunInfo(null));
+    // Same posture for the labeled cutlist (cut review step 2): best-effort,
+    // and any failure — endpoint missing, corrupt file — degrades to "no
+    // removal seams", never an error state. The server already drops
+    // individually-bad spans through SegmentSchema, so this trusts the shape.
+    void fetch("/api/cleanup")
+      .then(async (r) =>
+        setCleanupCutlist(
+          r.ok ? (((await r.json()) as { cutlist?: Segment[] }).cutlist ?? []) : [],
+        ),
+      )
+      .catch(() => setCleanupCutlist([]));
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
     // progress, no logs, and no way to cancel it from the UI. Since
@@ -1730,6 +1747,9 @@ export const App: React.FC = () => {
         // `sourceToOutputClamped`; a NOT-YET-APPLIED cut's struck band
         // doesn't consume them at all.
         spans={live.spans ?? []}
+        // Produce's labeled removals (cut review step 2) — the seams also
+        // place through `spans`, same lookup as an applied cut's.
+        cleanup={cleanupCutlist}
         durationSec={live.outputDurationSec}
         fps={live.settings.fps}
         playerRef={playerRef}

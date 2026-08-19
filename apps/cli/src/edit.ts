@@ -30,6 +30,8 @@ import {
   PORTRAIT_MIME_TYPES,
   portraitMimeType,
   readCoverProvenance,
+  SegmentSchema,
+  type Segment,
   thumbnailImageCacheName,
   type CoverProvenance,
   type GenerateThumbnailImageOptions,
@@ -546,6 +548,37 @@ export async function startEditServer(
                 }
               : null,
           });
+        }
+
+        if (url.pathname === "/api/cleanup" && req.method === "GET") {
+          // The labeled removals (cut review step 2): produce already writes
+          // every cut it made — silences, pauses, fillers, retakes — into
+          // production.json's `cutlist`, a full partition of the SOURCE
+          // timeline; the editor only has to display them. Same lenient-read
+          // posture as /api/usage above: a missing or corrupt production.json
+          // degrades to an empty cutlist, never a 500 — the timeline simply
+          // draws no removal seams.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          let cutlist: Segment[] = [];
+          try {
+            const production = JSON.parse(
+              await readFile(join(workdir, "production.json"), "utf8"),
+            ) as { cutlist?: unknown };
+            if (Array.isArray(production.cutlist)) {
+              // Each span parses ALONE: a hand-edited production.json with
+              // one bad span (a string srcIn, a negative time) drops that
+              // span and keeps the rest, instead of either 500ing or letting
+              // a NaN through to position a seam off-screen. zod parse, not
+              // a cast — the house rule for anything a user can have edited.
+              cutlist = production.cutlist.flatMap((s) => {
+                const parsed = SegmentSchema.safeParse(s);
+                return parsed.success ? [parsed.data] : [];
+              });
+            }
+          } catch {
+            // degrade — same as /api/usage's readJson
+          }
+          return send(200, { cutlist });
         }
 
         if (url.pathname === "/api/workdir" && req.method === "POST") {

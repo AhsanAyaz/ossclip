@@ -52,4 +52,17 @@ export { mapFromKeptSpans, TimeMap, type KeptSpan } from "./timemap";
 // ./cover-headline, NOT ./cover — that module is node all the way down
 // (node:fs, ./exec), which is exactly what this surface exists to keep out.
 export { COVER_MAX_WORDS, coverHeadline } from "./cover-headline";
-export type { Probe, Production, RenderSettings, Segment, Transcript, Word } from "./schema";
+export type {
+  Probe,
+  Production,
+  // `RemovalReason` rides along with `Segment` (cut review step 2): the
+  // editor's reason→colour map is a `Record<RemovalReason, string>` precisely
+  // so a NEW reason in the vocabulary fails typecheck in the editor instead
+  // of silently drawing an uncoloured seam. Type-only — erases at compile
+  // time, so this surface stays free of the schema module at runtime.
+  RemovalReason,
+  RenderSettings,
+  Segment,
+  Transcript,
+  Word,
+} from "./schema";

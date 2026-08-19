@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
+import type { KeptSpan, SceneCue, Segment } from "@ossclip/core/browser";
+import { removalSeams } from "./cleanup";
 import {
   applySnap,
   clampTiming,
@@ -52,6 +53,15 @@ interface TimelineProps {
    * than no seam, per the re-review's Minor).
    */
   spans?: readonly KeptSpan[];
+  /**
+   * Produce's labeled cutlist (`production.json`, via GET /api/cleanup) —
+   * cut review step 2, display only. Every `remove` span draws as a
+   * reason-coloured seam marker at its output position; nothing here is
+   * clickable and nothing writes back yet (the veto layer is step 3).
+   * Optional/defaulted like `cuts`/`spans` so existing callers keep
+   * compiling unchanged.
+   */
+  cleanup?: readonly Segment[];
   durationSec: number;
   fps: number;
   playerRef: React.RefObject<PlayerRef | null>;
@@ -207,6 +217,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   ghosts,
   cuts = [],
   spans = [],
+  cleanup = [],
   durationSec,
   fps,
   playerRef,
@@ -947,6 +958,37 @@ export const Timeline: React.FC<TimelineProps> = ({
                 </div>
               );
             })}
+            {removalSeams(cleanup, spans).map((seam) => {
+              // Produce's own removals (cut review step 2): every cut the
+              // pipeline made, as a reason-coloured seam at the output
+              // instant where the material USED to be — same seam-not-band
+              // logic as the applied user cut above (a removal has zero
+              // output width by definition), and `removalSeams` inherits its
+              // "no spans, no seam" rule too. DISPLAY ONLY: hover discloses
+              // reason + removed duration via `title`; there is no handler
+              // and no stopPropagation, so a press falls through to the
+              // track's own seek exactly as if the marker weren't there.
+              // Coincident seams (adjacent removals with different reasons)
+              // fan out rightward by `stackIndex` so each stays hoverable.
+              const leftPct =
+                durationSec > 0
+                  ? Math.min(100, Math.max(0, (seam.outSec / durationSec) * 100))
+                  : 0;
+              return (
+                <div
+                  key={`removal-${seam.srcIn}-${seam.srcOut}`}
+                  data-testid={`timeline-removal-${seam.srcIn}-${seam.srcOut}`}
+                  title={seam.label}
+                  style={{
+                    ...removalSeamHit,
+                    left: `${leftPct}%`,
+                    marginLeft: -3 + seam.stackIndex * 7,
+                  }}
+                >
+                  <div style={{ ...removalSeamLine, background: seam.color }} />
+                </div>
+              );
+            })}
             {dragPreview ? (
               // The drag readout (precision-editing design, "The frames
               // readout"): m:ss:ff in the same units the transport shows,
@@ -1195,6 +1237,33 @@ const cutSeamLine: React.CSSProperties = {
   bottom: 0,
   width: 2,
   background: "#FF5C5C",
+  pointerEvents: "none",
+};
+
+/** A produce-removal seam's hover zone (cut review step 2). Narrower than the
+ * restore seam's 12px — it is NOT a click target, only a hover disclosure —
+ * and one level BELOW it (zIndex 3 vs 4): where a user's applied cut and a
+ * pipeline removal coincide, the actionable Restore must win the pointer.
+ * `pointerEvents: "auto"` only so the `title` tooltip fires; no handler, so
+ * presses bubble through to the track's seek untouched. */
+const removalSeamHit: React.CSSProperties = {
+  position: "absolute",
+  top: -4,
+  bottom: -4,
+  width: 6,
+  marginLeft: -3,
+  zIndex: 3,
+  pointerEvents: "auto",
+};
+
+/** The removal seam's paint — same thin-tick shape as `cutSeamLine`, but the
+ * colour is per-reason (`REMOVAL_REASON_COLOR`), applied at the call site. */
+const removalSeamLine: React.CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  top: 0,
+  bottom: 0,
+  width: 2,
   pointerEvents: "none",
 };
 

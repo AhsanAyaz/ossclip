@@ -1528,3 +1528,73 @@ describe("cover endpoints (editor panel, 2026-08-19)", () => {
     expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
   });
 });
+
+describe("GET /api/cleanup (cut review step 2, 2026-08-19)", () => {
+  const cleanupOf = async (url: string): Promise<{ status: number; cutlist: unknown[] }> => {
+    const res = await fetch(`${url}/api/cleanup`);
+    const body = (await res.json()) as { cutlist?: unknown[] };
+    return { status: res.status, cutlist: body.cutlist ?? [] };
+  };
+
+  it("serves the labeled cutlist produce wrote into production.json", async () => {
+    const dir = await fixtureWorkdir();
+    const cutlist = [
+      { srcIn: 0, srcOut: 8, kind: "keep" },
+      { srcIn: 8, srcOut: 11, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 11, srcOut: 20, kind: "keep" },
+    ];
+    await writeFile(join(dir, "production.json"), JSON.stringify({ cutlist }));
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const { status, cutlist: served } = await cleanupOf(server.url);
+    expect(status).toBe(200);
+    expect(served).toEqual(cutlist);
+  });
+
+  it("a hand-edited bad span drops ALONE — the rest of the cutlist survives it", async () => {
+    // The zod-per-span rule: one string srcIn must cost exactly one span,
+    // not the whole endpoint (a NaN through a cast would position a seam
+    // off-screen; a throw would 500 the read path).
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        cutlist: [
+          { srcIn: 0, srcOut: 8, kind: "keep" },
+          { srcIn: "eight", srcOut: 11, kind: "remove", reason: "pause" },
+          { srcIn: 11, srcOut: 20, kind: "remove", reason: "retake" },
+        ],
+      }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const { cutlist } = await cleanupOf(server.url);
+    expect(cutlist).toEqual([
+      { srcIn: 0, srcOut: 8, kind: "keep" },
+      { srcIn: 11, srcOut: 20, kind: "remove", reason: "retake" },
+    ]);
+  });
+
+  it("degrades to an empty cutlist when production.json is missing, corrupt, or cutlist-less", async () => {
+    // The /api/usage posture, verbatim: GET paths read leniently — the
+    // timeline draws no seams, the editor never sees a 500.
+    const missing = await fixtureWorkdir();
+    const corrupt = await fixtureWorkdir();
+    await writeFile(join(corrupt, "production.json"), "{ not json");
+    const cutless = await fixtureWorkdir();
+    await writeFile(join(cutless, "production.json"), JSON.stringify({ producer: "llm" }));
+    for (const dir of [missing, corrupt, cutless]) {
+      const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+      close = server.close;
+      expect(await cleanupOf(server.url)).toEqual({ status: 200, cutlist: [] });
+      server.close();
+      close = undefined;
+    }
+  });
+
+  it("409 with no workdir open, like every workdir endpoint", async () => {
+    const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/cleanup`)).status).toBe(409);
+  });
+});
