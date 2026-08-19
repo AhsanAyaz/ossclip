@@ -193,9 +193,9 @@ export type EditAction =
   /** The cleanup veto layer's category switch (cut review step 3) —
    * `enabled: false` writes `cleanup.reasons[reason] = false` ("keep all
    * pauses"); `enabled: true` DELETES the key, never writes `true` (the
-   * captionsHidden rule: a true entry restates the default). Takes effect on
-   * the next produce/Render — the preview marks rather than applies, same
-   * honesty as `cutChunk`. */
+   * captionsHidden rule: a true entry restates the default). Since cut
+   * review step 4 the preview PLAYS the veto live (App's `liveRecut`) as
+   * well as the next produce/Render applying it. */
   | { type: "setReasonEnabled"; reason: RemovalReason; enabled: boolean }
   /** One removal span's individual veto, SOURCE seconds (the schema's
    * recut-immune anchoring). Toggling OFF removes every `cleanup.kept` entry
@@ -451,8 +451,10 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // Soft like `hideScene`, but a DIFFERENT axis of soft — `hideScene`
       // only drops a graphic and keeps the window's duration; this marks
       // the WINDOW ITSELF for removal from the output, TAKE or SCENE alike,
-      // and takes effect on the next produce/Render (App.tsx's `live` memo
-      // never reads `doc.cuts` — see its own comment for why).
+      // and takes effect on the next produce/Render (App.tsx's live preview
+      // never APPLIES a fresh `doc.cuts` entry — its DECIDE comment has the
+      // `cuts[].src` reason; src-anchored entries it only carries through a
+      // veto re-cut so an already-applied cut stays applied).
       //
       // Writes ONLY `{startSec, endSec}` — never a `src` (the schema
       // comment on `OverrideDocSchema.cuts`, packages/core/src/overrides.ts:

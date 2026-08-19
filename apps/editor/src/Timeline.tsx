@@ -58,8 +58,10 @@ interface TimelineProps {
    * GET /api/cleanup) — cut review step 2's seams, toggleable since step 3.
    * Every `remove` span draws as a reason-coloured seam marker at its output
    * position; clicking a vetoable one toggles its veto (`edits.toggleKept`),
-   * and a vetoed seam renders hollow — the removal comes back on the next
-   * render. Optional/defaulted like `cuts`/`spans` so existing callers keep
+   * and a vetoed seam renders hollow. Since step 4 the `spans`/`durationSec`
+   * this component receives are the LIVE (post-veto) ones, so a vetoed
+   * seam's position is inside the revived material the player now plays.
+   * Optional/defaulted like `cuts`/`spans` so existing callers keep
    * compiling unchanged.
    */
   cleanup?: readonly Segment[];
@@ -971,9 +973,11 @@ export const Timeline: React.FC<TimelineProps> = ({
               // seam above — and stays one zIndex BELOW it, so where a
               // user's applied cut and a pipeline removal coincide the
               // actionable Restore keeps winning the pointer. A vetoed seam
-              // renders HOLLOW (outline, no fill) and dimmed: the honest
-              // marks-rather-than-applies state — the current preview still
-              // plays the cut, the material returns on the next render.
+              // renders HOLLOW (outline, no fill) and dimmed — and since cut
+              // review step 4 the preview genuinely PLAYS the kept material:
+              // this component's `spans`/`durationSec` come from the live
+              // (retimed) props, so the hollow seam sits at the revived
+              // span's own start inside a timeline that includes it.
               // `user`/`clip` seams stay handler-less hover disclosures, as
               // in step 2: `applyCleanupChoices` would ignore a veto on them
               // by contract, so offering the click would write dead weight.
@@ -984,9 +988,9 @@ export const Timeline: React.FC<TimelineProps> = ({
                   ? Math.min(100, Math.max(0, (seam.outSec / durationSec) * 100))
                   : 0;
               const title = seam.vetoed
-                ? `${seam.label} — declined: will be kept on next render (click to re-remove)`
+                ? `${seam.label} — declined: kept, playing in the preview (click to re-remove)`
                 : seam.vetoable
-                  ? `${seam.label} — click to keep this on the next render`
+                  ? `${seam.label} — click to keep this; the preview updates immediately`
                   : seam.label;
               return (
                 <div

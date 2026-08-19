@@ -15,7 +15,9 @@ import { sourceToOutputClamped } from "./timing";
  * not a band — so all the timeline needs is an output-time position, a
  * colour, and a label. Since step 3 the cutlist here is the PROPOSAL
  * (`production.cutlistProposed` via GET /api/cleanup), so a VETOED removal
- * still has a seam — hollow/dimmed, saying it comes back on the next render.
+ * still has a seam — hollow/dimmed. Since step 4 the `spans` handed in are
+ * the LIVE (post-veto) ones, so a vetoed seam clamps to the revived span's
+ * own start — the seam math needs no change, the input clock moved.
  */
 export interface RemovalSeam {
   /** SOURCE range produce removed — identity for keys/testids, stable across recuts. */
@@ -46,8 +48,9 @@ export interface RemovalSeam {
    * The user has DECLINED this removal (category switch or individual veto)
    * — computed through core's `vetoedRemovals`, the same predicate produce
    * re-keeps with, so the seam can never show a veto the render would not
-   * honour. Marks rather than applies: the current preview still plays the
-   * cut; the material returns on the next produce/Render.
+   * honour. Since step 4 the preview PLAYS a veto live (`livePreviewMap` +
+   * `retimeForPreview` in App's live memo); this flag is the seam's visual
+   * state, not the mark-only posture it was under step 3.
    */
   vetoed: boolean;
 }

@@ -56,9 +56,9 @@ export const CleanupPanel: React.FC<CleanupPanelProps> = ({ cutlist, edits, onCl
           </button>
         </div>
         <div style={subtitle}>
-          What produce removed, by reason. Untick a category to keep it — the change applies on
-          the next render, and individual removals can be kept by clicking their seam on the
-          timeline.
+          What produce removed, by reason. Untick a category to keep it — the preview plays
+          your choice immediately and the next render applies it. Individual removals can be
+          kept by clicking their seam on the timeline.
         </div>
         {summaries.length === 0 ? (
           <div data-testid="cleanup-empty" style={{ ...subtitle, marginTop: 16 }}>
@@ -83,7 +83,7 @@ export const CleanupPanel: React.FC<CleanupPanelProps> = ({ cutlist, edits, onCl
                   </span>
                   {enabled ? null : (
                     <span data-testid={`cleanup-declined-${s.reason}`} style={declinedNote}>
-                      kept on next render
+                      kept — live in the preview
                     </span>
                   )}
                 </label>

@@ -121,7 +121,9 @@ import {
 } from "@ossclip/core";
 import {
   applyCleanupChoices,
+  livePreviewMap,
   mapFromKeptSpans,
+  retimeForPreview,
   vetoedRemovals,
   type CleanupChoices,
 } from "@ossclip/core/browser";
@@ -246,5 +248,32 @@ describe("the agreement test: produce's spans and the editor's are the SAME comp
       const mid = (srcIn + srcOut) / 2;
       expect(resolved.find((s) => s.srcIn <= mid && mid < s.srcOut)?.kind).toBe("keep");
     }
+  });
+
+  it("the live preview's new clock agrees with produce's map — span for span, and in total (step 4)", () => {
+    // Produce's side: applyCleanupChoices -> new TimeMap(...), the exact
+    // sequence produce.ts runs. The editor's side: `livePreviewMap`, whose
+    // old spans are the last render-props' (here: the proposal applied).
+    const produceMap = new CoreTimeMap(coreApplyCleanupChoices(proposal, choices));
+    const clocks = livePreviewMap(proposal, choices, [], new CoreTimeMap(proposal).spans);
+    expect(clocks).not.toBeNull();
+    expect(clocks!.newMap.spans).toEqual(produceMap.spans);
+    expect(clocks!.newMap.outputDuration).toBe(produceMap.outputDuration);
+  });
+
+  it("caption fidelity across the live re-cut: same source moment on both clocks (step 4)", () => {
+    const clocks = livePreviewMap(proposal, choices, [], new CoreTimeMap(proposal).spans)!;
+    // A word at output 9 of the OLD clock (source 12 — past the vetoed
+    // pause, so it moves) retimed onto the new clock names the SAME source
+    // instant: the player shows the identical frame under the word.
+    const word = { text: "same", start: 9, end: 9.4, srcStart: 12 };
+    const { fields } = retimeForPreview(
+      { outputDurationSec: clocks.oldMap.outputDuration, captionLines: [{ start: 9, end: 9.4, words: [word] }], sceneCues: [] },
+      clocks.oldMap,
+      clocks.newMap,
+    );
+    const after = fields.captionLines[0]!.words[0]!;
+    expect(clocks.newMap.toSource(after.start)).toBeCloseTo(clocks.oldMap.toSource(word.start), 9);
+    expect(after.srcStart).toBe(word.srcStart);
   });
 });

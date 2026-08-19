@@ -1,0 +1,203 @@
+/**
+ * The editor's live post-veto preview (cut review step 4): when the user
+ * declines a removal produce proposed, the preview's own timeline is re-cut
+ * so the player actually PLAYS the revived material, immediately, instead of
+ * marking a seam that only the next render honours.
+ *
+ * Cleanup vetoes ONLY. User `cuts[]` stay marked-not-applied, exactly the
+ * step-3 posture, for two reasons that are not the retired "no client-side
+ * TimeMap" one:
+ *  - produce alone resolves a fresh cut's `src` (the `cuts[].src` schema
+ *    contract, overrides.ts) — the editor must never apply a cut whose
+ *    source range only produce can resolve;
+ *  - a veto RESTORES content the mezzanine already has, so the editor can
+ *    honestly play it; a cut REMOVES content, and the struck band already
+ *    communicates that honestly.
+ *
+ * Pure and browser-safe by construction (the cover-headline.ts split): this
+ * module's whole import graph — cutlist, recut, timemap, and types — has
+ * zero node built-ins, so it rides `@ossclip/core/browser` into the editor
+ * bundle, and every function here is testable without a TTY or a filesystem.
+ */
+
+import type { CaptionLine } from "./captions";
+import { applyCleanupChoices, type CleanupChoices } from "./cutlist";
+import { remapPoint, subtractRangesFromCutlist, type UserCut } from "./recut";
+import type { SceneCue } from "./scene-schema";
+import type { Segment } from "./schema";
+import { mapFromKeptSpans, mapsClose, TimeMap, type KeptSpan } from "./timemap";
+import type { ZoomSegment } from "./zoom";
+
+/** `applyUserCuts`'s EPS — a JSON round-trip plus TimeMap arithmetic is
+ * noise, a real veto is never under a millisecond. */
+const EPS = 1e-6;
+
+/** Both clocks the retime needs: the one the current render-props are timed
+ * against, and the one the user's cleanup choices produce. */
+export interface LivePreviewClocks {
+  oldMap: TimeMap;
+  newMap: TimeMap;
+}
+
+/**
+ * Whether the current cleanup choices change the timeline at all — and the
+ * two clocks to retime through when they do. `null` is the identity signal:
+ * the caller must hand the props through UNTOUCHED (the regression anchor —
+ * a doc with no live veto must leave the preview byte-identical to today's).
+ *
+ * The new clock is produce's own sequence, same functions, same order:
+ * `applyCleanupChoices(proposal, choices)` then user cuts subtract from the
+ * result (`subtractRangesFromCutlist`), so a user cut drawn over a vetoed
+ * pause still cuts here exactly as it does in produce. Only cuts whose `src`
+ * is already resolved subtract — a fresh cut's source range is produce's
+ * alone to resolve (`resolveCutSourceRanges` needs the prior render-props
+ * frame), and that cut is still marked-not-applied on the timeline anyway.
+ * Skipping the subtraction entirely would be worse than incomplete: every
+ * ALREADY-APPLIED cut (src resolved by a past produce, absent from
+ * `oldSpans`) would silently come back the moment any veto went live.
+ *
+ * `null` on any degenerate input — no proposal, no old spans, choices with
+ * no actual veto — and on a proposal `TimeMap`'s constructor rejects (a
+ * hand-mangled production.json): the preview degrades to step 3's honest
+ * marks-rather-than-applies, never a crash, the same lenient posture as
+ * GET /api/cleanup itself.
+ */
+export function livePreviewMap(
+  proposal: readonly Segment[],
+  choices: CleanupChoices | undefined,
+  cuts: readonly UserCut[],
+  oldSpans: readonly KeptSpan[],
+): LivePreviewClocks | null {
+  // "Non-empty" means a veto actually present — a `reasons` map of tolerated
+  // `true` entries restates the default (the schema comment) and must take
+  // the cheap exact exit, not a float comparison of two equal maps.
+  const hasVeto =
+    Object.values(choices?.reasons ?? {}).some((v) => v === false) ||
+    (choices?.kept?.length ?? 0) > 0;
+  if (!hasVeto) return null;
+  if (proposal.length === 0 || oldSpans.length === 0) return null;
+  try {
+    const rekept = applyCleanupChoices(proposal, choices);
+    const ranges = cuts.flatMap((c) =>
+      c.src && c.src.endSec > c.src.startSec
+        ? [{ start: c.src.startSec, end: c.src.endSec }]
+        : [],
+    );
+    const newMap = new TimeMap(subtractRangesFromCutlist(rekept, ranges));
+    const oldMap = mapFromKeptSpans(oldSpans);
+    // Choices that change nothing (a veto already baked into the last
+    // produce's spans, a kept range overlapping no removal) are identity.
+    if (mapsClose(oldMap, newMap, EPS)) return null;
+    return { oldMap, newMap };
+  } catch {
+    return null;
+  }
+}
+
+/** The output-timed subset of the render props the retime reads. Structural
+ * on purpose — the renderer's `ProductionCompProps` satisfies it without
+ * core importing the renderer package. */
+export interface RetimeablePreviewProps {
+  outputDurationSec: number;
+  captionLines: readonly CaptionLine[];
+  sceneCues: readonly SceneCue[];
+  zoomPlan?: readonly ZoomSegment[];
+  ctaWindow?: { startSec: number; endSec: number };
+  sourceTextRegions?: readonly { y: number; h: number; startSec: number; endSec: number }[];
+}
+
+/** Exactly the fields `retimeForPreview` re-timed — the caller spreads them
+ * over the full props (`{ ...props, ...fields }`), so fields this function
+ * never touches (theme, face, framingTimeline — all source-timed or
+ * timeless) cannot be accidentally rewritten here. */
+export interface RetimedPreviewFields {
+  spans: KeptSpan[];
+  outputDurationSec: number;
+  captionLines: CaptionLine[];
+  sceneCues: SceneCue[];
+  zoomPlan?: ZoomSegment[];
+  ctaWindow?: { startSec: number; endSec: number };
+  sourceTextRegions?: { y: number; h: number; startSec: number; endSec: number }[];
+  punch: { scale: number; allowed: boolean[] };
+}
+
+export interface RetimedPreview {
+  fields: RetimedPreviewFields;
+  reports: string[];
+}
+
+/**
+ * Re-time every output-timed render prop from `oldMap`'s clock onto
+ * `newMap`'s: old-output → source → new-output, `remapPoint`'s exact
+ * algorithm — the same one produce re-anchors splits and pins with.
+ *
+ * Vetoes only ever ADD time back (a removal becomes a keep), so every moment
+ * the old clock could express survives on the new one and maps exactly. The
+ * clamped fallback still stands behind each point (`toOutputClamped`'s
+ * documented role) for the one direction that can remove time: the old spans
+ * carrying a veto the doc no longer holds — a moment inside it snaps to the
+ * nearest kept edge and is reported, never silently dropped.
+ *
+ * Word `srcStart` is already SOURCE time (§137's recut-immune key) and is
+ * carried untouched. `punch` comes back provably inert — `{scale: 1,
+ * allowed: []}`: `punchScalesFor` (punch-plan.ts) renders an allowed span's
+ * punched turn at `scale`, and scale 1 is no visible punch; an empty mask
+ * reads all-allowed, which is exactly what makes scale the only knob. It
+ * cannot pass through: `punch.allowed` is INDEXED PER SPAN, the new span
+ * list has different indices, and the face-only verdict that built the mask
+ * cannot be recomputed client-side — a punch on the wrong span (a screen
+ * share sliding) is worse than no punch for the preview's duration. The
+ * zoom plan, by contrast, IS remapped: its segments are pure output time
+ * (`zoomScaleAt` consults nothing but `startSec`/`endSec`), and a revived
+ * stretch simply falls outside every segment, which `zoomScaleAt` already
+ * renders as the static camera.
+ */
+export function retimeForPreview(
+  props: RetimeablePreviewProps,
+  oldMap: TimeMap,
+  newMap: TimeMap,
+): RetimedPreview {
+  const reports: string[] = [];
+  const at = (label: string, t: number): number => remapPoint(label, t, oldMap, newMap, reports);
+  const fields: RetimedPreviewFields = {
+    spans: newMap.spans.map((s) => ({ ...s })),
+    outputDurationSec: newMap.outputDuration,
+    captionLines: props.captionLines.map((line, i) => ({
+      ...line,
+      start: at(`caption line ${i + 1} start`, line.start),
+      end: at(`caption line ${i + 1} end`, line.end),
+      words: line.words.map((w) => ({
+        ...w,
+        start: at(`caption word "${w.text}" start`, w.start),
+        end: at(`caption word "${w.text}" end`, w.end),
+      })),
+    })),
+    sceneCues: props.sceneCues.map((c) => ({
+      ...c,
+      startSec: at(`scene "${c.id}" start`, c.startSec),
+      endSec: at(`scene "${c.id}" end`, c.endSec),
+    })),
+    punch: { scale: 1, allowed: [] },
+  };
+  if (props.zoomPlan) {
+    fields.zoomPlan = props.zoomPlan.map((seg, i) => ({
+      ...seg,
+      startSec: at(`zoom segment ${i + 1} start`, seg.startSec),
+      endSec: at(`zoom segment ${i + 1} end`, seg.endSec),
+    }));
+  }
+  if (props.ctaWindow) {
+    fields.ctaWindow = {
+      startSec: at("CTA window start", props.ctaWindow.startSec),
+      endSec: at("CTA window end", props.ctaWindow.endSec),
+    };
+  }
+  if (props.sourceTextRegions) {
+    fields.sourceTextRegions = props.sourceTextRegions.map((r, i) => ({
+      ...r,
+      startSec: at(`source text region ${i + 1} start`, r.startSec),
+      endSec: at(`source text region ${i + 1} end`, r.endSec),
+    }));
+  }
+  return { fields, reports };
+}

@@ -45,7 +45,11 @@ export {
 // types only). The editor's load-path repair needs the MAP, not the raw span
 // array, to decide whether a repair is possible at all — see
 // `anchorCaptionLines` (§137): a non-empty array can still build an empty map.
-export { mapFromKeptSpans, TimeMap, type KeptSpan } from "./timemap";
+// `mapsClose` rides along since cut review step 4: the editor's playhead
+// hand-off across a live re-cut needs "did the clock actually change" to be
+// the SAME float-tolerant comparison `livePreviewMap`'s identity gate uses,
+// or a 1-ulp drift could seek the player for nothing.
+export { mapFromKeptSpans, mapsClose, TimeMap, type KeptSpan } from "./timemap";
 // The §35 cover word cap. The editor's CoverPanel shows the trimmed headline
 // live as you type, and restating the trimming rules there would drift from
 // the one the regenerate endpoint actually renders with. Imported from
@@ -67,6 +71,21 @@ export {
   vetoedRemovals,
   type CleanupChoices,
 } from "./cutlist";
+// The live post-veto preview (cut review step 4), VALUE exports and
+// browser-safe: retime-preview.ts composes cutlist + recut + timemap — all
+// already in this surface's runtime graph (recut.ts imports only overrides
+// and timemap, zero node built-ins, verified before this export). The editor
+// re-cuts its preview clock with the SAME `applyCleanupChoices` +
+// `subtractRangesFromCutlist` sequence produce runs and re-times every prop
+// through the SAME `remapPoint` produce re-anchors with — one implementation,
+// two callers, so the preview cannot drift from the render.
+export {
+  livePreviewMap,
+  retimeForPreview,
+  type LivePreviewClocks,
+  type RetimeablePreviewProps,
+  type RetimedPreviewFields,
+} from "./retime-preview";
 export type {
   Probe,
   Production,
