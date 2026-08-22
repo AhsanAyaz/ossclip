@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
+import type { KeptSpan, SceneCue, Segment } from "@ossclip/core/browser";
+import { removalSeams } from "./cleanup";
 import {
   applySnap,
   clampTiming,
@@ -52,6 +53,18 @@ interface TimelineProps {
    * than no seam, per the re-review's Minor).
    */
   spans?: readonly KeptSpan[];
+  /**
+   * Produce's labeled cutlist PROPOSAL (`production.cutlistProposed`, via
+   * GET /api/cleanup) — cut review step 2's seams, toggleable since step 3.
+   * Every `remove` span draws as a reason-coloured seam marker at its output
+   * position; clicking a vetoable one toggles its veto (`edits.toggleKept`),
+   * and a vetoed seam renders hollow. Since step 4 the `spans`/`durationSec`
+   * this component receives are the LIVE (post-veto) ones, so a vetoed
+   * seam's position is inside the revived material the player now plays.
+   * Optional/defaulted like `cuts`/`spans` so existing callers keep
+   * compiling unchanged.
+   */
+  cleanup?: readonly Segment[];
   durationSec: number;
   fps: number;
   playerRef: React.RefObject<PlayerRef | null>;
@@ -64,6 +77,20 @@ interface TimelineProps {
   /** Output→source time, through the spans — a filmstrip frame must come
    * from the SOURCE second actually playing at that point of the cut. */
   toSourceSec?: (outSec: number) => number;
+  /**
+   * OLD-clock output seconds → the live (player) clock this ruler draws
+   * (cut review step 4 follow-up, the struck band's DISPLAY half): a
+   * NOT-YET-APPLIED cut's `startSec`/`endSec` speak the LAST RENDER's own
+   * output seconds (the `OverrideDocSchema.cuts` contract the writers now
+   * hold to), but under a live cleanup veto `durationSec`/`spans` here are
+   * the re-cut NEW clock — unmapped, a band past a revived pause strikes
+   * through content the revived seconds off its true window. App threads
+   * `previewClockMappers(liveRecut).toLive`, exact for every live veto
+   * (vetoes only ADD time back). Identity default, same back-compat rule as
+   * `toSourceSec`; the APPLIED-cut seam never needs it — that one places by
+   * `src` through the live `spans` already.
+   */
+  toLive?: (sec: number) => number;
 }
 
 interface DragState {
@@ -207,6 +234,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   ghosts,
   cuts = [],
   spans = [],
+  cleanup = [],
   durationSec,
   fps,
   playerRef,
@@ -215,6 +243,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   edits,
   videoSrc,
   toSourceSec,
+  toLive = (sec: number): number => sec,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -872,14 +901,19 @@ export const Timeline: React.FC<TimelineProps> = ({
 
               if (!cut.src) {
                 // NOT YET APPLIED: the material is genuinely still on
-                // screen, at `startSec`/`endSec` in THIS render-props' own
-                // frame — today's struck band + Restore, unchanged. Both
-                // ends clamp into [0, durationSec] (the review's "clamp all
-                // cut visuals to the timeline width regardless") in case an
-                // EARLIER produce run already shortened the timeline out
-                // from under a cut nobody has restored yet.
-                const clampedStart = Math.min(Math.max(cut.startSec, 0), durationSec);
-                const clampedEnd = Math.min(Math.max(cut.endSec, 0), durationSec);
+                // screen, at `startSec`/`endSec` in the LAST RENDER's own
+                // frame — drawn at `toLive(...)` (the prop doc: under a live
+                // veto this ruler is the re-cut NEW clock, and the unmapped
+                // band struck through content the revived seconds off), the
+                // identity when no veto is live. Both ends then clamp into
+                // [0, durationSec] (the review's "clamp all cut visuals to
+                // the timeline width regardless") in case an EARLIER produce
+                // run already shortened the timeline out from under a cut
+                // nobody has restored yet. The key/testid keep the DOC's own
+                // numbers — they identify the entry, not its pixels, and the
+                // no-veto path must stay bit-identical.
+                const clampedStart = Math.min(Math.max(toLive(cut.startSec), 0), durationSec);
+                const clampedEnd = Math.min(Math.max(toLive(cut.endSec), 0), durationSec);
                 const left = pct(clampedStart);
                 const width =
                   durationSec > 0
@@ -944,6 +978,80 @@ export const Timeline: React.FC<TimelineProps> = ({
                   style={{ ...cutSeamHit, left: `${seamPct}%` }}
                 >
                   <div style={cutSeamLine} />
+                </div>
+              );
+            })}
+            {removalSeams(cleanup, spans, edits.doc.cleanup).map((seam) => {
+              // Produce's own removals (cut review step 2): every cut the
+              // pipeline PROPOSED, as a reason-coloured seam at the output
+              // instant where the material used to be — same seam-not-band
+              // logic as the applied user cut above (a removal has zero
+              // output width by definition), and `removalSeams` inherits its
+              // "no spans, no seam" rule too. Since step 3 a VETOABLE seam
+              // takes a click: toggleKept writes/removes the SOURCE-second
+              // veto (`cleanup.kept`), same mousedown idiom as the restore
+              // seam above — and stays one zIndex BELOW it, so where a
+              // user's applied cut and a pipeline removal coincide the
+              // actionable Restore keeps winning the pointer. A vetoed seam
+              // renders HOLLOW (outline, no fill) and dimmed — and since cut
+              // review step 4 the preview genuinely PLAYS the kept material:
+              // this component's `spans`/`durationSec` come from the live
+              // (retimed) props, so the hollow seam sits at the revived
+              // span's own start inside a timeline that includes it.
+              // `user`/`clip` seams stay handler-less hover disclosures, as
+              // in step 2: `applyCleanupChoices` would ignore a veto on them
+              // by contract, so offering the click would write dead weight.
+              // Coincident seams (adjacent removals with different reasons)
+              // fan out rightward by `stackIndex` so each stays hoverable.
+              const leftPct =
+                durationSec > 0
+                  ? Math.min(100, Math.max(0, (seam.outSec / durationSec) * 100))
+                  : 0;
+              const title = seam.vetoed
+                ? `${seam.label} — declined: kept, playing in the preview (click to re-remove)`
+                : seam.vetoable
+                  ? `${seam.label} — click to keep this; the preview updates immediately`
+                  : seam.label;
+              return (
+                <div
+                  key={`removal-${seam.srcIn}-${seam.srcOut}`}
+                  data-testid={`timeline-removal-${seam.srcIn}-${seam.srcOut}`}
+                  {...(seam.vetoed ? { "data-vetoed": "true" } : {})}
+                  title={title}
+                  {...(seam.vetoable
+                    ? {
+                        onMouseDown: (e: React.MouseEvent) => {
+                          // The restore seam's own idiom: act on mousedown,
+                          // stopPropagation so the track underneath doesn't
+                          // also seek-and-scrub.
+                          e.stopPropagation();
+                          e.preventDefault();
+                          edits.toggleKept(seam.srcIn, seam.srcOut);
+                        },
+                      }
+                    : {})}
+                  style={{
+                    ...removalSeamHit,
+                    ...(seam.vetoable ? { cursor: "pointer" } : {}),
+                    left: `${leftPct}%`,
+                    marginLeft: -3 + seam.stackIndex * 7,
+                  }}
+                >
+                  <div
+                    style={
+                      seam.vetoed
+                        ? // Hollow + dimmed: the veto's own look — an outline
+                          // where the filled tick was, so "declined" reads at
+                          // a glance without hovering.
+                          {
+                            ...removalSeamLine,
+                            background: "transparent",
+                            border: `1px solid ${seam.color}`,
+                            opacity: 0.55,
+                          }
+                        : { ...removalSeamLine, background: seam.color }
+                    }
+                  />
                 </div>
               );
             })}
@@ -1195,6 +1303,34 @@ const cutSeamLine: React.CSSProperties = {
   bottom: 0,
   width: 2,
   background: "#FF5C5C",
+  pointerEvents: "none",
+};
+
+/** A produce-removal seam's hit zone (cut review step 2, clickable for
+ * vetoable reasons since step 3). Narrower than the restore seam's 12px —
+ * the veto toggle is a smaller decision than restoring a user's own cut —
+ * and one level BELOW it (zIndex 3 vs 4): where a user's applied cut and a
+ * pipeline removal coincide, the actionable Restore must win the pointer.
+ * `cursor: pointer` is added per-seam at the call site, only when the seam
+ * actually takes a click (`user`/`clip` seams remain hover disclosures). */
+const removalSeamHit: React.CSSProperties = {
+  position: "absolute",
+  top: -4,
+  bottom: -4,
+  width: 6,
+  marginLeft: -3,
+  zIndex: 3,
+  pointerEvents: "auto",
+};
+
+/** The removal seam's paint — same thin-tick shape as `cutSeamLine`, but the
+ * colour is per-reason (`REMOVAL_REASON_COLOR`), applied at the call site. */
+const removalSeamLine: React.CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  top: 0,
+  bottom: 0,
+  width: 2,
   pointerEvents: "none",
 };
 

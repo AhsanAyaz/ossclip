@@ -99,7 +99,37 @@ export const ClipBeatSheetSchema = BeatSheetSchema.extend({
   ),
 });
 
-export const PRODUCER_SYSTEM = `You are the producer for a short-form vertical video (Reels/Shorts/TikTok). You receive a word-indexed transcript of a talking-head take that has already been cut. Your job is EDITORIAL: segment the take into moments, pick which moments deserve a graphic scene, and write the on-screen copy.
+/**
+ * Bump whenever `producerSystem`/`buildBeatsUserPrompt` change what they ask
+ * for: a prompt change changes the answer, so the beat-sheet/scenes cache key
+ * carries this (the §78 cache-key posture, same role as
+ * YOUTUBE_PROMPT_VERSION) — an old cached sheet must not survive a new prompt.
+ *
+ * v2: the system prompt stopped calling every output "vertical" (see
+ * `producerSystem`).
+ */
+export const PRODUCER_PROMPT_VERSION = "v2";
+
+/**
+ * The editorial system prompt, in the shape the output actually has.
+ *
+ * The opening sentence used to hardcode "short-form vertical video
+ * (Reels/Shorts/TikTok)" for every run, while `buildBeatsUserPrompt` has told
+ * 16:9 runs "Output frame: LANDSCAPE 16:9" since R21 §101 — so a landscape
+ * produce handed the model two contradictory descriptions of the same frame
+ * and left it to reconcile them (confirmed on a live 16:9 run, 2026-08).
+ *
+ * ONLY that sentence varies. Everything below it is the tuned 9:16 wording,
+ * byte-identical, and the portrait default must stay byte-identical to what
+ * shipped — the virality grammar was tuned against real runs of it, and a
+ * silent reword is a silent re-tune.
+ */
+export function producerSystem(aspect?: "9:16" | "16:9"): string {
+  const shape =
+    aspect === "16:9"
+      ? "a landscape video (YouTube)"
+      : "a short-form vertical video (Reels/Shorts/TikTok)";
+  return `You are the producer for ${shape}. You receive a word-indexed transcript of a talking-head take that has already been cut. Your job is EDITORIAL: segment the take into moments, pick which moments deserve a graphic scene, and write the on-screen copy.
 
 Virality grammar — follow these as hard policies:
 - The first moment is the hook: the strongest claim or number anywhere in the take, on screen within 2 seconds.
@@ -115,10 +145,19 @@ Virality grammar — follow these as hard policies:
 - The transcript is ASR output and may contain mishearings: an unfamiliar proper noun is more likely a mistranscription of a common phrase than a real entity — write on-screen copy with the common-sense reading, never a suspected mishearing.
 - FRAMING: when the prompt carries a "Camera framing" brief, it is measured from the footage and is a HARD constraint: on words marked CLOSE, never choose a layout listed as UNAVAILABLE there — pick a \`layout\` that keeps the whole head in frame (pip-bubble, graphic-only, full-bleed) or leave the moment as "none". You may set \`layout\` on any moment; omit it to accept the component's default.
 - COVER: also write \`coverText\` — the hook compressed to a thumbnail headline, AT MOST ${COVER_MAX_WORDS} WORDS. It is read at a glance in a profile grid, so it must stand alone without the video: the claim or the number, no lead-in, no ellipsis.`;
+}
+
+/**
+ * The portrait prompt, kept as a named export because it is part of
+ * @ossclip/core's public surface (`export * from "./producer/beats"`) and
+ * removing it would break an importer for nothing. Equal to
+ * `producerSystem()` by construction — never a second copy of the text.
+ */
+export const PRODUCER_SYSTEM = producerSystem();
 
 /**
  * The `--clip` request, appended to the USER prompt (R19 §93d). The tuned
- * PRODUCER_SYSTEM stays untouched — this adds the window request without
+ * system prompt stays untouched — this adds the window request without
  * rewriting the editorial instructions the beat sheet already follows.
  */
 export function buildClipAddendum(targetSec: number): string {
@@ -508,7 +547,9 @@ export async function generateBeatSheet(
     // Same editorial call, extended schema (R19 §93d) — the highlight and the
     // beat sheet come from ONE judgement, so they cannot disagree.
     const raw = await provider.complete({
-      system: PRODUCER_SYSTEM,
+      // Same aspect the user prompt was built with — the two halves of one
+      // call must describe the same frame.
+      system: producerSystem(aspect),
       user,
       schema: ClipBeatSheetSchema,
       schemaName: "clip_beat_sheet",
@@ -517,7 +558,7 @@ export async function generateBeatSheet(
     return { ...normalizeBeatSheet(raw, transcript, null), asked, highlight: raw.highlight };
   }
   const raw = await provider.complete({
-    system: PRODUCER_SYSTEM,
+    system: producerSystem(aspect),
     user,
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",

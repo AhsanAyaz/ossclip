@@ -15,10 +15,19 @@ import {
   splitCues,
   resolveTheme,
   defaultTheme,
+  cutRangeToOldClock,
+  livePreviewMap,
+  mapFromKeptSpans,
+  mapsClose,
+  previewClockMappers,
+  retimeForPreview,
   type AppliedCaptionEdits,
+  type LivePreviewClocks,
+  type TimeMap,
   type CaptionKeyMigration,
   type OverrideDoc,
   type SceneCue,
+  type Segment,
   type Theme,
 } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
@@ -34,6 +43,7 @@ import type { DeleteWordsPlan } from "./deleteWords";
 import { ProjectPicker } from "./ProjectPicker";
 import { RenderModal } from "./RenderModal";
 import { ThumbnailPanel } from "./ThumbnailPanel";
+import { CleanupPanel } from "./CleanupPanel";
 import { YoutubePanel } from "./YoutubePanel";
 import { CoverPanel } from "./CoverPanel";
 import {
@@ -174,6 +184,16 @@ export const App: React.FC = () => {
   // banner rather than an inline RenderModal error because the plain Render
   // button hits this path too, with no modal open to show anything in.
   const [renderRefusedNotice, setRenderRefusedNotice] = useState<string | null>(null);
+  // A gesture the OLD clock cannot express (cut review step 4 follow-up,
+  // WRITE direction): a ⌘B split or a cut aimed at REVIVED material — a
+  // vetoed pause the last render cut away, so the moment has no old-clock
+  // preimage for the doc's own time slots (`splits[].at`,
+  // `cuts[].startSec/endSec` both speak the last render's output seconds).
+  // Refused OUT LOUD rather than silently clamped to the seam — relocating a
+  // user's split unasked is the silent-overwrite class the override doc
+  // fights. Same posture as the two notices above, and for the same reason:
+  // routine, dismissible, never `setError`'s fatal full-screen view.
+  const [clockRefusedNotice, setClockRefusedNotice] = useState<string | null>(null);
   // Caption edits the §137 key migration could not place when this doc was
   // loaded. They are NOT in the doc any more (the migration reports rather
   // than guesses), so this state is the only record of them — set on every
@@ -201,6 +221,14 @@ export const App: React.FC = () => {
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
+  // Produce's labeled cutlist PROPOSAL (cut review steps 2+3) — read-only
+  // display data, fetched per project open like `runInfo` above, NOT part of
+  // `edits`: it is the pipeline's record of what it PROPOSED to remove; the
+  // user's response to it lives in `edits.doc.cleanup` (the veto layer), and
+  // the two only meet through `applyCleanupChoices`/`vetoedRemovals` — the
+  // same pure functions produce renders with. Timeline draws it as
+  // reason-coloured seams; CleanupPanel derives its per-reason checkboxes.
+  const [cleanupCutlist, setCleanupCutlist] = useState<Segment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -408,6 +436,11 @@ export const App: React.FC = () => {
   // or not --youtube ran, and filing it under YouTube would tell users it
   // belongs to a feature they may never turn on.
   const [showCover, setShowCover] = useState(false);
+  // The cleanup review panel (cut review step 3) — UNLIKE the three panels
+  // above it edits the overrides doc (cleanup.reasons through useEdits), so
+  // undo/redo/dirty/save all apply to its checkboxes; only the open/closed
+  // state lives here.
+  const [showCleanup, setShowCleanup] = useState(false);
   useEffect(() => {
     if (!showYoutubeMenu) return;
     // Esc closes the menu the way it closes the panels (capture-phase, so
@@ -657,6 +690,17 @@ export const App: React.FC = () => {
     void fetch("/api/usage")
       .then(async (r) => setRunInfo(r.ok ? ((await r.json()) as RunInfo) : null))
       .catch(() => setRunInfo(null));
+    // Same posture for the labeled cutlist (cut review step 2): best-effort,
+    // and any failure — endpoint missing, corrupt file — degrades to "no
+    // removal seams", never an error state. The server already drops
+    // individually-bad spans through SegmentSchema, so this trusts the shape.
+    void fetch("/api/cleanup")
+      .then(async (r) =>
+        setCleanupCutlist(
+          r.ok ? (((await r.json()) as { cutlist?: Segment[] }).cutlist ?? []) : [],
+        ),
+      )
+      .catch(() => setCleanupCutlist([]));
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
     // progress, no logs, and no way to cancel it from the UI. Since
@@ -842,23 +886,51 @@ export const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dropNoticeSignature]);
 
-  // DECIDE (PLAN 2026-08-04 Task 4c): this memo deliberately never reads
-  // `edits.doc.cuts`. A cut removes an output-second RANGE and shifts every
-  // scene after it — the same reshaping `produce.ts`'s `buildCutlist` +
-  // `TimeMap` + `assembleScenes` does server-side. Reproducing that here
-  // would mean a second EDL implementation in the browser (the brief's own
-  // explicit "don't"), and there is nothing cheap to lean on instead: this
-  // memo's `renderProps.spans`/`outputDurationSec` describe the LAST
-  // produce run's timeline, not a live re-cut one, and the editor has no
-  // client-side TimeMap to rebuild a post-cut version from (only
-  // `render-props.json`'s `spans`, which is `produce.ts`'s OUTPUT, not
-  // something a cut can be subtracted from without the same server-side
-  // machinery). The honest v1: a cut renders as a marked-dead region
-  // (Timeline's struck-through overlay, fed straight from `edits.doc.cuts`
-  // below) that TAKES EFFECT on the next produce/Render, which already
-  // subtracts it correctly (Task 4b) — never silently pretending the live
-  // preview reflects a cut it can't actually apply.
-  const live = useMemo<PlayerProductionProps | null>(() => {
+  // The live clock (cut review step 4): non-null exactly when the user's
+  // cleanup vetoes actually change the timeline — `livePreviewMap` owns the
+  // gate (empty choices, a veto already baked into these render-props, and a
+  // degenerate proposal all answer null), and null means the `live` memo
+  // below hands its props through UNTOUCHED, the regression anchor. The
+  // clocks are produce's own functions end to end (`applyCleanupChoices` +
+  // `subtractRangesFromCutlist` + `TimeMap`), so the preview's re-cut and
+  // the next render's cannot drift.
+  const liveRecut = useMemo<LivePreviewClocks | null>(() => {
+    if (!renderProps) return null;
+    return livePreviewMap(
+      cleanupCutlist,
+      edits.doc.cleanup,
+      edits.doc.cuts,
+      renderProps.spans ?? [],
+    );
+  }, [renderProps, cleanupCutlist, edits.doc.cleanup, edits.doc.cuts]);
+
+  // The two clocks as POINT mappers (step 4 follow-up): `retimeForPreview`
+  // below moves the player's PROPS onto the new clock in one batch, but three
+  // surfaces still spoke single instants against the OLD one — the
+  // transcript's word times, the ghost cues' windows, and the cover panel's
+  // playhead — each offset by exactly the revived seconds before it while a
+  // veto was live. One derivation, threaded as plain functions, so no
+  // consumer learns the recut machinery; identity (literally `(sec) => sec`)
+  // whenever `liveRecut` is null, the same regression anchor as the memo
+  // below — a session with no veto computes bit-identical values to before.
+  const clock = useMemo(() => previewClockMappers(liveRecut), [liveRecut]);
+
+  // DECIDE (PLAN 2026-08-04 Task 4c, revised by cut review step 4): this
+  // memo still never applies `edits.doc.cuts` — but the original refusal
+  // gave two reasons, and only one survived. "The editor has no client-side
+  // TimeMap to rebuild a post-cut version from" is RETIRED: `livePreviewMap`
+  // above builds exactly that, and the retime at the bottom of this memo
+  // plays cleanup vetoes live. "A second EDL implementation in the browser"
+  // stays refused — the live clock is the SAME `applyCleanupChoices`/
+  // `TimeMap`/`remapPoint` produce runs, imported from core, one
+  // implementation with two callers. User cuts remain marked-not-applied
+  // (the struck band, effective on the next produce/Render) for two reasons
+  // of their own: a fresh cut's `src` is produce's alone to resolve (the
+  // `cuts[].src` schema contract — the editor must never apply a cut whose
+  // source range only produce can resolve), and a cut REMOVES content, which
+  // the struck band already communicates honestly, while a veto RESTORES
+  // content the mezzanine already has, so the player can honestly play it.
+  const liveRetimed = useMemo<{ props: PlayerProductionProps; reports: string[] } | null>(() => {
     if (!renderProps) return null;
     // Always merge onto the PRISTINE base, never onto `renderProps.sceneCues`/
     // `theme` themselves — those are what `produce` actually rendered (its
@@ -916,7 +988,7 @@ export const App: React.FC = () => {
         c.id === graphicPreview.sceneId ? { ...c, graphicRect: graphicPreview.rect } : c,
       );
     }
-    return {
+    const base: PlayerProductionProps = {
       ...renderProps,
       sceneCues: previewed,
       // POST-timing lines (post-hide until 2026-08-18): a caption-only word
@@ -936,7 +1008,66 @@ export const App: React.FC = () => {
         renderProps.captionsHiddenByFlag === true || edits.doc.captionsHidden === true,
       videoFileName: `/media/${renderProps.videoFileName}`,
     };
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming]);
+    // Cut review step 4, LAST — a final transform over the fully-merged
+    // props, so every layer above (overrides, splits, fill, captions,
+    // previews) keeps reasoning on the old clock it was written against and
+    // only the finished result moves. `liveRecut === null` returns `base` as
+    // built — identical in content to what this memo produced before step 4
+    // existed, the regression anchor. When a veto is live, every output-timed
+    // field remaps old-output → source → new-output (`retimeForPreview`'s
+    // doc comment owns the field list and the punch/zoom reasoning), so the
+    // player genuinely plays the revived material.
+    if (!liveRecut) return { props: base, reports: [] };
+    const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
+    return { props: { ...base, ...fields }, reports };
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut]);
+  const live = liveRetimed === null ? null : liveRetimed.props;
+
+  // A retime report means a stored moment fell inside a NEWLY re-cut region
+  // (only possible when a veto was retracted against already-vetoed render
+  // props) and was snapped to the nearest kept edge — `remapPoint`'s
+  // "nothing moves without saying so" rule, honoured here in the console the
+  // way the §137 drop log is. Keyed on the joined signature so each distinct
+  // set is said once, not on every render.
+  const retimeReportSignature = (liveRetimed?.reports ?? []).join("\n");
+  useEffect(() => {
+    if (!liveRetimed || liveRetimed.reports.length === 0) return;
+    for (const line of liveRetimed.reports) console.warn(`ossclip cut preview: ${line}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retimeReportSignature]);
+
+  // Playhead continuity across a clock change (cut review step 4): the
+  // player's current frame is an OLD-clock output time the moment a veto
+  // toggles — past a revived pause it names a different source instant, and
+  // it can even exceed the new duration when a veto is retracted. Mapping it
+  // through the same old → source → new path the props took keeps the user's
+  // position on the SAME MATERIAL instead of jumping wildly — the difference
+  // between "preview" and "glitch". The ref pairs the map with the
+  // renderProps it belongs to: a project switch or a render-complete reload
+  // is a NEW timeline, not a re-cut of the old one, and must not seek.
+  const playheadClockRef = useRef<{ props: RawRenderProps; map: TimeMap } | null>(null);
+  useEffect(() => {
+    if (!renderProps) {
+      playheadClockRef.current = null;
+      return;
+    }
+    const nextMap = liveRecut ? liveRecut.newMap : mapFromKeptSpans(renderProps.spans ?? []);
+    const prev = playheadClockRef.current;
+    playheadClockRef.current = { props: renderProps, map: nextMap };
+    if (!prev || prev.props !== renderProps) return;
+    // The same float-tolerant "did it actually change" as `livePreviewMap`'s
+    // identity gate — a re-derived but equal map must not seek the player.
+    if (mapsClose(prev.map, nextMap, 1e-6)) return;
+    const player = playerRef.current;
+    if (!player) return;
+    const fps = renderProps.settings.fps;
+    const src = prev.map.toSource(player.getCurrentFrame() / fps);
+    // A playhead inside a re-cut region snaps to the nearest kept edge —
+    // `toOutputClamped`'s documented role, the same fallback `remapPoint`
+    // gives the props themselves.
+    const out = nextMap.toOutput(src) ?? nextMap.toOutputClamped(src);
+    player.seekTo(Math.round(out * fps));
+  }, [liveRecut, renderProps]);
 
   const onSave = (): void => {
     // Finding 1, PLAN 2026-08-04 fix wave final review (scoped re-review
@@ -1001,8 +1132,12 @@ export const App: React.FC = () => {
     // for `hidden` on the PRE-split cues, so a hidden `id@<split id>` half (a
     // sanctioned gesture since Task 1) never matched anything and had no
     // ghost, no Restore, no way back but hand-editing overrides.json.
-    return computeGhostCues(baseCues, edits.doc);
-  }, [renderProps, edits.doc]);
+    // `clock.toLive` (step 4 follow-up): the base cues are old-clock times,
+    // and the Timeline draws these bands on the live (possibly re-cut)
+    // timeline — unmapped, every ghost past a revived pause sat the revived
+    // seconds off its true window.
+    return computeGhostCues(baseCues, edits.doc, clock.toLive);
+  }, [renderProps, edits.doc, clock]);
 
   const selectedCue = useMemo(
     () =>
@@ -1148,6 +1283,17 @@ export const App: React.FC = () => {
           >
             Cover
           </button>
+          {/* Cut review step 3 — the Cover button precedent: its own top-bar
+              button, not a menu item, because reviewing the cut is a
+              first-class pass over every produce run. */}
+          <button
+            data-testid="cleanup-button"
+            style={{ ...ghostButton, ...(showCleanup ? { borderColor: "#5b8cff" } : {}) }}
+            onClick={() => setShowCleanup(true)}
+            title="Review what produce removed — keep whole categories; the preview plays your choices immediately"
+          >
+            Cleanup
+          </button>
           {/* One menu for the --youtube extras (2026-08-17): the thumbnail
               and the SEO pack are two panels over one feature, and two
               top-bar buttons were the bar's first scaling failure. */}
@@ -1275,17 +1421,38 @@ export const App: React.FC = () => {
       </div>
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
       {showThumbnail ? <ThumbnailPanel onClose={() => setShowThumbnail(false)} /> : null}
+      {showCleanup ? (
+        <CleanupPanel
+          cutlist={cleanupCutlist}
+          edits={edits}
+          onClose={() => setShowCleanup(false)}
+        />
+      ) : null}
       {showYoutubeSeo ? <YoutubePanel onClose={() => setShowYoutubeSeo(false)} /> : null}
       {showCover ? (
         <CoverPanel
           onClose={() => setShowCover(false)}
           // A GETTER, read on click: App does not re-render per frame, so a
           // number prop would freeze at whatever the playhead was when the
-          // panel opened. The Player's frame IS output time (the finished
-          // mp4's own timeline), which is why the seconds go through to
-          // `atSec` with no mapping — see CoverPanel's prop doc.
+          // panel opened. Mapped through `clock.fromLive` — the REVERSE
+          // direction of every other surface's mapping, deliberately: the
+          // server extracts the `--from final` frame from the FINISHED
+          // RENDERED mp4 (cover.ts seeks `timeSec` into it), and that file's
+          // timeline is the OLD clock — the last render's own output time —
+          // while a live veto puts the player on the new one. Unmapped, the
+          // grabbed frame sat exactly the revived seconds early; a playhead
+          // INSIDE revived material has no frame in that mp4 at all and
+          // clamps to the nearest kept edge (`fromLive`'s doc). `--from
+          // source` instead seeks the ORIGINAL take in SOURCE seconds; the
+          // panel has always sent last-render output seconds for that case
+          // too (its prop doc), and `fromLive` preserves exactly that value —
+          // the pre-existing source-case semantics are unchanged. Identity
+          // when no veto is live, so the seconds go through untouched — see
+          // CoverPanel's prop doc.
           playheadSec={() =>
-            (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps
+            clock.fromLive(
+              (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps,
+            )
           }
         />
       ) : null}
@@ -1306,8 +1473,29 @@ export const App: React.FC = () => {
           onConfirm={(target) => {
             // Both arms are ordinary reducer commits, so ⌘Z takes either
             // back — the modal adds friction, not a second edit mechanism.
-            if (target === "graphic") edits.hideScene(deletePlan.sceneId);
-            else edits.cutChunk(deletePlan.startSec, deletePlan.endSec);
+            if (target === "graphic") {
+              edits.hideScene(deletePlan.sceneId);
+            } else {
+              // The plan's window came off a retimed cue — the LIVE clock —
+              // but a fresh `cuts[]` entry speaks the LAST RENDER's output
+              // seconds (the `OverrideDocSchema.cuts` contract), so it
+              // converts here, at the write boundary, exactly as the
+              // Inspector's own "Delete this chunk" does (same helper, so
+              // the shrink/refuse verdict cannot drift between the two).
+              // Identity when no veto is live — the values pass untouched.
+              const range = cutRangeToOldClock(clock, deletePlan.startSec, deletePlan.endSec);
+              if (range.kind === "degenerate") {
+                setClockRefusedNotice(
+                  "Can't cut this window: it isn't in the last render yet — render once (or re-remove the pause) to cut it.",
+                );
+              } else {
+                // A window that merely shrinks at a revived edge proceeds
+                // and says so — the console, the retime reports' own
+                // channel (this gesture has no quieter one today).
+                if (range.kind === "shrunk") console.warn(`ossclip cut preview: ${range.report}`);
+                edits.cutChunk(range.startSec, range.endSec);
+              }
+            }
             setDeletePlan(null);
           }}
         />
@@ -1548,6 +1736,20 @@ export const App: React.FC = () => {
           </button>
         </div>
       ) : null}
+      {clockRefusedNotice !== null ? (
+        // A split/cut aimed at revived material (step 4 follow-up) — same
+        // chrome and same non-fatal posture as the render refusal above; the
+        // useState's doc comment has the reasoning.
+        <div data-testid="clock-refused-notice" style={reanchorNotice}>
+          {clockRefusedNotice}
+          <button
+            style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
+            onClick={() => setClockRefusedNotice(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div style={mainRow}>
         {showTranscript ? (
           <>
@@ -1575,6 +1777,12 @@ export const App: React.FC = () => {
               // `/media/*` resolves against the CURRENT workdir, so the
               // waveform cache is keyed by it (`loadSourceAudio`).
               workdir={workdirPath}
+              // Step 4 follow-up: the panel's lines are pre-retime (old
+              // clock) BY DESIGN — see the liveLines comment above — so its
+              // seeks and playhead reads convert at the boundary instead.
+              // Identity when no veto is live (the panel's own prop doc).
+              toPlayerSec={clock.toLive}
+              fromPlayerSec={clock.fromLive}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}
@@ -1653,6 +1861,12 @@ export const App: React.FC = () => {
               onGraphicPreview={setGraphicPreview}
               onToggleHelp={() => setShowShortcuts((v) => !v)}
               onRequestDelete={setDeletePlan}
+              // ⌘B's write boundary (step 4 follow-up): the playhead is on
+              // the live clock, `splits[].at` on the old — the Overlay prop
+              // docs own the argument; identity when no veto is live.
+              fromLive={clock.fromLive}
+              hasOldClockPreimage={clock.hasOldClockPreimage}
+              onClockRefused={setClockRefusedNotice}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
                 only reachable by keyboard is a rate users lose track of.
@@ -1717,6 +1931,13 @@ export const App: React.FC = () => {
             onVideoPreview={setVideoPreview}
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
+            // "Delete this chunk"'s write boundary (step 4 follow-up): the
+            // cue window is on the live clock, a fresh `cuts[]` entry on the
+            // old — the Inspector prop docs own the argument; identity when
+            // no veto is live.
+            fromLive={clock.fromLive}
+            hasOldClockPreimage={clock.hasOldClockPreimage}
+            onClockRefused={setClockRefusedNotice}
           />
         </div>
       </div>
@@ -1730,6 +1951,9 @@ export const App: React.FC = () => {
         // `sourceToOutputClamped`; a NOT-YET-APPLIED cut's struck band
         // doesn't consume them at all.
         spans={live.spans ?? []}
+        // Produce's labeled removals (cut review step 2) — the seams also
+        // place through `spans`, same lookup as an applied cut's.
+        cleanup={cleanupCutlist}
         durationSec={live.outputDurationSec}
         fps={live.settings.fps}
         playerRef={playerRef}
@@ -1737,6 +1961,10 @@ export const App: React.FC = () => {
         onSelect={setSelection}
         edits={edits}
         videoSrc={live.videoFileName}
+        // The struck band's DISPLAY half (step 4 follow-up): a fresh cut's
+        // doc window is old-clock, this ruler is the live one — the Timeline
+        // prop doc owns the argument; identity when no veto is live.
+        toLive={clock.toLive}
         toSourceSec={(outSec) => {
           // Output→source through the spans (R20 §97) — the filmstrip frame
           // must be the source second actually playing there, not the raw

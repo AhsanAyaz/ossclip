@@ -9,7 +9,7 @@ import { loadEnvFiles } from "./env";
 import { ExportFormatSchema, runAnalyze } from "./analyze";
 import { expandHome } from "./paths";
 import { phaseBucketProps } from "./phase-timing";
-import { dictionaryFlag, jumpCutsFlag, produce } from "./produce";
+import { dictionaryFlag, jumpCutsFlag, produce, reviewFlag } from "./produce";
 // The one interactive import that is STATIC rather than `await import()`: the
 // `resetInputSource()` run boundary in `buildProgram` has to run synchronously
 // while the program is being built, and `buildProgram` cannot await. The graph
@@ -335,6 +335,10 @@ export function buildProgram(): Command {
     )
     .option("--llm-model <id>", "override the provider's default model")
     .option(
+      "--llm-effort <level>",
+      "reasoning effort for the antigravity provider (low|medium|high)",
+    )
+    .option(
       "--llm-fast-model <id>",
       "model for mechanical calls (repair, scene props); 'same' disables tiering",
     )
@@ -478,6 +482,13 @@ export function buildProgram(): Command {
       "--no-open-editor",
       "don't open the editor, and don't ask (overrides openEditorAfterProduce)",
     )
+    // Implies --no-render and forces the editor open — resolved by reviewFlag
+    // in the action, where typing --no-render alongside it is agreement and
+    // --no-open-editor is the loud contradiction.
+    .option(
+      "--review",
+      "produce without rendering, then open the editor to review the cut before rendering once",
+    )
     .option("--editor-port <n>", "port for the editor started by --open-editor",
       (v) => Number.parseInt(v, 10), 5174)
     // No default: undefined = "not typed" is what lets the config's
@@ -539,6 +550,13 @@ export function buildProgram(): Command {
       const provider = opts.llm
         ? z.enum(["antigravity", "claude", "claude-cli", "gemini", "mock"]).parse(opts.llm)
         : undefined;
+      // Parsed like --llm above: a typo'd `--llm-effort hgh` must die here
+      // naming the allowed values, not silently run at agy's default — the
+      // knob exists because of a hang (§143), and a user reaching for it is
+      // mid-investigation.
+      const llmEffort = opts.llmEffort
+        ? z.enum(["low", "medium", "high"]).parse(opts.llmEffort)
+        : undefined;
       const forceComponent = opts.forceComponent
         ? SceneComponentIdSchema.parse(opts.forceComponent)
         : undefined;
@@ -569,6 +587,15 @@ export function buildProgram(): Command {
         opts.addJumpCuts,
         command.getOptionValueSource("jumpCuts") === "cli",
       );
+      // --review resolved BEFORE produce runs: it implies --no-render (typed
+      // alongside is agreement) and forces the end-of-run editor open, so the
+      // one render happens from the editor's Render button. reviewFlag throws
+      // on --no-open-editor, the jumpCutsFlag contradiction posture.
+      const { render, openEditor } = reviewFlag(
+        opts.review === true,
+        opts.render,
+        opts.openEditor,
+      );
       // Wall clock around produce() only — the editor offer below can sit at
       // an interactive prompt for as long as the user thinks, and think-time
       // would poison the duration metric (FINDINGS §134).
@@ -578,7 +605,12 @@ export function buildProgram(): Command {
           out: opts.out,
           cleanup,
           transcript: opts.transcript,
-          render: opts.render,
+          // The reviewFlag resolution, not opts.render: --review implies off.
+          render,
+          // Only phrases the no-render exit ("the editor is opening" instead
+          // of the --no-render skip + edit hint) — the render/openEditor
+          // consequences are already resolved above.
+          review: opts.review === true,
           mezzanine: opts.mezzanine,
           workdir: opts.workdir,
           sort,
@@ -590,6 +622,9 @@ export function buildProgram(): Command {
           provider,
           llmModel: opts.llmModel,
           llmFastModel: opts.llmFastModel,
+          // The zod-parsed union above; untyped = undefined lets the config's
+          // `llmEffort` supply it (resolveLlmEffort at the use site).
+          llmEffort,
           speaker: opts.speaker,
           scenes: opts.scenes,
           repair: opts.repair,
@@ -645,7 +680,10 @@ export function buildProgram(): Command {
           produced: opts.produce === true,
           aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
           clip: opts.clip !== undefined,
-          render: opts.render !== false,
+          // The reviewFlag resolution, spelled `key:` and not shorthand — a
+          // --review run must report render: false, and telemetry.test.ts's
+          // source-drift scan (§136) only sees `key:`-form props.
+          render: render,
           source_duration_bucket: durationBucket(result.sourceDurationSec),
           scenes: result.sceneCount,
           // Per-phase buckets (§140), one `<phase>_bucket` per phase that
@@ -668,7 +706,13 @@ export function buildProgram(): Command {
           }
         }
         const { offerEditor } = await import("./interactive/offer-editor");
-        await offerEditor(result, { flag: opts.openEditor, port: opts.editorPort });
+        // The reviewFlag resolution: --review forces flag=true, and
+        // decideOpenEditor already documents that an explicit flag beats
+        // `rendered` — the editor reads render-props.json, which a no-render
+        // run does write. Reusing this path is what gives --review the edit
+        // command's whole posture (resolveEditorPageDir's loud "run pnpm
+        // build" degrade, startEditServer, openInBrowser) for free.
+        await offerEditor(result, { flag: openEditor, port: opts.editorPort });
         // Deliberately LAST — after the render summary and the editor offer —
         // so the one question ossclip ever asks is the last thing on screen.
         await maybeAskRating(telemetry);

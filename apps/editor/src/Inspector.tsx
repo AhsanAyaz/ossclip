@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  cutRangeToOldClock,
   LayoutSchema,
   SceneComponentIdSchema,
   splitRootId,
@@ -77,6 +78,25 @@ interface InspectorProps {
    * on such a workdir.
    */
   captionsHiddenByFlag?: boolean;
+  /**
+   * "Delete this chunk"'s WRITE boundary (cut review step 4 follow-up): the
+   * cue's window speaks the player's LIVE clock (App retimes every cue under
+   * a live cleanup veto), but a fresh `cuts[]` entry's `startSec`/`endSec`
+   * speak the LAST RENDER's output seconds — produce resolves `src` against
+   * the prior TimeMap (the `OverrideDocSchema.cuts` comment), so an unmapped
+   * write lands the cut the revived seconds off. Both endpoints convert
+   * through `cutRangeToOldClock` at the click. Identity default, so the
+   * no-veto path (and every existing harness) writes bit-identical values.
+   */
+  fromLive?: (sec: number) => number;
+  /** `fromLive`'s guard (`previewClockMappers.hasOldClockPreimage`) — feeds
+   * `cutRangeToOldClock`'s exact/shrunk/degenerate verdict. Defaults to
+   * always-true, the no-veto shape. */
+  hasOldClockPreimage?: (sec: number) => boolean;
+  /** Visible refusal channel for a cut window with NO old-clock extent at
+   * all (`cutRangeToOldClock`'s degenerate verdict) — App's dismissible
+   * notice, the same non-fatal chrome as its other gesture refusals. */
+  onClockRefused?: (message: string) => void;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -298,6 +318,9 @@ export const Inspector: React.FC<InspectorProps> = ({
   onVideoPreview,
   runInfo,
   captionsHiddenByFlag,
+  fromLive = (sec: number): number => sec,
+  hasOldClockPreimage = (): boolean => true,
+  onClockRefused = (): void => {},
 }) => {
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
@@ -1126,7 +1149,25 @@ export const Inspector: React.FC<InspectorProps> = ({
             style={button}
             onClick={() => {
               blurActive();
-              edits.cutChunk(cue.startSec, cue.endSec);
+              // The cue window speaks the LIVE clock; the doc entry must
+              // speak the OLD one (the `fromLive` prop doc). A window with
+              // no old-clock extent at all is refused out loud; one that
+              // merely shrinks at a revived edge proceeds and says so on
+              // the console — the same channel App gives the retime's own
+              // snap reports, these gestures having no quieter one today.
+              const range = cutRangeToOldClock(
+                { fromLive, hasOldClockPreimage },
+                cue.startSec,
+                cue.endSec,
+              );
+              if (range.kind === "degenerate") {
+                onClockRefused(
+                  "Can't cut this window: it isn't in the last render yet — render once (or re-remove the pause) to cut it.",
+                );
+                return;
+              }
+              if (range.kind === "shrunk") console.warn(`ossclip cut preview: ${range.report}`);
+              edits.cutChunk(range.startSec, range.endSec);
             }}
           >
             Delete this chunk

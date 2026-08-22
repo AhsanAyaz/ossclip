@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { produceArgv, type ProduceAnswers } from "../src/interactive/produce-argv";
 import { extrasFor, rememberPatch, youtubeFollowups } from "../src/interactive/produce-wizard";
-import { dictionaryFlag, jumpCutsFlag, resolveJumpCuts } from "../src/produce";
+import { dictionaryFlag, jumpCutsFlag, resolveJumpCuts, reviewFlag } from "../src/produce";
 
 const answers = (over: Partial<ProduceAnswers> = {}): ProduceAnswers => ({
   input: "./take.mp4",
@@ -229,6 +229,40 @@ describe("wizard argv survives the real commander parse", () => {
     expect(await mode(["produce", "./take.mp4", "--add-jump-cuts"])).toBe("force");
     expect(await mode(["produce", "./take.mp4", "--no-jump-cuts"])).toBe("off");
     expect(await mode(["produce", "./take.mp4"])).toBe("auto");
+  });
+
+  // --review (cut-review step 1): a plain presence flag through commander;
+  // the interaction with --no-render/--open-editor is reviewFlag's, below.
+  it("--review parses, and typing --no-render alongside it is agreement", async () => {
+    const opts = await parse(["produce", "./take.mp4", "--review"]);
+    expect(opts.review).toBe(true);
+    // commander's --no-render default stays true; reviewFlag flips it.
+    expect(opts.render).toBe(true);
+    const both = await parse(["produce", "./take.mp4", "--review", "--no-render"]);
+    expect(both.review).toBe(true);
+    expect(both.render).toBe(false);
+    expect((await parse(["produce", "./take.mp4"])).review).toBeUndefined();
+  });
+
+  // The decision matrix, assertable without a TTY (the decideOpenEditor
+  // posture): --review means "don't render here, open the editor", both
+  // agreeing flags resolve silently, and only --no-open-editor — the real
+  // contradiction — errors instead of picking a winner.
+  it("reviewFlag resolves {render, openEditor} — passthrough off, forced on, loud contradiction", () => {
+    // No --review: everything passes through untouched, tri-state included.
+    expect(reviewFlag(false, true, undefined)).toEqual({ render: true, openEditor: undefined });
+    expect(reviewFlag(false, false, false)).toEqual({ render: false, openEditor: false });
+    expect(reviewFlag(false, true, true)).toEqual({ render: true, openEditor: true });
+    // --review implies --no-render and forces the editor open.
+    expect(reviewFlag(true, true, undefined)).toEqual({ render: false, openEditor: true });
+    // --review --no-render: agreement, not a contradiction.
+    expect(reviewFlag(true, false, undefined)).toEqual({ render: false, openEditor: true });
+    // --review --open-editor: also agreement.
+    expect(reviewFlag(true, true, true)).toEqual({ render: false, openEditor: true });
+    // Reviewing IS opening the editor — jumpCutsFlag's contradiction posture.
+    expect(() => reviewFlag(true, true, false)).toThrow(
+      /--review contradicts --no-open-editor/,
+    );
   });
 
   it("typing both jump-cut flags errors instead of picking a winner", async () => {

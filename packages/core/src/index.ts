@@ -12,6 +12,7 @@ export * from "./concat";
 export * from "./transcribe";
 export * from "./analyze";
 export * from "./cutlist";
+export * from "./retime-preview";
 export * from "./clip";
 export * from "./blooper";
 export * from "./retake";

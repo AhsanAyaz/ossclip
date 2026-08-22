@@ -25,8 +25,13 @@ export interface RecutRemap {
  * caption/overlay boundaries, so a value pushed onto a cut lands exactly
  * where the timeline's own dead-region rendering shows the cut's edge.
  * `label` is only for the report string — it carries no behavior.
+ *
+ * Exported since cut review step 4: `retimeForPreview` (retime-preview.ts)
+ * moves every output-timed render prop through THIS function so the editor's
+ * live post-veto preview and produce's own re-anchoring can never disagree
+ * about what "the same moment on the new clock" means.
  */
-function remapPoint(
+export function remapPoint(
   label: string,
   t: number,
   oldMap: TimeMap,

@@ -52,6 +52,7 @@ import {
   createProvider,
   createTieredProvider,
   defaultProviderName,
+  fallbackProviderName,
   defaultTheme,
   detectSilences,
   dropHiddenCues,
@@ -91,6 +92,8 @@ import {
   portraitMimeType,
   thumbnailDecision,
   thumbnailImageCacheName,
+  applyCleanupChoices,
+  vetoedRemovals,
   applyUserCuts,
   pruneHidesInsideCuts,
   loadConfig,
@@ -118,6 +121,8 @@ import {
   measureLevels,
   probe,
   produceScenes,
+  PRODUCER_PROMPT_VERSION,
+  type FramingContext,
   reclampPinnedTiming,
   reconcileCopy,
   repairTranscript,
@@ -144,7 +149,9 @@ import {
   type CleanupLevel,
   type ClipWindow,
   type Layout,
+  type LlmEffort,
   type LlmProvider,
+  type LlmUsage,
   type Production,
   ossclipOutputPathFor,
   type ProviderName,
@@ -154,7 +161,7 @@ import {
   type Transcript,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
-import { binOnPath, detectionLine } from "./llm-detect";
+import { binOnPath, detectionLine, fallbackLine } from "./llm-detect";
 import {
   modelImpliedLanguage,
   modelUrl,
@@ -272,11 +279,165 @@ export function transcriptCacheReusable(
   };
 }
 
+/**
+ * The beat-sheet/scenes cache key: everything that changes the plan — which
+ * prompt asked, who was asked, with what editorial steer, about which words,
+ * in what frame. Pure and exported so the §78 posture ("a change that changes
+ * the answer must change the key") is testable without a workdir.
+ *
+ * Two of these are new, and only one of them was a live bug:
+ *  - `promptVersion` (the caller passes PRODUCER_PROMPT_VERSION) is the §78
+ *    fix proper — before it, a warm workdir kept serving a sheet the OLD
+ *    prompt wrote, exactly the failure YOUTUBE_PROMPT_VERSION exists for.
+ *  - `aspect` is LATENT rather than active: it changes the user prompt (the
+ *    LANDSCAPE block, R21 §101), but `--aspect 16:9` also derives its own
+ *    `-16x9` workdir and this cache is a file inside it, so a portrait and a
+ *    landscape plan of the same source cannot meet today. Keyed anyway —
+ *    the collision is one workdir-naming change away, and the key should not
+ *    depend on a different module's directory scheme to stay correct.
+ */
+export function beatSheetCacheKey(parts: {
+  promptVersion: string;
+  /** The primary on reads; on a §143 fallback WRITE, the provider that
+   * actually answered — a plain name from the usage records. */
+  providerName: string;
+  llmModel?: string;
+  /** The §143 effort knob — it steers the editorial call, so it changes the plan. */
+  llmEffort?: LlmEffort;
+  intent?: string;
+  cleanup: CleanupLevel;
+  forceComponent?: SceneComponentId;
+  /** Framing constraints steer layout choice, so a re-measure must replan. */
+  framing?: FramingContext;
+  clipTargetSec?: number;
+  clipWindow?: ClipWindow | null;
+  /** The repaired transcript's TEXT — see the call site on why not the count. */
+  words: readonly string[];
+  aspect: "9:16" | "16:9";
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify([
+        parts.promptVersion,
+        parts.providerName,
+        parts.llmModel,
+        parts.intent,
+        parts.cleanup,
+        parts.forceComponent ?? null,
+        parts.framing ?? null,
+        // §93f: the clip target and the RESOLVED window key the plan too —
+        // without them a clip run and a full run of the same source would
+        // collide and answer from each other's cache (the §78 failure
+        // mode). Keyed POST-resolution so a replay that derives the same
+        // window hits the same entries.
+        parts.clipTargetSec ?? null,
+        parts.clipWindow ? `${parts.clipWindow.startWord}:${parts.clipWindow.endWord}` : null,
+        parts.words,
+        parts.aspect,
+        // The §143 effort knob — appended at the END, and only when SET: an
+        // unconditional `?? null` would change the serialization of every
+        // existing key and silently re-plan every warm workdir for users who
+        // never touched the knob. §78 only demands that a DIFFERENT effort
+        // miss; an unset one must keep hitting what it always hit.
+        ...(parts.llmEffort !== undefined ? [parts.llmEffort] : []),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
+}
+
+/**
+ * The clip-window cache key (`clipwindow-<hash>.json`), which answers a
+ * different question — WHICH ~Ns of the take to keep (R19 §93) — but asks it
+ * with the SAME producer prompt, via `produceScenes(…, clip: {…})`. So it
+ * carries the same two fields `beatSheetCacheKey` gained, for the same
+ * reasons:
+ *  - `promptVersion`: without it, editing the producer prompt leaves every
+ *    warm workdir serving a window that was resolved under the OLD prompt —
+ *    the §78 failure mode, one call above where it was just fixed. The
+ *    tradeoff is accepted deliberately: a version bump DOES throw away an
+ *    already-resolved window and costs one LLM call to re-select it. That is
+ *    the correct price. Planning a whole video against a window the current
+ *    prompt would not have chosen is worse than an LLM call.
+ *  - `aspect`: LATENT today, exactly as it is one function down — `--aspect
+ *    16:9` derives its own `-16x9` workdir and this cache is a file inside
+ *    it, so a portrait and a landscape selection of the same source cannot
+ *    meet. Keyed anyway: the aspect reaches the prompt (both halves of it
+ *    since the producerSystem change), and the key should not depend on a
+ *    different module's directory scheme to stay correct.
+ *
+ * Deliberately NOT keyed, matching what the call site passes to the selection
+ * call: cleanup, forced component and the clip window itself. The first two
+ * do not reach this prompt, and the third is what it returns.
+ */
+export function clipWindowCacheKey(parts: {
+  promptVersion: string;
+  /** Same read/write split as `beatSheetCacheKey` (§143). */
+  providerName: string;
+  llmModel?: string;
+  /** The §143 effort knob — the selection rides the same editorial call. */
+  llmEffort?: LlmEffort;
+  intent?: string;
+  clipTargetSec: number;
+  /** Framing constraints steer the selection call the same way (see above). */
+  framing?: FramingContext;
+  /** The repaired transcript's TEXT — the window is word-indexed into it. */
+  words: readonly string[];
+  aspect: "9:16" | "16:9";
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify([
+        parts.promptVersion,
+        parts.providerName,
+        parts.llmModel,
+        parts.intent,
+        parts.clipTargetSec,
+        parts.framing ?? null,
+        parts.words,
+        parts.aspect,
+        // Appended at the END, only when SET — beatSheetCacheKey's rule: an
+        // unset effort must keep every existing key byte-identical.
+        ...(parts.llmEffort !== undefined ? [parts.llmEffort] : []),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
+}
+
+/**
+ * The provider that actually answered the call whose output is being cached
+ * (2026-08-22, FINDINGS §143): after a timeout fallback the resolved
+ * `providerName` names the provider that FAILED, and keying a cache write on
+ * it would attribute the fallback's plan to a provider that never produced
+ * it. Last matching record wins — retries and the fallback both append to the
+ * usage log, so the last writer is the one whose answer survived. Pure and
+ * exported so the attribution is testable without a workdir.
+ */
+export function actualProvider(
+  usage: readonly LlmUsage[],
+  schemaName: string,
+  defaultName: string,
+): string {
+  for (let i = usage.length - 1; i >= 0; i--) {
+    if (usage[i]!.schemaName === schemaName) return usage[i]!.provider;
+  }
+  return defaultName;
+}
+
 export interface ProduceOptions {
   out?: string;
   cleanup: CleanupLevel;
   transcript?: string;
   render: boolean;
+  /**
+   * This run is a `--review` (cut review step 1/3): `render` is already
+   * false (reviewFlag resolved that in the action) and the editor opens on
+   * the workdir afterwards. Produce only reads it to phrase the no-render
+   * exit — "the editor is opening" instead of the `--no-render` skip line
+   * plus an `ossclip edit` hint for an editor that is about to open itself.
+   */
+  review?: boolean;
   mezzanine: boolean;
   workdir?: string;
   inspect?: boolean;
@@ -291,6 +452,12 @@ export interface ProduceOptions {
   llmModel?: string;
   /** Model for mechanical calls; "same" sends everything to the main model. */
   llmFastModel?: string;
+  /**
+   * `agy --effort` for the antigravity provider (§143). Already zod-parsed to
+   * the union by program.ts — the CONFIG's `llmEffort` arrives separately, as
+   * an unvalidated string, and `resolveLlmEffort` arbitrates.
+   */
+  llmEffort?: LlmEffort;
   /** Who is on camera — steers repair and exempts their name from grounding. */
   speaker?: string;
   /** Repair ASR mishearings before captions/producer/grounding (default on). */
@@ -481,6 +648,32 @@ export function resolveYoutube(
   configValue: boolean | undefined,
 ): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * The effective `--llm-effort` — reasoning effort for the antigravity
+ * provider's `agy --effort` flag (§143: exposed after the hang incident;
+ * untested at real scale whether it moves the hang, but the knob existed and
+ * we passed nothing). A TYPED flag always wins, and it arrives already
+ * zod-parsed by program.ts; only the config value is checked here — the
+ * `dictionary` posture, since it comes from hand-editable JSON loadConfig
+ * doesn't zod-parse: exactly low|medium|high, or one warning and agy's
+ * default, never a coerced effort level. Pure so the flag × config matrix is
+ * testable without a config file on disk.
+ */
+export function resolveLlmEffort(
+  flag: LlmEffort | undefined,
+  configValue: unknown,
+): { effort?: LlmEffort; warning?: string } {
+  // Typed-beats-config, and typed also beats a MALFORMED config: the user
+  // asking for an effort on the command line gets it, not a warning about a
+  // config key they did not touch this run.
+  if (flag !== undefined) return { effort: flag };
+  if (configValue === undefined) return {};
+  if (configValue === "low" || configValue === "medium" || configValue === "high") {
+    return { effort: configValue };
+  }
+  return { warning: "⚠ config llmEffort ignored — expected low|medium|high" };
 }
 
 /**
@@ -965,7 +1158,23 @@ export async function thumbnailStep(args: ThumbnailStepArgs): Promise<ThumbnailS
         // ceiling). Capped BEFORE caching so the cache and the image key hold
         // what is used.
         concept = { ...fresh, overlayText: approvedOverlayText(fresh.overlayText) };
-        await writeFile(conceptCache, JSON.stringify(concept, null, 2));
+        // §143 read/write split, same as the plan and repair caches: the
+        // concept call rides the editorial provider and can fall back, so the
+        // file goes under whoever actually answered.
+        await writeFile(
+          join(
+            args.work,
+            thumbnailConceptCacheName({
+              ...args,
+              providerName: actualProvider(
+                args.provider.usage,
+                "thumbnail_concept",
+                args.providerName,
+              ),
+            }),
+          ),
+          JSON.stringify(concept, null, 2),
+        );
       } catch (err) {
         log(
           `▸ thumbnail: concept failed (${err instanceof Error ? err.message : String(err)}) ` +
@@ -1147,6 +1356,54 @@ export function resolveJumpCuts(flag: boolean | undefined): JumpCutsMode {
   if (flag === true) return "force";
   if (flag === false) return "off";
   return "auto";
+}
+
+/**
+ * Resolves `--review` against the two flags it overlaps: produce without
+ * rendering, then open the editor to review the cut — so the ONE render
+ * happens from the editor's Render button, not before the user could look.
+ *
+ * `--review --no-render` is agreement, not a contradiction — both point the
+ * same way (don't render here), unlike the jump-cuts pair — so it resolves
+ * silently. `--review --no-open-editor` IS the contradiction (reviewing is
+ * opening the editor) and follows jumpCutsFlag's rule: a loud error, never a
+ * precedence the user has to memorize. Without --review everything passes
+ * through untouched, tri-states included. Pure so the whole matrix is
+ * assertable without commander or a TTY.
+ */
+export function reviewFlag(
+  review: boolean,
+  render: boolean,
+  openEditor: boolean | undefined,
+): { render: boolean; openEditor: boolean | undefined } {
+  if (!review) return { render, openEditor };
+  if (openEditor === false) {
+    throw new Error("--review contradicts --no-open-editor — reviewing means opening the editor");
+  }
+  return { render: false, openEditor: true };
+}
+
+/**
+ * The one loud line for cleanup vetoes actually changing this run's cut (cut
+ * review step 3) — the `▸ N user cut(s) removed …` voice, inverted: per
+ * declined reason, how many removals came back and how much source time they
+ * restore. Pure so the whole phrasing is assertable without running produce;
+ * callers only print it when `vetoed` is non-empty (a silent no-change run
+ * must stay silent, like the user-cut line's own `cuts.length > 0` gate).
+ */
+export function cleanupChoicesLine(vetoed: readonly Segment[], outputDuration: number): string {
+  const byReason = new Map<string, { count: number; sec: number }>();
+  for (const seg of vetoed) {
+    const key = seg.reason ?? "unlabeled";
+    const entry = byReason.get(key) ?? { count: 0, sec: 0 };
+    entry.count += 1;
+    entry.sec += seg.srcOut - seg.srcIn;
+    byReason.set(key, entry);
+  }
+  const parts = [...byReason.entries()].map(
+    ([reason, { count, sec }]) => `${count} ${reason} removal(s) (+${sec.toFixed(1)}s)`,
+  );
+  return `▸ cleanup choices kept ${parts.join(", ")} — ${outputDuration.toFixed(1)}s output`;
 }
 
 /**
@@ -1678,6 +1935,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const dictionary = opts.dictionary ?? configDictionary ?? [];
   if (dictionary.length > 0) console.log(`▸ dictionary: ${dictionary.join(", ")}`);
 
+  // Resolved ONCE for the whole run (§143): the provider call, both plan
+  // cache keys and the command.json pin must all see the same effort, or a
+  // replay re-plans under a knob the run never used.
+  const { effort: llmEffort, warning: llmEffortWarning } = resolveLlmEffort(
+    opts.llmEffort,
+    cfg.llmEffort,
+  );
+  if (llmEffortWarning) console.log(llmEffortWarning);
+
   // The run's base theme (F6): config theme over defaultTheme, resolved once
   // and used for BOTH resolveTheme's base and props.baseTheme below — the
   // editor's reset must land on the user's global colors, not the factory's.
@@ -2088,31 +2354,62 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (!opts.provider) {
       console.log(detectionLine(providerName));
     }
+    // Timeout fallback (2026-08-22, FINDINGS §143): agy hangs persistently on
+    // the real beat-sheet call — 10-minute --print-timeout expiries while
+    // claude-cli planned the same video — and auto-detection picks agy
+    // whenever the CLI is on PATH. When the editorial call times out, ONE
+    // other provider answers it instead of the run dying, announced out loud:
+    // the user must know which model planned their video.
+    const llmFallbackName =
+      providerName === "antigravity"
+        ? fallbackProviderName(providerName, process.env, binOnPath)
+        : undefined;
     provider = createTieredProvider(providerName, {
       model: opts.llmModel,
       fastModel: opts.llmFastModel ?? cfg.fastModel,
+      fallback: llmFallbackName,
+      onFallback: (info) => console.log(fallbackLine(info.from, info.to, info.schemaName)),
+      // §143: rides the editorial antigravity call only — see TieringOptions.
+      effort: llmEffort,
     });
   }
 
   let rawTranscript = transcript;
   let repairs: AppliedRepair[] = [];
   if (provider && opts.repair !== false) {
-    const rawKey = createHash("sha1")
-      .update(
-        JSON.stringify([
-          providerName,
-          opts.llmModel,
-          opts.llmFastModel ?? cfg.fastModel,
-          opts.speaker ?? cfg.speaker,
-          // The dictionary changes both the prompt and the vouched set (F4),
-          // so cached repairs from a different vocabulary must not be reused.
-          dictionary,
-          rawTranscript.words.map((w) => w.text),
-        ]),
-      )
-      .digest("hex")
-      .slice(0, 8);
-    const repairCache = join(work, `repairs-${rawKey}.json`);
+    // Parameterized on the provider so the WRITE below can re-key on who
+    // actually answered (§143) — the same read/write split as the beat-sheet
+    // caches, and load-bearing beyond attribution: repairs REWRITE the words,
+    // and the words are an input to every plan cache key downstream. A repair
+    // set cached under the provider that timed out would fork the transcript
+    // lineage, and the fallback-written plan could never be reached by a
+    // later run that names the fallback provider directly (measured
+    // 2026-08-22: two repair caches, 10 vs 11 repairs — one applied
+    // "Llama," → "LLaVA," — put the same take's beat sheets under keys no
+    // other run computed).
+    const repairKeyFor = (p: string): string =>
+      createHash("sha1")
+        .update(
+          JSON.stringify([
+            p,
+            opts.llmModel,
+            opts.llmFastModel ?? cfg.fastModel,
+            opts.speaker ?? cfg.speaker,
+            // The dictionary changes both the prompt and the vouched set (F4),
+            // so cached repairs from a different vocabulary must not be reused.
+            dictionary,
+            rawTranscript.words.map((w) => w.text),
+            // Repair runs on the EDITORIAL tier (repair.ts: deciding what a
+            // person actually said is semantic work), so the §143 effort knob
+            // changes its answers. Appended at the END, only when SET —
+            // beatSheetCacheKey's rule: an unset effort must keep serving the
+            // repairs every existing workdir already cached.
+            ...(llmEffort !== undefined ? [llmEffort] : []),
+          ]),
+        )
+        .digest("hex")
+        .slice(0, 8);
+    const repairCache = join(work, `repairs-${repairKeyFor(providerName)}.json`);
     if (existsSync(repairCache)) {
       const cached = JSON.parse(await readFile(repairCache, "utf8")) as AppliedRepair[];
       // Re-DECIDE from the cached PROPOSALS; never replay the stored verdicts
@@ -2182,7 +2479,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             "    (not cached — the next run retries the pass)",
         );
       } else {
-        await writeFile(repairCache, JSON.stringify(repairs, null, 2));
+        // Written under the ANSWERING provider's key (§143): after a timeout
+        // fallback these are the fallback's repairs, and the transcript
+        // lineage they start must be reachable by a run that asks that
+        // provider by name. The primary-keyed read above stays deliberate.
+        await writeFile(
+          join(
+            work,
+            `repairs-${repairKeyFor(actualProvider(provider.usage, "transcript_repair", providerName))}.json`,
+          ),
+          JSON.stringify(repairs, null, 2),
+        );
       }
     }
     for (const r of repairs) {
@@ -2298,19 +2605,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // calls; only a first run selects.
     let clipFresh: Awaited<ReturnType<typeof produceScenes>> | null = null;
     if (clipTargetSec !== undefined) {
-      const windowKey = createHash("sha1")
-        .update(
-          JSON.stringify([
-            providerName,
-            opts.llmModel,
-            opts.intent,
-            clipTargetSec,
-            framingCtx ?? null,
-            transcript.words.map((w) => w.text),
-          ]),
-        )
-        .digest("hex")
-        .slice(0, 8);
+      // Parts split from the key so the WRITE below can re-key on the
+      // provider that actually answered (§143) without restating them.
+      const windowKeyParts = {
+        promptVersion: PRODUCER_PROMPT_VERSION,
+        llmModel: opts.llmModel,
+        llmEffort,
+        intent: opts.intent,
+        clipTargetSec,
+        framing: framingCtx,
+        words: transcript.words.map((w) => w.text),
+        aspect: landscape ? ("16:9" as const) : ("9:16" as const),
+      };
+      const windowKey = clipWindowCacheKey({ ...windowKeyParts, providerName });
       const clipWindowCache = join(work, `clipwindow-${windowKey}.json`);
       if (opts.clipWindow) {
         clipWindow = parseClipWindowPin(transcript, opts.clipWindow);
@@ -2337,7 +2644,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         );
         clipWindow = clipFresh.clip!.window;
         for (const note of clipFresh.clip!.notes) console.log(`  ▸ ${note}`);
-        await writeFile(clipWindowCache, JSON.stringify(clipWindow, null, 2));
+        // The WRITE keys on the provider that actually answered; the READS
+        // above stay keyed on the primary — both deliberate (2026-08-22,
+        // FINDINGS §143). After a timeout fallback the window is the
+        // fallback's work: filing it under agy would let an agy-keyed read
+        // claim a window agy never chose, and would hide it from a later
+        // `--llm claude-cli` run that should hit it. The price of the
+        // primary-keyed read is that a repeat agy run re-attempts agy (10
+        // minutes, today) before falling back again — accepted over ever
+        // serving a cache whose label lies.
+        await writeFile(
+          join(
+            work,
+            `clipwindow-${clipWindowCacheKey({
+              ...windowKeyParts,
+              providerName: actualProvider(provider.usage, "clip_beat_sheet", providerName),
+            })}.json`,
+          ),
+          JSON.stringify(clipWindow, null, 2),
+        );
       }
 
       // Slice the pipeline state to the window (§93.1), then let everything
@@ -2381,29 +2706,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       map = new TimeMap(cutlist);
     }
 
-    const cacheKey = createHash("sha1")
-      .update(
-        JSON.stringify([
-          providerName,
-          opts.llmModel,
-          opts.intent,
-          opts.cleanup,
-          opts.forceComponent ?? null,
-          // The framing constraints steer layout choice, so a change in the
-          // measured framing must invalidate the cached plan.
-          framingCtx ?? null,
-          // §93f: the clip target and the RESOLVED window key the plan too —
-          // without them a clip run and a full run of the same source would
-          // collide and answer from each other's cache (the §78 failure
-          // mode). Keyed POST-resolution so a replay that derives the same
-          // window hits the same entries.
-          clipTargetSec ?? null,
-          clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : null,
-          transcript.words.map((w) => w.text),
-        ]),
-      )
-      .digest("hex")
-      .slice(0, 8);
+    // Parts split from the key for the same §143 reason as the clip window:
+    // the writes below re-key on the provider that actually answered.
+    const beatKeyParts = {
+      promptVersion: PRODUCER_PROMPT_VERSION,
+      llmModel: opts.llmModel,
+      llmEffort,
+      intent: opts.intent,
+      cleanup: opts.cleanup,
+      forceComponent: opts.forceComponent,
+      framing: framingCtx,
+      clipTargetSec,
+      clipWindow,
+      words: transcript.words.map((w) => w.text),
+      aspect: landscape ? ("16:9" as const) : ("9:16" as const),
+    };
+    const cacheKey = beatSheetCacheKey({ ...beatKeyParts, providerName });
     const sceneCache = join(work, `scenes-${cacheKey}.json`);
     // The cover needs the editorial copy, which is not in the scene list — a
     // cached run must still be able to write one.
@@ -2431,9 +2749,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         clipFresh.graphics.asked,
         transcript,
       );
-      await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
+      // Written under the ANSWERING provider's key (§143, same rule as the
+      // clip-window write above): the adopted sheet came from the ONE
+      // clip_beat_sheet call, which may have been the fallback's.
+      const adoptKey = beatSheetCacheKey({
+        ...beatKeyParts,
+        providerName: actualProvider(provider.usage, "clip_beat_sheet", providerName),
+      });
+      await writeFile(join(work, `scenes-${adoptKey}.json`), JSON.stringify(scenes, null, 2));
       await writeFile(
-        beatCache,
+        join(work, `beatsheet-${adoptKey}.json`),
         JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
       );
     } else if (existsSync(sceneCache)) {
@@ -2493,9 +2818,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // Cache props only — overrides are user-owned and live in overrides.json,
       // never in production.json (that file is derived and every `produce`
       // run overwrites it, per the merge rule in `overrides.ts`).
-      await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
+      // Keyed on who answered the beat_sheet call (§143) — see the clip-window
+      // write above for why reads stay primary-keyed while writes do not.
+      const freshKey = beatSheetCacheKey({
+        ...beatKeyParts,
+        providerName: actualProvider(provider.usage, "beat_sheet", providerName),
+      });
+      await writeFile(join(work, `scenes-${freshKey}.json`), JSON.stringify(scenes, null, 2));
       await writeFile(
-        beatCache,
+        join(work, `beatsheet-${freshKey}.json`),
         JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
       );
     }
@@ -2531,8 +2862,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // …and stamp it onto the artefact it explains, so `production.json` says
     // who planned it without a second file to cross-reference.
     const last = log.runs[log.runs.length - 1]!;
+    // `last.provider` derives from records[0] — the FIRST call's provider,
+    // which after a §143 timeout fallback is the primary that failed the
+    // editorial call. The stamp answers "who planned this", so it is built
+    // from the records that ANSWERED (`failed` attempts stay in usage.json
+    // and every report — their cost is real — but a stamp listing the failed
+    // attempt's placeholder model read "planned by claude-cli
+    // (antigravity-default)" after a fallback run, 2026-08-22). Providers in
+    // first-seen order, the same " → " rendering the usage report uses;
+    // single-provider runs stamp exactly as before.
+    const answered = provider.usage.filter((r) => !r.failed);
+    const providersSeen = [...new Set(answered.map((r) => r.provider))];
     producerStamp = {
-      provider: last.provider ?? providerName,
+      provider:
+        providersSeen.length > 1
+          ? providersSeen.join(" → ")
+          : providersSeen[0] ?? last.provider ?? providerName,
+      // `last.models` already excludes failed attempts' models (usage.ts,
+      // same §143 rule) — a stamp that listed the timed-out placeholder read
+      // "planned by claude-cli (antigravity-default)" after a fallback run.
       models: last.models,
       cached: last.cached,
       at: last.at,
@@ -2631,6 +2979,28 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
     }
     overrideDoc = parsed.data;
+  }
+  // ---- Cleanup choices: the user's veto over the AUTOMATIC cutlist (cut
+  // review step 3) ------------------------------------------------------
+  // Applied here — the same load `cuts` rides, before `applyUserCuts` — and
+  // in exactly this order on purpose: cleanup vetoes reshape the PROPOSAL,
+  // then user cuts subtract from the result as they always did, so a user
+  // cut drawn over a vetoed pause still cuts (an explicit user action
+  // outranks a veto). The proposal itself is captured FIRST for
+  // `production.json`'s `cutlistProposed` — the resolution is lossy (a
+  // vetoed removal merges into a plain keep), and the editor's checkboxes
+  // re-derive the veto state from proposal + choices through the same
+  // `applyCleanupChoices` this run used (ProductionSchema has the full why).
+  // Consumers of `map` ABOVE this point (the repair pass's isCut guard, the
+  // producer's outputDuration hint) saw the pre-veto map: both are
+  // conservative uses — a refused word-merge across a span that comes back,
+  // a duration hint a few seconds short — never a wrong cut.
+  const cutlistProposed = cutlist;
+  const cleanupVetoed = vetoedRemovals(cutlist, overrideDoc.cleanup);
+  if (cleanupVetoed.length > 0) {
+    cutlist = applyCleanupChoices(cutlist, overrideDoc.cleanup);
+    map = new TimeMap(cutlist);
+    console.log(cleanupChoicesLine(cleanupVetoed, map.outputDuration));
   }
   // `applyUserCuts`'s `priorMap`: a cut's `startSec`/`endSec` (when it has
   // no `src` yet) and any already-re-anchored splits/pins are expressed
@@ -3150,7 +3520,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     transcript: rawTranscript,
     repairs: repairs.length > 0 ? repairs : undefined,
     analysis,
+    // The APPLIED truth vs the PROPOSAL — see ProductionSchema for why both
+    // are recorded: `cutlist` keeps the report/exporters honest about what
+    // happened; `cutlistProposed` keeps the declined categories recoverable
+    // for the editor (a vetoed removal merges into a plain keep, so the
+    // resolved list alone cannot name what was declined).
     cutlist,
+    cutlistProposed,
     ...(clipWindow && clipTargetSec !== undefined
       ? { clip: { targetSec: clipTargetSec, ...clipWindow } }
       : {}),
@@ -3806,12 +4182,147 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log(overridesWriteLine(cutResult.changed));
   }
 
+  // Resolved HERE — above the --no-render exit rather than at the thumbnail
+  // gate / pack section below — so the gate, the post-render consumers AND
+  // the command.json record (which both exits now write) all read one
+  // answer. Typed-beats-config, `typeof` not truthiness (the `portrait`
+  // posture): config.json is hand-edited and unparsed, and a
+  // `"audience": true` typo must resolve to "no audience".
+  const youtube = resolveYoutube(opts.youtube, cfg.youtube);
+  // resolvePortrait (portrait-override.ts) carries the expandHome treatment
+  // of the flag and config paths, and puts the workdir's portrait-override
+  // ABOVE both (editor face swap, 2026-08-17): a per-project expression
+  // chosen in the editor must survive CLI re-renders — the flag/config
+  // portrait is the fallback headshot, and a replay silently reverting the
+  // swapped face would undo the one thing the swap exists for.
+  const portrait = resolvePortrait({
+    overridePath: portraitOverridePath(work),
+    flagPortrait: opts.portrait,
+    cfgPortrait: cfg.portrait,
+  })?.path;
+  const audience = opts.audience ?? (typeof cfg.audience === "string" ? cfg.audience : undefined);
+  const thumbnailBrief =
+    opts.thumbnailBrief ?? (typeof cfg.thumbnailBrief === "string" ? cfg.thumbnailBrief : undefined);
+
+  // Record THIS invocation so the editor's Render button can replay it (R11
+  // Task 4). Nothing else can reconstruct it — production.json has the
+  // source path, cleanup and intent, but not --produce, --out or the LLM
+  // flags — and guessing would silently render a different video than the
+  // one on screen. execArgv carries the module loader (tsx in dev), so the
+  // replay works from source and from a compiled build alike.
+  //
+  // Written BEFORE the render/no-render fork, not after the render (cut-review
+  // step 1): a --no-render workdir used to carry NO command.json at all, so
+  // the editor's Render button 412'd with "run `ossclip produce` once from
+  // the terminal" — a dead end that made `--review` (produce without
+  // rendering, review in the editor, render ONCE from its Render button)
+  // impossible. Every pin below is resolved by this point, so the record is
+  // byte-identical to what the post-render write produced; the side effect is
+  // that a crashed render now leaves a record its own Render button can
+  // retry. recordedProduceArgs strips --review/--no-render at record, so the
+  // replay actually renders instead of looping.
+  //
+  // The provider may have been AUTO-DETECTED from this shell's environment
+  // (a GEMINI_/ANTHROPIC_ key exported here). The editor's Render replays
+  // this argv from the EDIT SERVER's environment, which may not have that
+  // key — and the auto-detection would then silently pick a DIFFERENT
+  // provider (R16 §75). Pin the RESOLVED choice into the recorded args —
+  // never the key itself; secrets stay out of the workdir — so a replay
+  // uses the same configuration or fails loudly asking for it.
+  // §93g: pin the RESOLVED window, exactly as §75 pinned the provider. The
+  // editor's Render replays this argv; if replay re-asked the model and got a
+  // slightly different window, every saved override — anchored to scene ids
+  // and word indices — would land on the wrong words. The word range, not
+  // just `--clip 60`, is what makes replay deterministic with zero LLM calls.
+  //
+  // §129: NOT process.argv. A wizard or bare-path run re-enters commander
+  // with a BUILT argv while process.argv still holds the original invocation
+  // (`ossclip <path>`, no `produce` literal, none of the wizard's answers) —
+  // recording process.argv shipped a command that replays as
+  // `ossclip <path> --llm …` and dies on "unknown option '--llm'".
+  // recordedProduceArgs prefers the argv the re-entry stashed and falls back
+  // to process.argv for a directly typed `ossclip produce …`, which stays
+  // byte-identical to what was always recorded.
+  // Watermark pin, same §75 shape, and in BOTH directions (review,
+  // Important): the effective default comes from THIS machine's
+  // ~/.ossclip/config.json, so an unpinned record replays differently
+  // wherever that config differs — an off-run would silently gain a credit
+  // under a later/foreign config-on, an on-run would silently lose it. The
+  // RESOLVED state is always pinned; a typed flag is already in the argv and
+  // the includes-guard leaves it alone.
+  // Captions pin: the FLAG's resolved state (`opts.captions ?? true`), never
+  // the override-inclusive `captionsHidden` — overrides.json travels with
+  // the workdir and is re-read on every replay, so pinning --no-captions
+  // because the EDITOR hid them would freeze an edit the user may later
+  // undo in that same editor. See recordedProduceArgs for why the pin is
+  // unconditional even though captions' default is config-independent today.
+  // Jump-cuts pin: the RESOLVED mode, but only its typed states reach the
+  // argv — "auto" has no flag spelling and stays unpinned (see
+  // recordedProduceArgs for why that is safe today).
+  // Youtube pin: the watermark's config-dependent-default rationale exactly —
+  // resolved both ways, so a later config edit can't flip what Render
+  // replays. Portrait and dictionary pin the RESOLVED values (a path and
+  // terms, never a secret) for the same reason; recordedProduceArgs owns
+  // the non-empty/includes guards.
+  const recordedArgs = recordedProduceArgs({
+    llm: provider ? providerName : undefined,
+    // The RESOLVED effort (§143), pinned like the dictionary: it may have
+    // come from this machine's config, and it keys the plan caches — an
+    // unpinned record would re-plan on replay after a config edit.
+    llmEffort,
+    clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
+    watermark,
+    captions: opts.captions ?? true,
+    jumpCuts: jumpCutsMode,
+    dictionary,
+    youtube,
+    portrait,
+    audience,
+    thumbnailBrief,
+  });
+  // produce is the ONLY command that may write command.json — edit.ts's §129
+  // heal prepends the "produce" literal to any record that doesn't start
+  // with it, so a record made by `transcribe`/`analyze` (which run this same
+  // pipeline with render: false, and used to be kept out by the write
+  // sitting after the early return below) would heal into
+  // `produce transcribe …` and replay garbage. Their argv cannot start with
+  // "produce" (§129: the stash mirrors the parse that ran, and only
+  // produce's re-entries stash), which is the gate.
+  if (recordedArgs[0] === "produce") {
+    await writeFile(
+      join(work, "command.json"),
+      JSON.stringify(
+        {
+          execPath: process.execPath,
+          execArgv: process.execArgv,
+          script: process.argv[1],
+          args: recordedArgs,
+          cwd: process.cwd(),
+          out: outPath,
+        },
+        null,
+        2,
+      ),
+    );
+    // Every produce run is a project the picker should offer (R17 §83) —
+    // best-effort, so a read-only home dir never fails the render.
+    await recordRecentProject(work);
+  }
+
   if (!opts.render) {
     // §140: the breakdown goes above the closing lines on both exits, so the
     // last thing on screen stays the success line and the edit hint.
     console.log(formatPhaseLine(phases.timings(), phases.totalMs()));
-    console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
-    console.log(editHint(work));
+    if (opts.review === true) {
+      // --review (step 1's report, fixed in step 3): the editor opens itself
+      // right after this return, so the --no-render skip line plus an
+      // `ossclip edit …` hint would tell the user to do what is already
+      // happening. One line that says what comes next instead.
+      console.log("▸ review: opening the editor — render once from its Render button");
+    } else {
+      console.log(`▸ skipping render (--no-render). Props at ${join(work, "render-props.json")}`);
+      console.log(editHint(work));
+    }
     return {
       workdir: work,
       rendered: false,
@@ -3833,27 +4344,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // multi-minute render. Interactive runs approve (or edit, or skip) it
   // here; the file it writes is what thumbnailStep honors after render — and
   // what a non-TTY replay (the editor's Render) reuses, which is the whole
-  // persistence story.
-  //
-  // Resolved HERE rather than at the pack section below so the gate and the
-  // post-render consumers read one answer. Typed-beats-config, `typeof` not
-  // truthiness (the `portrait` posture): config.json is hand-edited and
-  // unparsed, and a `"audience": true` typo must resolve to "no audience".
-  const youtube = resolveYoutube(opts.youtube, cfg.youtube);
-  // resolvePortrait (portrait-override.ts) carries the expandHome treatment
-  // of the flag and config paths, and puts the workdir's portrait-override
-  // ABOVE both (editor face swap, 2026-08-17): a per-project expression
-  // chosen in the editor must survive CLI re-renders — the flag/config
-  // portrait is the fallback headshot, and a replay silently reverting the
-  // swapped face would undo the one thing the swap exists for.
-  const portrait = resolvePortrait({
-    overridePath: portraitOverridePath(work),
-    flagPortrait: opts.portrait,
-    cfgPortrait: cfg.portrait,
-  })?.path;
-  const audience = opts.audience ?? (typeof cfg.audience === "string" ? cfg.audience : undefined);
-  const thumbnailBrief =
-    opts.thumbnailBrief ?? (typeof cfg.thumbnailBrief === "string" ? cfg.thumbnailBrief : undefined);
+  // persistence story. The youtube/portrait/audience/brief resolutions this
+  // gate reads moved above the --no-render exit (cut-review step 1) so the
+  // command.json record pins the same answers on both exits.
   const geminiKey = process.env.GEMINI_API_KEY;
   const approvedConceptPath = join(work, THUMBNAIL_APPROVED_BASENAME);
   // The gate reuses thumbnailDecision (plus the mime check) so the prompt
@@ -4279,14 +4772,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     } else {
       // Beat-sheet cache shape: keyed on everything that changes the answer —
       // who is asked, with what editorial steer, about which words.
-      const packKey = createHash("sha1")
+      // Parameterized on the provider for the §143 read/write split: the
+      // write below re-keys on who actually answered the pack call.
+      const packKeyFor = (p: string): string => createHash("sha1")
         .update(
           JSON.stringify([
             // Prompt changes change the answer (the §78 posture): the v2
             // rewrite must not serve a pack cached under v1's questions.
             YOUTUBE_PROMPT_VERSION,
-            providerName,
+            p,
             opts.llmModel ?? "",
+            // Appended only when set — the plan-cache rule (§78 via §143's
+            // effort knob): an unset effort must keep every warm workdir's
+            // key byte-identical, and a changed effort is a different answer.
+            ...(llmEffort !== undefined ? [llmEffort] : []),
             opts.intent ?? "",
             // Steer, so part of the key — a changed audience is a different
             // pack, not a cache hit.
@@ -4302,7 +4801,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         )
         .digest("hex")
         .slice(0, 8);
-      const packCache = join(work, `youtube-${packKey}.json`);
+      const packCache = join(work, `youtube-${packKeyFor(providerName)}.json`);
       if (existsSync(packCache)) {
         pack = YoutubePackSchema.parse(JSON.parse(await readFile(packCache, "utf8")));
         console.log("▸ youtube: metadata cached");
@@ -4322,7 +4821,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
               durationSec: map.outputDuration,
             }),
           );
-          await writeFile(packCache, JSON.stringify(pack, null, 2));
+          // §143 read/write split, same as the plan and repair caches: the
+          // pack files under whoever wrote it.
+          await writeFile(
+            join(
+              work,
+              `youtube-${packKeyFor(actualProvider(provider!.usage, "youtube_pack", providerName))}.json`,
+            ),
+            JSON.stringify(pack, null, 2),
+          );
         } catch (err) {
           // NEVER cache a failure (§106), and never fail the produce that
           // just rendered over a metadata sidecar: one loud line, the video
@@ -4388,84 +4895,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       });
     }
   }
-  // Record THIS invocation so the editor's Render button can replay it (R11
-  // Task 4). Nothing else can reconstruct it — production.json has the
-  // source path, cleanup and intent, but not --produce, --out or the LLM
-  // flags — and guessing would silently render a different video than the
-  // one on screen. execArgv carries the module loader (tsx in dev), so the
-  // replay works from source and from a compiled build alike.
-  // The provider may have been AUTO-DETECTED from this shell's environment
-  // (a GEMINI_/ANTHROPIC_ key exported here). The editor's Render replays
-  // this argv from the EDIT SERVER's environment, which may not have that
-  // key — and the auto-detection would then silently pick a DIFFERENT
-  // provider (R16 §75). Pin the RESOLVED choice into the recorded args —
-  // never the key itself; secrets stay out of the workdir — so a replay
-  // uses the same configuration or fails loudly asking for it.
-  // §93g: pin the RESOLVED window, exactly as §75 pinned the provider. The
-  // editor's Render replays this argv; if replay re-asked the model and got a
-  // slightly different window, every saved override — anchored to scene ids
-  // and word indices — would land on the wrong words. The word range, not
-  // just `--clip 60`, is what makes replay deterministic with zero LLM calls.
-  //
-  // §129: NOT process.argv. A wizard or bare-path run re-enters commander
-  // with a BUILT argv while process.argv still holds the original invocation
-  // (`ossclip <path>`, no `produce` literal, none of the wizard's answers) —
-  // recording process.argv shipped a command that replays as
-  // `ossclip <path> --llm …` and dies on "unknown option '--llm'".
-  // recordedProduceArgs prefers the argv the re-entry stashed and falls back
-  // to process.argv for a directly typed `ossclip produce …`, which stays
-  // byte-identical to what was always recorded.
-  // Watermark pin, same §75 shape, and in BOTH directions (review,
-  // Important): the effective default comes from THIS machine's
-  // ~/.ossclip/config.json, so an unpinned record replays differently
-  // wherever that config differs — an off-run would silently gain a credit
-  // under a later/foreign config-on, an on-run would silently lose it. The
-  // RESOLVED state is always pinned; a typed flag is already in the argv and
-  // the includes-guard leaves it alone.
-  // Captions pin: the FLAG's resolved state (`opts.captions ?? true`), never
-  // the override-inclusive `captionsHidden` — overrides.json travels with
-  // the workdir and is re-read on every replay, so pinning --no-captions
-  // because the EDITOR hid them would freeze an edit the user may later
-  // undo in that same editor. See recordedProduceArgs for why the pin is
-  // unconditional even though captions' default is config-independent today.
-  // Jump-cuts pin: the RESOLVED mode, but only its typed states reach the
-  // argv — "auto" has no flag spelling and stays unpinned (see
-  // recordedProduceArgs for why that is safe today).
-  // Youtube pin: the watermark's config-dependent-default rationale exactly —
-  // resolved both ways, so a later config edit can't flip what Render
-  // replays. Portrait and dictionary pin the RESOLVED values (a path and
-  // terms, never a secret) for the same reason; recordedProduceArgs owns
-  // the non-empty/includes guards.
-  const recordedArgs = recordedProduceArgs({
-    llm: provider ? providerName : undefined,
-    clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
-    watermark,
-    captions: opts.captions ?? true,
-    jumpCuts: jumpCutsMode,
-    dictionary,
-    youtube,
-    portrait,
-    audience,
-    thumbnailBrief,
-  });
-  await writeFile(
-    join(work, "command.json"),
-    JSON.stringify(
-      {
-        execPath: process.execPath,
-        execArgv: process.execArgv,
-        script: process.argv[1],
-        args: recordedArgs,
-        cwd: process.cwd(),
-        out: outPath,
-      },
-      null,
-      2,
-    ),
-  );
-  // Every produce run is a project the picker should offer (R17 §83) —
-  // best-effort, so a read-only home dir never fails the render.
-  await recordRecentProject(work);
+  // command.json was recorded above the --no-render exit (cut-review step 1)
+  // — see the block before that fork for the §75/§93g/§129 pinning story.
   console.log(formatPhaseLine(phases.timings(), phases.totalMs()));
   console.log(`✓ done → ${outPath}`);
   if (isInteractive()) {

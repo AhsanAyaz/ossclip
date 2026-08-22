@@ -60,3 +60,14 @@ export function detectionLine(name: ProviderName): string {
       return "▸ using the mock provider (no LLM)";
   }
 }
+
+/**
+ * The out-loud line for a §143 timeout fallback (2026-08-22): agy expired its
+ * own print timeout on the editorial call and another provider is answering
+ * it. Names all three facts — who failed, on which call, who took over —
+ * because a silent substitution would be worse than the hang: the user must
+ * know which model planned their video.
+ */
+export function fallbackLine(from: string, to: string, schemaName: string): string {
+  return `⚠ ${from} timed out on ${schemaName} — falling back to ${to}`;
+}

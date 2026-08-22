@@ -14,6 +14,7 @@ import {
   type ElementTransform,
   type Layout,
   type OverrideDoc,
+  type RemovalReason,
   type SceneComponentId,
 } from "@ossclip/core/browser";
 
@@ -189,6 +190,19 @@ export type EditAction =
       startSec: number;
       endSec: number;
     }
+  /** The cleanup veto layer's category switch (cut review step 3) —
+   * `enabled: false` writes `cleanup.reasons[reason] = false` ("keep all
+   * pauses"); `enabled: true` DELETES the key, never writes `true` (the
+   * captionsHidden rule: a true entry restates the default). Since cut
+   * review step 4 the preview PLAYS the veto live (App's `liveRecut`) as
+   * well as the next produce/Render applying it. */
+  | { type: "setReasonEnabled"; reason: RemovalReason; enabled: boolean }
+  /** One removal span's individual veto, SOURCE seconds (the schema's
+   * recut-immune anchoring). Toggling OFF removes every `cleanup.kept` entry
+   * OVERLAPPING the span, not just an exact-endpoint match — the same
+   * overlap rule `vetoedRemovals` matches with, so a click always inverts
+   * the state the seam is showing. */
+  | { type: "toggleKept"; srcIn: number; srcOut: number }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -437,8 +451,10 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // Soft like `hideScene`, but a DIFFERENT axis of soft — `hideScene`
       // only drops a graphic and keeps the window's duration; this marks
       // the WINDOW ITSELF for removal from the output, TAKE or SCENE alike,
-      // and takes effect on the next produce/Render (App.tsx's `live` memo
-      // never reads `doc.cuts` — see its own comment for why).
+      // and takes effect on the next produce/Render (App.tsx's live preview
+      // never APPLIES a fresh `doc.cuts` entry — its DECIDE comment has the
+      // `cuts[].src` reason; src-anchored entries it only carries through a
+      // veto re-cut so an already-applied cut stays applied).
       //
       // Writes ONLY `{startSec, endSec}` — never a `src` (the schema
       // comment on `OverrideDocSchema.cuts`, packages/core/src/overrides.ts:
@@ -828,6 +844,45 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         cuts: [...cuts, { startSec: action.startSec, endSec: action.endSec }],
       });
     }
+    case "setReasonEnabled": {
+      const { reasons } = state.doc.cleanup;
+      if (action.enabled) {
+        // DELETE the key rather than writing true — the captionsHidden/
+        // restoreScene rule: an entry restating the default is still an
+        // override. Also swallows a tolerated on-disk `true` (schema comment)
+        // instead of preserving it as dead weight. No-op guard first, so
+        // re-enabling an already-enabled reason mints no undo step.
+        if (!(action.reason in reasons)) return state;
+        const { [action.reason]: _dropped, ...rest } = reasons;
+        return commit({ ...state.doc, cleanup: { ...state.doc.cleanup, reasons: rest } });
+      }
+      if (reasons[action.reason] === false) return state;
+      return commit({
+        ...state.doc,
+        cleanup: {
+          ...state.doc.cleanup,
+          reasons: { ...reasons, [action.reason]: false },
+        },
+      });
+    }
+    case "toggleKept": {
+      // A degenerate span can never overlap anything (`vetoedRemovals`' strict
+      // inequalities), so an entry for it would be permanently inert — refuse
+      // rather than store dead weight.
+      if (!(action.srcOut > action.srcIn)) return state;
+      const { kept } = state.doc.cleanup;
+      // Overlap, not endpoint equality (the action docstring): a re-produce
+      // can shift a removal's boundary by a frame, and the entry that vetoed
+      // it must still be the one this click removes.
+      const rest = kept.filter((k) => !(k.srcIn < action.srcOut && k.srcOut > action.srcIn));
+      const cleanup =
+        rest.length < kept.length
+          ? // Un-veto: the entries GO — the restoreChunk/restoreScene rule,
+            // there is no "not vetoed" value for an entry to hold.
+            { ...state.doc.cleanup, kept: rest }
+          : { ...state.doc.cleanup, kept: [...kept, { srcIn: action.srcIn, srcOut: action.srcOut }] };
+      return commit({ ...state.doc, cleanup });
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -954,6 +1009,9 @@ export function useEdits() {
       dispatch({ type: "restoreCaptionWords", srcStarts }),
     cutWords: (words: Array<{ srcStart: number; was: string }>, startSec: number, endSec: number) =>
       dispatch({ type: "cutWords", words, startSec, endSec }),
+    setReasonEnabled: (reason: RemovalReason, enabled: boolean) =>
+      dispatch({ type: "setReasonEnabled", reason, enabled }),
+    toggleKept: (srcIn: number, srcOut: number) => dispatch({ type: "toggleKept", srcIn, srcOut }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

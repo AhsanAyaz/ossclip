@@ -124,6 +124,16 @@ describe("cover headline cap (FINDINGS §35)", () => {
     expect(words(out)).toBeLessThanOrEqual(COVER_MAX_WORDS);
   });
 
+  it("never stops on an auxiliary verb (real run, 2026-08-22)", () => {
+    // The 9-word slice of this hook ends "…I Had" — an auxiliary dangles
+    // exactly like a preposition, and this run shipped it.
+    const out = coverHeadline("AI Gave Me Too Many Ideas. I Had To Ship Less");
+    // Popping "Had" alone would leave "…Ideas. I" — the bare pronoun dangles
+    // just as badly, so "i" is in the set too.
+    expect(out.toLowerCase()).not.toMatch(/\b(had|has|have|was|were|will|can|should|i)$/);
+    expect(words(out)).toBeLessThanOrEqual(COVER_MAX_WORDS);
+  });
+
   it("never crosses the dash while truncating", () => {
     // Cutting into the elaboration produces a sentence fragment, which is
     // worse than a short headline.

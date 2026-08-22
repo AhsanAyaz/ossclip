@@ -46,6 +46,23 @@ describe("usage log is append-only (R16 §78)", () => {
     expect(providerOfLog(log)).toBe("gemini");
   });
 
+  it("a failed attempt's model never reaches the run's model list (§143)", () => {
+    // The 2026-08-22 fallback incident: agy's timed-out attempt recorded its
+    // "antigravity-default" placeholder, and the production stamp read
+    // "planned by claude-cli (antigravity-default)". The cost stays in the
+    // records; the attribution list skips it — including what a cached
+    // re-run inherits.
+    const failedAgy = { ...call("antigravity", "antigravity-default"), failed: true };
+    const first = appendUsageRun(
+      {},
+      { at: AT, records: [failedAgy, call("claude-cli", "claude-fable-5")] },
+    );
+    expect(first.runs[0]!.models).toEqual(["claude-fable-5"]);
+    expect(first.records).toHaveLength(2); // the spend itself is not erased
+    const cached = appendUsageRun(first, { at: AT, records: [], provider: "antigravity" });
+    expect(cached.runs[1]!.models).toEqual(["claude-fable-5"]);
+  });
+
   it("records the models a run used, first-seen order — the tiering is visible", () => {
     const log = appendUsageRun(
       {},

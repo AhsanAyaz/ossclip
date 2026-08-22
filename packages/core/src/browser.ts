@@ -45,11 +45,72 @@ export {
 // types only). The editor's load-path repair needs the MAP, not the raw span
 // array, to decide whether a repair is possible at all — see
 // `anchorCaptionLines` (§137): a non-empty array can still build an empty map.
-export { mapFromKeptSpans, TimeMap, type KeptSpan } from "./timemap";
+// `mapsClose` rides along since cut review step 4: the editor's playhead
+// hand-off across a live re-cut needs "did the clock actually change" to be
+// the SAME float-tolerant comparison `livePreviewMap`'s identity gate uses,
+// or a 1-ulp drift could seek the player for nothing.
+export { mapFromKeptSpans, mapsClose, TimeMap, type KeptSpan } from "./timemap";
 // The §35 cover word cap. The editor's CoverPanel shows the trimmed headline
 // live as you type, and restating the trimming rules there would drift from
 // the one the regenerate endpoint actually renders with. Imported from
 // ./cover-headline, NOT ./cover — that module is node all the way down
 // (node:fs, ./exec), which is exactly what this surface exists to keep out.
 export { COVER_MAX_WORDS, coverHeadline } from "./cover-headline";
-export type { Probe, Production, RenderSettings, Segment, Transcript, Word } from "./schema";
+// The cleanup veto layer (cut review step 3), VALUE exports and browser-safe:
+// cutlist.ts imports nothing but types from ./schema — verified before this
+// export, zero node built-ins in its graph. The editor marks vetoed seams
+// with the SAME `applyCleanupChoices` produce renders with (the
+// buildCoverRender one-implementation-two-callers pattern); a browser copy is
+// how the preview and the render would drift. `buildCutlist` itself rides
+// along in the module graph but stays unexported here on purpose — the
+// editor must never rebuild the proposal, only apply choices to the one
+// produce recorded.
+export {
+  applyCleanupChoices,
+  cleanupVetoable,
+  vetoedRemovals,
+  type CleanupChoices,
+} from "./cutlist";
+// The live post-veto preview (cut review step 4), VALUE exports and
+// browser-safe: retime-preview.ts composes cutlist + recut + timemap — all
+// already in this surface's runtime graph (recut.ts imports only overrides
+// and timemap, zero node built-ins, verified before this export). The editor
+// re-cuts its preview clock with the SAME `applyCleanupChoices` +
+// `subtractRangesFromCutlist` sequence produce runs and re-times every prop
+// through the SAME `remapPoint` produce re-anchors with — one implementation,
+// two callers, so the preview cannot drift from the render.
+// `previewClockMappers` rides along (step 4 follow-up): the surfaces that
+// speak in single instants — transcript seeks, ghost bands, the cover
+// panel's playhead — need the same walk as a point function, identity when
+// no re-cut is live, threaded by App so no consumer learns the machinery.
+// `cutRangeToOldClock` is the WRITE direction's range half (the follow-up's
+// follow-up): a cut gesture's live window converted to the old-clock frame
+// `doc.cuts` speaks, shared by the Inspector's button and App's delete
+// modal so the shrink/refuse verdict cannot drift between the two.
+export {
+  cutRangeToOldClock,
+  livePreviewMap,
+  previewClockMappers,
+  retimeForPreview,
+  type LivePreviewClocks,
+  type OldClockCutRange,
+  type PreviewClockMappers,
+  type RetimeablePreviewProps,
+  type RetimedPreviewFields,
+} from "./retime-preview";
+export type {
+  Probe,
+  Production,
+  // `RemovalReason` rides along with `Segment` (cut review step 2): the
+  // editor's reason→colour map is a `Record<RemovalReason, string>` precisely
+  // so a NEW reason in the vocabulary fails typecheck in the editor instead
+  // of silently drawing an uncoloured seam. (Since step 3 the schema module
+  // is in the runtime graph anyway — ./overrides imports RemovalReasonSchema
+  // for the `cleanup` key — but schema.ts is zod + scene-schema only, both
+  // already on this surface, so it stays browser-safe.)
+  RemovalReason,
+  RenderSettings,
+  Segment,
+  Transcript,
+  Word,
+} from "./schema";

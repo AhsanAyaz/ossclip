@@ -113,6 +113,29 @@ interface OverlayProps {
    * ChatMock message, …) can rewrite that element's entry in place instead
    * of writing a bogus top-level prop nothing reads. */
   cue: SceneCue | null;
+  /**
+   * The ⌘B split's WRITE boundary (cut review step 4 follow-up): the
+   * playhead speaks the player's LIVE clock, but `splits[].at` speaks the
+   * LAST RENDER's output seconds (SplitSchema, overrides.ts —
+   * `remapOverridesThroughRecut` walks it old-output → source → new-output),
+   * so under a live cleanup veto the raw playhead value is off by exactly
+   * the revived seconds before it. App threads
+   * `previewClockMappers(liveRecut).fromLive`; the default is the identity
+   * so the no-veto path (and every existing harness) writes bit-identical
+   * values to before.
+   */
+  fromLive?: (sec: number) => number;
+  /** `fromLive`'s guard (`previewClockMappers.hasOldClockPreimage`): a
+   * playhead inside REVIVED material has no old-clock moment for the split
+   * to anchor to — `fromLive` could only clamp it to the seam, silently
+   * relocating the user's split (the silent-overwrite class the override doc
+   * fights) — so ⌘B refuses through `onClockRefused` instead. Defaults to
+   * always-true, the no-veto shape. */
+  hasOldClockPreimage?: (sec: number) => boolean;
+  /** Visible refusal channel for a gesture the old clock cannot express —
+   * App renders it as a dismissible notice beside its other non-fatal
+   * banners, never `setError` (that path is fatal, the `onSave` rule). */
+  onClockRefused?: (message: string) => void;
 }
 
 const HANDLE = 9;
@@ -355,6 +378,9 @@ export const Overlay: React.FC<OverlayProps> = ({
   cues,
   onToggleHelp,
   onRequestDelete,
+  fromLive = (sec: number): number => sec,
+  hasOldClockPreimage = (): boolean => true,
+  onClockRefused = (): void => {},
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   /** An in-progress drag-to-pan on the video slot (PLAN Task B). `base` is
@@ -1193,7 +1219,20 @@ export const Overlay: React.FC<OverlayProps> = ({
         // Too close to an edge (or on no cue at all): refuse rather than
         // mint an unusably thin half.
         if (!target) return;
-        edits.addSplit(Math.round(t * 1000) / 1000);
+        // A playhead inside REVIVED material (a vetoed removal the last
+        // render cut away) has no old-clock moment to anchor to — see the
+        // `hasOldClockPreimage` prop doc. Refuse out loud; the clamp would
+        // silently relocate the split to the seam.
+        if (!hasOldClockPreimage(t)) {
+          onClockRefused(
+            "Can't split here: this moment isn't in the last render yet — render once (or re-remove the pause) to split here.",
+          );
+          return;
+        }
+        // Mapped onto the doc's OLD clock FIRST (the `fromLive` prop doc),
+        // then rounded — the millisecond round belongs to the value being
+        // stored, not to the clock the playhead happened to be on.
+        edits.addSplit(Math.round(fromLive(t) * 1000) / 1000);
       } else if (!mod && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         // ⌥+arrows move the SELECTION to the neighbouring scene (R16 §62) —
         // the playhead stays put; this is "select", not "navigate". With
@@ -1252,7 +1291,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp, onRequestDelete]);
+  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp, onRequestDelete, fromLive, hasOldClockPreimage, onClockRefused]);
 
   return (
     <div

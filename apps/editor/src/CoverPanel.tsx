@@ -174,15 +174,18 @@ export function coverRegenerateBody(args: {
 export interface CoverPanelProps {
   onClose: () => void;
   /**
-   * The playhead, in seconds, read at CLICK time — a getter rather than a
-   * number because App does not re-render per frame, so a prop snapshot would
-   * be whatever the playhead was when the panel opened.
+   * The playhead, in seconds ON THE FINISHED VIDEO'S OWN CLOCK, read at CLICK
+   * time — a getter rather than a number because App does not re-render per
+   * frame, so a prop snapshot would be whatever the playhead was when the
+   * panel opened.
    *
    * This value goes straight through as `atSec`, and that is only sound
-   * because the editor's timeline is OUTPUT time: it is the finished mp4's own
-   * timeline, cuts already applied, which is exactly what `--from final` seeks
-   * into. (`--from source` is the other case, and the server re-maps nothing
-   * for it — see the toggle's note.)
+   * because App answers in the finished mp4's own output time: with no live
+   * cleanup re-cut the player's frame IS that clock, and under one App maps
+   * the live playhead BACK onto it (new → source → old — the call site's
+   * comment owns why that direction is the REVERSE of every other surface's).
+   * (`--from source` is the other case, and the server re-maps nothing for it
+   * — see the toggle's note.)
    */
   playheadSec: () => number;
 }

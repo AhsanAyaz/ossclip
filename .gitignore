@@ -39,3 +39,6 @@ docs/assets/
 docs/local/
 apps/cli/.posthog-events.json
 apps/cli/.claude/
+
+# Verification run artifacts — regenerated per run, see .claude/skills/verify-ossclip
+docs/verification/

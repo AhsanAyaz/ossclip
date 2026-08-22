@@ -2,11 +2,12 @@ import type { Transcript } from "../schema";
 import type { Scene, SceneComponentId } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
-import { AntigravityProvider } from "./antigravity";
+import { AntigravityProvider, type LlmEffort } from "./antigravity";
 import { ClaudeCliProvider } from "./claude-cli";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 import { MockProvider } from "./mock";
 import { TieredProvider } from "./tiered";
+import { FallbackProvider, type FallbackInfo } from "./fallback";
 import {
   generateBeatSheet,
   normalizeBeatSheet,
@@ -29,13 +30,22 @@ export * from "./youtube";
 export * from "./scene-props";
 export * from "./repair";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
-export { AntigravityProvider } from "./antigravity";
+export { AntigravityProvider, type LlmEffort } from "./antigravity";
 export { ClaudeCliProvider } from "./claude-cli";
 export { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 export { MockProvider } from "./mock";
 export { TieredProvider } from "./tiered";
+export { FallbackProvider, type FallbackInfo } from "./fallback";
 
-export function createProvider(name: ProviderName, model?: string): LlmProvider {
+export function createProvider(
+  name: ProviderName,
+  model?: string,
+  // A trailing bag, not a third positional per knob: every existing
+  // (name, model) call site keeps compiling. Only antigravity reads `effort`
+  // today (§143) — the other providers have no such flag, and inventing a
+  // mapping for them would be a coercion of intent.
+  opts: { effort?: LlmEffort } = {},
+): LlmProvider {
   switch (name) {
     case "claude":
       return new AnthropicProvider(model ?? DEFAULT_CLAUDE_MODEL);
@@ -48,7 +58,7 @@ export function createProvider(name: ProviderName, model?: string): LlmProvider 
       // Rides agy's cached subscription sign-in. No default model on purpose:
       // the editorial tier runs whatever the user configured agy itself to
       // use (FINDINGS §132, antigravity provider).
-      return new AntigravityProvider(model);
+      return new AntigravityProvider(model, undefined, { effort: opts.effort });
     case "mock":
       return new MockProvider();
   }
@@ -80,6 +90,26 @@ export interface TieringOptions {
    * tiering and sends everything to the editorial model.
    */
   fastModel?: string;
+  /**
+   * Provider to fall back to when the editorial call TIMES OUT (2026-08-22,
+   * FINDINGS §143). Honored only when the primary is antigravity — the one
+   * provider measured to hang on the real beat-sheet call. See
+   * `fallbackProviderName` for who is eligible.
+   */
+  fallback?: ProviderName;
+  /**
+   * Fired once, before the fallback call — the caller announces it out loud.
+   * Silent substitution is the failure mode the fallback exists to avoid.
+   */
+  onFallback?: (info: FallbackInfo) => void;
+  /**
+   * `agy --effort` for the EDITORIAL antigravity call only (§143: exposed
+   * after the hang incident — the knob existed and we passed nothing). The
+   * mechanical tier keeps agy's default (its small calls never hung), and the
+   * §143 fallback never sees it — it is a different provider, and the
+   * primary's effort level means nothing to it.
+   */
+  effort?: LlmEffort;
 }
 
 /**
@@ -91,7 +121,16 @@ export function createTieredProvider(
   name: ProviderName,
   opts: TieringOptions = {},
 ): LlmProvider {
-  const editorial = createProvider(name, opts.model);
+  // The §143 effort knob rides the editorial call only — see TieringOptions.
+  let editorial = createProvider(name, opts.model, { effort: opts.effort });
+  // Timeout fallback (2026-08-22, FINDINGS §143): only the editorial tier
+  // wraps — the beat-sheet call is the one measured to outrun agy's print
+  // timeout; mechanical calls are small enough to finish. The fallback gets
+  // NO model override: the primary's model name means nothing to a different
+  // provider, so the fallback runs its own default.
+  if (name === "antigravity" && opts.fallback) {
+    editorial = new FallbackProvider(editorial, createProvider(opts.fallback), opts.onFallback);
+  }
   const fast = opts.fastModel === "same" ? undefined : opts.fastModel ?? DEFAULT_FAST_MODEL[name];
   if (!fast || fast === opts.model) return editorial;
   return new TieredProvider(editorial, createProvider(name, fast));
@@ -130,6 +169,27 @@ export function defaultProviderName(
   if (env.GEMINI_API_KEY) return "gemini";
   if (env.ANTHROPIC_API_KEY) return "claude";
   return "claude-cli";
+}
+
+/**
+ * Where a timed-out antigravity run falls back to (2026-08-22, FINDINGS
+ * §143). Only antigravity gets one: it is the sole provider measured to hang
+ * persistently on the real beat-sheet call, and handing every provider a
+ * second choice would turn one measured incident into a general substitution
+ * policy. The order is `defaultProviderName`'s with agy removed — a logged-in
+ * claude CLI beats the gemini key for the same §132 subscription-first
+ * reasons — and the `hasBin` default of `() => false` keeps this pure the
+ * same way: callers that can see a filesystem inject a real checker.
+ */
+export function fallbackProviderName(
+  primary: ProviderName,
+  env: NodeJS.ProcessEnv = process.env,
+  hasBin: (bin: string) => boolean = () => false,
+): ProviderName | undefined {
+  if (primary !== "antigravity") return undefined;
+  if (hasBin(env.OSSCLIP_CLAUDE_BIN ?? "claude")) return "claude-cli";
+  if (env.GEMINI_API_KEY) return "gemini";
+  return undefined;
 }
 
 export interface ProduceScenesResult {

@@ -80,6 +80,27 @@ describe("recordedProduceArgs (§129)", () => {
     ]);
   });
 
+  // The effort pin (§143), the dictionary's rationale: the resolved level may
+  // have come from ~/.ossclip/config.json's `llmEffort`, and it keys the plan
+  // caches — an unpinned record would re-plan on replay after a config edit.
+  it("pins a config-sourced --llm-effort, once, and never pins an unset one", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ llmEffort: "low" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--llm-effort",
+      "low",
+    ]);
+    // A typed flag is already in the argv; the includes-guard must not
+    // double it (with a possibly different value) at the end.
+    setReplayArgv(["produce", "./a.mp4", "--llm-effort", "high"]);
+    const typed = recordedProduceArgs({ llmEffort: "high" });
+    expect(typed.filter((a) => a === "--llm-effort")).toHaveLength(1);
+    // Unset stays unpinned — there is no flag spelling for "agy's default".
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
+  });
+
   // The watermark pin (same §75 shape as --llm, in BOTH directions): the
   // effective default is config-dependent, so command.json must carry the
   // RESOLVED state — on OR off — or a replay under a different config
@@ -327,6 +348,50 @@ describe("recordedProduceArgs (§129)", () => {
     const off = recordedProduceArgs({ jumpCuts: "off" });
     expect(off.filter((a) => a === "--no-jump-cuts")).toHaveLength(1);
     expect(off).not.toContain("--add-jump-cuts");
+  });
+
+  // The --review/--no-render strip (cut-review step 1): command.json's one
+  // consumer is the editor's Render button, and a record carrying either
+  // flag replays as a run that skips the render again — --review would also
+  // spawn a SECOND editor from inside the replay child. The record is the
+  // invocation the user wants Render to run.
+  it("strips --review and --no-render at record so the replay actually renders", () => {
+    setReplayArgv(["produce", "./a.mp4", "--review", "--llm", "mock"]);
+    const review = recordedProduceArgs({ llm: "mock" });
+    expect(review).toEqual(["produce", "./a.mp4", "--llm", "mock"]);
+    setReplayArgv(["produce", "./a.mp4", "--no-render"]);
+    expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
+    // Typed together (agreement, not a contradiction) both still go.
+    setReplayArgv(["produce", "./a.mp4", "--review", "--no-render"]);
+    const both = recordedProduceArgs({});
+    expect(both).not.toContain("--review");
+    expect(both).not.toContain("--no-render");
+    expect(both).toEqual(["produce", "./a.mp4"]);
+  });
+
+  it("strips --no-render from the direct process.argv fallback too", () => {
+    const original = process.argv;
+    process.argv = [
+      "/usr/bin/node",
+      "/usr/local/bin/ossclip",
+      "produce",
+      "./take.mp4",
+      "--no-render",
+      "--llm",
+      "mock",
+    ];
+    try {
+      // No stash — the direct path records process.argv.slice(2), minus the
+      // two render-skipping flags.
+      expect(recordedProduceArgs({ llm: "mock" })).toEqual([
+        "produce",
+        "./take.mp4",
+        "--llm",
+        "mock",
+      ]);
+    } finally {
+      process.argv = original;
+    }
   });
 
   // The replay round trip, same shape as the captions one above: a typed

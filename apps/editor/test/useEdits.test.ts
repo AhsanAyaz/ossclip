@@ -1236,3 +1236,65 @@ describe("setCaptionsHidden (the global Captions toggle)", () => {
     expect(s.doc.captionsHidden).toBe(true);
   });
 });
+
+describe("cleanup veto actions (cut review step 3)", () => {
+  it("setReasonEnabled(false) writes the category veto, and dirty/undo come free from commit()", () => {
+    let s = editReducer(initialEditState(), {
+      type: "setReasonEnabled", reason: "pause", enabled: false,
+    });
+    expect(s.doc.cleanup.reasons.pause).toBe(false);
+    expect(s.dirty).toBe(true);
+    expect(s.past).toHaveLength(1);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.cleanup.reasons.pause).toBeUndefined();
+  });
+
+  it("setReasonEnabled(true) DELETES the key — never writes true (the captionsHidden rule)", () => {
+    let s = editReducer(initialEditState(), {
+      type: "setReasonEnabled", reason: "pause", enabled: false,
+    });
+    s = editReducer(s, { type: "setReasonEnabled", reason: "pause", enabled: true });
+    expect("pause" in s.doc.cleanup.reasons).toBe(false);
+  });
+
+  it("re-enabling swallows a tolerated on-disk true instead of preserving dead weight", () => {
+    const loaded = OverrideDocSchema.parse({ cleanup: { reasons: { retake: true } } });
+    let s = editReducer(initialEditState(), { type: "load", doc: loaded });
+    s = editReducer(s, { type: "setReasonEnabled", reason: "retake", enabled: true });
+    expect("retake" in s.doc.cleanup.reasons).toBe(false);
+    expect(s.dirty).toBe(true);
+  });
+
+  it("no-op guards both ways — an unchanged document mints no undo step", () => {
+    const base = initialEditState();
+    // Already enabled (key absent): re-enabling is the SAME state object.
+    expect(editReducer(base, { type: "setReasonEnabled", reason: "pause", enabled: true })).toBe(base);
+    const disabled = editReducer(base, {
+      type: "setReasonEnabled", reason: "pause", enabled: false,
+    });
+    expect(
+      editReducer(disabled, { type: "setReasonEnabled", reason: "pause", enabled: false }),
+    ).toBe(disabled);
+  });
+
+  it("toggleKept adds an individual veto, and toggling again removes the entry (never a false-ish value)", () => {
+    let s = editReducer(initialEditState(), { type: "toggleKept", srcIn: 12.4, srcOut: 13.1 });
+    expect(s.doc.cleanup.kept).toEqual([{ srcIn: 12.4, srcOut: 13.1 }]);
+    expect(s.past).toHaveLength(1);
+    s = editReducer(s, { type: "toggleKept", srcIn: 12.4, srcOut: 13.1 });
+    expect(s.doc.cleanup.kept).toEqual([]);
+  });
+
+  it("toggleKept removes by OVERLAP, not endpoint equality — a re-produce can shift the boundary", () => {
+    // The veto was stored against 12.4..13.1; the seam the user clicks after
+    // a re-produce says 12.433..13.1. The click must still UN-veto.
+    let s = editReducer(initialEditState(), { type: "toggleKept", srcIn: 12.4, srcOut: 13.1 });
+    s = editReducer(s, { type: "toggleKept", srcIn: 12.433, srcOut: 13.1 });
+    expect(s.doc.cleanup.kept).toEqual([]);
+  });
+
+  it("a degenerate span is refused — an entry that can never overlap anything is dead weight", () => {
+    const base = initialEditState();
+    expect(editReducer(base, { type: "toggleKept", srcIn: 5, srcOut: 5 })).toBe(base);
+  });
+});

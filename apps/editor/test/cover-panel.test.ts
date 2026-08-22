@@ -3,6 +3,12 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  livePreviewMap,
+  previewClockMappers,
+  TimeMap,
+  type Segment,
+} from "@ossclip/core/browser";
+import {
   CoverPanel,
   coverRegenerateBody,
   coverUnavailableMessage,
@@ -295,6 +301,41 @@ describe("CoverPanel", () => {
     // after the panel opened is the one that lands in the field.
     expect(container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')?.value).toBe(
       "17.50",
+    );
+  });
+
+  it("the playhead's atSec is the RENDERED video's own second under a live re-cut (step 4 follow-up)", async () => {
+    // The direction is the REVERSE of the transcript's and the ghosts':
+    // those map old → new because they aim gestures at the PLAYER, which
+    // plays the new clock under a live veto — but the cover server extracts
+    // the `--from final` frame from the FINISHED RENDERED mp4 (cover.ts
+    // seeks `timeSec` into it), and that file's timeline is the OLD clock.
+    // So App threads `previewClockMappers(liveRecut).fromLive` into this
+    // getter: new → source → old, the time the server's chosen video
+    // actually has. Unmapped, the grabbed frame sat exactly the revived
+    // seconds early.
+    const proposal: Segment[] = [
+      { srcIn: 0, srcOut: 5, kind: "keep" },
+      { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 7, srcOut: 10, kind: "keep" },
+    ];
+    const clocks = livePreviewMap(
+      proposal,
+      { reasons: { pause: false } },
+      [],
+      new TimeMap(proposal).spans,
+    )!;
+    const m = previewClockMappers(clocks);
+    stubGet(READY);
+    // The live playhead sits at 8s on the NEW clock (source 8, past the
+    // revived 2s pause) — App's getter, composed exactly as App composes it.
+    await mount(() => m.fromLive(8));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
+    });
+    // 6.00: the rendered mp4 (pause cut) plays that same source instant at 6.
+    expect(container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')?.value).toBe(
+      "6.00",
     );
   });
 

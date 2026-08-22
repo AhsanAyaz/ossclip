@@ -54,6 +54,8 @@ export function consumeReplayArgv(): string[] | null {
  */
 export function recordedProduceArgs(pins: {
   llm?: string;
+  /** The RESOLVED §143 effort — flag or valid config, never a raw config string. */
+  llmEffort?: "low" | "medium" | "high";
   clipWindow?: string;
   watermark?: boolean;
   captions?: boolean;
@@ -68,9 +70,28 @@ export function recordedProduceArgs(pins: {
   /** The RESOLVED thumbnail brief — pinned only when non-empty. */
   thumbnailBrief?: string;
 }): string[] {
-  const args = consumeReplayArgv() ?? process.argv.slice(2);
+  // --review and --no-render are stripped at record (cut-review step 1):
+  // command.json exists for exactly one consumer — the editor's Render
+  // button, which replays this argv to produce the video — and a record
+  // carrying --no-render would replay as a run that skips the render again,
+  // while a recorded --review would ALSO spawn a second editor from inside
+  // the replay child. Record the invocation the user wants Render to run.
+  // Both are bare boolean flags, so a value-free filter cannot orphan an
+  // option's argument.
+  const args = (consumeReplayArgv() ?? process.argv.slice(2)).filter(
+    (a) => a !== "--review" && a !== "--no-render",
+  );
   if (pins.llm !== undefined && !args.includes("--llm")) {
     args.push("--llm", pins.llm);
+  }
+  // The effort pin (§143), the dictionary's rationale: the resolved level may
+  // have come from ~/.ossclip/config.json's `llmEffort`, and it steers the
+  // editorial call — an unpinned record would replay a DIFFERENT plan the
+  // moment that config is edited. Unset stays unpinned: there is no flag
+  // spelling for "agy's own default", and an argv without the flag replays as
+  // "config decides" — the same accepted cost as the dictionary's empty case.
+  if (pins.llmEffort !== undefined && !args.includes("--llm-effort")) {
+    args.push("--llm-effort", pins.llmEffort);
   }
   if (pins.clipWindow !== undefined && !args.includes("--clip-window")) {
     args.push("--clip-window", pins.clipWindow);
