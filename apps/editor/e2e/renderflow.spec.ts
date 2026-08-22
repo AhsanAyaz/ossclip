@@ -38,6 +38,26 @@ test.beforeAll(async () => {
   );
 });
 
+/**
+ * Leave no render running (§147). Both fixtures deliberately stay alive for
+ * ~50s so a run can be refreshed into and cancelled, and every test here ends
+ * by cancelling its own — but a test that FAILS in between never gets there,
+ * and the child outlives it. The next attempt then loads a page whose Render
+ * button is disabled and reads "Rendering…", and fails on a 30s click timeout
+ * that has nothing to do with what actually broke. That is how the real bug
+ * in §147 arrived at CI wearing a second, misleading error on top of it.
+ *
+ * Cancelled through the API rather than the UI on purpose: this has to work
+ * precisely when the test failed BECAUSE the UI was not in the state it
+ * expected, so it cannot depend on a button being present or enabled.
+ */
+test.afterEach(async ({ request }) => {
+  const status = await request.get("/api/render/status");
+  if (!status.ok()) return;
+  const { running } = (await status.json()) as { running: boolean };
+  if (running) await request.post("/api/render/cancel");
+});
+
 test.afterAll(async () => {
   await rm(COMMAND, { force: true });
   await rm(FAKE_RENDER, { force: true });
