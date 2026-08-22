@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import {
   AGY_PRINT_TIMEOUT,
+  AgyError,
   agyErrorText,
   agyFailureMessage,
   AntigravityProvider,
@@ -342,12 +343,29 @@ describe("AntigravityProvider", () => {
     // "Is Antigravity installed and logged in?" on a working, logged-in agy.
     expect(err?.message).not.toMatch(/logged in/);
     expect(err?.message).toMatch(/timed out/);
-    expect(err?.message).toMatch(/2 attempts/);
     expect(err?.message).toMatch(new RegExp(`--print-timeout ${AGY_PRINT_TIMEOUT}`));
     // The escape hatch is another provider, or no planner at all.
     expect(err?.message).toMatch(/--llm claude-cli[\s\S]*--llm gemini[\s\S]*--produce/);
-    // A timeout is not deterministic, so the retry still ran. Policy unchanged.
-    expect(callsOf(stub)).toBe(2);
+    // A timed-out call never succeeds on retry at this call size (measured
+    // 2026-08-22: two 10m expiries, 20 minutes of wall clock for nothing), so
+    // the second attempt no longer runs.
+    expect(callsOf(stub)).toBe(1);
+  });
+
+  it("throws AgyError carrying the failure class as data, not prose", async () => {
+    // The fallback decorator branches on `failureClass`; re-parsing the
+    // message would couple it to wording that is free to change.
+    const fail = async (stub: Stub, model?: string): Promise<unknown> =>
+      new AntigravityProvider(model, stub.bin)
+        .complete({ system: "s", user: "u", schema, schemaName: "t" })
+        .then(() => null)
+        .catch((e: unknown) => e);
+    const timeout = await fail(stubAgyEnvelopeError("timeout waiting for response"));
+    expect(timeout).toBeInstanceOf(AgyError);
+    expect((timeout as AgyError).failureClass).toBe("timeout");
+    const auth = await fail(stubAgyEnvelopeError("authentication required: run agy to sign in"));
+    expect(auth).toBeInstanceOf(AgyError);
+    expect((auth as AgyError).failureClass).toBe("auth");
   });
 });
 

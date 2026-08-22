@@ -246,6 +246,22 @@ export function agyFailureMessage(parts: {
 }
 
 /**
+ * The provider's terminal error, carrying the failure class as DATA. The
+ * message is written for humans and free to reword; a provider-fallback
+ * decorator that branches on what failed must read `failureClass`, never
+ * re-parse the prose.
+ */
+export class AgyError extends Error {
+  constructor(
+    message: string,
+    readonly failureClass: AgyFailureClass,
+  ) {
+    super(message);
+    this.name = "AgyError";
+  }
+}
+
+/**
  * Google Antigravity via the locally installed `agy` CLI. Uses whatever auth
  * the CLI holds — a logged-in subscription, so producing a video consumes
  * plan usage rather than pay-per-token API credits (`billed: false`, and agy
@@ -322,6 +338,10 @@ export class AntigravityProvider implements LlmProvider {
         attemptMs.push(Date.now() - started);
         lastError = err instanceof Error ? err.message : String(err);
         if (isNonRetryableAgyFailure(lastError)) break;
+        // An externally killed spawn (SIGTERM/SIGKILL) classifies as timeout,
+        // and is as persistent as an expired --print-timeout — same fail-fast
+        // as the envelope path below.
+        if (classifyAgyFailure(lastError) === "timeout") break;
         continue;
       }
       const elapsed = Date.now() - started;
@@ -357,6 +377,12 @@ export class AntigravityProvider implements LlmProvider {
         attemptMs.push(elapsed);
         lastError = agyErrorText(stdout, stderr);
         if (isNonRetryableAgyFailure(lastError)) break;
+        // A timed-out call never succeeds on retry at this call size —
+        // measured 2026-08-22: a ~63k-token beat-sheet call expired at the
+        // 10m --print-timeout twice in a row, so the second attempt only
+        // doubled the wall clock to 20 minutes. Fail fast; the escape hatch
+        // is another provider, not the same call again.
+        if (classifyAgyFailure(lastError) === "timeout") break;
         continue;
       }
       try {
@@ -371,7 +397,7 @@ export class AntigravityProvider implements LlmProvider {
         lastError = err instanceof Error ? err.message : String(err);
       }
     }
-    throw new Error(
+    throw new AgyError(
       agyFailureMessage({
         bin: this.bin,
         schemaName: req.schemaName,
@@ -379,6 +405,7 @@ export class AntigravityProvider implements LlmProvider {
         attemptMs,
         printTimeout: AGY_PRINT_TIMEOUT,
       }),
+      classifyAgyFailure(lastError),
     );
   }
 }
