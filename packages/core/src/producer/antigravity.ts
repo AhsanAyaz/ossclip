@@ -386,6 +386,9 @@ export class AntigravityProvider implements LlmProvider {
           // subscription pays, not a card, and agy reports no cost to forward.
           billed: false,
           ms: elapsed,
+          // The envelope's own verdict (§143): a failed attempt's cost stays
+          // visible, but attribution (the production.json stamp) skips it.
+          failed: envelope.status !== "SUCCESS" || undefined,
         });
       }
       // SUCCESS is the envelope's own word for "this worked" (§132 lists the

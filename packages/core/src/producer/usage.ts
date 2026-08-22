@@ -45,6 +45,14 @@ export interface LlmUsage {
   billed: boolean;
   /** Wall-clock milliseconds, so a slow call is visible beside a costly one. */
   ms?: number;
+  /**
+   * True when this ATTEMPT did not produce the artifact (a timed-out or
+   * errored call, §143). The cost is real and stays in every usage report —
+   * the flag exists so ATTRIBUTION can skip it: a production.json stamp that
+   * listed the failed attempt's placeholder model read "planned by
+   * claude-cli (antigravity-default)" after a fallback run (2026-08-22).
+   */
+  failed?: boolean;
 }
 
 export interface ModelPrice {
@@ -401,6 +409,9 @@ function modelsOfLog(log: Pick<UsageLog, "runs" | "records">): string[] {
   }
   const seen: string[] = [];
   for (const r of log.records) {
+    // Failed attempts never contribute a model (§143) — same rule as the
+    // per-run list below.
+    if (r.failed) continue;
     if (r.model && !seen.includes(r.model)) seen.push(r.model);
   }
   return seen;
@@ -418,6 +429,11 @@ export function appendUsageRun(
   const cached = records.length === 0;
   const models: string[] = [];
   for (const r of records) {
+    // A run's model list answers "who made this", not "who was asked" — a
+    // failed attempt's model (the timed-out agy placeholder, §143) stays in
+    // the records and every cost report, but never in the attribution list a
+    // cached run inherits or the production stamp copies.
+    if (r.failed) continue;
     if (r.model && !models.includes(r.model)) models.push(r.model);
   }
   // A cached run inherits the models it is REUSING the output of, exactly as

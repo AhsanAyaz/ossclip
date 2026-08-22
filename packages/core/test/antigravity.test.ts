@@ -248,6 +248,9 @@ describe("AntigravityProvider", () => {
       exact: true,
       billed: false,
     });
+    // A SUCCESS attempt is not `failed` — the flag exists so the stamp can
+    // skip failed attempts' models (§143), and must never taint a real one.
+    expect(provider.usage[0]!.failed).toBeUndefined();
   });
 
   it("does not double-count cache reads when input_tokens is cache-inclusive", () => {
@@ -379,6 +382,11 @@ describe("AntigravityProvider", () => {
     // 2026-08-22: two 10m expiries, 20 minutes of wall clock for nothing), so
     // the second attempt no longer runs.
     expect(callsOf(stub)).toBe(1);
+    // The attempt's cost is recorded AND marked failed (§143): usage reports
+    // keep the spend, but attribution — the production.json stamp — must not
+    // credit the plan to a model that never answered.
+    expect(provider.usage).toHaveLength(1);
+    expect(provider.usage[0]!.failed).toBe(true);
   });
 
   it("throws AgyError carrying the failure class as data, not prose", async () => {

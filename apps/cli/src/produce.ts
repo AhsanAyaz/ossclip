@@ -2864,14 +2864,23 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const last = log.runs[log.runs.length - 1]!;
     // `last.provider` derives from records[0] — the FIRST call's provider,
     // which after a §143 timeout fallback is the primary that failed the
-    // editorial call. Name every provider that worked, first-seen order (the
-    // same " → " rendering the usage report uses), so production.json never
-    // credits a plan to a provider that never made it. Single-provider runs
-    // stamp exactly as before.
-    const providersSeen = [...new Set(provider.usage.map((r) => r.provider))];
+    // editorial call. The stamp answers "who planned this", so it is built
+    // from the records that ANSWERED (`failed` attempts stay in usage.json
+    // and every report — their cost is real — but a stamp listing the failed
+    // attempt's placeholder model read "planned by claude-cli
+    // (antigravity-default)" after a fallback run, 2026-08-22). Providers in
+    // first-seen order, the same " → " rendering the usage report uses;
+    // single-provider runs stamp exactly as before.
+    const answered = provider.usage.filter((r) => !r.failed);
+    const providersSeen = [...new Set(answered.map((r) => r.provider))];
     producerStamp = {
       provider:
-        providersSeen.length > 1 ? providersSeen.join(" → ") : last.provider ?? providerName,
+        providersSeen.length > 1
+          ? providersSeen.join(" → ")
+          : providersSeen[0] ?? last.provider ?? providerName,
+      // `last.models` already excludes failed attempts' models (usage.ts,
+      // same §143 rule) — a stamp that listed the timed-out placeholder read
+      // "planned by claude-cli (antigravity-default)" after a fallback run.
       models: last.models,
       cached: last.cached,
       at: last.at,
