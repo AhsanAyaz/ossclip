@@ -133,24 +133,42 @@ jobs:
           awk -v d="$DUR" 'BEGIN { exit (d > 1) ? 0 : 1 }' \
             || { echo "::error::duration $DUR is not a real render"; exit 1; }
 
-      # The regression guard for #7 specifically. Off darwin the encoder MUST
-      # be software x264: h264_nvenc here would mean the platform gate stopped
-      # working, and on a runner that happens to have an NVIDIA card it would
-      # even pass the checks above while shipping the bug back to every user
-      # without one. The encoder identity is the assertion, not a detail.
-      - name: the encoder is software x264, never nvenc (§144)
+      # The regression guard for #7 specifically. The check above proves a file
+      # came out; this proves WHICH encoder made it. That still matters on a
+      # green run: GitHub's runners have no NVIDIA card today, but if one ever
+      # gained one, a regressed gate would select nvenc, succeed here, and ship
+      # the broken build back to every user without a card.
+      #
+      # Asserted on x264's SEI user-data, not on the encoder metadata tag: the
+      # tag is written on macOS by videotoolbox but is ABSENT from Remotion's
+      # Windows output, which is how this check failed on its first real run.
+      # The SEI string ("x264 - core 165 ... crf=18.0") is written into the
+      # bitstream by the encoder itself, so it survives whatever the muxer does
+      # with tags — verified against the actual Windows artifact.
+      - name: software x264 encoded it, never nvenc (§144)
         shell: bash
         run: |
-          FFPROBE=$(node -p "try{JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.ossclip/config.json','utf8')).ffprobePath||'ffprobe'}catch(e){'ffprobe'}")
           RAW=$(ls "$PWD"/wd/*/render-raw.mp4 | head -1)
-          TAG=$("$FFPROBE" -v error -select_streams v:0 -show_entries stream_tags=encoder \
-            -of default=noprint_wrappers=1:nokey=1 "$RAW")
-          echo "encoder: $TAG"
-          case "$TAG" in
-            *nvenc*) echo "::error::nvenc was selected on $RUNNER_OS — the platform gate regressed"; exit 1 ;;
-            *libx264*) ;;
-            *) echo "::error::unexpected encoder '$TAG' — expected libx264"; exit 1 ;;
-          esac
+          echo "raw render: $RAW"
+          cat > check-encoder.mjs <<'EOF'
+          import { readFileSync } from "node:fs";
+          const raw = process.argv[2];
+          // latin1 keeps every byte addressable as a character; the SEI is
+          // ASCII inside an otherwise binary stream.
+          const bytes = readFileSync(raw).toString("latin1");
+          const x264 = bytes.includes("x264 - core");
+          const nvenc = /nvenc/i.test(bytes);
+          console.log(`x264 SEI: ${x264} | nvenc marker: ${nvenc}`);
+          if (nvenc) {
+            console.log("::error::nvenc encoded this render — the platform gate regressed");
+            process.exit(1);
+          }
+          if (!x264) {
+            console.log("::error::no x264 SEI — software x264 did not encode this render");
+            process.exit(1);
+          }
+          EOF
+          node check-encoder.mjs "$RAW"
 
       # A failed render is hard to read from a log alone; the workdir carries
       # the cut report and the props the render was given.
