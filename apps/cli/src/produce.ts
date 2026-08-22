@@ -1158,7 +1158,23 @@ export async function thumbnailStep(args: ThumbnailStepArgs): Promise<ThumbnailS
         // ceiling). Capped BEFORE caching so the cache and the image key hold
         // what is used.
         concept = { ...fresh, overlayText: approvedOverlayText(fresh.overlayText) };
-        await writeFile(conceptCache, JSON.stringify(concept, null, 2));
+        // §143 read/write split, same as the plan and repair caches: the
+        // concept call rides the editorial provider and can fall back, so the
+        // file goes under whoever actually answered.
+        await writeFile(
+          join(
+            args.work,
+            thumbnailConceptCacheName({
+              ...args,
+              providerName: actualProvider(
+                args.provider.usage,
+                "thumbnail_concept",
+                args.providerName,
+              ),
+            }),
+          ),
+          JSON.stringify(concept, null, 2),
+        );
       } catch (err) {
         log(
           `▸ thumbnail: concept failed (${err instanceof Error ? err.message : String(err)}) ` +
@@ -2361,28 +2377,39 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   let rawTranscript = transcript;
   let repairs: AppliedRepair[] = [];
   if (provider && opts.repair !== false) {
-    const rawKey = createHash("sha1")
-      .update(
-        JSON.stringify([
-          providerName,
-          opts.llmModel,
-          opts.llmFastModel ?? cfg.fastModel,
-          opts.speaker ?? cfg.speaker,
-          // The dictionary changes both the prompt and the vouched set (F4),
-          // so cached repairs from a different vocabulary must not be reused.
-          dictionary,
-          rawTranscript.words.map((w) => w.text),
-          // Repair runs on the EDITORIAL tier (repair.ts: deciding what a
-          // person actually said is semantic work), so the §143 effort knob
-          // changes its answers. Appended at the END, only when SET —
-          // beatSheetCacheKey's rule: an unset effort must keep serving the
-          // repairs every existing workdir already cached.
-          ...(llmEffort !== undefined ? [llmEffort] : []),
-        ]),
-      )
-      .digest("hex")
-      .slice(0, 8);
-    const repairCache = join(work, `repairs-${rawKey}.json`);
+    // Parameterized on the provider so the WRITE below can re-key on who
+    // actually answered (§143) — the same read/write split as the beat-sheet
+    // caches, and load-bearing beyond attribution: repairs REWRITE the words,
+    // and the words are an input to every plan cache key downstream. A repair
+    // set cached under the provider that timed out would fork the transcript
+    // lineage, and the fallback-written plan could never be reached by a
+    // later run that names the fallback provider directly (measured
+    // 2026-08-22: two repair caches, 10 vs 11 repairs — one applied
+    // "Llama," → "LLaVA," — put the same take's beat sheets under keys no
+    // other run computed).
+    const repairKeyFor = (p: string): string =>
+      createHash("sha1")
+        .update(
+          JSON.stringify([
+            p,
+            opts.llmModel,
+            opts.llmFastModel ?? cfg.fastModel,
+            opts.speaker ?? cfg.speaker,
+            // The dictionary changes both the prompt and the vouched set (F4),
+            // so cached repairs from a different vocabulary must not be reused.
+            dictionary,
+            rawTranscript.words.map((w) => w.text),
+            // Repair runs on the EDITORIAL tier (repair.ts: deciding what a
+            // person actually said is semantic work), so the §143 effort knob
+            // changes its answers. Appended at the END, only when SET —
+            // beatSheetCacheKey's rule: an unset effort must keep serving the
+            // repairs every existing workdir already cached.
+            ...(llmEffort !== undefined ? [llmEffort] : []),
+          ]),
+        )
+        .digest("hex")
+        .slice(0, 8);
+    const repairCache = join(work, `repairs-${repairKeyFor(providerName)}.json`);
     if (existsSync(repairCache)) {
       const cached = JSON.parse(await readFile(repairCache, "utf8")) as AppliedRepair[];
       // Re-DECIDE from the cached PROPOSALS; never replay the stored verdicts
@@ -2452,7 +2479,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             "    (not cached — the next run retries the pass)",
         );
       } else {
-        await writeFile(repairCache, JSON.stringify(repairs, null, 2));
+        // Written under the ANSWERING provider's key (§143): after a timeout
+        // fallback these are the fallback's repairs, and the transcript
+        // lineage they start must be reachable by a run that asks that
+        // provider by name. The primary-keyed read above stays deliberate.
+        await writeFile(
+          join(
+            work,
+            `repairs-${repairKeyFor(actualProvider(provider.usage, "transcript_repair", providerName))}.json`,
+          ),
+          JSON.stringify(repairs, null, 2),
+        );
       }
     }
     for (const r of repairs) {
@@ -4726,13 +4763,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     } else {
       // Beat-sheet cache shape: keyed on everything that changes the answer —
       // who is asked, with what editorial steer, about which words.
-      const packKey = createHash("sha1")
+      // Parameterized on the provider for the §143 read/write split: the
+      // write below re-keys on who actually answered the pack call.
+      const packKeyFor = (p: string): string => createHash("sha1")
         .update(
           JSON.stringify([
             // Prompt changes change the answer (the §78 posture): the v2
             // rewrite must not serve a pack cached under v1's questions.
             YOUTUBE_PROMPT_VERSION,
-            providerName,
+            p,
             opts.llmModel ?? "",
             // Appended only when set — the plan-cache rule (§78 via §143's
             // effort knob): an unset effort must keep every warm workdir's
@@ -4753,7 +4792,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         )
         .digest("hex")
         .slice(0, 8);
-      const packCache = join(work, `youtube-${packKey}.json`);
+      const packCache = join(work, `youtube-${packKeyFor(providerName)}.json`);
       if (existsSync(packCache)) {
         pack = YoutubePackSchema.parse(JSON.parse(await readFile(packCache, "utf8")));
         console.log("▸ youtube: metadata cached");
@@ -4773,7 +4812,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
               durationSec: map.outputDuration,
             }),
           );
-          await writeFile(packCache, JSON.stringify(pack, null, 2));
+          // §143 read/write split, same as the plan and repair caches: the
+          // pack files under whoever wrote it.
+          await writeFile(
+            join(
+              work,
+              `youtube-${packKeyFor(actualProvider(provider!.usage, "youtube_pack", providerName))}.json`,
+            ),
+            JSON.stringify(pack, null, 2),
+          );
         } catch (err) {
           // NEVER cache a failure (§106), and never fail the produce that
           // just rendered over a metadata sidecar: one loud line, the video
