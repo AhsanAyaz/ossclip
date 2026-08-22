@@ -26,10 +26,17 @@
  */
 export const COVER_MAX_WORDS = 9;
 
-/** Trailing words that cannot end a headline — the truncation reads as broken. */
+/**
+ * Trailing words that cannot end a headline — the truncation reads as broken.
+ * Auxiliaries dangle exactly like prepositions: a real run (2026-08-22)
+ * truncated to "AI Gave Me Too Many Ideas. I Had" because the set had none.
+ * "i" is here for the same incident: popping "Had" alone leaves "…Ideas. I",
+ * a subject with its sentence cut off.
+ */
 const DANGLING = new Set([
   "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "is", "it",
   "of", "on", "or", "the", "to", "with", "that", "this", "my", "your", "so",
+  "had", "has", "have", "was", "were", "will", "can", "should", "i",
 ]);
 
 /**
