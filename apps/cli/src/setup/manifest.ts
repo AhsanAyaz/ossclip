@@ -11,6 +11,10 @@
  * `checksums.sha256` per release; ggml-org assets are hashed by hand), and
  * re-run the setup-e2e workflow. The manifest test asserts every supported
  * platform×arch resolves to either an asset or an explicit manual hint.
+ *
+ * A pinned URL can also rot without anything here changing, so the `manifest
+ * urls` CI job HEADs every one of them on every setup PR and weekly (§145,
+ * §146) — a shape assertion in the unit suite cannot see a 404.
  */
 
 import { basename, isAbsolute, join } from "node:path";
@@ -29,9 +33,23 @@ export interface BinaryAsset {
   version: string;
 }
 
+/**
+ * PIN A MONTH-END TAG ONLY. BtbN's `autobuild-*` releases are not all equal:
+ * the dailies are pruned after roughly two weeks, but the LAST autobuild of
+ * each month is retained indefinitely — verified 2026-08-22 against tags going
+ * back to `autobuild-2024-09-30-15-36`, still serving all 48 assets.
+ *
+ * The previous pin here was a daily (`autobuild-2026-07-29-13-36`) and took
+ * the whole tag with it when it rotated, so `ossclip setup` could not install
+ * ffmpeg on ANY platform it provisions for — every non-darwin branch below
+ * interpolates this one base (#6, §145). Picking the month-end tag costs
+ * nothing and cannot rot the same way; picking `latest` would fix the 404 but
+ * forfeit the checksum guarantee this whole file exists for, since the asset
+ * behind it changes daily.
+ */
 const BTBN =
-  "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-29-13-36";
-const FFMPEG_VER = "n8.1.2-31-g8c9502e9b0";
+  "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10";
+const FFMPEG_VER = "n8.1.2-34-g9b6c8969e0";
 
 const WHISPER =
   "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1";
@@ -50,7 +68,7 @@ export function ffmpegAsset(platform: NodeJS.Platform, arch: string): BinaryAsse
     return {
       ...common,
       url: `${BTBN}/ffmpeg-${FFMPEG_VER}-win64-gpl-8.1.zip`,
-      sha256: "106d3f8e72b70e29f83983dbaa65efdfc5355716a5df675dc846e441929f7890",
+      sha256: "cc4156d51387566ea8ba653fc3a04897bdf812fddf652428d9030bbf7ae24835",
       archive: "zip",
       sizeMB: 160,
     };
@@ -59,7 +77,7 @@ export function ffmpegAsset(platform: NodeJS.Platform, arch: string): BinaryAsse
     return {
       ...common,
       url: `${BTBN}/ffmpeg-${FFMPEG_VER}-winarm64-gpl-8.1.zip`,
-      sha256: "ac46bdb0c9c619b107c7281a0cc6932a9419c4d6c3c8c36a259550f7fcee1a1a",
+      sha256: "abf3b41c200ce5346b9bb5be6fe634c4720d891778d8921f7b36b76d002b3c96",
       archive: "zip",
       sizeMB: 107,
     };
@@ -68,16 +86,16 @@ export function ffmpegAsset(platform: NodeJS.Platform, arch: string): BinaryAsse
     return {
       ...common,
       url: `${BTBN}/ffmpeg-${FFMPEG_VER}-linux64-gpl-8.1.tar.xz`,
-      sha256: "9fb60ff01e6574258dc76efdf94f901a651582da67b8edcfd10e8860233b7ef4",
+      sha256: "09fc77be269c7053e438b7e96548e4af97604faf96a42c4a3c56a1ad74c22c0a",
       archive: "tar.xz",
-      sizeMB: 120,
+      sizeMB: 119,
     };
   }
   if (platform === "linux" && arch === "arm64") {
     return {
       ...common,
       url: `${BTBN}/ffmpeg-${FFMPEG_VER}-linuxarm64-gpl-8.1.tar.xz`,
-      sha256: "d8f9598a885db3deabd06af7f0f70c8565af27d29fadbcf746598c9306a0c3fa",
+      sha256: "177e40c91564dec3840096f3bf1ffe696b94330585972462cfc739fa29fe0e1a",
       archive: "tar.xz",
       sizeMB: 102,
     };
@@ -163,13 +181,13 @@ export const MODELS: Record<string, ModelInfo> = {
   "base.en": { sizeMB: 142, sha1: "137c40403d78fd54d454da0f9bd998f78703390c" },
   "small.en": { sizeMB: 466, sha1: "db8a495a91d927739e50b3fc1cc4c6b8f6c2d022" },
   "medium.en": { sizeMB: 1536, sha1: "8c30f0e44ce9560643ebd10bbe50cd20eafd3723" },
-  // URL pending the author's upload (2026-08-17) — sha1 added when the file
-  // is published; setup already warns-and-continues without a checksum.
   "medium-urdu": {
     sizeMB: 1463,
-    // sha1 computed 2026-08-17 from the author's converted file BEFORE the HF
-    // upload — same bytes, so the pin is valid the moment the file publishes,
-    // and a corrupted/tampered mirror download fails the checksum loudly.
+    // sha1 was computed 2026-08-17 from the author's converted file before the
+    // HF upload, then the published file was checked byte-identical to it
+    // (exact size + head/mid/tail ranges) rather than trusted — so a corrupted
+    // or tampered mirror download fails the checksum loudly. Live since that
+    // date; `pnpm check:urls` re-probes this URL with the rest of the table.
     sha1: "59769d590f62eeeb3bc3f5b82ce8c03b6e96831e",
     language: "ur",
     note: "community Urdu fine-tune (Abdul145/whisper-medium-urdu-custom, Apache-2.0), converted to GGML",

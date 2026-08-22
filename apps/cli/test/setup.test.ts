@@ -3,10 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfigPatch, type OssclipConfig } from "@ossclip/core";
-import { MODELS, ffmpegAsset, whisperAsset } from "../src/setup/manifest";
+import { MODELS, WHISPER_BUILD_HINT, ffmpegAsset, whisperAsset } from "../src/setup/manifest";
 import { formatPlan, planSetup, type SetupProbes } from "../src/setup/plan";
 import { promptForProvider } from "../src/setup/provider";
-import { download } from "../src/setup/download";
+import { PinnedAssetGoneError, download } from "../src/setup/download";
+import { manualInstall } from "../src/setup/setup";
 import { tarCandidates } from "../src/setup/extract";
 import { openCommand, revealCommand } from "../src/open";
 
@@ -196,8 +197,8 @@ describe("setup planner", () => {
       OPTS,
     );
     const text = formatPlan(steps);
-    // 120 (ffmpeg linux64) + 9 (whisper) + 466 (small.en)
-    expect(text).toContain("total download ~595 MB");
+    // 119 (ffmpeg linux64) + 9 (whisper) + 466 (small.en)
+    expect(text).toContain("total download ~594 MB");
   });
 });
 
@@ -274,6 +275,66 @@ describe("download (resume + integrity)", () => {
     expect(() => readFileSync(dest)).toThrow();
     expect(() => readFileSync(`${dest}.part`)).toThrow();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * The HTTP-error branch had no test at all, which is part of why #6 was a
+   * dead end rather than a detour: a rotated-away pin and a flaky server read
+   * identically to the user (§145).
+   */
+  it("a 404 is a STALE PIN, typed separately from any other HTTP failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-dl-"));
+    const dest = join(dir, "file.bin");
+    const err = await download("https://x/gone", dest, {
+      fetchImpl: async () => new Response(null, { status: 404 }),
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PinnedAssetGoneError);
+    // The message must say whose fault it is, or the user goes hunting their
+    // own network for a bug that is in this repo's manifest.
+    expect((err as Error).message).toMatch(/not a problem on your machine/);
+    expect((err as Error).message).toContain("https://x/gone");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("other HTTP failures keep the generic message — they really might be transient", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-dl-"));
+    const dest = join(dir, "file.bin");
+    const err = await download("https://x/file", dest, {
+      fetchImpl: async () => new Response(null, { status: 503 }),
+    }).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(PinnedAssetGoneError);
+    expect((err as Error).message).toMatch(/download failed: HTTP 503/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * The manual-install matrix (§145). When a pin rots, this is the only thing
+ * standing between the user and a dead end, so the whole cross-platform
+ * decision is asserted here rather than discovered by a Windows user (§136).
+ */
+describe("manualInstall — the detour when a pinned download is gone", () => {
+  it("ffmpeg: the platform's real package command", () => {
+    expect(manualInstall("ffmpeg", "darwin")).toBe("brew install ffmpeg");
+    expect(manualInstall("ffmpeg", "linux")).toBe("sudo apt install ffmpeg");
+    expect(manualInstall("ffmpeg", "win32")).toMatch(/^winget install ffmpeg/);
+    expect(manualInstall("ffmpeg", "freebsd")).toMatch(/ffmpeg\.org/);
+  });
+
+  it("win32 ffmpeg names the env vars — winget's shims land off PATH for open shells", () => {
+    // Exactly the workaround #6's reporter had to find on their own.
+    expect(manualInstall("ffmpeg", "win32")).toMatch(/OSSCLIP_FFMPEG/);
+  });
+
+  it("whisper: brew on darwin, build-from-source everywhere else — apt has no package", () => {
+    expect(manualInstall("whisper", "darwin")).toBe("brew install whisper-cpp");
+    expect(manualInstall("whisper", "linux")).toBe(WHISPER_BUILD_HINT);
+    expect(manualInstall("whisper", "win32")).toBe(WHISPER_BUILD_HINT);
+  });
+
+  it("model and provider are not package-manager installs", () => {
+    expect(manualInstall("model", "linux")).toMatch(/ossclip doctor/);
+    expect(manualInstall("provider", "linux")).toMatch(/API key/);
   });
 });
 
