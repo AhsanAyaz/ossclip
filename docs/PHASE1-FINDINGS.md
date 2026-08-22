@@ -1469,3 +1469,24 @@ The general shape, worth carrying past this incident: **a watcher keyed on the i
 Two changes. The cache is skipped on `schedule` (PR runs keep it; that is where the download tax is actually annoying), so the weekly run is genuinely cold on all three OSes. And a `manifest urls` job HEADs every URL the manifest can hand out — the full platform×arch matrix, not just the runner's — in seconds with no downloads, on every setup PR and on the same cron. `pnpm check:urls` is the same lever locally.
 
 The unit suite cannot cover this and should not try: `setup.test.ts` asserts URLs match `^https://github\.com/`, a shape a 404 satisfies perfectly, and `pnpm test` stays offline and deterministic because the verification skill depends on it. Shape assertions and liveness assertions are different questions and belong in different places.
+
+## 147. The flaky test was not flaky — it was a real bug with a retry in front of it
+
+CI had reported `1 flaky, 60 passed` on the editor e2e for weeks, on `main` and every branch, always the same case: `renderflow.spec.ts:75`, "the render log is a scrollable tail". Playwright's CI-only `retries: 2` turned it green each time, so the build stayed green and nobody looked. Run it locally, where the same config sets `retries: 0` on purpose, and it failed **3 out of 3** — not flaky at all. Deterministic, and load-bearing.
+
+The chain, confirmed by probing the DOM at the failing assertion rather than reasoning about it:
+
+1. The first test in the file runs a render and cancels it. The server keeps the last run's ring buffer until the next render starts — deliberate, so a reload can still report a finished run.
+2. The second test calls `page.goto("/")`. On mount `loadProduction` reads `/api/render/status`, finds that terminal run, restores it, and **collapses the log** — also deliberate (a reload should not be greeted by a wall of an old run's output).
+3. The test clicks Render. A new run starts, `render-status` appears… and `logsOpen` is still `false`, because nothing reopened it. `render-tail` never mounts, and the assertion fails with "element(s) not found".
+
+The probe is the proof: at the moment of failure the toggle read `▸ logs` (collapsed), `render-status` was visible, and `render-tail` count was `0`. The render was running fine. The log was folded away on behalf of a run the user had already dismissed.
+
+So the product bug: **collapse is per-run state, and one run's collapse was governing the next one.** Click Render, get a spinner and no output. `onRender` now opens the log when it starts a run, which is the same argument the restore path's own comment makes — a fresh run is a fresh context — applied in the direction it had been missed.
+
+Two lessons worth more than the fix:
+
+- **A retry policy is a reporting decision, not a correctness one.** `retries: 2` exists for good reasons (real timing against a shared runner), but "flaky" in a summary is a claim nobody had tested. The honest read of a persistent one-test flake is *an unexplained failure that happens to pass on attempt two*, and the cheapest way to test that claim is to run it where retries are off.
+- **The assertion that mattered was the one nobody wrote.** Every line after the click depended on the log being open, and none of them said so. The precondition is now asserted explicitly, so the next regression names itself instead of arriving as a mystery collapse three assertions later.
+
+Also observed, and left alone deliberately: a failure between starting the render and cancelling it leaks the fixture's 50-second child, so the *retry* then fails on a disabled Render button — a second, misleading error on top of the first. Dormant now that the test passes, and worth an `afterEach` cancel if this file ever grows a third case.

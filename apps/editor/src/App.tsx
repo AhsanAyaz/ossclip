@@ -1104,6 +1104,14 @@ export const App: React.FC = () => {
           throw new Error(body.error ?? `render failed to start: ${res.status}`);
         }
         setRender({ running: true, lines: [], startedAt: Date.now() });
+        // A NEW run opens its own log (§147). The collapse above this in
+        // loadProduction is applied BY THE APP to a restored terminal run, and
+        // without this it silently governed the next run too: click Render and
+        // you got a spinner with no output, collapsed on behalf of a finished
+        // run you had already dismissed. Collapse is per-run state, exactly as
+        // the restore path's own comment argues — a fresh run is a fresh
+        // context, and the chevron is still there to fold it away again.
+        setLogsOpen(true);
         setRenderRefusedNotice(null);
         beginRenderPoll();
       } catch (err) {

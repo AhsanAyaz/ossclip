@@ -102,9 +102,16 @@ test("the render log is a scrollable tail and collapses behind the toggle (R17 �
   await page.getByTestId("render-button").click();
   await expect(page.getByTestId("render-status")).toBeVisible();
 
+  // A NEW run opens its own log (§147). Asserted rather than assumed: the
+  // first test leaves a finished run in the server's ring buffer, this test's
+  // goto restores it, and the restore path collapses the log — which used to
+  // govern this run too, so the tail below simply did not exist. Every
+  // assertion after this line silently depended on that not happening.
+  const tail = page.getByTestId("render-tail");
+  await expect(tail).toBeVisible();
+
   // The tail holds ALL 60 lines in a bounded, scrollable box — not the old
   // last-six-lines slice — and sticks to the bottom as they arrive.
-  const tail = page.getByTestId("render-tail");
   await expect(tail).toContainText("line 59");
   expect(await tail.evaluate((el) => el.scrollHeight > el.clientHeight + 20)).toBe(true);
   expect(
