@@ -77,6 +77,24 @@ describe("beatSheetCacheKey", () => {
     // `ClipWindow | null` there — a null must key like an omission.
     expect(beatSheetCacheKey({ ...base, clipWindow: null })).toBe(beatSheetCacheKey(base));
   });
+
+  it("changes when only the effort differs (§143)", () => {
+    // The knob steers the editorial call, so a re-run at a different effort
+    // must not serve the old plan — the §78 posture.
+    const key = beatSheetCacheKey(base);
+    expect(beatSheetCacheKey({ ...base, llmEffort: "low" })).not.toBe(key);
+    expect(beatSheetCacheKey({ ...base, llmEffort: "low" })).not.toBe(
+      beatSheetCacheKey({ ...base, llmEffort: "high" }),
+    );
+  });
+
+  it("an unset effort keeps the key byte-identical to the pre-knob code", () => {
+    // "fc437963" was computed by THIS fixture against the shipped algorithm
+    // at HEAD 404a469, BEFORE the effort field existed (a temporary test
+    // logged it). If this fails, every user's warm workdir re-runs the LLM —
+    // the exact cache invalidation the conditional append exists to prevent.
+    expect(beatSheetCacheKey({ ...base, promptVersion: "vX-fixed" })).toBe("fc437963");
+  });
 });
 
 /**
@@ -150,6 +168,19 @@ describe("clipWindowCacheKey", () => {
     expect(clipWindowCacheKey({ ...base, providerName: "claude-cli" })).not.toBe(
       clipWindowCacheKey(base),
     );
+  });
+
+  it("changes when only the effort differs (§143)", () => {
+    // The window is chosen by the same editorial call the knob steers.
+    const key = clipWindowCacheKey(base);
+    expect(clipWindowCacheKey({ ...base, llmEffort: "medium" })).not.toBe(key);
+  });
+
+  it("an unset effort keeps the key byte-identical to the pre-knob code", () => {
+    // "fe2ae666": this fixture against the shipped algorithm at HEAD 404a469,
+    // captured before the effort field existed — see beatSheetCacheKey's twin
+    // test for what breaking it costs.
+    expect(clipWindowCacheKey({ ...base, promptVersion: "vX-fixed" })).toBe("fe2ae666");
   });
 });
 

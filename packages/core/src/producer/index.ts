@@ -2,7 +2,7 @@ import type { Transcript } from "../schema";
 import type { Scene, SceneComponentId } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
-import { AntigravityProvider } from "./antigravity";
+import { AntigravityProvider, type LlmEffort } from "./antigravity";
 import { ClaudeCliProvider } from "./claude-cli";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 import { MockProvider } from "./mock";
@@ -30,14 +30,22 @@ export * from "./youtube";
 export * from "./scene-props";
 export * from "./repair";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
-export { AntigravityProvider } from "./antigravity";
+export { AntigravityProvider, type LlmEffort } from "./antigravity";
 export { ClaudeCliProvider } from "./claude-cli";
 export { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 export { MockProvider } from "./mock";
 export { TieredProvider } from "./tiered";
 export { FallbackProvider, type FallbackInfo } from "./fallback";
 
-export function createProvider(name: ProviderName, model?: string): LlmProvider {
+export function createProvider(
+  name: ProviderName,
+  model?: string,
+  // A trailing bag, not a third positional per knob: every existing
+  // (name, model) call site keeps compiling. Only antigravity reads `effort`
+  // today (§143) — the other providers have no such flag, and inventing a
+  // mapping for them would be a coercion of intent.
+  opts: { effort?: LlmEffort } = {},
+): LlmProvider {
   switch (name) {
     case "claude":
       return new AnthropicProvider(model ?? DEFAULT_CLAUDE_MODEL);
@@ -50,7 +58,7 @@ export function createProvider(name: ProviderName, model?: string): LlmProvider 
       // Rides agy's cached subscription sign-in. No default model on purpose:
       // the editorial tier runs whatever the user configured agy itself to
       // use (FINDINGS §132, antigravity provider).
-      return new AntigravityProvider(model);
+      return new AntigravityProvider(model, undefined, { effort: opts.effort });
     case "mock":
       return new MockProvider();
   }
@@ -94,6 +102,14 @@ export interface TieringOptions {
    * Silent substitution is the failure mode the fallback exists to avoid.
    */
   onFallback?: (info: FallbackInfo) => void;
+  /**
+   * `agy --effort` for the EDITORIAL antigravity call only (§143: exposed
+   * after the hang incident — the knob existed and we passed nothing). The
+   * mechanical tier keeps agy's default (its small calls never hung), and the
+   * §143 fallback never sees it — it is a different provider, and the
+   * primary's effort level means nothing to it.
+   */
+  effort?: LlmEffort;
 }
 
 /**
@@ -105,7 +121,8 @@ export function createTieredProvider(
   name: ProviderName,
   opts: TieringOptions = {},
 ): LlmProvider {
-  let editorial = createProvider(name, opts.model);
+  // The §143 effort knob rides the editorial call only — see TieringOptions.
+  let editorial = createProvider(name, opts.model, { effort: opts.effort });
   // Timeout fallback (2026-08-22, FINDINGS §143): only the editorial tier
   // wraps — the beat-sheet call is the one measured to outrun agy's print
   // timeout; mechanical calls are small enough to finish. The fallback gets

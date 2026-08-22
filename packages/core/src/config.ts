@@ -20,6 +20,16 @@ export interface OssclipConfig {
    */
   fastModel?: string;
   /**
+   * Reasoning effort for the antigravity provider — low | medium | high,
+   * agy's own `--effort` vocabulary. Consumed ONLY by antigravity today
+   * (§143: exposed after the hang incident — the knob existed and we passed
+   * nothing); every other provider ignores it. `--llm-effort` wins over this
+   * per run. File-only like `dictionary`; validated at the consumer
+   * (`resolveLlmEffort` in produce.ts), so a hand-edited `"max"` is one
+   * warning and an ignored key, never a coerced effort level.
+   */
+  llmEffort?: string;
+  /**
    * Download URLs for models the ggerganov mirror doesn't host, keyed by the
    * bare model name — a user's own fine-tune needs one line:
    * `"modelSources": {"my-model": "https://…/ggml-my-model.bin"}`. Wins over
@@ -196,6 +206,11 @@ export function loadConfig(): OssclipConfig {
     modelDir: process.env.OSSCLIP_MODEL_DIR ?? fileCfg.modelDir ?? DEFAULTS.modelDir,
     model: process.env.OSSCLIP_MODEL ?? fileCfg.model ?? DEFAULTS.model,
     fastModel: process.env.OSSCLIP_FAST_MODEL ?? fileCfg.fastModel,
+    // File-only, the `dictionary` posture — and deliberately NO env spelling
+    // (flag + config are the whole interface): validated where it is USED
+    // (`resolveLlmEffort` in produce.ts), so a hand-edited `"max"` earns one
+    // warning there and agy's default, never a coerced effort.
+    llmEffort: fileCfg.llmEffort,
     speaker: process.env.OSSCLIP_SPEAKER ?? fileCfg.speaker,
     openEditorAfterProduce: (process.env.OSSCLIP_OPEN_EDITOR ??
       fileCfg.openEditorAfterProduce) as OpenEditorPref | undefined,

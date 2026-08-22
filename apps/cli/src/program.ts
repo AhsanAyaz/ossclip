@@ -335,6 +335,10 @@ export function buildProgram(): Command {
     )
     .option("--llm-model <id>", "override the provider's default model")
     .option(
+      "--llm-effort <level>",
+      "reasoning effort for the antigravity provider (low|medium|high)",
+    )
+    .option(
       "--llm-fast-model <id>",
       "model for mechanical calls (repair, scene props); 'same' disables tiering",
     )
@@ -546,6 +550,13 @@ export function buildProgram(): Command {
       const provider = opts.llm
         ? z.enum(["antigravity", "claude", "claude-cli", "gemini", "mock"]).parse(opts.llm)
         : undefined;
+      // Parsed like --llm above: a typo'd `--llm-effort hgh` must die here
+      // naming the allowed values, not silently run at agy's default — the
+      // knob exists because of a hang (§143), and a user reaching for it is
+      // mid-investigation.
+      const llmEffort = opts.llmEffort
+        ? z.enum(["low", "medium", "high"]).parse(opts.llmEffort)
+        : undefined;
       const forceComponent = opts.forceComponent
         ? SceneComponentIdSchema.parse(opts.forceComponent)
         : undefined;
@@ -611,6 +622,9 @@ export function buildProgram(): Command {
           provider,
           llmModel: opts.llmModel,
           llmFastModel: opts.llmFastModel,
+          // The zod-parsed union above; untyped = undefined lets the config's
+          // `llmEffort` supply it (resolveLlmEffort at the use site).
+          llmEffort,
           speaker: opts.speaker,
           scenes: opts.scenes,
           repair: opts.repair,

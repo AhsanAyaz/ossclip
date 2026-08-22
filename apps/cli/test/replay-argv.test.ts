@@ -80,6 +80,27 @@ describe("recordedProduceArgs (§129)", () => {
     ]);
   });
 
+  // The effort pin (§143), the dictionary's rationale: the resolved level may
+  // have come from ~/.ossclip/config.json's `llmEffort`, and it keys the plan
+  // caches — an unpinned record would re-plan on replay after a config edit.
+  it("pins a config-sourced --llm-effort, once, and never pins an unset one", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ llmEffort: "low" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--llm-effort",
+      "low",
+    ]);
+    // A typed flag is already in the argv; the includes-guard must not
+    // double it (with a possibly different value) at the end.
+    setReplayArgv(["produce", "./a.mp4", "--llm-effort", "high"]);
+    const typed = recordedProduceArgs({ llmEffort: "high" });
+    expect(typed.filter((a) => a === "--llm-effort")).toHaveLength(1);
+    // Unset stays unpinned — there is no flag spelling for "agy's default".
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
+  });
+
   // The watermark pin (same §75 shape as --llm, in BOTH directions): the
   // effective default is config-dependent, so command.json must carry the
   // RESOLVED state — on OR off — or a replay under a different config

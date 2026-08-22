@@ -54,6 +54,8 @@ export function consumeReplayArgv(): string[] | null {
  */
 export function recordedProduceArgs(pins: {
   llm?: string;
+  /** The RESOLVED §143 effort — flag or valid config, never a raw config string. */
+  llmEffort?: "low" | "medium" | "high";
   clipWindow?: string;
   watermark?: boolean;
   captions?: boolean;
@@ -81,6 +83,15 @@ export function recordedProduceArgs(pins: {
   );
   if (pins.llm !== undefined && !args.includes("--llm")) {
     args.push("--llm", pins.llm);
+  }
+  // The effort pin (§143), the dictionary's rationale: the resolved level may
+  // have come from ~/.ossclip/config.json's `llmEffort`, and it steers the
+  // editorial call — an unpinned record would replay a DIFFERENT plan the
+  // moment that config is edited. Unset stays unpinned: there is no flag
+  // spelling for "agy's own default", and an argv without the flag replays as
+  // "config decides" — the same accepted cost as the dictionary's empty case.
+  if (pins.llmEffort !== undefined && !args.includes("--llm-effort")) {
+    args.push("--llm-effort", pins.llmEffort);
   }
   if (pins.clipWindow !== undefined && !args.includes("--clip-window")) {
     args.push("--clip-window", pins.clipWindow);

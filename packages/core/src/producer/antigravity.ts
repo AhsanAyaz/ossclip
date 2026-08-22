@@ -26,13 +26,21 @@ export const AGY_PRINT_TIMEOUT = "10m";
 export const MAX_AGY_PROMPT_BYTES = 700_000;
 
 /**
+ * agy's `--effort` levels. Exposed after the §143 hang incident (2026-08-22):
+ * untested at real scale whether a lower effort moves the hang, but the knob
+ * existed and we passed nothing — every call ran at agy's default with no way
+ * to try anything else.
+ */
+export type LlmEffort = "low" | "medium" | "high";
+
+/**
  * The argv for one `agy` print-mode call. Pure so the flag set is testable
  * without spawning anything. `--disable-slash-commands` because a transcript
  * prompt that happens to start with `/` must not expand as a skill.
  */
 export function buildAgyArgs(
   prompt: string,
-  opts: { model?: string; schemaJson: string },
+  opts: { model?: string; effort?: LlmEffort; schemaJson: string },
 ): string[] {
   return [
     "-p",
@@ -45,6 +53,9 @@ export function buildAgyArgs(
     "--print-timeout",
     AGY_PRINT_TIMEOUT,
     ...(opts.model ? ["--model", opts.model] : []),
+    // Omitted entirely when unset — agy's own default stands, exactly as it
+    // did before the knob existed (§143).
+    ...(opts.effort ? ["--effort", opts.effort] : []),
   ];
 }
 
@@ -280,9 +291,12 @@ export class AntigravityProvider implements LlmProvider {
   readonly name = "antigravity";
   readonly usage: LlmUsage[] = [];
 
+  // A trailing options bag rather than a fourth positional: every existing
+  // `new AntigravityProvider(model, bin)` call site keeps compiling unchanged.
   constructor(
     private model?: string,
     private bin: string = process.env.OSSCLIP_AGY_BIN ?? "agy",
+    private opts: { effort?: LlmEffort } = {},
   ) {}
 
   async complete<T>(req: {
@@ -329,7 +343,11 @@ export class AntigravityProvider implements LlmProvider {
         // what makes both the message AND the fail-fast work.
         ({ stdout, stderr } = await run(
           this.bin,
-          buildAgyArgs(prompt, { model: this.model, schemaJson: schemaText }),
+          buildAgyArgs(prompt, {
+            model: this.model,
+            effort: this.opts.effort,
+            schemaJson: schemaText,
+          }),
           { allowNonZero: true },
         ));
       } catch (err) {

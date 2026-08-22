@@ -292,6 +292,35 @@ describe("AntigravityProvider", () => {
     expect(withModel.slice(-2)).toEqual(["--model", "gemini-3.6-flash-low"]);
   });
 
+  it("buildAgyArgs adds --effort only when given — unset keeps agy's default (§143)", () => {
+    // Exposed after the §143 hang incident: untested at real scale whether a
+    // lower effort moves the hang, but the knob existed and we passed nothing.
+    const withEffort = buildAgyArgs("PROMPT", { effort: "high", schemaJson: "{}" });
+    expect(withEffort.slice(-2)).toEqual(["--effort", "high"]);
+    // Omitted ENTIRELY when unset — not `--effort ""`, which agy would have
+    // to interpret; the pre-knob argv must stay byte-identical.
+    expect(buildAgyArgs("PROMPT", { schemaJson: "{}" })).not.toContain("--effort");
+  });
+
+  it("the constructor's effort reaches the spawned argv (§143)", async () => {
+    // End-to-end through the ctor's options bag, not just buildAgyArgs: the
+    // knob is only real if the spawn actually carries it. This stub records
+    // the WHOLE argv — the shared ones keep only the prompt ($2).
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-agy-stub-"));
+    const argvFile = join(dir, "argv");
+    const out = envelope({ structured_output: { title: "OK" } });
+    const bin = join(dir, "agy");
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argvFile}"\ncat <<'EOF'\n${out}\nEOF`,
+    );
+    chmodSync(bin, 0o755);
+    const provider = new AntigravityProvider(undefined, bin, { effort: "low" });
+    await provider.complete({ system: "s", user: "u", schema, schemaName: "t" });
+    const argv = readFileSync(argvFile, "utf8").split("\n");
+    expect(argv[argv.indexOf("--effort") + 1]).toBe("low");
+  });
+
   it("refuses an oversized prompt before spawning, naming the alternatives", async () => {
     const stub = stubAgy(envelope({ structured_output: { title: "NEVER REACHED" } }));
     const provider = new AntigravityProvider(undefined, stub.bin);

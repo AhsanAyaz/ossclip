@@ -149,6 +149,7 @@ import {
   type CleanupLevel,
   type ClipWindow,
   type Layout,
+  type LlmEffort,
   type LlmProvider,
   type LlmUsage,
   type Production,
@@ -301,6 +302,8 @@ export function beatSheetCacheKey(parts: {
    * actually answered — a plain name from the usage records. */
   providerName: string;
   llmModel?: string;
+  /** The §143 effort knob — it steers the editorial call, so it changes the plan. */
+  llmEffort?: LlmEffort;
   intent?: string;
   cleanup: CleanupLevel;
   forceComponent?: SceneComponentId;
@@ -331,6 +334,12 @@ export function beatSheetCacheKey(parts: {
         parts.clipWindow ? `${parts.clipWindow.startWord}:${parts.clipWindow.endWord}` : null,
         parts.words,
         parts.aspect,
+        // The §143 effort knob — appended at the END, and only when SET: an
+        // unconditional `?? null` would change the serialization of every
+        // existing key and silently re-plan every warm workdir for users who
+        // never touched the knob. §78 only demands that a DIFFERENT effort
+        // miss; an unset one must keep hitting what it always hit.
+        ...(parts.llmEffort !== undefined ? [parts.llmEffort] : []),
       ]),
     )
     .digest("hex")
@@ -366,6 +375,8 @@ export function clipWindowCacheKey(parts: {
   /** Same read/write split as `beatSheetCacheKey` (§143). */
   providerName: string;
   llmModel?: string;
+  /** The §143 effort knob — the selection rides the same editorial call. */
+  llmEffort?: LlmEffort;
   intent?: string;
   clipTargetSec: number;
   /** Framing constraints steer the selection call the same way (see above). */
@@ -385,6 +396,9 @@ export function clipWindowCacheKey(parts: {
         parts.framing ?? null,
         parts.words,
         parts.aspect,
+        // Appended at the END, only when SET — beatSheetCacheKey's rule: an
+        // unset effort must keep every existing key byte-identical.
+        ...(parts.llmEffort !== undefined ? [parts.llmEffort] : []),
       ]),
     )
     .digest("hex")
@@ -438,6 +452,12 @@ export interface ProduceOptions {
   llmModel?: string;
   /** Model for mechanical calls; "same" sends everything to the main model. */
   llmFastModel?: string;
+  /**
+   * `agy --effort` for the antigravity provider (§143). Already zod-parsed to
+   * the union by program.ts — the CONFIG's `llmEffort` arrives separately, as
+   * an unvalidated string, and `resolveLlmEffort` arbitrates.
+   */
+  llmEffort?: LlmEffort;
   /** Who is on camera — steers repair and exempts their name from grounding. */
   speaker?: string;
   /** Repair ASR mishearings before captions/producer/grounding (default on). */
@@ -628,6 +648,32 @@ export function resolveYoutube(
   configValue: boolean | undefined,
 ): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * The effective `--llm-effort` — reasoning effort for the antigravity
+ * provider's `agy --effort` flag (§143: exposed after the hang incident;
+ * untested at real scale whether it moves the hang, but the knob existed and
+ * we passed nothing). A TYPED flag always wins, and it arrives already
+ * zod-parsed by program.ts; only the config value is checked here — the
+ * `dictionary` posture, since it comes from hand-editable JSON loadConfig
+ * doesn't zod-parse: exactly low|medium|high, or one warning and agy's
+ * default, never a coerced effort level. Pure so the flag × config matrix is
+ * testable without a config file on disk.
+ */
+export function resolveLlmEffort(
+  flag: LlmEffort | undefined,
+  configValue: unknown,
+): { effort?: LlmEffort; warning?: string } {
+  // Typed-beats-config, and typed also beats a MALFORMED config: the user
+  // asking for an effort on the command line gets it, not a warning about a
+  // config key they did not touch this run.
+  if (flag !== undefined) return { effort: flag };
+  if (configValue === undefined) return {};
+  if (configValue === "low" || configValue === "medium" || configValue === "high") {
+    return { effort: configValue };
+  }
+  return { warning: "⚠ config llmEffort ignored — expected low|medium|high" };
 }
 
 /**
@@ -1873,6 +1919,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const dictionary = opts.dictionary ?? configDictionary ?? [];
   if (dictionary.length > 0) console.log(`▸ dictionary: ${dictionary.join(", ")}`);
 
+  // Resolved ONCE for the whole run (§143): the provider call, both plan
+  // cache keys and the command.json pin must all see the same effort, or a
+  // replay re-plans under a knob the run never used.
+  const { effort: llmEffort, warning: llmEffortWarning } = resolveLlmEffort(
+    opts.llmEffort,
+    cfg.llmEffort,
+  );
+  if (llmEffortWarning) console.log(llmEffortWarning);
+
   // The run's base theme (F6): config theme over defaultTheme, resolved once
   // and used for BOTH resolveTheme's base and props.baseTheme below — the
   // editor's reset must land on the user's global colors, not the factory's.
@@ -2298,6 +2353,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       fastModel: opts.llmFastModel ?? cfg.fastModel,
       fallback: llmFallbackName,
       onFallback: (info) => console.log(fallbackLine(info.from, info.to, info.schemaName)),
+      // §143: rides the editorial antigravity call only — see TieringOptions.
+      effort: llmEffort,
     });
   }
 
@@ -2315,6 +2372,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           // so cached repairs from a different vocabulary must not be reused.
           dictionary,
           rawTranscript.words.map((w) => w.text),
+          // Repair runs on the EDITORIAL tier (repair.ts: deciding what a
+          // person actually said is semantic work), so the §143 effort knob
+          // changes its answers. Appended at the END, only when SET —
+          // beatSheetCacheKey's rule: an unset effort must keep serving the
+          // repairs every existing workdir already cached.
+          ...(llmEffort !== undefined ? [llmEffort] : []),
         ]),
       )
       .digest("hex")
@@ -2510,6 +2573,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       const windowKeyParts = {
         promptVersion: PRODUCER_PROMPT_VERSION,
         llmModel: opts.llmModel,
+        llmEffort,
         intent: opts.intent,
         clipTargetSec,
         framing: framingCtx,
@@ -2610,6 +2674,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const beatKeyParts = {
       promptVersion: PRODUCER_PROMPT_VERSION,
       llmModel: opts.llmModel,
+      llmEffort,
       intent: opts.intent,
       cleanup: opts.cleanup,
       forceComponent: opts.forceComponent,
@@ -4155,6 +4220,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // the non-empty/includes guards.
   const recordedArgs = recordedProduceArgs({
     llm: provider ? providerName : undefined,
+    // The RESOLVED effort (§143), pinned like the dictionary: it may have
+    // come from this machine's config, and it keys the plan caches — an
+    // unpinned record would re-plan on replay after a config edit.
+    llmEffort,
     clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
     watermark,
     captions: opts.captions ?? true,
@@ -4665,6 +4734,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             YOUTUBE_PROMPT_VERSION,
             providerName,
             opts.llmModel ?? "",
+            // Appended only when set — the plan-cache rule (§78 via §143's
+            // effort knob): an unset effort must keep every warm workdir's
+            // key byte-identical, and a changed effort is a different answer.
+            ...(llmEffort !== undefined ? [llmEffort] : []),
             opts.intent ?? "",
             // Steer, so part of the key — a changed audience is a different
             // pack, not a cache hit.
