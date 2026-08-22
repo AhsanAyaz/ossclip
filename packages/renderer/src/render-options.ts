@@ -73,8 +73,16 @@ export function renderMediaOptions(args: {
   serveUrl: string;
   inputProps: Record<string, unknown>;
   opts: RenderJobOptions;
+  /**
+   * Required, not defaulted: this module is the PURE half, so the platform is
+   * an input to the decision, not something it reads off the process. Same
+   * split as `openCommand(target, platform)` — index.ts passes
+   * `process.platform` at the one production call site. Un-defaulted is what
+   * makes the platform matrix below assertable at all (§144).
+   */
+  platform: NodeJS.Platform;
 }): RenderMediaOptions {
-  const { composition, serveUrl, inputProps, opts } = args;
+  const { composition, serveUrl, inputProps, opts, platform } = args;
   return {
     composition,
     serveUrl,
@@ -84,10 +92,24 @@ export function renderMediaOptions(args: {
     inputProps,
     browserExecutable: opts.browserExecutable,
     // VideoToolbox on macOS lifts the x264 CPU tax off the encode half of a
-    // decode-bound render; "if-possible" falls back silently to software
-    // everywhere else (2026-08-17 render-speed pass; option name and values
-    // verified against @remotion/renderer 4.0.499's HardwareAccelerationOption).
-    hardwareAcceleration: "if-possible",
+    // decode-bound render — that is the 2026-08-17 render-speed pass (83567f1),
+    // and it was measured on macOS ONLY.
+    //
+    // The gate is load-bearing: "if-possible" is a static PLATFORM PREFERENCE,
+    // not a capability probe. Remotion's getCodecName (dist/get-codec-name.js,
+    // identical in 4.0.499 and 4.0.515) switches on process.platform alone —
+    // darwin -> h264_videotoolbox, linux/win32 -> h264_nvenc, with nothing
+    // asking whether an NVIDIA encoder exists. The old comment here claimed it
+    // "falls back silently to software everywhere else"; it does not, and a box
+    // without nvcuda.dll loses the ENTIRE render at 100% when the encoder is
+    // opened at stitch time, after every frame has been paid for (#7, §144).
+    // "disable" is Remotion's own default, so off-darwin this is upstream
+    // behaviour, not a downgrade.
+    //
+    // Careful if you ever tune quality: setting crf (or encodingMaxRate /
+    // encodingBufferSize) makes Remotion silently drop to libx264 even on
+    // darwin, which would quietly undo the pass above (get-codec-name.js:5-32).
+    hardwareAcceleration: platform === "darwin" ? "if-possible" : "disable",
     // Screenshot TRANSPORT only — the ENCODED output's quality is set by the
     // codec settings above. The PNG default was lossless but 3-5x slower to
     // screenshot and pipe per frame, for fidelity h264 then threw away.

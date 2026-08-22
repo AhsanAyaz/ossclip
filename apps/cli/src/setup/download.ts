@@ -12,6 +12,28 @@ import { dirname } from "node:path";
  * before renaming into place — a `.part` never becomes a `dest` unverified.
  */
 
+/**
+ * A pinned asset is gone from the host — distinguished from every other HTTP
+ * failure because it is OURS, not the user's: the manifest names an exact
+ * upstream release, and hosts rotate releases out from under a pin (BtbN
+ * prunes daily autobuilds after ~2 weeks — #6, §145). A stale pin reported as
+ * a bare "download failed: HTTP 404" reads as a broken network and leaves the
+ * user nowhere; the caller catches this type and adds the manual install for
+ * their platform, which turns a dead end into a two-minute detour.
+ *
+ * Deliberately generic: this module downloads models and whisper builds too,
+ * so it names the problem and lets the caller name the remedy.
+ */
+export class PinnedAssetGoneError extends Error {
+  constructor(readonly url: string) {
+    super(
+      `the pinned download is gone upstream (HTTP 404)\n  ${url}\n` +
+        "  This is a stale pin in ossclip's manifest, not a problem on your machine.",
+    );
+    this.name = "PinnedAssetGoneError";
+  }
+}
+
 export interface DownloadOptions {
   /** hex digest; algorithm chosen by which field is set */
   sha256?: string;
@@ -39,6 +61,8 @@ export async function download(url: string, dest: string, opts: DownloadOptions 
   const res = await fetchImpl(url, { headers, redirect: "follow" });
   if (res.status === 200) {
     offset = 0; // server ignored the range — start over
+  } else if (res.status === 404) {
+    throw new PinnedAssetGoneError(url);
   } else if (res.status !== 206) {
     throw new Error(`download failed: HTTP ${res.status} for ${url}`);
   }

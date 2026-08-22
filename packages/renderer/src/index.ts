@@ -50,7 +50,17 @@ export async function renderProduction(
   opts.onPhase?.("rendering");
   // Every non-I/O decision lives in renderMediaOptions (render-options.ts) so
   // the memory bound and the cancel signal are testable without a browser.
-  await renderMedia(renderMediaOptions({ composition, serveUrl, inputProps, opts }));
+  // This is the I/O half, so this is where the real platform is read — the
+  // builder takes it as an argument so its matrix can be asserted (§144).
+  await renderMedia(
+    renderMediaOptions({
+      composition,
+      serveUrl,
+      inputProps,
+      opts,
+      platform: process.platform,
+    }),
+  );
 }
 
 /**

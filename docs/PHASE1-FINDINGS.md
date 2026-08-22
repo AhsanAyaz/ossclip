@@ -1416,3 +1416,77 @@ Two smaller corrections rode along. First, §132's "server-enforced structured o
 **The cross-provider cache hit failed its first live test, and the suspect was innocent.** A `--llm claude-cli` run after a fallback run read the MORNING's 14-scene plan, not the fallback's fresh 17-scene one, and every key in between pointed at `actualProvider` — the helper that picks the answering provider for a write. An instrumented stub run acquitted it: the write key was byte-for-byte the claude-cli key, the parts object identical before and after the call. The real cause was one cache upstream: **transcript repair rewrites the words, the words feed every plan key, and the repair cache was still keyed only on the REQUESTED provider.** The two providers' repair sets genuinely differ (10 vs 11 on this take — claude applied `"Llama," → "LLaVA,"`, agy's lineage did not), so the fallback plan was cached over words no claude-run would ever compute. The repair, youtube-pack and thumbnail-concept writes now carry the same read/write split as the plan caches — reads stay on the requested provider, writes file under whoever answered — which is what makes the transcript lineage, and therefore every key derived from it, converge. The general lesson: when a cache's OUTPUT is another cache's INPUT, an attribution rule has to propagate to the upstream cache or the downstream one silently forks.
 
 Left on the shelf, with the probe verdict attached: `--effort` plumbing landed as cheap insurance but is unlikely to matter (the hang is not load-shaped), and `--input-format stream-json` — which would lift the 700KB argv cap of §132 and replace the blind spinner with progress events — is real but solves a different problem than the one measured here.
+
+## 144. `if-possible` is a preference, not a probe — and the fallback it promised does not exist
+
+The 2026-08-17 render-speed pass (83567f1) set `hardwareAcceleration: "if-possible"` on the strength of a measured macOS win — VideoToolbox took the render from 0.43x to ~1.27x realtime, SSIM-verified. The comment it shipped with claimed the setting "falls back silently to software everywhere else." It does not, and the first person to find that out was a Windows user (#7).
+
+Remotion's `getCodecName` (`@remotion/renderer/dist/get-codec-name.js`, byte-identical in 4.0.499 and 4.0.515) is a `process.platform` switch with **no capability probe anywhere in it**: darwin → `h264_videotoolbox`, linux/win32 → `h264_nvenc`, unconditionally. `libx264` is reachable only when hwaccel is `"disable"`, or when one of `crf` / `encodingMaxRate` / `encodingBufferSize` is set — and `render-options.ts` set none of them, so nvenc was selected on every non-macOS machine regardless of whether an NVIDIA encoder existed.
+
+The cost shape is what makes this worse than a slow render. The encoder is opened at the **stitch**, after every frame has been rendered and paid for. The reporter's machine (Intel UHD 770, no NVIDIA card) drew the progress bar to 787/787, then:
+
+```
+[h264_nvenc @ ...] Cannot load nvcuda.dll
+[out#0/mp4 @ ...] Nothing was written into output file
+✗ FFmpeg quit with code 4294967295
+```
+
+Full compute, zero output, on every render — `--produce`, `--aspect` and captions make no difference, because none of them touch encoder selection.
+
+Three lessons, only one of which is about Remotion:
+
+- **A named option is not a contract.** "if-possible" reads like a runtime negotiation and is a compile-time preference. The option name and its legal values *were* verified against 4.0.499 at pin time; its *behaviour* was not. Verifying the spelling of a flag is not verifying what it does.
+- **The test asserted the constant, not the decision.** `expect(o.hardwareAcceleration).toBe("if-possible")` ran on one platform and passed everywhere, which is the same failure the openCommand matrix (§136) and the picker matrix exist to prevent. A cross-platform decision needs a cross-platform assertion; the platform is now an argument to `renderMediaOptions`, un-defaulted, so every case must say which machine it speaks for.
+- **Optimisations measured on one platform get gated to it.** `"disable"` is Remotion's own default, so off-darwin this is upstream behaviour rather than a downgrade. macOS keeps the win; nobody else pays for a benchmark they were never part of.
+
+Live trap for whoever tunes quality next: adding a `crf` would silently drop darwin back to libx264 and quietly undo the pass above, without touching the line that sets hardware acceleration.
+
+## 145. Not all upstream tags are equally permanent — pin the month, not the day
+
+`ossclip setup` could not install ffmpeg on **any** platform it provisions for (#6). The manifest pinned `autobuild-2026-07-29-13-36`, and BtbN had rotated the entire tag away — not just the asset. All four non-darwin branches interpolate that one base, so Windows x64/arm64 and Linux x64/arm64 died together; macOS was untouched only because it returns `null` and falls back to brew. The documented two-command install (`npm install -g ossclip`, `ossclip setup`) could not produce a working toolchain, against a ROADMAP whose first item under **Now** is "Kill the install cliff".
+
+The reporter read this as "BtbN rotates autobuild releases away" and proposed mirroring the builds ourselves. The retention policy is more specific than that, and the specificity is the whole fix — the release list, read 2026-08-22:
+
+| tag class | retention |
+| --- | --- |
+| daily `autobuild-YYYY-MM-DD-HH-MM` | ~14 days (oldest surviving: `2026-08-09`) |
+| **last autobuild of each month** | **indefinite — `2024-09-30` still serves all 48 assets** |
+
+The dead pin was a *daily*, so it was never going to survive two weeks. A month-end tag in the same build family (`autobuild-2026-07-31-14-10`, ffmpeg `n8.1.2-34-g9b6c8969e0`) serves today and has siblings alive from two years ago. Re-pinning there keeps the checksum guarantee this manifest exists for, costs no mirroring duty, and — unlike `latest`, whose asset changes daily — does not trade integrity for availability. Mirroring as ossclip release assets stays on the shelf next to the whisper darwin prebuilts, for the same reason: recurring rebuild duty needs a deliberate yes.
+
+The rule is now stated in the manifest where the next bump will read it: **pin a month-end tag only.** A value corrected without its rule regenerates the bug on the next bump.
+
+Second-order fix: a 404 is now typed (`PinnedAssetGoneError`) and distinguished from every other HTTP failure, because a stale pin is *our* bug and read as a broken network by the user. Setup catches it and prints the hand-install for their platform. That does not fix a pin, but it turns a dead end into a two-minute detour — which is precisely what the reporter had to reconstruct alone (`winget install ffmpeg`, then pin the paths in `config.json` because winget's shims land off PATH for already-open shells).
+
+## 146. A canary that caches the thing it watches is not a canary
+
+`setup-e2e.yml` was written for exactly the failure in §145. Its own comments say so: *"weekly (to catch an upstream release asset disappearing)"*, *"a broken upstream pin should not wait for the next PR"*. It ran on 2026-08-03, 08-10 and 08-17 and **passed green all three times**, while the pinned URL was already dead. A user found the bug instead.
+
+The cause is one step: `actions/cache@v4` restoring `~/.ossclip`, keyed on `hashFiles('apps/cli/src/setup/manifest.ts')`. Its comment claimed "bumping any pin gets a genuinely cold run" — true, and irrelevant. The weekly cron by construction runs against an **unchanged** manifest, so it always hit the cache and never contacted BtbN. Run `31999276640` is the proof: the Windows job logs `Cache hit for: ossclip-setup-Windows-…` and finishes in 57 seconds, against a job whose purpose is to download ~200 MB. The cache made the canary cold-start only in the one case where a human had already looked at the pin.
+
+The general shape, worth carrying past this incident: **a watcher keyed on the input it is meant to be watching can only fire when someone has already noticed.** The cache key encoded "has the manifest changed", but the question the cron asks is "has the WORLD changed" — and those are independent variables.
+
+Two changes. The cache is skipped on `schedule` (PR runs keep it; that is where the download tax is actually annoying), so the weekly run is genuinely cold on all three OSes. And a `manifest urls` job HEADs every URL the manifest can hand out — the full platform×arch matrix, not just the runner's — in seconds with no downloads, on every setup PR and on the same cron. `pnpm check:urls` is the same lever locally.
+
+The unit suite cannot cover this and should not try: `setup.test.ts` asserts URLs match `^https://github\.com/`, a shape a 404 satisfies perfectly, and `pnpm test` stays offline and deterministic because the verification skill depends on it. Shape assertions and liveness assertions are different questions and belong in different places.
+
+## 147. The flaky test was not flaky — it was a real bug with a retry in front of it
+
+CI had reported `1 flaky, 60 passed` on the editor e2e for weeks, on `main` and every branch, always the same case: `renderflow.spec.ts:75`, "the render log is a scrollable tail". Playwright's CI-only `retries: 2` turned it green each time, so the build stayed green and nobody looked. Run it locally, where the same config sets `retries: 0` on purpose, and it failed **3 out of 3** — not flaky at all. Deterministic, and load-bearing.
+
+The chain, confirmed by probing the DOM at the failing assertion rather than reasoning about it:
+
+1. The first test in the file runs a render and cancels it. The server keeps the last run's ring buffer until the next render starts — deliberate, so a reload can still report a finished run.
+2. The second test calls `page.goto("/")`. On mount `loadProduction` reads `/api/render/status`, finds that terminal run, restores it, and **collapses the log** — also deliberate (a reload should not be greeted by a wall of an old run's output).
+3. The test clicks Render. A new run starts, `render-status` appears… and `logsOpen` is still `false`, because nothing reopened it. `render-tail` never mounts, and the assertion fails with "element(s) not found".
+
+The probe is the proof: at the moment of failure the toggle read `▸ logs` (collapsed), `render-status` was visible, and `render-tail` count was `0`. The render was running fine. The log was folded away on behalf of a run the user had already dismissed.
+
+So the product bug: **collapse is per-run state, and one run's collapse was governing the next one.** Click Render, get a spinner and no output. `onRender` now opens the log when it starts a run, which is the same argument the restore path's own comment makes — a fresh run is a fresh context — applied in the direction it had been missed.
+
+Two lessons worth more than the fix:
+
+- **A retry policy is a reporting decision, not a correctness one.** `retries: 2` exists for good reasons (real timing against a shared runner), but "flaky" in a summary is a claim nobody had tested. The honest read of a persistent one-test flake is *an unexplained failure that happens to pass on attempt two*, and the cheapest way to test that claim is to run it where retries are off.
+- **The assertion that mattered was the one nobody wrote.** Every line after the click depended on the log being open, and none of them said so. The precondition is now asserted explicitly, so the next regression names itself instead of arriving as a mystery collapse three assertions later.
+
+Also observed, and left alone deliberately: a failure between starting the render and cancelling it leaks the fixture's 50-second child, so the *retry* then fails on a disabled Render button — a second, misleading error on top of the first. Dormant now that the test passes, and worth an `afterEach` cancel if this file ever grows a third case.

@@ -38,6 +38,26 @@ test.beforeAll(async () => {
   );
 });
 
+/**
+ * Leave no render running (§147). Both fixtures deliberately stay alive for
+ * ~50s so a run can be refreshed into and cancelled, and every test here ends
+ * by cancelling its own — but a test that FAILS in between never gets there,
+ * and the child outlives it. The next attempt then loads a page whose Render
+ * button is disabled and reads "Rendering…", and fails on a 30s click timeout
+ * that has nothing to do with what actually broke. That is how the real bug
+ * in §147 arrived at CI wearing a second, misleading error on top of it.
+ *
+ * Cancelled through the API rather than the UI on purpose: this has to work
+ * precisely when the test failed BECAUSE the UI was not in the state it
+ * expected, so it cannot depend on a button being present or enabled.
+ */
+test.afterEach(async ({ request }) => {
+  const status = await request.get("/api/render/status");
+  if (!status.ok()) return;
+  const { running } = (await status.json()) as { running: boolean };
+  if (running) await request.post("/api/render/cancel");
+});
+
 test.afterAll(async () => {
   await rm(COMMAND, { force: true });
   await rm(FAKE_RENDER, { force: true });
@@ -102,9 +122,16 @@ test("the render log is a scrollable tail and collapses behind the toggle (R17 �
   await page.getByTestId("render-button").click();
   await expect(page.getByTestId("render-status")).toBeVisible();
 
+  // A NEW run opens its own log (§147). Asserted rather than assumed: the
+  // first test leaves a finished run in the server's ring buffer, this test's
+  // goto restores it, and the restore path collapses the log — which used to
+  // govern this run too, so the tail below simply did not exist. Every
+  // assertion after this line silently depended on that not happening.
+  const tail = page.getByTestId("render-tail");
+  await expect(tail).toBeVisible();
+
   // The tail holds ALL 60 lines in a bounded, scrollable box — not the old
   // last-six-lines slice — and sticks to the bottom as they arrive.
-  const tail = page.getByTestId("render-tail");
   await expect(tail).toContainText("line 59");
   expect(await tail.evaluate((el) => el.scrollHeight > el.clientHeight + 20)).toBe(true);
   expect(

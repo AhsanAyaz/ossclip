@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "apps/cli/src/setup/**"
+      - "scripts/check-manifest-urls.ts"
       - ".github/workflows/setup-e2e.yml"
   workflow_dispatch:
   schedule:
@@ -19,6 +20,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Seconds, no downloads, one OS — a dead pin is visible from a HEAD request,
+  # so it should never cost a three-OS provision to discover (#6, §146). The
+  # unit suite can only assert URL SHAPE, which a 404 satisfies, and it stays
+  # offline by design; this is where the network question is asked.
+  urls:
+    name: manifest urls resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:urls
+
   setup:
     name: ossclip setup (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -35,9 +53,16 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # Repeat runs shouldn't re-download ~200 MB; the key is the manifest,
-      # so bumping any pin gets a genuinely cold run.
+      # Repeat runs shouldn't re-download ~200 MB, so PR runs cache on the
+      # manifest hash. The WEEKLY run must never cache: keying on the manifest
+      # means an unchanged manifest always hits, and the cron exists precisely
+      # to test an unchanged manifest against a moving upstream. That is not
+      # hypothetical — runs on 2026-08-03, 08-10 and 08-17 all passed green
+      # while the pinned ffmpeg URL was already a 404, because every one of
+      # them restored ~/.ossclip and never contacted BtbN at all. A canary that
+      # caches the thing it is watching is not a canary (#6, §146).
       - uses: actions/cache@v4
+        if: github.event_name != 'schedule'
         with:
           path: ~/.ossclip
           key: ossclip-setup-${{ runner.os }}-${{ hashFiles('apps/cli/src/setup/manifest.ts') }}

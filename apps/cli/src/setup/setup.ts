@@ -11,8 +11,15 @@ import {
   whisperModelPath,
   type BinaryAsset,
 } from "./manifest";
-import { formatPlan, managedBinDir, planSetup, type SetupProbes, type SetupStep } from "./plan";
-import { download, progressLine } from "./download";
+import {
+  formatPlan,
+  managedBinDir,
+  planSetup,
+  type SetupProbes,
+  type SetupStep,
+  type StepKind,
+} from "./plan";
+import { PinnedAssetGoneError, download, progressLine } from "./download";
 import { extractArchive, findFile, markExecutable } from "./extract";
 import { promptForProvider } from "./provider";
 
@@ -35,6 +42,35 @@ export interface SetupCliOptions {
   skipLlm: boolean;
   force: boolean;
   yes: boolean;
+}
+
+/**
+ * The hand-install to fall back to when setup's own pinned download is gone
+ * (§145). Pure, and exported so the platform matrix is assertable — the whole
+ * point is that a Windows or Linux user is never the one who finds out the
+ * command was wrong (§136).
+ *
+ * Deliberately NOT doctor's `installHint`: doctor imports from this directory,
+ * and pointing setup back at doctor would invert that. These are the same
+ * commands doctor prints, and doctor.test.ts pins those independently.
+ */
+export function manualInstall(kind: StepKind, platform: NodeJS.Platform): string {
+  if (kind === "model") return "download it by hand — `ossclip doctor` prints the exact curl";
+  if (kind === "provider") return "set an API key, or install the agy or claude CLI";
+  const pkg = kind === "ffmpeg" ? "ffmpeg" : "whisper-cpp";
+  if (platform === "darwin") return `brew install ${pkg}`;
+  if (platform === "linux") {
+    // apt has no whisper.cpp package; building it is the documented path.
+    return kind === "ffmpeg" ? "sudo apt install ffmpeg" : WHISPER_BUILD_HINT;
+  }
+  if (platform === "win32") {
+    return kind === "ffmpeg"
+      ? "winget install ffmpeg — then point OSSCLIP_FFMPEG/OSSCLIP_FFPROBE (or config.json) at the binaries"
+      : WHISPER_BUILD_HINT;
+  }
+  return kind === "ffmpeg"
+    ? "install ffmpeg from https://ffmpeg.org and set OSSCLIP_FFMPEG"
+    : WHISPER_BUILD_HINT;
 }
 
 const probeBin = (bin: string, arg: string): Promise<boolean> =>
@@ -92,8 +128,15 @@ export async function setup(
         await runStep(step);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        failures.push(`${step.kind}: ${msg}`);
-        console.error(`✗ ${step.kind} failed: ${msg}`);
+        // A rotated-away pin is ossclip's bug, and the user still needs a
+        // working toolchain today — so name the hand-install for their
+        // platform instead of leaving them on a bare 404 (#6, §145).
+        const detour =
+          err instanceof PinnedAssetGoneError
+            ? `\n  Until it is re-pinned, install it yourself: ${manualInstall(step.kind, probes.platform)}`
+            : "";
+        failures.push(`${step.kind}: ${msg}${detour}`);
+        console.error(`✗ ${step.kind} failed: ${msg}${detour}`);
       }
     }
 
