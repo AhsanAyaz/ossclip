@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { defaultProviderName, type ProviderName } from "@ossclip/core";
-import { binOnPath, detectionLine } from "../src/llm-detect";
+import { binOnPath, detectionLine, fallbackLine } from "../src/llm-detect";
 
 /**
  * Field report 2026-08-07: `--llm`'s help promised "claude if
@@ -105,6 +105,19 @@ describe("detectionLine names each provider's trigger", () => {
   it("no two providers share a line", () => {
     const lines = (Object.keys(triggers) as ProviderName[]).map(detectionLine);
     expect(new Set(lines).size).toBe(lines.length);
+  });
+});
+
+/**
+ * The §143 fallback announcement (2026-08-22): agy timed out on the editorial
+ * call and another provider answered it. Pinned exactly — the line is the
+ * user's only in-run notice that a different model planned the video.
+ */
+describe("fallbackLine names who failed, on what, and who took over", () => {
+  it("renders the exact hand-off sentence", () => {
+    expect(fallbackLine("antigravity", "claude-cli", "clip_beat_sheet")).toBe(
+      "⚠ antigravity timed out on clip_beat_sheet — falling back to claude-cli",
+    );
   });
 });
 

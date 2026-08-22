@@ -155,6 +155,21 @@ describe("output", () => {
     const report = formatUsageReport([call({ cachedInputTokens: 5_000 })]);
     expect(report).toMatch(/over-estimate/);
   });
+
+  it("a §143 fallback run names both providers in hand-off order, no model suffix", () => {
+    // 2026-08-22: agy timed out on the editorial call and claude-cli answered
+    // it — the header must credit neither alone, and must not pin one model
+    // name onto calls another model made.
+    const report = formatUsageReport([
+      call({ provider: "antigravity", model: "antigravity-default", schemaName: "transcript_repair" }),
+      call({ provider: "claude-cli", model: "claude-opus-5", schemaName: "clip_beat_sheet" }),
+    ]);
+    expect(report).toContain("llm usage (antigravity → claude-cli):");
+  });
+
+  it("a single-provider run still renders the provider · model header", () => {
+    expect(formatUsageReport([call()])).toContain("llm usage (claude · claude-opus-5):");
+  });
 });
 
 describe("token estimation", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { PRODUCER_PROMPT_VERSION } from "@ossclip/core";
-import { beatSheetCacheKey, clipWindowCacheKey } from "../src/produce";
+import { PRODUCER_PROMPT_VERSION, type LlmUsage } from "@ossclip/core";
+import { actualProvider, beatSheetCacheKey, clipWindowCacheKey } from "../src/produce";
 
 /**
  * The §78 posture, applied to the beat sheet: anything that changes the plan
@@ -141,5 +141,55 @@ describe("clipWindowCacheKey", () => {
     expect(clipWindowCacheKey(base)).not.toBe(
       beatSheetCacheKey({ ...base, cleanup: "standard" as const }),
     );
+  });
+
+  it("re-keying with the answering provider yields a different key (§143)", () => {
+    // The write-side half of the fallback attribution: after agy timed out
+    // and claude-cli answered, the cache write must land under a key the
+    // primary's read would NOT hit — and a later `--llm claude-cli` run would.
+    expect(clipWindowCacheKey({ ...base, providerName: "claude-cli" })).not.toBe(
+      clipWindowCacheKey(base),
+    );
+  });
+});
+
+/**
+ * Cache-write attribution after a §143 timeout fallback (2026-08-22): the
+ * plan in hand is the fallback's work, and the write must key on the provider
+ * that actually answered — not the primary that failed. Pure — the usage log
+ * is the whole input.
+ */
+describe("actualProvider", () => {
+  const rec = (provider: string, schemaName: string): LlmUsage => ({
+    provider,
+    schemaName,
+    inputTokens: 1,
+    outputTokens: 1,
+    exact: true,
+    billed: false,
+  });
+
+  it("the last record matching the schema wins — the answer that survived", () => {
+    expect(
+      actualProvider(
+        [
+          rec("antigravity", "transcript_repair"),
+          rec("antigravity", "clip_beat_sheet"),
+          rec("claude-cli", "clip_beat_sheet"),
+        ],
+        "clip_beat_sheet",
+        "antigravity",
+      ),
+    ).toBe("claude-cli");
+  });
+
+  it("no matching record leaves the resolved provider standing", () => {
+    expect(
+      actualProvider([rec("antigravity", "transcript_repair")], "beat_sheet", "antigravity"),
+    ).toBe("antigravity");
+  });
+
+  it("an empty log (the cached path) leaves the resolved provider standing", () => {
+    expect(actualProvider([], "beat_sheet", "gemini")).toBe("gemini");
   });
 });

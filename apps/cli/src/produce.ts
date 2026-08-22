@@ -52,6 +52,7 @@ import {
   createProvider,
   createTieredProvider,
   defaultProviderName,
+  fallbackProviderName,
   defaultTheme,
   detectSilences,
   dropHiddenCues,
@@ -149,6 +150,7 @@ import {
   type ClipWindow,
   type Layout,
   type LlmProvider,
+  type LlmUsage,
   type Production,
   ossclipOutputPathFor,
   type ProviderName,
@@ -158,7 +160,7 @@ import {
   type Transcript,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
-import { binOnPath, detectionLine } from "./llm-detect";
+import { binOnPath, detectionLine, fallbackLine } from "./llm-detect";
 import {
   modelImpliedLanguage,
   modelUrl,
@@ -295,7 +297,9 @@ export function transcriptCacheReusable(
  */
 export function beatSheetCacheKey(parts: {
   promptVersion: string;
-  providerName: ProviderName;
+  /** The primary on reads; on a §143 fallback WRITE, the provider that
+   * actually answered — a plain name from the usage records. */
+  providerName: string;
   llmModel?: string;
   intent?: string;
   cleanup: CleanupLevel;
@@ -359,7 +363,8 @@ export function beatSheetCacheKey(parts: {
  */
 export function clipWindowCacheKey(parts: {
   promptVersion: string;
-  providerName: ProviderName;
+  /** Same read/write split as `beatSheetCacheKey` (§143). */
+  providerName: string;
   llmModel?: string;
   intent?: string;
   clipTargetSec: number;
@@ -384,6 +389,26 @@ export function clipWindowCacheKey(parts: {
     )
     .digest("hex")
     .slice(0, 8);
+}
+
+/**
+ * The provider that actually answered the call whose output is being cached
+ * (2026-08-22, FINDINGS §143): after a timeout fallback the resolved
+ * `providerName` names the provider that FAILED, and keying a cache write on
+ * it would attribute the fallback's plan to a provider that never produced
+ * it. Last matching record wins — retries and the fallback both append to the
+ * usage log, so the last writer is the one whose answer survived. Pure and
+ * exported so the attribution is testable without a workdir.
+ */
+export function actualProvider(
+  usage: readonly LlmUsage[],
+  schemaName: string,
+  defaultName: string,
+): string {
+  for (let i = usage.length - 1; i >= 0; i--) {
+    if (usage[i]!.schemaName === schemaName) return usage[i]!.provider;
+  }
+  return defaultName;
 }
 
 export interface ProduceOptions {
@@ -2258,9 +2283,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (!opts.provider) {
       console.log(detectionLine(providerName));
     }
+    // Timeout fallback (2026-08-22, FINDINGS §143): agy hangs persistently on
+    // the real beat-sheet call — 10-minute --print-timeout expiries while
+    // claude-cli planned the same video — and auto-detection picks agy
+    // whenever the CLI is on PATH. When the editorial call times out, ONE
+    // other provider answers it instead of the run dying, announced out loud:
+    // the user must know which model planned their video.
+    const llmFallbackName =
+      providerName === "antigravity"
+        ? fallbackProviderName(providerName, process.env, binOnPath)
+        : undefined;
     provider = createTieredProvider(providerName, {
       model: opts.llmModel,
       fastModel: opts.llmFastModel ?? cfg.fastModel,
+      fallback: llmFallbackName,
+      onFallback: (info) => console.log(fallbackLine(info.from, info.to, info.schemaName)),
     });
   }
 
@@ -2468,16 +2505,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // calls; only a first run selects.
     let clipFresh: Awaited<ReturnType<typeof produceScenes>> | null = null;
     if (clipTargetSec !== undefined) {
-      const windowKey = clipWindowCacheKey({
+      // Parts split from the key so the WRITE below can re-key on the
+      // provider that actually answered (§143) without restating them.
+      const windowKeyParts = {
         promptVersion: PRODUCER_PROMPT_VERSION,
-        providerName,
         llmModel: opts.llmModel,
         intent: opts.intent,
         clipTargetSec,
         framing: framingCtx,
         words: transcript.words.map((w) => w.text),
-        aspect: landscape ? "16:9" : "9:16",
-      });
+        aspect: landscape ? ("16:9" as const) : ("9:16" as const),
+      };
+      const windowKey = clipWindowCacheKey({ ...windowKeyParts, providerName });
       const clipWindowCache = join(work, `clipwindow-${windowKey}.json`);
       if (opts.clipWindow) {
         clipWindow = parseClipWindowPin(transcript, opts.clipWindow);
@@ -2504,7 +2543,25 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         );
         clipWindow = clipFresh.clip!.window;
         for (const note of clipFresh.clip!.notes) console.log(`  ▸ ${note}`);
-        await writeFile(clipWindowCache, JSON.stringify(clipWindow, null, 2));
+        // The WRITE keys on the provider that actually answered; the READS
+        // above stay keyed on the primary — both deliberate (2026-08-22,
+        // FINDINGS §143). After a timeout fallback the window is the
+        // fallback's work: filing it under agy would let an agy-keyed read
+        // claim a window agy never chose, and would hide it from a later
+        // `--llm claude-cli` run that should hit it. The price of the
+        // primary-keyed read is that a repeat agy run re-attempts agy (10
+        // minutes, today) before falling back again — accepted over ever
+        // serving a cache whose label lies.
+        await writeFile(
+          join(
+            work,
+            `clipwindow-${clipWindowCacheKey({
+              ...windowKeyParts,
+              providerName: actualProvider(provider.usage, "clip_beat_sheet", providerName),
+            })}.json`,
+          ),
+          JSON.stringify(clipWindow, null, 2),
+        );
       }
 
       // Slice the pipeline state to the window (§93.1), then let everything
@@ -2548,9 +2605,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       map = new TimeMap(cutlist);
     }
 
-    const cacheKey = beatSheetCacheKey({
+    // Parts split from the key for the same §143 reason as the clip window:
+    // the writes below re-key on the provider that actually answered.
+    const beatKeyParts = {
       promptVersion: PRODUCER_PROMPT_VERSION,
-      providerName,
       llmModel: opts.llmModel,
       intent: opts.intent,
       cleanup: opts.cleanup,
@@ -2559,8 +2617,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       clipTargetSec,
       clipWindow,
       words: transcript.words.map((w) => w.text),
-      aspect: landscape ? "16:9" : "9:16",
-    });
+      aspect: landscape ? ("16:9" as const) : ("9:16" as const),
+    };
+    const cacheKey = beatSheetCacheKey({ ...beatKeyParts, providerName });
     const sceneCache = join(work, `scenes-${cacheKey}.json`);
     // The cover needs the editorial copy, which is not in the scene list — a
     // cached run must still be able to write one.
@@ -2588,9 +2647,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         clipFresh.graphics.asked,
         transcript,
       );
-      await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
+      // Written under the ANSWERING provider's key (§143, same rule as the
+      // clip-window write above): the adopted sheet came from the ONE
+      // clip_beat_sheet call, which may have been the fallback's.
+      const adoptKey = beatSheetCacheKey({
+        ...beatKeyParts,
+        providerName: actualProvider(provider.usage, "clip_beat_sheet", providerName),
+      });
+      await writeFile(join(work, `scenes-${adoptKey}.json`), JSON.stringify(scenes, null, 2));
       await writeFile(
-        beatCache,
+        join(work, `beatsheet-${adoptKey}.json`),
         JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
       );
     } else if (existsSync(sceneCache)) {
@@ -2650,9 +2716,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // Cache props only — overrides are user-owned and live in overrides.json,
       // never in production.json (that file is derived and every `produce`
       // run overwrites it, per the merge rule in `overrides.ts`).
-      await writeFile(sceneCache, JSON.stringify(scenes, null, 2));
+      // Keyed on who answered the beat_sheet call (§143) — see the clip-window
+      // write above for why reads stay primary-keyed while writes do not.
+      const freshKey = beatSheetCacheKey({
+        ...beatKeyParts,
+        providerName: actualProvider(provider.usage, "beat_sheet", providerName),
+      });
+      await writeFile(join(work, `scenes-${freshKey}.json`), JSON.stringify(scenes, null, 2));
       await writeFile(
-        beatCache,
+        join(work, `beatsheet-${freshKey}.json`),
         JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
       );
     }
@@ -2688,8 +2760,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // …and stamp it onto the artefact it explains, so `production.json` says
     // who planned it without a second file to cross-reference.
     const last = log.runs[log.runs.length - 1]!;
+    // `last.provider` derives from records[0] — the FIRST call's provider,
+    // which after a §143 timeout fallback is the primary that failed the
+    // editorial call. Name every provider that worked, first-seen order (the
+    // same " → " rendering the usage report uses), so production.json never
+    // credits a plan to a provider that never made it. Single-provider runs
+    // stamp exactly as before.
+    const providersSeen = [...new Set(provider.usage.map((r) => r.provider))];
     producerStamp = {
-      provider: last.provider ?? providerName,
+      provider:
+        providersSeen.length > 1 ? providersSeen.join(" → ") : last.provider ?? providerName,
       models: last.models,
       cached: last.cached,
       at: last.at,

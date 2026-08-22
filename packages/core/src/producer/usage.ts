@@ -288,6 +288,20 @@ export function formatUsageReport(
   if (records.length === 0) return "";
   const t = summarizeUsage(records, pricing);
   const first = records[0]!;
+  // After a §143 timeout fallback (2026-08-22) the records genuinely span two
+  // providers, and a header naming only records[0]'s would credit the whole
+  // run to the one that failed the editorial call. First-seen order joined
+  // " → " says who handed off to whom; the model suffix drops in that case
+  // because one model name would be attributed to calls another model made.
+  // Single-provider runs render byte-identically to before.
+  const providers: string[] = [];
+  for (const r of records) {
+    if (!providers.includes(r.provider)) providers.push(r.provider);
+  }
+  const who =
+    providers.length > 1
+      ? providers.join(" → ")
+      : `${first.provider}${first.model ? ` · ${first.model}` : ""}`;
   // A column of $0.0000 says nothing; an offline run's cost column is a dash.
   const free = t.allUnbilled && t.equivalentUsd === 0;
   const money = (v: number | null): string => (free ? "—" : v === null ? "?" : usd(v));
@@ -326,7 +340,7 @@ export function formatUsageReport(
     notes.push("  Prices are the built-in per-family assumption; override in ~/.ossclip/config.json.");
   }
   return (
-    `\nllm usage (${first.provider}${first.model ? ` · ${first.model}` : ""}` +
+    `\nllm usage (${who}` +
     `${t.ms > 0 ? `, ${secs(t.ms)}` : ""}):\n` +
     rows.join("\n") +
     "\n" +
