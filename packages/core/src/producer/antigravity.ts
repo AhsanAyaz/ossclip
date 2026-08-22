@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 import { run } from "../exec";
+import { attemptFactsLine } from "./failure";
 import type { LlmProvider } from "./provider";
 import { estimateTokens, type LlmUsage } from "./usage";
 // Shared fence-stripper for replies that wrap the JSON in prose/markdown.
@@ -107,37 +108,52 @@ export function parseAgyEnvelope(stdout: string): {
  * Failures a retry cannot fix: missing auth and a bad model slug are
  * deterministic, and each retry burns another ~24k-token baseline call (agy's
  * own agent context) for nothing (FINDINGS §132, antigravity provider).
+ *
+ * The patterns were always right; the INPUT was wrong. Until 2026-08-22 this
+ * was handed `run()`'s rejection, and the contract §132 claimed for it — "the
+ * stderr tail is embedded, so auth/bad-slug are matchable here" — is false for
+ * real agy: a bad slug exits 1 with `invalid model selection …` in the STDOUT
+ * envelope and NOTHING on stderr (measured, 1.1.18). So the message this saw
+ * was our own echoed argv, which contains the slug but never the words
+ * "invalid model", and the documented fail-fast has never once fired in the
+ * field. It is now given `agyErrorText()` — the envelope's own error — which
+ * matches the shipped patterns as measured, with no pattern change at all.
+ *
+ * That is a real behaviour change (a bad slug now costs one call, not two),
+ * taken deliberately: it makes the code do what this comment has always said
+ * it does, rather than changing what it should do.
  */
 export function isNonRetryableAgyFailure(message: string): boolean {
   return /authentication|not logged in|login|unknown model|invalid model/i.test(message);
 }
 
 /**
- * The stderr tail out of a `run()` rejection — its format is
- * `<bin> <args> failed (exit N):\n<stderr tail>` — or the message unchanged
- * when it did not come from `run()` (a spawn error, or a zod message from the
- * validation arm).
+ * What actually went wrong, out of the two surfaces agy uses — measured
+ * against agy 1.1.18 on 2026-08-22, because none of it is documented:
  *
- * Worth isolating because agy takes the prompt on argv (§132), so the echoed
- * command line is the ENTIRE transcript prompt plus the JSON schema: the
- * failure text a user needs starts thousands of characters in, and the first
- * 400 chars of the raw message — what this error used to print — are our own
- * command line and none of the failure.
+ *   print timeout fires  exit 1  stdout `{"status":"ERROR","error":"timeout
+ *                                waiting for response",…}`   stderr empty
+ *   unknown model slug   exit 1  stdout `{"status":"ERROR","error":"invalid
+ *                                model selection (--model …)…"}`  stderr empty
+ *   bad flag / usage     exit 2  stdout empty                 stderr usage text
  *
- * Splits on the LAST marker: the prompt is user text and could in principle
- * contain the same phrase, but the real one is always after it.
+ * So the operational failures speak through the ENVELOPE and the process-level
+ * ones through stderr, and a reader of only one surface is blind to half of
+ * them. Preference order follows that: the envelope's own `error` first (it is
+ * agy's sentence about its own failure), then stderr for the exits that never
+ * reached the envelope, then the bare status, then whatever stdout held.
  *
- * An empty result when the marker DID match is returned as empty rather than
- * falling back to the whole message: a silent non-zero exit is a real outcome,
- * and handing the argv echo back would put `--print-timeout 10m` in front of
- * the classifier — the exact false positive the split exists to prevent.
+ * Pure, and exported so the surfaces are testable without spawning agy. agy's
+ * wording is not a contract we control — only the two surfaces are — which is
+ * why callers classify loosely and print the raw text either way.
  */
-export function agyFailureDetail(message: string): string {
-  let tail: string | null = null;
-  for (const m of message.matchAll(/\sfailed \(exit [^)]*\):\n/g)) {
-    tail = message.slice((m.index ?? 0) + m[0].length);
-  }
-  return (tail ?? message).trim();
+export function agyErrorText(stdout: string, stderr: string): string {
+  const env = parseAgyEnvelope(stdout);
+  if (env.error?.trim()) return env.error.trim();
+  if (stderr.trim()) return stderr.trim().slice(-2000);
+  if (env.status) return `agy reported status ${env.status}`;
+  if (stdout.trim()) return `agy replied with no envelope: ${stdout.trim().slice(0, 300)}`;
+  return "agy printed nothing";
 }
 
 /** What the failure text says actually went wrong. See `classifyAgyFailure`. */
@@ -145,48 +161,41 @@ export type AgyFailureClass = "auth" | "model" | "timeout" | "schema" | "unknown
 
 /**
  * Classify a failure so the error can say what happened instead of guessing.
- * Pure and exported so every class is assertable without spawning agy.
+ * Pure and exported so every class is assertable without spawning agy. The
+ * input is `agyErrorText()` — agy's own sentence — not `run()`'s rejection.
  *
- * The incident (2026-08-22): a `--produce --aspect 16:9` run on an 11-minute
- * take timed out twice at AGY_PRINT_TIMEOUT — 10m each, 25 minutes burned —
- * and then died with "Is Antigravity installed and logged in?", while agy was
- * installed, logged in and working. The hint was appended unconditionally, so
- * every failure was reported as an auth failure and this one sent the user to
- * debug auth after a 25-minute wait.
+ * The incident (2026-08-22, FINDINGS §132): a `--produce --aspect 16:9` run on
+ * an 11-minute take timed out twice at AGY_PRINT_TIMEOUT — 10m each, 25
+ * minutes burned — and then died with "Is Antigravity installed and logged
+ * in?", while agy was installed, logged in and working. The hint was appended
+ * unconditionally, so every failure was reported as an auth failure and this
+ * one sent the user to debug auth after a 25-minute wait.
  *
- * The scopes differ on purpose:
- *  - `auth`/`model` test the WHOLE message, with the same patterns
- *    `isNonRetryableAgyFailure` uses, so the class a user is shown can never
- *    disagree with the fail-fast decision that produced it.
- *  - `timeout`/`schema` test only `agyFailureDetail`, because the argv echo
- *    carries our own `--print-timeout 10m` flag and our own `--json-schema`
- *    payload. A pattern as natural as /timeout/ over the whole message would
- *    classify every non-zero exit as a hang — the same over-claiming this
- *    change exists to remove.
+ * Anchors, and how much each is worth:
+ *  - `timeout` and `model` are MEASURED (agy 1.1.18): "timeout waiting for
+ *    response" and "invalid model selection (--model …)". The looser
+ *    alternatives stay beside them because the exact strings are agy's to
+ *    change without telling us — and because an externally killed agy (a
+ *    signal, not agy's own clock) surfaces differently again.
+ *  - `auth` is INFERRED, not measured: establishing it would mean signing the
+ *    user out. Its patterns are exactly the ones `isNonRetryableAgyFailure`
+ *    has always used, so an auth failure can never classify worse than it did
+ *    before this change, and both measured samples put operational reasons in
+ *    the same envelope field, so there is no reason to expect auth elsewhere.
+ *  - `schema` matches what OUR OWN code leaves in `lastError` — `extractJson-
+ *    Object`'s message, JSON.parse's, and zod's issue array.
  *
- * The timeout pattern is best-effort. agy's wording when `--print-timeout`
- * fires is not a contract we control (§132 measured the SUCCESS envelope, not
- * this), so it matches the plausible surfacings — a phrase, the errno, and the
- * signals a killed child reports — rather than one pinned string. A miss costs
- * the headline and the provider hint; the attempt facts below print either
- * way, and they are what actually self-diagnoses a hang.
+ * A miss costs the headline and the class-gated advice, never the facts: the
+ * attempt line below prints for every class, and it is what actually
+ * self-diagnoses a hang.
  */
 export function classifyAgyFailure(message: string): AgyFailureClass {
   if (/authentication|not logged in|login/i.test(message)) return "auth";
   if (/unknown model|invalid model/i.test(message)) return "model";
-  const detail = agyFailureDetail(message);
-  if (/timed? ?out|ETIMEDOUT|SIGTERM|SIGKILL/i.test(detail)) return "timeout";
-  // Ours (`extractJsonObject`), JSON.parse's, and zod's — the three things
-  // that can leave a validation message in `lastError`.
+  if (/timed? ?out|ETIMEDOUT|SIGTERM|SIGKILL/i.test(message)) return "timeout";
   const schemaish = /no JSON object in reply|is not valid JSON|Unexpected (token|end of)|"code":\s*"/i;
-  if (schemaish.test(detail)) return "schema";
+  if (schemaish.test(message)) return "schema";
   return "unknown";
-}
-
-/** `600_000 → "10m0s"`, `1_500 → "1.5s"` — an at-a-glance wall time. */
-function formatElapsed(ms: number): string {
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
 }
 
 /**
@@ -216,16 +225,10 @@ export function agyFailureMessage(parts: {
       : cls === "schema"
         ? " — the reply never matched the schema"
         : "";
-  const times = parts.attemptMs.map(formatElapsed);
-  const listed =
-    times.length > 1
-      ? `${times.slice(0, -1).join(", ")} and ${times[times.length - 1]}`
-      : (times[0] ?? "");
-  const detail = agyFailureDetail(parts.lastError).slice(0, 400) || "agy printed nothing";
+  const detail = parts.lastError.trim().slice(0, 400) || "agy printed nothing";
   const lines = [
     `agy CLI ('${parts.bin}') did not produce valid ${parts.schemaName} JSON${headline}: ${detail}`,
-    `${parts.attemptMs.length} attempt${parts.attemptMs.length === 1 ? "" : "s"}` +
-      `${listed ? `, ${listed}` : ""}, --print-timeout ${parts.printTimeout}.`,
+    attemptFactsLine(parts.attemptMs, `--print-timeout ${parts.printTimeout}`),
   ];
   if (cls === "auth") {
     lines.push(
@@ -299,16 +302,25 @@ export class AntigravityProvider implements LlmProvider {
       }
       const started = Date.now();
       let stdout = "";
+      let stderr = "";
       try {
-        ({ stdout } = await run(
+        // allowNonZero, and it is load-bearing: agy reports its operational
+        // failures as exit 1 with the reason in the STDOUT envelope and
+        // nothing on stderr (measured 1.1.18 — see `agyErrorText`). run()'s
+        // default reject path keeps only the stderr tail, so it threw away
+        // every one of those reasons and handed this loop our own echoed
+        // argv instead. Resolving non-zero exits and reading the envelope is
+        // what makes both the message AND the fail-fast work.
+        ({ stdout, stderr } = await run(
           this.bin,
           buildAgyArgs(prompt, { model: this.model, schemaJson: schemaText }),
+          { allowNonZero: true },
         ));
       } catch (err) {
+        // Only a spawn failure reaches here now: agy not on PATH, or not
+        // executable. Nothing was spent, and no retry can install it.
         attemptMs.push(Date.now() - started);
         lastError = err instanceof Error ? err.message : String(err);
-        // run() embeds the stderr tail in its rejection, so auth/bad-slug
-        // failures are matchable here and fail fast instead of re-spending.
         if (isNonRetryableAgyFailure(lastError)) break;
         continue;
       }
@@ -317,25 +329,33 @@ export class AntigravityProvider implements LlmProvider {
       // schema still spent the tokens, and a retry is exactly the cost a user
       // would want to see rather than have quietly absorbed.
       const envelope = parseAgyEnvelope(stdout);
-      this.usage.push({
-        provider: this.name,
-        // The envelope names no model, so record what was asked for — or the
-        // honest placeholder, which the cost report declines to price.
-        model: this.model ?? "antigravity-default",
-        schemaName: req.schemaName,
-        inputTokens: envelope.inputTokens ?? estimateTokens(prompt),
-        outputTokens: envelope.outputTokens ?? estimateTokens(envelope.response ?? stdout),
-        cachedInputTokens: envelope.cachedInputTokens,
-        exact: envelope.inputTokens !== undefined,
-        // The whole point of this provider: agy's cached sign-in means the
-        // subscription pays, not a card, and agy reports no cost to forward.
-        billed: false,
-        ms: elapsed,
-      });
+      // Gated on stdout now that non-zero exits resolve: a call that printed
+      // NOTHING never reached the model (exit 2, a usage error) and must not
+      // be booked as an estimated ~24k-token call. Anything that did reply —
+      // including an ERROR envelope reporting zeros — is still recorded.
+      if (stdout.trim()) {
+        this.usage.push({
+          provider: this.name,
+          // The envelope names no model, so record what was asked for — or the
+          // honest placeholder, which the cost report declines to price.
+          model: this.model ?? "antigravity-default",
+          schemaName: req.schemaName,
+          inputTokens: envelope.inputTokens ?? estimateTokens(prompt),
+          outputTokens: envelope.outputTokens ?? estimateTokens(envelope.response ?? stdout),
+          cachedInputTokens: envelope.cachedInputTokens,
+          exact: envelope.inputTokens !== undefined,
+          // The whole point of this provider: agy's cached sign-in means the
+          // subscription pays, not a card, and agy reports no cost to forward.
+          billed: false,
+          ms: elapsed,
+        });
+      }
+      // SUCCESS is the envelope's own word for "this worked" (§132 lists the
+      // status enum), and with non-zero exits resolving it is now the ONLY
+      // success test — an exit code we no longer see cannot be one.
       if (envelope.status !== "SUCCESS") {
         attemptMs.push(elapsed);
-        lastError =
-          envelope.error ?? `agy reported status ${envelope.status ?? "unknown"}: ${stdout.slice(0, 300)}`;
+        lastError = agyErrorText(stdout, stderr);
         if (isNonRetryableAgyFailure(lastError)) break;
         continue;
       }

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import {
   AGY_PRINT_TIMEOUT,
-  agyFailureDetail,
+  agyErrorText,
   agyFailureMessage,
   AntigravityProvider,
   buildAgyArgs,
@@ -48,8 +48,48 @@ function stubAgy(...stdoutPerCall: string[]): Stub {
   return { bin, prompts, calls };
 }
 
-/** An `agy` stub that always exits 1 with the given stderr — the fail-fast cases. */
-function stubAgyFailing(stderrLine: string): Stub {
+/**
+ * An `agy` stub that fails the way real agy fails: the reason in the STDOUT
+ * envelope, exit 1, NOTHING on stderr.
+ *
+ * Measured against agy 1.1.18 on 2026-08-22, and it is the correction of this
+ * stub that exposed the bug — the old version wrote the reason to stderr,
+ * which agy does not do, so the suite was green against a provider that could
+ * not fail this way and blind to a failure path that never worked (§132).
+ */
+function stubAgyEnvelopeError(error: string): Stub {
+  const out = JSON.stringify({
+    conversation_id: "c1",
+    status: "ERROR",
+    response: "",
+    error,
+    duration_seconds: 0,
+    num_turns: 1,
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      thinking_tokens: 0,
+      cache_read_tokens: 0,
+      total_tokens: 0,
+    },
+  });
+  return writeStub([
+    `cat <<'EOF'\n${out}\nEOF`,
+    "exit 1",
+  ]);
+}
+
+/**
+ * The OTHER surface: a process-level failure (a bad flag) exits 2 with usage
+ * text on stderr and an empty stdout — measured the same day. Both surfaces
+ * stay covered because a reader of only one is blind to half the failures.
+ */
+function stubAgyUsageError(stderrLine: string): Stub {
+  return writeStub([`echo "${stderrLine}" >&2`, "exit 2"]);
+}
+
+/** Shared preamble: record the argv prompt and count the call, then act. */
+function writeStub(body: string[]): Stub {
   const dir = mkdtempSync(join(tmpdir(), "ossclip-agy-stub-"));
   const prompts = join(dir, "prompts");
   const calls = join(dir, "calls");
@@ -58,8 +98,7 @@ function stubAgyFailing(stderrLine: string): Stub {
     `printf '%s\\n${PROMPT_END}\\n' "$2" >> "${prompts}"`,
     `n=$(cat "${calls}" 2>/dev/null || echo 0)`,
     `echo $((n+1)) > "${calls}"`,
-    `echo "${stderrLine}" >&2`,
-    "exit 1",
+    ...body,
   ].join("\n");
   const bin = join(dir, "agy");
   writeFileSync(bin, script);
@@ -137,7 +176,10 @@ describe("AntigravityProvider", () => {
   });
 
   it("fails fast on an authentication failure — one call, no retry", async () => {
-    const stub = stubAgyFailing("authentication required: run agy to sign in");
+    // The auth WORDING is inferred, not measured: establishing it would mean
+    // signing the user out. The envelope SURFACE is measured, and both
+    // measured failures use it, so this is where auth is expected to speak.
+    const stub = stubAgyEnvelopeError("authentication required: run agy to sign in");
     const provider = new AntigravityProvider(undefined, stub.bin);
     await expect(
       provider.complete({ system: "s", user: "u", schema, schemaName: "t" }),
@@ -146,15 +188,37 @@ describe("AntigravityProvider", () => {
   });
 
   it("fails fast on an unknown model slug — one call, no retry", async () => {
-    const stub = stubAgyFailing("Error: unknown model gemini-9-ultra");
+    // agy 1.1.18's real text, measured 2026-08-22. This is the case the old
+    // stub got wrong: agy puts it in the envelope, not on stderr, so run()'s
+    // rejection never carried the words "invalid model" and the documented
+    // fail-fast had never actually fired — the retry burned a second
+    // ~24k-token call every time (§132).
+    const stub = stubAgyEnvelopeError(
+      'invalid model selection (--model "gemini-9-ultra" --effort ""): ' +
+        "model gemini-9-ultra is not recognized as a known model or custom model in settings",
+    );
     const provider = new AntigravityProvider("gemini-9-ultra", stub.bin);
-    // run()'s rejection embeds the whole argv (the prompt rides argv) before
-    // the stderr tail; `agyFailureDetail` strips it, so the message names the
-    // slug the user actually has to fix. The fail-fast proof is the call count.
     await expect(
       provider.complete({ system: "s", user: "u", schema, schemaName: "t" }),
-    ).rejects.toThrow(/unknown model gemini-9-ultra/);
+    ).rejects.toThrow(/invalid model selection.*gemini-9-ultra/s);
     expect(callsOf(stub)).toBe(1);
+  });
+
+  it("reads the OTHER surface too: exit 2 with usage text on stderr", async () => {
+    // A bad flag never reaches the model, so there is no envelope to read —
+    // measured as exit 2, empty stdout, usage text on stderr. Retryable (it
+    // is not auth or a slug), and the text still has to reach the user.
+    const stub = stubAgyUsageError("flags provided but not defined: -nonexistent-flag");
+    const provider = new AntigravityProvider(undefined, stub.bin);
+    const err = await provider
+      .complete({ system: "s", user: "u", schema, schemaName: "t" })
+      .then(() => null)
+      .catch((e: Error) => e);
+    expect(err?.message).toMatch(/flags provided but not defined/);
+    expect(callsOf(stub)).toBe(2);
+    // Nothing was spent: a call that printed no envelope must not be booked
+    // as an estimated ~24k-token call.
+    expect(provider.usage).toHaveLength(0);
   });
 
   it("maps the usage block into unbilled subscription usage", async () => {
@@ -257,17 +321,18 @@ describe("AntigravityProvider", () => {
   });
 
   it("isNonRetryableAgyFailure matches the deterministic failures only", () => {
-    expect(isNonRetryableAgyFailure("agy failed (exit 1):\nauthentication required")).toBe(true);
-    expect(isNonRetryableAgyFailure("Error: unknown model gemini-9")).toBe(true);
-    expect(isNonRetryableAgyFailure("print timeout exceeded")).toBe(false);
+    expect(isNonRetryableAgyFailure("authentication required: run agy to sign in")).toBe(true);
+    // agy 1.1.18's measured wording — it matches the shipped patterns as-is.
+    // The patterns were never the bug; the input was (§132).
+    expect(isNonRetryableAgyFailure('invalid model selection (--model "gemini-9")')).toBe(true);
+    expect(isNonRetryableAgyFailure("timeout waiting for response")).toBe(false);
   });
 
   it("reports a timeout as a timeout — attempts and clock, no login hint", async () => {
-    // The stderr wording is invented: agy's own text when --print-timeout
-    // fires is not a contract we control, and the point under test is that
-    // the classifier tolerates a plausible phrasing rather than one pinned
-    // string. The attempt facts below print either way.
-    const stub = stubAgyFailing("error: print timeout of 10m exceeded");
+    // agy 1.1.18's real text when --print-timeout fires, measured 2026-08-22
+    // by running agy with --print-timeout 2s: exit 1, this string in the
+    // stdout envelope's `error`, stderr empty.
+    const stub = stubAgyEnvelopeError("timeout waiting for response");
     const provider = new AntigravityProvider(undefined, stub.bin);
     const err = await provider
       .complete({ system: "s", user: "u", schema, schemaName: "beat_sheet" })
@@ -294,46 +359,56 @@ describe("AntigravityProvider", () => {
  * assertable without spawning agy.
  */
 describe("agy failure classification", () => {
-  // What run() actually rejects with: `<bin> <args> failed (exit N):\n<tail>`,
-  // and agy's args carry the whole prompt, the JSON schema, and our own
-  // --print-timeout flag.
-  const rejection = (stderr: string): string =>
-    `agy -p "SYSTEM…USER…" --output-format json --disable-slash-commands ` +
-    `--json-schema {"type":"object"} --print-timeout 10m failed (exit 1):\n${stderr}`;
+  // agy 1.1.18's own words, measured 2026-08-22 — see `agyErrorText`.
+  const MEASURED_TIMEOUT = "timeout waiting for response";
+  const MEASURED_BAD_MODEL =
+    'invalid model selection (--model "definitely-not-a-real-model" --effort ""): ' +
+    "model definitely-not-a-real-model is not recognized as a known model or custom model in settings";
+  const errEnvelope = (error: string): string =>
+    JSON.stringify({ conversation_id: "c1", status: "ERROR", response: "", error });
 
-  it("strips the argv echo so the user reads the failure, not our command line", () => {
-    expect(agyFailureDetail(rejection("boom"))).toBe("boom");
-    // Not a run() rejection at all (zod, or a spawn error) — unchanged.
-    expect(agyFailureDetail("agy failed to start: ENOENT")).toBe("agy failed to start: ENOENT");
-    // A silent non-zero exit stays empty rather than falling back to the argv.
-    expect(agyFailureDetail(rejection(""))).toBe("");
+  it("reads the reason out of whichever surface agy used", () => {
+    // Operational failures: the envelope, with stderr empty.
+    expect(agyErrorText(errEnvelope(MEASURED_TIMEOUT), "")).toBe(MEASURED_TIMEOUT);
+    expect(agyErrorText(errEnvelope(MEASURED_BAD_MODEL), "")).toBe(MEASURED_BAD_MODEL);
+    // Process-level failures: stderr, with stdout empty (exit 2, bad flag).
+    expect(agyErrorText("", "flags provided but not defined: -nope\nUsage of agy:")).toMatch(
+      /flags provided but not defined/,
+    );
+    // A status with no error of its own still names itself.
+    expect(agyErrorText(JSON.stringify({ status: "CANCELED" }), "")).toBe(
+      "agy reported status CANCELED",
+    );
+    // Neither surface said anything: say THAT, rather than inventing a reason.
+    expect(agyErrorText("", "")).toBe("agy printed nothing");
+    expect(agyErrorText("<html>gateway error</html>", "")).toMatch(/no envelope/);
   });
 
   it("classifies each failure it can name", () => {
-    expect(classifyAgyFailure(rejection("authentication required: run agy"))).toBe("auth");
-    expect(classifyAgyFailure(rejection("Error: unknown model gemini-9-ultra"))).toBe("model");
-    expect(classifyAgyFailure(rejection("print timeout of 10m exceeded"))).toBe("timeout");
-    expect(classifyAgyFailure(rejection("the operation timed out"))).toBe("timeout");
-    expect(classifyAgyFailure(rejection("killed by SIGKILL"))).toBe("timeout");
+    // Measured.
+    expect(classifyAgyFailure(MEASURED_TIMEOUT)).toBe("timeout");
+    expect(classifyAgyFailure(MEASURED_BAD_MODEL)).toBe("model");
+    // Inferred — the auth wording is not measurable without signing the user
+    // out, so the patterns are the ones fail-fast has always used.
+    expect(classifyAgyFailure("authentication required: run agy to sign in")).toBe("auth");
+    // Best-effort alternatives: agy's wording is not a contract we control,
+    // and an externally killed agy never speaks through the envelope at all.
+    expect(classifyAgyFailure("the operation timed out")).toBe("timeout");
+    expect(classifyAgyFailure("killed by SIGKILL")).toBe("timeout");
+    // Ours: zod, and extractJsonObject.
     expect(classifyAgyFailure('[{"code":"invalid_type","path":["beats"]}]')).toBe("schema");
     expect(classifyAgyFailure("no JSON object in reply: sorry, I can't")).toBe("schema");
-    expect(classifyAgyFailure(rejection("server exploded"))).toBe("unknown");
-  });
-
-  it("does not read our own --print-timeout flag as a timeout", () => {
-    // The trap the stderr-tail split exists for: every run() rejection echoes
-    // `--print-timeout 10m`, so matching the whole message would report every
-    // non-zero exit as a hang — over-claiming in the opposite direction.
-    expect(classifyAgyFailure(rejection("server exploded"))).not.toBe("timeout");
-    expect(classifyAgyFailure(rejection(""))).toBe("unknown");
+    // Everything else stays honestly unnamed rather than guessing.
+    expect(classifyAgyFailure("server exploded")).toBe("unknown");
+    expect(classifyAgyFailure("agy printed nothing")).toBe("unknown");
   });
 
   it("prints the attempt facts for every class, because they self-diagnose", () => {
     const facts = { bin: "agy", schemaName: "beat_sheet", attemptMs: [600_000, 600_000] };
     for (const lastError of [
-      rejection("authentication required"),
-      rejection("print timeout of 10m exceeded"),
-      rejection("server exploded"),
+      "authentication required",
+      MEASURED_TIMEOUT,
+      "server exploded",
       '[{"code":"too_small"}]',
     ]) {
       expect(
@@ -349,14 +424,10 @@ describe("agy failure classification", () => {
       attemptMs: [1_200],
       printTimeout: AGY_PRINT_TIMEOUT,
     };
-    const auth = agyFailureMessage({ ...facts, lastError: rejection("authentication required") });
+    const auth = agyFailureMessage({ ...facts, lastError: "authentication required" });
     expect(auth).toContain("Is Antigravity installed and logged in?");
     expect(auth).toContain("1 attempt, 1.2s");
-    for (const lastError of [
-      rejection("print timeout of 10m exceeded"),
-      rejection("server exploded"),
-      rejection("Error: unknown model gemini-9-ultra"),
-    ]) {
+    for (const lastError of [MEASURED_TIMEOUT, "server exploded", MEASURED_BAD_MODEL]) {
       expect(agyFailureMessage({ ...facts, lastError })).not.toContain("logged in");
     }
   });
@@ -365,7 +436,7 @@ describe("agy failure classification", () => {
     const msg = agyFailureMessage({
       bin: "agy",
       schemaName: "beat_sheet",
-      lastError: rejection("print timeout of 10m exceeded"),
+      lastError: MEASURED_TIMEOUT,
       attemptMs: [600_000, 600_000],
       printTimeout: AGY_PRINT_TIMEOUT,
     });

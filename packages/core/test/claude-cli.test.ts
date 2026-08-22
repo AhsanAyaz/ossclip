@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import {
   ClaudeCliProvider,
+  classifyClaudeCliFailure,
+  claudeCliFailureMessage,
   extractJsonObject,
   parseCliEnvelope,
   unwrapCliEnvelope,
@@ -57,12 +59,19 @@ describe("ClaudeCliProvider", () => {
     expect(out).toEqual({ title: "FIXED" });
   });
 
-  it("throws with install/login guidance after two bad replies", async () => {
+  it("reports two bad replies as a schema failure, not a login problem", async () => {
+    // Was "throws with install/login guidance": the hint went on every
+    // failure, so a model that simply would not return JSON sent the user to
+    // check an auth that was fine (the §132 disease, this provider's copy).
     const bin = stubClaude(envelope("not json at all"), envelope("still not json"));
     const provider = new ClaudeCliProvider(undefined, bin);
-    await expect(
-      provider.complete({ system: "s", user: "u", schema, schemaName: "t" }),
-    ).rejects.toThrow(/logged in/);
+    const err = await provider
+      .complete({ system: "s", user: "u", schema, schemaName: "t" })
+      .then(() => null)
+      .catch((e: Error) => e);
+    expect(err?.message).toMatch(/never matched the schema/);
+    expect(err?.message).toMatch(/2 attempts/);
+    expect(err?.message).not.toMatch(/logged in/);
   });
 
   it("surfaces CLI-side errors from the envelope", () => {
@@ -133,5 +142,54 @@ describe("ClaudeCliProvider", () => {
       cachedInputTokens: undefined,
       costUsd: undefined,
     });
+  });
+});
+
+/**
+ * The §132 fix, this provider's half: say what happened instead of blaming the
+ * login every time. Pure — no CLI, no auth.
+ */
+describe("claude CLI failure classification", () => {
+  // Measured against the real CLI on 2026-08-22 with a bad --model slug: exit
+  // 1, this machine-readable line on STDERR (the human sentence goes to the
+  // stdout envelope's `result`, which run()'s reject path drops). Unlike agy,
+  // the prompt rides stdin, so run()'s argv echo is short and harmless.
+  const MEASURED_BAD_MODEL =
+    'claude -p --output-format json --max-turns 1 --model nope failed (exit 1):\n' +
+    '[claude-code:unrecognized_model] {"model":"nope","query_source":"sdk"}';
+
+  it("classifies each failure it can name", () => {
+    expect(classifyClaudeCliFailure(MEASURED_BAD_MODEL)).toBe("model");
+    // Inferred, not measured — no test may sign the user out to find out.
+    expect(classifyClaudeCliFailure("Invalid API key · Please run /login")).toBe("auth");
+    expect(classifyClaudeCliFailure("no JSON object in reply: sorry")).toBe("schema");
+    expect(classifyClaudeCliFailure("the request timed out")).toBe("timeout");
+    // A usage-limit failure is real, actionable, and NOT an auth problem —
+    // it used to get the login hint like everything else.
+    expect(classifyClaudeCliFailure("usage limit reached")).toBe("unknown");
+  });
+
+  it("gives the sign-in hint to an auth failure and to nothing else", () => {
+    const facts = { bin: "claude", schemaName: "beat_sheet", attemptMs: [1_200, 900] };
+    const auth = claudeCliFailureMessage({
+      ...facts,
+      lastError: "Invalid API key · Please run /login",
+    });
+    expect(auth).toContain("Is Claude Code installed and logged in?");
+    for (const lastError of [MEASURED_BAD_MODEL, "usage limit reached", "no JSON object in reply"]) {
+      expect(claudeCliFailureMessage({ ...facts, lastError })).not.toContain("logged in");
+    }
+  });
+
+  it("prints the attempt facts for every class, and points a slug at the slug", () => {
+    const facts = { bin: "claude", schemaName: "beat_sheet", attemptMs: [1_200, 900] };
+    for (const lastError of [MEASURED_BAD_MODEL, "usage limit reached", "Please run /login"]) {
+      expect(claudeCliFailureMessage({ ...facts, lastError })).toContain(
+        "2 attempts, 1.2s and 0.9s.",
+      );
+    }
+    expect(claudeCliFailureMessage({ ...facts, lastError: MEASURED_BAD_MODEL })).toContain(
+      "--llm-model",
+    );
   });
 });
