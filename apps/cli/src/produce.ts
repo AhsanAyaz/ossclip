@@ -120,6 +120,8 @@ import {
   measureLevels,
   probe,
   produceScenes,
+  PRODUCER_PROMPT_VERSION,
+  type FramingContext,
   reclampPinnedTiming,
   reconcileCopy,
   repairTranscript,
@@ -272,6 +274,63 @@ export function transcriptCacheReusable(
       JSON.stringify(effective.dictionary ?? []) === JSON.stringify(requested.dictionary ?? []),
     recorded: effective,
   };
+}
+
+/**
+ * The beat-sheet/scenes cache key: everything that changes the plan — which
+ * prompt asked, who was asked, with what editorial steer, about which words,
+ * in what frame. Pure and exported so the §78 posture ("a change that changes
+ * the answer must change the key") is testable without a workdir.
+ *
+ * Two of these are new, and only one of them was a live bug:
+ *  - `promptVersion` (the caller passes PRODUCER_PROMPT_VERSION) is the §78
+ *    fix proper — before it, a warm workdir kept serving a sheet the OLD
+ *    prompt wrote, exactly the failure YOUTUBE_PROMPT_VERSION exists for.
+ *  - `aspect` is LATENT rather than active: it changes the user prompt (the
+ *    LANDSCAPE block, R21 §101), but `--aspect 16:9` also derives its own
+ *    `-16x9` workdir and this cache is a file inside it, so a portrait and a
+ *    landscape plan of the same source cannot meet today. Keyed anyway —
+ *    the collision is one workdir-naming change away, and the key should not
+ *    depend on a different module's directory scheme to stay correct.
+ */
+export function beatSheetCacheKey(parts: {
+  promptVersion: string;
+  providerName: ProviderName;
+  llmModel?: string;
+  intent?: string;
+  cleanup: CleanupLevel;
+  forceComponent?: SceneComponentId;
+  /** Framing constraints steer layout choice, so a re-measure must replan. */
+  framing?: FramingContext;
+  clipTargetSec?: number;
+  clipWindow?: ClipWindow | null;
+  /** The repaired transcript's TEXT — see the call site on why not the count. */
+  words: readonly string[];
+  aspect: "9:16" | "16:9";
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify([
+        parts.promptVersion,
+        parts.providerName,
+        parts.llmModel,
+        parts.intent,
+        parts.cleanup,
+        parts.forceComponent ?? null,
+        parts.framing ?? null,
+        // §93f: the clip target and the RESOLVED window key the plan too —
+        // without them a clip run and a full run of the same source would
+        // collide and answer from each other's cache (the §78 failure
+        // mode). Keyed POST-resolution so a replay that derives the same
+        // window hits the same entries.
+        parts.clipTargetSec ?? null,
+        parts.clipWindow ? `${parts.clipWindow.startWord}:${parts.clipWindow.endWord}` : null,
+        parts.words,
+        parts.aspect,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
 }
 
 export interface ProduceOptions {
@@ -2439,29 +2498,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       map = new TimeMap(cutlist);
     }
 
-    const cacheKey = createHash("sha1")
-      .update(
-        JSON.stringify([
-          providerName,
-          opts.llmModel,
-          opts.intent,
-          opts.cleanup,
-          opts.forceComponent ?? null,
-          // The framing constraints steer layout choice, so a change in the
-          // measured framing must invalidate the cached plan.
-          framingCtx ?? null,
-          // §93f: the clip target and the RESOLVED window key the plan too —
-          // without them a clip run and a full run of the same source would
-          // collide and answer from each other's cache (the §78 failure
-          // mode). Keyed POST-resolution so a replay that derives the same
-          // window hits the same entries.
-          clipTargetSec ?? null,
-          clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : null,
-          transcript.words.map((w) => w.text),
-        ]),
-      )
-      .digest("hex")
-      .slice(0, 8);
+    const cacheKey = beatSheetCacheKey({
+      promptVersion: PRODUCER_PROMPT_VERSION,
+      providerName,
+      llmModel: opts.llmModel,
+      intent: opts.intent,
+      cleanup: opts.cleanup,
+      forceComponent: opts.forceComponent,
+      framing: framingCtx,
+      clipTargetSec,
+      clipWindow,
+      words: transcript.words.map((w) => w.text),
+      aspect: landscape ? "16:9" : "9:16",
+    });
     const sceneCache = join(work, `scenes-${cacheKey}.json`);
     // The cover needs the editorial copy, which is not in the scene list — a
     // cached run must still be able to write one.

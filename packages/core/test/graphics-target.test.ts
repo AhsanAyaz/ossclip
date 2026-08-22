@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import {
   BeatSheetSchema,
+  PRODUCER_PROMPT_VERSION,
+  PRODUCER_SYSTEM,
   SEC_PER_GRAPHIC,
   buildBeatsUserPrompt,
   countEnumeratedBeats,
@@ -9,6 +11,7 @@ import {
   generateBeatSheet,
   graphicsTarget,
   normalizeBeatSheet,
+  producerSystem,
 } from "../src/producer/beats";
 import type { LlmProvider } from "../src/producer/provider";
 import type { Transcript } from "../src/schema";
@@ -121,6 +124,94 @@ describe("the count reaches the prompt (§118 — the actual fix)", () => {
     });
     // 60s clip → runtime density, not the 300s take's.
     expect(p).toContain("Graphic moments to plan: 7");
+  });
+});
+
+/**
+ * The system prompt opened with "short-form vertical video (Reels/Shorts/
+ * TikTok)" on EVERY run, while the user prompt has said "Output frame:
+ * LANDSCAPE 16:9" since R21 §101 — a 16:9 produce shipped both sentences in
+ * one call and left the model to reconcile them.
+ */
+describe("producerSystem — the system prompt describes the frame it will fill", () => {
+  /** The opening sentence, byte-pinned: the tuned default must not drift. */
+  const PORTRAIT_OPENING =
+    "You are the producer for a short-form vertical video (Reels/Shorts/TikTok). " +
+    "You receive a word-indexed transcript of a talking-head take that has already " +
+    "been cut. Your job is EDITORIAL: segment the take into moments, pick which " +
+    "moments deserve a graphic scene, and write the on-screen copy.";
+
+  it("is byte-identical to the shipped prompt when no aspect is given", () => {
+    // Every 9:16 run must send exactly the text the virality grammar was
+    // tuned against — a silent reword here is a silent re-tune.
+    expect(producerSystem().split("\n")[0]).toBe(PORTRAIT_OPENING);
+    expect(producerSystem("9:16")).toBe(producerSystem());
+    // The back-compat export is the same string, never a second copy.
+    expect(PRODUCER_SYSTEM).toBe(producerSystem());
+  });
+
+  it("stops calling a landscape output vertical", () => {
+    const landscape = producerSystem("16:9");
+    expect(landscape).not.toMatch(/vertical/i);
+    for (const platform of ["Reels", "Shorts", "TikTok"]) {
+      expect(landscape).not.toContain(platform);
+    }
+    expect(landscape.split("\n")[0]).toContain("landscape video (YouTube)");
+  });
+
+  it("changes ONLY the shape sentence — every policy line survives in both", () => {
+    // The hook rule, the alternation rule, the coverage budget, FRAMING and
+    // COVER are the same editorial policy whatever shape the frame is.
+    const rest = (s: string) => s.split("\n").slice(1).join("\n");
+    expect(rest(producerSystem("16:9"))).toBe(rest(producerSystem()));
+    for (const prompt of [producerSystem(), producerSystem("16:9")]) {
+      expect(prompt).toContain("The first moment is the hook");
+      expect(prompt).toContain("Pattern interrupts");
+      expect(prompt).toContain("- COUNT:");
+      expect(prompt).toContain("- COVERAGE:");
+      expect(prompt).toContain("- VARIETY:");
+      expect(prompt).toContain("- FRAMING:");
+      expect(prompt).toContain("- COVER:");
+    }
+  });
+
+  it("reaches the provider: the system and user halves agree about the frame", async () => {
+    // The bug was at the CALL SITE — buildBeatsUserPrompt already took the
+    // aspect, generateBeatSheet just never passed it to the system half.
+    const sent: { system?: string; user?: string } = {};
+    const spy = {
+      name: "spy",
+      usage: [],
+      complete: async (req: { system: string; user: string }) => {
+        sent.system = req.system;
+        sent.user = req.user;
+        return {
+          hook: "h",
+          moments: [
+            { startWord: 0, endWord: 3, purpose: "a", onScreenCopy: "A", sceneKind: "none" },
+          ],
+        };
+      },
+    } as unknown as LlmProvider;
+    await generateBeatSheet(
+      spy,
+      speak(filler(60)),
+      30,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "16:9",
+    );
+    expect(sent.user).toContain("Output frame: LANDSCAPE 16:9");
+    expect(sent.system).toBe(producerSystem("16:9"));
+  });
+
+  it("PRODUCER_PROMPT_VERSION is pinned — the cache key carries it", () => {
+    // Prompt changes change the answer (the §78 posture). If a prompt edit
+    // ships without bumping this, every warm workdir keeps serving the sheet
+    // the old prompt wrote — this pin makes the bump a conscious act.
+    expect(PRODUCER_PROMPT_VERSION).toBe("v2");
   });
 });
 
