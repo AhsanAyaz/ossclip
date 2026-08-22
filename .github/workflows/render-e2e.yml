@@ -25,7 +25,7 @@ on:
       - "packages/renderer/**"
       - "packages/scenes/**"
       - "apps/cli/src/produce.ts"
-      - "fixtures/**"
+      - "fixtures/fixture.transcript.json"
       - ".github/workflows/render-e2e.yml"
   workflow_dispatch:
   # Nothing in this repo changing is the point: Remotion, Chrome and ffmpeg
@@ -87,17 +87,33 @@ jobs:
         shell: bash
         run: pnpm ossclip setup --model tiny.en --skip-llm --yes
 
-      # The deterministic path the verify-ossclip skill uses: --transcript
-      # injects the ground-truth transcript, so whisper never runs, and no
-      # --produce means the LLM is not involved. Fully offline, and the only
-      # variable left is the render itself.
+      # `fixtures/*.mp4` is gitignored — `pnpm fixture` generates it from
+      # espeak-ng, which is an apt one-liner on Linux and a yak shave on
+      # Windows (setup-e2e keeps its transcribe step ubuntu-only for exactly
+      # that reason). This job does not need speech: the transcript is
+      # injected, so the audio only has to be non-silent enough that the cut
+      # pass keeps material to render. testsrc2 + a sine tone is reproducible,
+      # needs nothing but the ffmpeg setup just provisioned, and matches the
+      # real fixture's 17.9s so the committed ground-truth transcript lines up.
+      - name: synthesize a source
+        shell: bash
+        run: |
+          FFMPEG=$(node -p "try{JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.ossclip/config.json','utf8')).ffmpegPath||'ffmpeg'}catch(e){'ffmpeg'}")
+          "$FFMPEG" -y -v error \
+            -f lavfi -i testsrc2=s=1080x1920:r=30:d=17.9 \
+            -f lavfi -i sine=frequency=220:duration=17.9 \
+            -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "$PWD/sample.mp4"
+
+      # --transcript injects the committed ground-truth words so whisper never
+      # runs, and no --produce keeps the LLM out. Fully offline, which leaves
+      # the render as the only variable in the job.
       #
       # Absolute paths on purpose — a relative input resolves against the
       # wrong dir once pnpm sets the cwd (setup-e2e hit this first).
-      - name: render the fixture
+      - name: render it
         shell: bash
         run: |
-          pnpm ossclip produce "$PWD/fixtures/fixture.mp4" \
+          pnpm ossclip produce "$PWD/sample.mp4" \
             --transcript "$PWD/fixtures/fixture.transcript.json" \
             --workdir "$PWD/wd" \
             -o "$PWD/out.mp4"
