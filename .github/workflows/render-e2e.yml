@@ -1,0 +1,146 @@
+name: render e2e
+
+# One real render on Windows, because the platform matrix test cannot do this
+# job (§144). That test asserts the VALUE we pass — `hardwareAcceleration:
+# "disable"` off darwin — and it would stay green through any upstream change
+# to what that value MEANS. #7 was exactly that failure: the option name and
+# its legal values had been verified against the installed Remotion, its
+# behaviour had not, and "if-possible" turned out to select h264_nvenc from
+# process.platform alone with no capability probe. A runner without an NVIDIA
+# card is the only thing that actually proves the encoder opens.
+#
+# Windows because that is where the coverage is zero: ci.yml is ubuntu-only
+# and never renders, setup-e2e has a Windows runner but only provisions and
+# runs doctor. macOS renders constantly on the maintainer's machine; nobody
+# renders on Windows until a user does. The 0.1.4 `ossclip edit` crash is the
+# standing reminder of what that costs (adding `ubuntu-latest` to the matrix
+# would cover the other half of the nvenc branch, at the price of Chrome's
+# system libs on Linux).
+#
+# Standard runners are free on public repos, so this is billed time only if
+# the repo goes private — the same condition ci.yml's trigger comment names.
+on:
+  pull_request:
+    paths:
+      - "packages/renderer/**"
+      - "packages/scenes/**"
+      - "apps/cli/src/produce.ts"
+      - "fixtures/**"
+      - ".github/workflows/render-e2e.yml"
+  workflow_dispatch:
+  # Nothing in this repo changing is the point: Remotion, Chrome and ffmpeg
+  # all move underneath a pinned render. Weekly is when upstream drift in the
+  # encoder path gets found by CI instead of by a user.
+  schedule:
+    - cron: "41 5 * * 1"
+
+concurrency:
+  group: render-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    name: ossclip produce (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Caching the toolchain is correct HERE and wrong in setup-e2e: that
+      # workflow is the pin canary and must stay cold (§146). This one is
+      # asking whether a render works, not whether the pin is alive, so it
+      # should spend its time rendering rather than re-downloading ffmpeg.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ossclip
+          key: ossclip-render-${{ runner.os }}-${{ hashFiles('apps/cli/src/setup/manifest.ts') }}
+
+      # Remotion downloads Chrome Headless Shell (~190 MB) into
+      # node_modules/.remotion on first render. Key on the resolved renderer
+      # version, since that is what decides the browser revision — the same
+      # reasoning as ci.yml's Playwright cache.
+      #
+      # Resolved FROM packages/renderer, not the root: under pnpm the root has
+      # no @remotion/renderer to require, and the workspace package can resolve
+      # a different version than anything hoisted beside it. The one that
+      # renders is the one whose browser gets downloaded.
+      - id: remotion-version
+        shell: bash
+        run: |
+          V=$(node -p "require(require.resolve('@remotion/renderer/package.json', { paths: ['./packages/renderer'] })).version")
+          echo "resolved @remotion/renderer $V"
+          echo "v=$V" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: node_modules/.remotion
+          key: remotion-browser-${{ runner.os }}-${{ steps.remotion-version.outputs.v }}
+
+      # ffmpeg is a real dependency of the render (mezzanine in, loudness
+      # normalisation out), so the render needs the provisioned toolchain.
+      # tiny.en keeps the model download small — whisper never runs here.
+      - name: provision the toolchain
+        shell: bash
+        run: pnpm ossclip setup --model tiny.en --skip-llm --yes
+
+      # The deterministic path the verify-ossclip skill uses: --transcript
+      # injects the ground-truth transcript, so whisper never runs, and no
+      # --produce means the LLM is not involved. Fully offline, and the only
+      # variable left is the render itself.
+      #
+      # Absolute paths on purpose — a relative input resolves against the
+      # wrong dir once pnpm sets the cwd (setup-e2e hit this first).
+      - name: render the fixture
+        shell: bash
+        run: |
+          pnpm ossclip produce "$PWD/fixtures/fixture.mp4" \
+            --transcript "$PWD/fixtures/fixture.transcript.json" \
+            --workdir "$PWD/wd" \
+            -o "$PWD/out.mp4"
+
+      # Exit 0 is not the assertion — #7 exited nonzero only AFTER every frame
+      # was rendered, and a silent zero-byte output is the failure mode to
+      # catch. Assert a real, playable file.
+      - name: the output is a real video
+        shell: bash
+        run: |
+          FFPROBE=$(node -p "try{JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.ossclip/config.json','utf8')).ffprobePath||'ffprobe'}catch(e){'ffprobe'}")
+          "$FFPROBE" -v error -show_entries stream=codec_name -show_entries format=duration,size \
+            -of default=noprint_wrappers=1 "$PWD/out.mp4" | tee probe.txt
+          grep -q "codec_name=h264" probe.txt || { echo "::error::no h264 video stream"; exit 1; }
+          grep -q "codec_name=aac"  probe.txt || { echo "::error::no aac audio stream"; exit 1; }
+          DUR=$(sed -n 's/^duration=//p' probe.txt)
+          awk -v d="$DUR" 'BEGIN { exit (d > 1) ? 0 : 1 }' \
+            || { echo "::error::duration $DUR is not a real render"; exit 1; }
+
+      # The regression guard for #7 specifically. Off darwin the encoder MUST
+      # be software x264: h264_nvenc here would mean the platform gate stopped
+      # working, and on a runner that happens to have an NVIDIA card it would
+      # even pass the checks above while shipping the bug back to every user
+      # without one. The encoder identity is the assertion, not a detail.
+      - name: the encoder is software x264, never nvenc (§144)
+        shell: bash
+        run: |
+          FFPROBE=$(node -p "try{JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.ossclip/config.json','utf8')).ffprobePath||'ffprobe'}catch(e){'ffprobe'}")
+          RAW=$(ls "$PWD"/wd/*/render-raw.mp4 | head -1)
+          TAG=$("$FFPROBE" -v error -select_streams v:0 -show_entries stream_tags=encoder \
+            -of default=noprint_wrappers=1:nokey=1 "$RAW")
+          echo "encoder: $TAG"
+          case "$TAG" in
+            *nvenc*) echo "::error::nvenc was selected on $RUNNER_OS — the platform gate regressed"; exit 1 ;;
+            *libx264*) ;;
+            *) echo "::error::unexpected encoder '$TAG' — expected libx264"; exit 1 ;;
+          esac
+
+      # A failed render is hard to read from a log alone; the workdir carries
+      # the cut report and the props the render was given.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: render-e2e-workdir
+          path: wd/
+          retention-days: 7
