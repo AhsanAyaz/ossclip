@@ -5,8 +5,11 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import {
   AGY_PRINT_TIMEOUT,
+  agyFailureDetail,
+  agyFailureMessage,
   AntigravityProvider,
   buildAgyArgs,
+  classifyAgyFailure,
   isNonRetryableAgyFailure,
   parseAgyEnvelope,
 } from "../src/producer/antigravity";
@@ -115,15 +118,21 @@ describe("AntigravityProvider", () => {
     expect(prompts[1]).toContain("failed validation");
   });
 
-  it("retries a non-SUCCESS status, then throws sign-in guidance", async () => {
+  it("retries a non-SUCCESS status, then reports the attempts — not a login guess", async () => {
     const stub = stubAgy(
       envelope({ status: "ERROR", error: "server exploded" }),
       envelope({ status: "ERROR", error: "server exploded again" }),
     );
     const provider = new AntigravityProvider(undefined, stub.bin);
-    await expect(
-      provider.complete({ system: "s", user: "u", schema, schemaName: "t" }),
-    ).rejects.toThrow(/Antigravity.*sign in/s);
+    const err = await provider
+      .complete({ system: "s", user: "u", schema, schemaName: "t" })
+      .then(() => null)
+      .catch((e: Error) => e);
+    expect(err?.message).toMatch(/server exploded again/);
+    expect(err?.message).toMatch(/2 attempts/);
+    // A server-side error says nothing about auth. Before 2026-08-22 this
+    // message ended in "Is Antigravity installed and logged in?" regardless.
+    expect(err?.message).not.toMatch(/logged in/);
     expect(callsOf(stub)).toBe(2);
   });
 
@@ -140,11 +149,11 @@ describe("AntigravityProvider", () => {
     const stub = stubAgyFailing("Error: unknown model gemini-9-ultra");
     const provider = new AntigravityProvider("gemini-9-ultra", stub.bin);
     // run()'s rejection embeds the whole argv (the prompt rides argv) before
-    // the stderr tail, so the sliced message may not show the slug — the
-    // fail-fast proof is the call count.
+    // the stderr tail; `agyFailureDetail` strips it, so the message names the
+    // slug the user actually has to fix. The fail-fast proof is the call count.
     await expect(
       provider.complete({ system: "s", user: "u", schema, schemaName: "t" }),
-    ).rejects.toThrow(/Antigravity/);
+    ).rejects.toThrow(/unknown model gemini-9-ultra/);
     expect(callsOf(stub)).toBe(1);
   });
 
@@ -251,5 +260,119 @@ describe("AntigravityProvider", () => {
     expect(isNonRetryableAgyFailure("agy failed (exit 1):\nauthentication required")).toBe(true);
     expect(isNonRetryableAgyFailure("Error: unknown model gemini-9")).toBe(true);
     expect(isNonRetryableAgyFailure("print timeout exceeded")).toBe(false);
+  });
+
+  it("reports a timeout as a timeout — attempts and clock, no login hint", async () => {
+    // The stderr wording is invented: agy's own text when --print-timeout
+    // fires is not a contract we control, and the point under test is that
+    // the classifier tolerates a plausible phrasing rather than one pinned
+    // string. The attempt facts below print either way.
+    const stub = stubAgyFailing("error: print timeout of 10m exceeded");
+    const provider = new AntigravityProvider(undefined, stub.bin);
+    const err = await provider
+      .complete({ system: "s", user: "u", schema, schemaName: "beat_sheet" })
+      .then(() => null)
+      .catch((e: Error) => e);
+    // The 2026-08-22 incident in one assertion: 25 minutes of hanging, then
+    // "Is Antigravity installed and logged in?" on a working, logged-in agy.
+    expect(err?.message).not.toMatch(/logged in/);
+    expect(err?.message).toMatch(/timed out/);
+    expect(err?.message).toMatch(/2 attempts/);
+    expect(err?.message).toMatch(new RegExp(`--print-timeout ${AGY_PRINT_TIMEOUT}`));
+    // The escape hatch is another provider, or no planner at all.
+    expect(err?.message).toMatch(/--llm claude-cli[\s\S]*--llm gemini[\s\S]*--produce/);
+    // A timeout is not deterministic, so the retry still ran. Policy unchanged.
+    expect(callsOf(stub)).toBe(2);
+  });
+});
+
+/**
+ * Honest failure text (2026-08-22): a `--produce --aspect 16:9` run on an
+ * 11-minute take timed out twice at AGY_PRINT_TIMEOUT, burned 25 minutes, and
+ * died telling the user to check a login that was fine the whole time — the
+ * sign-in hint was appended to every failure. Pure, so each class is
+ * assertable without spawning agy.
+ */
+describe("agy failure classification", () => {
+  // What run() actually rejects with: `<bin> <args> failed (exit N):\n<tail>`,
+  // and agy's args carry the whole prompt, the JSON schema, and our own
+  // --print-timeout flag.
+  const rejection = (stderr: string): string =>
+    `agy -p "SYSTEM…USER…" --output-format json --disable-slash-commands ` +
+    `--json-schema {"type":"object"} --print-timeout 10m failed (exit 1):\n${stderr}`;
+
+  it("strips the argv echo so the user reads the failure, not our command line", () => {
+    expect(agyFailureDetail(rejection("boom"))).toBe("boom");
+    // Not a run() rejection at all (zod, or a spawn error) — unchanged.
+    expect(agyFailureDetail("agy failed to start: ENOENT")).toBe("agy failed to start: ENOENT");
+    // A silent non-zero exit stays empty rather than falling back to the argv.
+    expect(agyFailureDetail(rejection(""))).toBe("");
+  });
+
+  it("classifies each failure it can name", () => {
+    expect(classifyAgyFailure(rejection("authentication required: run agy"))).toBe("auth");
+    expect(classifyAgyFailure(rejection("Error: unknown model gemini-9-ultra"))).toBe("model");
+    expect(classifyAgyFailure(rejection("print timeout of 10m exceeded"))).toBe("timeout");
+    expect(classifyAgyFailure(rejection("the operation timed out"))).toBe("timeout");
+    expect(classifyAgyFailure(rejection("killed by SIGKILL"))).toBe("timeout");
+    expect(classifyAgyFailure('[{"code":"invalid_type","path":["beats"]}]')).toBe("schema");
+    expect(classifyAgyFailure("no JSON object in reply: sorry, I can't")).toBe("schema");
+    expect(classifyAgyFailure(rejection("server exploded"))).toBe("unknown");
+  });
+
+  it("does not read our own --print-timeout flag as a timeout", () => {
+    // The trap the stderr-tail split exists for: every run() rejection echoes
+    // `--print-timeout 10m`, so matching the whole message would report every
+    // non-zero exit as a hang — over-claiming in the opposite direction.
+    expect(classifyAgyFailure(rejection("server exploded"))).not.toBe("timeout");
+    expect(classifyAgyFailure(rejection(""))).toBe("unknown");
+  });
+
+  it("prints the attempt facts for every class, because they self-diagnose", () => {
+    const facts = { bin: "agy", schemaName: "beat_sheet", attemptMs: [600_000, 600_000] };
+    for (const lastError of [
+      rejection("authentication required"),
+      rejection("print timeout of 10m exceeded"),
+      rejection("server exploded"),
+      '[{"code":"too_small"}]',
+    ]) {
+      expect(
+        agyFailureMessage({ ...facts, lastError, printTimeout: AGY_PRINT_TIMEOUT }),
+      ).toContain("2 attempts, 10m0s and 10m0s, --print-timeout 10m.");
+    }
+  });
+
+  it("gives the sign-in hint to an auth failure and to nothing else", () => {
+    const facts = {
+      bin: "agy",
+      schemaName: "beat_sheet",
+      attemptMs: [1_200],
+      printTimeout: AGY_PRINT_TIMEOUT,
+    };
+    const auth = agyFailureMessage({ ...facts, lastError: rejection("authentication required") });
+    expect(auth).toContain("Is Antigravity installed and logged in?");
+    expect(auth).toContain("1 attempt, 1.2s");
+    for (const lastError of [
+      rejection("print timeout of 10m exceeded"),
+      rejection("server exploded"),
+      rejection("Error: unknown model gemini-9-ultra"),
+    ]) {
+      expect(agyFailureMessage({ ...facts, lastError })).not.toContain("logged in");
+    }
+  });
+
+  it("points a timeout at the providers that can take the call instead", () => {
+    const msg = agyFailureMessage({
+      bin: "agy",
+      schemaName: "beat_sheet",
+      lastError: rejection("print timeout of 10m exceeded"),
+      attemptMs: [600_000, 600_000],
+      printTimeout: AGY_PRINT_TIMEOUT,
+    });
+    expect(msg).toMatch(/timed out/);
+    // Same voice as the oversized-prompt refusal: name the way out.
+    expect(msg).toContain("--llm claude-cli");
+    expect(msg).toContain("GEMINI_API_KEY");
+    expect(msg).toContain("--produce");
   });
 });

@@ -113,6 +113,136 @@ export function isNonRetryableAgyFailure(message: string): boolean {
 }
 
 /**
+ * The stderr tail out of a `run()` rejection — its format is
+ * `<bin> <args> failed (exit N):\n<stderr tail>` — or the message unchanged
+ * when it did not come from `run()` (a spawn error, or a zod message from the
+ * validation arm).
+ *
+ * Worth isolating because agy takes the prompt on argv (§132), so the echoed
+ * command line is the ENTIRE transcript prompt plus the JSON schema: the
+ * failure text a user needs starts thousands of characters in, and the first
+ * 400 chars of the raw message — what this error used to print — are our own
+ * command line and none of the failure.
+ *
+ * Splits on the LAST marker: the prompt is user text and could in principle
+ * contain the same phrase, but the real one is always after it.
+ *
+ * An empty result when the marker DID match is returned as empty rather than
+ * falling back to the whole message: a silent non-zero exit is a real outcome,
+ * and handing the argv echo back would put `--print-timeout 10m` in front of
+ * the classifier — the exact false positive the split exists to prevent.
+ */
+export function agyFailureDetail(message: string): string {
+  let tail: string | null = null;
+  for (const m of message.matchAll(/\sfailed \(exit [^)]*\):\n/g)) {
+    tail = message.slice((m.index ?? 0) + m[0].length);
+  }
+  return (tail ?? message).trim();
+}
+
+/** What the failure text says actually went wrong. See `classifyAgyFailure`. */
+export type AgyFailureClass = "auth" | "model" | "timeout" | "schema" | "unknown";
+
+/**
+ * Classify a failure so the error can say what happened instead of guessing.
+ * Pure and exported so every class is assertable without spawning agy.
+ *
+ * The incident (2026-08-22): a `--produce --aspect 16:9` run on an 11-minute
+ * take timed out twice at AGY_PRINT_TIMEOUT — 10m each, 25 minutes burned —
+ * and then died with "Is Antigravity installed and logged in?", while agy was
+ * installed, logged in and working. The hint was appended unconditionally, so
+ * every failure was reported as an auth failure and this one sent the user to
+ * debug auth after a 25-minute wait.
+ *
+ * The scopes differ on purpose:
+ *  - `auth`/`model` test the WHOLE message, with the same patterns
+ *    `isNonRetryableAgyFailure` uses, so the class a user is shown can never
+ *    disagree with the fail-fast decision that produced it.
+ *  - `timeout`/`schema` test only `agyFailureDetail`, because the argv echo
+ *    carries our own `--print-timeout 10m` flag and our own `--json-schema`
+ *    payload. A pattern as natural as /timeout/ over the whole message would
+ *    classify every non-zero exit as a hang — the same over-claiming this
+ *    change exists to remove.
+ *
+ * The timeout pattern is best-effort. agy's wording when `--print-timeout`
+ * fires is not a contract we control (§132 measured the SUCCESS envelope, not
+ * this), so it matches the plausible surfacings — a phrase, the errno, and the
+ * signals a killed child reports — rather than one pinned string. A miss costs
+ * the headline and the provider hint; the attempt facts below print either
+ * way, and they are what actually self-diagnoses a hang.
+ */
+export function classifyAgyFailure(message: string): AgyFailureClass {
+  if (/authentication|not logged in|login/i.test(message)) return "auth";
+  if (/unknown model|invalid model/i.test(message)) return "model";
+  const detail = agyFailureDetail(message);
+  if (/timed? ?out|ETIMEDOUT|SIGTERM|SIGKILL/i.test(detail)) return "timeout";
+  // Ours (`extractJsonObject`), JSON.parse's, and zod's — the three things
+  // that can leave a validation message in `lastError`.
+  const schemaish = /no JSON object in reply|is not valid JSON|Unexpected (token|end of)|"code":\s*"/i;
+  if (schemaish.test(detail)) return "schema";
+  return "unknown";
+}
+
+/** `600_000 → "10m0s"`, `1_500 → "1.5s"` — an at-a-glance wall time. */
+function formatElapsed(ms: number): string {
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60_000)}m${Math.floor((ms % 60_000) / 1000)}s`;
+}
+
+/**
+ * The error thrown when every attempt failed. Pure so the wording is testable
+ * without spawning agy, and built around one rule learned from the 2026-08-22
+ * incident: the ATTEMPT FACTS print for every class, because they self-diagnose
+ * regardless of what the classifier decided. "2 attempts, 10m0s and 10m0s,
+ * --print-timeout 10m" tells a user the call hung better than any guess we
+ * could make, and it stays true when the guess is wrong.
+ *
+ * Guidance, by contrast, is class-gated: the sign-in hint only for `auth`, and
+ * for `timeout` the actual escape hatch — another provider, or no planner at
+ * all — named the way the oversized-prompt error above names them.
+ */
+export function agyFailureMessage(parts: {
+  bin: string;
+  schemaName: string;
+  lastError: string;
+  /** Wall time of every attempt that ran, in order. */
+  attemptMs: readonly number[];
+  printTimeout: string;
+}): string {
+  const cls = classifyAgyFailure(parts.lastError);
+  const headline =
+    cls === "timeout"
+      ? " — the call timed out"
+      : cls === "schema"
+        ? " — the reply never matched the schema"
+        : "";
+  const times = parts.attemptMs.map(formatElapsed);
+  const listed =
+    times.length > 1
+      ? `${times.slice(0, -1).join(", ")} and ${times[times.length - 1]}`
+      : (times[0] ?? "");
+  const detail = agyFailureDetail(parts.lastError).slice(0, 400) || "agy printed nothing";
+  const lines = [
+    `agy CLI ('${parts.bin}') did not produce valid ${parts.schemaName} JSON${headline}: ${detail}`,
+    `${parts.attemptMs.length} attempt${parts.attemptMs.length === 1 ? "" : "s"}` +
+      `${listed ? `, ${listed}` : ""}, --print-timeout ${parts.printTimeout}.`,
+  ];
+  if (cls === "auth") {
+    lines.push(
+      `Is Antigravity installed and logged in? (https://antigravity.google — run 'agy' once interactively to sign in)`,
+    );
+  }
+  if (cls === "timeout") {
+    lines.push(
+      `A long take can outrun agy's ${parts.printTimeout} print timeout. ` +
+        `Use --llm claude-cli (a logged-in Claude Code subscription) or --llm gemini (needs GEMINI_API_KEY), ` +
+        `or drop --produce to cut and caption without a planner.`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
  * Google Antigravity via the locally installed `agy` CLI. Uses whatever auth
  * the CLI holds — a logged-in subscription, so producing a video consumes
  * plan usage rather than pay-per-token API credits (`billed: false`, and agy
@@ -149,6 +279,11 @@ export class AntigravityProvider implements LlmProvider {
       `No markdown fences, no commentary, no tool use — just the JSON:\n${schemaText}`;
 
     let lastError = "";
+    // Wall time of every attempt that FAILED, in order — the facts the final
+    // error reports. Kept separately from `usage`, which only records attempts
+    // that got as far as an envelope: a call killed by --print-timeout never
+    // does, and a 10-minute hang is exactly the attempt a user needs to see.
+    const attemptMs: number[] = [];
     for (let attempt = 0; attempt < 2; attempt++) {
       const prompt =
         attempt === 0
@@ -170,12 +305,14 @@ export class AntigravityProvider implements LlmProvider {
           buildAgyArgs(prompt, { model: this.model, schemaJson: schemaText }),
         ));
       } catch (err) {
+        attemptMs.push(Date.now() - started);
         lastError = err instanceof Error ? err.message : String(err);
         // run() embeds the stderr tail in its rejection, so auth/bad-slug
         // failures are matchable here and fail fast instead of re-spending.
         if (isNonRetryableAgyFailure(lastError)) break;
         continue;
       }
+      const elapsed = Date.now() - started;
       // Recorded per ATTEMPT, before validation: a reply that failed the
       // schema still spent the tokens, and a retry is exactly the cost a user
       // would want to see rather than have quietly absorbed.
@@ -193,9 +330,10 @@ export class AntigravityProvider implements LlmProvider {
         // The whole point of this provider: agy's cached sign-in means the
         // subscription pays, not a card, and agy reports no cost to forward.
         billed: false,
-        ms: Date.now() - started,
+        ms: elapsed,
       });
       if (envelope.status !== "SUCCESS") {
+        attemptMs.push(elapsed);
         lastError =
           envelope.error ?? `agy reported status ${envelope.status ?? "unknown"}: ${stdout.slice(0, 300)}`;
         if (isNonRetryableAgyFailure(lastError)) break;
@@ -209,12 +347,18 @@ export class AntigravityProvider implements LlmProvider {
         }
         return req.schema.parse(JSON.parse(extractJsonObject(envelope.response ?? stdout)));
       } catch (err) {
+        attemptMs.push(elapsed);
         lastError = err instanceof Error ? err.message : String(err);
       }
     }
     throw new Error(
-      `agy CLI ('${this.bin}') did not produce valid ${req.schemaName} JSON: ${lastError.slice(0, 400)}\n` +
-        `Is Antigravity installed and logged in? (https://antigravity.google — run 'agy' once interactively to sign in)`,
+      agyFailureMessage({
+        bin: this.bin,
+        schemaName: req.schemaName,
+        lastError,
+        attemptMs,
+        printTimeout: AGY_PRINT_TIMEOUT,
+      }),
     );
   }
 }

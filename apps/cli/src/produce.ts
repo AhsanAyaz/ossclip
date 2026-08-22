@@ -333,6 +333,59 @@ export function beatSheetCacheKey(parts: {
     .slice(0, 8);
 }
 
+/**
+ * The clip-window cache key (`clipwindow-<hash>.json`), which answers a
+ * different question — WHICH ~Ns of the take to keep (R19 §93) — but asks it
+ * with the SAME producer prompt, via `produceScenes(…, clip: {…})`. So it
+ * carries the same two fields `beatSheetCacheKey` gained, for the same
+ * reasons:
+ *  - `promptVersion`: without it, editing the producer prompt leaves every
+ *    warm workdir serving a window that was resolved under the OLD prompt —
+ *    the §78 failure mode, one call above where it was just fixed. The
+ *    tradeoff is accepted deliberately: a version bump DOES throw away an
+ *    already-resolved window and costs one LLM call to re-select it. That is
+ *    the correct price. Planning a whole video against a window the current
+ *    prompt would not have chosen is worse than an LLM call.
+ *  - `aspect`: LATENT today, exactly as it is one function down — `--aspect
+ *    16:9` derives its own `-16x9` workdir and this cache is a file inside
+ *    it, so a portrait and a landscape selection of the same source cannot
+ *    meet. Keyed anyway: the aspect reaches the prompt (both halves of it
+ *    since the producerSystem change), and the key should not depend on a
+ *    different module's directory scheme to stay correct.
+ *
+ * Deliberately NOT keyed, matching what the call site passes to the selection
+ * call: cleanup, forced component and the clip window itself. The first two
+ * do not reach this prompt, and the third is what it returns.
+ */
+export function clipWindowCacheKey(parts: {
+  promptVersion: string;
+  providerName: ProviderName;
+  llmModel?: string;
+  intent?: string;
+  clipTargetSec: number;
+  /** Framing constraints steer the selection call the same way (see above). */
+  framing?: FramingContext;
+  /** The repaired transcript's TEXT — the window is word-indexed into it. */
+  words: readonly string[];
+  aspect: "9:16" | "16:9";
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify([
+        parts.promptVersion,
+        parts.providerName,
+        parts.llmModel,
+        parts.intent,
+        parts.clipTargetSec,
+        parts.framing ?? null,
+        parts.words,
+        parts.aspect,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
+}
+
 export interface ProduceOptions {
   out?: string;
   cleanup: CleanupLevel;
@@ -2415,19 +2468,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // calls; only a first run selects.
     let clipFresh: Awaited<ReturnType<typeof produceScenes>> | null = null;
     if (clipTargetSec !== undefined) {
-      const windowKey = createHash("sha1")
-        .update(
-          JSON.stringify([
-            providerName,
-            opts.llmModel,
-            opts.intent,
-            clipTargetSec,
-            framingCtx ?? null,
-            transcript.words.map((w) => w.text),
-          ]),
-        )
-        .digest("hex")
-        .slice(0, 8);
+      const windowKey = clipWindowCacheKey({
+        promptVersion: PRODUCER_PROMPT_VERSION,
+        providerName,
+        llmModel: opts.llmModel,
+        intent: opts.intent,
+        clipTargetSec,
+        framing: framingCtx,
+        words: transcript.words.map((w) => w.text),
+        aspect: landscape ? "16:9" : "9:16",
+      });
       const clipWindowCache = join(work, `clipwindow-${windowKey}.json`);
       if (opts.clipWindow) {
         clipWindow = parseClipWindowPin(transcript, opts.clipWindow);

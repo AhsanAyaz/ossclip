@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PRODUCER_PROMPT_VERSION } from "@ossclip/core";
-import { beatSheetCacheKey } from "../src/produce";
+import { beatSheetCacheKey, clipWindowCacheKey } from "../src/produce";
 
 /**
  * The §78 posture, applied to the beat sheet: anything that changes the plan
@@ -76,5 +76,70 @@ describe("beatSheetCacheKey", () => {
     // The call site passes `clipWindow` straight through, and it is
     // `ClipWindow | null` there — a null must key like an omission.
     expect(beatSheetCacheKey({ ...base, clipWindow: null })).toBe(beatSheetCacheKey(base));
+  });
+});
+
+/**
+ * The same posture, one call earlier: the clip window is chosen by the SAME
+ * producer prompt (`produceScenes(…, clip: {…})`), so a prompt edit that
+ * leaves this key untouched serves a window selected under the old prompt and
+ * plans the whole video against it.
+ */
+describe("clipWindowCacheKey", () => {
+  const base = {
+    promptVersion: PRODUCER_PROMPT_VERSION,
+    providerName: "antigravity" as const,
+    llmModel: "gemini-3.7-flash",
+    intent: "make it punchy",
+    clipTargetSec: 60,
+    words: ["one", "two", "three"],
+    aspect: "9:16" as const,
+  };
+
+  it("is stable for identical inputs — a re-run must hit its own cache", () => {
+    expect(clipWindowCacheKey(base)).toBe(clipWindowCacheKey({ ...base }));
+  });
+
+  it("changes when only the prompt version differs (the §78 fix)", () => {
+    // Accepted cost of the bump: an already-resolved window is thrown away and
+    // one LLM call re-selects it. That is the right price — planning against a
+    // window the current prompt would not have chosen is the worse outcome.
+    expect(clipWindowCacheKey({ ...base, promptVersion: "v1" })).not.toBe(clipWindowCacheKey(base));
+  });
+
+  it("changes when only the aspect differs", () => {
+    // Latent, not live: `--aspect 16:9` derives a `-16x9` workdir and this
+    // cache is a file inside it, so the two selections cannot meet today.
+    // Keyed anyway — the aspect reaches both halves of the prompt.
+    expect(clipWindowCacheKey({ ...base, aspect: "16:9" })).not.toBe(clipWindowCacheKey(base));
+  });
+
+  it("still separates the things it always separated", () => {
+    const key = clipWindowCacheKey(base);
+    expect(clipWindowCacheKey({ ...base, providerName: "claude" })).not.toBe(key);
+    expect(clipWindowCacheKey({ ...base, llmModel: "gemini-3.5-flash-lite" })).not.toBe(key);
+    expect(clipWindowCacheKey({ ...base, intent: "make it calm" })).not.toBe(key);
+    expect(clipWindowCacheKey({ ...base, clipTargetSec: 30 })).not.toBe(key);
+    expect(clipWindowCacheKey({ ...base, words: ["one", "two", "четыре"] })).not.toBe(key);
+    expect(
+      clipWindowCacheKey({
+        ...base,
+        framing: {
+          windows: [{ startSec: 0, endSec: 1, faceFracOfCanvas: 0.3 }],
+          canvasAspect: 9 / 16,
+          layouts: [],
+          zoom: 1.2,
+        },
+      }),
+    ).not.toBe(key);
+  });
+
+  it("does not collide with the beat-sheet key for the same inputs", () => {
+    // Both files live in the same workdir under different prefixes, so a
+    // collision is cosmetic rather than dangerous — but the two answer
+    // different questions and should not look interchangeable.
+    expect(clipWindowCacheKey(base)).not.toBe(
+      beatSheetCacheKey({ ...base, cleanup: "standard" as const }),
+    );
   });
 });
