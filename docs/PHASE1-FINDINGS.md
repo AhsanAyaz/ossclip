@@ -1539,3 +1539,33 @@ Two things this finding is careful about:
 The general shape, worth carrying: **an asymmetric cache key is a cache that cannot hit.** If the value written under key A is only ever looked up under key B, the store is write-only, and the symptom is not a miss — it is the expensive path running every single time, which reads as slowness rather than as a bug.
 
 Left open, and visible in the same run's output: the report's cached-run line reads `producerStamp.provider`, which records that antigravity answered *some* call that run (the transcript repair did succeed), so it prints "planned by antigravity" beside the new line naming claude-cli. Two true-ish statements that contradict each other about the thing that matters — who planned the video.
+
+## 151. The maxLength theory was wrong, and the disproof is the useful part
+
+§149 fixed how long we wait for a hung agy call. This section is the attempt to fix why it hangs at all, and it failed — the reasoning is recorded because the wrong turn is instructive and the next person will otherwise take it again.
+
+The theory came from a real capture. Replaying the beat-sheet call with a trivial prompt returned:
+
+```
+"status": "ERROR"
+"error": "invalid arguments:\n- at '/hook': maxLength: got 136, want 120"
+```
+
+agy does not constrain decoding. It generates, validates server-side against the JSON Schema we hand it, and regenerates on a miss. Sixteen characters over on one field and the whole attempt is discarded. The beat sheet carries six capped strings, three of them per moment across up to 24 moments, so the chance that *every* field lands under its limit on the *same* attempt is not high — and each attempt costs 30-70s. That is a clean, complete story for a hang, and it was wrong.
+
+Three things killed it, in order:
+
+1. **The strip shipped and the hang didn't move.** With `maxLength` removed from the wire schema (verified by capturing the live argv: zero occurrences), the fixture run still timed out at 140s.
+2. **Replaying the exact failing request standalone** — the real system prompt, real transcript, real schema, dumped from the running provider rather than reconstructed — returned `status: ERROR`, `duration_seconds: 115.9`, `error: "timeout waiting for response"`. Not a validation rejection. The model never answered.
+3. **Dropping `--json-schema` entirely** and sending the same prompt still timed out, at 87.6s, with an empty response body.
+
+So the schema is not implicated, size is not (the whole prompt is 6,284 bytes), and our plumbing is not — it reproduces with no ossclip in the picture. §143's original read was right: it is upstream, and our prompt reliably triggers a non-response.
+
+The methodological lesson is the one worth keeping. **A trivial-prompt reproduction is not a reproduction.** The `maxLength` error was genuine, reproducible, and about the right call — and still had nothing to do with the failure being investigated, because the prompt that produced it was one I wrote rather than the one that fails. §143 made the same class of error from the other direction (probing agy from the command line rather than through our spawn, §149), and the fix for both is the same: dump the real request from the running system and replay *that*.
+
+What survives, on its own merits rather than as a fix:
+
+- `stripAbsorbableCaps` stays. It removes a real way a generation gets discarded — one observed, not hypothesised — and `cappedText` already absorbs the overshoot locally, so the wire cap could only ever cost a generation, never save one. Its doc says plainly that it is not the cure for the timeouts.
+- `ClipHighlightSchema.reason` moves from a bare `.max(200)` to `cappedText(200)`. It was the only capped string in the beat sheet that *rejected* an overshoot while every other one truncated, which is precisely the asymmetry §123 exists to prevent: validate where the pipeline can degrade, not where it can only die.
+
+What was deliberately NOT done: stating the copy budgets in the producer prompt, which was the third leg of the plan. `producerSystem`'s own doc requires the portrait wording stay byte-identical because the virality grammar was tuned against real runs of it, and any prompt edit must bump `PRODUCER_PROMPT_VERSION` — which invalidates every cached plan and forces exactly the re-plan-and-drop-edits behaviour §150 had just fixed. A prompt improvement that costs every user their edits needs to be a deliberate decision, not a side effect of a bug hunt.

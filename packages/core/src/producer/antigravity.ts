@@ -37,6 +37,50 @@ export const AGY_PRINT_TIMEOUT = "90s";
 export const MAX_AGY_PROMPT_BYTES = 700_000;
 
 /**
+ * Remove the constraints agy would REJECT a whole generation over and we can
+ * absorb ourselves (§151).
+ *
+ * agy does not constrain decoding — it generates, validates server-side
+ * against the schema we hand it, and on failure regenerates. Captured from a
+ * real call:
+ *
+ *   "error": "invalid arguments:\n- at '/hook': maxLength: got 136, want 120"
+ *
+ * Sixteen characters over, and the whole attempt is discarded. `maxLength`
+ * buys nothing there, because `cappedText` already truncates an overshoot at a
+ * word boundary — so the cap on the wire could only ever cost a generation,
+ * never save one.
+ *
+ * SCOPE, stated because the obvious guess is wrong: this is NOT why agy times
+ * out. That was the theory this function was written under, and it was
+ * refuted by replaying the exact failing beat-sheet request standalone — with
+ * maxLength stripped it still timed out, and with `--json-schema` dropped
+ * ENTIRELY it still timed out, agy's own error being "timeout waiting for
+ * response" with an empty body. The hang is upstream and prompt-triggered
+ * (§143, §149); this only removes one real-but-separate way a generation gets
+ * thrown away.
+ *
+ * `maxItems`, `enum`, `const`, `type` and `required` all stay: a 25th moment
+ * or an invented sceneKind is not something truncation can quietly repair, and
+ * that is the part of the contract worth paying a retry for.
+ *
+ * Only agy needs this. claude-cli receives the schema as prompt text, and
+ * gemini constrains during decoding, so neither turns a long string into a
+ * discarded generation.
+ */
+export function stripAbsorbableCaps(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(stripAbsorbableCaps);
+  if (schema && typeof schema === "object") {
+    return Object.fromEntries(
+      Object.entries(schema as Record<string, unknown>)
+        .filter(([k]) => k !== "maxLength")
+        .map(([k, v]) => [k, stripAbsorbableCaps(v)]),
+    );
+  }
+  return schema;
+}
+
+/**
  * agy's `--effort` levels. Exposed after the §143 hang incident (2026-08-22):
  * untested at real scale whether a lower effort moves the hang, but the knob
  * existed and we passed nothing — every call ran at agy's default with no way
@@ -316,7 +360,9 @@ export class AntigravityProvider implements LlmProvider {
     schema: z.ZodType<T>;
     schemaName: string;
   }): Promise<T> {
-    const schemaText = JSON.stringify(z.toJSONSchema(req.schema));
+    // Stripped before it goes on the wire (§151) — agy validates against this
+    // after generating, and a length overshoot costs the whole attempt.
+    const schemaText = JSON.stringify(stripAbsorbableCaps(z.toJSONSchema(req.schema)));
     const base =
       `${req.system}\n\n${req.user}\n\n` +
       `Respond with ONLY a JSON object valid against this JSON Schema ("${req.schemaName}"). ` +
