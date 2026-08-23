@@ -9,13 +9,24 @@ import { estimateTokens, type LlmUsage } from "./usage";
 import { extractJsonObject } from "./claude-cli";
 
 /**
- * agy's own print timeout defaults to 5m, which a beat-sheet call on a long
- * transcript can exceed. Core's `run()` has no timeout of its own, so this
- * flag is the ONLY clock on the spawn — without it a stuck call is a hang,
- * with it a timeout surfaces as retry-then-throw (FINDINGS §132, antigravity
- * provider).
+ * Core's `run()` has no timeout of its own, so this flag is the ONLY clock on
+ * the spawn — without it a stuck call is a hang, with it a timeout surfaces as
+ * a fall back to the next provider (FINDINGS §132, §143).
+ *
+ * This is a RECOVERY DEADLINE, not a patience allowance (§149). It was 10m on
+ * the theory that a big beat sheet might legitimately need it; the theory was
+ * wrong twice over. agy's hang is intermittent and service-side — §143 probed
+ * a 95,030-token call that answered in 17.6s — so a call that has said nothing
+ * for 90s is not working slowly, it is hung. And what rescues it is the
+ * fallback, which costs seconds. Waiting 10m to start a 5s recovery cost one
+ * field run 605.9s of dead air on a 96-second video (2026-08-23: 692s total
+ * for ~86s of real work).
+ *
+ * 90s is 2x the slowest healthy call ever measured (46s) and below agy's own
+ * 5m default. Go duration format, verified against `agy --help` ("default
+ * 5m0s"). Raise it only for a call measured to SUCCEED slower than this.
  */
-export const AGY_PRINT_TIMEOUT = "10m";
+export const AGY_PRINT_TIMEOUT = "90s";
 
 /**
  * agy takes the prompt as an argv argument only — no stdin — and macOS caps

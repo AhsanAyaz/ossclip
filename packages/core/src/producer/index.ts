@@ -30,7 +30,11 @@ export * from "./youtube";
 export * from "./scene-props";
 export * from "./repair";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
-export { AntigravityProvider, type LlmEffort } from "./antigravity";
+// AGY_PRINT_TIMEOUT is public because the CLI SAYS it: a slow agy call looks
+// identical to a working one on screen, so the spinner names the budget it is
+// waiting out rather than letting the wait read as a freeze (§149). Exported
+// rather than restated in the CLI so the number cannot drift from the flag.
+export { AntigravityProvider, AGY_PRINT_TIMEOUT, type LlmEffort } from "./antigravity";
 export { ClaudeCliProvider } from "./claude-cli";
 export { GeminiProvider, DEFAULT_GEMINI_MODEL } from "./gemini";
 export { MockProvider } from "./mock";

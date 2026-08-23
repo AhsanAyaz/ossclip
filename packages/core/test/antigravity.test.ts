@@ -389,6 +389,23 @@ describe("AntigravityProvider", () => {
     expect(provider.usage[0]!.failed).toBe(true);
   });
 
+  /**
+   * The budget is a RECOVERY deadline, not a patience allowance (§149). agy's
+   * hang is intermittent and service-side (§143 probed it: a 95,030-token call
+   * answered in 17.6s), and the thing that rescues a hung call is the fallback
+   * to the next provider, which costs seconds. So the only question this
+   * number answers is "how long before we give up and recover" — and at 10m it
+   * answered it wrong, turning one upstream hiccup into a 605.9s stall on a
+   * 96-second video (2026-08-23 field run, 692s total for ~86s of work).
+   *
+   * 90s is 2x the slowest healthy call ever measured here (46s) and well under
+   * agy's own 5m default. Raising it again needs a measured call that both
+   * SUCCEEDED and took longer than this.
+   */
+  it("the print timeout is a recovery deadline, not a patience allowance", () => {
+    expect(AGY_PRINT_TIMEOUT).toBe("90s");
+  });
+
   it("throws AgyError carrying the failure class as data, not prose", async () => {
     // The fallback decorator branches on `failureClass`; re-parsing the
     // message would couple it to wording that is free to change.
@@ -468,7 +485,7 @@ describe("agy failure classification", () => {
     ]) {
       expect(
         agyFailureMessage({ ...facts, lastError, printTimeout: AGY_PRINT_TIMEOUT }),
-      ).toContain("2 attempts, 10m0s and 10m0s, --print-timeout 10m.");
+      ).toContain(`2 attempts, 10m0s and 10m0s, --print-timeout ${AGY_PRINT_TIMEOUT}.`);
     }
   });
 
