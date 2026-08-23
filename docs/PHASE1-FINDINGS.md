@@ -1569,3 +1569,23 @@ What survives, on its own merits rather than as a fix:
 - `ClipHighlightSchema.reason` moves from a bare `.max(200)` to `cappedText(200)`. It was the only capped string in the beat sheet that *rejected* an overshoot while every other one truncated, which is precisely the asymmetry §123 exists to prevent: validate where the pipeline can degrade, not where it can only die.
 
 What was deliberately NOT done: stating the copy budgets in the producer prompt, which was the third leg of the plan. `producerSystem`'s own doc requires the portrait wording stay byte-identical because the virality grammar was tuned against real runs of it, and any prompt edit must bump `PRODUCER_PROMPT_VERSION` — which invalidates every cached plan and forces exactly the re-plan-and-drop-edits behaviour §150 had just fixed. A prompt improvement that costs every user their edits needs to be a deliberate decision, not a side effect of a bug hunt.
+
+## 152. A run that answered nothing was still signing the work
+
+Found while verifying §150, in the same run's output — two lines contradicting each other about the one thing the stamp exists to record:
+
+```
+▸ scenes cached (4) — planned by claude-cli, which antigravity fell back to
+llm: no calls this run — planned by antigravity (…), reused from the workdir cache
+```
+
+`production.json` is rewritten by every produce, cached or not, and its producer stamp is rebuilt from *this* run's usage records. On a fully cached run there are none, so `providersSeen` is empty, the expression falls through to `last.provider` — the provider we ASKED for — and the stamp that the planning run had correctly written as `antigravity → claude-cli` was overwritten with `antigravity`.
+
+So re-rendering a cached project quietly credited the plan to a provider that never produced it, and the longer a workdir lived the more certain that erasure became: one truthful stamp, then every subsequent run replacing it. §143 built the fallback to guarantee the user knows which model planned their video; this undid it one cached run later.
+
+The fix is a sentence: a run with nothing answered keeps the stamp already on disk. The plan did not change, so its attribution does not either.
+
+Two things worth carrying:
+
+- **The bug was invisible until something else disagreed with it.** `planned by antigravity` is a completely plausible line. It only became a defect when §150 added a second line naming the real planner, and the two sat three rows apart. Redundant reporting is not waste when the thing being reported is easy to get quietly wrong.
+- **Derived files are still artefacts.** `production.json` is regenerated every run, which made it feel safe to rebuild every field every time. But one of those fields is a record of something that happened in a *different* run, and a rebuild had no way to know it. A regenerated file can still carry history, and the fields that do need to survive the regeneration.

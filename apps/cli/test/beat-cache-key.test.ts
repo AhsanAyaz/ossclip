@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { PRODUCER_PROMPT_VERSION, type LlmUsage } from "@ossclip/core";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   actualProvider,
   beatCacheKeyCandidates,
   beatSheetCacheKey,
   clipWindowCacheKey,
+  existingProducerStamp,
 } from "../src/produce";
 
 /**
@@ -277,5 +281,38 @@ describe("beatCacheKeyCandidates", () => {
   it("the two keys differ — otherwise the second read is dead weight", () => {
     const [primary, fallback] = beatCacheKeyCandidates(parts, "antigravity", "claude-cli");
     expect(primary).not.toBe(fallback);
+  });
+});
+
+/**
+ * A run that answered nothing must not restamp who planned the video (§152).
+ * `production.json` is rewritten on every produce, cached or not, and the
+ * stamp was rebuilt from THIS run's usage records — empty on a cached run — so
+ * it fell through to the provider we asked for and silently overwrote a
+ * truthful "antigravity → claude-cli" with "antigravity". The plan did not
+ * change; neither should its attribution.
+ */
+describe("existingProducerStamp", () => {
+  it("returns the stamp already on disk, so a cached run can keep it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-stamp-"));
+    writeFileSync(
+      join(dir, "production.json"),
+      JSON.stringify({ producer: { provider: "antigravity → claude-cli", models: ["m"] } }),
+    );
+    expect(existingProducerStamp(dir)?.provider).toBe("antigravity → claude-cli");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a missing file means no prior attribution, not a crash — a first run has none", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-stamp-"));
+    expect(existingProducerStamp(dir)).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("unreadable JSON is also 'no prior attribution' — never a failed produce", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-stamp-"));
+    writeFileSync(join(dir, "production.json"), "{ not json");
+    expect(existingProducerStamp(dir)).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

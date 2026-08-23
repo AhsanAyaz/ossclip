@@ -366,6 +366,30 @@ export function beatSheetCacheKey(parts: {
  * Anything looser (any provider's sheet, newest file wins) would hand a
  * claude-cli plan to someone who asked for gemini and got gemini.
  */
+/**
+ * The producer stamp already on disk, or undefined (§152).
+ *
+ * Read so a run that answered NOTHING can keep it. `production.json` is
+ * rewritten on every produce, cached or not, and the stamp is rebuilt from
+ * this run's usage records — which on a cached run are empty, so it fell
+ * through to the provider we ASKED for and quietly overwrote a truthful
+ * "antigravity → claude-cli" with "antigravity". Attribution belongs to the
+ * run that produced the plan, and a cached run produced nothing.
+ *
+ * Tolerant on purpose: a missing, unreadable or stamp-less file all mean "no
+ * prior attribution", which is the same answer a first run gives.
+ */
+export function existingProducerStamp(work: string): Production["producer"] | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(work, "production.json"), "utf8")) as {
+      producer?: Production["producer"];
+    };
+    return raw.producer;
+  } catch {
+    return undefined;
+  }
+}
+
 export function beatCacheKeyCandidates(
   parts: Omit<Parameters<typeof beatSheetCacheKey>[0], "providerName">,
   providerName: string,
@@ -2956,18 +2980,29 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // single-provider runs stamp exactly as before.
     const answered = provider.usage.filter((r) => !r.failed);
     const providersSeen = [...new Set(answered.map((r) => r.provider))];
-    producerStamp = {
-      provider:
-        providersSeen.length > 1
-          ? providersSeen.join(" → ")
-          : providersSeen[0] ?? last.provider ?? providerName,
-      // `last.models` already excludes failed attempts' models (usage.ts,
-      // same §143 rule) — a stamp that listed the timed-out placeholder read
-      // "planned by claude-cli (antigravity-default)" after a fallback run.
-      models: last.models,
-      cached: last.cached,
-      at: last.at,
-    };
+    // A run that answered NOTHING must not restamp the artefact (§152). On a
+    // fully cached run `answered` is empty, `last.provider` is the run we just
+    // appended — whose provider is the one we ASKED for — and the stamp
+    // silently rewrote a truthful "antigravity → claude-cli" into
+    // "antigravity", crediting the plan to a provider that never produced it.
+    // The plan did not change this run, so neither does its attribution.
+    const priorStamp = existingProducerStamp(work);
+    if (answered.length === 0 && priorStamp) {
+      producerStamp = priorStamp;
+    } else {
+      producerStamp = {
+        provider:
+          providersSeen.length > 1
+            ? providersSeen.join(" → ")
+            : providersSeen[0] ?? last.provider ?? providerName,
+        // `last.models` already excludes failed attempts' models (usage.ts,
+        // same §143 rule) — a stamp that listed the timed-out placeholder read
+        // "planned by claude-cli (antigravity-default)" after a fallback run.
+        models: last.models,
+        cached: last.cached,
+        at: last.at,
+      };
+    }
   }
 
   // The overlay and the caption under it must spell the same word (§21).
