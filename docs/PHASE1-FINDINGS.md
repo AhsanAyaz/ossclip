@@ -1490,3 +1490,28 @@ Two lessons worth more than the fix:
 - **The assertion that mattered was the one nobody wrote.** Every line after the click depended on the log being open, and none of them said so. The precondition is now asserted explicitly, so the next regression names itself instead of arriving as a mystery collapse three assertions later.
 
 Also observed, and left alone deliberately: a failure between starting the render and cancelling it leaks the fixture's 50-second child, so the *retry* then fails on a disabled Render button — a second, misleading error on top of the first. Dormant now that the test passes, and worth an `afterEach` cancel if this file ever grows a third case.
+
+## 149. A timeout is a recovery deadline, not a patience allowance
+
+§143 closed the agy hang by routing around it: a timed-out call fails after one attempt and falls back to the next provider. That was right. The number attached to it was not — `AGY_PRINT_TIMEOUT` stayed at `10m`, and the 2026-08-23 field run shows what that costs.
+
+A **96.5-second** video, 266 words, one clip:
+
+```
+⚡ NEURAL SCENE PLANNER (605.9s)
+llm usage (antigravity → claude-cli, 692s):
+  beat_sheet ×2   51,526 in   1,140 out
+```
+
+605.9s is `AGY_PRINT_TIMEOUT` elapsing, near enough exactly. `beat_sheet ×2` is one agy attempt that hung and one claude-cli attempt that answered. The run spent **692 seconds to do about 86 seconds of work**, and the other 606 were spent waiting for a call we already knew how to recover from.
+
+The reporter's instinct was that a short video hanging proves the bug is ours — that scale was never the cause and something in the code must be stuck mid-run. The token counts say otherwise, and say something more useful: **the video is short but the call is not.** `beat_sheet` is ~25,763 input tokens per attempt and `transcript_repair` is 25,004, against a transcript worth maybe 350 — the rest is system prompt, schemas and the scene registry. §143 had already measured a **95,030-token** agy call answering in **17.6s**. Input size is not the variable, and this run is consistent with §143 rather than a counter-example to it.
+
+What the run does prove is that the budget was reasoned about backwards. `10m` was chosen as "long enough that a legitimately slow call is not cut off". But every healthy agy call ever measured here lands in **17–46s**, and the thing that rescues a hung one is the fallback, which costs seconds. So the only question the number answers is *how long before we give up and recover* — and answering it with ten minutes converts an intermittent upstream hiccup into ten minutes of dead air, every time it fires. It is now `90s`: 2x the slowest healthy call on record, and below agy's own `5m0s` default, which we had been overriding upward.
+
+The second half is that the wait was **illegible**. A hung agy looks exactly like a working one: the spinner said "Planning editorial beats & graphics with antigravity…" for ten minutes with no sign that a budget existed or that a recovery was coming, which reads as a freeze, not as waiting. The spinner now names the budget once a call has been silent for 30s — late enough that a healthy run never sees it, early enough to still mean something. The first draft of that line was too long and the clamp ate it (`"falling back to the n..."`), taking the number with it — the only part that changes what the user does.
+
+Two things worth keeping:
+
+- **The verification reproduced the bug.** Driving the real CLI under a pty to check the notice rendered also caught agy hanging again — timing out at 90s, falling back, and finishing. The fix was proven by the failure it was written for, on the first attempt to look at it.
+- **§143's probes ran agy from the command line, not through our spawn.** That is why the hang "would not reproduce" there, and it is the gap that let the timeout stay unexamined for a release. When a probe cannot reproduce a hang, check whether the probe is exercising the same plumbing before concluding the cause is upstream.

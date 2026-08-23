@@ -152,6 +152,7 @@ import {
   type LlmEffort,
   type LlmProvider,
   type LlmUsage,
+  AGY_PRINT_TIMEOUT,
   type Production,
   ossclipOutputPathFor,
   type ProviderName,
@@ -1413,6 +1414,14 @@ export function cleanupChoicesLine(vetoed: readonly Segment[], outputDuration: n
  * and even on a talking head a 7% lurch reads as the camera stumbling. Big
  * enough to break up the jump, small enough to pass as sensor noise.
  */
+/**
+ * How long a silent antigravity call runs before the spinner admits it (§149).
+ * Well clear of the 17-46s a healthy call takes, so a normal run never shows
+ * the notice, and well short of AGY_PRINT_TIMEOUT, so it lands while the wait
+ * still has somewhere to go.
+ */
+export const AGY_SLOW_NOTICE_MS = 30_000;
+
 export const FACE_PUNCH_SCALE = 1.015;
 
 /**
@@ -2787,17 +2796,38 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         : null;
       if (!aiAnim) console.log(`▸ producing scenes (${providerName})…`);
       if (opts.forceComponent) console.log(`▸ forcing every graphic to ${opts.forceComponent}`);
-      const result = await phases.time("llm", () =>
-        produceScenes(provider!, {
-          transcript,
-          outputDuration: map.outputDuration,
-          intent: opts.intent,
-          speaker: opts.speaker ?? cfg.speaker,
-          forceComponent: opts.forceComponent,
-          framing: framingCtx,
-          aspect: landscape ? "16:9" : "9:16",
-        }),
-      );
+      // A hung agy is indistinguishable from a working one on screen: the
+      // 2026-08-23 field run sat on this spinner for 605.9s with no hint that
+      // a budget existed or that a recovery was coming, which reads as a
+      // freeze rather than as waiting (§149). Only antigravity has a
+      // print-timeout and a fallback, so only it gets the notice — and only
+      // once the call is actually slow, so a healthy run never sees it.
+      const slowNotice =
+        aiAnim && providerName === "antigravity"
+          ? setTimeout(
+              () =>
+                // Short on purpose: StageAnimator clamps the subtitle to the
+                // terminal width and floors that at 40 columns, and the first
+                // draft lost the budget to "falling back to the n...". The
+                // number is the only part that changes what the user does
+                // (wait vs. Ctrl-C), so it has to survive the clamp.
+                aiAnim.update(`agy not replying — falling back at ${AGY_PRINT_TIMEOUT}...`),
+              AGY_SLOW_NOTICE_MS,
+            )
+          : undefined;
+      const result = await phases
+        .time("llm", () =>
+          produceScenes(provider!, {
+            transcript,
+            outputDuration: map.outputDuration,
+            intent: opts.intent,
+            speaker: opts.speaker ?? cfg.speaker,
+            forceComponent: opts.forceComponent,
+            framing: framingCtx,
+            aspect: landscape ? "16:9" : "9:16",
+          }),
+        )
+        .finally(() => clearTimeout(slowNotice));
       if (aiAnim) aiAnim.stop();
       scenes = result.scenes;
       beatSheet = { hook: result.beatSheet.hook, coverText: result.beatSheet.coverText };

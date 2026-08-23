@@ -63,6 +63,15 @@ export interface ProduceAnswers {
   graphics: boolean;
   intent?: string;
   out?: string;
+  /**
+   * Review the cut in the editor instead of rendering now (§148). A main-flow
+   * answer like `graphics`, not an extra: it decides what the run DOES, and
+   * burying it in "Anything else?" would hide it from the people the wizard
+   * exists for. The only answer whose wizard default (review) differs from
+   * the CLI's (render) — which costs nothing here, because the elision rule
+   * below keys off the CLI default, not off what the prompt preselected.
+   */
+  review?: boolean;
   extras: ProduceExtras;
 }
 
@@ -76,6 +85,11 @@ export function produceArgv(a: ProduceAnswers): string[] {
   if (a.aspect !== "9:16") argv.push("--aspect", a.aspect);
   if (a.cleanup !== "standard") argv.push("--cleanup", a.cleanup);
   if (a.out) argv.push("--out", a.out);
+  // Rendering is the CLI's default, so only reviewing is worth saying — the
+  // rule above is about the DEFAULT, not about which option the prompt
+  // preselected. --out still travels either way: nothing renders now, but the
+  // editor's Render button replays command.json, and that is where out lands.
+  if (a.review === true) argv.push("--review");
 
   if (a.graphics) {
     argv.push("--produce");

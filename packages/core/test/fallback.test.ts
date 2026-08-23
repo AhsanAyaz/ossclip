@@ -46,7 +46,7 @@ const call = (p: LlmProvider, schemaName: string) =>
 
 const timeoutError = () =>
   new AgyError(
-    "agy CLI ('agy') did not produce valid clip_beat_sheet JSON — the call timed out: timeout waiting for response\n1 attempt: 10m0s (--print-timeout 10m)",
+    "agy CLI ('agy') did not produce valid clip_beat_sheet JSON — the call timed out: timeout waiting for response\n1 attempt: 1m30s (--print-timeout 90s)",
     "timeout",
   );
 

@@ -248,6 +248,31 @@ describe("wizard argv survives the real commander parse", () => {
   // posture): --review means "don't render here, open the editor", both
   // agreeing flags resolve silently, and only --no-open-editor — the real
   // contradiction — errors instead of picking a winner.
+  /**
+   * The wizard's review answer reaches the BEHAVIOUR, not just a parser that
+   * accepts the string (§148). Before this the wizard could not emit --review
+   * at all, so `ossclip` with no arguments — the entry point a first-time user
+   * takes — could only render first and ask about the editor afterwards, which
+   * is the opposite of what --review exists for.
+   */
+  it("the wizard's --review reaches produce as no-render + editor-open", async () => {
+    const opts = await parse(produceArgv(answers({ review: true })));
+    expect(opts.review).toBe(true);
+    // The same resolution the real action performs, on the real parsed opts:
+    // reviewFlag is what turns the flag into behaviour.
+    expect(
+      reviewFlag(opts.review === true, opts.render as boolean, opts.openEditor as boolean | undefined),
+    ).toEqual({ render: false, openEditor: true });
+  });
+
+  it("render-now leaves review off, and the render/editor defaults untouched", async () => {
+    const opts = await parse(produceArgv(answers({ review: false })));
+    expect(opts.review).toBeUndefined();
+    expect(
+      reviewFlag(opts.review === true, opts.render as boolean, opts.openEditor as boolean | undefined),
+    ).toEqual({ render: true, openEditor: undefined });
+  });
+
   it("reviewFlag resolves {render, openEditor} — passthrough off, forced on, loud contradiction", () => {
     // No --review: everything passes through untouched, tri-state included.
     expect(reviewFlag(false, true, undefined)).toEqual({ render: true, openEditor: undefined });
