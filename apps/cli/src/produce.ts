@@ -348,6 +348,37 @@ export function beatSheetCacheKey(parts: {
 }
 
 /**
+ * The beat-sheet cache keys to TRY, in priority order (§150).
+ *
+ * §143 split the cache: reads use the provider you asked for, writes file
+ * under the one that actually answered. That is right for attribution and
+ * wrong for re-runs — while agy keeps timing out, a run that asks for
+ * antigravity reads a key nothing will ever write. It re-attempts, waits out
+ * the whole print-timeout, falls back, and rewrites the key nobody reads.
+ * Every re-render therefore re-plans, the plan differs each time, and editor
+ * edits anchored to scenes the new plan no longer has are dropped — a
+ * re-render silently rewriting an approved cut (2026-08-23: "edit for
+ * scene-11 dropped — the plan no longer has that scene").
+ *
+ * So the read tries a second key, and exactly one: the provider THIS run
+ * would fall back to anyway. Serving that sheet is not a substitution — it is
+ * what this run would produce, without paying the timeout to rediscover it.
+ * Anything looser (any provider's sheet, newest file wins) would hand a
+ * claude-cli plan to someone who asked for gemini and got gemini.
+ */
+export function beatCacheKeyCandidates(
+  parts: Omit<Parameters<typeof beatSheetCacheKey>[0], "providerName">,
+  providerName: string,
+  fallbackName: string | undefined,
+): string[] {
+  const keys = [beatSheetCacheKey({ ...parts, providerName })];
+  if (fallbackName && fallbackName !== providerName) {
+    keys.push(beatSheetCacheKey({ ...parts, providerName: fallbackName }));
+  }
+  return keys;
+}
+
+/**
  * The clip-window cache key (`clipwindow-<hash>.json`), which answers a
  * different question — WHICH ~Ns of the take to keep (R19 §93) — but asks it
  * with the SAME producer prompt, via `produceScenes(…, clip: {…})`. So it
@@ -2347,6 +2378,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // the grounding check — uses the repaired transcript instead, so a
   // mishearing can't reach the screen twice in two different spellings.
   const providerName = opts.provider ?? defaultProviderName(process.env, binOnPath);
+  // Timeout fallback (2026-08-22, FINDINGS §143): agy hangs persistently on
+  // the real beat-sheet call, and auto-detection picks it whenever the CLI is
+  // on PATH. When the editorial call times out, ONE other provider answers
+  // instead of the run dying, announced out loud: the user must know which
+  // model planned their video.
+  //
+  // Function-scope because the beat CACHE needs it too (§150) — the key a
+  // fallback wrote is the second key a re-run has to try, and computing it
+  // twice would let the two drift into disagreeing about where the plan is.
+  const llmFallbackName =
+    providerName === "antigravity"
+      ? fallbackProviderName(providerName, process.env, binOnPath)
+      : undefined;
   let provider: LlmProvider | null = null;
   // --youtube brings its own provider (field gap, 2026-08-16): the user's
   // real command was `--youtube --llm antigravity` WITHOUT --produce, and the
@@ -2363,16 +2407,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (!opts.provider) {
       console.log(detectionLine(providerName));
     }
-    // Timeout fallback (2026-08-22, FINDINGS §143): agy hangs persistently on
-    // the real beat-sheet call — 10-minute --print-timeout expiries while
-    // claude-cli planned the same video — and auto-detection picks agy
-    // whenever the CLI is on PATH. When the editorial call times out, ONE
-    // other provider answers it instead of the run dying, announced out loud:
-    // the user must know which model planned their video.
-    const llmFallbackName =
-      providerName === "antigravity"
-        ? fallbackProviderName(providerName, process.env, binOnPath)
-        : undefined;
     provider = createTieredProvider(providerName, {
       model: opts.llmModel,
       fastModel: opts.llmFastModel ?? cfg.fastModel,
@@ -2730,11 +2764,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       words: transcript.words.map((w) => w.text),
       aspect: landscape ? ("16:9" as const) : ("9:16" as const),
     };
-    const cacheKey = beatSheetCacheKey({ ...beatKeyParts, providerName });
-    const sceneCache = join(work, `scenes-${cacheKey}.json`);
+    // Two keys, tried in order: the provider asked for, then the one this run
+    // would fall back to anyway (§150). Without the second, a workdir whose
+    // plan was written by a fallback can never be read again while the primary
+    // keeps failing — every re-render re-plans, and edits anchored to scenes
+    // the new plan drops go with it.
+    const cacheKeys = beatCacheKeyCandidates(beatKeyParts, providerName, llmFallbackName);
+    const cacheKey = cacheKeys[0]!;
+    const hitKey =
+      cacheKeys.find((k) => existsSync(join(work, `scenes-${k}.json`))) ?? cacheKey;
+    const sceneCache = join(work, `scenes-${hitKey}.json`);
     // The cover needs the editorial copy, which is not in the scene list — a
     // cached run must still be able to write one.
-    const beatCache = join(work, `beatsheet-${cacheKey}.json`);
+    // Same key the scenes came from — the hook and cover copy belong to THAT
+    // plan, and pairing a cached scene list with a different sheet's hook
+    // would caption the video with copy for a plan it is not showing.
+    const beatCache = join(work, `beatsheet-${hitKey}.json`);
     if (clipFresh) {
       // The selection call already planned the scenes (§93d: ONE editorial
       // call chooses the window and the beats inside it) — adopt them and
@@ -2772,7 +2817,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       );
     } else if (existsSync(sceneCache)) {
       scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(sceneCache, "utf8")));
-      console.log(`▸ scenes cached (${scenes.length})`);
+      // Naming the fallback is the same obligation the live fallback line has
+      // (§143: the user must know which model planned their video). A silent
+      // hit here would let a claude-cli plan read as an antigravity one purely
+      // because it came from disk this time.
+      console.log(
+        hitKey === cacheKey
+          ? `▸ scenes cached (${scenes.length})`
+          : `▸ scenes cached (${scenes.length}) — planned by ${llmFallbackName}, which ${providerName} fell back to`,
+      );
       if (existsSync(beatCache)) {
         // Pre-§118b caches carry no accounting — the report then simply
         // omits the graphics section rather than guessing one.

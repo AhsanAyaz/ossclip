@@ -1515,3 +1515,27 @@ Two things worth keeping:
 
 - **The verification reproduced the bug.** Driving the real CLI under a pty to check the notice rendered also caught agy hanging again — timing out at 90s, falling back, and finishing. The fix was proven by the failure it was written for, on the first attempt to look at it.
 - **§143's probes ran agy from the command line, not through our spawn.** That is why the hang "would not reproduce" there, and it is the gap that let the timeout stay unexamined for a release. When a probe cannot reproduce a hang, check whether the probe is exercising the same plumbing before concluding the cause is upstream.
+
+## 150. A cache that writes one key and reads another never hits
+
+§143 split the beat-sheet cache deliberately: reads use the provider you asked for, writes file under the provider that actually answered, so attribution stays truthful when a fallback plans your video. Its own note called the cost out loud — "a repeat `--llm antigravity` run re-attempts agy before falling back again" — and accepted it, because the hang was believed rare.
+
+The hang is not rare (§149), and that turns the accepted cost into a loop with no exit:
+
+1. Run asks for antigravity. agy times out. claude-cli answers.
+2. The plan is written under the **claude-cli** key.
+3. The next run asks for antigravity again, reads the **antigravity** key, and misses — nothing will ever write it while agy keeps failing.
+4. It re-attempts agy, waits out the whole print-timeout, falls back, and rewrites the key nobody reads.
+
+So a warm workdir never gets a warm plan. Every re-render pays the timeout again, and — because the beat sheet is a fresh LLM call each time — produces a **different** plan. The 2026-08-23 field run shows what that costs a user who had already edited their video: `⚠ edit for scene-11 dropped — the plan no longer has that scene`. Re-rendering after an edit silently rewrote the approved cut, changed the graphics, and threw away an edit anchored to a scene the new plan no longer contained.
+
+The read now tries a second key, and exactly one: the provider this run *would fall back to anyway*. That is not a substitution — it is what this run would produce, without paying the timeout to rediscover it. Anything looser (any provider's sheet, newest-file-wins) would hand a claude-cli plan to someone who asked for gemini and got gemini. Measured on the fixture: a cold run 134s, the re-run **1s**, with no agy call at all.
+
+Two things this finding is careful about:
+
+- **The write side was right and stays.** The bug was never that a fallback writes under its own name; it was that nothing ever read that name back. Fixing attribution by dropping the provider from the key would have traded a real guarantee for a cache hit.
+- **A cached hit says who planned it.** The live fallback already announces itself, and a cached run inherits that obligation — a plan reaching the screen from disk must not read as the primary's work just because the call was skipped this time.
+
+The general shape, worth carrying: **an asymmetric cache key is a cache that cannot hit.** If the value written under key A is only ever looked up under key B, the store is write-only, and the symptom is not a miss — it is the expensive path running every single time, which reads as slowness rather than as a bug.
+
+Left open, and visible in the same run's output: the report's cached-run line reads `producerStamp.provider`, which records that antigravity answered *some* call that run (the transcript repair did succeed), so it prints "planned by antigravity" beside the new line naming claude-cli. Two true-ish statements that contradict each other about the thing that matters — who planned the video.
