@@ -19,6 +19,21 @@ describe("produceArgv", () => {
     expect(produceArgv(answers())).toEqual(["produce", "./take.mp4"]);
   });
 
+  // §148: the wizard leans to review, so this is the ONE answer whose
+  // wizard-default differs from the CLI default — and the elision rule is
+  // still what decides the argv. `--review` is emitted because it is not the
+  // CLI's default, not because the wizard preselected it.
+  it("emits --review when the user chose to review the cut first", () => {
+    expect(produceArgv(answers({ review: true }))).toEqual([
+      "produce", "./take.mp4", "--review",
+    ]);
+  });
+
+  it("emits nothing for render-now — the CLI default stays untaught", () => {
+    expect(produceArgv(answers({ review: false }))).toEqual(["produce", "./take.mp4"]);
+    expect(produceArgv(answers({ review: undefined }))).toEqual(["produce", "./take.mp4"]);
+  });
+
   it("emits the non-default shape and cleanup", () => {
     expect(produceArgv(answers({ aspect: "16:9", cleanup: "aggressive" }))).toEqual([
       "produce", "./take.mp4", "--aspect", "16:9", "--cleanup", "aggressive",

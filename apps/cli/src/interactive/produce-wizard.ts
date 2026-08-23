@@ -505,6 +505,33 @@ export async function produceWizard(
     ) as ProduceExtras["llm"];
   }
 
+  // LAST, because it decides what happens after every answer above it — and
+  // asked at all because until §148 the wizard could not reach --review, so
+  // `ossclip` with no arguments, the entry point a first-time user takes,
+  // could only render first and offer the editor afterwards. That is the
+  // opposite of what --review is for: the render is the expensive step, and
+  // reviewing exists so it happens once, on a cut you already agreed with.
+  //
+  // Leaning to review is the one place a wizard default differs from the
+  // CLI's. It costs nothing: produceArgv elides against the CLI default, so
+  // choosing to render still teaches `ossclip produce <file>` and choosing to
+  // review teaches the flag that did it.
+  const review =
+    unwrap(
+      await select({
+        message: "Render now, or review the cut first?",
+        initialValue: "review",
+        options: [
+          {
+            value: "review",
+            label: "Review the cut first",
+            hint: "opens the editor; render from its button",
+          },
+          { value: "render", label: "Render now", hint: "straight to a finished file" },
+        ],
+      }),
+    ) === "review";
+
   return produceArgv({
     input,
     aspect,
@@ -514,6 +541,7 @@ export async function produceWizard(
     // Already `string | undefined`: pickSavePath's use-default row IS the
     // old empty answer — no --out, produce derives its own default.
     out,
+    review,
     extras,
   });
 }
