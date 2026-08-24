@@ -1589,3 +1589,22 @@ Two things worth carrying:
 
 - **The bug was invisible until something else disagreed with it.** `planned by antigravity` is a completely plausible line. It only became a defect when §150 added a second line naming the real planner, and the two sat three rows apart. Redundant reporting is not waste when the thing being reported is easy to get quietly wrong.
 - **Derived files are still artefacts.** `production.json` is regenerated every run, which made it feel safe to rebuild every field every time. But one of those fields is a record of something that happened in a *different* run, and a rebuild had no way to know it. A regenerated file can still carry history, and the fields that do need to survive the regeneration.
+
+## 153. An edit id that names no prop is an invisible dead end
+
+Reported as "make sure each component is editable — if I have a terminal screenshot or the other screenshot, all of them should be possible to edit". The audit found the mechanism was already there and two things were quietly missing from it.
+
+**The bug.** `ScreenshotFrame` renders `data-edit-id="image"`; the prop is called `src`. The Inspector resolves a selected element with `elementTextOf`, which is `props[elementId]` and returns `null` for anything that is not a string — so the Text field never rendered and the screenshot could be selected but never changed. Nothing failed. No error, no empty field, no console warning: the control was simply absent, which is indistinguishable from "this element has nothing to edit". One rename is all it took, and the only thing that ever noticed was a user asking why they couldn't swap the image.
+
+That failure mode is why the fix is a test rather than a rename. `packages/scenes/test/edit-ids-resolve.test.ts` walks every component's `data-edit-id` and asserts it resolves to a real prop — literal ids against the schema's properties, dynamic ones (`window-${i}`) against the array they index. Written first, it failed on exactly one component, which is the best evidence a guard can offer about itself.
+
+Writing it did take two passes, and the reason is worth keeping: the components use two shapes. A leaf either hardcodes its id or takes one as a prop and renders `data-edit-id={editId}`, with the real id built at the *call* site as a template. Scanning only the attribute collects the literal string `"editId"` — a variable name — and reports five components broken that are fine. A static scan has to match how the code is actually written, not how it reads at one call site.
+
+**The gap.** `elementTextOf` returning `null` for non-strings also meant every boolean prop had no control anywhere in the UI: `StatCard.inverted`, `ScreenshotFrame.kenBurns`, `FlowDiagram.emphasizeLast` were reachable only by hand-editing `overrides.json`. The Inspector now derives controls from the component's own `propsSchema` — booleans to checkboxes, enums to selects — so a component that gains one gets a control the day it lands. Hand-wiring per component is precisely how the id and the prop drifted apart in the first place.
+
+Two details that only surfaced by building it:
+
+- **The schema's default is part of the display.** `kenBurns` is `true` when unset, so a checkbox that assumed `false` would have described the scene wrongly before the user touched anything — reporting the control's own default rather than the scene's state.
+- **`fanOut` looks like a toggle and is a string.** The test asserting it should appear as a checkbox failed, and the test was wrong, not the code: it is `z.string().max(20)` with a matching edit id, already editable as text. A second control writing the same prop is how two sources of truth start disagreeing.
+
+The derivation lives in core and ships through the `browser` entry rather than in the editor, because zod is already in that module graph — the editor gets it without pulling a schema library into its own bundle, which is what `browser.ts` exists for.

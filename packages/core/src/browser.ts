@@ -6,6 +6,7 @@
  */
 export * from "./scene-schema";
 export * from "./scene-registry";
+export * from "./scene-props-controls";
 export * from "./overrides";
 // The editor derives its plain takes with the SAME function the pipeline
 // uses — a copy would drift and the two timelines would disagree.

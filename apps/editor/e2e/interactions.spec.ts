@@ -1415,3 +1415,32 @@ test("Open raises the project picker; a recent click reopens the project (R17 §
   // The top bar names the open project.
   await expect(page.getByTestId("workdir-label")).toBeVisible();
 });
+
+test("a component's boolean props are editable from the Inspector (§153)", async ({ page }) => {
+  // Before this, the Inspector only rendered a Text field, and only for STRING
+  // props — so a component's booleans had no control anywhere in the UI and
+  // were reachable only by hand-editing overrides.json. The controls are
+  // derived from the component's own schema, so this also proves the editor
+  // can read the registry in the browser bundle.
+  await page.goto("/");
+  await settle(page);
+
+  // StatCard.inverted — false in the fixture.
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-0"));
+  const inverted = page.getByTestId("prop-inverted");
+  await expect(inverted).toBeVisible();
+  await expect(inverted).not.toBeChecked();
+  await inverted.check();
+  await expect(inverted).toBeChecked();
+
+  // ScreenshotFrame.kenBurns — the schema default is TRUE, and the checkbox
+  // must report what the scene actually renders rather than assuming false.
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-3"));
+  const kenBurns = page.getByTestId("prop-kenBurns");
+  await expect(kenBurns).toBeVisible();
+  await expect(kenBurns).toBeChecked();
+
+  // The screenshot's own content is reachable too: its data-edit-id used to be
+  // "image" while the prop is "src", so selecting it offered nothing to edit.
+  await expect(page.locator('[data-edit-id="src"]').first()).toHaveCount(1);
+});
