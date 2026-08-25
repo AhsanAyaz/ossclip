@@ -3197,6 +3197,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
 
+  // Re-key scene edits whose positional id no longer means the moment they
+  // were made on (handoff-edit-anchoring; §137 is the caption precedent — in
+  // the field, scene-4 was a TerminalMock in one plan and a FlowDiagram in
+  // the next, and the user's edit landed on the impostor). Placed HERE,
+  // before ANY consumer of `overrideDoc.scenes`: the first `applyOverrides`
+  // pass, `splitThenDropHidden` and the pinned-timing reclamp all join by id,
+  // and a stale key at any of them bakes the misapply this plan exists to
+  // kill — a `hidden` on a renumbered scene would hide the impostor, not the
+  // moved moment. `assembled` is enough for the match: the remap reads only
+  // anchored graphic cues, and take ids (which don't exist until the fill)
+  // carry no anchors and are left untouched by design. Notes are non-empty
+  // exactly when the doc changed, which is what earns the write-back its
+  // turn at the sanctioned write below.
+  const sceneRemap = remapSceneOverrides(overrideDoc, assembled);
+  overrideDoc = sceneRemap.doc;
+  for (const n of sceneRemap.notes) console.log(`  ▸ ${n}`);
+  const sceneKeysRemapped = sceneRemap.notes.length > 0;
+
   // ---- Framing plan → props (2026-08-16 incident) --------------------------
   // The plan used to be BAKED here: every window cropped, scaled and
   // re-encoded into a content-<hash>.mp4 that replaced the source for the
@@ -3425,19 +3443,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     outputDurationSec: map.outputDuration,
     clipStarts: map.spans.map((s) => s.outIn),
   });
-  // Re-key scene edits whose positional id no longer means the moment they
-  // were made on (handoff-edit-anchoring; §137 is the caption precedent — in
-  // the field, scene-4 was a TerminalMock in one plan and a FlowDiagram in
-  // the next, and the user's edit landed on the impostor). BEFORE `splitCues`
-  // so `root@splitId` halves rename with their root, and BEFORE
-  // `applyOverrides` so its id-join — and its orphan warning — see the
-  // converged keys: after this, "dropped" really means both identities
-  // missed. Notes are non-empty exactly when the doc changed, which is what
-  // earns the write-back its turn at the sanctioned write below.
-  const sceneRemap = remapSceneOverrides(overrideDoc, filled);
-  overrideDoc = sceneRemap.doc;
-  for (const n of sceneRemap.notes) console.log(`  ▸ ${n}`);
-  const sceneKeysRemapped = sceneRemap.notes.length > 0;
   // User splits (R16 §61) — after the fill so takes split like scenes, and
   // before the final override pass so edits on the `id@<split id>` halves land
   // (the suffix is the split's own minted id, §137, not its time). A

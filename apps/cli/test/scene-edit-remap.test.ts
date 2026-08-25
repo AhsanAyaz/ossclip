@@ -7,6 +7,7 @@ import {
   applyOverrides,
   remapSceneOverrides,
   splitCues,
+  splitThenDropHidden,
   type SceneCue,
 } from "@ossclip/core";
 import { orphanEditLine } from "../src/produce";
@@ -17,9 +18,13 @@ import { writeOverrideDoc } from "../src/overrides-write";
  * the seam below `produce()` itself: nothing in the repo can invoke `produce()`
  * (it needs ffmpeg, a transcript, a workdir and a render — overrides-write.ts
  * says so where it lives), so these tests run the SAME calls in the SAME order
- * produce.ts runs them — remap on the post-fill cue list, then `splitCues`,
- * then the final `applyOverrides` whose orphans feed the warning loop — and
- * pin the sentences via the pure `orphanEditLine`.
+ * produce.ts runs them — remap on the ASSEMBLED cue list, before every
+ * consumer of `overrideDoc.scenes` (the first `applyOverrides`,
+ * `splitThenDropHidden`, `splitCues`, the final `applyOverrides` whose
+ * orphans feed the warning loop) — and pin the sentences via the pure
+ * `orphanEditLine`. The placement is the fix-round ruling on
+ * handoff-edit-anchoring: a remap AFTER the first pass lets a `hidden` on a
+ * renumbered scene hide the impostor before the keys converge.
  */
 
 const cue = (id: string, anchor?: { startWord: number; endWord: number }): SceneCue => ({
@@ -74,6 +79,29 @@ describe("produce wires remapSceneOverrides before splitCues and applyOverrides"
     expect(onDisk.scenes["scene-11"]).toBeUndefined();
   });
 
+  it("a hidden override on a renumbered scene hides the moved cue, not the impostor", () => {
+    // The mis-hide the old (post-fill) placement allowed: the user deleted
+    // the moment that WAS scene-11; a re-plan renamed it scene-7 and handed
+    // scene-11 to a different moment. `splitThenDropHidden` joins by id, so
+    // with stale keys it would have dropped the impostor and rendered the
+    // scene the user deleted.
+    const doc = OverrideDocSchema.parse({
+      scenes: {
+        "scene-11": { hidden: true, anchor: { startWord: 20, endWord: 30 } },
+      },
+    });
+    const assembled = [
+      cue("scene-7", { startWord: 21, endWord: 29 }),
+      cue("scene-11", { startWord: 80, endWord: 90 }),
+    ];
+    // Produce's exact order after the fix: remap FIRST, then the first
+    // override pass and the hidden drop.
+    const remap = remapSceneOverrides(doc, assembled);
+    const { cues: edited } = applyOverrides(assembled, remap.doc);
+    const { cues: visible } = splitThenDropHidden(edited, remap.doc);
+    expect(visible.map((c) => c.id)).toEqual(["scene-11"]);
+  });
+
   it("a genuinely-gone edit still orphans and still warns dropped", () => {
     // Shrunk plan: no cue has the words, no cue has the id — remap leaves the
     // entry alone, applyOverrides orphans it, the dropped sentence fires.
@@ -126,19 +154,26 @@ describe("orphanEditLine", () => {
 describe("produce's remap wiring (source-text guard)", () => {
   const src = readFileSync(new URL("../src/produce.ts", import.meta.url), "utf8");
 
-  it("calls remapSceneOverrides on the post-fill list AND adopts the doc", () => {
+  it("calls remapSceneOverrides on the assembled list AND adopts the doc", () => {
     // The two-part shape from the §137 guards: computing the remap and
     // dropping `sceneRemap.doc` typechecks, prints truthful notes, and
     // applies edits under the stale keys anyway.
-    expect(src).toMatch(/=\s*remapSceneOverrides\(overrideDoc,\s*filled\)/);
+    expect(src).toMatch(/=\s*remapSceneOverrides\(overrideDoc,\s*assembled\)/);
     expect(src).toMatch(/overrideDoc\s*=\s*sceneRemap\.doc/);
   });
 
-  it("remaps BEFORE splitCues and the final applyOverrides — the join must see converged keys", () => {
-    const remapAt = src.indexOf("remapSceneOverrides(overrideDoc, filled)");
+  it("remaps BEFORE every scenes consumer — first pass, hidden drop, splits, final join", () => {
+    // The fix-round ruling: the FIRST `applyOverrides` and
+    // `splitThenDropHidden` join by id too, and a remap after them lets a
+    // hidden/renumbered edit land on the impostor before the keys converge.
+    const remapAt = src.indexOf("remapSceneOverrides(overrideDoc, assembled)");
+    const firstApplyAt = src.indexOf("applyOverrides(routed.cues");
+    const dropHiddenAt = src.indexOf("splitThenDropHidden(editedCues");
     const splitAt = src.indexOf("splitCues(filled");
     const applyAt = src.indexOf("applyOverrides(split");
     expect(remapAt).toBeGreaterThan(-1);
+    expect(remapAt).toBeLessThan(firstApplyAt);
+    expect(remapAt).toBeLessThan(dropHiddenAt);
     expect(remapAt).toBeLessThan(splitAt);
     expect(remapAt).toBeLessThan(applyAt);
   });
