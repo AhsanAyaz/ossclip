@@ -9,12 +9,14 @@ import {
   type Segment,
 } from "@ossclip/core/browser";
 import {
+  atFieldOnFromToggle,
   CoverPanel,
   coverRegenerateBody,
   coverUnavailableMessage,
   frameSourceNote,
   headlinePreview,
   parseAtSeconds,
+  playheadAtSeconds,
   sourceFrameOption,
   type CoverInfo,
   type CoverProvenanceView,
@@ -155,6 +157,96 @@ describe("coverRegenerateBody", () => {
   });
 });
 
+/** Two kept spans with a removal between them (source 0–10s and 20–30s →
+ * output 0–20s), so past 10s the two clocks genuinely disagree — a fixture
+ * whose conversion happened to be the identity would prove nothing. */
+const CUTLIST: Segment[] = [
+  { kind: "keep", srcIn: 0, srcOut: 10 },
+  { kind: "remove", srcIn: 10, srcOut: 20, reason: "pause", confidence: 0.9 },
+  { kind: "keep", srcIn: 20, srcOut: 30 },
+];
+
+describe("playheadAtSeconds", () => {
+  it("passes through untouched for the finished video", () => {
+    expect(playheadAtSeconds({ playheadOutSec: 15, from: "final", cutlist: CUTLIST })).toEqual({
+      atSec: 15,
+      note: null,
+    });
+  });
+
+  it("maps output → source for the original take, and says so", () => {
+    const r = playheadAtSeconds({ playheadOutSec: 15, from: "source", cutlist: CUTLIST });
+    // 15s of output = 5s into the second kept span = 25s of source.
+    expect(r.atSec).toBe(25);
+    expect(r.note).toMatch(/15\.0.*finished.*25\.0.*original take/i);
+  });
+
+  it("empty cutlist: source playhead refuses to pretend — passes through with a warning", () => {
+    // toSource on zero spans degenerates to 0, which would silently discard
+    // the playhead; passing the number through with a note keeps the user in
+    // charge of whether it is close enough.
+    const r = playheadAtSeconds({ playheadOutSec: 15, from: "source", cutlist: [] });
+    expect(r.atSec).toBe(15);
+    expect(r.note).toMatch(/couldn't convert/i);
+  });
+});
+
+describe("atFieldOnFromToggle", () => {
+  it("toggle final → source re-expresses the field", () => {
+    expect(
+      atFieldOnFromToggle({ atRaw: "15", prevFrom: "final", nextFrom: "source", cutlist: CUTLIST }),
+    ).toMatchObject({ atRaw: "25.00" });
+  });
+
+  it("toggle source → final clamps a cut-out instant to the nearest kept edge and says so", () => {
+    const r = atFieldOnFromToggle({
+      atRaw: "15",
+      prevFrom: "source",
+      nextFrom: "final",
+      cutlist: CUTLIST,
+    });
+    // Source 15s sits inside the removed 10–20s: the exact lookup misses and
+    // toOutputClamped snaps to the kept edge at output 10s.
+    expect(r!.atRaw).toBe("10.00");
+    expect(r!.note).toMatch(/cut/i);
+  });
+
+  it("a kept instant converts exactly, with no cut warning", () => {
+    const r = atFieldOnFromToggle({
+      atRaw: "25",
+      prevFrom: "source",
+      nextFrom: "final",
+      cutlist: CUTLIST,
+    });
+    expect(r!.atRaw).toBe("15.00");
+    expect(r!.note).not.toMatch(/cut/i);
+  });
+
+  it("blank or invalid field: toggle leaves it alone", () => {
+    expect(
+      atFieldOnFromToggle({ atRaw: "", prevFrom: "final", nextFrom: "source", cutlist: CUTLIST }),
+    ).toBeNull();
+    expect(
+      atFieldOnFromToggle({ atRaw: "abc", prevFrom: "final", nextFrom: "source", cutlist: CUTLIST }),
+    ).toBeNull();
+  });
+
+  it("no clock change leaves the field alone", () => {
+    expect(
+      atFieldOnFromToggle({ atRaw: "15", prevFrom: "final", nextFrom: "final", cutlist: CUTLIST }),
+    ).toBeNull();
+  });
+
+  it("empty cutlist: keeps the number and says it couldn't convert", () => {
+    // Same refusal as playheadAtSeconds': rewriting to toSource's degenerate 0
+    // would destroy the field; the note owns up that the seconds may now sit
+    // on the wrong clock.
+    const r = atFieldOnFromToggle({ atRaw: "15", prevFrom: "final", nextFrom: "source", cutlist: [] });
+    expect(r!.atRaw).toBe("15");
+    expect(r!.note).toMatch(/couldn't convert/i);
+  });
+});
+
 describe("CoverPanel", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -199,6 +291,9 @@ describe("CoverPanel", () => {
     },
     outPath: "/tmp/clip.ossclip.cover.jpg",
     imageUrl: "/api/cover/image?ts=123",
+    // Empty on purpose: most mounted tests predate the clock conversions and
+    // assert pass-through; the conversion tests spread CUTLIST in themselves.
+    cutlist: [],
   };
 
   it("a workdir with nowhere to write shows the reason plainly, no controls", async () => {
@@ -208,6 +303,7 @@ describe("CoverPanel", () => {
       provenance: null,
       outPath: null,
       imageUrl: null,
+      cutlist: [],
     });
     await mount();
     expect(container.querySelector('[data-testid="cover-unavailable"]')?.textContent).toContain(
@@ -277,6 +373,7 @@ describe("CoverPanel", () => {
       provenance: null,
       outPath: "/tmp/clip.ossclip.cover.jpg",
       imageUrl: null,
+      cutlist: [],
     });
     await mount();
     expect(container.querySelector('[data-testid="cover-placeholder"]')).not.toBeNull();

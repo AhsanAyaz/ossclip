@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { COVER_MAX_WORDS, coverHeadline } from "@ossclip/core/browser";
+import { COVER_MAX_WORDS, coverHeadline, TimeMap, type Segment } from "@ossclip/core/browser";
 
 /**
  * The cover panel (2026-08-19): view the `<out>.cover.jpg`, retype its
@@ -52,6 +52,14 @@ export interface CoverInfo {
   /** Where a regeneration would write — null when there is nowhere to put it. */
   outPath: string | null;
   imageUrl: string | null;
+  /**
+   * The finished mp4's RESOLVED span set — never the proposal /api/cleanup
+   * serves, whose ruler the user's vetoes already changed. What the panel's
+   * clock conversions (`playheadAtSeconds`, `atFieldOnFromToggle`) run on;
+   * `[]` when the render recorded none, and the helpers then degrade to
+   * pass-through with a "couldn't convert" note.
+   */
+  cutlist: Segment[];
 }
 
 /**
@@ -168,6 +176,106 @@ export function coverRegenerateBody(args: {
     ...(args.typed === (args.persistedText ?? "") ? {} : { text: args.typed }),
     ...(args.atSec === undefined ? {} : { atSec: args.atSec }),
     from: args.from,
+  };
+}
+
+/*
+ * The two clock-crossing gestures (handoff-cover-panel §1). The seconds field
+ * has exactly ONE meaning: seconds on the SELECTED video's own clock — the
+ * same thing `ossclip cover --at` means, so the server keeps re-mapping
+ * nothing. The clocks only ever meet inside the panel: the playhead arrives
+ * in the finished mp4's output time (the `playheadSec` prop contract below),
+ * and the from-toggle changes which clock the field is denominated in. Both
+ * helpers are pure so the span math is testable without a mount, and both
+ * build `new TimeMap(cutlist)` per call — cheap for a handful of spans;
+ * memoization is the component's business, not these functions'.
+ */
+
+/**
+ * The playhead button's value for the CURRENT frame source, plus the sentence
+ * explaining a crossed clock (null when no conversion happened).
+ *
+ * With no cutlist to convert through, `toSource` would degenerate to 0 and
+ * silently discard the playhead — so this refuses to pretend: the output
+ * seconds pass through unchanged, under a note that says so.
+ */
+export function playheadAtSeconds(args: {
+  playheadOutSec: number;
+  from: CoverFrom;
+  cutlist: readonly Segment[];
+}): { atSec: number; note: string | null } {
+  if (args.from === "final") return { atSec: args.playheadOutSec, note: null };
+  const map = new TimeMap(args.cutlist);
+  if (map.spans.length === 0) {
+    return {
+      atSec: args.playheadOutSec,
+      note:
+        "Couldn't convert to the original take's clock — this render recorded no cutlist, so " +
+        `${args.playheadOutSec.toFixed(1)}s of the finished video is being used as-is.`,
+    };
+  }
+  const atSec = map.toSource(args.playheadOutSec);
+  return {
+    atSec,
+    note:
+      `${args.playheadOutSec.toFixed(1)}s of the finished video is ` +
+      `${atSec.toFixed(1)}s of the original take.`,
+  };
+}
+
+/**
+ * Re-express a filled field when the frame-source toggle crosses clocks.
+ * Returns null when the field should be left alone: blank or invalid input
+ * (`parseAtSeconds`'s rule, reused rather than restated — blank means "no
+ * timestamp", and an invalid field stays visibly wrong under its own error
+ * message instead of being "fixed" by a toggle), or no clock change.
+ *
+ * source → final uses the exact lookup first: an instant that was cut from
+ * the finished video has no exact answer, so it snaps to the nearest kept
+ * edge and the note says a snap happened rather than passing it off as a
+ * conversion.
+ */
+export function atFieldOnFromToggle(args: {
+  atRaw: string;
+  prevFrom: CoverFrom;
+  nextFrom: CoverFrom;
+  cutlist: readonly Segment[];
+}): { atRaw: string; note: string } | null {
+  if (args.prevFrom === args.nextFrom) return null;
+  const at = parseAtSeconds(args.atRaw);
+  if (!at.ok || at.atSec === undefined) return null;
+  const map = new TimeMap(args.cutlist);
+  if (map.spans.length === 0) {
+    // playheadAtSeconds' refusal, on the toggle: rewriting through zero spans
+    // would destroy the number. Keep it, and own up that it now sits on a
+    // clock nobody converted.
+    return {
+      atRaw: args.atRaw,
+      note:
+        "Couldn't convert between clocks — this render recorded no cutlist; " +
+        "the seconds are unchanged.",
+    };
+  }
+  if (args.nextFrom === "source") {
+    const src = map.toSource(at.atSec);
+    return {
+      atRaw: src.toFixed(2),
+      note: `${at.atSec.toFixed(1)}s of the finished video is ${src.toFixed(1)}s of the original take.`,
+    };
+  }
+  const exact = map.toOutput(at.atSec);
+  if (exact !== null) {
+    return {
+      atRaw: exact.toFixed(2),
+      note: `${at.atSec.toFixed(1)}s of the original take is ${exact.toFixed(1)}s of the finished video.`,
+    };
+  }
+  const clamped = map.toOutputClamped(at.atSec);
+  return {
+    atRaw: clamped.toFixed(2),
+    note:
+      `${at.atSec.toFixed(1)}s of the original take was cut from the finished video — ` +
+      `snapped to the nearest kept moment, ${clamped.toFixed(1)}s.`,
   };
 }
 
