@@ -499,4 +499,77 @@ describe("CoverPanel", () => {
     expect(container.querySelector('[data-testid="cover-notes"]')?.textContent).toContain("trimmed");
     expect(container.querySelector('[data-testid="cover-error"]')).toBeNull();
   });
+
+  // 2026-08-25: the button captured the playhead in output time while a
+  // `--from source` field spends in source time — the same number, two clocks
+  // (handoff-cover-panel §1). The panel now converts at the gesture.
+  it("'use current playhead' with the original take selected spends on the SOURCE clock", async () => {
+    stubGet({ ...READY, cutlist: CUTLIST });
+    await mount(() => 15);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
+    });
+    // Output 15s = 5s into the second kept span = source 25s.
+    expect(container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')?.value).toBe(
+      "25.00",
+    );
+    expect(
+      container.querySelector('[data-testid="cover-clock-note"]')?.textContent,
+    ).toMatch(/15\.0.*finished.*25\.0.*original take/i);
+  });
+
+  it("toggling final → source re-expresses a filled field on the new clock", async () => {
+    stubGet({
+      ...READY,
+      cutlist: CUTLIST,
+      provenance: { ...READY.provenance!, frame: { ...READY.provenance!.frame, source: "final" } },
+    });
+    await mount();
+    const field = container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')!;
+    await act(async () => {
+      setInputValue(field, "15");
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-from-source"]')!.click();
+    });
+    expect(field.value).toBe("25.00");
+    expect(
+      container.querySelector('[data-testid="cover-clock-note"]')?.textContent,
+    ).toMatch(/15\.0.*finished.*25\.0.*original take/i);
+    expect(
+      container.querySelector('[data-testid="cover-from-source"]')?.getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("a successful Apply KEEPS the seconds it used — the field is the record, not a blank", async () => {
+    const bodies: unknown[] = [];
+    global.fetch = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") {
+        bodies.push(JSON.parse(init.body!));
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            provenance: READY.provenance,
+            notes: [],
+            imageUrl: "/api/cover/image?ts=789",
+          }),
+        };
+      }
+      return { ok: true, json: async () => READY };
+    }) as unknown as typeof fetch;
+    await mount();
+    const field = container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')!;
+    await act(async () => {
+      setInputValue(field, "9.5");
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-apply-btn"]')!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(bodies).toEqual([{ atSec: 9.5, from: "source" }]);
+    // The frame just applied stays visible and iterable — nudging it to 9.6 is
+    // an edit to a number, not an archaeology dig (handoff problem 2).
+    expect(field.value).toBe("9.5");
+  });
 });

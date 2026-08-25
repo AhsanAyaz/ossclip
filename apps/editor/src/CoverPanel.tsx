@@ -287,13 +287,15 @@ export interface CoverPanelProps {
    * frame, so a prop snapshot would be whatever the playhead was when the
    * panel opened.
    *
-   * This value goes straight through as `atSec`, and that is only sound
-   * because App answers in the finished mp4's own output time: with no live
-   * cleanup re-cut the player's frame IS that clock, and under one App maps
-   * the live playhead BACK onto it (new → source → old — the call site's
-   * comment owns why that direction is the REVERSE of every other surface's).
-   * (`--from source` is the other case, and the server re-maps nothing for it
-   * — see the toggle's note.)
+   * This value is denominated in the finished mp4's own output time, always:
+   * with no live cleanup re-cut the player's frame IS that clock, and under
+   * one App maps the live playhead BACK onto it (new → source → old — the
+   * call site's comment owns why that direction is the REVERSE of every other
+   * surface's). It only goes straight through as `atSec` for `--from final`;
+   * with the original take selected the PANEL owns the remaining hop, output
+   * → source, through `playheadAtSeconds` (and `atFieldOnFromToggle` when the
+   * toggle re-denominates an already-filled field) — the server re-maps
+   * nothing either way, which is the field's one-meaning contract.
    */
   playheadSec: () => number;
 }
@@ -308,6 +310,12 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
   const [busy, setBusy] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
+  /** The finished mp4's resolved spans (CoverInfo.cutlist) — the ruler the
+   * two clock-crossing gestures convert through. */
+  const [cutlist, setCutlist] = useState<Segment[]>([]);
+  /** The last gesture's conversion sentence — cleared by neither Apply nor
+   * typing, because it explains where the number in the field CAME from. */
+  const [clockNote, setClockNote] = useState<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -328,6 +336,9 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
         if (!res.ok) throw new Error(body.error ?? `GET /api/cover failed: ${res.status}`);
         setInfo(body);
         setImageUrl(body.imageUrl);
+        // `?? []` guards a pre-cutlist server only — in lockstep builds the
+        // field is always present (edit.ts's /api/cover).
+        setCutlist(body.cutlist ?? []);
         if (body.provenance) {
           setText(body.provenance.text);
           // NOT the persisted timestamp: an empty field means "re-use the
@@ -389,9 +400,12 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
         setInfo((prev) => (prev ? { ...prev, provenance: written, status: "ready" } : prev));
         setText(written.text);
       }
-      // The frame it used is now the still on disk, so the next Apply is the
-      // cheap path again — clear the field to say so.
-      setAtRaw("");
+      // The seconds it used stay VISIBLE in the field (handoff problem 2):
+      // clearing it made the applied frame's timestamp unrecoverable, so
+      // iterating meant re-hunting with the playhead. Kept, a repeat Apply
+      // with the field untouched re-extracts the same instant — idempotent,
+      // just not the no-ffmpeg path — which is the price of being able to
+      // nudge the number. Blank-for-cheap-path is the INITIAL state only.
     } catch (err) {
       setApplyError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -452,7 +466,14 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                 <button
                   data-testid="cover-playhead-btn"
                   style={ghostBtn}
-                  onClick={() => setAtRaw(playheadSec().toFixed(2))}
+                  onClick={() => {
+                    // The getter answers in OUTPUT time (the prop contract);
+                    // the helper converts it onto the SELECTED video's clock,
+                    // and its sentence explains any crossing.
+                    const r = playheadAtSeconds({ playheadOutSec: playheadSec(), from, cutlist });
+                    setAtRaw(r.atSec.toFixed(2));
+                    setClockNote(r.note);
+                  }}
                   disabled={busy}
                 >
                   Use current playhead
@@ -472,6 +493,11 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                   {at.message}
                 </div>
               )}
+              {clockNote ? (
+                <div data-testid="cover-clock-note" style={{ ...footNote, marginTop: 6 }}>
+                  {clockNote}
+                </div>
+              ) : null}
               <div style={{ ...rowStyle, marginTop: 10 }}>
                 {(["final", "source"] as const).map((v) => {
                   // The only dead option is "source", and only when this
@@ -487,7 +513,24 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                         ...(from === v ? selectedBtn : {}),
                         ...(dead ? { opacity: 0.5, cursor: "default" } : {}),
                       }}
-                      onClick={() => setFrom(v)}
+                      onClick={() => {
+                        // A filled field is denominated in the OUTGOING
+                        // clock; re-express it before the new one takes
+                        // over, or the same number silently means a
+                        // different instant. Null = leave it alone (blank,
+                        // invalid, or no clock change).
+                        const rewrite = atFieldOnFromToggle({
+                          atRaw,
+                          prevFrom: from,
+                          nextFrom: v,
+                          cutlist,
+                        });
+                        if (rewrite !== null) {
+                          setAtRaw(rewrite.atRaw);
+                          setClockNote(rewrite.note);
+                        }
+                        setFrom(v);
+                      }}
                       disabled={busy || dead}
                       aria-pressed={from === v}
                     >
