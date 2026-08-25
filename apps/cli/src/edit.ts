@@ -1193,6 +1193,27 @@ export async function startEditServer(
           // throw for want of a destination, and the panel says so up front
           // rather than after a click.
           const outPath = provenance?.out ?? (await recordedArtifactPath(".cover.jpg"));
+          // The finished mp4's OWN span set — the RESOLVED cutlist, never the
+          // proposal /api/cleanup serves: the panel converts the playhead
+          // between the output clock and the source clock
+          // (handoff-cover-panel §1), and a proposal the user's vetoes already
+          // changed is the wrong ruler. Lenient per-span parse, [] on a
+          // missing or corrupt production.json — a cover panel that cannot
+          // convert must still open.
+          let coverCutlist: Segment[] = [];
+          try {
+            const production = JSON.parse(
+              await readFile(join(workdir, "production.json"), "utf8"),
+            ) as { cutlist?: unknown };
+            if (Array.isArray(production.cutlist)) {
+              coverCutlist = production.cutlist.flatMap((s) => {
+                const p = SegmentSchema.safeParse(s);
+                return p.success ? [p.data] : [];
+              });
+            }
+          } catch {
+            // degrade — same as /api/cleanup
+          }
           return send(200, {
             status: outPath === null ? "unavailable" : "ready",
             ...(outPath === null
@@ -1203,6 +1224,7 @@ export async function startEditServer(
             provenance,
             outPath,
             imageUrl: coverImageUrl(image),
+            cutlist: coverCutlist,
           });
         }
 

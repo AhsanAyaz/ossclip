@@ -1528,6 +1528,54 @@ describe("cover endpoints (editor panel, 2026-08-19)", () => {
     release();
     expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
   });
+
+  it("serves the RESOLVED cutlist, never the proposal — the finished mp4's own span set", async () => {
+    // The opposite preference from /api/cleanup, on purpose: the cover panel
+    // converts the playhead between the output clock and the source clock
+    // (handoff-cover-panel §1), and only the resolved `cutlist` — the spans
+    // the mp4 was actually assembled from — is that ruler. The proposal
+    // still contains the removals the user's vetoes put back.
+    const { dir } = await coverWorkdir();
+    const cutlist = [
+      { srcIn: 0, srcOut: 8, kind: "keep" },
+      { srcIn: 11, srcOut: 20, kind: "keep" },
+    ];
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        cutlist,
+        cutlistProposed: [
+          { srcIn: 0, srcOut: 8, kind: "keep" },
+          { srcIn: 8, srcOut: 11, kind: "remove", reason: "pause", confidence: 0.9 },
+          { srcIn: 11, srcOut: 20, kind: "keep" },
+        ],
+      }),
+    );
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {},
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/cover`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { cutlist: unknown[] }).cutlist).toEqual(cutlist);
+  });
+
+  it("cutlist degrades to [] with no production.json — the panel must still open", async () => {
+    // The /api/cleanup posture: a workdir without a production.json (or a
+    // corrupt one) costs the clock conversion, never the whole panel.
+    const { dir } = await coverWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async () => {},
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/cover`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { cutlist: unknown[] }).cutlist).toEqual([]);
+  });
 });
 
 describe("GET /api/cleanup (cut review step 2, 2026-08-19)", () => {
