@@ -541,6 +541,80 @@ describe("CoverPanel", () => {
     ).toBe("true");
   });
 
+  // 2026-08-25 (handoff-cover-panel §3): before Preview, every diagnostic
+  // attempt destroyed the previous cover, so "wrong frame" and "nothing
+  // happened" were indistinguishable from the UI.
+  it("Preview shows the one-off frame under a badge, never touching the saved cover; Apply clears it", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    global.fetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") {
+        posts.push({ url, body: JSON.parse(init.body!) });
+        if (url === "/api/cover/preview") {
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              notes: ["▸ one-off --out: this project's own cover was NOT updated"],
+              previewImageUrl: "/api/cover/preview-image?ts=42",
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            provenance: READY.provenance,
+            notes: [],
+            imageUrl: "/api/cover/image?ts=456",
+          }),
+        };
+      }
+      return { ok: true, json: async () => READY };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-preview-btn"]')!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    // The same body as Apply — text/atSec/from and never a path — aimed at
+    // the preview endpoint. The server derives the one-off destination.
+    expect(posts).toEqual([{ url: "/api/cover/preview", body: { from: "source" } }]);
+    // The one-off frame IN PLACE of the cover, and a badge saying it is not
+    // the saved cover — the disclosure the one-off note also carries.
+    expect(container.querySelector<HTMLImageElement>('[data-testid="cover-image"]')?.src).toContain(
+      "/api/cover/preview-image?ts=42",
+    );
+    expect(
+      container.querySelector('[data-testid="cover-preview-badge"]')?.textContent,
+    ).toContain("Preview — not saved");
+    expect(container.querySelector('[data-testid="cover-notes"]')?.textContent).toContain("one-off");
+    // A real Apply replaces the preview with the freshly SAVED cover.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-apply-btn"]')!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(container.querySelector('[data-testid="cover-preview-badge"]')).toBeNull();
+    expect(container.querySelector<HTMLImageElement>('[data-testid="cover-image"]')?.src).toContain(
+      "/api/cover/image?ts=456",
+    );
+  });
+
+  // Tasks 2+3 review: the note survived a manual retype, describing a number
+  // the field no longer held.
+  it("typing in the seconds field clears the conversion note — it describes a number no longer there", async () => {
+    stubGet({ ...READY, cutlist: CUTLIST });
+    await mount(() => 15);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="cover-clock-note"]')).not.toBeNull();
+    const field = container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')!;
+    await act(async () => {
+      setInputValue(field, "7");
+    });
+    expect(container.querySelector('[data-testid="cover-clock-note"]')).toBeNull();
+  });
+
   it("a successful Apply KEEPS the seconds it used — the field is the record, not a blank", async () => {
     const bodies: unknown[] = [];
     global.fetch = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {

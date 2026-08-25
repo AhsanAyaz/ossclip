@@ -1278,6 +1278,8 @@ describe("cover endpoints (editor panel, 2026-08-19)", () => {
     expect((await fetch(`${server.url}/api/cover`)).status).toBe(409);
     expect((await fetch(`${server.url}/api/cover/image`)).status).toBe(409);
     expect((await fetch(`${server.url}/api/cover/regenerate`, { method: "POST" })).status).toBe(409);
+    expect((await fetch(`${server.url}/api/cover/preview`, { method: "POST" })).status).toBe(409);
+    expect((await fetch(`${server.url}/api/cover/preview-image`)).status).toBe(409);
   });
 
   it("a produced workdir reports its provenance and a ?ts-busted image URL", async () => {
@@ -1527,6 +1529,63 @@ describe("cover endpoints (editor panel, 2026-08-19)", () => {
     expect(second.status).toBe(409);
     release();
     expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
+  });
+
+  it("preview renders to the one-off path and leaves the canonical cover byte-identical", async () => {
+    // handoff-cover-panel §3: before this endpoint every diagnostic attempt
+    // DESTROYED the previous cover, so "wrong frame" and "nothing happened"
+    // were indistinguishable from the UI. The preview rides the same one-off
+    // `--out` machinery as `ossclip cover --out /tmp/try.jpg`.
+    //
+    // The cheap path (no atSec) on purpose: startEditServer seams only
+    // `renderCover`, and a frame extraction would fall through to real
+    // ffmpeg — the one thing this suite must never run.
+    const { dir, coverOut } = await coverWorkdir();
+    await writeProvenance(dir, coverOut);
+    await writeFile(coverOut, JPEG);
+    // Distinct bytes, so "the canonical cover survived" is provable by
+    // content rather than by mtime.
+    const PREVIEW_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0x42]);
+    const destinations: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      renderCover: async (_props, o) => {
+        destinations.push(o.outPath);
+        await writeFile(o.outPath, PREVIEW_JPEG);
+      },
+    });
+    close = server.close;
+    // Nothing previewed yet — a 404, the /api/cover/image posture.
+    expect((await fetch(`${server.url}/api/cover/preview-image`)).status).toBe(404);
+    const res = await fetch(`${server.url}/api/cover/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "TRY THIS", from: "final" }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    // (a) the render landed at the workdir's own one-off file, never at the
+    // canonical destination and never anywhere the body could name.
+    const previewPath = join(dir, "cover-preview.jpg");
+    expect(destinations).toEqual([previewPath]);
+    expect(existsSync(previewPath)).toBe(true);
+    // (b) the canonical cover is byte-identical to before the preview.
+    expect([...new Uint8Array(await readFile(coverOut))]).toEqual([...JPEG]);
+    // (c) the URL is ?ts-busted on the PREVIEW file's mtime and serves it.
+    expect(body.previewImageUrl).toBe(
+      `/api/cover/preview-image?ts=${Math.round(statSync(previewPath).mtimeMs)}`,
+    );
+    const img = await fetch(`${server.url}/api/cover/preview-image`);
+    expect(img.status).toBe(200);
+    expect(img.headers.get("content-type")).toBe("image/jpeg");
+    expect(img.headers.get("cache-control")).toBe("no-store");
+    expect([...new Uint8Array(await img.arrayBuffer())]).toEqual([...PREVIEW_JPEG]);
+    // (d) the one-off note rides back — the panel's disclosure that
+    // cover.json now describes the previewed frame while the canonical JPEG
+    // still shows the old one.
+    expect(body.notes.join("\n")).toContain("one-off");
   });
 
   it("serves the RESOLVED cutlist, never the proposal — the finished mp4's own span set", async () => {

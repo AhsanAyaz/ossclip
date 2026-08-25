@@ -313,9 +313,17 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
   /** The finished mp4's resolved spans (CoverInfo.cutlist) — the ruler the
    * two clock-crossing gestures convert through. */
   const [cutlist, setCutlist] = useState<Segment[]>([]);
-  /** The last gesture's conversion sentence — cleared by neither Apply nor
-   * typing, because it explains where the number in the field CAME from. */
+  /** The last gesture's conversion sentence. Apply keeps it — it explains
+   * where the number in the field CAME from — but a manual retype clears it
+   * (Tasks 2+3 review): the sentence describes a number the field no longer
+   * holds. */
   const [clockNote, setClockNote] = useState<string | null>(null);
+  /** The one-off frame's URL while a preview is showing, null otherwise
+   * (handoff-cover-panel §3). Shown IN PLACE of the cover under a "not
+   * saved" badge; a successful real Apply replaces it with the saved cover.
+   * Never persisted anywhere client-side — the server owns the scratch file
+   * exactly as it owns the cover. */
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -394,6 +402,9 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
         return;
       }
       setImageUrl(body.imageUrl ?? null);
+      // The preview's whole meaning was "not what Apply would save" — this
+      // Apply just saved, so the freshly written cover takes the box back.
+      setPreviewUrl(null);
       setNotes(body.notes ?? []);
       if (body.provenance) {
         const written = body.provenance;
@@ -406,6 +417,53 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
       // with the field untouched re-extracts the same instant — idempotent,
       // just not the no-ffmpeg path — which is the price of being able to
       // nudge the number. Blank-for-cheap-path is the INITIAL state only.
+    } catch (err) {
+      setApplyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * onApply's exact gestures against the preview endpoint: the SAME body
+   * (coverRegenerateBody — text/atSec/from, never a path; the server derives
+   * the one-off destination), the same busy flag (a preview boots the same
+   * headless browser), the same verbatim error posture. The differences are
+   * the response — a previewUrl instead of a saved cover — and that neither
+   * `imageUrl` nor the provenance prefills move: the notes carry the server's
+   * one-off disclosure that cover.json now describes the previewed frame
+   * while the canonical JPEG does not (handoff-cover-panel §3).
+   */
+  const onPreview = async (): Promise<void> => {
+    if (!at.ok) return;
+    setBusy(true);
+    setApplyError(null);
+    setNotes([]);
+    try {
+      const res = await fetch("/api/cover/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          coverRegenerateBody({
+            typed: text,
+            persistedText: info?.provenance?.text ?? null,
+            atSec: at.atSec,
+            from,
+          }),
+        ),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        notes?: string[];
+        previewImageUrl?: string;
+        error?: string;
+      };
+      if (!res.ok || body.ok !== true) {
+        setApplyError(body.error ?? `preview failed: ${res.status}`);
+        return;
+      }
+      setPreviewUrl(body.previewImageUrl ?? null);
+      setNotes(body.notes ?? []);
     } catch (err) {
       setApplyError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -437,7 +495,12 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
         ) : (
           <>
             <div style={imageBox}>
-              {imageUrl ? (
+              {previewUrl ? (
+                // IN PLACE of the cover, not beside it: the point of a
+                // preview is "this is what Apply would save", and two images
+                // invite comparing a frame against a stale one.
+                <img data-testid="cover-image" src={previewUrl} alt="Cover preview" style={imageStyle} />
+              ) : imageUrl ? (
                 <img data-testid="cover-image" src={imageUrl} alt="Current cover" style={imageStyle} />
               ) : (
                 <div data-testid="cover-placeholder" style={placeholder}>
@@ -445,6 +508,11 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                 </div>
               )}
             </div>
+            {previewUrl ? (
+              <div data-testid="cover-preview-badge" style={previewBadge}>
+                Preview — not saved. The cover on disk is unchanged; Apply writes it for real.
+              </div>
+            ) : null}
             <div style={{ marginTop: 16 }}>
               <label style={labelStyle}>Headline — at most {COVER_MAX_WORDS} words (§35)</label>
               <input
@@ -484,7 +552,14 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                   inputMode="decimal"
                   placeholder="seconds — blank keeps the current still"
                   value={atRaw}
-                  onChange={(e) => setAtRaw(e.target.value)}
+                  onChange={(e) => {
+                    setAtRaw(e.target.value);
+                    // A retyped field no longer holds the number the
+                    // conversion sentence describes (the clockNote state's
+                    // rule) — only the gesture that WROTE the field may
+                    // caption it.
+                    setClockNote(null);
+                  }}
                   style={{ ...textInput, flex: 1 }}
                 />
               </div>
@@ -573,6 +648,17 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
               <div style={{ display: "flex", gap: 8 }}>
                 <button data-testid="cover-cancel-btn" style={ghostBtn} onClick={onClose}>
                   Cancel
+                </button>
+                <button
+                  data-testid="cover-preview-btn"
+                  style={{
+                    ...ghostBtn,
+                    ...(busy || !at.ok ? { opacity: 0.6, cursor: "default" } : {}),
+                  }}
+                  onClick={() => void onPreview()}
+                  disabled={busy || !at.ok}
+                >
+                  Preview
                 </button>
                 <button
                   data-testid="cover-apply-btn"
@@ -669,6 +755,20 @@ const imageStyle: React.CSSProperties = {
   maxWidth: "100%",
   maxHeight: 320,
   objectFit: "contain",
+};
+
+// Loud on purpose — amber, not the footnote grey: mistaking a preview for
+// the saved cover is the exact confusion the badge exists to prevent.
+const previewBadge: React.CSSProperties = {
+  marginTop: 8,
+  padding: "6px 10px",
+  borderRadius: 6,
+  border: "1px solid #8a6d1a",
+  background: "rgba(255,196,0,0.08)",
+  color: "#FFC400",
+  fontSize: 12,
+  fontWeight: 600,
+  lineHeight: 1.4,
 };
 
 const placeholder: React.CSSProperties = {
