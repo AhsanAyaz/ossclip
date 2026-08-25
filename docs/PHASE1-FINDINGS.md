@@ -1608,3 +1608,26 @@ Two details that only surfaced by building it:
 - **`fanOut` looks like a toggle and is a string.** The test asserting it should appear as a checkbox failed, and the test was wrong, not the code: it is `z.string().max(20)` with a matching edit id, already editable as text. A second control writing the same prop is how two sources of truth start disagreeing.
 
 The derivation lives in core and ships through the `browser` entry rather than in the editor, because zod is already in that module graph — the editor gets it without pulling a schema library into its own bundle, which is what `browser.ts` exists for.
+
+## 154. A cover should not require a face, and the schema said so twice, differently
+
+Reported from the published 0.1.29: the editor's cover panel could not regenerate at all on a terminal-recording project.
+
+```
+render-props.json in /Users/…/.ossclip/Handy-84fdf09a is not valid:
+{ "path": ["face"], "message": "Invalid input: expected object, received null" }
+```
+
+`produce` writes `face: null` when the detector found nobody. That is a MEASUREMENT — we looked, there was no face — and core's own schema states it outright: *"null = no face found"*, typed `.nullable().optional()`. The cover kept a second, narrower copy of the same shape:
+
+```ts
+face: z.object({ subject: z.enum(["face", "screen"]).optional() }).optional(),
+```
+
+`.optional()` admits a *missing key* and rejects an *explicit null*, so the writer produced a value its own reader refused. Every take with nobody on camera — screen recordings, slides with a voiceover, the reporter's terminal capture — could write a project it could never reopen for a cover. The video rendered fine; only the cover path failed, which is why it survived to a release.
+
+The fix is `.nullable()`. Downstream was already null-safe (`renderProps.face?.subject`), so nothing else moved.
+
+The lesson is not about `face`. It is the third instance in one week of the same failure: **two copies of one shape, drifting**. §150 was a cache writing under one key and reading under another; §152 was a stamp rebuilt from the wrong run's records; this is a field written nullable and read non-nullable. Each was invisible in isolation, each surfaced only when a user hit the exact path, and each was a one-line disagreement between two places that were supposed to describe the same thing.
+
+Worth acting on structurally rather than incident by incident: where a shape is duplicated instead of shared, the copies need either a single definition or a test that asserts they agree. `null` here was legal in the writer, illegal in the reader, and nothing in the build could see the contradiction.
