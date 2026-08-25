@@ -6,6 +6,7 @@ import {
   clearGraphicRect,
   legacySplitId,
   mintSplitId,
+  remapSceneOverrides,
   splitCues,
   splitThenDropHidden,
   stampSceneAnchors,
@@ -272,14 +273,14 @@ describe("scene override anchor (handoff-edit-anchoring)", () => {
   });
 });
 
-describe("stampSceneAnchors", () => {
-  const docWith = (scenes: Record<string, unknown>): OverrideDoc =>
-    OverrideDocSchema.parse({ scenes });
-  const cueFixture = (patch: Partial<SceneCue> & { id: string }): SceneCue => ({
-    ...cue(patch.id),
-    ...patch,
-  });
+const docWith = (scenes: Record<string, unknown>): OverrideDoc =>
+  OverrideDocSchema.parse({ scenes });
+const cueFixture = (patch: Partial<SceneCue> & { id: string }): SceneCue => ({
+  ...cue(patch.id),
+  ...patch,
+});
 
+describe("stampSceneAnchors", () => {
   it("stamps a scene entry with its cue's anchor", () => {
     const doc = docWith({ "scene-3": { props: { title: "x" }, elements: {} } });
     const cues = [cueFixture({ id: "scene-3", anchor: { startWord: 4, endWord: 9 } })];
@@ -310,6 +311,211 @@ describe("stampSceneAnchors", () => {
     const out = stampSceneAnchors(doc, cues);
     expect(out.scenes["scene-3"]!.anchor).toEqual({ startWord: 4, endWord: 9 });
     expect(out.scenes["take-clip0"]!.anchor).toBeUndefined();
+  });
+});
+
+describe("remapSceneOverrides (handoff-edit-anchoring — the produce-side misapplication guard)", () => {
+  it("an edit whose id survives but whose anchor moved does NOT stay on the impostor cue", () => {
+    // Old plan: scene-3 was words 40..50. New plan renumbered: words 40..50
+    // are now scene-1, and scene-3 is a different moment (words 80..90) —
+    // the field case (scene-4: TerminalMock 85..116 in one plan, FlowDiagram
+    // 47..57 in the next) that motivated this whole pass.
+    const doc = docWith({
+      "scene-3": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [
+      cueFixture({ id: "scene-1", anchor: { startWord: 41, endWord: 49 } }),
+      cueFixture({ id: "scene-3", anchor: { startWord: 80, endWord: 90 } }),
+    ];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-3"]).toBeUndefined(); // never left on the impostor
+    expect(out.scenes["scene-1"]!.props.title).toBe("edited");
+    // The entry moves verbatim — re-stamping to the new cue's anchor is the
+    // editor's job at next save, not produce's.
+    expect(out.scenes["scene-1"]!.anchor).toEqual({ startWord: 40, endWord: 50 });
+    expect(notes.some((n) => n.includes("scene-3") && n.includes("scene-1"))).toBe(true);
+  });
+
+  it("renumbered plan: the edit follows its anchor to the new id", () => {
+    // The old id is simply gone — no impostor, just fewer/renumbered scenes.
+    const doc = docWith({
+      "scene-11": { props: { title: "edited" }, elements: {}, anchor: { startWord: 20, endWord: 30 } },
+    });
+    const cues = [cueFixture({ id: "scene-7", anchor: { startWord: 21, endWord: 29 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-11"]).toBeUndefined();
+    expect(out.scenes["scene-7"]!.props.title).toBe("edited");
+    expect(notes.some((n) => n.includes("scene-11") && n.includes("scene-7"))).toBe(true);
+  });
+
+  it("shrunk plan, id also gone: entry survives untouched so applyOverrides orphans and warns as today", () => {
+    const entry = { props: { title: "edited" }, elements: {}, anchor: { startWord: 60, endWord: 70 } };
+    const doc = docWith({ "scene-5": entry });
+    // No cue has these words, and no cue is named scene-5: nothing can
+    // misapply, so today's orphan reporting is the right (and only) outcome.
+    const cues = [cueFixture({ id: "scene-1", anchor: { startWord: 0, endWord: 10 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-5"]).toEqual(doc.scenes["scene-5"]);
+    expect(notes).toEqual([]);
+  });
+
+  it("words gone but the id now belongs to a DIFFERENT moment: the entry is PARKED, never left to join the impostor", () => {
+    // scene-3's stored anchor (40..50) overlaps nothing in the new plan, but
+    // a cue named scene-3 exists with anchor 80..90. Leaving the entry keyed
+    // scene-3 would silently misapply — the exact bug. Park it instead.
+    const doc = docWith({
+      "scene-3": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [cueFixture({ id: "scene-3", anchor: { startWord: 80, endWord: 90 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-3"]).toBeUndefined();
+    expect(out.scenes["scene-3#orphaned"]!.props.title).toBe("edited"); // data preserved, inert key
+    expect(out.scenes["scene-3#orphaned"]!.anchor).toEqual({ startWord: 40, endWord: 50 });
+    expect(notes.some((n) => n.includes("parked"))).toBe(true);
+  });
+
+  it("a parked entry is rescued when a later plan has its words again", () => {
+    // Round-trip of the case above: the anchor is still on the parked entry,
+    // so a plan that brings words 40..50 back re-keys it onto that cue.
+    const doc = docWith({
+      "scene-3#orphaned": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [cueFixture({ id: "scene-1", anchor: { startWord: 42, endWord: 48 } })];
+    const { doc: out } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-1"]!.props.title).toBe("edited");
+    expect(out.scenes["scene-3#orphaned"]).toBeUndefined();
+  });
+
+  it("a parked entry matches purely by anchor — a cue reusing its historical id does not capture it", () => {
+    // The parked entry's root id (scene-3) is historical, not a claim: a new
+    // cue named scene-3 over DIFFERENT words must not shortcut the anchor
+    // match and swallow the edit.
+    const doc = docWith({
+      "scene-3#orphaned": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [cueFixture({ id: "scene-3", anchor: { startWord: 80, endWord: 90 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-3#orphaned"]).toEqual(doc.scenes["scene-3#orphaned"]); // still parked
+    expect(out.scenes["scene-3"]).toBeUndefined();
+    expect(notes).toEqual([]); // parked-and-still-parked is not news on every produce
+  });
+
+  it("anchor-less (pre-migration) entries behave exactly as today", () => {
+    // Id present but pointing somewhere new — with no anchor there is no
+    // identity to check, so: untouched, no note, no new behaviour (§137's
+    // no-retroactive-protection posture).
+    const doc = docWith({ "scene-3": { props: { title: "edited" }, elements: {} } });
+    const cues = [
+      cueFixture({ id: "scene-1", anchor: { startWord: 41, endWord: 49 } }),
+      cueFixture({ id: "scene-3", anchor: { startWord: 80, endWord: 90 } }),
+    ];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-3"]).toEqual(doc.scenes["scene-3"]);
+    expect(notes).toEqual([]);
+  });
+
+  it("split halves re-key with their root", () => {
+    // The cue list is PRE-splitCues, so `scene-1@abc` does not exist yet —
+    // the half's entry re-keys by its ROOT id and keeps the split suffix,
+    // then matches the half once splitCues runs.
+    const doc = docWith({
+      "scene-3@abc": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [cueFixture({ id: "scene-1", anchor: { startWord: 40, endWord: 50 } })];
+    const { doc: out } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-3@abc"]).toBeUndefined();
+    expect(out.scenes["scene-1@abc"]!.props.title).toBe("edited");
+  });
+
+  it("id match with agreeing anchor is a no-op", () => {
+    // PARTIAL overlap on purpose: any shared word means the id still names
+    // the same moment (measured plans re-anchored at 100% overlap; partial
+    // covers a trimmed/extended scene).
+    const doc = docWith({
+      "scene-3": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [cueFixture({ id: "scene-3", anchor: { startWord: 45, endWord: 60 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-3"]).toEqual(doc.scenes["scene-3"]);
+    expect(notes).toEqual([]);
+  });
+
+  it("two cues overlap the stored anchor: the larger overlap wins", () => {
+    const doc = docWith({
+      "scene-9": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [
+      cueFixture({ id: "scene-1", anchor: { startWord: 48, endWord: 60 } }), // 3 shared words
+      cueFixture({ id: "scene-2", anchor: { startWord: 38, endWord: 46 } }), // 7 shared words
+    ];
+    const { doc: out } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-2"]!.props.title).toBe("edited");
+    expect(out.scenes["scene-1"]).toBeUndefined();
+    expect(out.scenes["scene-9"]).toBeUndefined();
+  });
+
+  it("equal overlap: the cue reusing the stored root id wins for a parked entry, else the earlier cue", () => {
+    // The id-preference leg is only reachable for parked entries — an
+    // unparked entry whose id overlaps was already kept by the shortcut.
+    const parked = docWith({
+      "scene-3#orphaned": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 49 } },
+    });
+    const tie = [
+      cueFixture({ id: "scene-2", anchor: { startWord: 40, endWord: 44 }, startSec: 0, endSec: 5 }),
+      cueFixture({ id: "scene-3", anchor: { startWord: 45, endWord: 49 }, startSec: 10, endSec: 15 }),
+    ];
+    expect(remapSceneOverrides(parked, tie).doc.scenes["scene-3"]!.props.title).toBe("edited");
+
+    const noIdMatch = docWith({
+      "scene-99": { props: { title: "edited" }, elements: {}, anchor: { startWord: 40, endWord: 49 } },
+    });
+    const byTime = [
+      cueFixture({ id: "scene-8", anchor: { startWord: 45, endWord: 49 }, startSec: 20, endSec: 25 }),
+      cueFixture({ id: "scene-5", anchor: { startWord: 40, endWord: 44 }, startSec: 10, endSec: 15 }),
+    ];
+    expect(remapSceneOverrides(noIdMatch, byTime).doc.scenes["scene-5"]!.props.title).toBe("edited");
+  });
+
+  it("two entries re-keying onto one cue: the larger overlap keeps the key, the loser is parked, both are noted", () => {
+    const doc = docWith({
+      "scene-4": { props: { title: "winner" }, elements: {}, anchor: { startWord: 40, endWord: 50 } }, // 11 shared
+      "scene-9": { props: { title: "loser" }, elements: {}, anchor: { startWord: 42, endWord: 46 } }, // 5 shared
+    });
+    const cues = [cueFixture({ id: "scene-1", anchor: { startWord: 40, endWord: 50 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-1"]!.props.title).toBe("winner");
+    expect(out.scenes["scene-9#orphaned"]!.props.title).toBe("loser"); // parked, not dropped
+    expect(notes.some((n) => n.includes("scene-4") && n.includes("scene-1"))).toBe(true);
+    expect(notes.some((n) => n.includes("scene-9") && n.includes("parked"))).toBe(true);
+  });
+
+  it("a re-keyer never evicts a kept entry — an anchor-less incumbent is immovable", () => {
+    // scene-1's entry has no anchor, so it must behave EXACTLY as today
+    // (stay put, untouched). The re-keyer that wants scene-1 parks instead.
+    const doc = docWith({
+      "scene-1": { props: { title: "incumbent" }, elements: {} },
+      "scene-9": { props: { title: "mover" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [cueFixture({ id: "scene-1", anchor: { startWord: 40, endWord: 50 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-1"]).toEqual(doc.scenes["scene-1"]);
+    expect(out.scenes["scene-9#orphaned"]!.props.title).toBe("mover");
+    expect(notes.some((n) => n.includes("scene-9") && n.includes("parked"))).toBe(true);
+  });
+
+  it("a park slot already held by a still-parked edit keeps its incumbent; the newcomer is dropped out loud", () => {
+    // edit → re-plan parks it → edit again → re-plan again: one inert slot,
+    // two edits. The incumbent stays (holds are immovable) and the loss is a
+    // note, never a silent overwrite.
+    const doc = docWith({
+      "scene-3": { props: { title: "newer" }, elements: {}, anchor: { startWord: 60, endWord: 70 } },
+      "scene-3#orphaned": { props: { title: "older" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+    });
+    const cues = [cueFixture({ id: "scene-3", anchor: { startWord: 80, endWord: 90 } })];
+    const { doc: out, notes } = remapSceneOverrides(doc, cues);
+    expect(out.scenes["scene-3#orphaned"]!.props.title).toBe("older");
+    expect(out.scenes["scene-3"]).toBeUndefined(); // still never left on the impostor
+    expect(notes.some((n) => n.includes("dropped"))).toBe(true);
   });
 });
 
@@ -638,6 +844,16 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
       ["take-0@3000", 3, 6],
       ["take-0@6000", 6, 10],
     ]);
+  });
+
+  it("both halves of a split graphic cue carry the root's anchor", () => {
+    // remapSceneOverrides matches split-half entries by their ROOT id against
+    // the pre-split cue list, and stampSceneAnchors stamps halves through the
+    // cue's own anchor — both rely on `splitCues` spreading the root cue, so
+    // the anchor must ride along verbatim (handoff-edit-anchoring).
+    const anchor = { startWord: 4, endWord: 9 };
+    const out = splitCues([{ ...cue("scene-0"), anchor }], [{ at: 2, id: "2000" }]);
+    expect(out.map((c) => c.anchor)).toEqual([anchor, anchor]);
   });
 
   it("refuses a cut that would mint an unusably thin half", () => {
