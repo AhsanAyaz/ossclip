@@ -4,6 +4,7 @@ import {
   SceneAnchorSchema,
   SceneComponentIdSchema,
   ThemeSchema,
+  type SceneAnchor,
   type SceneCue,
   type SceneComponentId,
   type Theme,
@@ -710,6 +711,38 @@ export function splitThenDropHidden(
   doc: OverrideDoc,
 ): DropHiddenResult {
   return dropHiddenCues(splitCues(cues, doc.splits), doc);
+}
+
+/**
+ * Stamp every scene override with the anchor of the cue it currently targets
+ * — the edit's identity across a re-plan (see SceneOverrideSchema.anchor).
+ * Called by the EDITOR at save time, from the cues in its memory, never from
+ * render-props.json on disk: after a mid-session re-render the disk can
+ * describe a newer plan than the one the user is looking at, and stamping
+ * from it would record the wrong identity — the misapply this exists to stop.
+ * Cues without an anchor (plain takes, pre-anchor render-props) stamp nothing.
+ *
+ * RE-stamps on every save, deliberately: the cue on screen is always the
+ * freshest truth about what the user is editing, so a stale stamp from an
+ * earlier plan is overwritten rather than preserved. A split half's cue
+ * carries its root's anchor verbatim (`splitCues` spreads the root cue), so
+ * the `id@<split id>` entry stamps through the same by-id lookup as its root.
+ *
+ * `doc` must have been through `OverrideDocSchema` — the `captionEditsToKeep`
+ * rule: a literal `"__proto__"` key surviving `JSON.parse` as an own property
+ * would assign through the prototype in the record rebuild below.
+ */
+export function stampSceneAnchors(doc: OverrideDoc, cues: readonly SceneCue[]): OverrideDoc {
+  const anchorById = new Map<string, SceneAnchor>();
+  for (const c of cues) {
+    if (c.anchor) anchorById.set(c.id, c.anchor);
+  }
+  const scenes: Record<string, SceneOverride> = {};
+  for (const [id, entry] of Object.entries(doc.scenes)) {
+    const anchor = anchorById.get(id);
+    scenes[id] = anchor ? { ...entry, anchor } : entry;
+  }
+  return { ...doc, scenes };
 }
 
 /**

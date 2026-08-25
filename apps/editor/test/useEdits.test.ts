@@ -1,6 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+// jsdom for the ONE mounted suite at the bottom ("save() stamps scene
+// anchors"): `save` closes over the hook's reducer state and its cues ref,
+// so it is only reachable through a real mount. The reducer tests above are
+// DOM-free and indifferent to the environment.
+import { afterEach, describe, expect, it, vi } from "vitest";
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
 import { OverrideDocSchema, splitCues, type SceneCue } from "@ossclip/core/browser";
-import { COALESCE_MS, editReducer, initialEditState } from "../src/useEdits";
+import { COALESCE_MS, editReducer, initialEditState, useEdits } from "../src/useEdits";
 
 describe("edit state", () => {
   it("starts clean", () => {
@@ -1296,5 +1303,62 @@ describe("cleanup veto actions (cut review step 3)", () => {
   it("a degenerate span is refused — an entry that can never overlap anything is dead weight", () => {
     const base = initialEditState();
     expect(editReducer(base, { type: "toggleKept", srcIn: 5, srcOut: 5 })).toBe(base);
+  });
+});
+
+// Same mount conventions as cover-panel.test.ts: real createRoot, mocked
+// fetch, no module mocking.
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+describe("save() stamps scene anchors from the synced live cues (handoff-edit-anchoring)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const anchoredCue = (id: string, anchor: { startWord: number; endWord: number }): SceneCue => ({
+    id,
+    layout: "video-top",
+    component: "StatCard",
+    props: { label: "CODE CHURN", value: "861%", inverted: false },
+    startSec: 0,
+    endSec: 5,
+    anchor,
+  });
+
+  it("PUTs a body whose scene entry carries the synced cue's anchor — and leaves the in-memory doc unstamped", async () => {
+    const fetchSpy = vi.fn(async () => ({ ok: true }) as Response);
+    vi.stubGlobal("fetch", fetchSpy);
+    let api!: ReturnType<typeof useEdits>;
+    const Harness = (): null => {
+      api = useEdits();
+      return null;
+    };
+    const root = createRoot(document.createElement("div"));
+    act(() => {
+      root.render(React.createElement(Harness));
+    });
+    // An edit mints the scene-0 entry; syncCues feeds the live cue list the
+    // way App's effect does.
+    act(() => api.patchProps("scene-0", { value: "999%" }));
+    act(() => api.syncCues([anchoredCue("scene-0", { startWord: 4, endWord: 9 })]));
+    await act(async () => {
+      await api.save();
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/overrides");
+    expect(init.method).toBe("PUT");
+    // Parsed back through the same schema the server's PUT handler runs, so
+    // this asserts the anchor SURVIVES the round-trip, not just that some
+    // bytes were sent. The user's own edit rides along unharmed.
+    const body = OverrideDocSchema.parse(JSON.parse(init.body as string));
+    expect(body.scenes["scene-0"]!.anchor).toEqual({ startWord: 4, endWord: 9 });
+    expect(body.scenes["scene-0"]!.props).toEqual({ value: "999%" });
+    // The in-memory doc deliberately stays UNstamped (a `load` dispatch would
+    // clear undo history; the stamp is recomputed on every save) — but the
+    // save still marked the state clean.
+    expect(api.doc.scenes["scene-0"]!.anchor).toBeUndefined();
+    expect(api.dirty).toBe(false);
+    act(() => root.unmount());
   });
 });

@@ -8,6 +8,7 @@ import {
   mintSplitId,
   splitCues,
   splitThenDropHidden,
+  stampSceneAnchors,
   dropHiddenCues,
   clearElementTransform,
   clearTiming,
@@ -268,6 +269,47 @@ describe("scene override anchor (handoff-edit-anchoring)", () => {
       scenes: { "scene-3": { props: {}, elements: {} } },
     });
     expect(doc.scenes["scene-3"]!.anchor).toBeUndefined();
+  });
+});
+
+describe("stampSceneAnchors", () => {
+  const docWith = (scenes: Record<string, unknown>): OverrideDoc =>
+    OverrideDocSchema.parse({ scenes });
+  const cueFixture = (patch: Partial<SceneCue> & { id: string }): SceneCue => ({
+    ...cue(patch.id),
+    ...patch,
+  });
+
+  it("stamps a scene entry with its cue's anchor", () => {
+    const doc = docWith({ "scene-3": { props: { title: "x" }, elements: {} } });
+    const cues = [cueFixture({ id: "scene-3", anchor: { startWord: 4, endWord: 9 } })];
+    expect(stampSceneAnchors(doc, cues).scenes["scene-3"]!.anchor).toEqual({
+      startWord: 4,
+      endWord: 9,
+    });
+  });
+
+  it("resolves a split half's root for the anchor", () => {
+    const doc = docWith({ "scene-3@abc": { props: {}, elements: {} } });
+    const cues = [cueFixture({ id: "scene-3@abc", anchor: { startWord: 4, endWord: 9 } })];
+    expect(stampSceneAnchors(doc, cues).scenes["scene-3@abc"]!.anchor).toEqual({
+      startWord: 4,
+      endWord: 9,
+    });
+  });
+
+  it("re-stamps an entry whose cue anchor changed, and leaves anchor-less cues (takes) unstamped", () => {
+    const doc = docWith({
+      "scene-3": { props: {}, elements: {}, anchor: { startWord: 0, endWord: 1 } },
+      "take-clip0": { props: {}, elements: {} },
+    });
+    const cues = [
+      cueFixture({ id: "scene-3", anchor: { startWord: 4, endWord: 9 } }),
+      cueFixture({ id: "take-clip0", kind: "plain" }),
+    ];
+    const out = stampSceneAnchors(doc, cues);
+    expect(out.scenes["scene-3"]!.anchor).toEqual({ startWord: 4, endWord: 9 });
+    expect(out.scenes["take-clip0"]!.anchor).toBeUndefined();
   });
 });
 
