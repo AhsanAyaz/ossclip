@@ -36,6 +36,8 @@ ossclip edit "<work directory>"
 
 **Not sure what to run?** `ossclip` with no arguments opens a menu, and every choice prints the equivalent command before it runs. Choose **produce a video** and the wizard's first question offers the newest videos in your working directory, Downloads and Movies (Videos on Linux and Windows); a **Browse…** row that opens your operating system's own file picker; and typing a path. Over SSH on macOS or Windows, or on a Linux box with no display or no `zenity`/`kdialog`, the Browse rows are simply not shown — there is no window to open. `OSSCLIP_NO_PICKER` set to a non-empty value hides them too, leaving suggestions and typing — truthiness, not presence, so an empty `OSSCLIP_NO_PICKER=` leaves the picker on.
 
+**Your edits survive a re-produce:** everything you change in the editor lands in `overrides.json`, which the producer never overwrites. Each edit is anchored to the words it was made against, so it follows its moment even when a re-plan renumbers the scenes — and an edit whose words are gone is parked and reported, never silently applied to whatever now sits in that slot.
+
 **Scope, honestly:** ossclip is at its best polishing a take you have already cut down. `--clip` selects a single strongest window from long-form input — one clip, not N.
 
 **Keep your own editor:** `ossclip analyze` exports every suggested cut as a labelled span marker — reason, duration, confidence — in the dialect your NLE actually reads (`premiere-xml`, `resolve-edl` with colours, or `fcpxml` for Final Cut). Review the markers, cut in your own timeline; nothing is applied for you. Import steps per NLE are in the repo README.

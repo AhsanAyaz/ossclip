@@ -195,7 +195,7 @@ ossclip produce take.mp4 --produce -o short.mp4</code></pre>
 <ol>
   <li>The run narrates itself: transcription, the measured silence threshold, every cut with a reason, the LLM's beat sheet, then the render. The same account is written to <code>report.txt</code> beside the video.</li>
   <li>First runs are dominated by the render — measured at ~85% of wall time. A 7-minute take is roughly a coffee; re-runs answer from the work directory's cache and are near-instant.</li>
-  <li>When it finishes you get <code>short.mp4</code>, a cover JPEG, and an offer to open the editor. Take it: drag what the cut got wrong, retype a caption, delete a scene — your edits live in <code>overrides.json</code> and survive every re-run.</li>
+  <li>When it finishes you get <code>short.mp4</code>, a cover JPEG, and an offer to open the editor. Take it: drag what the cut got wrong, retype a caption, delete a scene — your edits live in <code>overrides.json</code> and survive every re-run — each anchored to the words it was made against, so it follows its moment even when a re-plan renumbers the scenes.</li>
 </ol>
 <div class="note"><strong>No LLM key? Drop <code>--produce</code>.</strong> Cut + captions run fully local, no network. And if you're unsure of any flag, run bare <code>ossclip</code> — the wizard asks, then prints the exact command it's about to run, which is also how you learn the flags.</div>
 
@@ -266,13 +266,14 @@ ossclip produce take.mp4 --whisper-model medium-urdu --whisper-language ur -o ou
 
 <h2 id="editor">Editing</h2>
 <img class="shot" src="./assets/editor-preview.gif" alt="The ossclip editor: preview, transform handles, inspector and timeline" />
-<p class="caption">Select, drag, retype — every edit lands in <code>overrides.json</code>, which the producer never overwrites.</p>
+<p class="caption">Select, drag, retype — every edit lands in <code>overrides.json</code>, which the producer never overwrites, anchored to the words it was made against.</p>
 <pre><code>ossclip edit "&lt;work directory&gt;"     # opens http://127.0.0.1:5174
 ossclip edit                        # bare: pick from recent projects, or browse</code></pre>
 <div class="cards">
   <div class="card"><b>Direct manipulation</b><span>Click to select, drag to move, corner handles to resize, panel fields for precision. Graphic boxes, elements, video framing, pip bubble — every element on every component is grabbable.</span></div>
   <div class="card"><b>Timeline</b><span>Zoom 1–16×, scrub, drag blocks in time, resize edges, split at the playhead (⌘B — each half inherits the scene's edits), soft-delete with a way back. The view follows the cursor.</span></div>
   <div class="card"><b>Cut &amp; restore</b><span>Split any take or scene, "Delete this chunk" — struck-through until the next Render, Restore one click away. Cuts are source-anchored, so a re-produce never drifts your splits, pins, or captions. Hidden graphic elements get the same treatment: per-element Restore in the scene panel.</span></div>
+  <div class="card"><b>Cover</b><span>Retype the headline or re-cut the frame from the top bar — <em>Use current playhead</em> takes the frame you are looking at, put on the original take's clock when you ask for a source frame, and it says so when that instant was cut away. <em>Preview</em> tries a frame without spending the cover you already have. Seconds, not a re-render; the video is never touched.</span></div>
   <div class="card"><b>Captions</b><span>Double-click a word to retype it (1:1 — timings stay). Position and scale per scene, or applied to every scene at once. A global Show-captions toggle hides the track everywhere — instant, undo-able, survives re-produces.</span></div>
   <div class="card"><b>Transcript view</b><span>The whole transcript, searchable — ‹ › chevrons (or Enter/⇧Enter) walk the matches — in a drag-resizable pane that follows playback; click a word to jump the preview, double-click to fix it.</span></div>
   <div class="card"><b>Render from the editor</b><span>Replays the recorded produce invocation — same flags, same provider — with live progress, elapsed time, token/cost lines, cancel, and a collapsible scrolling log. Survives a refresh.</span></div>

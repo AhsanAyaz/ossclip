@@ -124,10 +124,10 @@ ossclip edit                        # bare: pick from recent projects, or browse
 - **Hide any graphic element** — a chat bubble, a bullet, a diagram node — and the scene panel lists what's hidden with a per-element Restore.
 - A global **Show captions** toggle hides the caption track everywhere — instant in the preview, undo-able, and it survives re-produces. On a `--no-captions` run the toggle says the flag owns it.
 - **SPACE** toggles playback, **⌘Z** / **⌘⇧Z** undo and redo (also in the top bar), **⌘S** saves. Press **?** for the full keybinds reference.
-- **Cover** in the top bar retypes the cover headline or re-cuts its frame — **Use current playhead** takes the frame you are looking at. Rebuilds in seconds; the video itself is never touched. Same thing `ossclip cover` does from a terminal.
+- **Cover** in the top bar retypes the cover headline or re-cuts its frame. **Use current playhead** takes the frame you are looking at — converted to the original take's clock when you ask for a frame from the source, and it says so when the instant you picked was cut away. **Preview** tries a frame without spending the cover you already have; the seconds field keeps what it used, so you can nudge it and go again. Rebuilds in seconds; the video itself is never touched. Same thing `ossclip cover` does from a terminal.
 - **Open** in the top bar switches projects in place — recent produce runs plus a folder browser, no server restart.
 
-Edits land in `<workdir>/overrides.json` — a file the producer never writes. Re-running `produce` re-plans the video and **keeps your edits**.
+Edits land in `<workdir>/overrides.json` — a file the producer never writes. Re-running `produce` re-plans the video and **keeps your edits**: each one is anchored to the words it was made against, so it follows its moment even when the new plan numbers the scenes differently. An edit whose words are gone from the plan is parked and reported — never quietly applied to whatever now occupies that slot — and it comes back if a later plan has those words again.
 
 ## The commands
 

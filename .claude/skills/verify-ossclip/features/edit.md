@@ -8,6 +8,11 @@ Caption editing in the transcript shipped 2026-08-19, together with the non-Lati
 - Transcript-as-caption-editor: fix a word and the burned-in caption follows
 - Framing and crop overrides, written back as override files in the workdir
 - Cover regeneration from the editor without a full re-render (0.1.27)
+- Cover frame picked on the right clock: **Use current playhead** converts to the source clock for `--from source`,
+  clamps a cut instant with a spoken note, and **Preview** renders a candidate to `cover-preview.jpg` without
+  replacing the cover; the seconds field survives Apply (0.1.31, §156)
+- Scene overrides anchored to their transcript words, so a re-plan that renumbers scenes cannot misapply an edit;
+  an edit whose words are gone is parked under a `#orphaned` key rather than joined to the impostor (0.1.31, §155)
 - Non-Latin text end to end, Urdu being the case that drove it
 
 ## How to get to it (user POV)
