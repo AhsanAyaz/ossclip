@@ -15,9 +15,12 @@ import { writeOverrideDoc } from "../src/overrides-write";
 
 /**
  * Produce's wiring of the scene-edit remap (handoff-edit-anchoring), tested at
- * the seam below `produce()` itself: nothing in the repo can invoke `produce()`
- * (it needs ffmpeg, a transcript, a workdir and a render — overrides-write.ts
- * says so where it lives), so these tests run the SAME calls in the SAME order
+ * the seam below `produce()` itself. A behavioural harness for `produce()`
+ * does exist — produce-timing.test.ts (§140) invokes it hermetically
+ * (ffmpeg-gated, injected transcript, no render) — but it cannot reach
+ * graphic scenes without an LLM or a `--scenes` injection plus an
+ * overrides.json seeded into the hash-derived workdir. So these tests run
+ * the SAME calls in the SAME order
  * produce.ts runs them — remap on the ASSEMBLED cue list, before every
  * consumer of `overrideDoc.scenes` (the first `applyOverrides`,
  * `splitThenDropHidden`, `splitCues`, the final `applyOverrides` whose
@@ -147,10 +150,11 @@ describe("orphanEditLine", () => {
   });
 });
 
-// Source-text guard, the caption-report.test.ts precedent: nothing in the repo
-// can run `produce()`, and "the remap runs at the right POINT in the pipeline,
-// and its doc is the one written back" are claims about produce.ts itself that
-// the composition tests above cannot make.
+// Source-text guard, the caption-report.test.ts precedent: the §140 harness
+// can run `produce()` but not reach graphic scenes (the header comment has
+// the why), and "the remap runs at the right POINT in the pipeline, and its
+// doc is the one written back" are claims about produce.ts itself that the
+// composition tests above cannot make.
 describe("produce's remap wiring (source-text guard)", () => {
   const src = readFileSync(new URL("../src/produce.ts", import.meta.url), "utf8");
 

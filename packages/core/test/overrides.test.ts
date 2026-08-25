@@ -292,7 +292,7 @@ describe("stampSceneAnchors", () => {
     });
   });
 
-  it("resolves a split half's root for the anchor", () => {
+  it("stamps a split half through its own cue id — the half cue carries the root's anchor", () => {
     const doc = docWith({ "scene-3@abc": { props: {}, elements: {} } });
     const cues = [cueFixture({ id: "scene-3@abc", anchor: { startWord: 4, endWord: 9 } })];
     expect(stampSceneAnchors(doc, cues).scenes["scene-3@abc"]!.anchor).toEqual({

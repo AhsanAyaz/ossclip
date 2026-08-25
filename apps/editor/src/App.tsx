@@ -1032,9 +1032,10 @@ export const App: React.FC = () => {
   const liveCues = live?.sceneCues;
   useEffect(() => {
     if (liveCues) edits.syncCues(liveCues);
-    // `edits` is a fresh object every render but `syncCues` only writes a
-    // stable ref — depending on the cues alone is what keeps this from
-    // re-running on every keystroke.
+    // `liveCues` is a fresh array whenever `edits.doc` changes, so this still
+    // re-runs per edit — harmless, `syncCues` only writes a stable ref. What
+    // depending on the cues alone (not the fresh-every-render `edits` object)
+    // prevents is re-running on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveCues]);
 

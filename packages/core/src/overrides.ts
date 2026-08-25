@@ -792,7 +792,10 @@ export interface SceneRemapResult {
  * one whose words are GONE while its id points at a different moment is
  * parked under `${key}#orphaned` rather than left to join the impostor. A
  * parked entry's root id is historical, not a claim on today's cue, so it
- * skips the id-agreement shortcut and matches purely by anchor.
+ * skips the id-agreement shortcut and matches purely by anchor. A parked
+ * entry whose words are STILL gone stays quiet on later runs; one whose
+ * words are back while its target key is held re-parks and re-notes on
+ * EVERY run — deliberately, because that collision is actionable.
  *
  * Anchor-less (pre-migration) entries pass through byte-identical with no
  * note — the same no-retroactive-protection posture §137 took for captions.
