@@ -17,6 +17,7 @@ import {
   regenerateCover,
   resolveCoverText,
   type CoverSeams,
+  CoverRenderPropsSchema,
 } from "../src/cover";
 
 /**
@@ -892,5 +893,49 @@ describe("regenerateCover", () => {
     ).rejects.toThrow(/chrome fell over/);
     // Still describing the cover that IS on disk.
     expect(readProvenance()).toEqual(before);
+  });
+});
+
+/**
+ * A take with no face must still be able to regenerate its cover (§154).
+ *
+ * `produce` writes `face: null` when the detector found nobody — that is a
+ * measurement, not an absence, and core's own schema says so
+ * (`schema.ts`: "null = no face found", `.nullable().optional()`). The cover's
+ * copy of the shape only had `.optional()`, which accepts a MISSING key and
+ * rejects an explicit null, so every screen recording and voiceover-over-slides
+ * project hit:
+ *
+ *   render-props.json in … is not valid:
+ *   { "path": ["face"], "message": "Invalid input: expected object, received null" }
+ *
+ * Reported from the published 0.1.29 on a terminal-recording project, where
+ * "no face" is the normal case rather than an edge one. The cover panel could
+ * not regenerate at all.
+ */
+describe("CoverRenderPropsSchema tolerates a faceless take", () => {
+  const base = {
+    videoFileName: "in.mp4",
+    spans: [],
+    captionLines: [],
+    sceneCues: [],
+    settings: { width: 1080, height: 1920 },
+    outputDurationSec: 10,
+  };
+
+  it("accepts face: null — the shape produce actually writes when nobody is on camera", () => {
+    expect(CoverRenderPropsSchema.safeParse({ ...base, face: null }).success).toBe(true);
+  });
+
+  it("still accepts a measured face, and an absent key", () => {
+    expect(
+      CoverRenderPropsSchema.safeParse({ ...base, face: { subject: "face" } }).success,
+    ).toBe(true);
+    expect(CoverRenderPropsSchema.safeParse(base).success).toBe(true);
+  });
+
+  it("null survives parsing as null, so `face?.subject` stays undefined downstream", () => {
+    const parsed = CoverRenderPropsSchema.parse({ ...base, face: null });
+    expect(parsed.face ?? undefined).toBeUndefined();
   });
 });

@@ -527,12 +527,21 @@ export function coverBannerText(args: {
  * theme, which is exactly how a regenerated cover picks up a theme change for
  * free (§corr.2). `production.json` carries neither the RESOLVED theme nor
  * the editor's edits, which is why this is the file that gets read. */
-const CoverRenderPropsSchema = z.object({
+export const CoverRenderPropsSchema = z.object({
   theme: ThemeSchema.optional(),
   settings: z.object({ width: z.number(), height: z.number() }).optional(),
   /** The take's whole-frame subject, for a re-pick's scoring — "screen"
    * zeroes the face weight (scoreCandidate's 2026-08-16 incident). */
-  face: z.object({ subject: z.enum(["face", "screen"]).optional() }).optional(),
+  // `.nullable()`, not just `.optional()` (§154): produce writes `face: null`
+  // when the detector found nobody, and null is a MEASUREMENT — core's own
+  // schema says so ("null = no face found"). `.optional()` accepts a missing
+  // key and rejects an explicit null, so every screen recording and
+  // slides-with-voiceover project could not regenerate its cover at all.
+  // Downstream reads `renderProps.face?.subject`, which is already null-safe.
+  face: z
+    .object({ subject: z.enum(["face", "screen"]).optional() })
+    .nullable()
+    .optional(),
 });
 
 export interface CoverRegenerateOptions {
