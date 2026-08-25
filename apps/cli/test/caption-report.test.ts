@@ -584,9 +584,12 @@ describe("produce's §137 caption wiring (source-text guard)", () => {
     // survive is one of them going missing, or the `||` narrowing to `&&`.
     // `hidesPruned` joined the gate with the §59b-revisited word delete — a
     // pruned hide is a doc change with neither a cut change nor a migration
-    // behind it, the identical shape — so the regex requires all three.
+    // behind it, the identical shape. `sceneKeysRemapped` joined with
+    // handoff-edit-anchoring — a scene edit re-keyed to its anchor's new id
+    // is again a doc change none of the others see — so the regex requires
+    // all four.
     expect(src).toMatch(
-      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\|\|\s*hidesPruned\s*\)/,
+      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\|\|\s*hidesPruned\s*\|\|\s*sceneKeysRemapped\s*\)/,
     );
   });
 

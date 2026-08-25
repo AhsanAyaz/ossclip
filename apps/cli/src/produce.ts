@@ -23,6 +23,9 @@ import {
   analyze,
   applyOverrides,
   applyRepairs,
+  isParkedOverrideKey,
+  parkedOverrideBaseKey,
+  remapSceneOverrides,
   assembleScenes,
   buildCaptionLines,
   buildCutlist,
@@ -1894,6 +1897,20 @@ export function layoutSlotAspects(frame: {
   });
 }
 
+/**
+ * One orphaned scene edit, one honest sentence. A parked key (`…#orphaned`,
+ * handoff-edit-anchoring) matches no cue BY DESIGN, so it surfaces in
+ * `applyOverrides`' orphan list on every run — and "dropped" would tell the
+ * user an edit is gone while the doc still holds it, anchor intact, waiting
+ * for a plan that has its words again. Pure so both sentences are testable
+ * without a produce run.
+ */
+export function orphanEditLine(id: string): string {
+  return isParkedOverrideKey(id)
+    ? `  ⚠ edit for ${parkedOverrideBaseKey(id)} is parked — its words are not in this plan`
+    : `  ⚠ edit for ${id} dropped — the plan no longer has that scene`;
+}
+
 async function preflight(bin: string, hint: string): Promise<void> {
   try {
     await run(bin, ["-version"], { allowNonZero: true });
@@ -3408,6 +3425,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     outputDurationSec: map.outputDuration,
     clipStarts: map.spans.map((s) => s.outIn),
   });
+  // Re-key scene edits whose positional id no longer means the moment they
+  // were made on (handoff-edit-anchoring; §137 is the caption precedent — in
+  // the field, scene-4 was a TerminalMock in one plan and a FlowDiagram in
+  // the next, and the user's edit landed on the impostor). BEFORE `splitCues`
+  // so `root@splitId` halves rename with their root, and BEFORE
+  // `applyOverrides` so its id-join — and its orphan warning — see the
+  // converged keys: after this, "dropped" really means both identities
+  // missed. Notes are non-empty exactly when the doc changed, which is what
+  // earns the write-back its turn at the sanctioned write below.
+  const sceneRemap = remapSceneOverrides(overrideDoc, filled);
+  overrideDoc = sceneRemap.doc;
+  for (const n of sceneRemap.notes) console.log(`  ▸ ${n}`);
+  const sceneKeysRemapped = sceneRemap.notes.length > 0;
   // User splits (R16 §61) — after the fill so takes split like scenes, and
   // before the final override pass so edits on the `id@<split id>` halves land
   // (the suffix is the split's own minted id, §137, not its time). A
@@ -3438,7 +3468,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log(`▸ applied your edits to ${editedCount - orphans.length - hiddenIds.length} scene(s)`);
   }
   for (const id of orphans) {
-    console.log(`  ⚠ edit for ${id} dropped — the plan no longer has that scene`);
+    console.log(orphanEditLine(id));
   }
 
   const graphicCues = sceneCues.filter((c) => c.kind !== "plain");
@@ -4295,7 +4325,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // re-report "the cut removed it" on every later run. It does NOT spend the
   // `.bak` — retiring a redundant key is not the cut re-anchoring the backup
   // exists to survive.
-  if (cutResult.changed || captionKeysReanchored || hidesPruned) {
+  // `sceneKeysRemapped` joins for the caption-migration reason: a scene edit
+  // that followed its anchor to a new id (handoff-edit-anchoring) is keyed
+  // right in memory but wrong on disk, and every re-keyed entry was just
+  // printed by name. It does NOT spend the `.bak` — the remap moves keys, it
+  // rewrites no values a user would need to recover.
+  if (cutResult.changed || captionKeysReanchored || hidesPruned || sceneKeysRemapped) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
     console.log(overridesWriteLine(cutResult.changed));
   }

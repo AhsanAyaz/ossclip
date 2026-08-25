@@ -758,6 +758,18 @@ const wordOverlap = (a: SceneAnchor, b: SceneAnchor): number =>
  */
 const PARKED_SUFFIX = "#orphaned";
 
+/** The one exported spelling of the parked-key convention: produce's orphan
+ * warning must ask this, never re-spell the literal, or the two sides drift. */
+export function isParkedOverrideKey(key: string): boolean {
+  return key.endsWith(PARKED_SUFFIX);
+}
+
+/** The key a parked entry was parked FROM — what the user's warning should
+ * name, since the suffix is bookkeeping, not something they ever typed. */
+export function parkedOverrideBaseKey(key: string): string {
+  return isParkedOverrideKey(key) ? key.slice(0, -PARKED_SUFFIX.length) : key;
+}
+
 export interface SceneRemapResult {
   doc: OverrideDoc;
   /** Human sentences for produce to print — one per re-keyed, parked, or blocked entry. */

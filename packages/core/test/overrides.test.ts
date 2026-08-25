@@ -6,6 +6,8 @@ import {
   clearGraphicRect,
   legacySplitId,
   mintSplitId,
+  isParkedOverrideKey,
+  parkedOverrideBaseKey,
   remapSceneOverrides,
   splitCues,
   splitThenDropHidden,
@@ -516,6 +518,26 @@ describe("remapSceneOverrides (handoff-edit-anchoring — the produce-side misap
     expect(out.scenes["scene-3#orphaned"]!.props.title).toBe("older");
     expect(out.scenes["scene-3"]).toBeUndefined(); // still never left on the impostor
     expect(notes.some((n) => n.includes("dropped"))).toBe(true);
+  });
+});
+
+describe("isParkedOverrideKey / parkedOverrideBaseKey", () => {
+  // The suffix convention lives in ONE place: produce's orphan-warning loop
+  // asks these instead of re-spelling the literal, so the two sides can
+  // never drift apart on what a parked key looks like.
+  it("recognises a parked key and recovers its base", () => {
+    expect(isParkedOverrideKey("scene-3#orphaned")).toBe(true);
+    expect(parkedOverrideBaseKey("scene-3#orphaned")).toBe("scene-3");
+  });
+
+  it("leaves ordinary keys — including split halves — alone", () => {
+    expect(isParkedOverrideKey("scene-3")).toBe(false);
+    expect(isParkedOverrideKey("scene-3@abc")).toBe(false);
+    expect(parkedOverrideBaseKey("scene-3")).toBe("scene-3");
+  });
+
+  it("a parked split half keeps its split suffix in the base", () => {
+    expect(parkedOverrideBaseKey("scene-3@abc#orphaned")).toBe("scene-3@abc");
   });
 });
 
