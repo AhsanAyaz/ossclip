@@ -2,6 +2,7 @@ import React from "react";
 import {
   cutRangeToOldClock,
   LayoutSchema,
+  scalarPropControls,
   SceneComponentIdSchema,
   splitRootId,
   type SceneCue,
@@ -689,6 +690,55 @@ export const Inspector: React.FC<InspectorProps> = ({
               </select>
             </div>
           ) : null}
+          {/* Props the Text field cannot reach (§153): it renders only for
+              string props, so a component's booleans had no control anywhere
+              in the UI and were reachable only by hand-editing overrides.json.
+              Derived from the component's own schema rather than listed here,
+              so a component that gains one gets a control the day it lands —
+              hand-wiring is what let ScreenshotFrame ship an edit id naming no
+              prop at all. */}
+          {!isPlain && cue.component
+            ? scalarPropControls(cue.component).map((control) =>
+                control.kind === "boolean" ? (
+                  <div style={row} key={control.key}>
+                    <span style={label}>{control.key}</span>
+                    <input
+                      type="checkbox"
+                      data-testid={`prop-${control.key}`}
+                      // The schema's default, not `false`: kenBurns is on when
+                      // unset, and a box that started unchecked would describe
+                      // the scene wrongly before you touched anything.
+                      checked={
+                        typeof cue.props?.[control.key] === "boolean"
+                          ? (cue.props[control.key] as boolean)
+                          : control.fallback === true
+                      }
+                      onChange={(e) =>
+                        edits.patchProps(selection.sceneId, { [control.key]: e.target.checked })
+                      }
+                    />
+                  </div>
+                ) : (
+                  <div style={row} key={control.key}>
+                    <span style={label}>{control.key}</span>
+                    <select
+                      style={numberInput}
+                      data-testid={`prop-${control.key}`}
+                      value={String(cue.props?.[control.key] ?? control.options?.[0] ?? "")}
+                      onChange={(e) =>
+                        edits.patchProps(selection.sceneId, { [control.key]: e.target.value })
+                      }
+                    >
+                      {(control.options ?? []).map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ),
+              )
+            : null}
           <div style={row}>
             <span style={label}>Layout</span>
             <select

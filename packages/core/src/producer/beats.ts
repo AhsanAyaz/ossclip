@@ -20,6 +20,15 @@ import type { LlmProvider } from "./provider";
  * so the model is still ASKED for the limit; it just no longer costs a run
  * when the model misses by a word. Truncation prefers the last word boundary,
  * and adds no ellipsis — the prompt explicitly forbids one on cover text.
+ *
+ * One provider is now an exception (§151). agy does not constrain decoding: it
+ * generates, validates against the schema server-side, and REGENERATES on a
+ * miss — so there, "still asked" cost the entire attempt, and a run of near
+ * misses walked into the print-timeout as a hang. `stripAbsorbableCaps` drops
+ * maxLength from agy's copy of the schema, and this truncation is what makes
+ * that safe. Every capped string in the beat sheet routes through here for
+ * exactly that reason — a single bare `.max()` would turn agy's retry loop
+ * into a hard local failure instead.
  */
 export function cappedText(max: number): z.ZodType<string> {
   return z.preprocess((v) => {
@@ -86,10 +95,14 @@ export type BeatSheet = z.infer<typeof BeatSheetSchema>;
 export const ClipHighlightSchema = z.object({
   startWord: z.number().int().nonnegative(),
   endWord: z.number().int().nonnegative(),
-  reason: z
-    .string()
-    .max(200)
-    .describe("one line: why THIS window is the strongest stretch of the take"),
+  // cappedText, not a bare .max(200) (§151): this was the ONE capped string in
+  // the beat sheet that REJECTED an overshoot instead of truncating it. That
+  // asymmetry is load-bearing now — the agy request drops maxLength from the
+  // wire schema precisely because every cap can be absorbed locally, and a
+  // single rejecting field would turn a retry loop into a hard failure.
+  reason: cappedText(200).describe(
+    "one line: why THIS window is the strongest stretch of the take",
+  ),
 });
 export type ClipHighlight = z.infer<typeof ClipHighlightSchema>;
 

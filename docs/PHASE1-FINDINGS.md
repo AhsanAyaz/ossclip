@@ -1515,3 +1515,96 @@ Two things worth keeping:
 
 - **The verification reproduced the bug.** Driving the real CLI under a pty to check the notice rendered also caught agy hanging again — timing out at 90s, falling back, and finishing. The fix was proven by the failure it was written for, on the first attempt to look at it.
 - **§143's probes ran agy from the command line, not through our spawn.** That is why the hang "would not reproduce" there, and it is the gap that let the timeout stay unexamined for a release. When a probe cannot reproduce a hang, check whether the probe is exercising the same plumbing before concluding the cause is upstream.
+
+## 150. A cache that writes one key and reads another never hits
+
+§143 split the beat-sheet cache deliberately: reads use the provider you asked for, writes file under the provider that actually answered, so attribution stays truthful when a fallback plans your video. Its own note called the cost out loud — "a repeat `--llm antigravity` run re-attempts agy before falling back again" — and accepted it, because the hang was believed rare.
+
+The hang is not rare (§149), and that turns the accepted cost into a loop with no exit:
+
+1. Run asks for antigravity. agy times out. claude-cli answers.
+2. The plan is written under the **claude-cli** key.
+3. The next run asks for antigravity again, reads the **antigravity** key, and misses — nothing will ever write it while agy keeps failing.
+4. It re-attempts agy, waits out the whole print-timeout, falls back, and rewrites the key nobody reads.
+
+So a warm workdir never gets a warm plan. Every re-render pays the timeout again, and — because the beat sheet is a fresh LLM call each time — produces a **different** plan. The 2026-08-23 field run shows what that costs a user who had already edited their video: `⚠ edit for scene-11 dropped — the plan no longer has that scene`. Re-rendering after an edit silently rewrote the approved cut, changed the graphics, and threw away an edit anchored to a scene the new plan no longer contained.
+
+The read now tries a second key, and exactly one: the provider this run *would fall back to anyway*. That is not a substitution — it is what this run would produce, without paying the timeout to rediscover it. Anything looser (any provider's sheet, newest-file-wins) would hand a claude-cli plan to someone who asked for gemini and got gemini. Measured on the fixture: a cold run 134s, the re-run **1s**, with no agy call at all.
+
+Two things this finding is careful about:
+
+- **The write side was right and stays.** The bug was never that a fallback writes under its own name; it was that nothing ever read that name back. Fixing attribution by dropping the provider from the key would have traded a real guarantee for a cache hit.
+- **A cached hit says who planned it.** The live fallback already announces itself, and a cached run inherits that obligation — a plan reaching the screen from disk must not read as the primary's work just because the call was skipped this time.
+
+The general shape, worth carrying: **an asymmetric cache key is a cache that cannot hit.** If the value written under key A is only ever looked up under key B, the store is write-only, and the symptom is not a miss — it is the expensive path running every single time, which reads as slowness rather than as a bug.
+
+Left open, and visible in the same run's output: the report's cached-run line reads `producerStamp.provider`, which records that antigravity answered *some* call that run (the transcript repair did succeed), so it prints "planned by antigravity" beside the new line naming claude-cli. Two true-ish statements that contradict each other about the thing that matters — who planned the video.
+
+## 151. The maxLength theory was wrong, and the disproof is the useful part
+
+§149 fixed how long we wait for a hung agy call. This section is the attempt to fix why it hangs at all, and it failed — the reasoning is recorded because the wrong turn is instructive and the next person will otherwise take it again.
+
+The theory came from a real capture. Replaying the beat-sheet call with a trivial prompt returned:
+
+```
+"status": "ERROR"
+"error": "invalid arguments:\n- at '/hook': maxLength: got 136, want 120"
+```
+
+agy does not constrain decoding. It generates, validates server-side against the JSON Schema we hand it, and regenerates on a miss. Sixteen characters over on one field and the whole attempt is discarded. The beat sheet carries six capped strings, three of them per moment across up to 24 moments, so the chance that *every* field lands under its limit on the *same* attempt is not high — and each attempt costs 30-70s. That is a clean, complete story for a hang, and it was wrong.
+
+Three things killed it, in order:
+
+1. **The strip shipped and the hang didn't move.** With `maxLength` removed from the wire schema (verified by capturing the live argv: zero occurrences), the fixture run still timed out at 140s.
+2. **Replaying the exact failing request standalone** — the real system prompt, real transcript, real schema, dumped from the running provider rather than reconstructed — returned `status: ERROR`, `duration_seconds: 115.9`, `error: "timeout waiting for response"`. Not a validation rejection. The model never answered.
+3. **Dropping `--json-schema` entirely** and sending the same prompt still timed out, at 87.6s, with an empty response body.
+
+So the schema is not implicated, size is not (the whole prompt is 6,284 bytes), and our plumbing is not — it reproduces with no ossclip in the picture. §143's original read was right: it is upstream, and our prompt reliably triggers a non-response.
+
+The methodological lesson is the one worth keeping. **A trivial-prompt reproduction is not a reproduction.** The `maxLength` error was genuine, reproducible, and about the right call — and still had nothing to do with the failure being investigated, because the prompt that produced it was one I wrote rather than the one that fails. §143 made the same class of error from the other direction (probing agy from the command line rather than through our spawn, §149), and the fix for both is the same: dump the real request from the running system and replay *that*.
+
+What survives, on its own merits rather than as a fix:
+
+- `stripAbsorbableCaps` stays. It removes a real way a generation gets discarded — one observed, not hypothesised — and `cappedText` already absorbs the overshoot locally, so the wire cap could only ever cost a generation, never save one. Its doc says plainly that it is not the cure for the timeouts.
+- `ClipHighlightSchema.reason` moves from a bare `.max(200)` to `cappedText(200)`. It was the only capped string in the beat sheet that *rejected* an overshoot while every other one truncated, which is precisely the asymmetry §123 exists to prevent: validate where the pipeline can degrade, not where it can only die.
+
+What was deliberately NOT done: stating the copy budgets in the producer prompt, which was the third leg of the plan. `producerSystem`'s own doc requires the portrait wording stay byte-identical because the virality grammar was tuned against real runs of it, and any prompt edit must bump `PRODUCER_PROMPT_VERSION` — which invalidates every cached plan and forces exactly the re-plan-and-drop-edits behaviour §150 had just fixed. A prompt improvement that costs every user their edits needs to be a deliberate decision, not a side effect of a bug hunt.
+
+## 152. A run that answered nothing was still signing the work
+
+Found while verifying §150, in the same run's output — two lines contradicting each other about the one thing the stamp exists to record:
+
+```
+▸ scenes cached (4) — planned by claude-cli, which antigravity fell back to
+llm: no calls this run — planned by antigravity (…), reused from the workdir cache
+```
+
+`production.json` is rewritten by every produce, cached or not, and its producer stamp is rebuilt from *this* run's usage records. On a fully cached run there are none, so `providersSeen` is empty, the expression falls through to `last.provider` — the provider we ASKED for — and the stamp that the planning run had correctly written as `antigravity → claude-cli` was overwritten with `antigravity`.
+
+So re-rendering a cached project quietly credited the plan to a provider that never produced it, and the longer a workdir lived the more certain that erasure became: one truthful stamp, then every subsequent run replacing it. §143 built the fallback to guarantee the user knows which model planned their video; this undid it one cached run later.
+
+The fix is a sentence: a run with nothing answered keeps the stamp already on disk. The plan did not change, so its attribution does not either.
+
+Two things worth carrying:
+
+- **The bug was invisible until something else disagreed with it.** `planned by antigravity` is a completely plausible line. It only became a defect when §150 added a second line naming the real planner, and the two sat three rows apart. Redundant reporting is not waste when the thing being reported is easy to get quietly wrong.
+- **Derived files are still artefacts.** `production.json` is regenerated every run, which made it feel safe to rebuild every field every time. But one of those fields is a record of something that happened in a *different* run, and a rebuild had no way to know it. A regenerated file can still carry history, and the fields that do need to survive the regeneration.
+
+## 153. An edit id that names no prop is an invisible dead end
+
+Reported as "make sure each component is editable — if I have a terminal screenshot or the other screenshot, all of them should be possible to edit". The audit found the mechanism was already there and two things were quietly missing from it.
+
+**The bug.** `ScreenshotFrame` renders `data-edit-id="image"`; the prop is called `src`. The Inspector resolves a selected element with `elementTextOf`, which is `props[elementId]` and returns `null` for anything that is not a string — so the Text field never rendered and the screenshot could be selected but never changed. Nothing failed. No error, no empty field, no console warning: the control was simply absent, which is indistinguishable from "this element has nothing to edit". One rename is all it took, and the only thing that ever noticed was a user asking why they couldn't swap the image.
+
+That failure mode is why the fix is a test rather than a rename. `packages/scenes/test/edit-ids-resolve.test.ts` walks every component's `data-edit-id` and asserts it resolves to a real prop — literal ids against the schema's properties, dynamic ones (`window-${i}`) against the array they index. Written first, it failed on exactly one component, which is the best evidence a guard can offer about itself.
+
+Writing it did take two passes, and the reason is worth keeping: the components use two shapes. A leaf either hardcodes its id or takes one as a prop and renders `data-edit-id={editId}`, with the real id built at the *call* site as a template. Scanning only the attribute collects the literal string `"editId"` — a variable name — and reports five components broken that are fine. A static scan has to match how the code is actually written, not how it reads at one call site.
+
+**The gap.** `elementTextOf` returning `null` for non-strings also meant every boolean prop had no control anywhere in the UI: `StatCard.inverted`, `ScreenshotFrame.kenBurns`, `FlowDiagram.emphasizeLast` were reachable only by hand-editing `overrides.json`. The Inspector now derives controls from the component's own `propsSchema` — booleans to checkboxes, enums to selects — so a component that gains one gets a control the day it lands. Hand-wiring per component is precisely how the id and the prop drifted apart in the first place.
+
+Two details that only surfaced by building it:
+
+- **The schema's default is part of the display.** `kenBurns` is `true` when unset, so a checkbox that assumed `false` would have described the scene wrongly before the user touched anything — reporting the control's own default rather than the scene's state.
+- **`fanOut` looks like a toggle and is a string.** The test asserting it should appear as a checkbox failed, and the test was wrong, not the code: it is `z.string().max(20)` with a matching edit id, already editable as text. A second control writing the same prop is how two sources of truth start disagreeing.
+
+The derivation lives in core and ships through the `browser` entry rather than in the editor, because zod is already in that module graph — the editor gets it without pulling a schema library into its own bundle, which is what `browser.ts` exists for.
