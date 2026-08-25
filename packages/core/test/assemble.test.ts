@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assembleScenes } from "../src/assemble";
+import { fillPlainCues } from "../src/fill";
 import { TimeMap } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
 import type { Scene } from "../src/scene-schema";
@@ -92,6 +93,16 @@ describe("assembleScenes", () => {
     expect(cues).toHaveLength(1);
     expect(cues[0]!.props!.title).toBe("OVERRIDDEN");
     expect(dropped[0]).toMatchObject({ id: "b" });
+  });
+
+  it("assembled graphic cues carry the scene's anchor; plain fill cues carry none", () => {
+    // The anchor is the cue's cross-re-plan identity (handoff-edit-anchoring):
+    // graphic cues carry their scene's word range, fill cues have no plan
+    // anchor and must stay bare so absence keeps meaning "id-only identity".
+    const { cues } = assembleScenes([scene("scene-0", 2, 5)], transcript, identity);
+    expect(cues[0]!.anchor).toEqual({ startWord: 2, endWord: 5 });
+    const filled = fillPlainCues(cues, { outputDurationSec: 10, clipStarts: [0] });
+    expect(filled.find((c) => c.kind === "plain")!.anchor).toBeUndefined();
   });
 
   it("every layout holds through its whole moment (R23 §114), under the 15s ceiling", () => {
