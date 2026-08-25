@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { COVER_MAX_WORDS, coverHeadline } from "@ossclip/core/browser";
+import { COVER_MAX_WORDS, coverHeadline, TimeMap, type Segment } from "@ossclip/core/browser";
 
 /**
  * The cover panel (2026-08-19): view the `<out>.cover.jpg`, retype its
@@ -52,6 +52,14 @@ export interface CoverInfo {
   /** Where a regeneration would write — null when there is nowhere to put it. */
   outPath: string | null;
   imageUrl: string | null;
+  /**
+   * The finished mp4's RESOLVED span set — never the proposal /api/cleanup
+   * serves, whose ruler the user's vetoes already changed. What the panel's
+   * clock conversions (`playheadAtSeconds`, `atFieldOnFromToggle`) run on;
+   * `[]` when the render recorded none, and the helpers then degrade to
+   * pass-through with a "couldn't convert" note.
+   */
+  cutlist: Segment[];
 }
 
 /**
@@ -171,6 +179,106 @@ export function coverRegenerateBody(args: {
   };
 }
 
+/*
+ * The two clock-crossing gestures (handoff-cover-panel §1). The seconds field
+ * has exactly ONE meaning: seconds on the SELECTED video's own clock — the
+ * same thing `ossclip cover --at` means, so the server keeps re-mapping
+ * nothing. The clocks only ever meet inside the panel: the playhead arrives
+ * in the finished mp4's output time (the `playheadSec` prop contract below),
+ * and the from-toggle changes which clock the field is denominated in. Both
+ * helpers are pure so the span math is testable without a mount, and both
+ * build `new TimeMap(cutlist)` per call — cheap for a handful of spans;
+ * memoization is the component's business, not these functions'.
+ */
+
+/**
+ * The playhead button's value for the CURRENT frame source, plus the sentence
+ * explaining a crossed clock (null when no conversion happened).
+ *
+ * With no cutlist to convert through, `toSource` would degenerate to 0 and
+ * silently discard the playhead — so this refuses to pretend: the output
+ * seconds pass through unchanged, under a note that says so.
+ */
+export function playheadAtSeconds(args: {
+  playheadOutSec: number;
+  from: CoverFrom;
+  cutlist: readonly Segment[];
+}): { atSec: number; note: string | null } {
+  if (args.from === "final") return { atSec: args.playheadOutSec, note: null };
+  const map = new TimeMap(args.cutlist);
+  if (map.spans.length === 0) {
+    return {
+      atSec: args.playheadOutSec,
+      note:
+        "Couldn't convert to the original take's clock — this render recorded no cutlist, so " +
+        `${args.playheadOutSec.toFixed(1)}s of the finished video is being used as-is.`,
+    };
+  }
+  const atSec = map.toSource(args.playheadOutSec);
+  return {
+    atSec,
+    note:
+      `${args.playheadOutSec.toFixed(1)}s of the finished video is ` +
+      `${atSec.toFixed(1)}s of the original take.`,
+  };
+}
+
+/**
+ * Re-express a filled field when the frame-source toggle crosses clocks.
+ * Returns null when the field should be left alone: blank or invalid input
+ * (`parseAtSeconds`'s rule, reused rather than restated — blank means "no
+ * timestamp", and an invalid field stays visibly wrong under its own error
+ * message instead of being "fixed" by a toggle), or no clock change.
+ *
+ * source → final uses the exact lookup first: an instant that was cut from
+ * the finished video has no exact answer, so it snaps to the nearest kept
+ * edge and the note says a snap happened rather than passing it off as a
+ * conversion.
+ */
+export function atFieldOnFromToggle(args: {
+  atRaw: string;
+  prevFrom: CoverFrom;
+  nextFrom: CoverFrom;
+  cutlist: readonly Segment[];
+}): { atRaw: string; note: string } | null {
+  if (args.prevFrom === args.nextFrom) return null;
+  const at = parseAtSeconds(args.atRaw);
+  if (!at.ok || at.atSec === undefined) return null;
+  const map = new TimeMap(args.cutlist);
+  if (map.spans.length === 0) {
+    // playheadAtSeconds' refusal, on the toggle: rewriting through zero spans
+    // would destroy the number. Keep it, and own up that it now sits on a
+    // clock nobody converted.
+    return {
+      atRaw: args.atRaw,
+      note:
+        "Couldn't convert between clocks — this render recorded no cutlist; " +
+        "the seconds are unchanged.",
+    };
+  }
+  if (args.nextFrom === "source") {
+    const src = map.toSource(at.atSec);
+    return {
+      atRaw: src.toFixed(2),
+      note: `${at.atSec.toFixed(1)}s of the finished video is ${src.toFixed(1)}s of the original take.`,
+    };
+  }
+  const exact = map.toOutput(at.atSec);
+  if (exact !== null) {
+    return {
+      atRaw: exact.toFixed(2),
+      note: `${at.atSec.toFixed(1)}s of the original take is ${exact.toFixed(1)}s of the finished video.`,
+    };
+  }
+  const clamped = map.toOutputClamped(at.atSec);
+  return {
+    atRaw: clamped.toFixed(2),
+    note:
+      `${at.atSec.toFixed(1)}s of the original take was cut from the finished video — ` +
+      `snapped to the nearest kept moment, ${clamped.toFixed(1)}s.`,
+  };
+}
+
 export interface CoverPanelProps {
   onClose: () => void;
   /**
@@ -179,13 +287,15 @@ export interface CoverPanelProps {
    * frame, so a prop snapshot would be whatever the playhead was when the
    * panel opened.
    *
-   * This value goes straight through as `atSec`, and that is only sound
-   * because App answers in the finished mp4's own output time: with no live
-   * cleanup re-cut the player's frame IS that clock, and under one App maps
-   * the live playhead BACK onto it (new → source → old — the call site's
-   * comment owns why that direction is the REVERSE of every other surface's).
-   * (`--from source` is the other case, and the server re-maps nothing for it
-   * — see the toggle's note.)
+   * This value is denominated in the finished mp4's own output time, always:
+   * with no live cleanup re-cut the player's frame IS that clock, and under
+   * one App maps the live playhead BACK onto it (new → source → old — the
+   * call site's comment owns why that direction is the REVERSE of every other
+   * surface's). It only goes straight through as `atSec` for `--from final`;
+   * with the original take selected the PANEL owns the remaining hop, output
+   * → source, through `playheadAtSeconds` (and `atFieldOnFromToggle` when the
+   * toggle re-denominates an already-filled field) — the server re-maps
+   * nothing either way, which is the field's one-meaning contract.
    */
   playheadSec: () => number;
 }
@@ -200,6 +310,20 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
   const [busy, setBusy] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
+  /** The finished mp4's resolved spans (CoverInfo.cutlist) — the ruler the
+   * two clock-crossing gestures convert through. */
+  const [cutlist, setCutlist] = useState<Segment[]>([]);
+  /** The last gesture's conversion sentence. Apply keeps it — it explains
+   * where the number in the field CAME from — but a manual retype clears it
+   * (Tasks 2+3 review): the sentence describes a number the field no longer
+   * holds. */
+  const [clockNote, setClockNote] = useState<string | null>(null);
+  /** The one-off frame's URL while a preview is showing, null otherwise
+   * (handoff-cover-panel §3). Shown IN PLACE of the cover under a "not
+   * saved" badge; a successful real Apply replaces it with the saved cover.
+   * Never persisted anywhere client-side — the server owns the scratch file
+   * exactly as it owns the cover. */
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -220,6 +344,9 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
         if (!res.ok) throw new Error(body.error ?? `GET /api/cover failed: ${res.status}`);
         setInfo(body);
         setImageUrl(body.imageUrl);
+        // `?? []` guards a pre-cutlist server only — in lockstep builds the
+        // field is always present (edit.ts's /api/cover).
+        setCutlist(body.cutlist ?? []);
         if (body.provenance) {
           setText(body.provenance.text);
           // NOT the persisted timestamp: an empty field means "re-use the
@@ -275,15 +402,68 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
         return;
       }
       setImageUrl(body.imageUrl ?? null);
+      // The preview's whole meaning was "not what Apply would save" — this
+      // Apply just saved, so the freshly written cover takes the box back.
+      setPreviewUrl(null);
       setNotes(body.notes ?? []);
       if (body.provenance) {
         const written = body.provenance;
         setInfo((prev) => (prev ? { ...prev, provenance: written, status: "ready" } : prev));
         setText(written.text);
       }
-      // The frame it used is now the still on disk, so the next Apply is the
-      // cheap path again — clear the field to say so.
-      setAtRaw("");
+      // The seconds it used stay VISIBLE in the field (handoff problem 2):
+      // clearing it made the applied frame's timestamp unrecoverable, so
+      // iterating meant re-hunting with the playhead. Kept, a repeat Apply
+      // with the field untouched re-extracts the same instant — idempotent,
+      // just not the no-ffmpeg path — which is the price of being able to
+      // nudge the number. Blank-for-cheap-path is the INITIAL state only.
+    } catch (err) {
+      setApplyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * onApply's exact gestures against the preview endpoint: the SAME body
+   * (coverRegenerateBody — text/atSec/from, never a path; the server derives
+   * the one-off destination), the same busy flag (a preview boots the same
+   * headless browser), the same verbatim error posture. The differences are
+   * the response — a previewUrl instead of a saved cover — and that neither
+   * `imageUrl` nor the provenance prefills move: the notes carry the server's
+   * one-off disclosure that cover.json now describes the previewed frame
+   * while the canonical JPEG does not (handoff-cover-panel §3).
+   */
+  const onPreview = async (): Promise<void> => {
+    if (!at.ok) return;
+    setBusy(true);
+    setApplyError(null);
+    setNotes([]);
+    try {
+      const res = await fetch("/api/cover/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          coverRegenerateBody({
+            typed: text,
+            persistedText: info?.provenance?.text ?? null,
+            atSec: at.atSec,
+            from,
+          }),
+        ),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        notes?: string[];
+        previewImageUrl?: string;
+        error?: string;
+      };
+      if (!res.ok || body.ok !== true) {
+        setApplyError(body.error ?? `preview failed: ${res.status}`);
+        return;
+      }
+      setPreviewUrl(body.previewImageUrl ?? null);
+      setNotes(body.notes ?? []);
     } catch (err) {
       setApplyError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -315,7 +495,12 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
         ) : (
           <>
             <div style={imageBox}>
-              {imageUrl ? (
+              {previewUrl ? (
+                // IN PLACE of the cover, not beside it: the point of a
+                // preview is "this is what Apply would save", and two images
+                // invite comparing a frame against a stale one.
+                <img data-testid="cover-image" src={previewUrl} alt="Cover preview" style={imageStyle} />
+              ) : imageUrl ? (
                 <img data-testid="cover-image" src={imageUrl} alt="Current cover" style={imageStyle} />
               ) : (
                 <div data-testid="cover-placeholder" style={placeholder}>
@@ -323,6 +508,11 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                 </div>
               )}
             </div>
+            {previewUrl ? (
+              <div data-testid="cover-preview-badge" style={previewBadge}>
+                Preview — not saved. The cover on disk is unchanged; Apply writes it for real.
+              </div>
+            ) : null}
             <div style={{ marginTop: 16 }}>
               <label style={labelStyle}>Headline — at most {COVER_MAX_WORDS} words (§35)</label>
               <input
@@ -344,7 +534,14 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                 <button
                   data-testid="cover-playhead-btn"
                   style={ghostBtn}
-                  onClick={() => setAtRaw(playheadSec().toFixed(2))}
+                  onClick={() => {
+                    // The getter answers in OUTPUT time (the prop contract);
+                    // the helper converts it onto the SELECTED video's clock,
+                    // and its sentence explains any crossing.
+                    const r = playheadAtSeconds({ playheadOutSec: playheadSec(), from, cutlist });
+                    setAtRaw(r.atSec.toFixed(2));
+                    setClockNote(r.note);
+                  }}
                   disabled={busy}
                 >
                   Use current playhead
@@ -355,7 +552,14 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                   inputMode="decimal"
                   placeholder="seconds — blank keeps the current still"
                   value={atRaw}
-                  onChange={(e) => setAtRaw(e.target.value)}
+                  onChange={(e) => {
+                    setAtRaw(e.target.value);
+                    // A retyped field no longer holds the number the
+                    // conversion sentence describes (the clockNote state's
+                    // rule) — only the gesture that WROTE the field may
+                    // caption it.
+                    setClockNote(null);
+                  }}
                   style={{ ...textInput, flex: 1 }}
                 />
               </div>
@@ -364,6 +568,11 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                   {at.message}
                 </div>
               )}
+              {clockNote ? (
+                <div data-testid="cover-clock-note" style={{ ...footNote, marginTop: 6 }}>
+                  {clockNote}
+                </div>
+              ) : null}
               <div style={{ ...rowStyle, marginTop: 10 }}>
                 {(["final", "source"] as const).map((v) => {
                   // The only dead option is "source", and only when this
@@ -379,7 +588,24 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                         ...(from === v ? selectedBtn : {}),
                         ...(dead ? { opacity: 0.5, cursor: "default" } : {}),
                       }}
-                      onClick={() => setFrom(v)}
+                      onClick={() => {
+                        // A filled field is denominated in the OUTGOING
+                        // clock; re-express it before the new one takes
+                        // over, or the same number silently means a
+                        // different instant. Null = leave it alone (blank,
+                        // invalid, or no clock change).
+                        const rewrite = atFieldOnFromToggle({
+                          atRaw,
+                          prevFrom: from,
+                          nextFrom: v,
+                          cutlist,
+                        });
+                        if (rewrite !== null) {
+                          setAtRaw(rewrite.atRaw);
+                          setClockNote(rewrite.note);
+                        }
+                        setFrom(v);
+                      }}
                       disabled={busy || dead}
                       aria-pressed={from === v}
                     >
@@ -422,6 +648,17 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
               <div style={{ display: "flex", gap: 8 }}>
                 <button data-testid="cover-cancel-btn" style={ghostBtn} onClick={onClose}>
                   Cancel
+                </button>
+                <button
+                  data-testid="cover-preview-btn"
+                  style={{
+                    ...ghostBtn,
+                    ...(busy || !at.ok ? { opacity: 0.6, cursor: "default" } : {}),
+                  }}
+                  onClick={() => void onPreview()}
+                  disabled={busy || !at.ok}
+                >
+                  Preview
                 </button>
                 <button
                   data-testid="cover-apply-btn"
@@ -518,6 +755,20 @@ const imageStyle: React.CSSProperties = {
   maxWidth: "100%",
   maxHeight: 320,
   objectFit: "contain",
+};
+
+// Loud on purpose — amber, not the footnote grey: mistaking a preview for
+// the saved cover is the exact confusion the badge exists to prevent.
+const previewBadge: React.CSSProperties = {
+  marginTop: 8,
+  padding: "6px 10px",
+  borderRadius: 6,
+  border: "1px solid #8a6d1a",
+  background: "rgba(255,196,0,0.08)",
+  color: "#FFC400",
+  fontSize: 12,
+  fontWeight: 600,
+  lineHeight: 1.4,
 };
 
 const placeholder: React.CSSProperties = {

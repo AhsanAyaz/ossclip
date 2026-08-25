@@ -369,6 +369,11 @@ export async function startEditServer(
    * file behind this URL). */
   const coverImageUrl = (image: string | null): string | null =>
     image === null ? null : `/api/cover/image?ts=${Math.round(statSync(image).mtimeMs)}`;
+  /** Where the Preview button's one-off render lands (handoff-cover-panel
+   * §3): a fixed name IN the workdir — never a client-named path, and never
+   * the canonical `.cover.jpg` a real Apply owns. Each preview overwrites the
+   * last; the file is scratch, like the frame-sampler's cache. */
+  const coverPreviewPath = (): string => join(workdir!, "cover-preview.jpg");
 
   // ---- Portrait override (editor face swap, 2026-08-17) -------------------
   // A per-project `portrait-override.<ext>` in the workdir that outranks the
@@ -1193,6 +1198,27 @@ export async function startEditServer(
           // throw for want of a destination, and the panel says so up front
           // rather than after a click.
           const outPath = provenance?.out ?? (await recordedArtifactPath(".cover.jpg"));
+          // The finished mp4's OWN span set — the RESOLVED cutlist, never the
+          // proposal /api/cleanup serves: the panel converts the playhead
+          // between the output clock and the source clock
+          // (handoff-cover-panel §1), and a proposal the user's vetoes already
+          // changed is the wrong ruler. Lenient per-span parse, [] on a
+          // missing or corrupt production.json — a cover panel that cannot
+          // convert must still open.
+          let coverCutlist: Segment[] = [];
+          try {
+            const production = JSON.parse(
+              await readFile(join(workdir, "production.json"), "utf8"),
+            ) as { cutlist?: unknown };
+            if (Array.isArray(production.cutlist)) {
+              coverCutlist = production.cutlist.flatMap((s) => {
+                const p = SegmentSchema.safeParse(s);
+                return p.success ? [p.data] : [];
+              });
+            }
+          } catch {
+            // degrade — same as /api/cleanup
+          }
           return send(200, {
             status: outPath === null ? "unavailable" : "ready",
             ...(outPath === null
@@ -1203,6 +1229,7 @@ export async function startEditServer(
             provenance,
             outPath,
             imageUrl: coverImageUrl(image),
+            cutlist: coverCutlist,
           });
         }
 
@@ -1277,6 +1304,78 @@ export async function startEditServer(
             // failures are user-actionable sentences ("is the timestamp past
             // the end?", "--from source needs cover.json") and the panel shows
             // them inline VERBATIM rather than as a dead 500.
+            return send(200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+          } finally {
+            coverBusy = false;
+          }
+        }
+
+        if (url.pathname === "/api/cover/preview-image" && req.method === "GET") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const image = coverPreviewPath();
+          if (!existsSync(image)) return send(404, { error: "no preview image" });
+          // /api/cover/image's exact posture, for its exact reason: every
+          // preview REPLACES the file behind a URL the panel busts with ?ts,
+          // and a cached 200 would show the old preview against the new ts.
+          const bytes = await readFile(image);
+          res.writeHead(200, {
+            "content-type": "image/jpeg",
+            "cache-control": "no-store",
+            "content-length": String(bytes.length),
+          });
+          res.end(bytes);
+          return;
+        }
+
+        if (url.pathname === "/api/cover/preview" && req.method === "POST") {
+          // The regenerate handler above, verbatim, up to the outPath: a
+          // preview is a full cover render — it boots the same headless
+          // browser (hence the same coverBusy gate), takes the same three
+          // steerable values and nothing else, and fails with the same
+          // 200-with-ok:false verbatim-message posture.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          if (coverBusy) return send(409, { error: "a cover regeneration is already running" });
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          const parsed = z
+            .object({
+              text: z.string().optional(),
+              atSec: CoverAtSecondsSchema.optional(),
+              from: CoverFromSchema.optional(),
+            })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: parsed.error.message });
+          coverBusy = true;
+          try {
+            const notes: string[] = [];
+            await regenerateCover(
+              workdir,
+              {
+                text: parsed.data.text,
+                atSec: parsed.data.atSec,
+                from: parsed.data.from,
+                // The ONE-OFF path, derived HERE and never from the body (the
+                // regenerate handler's comment owns why). Same machinery as
+                // `ossclip cover --out` (handoff-cover-panel §3): the
+                // canonical cover is untouched, provenance updates to
+                // describe the previewed frame — which is what makes a
+                // follow-up blank-field Apply adopt it via the cheap path,
+                // and the one-off note riding back is the panel's disclosure
+                // of exactly that.
+                outPath: coverPreviewPath(),
+              },
+              { renderCover: opts.renderCover, log: (line) => notes.push(line) },
+            );
+            return send(200, {
+              ok: true,
+              notes,
+              // coverImageUrl's mtime rule, aimed at the preview file: the
+              // URL changes exactly when the file does.
+              previewImageUrl: `/api/cover/preview-image?ts=${Math.round(
+                statSync(coverPreviewPath()).mtimeMs,
+              )}`,
+            });
+          } catch (err) {
             return send(200, { ok: false, error: err instanceof Error ? err.message : String(err) });
           } finally {
             coverBusy = false;

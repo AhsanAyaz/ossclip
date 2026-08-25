@@ -9,12 +9,14 @@ import {
   type Segment,
 } from "@ossclip/core/browser";
 import {
+  atFieldOnFromToggle,
   CoverPanel,
   coverRegenerateBody,
   coverUnavailableMessage,
   frameSourceNote,
   headlinePreview,
   parseAtSeconds,
+  playheadAtSeconds,
   sourceFrameOption,
   type CoverInfo,
   type CoverProvenanceView,
@@ -155,6 +157,96 @@ describe("coverRegenerateBody", () => {
   });
 });
 
+/** Two kept spans with a removal between them (source 0–10s and 20–30s →
+ * output 0–20s), so past 10s the two clocks genuinely disagree — a fixture
+ * whose conversion happened to be the identity would prove nothing. */
+const CUTLIST: Segment[] = [
+  { kind: "keep", srcIn: 0, srcOut: 10 },
+  { kind: "remove", srcIn: 10, srcOut: 20, reason: "pause", confidence: 0.9 },
+  { kind: "keep", srcIn: 20, srcOut: 30 },
+];
+
+describe("playheadAtSeconds", () => {
+  it("passes through untouched for the finished video", () => {
+    expect(playheadAtSeconds({ playheadOutSec: 15, from: "final", cutlist: CUTLIST })).toEqual({
+      atSec: 15,
+      note: null,
+    });
+  });
+
+  it("maps output → source for the original take, and says so", () => {
+    const r = playheadAtSeconds({ playheadOutSec: 15, from: "source", cutlist: CUTLIST });
+    // 15s of output = 5s into the second kept span = 25s of source.
+    expect(r.atSec).toBe(25);
+    expect(r.note).toMatch(/15\.0.*finished.*25\.0.*original take/i);
+  });
+
+  it("empty cutlist: source playhead refuses to pretend — passes through with a warning", () => {
+    // toSource on zero spans degenerates to 0, which would silently discard
+    // the playhead; passing the number through with a note keeps the user in
+    // charge of whether it is close enough.
+    const r = playheadAtSeconds({ playheadOutSec: 15, from: "source", cutlist: [] });
+    expect(r.atSec).toBe(15);
+    expect(r.note).toMatch(/couldn't convert/i);
+  });
+});
+
+describe("atFieldOnFromToggle", () => {
+  it("toggle final → source re-expresses the field", () => {
+    expect(
+      atFieldOnFromToggle({ atRaw: "15", prevFrom: "final", nextFrom: "source", cutlist: CUTLIST }),
+    ).toMatchObject({ atRaw: "25.00" });
+  });
+
+  it("toggle source → final clamps a cut-out instant to the nearest kept edge and says so", () => {
+    const r = atFieldOnFromToggle({
+      atRaw: "15",
+      prevFrom: "source",
+      nextFrom: "final",
+      cutlist: CUTLIST,
+    });
+    // Source 15s sits inside the removed 10–20s: the exact lookup misses and
+    // toOutputClamped snaps to the kept edge at output 10s.
+    expect(r!.atRaw).toBe("10.00");
+    expect(r!.note).toMatch(/cut/i);
+  });
+
+  it("a kept instant converts exactly, with no cut warning", () => {
+    const r = atFieldOnFromToggle({
+      atRaw: "25",
+      prevFrom: "source",
+      nextFrom: "final",
+      cutlist: CUTLIST,
+    });
+    expect(r!.atRaw).toBe("15.00");
+    expect(r!.note).not.toMatch(/cut/i);
+  });
+
+  it("blank or invalid field: toggle leaves it alone", () => {
+    expect(
+      atFieldOnFromToggle({ atRaw: "", prevFrom: "final", nextFrom: "source", cutlist: CUTLIST }),
+    ).toBeNull();
+    expect(
+      atFieldOnFromToggle({ atRaw: "abc", prevFrom: "final", nextFrom: "source", cutlist: CUTLIST }),
+    ).toBeNull();
+  });
+
+  it("no clock change leaves the field alone", () => {
+    expect(
+      atFieldOnFromToggle({ atRaw: "15", prevFrom: "final", nextFrom: "final", cutlist: CUTLIST }),
+    ).toBeNull();
+  });
+
+  it("empty cutlist: keeps the number and says it couldn't convert", () => {
+    // Same refusal as playheadAtSeconds': rewriting to toSource's degenerate 0
+    // would destroy the field; the note owns up that the seconds may now sit
+    // on the wrong clock.
+    const r = atFieldOnFromToggle({ atRaw: "15", prevFrom: "final", nextFrom: "source", cutlist: [] });
+    expect(r!.atRaw).toBe("15");
+    expect(r!.note).toMatch(/couldn't convert/i);
+  });
+});
+
 describe("CoverPanel", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -199,6 +291,9 @@ describe("CoverPanel", () => {
     },
     outPath: "/tmp/clip.ossclip.cover.jpg",
     imageUrl: "/api/cover/image?ts=123",
+    // Empty on purpose: most mounted tests predate the clock conversions and
+    // assert pass-through; the conversion tests spread CUTLIST in themselves.
+    cutlist: [],
   };
 
   it("a workdir with nowhere to write shows the reason plainly, no controls", async () => {
@@ -208,6 +303,7 @@ describe("CoverPanel", () => {
       provenance: null,
       outPath: null,
       imageUrl: null,
+      cutlist: [],
     });
     await mount();
     expect(container.querySelector('[data-testid="cover-unavailable"]')?.textContent).toContain(
@@ -277,6 +373,7 @@ describe("CoverPanel", () => {
       provenance: null,
       outPath: "/tmp/clip.ossclip.cover.jpg",
       imageUrl: null,
+      cutlist: [],
     });
     await mount();
     expect(container.querySelector('[data-testid="cover-placeholder"]')).not.toBeNull();
@@ -401,5 +498,152 @@ describe("CoverPanel", () => {
     );
     expect(container.querySelector('[data-testid="cover-notes"]')?.textContent).toContain("trimmed");
     expect(container.querySelector('[data-testid="cover-error"]')).toBeNull();
+  });
+
+  // 2026-08-25: the button captured the playhead in output time while a
+  // `--from source` field spends in source time — the same number, two clocks
+  // (handoff-cover-panel §1). The panel now converts at the gesture.
+  it("'use current playhead' with the original take selected spends on the SOURCE clock", async () => {
+    stubGet({ ...READY, cutlist: CUTLIST });
+    await mount(() => 15);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
+    });
+    // Output 15s = 5s into the second kept span = source 25s.
+    expect(container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')?.value).toBe(
+      "25.00",
+    );
+    expect(
+      container.querySelector('[data-testid="cover-clock-note"]')?.textContent,
+    ).toMatch(/15\.0.*finished.*25\.0.*original take/i);
+  });
+
+  it("toggling final → source re-expresses a filled field on the new clock", async () => {
+    stubGet({
+      ...READY,
+      cutlist: CUTLIST,
+      provenance: { ...READY.provenance!, frame: { ...READY.provenance!.frame, source: "final" } },
+    });
+    await mount();
+    const field = container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')!;
+    await act(async () => {
+      setInputValue(field, "15");
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-from-source"]')!.click();
+    });
+    expect(field.value).toBe("25.00");
+    expect(
+      container.querySelector('[data-testid="cover-clock-note"]')?.textContent,
+    ).toMatch(/15\.0.*finished.*25\.0.*original take/i);
+    expect(
+      container.querySelector('[data-testid="cover-from-source"]')?.getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  // 2026-08-25 (handoff-cover-panel §3): before Preview, every diagnostic
+  // attempt destroyed the previous cover, so "wrong frame" and "nothing
+  // happened" were indistinguishable from the UI.
+  it("Preview shows the one-off frame under a badge, never touching the saved cover; Apply clears it", async () => {
+    const posts: Array<{ url: string; body: unknown }> = [];
+    global.fetch = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") {
+        posts.push({ url, body: JSON.parse(init.body!) });
+        if (url === "/api/cover/preview") {
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              notes: ["▸ one-off --out: this project's own cover was NOT updated"],
+              previewImageUrl: "/api/cover/preview-image?ts=42",
+            }),
+          };
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            provenance: READY.provenance,
+            notes: [],
+            imageUrl: "/api/cover/image?ts=456",
+          }),
+        };
+      }
+      return { ok: true, json: async () => READY };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-preview-btn"]')!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    // The same body as Apply — text/atSec/from and never a path — aimed at
+    // the preview endpoint. The server derives the one-off destination.
+    expect(posts).toEqual([{ url: "/api/cover/preview", body: { from: "source" } }]);
+    // The one-off frame IN PLACE of the cover, and a badge saying it is not
+    // the saved cover — the disclosure the one-off note also carries.
+    expect(container.querySelector<HTMLImageElement>('[data-testid="cover-image"]')?.src).toContain(
+      "/api/cover/preview-image?ts=42",
+    );
+    expect(
+      container.querySelector('[data-testid="cover-preview-badge"]')?.textContent,
+    ).toContain("Preview — not saved");
+    expect(container.querySelector('[data-testid="cover-notes"]')?.textContent).toContain("one-off");
+    // A real Apply replaces the preview with the freshly SAVED cover.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-apply-btn"]')!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(container.querySelector('[data-testid="cover-preview-badge"]')).toBeNull();
+    expect(container.querySelector<HTMLImageElement>('[data-testid="cover-image"]')?.src).toContain(
+      "/api/cover/image?ts=456",
+    );
+  });
+
+  // Tasks 2+3 review: the note survived a manual retype, describing a number
+  // the field no longer held.
+  it("typing in the seconds field clears the conversion note — it describes a number no longer there", async () => {
+    stubGet({ ...READY, cutlist: CUTLIST });
+    await mount(() => 15);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="cover-clock-note"]')).not.toBeNull();
+    const field = container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')!;
+    await act(async () => {
+      setInputValue(field, "7");
+    });
+    expect(container.querySelector('[data-testid="cover-clock-note"]')).toBeNull();
+  });
+
+  it("a successful Apply KEEPS the seconds it used — the field is the record, not a blank", async () => {
+    const bodies: unknown[] = [];
+    global.fetch = vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") {
+        bodies.push(JSON.parse(init.body!));
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            provenance: READY.provenance,
+            notes: [],
+            imageUrl: "/api/cover/image?ts=789",
+          }),
+        };
+      }
+      return { ok: true, json: async () => READY };
+    }) as unknown as typeof fetch;
+    await mount();
+    const field = container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')!;
+    await act(async () => {
+      setInputValue(field, "9.5");
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-apply-btn"]')!.click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(bodies).toEqual([{ atSec: 9.5, from: "source" }]);
+    // The frame just applied stays visible and iterable — nudging it to 9.6 is
+    // an edit to a number, not an archaeology dig (handoff problem 2).
+    expect(field.value).toBe("9.5");
   });
 });
