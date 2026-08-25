@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { PRODUCER_PROMPT_VERSION, type LlmUsage } from "@ossclip/core";
-import { actualProvider, beatSheetCacheKey, clipWindowCacheKey } from "../src/produce";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  actualProvider,
+  beatCacheKeyCandidates,
+  beatSheetCacheKey,
+  clipWindowCacheKey,
+  existingProducerStamp,
+} from "../src/produce";
 
 /**
  * The §78 posture, applied to the beat sheet: anything that changes the plan
@@ -222,5 +231,88 @@ describe("actualProvider", () => {
 
   it("an empty log (the cached path) leaves the resolved provider standing", () => {
     expect(actualProvider([], "beat_sheet", "gemini")).toBe("gemini");
+  });
+});
+
+/**
+ * The read side of the §143 split (§150). A fallback run WRITES under whoever
+ * answered, so while agy keeps timing out, a re-run that asks for antigravity
+ * reads a key that can never exist: it re-attempts, waits out the whole
+ * timeout, falls back again, and rewrites the same key nobody reads. The plan
+ * differs every time, and editor edits anchored to scenes the new plan no
+ * longer has are dropped — which is how a re-render silently rewrote a user's
+ * approved cut (2026-08-23 field run: "edit for scene-11 dropped").
+ *
+ * The fix is narrow on purpose: the ONLY extra key tried is the one belonging
+ * to the provider this run would fall back to anyway. Never "any provider's
+ * plan" — that would serve a claude-cli sheet to someone who asked for gemini
+ * and got it. Pure — no workdir, no filesystem.
+ */
+describe("beatCacheKeyCandidates", () => {
+  const parts = {
+    promptVersion: PRODUCER_PROMPT_VERSION,
+    llmModel: undefined,
+    cleanup: "standard" as const,
+    words: ["one", "two"],
+    aspect: "9:16" as const,
+  };
+
+  it("tries the requested provider FIRST — an explicit ask still wins", () => {
+    const keys = beatCacheKeyCandidates(parts, "antigravity", "claude-cli");
+    expect(keys[0]).toBe(beatSheetCacheKey({ ...parts, providerName: "antigravity" }));
+  });
+
+  it("then the provider this run would fall back to — the key a timeout actually wrote", () => {
+    const keys = beatCacheKeyCandidates(parts, "antigravity", "claude-cli");
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(beatSheetCacheKey({ ...parts, providerName: "claude-cli" }));
+  });
+
+  it("no fallback key when the primary has no fallback — gemini never substitutes", () => {
+    expect(beatCacheKeyCandidates(parts, "gemini", undefined)).toEqual([
+      beatSheetCacheKey({ ...parts, providerName: "gemini" }),
+    ]);
+  });
+
+  it("never duplicates when the fallback IS the primary", () => {
+    expect(beatCacheKeyCandidates(parts, "claude-cli", "claude-cli")).toHaveLength(1);
+  });
+
+  it("the two keys differ — otherwise the second read is dead weight", () => {
+    const [primary, fallback] = beatCacheKeyCandidates(parts, "antigravity", "claude-cli");
+    expect(primary).not.toBe(fallback);
+  });
+});
+
+/**
+ * A run that answered nothing must not restamp who planned the video (§152).
+ * `production.json` is rewritten on every produce, cached or not, and the
+ * stamp was rebuilt from THIS run's usage records — empty on a cached run — so
+ * it fell through to the provider we asked for and silently overwrote a
+ * truthful "antigravity → claude-cli" with "antigravity". The plan did not
+ * change; neither should its attribution.
+ */
+describe("existingProducerStamp", () => {
+  it("returns the stamp already on disk, so a cached run can keep it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-stamp-"));
+    writeFileSync(
+      join(dir, "production.json"),
+      JSON.stringify({ producer: { provider: "antigravity → claude-cli", models: ["m"] } }),
+    );
+    expect(existingProducerStamp(dir)?.provider).toBe("antigravity → claude-cli");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a missing file means no prior attribution, not a crash — a first run has none", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-stamp-"));
+    expect(existingProducerStamp(dir)).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("unreadable JSON is also 'no prior attribution' — never a failed produce", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-stamp-"));
+    writeFileSync(join(dir, "production.json"), "{ not json");
+    expect(existingProducerStamp(dir)).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

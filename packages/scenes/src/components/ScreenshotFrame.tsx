@@ -24,8 +24,12 @@ export const ScreenshotFrame: React.FC<{
     : null;
   return (
     <div
-      data-edit-id="image"
-      style={{ ...pop(p), position: "relative", width: "94%", ...editStyle(edits, "image") }}
+      // "src", not "image" (§153): the editor resolves a selected element as
+      // props[editId], so an id naming no prop yields no Text field and the
+      // element is silently uneditable — you could select the screenshot and
+      // never change which file it showed. The id IS the prop name.
+      data-edit-id="src"
+      style={{ ...pop(p), position: "relative", width: "94%", ...editStyle(edits, "src") }}
     >
       <div
         style={{
