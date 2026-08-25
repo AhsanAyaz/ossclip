@@ -1023,6 +1023,22 @@ export const App: React.FC = () => {
   }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut]);
   const live = liveRetimed === null ? null : liveRetimed.props;
 
+  // Feed the live cue list to the edit layer so `save()` can stamp each scene
+  // override with its cue's anchor (handoff-edit-anchoring). THIS list, not
+  // the raw base cues, because it includes split halves — the `id@<split id>`
+  // cues are what the user's edits address — and it is exactly what the user
+  // is looking at, which is the identity a stamp must record (never the disk's
+  // possibly-newer plan; stampSceneAnchors' doc comment has the why).
+  const liveCues = live?.sceneCues;
+  useEffect(() => {
+    if (liveCues) edits.syncCues(liveCues);
+    // `liveCues` is a fresh array whenever `edits.doc` changes, so this still
+    // re-runs per edit — harmless, `syncCues` only writes a stable ref. What
+    // depending on the cues alone (not the fresh-every-render `edits` object)
+    // prevents is re-running on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveCues]);
+
   // A retime report means a stored moment fell inside a NEWLY re-cut region
   // (only possible when a veto was retracted against already-vetoed render
   // props) and was snapped to the nearest kept edge — `remapPoint`'s

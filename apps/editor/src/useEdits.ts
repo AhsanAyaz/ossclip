@@ -1,4 +1,4 @@
-import { useReducer } from "react";
+import { useReducer, useRef } from "react";
 import {
   captionEditWas,
   captionKeyFor,
@@ -11,11 +11,13 @@ import {
   mintSplitId,
   restoreElement,
   setElementTransform,
+  stampSceneAnchors,
   type ElementTransform,
   type Layout,
   type OverrideDoc,
   type RemovalReason,
   type SceneComponentId,
+  type SceneCue,
 } from "@ossclip/core/browser";
 
 /** A hand-set graphic slot, frame fractions (R11 Task 2). */
@@ -923,12 +925,23 @@ export function editReducer(state: EditState, action: EditAction): EditState {
  */
 export function useEdits() {
   const [state, dispatch] = useReducer(editReducer, undefined, initialEditState);
+  // The live cue list, for stamping anchors at save time (handoff-edit-
+  // anchoring). A REF, not state: the cues are App's derived view of the doc
+  // this hook already owns, so mirroring them as state here would re-render
+  // on every keystroke for data `save()` alone reads.
+  const cuesRef = useRef<readonly SceneCue[]>([]);
 
   const save = async (): Promise<void> => {
+    // Stamped at the PUT, from the cues in memory — never from disk (see
+    // stampSceneAnchors' doc comment for the mid-session re-render reason).
+    // The in-memory doc deliberately stays UNstamped after a 200: a `load`
+    // dispatch would clear undo history, and the stamp is recomputed on
+    // every save anyway, so memory and disk converge without touching it.
+    const stamped = stampSceneAnchors(state.doc, cuesRef.current);
     const res = await fetch("/api/overrides", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(state.doc),
+      body: JSON.stringify(stamped),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -946,6 +959,12 @@ export function useEdits() {
     undo: () => dispatch({ type: "undo" }),
     redo: () => dispatch({ type: "redo" }),
     save,
+    /** App feeds the live cue memo here so `save()` stamps against exactly
+     * what the user is looking at — including split halves, whose ids are
+     * what their edits address. */
+    syncCues: (cues: readonly SceneCue[]) => {
+      cuesRef.current = cues;
+    },
     patchProps: (sceneId: string, patch: Record<string, unknown>, coalesce?: string) =>
       dispatch({ type: "patchProps", sceneId, patch, coalesce }),
     patchElement: (sceneId: string, elementId: string, patch: ElementTransform, coalesce?: string) =>

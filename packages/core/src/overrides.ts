@@ -1,8 +1,10 @@
 import { z } from "zod/v4";
 import {
   LayoutSchema,
+  SceneAnchorSchema,
   SceneComponentIdSchema,
   ThemeSchema,
+  type SceneAnchor,
   type SceneCue,
   type SceneComponentId,
   type Theme,
@@ -121,6 +123,16 @@ export const SceneOverrideSchema = z.object({
       h: z.number().min(0.05).max(1),
     })
     .optional(),
+  /**
+   * The word range of the cue this edit was made against, stamped by the
+   * editor at save time (stampSceneAnchors). This is the edit's IDENTITY
+   * across a re-plan: ids are positional (`scene-${i}`) and a re-plan can
+   * hand an id to a different moment — matching on the anchor instead is
+   * what stops that edit landing there silently (handoff-edit-anchoring).
+   * Optional: docs written before this field keep id-only behaviour, the
+   * same no-retroactive-protection posture §137 took for captions.
+   */
+  anchor: SceneAnchorSchema.optional(),
   /**
    * The scene is deleted — SOFTLY (PLAN 2026-07-30 Task C): the cue drops
    * from the render (`dropHiddenCues`) and its window becomes a plain take,
@@ -699,6 +711,239 @@ export function splitThenDropHidden(
   doc: OverrideDoc,
 ): DropHiddenResult {
   return dropHiddenCues(splitCues(cues, doc.splits), doc);
+}
+
+/**
+ * Stamp every scene override with the anchor of the cue it currently targets
+ * — the edit's identity across a re-plan (see SceneOverrideSchema.anchor).
+ * Called by the EDITOR at save time, from the cues in its memory, never from
+ * render-props.json on disk: after a mid-session re-render the disk can
+ * describe a newer plan than the one the user is looking at, and stamping
+ * from it would record the wrong identity — the misapply this exists to stop.
+ * Cues without an anchor (plain takes, pre-anchor render-props) stamp nothing.
+ *
+ * RE-stamps on every save, deliberately: the cue on screen is always the
+ * freshest truth about what the user is editing, so a stale stamp from an
+ * earlier plan is overwritten rather than preserved. A split half's cue
+ * carries its root's anchor verbatim (`splitCues` spreads the root cue), so
+ * the `id@<split id>` entry stamps through the same by-id lookup as its root.
+ *
+ * `doc` must have been through `OverrideDocSchema` — the `captionEditsToKeep`
+ * rule: a literal `"__proto__"` key surviving `JSON.parse` as an own property
+ * would assign through the prototype in the record rebuild below.
+ */
+export function stampSceneAnchors(doc: OverrideDoc, cues: readonly SceneCue[]): OverrideDoc {
+  const anchorById = new Map<string, SceneAnchor>();
+  for (const c of cues) {
+    if (c.anchor) anchorById.set(c.id, c.anchor);
+  }
+  const scenes: Record<string, SceneOverride> = {};
+  for (const [id, entry] of Object.entries(doc.scenes)) {
+    const anchor = anchorById.get(id);
+    scenes[id] = anchor ? { ...entry, anchor } : entry;
+  }
+  return { ...doc, scenes };
+}
+
+/** Shared word count of two anchors — inclusive word-index ranges, so
+ * touching at a single word counts as 1 and disjoint ranges go ≤ 0. */
+const wordOverlap = (a: SceneAnchor, b: SceneAnchor): number =>
+  Math.min(a.endWord, b.endWord) - Math.max(a.startWord, b.startWord) + 1;
+
+/**
+ * The inert suffix a misapply-blocked edit is parked under. `#` never
+ * appears in a cue id (`scene-${i}`, `take-*`, split halves use `@`), so a
+ * parked key matches no cue and the edit sits harmless — data and anchor
+ * intact — until a later plan brings its words back and rescues it.
+ */
+const PARKED_SUFFIX = "#orphaned";
+
+/** The one exported spelling of the parked-key convention: produce's orphan
+ * warning must ask this, never re-spell the literal, or the two sides drift. */
+export function isParkedOverrideKey(key: string): boolean {
+  return key.endsWith(PARKED_SUFFIX);
+}
+
+/** The key a parked entry was parked FROM — what the user's warning should
+ * name, since the suffix is bookkeeping, not something they ever typed. */
+export function parkedOverrideBaseKey(key: string): string {
+  return isParkedOverrideKey(key) ? key.slice(0, -PARKED_SUFFIX.length) : key;
+}
+
+export interface SceneRemapResult {
+  doc: OverrideDoc;
+  /** Human sentences for produce to print — one per re-keyed, parked, or blocked entry. */
+  notes: string[];
+}
+
+/**
+ * Re-key scene overrides onto the cues that carry their WORDS — the
+ * produce-side counterpart of `stampSceneAnchors` above
+ * (handoff-edit-anchoring; §137 is the caption-side precedent).
+ *
+ * Ids are positional (`scene-${i}`) and a re-plan renumbers them freely: in
+ * the two plan pairs measured for this change, 8/11 and 2/10 ids moved while
+ * every anchor still found its moment at 100% overlap — and in the field,
+ * `scene-4` was a TerminalMock over words 85..116 in one plan and a
+ * FlowDiagram over words 47..57 in the next. An edit keyed by id alone lands
+ * on that impostor silently. So the stored anchor, not the key, is the
+ * edit's identity: an entry whose id still means the same moment (any word
+ * overlap) is untouched; one whose words moved follows them to their new id;
+ * one whose words are GONE while its id points at a different moment is
+ * parked under `${key}#orphaned` rather than left to join the impostor. A
+ * parked entry's root id is historical, not a claim on today's cue, so it
+ * skips the id-agreement shortcut and matches purely by anchor. A parked
+ * entry whose words are STILL gone stays quiet on later runs; one whose
+ * words are back while its target key is held re-parks and re-notes on
+ * EVERY run — deliberately, because that collision is actionable.
+ *
+ * Anchor-less (pre-migration) entries pass through byte-identical with no
+ * note — the same no-retroactive-protection posture §137 took for captions.
+ * Total on any parsed doc: conflicts resolve deterministically (kept entries
+ * are immovable; contending re-keys go to the larger overlap; an occupied
+ * park slot keeps its incumbent), never a throw.
+ *
+ * Runs on the post-fill, PRE-`splitCues` cue list, so a split-half key
+ * (`id@splitId`) re-keys by its ROOT and keeps its suffix — the half cue it
+ * must match only exists after `splitCues` runs. `doc` must have been
+ * through `OverrideDocSchema` — the `captionEditsToKeep` rule: a literal
+ * `"__proto__"` key surviving `JSON.parse` as an own property would assign
+ * through the prototype in the record rebuild below.
+ */
+export function remapSceneOverrides(
+  doc: OverrideDoc,
+  cues: readonly SceneCue[],
+): SceneRemapResult {
+  // Anchor-bearing root cues only. Plain fill takes carry no anchor by
+  // construction, and the `@` filter guards against a caller passing a
+  // POST-split list — a half carries its root's anchor verbatim
+  // (`splitCues` spreads the root cue), and matching a half's id here would
+  // mint double-suffixed keys like `scene-1@2000@abc`.
+  const anchored = cues.filter(
+    (c): c is SceneCue & { anchor: SceneAnchor } =>
+      c.anchor !== undefined && !c.id.includes("@"),
+  );
+  const notes: string[] = [];
+  const scenes: Record<string, SceneOverride> = {};
+  interface Claim {
+    key: string;
+    entry: SceneOverride;
+    /** Where this entry lands if it loses its target: `${baseKey}#orphaned`. */
+    parkKey: string;
+    ov: number;
+  }
+  /** Entries headed for a park slot, with the sentence explaining why. */
+  const parks: Array<{ key: string; entry: SceneOverride; parkKey: string; note: string }> = [];
+  /** Re-keying entries, grouped by the key they want — collisions resolve below. */
+  const rekeys = new Map<string, Claim[]>();
+
+  for (const [key, entry] of Object.entries(doc.scenes)) {
+    const stored = entry.anchor;
+    if (!stored) {
+      // Pre-migration entry: exactly today's id-only behaviour, silently.
+      scenes[key] = entry;
+      continue;
+    }
+    const isParked = key.endsWith(PARKED_SUFFIX);
+    const baseKey = isParked ? key.slice(0, -PARKED_SUFFIX.length) : key;
+    const at = baseKey.indexOf("@");
+    const rootId = at === -1 ? baseKey : baseKey.slice(0, at);
+    const parkKey = `${baseKey}${PARKED_SUFFIX}`;
+    const current = anchored.find((c) => c.id === rootId);
+    if (!isParked && current && wordOverlap(stored, current.anchor) > 0) {
+      scenes[key] = entry; // the id still means the same moment
+      continue;
+    }
+    // Id missing, pointing at a different moment, or historical (parked):
+    // follow the anchor.
+    const best = anchored
+      .map((c) => ({ c, ov: wordOverlap(stored, c.anchor) }))
+      .filter((x) => x.ov > 0)
+      // Larger overlap first; on a tie, the cue whose id matches the stored
+      // root (reachable only for parked entries — an unparked id match with
+      // overlap was kept above), then the earlier cue.
+      .sort(
+        (a, b) =>
+          b.ov - a.ov ||
+          Number(b.c.id === rootId) - Number(a.c.id === rootId) ||
+          a.c.startSec - b.c.startSec,
+      )[0];
+    if (!best) {
+      if (!isParked && current) {
+        // The words are gone AND the id now belongs to a different moment.
+        // Leaving the entry under `key` would join the impostor — the exact
+        // silent misapply this pass exists to prevent. Park it.
+        parks.push({
+          key,
+          entry,
+          parkKey,
+          note: `edit for ${key} parked — its words left the plan, and ${rootId} now shows a different moment`,
+        });
+      } else {
+        // The old id matches nothing (or the entry is already parked):
+        // today's orphan path — `applyOverrides` reports it, nothing can
+        // misapply, so no note either.
+        scenes[key] = entry;
+      }
+      continue;
+    }
+    const newKey = at === -1 ? best.c.id : `${best.c.id}${baseKey.slice(at)}`;
+    const list = rekeys.get(newKey) ?? [];
+    list.push({ key, entry, parkKey, ov: best.ov });
+    rekeys.set(newKey, list);
+  }
+
+  for (const [newKey, contenders] of rekeys) {
+    if (scenes[newKey] !== undefined) {
+      // Kept entries are immovable: an anchor-less one must behave exactly
+      // as today, and an id-plus-anchor match is the strongest claim there
+      // is. A re-keyer arriving at a held key parks instead of evicting.
+      for (const c of contenders) {
+        parks.push({
+          key: c.key,
+          entry: c.entry,
+          parkKey: c.parkKey,
+          note: `edit for ${c.key} parked — ${newKey} already carries its own edit`,
+        });
+      }
+      continue;
+    }
+    // Two entries re-keying onto one cue: the larger overlap wins, the loser
+    // parks, both get a sentence. On an exact tie, doc order — deterministic,
+    // and as good as any claim two different stored anchors can make on the
+    // same cue. (`sort` is stable, so equal overlaps keep insertion order.)
+    const [winner, ...losers] = [...contenders].sort((a, b) => b.ov - a.ov);
+    scenes[newKey] = winner!.entry;
+    notes.push(
+      winner!.key.endsWith(PARKED_SUFFIX)
+        ? `edit for ${winner!.key} rescued to ${newKey} — its words are back in the plan`
+        : `edit for ${winner!.key} re-keyed to ${newKey} — the plan renumbered, its words moved there`,
+    );
+    for (const l of losers) {
+      parks.push({
+        key: l.key,
+        entry: l.entry,
+        parkKey: l.parkKey,
+        note: `edit for ${l.key} parked — the edit from ${winner!.key} overlaps ${newKey}'s words more (${winner!.ov} vs ${l.ov})`,
+      });
+    }
+  }
+
+  for (const p of parks) {
+    if (scenes[p.parkKey] !== undefined) {
+      // Doubly-pathological: the slot already holds a still-parked edit for
+      // the same base key (edit → re-plan parks it → edit again → re-plan
+      // again). One inert slot, two edits — keep the incumbent, like every
+      // other hold, and say the loss out loud rather than overwriting
+      // silently.
+      notes.push(`edit for ${p.key} dropped — ${p.parkKey} already holds an earlier parked edit`);
+      continue;
+    }
+    scenes[p.parkKey] = p.entry;
+    notes.push(p.note);
+  }
+
+  return { doc: { ...doc, scenes }, notes };
 }
 
 /**

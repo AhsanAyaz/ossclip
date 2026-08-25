@@ -73,6 +73,15 @@ export const SceneCueSchema = z
    * `=== "graphic"`.
    */
   kind: z.enum(["graphic", "plain"]).optional(),
+  /**
+   * The plan anchor this cue was resolved from — the scene's word range,
+   * carried through so an edit made against this cue can be re-keyed when a
+   * re-plan renumbers ids (handoff-edit-anchoring; §137 is the caption-side
+   * precedent). Optional: plain fill cues have no plan anchor, and
+   * render-props.json written before this field carries none — absence means
+   * "id-only identity", exactly today's behaviour.
+   */
+  anchor: SceneAnchorSchema.optional(),
   layout: LayoutSchema,
   /**
    * Required for graphic cues (the superRefine below enforces it), absent on

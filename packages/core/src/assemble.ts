@@ -71,6 +71,9 @@ export function assembleScenes(
     }
     resolved.push({
       id: scene.id,
+      // The cue remembers which words it was planned against, so edits keyed
+      // to it can survive a re-plan's id renumbering (handoff-edit-anchoring).
+      anchor: scene.anchor,
       layout: scene.layout,
       component: scene.component,
       props,
