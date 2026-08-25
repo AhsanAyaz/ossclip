@@ -253,6 +253,24 @@ describe("override document", () => {
   });
 });
 
+describe("scene override anchor (handoff-edit-anchoring)", () => {
+  it("round-trips a scene entry's anchor through the doc schema", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: {
+        "scene-3": { props: {}, elements: {}, anchor: { startWord: 4, endWord: 9 } },
+      },
+    });
+    expect(doc.scenes["scene-3"]!.anchor).toEqual({ startWord: 4, endWord: 9 });
+  });
+
+  it("a doc written before the field still parses, anchor-less", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-3": { props: {}, elements: {} } },
+    });
+    expect(doc.scenes["scene-3"]!.anchor).toBeUndefined();
+  });
+});
+
 describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
   it("keeps hand edits when the producer re-rolls props", () => {
     const doc = OverrideDocSchema.parse({

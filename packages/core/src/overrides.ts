@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import {
   LayoutSchema,
+  SceneAnchorSchema,
   SceneComponentIdSchema,
   ThemeSchema,
   type SceneCue,
@@ -121,6 +122,16 @@ export const SceneOverrideSchema = z.object({
       h: z.number().min(0.05).max(1),
     })
     .optional(),
+  /**
+   * The word range of the cue this edit was made against, stamped by the
+   * editor at save time (stampSceneAnchors). This is the edit's IDENTITY
+   * across a re-plan: ids are positional (`scene-${i}`) and a re-plan can
+   * hand an id to a different moment — matching on the anchor instead is
+   * what stops that edit landing there silently (handoff-edit-anchoring).
+   * Optional: docs written before this field keep id-only behaviour, the
+   * same no-retroactive-protection posture §137 took for captions.
+   */
+  anchor: SceneAnchorSchema.optional(),
   /**
    * The scene is deleted — SOFTLY (PLAN 2026-07-30 Task C): the cue drops
    * from the render (`dropHiddenCues`) and its window becomes a plain take,
