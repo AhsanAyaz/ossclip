@@ -3,8 +3,10 @@ import {
   backfillSrcStart,
   buildCaptionLines,
   captionsNeedNastaliq,
+  enforceLineDwell,
   lineDirection,
   MAX_CAPTION_WORD_LEAD_SEC,
+  MIN_CAPTION_LINE_DWELL_SEC,
   type CaptionLine,
 } from "../src/captions";
 import { TimeMap, type KeptSpan } from "../src/timemap";
@@ -120,18 +122,19 @@ describe("buildCaptionLines", () => {
       // so nothing renders during the dead span.
       expect(lines).toHaveLength(2);
       const okay = lines[1]!;
-      expect(okay.start).toBeCloseTo(119.5, 6); // 121.5 − 2, not the stamped 100
-      // The previous line does NOT stretch to fill: hold only (100 + 0.35).
+      expect(okay.start).toBeCloseTo(120, 6); // 121.5 − 1.5, not the stamped 100
+      // The previous line does NOT stretch to fill: hold only (100 + 0.35),
+      // and 0.85s already clears the dwell floor so nothing extends it.
       expect(lines[0]!.end).toBeCloseTo(100.35, 6);
-      // Nothing on screen in (100.35, 119.5).
+      // Nothing on screen in (100.35, 120).
       expect(lines[0]!.end).toBeLessThanOrEqual(100.35 + 1e-9);
-      expect(okay.start).toBeGreaterThanOrEqual(119.5 - 1e-9);
+      expect(okay.start).toBeGreaterThanOrEqual(120 - 1e-9);
     });
 
     it("karaoke word timing uses the clamped start — the highlight cannot precede its line", () => {
       const lines = buildCaptionLines(incident, identity(122));
       const okay = lines[1]!.words[0]!;
-      expect(okay.start).toBeCloseTo(119.5, 6);
+      expect(okay.start).toBeCloseTo(120, 6);
       expect(okay.start).toBeGreaterThanOrEqual(lines[1]!.start - 1e-9);
       // The §137 anchor keeps the RAW source stamp — a caption edit made
       // before this clamp existed still keys to the same word.
@@ -147,7 +150,32 @@ describe("buildCaptionLines", () => {
       expect(word.start).toBe(10); // max(10, 12 − 2) — the boundary is inclusive
     });
 
-    it("changes NOTHING for normal sub-2s stamps — the 7-word fixture's full result is pinned", () => {
+    it("clamps a 2.43s revived-retake smear to 1.5s ending on its true end (field case 2026-08-26)", () => {
+      // `dedicated`, stamped 51.42→53.85 inside a revived retake: the pause
+      // after it was absorbed into the word. Under the old 2.0 bar this still
+      // displayed for a full 2.0s — the smear SLIPPED UNDER it, which is what
+      // moved the constant to 1.5.
+      const transcript: Transcript = {
+        language: "en",
+        words: [{ text: "dedicated", start: 51.42, end: 53.85 }],
+      };
+      const word = buildCaptionLines(transcript, identity(60))[0]!.words[0]!;
+      expect(word.end).toBeCloseTo(53.85, 6); // the trustworthy edge, untouched
+      expect(word.end - word.start).toBeCloseTo(1.5, 6);
+      expect(word.srcStart).toBe(51.42); // §137 anchor keeps the RAW stamp
+    });
+
+    it("leaves an ordinary 0.4s word alone — the tighter bar cannot truncate real speech", () => {
+      const transcript: Transcript = {
+        language: "en",
+        words: [{ text: "ordinary", start: 3, end: 3.4 }],
+      };
+      const word = buildCaptionLines(transcript, identity(6))[0]!.words[0]!;
+      expect(word.start).toBe(3);
+      expect(word.end).toBe(3.4);
+    });
+
+    it("changes NOTHING for normal sub-1.5s stamps — the 7-word fixture's full result is pinned", () => {
       // Byte-for-byte pin of the pre-clamp output (same expressions the
       // fixture uses, so float identity holds): any drift in an ordinary
       // transcript means the clamp leaked past the stretched-stamp case.
@@ -166,11 +194,15 @@ describe("buildCaptionLines", () => {
         srcStart: i * 0.3,
       });
       expect(buildCaptionLines(transcript, identity(3), { maxWordsPerLine: 3 })).toEqual([
-        // Holds clamp to the next line's start (3·0.3, 6·0.3); the last line
-        // keeps its full hold under the 3s output duration.
+        // Holds clamp to the next line's start (3·0.3, 6·0.3); both of those
+        // windows are 0.9s, already past the dwell floor, so they are the
+        // pre-clamp values verbatim.
         { words: [word(0), word(1), word(2)], start: 0 * 0.3, end: 3 * 0.3 },
         { words: [word(3), word(4), word(5)], start: 3 * 0.3, end: 6 * 0.3 },
-        { words: [word(6)], start: 6 * 0.3, end: 6 * 0.3 + 0.25 + 0.35 },
+        // The last line's hold gives it 0.6s — under MIN_CAPTION_LINE_DWELL_SEC
+        // — and with no neighbour it takes the floor outright, still inside the
+        // 3s output duration.
+        { words: [word(6)], start: 6 * 0.3, end: 6 * 0.3 + MIN_CAPTION_LINE_DWELL_SEC },
       ]);
     });
   });
@@ -187,6 +219,127 @@ describe("buildCaptionLines", () => {
     const lines = buildCaptionLines(transcript, map);
     expect(lines[0]!.end).toBeLessThanOrEqual(lines[1]!.start + 1e-9);
     expect(lines[lines.length - 1]!.end).toBeLessThanOrEqual(map.outputDuration + 1e-9);
+  });
+
+  it("repairs the whole revived-retake shape end to end (field case 2026-08-26)", () => {
+    // The measured shape, in one transcript: a smeared word (a 2.43s stamp
+    // that absorbed the pause after it), then ten words crammed into 0.25s,
+    // then ordinary speech. Zero gaps between them, as whisper's contiguous
+    // stamps always give (§18).
+    const words = [
+      { text: "dedicated", start: 10, end: 12.43 },
+      ..."context could read 50 files and then gives a clean".split(" ").map((text, i) => ({
+        text,
+        start: 12.43 + i * 0.025,
+        end: 12.43 + (i + 1) * 0.025,
+      })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        text: `n${i}`,
+        start: 13.5 + i * 0.5,
+        end: 13.5 + i * 0.5 + 0.4,
+      })),
+    ];
+    const map = identity(20);
+    const lines = buildCaptionLines({ language: "en", words }, map);
+
+    // No word squats: every display window is inside the lead clamp.
+    for (const w of lines.flatMap((l) => l.words)) {
+      expect(w.end - w.start).toBeLessThanOrEqual(MAX_CAPTION_WORD_LEAD_SEC + 1e-9);
+    }
+    // Every line either clears the dwell floor or is GAP-STARVED — there was
+    // no slack after it to take. Those are the only two honest outcomes: the
+    // display cannot slow the speech down.
+    const starved = lines.map((line, i) => {
+      const cap = lines[i + 1]?.start ?? map.outputDuration;
+      return line.end >= cap - 1e-9;
+    });
+    lines.forEach((line, i) => {
+      expect(
+        line.end - line.start >= MIN_CAPTION_LINE_DWELL_SEC - 1e-9 || starved[i],
+      ).toBe(true);
+    });
+    // …and the burst really does exercise BOTH arms: some of its lines are
+    // starved flashes, and the one that finally has a gap in front of the
+    // normal speech takes the floor.
+    expect(
+      lines.some((l, i) => starved[i] && l.end - l.start < MIN_CAPTION_LINE_DWELL_SEC - 1e-9),
+    ).toBe(true);
+    expect(lines.some((l) => Math.abs(l.end - l.start - MIN_CAPTION_LINE_DWELL_SEC) < 1e-9)).toBe(
+      true,
+    );
+    // Windows stay ordered and non-overlapping (§115).
+    for (let i = 0; i + 1 < lines.length; i++) {
+      expect(lines[i]!.end).toBeLessThanOrEqual(lines[i + 1]!.start + 1e-9);
+    }
+  });
+});
+
+describe("enforceLineDwell — MIN_CAPTION_LINE_DWELL_SEC (field case 2026-08-26)", () => {
+  /** A line whose words are irrelevant to the sweep — it never reads them. */
+  const line = (start: number, end: number, text = "w"): CaptionLine => ({
+    words: [{ text, start, end, srcStart: start }],
+    start,
+    end,
+  });
+
+  it("extends a flash line into the following gap, to exactly the floor", () => {
+    const [first] = enforceLineDwell([line(0, 0.06), line(5, 5.5)]);
+    expect(first!.end).toBeCloseTo(MIN_CAPTION_LINE_DWELL_SEC, 9);
+  });
+
+  it("never extends past the next line's start — no overlap, no reorder (§115)", () => {
+    const out = enforceLineDwell([line(0, 0.06), line(0.4, 0.9)]);
+    expect(out[0]!.end).toBe(0.4);
+    expect(out[0]!.end).toBeLessThanOrEqual(out[1]!.start);
+  });
+
+  it("leaves a zero-gap flash run alone — the display cannot slow speech down", () => {
+    // The 98%-zero-gap case measured on the field transcript: no slack exists,
+    // so the sweep must return the run untouched rather than push lines later.
+    const run = [line(0, 0.06), line(0.06, 0.12), line(0.12, 0.18), line(0.18, 5)];
+    const out = enforceLineDwell(run);
+    expect(out).toEqual(run);
+    expect(out[0]).toBe(run[0]); // verbatim, not a rebuilt copy
+  });
+
+  it("extends the LAST line free of any neighbour, still capped by maxEnd", () => {
+    expect(enforceLineDwell([line(0, 0.06)])[0]!.end).toBeCloseTo(MIN_CAPTION_LINE_DWELL_SEC, 9);
+    // No frames past the output end to draw a caption over.
+    expect(enforceLineDwell([line(0, 0.06)], { maxEnd: 0.3 })[0]!.end).toBe(0.3);
+  });
+
+  it("stops at the next breakpoint — readability never moves a line into the wrong layout band (§6b)", () => {
+    const out = enforceLineDwell([line(0, 0.06), line(5, 5.5)], { breakpoints: [0.2] });
+    expect(out[0]!.end).toBe(0.2);
+  });
+
+  it("returns lines that already clear the floor VERBATIM", () => {
+    const ok = [line(0, 0.9), line(1, 2)];
+    const out = enforceLineDwell(ok);
+    expect(out[0]).toBe(ok[0]);
+    expect(out[1]).toBe(ok[1]);
+  });
+
+  it("leaves the karaoke word stamps of an extended line byte-unchanged", () => {
+    // The dwell is the LINE's window. Stretching the last word's highlight to
+    // fill it would just reproduce the stuck-highlight bug one layer down.
+    const original = line(0, 0.06, "flash");
+    const words = original.words;
+    const out = enforceLineDwell([original, line(5, 5.5)]);
+    expect(out[0]!.end).not.toBe(original.end); // it really was extended…
+    expect(out[0]!.words).toBe(words); // …and the stamps are the same array
+    expect(out[0]!.words[0]).toEqual({ text: "flash", start: 0, end: 0.06, srcStart: 0 });
+  });
+
+  it("is monotone: no line's START ever moves, so a later line is never pushed", () => {
+    const lines = [line(0, 0.06), line(0.5, 0.56), line(2, 2.05)];
+    const out = enforceLineDwell(lines);
+    expect(out.map((l) => l.start)).toEqual(lines.map((l) => l.start));
+    // Line 0 is capped by its neighbour (0.5), line 1 has the gap to take the
+    // whole floor, line 2 is last — and none of that moved any start.
+    expect(out[0]!.end).toBe(0.5);
+    expect(out[1]!.end).toBeCloseTo(0.5 + MIN_CAPTION_LINE_DWELL_SEC, 9);
+    expect(out[2]!.end).toBeCloseTo(2 + MIN_CAPTION_LINE_DWELL_SEC, 9);
   });
 });
 

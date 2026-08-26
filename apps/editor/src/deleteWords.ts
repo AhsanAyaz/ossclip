@@ -63,9 +63,9 @@ export function deleteWordsPlanFor(
   // Raw ASR word starts can be smeared FAR early by whisper's stamp-stretch
   // (transcribe.ts:150-155 bleeds each end into the next start — the §18
   // field case put a word on screen 21 seconds early), so the word's
-  // display-clamped `start` (MAX_CAPTION_WORD_LEAD_SEC, captions.ts:147,169)
+  // display-clamped `start` (MAX_CAPTION_WORD_LEAD_SEC in captions.ts)
   // is the SAFE cut edge; ends are the trustworthy stamps
-  // (captions.ts:137-146). Clamping to the PREVIOUS word's end on top of
+  // (MAX_CAPTION_WORD_LEAD_SEC's own doc). Clamping to the PREVIOUS word's end on top of
   // that guarantees the cut never eats a kept word, whatever the stamps say.
   const startSec = Math.max(first.start, prevEnd ?? 0);
   const endSec = last.end;

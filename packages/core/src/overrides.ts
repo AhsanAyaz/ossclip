@@ -1774,8 +1774,9 @@ export function applyCaptionRangeEdits(
  * only the rendered caption stream loses the word.
  *
  * Line WINDOWS are recomputed here, deliberately: `buildCaptionLines` derives
- * `start` from the first word and `end` from the last word plus a hold
- * (captions.ts:203-213), so hiding a boundary word would otherwise leave the
+ * `start` from the first word and `end` from the last word plus a hold (its
+ * hold/breakpoint clamp loop, then `enforceLineDwell`), so hiding a boundary
+ * word would otherwise leave the
  * line lingering on screen over silence — up for the hidden first word's
  * duration, or held past the hidden last word's end. A hidden FIRST word moves
  * `start` to the first survivor; a hidden LAST word re-bases the packer's hold
@@ -1838,7 +1839,7 @@ export function applyCaptionWordHides(
     const firstKept = kept[0]!;
     const lastKept = kept[kept.length - 1]!;
     const start = firstKept === line.words[0] ? line.start : firstKept.start;
-    // The packer's hold delta (captions.ts:203-213) rides on whichever word
+    // The packer's hold delta (`buildCaptionLines`) rides on whichever word
     // is now last; clamped so the line never ends before its own last word
     // (the delta can be negative when the hold was clamped to outputDuration).
     const end =
@@ -1921,7 +1922,7 @@ export function scaleWordsIntoWindow(
  * line's END and the next line's START are two separate numbers here — even
  * though on a real transcript they are always equal, because the packer chains
  * words (`transcribe.ts`: `next.start = w.end`) and clamps each line's end to
- * the next line's start (`captions.ts:203-213`), giving inter-line gaps of
+ * the next line's start (`buildCaptionLines`), giving inter-line gaps of
  * exactly zero (measured 116/116, see `captionLineTiming`). A nudge CLOSES the
  * two onto one value only when they were already COINCIDENT: that is what
  * makes a lead on the packed stream move both sides of the boundary, one edit
@@ -1929,8 +1930,10 @@ export function scaleWordsIntoWindow(
  *
  * They are two numbers because GAPS ARE REAL: `applyCaptionWordHides` re-bases
  * a line's window onto its surviving words, `MAX_CAPTION_WORD_LEAD_SEC`
- * (captions.ts:147, 169) clamps a word's display start, and an overrides.json
- * can be hand-edited. This code
+ * (`captions.ts`) clamps a word's display start, and an overrides.json
+ * can be hand-edited. (Citations here name the constant or function
+ * deliberately — the line numbers they used to carry went stale the first
+ * time `captions.ts` grew a constant.) This code
  * used to hold ONE `seams` array whose interior entry was read off the later
  * line's start, conflating the two: with lines `[0,2] [2,4] [5,6]`, a
  * lead-only drag of the middle line (`{lead: -0.05, tail: 0}`, exactly what

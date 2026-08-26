@@ -143,8 +143,84 @@ export interface CaptionOptions {
  * the start toward it. Display-only: cuts, analysis and the transcript
  * itself never see this, and `srcStart` keeps the RAW source stamp so the
  * §137 edit anchor does not move.
+ *
+ * 2.0 → 1.5 (field case 2026-08-26, a revived retake): its smears SLIPPED
+ * UNDER the 2.0 bar — `dedicated` was stamped 2.43s, so the clamp still left
+ * the word squatting on screen for a full 2.0s with the karaoke highlight
+ * stuck on it, and 8 more words in that one transcript were the same shape.
+ * 1.5s exceeds any genuinely spoken English word, so the tighter bar cannot
+ * truncate real speech, and the 2026-08-17 incident still shows "Okay," for
+ * its final 1.5s. ONE lever, by doctrine: the end side is the trustworthy
+ * edge and is never clamped, so how hard the start pulls toward it is the
+ * only number here — a second constant would just be this one, twice.
  */
-export const MAX_CAPTION_WORD_LEAD_SEC = 2;
+export const MAX_CAPTION_WORD_LEAD_SEC = 1.5;
+
+/**
+ * The floor on how long a caption LINE stays on screen. Whisper's stamps can
+ * cram a burst of words into no time at all — field case 2026-08-26, a
+ * revived retake: ten words ("context could read 50 files and then gives a
+ * clean") inside 0.25s, 0.01–0.05s each, which packs into 3-word lines with
+ * ~0.06s windows. Rendered faithfully that is a flash nobody can read at any
+ * speed, so the display repairs it: a too-short line borrows from the GAP
+ * that follows it.
+ *
+ * SLACK ONLY, and there usually is none. On the transcript this came from,
+ * 98% of adjacent word pairs have a gap of ≤0 (the §18 contiguous-stamp
+ * chain, `parseWhisperJson` sets `next.start = w.end`), so on a zero-gap run
+ * of flash lines this sweep does NOTHING and the captions stay fast. That is
+ * the honest limit: a display cannot slow speech down, only spend slack that
+ * exists — which is also why the sweep is monotone and single-pass, never
+ * pushing a later line to make room. The slack it does find is largely what
+ * `MAX_CAPTION_WORD_LEAD_SEC` above creates by pulling a smeared start
+ * forward.
+ */
+export const MIN_CAPTION_LINE_DWELL_SEC = 0.7;
+
+/**
+ * Extend every line that would flash by less than `MIN_CAPTION_LINE_DWELL_SEC`
+ * into the gap after it — the display-side repair of a crammed stamp burst.
+ *
+ * Forward, single-pass, monotone: only line ENDS move, and only later, so the
+ * caps below can be read off the ORIGINAL lines and no line can be pushed by
+ * one before it. Bounds, all three of which the packer already respects for
+ * `hold` (`buildCaptionLines` below) and which therefore cannot be dropped
+ * here without re-opening what they were added for:
+ *  - the next line's START — never overlap, never reorder (§115,
+ *    `packages/scenes/src/frames.ts`: no two lines may share a frame);
+ *  - the next BREAKPOINT — a line held across a scene-cue edge sits in the
+ *    WRONG layout's caption band and can land on a card or the face
+ *    (FINDINGS §6b), and readability is not worth that;
+ *  - `maxEnd`, the output duration — there are no frames past it to draw on.
+ * The last line is free of the NEIGHBOUR bound only; the other two still hold.
+ *
+ * Never shortens a line, and never touches `words`: the dwell is the LINE's
+ * window, and stretching the last word's karaoke stamp to fill it would just
+ * move the stuck-highlight bug from `MAX_CAPTION_WORD_LEAD_SEC`'s case into
+ * this one. Lines with no slack to take are returned VERBATIM. Pure, so the
+ * whole bounds matrix is testable without a packer.
+ */
+export function enforceLineDwell(
+  lines: readonly CaptionLine[],
+  opts: { breakpoints?: readonly number[]; maxEnd?: number } = {},
+): CaptionLine[] {
+  const breakpoints = [...(opts.breakpoints ?? [])].sort((a, b) => a - b);
+  return lines.map((line, i) => {
+    if (line.end - line.start >= MIN_CAPTION_LINE_DWELL_SEC) return line;
+    let end = line.start + MIN_CAPTION_LINE_DWELL_SEC;
+    const next = lines[i + 1];
+    if (next) end = Math.min(end, next.start);
+    // Same predicate as the hold clamp, so the two agree on which boundary is
+    // "this line's": strictly after its start, with the packer's epsilon.
+    const boundary = breakpoints.find((b) => b > line.start + 1e-6);
+    if (boundary !== undefined) end = Math.min(end, boundary);
+    if (opts.maxEnd !== undefined) end = Math.min(end, opts.maxEnd);
+    // A cap at or before where the line already ended is no slack at all —
+    // return the line itself, so an untouched track stays byte-identical.
+    if (end <= line.end) return line;
+    return { ...line, end };
+  });
+}
 
 /**
  * Landscape draws captions at 44px on a 1920px frame against portrait's
@@ -230,5 +306,9 @@ export function buildCaptionLines(
     // A single word physically spanning a boundary stays readable to its end.
     line.end = Math.min(Math.max(end, lastWordEnd), map.outputDuration);
   }
-  return lines;
+  // LAST, on the finished windows: `hold` has already had its say, so the
+  // dwell floor caps at an absolute `start + MIN_CAPTION_LINE_DWELL_SEC`
+  // rather than adding to what the hold produced — a line already long
+  // enough is returned untouched instead of held twice.
+  return enforceLineDwell(lines, { breakpoints, maxEnd: map.outputDuration });
 }
