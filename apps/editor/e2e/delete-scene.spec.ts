@@ -79,17 +79,30 @@ test("Escape cancels, deleting nothing and leaving the selection alone", async (
   await expect(page.getByTestId("delete-scene")).toBeVisible();
 });
 
-test("the whole take strikes the window through, and that undoes too", async ({ page }) => {
+test("the whole take leaves a restore seam where it was, and that undoes too", async ({ page }) => {
   const modal = await openOn(page, "scene-5");
   await page.getByTestId("delete-option-take").locator("input").check();
   await page.getByTestId("delete-confirm").click();
   await expect(modal).toHaveCount(0);
 
-  // `cutChunk` writes the cue's own window — the struck band is keyed by it.
-  const band = page.locator('[data-testid^="timeline-cut-27.61-"]');
-  await expect(band).toHaveCount(1);
+  // `cutChunk` writes the cue's own window — both testids are keyed by it.
+  //
+  // Since the cut-review rework the editor's own cut writers resolve `src` AT
+  // THE GESTURE and `livePreviewMap` subtracts it, so this cut arrives at the
+  // Timeline already APPLIED: the window is gone from the live clock, the
+  // block with it, and Timeline draws the seam arm (the `cut.src` branch,
+  // Timeline.tsx) rather than a band struck through material that is no
+  // longer on screen. Asserting the old `timeline-cut-…` band here is what
+  // went red on CI — this suite is the only place that renders the applied
+  // arm end to end, and `pnpm test` never runs it.
+  const seam = page.locator('[data-testid^="timeline-cut-seam-27.61-"]');
+  const block = page.getByTestId("timeline-block-scene-5");
+  await expect(seam).toHaveCount(1);
+  await expect(block).toHaveCount(0);
+
   await page.keyboard.press("Meta+z");
-  await expect(band).toHaveCount(0);
+  await expect(seam).toHaveCount(0);
+  await expect(block).toHaveCount(1);
 });
 
 test("a plain take still confirms, with only the option that applies", async ({ page }) => {

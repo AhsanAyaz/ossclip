@@ -284,9 +284,19 @@ test("dragging a block body moves the scene in time, keeping its duration; a cli
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   const renderProps = JSON.parse(await readFile(join(WORKDIR, "render-props.json"), "utf8"));
   const cue = renderProps.baseSceneCues.find((c: { id: string }) => c.id === "scene-2");
+  // The SRC-ANCHORED arm of `SceneTimingSchema`: since timing went audio-first
+  // the editor converts the drag at the gesture and pins SOURCE seconds, so a
+  // dropped block cannot snap back when the next derive changes the output
+  // clock under it. There is no dual-write — asserting `startSec` here is what
+  // went red on CI, and asserting either shape would let a regression back to
+  // the output-clock arm pass.
   const timing = doc.scenes[cue.id].timing;
-  expect(timing.startSec).toBeLessThan(cue.startSec);
-  expect(timing.endSec - timing.startSec).toBeCloseTo(cue.endSec - cue.startSec, 3);
+  expect(Object.keys(timing).sort()).toEqual(["srcEnd", "srcStart"]);
+  // Comparable against the cue's OUTPUT-clock window only because this
+  // project's fixture spans are the identity (the `recut` project rewrites
+  // them, and playwright.config.ts serializes it behind everything else).
+  expect(timing.srcStart).toBeLessThan(cue.startSec);
+  expect(timing.srcEnd - timing.srcStart).toBeCloseTo(cue.endSec - cue.startSec, 3);
 
   // And a plain click on a block does NOT write a timing override: click the
   // FIRST block (untouched) and save — its scene must carry no timing.
