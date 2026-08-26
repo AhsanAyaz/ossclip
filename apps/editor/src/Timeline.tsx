@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import type { KeptSpan, SceneCue, Segment } from "@ossclip/core/browser";
-import { removalSeams } from "./cleanup";
+import { chipMenuLabels, removalSeams, type RemovalSeam } from "./cleanup";
+import { ContextMenu } from "./ContextMenu";
 import {
   applySnap,
   clampTiming,
@@ -256,6 +257,12 @@ export const Timeline: React.FC<TimelineProps> = ({
   // frame count from whenever the listener last (re)attached.
   const frameRef = useRef(frame);
   frameRef.current = frame;
+  // The marker chip's right-click menu (cut-review rework): the seam it
+  // opened on plus the click's viewport point; null = closed. Rendered at
+  // the strip's end so it floats above everything.
+  const [chipMenu, setChipMenu] = useState<{ x: number; y: number; seam: RemovalSeam } | null>(
+    null,
+  );
   const [dragPreview, setDragPreview] = useState<{
     sceneId: string;
     startSec: number;
@@ -635,6 +642,23 @@ export const Timeline: React.FC<TimelineProps> = ({
       // grab) instead of repeating the same call in each of their handlers.
       onMouseDownCapture={blurTypingElement}
     >
+      {chipMenu !== null
+        ? (() => {
+            const labels = chipMenuLabels(chipMenu.seam);
+            const { srcIn, srcOut } = chipMenu.seam;
+            return (
+              <ContextMenu
+                x={chipMenu.x}
+                y={chipMenu.y}
+                onClose={() => setChipMenu(null)}
+                items={[
+                  { label: labels.keep, onPick: () => edits.toggleKept(srcIn, srcOut) },
+                  { label: labels.dismiss, onPick: () => edits.dismissRemoval(srcIn, srcOut) },
+                ]}
+              />
+            );
+          })()
+        : null}
       <div style={zoomBar}>
         {/* Zoom controls (R14 §53), always visible so the feature is
             discoverable — buttons anchor about the viewport centre,
@@ -711,10 +735,19 @@ export const Timeline: React.FC<TimelineProps> = ({
                             onMouseDown: (e: React.MouseEvent) => {
                               // The restore seam's idiom: act on mousedown,
                               // stopPropagation so the track underneath
-                              // doesn't also seek-and-scrub.
+                              // doesn't also seek-and-scrub. Right-button
+                              // presses fall through to onContextMenu below.
+                              if (e.button === 2) return;
                               e.stopPropagation();
                               e.preventDefault();
                               edits.toggleKept(seam.srcIn, seam.srcOut);
+                            },
+                            onContextMenu: (e: React.MouseEvent) => {
+                              // Right-click opens the marker menu (keep /
+                              // "not a <reason>") instead of the browser's.
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setChipMenu({ x: e.clientX, y: e.clientY, seam });
                             },
                           }
                         : {})}
@@ -915,12 +948,24 @@ export const Timeline: React.FC<TimelineProps> = ({
                     // grew UNDERNEATH its neighbour. Levels: block 1, ghost 2,
                     // selected 3, dragging 4, playhead 5.
                     zIndex: isDragging ? 4 : isSelected ? 3 : 1,
+                    // A revived block (`cue.kept` — a vetoed removal carved
+                    // into its own take by carveKeptTakes) reads as its own
+                    // state at a glance: dashed violet over a faint tint,
+                    // the kept-band family. Selection still wins the border.
                     border: isSelected
                       ? "2px solid #5b8cff"
-                      : isPlain
-                        ? "1px solid #22222a"
-                        : "1px solid #2A2A33",
-                    backgroundColor: isSelected ? "#1c2333" : isPlain ? "#131318" : "#1A1A21",
+                      : cue.kept !== undefined
+                        ? "1px dashed #B78CFF"
+                        : isPlain
+                          ? "1px solid #22222a"
+                          : "1px solid #2A2A33",
+                    backgroundColor: isSelected
+                      ? "#1c2333"
+                      : cue.kept !== undefined
+                        ? "#1a1524"
+                        : isPlain
+                          ? "#131318"
+                          : "#1A1A21",
                     // The filmstrip (R20 §97): the take's own frame repeated
                     // across the block, dimmed under a gradient so the label
                     // stays readable. Missing thumb → the flat panel above.
@@ -944,7 +989,7 @@ export const Timeline: React.FC<TimelineProps> = ({
                         : blockLabel
                     }
                   >
-                    {cue.id}
+                    {cue.kept !== undefined ? "KEPT" : cue.id}
                   </span>
                   {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
                   {!isPlain ? (

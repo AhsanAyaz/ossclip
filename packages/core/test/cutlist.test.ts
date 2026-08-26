@@ -4,6 +4,7 @@ import {
   applyCleanupChoices,
   buildCutlist,
   cleanupVetoable,
+  dismissedRemovals,
   vetoedRemovals,
 } from "../src/cutlist";
 import { subtractRangesFromCutlist } from "../src/recut";
@@ -684,5 +685,45 @@ describe("applyCleanupChoices (the cleanup veto layer, cut review step 3)", () =
     expect(cleanupVetoable(undefined)).toBe(true);
     expect(cleanupVetoable("user")).toBe(false);
     expect(cleanupVetoable("clip")).toBe(false);
+  });
+});
+
+describe("dismissedRemovals + the applyCleanupChoices union (cut-review rework, 2026-08-26)", () => {
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "retake", confidence: 0.9 },
+    { srcIn: 7, srcOut: 12, kind: "keep" },
+    { srcIn: 12, srcOut: 13, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 13, srcOut: 20, kind: "keep" },
+  ];
+
+  it("matches by overlap, never float equality — a shifted re-proposal stays dismissed", () => {
+    const hit = dismissedRemovals(proposal, { dismissed: [{ srcIn: 5.4, srcOut: 5.5 }] });
+    expect(hit).toHaveLength(1);
+    expect(hit[0]!.reason).toBe("retake");
+  });
+
+  it("is NOT part of vetoedRemovals — a dismissal must never read as \"kept · retake\"", () => {
+    const choices = { dismissed: [{ srcIn: 5, srcOut: 7 }] };
+    expect(vetoedRemovals(proposal, choices)).toEqual([]);
+    expect(dismissedRemovals(proposal, choices)).toHaveLength(1);
+  });
+
+  it("applyCleanupChoices re-keeps the union of vetoed and dismissed", () => {
+    const out = applyCleanupChoices(proposal, {
+      kept: [{ srcIn: 12, srcOut: 13 }],
+      dismissed: [{ srcIn: 5, srcOut: 7 }],
+    });
+    // Both removals became keeps and merged with their neighbours: one span.
+    expect(out).toEqual([{ srcIn: 0, srcOut: 20, kind: "keep" }]);
+  });
+
+  it("user/clip spans are never dismissible — cleanupVetoable's contract", () => {
+    const withUser: Segment[] = [
+      { srcIn: 0, srcOut: 5, kind: "keep" },
+      { srcIn: 5, srcOut: 6, kind: "remove", reason: "user", confidence: 1 },
+      { srcIn: 6, srcOut: 10, kind: "keep" },
+    ];
+    expect(dismissedRemovals(withUser, { dismissed: [{ srcIn: 5, srcOut: 6 }] })).toEqual([]);
   });
 });

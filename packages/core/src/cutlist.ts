@@ -349,6 +349,15 @@ export interface CleanupChoices {
   /** Individual vetoes, SOURCE seconds — see `vetoedRemovals` for the
    * overlap-based matching rule. */
   kept?: readonly { srcIn: number; srcOut: number }[];
+  /**
+   * Dismissed proposals ("not a retake") — the classification itself was
+   * wrong, so the material is ordinary footage and the marker disappears.
+   * SOURCE seconds, overlap-matched like `kept`. Kept in its own list, NOT
+   * folded into `kept`: `vetoedRemovals` feeds the "kept · <reason>" visual
+   * state and produce's kept-N line, and a dismissed marker must read as
+   * neither. `applyCleanupChoices` re-keeps both.
+   */
+  dismissed?: readonly { srcIn: number; srcOut: number }[];
 }
 
 /**
@@ -413,11 +422,39 @@ export function vetoedRemovals(
  * (via `@ossclip/core/browser`) to mark vetoed seams. A preview that
  * disagrees with the render is worse than no preview.
  */
+/**
+ * The `remove` spans of `cutlist` that `choices.dismissed` reclassifies away
+ * — `vetoedRemovals`' exact matching rule (overlap, never float equality; a
+ * partial overlap dismisses the WHOLE removal — one decision, not divisible)
+ * over the other list. Separate function on purpose: the two lists mean
+ * different things to every DISPLAY surface (a veto is "kept", a dismissal
+ * is "there was never anything here"), while `applyCleanupChoices` re-keeps
+ * the union because the RENDER outcome is identical.
+ */
+export function dismissedRemovals(
+  cutlist: readonly Segment[],
+  choices: CleanupChoices | undefined,
+): Segment[] {
+  const dismissed = choices?.dismissed ?? [];
+  if (dismissed.length === 0) return [];
+  return cutlist.filter(
+    (seg) =>
+      seg.kind === "remove" &&
+      cleanupVetoable(seg.reason) &&
+      dismissed.some((d) => d.srcIn < seg.srcOut && d.srcOut > seg.srcIn),
+  );
+}
+
 export function applyCleanupChoices(
   cutlist: readonly Segment[],
   choices: CleanupChoices | undefined,
 ): Segment[] {
-  const vetoed = new Set(vetoedRemovals(cutlist, choices));
+  const vetoed = new Set([
+    ...vetoedRemovals(cutlist, choices),
+    // Dismissed proposals re-keep identically — the difference is display
+    // state and permanence, not render outcome (dismissedRemovals' doc).
+    ...dismissedRemovals(cutlist, choices),
+  ]);
   if (vetoed.size === 0) return [...cutlist];
   const out: Segment[] = [];
   for (const seg of cutlist) {

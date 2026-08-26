@@ -73,7 +73,11 @@ export function livePreviewMap(
   // the cheap exact exit, not a float comparison of two equal maps.
   const hasVeto =
     Object.values(choices?.reasons ?? {}).some((v) => v === false) ||
-    (choices?.kept?.length ?? 0) > 0;
+    (choices?.kept?.length ?? 0) > 0 ||
+    // A dismissal re-keeps content exactly like a veto does — the live
+    // preview must play it (dismissedRemovals' doc: same render outcome,
+    // different display state).
+    (choices?.dismissed?.length ?? 0) > 0;
   if (!hasVeto) return null;
   if (proposal.length === 0 || oldSpans.length === 0) return null;
   try {
@@ -133,6 +137,11 @@ export interface PreviewClockMappers {
    * (timemap.ts), so the seam moment is one the last render still contained.
    * Always true for the identity pair — no veto, nothing revived. */
   hasOldClockPreimage: (sec: number) => boolean;
+  /** Live-output → SOURCE seconds, or null when no conversion exists (the
+   * identity case with no spans-backed fallback supplied). Exact under a
+   * live veto (`newMap.toSource` is total on the player's own clock). The
+   * split writer's anchor (`splits[].src`). */
+  toSourceSec: ((sec: number) => number) | null;
 }
 
 /**
@@ -142,10 +151,26 @@ export interface PreviewClockMappers {
  * bit-identical values to what it computed before the mapping existed — the
  * same regression anchor the `live` memo's null branch holds to.
  */
-export function previewClockMappers(clocks: LivePreviewClocks | null): PreviewClockMappers {
+export function previewClockMappers(
+  clocks: LivePreviewClocks | null,
+  opts: {
+    /** Live-output → source when NO veto is live (`clocks === null`): the
+     * identity clocks carry no map, and output seconds are NOT source
+     * seconds, so the caller supplies the spans-backed conversion
+     * (`mapFromKeptSpans(renderProps.spans).toSource`). Absent means
+     * `toSourceSec` is null — a writer that needs source time then falls
+     * back to old-clock-only behaviour rather than storing a lie. */
+    identityToSource?: (sec: number) => number;
+  } = {},
+): PreviewClockMappers {
   if (clocks === null) {
     const identity = (sec: number): number => sec;
-    return { toLive: identity, fromLive: identity, hasOldClockPreimage: () => true };
+    return {
+      toLive: identity,
+      fromLive: identity,
+      hasOldClockPreimage: () => true,
+      toSourceSec: opts.identityToSource ?? null,
+    };
   }
   const { oldMap, newMap } = clocks;
   return {
@@ -162,6 +187,11 @@ export function previewClockMappers(clocks: LivePreviewClocks | null): PreviewCl
     // — i.e. the live moment is inside revived material (its own doc comment
     // above pins the inclusive-seam semantics).
     hasOldClockPreimage: (sec) => oldMap.toOutput(newMap.toSource(sec)) !== null,
+    // The SOURCE second under the live playhead — exact: `newMap` is the
+    // very clock the player is on, and `toSource` is total. This is what
+    // lets the editor write `splits[].src` directly (SplitSchema's
+    // documented divergence from the cuts rule).
+    toSourceSec: (sec) => newMap.toSource(sec),
   };
 }
 

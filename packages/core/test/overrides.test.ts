@@ -10,6 +10,7 @@ import {
   parkedOverrideBaseKey,
   remapSceneOverrides,
   splitCues,
+  atSplitPoints,
   splitThenDropHidden,
   stampSceneAnchors,
   dropHiddenCues,
@@ -890,7 +891,7 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
       scenes: { "scene-0@2000": { video: { scale: 0.8 } } },
       splits: [2],
     });
-    const halves = splitCues([cue("scene-0")], doc.splits);
+    const halves = splitCues([cue("scene-0")], atSplitPoints(doc.splits));
     const { cues } = applyOverrides(halves, doc);
     expect(cues[1]!.video?.scale).toBe(0.8);
     // The first half is untouched — the halves are independent scenes now.
@@ -915,7 +916,7 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
       scenes: { "take-0": { captionScale: 0.5, captionY: 0.2, video: { scale: 0.8 } } },
       splits: [4],
     });
-    const halves = splitCues([take("take-0", 0, 10)], doc.splits);
+    const halves = splitCues([take("take-0", 0, 10)], atSplitPoints(doc.splits));
     const { cues } = applyOverrides(halves, doc);
     for (const half of cues) {
       expect(half.captionScale, half.id).toBe(0.5);
@@ -932,7 +933,7 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
       },
       splits: [4],
     });
-    const { cues } = applyOverrides(splitCues([take("take-0", 0, 10)], doc.splits), doc);
+    const { cues } = applyOverrides(splitCues([take("take-0", 0, 10)], atSplitPoints(doc.splits)), doc);
     const right = cues[1]!;
     expect(right.captionY).toBe(0.85); // own
     expect(right.captionScale).toBe(0.5); // inherited
@@ -946,7 +947,7 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
       scenes: { "take-0": { timing: { startSec: 0, endSec: 10 }, hidden: true } },
       splits: [4],
     });
-    const { cues } = applyOverrides(splitCues([take("take-0", 0, 10)], doc.splits), doc);
+    const { cues } = applyOverrides(splitCues([take("take-0", 0, 10)], atSplitPoints(doc.splits)), doc);
     const right = cues[1]!;
     expect(right.startSec).toBe(4);
     expect(right.pinned).toBeFalsy();
@@ -961,7 +962,7 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
     // First pass pins, split cuts, second pass re-applies — and used to put
     // the original endSec back on the first half, overlapping the second.
     const { cues: pinned } = applyOverrides([cue("scene-0")], doc);
-    const halves = splitCues(pinned, doc.splits);
+    const halves = splitCues(pinned, atSplitPoints(doc.splits));
     const { cues } = applyOverrides(halves, doc);
     expect(cues[0]!.endSec).toBe(2);
     expect(cues[1]!.startSec).toBe(2);
@@ -981,7 +982,7 @@ describe("the produce.ts / editor pipeline order (PLAN 2026-08-04 Task 1, bug 3)
     const { cues: visibleCues } = splitThenDropHidden(editedCues, doc);
     const { cues: reclamped } = reclampPinnedTiming(visibleCues);
     const filled = fillPlainCues(reclamped, { outputDurationSec: 40 });
-    const split = splitCues(filled, doc.splits);
+    const split = splitCues(filled, atSplitPoints(doc.splits));
     const { cues: mergedCues } = applyOverrides(split, doc);
     return dropHiddenCues(mergedCues, doc).cues;
   }
@@ -1732,7 +1733,7 @@ describe("§137 field case: Starship V2-e89a046b, 2026-08-12", () => {
 describe("cleanup (the veto layer over the automatic cutlist, cut review step 3)", () => {
   it("absent defaults to empty choices — the splits/cuts optional-with-default shape", () => {
     const doc = OverrideDocSchema.parse({});
-    expect(doc.cleanup).toEqual({ reasons: {}, kept: [] });
+    expect(doc.cleanup).toEqual({ reasons: {}, kept: [], dismissed: [] });
   });
 
   it("a written veto round-trips: only false is ever written, true is tolerated and means default", () => {

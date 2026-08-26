@@ -13,6 +13,11 @@ import {
   splitThenDropHidden,
   fillPlainCues,
   splitCues,
+  atSplitPoints,
+  resolveSplitPoints,
+  carveKeptTakes,
+  dismissedRemovals,
+  vetoedRemovals,
   resolveTheme,
   defaultTheme,
   cutRangeToOldClock,
@@ -919,7 +924,24 @@ export const App: React.FC = () => {
   // consumer learns the recut machinery; identity (literally `(sec) => sec`)
   // whenever `liveRecut` is null, the same regression anchor as the memo
   // below — a session with no veto computes bit-identical values to before.
-  const clock = useMemo(() => previewClockMappers(liveRecut), [liveRecut]);
+  const clock = useMemo(() => {
+    // The identity case still needs live-output → SOURCE for ⌘B's
+    // `splits[].src` dual-write (SplitSchema's anchor): with no veto live
+    // the player's clock IS the last render's, and its spans define the
+    // conversion exactly. Guarded — malformed spans degrade to at-only
+    // splits, never a thrown clock.
+    let identityToSource: ((sec: number) => number) | undefined;
+    try {
+      const spans = renderProps?.spans ?? [];
+      if (spans.length > 0) {
+        const m = mapFromKeptSpans(spans);
+        identityToSource = (sec: number) => m.toSource(sec);
+      }
+    } catch {
+      identityToSource = undefined;
+    }
+    return previewClockMappers(liveRecut, { identityToSource });
+  }, [liveRecut, renderProps]);
 
   // DECIDE (PLAN 2026-08-04 Task 4c, revised by cut review step 4): this
   // memo still never applies `edits.doc.cuts` — but the original refusal
@@ -977,7 +999,10 @@ export const App: React.FC = () => {
     // `id@<split id>` halves land (the suffix is the split's minted id, §137).
     // The extra dropHiddenCues below catches halves of a TAKE
     // the user deleted, whose id did not exist until the fill just ran.
-    const splitted = splitCues(filled, edits.doc.splits);
+    // Pass 1 of two (cut-review rework): old-clock splits — entries carrying
+    // an `at`. Src-only splits (minted inside revived material) have no image
+    // on this clock; they apply in the post-retime pass below.
+    const splitted = splitCues(filled, atSplitPoints(edits.doc.splits));
     const { cues: mergedCues } = applyOverrides(splitted, edits.doc);
     const { cues } = dropHiddenCues(mergedCues, edits.doc);
     // The framing preview applies LAST, onto the fully-merged cue, so what
@@ -1023,10 +1048,58 @@ export const App: React.FC = () => {
     // field remaps old-output → source → new-output (`retimeForPreview`'s
     // doc comment owns the field list and the punch/zoom reasoning), so the
     // player genuinely plays the revived material.
-    if (!liveRecut) return { props: base, reports: [] };
+    // Cut-review rework (2026-08-26): the shared tail for both branches —
+    // carve kept/dismissed removals into first-class `take-kept-*` blocks
+    // (`carveKeptTakes`) and apply src-only splits (`resolveSplitPoints`,
+    // minted by ⌘B inside revived material), on whichever clock the branch
+    // is on: the live map under a veto, the spans-backed map once a veto is
+    // BAKED into the render (livePreviewMap answers null then, but the doc's
+    // kept/dismissed ranges and src splits are still live edits to show).
+    // Nothing to do → the props pass through untouched, the regression
+    // anchor both branches held before this existed.
+    const finishOnClock = (
+      props: PlayerProductionProps,
+      priorReports: string[],
+      clockMap: TimeMap | null,
+    ): { props: PlayerProductionProps; reports: string[] } => {
+      const keptRanges = vetoedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
+        srcIn: seg.srcIn,
+        srcOut: seg.srcOut,
+      }));
+      const dismissedRanges = dismissedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
+        srcIn: seg.srcIn,
+        srcOut: seg.srcOut,
+        dismissed: true,
+      }));
+      const srcOnly = edits.doc.splits.filter((s) => s.at === undefined && s.src !== undefined);
+      const ranges = [...keptRanges, ...dismissedRanges];
+      if (clockMap === null || (ranges.length === 0 && srcOnly.length === 0)) {
+        return { props, reports: priorReports };
+      }
+      const carved = carveKeptTakes(props.sceneCues ?? [], ranges, clockMap);
+      const resolved = resolveSplitPoints(srcOnly, clockMap);
+      const splitted2 = splitCues(carved.cues, resolved.points);
+      // One more override pass so framing edits on `take-kept-*` (and on
+      // src-split halves) preview live — idempotent on already-merged cues,
+      // the memo's own documented property.
+      const { cues: finalCues } = applyOverrides(splitted2, edits.doc);
+      return {
+        props: { ...props, sceneCues: finalCues },
+        reports: [...priorReports, ...carved.reports, ...resolved.reports],
+      };
+    };
+    const spansMap = (): TimeMap | null => {
+      try {
+        const spans = renderProps.spans ?? [];
+        return spans.length > 0 ? mapFromKeptSpans(spans) : null;
+      } catch {
+        return null;
+      }
+    };
+    if (!liveRecut) return finishOnClock(base, [], spansMap());
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
-    return { props: { ...base, ...fields }, reports };
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut]);
+    return finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap);
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut, cleanupCutlist]);
   const live = liveRetimed === null ? null : liveRetimed.props;
 
   // Feed the live cue list to the edit layer so `save()` can stamp each scene
@@ -1905,6 +1978,7 @@ export const App: React.FC = () => {
               // docs own the argument; identity when no veto is live.
               fromLive={clock.fromLive}
               hasOldClockPreimage={clock.hasOldClockPreimage}
+              toSourceSec={clock.toSourceSec}
               onClockRefused={setClockRefusedNotice}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate

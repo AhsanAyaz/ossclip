@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { OverrideDocSchema, splitCues, type SceneCue } from "@ossclip/core/browser";
+import { OverrideDocSchema, atSplitPoints, splitCues, type SceneCue } from "@ossclip/core/browser";
 import { COALESCE_MS, editReducer, initialEditState, useEdits } from "../src/useEdits";
 
 describe("edit state", () => {
@@ -396,15 +396,15 @@ describe("scene splits (R16 §61)", () => {
     ({ id: "scene-0", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10 }) as SceneCue;
 
   it("addSplit stores sorted, dedupes within a millisecond", () => {
-    let s = editReducer(initialEditState(), { type: "addSplit", t: 7.5 });
-    s = editReducer(s, { type: "addSplit", t: 2.25 });
+    let s = editReducer(initialEditState(), { type: "addSplit", at: 7.5 });
+    s = editReducer(s, { type: "addSplit", at: 2.25 });
     expect(s.doc.splits.map((x) => x.at)).toEqual([2.25, 7.5]);
     // Every split leaves here NAMEABLE. The exact value is §137's business
     // (`legacySplitId`), but an empty id would name the half `scene-0@` and
     // is only caught by the server's `safeParse` on Save, as a 400.
     expect(s.doc.splits.every((x) => x.id.length > 0)).toBe(true);
     // A repeated ⌘B on the same paused frame is one decision.
-    expect(editReducer(s, { type: "addSplit", t: 7.5004 })).toBe(s);
+    expect(editReducer(s, { type: "addSplit", at: 7.5004 })).toBe(s);
   });
 
   it("a re-anchored split's old time coming round again gets its OWN id (§137)", () => {
@@ -419,18 +419,18 @@ describe("scene splits (R16 §61)", () => {
       type: "load",
       doc: OverrideDocSchema.parse({ splits: [{ at: 0.6, id: "1200" }] }),
     });
-    s = editReducer(s, { type: "addSplit", t: 1.2 });
+    s = editReducer(s, { type: "addSplit", at: 1.2 });
 
     expect(s.doc.splits).toHaveLength(2);
     expect(new Set(s.doc.splits.map((x) => x.id)).size).toBe(2);
 
-    const halves = splitCues([splitTarget()], s.doc.splits);
+    const halves = splitCues([splitTarget()], atSplitPoints(s.doc.splits));
     expect(halves).toHaveLength(3);
     expect(new Set(halves.map((c) => c.id)).size).toBe(3);
   });
 
   it("splits undo like any other edit", () => {
-    let s = editReducer(initialEditState(), { type: "addSplit", t: 7.5 });
+    let s = editReducer(initialEditState(), { type: "addSplit", at: 7.5 });
     s = editReducer(s, { type: "undo" });
     expect(s.doc.splits).toEqual([]);
   });
@@ -1360,5 +1360,35 @@ describe("save() stamps scene anchors from the synced live cues (handoff-edit-an
     expect(api.doc.scenes["scene-0"]!.anchor).toBeUndefined();
     expect(api.dirty).toBe(false);
     act(() => root.unmount());
+  });
+});
+
+describe("cleanup dismissals (cut-review rework, 2026-08-26)", () => {
+  it("dismissRemoval stores the range and subsumes any overlapping veto", () => {
+    let s = editReducer(initialEditState(), { type: "toggleKept", srcIn: 5, srcOut: 7 });
+    expect(s.doc.cleanup.kept).toEqual([{ srcIn: 5, srcOut: 7 }]);
+    s = editReducer(s, { type: "dismissRemoval", srcIn: 5.1, srcOut: 6.9 });
+    // One state per range: the veto goes, the dismissal stands.
+    expect(s.doc.cleanup.kept).toEqual([]);
+    expect(s.doc.cleanup.dismissed).toEqual([{ srcIn: 5.1, srcOut: 6.9 }]);
+  });
+
+  it("a second overlapping dismissal is a no-op; a degenerate span is refused", () => {
+    let s = editReducer(initialEditState(), { type: "dismissRemoval", srcIn: 5, srcOut: 7 });
+    expect(editReducer(s, { type: "dismissRemoval", srcIn: 6, srcOut: 6.5 })).toBe(s);
+    expect(editReducer(s, { type: "dismissRemoval", srcIn: 9, srcOut: 9 })).toBe(s);
+  });
+
+  it("restoreDismissed removes by overlap and no-ops when nothing matches", () => {
+    let s = editReducer(initialEditState(), { type: "dismissRemoval", srcIn: 5, srcOut: 7 });
+    expect(editReducer(s, { type: "restoreDismissed", srcIn: 20, srcOut: 21 })).toBe(s);
+    s = editReducer(s, { type: "restoreDismissed", srcIn: 5.5, srcOut: 6 });
+    expect(s.doc.cleanup.dismissed).toEqual([]);
+  });
+
+  it("dismissals undo like any other edit", () => {
+    let s = editReducer(initialEditState(), { type: "dismissRemoval", srcIn: 5, srcOut: 7 });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.cleanup.dismissed).toEqual([]);
   });
 });

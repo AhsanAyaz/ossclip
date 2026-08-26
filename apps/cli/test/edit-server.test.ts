@@ -77,7 +77,7 @@ describe("edit server", () => {
       captionLineTiming: {},
       splits: [],
       cuts: [],
-      cleanup: { reasons: {}, kept: [] },
+      cleanup: { reasons: {}, kept: [], dismissed: [] },
     });
   });
 

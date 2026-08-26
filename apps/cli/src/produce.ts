@@ -97,6 +97,9 @@ import {
   thumbnailImageCacheName,
   applyCleanupChoices,
   vetoedRemovals,
+  dismissedRemovals,
+  carveKeptTakes,
+  resolveSplitPoints,
   applyUserCuts,
   pruneHidesInsideCuts,
   loadConfig,
@@ -3132,10 +3135,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // a duration hint a few seconds short — never a wrong cut.
   const cutlistProposed = cutlist;
   const cleanupVetoed = vetoedRemovals(cutlist, overrideDoc.cleanup);
-  if (cleanupVetoed.length > 0) {
+  // Dismissed proposals ("not a retake", cut-review rework 2026-08-26)
+  // re-keep exactly like vetoes — applyCleanupChoices owns the union — but
+  // get their own line: a dismissal is "the classification was wrong", not
+  // "kept this once", and the two must not read as one number.
+  const cleanupDismissed = dismissedRemovals(cutlist, overrideDoc.cleanup);
+  if (cleanupVetoed.length > 0 || cleanupDismissed.length > 0) {
     cutlist = applyCleanupChoices(cutlist, overrideDoc.cleanup);
     map = new TimeMap(cutlist);
-    console.log(cleanupChoicesLine(cleanupVetoed, map.outputDuration));
+    if (cleanupVetoed.length > 0) console.log(cleanupChoicesLine(cleanupVetoed, map.outputDuration));
+    if (cleanupDismissed.length > 0) {
+      const sec = cleanupDismissed.reduce((s, seg) => s + (seg.srcOut - seg.srcIn), 0);
+      console.log(
+        `▸ dismissed ${cleanupDismissed.length} marker(s) — ${sec.toFixed(1)}s kept as footage`,
+      );
+    }
   }
   // `applyUserCuts`'s `priorMap`: a cut's `startSec`/`endSec` (when it has
   // no `src` yet) and any already-re-anchored splits/pins are expressed
@@ -3164,6 +3178,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   cutlist = cutResult.cutlist;
   map = cutResult.map;
   overrideDoc = cutResult.doc;
+  // Backfill `splits[].src` ONCE for src-less legacy entries (cut-review
+  // rework, 2026-08-26) — the `resolveCutSourceRanges` posture applied to
+  // splits: after `applyUserCuts`, a legacy `at` speaks THIS run's clock
+  // (remapped when the frames differed), so `map.toSource(at)` is exact.
+  // Gated on `priorMap` like the cuts resolution: with no prior render-props
+  // the frame `at` was drawn against is unknowable, and a guessed src would
+  // be a wrong anchor forever. `at` stays verbatim — the historical record,
+  // per SplitSchema.
+  let splitSrcResolved = false;
+  if (priorMap !== null) {
+    const withSrc = overrideDoc.splits.map((s) => {
+      if (s.src !== undefined || s.at === undefined) return s;
+      splitSrcResolved = true;
+      return { ...s, src: Math.round(map.toSource(s.at) * 1000) / 1000 };
+    });
+    if (splitSrcResolved) {
+      overrideDoc = { ...overrideDoc, splits: withSrc };
+      console.log(`▸ anchored ${withSrc.filter((s) => s.src !== undefined).length} split(s) to source time`);
+    }
+  }
   if (overrideDoc.cuts.length > 0) {
     console.log(
       `▸ ${overrideDoc.cuts.length} user cut(s) removed ${cutResult.removedSec.toFixed(1)}s ` +
@@ -3439,10 +3473,31 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // are reported from THIS pass: only now does the id universe include the
   // takes, so a `take-2-1` edit whose take merged away reports here instead
   // of every take id reporting on the first pass.
-  const filled = fillPlainCues(reclamped, {
-    outputDurationSec: map.outputDuration,
-    clipStarts: map.spans.map((s) => s.outIn),
+  // Kept/dismissed removal edges ride along as extra clipStarts (cut-review
+  // rework, 2026-08-26): a veto merges two kept spans into one, which would
+  // otherwise change the clip count and silently re-target every `take-N`
+  // framing edit after it (§155's misapply class). With the edges preserved,
+  // the fill still cuts where the boundaries were, and `carveKeptTakes`
+  // below owns the revived middle.
+  const keptRangesForCarve = [
+    ...cleanupVetoed.map((seg) => ({ srcIn: seg.srcIn, srcOut: seg.srcOut })),
+    ...cleanupDismissed.map((seg) => ({ srcIn: seg.srcIn, srcOut: seg.srcOut, dismissed: true })),
+  ];
+  const keptEdgeStarts = keptRangesForCarve.flatMap((r) => {
+    const a = map.toOutput(r.srcIn);
+    const b = map.toOutput(r.srcOut);
+    return [...(a !== null ? [a] : []), ...(b !== null ? [b] : [])];
   });
+  const filled0 = fillPlainCues(reclamped, {
+    outputDurationSec: map.outputDuration,
+    clipStarts: [...map.spans.map((s) => s.outIn), ...keptEdgeStarts],
+  });
+  // Revived material as a first-class block — same carve the editor previews
+  // with (`carveKeptTakes`'s one-implementation-two-callers doc), so
+  // `take-kept-*` ids exist server-side and framing edits on them land in
+  // the second override pass below instead of orphaning.
+  const { cues: filled, reports: carveReports } = carveKeptTakes(filled0, keptRangesForCarve, map);
+  for (const r of carveReports) console.log(`  ⚠ ${r}`);
   // User splits (R16 §61) — after the fill so takes split like scenes, and
   // before the final override pass so edits on the `id@<split id>` halves land
   // (the suffix is the split's own minted id, §137, not its time). A
@@ -3451,7 +3506,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // is a no-op for that scene (the split point sits exactly on the joint
   // between the two halves, matching neither), so this call stays the one
   // that actually cuts TAKE ids, which don't exist until the fill just ran.
-  const split = splitCues(filled, overrideDoc.splits);
+  // Resolved onto THIS run's clock: `src` (the recut-immune anchor) wins,
+  // src-less legacy entries pass their re-anchored `at` through, and a src
+  // sitting in removed material is inert with a report (resolveSplitPoints'
+  // doc owns the posture).
+  const resolvedSplits = resolveSplitPoints(overrideDoc.splits, map);
+  for (const r of resolvedSplits.reports) console.log(`  ⚠ ${r}`);
+  const split = splitCues(filled, resolvedSplits.points);
   if (overrideDoc.splits.length > 0) {
     console.log(`▸ ${overrideDoc.splits.length} scene split(s) from the edit layer`);
   }
@@ -4335,7 +4396,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // right in memory but wrong on disk, and every re-keyed entry was just
   // printed by name. It does NOT spend the `.bak` — the remap moves keys, it
   // rewrites no values a user would need to recover.
-  if (cutResult.changed || captionKeysReanchored || hidesPruned || sceneKeysRemapped) {
+  // `splitSrcResolved` joins for the sceneKeysRemapped reason: the source
+  // anchor exists in memory but not on disk, and skipping the write would
+  // re-resolve (and re-announce) it every run. It does NOT spend the `.bak`
+  // — backfilling adds an anchor, it rewrites no value a user would need to
+  // recover.
+  if (cutResult.changed || captionKeysReanchored || hidesPruned || sceneKeysRemapped || splitSrcResolved) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
     console.log(overridesWriteLine(cutResult.changed));
   }

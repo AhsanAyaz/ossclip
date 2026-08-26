@@ -90,7 +90,7 @@ export type EditAction =
    * style to every listed scene — "the captions are too low for this whole
    * video". R16 §64 rides along: scale fans out with position. */
   | { type: "patchCaptionStyleAll"; sceneIds: string[]; y?: number; scale?: number }
-  | { type: "addSplit"; t: number }
+  | { type: "addSplit"; at?: number; src?: number }
   | { type: "clearTiming"; sceneId: string }
   /** The global Captions switch (doc-global `captionsHidden`) — one action
    * for both directions rather than a hide/restore pair, because the UI is
@@ -205,6 +205,8 @@ export type EditAction =
    * overlap rule `vetoedRemovals` matches with, so a click always inverts
    * the state the seam is showing. */
   | { type: "toggleKept"; srcIn: number; srcOut: number }
+  | { type: "dismissRemoval"; srcIn: number; srcOut: number }
+  | { type: "restoreDismissed"; srcIn: number; srcOut: number }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -400,19 +402,35 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       return commit({ ...state.doc, scenes });
     }
     case "addSplit": {
+      // A split needs at least one anchor (SplitSchema's refine) — a
+      // dispatch with neither is a caller bug, dropped rather than stored.
+      if (action.at === undefined && action.src === undefined) return state;
       // Dedupe within a millisecond: a repeated Cmd+B on the same paused
-      // frame is one decision, not a stack of coincident cuts.
-      if (state.doc.splits.some((s) => Math.abs(s.at - action.t) < 0.001)) return state;
-      // The id is minted HERE, once, and never recomputed (§137). The dedupe
-      // above cannot stand in for uniqueness: it compares `at`, and a split
-      // re-anchored by a re-cut keeps an id derived from a time it no longer
-      // sits at — so `mintSplitId` checks the ids themselves.
+      // frame is one decision, not a stack of coincident cuts. Compared on
+      // `src` when both sides carry it (the authoritative anchor), else on
+      // `at` — a src-only split (revived material) and an at-only legacy
+      // entry can never be "the same" gesture.
+      const dup = state.doc.splits.some((s) =>
+        action.src !== undefined && s.src !== undefined
+          ? Math.abs(s.src - action.src) < 0.001
+          : action.at !== undefined && s.at !== undefined
+            ? Math.abs(s.at - action.at) < 0.001
+            : false,
+      );
+      if (dup) return state;
+      // The id is minted HERE, once, and never recomputed (§137). Minted
+      // from the SOURCE ms when available — the stable anchor — else the
+      // old-clock at; `mintSplitId` checks the ids themselves either way.
       return commit({
         ...state.doc,
         splits: [
           ...state.doc.splits,
-          { at: action.t, id: mintSplitId(action.t, state.doc.splits) },
-        ].sort((a, b) => a.at - b.at),
+          {
+            ...(action.at !== undefined ? { at: action.at } : {}),
+            ...(action.src !== undefined ? { src: action.src } : {}),
+            id: mintSplitId(action.src ?? action.at!, state.doc.splits),
+          },
+        ].sort((a, b) => (a.at ?? a.src ?? 0) - (b.at ?? b.src ?? 0)),
       });
     }
     case "setCaptionsHidden": {
@@ -885,6 +903,36 @@ export function editReducer(state: EditState, action: EditAction): EditState {
           : { ...state.doc.cleanup, kept: [...kept, { srcIn: action.srcIn, srcOut: action.srcOut }] };
       return commit({ ...state.doc, cleanup });
     }
+    case "dismissRemoval": {
+      // "Not a <reason>" (cut-review rework, 2026-08-26): the classification
+      // was wrong, so the marker leaves the lane and the material is
+      // ordinary footage. Same degenerate-span refusal as toggleKept.
+      if (!(action.srcOut > action.srcIn)) return state;
+      const { kept, dismissed } = state.doc.cleanup;
+      if (dismissed.some((d) => d.srcIn < action.srcOut && d.srcOut > action.srcIn)) return state;
+      return commit({
+        ...state.doc,
+        cleanup: {
+          ...state.doc.cleanup,
+          // One state per range: a dismissal subsumes any overlapping veto —
+          // "kept · retake" and "not a retake" cannot both be true.
+          kept: kept.filter((k) => !(k.srcIn < action.srcOut && k.srcOut > action.srcIn)),
+          dismissed: [...dismissed, { srcIn: action.srcIn, srcOut: action.srcOut }],
+        },
+      });
+    }
+    case "restoreDismissed": {
+      const { dismissed } = state.doc.cleanup;
+      // Overlap, not endpoint equality — the toggleKept rule: the entry that
+      // dismissed a (possibly boundary-shifted) proposal is the one this
+      // restore removes.
+      const rest = dismissed.filter((d) => !(d.srcIn < action.srcOut && d.srcOut > action.srcIn));
+      if (rest.length === dismissed.length) return state;
+      return commit({
+        ...state.doc,
+        cleanup: { ...state.doc.cleanup, dismissed: rest },
+      });
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -997,7 +1045,8 @@ export function useEdits() {
     clearCaptionStyle: (sceneId: string) => dispatch({ type: "clearCaptionStyle", sceneId }),
     patchCaptionStyleAll: (sceneIds: string[], style: { y?: number; scale?: number }) =>
       dispatch({ type: "patchCaptionStyleAll", sceneIds, ...style }),
-    addSplit: (t: number) => dispatch({ type: "addSplit", t }),
+    addSplit: (split: { at?: number; src?: number }) =>
+      dispatch({ type: "addSplit", at: split.at, src: split.src }),
     setCaptionsHidden: (hidden: boolean) => dispatch({ type: "setCaptionsHidden", hidden }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
@@ -1031,6 +1080,10 @@ export function useEdits() {
     setReasonEnabled: (reason: RemovalReason, enabled: boolean) =>
       dispatch({ type: "setReasonEnabled", reason, enabled }),
     toggleKept: (srcIn: number, srcOut: number) => dispatch({ type: "toggleKept", srcIn, srcOut }),
+    dismissRemoval: (srcIn: number, srcOut: number) =>
+      dispatch({ type: "dismissRemoval", srcIn, srcOut }),
+    restoreDismissed: (srcIn: number, srcOut: number) =>
+      dispatch({ type: "restoreDismissed", srcIn, srcOut }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

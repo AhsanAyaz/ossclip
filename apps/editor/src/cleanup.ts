@@ -1,5 +1,6 @@
 import {
   cleanupVetoable,
+  dismissedRemovals,
   vetoedRemovals,
   type CleanupChoices,
   type KeptSpan,
@@ -116,8 +117,14 @@ export function removalSeams(
   // very array — the one implementation produce re-keeps with, so the seam
   // state and the render cannot disagree.
   const vetoed = new Set(vetoedRemovals(cutlist, choices));
+  // A dismissed proposal has NO seam and no chip — "not a retake" means the
+  // marker itself was wrong, and drawing it (even hollow) would keep saying
+  // the classification. The material renders as an ordinary take instead
+  // (`carveKeptTakes`); the Cleanup panel lists dismissals for restore.
+  const dismissed = new Set(dismissedRemovals(cutlist, choices));
   const seams: RemovalSeam[] = [];
   for (const seg of cutlist) {
+    if (dismissed.has(seg)) continue;
     // Zero-width removes carry no material — nothing was removed there, so
     // there is nothing to disclose. (The partition can hold them legally.)
     if (seg.kind !== "remove" || seg.srcOut <= seg.srcIn) continue;
@@ -186,4 +193,22 @@ export function cleanupReasonSummaries(cutlist: readonly Segment[]): CleanupReas
   return (Object.keys(REMOVAL_REASON_COLOR) as RemovalReason[])
     .map((reason) => byReason.get(reason))
     .filter((s): s is CleanupReasonSummary => s !== undefined);
+}
+
+/**
+ * The chip context menu's two rows (cut-review rework, 2026-08-26), pure so
+ * the copy matrix is testable without a mount. `keep` toggles the veto
+ * (`toggleKept`), `dismiss` reclassifies (`dismissRemoval`): "Not a retake —
+ * remove marker" says the classification was wrong and the material is
+ * ordinary footage. Only for vetoable seams — a `user`/`clip` chip opens no
+ * menu at all (`cleanupVetoable`, applyCleanupChoices' contract).
+ */
+export function chipMenuLabels(seam: Pick<RemovalSeam, "vetoed" | "reason">): {
+  keep: string;
+  dismiss: string;
+} {
+  return {
+    keep: seam.vetoed ? "Re-remove" : "Keep this (preview plays it)",
+    dismiss: seam.reason !== undefined ? `Not a ${seam.reason} — remove marker` : "Remove marker — keep as footage",
+  };
 }

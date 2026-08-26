@@ -783,3 +783,29 @@ describe("pruneHidesInsideCuts (§59b revisited — the cut supersedes the hide)
     expect(pruned.captionWordsHidden).toEqual({ wat: { was: "??" } });
   });
 });
+
+describe("src-anchored splits pass through the recut remap untouched (cut-review rework)", () => {
+  it("only the src-less legacy shape moves; {src} and {at, src} ride verbatim", () => {
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = new TimeMap([
+      { srcIn: 0, srcOut: 1, kind: "remove", reason: "user", confidence: 1 },
+      { srcIn: 1, srcOut: 10, kind: "keep" },
+    ]);
+    const doc = OverrideDocSchema.parse({
+      splits: [
+        { at: 5, id: "legacy" },
+        { at: 5, src: 5, id: "dual" },
+        { src: 6, id: "srconly" },
+      ],
+    });
+    const { doc: remapped } = remapOverridesThroughRecut(doc, oldMap, newMap);
+    const byId = Object.fromEntries(remapped.splits.map((s) => [s.id, s]));
+    // Legacy at 5 → the 1s head cut shifts it to 4.
+    expect(byId.legacy!.at).toBe(4);
+    // Source-anchored entries do not move — resolveSplitPoints re-derives
+    // their output instant fresh at each application (the cleanup.kept rule).
+    expect(byId.dual).toEqual({ at: 5, src: 5, id: "dual" });
+    expect(byId.srconly).toMatchObject({ src: 6, id: "srconly" });
+    expect(byId.srconly!.at).toBeUndefined();
+  });
+});

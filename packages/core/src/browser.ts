@@ -69,9 +69,15 @@ export { COVER_MAX_WORDS, coverHeadline } from "./cover-headline";
 export {
   applyCleanupChoices,
   cleanupVetoable,
+  dismissedRemovals,
   vetoedRemovals,
   type CleanupChoices,
 } from "./cutlist";
+// Revived-material carving (cut-review rework 2026-08-26), browser-safe:
+// kept-takes.ts imports only scene-schema, timemap and overrides types —
+// all already in this surface's graph. Editor and produce carve with the
+// SAME function (the applyCleanupChoices pattern).
+export { carveKeptTakes, keptTakeId, type KeptRange, type CarveResult } from "./kept-takes";
 // The live post-veto preview (cut review step 4), VALUE exports and
 // browser-safe: retime-preview.ts composes cutlist + recut + timemap — all
 // already in this surface's runtime graph (recut.ts imports only overrides

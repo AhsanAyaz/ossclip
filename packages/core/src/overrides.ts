@@ -10,6 +10,7 @@ import {
   type Theme,
 } from "./scene-schema";
 import { RemovalReasonSchema } from "./schema";
+import type { TimeMap } from "./timemap";
 import { resolveSceneProps } from "./scene-registry";
 import type { CaptionLine, CaptionWord } from "./captions";
 
@@ -261,12 +262,95 @@ export const SplitSchema = z.union([
   // words. zod v4's `z.number()` already rejects non-finite where v3's did
   // not, so this is a requirement written down at the site instead of a
   // default that has already changed once underneath this file.
-  z.object({ at: z.number().finite().nonnegative(), id: z.string().min(1) }),
+  //
+  // `src` (cut-review rework, 2026-08-26) is the split's SOURCE second — the
+  // §155 principle ("key on the property the disruption cannot move")
+  // applied to splits, the way `cuts[].src`, `cleanup.kept` and the caption
+  // keys already anchor. When present it is AUTHORITATIVE and the split is
+  // recut-immune (`remapOverridesThroughRecut` passes it through untouched);
+  // `at` then survives only as the historical old-clock record, the
+  // `cuts[].startSec` posture. Three shapes, all meaningful:
+  //   {at}       — legacy doc; produce backfills `src` once via priorMap.
+  //   {at, src}  — a normal ⌘B: the editor dual-writes both.
+  //   {src}      — ⌘B INSIDE revived material (a kept cleanup removal): no
+  //                old-clock image exists, and none is invented.
+  //
+  // DELIBERATE divergence from the `cuts[].src` editor-never-writes rule:
+  // the editor MAY write `splits[].src`. A cut is a RANGE drawn on props the
+  // editor did not compute, resolvable only against produce's priorMap; a
+  // split is a POINT on a clock the editor itself holds exactly —
+  // `newMap.toSource(liveSec)` under a live veto (`livePreviewMap` builds
+  // that very map client-side), `mapFromKeptSpans(spans).toSource` otherwise.
+  z
+    .object({
+      at: z.number().finite().nonnegative().optional(),
+      src: z.number().finite().nonnegative().optional(),
+      id: z.string().min(1),
+    })
+    .refine((s) => s.at !== undefined || s.src !== undefined, {
+      message: "a split needs `at` or `src`",
+    }),
   // Legacy: a bare number, upgraded in place so every overrides.json written
   // before §137 parses and keeps its split-half overrides attached.
-  z.number().finite().nonnegative().transform((at) => ({ at, id: legacySplitId(at) })),
+  z
+    .number()
+    .finite()
+    .nonnegative()
+    // `src: undefined` spelled out so both union arms share one output
+    // shape — consumers read `s.src` without narrowing the arm first.
+    .transform((at) => ({ at: at as number | undefined, src: undefined as number | undefined, id: legacySplitId(at) })),
 ]);
 export type Split = z.infer<typeof SplitSchema>;
+
+/** A split resolved onto ONE clock — what `splitCues` actually consumes.
+ * `resolveSplitPoints` (src-aware, needs a TimeMap) and `atSplitPoints`
+ * (old-clock, no map needed) both produce this. */
+export interface ResolvedSplitPoint {
+  at: number;
+  id: string;
+}
+
+/** The splits that carry an old-clock `at` — the editor's pass-1 input (its
+ * cue windows speak the last render's clock) and the no-map fallback. A
+ * src-only split is NOT here by definition; it applies via
+ * `resolveSplitPoints` on the clock the map defines. */
+export function atSplitPoints(splits: readonly Split[]): ResolvedSplitPoint[] {
+  return splits.flatMap((s) => (s.at !== undefined ? [{ at: s.at, id: s.id }] : []));
+}
+
+/**
+ * Resolve every split onto the clock `map` defines. `src` wins when present
+ * (the authoritative anchor); a src whose `toOutput` is null sits inside
+ * material the CURRENT cut removes — the split is INERT this run, skipped
+ * with a report, never clamped to a seam (`cleanup.kept`'s inert-entry
+ * posture: the doc keeps it, and it wakes up when that material is kept
+ * again). A src-less split passes its old-clock `at` through — meaningful
+ * only when `map` IS that old clock, which is produce's situation after
+ * `remapOverridesThroughRecut` re-anchored it, and the editor's pass-1.
+ */
+export function resolveSplitPoints(
+  splits: readonly Split[],
+  map: TimeMap,
+): { points: ResolvedSplitPoint[]; reports: string[] } {
+  const points: ResolvedSplitPoint[] = [];
+  const reports: string[] = [];
+  for (const s of splits) {
+    if (s.src !== undefined) {
+      const at = map.toOutput(s.src);
+      if (at === null) {
+        reports.push(
+          `split "${s.id}" sits in removed material (source ${s.src.toFixed(3)}s) — ` +
+            `inert until that material is kept again`,
+        );
+        continue;
+      }
+      points.push({ at, id: s.id });
+    } else if (s.at !== undefined) {
+      points.push({ at: s.at, id: s.id });
+    }
+  }
+  return { points, reports };
+}
 
 /**
  * A split id that no split in `existing` already holds.
@@ -390,17 +474,23 @@ export const OverrideDocSchema = z.object({
     )
     .default({}),
   /**
-   * Scene split points. `at` is ABSOLUTE output seconds (R16 §61 — Cmd/Ctrl+B
-   * at the playhead) and moves when a re-cut re-anchors the doc; `id` is
-   * minted once when the split is created and NEVER recomputed (§137). The
-   * split half is named `${rootId}@${id}`, so re-anchoring `at` cannot rename
-   * the half out from under a `hidden` (or any other) override on it — the
-   * bug that resurrected a deleted scene in the field case.
+   * Scene split points (R16 §61 — Cmd/Ctrl+B at the playhead). Since the
+   * cut-review rework (2026-08-26) `src` — SOURCE seconds — is the
+   * authoritative anchor when present (recut-immune, the `cleanup.kept`
+   * trick; see SplitSchema for the three shapes and the editor-may-write-src
+   * divergence). `at` is the old-clock output second: authoritative only on
+   * src-less legacy entries, where it still moves under
+   * `remapOverridesThroughRecut`. `id` is minted once when the split is
+   * created and NEVER recomputed (§137). The split half is named
+   * `${rootId}@${id}`, so re-anchoring cannot rename the half out from under
+   * a `hidden` (or any other) override on it — the bug that resurrected a
+   * deleted scene in the field case.
    *
-   * `at` stays time-anchored rather than scene-anchored on purpose: a re-plan
-   * can rename or move scenes, and WHERE to cut is a decision about a MOMENT
-   * of the output. Applied by `splitCues` after the plain fill, so a split
-   * lands on graphic cues and takes alike.
+   * Time-anchored rather than scene-anchored on purpose: a re-plan can
+   * rename or move scenes, and WHERE to cut is a decision about a MOMENT of
+   * the footage. Applied by `splitCues` (over `resolveSplitPoints` /
+   * `atSplitPoints`) after the plain fill, so a split lands on graphic cues
+   * and takes alike.
    */
   splits: z.array(SplitSchema).default([]),
   /**
@@ -482,8 +572,25 @@ export const OverrideDocSchema = z.object({
       kept: z
         .array(z.object({ srcIn: z.number().nonnegative(), srcOut: z.number().nonnegative() }))
         .default([]),
+      /**
+       * DISMISSED proposals ("not a retake", cut-review rework 2026-08-26) —
+       * the user says the classification itself was wrong: the marker leaves
+       * the lane, the material is ordinary footage, and the state survives
+       * re-produce (buildCutlist re-proposes, the overlap match suppresses).
+       * SOURCE seconds and overlap-matched exactly like `kept` — recut-immune
+       * by construction. Distinct from `kept` on purpose: a veto says "remove
+       * proposed, I decline it (this once)", a dismissal says "there was
+       * nothing to remove"; `vetoedRemovals` must not paint a dismissed
+       * marker as "kept · retake". One state per range: the editor's dismiss
+       * action deletes any overlapping `kept` entry. `user`/`clip` spans are
+       * never dismissible (`cleanupVetoable`). Optional-with-default like
+       * `kept` — absent parses byte-identically to today.
+       */
+      dismissed: z
+        .array(z.object({ srcIn: z.number().nonnegative(), srcOut: z.number().nonnegative() }))
+        .default([]),
     })
-    .default({ reasons: {}, kept: [] }),
+    .default({ reasons: {}, kept: [], dismissed: [] }),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 
@@ -638,7 +745,10 @@ export const SPLIT_MIN_PIECE_SEC = 0.3;
  * intro animation (a Sequence restarts at its own frame 0) — acceptable for
  * the feature's real use, cutting takes and re-timing halves.
  */
-export function splitCues(cues: readonly SceneCue[], splits: readonly Split[]): SceneCue[] {
+export function splitCues(
+  cues: readonly SceneCue[],
+  splits: readonly ResolvedSplitPoint[],
+): SceneCue[] {
   const out = [...cues];
   for (const s of [...splits].sort((a, b) => a.at - b.at)) {
     const i = out.findIndex(
@@ -709,8 +819,12 @@ export function dropHiddenCues(cues: readonly SceneCue[], doc: OverrideDoc): Dro
 export function splitThenDropHidden(
   cues: readonly SceneCue[],
   doc: OverrideDoc,
+  // Resolved points, when the caller holds a map (produce, the editor's
+  // post-carve pass). Default: the doc's old-clock `at` entries — src-only
+  // splits have no image on that clock and are correctly absent.
+  points: readonly ResolvedSplitPoint[] = atSplitPoints(doc.splits),
 ): DropHiddenResult {
-  return dropHiddenCues(splitCues(cues, doc.splits), doc);
+  return dropHiddenCues(splitCues(cues, points), doc);
 }
 
 /**

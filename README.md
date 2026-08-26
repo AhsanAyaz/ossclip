@@ -120,7 +120,8 @@ ossclip edit                        # bare: pick from recent projects, or browse
 
 - **Click** an element to select it, **drag** to move, **double-click** to retype.
 - **Timeline**: click a scene to select and seek to that point, press-and-drag to scrub, drag a block body to move it in time, drag its edges to retime it.
-- **Cut anything**: split any take or scene at the playhead (**⌘B**), then **Delete this chunk** — struck-through until the next Render, Restore one click away. Cuts are source-anchored, so re-running produce never drifts your splits, pins, or captions.
+- **Cut anything**: split any take or scene at the playhead (**⌘B**), then **Delete this chunk** — struck-through until the next Render, Restore one click away. Cuts and splits are source-anchored, so re-running produce never drifts your splits, pins, or captions.
+- **Review every removal in the marker lane** above the ruler: each silence, pause, filler, and retake produce cut is a labeled chip. **Click** a chip to keep the material — it appears instantly as its own KEPT block you can play, trim, and split like any take. **Right-click** → "Not a retake — remove marker" when the classification was wrong: the marker disappears, the footage becomes an ordinary part of the timeline, and the decision survives every re-produce. The Cleanup panel lists category switches and dismissed markers.
 - **Hide any graphic element** — a chat bubble, a bullet, a diagram node — and the scene panel lists what's hidden with a per-element Restore.
 - A global **Show captions** toggle hides the caption track everywhere — instant in the preview, undo-able, and it survives re-produces. On a `--no-captions` run the toggle says the flag owns it.
 - **SPACE** toggles playback, **⌘Z** / **⌘⇧Z** undo and redo (also in the top bar), **⌘S** saves. Press **?** for the full keybinds reference.

@@ -588,8 +588,10 @@ describe("produce's §137 caption wiring (source-text guard)", () => {
     // handoff-edit-anchoring — a scene edit re-keyed to its anchor's new id
     // is again a doc change none of the others see — so the regex requires
     // all four.
+    // `splitSrcResolved` joined with the cut-review rework — a backfilled
+    // source anchor is a doc change none of the others see, same shape again.
     expect(src).toMatch(
-      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\|\|\s*hidesPruned\s*\|\|\s*sceneKeysRemapped\s*\)/,
+      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\|\|\s*hidesPruned\s*\|\|\s*sceneKeysRemapped\s*\|\|\s*splitSrcResolved\s*\)/,
     );
   });
 

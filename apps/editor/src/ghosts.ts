@@ -1,5 +1,6 @@
 import {
   applyOverrides,
+  atSplitPoints,
   splitCues,
   type OverrideDoc,
   type SceneCue,
@@ -46,7 +47,7 @@ export function ghostCues(
   toLive: (sec: number) => number = (sec) => sec,
 ): SceneCue[] {
   const { cues: applied } = applyOverrides(cues, doc);
-  const splitted = splitCues(applied, doc.splits);
+  const splitted = splitCues(applied, atSplitPoints(doc.splits));
   return splitted
     .filter((c) => doc.scenes[c.id]?.hidden === true)
     .map((c) => ({ ...c, startSec: toLive(c.startSec), endSec: toLive(c.endSec) }));

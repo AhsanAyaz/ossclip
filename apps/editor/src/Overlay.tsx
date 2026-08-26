@@ -132,6 +132,10 @@ interface OverlayProps {
    * fights) — so ⌘B refuses through `onClockRefused` instead. Defaults to
    * always-true, the no-veto shape. */
   hasOldClockPreimage?: (sec: number) => boolean;
+  /** Live playhead → SOURCE seconds (`previewClockMappers.toSourceSec`) —
+   * the `splits[].src` anchor ⌘B dual-writes. Null when no conversion
+   * exists (no spans yet); ⌘B then writes at-only, today's exact shape. */
+  toSourceSec?: ((sec: number) => number) | null;
   /** Visible refusal channel for a gesture the old clock cannot express —
    * App renders it as a dismissible notice beside its other non-fatal
    * banners, never `setError` (that path is fatal, the `onSave` rule). */
@@ -380,6 +384,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   onRequestDelete,
   fromLive = (sec: number): number => sec,
   hasOldClockPreimage = (): boolean => true,
+  toSourceSec = null,
   onClockRefused = (): void => {},
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -1236,20 +1241,24 @@ export const Overlay: React.FC<OverlayProps> = ({
         // Too close to an edge (or on no cue at all): refuse rather than
         // mint an unusably thin half.
         if (!target) return;
-        // A playhead inside REVIVED material (a vetoed removal the last
-        // render cut away) has no old-clock moment to anchor to — see the
-        // `hasOldClockPreimage` prop doc. Refuse out loud; the clamp would
-        // silently relocate the split to the seam.
-        if (!hasOldClockPreimage(t)) {
+        // Dual-write (cut-review rework, 2026-08-26): `src` — the SOURCE
+        // second, the anchor a re-cut cannot move (SplitSchema) — plus the
+        // old-clock `at` when the moment exists on that clock. A playhead
+        // inside REVIVED material has no old-clock image (the refusal this
+        // used to be): it now writes a src-only split, applied by
+        // `resolveSplitPoints` on whatever clock renders next. `toSourceSec`
+        // null (no spans, no live map) falls back to at-only — never a
+        // guessed source second. Rounds belong to the values being stored,
+        // not to the clock the playhead happened to be on.
+        const src = toSourceSec === null ? undefined : Math.round(toSourceSec(t) * 1000) / 1000;
+        const at = hasOldClockPreimage(t) ? Math.round(fromLive(t) * 1000) / 1000 : undefined;
+        if (at === undefined && src === undefined) {
           onClockRefused(
-            "Can't split here: this moment isn't in the last render yet — render once (or re-remove the pause) to split here.",
+            "Can't split here: this moment isn't anchorable yet — render once and try again.",
           );
           return;
         }
-        // Mapped onto the doc's OLD clock FIRST (the `fromLive` prop doc),
-        // then rounded — the millisecond round belongs to the value being
-        // stored, not to the clock the playhead happened to be on.
-        edits.addSplit(Math.round(fromLive(t) * 1000) / 1000);
+        edits.addSplit({ at, src });
       } else if (!mod && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         // ⌥+arrows move the SELECTION to the neighbouring scene (R16 §62) —
         // the playhead stays put; this is "select", not "navigate". With
@@ -1308,7 +1317,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp, onRequestDelete, fromLive, hasOldClockPreimage, onClockRefused]);
+  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp, onRequestDelete, fromLive, hasOldClockPreimage, toSourceSec, onClockRefused]);
 
   return (
     <div

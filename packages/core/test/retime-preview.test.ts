@@ -310,3 +310,32 @@ describe("cutRangeToOldClock (the WRITE direction's range half — cutChunk's bo
     expect(cutRangeToOldClock(mappers, 5, 7)).toEqual({ kind: "degenerate" });
   });
 });
+
+describe("dismissed markers drive the live preview (cut-review rework)", () => {
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "retake", confidence: 0.9 },
+    { srcIn: 7, srcOut: 10, kind: "keep" },
+  ];
+  const oldSpans = [
+    { srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 },
+    { srcIn: 7, srcOut: 10, outIn: 5, outOut: 8 },
+  ];
+
+  it("a dismissal alone opens the live clocks — the preview must play the footage", () => {
+    const clocks = livePreviewMap(proposal, { dismissed: [{ srcIn: 5, srcOut: 7 }] }, [], oldSpans);
+    expect(clocks).not.toBeNull();
+    expect(clocks!.newMap.outputDuration).toBe(10);
+  });
+
+  it("previewClockMappers.toSourceSec is exact under live clocks and honors the identity fallback", () => {
+    const clocks = livePreviewMap(proposal, { dismissed: [{ srcIn: 5, srcOut: 7 }] }, [], oldSpans);
+    const live = previewClockMappers(clocks);
+    // The re-kept cutlist keeps all of 0..10, so live time IS source time.
+    expect(live.toSourceSec!(6)).toBe(6);
+    const none = previewClockMappers(null);
+    expect(none.toSourceSec).toBeNull();
+    const withFallback = previewClockMappers(null, { identityToSource: (s) => s + 100 });
+    expect(withFallback.toSourceSec!(2)).toBe(102);
+  });
+});

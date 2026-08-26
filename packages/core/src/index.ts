@@ -29,6 +29,7 @@ export * from "./framing";
 export * from "./face";
 export * from "./cover";
 export * from "./publish/index";
+export * from "./kept-takes";
 export * from "./thumbnail";
 export * from "./source-text";
 export * from "./report";

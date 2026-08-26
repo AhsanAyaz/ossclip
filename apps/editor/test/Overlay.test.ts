@@ -703,6 +703,7 @@ describe("⌘B split under a live cleanup veto — old-clock write, revived-mate
           ? {
               fromLive: mappers.fromLive,
               hasOldClockPreimage: mappers.hasOldClockPreimage,
+              toSourceSec: mappers.toSourceSec,
             }
           : {}),
         onClockRefused,
@@ -762,7 +763,11 @@ describe("⌘B split under a live cleanup veto — old-clock write, revived-mate
     expect(refused).not.toHaveBeenCalled();
   });
 
-  it("live veto, playhead inside REVIVED material: refuses out loud, writes nothing", async () => {
+  it("live veto, playhead inside REVIVED material: writes a SRC-ONLY split — the old refusal retired (cut-review rework)", async () => {
+    // Live 6 sits inside the revived 5..7 source stretch: no old-clock image
+    // exists, so no `at` is invented — the split anchors on `src` alone
+    // (SplitSchema's third shape) and `resolveSplitPoints` places it on
+    // whatever clock renders next.
     const refused = vi.fn();
     let doc: OverrideDoc | undefined;
     await act(async () => {
@@ -776,8 +781,11 @@ describe("⌘B split under a live cleanup veto — old-clock write, revived-mate
       );
     });
     await cmdB();
-    expect(refused).toHaveBeenCalledWith(expect.stringContaining("isn't in the last render yet"));
-    expect(doc!.splits).toEqual([]);
+    expect(refused).not.toHaveBeenCalled();
+    expect(doc!.splits).toHaveLength(1);
+    expect(doc!.splits[0]!.at).toBeUndefined();
+    // newMap keeps all of source 0..10, so live 6 IS source 6.
+    expect(doc!.splits[0]!.src).toBe(6);
   });
 
   it("⌘B with focus parked in a single-line input YIELDS and splits — the Inspector-field focus trap (field report 2026-08-26)", async () => {

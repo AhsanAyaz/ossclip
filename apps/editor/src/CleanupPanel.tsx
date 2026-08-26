@@ -58,7 +58,8 @@ export const CleanupPanel: React.FC<CleanupPanelProps> = ({ cutlist, edits, onCl
         <div style={subtitle}>
           What produce removed, by reason. Untick a category to keep it — the preview plays
           your choice immediately and the next render applies it. Individual removals can be
-          kept by clicking their seam on the timeline.
+          kept by clicking their marker above the timeline; right-click a marker to say the
+          classification was wrong ("not a retake").
         </div>
         {summaries.length === 0 ? (
           <div data-testid="cleanup-empty" style={{ ...subtitle, marginTop: 16 }}>
@@ -93,12 +94,50 @@ export const CleanupPanel: React.FC<CleanupPanelProps> = ({ cutlist, edits, onCl
         )}
         {keptCount > 0 ? (
           <div data-testid="cleanup-kept-note" style={{ ...footNote, marginTop: 12 }}>
-            {keptCount} individual removal{keptCount === 1 ? "" : "s"} kept via timeline seams.
+            {keptCount} individual removal{keptCount === 1 ? "" : "s"} kept via timeline markers.
+          </div>
+        ) : null}
+        {edits.doc.cleanup.dismissed.length > 0 ? (
+          <div style={{ marginTop: 16 }}>
+            <div style={{ ...subtitle, marginBottom: 6 }}>
+              Dismissed markers — the material is ordinary footage now. Restore one to bring
+              the proposal (and its marker) back.
+            </div>
+            {edits.doc.cleanup.dismissed.map((d) => (
+              <div
+                key={`${d.srcIn}-${d.srcOut}`}
+                data-testid={`cleanup-dismissed-${d.srcIn}-${d.srcOut}`}
+                style={row}
+              >
+                <span style={rowLabel}>
+                  {d.srcIn.toFixed(1)}s – {d.srcOut.toFixed(1)}s ({(d.srcOut - d.srcIn).toFixed(1)}s)
+                </span>
+                <button
+                  data-testid={`cleanup-restore-dismissed-${d.srcIn}-${d.srcOut}`}
+                  style={restoreBtn}
+                  onClick={() => edits.restoreDismissed(d.srcIn, d.srcOut)}
+                >
+                  Restore proposal
+                </button>
+              </div>
+            ))}
           </div>
         ) : null}
       </div>
     </div>
   );
+};
+
+const restoreBtn: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: "#C9C9D4",
+  background: "#1A1A21",
+  border: "1px solid #2A2A33",
+  borderRadius: 6,
+  padding: "5px 10px",
+  cursor: "pointer",
+  whiteSpace: "nowrap",
 };
 
 // Modal chrome matches ThumbnailPanel's (itself RenderModal's) — the

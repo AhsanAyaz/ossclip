@@ -652,3 +652,148 @@ describe("Timeline — removal marker lane (field report 2026-08-26)", () => {
     expect(container.querySelector('[data-testid="marker-lane"]')).toBeNull();
   });
 });
+
+/**
+ * Cut-review rework (2026-08-26): the chip's right-click menu, the dismissed
+ * state, and the revived block.
+ */
+describe("Timeline — marker context menu, dismissal, revived block", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const cutlist: Segment[] = [
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "retake", confidence: 0.9 },
+    { srcIn: 7, srcOut: 10, kind: "keep" },
+  ];
+  const keptSpans: KeptSpan[] = [
+    { srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 },
+    { srcIn: 7, srcOut: 10, outIn: 5, outOut: 8 },
+  ];
+
+  function ReworkHarness({
+    cues = [cue],
+    onDoc,
+  }: {
+    cues?: SceneCue[];
+    onDoc?: (cleanup: { kept: unknown[]; dismissed: unknown[] }) => void;
+  }) {
+    const edits = useEdits();
+    React.useEffect(() => {
+      onDoc?.(edits.doc.cleanup);
+    });
+    return React.createElement(Timeline, {
+      cues,
+      ghosts: [],
+      cleanup: cutlist,
+      spans: keptSpans,
+      durationSec: 8,
+      fps: 30,
+      playerRef: { current: null } as never,
+      selection: null,
+      onSelect: vi.fn(),
+      edits,
+    });
+  }
+
+  const chipSelector = '[data-testid="timeline-removal-5-7"]';
+
+  it("right-click opens the menu; 'Not a retake — remove marker' dismisses and the chip leaves the lane", async () => {
+    let cleanup: { kept: unknown[]; dismissed: unknown[] } = { kept: [], dismissed: [] };
+    await act(async () => {
+      root.render(React.createElement(ReworkHarness, { onDoc: (c) => (cleanup = c) }));
+    });
+    const chip = container.querySelector<HTMLElement>(chipSelector)!;
+    await act(async () => {
+      chip.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
+    });
+    const menu = container.querySelector('[data-testid="context-menu"]')!;
+    expect(menu).not.toBeNull();
+    const dismiss = container.querySelector<HTMLElement>(
+      '[data-testid="context-menu-item-Not a retake — remove marker"]',
+    )!;
+    expect(dismiss).not.toBeNull();
+    await act(async () => {
+      dismiss.click();
+    });
+    expect(cleanup.dismissed).toEqual([{ srcIn: 5, srcOut: 7 }]);
+    // The chip is GONE — not hollow, gone: the classification was wrong.
+    expect(container.querySelector(chipSelector)).toBeNull();
+    expect(container.querySelector('[data-testid="context-menu"]')).toBeNull();
+  });
+
+  it("dismissing a KEPT marker removes the overlapping veto — one state per range", async () => {
+    let cleanup: { kept: unknown[]; dismissed: unknown[] } = { kept: [], dismissed: [] };
+    await act(async () => {
+      root.render(React.createElement(ReworkHarness, { onDoc: (c) => (cleanup = c) }));
+    });
+    // Left-click keeps it first (the existing toggle).
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>(chipSelector)!
+        .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(cleanup.kept).toEqual([{ srcIn: 5, srcOut: 7 }]);
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>(chipSelector)!
+        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="context-menu-item-Not a retake — remove marker"]')!
+        .click();
+    });
+    expect(cleanup.kept).toEqual([]);
+    expect(cleanup.dismissed).toEqual([{ srcIn: 5, srcOut: 7 }]);
+  });
+
+  it("Escape closes the menu without acting", async () => {
+    await act(async () => {
+      root.render(React.createElement(ReworkHarness));
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>(chipSelector)!
+        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }));
+    });
+    expect(container.querySelector('[data-testid="context-menu"]')).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="context-menu"]')).toBeNull();
+    // The chip is still there, un-dismissed.
+    expect(container.querySelector(chipSelector)).not.toBeNull();
+  });
+
+  it("a revived block (cue.kept) renders in the revived state with the KEPT label", async () => {
+    const revived: SceneCue = {
+      id: "take-kept-5000",
+      kind: "plain",
+      layout: "video-top",
+      startSec: 5,
+      endSec: 7,
+      kept: { srcIn: 5, srcOut: 7 },
+    } as SceneCue;
+    await act(async () => {
+      root.render(React.createElement(ReworkHarness, { cues: [revived] }));
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-take-kept-5000"]')!;
+    expect(block).not.toBeNull();
+    expect(block.textContent).toContain("KEPT");
+    expect(block.style.border).toContain("dashed");
+  });
+});

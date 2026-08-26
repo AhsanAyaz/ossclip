@@ -65,8 +65,16 @@ export function remapOverridesThroughRecut(
   // (§137, `SplitSchema`) — re-deriving it here is what renamed the half and
   // orphaned the overrides on it.
   const splits = doc.splits.map((s) => {
+    // A src-anchored split passes through UNTOUCHED — the `doc.cuts`
+    // non-remap rule below, for the same reason `cleanup.kept` needs no
+    // entry here at all: source time is stable across every re-cut, and
+    // `resolveSplitPoints` re-derives the output instant fresh at each
+    // application. Only the src-less legacy shape still carries an
+    // old-clock `at` worth moving.
+    if (s.src !== undefined) return s;
     const before = reports.length;
-    const at = remapPoint(`split "${s.id}"`, s.at, oldMap, newMap, reports);
+    const atBefore = s.at!;
+    const at = remapPoint(`split "${s.id}"`, atBefore, oldMap, newMap, reports);
     // `splitCues` needs a cue with `at >= startSec + SPLIT_MIN_PIECE_SEC` AND
     // `at <= endSec - SPLIT_MIN_PIECE_SEC`. Output time runs [0,
     // outputDuration] and every cue lives inside it, so a split closer than
@@ -101,7 +109,7 @@ export function remapOverridesThroughRecut(
     // a cut edge; restating it here would read as a second, separate move
     // rather than the consequence of the one already reported.
     const where = reports.length > before ? "is" : `is now ${at.toFixed(3)}s —`;
-    if (at < SPLIT_MIN_PIECE_SEC && s.at >= SPLIT_MIN_PIECE_SEC) {
+    if (at < SPLIT_MIN_PIECE_SEC && atBefore >= SPLIT_MIN_PIECE_SEC) {
       reports.push(
         `split "${s.id}" ${where} too close to the start to divide a scene, ` +
           `so any edit on its second half will not apply`,
@@ -111,7 +119,7 @@ export function remapOverridesThroughRecut(
       // no longer divide anything — two would read as two problems.
     } else if (
       at > newMap.outputDuration - SPLIT_MIN_PIECE_SEC &&
-      s.at <= oldMap.outputDuration - SPLIT_MIN_PIECE_SEC
+      atBefore <= oldMap.outputDuration - SPLIT_MIN_PIECE_SEC
     ) {
       reports.push(
         `split "${s.id}" ${where} too close to the end to divide a scene, ` +

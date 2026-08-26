@@ -74,6 +74,19 @@ export const SceneCueSchema = z
    */
   kind: z.enum(["graphic", "plain"]).optional(),
   /**
+   * Set on a plain cue carved out of a KEPT (vetoed) cleanup removal
+   * (`carveKeptTakes`, cut-review rework 2026-08-26) — the SOURCE range the
+   * user chose to keep, so the timeline can render the revived stretch as
+   * its own labeled block instead of an indistinguishable part of the
+   * neighbouring take. Explicit field over id-prefix sniffing on purpose;
+   * optional so every render-props/production.json written before it exists
+   * parses byte-identically. A DISMISSED range's carved cue does NOT carry
+   * this — dismissed material is ordinary footage.
+   */
+  kept: z
+    .object({ srcIn: z.number().nonnegative(), srcOut: z.number().nonnegative() })
+    .optional(),
+  /**
    * The plan anchor this cue was resolved from — the scene's word range,
    * carried through so an edit made against this cue can be re-keyed when a
    * re-plan renumbers ids (handoff-edit-anchoring; §137 is the caption-side
