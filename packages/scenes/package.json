@@ -1,6 +1,6 @@
 {
   "name": "@ossclip/scenes",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "ossclip's scene library and stage geometry — React components shared by preview and render",
   "type": "module",
   "license": "MIT",
