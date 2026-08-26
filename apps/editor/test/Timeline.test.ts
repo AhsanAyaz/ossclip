@@ -451,3 +451,204 @@ describe("Timeline — user cuts render as a dead-region overlay (PLAN 2026-08-0
     consoleError.mockRestore();
   });
 });
+
+/**
+ * Field report 2026-08-26: dragging a block with the timeline zoomed threw
+ * it somewhere else entirely. Cause: mousedown SELECTS the block, the
+ * selection-follow effect scrollIntoView'd it, and at zoom that scroll
+ * shifted the track under the in-flight press — whose content-space anchor
+ * (`startContentX`) was captured against the PRE-scroll rect. The view must
+ * never move under a live gesture; keyboard selection (no gesture) keeps
+ * the follow.
+ */
+describe("Timeline — the view never scrolls under a live press (field report 2026-08-26)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let scrolled: string[];
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    scrolled = [];
+    // jsdom has no scrollIntoView; install a recording one.
+    (Element.prototype as unknown as { scrollIntoView: () => void }).scrollIntoView =
+      function (this: Element) {
+        scrolled.push(this.getAttribute("data-testid") ?? "?");
+      };
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    delete (Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView;
+  });
+
+  function SelHarness() {
+    const edits = useEdits();
+    const [selection, setSelection] = React.useState<{
+      sceneId: string;
+      elementId: string | null;
+    } | null>(null);
+    return React.createElement(
+      "div",
+      null,
+      React.createElement("button", {
+        "data-testid": "select-externally",
+        onClick: () => setSelection({ sceneId: "scene-0", elementId: null }),
+      }),
+      React.createElement(Timeline, {
+        cues: [cue],
+        ghosts: [],
+        cuts: edits.doc.cuts,
+        durationSec: 10,
+        fps: 30,
+        playerRef: { current: null } as never,
+        selection,
+        onSelect: setSelection,
+        edits,
+      }),
+    );
+  }
+
+  it("mousedown-select on a block does NOT scroll the view — the press's content anchor must survive", async () => {
+    await act(async () => {
+      root.render(React.createElement(SelHarness));
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-scene-0"]')!;
+    await act(async () => {
+      block.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 5 }));
+    });
+    expect(scrolled).toEqual([]);
+    // The press ends; a LATER external selection still follows.
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+  });
+
+  it("keyboard/external selection still scrolls the block into view — the follow survives for non-gesture selects", async () => {
+    await act(async () => {
+      root.render(React.createElement(SelHarness));
+    });
+    const btn = container.querySelector<HTMLElement>('[data-testid="select-externally"]')!;
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(scrolled).toContain("timeline-block-scene-0");
+  });
+});
+
+/**
+ * The removal marker lane (field report 2026-08-26): produce's labelled
+ * removals draw as chips in their own row ABOVE the ruler — not as ticks on
+ * the track, which already owns seek/drag/trim. Contract unchanged from the
+ * seams (cut review steps 2–4): chip present = the removal happens at
+ * render; click = toggle the keep; kept chip renders hollow with a band
+ * spanning the revived material.
+ */
+describe("Timeline — removal marker lane (field report 2026-08-26)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const cutlist: Segment[] = [
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 7, srcOut: 10, kind: "keep" },
+  ];
+  const keptSpans: KeptSpan[] = [
+    { srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 },
+    { srcIn: 7, srcOut: 10, outIn: 5, outOut: 8 },
+  ];
+
+  function LaneHarness({ onDoc }: { onDoc?: (kept: { srcIn: number; srcOut: number }[]) => void }) {
+    const edits = useEdits();
+    React.useEffect(() => {
+      onDoc?.(edits.doc.cleanup.kept);
+    });
+    return React.createElement(Timeline, {
+      cues: [cue],
+      ghosts: [],
+      cleanup: cutlist,
+      spans: keptSpans,
+      durationSec: 8,
+      fps: 30,
+      playerRef: { current: null } as never,
+      selection: null,
+      onSelect: vi.fn(),
+      edits,
+    });
+  }
+
+  it("draws the removal as a labelled chip in the lane, not on the track", async () => {
+    await act(async () => {
+      root.render(React.createElement(LaneHarness));
+    });
+    const lane = container.querySelector('[data-testid="marker-lane"]')!;
+    const chip = lane.querySelector<HTMLElement>('[data-testid="timeline-removal-5-7"]')!;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toBe("pause · 2.0s removed");
+    // At the seam the kept spans share: 5s of 8s = 62.5%.
+    expect(chip.style.left).toBe("62.5%");
+    expect(chip.getAttribute("data-vetoed")).toBeNull();
+  });
+
+  it("clicking the chip toggles the keep and shows the kept band over the revived span", async () => {
+    let kept: { srcIn: number; srcOut: number }[] = [];
+    await act(async () => {
+      root.render(React.createElement(LaneHarness, { onDoc: (k) => (kept = k) }));
+    });
+    const chip = container.querySelector<HTMLElement>('[data-testid="timeline-removal-5-7"]')!;
+    await act(async () => {
+      chip.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(kept).toEqual([{ srcIn: 5, srcOut: 7 }]);
+    const after = container.querySelector<HTMLElement>('[data-testid="timeline-removal-5-7"]')!;
+    expect(after.getAttribute("data-vetoed")).toBe("true");
+    expect(after.textContent).toContain("kept");
+    const band = container.querySelector<HTMLElement>('[data-testid="timeline-kept-band-5-7"]')!;
+    expect(band).not.toBeNull();
+    // 2 revived seconds on an 8s lane = 25% wide.
+    expect(band.style.width).toBe("25%");
+    // Toggle back: the veto lifts and the band goes with it.
+    await act(async () => {
+      after.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(kept).toEqual([]);
+    expect(container.querySelector('[data-testid="timeline-kept-band-5-7"]')).toBeNull();
+  });
+
+  it("no cutlist, no lane — the row never renders empty chrome", async () => {
+    function Bare() {
+      const edits = useEdits();
+      return React.createElement(Timeline, {
+        cues: [cue],
+        ghosts: [],
+        durationSec: 8,
+        fps: 30,
+        playerRef: { current: null } as never,
+        selection: null,
+        onSelect: vi.fn(),
+        edits,
+      });
+    }
+    await act(async () => {
+      root.render(React.createElement(Bare));
+    });
+    expect(container.querySelector('[data-testid="marker-lane"]')).toBeNull();
+  });
+});

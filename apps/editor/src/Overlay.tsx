@@ -1208,7 +1208,24 @@ export const Overlay: React.FC<OverlayProps> = ({
         // Stored as an absolute output time in the override doc, applied
         // after the plain fill, so scenes and takes split alike and undo
         // takes it back like any other edit.
-        if (isTextEntry()) return;
+        //
+        // NOT the isTextEntry guard (field report 2026-08-26): focus parked
+        // in an Inspector number field made ⌘B die silently, forever, until
+        // a click elsewhere — and ⌘B never means anything to a single-line
+        // field. It YIELDS instead, the §70 SPACE-on-a-slider rule applied
+        // to a chorded key. Prose surfaces (textarea/contentEditable) keep
+        // it inert: ⌘B is "bold" muscle memory there, and a split would be
+        // an ambush.
+        {
+          const active = document.activeElement;
+          if (
+            active instanceof HTMLTextAreaElement ||
+            (active instanceof HTMLElement && active.isContentEditable)
+          ) {
+            return;
+          }
+          if (active instanceof HTMLElement) active.blur();
+        }
         e.preventDefault();
         const player = playerRef.current;
         if (!player) return;

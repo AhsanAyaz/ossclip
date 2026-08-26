@@ -779,4 +779,44 @@ describe("⌘B split under a live cleanup veto — old-clock write, revived-mate
     expect(refused).toHaveBeenCalledWith(expect.stringContaining("isn't in the last render yet"));
     expect(doc!.splits).toEqual([]);
   });
+
+  it("⌘B with focus parked in a single-line input YIELDS and splits — the Inspector-field focus trap (field report 2026-08-26)", async () => {
+    // The real-world dead-⌘B: adjust an Inspector number field, leave focus
+    // there, press ⌘B — isTextEntry used to swallow it silently, forever,
+    // until a click elsewhere. ⌘B never means anything to a single-line
+    // field, so it yields (the §70 SPACE-on-a-slider rule) instead.
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(SplitHarness, { playheadSec: 4, onDocChange: (d) => (doc = d) }),
+      );
+    });
+    const input = document.createElement("input");
+    input.type = "text";
+    input.setAttribute("inputmode", "decimal");
+    document.body.appendChild(input);
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    await cmdB();
+    expect(doc!.splits).toHaveLength(1);
+    expect(doc!.splits[0]!.at).toBe(4);
+    // Focus yielded — the next keystroke is the transport's, not the field's.
+    expect(document.activeElement).not.toBe(input);
+    input.remove();
+  });
+
+  it("⌘B in a TEXTAREA stays inert — prose keeps its bold muscle-memory harmless", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(SplitHarness, { playheadSec: 4, onDocChange: (d) => (doc = d) }),
+      );
+    });
+    const area = document.createElement("textarea");
+    document.body.appendChild(area);
+    area.focus();
+    await cmdB();
+    expect(doc!.splits).toEqual([]);
+    area.remove();
+  });
 });

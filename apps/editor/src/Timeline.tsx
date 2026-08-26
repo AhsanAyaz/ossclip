@@ -370,6 +370,13 @@ export const Timeline: React.FC<TimelineProps> = ({
     const scroller = scrollerRef.current;
     if (!scroller || durationSec <= 0) return;
     if (scroller.scrollWidth <= scroller.clientWidth) return;
+    // Never while a pointer gesture is live (field report 2026-08-26): a
+    // scroll here shifts the track under an in-flight press whose
+    // content-space anchor (`startContentX`) was captured against the
+    // pre-scroll rect — at zoom, the block then leaps by exactly the
+    // scrolled distance. Playback moving the playhead off-screen mid-drag
+    // is the case this used to fire on.
+    if (scrubbingRef.current || blockPressRef.current !== null || dragRef.current !== null) return;
     const x = (frame / fps / durationSec) * scroller.scrollWidth;
     const { scrollLeft, clientWidth } = scroller;
     if (x < scrollLeft || x > scrollLeft + clientWidth) {
@@ -384,6 +391,14 @@ export const Timeline: React.FC<TimelineProps> = ({
   // (⌥/⌘+arrows) may live outside the zoomed view — bring it in, minimally.
   useEffect(() => {
     if (!selection) return;
+    // Same gesture guard as the playhead-follow above (field report
+    // 2026-08-26): a BLOCK PRESS selects on mousedown, this effect then
+    // scrolled the (wider-than-viewport, at zoom) block "into view", and the
+    // drag that followed measured its delta against a track that had just
+    // moved — the block landed wherever the scroll put it, not where the
+    // pointer did. The follow is for selections made WITHOUT a pointer on
+    // the strip (⌥/⌘+arrows); a pressed block is already under the pointer.
+    if (scrubbingRef.current || blockPressRef.current !== null || dragRef.current !== null) return;
     const block = scrollerRef.current?.querySelector<HTMLElement>(
       `[data-testid="timeline-block-${selection.sceneId}"]`,
     );
@@ -658,6 +673,107 @@ export const Timeline: React.FC<TimelineProps> = ({
       </div>
       <div ref={scrollerRef} data-testid="timeline-scroller" style={scroller}>
         <div style={{ width: `${zoom * 100}%`, minWidth: "100%", paddingBottom: 6 }}>
+          {(() => {
+            // The removal marker lane (field report 2026-08-26): produce's
+            // labelled removals — pauses, fillers, retakes, bloopers — as
+            // readable chips in their OWN row above the ruler, the way NLEs
+            // put markers above the timeline, instead of 6px ticks competing
+            // with the track's seek/drag/trim surfaces. The contract is the
+            // seams' own (cut review steps 2–4), unchanged: a chip present at
+            // render time means the removal HAPPENS; clicking a vetoable chip
+            // toggles the keep (`cleanup.kept` / the category switch), the
+            // preview plays the change immediately, and a KEPT chip renders
+            // hollow with a band spanning the revived material it now
+            // occupies. `user`/`clip` chips stay hover-only disclosures —
+            // `applyCleanupChoices` ignores vetoes on them by contract.
+            const seams = removalSeams(cleanup, spans, edits.doc.cleanup);
+            if (seams.length === 0) return null;
+            return (
+              <div data-testid="marker-lane" style={markerLane}>
+                {seams.map((seam) => {
+                  const leftPct =
+                    durationSec > 0
+                      ? Math.min(100, Math.max(0, (seam.outSec / durationSec) * 100))
+                      : 0;
+                  const title = seam.vetoed
+                    ? `${seam.label} — kept: playing in the preview (click to re-remove)`
+                    : seam.vetoable
+                      ? `${seam.label} — click to keep this; the preview updates immediately`
+                      : seam.label;
+                  return (
+                    <div
+                      key={`removal-${seam.srcIn}-${seam.srcOut}`}
+                      data-testid={`timeline-removal-${seam.srcIn}-${seam.srcOut}`}
+                      {...(seam.vetoed ? { "data-vetoed": "true" } : {})}
+                      title={title}
+                      {...(seam.vetoable
+                        ? {
+                            onMouseDown: (e: React.MouseEvent) => {
+                              // The restore seam's idiom: act on mousedown,
+                              // stopPropagation so the track underneath
+                              // doesn't also seek-and-scrub.
+                              e.stopPropagation();
+                              e.preventDefault();
+                              edits.toggleKept(seam.srcIn, seam.srcOut);
+                            },
+                          }
+                        : {})}
+                      style={{
+                        ...markerChip,
+                        ...(seam.vetoable ? { cursor: "pointer" } : {}),
+                        left: `${leftPct}%`,
+                        // A chip at the timeline's tail anchors by its RIGHT
+                        // edge — left-anchored at 100% it would hang past the
+                        // lane entirely (the drag readout's late-block flip).
+                        ...(leftPct > 90 ? { transform: "translateX(-100%)" } : {}),
+                        // Coincident removals fan out so each stays hoverable.
+                        marginLeft: seam.stackIndex * 10,
+                        zIndex: 2 + seam.stackIndex,
+                        ...(seam.vetoed
+                          ? {
+                              background: "transparent",
+                              border: `1px dashed ${seam.color}`,
+                              color: seam.color,
+                              opacity: 0.7,
+                            }
+                          : {
+                              background: `${seam.color}30`,
+                              border: `1px solid ${seam.color}`,
+                              color: "#EDEDF2",
+                            }),
+                      }}
+                    >
+                      {seam.vetoed ? `kept · ${seam.label}` : seam.label}
+                    </div>
+                  );
+                })}
+                {seams
+                  .filter((s) => s.vetoed && durationSec > 0)
+                  .map((seam) => {
+                    const leftPct = Math.min(
+                      100,
+                      Math.max(0, (seam.outSec / durationSec) * 100),
+                    );
+                    const widthPct = Math.min(
+                      100 - leftPct,
+                      ((seam.srcOut - seam.srcIn) / durationSec) * 100,
+                    );
+                    return (
+                      <div
+                        key={`kept-band-${seam.srcIn}-${seam.srcOut}`}
+                        data-testid={`timeline-kept-band-${seam.srcIn}-${seam.srcOut}`}
+                        style={{
+                          ...keptBand,
+                          left: `${leftPct}%`,
+                          width: `${widthPct}%`,
+                          borderColor: seam.color,
+                        }}
+                      />
+                    );
+                  })}
+              </div>
+            );
+          })()}
           <div
             data-testid="ruler"
             style={ruler}
@@ -981,80 +1097,6 @@ export const Timeline: React.FC<TimelineProps> = ({
                 </div>
               );
             })}
-            {removalSeams(cleanup, spans, edits.doc.cleanup).map((seam) => {
-              // Produce's own removals (cut review step 2): every cut the
-              // pipeline PROPOSED, as a reason-coloured seam at the output
-              // instant where the material used to be — same seam-not-band
-              // logic as the applied user cut above (a removal has zero
-              // output width by definition), and `removalSeams` inherits its
-              // "no spans, no seam" rule too. Since step 3 a VETOABLE seam
-              // takes a click: toggleKept writes/removes the SOURCE-second
-              // veto (`cleanup.kept`), same mousedown idiom as the restore
-              // seam above — and stays one zIndex BELOW it, so where a
-              // user's applied cut and a pipeline removal coincide the
-              // actionable Restore keeps winning the pointer. A vetoed seam
-              // renders HOLLOW (outline, no fill) and dimmed — and since cut
-              // review step 4 the preview genuinely PLAYS the kept material:
-              // this component's `spans`/`durationSec` come from the live
-              // (retimed) props, so the hollow seam sits at the revived
-              // span's own start inside a timeline that includes it.
-              // `user`/`clip` seams stay handler-less hover disclosures, as
-              // in step 2: `applyCleanupChoices` would ignore a veto on them
-              // by contract, so offering the click would write dead weight.
-              // Coincident seams (adjacent removals with different reasons)
-              // fan out rightward by `stackIndex` so each stays hoverable.
-              const leftPct =
-                durationSec > 0
-                  ? Math.min(100, Math.max(0, (seam.outSec / durationSec) * 100))
-                  : 0;
-              const title = seam.vetoed
-                ? `${seam.label} — declined: kept, playing in the preview (click to re-remove)`
-                : seam.vetoable
-                  ? `${seam.label} — click to keep this; the preview updates immediately`
-                  : seam.label;
-              return (
-                <div
-                  key={`removal-${seam.srcIn}-${seam.srcOut}`}
-                  data-testid={`timeline-removal-${seam.srcIn}-${seam.srcOut}`}
-                  {...(seam.vetoed ? { "data-vetoed": "true" } : {})}
-                  title={title}
-                  {...(seam.vetoable
-                    ? {
-                        onMouseDown: (e: React.MouseEvent) => {
-                          // The restore seam's own idiom: act on mousedown,
-                          // stopPropagation so the track underneath doesn't
-                          // also seek-and-scrub.
-                          e.stopPropagation();
-                          e.preventDefault();
-                          edits.toggleKept(seam.srcIn, seam.srcOut);
-                        },
-                      }
-                    : {})}
-                  style={{
-                    ...removalSeamHit,
-                    ...(seam.vetoable ? { cursor: "pointer" } : {}),
-                    left: `${leftPct}%`,
-                    marginLeft: -3 + seam.stackIndex * 7,
-                  }}
-                >
-                  <div
-                    style={
-                      seam.vetoed
-                        ? // Hollow + dimmed: the veto's own look — an outline
-                          // where the filled tick was, so "declined" reads at
-                          // a glance without hovering.
-                          {
-                            ...removalSeamLine,
-                            background: "transparent",
-                            border: `1px solid ${seam.color}`,
-                            opacity: 0.55,
-                          }
-                        : { ...removalSeamLine, background: seam.color }
-                    }
-                  />
-                </div>
-              );
-            })}
             {dragPreview ? (
               // The drag readout (precision-editing design, "The frames
               // readout"): m:ss:ff in the same units the transport shows,
@@ -1313,24 +1355,45 @@ const cutSeamLine: React.CSSProperties = {
  * pipeline removal coincide, the actionable Restore must win the pointer.
  * `cursor: pointer` is added per-seam at the call site, only when the seam
  * actually takes a click (`user`/`clip` seams remain hover disclosures). */
-const removalSeamHit: React.CSSProperties = {
-  position: "absolute",
-  top: -4,
-  bottom: -4,
-  width: 6,
-  marginLeft: -3,
-  zIndex: 3,
-  pointerEvents: "auto",
+/** The removal marker lane (field report 2026-08-26): one row above the
+ * ruler, inside the zoom-width content so chips scroll and zoom with the
+ * track. Height fits one chip row; coincident chips fan out horizontally. */
+const markerLane: React.CSSProperties = {
+  position: "relative",
+  height: 22,
+  marginBottom: 2,
 };
 
-/** The removal seam's paint — same thin-tick shape as `cutSeamLine`, but the
- * colour is per-reason (`REMOVAL_REASON_COLOR`), applied at the call site. */
-const removalSeamLine: React.CSSProperties = {
+/** One removal as a labelled chip — reason-coloured border and tint at the
+ * call site (filled = will be removed; dashed hollow = kept). The label IS
+ * the marker, so it stays small, mono, and truncates rather than wraps. */
+const markerChip: React.CSSProperties = {
   position: "absolute",
-  left: "50%",
-  top: 0,
+  top: 2,
+  height: 16,
+  display: "flex",
+  alignItems: "center",
+  padding: "0 6px",
+  borderRadius: 4,
+  fontSize: 10,
+  lineHeight: "16px",
+  fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace",
+  whiteSpace: "nowrap",
+  maxWidth: 140,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  userSelect: "none",
+};
+
+/** Under a KEPT chip, the span the revived material now occupies on the live
+ * clock — a thin underline at the lane's floor, so "this stretch is back in
+ * the video" reads spatially, not just as a chip state. */
+const keptBand: React.CSSProperties = {
+  position: "absolute",
   bottom: 0,
-  width: 2,
+  height: 0,
+  borderBottom: "2px dotted",
+  opacity: 0.6,
   pointerEvents: "none",
 };
 
