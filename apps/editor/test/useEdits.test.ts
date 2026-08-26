@@ -217,7 +217,7 @@ describe("delete an individual element with a way back (PLAN Task 2)", () => {
 });
 
 describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", () => {
-  it("cutChunk writes ONLY {startSec, endSec} — no src key", () => {
+  it("a src-LESS cutChunk writes ONLY {startSec, endSec} — the legacy marked-only shape, byte-identical", () => {
     const s = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });
     expect(s.doc.cuts).toEqual([{ startSec: 10, endSec: 14 }]);
     expect("src" in s.doc.cuts[0]!).toBe(false);
@@ -276,12 +276,11 @@ describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", 
     expect(s.doc.cuts).toContainEqual({ startSec: 10, endSec: 15 });
   });
 
-  // The binding contract (packages/core/src/overrides.ts's schema comment,
-  // PLAN 2026-08-04 Task 4c): the editor must never write or preserve a
-  // cut's `src` — `src` is produce's own resolved source anchor. `cutChunk`
-  // only ever replaces an EXISTING SRC-LESS entry at the same window (a
-  // genuine re-cut of a window nobody has produced yet); it never invents
-  // one.
+  // A src-LESS dispatch dedupes on the WINDOW alone, exactly as it always
+  // has: it replaces an EXISTING SRC-LESS entry at that window (a genuine
+  // re-cut of a window nobody has produced yet) and never invents a `src` of
+  // its own — a writer with no source mapper is the only thing that dispatches
+  // this shape since the cut-review rework.
   it("cutChunk on a window whose EXISTING SRC-LESS entry is stale still writes a fresh, src-less replacement", () => {
     const withStaleCut = editReducer(initialEditState(), {
       type: "cutChunk", startSec: 10, endSec: 14,
@@ -291,6 +290,62 @@ describe("user cuts — Delete this chunk / Restore (PLAN 2026-08-04 Task 4c)", 
 
     expect(s.doc.cuts).toEqual([{ startSec: 10, endSec: 14 }]); // still exactly one
     expect("src" in s.doc.cuts[0]!).toBe(false);
+  });
+
+  // Cut-review rework (2026-08-26): the editor MAY write `src` now (the
+  // schema comment on `OverrideDocSchema.cuts`), resolved by the WRITE SITE
+  // off the preview clock and rounded there to 1ms. The reducer stores it
+  // verbatim — it does no arithmetic on these numbers, which is what lets the
+  // dedupe below compare them exactly.
+  it("cutChunk stores a src the writer resolved, alongside the historical record", () => {
+    const s = editReducer(initialEditState(), {
+      type: "cutChunk", startSec: 5, endSec: 5, src: { startSec: 5.5, endSec: 6.5 },
+    });
+    expect(s.doc.cuts).toEqual([{ startSec: 5, endSec: 5, src: { startSec: 5.5, endSec: 6.5 } }]);
+  });
+
+  it("a REPEATED src cut at the same source range replaces its predecessor rather than stacking", () => {
+    let s = editReducer(initialEditState(), {
+      type: "cutChunk", startSec: 6, endSec: 7, src: { startSec: 8, endSec: 9 },
+    });
+    // The same gesture twice (a double-click) — the record may even differ,
+    // the SOURCE range is the identity.
+    s = editReducer(s, {
+      type: "cutChunk", startSec: 6.001, endSec: 7, src: { startSec: 8, endSec: 9 },
+    });
+    expect(s.doc.cuts).toEqual([{ startSec: 6.001, endSec: 7, src: { startSec: 8, endSec: 9 } }]);
+  });
+
+  it("a src cut at a DIFFERENT source range keeps both — overlap is deliberately not merged", () => {
+    // `subtractRangesFromCutlist` is set-like, so two overlapping removals
+    // remove exactly what their union would; merging them would silently
+    // rewrite entries the user can otherwise Restore one at a time.
+    let s = editReducer(initialEditState(), {
+      type: "cutChunk", startSec: 0, endSec: 1, src: { startSec: 8, endSec: 9 },
+    });
+    s = editReducer(s, {
+      type: "cutChunk", startSec: 0, endSec: 1, src: { startSec: 8.5, endSec: 9.5 },
+    });
+    expect(s.doc.cuts).toHaveLength(2);
+  });
+
+  it("the src-LESS window filter is unchanged by the new arm: a src write still replaces a src-less entry at the SAME window, and the src-less arm still ignores src-carrying ones", () => {
+    // Same window, same last-render frame ⇒ the same decision, re-made with
+    // an anchor: one entry, not two. (The seam-coincidence rule guards the
+    // other direction — a src-ANCHORED entry is never touched by a src-less
+    // write, which the second half here pins.)
+    const legacy = editReducer(initialEditState(), { type: "cutChunk", startSec: 10, endSec: 14 });
+    const s = editReducer(legacy, {
+      type: "cutChunk", startSec: 10, endSec: 14, src: { startSec: 20, endSec: 24 },
+    });
+    expect(s.doc.cuts).toEqual([
+      { startSec: 10, endSec: 14, src: { startSec: 20, endSec: 24 } },
+    ]);
+    const back = editReducer(s, { type: "cutChunk", startSec: 10, endSec: 14 });
+    expect(back.doc.cuts).toEqual([
+      { startSec: 10, endSec: 14, src: { startSec: 20, endSec: 24 } },
+      { startSec: 10, endSec: 14 },
+    ]);
   });
 
   it("restoreChunk removes an entry even when it carries a resolved src", () => {
@@ -1125,9 +1180,44 @@ describe("cutWords — Remove captions + video (§59b revisited)", () => {
     expect(s.doc.cuts).toEqual([]);
   });
 
-  it("NEVER writes a src key — resolving it is produce's job alone", () => {
+  it("a src-LESS dispatch writes no src key — the legacy marked-only shape (App's null-mapper fallback)", () => {
     const s = cutTwo();
     expect("src" in s.doc.cuts[0]!).toBe(false);
+  });
+
+  it("stores the src App resolved through the OLD clock, in the same one commit", () => {
+    // The panel's window is old-clock, so App maps it with `oldToSourceSec`
+    // — the reducer just records what arrives (cut-review rework).
+    const s = editReducer(initialEditState(), {
+      type: "cutWords",
+      words: [{ srcStart: 4, was: "hello" }],
+      startSec: 1.0,
+      endSec: 1.6,
+      src: { startSec: 4, endSec: 4.6 },
+    });
+    expect(s.doc.cuts).toEqual([
+      { startSec: 1.0, endSec: 1.6, src: { startSec: 4, endSec: 4.6 } },
+    ]);
+    expect(s.doc.captionWordsHidden).toEqual({ w4000: { was: "hello" } });
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("a repeat of the same src range replaces its predecessor — the cutChunk dedupe arm, shared", () => {
+    let s = editReducer(initialEditState(), {
+      type: "cutWords",
+      words: [{ srcStart: 4, was: "hello" }],
+      startSec: 1.0,
+      endSec: 1.6,
+      src: { startSec: 4, endSec: 4.6 },
+    });
+    s = editReducer(s, {
+      type: "cutWords",
+      words: [{ srcStart: 4, was: "hello" }],
+      startSec: 1.0,
+      endSec: 1.6,
+      src: { startSec: 4, endSec: 4.6 },
+    });
+    expect(s.doc.cuts).toHaveLength(1);
   });
 
   it("never touches a src-anchored sibling cut at the same window (the cutChunk rule)", () => {

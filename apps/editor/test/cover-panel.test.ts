@@ -17,9 +17,11 @@ import {
   headlinePreview,
   parseAtSeconds,
   playheadAtSeconds,
+  snappedPlayheadNote,
   sourceFrameOption,
   type CoverInfo,
   type CoverProvenanceView,
+  type PlayheadReading,
 } from "../src/CoverPanel";
 
 // Same mount conventions as thumbnail-panel.test.ts: real createRoot, mocked
@@ -191,6 +193,18 @@ describe("playheadAtSeconds", () => {
   });
 });
 
+describe("snappedPlayheadNote", () => {
+  it("quotes the snapped second and states the limit as fundamental, not as a bug", () => {
+    const note = snappedPlayheadNote(5);
+    expect(note).toContain("5.00s");
+    expect(note).toMatch(/isn't in the rendered video yet/i);
+    // The honest half: no amount of clicking gets that frame, because the mp4
+    // does not contain it (§156's live-cut case). A render does.
+    expect(note).toMatch(/until the next render/i);
+    expect(note).toMatch(/original take/i);
+  });
+});
+
 describe("atFieldOnFromToggle", () => {
   it("toggle final → source re-expresses the field", () => {
     expect(
@@ -265,7 +279,11 @@ describe("CoverPanel", () => {
     vi.restoreAllMocks();
   });
 
-  const mount = async (playheadSec = () => 0): Promise<void> => {
+  /** `snapped: false` by default — the ordinary case, where the live clock and
+   * the last render's agree about the instant (§156's pair contract). */
+  const mount = async (
+    playheadSec: () => PlayheadReading = () => ({ sec: 0, snapped: false }),
+  ): Promise<void> => {
     await act(async () => {
       root.render(React.createElement(CoverPanel, { onClose: () => {}, playheadSec }));
     });
@@ -389,7 +407,7 @@ describe("CoverPanel", () => {
   it("'use current playhead' fills the seconds field from the getter, at click time", async () => {
     stubGet(READY);
     let now = 4;
-    await mount(() => now);
+    await mount(() => ({ sec: now, snapped: false }));
     now = 17.5;
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
@@ -426,7 +444,7 @@ describe("CoverPanel", () => {
     stubGet(READY);
     // The live playhead sits at 8s on the NEW clock (source 8, past the
     // revived 2s pause) — App's getter, composed exactly as App composes it.
-    await mount(() => m.fromLive(8));
+    await mount(() => ({ sec: m.fromLive(8), snapped: !m.hasOldClockPreimage(8) }));
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
     });
@@ -434,6 +452,64 @@ describe("CoverPanel", () => {
     expect(container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')?.value).toBe(
       "6.00",
     );
+    // Source 8 IS in the render, so whatever else the note says, it does not
+    // claim a snap.
+    expect(
+      container.querySelector('[data-testid="cover-clock-note"]')?.textContent ?? "",
+    ).not.toMatch(/isn't in the rendered video yet/i);
+  });
+
+  it("an un-snapped playhead on the finished video's own clock shows no note at all", async () => {
+    // `--from final` with nothing snapped is the whole no-conversion case: the
+    // seconds pass straight through, so there is nothing to explain.
+    stubGet({
+      ...READY,
+      provenance: { ...READY.provenance!, frame: { ...READY.provenance!.frame, source: "final" } },
+    });
+    await mount(() => ({ sec: 12.5, snapped: false }));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
+    });
+    expect(container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')?.value).toBe(
+      "12.50",
+    );
+    expect(container.querySelector('[data-testid="cover-clock-note"]')).toBeNull();
+  });
+
+  // 2026-08-26 (§156, the live-cut half): a playhead parked INSIDE revived
+  // material — a proposed removal the user kept — has no frame in the rendered
+  // mp4 at all, so `fromLive` clamps to the seam. That clamp used to be
+  // silent, and the cover came back cut from the seam frame.
+  it("a playhead inside revived material fills the clamped seconds AND says it snapped", async () => {
+    const proposal: Segment[] = [
+      { srcIn: 0, srcOut: 5, kind: "keep" },
+      { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+      { srcIn: 7, srcOut: 10, kind: "keep" },
+    ];
+    // The pause is VETOED, so the live clock plays it back and the render's
+    // clock has no preimage for anything inside it.
+    const clocks = livePreviewMap(
+      proposal,
+      { reasons: { pause: false } },
+      [],
+      new TimeMap(proposal).spans,
+    )!;
+    const m = previewClockMappers(clocks);
+    stubGet(READY);
+    // Live 6s = source 6s, the middle of the revived pause.
+    await mount(() => ({ sec: m.fromLive(6), snapped: !m.hasOldClockPreimage(6) }));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
+    });
+    // The clamped value still lands in the field — the seam frame is the only
+    // one that exists to grab — but under the sentence.
+    expect(container.querySelector<HTMLInputElement>('[data-testid="cover-at-input"]')?.value).toBe(
+      "5.00",
+    );
+    const note = container.querySelector('[data-testid="cover-clock-note"]')?.textContent ?? "";
+    expect(note).toMatch(/isn't in the rendered video yet/i);
+    expect(note).toContain("5.00s");
+    expect(note).toMatch(/until the next render/i);
   });
 
   it("a bad seconds field blocks Apply instead of seeking to zero", async () => {
@@ -505,7 +581,7 @@ describe("CoverPanel", () => {
   // (handoff-cover-panel §1). The panel now converts at the gesture.
   it("'use current playhead' with the original take selected spends on the SOURCE clock", async () => {
     stubGet({ ...READY, cutlist: CUTLIST });
-    await mount(() => 15);
+    await mount(() => ({ sec: 15, snapped: false }));
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
     });
@@ -603,7 +679,7 @@ describe("CoverPanel", () => {
   // the field no longer held.
   it("typing in the seconds field clears the conversion note — it describes a number no longer there", async () => {
     stubGet({ ...READY, cutlist: CUTLIST });
-    await mount(() => 15);
+    await mount(() => ({ sec: 15, snapped: false }));
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="cover-playhead-btn"]')!.click();
     });

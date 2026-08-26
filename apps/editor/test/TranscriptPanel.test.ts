@@ -24,6 +24,7 @@ import {
   TranscriptPanel,
 } from "../src/TranscriptPanel";
 import type { DeleteWordsPlan } from "../src/deleteWords";
+import { rebuildCaptionTrack } from "../src/liveCaptionTrack";
 import { useEdits } from "../src/useEdits";
 
 // Same one-time act() opt-in as Overlay.test.ts/Inspector.test.ts.
@@ -3464,5 +3465,187 @@ describe("TranscriptPanel timing handle drag", () => {
     // simply that dispatching is safe and the panel stays gone.
     await windowPointer("pointermove", 300);
     expect(container.querySelector('[data-testid="transcript-timing-popover"]')).toBeNull();
+  });
+});
+
+/**
+ * The panel over REBUILT live lines (cut-review rework phase 2). Field report:
+ * keep a proposed removal, then try to fix a word inside the revived stretch —
+ * impossible, because every stream the panel was fed came from
+ * `renderProps.baseCaptionLines`, the LAST RENDER's cut, where that word has no
+ * image at all (`liveCaptionTrack.test.ts` pins that blindness).
+ *
+ * App now feeds `rebuildCaptionTrack`'s three stops instead, with IDENTITY
+ * clocks — the streams are already on the player's clock, so converting them
+ * would move every word by the revived seconds a second time. This is that
+ * wiring, exercised end to end: the same rebuilt streams App computes, the
+ * same identity mappers, the real reducer behind them.
+ */
+describe("TranscriptPanel over REBUILT live lines (cut-review rework)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  /** The last render cut source 5..7; the user's veto revives it. */
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 7, srcOut: 10, kind: "keep" },
+  ];
+  /** "during" is the revived word — inside the stretch the render removed. */
+  const transcript = {
+    language: "en",
+    words: [
+      { text: "early", start: 3, end: 3.3 },
+      { text: "during", start: 6, end: 6.3 },
+      { text: "late", start: 8, end: 8.3 },
+    ],
+  };
+
+  function Harness({ onDeleteWords }: { onDeleteWords?: (plan: DeleteWordsPlan) => void }) {
+    const edits = useEdits();
+    const playerRef = useRef(null as unknown as PlayerRef);
+    // App's own composition, collapsed: `livePreviewMap` → the live clock →
+    // `rebuildCaptionTrack` over the doc the user is editing RIGHT NOW, which
+    // is why it lives inside the render rather than beside the fixture.
+    const clocks = livePreviewMap(
+      proposal,
+      { reasons: { pause: false } },
+      [],
+      new TimeMap(proposal).spans,
+    )!;
+    const track = rebuildCaptionTrack(transcript, clocks.newMap, edits.doc, {
+      breakpoints: [],
+      landscape: false,
+    });
+    return React.createElement(
+      "div",
+      null,
+      React.createElement("div", {
+        "data-testid": "captions-doc",
+        children: JSON.stringify(edits.doc.captions),
+      }),
+      React.createElement("div", {
+        "data-testid": "hidden-doc",
+        children: JSON.stringify(edits.doc.captionWordsHidden),
+      }),
+      React.createElement(TranscriptPanel, {
+        baseLines: track.baseLines,
+        liveLines: track.liveLines,
+        // DISTINCT from `liveLines` here, unlike the older harnesses: the hide
+        // below removes a word, and the timing surfaces must key against the
+        // surviving track (`postHideLineIndices`).
+        timingLines: track.timingLines,
+        workdir: null,
+        fps: 30,
+        playerRef,
+        edits,
+        onDeleteWords: (plan) => {
+          onDeleteWords?.(plan);
+          edits.hideCaptionWords(plan.words);
+        },
+        width: 300,
+        // App's `identitySec`, both directions — the phase-2 wiring.
+        toPlayerSec: (sec: number) => sec,
+        fromPlayerSec: (sec: number) => sec,
+      }),
+    );
+  }
+
+  const word = (i: number) =>
+    container.querySelector<HTMLElement>(`[data-testid="transcript-word-${i}"]`)!;
+  const click = async (el: HTMLElement) => {
+    await act(async () => {
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+  };
+  const keydown = async (key: string) => {
+    const body = container.querySelector<HTMLElement>('[data-testid="transcript-body"]')!;
+    await act(async () => {
+      body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    });
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("the revived word is ON SCREEN, in spoken order", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, {}));
+    });
+    expect([word(0).textContent, word(1).textContent, word(2).textContent]).toEqual([
+      "early",
+      "during",
+      "late",
+    ]);
+  });
+
+  it("retyping the revived word writes its SOURCE key — the gesture that was impossible", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, {}));
+    });
+    await act(async () => {
+      word(1).dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    });
+    const input = container.querySelector<HTMLInputElement>('[data-testid="transcript-edit"]')!;
+    expect(input).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(
+        input,
+        "DURING",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      input.blur();
+    });
+    // Keyed by SOURCE time (6s → w6000), so the edit outlives the veto: the
+    // next render bakes the revived stretch in and the key still finds it.
+    const doc = JSON.parse(container.querySelector('[data-testid="captions-doc"]')!.textContent!);
+    expect(doc).toEqual({ w6000: { text: "DURING", was: "during" } });
+    // And it lands on the rebuilt lines the panel re-renders from.
+    expect(word(1).textContent).toBe("DURING");
+  });
+
+  it("hiding the revived word lands, and it stays on screen struck through", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, {}));
+    });
+    await click(word(1));
+    await keydown("Delete");
+    expect(JSON.parse(container.querySelector('[data-testid="hidden-doc"]')!.textContent!)).toEqual({
+      w6000: { was: "during" },
+    });
+    // The pre-hide stream is what renders, so the word is still selectable
+    // and restorable — the same contract the old-clock wiring had.
+    expect(word(1).textContent).toBe("during");
+    expect(word(1).style.textDecoration).toBe("line-through");
+  });
+
+  it("the delete PLAN's window is LIVE-clock seconds — what routes App's `src` resolution", async () => {
+    const plans: DeleteWordsPlan[] = [];
+    await act(async () => {
+      root.render(React.createElement(Harness, { onDeleteWords: (p) => plans.push(p) }));
+    });
+    await click(word(1));
+    await keydown("Delete");
+    expect(plans).toHaveLength(1);
+    // Source 6 plays at 6 with the pause revived. On the OLD clock output 6
+    // is source 8 — a different word entirely — which is exactly why App
+    // resolves this window's `src` through `clock.toSourceSec` (live) rather
+    // than `oldToSourceSec` whenever these rebuilt streams are the ones fed,
+    // routed on the SAME boolean that chose them.
+    expect(plans[0]!.startSec).toBeCloseTo(6, 6);
+    expect(plans[0]!.endSec).toBeCloseTo(6.3, 6);
+    expect(plans[0]!.words).toEqual([{ srcStart: 6, was: "during" }]);
   });
 });

@@ -487,14 +487,20 @@ export const TranscriptPanel: React.FC<{
    * (`loadSourceAudio`). */
   workdir: string | null;
   /** Caption-line output seconds → the player's ACTUAL clock (cut review
-   * step 4 follow-up). This panel's word times are the last render's output
-   * clock — `liveLines` is the pre-retime `appliedCaptionRanges` stream, by
-   * App.tsx's own design — but under a live cleanup re-cut the player plays
-   * the NEW clock, so an unmapped seek on any word past a revived pause
-   * landed exactly the revived seconds early. App threads
-   * `previewClockMappers(liveRecut).toLive`; the default is the identity so
-   * the no-veto path (and every existing harness) computes bit-identical
-   * frames to before — the panel never learns the recut machinery. */
+   * step 4 follow-up). These word times are the last render's output clock
+   * whenever `liveLines` is the pre-retime `appliedCaptionRanges` stream —
+   * but under a live cleanup re-cut the player plays the NEW clock, so an
+   * unmapped seek on any word past a revived pause landed exactly the revived
+   * seconds early. App threads `previewClockMappers(liveRecut).toLive`; the
+   * default is the identity so the no-veto path (and every existing harness)
+   * computes bit-identical frames to before — the panel never learns the
+   * recut machinery.
+   *
+   * Since the cut-review rework App can instead hand this panel a track
+   * REBUILT on the player's own clock (`rebuildCaptionTrack`), which is what
+   * lets words inside revived material be edited at all; both mappers are the
+   * identity then, because there is nothing left to convert. Either way the
+   * panel only ever applies what it is given. */
   toPlayerSec?: (sec: number) => number;
   /** The reverse — the player's clock → these lines' own output seconds —
    * for READING the playhead against the words (the follow-along highlight).

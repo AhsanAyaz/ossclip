@@ -517,15 +517,38 @@ export const OverrideDocSchema = z.object({
    * a historical record of what render-props they were looking at, never
    * authoritative again once `src` is present.
    *
-   * The editor (PLAN 2026-08-04 Task 4c) MUST NEVER WRITE OR
-   * PRESERVE-AND-MODIFY `src` ITSELF — resolving it is produce's job alone.
-   * Creating a cut writes ONLY `{startSec, endSec}`; if a cut's range is
-   * ever edited/moved (not currently exposed, but the rule holds for any
-   * future gesture that would), its `src` is DELETED rather than carried
-   * forward, so the next produce re-resolves it against the render-props
-   * current at that point rather than an anchor drawn for a range that no
-   * longer means the same thing; Restore removes the WHOLE entry, `src`
-   * included — there is no "not cut" state for one array entry to hold.
+   * The editor MAY write `src` (cut-review rework, 2026-08-26 — the same
+   * divergence `SplitSchema` documents for `splits[].src`, and it retires
+   * this field's original editor-never-writes-src rule). The premise behind
+   * that rule was that only produce can resolve a cut's source range; that
+   * died with the client-side clock: `livePreviewMap`/`previewClockMappers`
+   * (retime-preview.ts) build the SAME `TimeMap` over the render-props' own
+   * `spans` that produce would resolve through, so the writer converts its
+   * window at the gesture and stores the answer. Produce then consumes it
+   * VERBATIM (`resolveCutSourceRanges`, recut.ts) — the arriving `src` wins,
+   * exactly as it does for a src produce itself resolved — and the priorMap
+   * fallback stays for legacy src-less entries, which is what keeps every
+   * overrides.json written before this reading identically.
+   *
+   * Three shapes, all meaningful:
+   *   {startSec, endSec}      — legacy/no-mapper: marked-only, produce
+   *                             resolves `src` on the next run.
+   *   {startSec, endSec, src} — the editor's normal write: the record plus
+   *                             the anchor, resolved at write time.
+   *   The record may be CLAMPED (or absent-in-spirit) when the window sits
+   *   in revived material with no old-clock image — historical, never
+   *   authoritative once `src` exists, so a clamped record is honest.
+   *
+   * `src` present also means LIVE-APPLIED in the editor: the preview
+   * subtracts those ranges and genuinely stops playing the material
+   * (retime-preview.ts's module doc). The rest of the original rule stands:
+   * if a cut's range is ever edited/moved (not currently exposed, but the
+   * rule holds for any future gesture that would), its `src` is DELETED
+   * rather than carried forward, so the next produce re-resolves it against
+   * the render-props current at that point rather than an anchor drawn for a
+   * range that no longer means the same thing; Restore removes the WHOLE
+   * entry, `src` included — there is no "not cut" state for one array entry
+   * to hold.
    */
   cuts: z
     .array(

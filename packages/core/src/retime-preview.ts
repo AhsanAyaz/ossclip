@@ -4,15 +4,17 @@
  * so the player actually PLAYS the revived material, immediately, instead of
  * marking a seam that only the next render honours.
  *
- * Cleanup vetoes ONLY. User `cuts[]` stay marked-not-applied, exactly the
- * step-3 posture, for two reasons that are not the retired "no client-side
- * TimeMap" one:
- *  - produce alone resolves a fresh cut's `src` (the `cuts[].src` schema
- *    contract, overrides.ts) — the editor must never apply a cut whose
- *    source range only produce can resolve;
- *  - a veto RESTORES content the mezzanine already has, so the editor can
- *    honestly play it; a cut REMOVES content, and the struck band already
- *    communicates that honestly.
+ * Vetoes ADD time back and live cuts REMOVE it, and since the cut-review
+ * rework (2026-08-26) BOTH play immediately. The old "the editor never
+ * applies a cut" premise is retired with the ban it rested on: a fresh cut's
+ * `src` is no longer produce's alone to resolve — the writer resolves it at
+ * the gesture, on the very clock this module hands it (`toSourceSec` /
+ * `oldToSourceSec`), and the schema now says the editor MAY write it
+ * (`OverrideDocSchema.cuts`, overrides.ts). So `src` present doubles as
+ * "live-applied": those ranges subtract here and the material genuinely
+ * stops playing. A `src`-LESS entry is the legacy marked-only shape and is
+ * still never applied — the struck band communicates it, byte-identically to
+ * before.
  *
  * Pure and browser-safe by construction (the cover-headline.ts split): this
  * module's whole import graph — cutlist, recut, timemap, and types — has
@@ -48,19 +50,29 @@ export interface LivePreviewClocks {
  * The new clock is produce's own sequence, same functions, same order:
  * `applyCleanupChoices(proposal, choices)` then user cuts subtract from the
  * result (`subtractRangesFromCutlist`), so a user cut drawn over a vetoed
- * pause still cuts here exactly as it does in produce. Only cuts whose `src`
- * is already resolved subtract — a fresh cut's source range is produce's
- * alone to resolve (`resolveCutSourceRanges` needs the prior render-props
- * frame), and that cut is still marked-not-applied on the timeline anyway.
- * Skipping the subtraction entirely would be worse than incomplete: every
- * ALREADY-APPLIED cut (src resolved by a past produce, absent from
- * `oldSpans`) would silently come back the moment any veto went live.
+ * pause still cuts here exactly as it does in produce. Only cuts carrying a
+ * `src` subtract, and since the cut-review rework that is the LIVE-APPLIED
+ * set, not just produce's own past resolutions: the editor's cut writers now
+ * resolve `src` at the gesture (module doc), so a fresh cut removes its
+ * material from the preview the moment it is made. A src-LESS entry is the
+ * legacy marked-only shape and never subtracts. Skipping the subtraction
+ * entirely would be worse than incomplete: every ALREADY-APPLIED cut (src
+ * resolved by a past produce, absent from `oldSpans`) would silently come
+ * back the moment any veto went live.
  *
- * `null` on any degenerate input — no proposal, no old spans, choices with
- * no actual veto — and on a proposal `TimeMap`'s constructor rejects (a
- * hand-mangled production.json): the preview degrades to step 3's honest
- * marks-rather-than-applies, never a crash, the same lenient posture as
- * GET /api/cleanup itself.
+ * A src cut ALONE opens the clocks (`hasLiveEdit`), which is what makes a cut
+ * inside revived material previewable at all. With no cleanup proposal on
+ * disk there is no partition to re-keep from, so the base cutlist becomes the
+ * LAST RENDER's own spans as keep-only segments and the cuts subtract from
+ * that — the honest base, and identity-safe: a cut a past produce already
+ * applied is absent from those spans, subtracts nothing, and `mapsClose`
+ * takes the null exit (`subtractRangesFromCutlist` is set-like).
+ *
+ * `null` on any degenerate input — no old spans, a veto with no proposal to
+ * apply it to, choices with no actual veto and no src cut — and on a proposal
+ * `TimeMap`'s constructor rejects (a hand-mangled production.json): the
+ * preview degrades to step 3's honest marks-rather-than-applies, never a
+ * crash, the same lenient posture as GET /api/cleanup itself.
  */
 export function livePreviewMap(
   proposal: readonly Segment[],
@@ -78,15 +90,28 @@ export function livePreviewMap(
     // preview must play it (dismissedRemovals' doc: same render outcome,
     // different display state).
     (choices?.dismissed?.length ?? 0) > 0;
-  if (!hasVeto) return null;
-  if (proposal.length === 0 || oldSpans.length === 0) return null;
+  const ranges = cuts.flatMap((c) =>
+    c.src !== undefined && c.src.endSec > c.src.startSec
+      ? [{ start: c.src.startSec, end: c.src.endSec }]
+      : [],
+  );
+  // A src cut is a live edit in its own right now (the doc above) — the gate
+  // is no longer "is a veto live" but "is ANY of this applied live".
+  const hasLiveEdit = hasVeto || ranges.length > 0;
+  if (!hasLiveEdit) return null;
+  if (oldSpans.length === 0) return null;
+  // A veto with no proposal to apply it to is still nothing to show — the
+  // pre-rework early exit, kept explicit so that path stays byte-identical
+  // rather than relying on the `mapsClose` exit below to reach the same null.
+  if (proposal.length === 0 && ranges.length === 0) return null;
   try {
-    const rekept = applyCleanupChoices(proposal, choices);
-    const ranges = cuts.flatMap((c) =>
-      c.src && c.src.endSec > c.src.startSec
-        ? [{ start: c.src.startSec, end: c.src.endSec }]
-        : [],
-    );
+    // No proposal on disk → the last render's spans ARE the base partition
+    // (keep-only): the cuts have to subtract from something, and this is the
+    // one honest description of what is currently kept.
+    const rekept =
+      proposal.length > 0
+        ? applyCleanupChoices(proposal, choices)
+        : oldSpans.map((s) => ({ srcIn: s.srcIn, srcOut: s.srcOut, kind: "keep" as const }));
     const newMap = new TimeMap(subtractRangesFromCutlist(rekept, ranges));
     const oldMap = mapFromKeptSpans(oldSpans);
     // Choices that change nothing (a veto already baked into the last
@@ -110,10 +135,16 @@ export function livePreviewMap(
 export interface PreviewClockMappers {
   /** OLD-clock output seconds (the last render's own timeline — what the
    * render props, the ghost cues and the pre-retime caption lines are timed
-   * in) → the clock the player is actually on. Exact for every live veto:
-   * vetoes only ever ADD time back, so every old moment survives on the new
-   * clock (`retimeForPreview`'s direction argument); the clamp behind it
-   * only fires for the retracted-veto shape the retime already reports. */
+   * in) → the clock the player is actually on. Exact for every VETO: those
+   * only ever ADD time back, so every old moment survives on the new clock
+   * (`retimeForPreview`'s direction argument). The clamp behind it is real,
+   * not theoretical, in the two directions that REMOVE time: the
+   * retracted-veto shape the retime already reports, and — since the
+   * cut-review rework — an old instant a LIVE cut removed, which snaps to
+   * the nearest surviving edge. The documented consumer of that clamp is
+   * App.tsx's playhead-continuity effect (~:1204-1225): the playhead sitting
+   * inside material the user just cut has to land SOMEWHERE, and the seam is
+   * the closest honest answer. */
   toLive: (sec: number) => number;
   /** The reverse: the player's clock → the last render's own output seconds.
    * A live moment inside REVIVED material has no old-clock preimage at all —
@@ -140,8 +171,18 @@ export interface PreviewClockMappers {
   /** Live-output → SOURCE seconds, or null when no conversion exists (the
    * identity case with no spans-backed fallback supplied). Exact under a
    * live veto (`newMap.toSource` is total on the player's own clock). The
-   * split writer's anchor (`splits[].src`). */
+   * split writer's anchor (`splits[].src`) and, since the cut-review rework,
+   * the cut writers' too (`cuts[].src`, resolved at the gesture). */
   toSourceSec: ((sec: number) => number) | null;
+  /** OLD-clock output → SOURCE seconds, or null when no conversion exists
+   * (the identity case with no spans-backed fallback). `toSourceSec`'s
+   * sibling for the surfaces whose windows are still timed against the LAST
+   * RENDER rather than the player — the transcript panel's word windows, and
+   * therefore `cutWords`' `src`. Exact under a live veto (`oldMap.toSource`
+   * is total on the old clock). Reaching for `toSourceSec` there would
+   * resolve the wrong source instant by exactly the revived seconds, which
+   * is the whole class of bug the cut-review audit found. */
+  oldToSourceSec: ((sec: number) => number) | null;
 }
 
 /**
@@ -170,6 +211,10 @@ export function previewClockMappers(
       fromLive: identity,
       hasOldClockPreimage: () => true,
       toSourceSec: opts.identityToSource ?? null,
+      // With no live re-cut the player's clock IS the last render's, so the
+      // two source conversions are the same function — the same fallback,
+      // never a second, differently-derived one.
+      oldToSourceSec: opts.identityToSource ?? null,
     };
   }
   const { oldMap, newMap } = clocks;
@@ -192,25 +237,36 @@ export function previewClockMappers(
     // lets the editor write `splits[].src` directly (SplitSchema's
     // documented divergence from the cuts rule).
     toSourceSec: (sec) => newMap.toSource(sec),
+    // The OLD clock's own source conversion — `oldMap`, not `newMap`: a
+    // window that has not been retimed onto the player's clock (the
+    // transcript panel's) must resolve through the map it was timed against.
+    oldToSourceSec: (sec) => oldMap.toSource(sec),
   };
 }
 
 /** `cutRangeToOldClock`'s verdict on a live-clock window headed for a doc
- * `cuts[]` slot. `exact`/`shrunk` carry OLD-clock seconds ready to store;
- * `shrunk` also carries a report (the `remapPoint` posture — a moved value
- * says so) for the caller's feedback channel; `degenerate` means the window
- * has NO old-clock extent at all and the write must be refused out loud. */
+ * `cuts[]` slot's HISTORICAL record. `exact`/`shrunk` carry OLD-clock seconds
+ * ready to store; `shrunk` also carries a report (the `remapPoint` posture —
+ * a moved value says so) for the caller's feedback channel; `degenerate`
+ * means the window has NO old-clock extent at all: a writer that can resolve
+ * `src` stores it with a clamped record anyway, one that cannot must refuse
+ * out loud. */
 export type OldClockCutRange =
   | { kind: "exact"; startSec: number; endSec: number }
   | { kind: "shrunk"; startSec: number; endSec: number; report: string }
   | { kind: "degenerate" };
 
 /**
- * Convert a cut gesture's LIVE-clock window into the OLD-clock window the
- * doc's `cuts[]` slots speak (the schema comment on `OverrideDocSchema.cuts`:
- * a fresh cut's `startSec`/`endSec` are drawn against the LAST render-props'
- * frame — produce resolves `src` by mapping them through the PRIOR TimeMap,
- * so a new-clock number stored there lands the cut the revived seconds off).
+ * Convert a cut gesture's LIVE-clock window into the OLD-clock window a
+ * `cuts[]` entry's `startSec`/`endSec` speak — since the cut-review rework
+ * that is the HISTORICAL RECORD half of the write (the schema comment on
+ * `OverrideDocSchema.cuts`: those two numbers describe the render-props the
+ * user was looking at, and `src` is what is authoritative once present). It
+ * is still the whole write for the two paths that have no `src` to offer:
+ * a legacy src-less entry, whose range produce resolves through the PRIOR
+ * TimeMap (so a new-clock number stored there would land the cut the revived
+ * seconds off), and a writer whose source mapper is null (no spans, no live
+ * map) — that one keeps the refusal, the pre-rework flow verbatim.
  *
  * Endpoints inside revived material clamp to the nearest kept edge
  * (`fromLive`'s doc): when only ONE edge clamps the range SHRINKS there and
@@ -220,10 +276,12 @@ export type OldClockCutRange =
  * sliver past the clamped edge is lost, and the report says so. When the
  * whole window collapses to one point — both endpoints inside one revived
  * region, or the window exactly covering it seam to seam (each seam HAS a
- * preimage, but the same one twice) — there is nothing left to cut and the
- * verdict is `degenerate`: refuse, the ⌘B-split posture, never a silent
- * zero-length entry. Checked on the mapped WIDTH first, before the preimage
- * question, for exactly that seam-to-seam case. The module `EPS`, not 0: the
+ * preimage, but the same one twice) — the old clock has no record to give:
+ * the verdict is `degenerate`, and what the caller does with it depends on
+ * whether it holds a source mapper (the type's own doc) — never a silent
+ * zero-length entry that pretends the old clock said something. Checked on
+ * the mapped WIDTH first, before the preimage question, for exactly that
+ * seam-to-seam case. The module `EPS`, not 0: the
  * mapped ends ride TimeMap arithmetic, and a real cut is never under a
  * microsecond.
  *
@@ -289,12 +347,23 @@ export interface RetimedPreview {
  * `newMap`'s: old-output → source → new-output, `remapPoint`'s exact
  * algorithm — the same one produce re-anchors splits and pins with.
  *
- * Vetoes only ever ADD time back (a removal becomes a keep), so every moment
- * the old clock could express survives on the new one and maps exactly. The
- * clamped fallback still stands behind each point (`toOutputClamped`'s
- * documented role) for the one direction that can remove time: the old spans
- * carrying a veto the doc no longer holds — a moment inside it snaps to the
- * nearest kept edge and is reported, never silently dropped.
+ * A veto only ever ADDS time back (a removal becomes a keep), so under vetoes
+ * alone every moment the old clock could express survives on the new one and
+ * maps exactly. Two directions REMOVE time and need the clamped fallback
+ * behind each point (`toOutputClamped`'s documented role): old spans carrying
+ * a veto the doc no longer holds, and — since the cut-review rework — a LIVE
+ * user cut (`cuts[].src`, subtracted by `livePreviewMap`). A moment inside
+ * either snaps to the nearest kept edge and is reported, never silently
+ * dropped.
+ *
+ * Removing time can also COLLAPSE a scene cue: a cut covering a whole block
+ * leaves both its ends clamped to the same seam. A zero-width cue is dropped
+ * from the preview outright, WITH a report — that is the honest rendering of
+ * material the user just removed, where a kept sliver would draw a phantom
+ * block on the timeline for footage that no longer plays. Only `sceneCues`
+ * get this: a collapsed caption line or zoom segment is inert where it sits
+ * (nothing renders across a zero window), while a cue is a timeline BLOCK
+ * with a label, a hit target and a selection.
  *
  * Word `srcStart` is already SOURCE time (§137's recut-immune key) and is
  * carried untouched. `punch` comes back provably inert — `{scale: 1,
@@ -330,11 +399,18 @@ export function retimeForPreview(
         end: at(`caption word "${w.text}" end`, w.end),
       })),
     })),
-    sceneCues: props.sceneCues.map((c) => ({
-      ...c,
-      startSec: at(`scene "${c.id}" start`, c.startSec),
-      endSec: at(`scene "${c.id}" end`, c.endSec),
-    })),
+    sceneCues: props.sceneCues.flatMap((c) => {
+      const startSec = at(`scene "${c.id}" start`, c.startSec);
+      const endSec = at(`scene "${c.id}" end`, c.endSec);
+      // Collapsed by a live cut (the doc's own paragraph) — dropped, and
+      // said out loud, the `remapPoint` "nothing moves without saying so"
+      // rule applied to a block that stopped existing.
+      if (endSec - startSec < EPS) {
+        reports.push(`scene "${c.id}" removed from the live preview by a cut`);
+        return [];
+      }
+      return [{ ...c, startSec, endSec }];
+    }),
     punch: { scale: 1, allowed: [] },
   };
   if (props.zoomPlan) {

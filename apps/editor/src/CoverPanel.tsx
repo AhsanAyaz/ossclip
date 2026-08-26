@@ -224,6 +224,34 @@ export function playheadAtSeconds(args: {
 }
 
 /**
+ * The sentence for a playhead that has no frame in the rendered mp4 at all
+ * (§156, and the live-cut half of it): the user parked inside material a
+ * cleanup removal proposed and they kept, so the last render's clock has no
+ * preimage for that instant and `fromLive` clamped to the nearest kept edge.
+ * Before this, that clamp was SILENT — the same "nothing happened" disguise
+ * §156 is about, one clock further in.
+ *
+ * The seconds quoted are on the RENDERED video's clock, which is where the
+ * snap happened; with "Original take" selected, `playheadAtSeconds`' own
+ * sentence rides after this one and explains what the field ended up holding.
+ *
+ * The limit is fundamental until the next render, not a panel bug, so the
+ * copy says so rather than offering a fix that does not exist: the take is
+ * only reachable by typing its OWN seconds, because the value that reached
+ * the panel was already clamped (App owns that hop — the `playheadSec`
+ * contract) and the source instant the user was watching is not recoverable
+ * from it.
+ */
+export function snappedPlayheadNote(playheadOutSec: number): string {
+  return (
+    `That moment isn't in the rendered video yet — snapped to the nearest rendered moment, ` +
+    `${playheadOutSec.toFixed(2)}s. The mp4 genuinely lacks the frame until the next render; ` +
+    `render once to take a cover from it, or read it off the original take by typing that ` +
+    `take's own seconds.`
+  );
+}
+
+/**
  * Re-express a filled field when the frame-source toggle crosses clocks.
  * Returns null when the field should be left alone: blank or invalid input
  * (`parseAtSeconds`'s rule, reused rather than restated — blank means "no
@@ -279,6 +307,19 @@ export function atFieldOnFromToggle(args: {
   };
 }
 
+/**
+ * What the playhead getter answers: the instant, plus whether getting it onto
+ * the rendered mp4's clock required a SNAP (§156). `snapped` is true exactly
+ * when the live playhead sits in material the last render does not contain —
+ * revived material, a kept cleanup removal — and `sec` is then the nearest
+ * kept edge rather than where the user was looking. The panel still spends
+ * `sec`; it just stops doing it silently (`snappedPlayheadNote`).
+ */
+export interface PlayheadReading {
+  sec: number;
+  snapped: boolean;
+}
+
 export interface CoverPanelProps {
   onClose: () => void;
   /**
@@ -286,6 +327,10 @@ export interface CoverPanelProps {
    * time — a getter rather than a number because App does not re-render per
    * frame, so a prop snapshot would be whatever the playhead was when the
    * panel opened.
+   *
+   * It answers a `{sec, snapped}` pair rather than a bare number because the
+   * mapping onto that clock can fail to be a mapping at all: see
+   * `PlayheadReading`.
    *
    * This value is denominated in the finished mp4's own output time, always:
    * with no live cleanup re-cut the player's frame IS that clock, and under
@@ -297,7 +342,7 @@ export interface CoverPanelProps {
    * toggle re-denominates an already-filled field) — the server re-maps
    * nothing either way, which is the field's one-meaning contract.
    */
-  playheadSec: () => number;
+  playheadSec: () => PlayheadReading;
 }
 
 export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) => {
@@ -538,9 +583,19 @@ export const CoverPanel: React.FC<CoverPanelProps> = ({ onClose, playheadSec }) 
                     // The getter answers in OUTPUT time (the prop contract);
                     // the helper converts it onto the SELECTED video's clock,
                     // and its sentence explains any crossing.
-                    const r = playheadAtSeconds({ playheadOutSec: playheadSec(), from, cutlist });
+                    const live = playheadSec();
+                    const r = playheadAtSeconds({ playheadOutSec: live.sec, from, cutlist });
                     setAtRaw(r.atSec.toFixed(2));
-                    setClockNote(r.note);
+                    // The field still takes the clamped value — it is the only
+                    // frame that exists to grab — but a snap gets SAID (§156).
+                    // Both sentences ride when both apply: the snap explains
+                    // where `live.sec` came from, the conversion explains what
+                    // the field now holds.
+                    setClockNote(
+                      live.snapped
+                        ? [snappedPlayheadNote(live.sec), r.note].filter((n) => n !== null).join(" ")
+                        : r.note,
+                    );
                   }}
                   disabled={busy}
                 >

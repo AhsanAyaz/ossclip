@@ -18,8 +18,6 @@ import {
   carveKeptTakes,
   dismissedRemovals,
   vetoedRemovals,
-  buildCaptionLines,
-  captionPackingFor,
   resolveTheme,
   defaultTheme,
   cutRangeToOldClock,
@@ -38,6 +36,7 @@ import {
   type Theme,
 } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
+import { rebuildCaptionTrack, type LiveCaptionTrack } from "./liveCaptionTrack";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector, type RunInfo } from "./Inspector";
 import { Timeline } from "./Timeline";
@@ -87,6 +86,17 @@ import {
  * actual index signature to see, without changing the runtime shape.
  */
 type PlayerProductionProps = ProductionCompProps & Record<string, unknown>;
+
+/**
+ * The Transcript panel's clock mapping when its lines were REBUILT on the
+ * player's own clock (cut-review rework phase 2): there is nothing to convert,
+ * so both directions are the identity.
+ *
+ * MODULE scope, not an inline arrow: the panel's playhead effect depends on
+ * `fromPlayerSec`, and a fresh function per render would tear down and re-add
+ * the player's `frameupdate` listener on every keystroke in the editor.
+ */
+const identitySec = (sec: number): number => sec;
 
 /**
  * The raw `render-props.json` shape the server hands back. `sceneCues` and
@@ -844,7 +854,9 @@ export const App: React.FC = () => {
   // The RANGE layer, on top of the per-word retypes — `applyCaptionLayers`'
   // order, still composed manually here (the legacy-key filtering above is
   // why the composer can't be handed the doc whole). This intermediate —
-  // post-range, PRE-hide — is what the Transcript panel renders: range edits
+  // post-range, PRE-hide — is what the Transcript panel renders when no live
+  // clock is up (since the cut-review rework a rebuilt track's own
+  // intermediate takes over — `rebuildCaptionTrack`): range edits
   // change word COUNT, so a panel fed pre-range lines would have flat
   // indices and text that diverge from the run the user just typed, while a
   // hidden word must still render struck-through (the pre-hide rule below).
@@ -880,7 +892,10 @@ export const App: React.FC = () => {
   // runs on the post-hide lines (a hide can re-base a line's window or remove
   // the line outright). The Transcript panel keeps receiving the post-range/
   // PRE-hide lines above; it reads `edits.doc.captionLineTiming` itself for
-  // the timing UI, so this memo feeds only the Player and the drop banner.
+  // the timing UI, so this memo feeds only the Player and the drop banner —
+  // and only while no rebuilt track has taken over both (the live memo's
+  // `transcript`, cut-review rework phase 2); the doc-read timing UI is
+  // clock-agnostic either way, its keys being source-anchored.
   const appliedCaptionTiming = useMemo<AppliedCaptionEdits>(() => {
     // The same null-props guard as the three layers above, for the same
     // reason: nothing loaded yet is not "every nudge is stale" — reporting
@@ -896,36 +911,6 @@ export const App: React.FC = () => {
     () => migrationLossNotices(captionMigrationLoss),
     [captionMigrationLoss],
   );
-  const droppedEditLines = useMemo(
-    // All three caption layers' reports through the one dismissible banner —
-    // a range rewrite or hide that could not land is the same silent-revert
-    // failure §137 removed for retypes, each with its own phrasing because
-    // the fix gesture differs (retype / re-select and Edit / re-select and
-    // hide).
-    () => [
-      ...droppedEditNotices(appliedCaptions.dropped),
-      ...droppedRangeNotices(appliedCaptionRanges.dropped),
-      ...droppedHideNotices(appliedCaptionHides.dropped),
-      ...droppedLineTimingNotices(appliedCaptionTiming.dropped),
-    ],
-    [appliedCaptions, appliedCaptionRanges, appliedCaptionHides, appliedCaptionTiming],
-  );
-  // The dismissal is aimed at ONE list, not at the notice forever: a later,
-  // DIFFERENT drop raises it again. Held as the dismissed list itself rather
-  // than a boolean for exactly that (§137 Task 6 review, Important 4 — a
-  // `duplicate-anchor` entry cannot be cleared by retyping, so a
-  // non-dismissible banner can strand a user permanently).
-  const dropNoticeSignature = droppedEditLines.join("\n");
-  const showDropNotice = droppedEditLines.length > 0 && dropNoticeSignature !== dismissedDrops;
-  // Durable alongside the banner, same reasoning as the migration losses: the
-  // banner can be dismissed, the log cannot. Keyed on the signature so it says
-  // each distinct set once rather than on every render.
-  useEffect(() => {
-    if (droppedEditLines.length === 0) return;
-    for (const line of droppedEditLines) console.warn(`ossclip §137: ${line}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dropNoticeSignature]);
-
   // The live clock (cut review step 4): non-null exactly when the user's
   // cleanup vetoes actually change the timeline — `livePreviewMap` owns the
   // gate (empty choices, a veto already baked into these render-props, and a
@@ -972,22 +957,31 @@ export const App: React.FC = () => {
     return previewClockMappers(liveRecut, { identityToSource });
   }, [liveRecut, renderProps]);
 
-  // DECIDE (PLAN 2026-08-04 Task 4c, revised by cut review step 4): this
-  // memo still never applies `edits.doc.cuts` — but the original refusal
-  // gave two reasons, and only one survived. "The editor has no client-side
-  // TimeMap to rebuild a post-cut version from" is RETIRED: `livePreviewMap`
-  // above builds exactly that, and the retime at the bottom of this memo
-  // plays cleanup vetoes live. "A second EDL implementation in the browser"
-  // stays refused — the live clock is the SAME `applyCleanupChoices`/
-  // `TimeMap`/`remapPoint` produce runs, imported from core, one
-  // implementation with two callers. User cuts remain marked-not-applied
-  // (the struck band, effective on the next produce/Render) for two reasons
-  // of their own: a fresh cut's `src` is produce's alone to resolve (the
-  // `cuts[].src` schema contract — the editor must never apply a cut whose
-  // source range only produce can resolve), and a cut REMOVES content, which
-  // the struck band already communicates honestly, while a veto RESTORES
-  // content the mezzanine already has, so the player can honestly play it.
-  const liveRetimed = useMemo<{ props: PlayerProductionProps; reports: string[] } | null>(() => {
+  // DECIDE (PLAN 2026-08-04 Task 4c, revised by cut review step 4 and again
+  // by the cut-review rework, 2026-08-26): both original refusals are now
+  // spent. "The editor has no client-side TimeMap to rebuild a post-cut
+  // version from" died at step 4 — `livePreviewMap` above builds exactly
+  // that. "User cuts stay marked-not-applied because a fresh cut's `src` is
+  // produce's alone to resolve" died with the schema rule it cited: the cut
+  // writers resolve `src` at the gesture off `clock` above, and
+  // `livePreviewMap` SUBTRACTS every src-carrying entry, so a cut the user
+  // just made genuinely stops playing here. Only LEGACY src-less entries are
+  // still marked-not-applied (the struck band, effective on the next
+  // produce/Render) — nothing in the editor writes one any more unless no
+  // source mapper exists at all. "A second EDL implementation in the
+  // browser" stays refused, and always will: the live clock is the SAME
+  // `applyCleanupChoices`/`TimeMap`/`remapPoint` produce runs, imported from
+  // core, one implementation with two callers.
+  // `transcript` is present exactly when the caption track was REBUILT on the
+  // live clock (cut-review rework phase 2) — and it is the one signal that
+  // decides which clock the Transcript panel's word times speak, so the panel
+  // wiring and the `cutWords` write below both route on its presence, never
+  // on a second, re-derived predicate that could disagree with this memo.
+  const liveRetimed = useMemo<{
+    props: PlayerProductionProps;
+    reports: string[];
+    transcript?: LiveCaptionTrack;
+  } | null>(() => {
     if (!renderProps) return null;
     // Always merge onto the PRISTINE base, never onto `renderProps.sceneCues`/
     // `theme` themselves — those are what `produce` actually rendered (its
@@ -1090,7 +1084,7 @@ export const App: React.FC = () => {
       props: PlayerProductionProps,
       priorReports: string[],
       clockMap: TimeMap | null,
-    ): { props: PlayerProductionProps; reports: string[] } => {
+    ): { props: PlayerProductionProps; reports: string[]; transcript?: LiveCaptionTrack } => {
       const keptRanges = vetoedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
         srcIn: seg.srcIn,
         srcOut: seg.srcOut,
@@ -1102,7 +1096,19 @@ export const App: React.FC = () => {
       }));
       const srcOnly = edits.doc.splits.filter((s) => s.at === undefined && s.src !== undefined);
       const ranges = [...keptRanges, ...dismissedRanges];
-      if (clockMap === null || (ranges.length === 0 && srcOnly.length === 0)) {
+      // The caption rebuild's OWN trigger (cut-review rework phase 2), wider
+      // than the carve's: any clock change invalidates the retimed lines, and
+      // a LIVE user cut (`liveRecut !== null` with no veto and no split)
+      // changes the clock while adding neither a range nor a split point —
+      // its removed material survives in `props.captionLines` only as words
+      // `remapPoint` clamped to zero width at the seam. Rebuilding from the
+      // transcript on this clock is the honest rendering of both directions
+      // (revived material gains its words, cut material loses them).
+      // `liveRecut === null` + no ranges is the no-live-edit path, which must
+      // stay byte-identical: no rebuild, and the early return below is the
+      // one this function has always taken.
+      const rebuildCaptions = transcriptDoc !== null && (ranges.length > 0 || liveRecut !== null);
+      if (clockMap === null || (ranges.length === 0 && srcOnly.length === 0 && !rebuildCaptions)) {
         return { props, reports: priorReports };
       }
       const carved = carveKeptTakes(props.sceneCues ?? [], ranges, clockMap);
@@ -1121,31 +1127,28 @@ export const App: React.FC = () => {
       // (§137), so every retype/hide/nudge lands on the rebuilt lines too.
       // No transcript on disk → the retimed lines stand (captions over the
       // revived stretch stay absent, said by the endpoint's own leniency).
+      // Phase 2: the chain's INTERMEDIATE stops leave with it — the Transcript
+      // panel is fed three of them (`rebuildCaptionTrack`'s doc comment owns
+      // the why), and the panel is the surface that could not see revived
+      // words at all.
       let captionLines = props.captionLines;
-      if (ranges.length > 0 && transcriptDoc !== null) {
-        const rebuilt = buildCaptionLines(transcriptDoc, clockMap, {
+      let transcript: LiveCaptionTrack | undefined;
+      // `transcriptDoc !== null` is `rebuildCaptions`' own first term, repeated
+      // for the narrowing TS cannot carry through a boolean.
+      if (rebuildCaptions && transcriptDoc !== null) {
+        transcript = rebuildCaptionTrack(transcriptDoc, clockMap, edits.doc, {
           breakpoints: finalCues
             .filter((c) => c.kind !== "plain")
             .flatMap((c) => [c.startSec, c.endSec]),
-          ...captionPackingFor(
+          landscape:
             (renderProps.settings?.width ?? 1080) > (renderProps.settings?.height ?? 1920),
-          ),
         });
-        const layered = applyCaptionLineTiming(
-          applyCaptionWordHides(
-            applyCaptionRangeEdits(
-              applyCaptionEdits(rebuilt, sourceKeyedCaptionEdits(edits.doc.captions)).lines,
-              edits.doc.captionRangeEdits,
-            ).lines,
-            edits.doc.captionWordsHidden,
-          ).lines,
-          edits.doc.captionLineTiming,
-        );
-        captionLines = layered.lines;
+        captionLines = transcript.lines;
       }
       return {
         props: { ...props, sceneCues: finalCues, captionLines },
         reports: [...priorReports, ...carved.reports, ...resolved.reports],
+        transcript,
       };
     };
     const spansMap = (): TimeMap | null => {
@@ -1161,6 +1164,69 @@ export const App: React.FC = () => {
     return finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap);
   }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut, cleanupCutlist, transcriptDoc]);
   const live = liveRetimed === null ? null : liveRetimed.props;
+  // ONE boolean for the two surfaces that must agree about which clock the
+  // Transcript panel speaks (cut-review rework phase 2): the panel wiring
+  // below and the `cutWords` write in the DeleteWordsModal. Two independently
+  // re-derived predicates here is how a delete would resolve `src` on a clock
+  // the plan's window was never measured in — off by exactly the revived (or
+  // cut) seconds, silently, since nothing downstream can tell.
+  const liveTranscript = liveRetimed?.transcript;
+
+  // BELOW the live memo since phase 2, not above with the caption layers it
+  // mostly reads: the REBUILT track's timing layer reports here too, and a
+  // `useMemo` factory runs during render, so reading `liveRetimed` from above
+  // its own declaration is a TDZ crash, not a stale value.
+  const droppedEditLines = useMemo(
+    // All three caption layers' reports through the one dismissible banner —
+    // a range rewrite or hide that could not land is the same silent-revert
+    // failure §137 removed for retypes, each with its own phrasing because
+    // the fix gesture differs (retype / re-select and Edit / re-select and
+    // hide).
+    () => {
+      const lines = [
+        ...droppedEditNotices(appliedCaptions.dropped),
+        ...droppedRangeNotices(appliedCaptionRanges.dropped),
+        ...droppedHideNotices(appliedCaptionHides.dropped),
+        ...droppedLineTimingNotices(appliedCaptionTiming.dropped),
+      ];
+      // The rebuilt track's own dropped nudges (cut-review rework phase 2).
+      // A live clock re-PACKS the caption lines, so a stored nudge's key can
+      // stop being any line's first word even though its word is still on
+      // screen — the notice then says "no longer exists", which is true of
+      // the CAPTION the nudge addressed if not of the word. Dropping it with
+      // a report beats dropping it silently (§137's rule), and re-anchoring
+      // a nudge across a re-pack is a design question nobody has answered.
+      // Appended, never merged: the old-clock chain above still feeds the
+      // Player's fallback lines, and only the entries it did NOT already
+      // print are added, so a nudge lost on both tracks is said once.
+      for (const line of droppedLineTimingNotices(liveRetimed?.transcript?.dropped ?? [])) {
+        if (!lines.includes(line)) lines.push(line);
+      }
+      return lines;
+    },
+    [
+      appliedCaptions,
+      appliedCaptionRanges,
+      appliedCaptionHides,
+      appliedCaptionTiming,
+      liveRetimed,
+    ],
+  );
+  // The dismissal is aimed at ONE list, not at the notice forever: a later,
+  // DIFFERENT drop raises it again. Held as the dismissed list itself rather
+  // than a boolean for exactly that (§137 Task 6 review, Important 4 — a
+  // `duplicate-anchor` entry cannot be cleared by retyping, so a
+  // non-dismissible banner can strand a user permanently).
+  const dropNoticeSignature = droppedEditLines.join("\n");
+  const showDropNotice = droppedEditLines.length > 0 && dropNoticeSignature !== dismissedDrops;
+  // Durable alongside the banner, same reasoning as the migration losses: the
+  // banner can be dismissed, the log cannot. Keyed on the signature so it says
+  // each distinct set once rather than on every render.
+  useEffect(() => {
+    if (droppedEditLines.length === 0) return;
+    for (const line of droppedEditLines) console.warn(`ossclip §137: ${line}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dropNoticeSignature]);
 
   // Feed the live cue list to the edit layer so `save()` can stamp each scene
   // override with its cue's anchor (handoff-edit-anchoring). THIS list, not
@@ -1179,11 +1245,14 @@ export const App: React.FC = () => {
   }, [liveCues]);
 
   // A retime report means a stored moment fell inside a NEWLY re-cut region
-  // (only possible when a veto was retracted against already-vetoed render
-  // props) and was snapped to the nearest kept edge — `remapPoint`'s
-  // "nothing moves without saying so" rule, honoured here in the console the
-  // way the §137 drop log is. Keyed on the joined signature so each distinct
-  // set is said once, not on every render.
+  // and was snapped to the nearest kept edge, or a scene cue collapsed to
+  // nothing and was dropped — `remapPoint`'s "nothing moves without saying
+  // so" rule, honoured here in the console the way the §137 drop log is. Two
+  // shapes reach it since the cut-review rework: a retracted veto against
+  // already-vetoed render props (the original), and a LIVE user cut removing
+  // material that stored moments sat in (`cuts[].src` — expect one report
+  // per word when a long take is cut; noisy, not wrong). Keyed on the joined
+  // signature so each distinct set is said once, not on every render.
   const retimeReportSignature = (liveRetimed?.reports ?? []).join("\n");
   useEffect(() => {
     if (!liveRetimed || liveRetimed.reports.length === 0) return;
@@ -1621,11 +1690,18 @@ export const App: React.FC = () => {
           // the pre-existing source-case semantics are unchanged. Identity
           // when no veto is live, so the seconds go through untouched — see
           // CoverPanel's prop doc.
-          playheadSec={() =>
-            clock.fromLive(
-              (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps,
-            )
-          }
+          //
+          // The clamp rides back as `snapped` rather than staying private to
+          // this call: inside revived material `fromLive` returns the seam,
+          // and a cover silently cut from the seam frame is §156's "same wrong
+          // frame every time" one clock further in. `hasOldClockPreimage` is
+          // `fromLive`'s own guard, asked on the SAME live instant `t` — hence
+          // computing `t` once — so the verdict describes the very number
+          // being handed over. The panel says it; nothing refuses.
+          playheadSec={() => {
+            const t = (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps;
+            return { sec: clock.fromLive(t), snapped: !clock.hasOldClockPreimage(t) };
+          }}
         />
       ) : null}
       {showRenderModal ? (
@@ -1649,21 +1725,42 @@ export const App: React.FC = () => {
               edits.hideScene(deletePlan.sceneId);
             } else {
               // The plan's window came off a retimed cue — the LIVE clock —
-              // but a fresh `cuts[]` entry speaks the LAST RENDER's output
-              // seconds (the `OverrideDocSchema.cuts` contract), so it
-              // converts here, at the write boundary, exactly as the
-              // Inspector's own "Delete this chunk" does (same helper, so
-              // the shrink/refuse verdict cannot drift between the two).
+              // but a `cuts[]` entry's `startSec`/`endSec` speak the LAST
+              // RENDER's output seconds (the `OverrideDocSchema.cuts`
+              // contract), so it converts here, at the write boundary,
+              // exactly as the Inspector's own "Delete this chunk" does
+              // (same helpers in the same order, so neither the verdict nor
+              // the src anchor can drift between the two).
               // Identity when no veto is live — the values pass untouched.
               const range = cutRangeToOldClock(clock, deletePlan.startSec, deletePlan.endSec);
-              if (range.kind === "degenerate") {
+              if (clock.toSourceSec !== null) {
+                // Dual-write (cut-review rework) — Inspector's button owns
+                // the full argument: `src` is authoritative and live-applied,
+                // the old-clock pair is the historical record (clamped when
+                // the window has no old-clock extent, which is exactly the
+                // delete-inside-revived-material case this unblocks).
+                const toSource = clock.toSourceSec;
+                const src = {
+                  startSec: Math.round(toSource(deletePlan.startSec) * 1000) / 1000,
+                  endSec: Math.round(toSource(deletePlan.endSec) * 1000) / 1000,
+                };
+                const record =
+                  range.kind === "degenerate"
+                    ? {
+                        startSec: clock.fromLive(deletePlan.startSec),
+                        endSec: clock.fromLive(deletePlan.endSec),
+                      }
+                    : { startSec: range.startSec, endSec: range.endSec };
+                edits.cutChunk(record.startSec, record.endSec, src);
+              } else if (range.kind === "degenerate") {
                 setClockRefusedNotice(
                   "Can't cut this window: it isn't in the last render yet — render once (or re-remove the pause) to cut it.",
                 );
               } else {
-                // A window that merely shrinks at a revived edge proceeds
-                // and says so — the console, the retime reports' own
-                // channel (this gesture has no quieter one today).
+                // The no-mapper fallback, pre-rework verbatim: a window that
+                // merely shrinks at a revived edge proceeds and says so — the
+                // console, the retime reports' own channel (this gesture has
+                // no quieter one today).
                 if (range.kind === "shrunk") console.warn(`ossclip cut preview: ${range.report}`);
                 edits.cutChunk(range.startSec, range.endSec);
               }
@@ -1682,12 +1779,44 @@ export const App: React.FC = () => {
             // mechanism. `cutWords` is ONE commit for hide + cut, so the
             // whole gesture is one undo step.
             if (target === "caption") edits.hideCaptionWords(deleteWordsPlan.words);
-            else
-              edits.cutWords(
-                deleteWordsPlan.words,
-                deleteWordsPlan.startSec,
-                deleteWordsPlan.endSec,
-              );
+            else {
+              // WHICH CLOCK the plan's window speaks decides both halves of
+              // this write, and the answer is `liveTranscript` — the exact
+              // value that chose the panel's streams a few hundred lines
+              // below, shared so the two cannot disagree.
+              //
+              // Rebuilt streams (phase 2): the words are on the PLAYER's
+              // clock, so `toSourceSec` resolves the anchor and the
+              // historical `cuts[].startSec/endSec` record has to be mapped
+              // BACK with `fromLive` — clamping inside revived material,
+              // which is fine: `src` is authoritative the moment it exists
+              // (OverrideDocSchema.cuts), the pair is the record.
+              //
+              // Old-clock streams: `oldToSourceSec`, NOT `toSourceSec` — the
+              // live clock would resolve a source instant exactly the revived
+              // seconds off — and the record passes through UNCHANGED,
+              // already being old-clock (which is why this writer never
+              // needed `cutRangeToOldClock`).
+              //
+              // Null mapper (no spans, no live map) → today's bare,
+              // marked-only write, either way.
+              const toSource = liveTranscript ? clock.toSourceSec : clock.oldToSourceSec;
+              const round = (sec: number): number => Math.round(sec * 1000) / 1000;
+              const src =
+                toSource === null
+                  ? undefined
+                  : {
+                      startSec: round(toSource(deleteWordsPlan.startSec)),
+                      endSec: round(toSource(deleteWordsPlan.endSec)),
+                    };
+              const record = liveTranscript
+                ? {
+                    startSec: round(clock.fromLive(deleteWordsPlan.startSec)),
+                    endSec: round(clock.fromLive(deleteWordsPlan.endSec)),
+                  }
+                : { startSec: deleteWordsPlan.startSec, endSec: deleteWordsPlan.endSec };
+              edits.cutWords(deleteWordsPlan.words, record.startSec, record.endSec, src);
+            }
             setDeleteWordsPlan(null);
           }}
         />
@@ -1926,7 +2055,19 @@ export const App: React.FC = () => {
         {showTranscript ? (
           <>
             <TranscriptPanel
-              baseLines={renderProps?.baseCaptionLines ?? renderProps?.captionLines ?? []}
+              // THREE streams, one chain, two possible sources for it
+              // (cut-review rework phase 2, the field bug: a word inside
+              // material the last render cut away existed in NO stream here,
+              // so it could not be retyped, hidden or deleted). When the live
+              // memo rebuilt the track on the player's clock, its stops are
+              // the panel's — same layers, same order, same source-anchored
+              // keys, just packed over material render-props never had.
+              // Otherwise the old-clock chain below, bit-identical to before.
+              baseLines={
+                liveTranscript
+                  ? liveTranscript.baseLines
+                  : (renderProps?.baseCaptionLines ?? renderProps?.captionLines ?? [])
+              }
               // POST-range, PRE-hide lines, deliberately not
               // `live.captionLines` (post-hide) and no longer the edits-only
               // set: range edits change word COUNT, so the panel must see
@@ -1934,13 +2075,13 @@ export const App: React.FC = () => {
               // just typed. A hidden word still renders — struck-through,
               // ready to select and Restore — and the panel derives which
               // words are hidden from `edits.doc.captionWordsHidden` itself.
-              liveLines={appliedCaptionRanges.lines}
+              liveLines={liveTranscript ? liveTranscript.liveLines : appliedCaptionRanges.lines}
               // The POST-hide lines the TIMING layer runs on, alongside the
               // pre-hide ones the panel renders: `applyCaptionLineTiming`
               // keys every entry by the SURVIVING line's first word, so a
               // nudge captured against the pre-hide stream could be keyed to
               // a hidden word core never sees (`postHideLineIndices`).
-              timingLines={appliedCaptionHides.lines}
+              timingLines={liveTranscript ? liveTranscript.timingLines : appliedCaptionHides.lines}
               fps={live.settings.fps}
               playerRef={playerRef}
               edits={edits}
@@ -1953,8 +2094,13 @@ export const App: React.FC = () => {
               // clock) BY DESIGN — see the liveLines comment above — so its
               // seeks and playhead reads convert at the boundary instead.
               // Identity when no veto is live (the panel's own prop doc).
-              toPlayerSec={clock.toLive}
-              fromPlayerSec={clock.fromLive}
+              // Phase 2: REBUILT lines are already on the player's clock, so
+              // converting them would move every word by the revived seconds
+              // a second time — the identity is the whole point of feeding
+              // the live streams, and it must be routed on the SAME boolean
+              // the streams are (`liveTranscript`), never re-derived.
+              toPlayerSec={liveTranscript ? identitySec : clock.toLive}
+              fromPlayerSec={liveTranscript ? identitySec : clock.fromLive}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}
@@ -2105,11 +2251,13 @@ export const App: React.FC = () => {
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
             // "Delete this chunk"'s write boundary (step 4 follow-up): the
-            // cue window is on the live clock, a fresh `cuts[]` entry on the
-            // old — the Inspector prop docs own the argument; identity when
-            // no veto is live.
+            // cue window is on the live clock, the entry's own seconds on the
+            // old one, and `src` (cut-review rework) on SOURCE time — the
+            // Inspector prop docs own the argument; identity/null when no
+            // veto is live and the render-props carry no usable spans.
             fromLive={clock.fromLive}
             hasOldClockPreimage={clock.hasOldClockPreimage}
+            toSourceSec={clock.toSourceSec}
             onClockRefused={setClockRefusedNotice}
           />
         </div>

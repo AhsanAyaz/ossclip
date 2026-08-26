@@ -17,8 +17,12 @@ import { captionAnchorOf, type CaptionWord, type OverrideDoc } from "@ossclip/co
 export type DeleteWordsTarget = "caption" | "caption-video";
 
 export interface DeleteWordsPlan {
-  /** The range `cutWords` removes — OUTPUT seconds of the current
-   * render-props frame, exactly like a `cutChunk` window. */
+  /** The range `cutWords` removes, in the OUTPUT seconds of WHATEVER CLOCK
+   * the panel's lines were on — the last render's frame, or the live one when
+   * App fed the panel a rebuilt track (cut-review rework phase 2). The two
+   * differ by the revived/cut seconds before the selection, so App resolves
+   * this window's `src` on the same signal that chose the streams; nothing
+   * here can tell them apart, which is why it is stated. */
   startSec: number;
   endSec: number;
   /** The anchorable selection words, LIVE (post-retype) text as `was` — the
@@ -80,8 +84,11 @@ export function deleteWordsPlanFor(
   if (!allHidden) targets.push("caption");
   // Mirrors `cutChunk`'s own predicate in useEdits.ts (via `deletePlanFor`):
   // only a SRC-LESS entry at this exact window means "the user already cut
-  // this" — a src-anchored entry sharing the window is produce's resolved
-  // anchor for a DIFFERENT decision and must not suppress the offer.
+  // this" — a src-anchored entry sharing the window is a resolved anchor for
+  // a DIFFERENT decision and must not suppress the offer. Unchanged by the
+  // cut-review rework for `deletePlanFor`'s reason: a src-carrying cut is
+  // live-applied, so its words are gone from the live caption stream this
+  // selection is drawn on, leaving this check to serve legacy entries.
   const alreadyCut = doc.cuts.some(
     (c) => c.src === undefined && c.startSec === startSec && c.endSec === endSec,
   );

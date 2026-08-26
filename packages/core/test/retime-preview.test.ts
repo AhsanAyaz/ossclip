@@ -339,3 +339,114 @@ describe("dismissed markers drive the live preview (cut-review rework)", () => {
     expect(withFallback.toSourceSec!(2)).toBe(102);
   });
 });
+
+/**
+ * Cut-review rework (2026-08-26): `cuts[].src` written by the EDITOR is
+ * live-applied — the preview subtracts it and the material stops playing.
+ * Same canonical proposal as the top of this file (pause at source 5..7, the
+ * last render keeping 0..5 + 7..10 on an 8s clock), with a user cut at source
+ * 2..3 so every expected number stays hand-mappable.
+ */
+describe("live user cuts (src written at the gesture) apply in the preview", () => {
+  /** What a writer stores now: the old-clock record plus the source anchor. */
+  const cut = (startSec: number, endSec: number, src: { startSec: number; endSec: number }) => ({
+    startSec,
+    endSec,
+    src,
+  });
+
+  it("a src cut ALONE opens the clocks — no veto needed (the gate the field report hit)", () => {
+    const clocks = livePreviewMap(proposal, undefined, [cut(2, 3, { startSec: 2, endSec: 3 })], oldSpans);
+    expect(clocks).not.toBeNull();
+    // The pause (5..7) stays removed and the user's 2..3 goes too: 8s − 1s.
+    expect(clocks!.newMap.outputDuration).toBeCloseTo(7, 9);
+    expect(clocks!.newMap.spans).toEqual([
+      { srcIn: 0, srcOut: 2, outIn: 0, outOut: 2 },
+      { srcIn: 3, srcOut: 5, outIn: 2, outOut: 4 },
+      { srcIn: 7, srcOut: 10, outIn: 4, outOut: 7 },
+    ]);
+  });
+
+  it("with NO cleanup proposal on disk the cut subtracts from the last render's own spans, as keeps", () => {
+    // Correction 1 in the plan: an empty proposal used to be an unconditional
+    // null, which would have left a cut on a proposal-less workdir invisible.
+    const clocks = livePreviewMap([], undefined, [cut(2, 3, { startSec: 2, endSec: 3 })], oldSpans);
+    expect(clocks).not.toBeNull();
+    expect(clocks!.newMap.spans).toEqual([
+      { srcIn: 0, srcOut: 2, outIn: 0, outOut: 2 },
+      { srcIn: 3, srcOut: 5, outIn: 2, outOut: 4 },
+      { srcIn: 7, srcOut: 10, outIn: 4, outOut: 7 },
+    ]);
+  });
+
+  it("a src cut a past produce ALREADY applied is identity — the widened gate's own regression anchor", () => {
+    // The stale-cutlist risk the plan pins: the cut's source range is absent
+    // from `oldSpans` (produce removed it), so subtracting it from those spans
+    // changes nothing — `subtractRangesFromCutlist` is set-like — and the
+    // `mapsClose` exit returns null rather than a phantom re-cut.
+    expect(
+      livePreviewMap([], undefined, [cut(5, 6, { startSec: 5.5, endSec: 6.5 })], oldSpans),
+    ).toBeNull();
+  });
+
+  it("a veto with no proposal to apply it to is still null — the pre-rework early exit", () => {
+    expect(livePreviewMap([], { reasons: { pause: false } }, [], oldSpans)).toBeNull();
+  });
+
+  it("a zero-width src range never counts as a live edit", () => {
+    expect(
+      livePreviewMap(proposal, undefined, [cut(2, 2, { startSec: 2, endSec: 2 })], oldSpans),
+    ).toBeNull();
+  });
+
+  it("toLive CLAMPS at an old instant a live cut removed — the playhead-continuity consumer", () => {
+    const clocks = livePreviewMap(proposal, undefined, [cut(2, 3, { startSec: 2, endSec: 3 })], oldSpans)!;
+    const m = previewClockMappers(clocks);
+    // Old output 2.5 is source 2.5, which the live cut removed: both edges of
+    // the removed span land on new output 2, so the clamp is exact and
+    // deterministic — App's playhead seeks to the seam rather than nowhere.
+    expect(m.toLive(2.5)).toBeCloseTo(2, 9);
+    // Untouched either side of it.
+    expect(m.toLive(1)).toBeCloseTo(1, 9);
+    expect(m.toLive(4)).toBeCloseTo(3, 9);
+  });
+
+  it("retimeForPreview DROPS a cue the cut collapsed, and says so", () => {
+    const clocks = livePreviewMap(proposal, undefined, [cut(2, 3, { startSec: 2, endSec: 3 })], oldSpans)!;
+    const { fields, reports } = retimeForPreview(
+      {
+        outputDurationSec: 8,
+        captionLines: [],
+        sceneCues: [
+          { id: "a", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 2 },
+          // Exactly the removed window — nothing of it survives.
+          { id: "gone", kind: "plain", layout: "full-bleed", startSec: 2, endSec: 3 },
+          { id: "c", kind: "plain", layout: "full-bleed", startSec: 3, endSec: 8 },
+        ],
+      },
+      clocks.oldMap,
+      clocks.newMap,
+    );
+    expect(fields.sceneCues.map((c) => c.id)).toEqual(["a", "c"]);
+    expect(reports).toContain('scene "gone" removed from the live preview by a cut');
+  });
+
+  it("oldToSourceSec resolves through the OLD map — the transcript panel's window, not the player's", () => {
+    const clocks = livePreviewMap(proposal, { reasons: { pause: false } }, [], oldSpans)!;
+    const m = previewClockMappers(clocks);
+    // Old output 6 is source 8 (the last render kept 7..10 at output 5..8),
+    // while the SAME number on the live clock is source 6 — exactly the
+    // revived seconds apart, which is the bug the two mappers keep apart.
+    expect(m.oldToSourceSec!(6)).toBeCloseTo(8, 9);
+    expect(m.toSourceSec!(6)).toBeCloseTo(6, 9);
+  });
+
+  it("oldToSourceSec shares the identity pair's fallback — and its null", () => {
+    expect(previewClockMappers(null).oldToSourceSec).toBeNull();
+    const withFallback = previewClockMappers(null, { identityToSource: (s) => s + 100 });
+    // With no live re-cut the two clocks ARE one, so both mappers answer with
+    // the caller's spans-backed conversion.
+    expect(withFallback.oldToSourceSec!(2)).toBe(102);
+    expect(withFallback.oldToSourceSec).toBe(withFallback.toSourceSec);
+  });
+});

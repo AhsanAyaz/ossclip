@@ -94,9 +94,23 @@ interface InspectorProps {
    * `cutRangeToOldClock`'s exact/shrunk/degenerate verdict. Defaults to
    * always-true, the no-veto shape. */
   hasOldClockPreimage?: (sec: number) => boolean;
+  /**
+   * Live-output → SOURCE seconds (`previewClockMappers.toSourceSec`), the
+   * cut's own anchor since the cut-review rework: the cue's window resolves
+   * through it at the click and the entry is written `{startSec, endSec,
+   * src}` — the ⌘B dual-write posture (Overlay.tsx), now allowed for cuts
+   * too (`OverrideDocSchema.cuts`). That is what makes "Delete this chunk"
+   * work INSIDE revived material, where no old-clock window exists: the
+   * record clamps, the source anchor is exact, and the preview applies it
+   * live. NULL (no spans, no live map) is the honest fallback and keeps the
+   * pre-rework flow verbatim, refusal included — a source second is never
+   * guessed. Defaults to null so every existing harness pins that path.
+   */
+  toSourceSec?: ((sec: number) => number) | null;
   /** Visible refusal channel for a cut window with NO old-clock extent at
-   * all (`cutRangeToOldClock`'s degenerate verdict) — App's dismissible
-   * notice, the same non-fatal chrome as its other gesture refusals. */
+   * all (`cutRangeToOldClock`'s degenerate verdict) and NO `toSourceSec` to
+   * anchor it with instead — App's dismissible notice, the same non-fatal
+   * chrome as its other gesture refusals. */
   onClockRefused?: (message: string) => void;
 }
 
@@ -169,6 +183,12 @@ const blurActive = (): void => {
 /** Display precision (§48): three decimals is enough for any real edit —
  * never the 13 digits of float dust a drag can produce. */
 const roundShown = (v: number): string => String(Math.round(v * 1000) / 1000);
+
+/** Millisecond precision for a value about to be STORED (`cuts[].src`) — the
+ * ⌘B rule (Overlay.tsx): rounds belong to the values being written, not to
+ * the clock the gesture happened to be on. Also what makes the reducer's
+ * src-equality dedupe an exact comparison rather than a tolerance. */
+const round3 = (v: number): number => Math.round(v * 1000) / 1000;
 
 const NumberField: React.FC<{
   id: string;
@@ -321,6 +341,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   captionsHiddenByFlag,
   fromLive = (sec: number): number => sec,
   hasOldClockPreimage = (): boolean => true,
+  toSourceSec = null,
   onClockRefused = (): void => {},
 }) => {
   if (selection?.elementId && cue) {
@@ -571,15 +592,19 @@ export const Inspector: React.FC<InspectorProps> = ({
     // the hidden-scene branch above: this UI exposes no way to edit a cut's
     // range, so there is nothing else this view needs to show.
     //
-    // `c.src === undefined` is load-bearing, not incidental: once produce
-    // resolves `src`, `startSec`/`endSec` are a HISTORICAL record only
-    // (schema comment on `OverrideDocSchema.cuts`,
-    // packages/core/src/overrides.ts) — the material at that window is
-    // GONE from the current output, so a live cue's window landing on the
-    // same numbers by coincidence (a re-plan, a later independent cut) is
-    // unrelated content, not "this block is still marked for removal". An
-    // applied cut's own Restore lives on its Timeline seam marker instead
-    // (`Timeline.tsx`'s `cutSeamHit`), which this branch must never shadow.
+    // `c.src === undefined` is load-bearing, not incidental, and the
+    // cut-review rework only widened what it excludes: once ANY writer
+    // resolves `src` — a past produce, or "Delete this chunk" itself now —
+    // `startSec`/`endSec` are a HISTORICAL record only (schema comment on
+    // `OverrideDocSchema.cuts`, packages/core/src/overrides.ts) and the
+    // material at that window is GONE from the output the user is watching
+    // (produce removed it, or the live preview subtracted it). A live cue's
+    // window landing on the same numbers by coincidence (a re-plan, a later
+    // independent cut) is unrelated content, not "this block is still marked
+    // for removal". So this branch — and the "marked for removal" copy under
+    // it — now serves LEGACY src-less entries only; every applied cut's
+    // Restore lives on its Timeline seam marker (`Timeline.tsx`'s
+    // `cutSeamHit`), which this must never shadow.
     //
     // `findIndex`, not `find` (fix round 2, re-review): `restoreChunk` is
     // keyed by INDEX, not a window match, precisely because a src-anchored
@@ -1184,32 +1209,60 @@ export const Inspector: React.FC<InspectorProps> = ({
               Split isolates a chunk into its own block; this removes it,
               TAKE or SCENE alike (unlike "Delete scene" above, which only
               drops the graphic and keeps the window). Soft, same shape as
-              every other delete in this panel: nothing here shortens the
-              LIVE preview (`live` in App.tsx never reads `doc.cuts` — the
-              DECIDE was to render a marked-dead region rather than build a
-              second EDL in the browser), the timeline shows it struck
-              through, and Restore is one click away until the next
-              produce/Render actually cuts it out of the output. */}
+              every other delete in this panel — but since the cut-review
+              rework it is no longer marked-only: the write carries a `src`
+              (the button's own comment below), which the live preview
+              SUBTRACTS, so the material stops playing at the click. Restore
+              then lives on the timeline SEAM (`Timeline.tsx`'s `cutSeamHit`,
+              the src branch), not on a struck band — there is no block left
+              on the timeline to strike. The band and its Inspector Restore
+              survive for legacy src-less entries only. */}
           <div style={{ fontSize: 12, color: "#9A9AA3" }}>
-            Removes this window from the output on the next produce/Render.
-            Struck through here until then — the preview keeps playing it.
+            Removes this window from the output. The preview stops playing it
+            immediately — Restore lives on the seam it leaves on the timeline.
           </div>
           <button
             data-testid="cut-chunk"
             style={button}
             onClick={() => {
               blurActive();
-              // The cue window speaks the LIVE clock; the doc entry must
-              // speak the OLD one (the `fromLive` prop doc). A window with
-              // no old-clock extent at all is refused out loud; one that
-              // merely shrinks at a revived edge proceeds and says so on
-              // the console — the same channel App gives the retime's own
-              // snap reports, these gestures having no quieter one today.
+              // The cue window speaks the LIVE clock; the entry's
+              // `startSec`/`endSec` speak the OLD one (the `fromLive` prop
+              // doc), and `src` speaks SOURCE time.
               const range = cutRangeToOldClock(
                 { fromLive, hasOldClockPreimage },
                 cue.startSec,
                 cue.endSec,
               );
+              if (toSourceSec !== null) {
+                // Dual-write (cut-review rework) — the ⌘B posture, Overlay.tsx:
+                // `src` is the authoritative anchor, resolved here on the clock
+                // App holds exactly, rounded to the millisecond it is stored at
+                // (the `cutChunk` dedupe compares these exactly). The old-clock
+                // pair rides along as the historical record only, so a window
+                // with NO old-clock extent (`degenerate` — the field report's
+                // "delete half of a revived retake") no longer refuses: its
+                // record simply clamps to the seam `fromLive` names, which is
+                // honest because the record is never authoritative once `src`
+                // exists. No shrink warning either — nothing is lost when the
+                // source range is exact.
+                const src = {
+                  startSec: round3(toSourceSec(cue.startSec)),
+                  endSec: round3(toSourceSec(cue.endSec)),
+                };
+                const record =
+                  range.kind === "degenerate"
+                    ? { startSec: fromLive(cue.startSec), endSec: fromLive(cue.endSec) }
+                    : { startSec: range.startSec, endSec: range.endSec };
+                edits.cutChunk(record.startSec, record.endSec, src);
+                return;
+              }
+              // No source mapper (no spans, no live map): the pre-rework flow
+              // verbatim — a window with no old-clock extent at all is refused
+              // out loud rather than anchored to a guessed source second, and
+              // one that merely shrinks at a revived edge proceeds and says so
+              // on the console, the same channel App gives the retime's own
+              // snap reports (these gestures have no quieter one today).
               if (range.kind === "degenerate") {
                 onClockRefused(
                   "Can't cut this window: it isn't in the last render yet — render once (or re-remove the pause) to cut it.",

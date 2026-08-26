@@ -57,6 +57,7 @@ function Harness({
   onDocChange,
   fromLive,
   hasOldClockPreimage,
+  toSourceSec,
   onClockRefused,
 }: {
   selection: { sceneId: string; elementId: string | null };
@@ -91,9 +92,12 @@ function Harness({
   onDocChange?: (doc: OverrideDoc) => void;
   /** The cut button's write boundary under a live cleanup veto (step 4
    * follow-up) — omitted everywhere else, so every pre-existing test pins
-   * the identity-default (no-veto) path. */
+   * the identity-default (no-veto) path. `toSourceSec` omitted likewise
+   * pins Inspector's null default: the no-source-mapper fallback, which is
+   * the pre-rework flow verbatim. */
   fromLive?: (sec: number) => number;
   hasOldClockPreimage?: (sec: number) => boolean;
+  toSourceSec?: ((sec: number) => number) | null;
   onClockRefused?: (message: string) => void;
 }) {
   const edits = useEdits();
@@ -131,6 +135,7 @@ function Harness({
     onVideoPreview: vi.fn(),
     fromLive,
     hasOldClockPreimage,
+    toSourceSec,
     onClockRefused,
   });
 }
@@ -637,15 +642,18 @@ describe("Inspector — user cuts (PLAN 2026-08-04 Task 4c)", () => {
 
 /**
  * "Delete this chunk" under a LIVE cleanup veto (cut review step 4
- * follow-up, WRITE direction): the cue window speaks the player's re-cut
- * NEW clock, but a fresh `cuts[]` entry speaks the LAST RENDER's output
- * seconds. The mappers are the real ones — `livePreviewMap` +
- * `previewClockMappers`, produce's own functions — over the canonical
- * one-vetoed-pause case (source 5..7 revived; old clock 8s, live clock
- * 10s), so every expected number is hand-mappable: live t past the pause is
- * old t − 2.
+ * follow-up, WRITE direction; reworked 2026-08-26): the cue window speaks
+ * the player's re-cut NEW clock, while a `cuts[]` entry's own seconds speak
+ * the LAST RENDER's and its `src` speaks SOURCE time — so the button
+ * DUAL-WRITES, the ⌘B posture. The mappers are the real ones —
+ * `livePreviewMap` + `previewClockMappers`, produce's own functions — over
+ * the canonical one-vetoed-pause case (source 5..7 revived; old clock 8s,
+ * live clock 10s), so every expected number is hand-mappable: live t past
+ * the pause is old t − 2, and live t IS source t (the re-kept cutlist keeps
+ * all of 0..10). The last two tests pin the OTHER flow — `toSourceSec` null,
+ * where the refusal and the shrink warning survive unchanged.
  */
-describe("Inspector — Delete this chunk converts to the OLD clock under a live veto (step 4 follow-up)", () => {
+describe("Inspector — Delete this chunk anchors to source under a live veto (cut-review rework)", () => {
   const proposal: Segment[] = [
     { srcIn: 0, srcOut: 5, kind: "keep" },
     { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
@@ -684,7 +692,14 @@ describe("Inspector — Delete this chunk converts to the OLD clock under a live
     vi.restoreAllMocks();
   });
 
-  const mount = async (cue: SceneCue, onClockRefused: (m: string) => void, capture: { doc?: OverrideDoc }) => {
+  const mount = async (
+    cue: SceneCue,
+    onClockRefused: (m: string) => void,
+    capture: { doc?: OverrideDoc },
+    /** Explicit so each test says which of the two flows it is pinning: the
+     * dual-write (a mapper present) or the no-mapper fallback (null). */
+    toSourceSec: ((sec: number) => number) | null = mappers.toSourceSec,
+  ) => {
     await act(async () => {
       root.render(
         React.createElement(Harness, {
@@ -692,6 +707,7 @@ describe("Inspector — Delete this chunk converts to the OLD clock under a live
           cue,
           fromLive: mappers.fromLive,
           hasOldClockPreimage: mappers.hasOldClockPreimage,
+          toSourceSec,
           onClockRefused,
           onDocChange: (doc) => {
             capture.doc = doc;
@@ -701,36 +717,70 @@ describe("Inspector — Delete this chunk converts to the OLD clock under a live
     });
   };
 
-  it("a window in kept material writes the last render's own seconds — live 8..9 stores 6..7", async () => {
+  const clickCut = async () => {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
+    });
+  };
+
+  it("a window in kept material DUAL-writes: the last render's own seconds plus the source anchor — live 8..9 stores 6..7 + src 8..9", async () => {
     const refused = vi.fn();
     const capture: { doc?: OverrideDoc } = {};
     await mount(liveTake(8, 9), refused, capture);
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
-    });
-    expect(capture.doc!.cuts).toEqual([{ startSec: 6, endSec: 7 }]);
+    await clickCut();
+    // The live clock keeps all of 0..10, so live seconds ARE source seconds
+    // here — while the old-clock record sits the revived 2s earlier.
+    expect(capture.doc!.cuts).toEqual([
+      { startSec: 6, endSec: 7, src: { startSec: 8, endSec: 9 } },
+    ]);
     expect(refused).not.toHaveBeenCalled();
   });
 
-  it("a window entirely inside revived material refuses out loud and writes nothing", async () => {
+  it("a window entirely inside REVIVED material writes a src cut with a CLAMPED record — the field report's own gesture, no longer refused", async () => {
     const refused = vi.fn();
     const capture: { doc?: OverrideDoc } = {};
     await mount(liveTake(5.5, 6.5), refused, capture);
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
-    });
-    expect(refused).toHaveBeenCalledWith(expect.stringContaining("isn't in the last render yet"));
-    expect(capture.doc!.cuts).toEqual([]);
+    await clickCut();
+    // No old-clock extent at all (both ends clamp to the seam at old 5), so
+    // the record is degenerate-but-honest — it is never authoritative once
+    // `src` is present (the schema comment) — and the source anchor is exact.
+    expect(capture.doc!.cuts).toEqual([
+      { startSec: 5, endSec: 5, src: { startSec: 5.5, endSec: 6.5 } },
+    ]);
+    expect(refused).not.toHaveBeenCalled();
   });
 
-  it("a window straddling a revived edge proceeds SHRUNK and says so on the console — live 4..6 stores 4..5", async () => {
+  it("a window straddling a revived edge anchors EXACTLY — live 4..6 stores src 4..6, no shrink, no warning", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const refused = vi.fn();
     const capture: { doc?: OverrideDoc } = {};
     await mount(liveTake(4, 6), refused, capture);
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="cut-chunk"]')!.click();
-    });
+    await clickCut();
+    // The record still shrinks to what the old clock can express (4..5), but
+    // nothing is LOST any more: `src` carries the whole window, so the shrink
+    // warning would be a lie.
+    expect(capture.doc!.cuts).toEqual([
+      { startSec: 4, endSec: 5, src: { startSec: 4, endSec: 6 } },
+    ]);
+    expect(refused).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("NO source mapper: the pre-rework flow verbatim — a window with no old-clock extent is refused out loud and writes nothing", async () => {
+    const refused = vi.fn();
+    const capture: { doc?: OverrideDoc } = {};
+    await mount(liveTake(5.5, 6.5), refused, capture, null);
+    await clickCut();
+    expect(refused).toHaveBeenCalledWith(expect.stringContaining("isn't in the last render yet"));
+    expect(capture.doc!.cuts).toEqual([]);
+  });
+
+  it("NO source mapper: a shrunk window still proceeds src-less and says so on the console — live 4..6 stores 4..5", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const refused = vi.fn();
+    const capture: { doc?: OverrideDoc } = {};
+    await mount(liveTake(4, 6), refused, capture, null);
+    await clickCut();
     expect(capture.doc!.cuts).toEqual([{ startSec: 4, endSec: 5 }]);
     expect(refused).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("ossclip cut preview: cut"));

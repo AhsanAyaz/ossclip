@@ -31,6 +31,7 @@ function Harness({
   playerRef = { current: null },
   onSelect = vi.fn(),
   toLive,
+  durationSec = 10,
 }: {
   cues?: SceneCue[];
   /** Loosely typed on purpose: tests hand in a tiny seekTo/eventing stub, not
@@ -48,6 +49,10 @@ function Harness({
    * follow-up) — omitted everywhere else, so every pre-existing test pins
    * the identity-default (no-veto) path. */
   toLive?: (sec: number) => number;
+  /** The ruler's own length — App passes `live.outputDurationSec`, which a
+   * LIVE cut SHORTENS (cut-review rework). Defaults to 10, so every
+   * pre-existing test keeps its hand-computed percentages. */
+  durationSec?: number;
 } = {}) {
   const edits = useEdits();
   React.useEffect(() => {
@@ -75,7 +80,7 @@ function Harness({
       ghosts: [],
       cuts: edits.doc.cuts,
       spans,
-      durationSec: 10,
+      durationSec,
       fps: 30,
       playerRef: playerRef as never,
       selection: null,
@@ -366,6 +371,37 @@ describe("Timeline — user cuts render as a dead-region overlay (PLAN 2026-08-0
     // 0-5, mapped directly) — 2/10 * 100 = 20%, NOT anything derived from
     // 99/999.
     expect(seam.style.left).toBe("20%");
+  });
+
+  it("a cut written THIS SESSION (src resolved by the editor) draws the applied SEAM, placed on the LIVE spans — no band, no Timeline special case", async () => {
+    // Cut-review rework: "applied" now means by produce OR by the live
+    // preview, and the seam positions itself with zero new wiring because App
+    // passes `spans={live.spans}` — the re-cut clock's own spans. Real core
+    // functions, so this is the same walk App does: the last render kept all
+    // of 0..10, the user cuts SOURCE 2..4, and `livePreviewMap` subtracts it.
+    const oldSpans: KeptSpan[] = [{ srcIn: 0, srcOut: 10, outIn: 0, outOut: 10 }];
+    const clocks = livePreviewMap(
+      [],
+      undefined,
+      [{ startSec: 2, endSec: 4, src: { startSec: 2, endSec: 4 } }],
+      oldSpans,
+    )!;
+    expect(clocks).not.toBeNull();
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          cuts: [{ startSec: 2, endSec: 4, src: { startSec: 2, endSec: 4 } }],
+          spans: clocks.newMap.spans,
+          durationSec: clocks.newMap.outputDuration,
+        }),
+      );
+    });
+    // No struck band: there is no live block left underneath to strike.
+    expect(container.querySelector('[data-testid="timeline-cut-2-4"]')).toBeNull();
+    const seam = container.querySelector<HTMLElement>('[data-testid="timeline-cut-seam-2-4"]')!;
+    expect(seam).not.toBeNull();
+    // Source 2 lands at output 2 on the live clock (8s long) — 25%.
+    expect(seam.style.left).toBe("25%");
   });
 
   it("clicking the seam restores the cut directly — the entry (and the seam) disappears", async () => {

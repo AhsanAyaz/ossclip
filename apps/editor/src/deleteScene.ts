@@ -50,8 +50,14 @@ export function deletePlanFor(cue: SceneCue | undefined | null, doc: OverrideDoc
   if (cue.kind !== "plain" && doc.scenes[cue.id]?.hidden !== true) targets.push("graphic");
   // Mirrors `cutChunk`'s own predicate in useEdits.ts: only a SRC-LESS entry
   // at this exact window means "the user already cut this". A src-anchored
-  // entry sharing the window is produce's resolved anchor for a DIFFERENT
-  // decision and must not suppress the offer — see that reducer case.
+  // entry sharing the window is a resolved anchor for a DIFFERENT decision
+  // and must not suppress the offer — see that reducer case.
+  //
+  // Unchanged by the cut-review rework, and it self-resolves rather than
+  // needing a src arm: a src-carrying cut is LIVE-APPLIED, so its material is
+  // gone from the live cue stream this `cue` comes from — there is no block
+  // left to press Delete on. The check therefore now guards exactly the
+  // legacy src-less population it names.
   const alreadyCut = doc.cuts.some(
     (c) => c.src === undefined && c.startSec === cue.startSec && c.endSec === cue.endSec,
   );

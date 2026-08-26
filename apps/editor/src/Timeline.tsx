@@ -1045,7 +1045,12 @@ export const Timeline: React.FC<TimelineProps> = ({
             })}
             {cuts.map((cut, i) => {
               // User cuts (PLAN 2026-08-04 Task 4c): TWO rendering modes,
-              // keyed on `src` (review fix wave, finding 1). A cut's own
+              // keyed on `src` (review fix wave, finding 1) — where `src`
+              // present means APPLIED, by produce OR by the live preview
+              // (cut-review rework: the editor's own cut writers resolve
+              // `src` at the gesture and `livePreviewMap` subtracts it, so a
+              // cut made this session is already gone from the timeline the
+              // ruler describes). A cut's own
               // `startSec`/`endSec` describe the render-props frame the user
               // was looking at when they cut — the schema comment on
               // `OverrideDocSchema.cuts` (packages/core/src/overrides.ts)
@@ -1091,9 +1096,14 @@ export const Timeline: React.FC<TimelineProps> = ({
                 );
               }
 
-              // ALREADY APPLIED: the window at `startSec`/`endSec` no longer
-              // exists in THIS output at all — produce removed it and
-              // shifted everything after it (Task 4b). There is no live
+              // ALREADY APPLIED — by produce, or by the LIVE PREVIEW since
+              // the cut-review rework: either way the window at
+              // `startSec`/`endSec` no longer exists in THIS output at all,
+              // because it was removed and everything after it shifted (Task
+              // 4b). A cut written THIS SESSION needs no special case: App
+              // passes `spans={live.spans}`, the re-cut clock's own spans, so
+              // `sourceToOutputClamped` places the seam of a just-made cut
+              // exactly where the material disappeared. There is no live
               // block left underneath to strike through, so this draws a
               // SEAM instead of a band, positioned by mapping `src.startSec`
               // (the SOURCE range produce actually removed — the one value

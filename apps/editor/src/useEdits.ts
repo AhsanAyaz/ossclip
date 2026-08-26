@@ -100,7 +100,15 @@ export type EditAction =
   | { type: "setCaptionsHidden"; hidden: boolean }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
-  | { type: "cutChunk"; startSec: number; endSec: number }
+  /** `startSec`/`endSec` are the OLD-clock historical record; `src` — when
+   * the writer could resolve one (cut-review rework, 2026-08-26) — is the
+   * SOURCE range, authoritative and live-applied. See the reducer case. */
+  | {
+      type: "cutChunk";
+      startSec: number;
+      endSec: number;
+      src?: { startSec: number; endSec: number };
+    }
   /** `index` is the entry's position in `doc.cuts` at the moment the caller
    * looked it up — identity, not a window match (fix round 2, PLAN
    * 2026-08-04 Task 4c re-review; see the reducer case's own comment). */
@@ -185,12 +193,15 @@ export type EditAction =
   /** "Remove captions + video" for a word selection (§59b revisited) — the
    * hide entries AND a `cuts` entry, in ONE commit. Same anchor contract as
    * `hideCaptionWords` above; `startSec`/`endSec` are output seconds of the
-   * current render-props frame, same as `cutChunk`. */
+   * LAST RENDER's frame and `src` the resolved SOURCE range, same pair as
+   * `cutChunk`. The panel's window is OLD-clock, so App resolves `src`
+   * through `clock.oldToSourceSec`, never the live one. */
   | {
       type: "cutWords";
       words: Array<{ srcStart: number; was: string }>;
       startSec: number;
       endSec: number;
+      src?: { startSec: number; endSec: number };
     }
   /** The cleanup veto layer's category switch (cut review step 3) —
    * `enabled: false` writes `cleanup.reasons[reason] = false` ("keep all
@@ -470,16 +481,16 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // for: split isolates a chunk into its own block, this removes it.
       // Soft like `hideScene`, but a DIFFERENT axis of soft — `hideScene`
       // only drops a graphic and keeps the window's duration; this marks
-      // the WINDOW ITSELF for removal from the output, TAKE or SCENE alike,
-      // and takes effect on the next produce/Render (App.tsx's live preview
-      // never APPLIES a fresh `doc.cuts` entry — its DECIDE comment has the
-      // `cuts[].src` reason; src-anchored entries it only carries through a
-      // veto re-cut so an already-applied cut stays applied).
+      // the WINDOW ITSELF for removal from the output, TAKE or SCENE alike.
       //
-      // Writes ONLY `{startSec, endSec}` — never a `src` (the schema
-      // comment on `OverrideDocSchema.cuts`, packages/core/src/overrides.ts:
-      // `src` is produce's own resolved source anchor, and the editor must
-      // never write or preserve one).
+      // `src` (cut-review rework, 2026-08-26) is the writer's own resolved
+      // SOURCE range — the schema on `OverrideDocSchema.cuts` now allows the
+      // editor to write it, and the writers resolve it at the gesture off
+      // the preview clock. Present ⇒ the entry is LIVE-APPLIED: the preview
+      // subtracts it and the material genuinely stops playing (retime-
+      // preview.ts's module doc). Absent ⇒ the legacy marked-only entry,
+      // effective on the next produce/Render, byte-identical to before —
+      // which is exactly what a writer with no source mapper still writes.
       //
       // Fix round 2 (re-review, PLAN 2026-08-04 Task 4c): the filter below
       // ONLY replaces an existing SRC-LESS entry at this exact window — a
@@ -500,12 +511,35 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // recut.ts) already resolve every `cuts` entry independently — a
       // src-anchored one used directly, a src-less one converted through
       // `priorMap` — so nothing downstream needs them deduplicated.
-      const cuts = state.doc.cuts.filter(
-        (c) => c.src !== undefined || c.startSec !== action.startSec || c.endSec !== action.endSec,
+      //
+      // The src-equality arm (cut-review rework) is the same idea one level
+      // up: two dispatches of the SAME gesture (a double-click, an undo-less
+      // repeat on the same block) resolve to the same source range, and the
+      // second must REPLACE the first rather than stack. Exact equality is
+      // right here because both numbers are rounded to 1ms AT THE WRITE
+      // SITES before they arrive — this reducer never does arithmetic on
+      // them — so a repeat of one gesture produces bit-identical values.
+      // OVERLAPPING (rather than identical) src ranges are DELIBERATELY not
+      // merged: `subtractRangesFromCutlist` (recut.ts) is set-like, so two
+      // overlapping removals remove exactly what one union would, and a
+      // merge would silently rewrite entries the user could otherwise
+      // Restore one at a time.
+      const cuts = state.doc.cuts.filter((c) =>
+        c.src === undefined
+          ? c.startSec !== action.startSec || c.endSec !== action.endSec
+          : action.src === undefined ||
+            c.src.startSec !== action.src.startSec ||
+            c.src.endSec !== action.src.endSec,
       );
       return commit({
         ...state.doc,
-        cuts: [...cuts, { startSec: action.startSec, endSec: action.endSec }],
+        cuts: [
+          ...cuts,
+          // Spread, not `src: action.src` — a src-less write must not grow a
+          // `src: undefined` key, or every legacy overrides.json this editor
+          // touches changes shape for nothing.
+          { startSec: action.startSec, endSec: action.endSec, ...(action.src ? { src: action.src } : {}) },
+        ],
       });
     }
     case "restoreChunk": {
@@ -837,12 +871,13 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     case "cutWords": {
       // "This word is gone" is ONE gesture, so BOTH layers land in ONE
       // commit (one undo step — the hideCaptionWords/patchCaptionStyleAll
-      // rule): the hide entries make the caption disappear NOW (the live
-      // preview deliberately never applies `doc.cuts` — App.tsx's `live`
-      // memo has the why), and the cut removes the time range on the next
-      // produce/Render. Produce then retires hide entries the applied cut
-      // made redundant (`pruneHidesInsideCuts`, packages/core/src/recut.ts),
-      // so the doc does not accumulate dead keys.
+      // rule): the hide entries make the caption disappear NOW, and the cut
+      // removes the time range — live too when it carries a `src` (the
+      // cut-review rework; `cutChunk`'s case above owns the whole argument),
+      // on the next produce/Render otherwise. Produce then retires hide
+      // entries the applied cut made redundant (`pruneHidesInsideCuts`,
+      // packages/core/src/recut.ts), so the doc does not accumulate dead
+      // keys.
       const hidden = { ...state.doc.captionWordsHidden };
       for (const w of action.words) {
         const key = captionKeyFor(w.srcStart);
@@ -851,17 +886,24 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         if (key in hidden) continue;
         hidden[key] = { was: w.was };
       }
-      // Writes ONLY `{startSec, endSec}` — never a `src` — and the filter
-      // replaces ONLY an existing SRC-LESS entry at this exact window: see
-      // `cutChunk` above for the whole argument (a src-anchored entry
-      // sharing the window is a settled, independent decision).
-      const cuts = state.doc.cuts.filter(
-        (c) => c.src !== undefined || c.startSec !== action.startSec || c.endSec !== action.endSec,
+      // Same two dedupe arms as `cutChunk` above, for the same reasons (that
+      // case owns the argument): a src-less dispatch replaces only a src-less
+      // entry at this exact window, a src-carrying one replaces only an entry
+      // at the exact same SOURCE range.
+      const cuts = state.doc.cuts.filter((c) =>
+        c.src === undefined
+          ? c.startSec !== action.startSec || c.endSec !== action.endSec
+          : action.src === undefined ||
+            c.src.startSec !== action.src.startSec ||
+            c.src.endSec !== action.src.endSec,
       );
       return commit({
         ...state.doc,
         captionWordsHidden: hidden,
-        cuts: [...cuts, { startSec: action.startSec, endSec: action.endSec }],
+        cuts: [
+          ...cuts,
+          { startSec: action.startSec, endSec: action.endSec, ...(action.src ? { src: action.src } : {}) },
+        ],
       });
     }
     case "setReasonEnabled": {
@@ -1050,7 +1092,13 @@ export function useEdits() {
     setCaptionsHidden: (hidden: boolean) => dispatch({ type: "setCaptionsHidden", hidden }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
-    cutChunk: (startSec: number, endSec: number) => dispatch({ type: "cutChunk", startSec, endSec }),
+    /** `src` is OPTIONAL and its absence is meaningful: a writer with no
+     * source mapper (no spans, no live map) falls back to the legacy
+     * marked-only entry rather than storing a guessed source range — the
+     * ⌘B/`addSplit` posture. Rounded to 1ms by the WRITE SITE (the reducer's
+     * src-equality dedupe compares exactly). */
+    cutChunk: (startSec: number, endSec: number, src?: { startSec: number; endSec: number }) =>
+      dispatch({ type: "cutChunk", startSec, endSec, src }),
     restoreChunk: (index: number) => dispatch({ type: "restoreChunk", index }),
     patchGraphicRect: (sceneId: string, rect: GraphicRect, coalesce?: string) =>
       dispatch({ type: "patchGraphicRect", sceneId, rect, coalesce }),
@@ -1075,8 +1123,15 @@ export function useEdits() {
       dispatch({ type: "hideCaptionWords", words }),
     restoreCaptionWords: (srcStarts: number[]) =>
       dispatch({ type: "restoreCaptionWords", srcStarts }),
-    cutWords: (words: Array<{ srcStart: number; was: string }>, startSec: number, endSec: number) =>
-      dispatch({ type: "cutWords", words, startSec, endSec }),
+    /** `src` optional on the same terms as `cutChunk` above — and resolved
+     * from the OLD clock (`oldToSourceSec`), because the window comes from
+     * the transcript panel, which is timed against the last render. */
+    cutWords: (
+      words: Array<{ srcStart: number; was: string }>,
+      startSec: number,
+      endSec: number,
+      src?: { startSec: number; endSec: number },
+    ) => dispatch({ type: "cutWords", words, startSec, endSec, src }),
     setReasonEnabled: (reason: RemovalReason, enabled: boolean) =>
       dispatch({ type: "setReasonEnabled", reason, enabled }),
     toggleKept: (srcIn: number, srcOut: number) => dispatch({ type: "toggleKept", srcIn, srcOut }),

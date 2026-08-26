@@ -37,9 +37,14 @@ import {
  * exactly the revived seconds off its true window. App threads
  * `previewClockMappers(liveRecut).toLive`, which is the literal identity when
  * no re-cut is live — the default here, so a two-argument call (and every
- * pre-step-4 test) keeps today's values bit for bit. The two ends map exactly,
- * never clamped: vetoes only ADD time back, so every old-clock moment
- * survives on the new clock (the `retimeForPreview` direction argument).
+ * pre-step-4 test) keeps today's values bit for bit. Under vetoes alone the
+ * two ends map exactly — vetoes only ADD time back, so every old-clock moment
+ * survives on the new clock (the `retimeForPreview` direction argument) — but
+ * since the cut-review rework a LIVE user cut (`cuts[].src`) can remove one,
+ * and a ghost end inside such a cut CLAMPS to the nearest surviving edge
+ * (`toLive`'s own doc). A hidden scene the user then cut away collapses to a
+ * zero-width ghost rather than drawing at a stale window: honest, and the
+ * Restore it offers still works, since `hidden` is keyed by id, not by time.
  */
 export function ghostCues(
   cues: readonly SceneCue[],
