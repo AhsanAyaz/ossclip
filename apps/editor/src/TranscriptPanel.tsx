@@ -1,11 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import {
-  applyCaptionLineTiming,
   captionAnchorOf,
   captionKeyFor,
   lineDirection,
-  MIN_CAPTION_SEC,
   NASTALIQ_FONT_NAME,
   NASTALIQ_FONT_REL,
   type CaptionLine,
@@ -16,21 +14,35 @@ import { deleteWordsPlanFor, type DeleteWordsPlan } from "./deleteWords";
 import { findOccurrences } from "./transcriptSelection";
 import { peaksForWindow } from "./waveform";
 
-/** The timing popover's waveform strip, in CSS px — also the canvas bitmap
- * size, so the handle-drag px→seconds conversion needs no rect measure. */
-const TIMING_CANVAS_W = 280;
+/** The timing widget's waveform strip, in CSS px — also the canvas bitmap
+ * size, so the handle-drag px→seconds conversion needs no rect measure.
+ * Twice the old popover's 280 since the tool became audio-first (2026-08-26):
+ * the window it shows is ±10s rather than ±1s, and at 280px a 20s window put
+ * a syllable inside two pixels — unaimable for the gesture the whole tool
+ * exists for ("this caption belongs where that word is"). */
+const TIMING_CANVAS_W = 560;
 const TIMING_CANVAS_H = 48;
-/** Context around the word's own window, so the strip shows what the nudge
- * is reaching toward on either side. */
-const TIMING_WIN_PAD_SEC = 1;
+/**
+ * How much audio to show either side of the selection, SOURCE seconds.
+ *
+ * Ten, not one: the field case is a caption sitting 1.5–3s from the words it
+ * belongs to, and a window that stopped at the neighbours' edges could not
+ * show the material the caption should be moved ONTO. This is also the drag's
+ * bound — you may place a caption anywhere you can hear, and nowhere you
+ * cannot (`timingAudioWindow`).
+ */
+const TIMING_WIN_PAD_SEC = 10;
 
 /**
  * Lazy loader for the SOURCE audio the waveform strip draws.
  * `/media/audio.wav` exists in every produced workdir (produce stages it for
- * the render), and it is SOURCE-time audio — the popover maps its output-time
- * span onto it via the word's own `srcStart` (see the draw effect). Fetched
- * and decoded ONCE per WORKDIR, module-level, because every popover open in
- * one project reads the same file. Purely decorative, the `useTakeThumbs`
+ * the render), and it is SOURCE-time audio — which since the timing tool
+ * became audio-first is the ONLY clock the widget speaks, so the strip needs
+ * no conversion at all (`timingAudioWindow`). The same file is what the
+ * widget's `<audio>` element plays; this decode exists for the PICTURE.
+ * Fetched and decoded ONCE per WORKDIR, module-level, because every widget
+ * open in one project reads the same file. Purely decorative, the
+ * `useTakeThumbs`
  * posture (Timeline.tsx): any failure — jsdom's missing AudioContext, a 404
  * on a hand-built workdir, a codec refusal — resolves null and the popover
  * draws a flat strip; nothing here may throw in a gesture's path.
@@ -139,89 +151,136 @@ const wordIndexOfNode = (node: Node | null): number | null => {
 };
 
 /**
- * One caption LINE as the timing popover addresses it: its §137 anchor plus
- * its DERIVED (pre-timing) window, which is the space `captionLineTiming`'s
- * deltas are measured in — `liveLines` is the post-range, PRE-hide, PRE-timing
- * stream (App.tsx), so these edges are exactly what core's seam sweep starts
- * from.
+ * One caption LINE as the timing widget addresses it: its §137 anchor, its
+ * DERIVED SOURCE extent (`srcStart`/`srcEnd` — what the widget drags, stores
+ * and draws over the waveform) and its derived OUTPUT window, which the panel
+ * still needs for the player seek a word click performs.
+ *
+ * The source pair is the load-bearing one since the tool became audio-first:
+ * it is the same clock `captionLineWindows` stores and the same clock the
+ * waveform is in, so a placement needs no conversion and survives a re-cut.
  */
 export interface TimingLine {
-  /** The line's key: its FIRST word's source anchor (`applyCaptionLineTiming`). */
+  /** The line's key: its FIRST word's source anchor (`applyCaptionLineWindows`
+   * and `applyCaptionLineTiming` key on the same word). */
   key: string;
   srcStart: number;
   start: number;
   end: number;
-  /** The line's SOURCE extent — the waveform strip is source-time audio, and
-   * a caption's output window only lines up with it by the identity-plus-
-   * offset a kept span has (the draw effect's caveat). */
+  /** The line's SOURCE end — the last word's own extent when it has one
+   * (`timingLineAt` has the minted-word fallback). */
   srcEnd: number;
 }
 
 /**
- * The output-time window a caption group's drag may target.
+ * The stretch of SOURCE audio the widget shows — and, because you may only
+ * place a caption where you can hear it, the drag's bounds.
  *
- * THE BOUNDS COME FROM THE NEIGHBOURS, NOT FROM THE GROUP'S OWN WINDOW, and
- * that is the whole reason this tool works on a real transcript. Caption lines
- * are a GAP-FREE PARTITION (`captionLineTiming`'s docstring: 116/116
- * inter-line gaps measured exactly 0.0), so bounds taken from the dragged
- * material's own edges collapse to `[span.start, span.end]` — every drag
- * clamps to identity, Apply stores nothing, and the popover is inert. That was
- * the field bug, and its shape in the code was `runDragBounds`, which bounded
- * a WORD run by its own line and its own immediate neighbours.
+ * The selection's own source span plus `TIMING_WIN_PAD_SEC` either side,
+ * clamped into the recording. `duration` is what the decode (or the audio
+ * element) reports; a NON-FINITE or non-positive one — jsdom, a 404 on a
+ * hand-built workdir, metadata that has not arrived yet — clamps at zero on
+ * the left only and leaves the right edge alone, so the widget opens on
+ * something usable instead of collapsing to nothing while the file loads.
  *
- * A SHARED boundary may take time from the neighbour it is shared with —
- * "this caption comes in too late" IS a request for the previous caption's
- * last moments — but it may never cross one, so that neighbour keeps
- * `MIN_CAPTION_SEC` of itself. That floor is `applyCaptionLineTiming`'s own;
- * it is restated here so the DRAG stops where the sweep would rather than
- * snapping back on release.
- *
- * ACROSS A GAP THE BOUND IS THE NEIGHBOUR'S OWN ADJACENT EDGE (2026-08-19
- * review). A gap means there is no shared boundary on that side: the caption
- * is moving into empty space and the neighbour does not follow it
- * (`captionTimingEntries`' coincidence rule), so a drag may CONSUME the gap
- * and stops at `prev.end` / `next.start` — which is exactly where core's
- * sweep blocks it (`applyCaptionLineTiming`: ordering is enforced against the
- * neighbour's OWN edge). Without this the handle kept travelling while the
- * previewed edge sat still, and past `next.start` the forward pass would have
- * PUSHED the untouched neighbour instead.
- *
- * On a packed stream every boundary is coincident, so both bounds are the
- * `MIN_CAPTION_SEC` ones and the behaviour is bit-identical to before — which
- * is the check that this is safe (the packed drag tests are unchanged).
- *
- * The track's own outer seams are the fallback at either end: a caption must
- * not appear before the first caption of the track or linger past the last
- * (the sweep's non-growing outer bounds).
+ * Pure, and separate from the drawing for the openCommand/openInBrowser
+ * reason: the window decides what is audible, what is drawn AND how many
+ * seconds a pixel is worth, so it must be assertable without a canvas.
  */
-export const captionDragBounds = (m: {
-  /** The caption line BEFORE the group; null when the group opens the track. */
-  prev: { start: number; end: number } | null;
-  /** The caption line AFTER the group; null when the group closes it. */
-  next: { start: number; end: number } | null;
-  /** The group's own DERIVED window — coincidence is tested against it, the
-   * same INPUT-edge test core makes. */
+export const timingAudioWindow = (
+  span: { start: number; end: number },
+  duration: number,
+): { start: number; end: number } => {
+  const start = Math.max(0, span.start - TIMING_WIN_PAD_SEC);
+  const end = span.end + TIMING_WIN_PAD_SEC;
+  return {
+    start,
+    end: Number.isFinite(duration) && duration > 0 ? Math.min(end, Math.max(duration, start)) : end,
+  };
+};
+
+/**
+ * The `captionLineWindows` entries a drag implies — ONE pure decision the
+ * strip, the readout and Apply all read (the openCommand/openInBrowser split),
+ * so what the user heard is exactly what is stored.
+ *
+ * SOURCE SECONDS THROUGHOUT. This is `captionTimingEntries`' ratio math (which
+ * it replaces) moved onto the waveform's own clock: the group's lines are
+ * mapped PROPORTIONALLY from the captured span onto the drag target, so a
+ * rigid pan (ratio 1) shifts every line by the same delta and a handle stretch
+ * scales the interior with it, keeping a multi-caption group's rhythm. The
+ * divergence from the old output-space version is that there is nothing else
+ * to write: an absolute window has no seam to share, so NO NEIGHBOUR ENTRY IS
+ * PRODUCED and no coincidence test is needed (`captionLineWindows`: overlap is
+ * legal, and the neighbour is the user's to move if they want it moved).
+ *
+ * A line that comes back onto its DERIVED window — within `DERIVED_EPS`, which
+ * is the reducer's own sub-millisecond rule in source seconds — yields `null`,
+ * the delete: a window that restates the derivation is still an override.
+ *
+ * Identity when the captured span is degenerate (a hand-edited doc, a line the
+ * hides collapsed): `0/0` would store NaN windows, so the group moves RIGIDLY
+ * with its opening edge instead — `scaleWordsIntoWindow` takes the same escape
+ * for the same reason.
+ */
+const DERIVED_EPS = 0.001;
+export const captionWindowEntries = (m: {
+  /** The dragged caption lines, in order, with their DERIVED source extents. */
+  lines: ReadonlyArray<{ srcStart: number; srcEnd: number }>;
+  /** The group's DERIVED source span — what the drag started from. */
   span: { start: number; end: number };
-  /** The track's first and last seam. */
-  track: { start: number; end: number };
-}): { lo: number; hi: number } => ({
-  lo:
-    m.prev === null
-      ? m.track.start
-      : m.prev.end === m.span.start
-        ? m.prev.start + MIN_CAPTION_SEC
-        : m.prev.end,
-  hi:
-    m.next === null
-      ? m.track.end
-      : m.next.start === m.span.end
-        ? m.next.end - MIN_CAPTION_SEC
-        : m.next.start,
-});
+  /** The drag target, source seconds. */
+  newSpan: { start: number; end: number };
+}): Array<{ srcStart: number; window: { srcStart: number; srcEnd: number } | null }> => {
+  const width = m.span.end - m.span.start;
+  const ratio = width > 0 ? (m.newSpan.end - m.newSpan.start) / width : 1;
+  const at = (t: number): number => m.newSpan.start + (t - m.span.start) * ratio;
+  return m.lines.map((l) => {
+    const srcStart = at(l.srcStart);
+    const srcEnd = at(l.srcEnd);
+    const derived =
+      Math.abs(srcStart - l.srcStart) < DERIVED_EPS && Math.abs(srcEnd - l.srcEnd) < DERIVED_EPS;
+    return { srcStart: l.srcStart, window: derived ? null : { srcStart, srcEnd } };
+  });
+};
+
+/**
+ * Which caption lines share a moment with another one — the OVERLAP TINT's
+ * whole decision, pure so the strip and the transcript words tint from one
+ * verdict rather than two.
+ *
+ * Overlap is LEGAL (`captionLineWindows`: an absolute window is not a seam
+ * edit, and the renderer stacks overlapping Sequences), so this reports rather
+ * than resolves: the user placed both windows and only they can say which one
+ * should move. Touching edges are NOT an overlap — the packed stream is
+ * gap-free by construction (`captionLineTiming`'s docstring: 116/116 seams
+ * measured exactly 0.0), so a strict test would tint every caption in the
+ * project amber the moment the widget opened.
+ *
+ * O(n²) deliberately: `n` is the lines of one caption track and the windows
+ * are not sorted once they may overlap, so a sweep would have to sort first to
+ * say the same thing about a few hundred entries.
+ */
+export const overlappingCaptionWindows = (
+  lines: ReadonlyArray<{ key: string; srcStart: number; srcEnd: number }>,
+): Set<string> => {
+  const out = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      const a = lines[i]!;
+      const b = lines[j]!;
+      if (a.srcStart < b.srcEnd && b.srcStart < a.srcEnd) {
+        out.add(a.key);
+        out.add(b.key);
+      }
+    }
+  }
+  return out;
+};
 
 /** A span forced inside `[lo, hi]`, end never before start. Used for the SEED
- * (reopening over stored deltas — a hand-edited doc can hold anything) so the
- * popover can never open on a span its own drag would refuse to reach. */
+ * (reopening over a STORED window — a hand-edited doc can hold anything) so
+ * the widget can never open on a span its own drag would refuse to reach. */
 export const clampCaptionSpan = (
   span: { start: number; end: number },
   lo: number,
@@ -233,13 +292,16 @@ export const clampCaptionSpan = (
 
 /**
  * Where a drag target lands: the span captured at pointerdown moved by
- * `dSec`, clamped into the neighbours' window (`captionDragBounds`). Pure —
- * the drag is one arithmetic decision the window listener merely feeds pixels
- * to, the openCommand/openInBrowser split the popover already follows.
+ * `dSec`, clamped into `[lo, hi]`. Pure — the drag is one arithmetic decision
+ * the window listener merely feeds pixels to, the openCommand/openInBrowser
+ * split the widget already follows.
  *
- * Unchanged from the per-word era except its name (the band rigidity and the
- * no-invert rule were always right; only what BOUNDS it moved to the caption
- * neighbours). The BAND is the reason this is not three inline expressions: a
+ * Unchanged through two rewrites (per-word deltas → caption deltas → absolute
+ * source windows): the band rigidity and the no-invert rule were always right,
+ * and only what BOUNDS it has moved — today it is the AUDIBLE window
+ * (`timingAudioWindow`), since a caption may be placed anywhere the user can
+ * hear and nowhere they cannot. The BAND is the reason this is not three
+ * inline expressions: a
  * pan must stay RIGID. Clamping its two edges independently would let one hit
  * a bound while the other kept moving — a pan that silently SQUASHES the
  * group, which is the stretch gesture the user did not ask for. So the DELTA
@@ -247,9 +309,10 @@ export const clampCaptionSpan = (
  *
  * The handles clamp against the opposite edge as well as the window, so a
  * drag can collapse the span to zero width but never INVERT it: a negative
- * ratio in `captionTimingEntries` would mirror the group's caption order, and
- * a collapsed span is pushed back apart by `applyCaptionLineTiming`'s
- * `MIN_CAPTION_SEC` sweep — which the preview runs, so the user sees it.
+ * ratio in `captionWindowEntries` would mirror the group's caption order, and
+ * a collapsed span is pushed back apart to `MIN_CAPTION_SEC` — by the schema
+ * before it can be stored, and by `applyCaptionLineWindows` before it can be
+ * rendered.
  */
 export const dragCaptionSpan = (m: {
   edge: "lead" | "tail" | "band";
@@ -273,87 +336,6 @@ export const dragCaptionSpan = (m: {
     start: m.span.start,
     end: Math.max(Math.min(m.span.end + m.dSec, m.hi), Math.max(m.lo, m.span.start)),
   };
-};
-
-/**
- * The `captionLineTiming` entries a drag implies — ONE pure decision the
- * preview, the readout and Apply all read (the openCommand/openInBrowser
- * split), so what is drawn is exactly what is stored.
- *
- * The group's seams are mapped PROPORTIONALLY from `span` onto `newSpan`: a
- * rigid band pan (ratio 1) shifts every seam by the same delta, and a handle
- * stretch scales the interior seams with it, which is what keeps a multi-
- * caption group's rhythm when its window grows. The interior entries are
- * WRITTEN rather than left to ride along, because the preview runs the real
- * apply pass and an unwritten interior seam would sit still while the outer
- * two moved — the group would visibly bunch up against one edge.
- *
- * A SHARED BOUNDARY'S NEIGHBOUR IS WRITTEN TOO. On the packed stream caption
- * lines partition the timeline, so the group's opening seam IS the previous
- * caption's closing seam (`applyCaptionLineTiming`: one edit, two windows).
- * Recording only the group's side leaves the doc saying the previous caption
- * still ends where it used to — core resolves that in the group's favour
- * ("the later line's lead wins"), but a popover reopened on the NEIGHBOUR
- * would then seed from a stale `tail` and snap the seam back. Its own
- * far-side delta (`prev.lead`, `next.tail`) is carried through untouched:
- * this gesture has nothing to say about it, and a zero there would drag a
- * neighbour's own earlier nudge back to base. A neighbour that ends up with
- * two sub-ms deltas is DELETED by the reducer, which is the correct record of
- * "this seam is where it was derived".
- *
- * ONLY WHERE THE BOUNDARY WAS ALREADY COINCIDENT, though (2026-08-19 review).
- * The model the gesture means is "dragging a caption's edge moves the
- * boundary it SHARES with its neighbour"; a GAP on that side means there is
- * no shared boundary — the caption is moving into empty space, and nothing
- * else should follow it. Writing the neighbour unconditionally assumed the
- * partition and moved captions the user never touched: on `[0,2] [3,5]
- * [6,8]`, a lead-only drag of the middle line wrote `next.lead = -1` and
- * dragged the untouched third caption a full second early, its words stretched
- * 2x by `scaleWordsIntoWindow`, with nothing reported. This is exactly the
- * rule core adopted for the same reason (a neighbour's edge follows only if it
- * was already coincident; a nudge past a neighbour is blocked, never pushes),
- * so the editor and core now express ONE model instead of two. Coincidence is
- * tested against the INPUT edges, like core's, and on a packed stream every
- * boundary is coincident — behaviour there is bit-identical.
- */
-export const captionTimingEntries = (m: {
-  /** The dragged caption lines, in order. */
-  lines: ReadonlyArray<{ srcStart: number; start: number; end: number }>;
-  /** The group's DERIVED window — what the deltas are measured against. */
-  span: { start: number; end: number };
-  /** The drag target. */
-  newSpan: { start: number; end: number };
-  /** The caption before the group, with its own stored OPENING delta. */
-  prev: { srcStart: number; end: number; lead: number } | null;
-  /** The caption after it, with its own stored CLOSING delta. */
-  next: { srcStart: number; start: number; tail: number } | null;
-}): Array<{ srcStart: number; lead: number; tail: number }> => {
-  const width = m.span.end - m.span.start;
-  // A degenerate derived window (a hide that collapsed a line, a hand-edited
-  // doc) has no ratio to scale by, and `0/0` would store NaN deltas — the
-  // group moves RIGIDLY with its opening seam instead (`scaleWordsIntoWindow`
-  // takes the same identity escape for the same reason).
-  const ratio = width > 0 ? (m.newSpan.end - m.newSpan.start) / width : 1;
-  const at = (t: number): number => m.newSpan.start + (t - m.span.start) * ratio;
-  const out = m.lines.map((l) => ({
-    srcStart: l.srcStart,
-    lead: at(l.start) - l.start,
-    tail: at(l.end) - l.end,
-  }));
-  // The coincidence test, per side: only a boundary the two lines already
-  // SHARED travels with the drag (see the docstring — and `applyCaptionLine
-  // Timing`'s own `lines[i + 1].start === line.end` test, which this mirrors).
-  if (m.prev !== null && m.prev.end === m.span.start) {
-    out.unshift({
-      srcStart: m.prev.srcStart,
-      lead: m.prev.lead,
-      tail: m.newSpan.start - m.prev.end,
-    });
-  }
-  if (m.next !== null && m.next.start === m.span.end) {
-    out.push({ srcStart: m.next.srcStart, lead: m.newSpan.end - m.next.start, tail: m.next.tail });
-  }
-  return out;
 };
 
 /**
@@ -597,30 +579,35 @@ export const TranscriptPanel: React.FC<{
     selHi: number;
   } | null>(null);
   /**
-   * The open TIMING popover (2026-08-18 round 4; CAPTION-shaped since the
-   * `captionLineTiming` rewrite) — the "when does this caption appear, and
-   * when does it leave" adjuster.
+   * The open TIMING widget (audio-first since 2026-08-26) — "this caption
+   * belongs HERE", answered against the waveform instead of against the
+   * previous caption's seam.
    *
-   * IT OPERATES ON CAPTIONS, NOT WORDS, and the selection is SNAPPED to the
-   * caption lines its words sit in (`openTiming`). Two measured facts force
-   * that: a caption's on-screen life IS `line.start`/`line.end` (one
-   * `<Sequence>` per line, CaptionTrack.tsx:387 — word stamps only drive the
-   * karaoke highlight inside that window), and the caption stream is a
-   * gap-free partition, against which the old per-word clamp was
-   * mathematically inert (see `captionLineTiming`'s docstring for the
-   * measurements).
+   * EVERYTHING IN IT IS SOURCE SECONDS, which is the whole rewrite. The
+   * waveform is source-time audio (`/media/audio.wav` is the whole recording),
+   * the stored record is source-anchored (`captionLineWindows`), and the
+   * widget plays that same file — so there is no clock to convert between and
+   * the documented source-vs-output shear the old popover's strip carried
+   * (the waveform drifting from the overlay past a cut inside the window) is
+   * gone rather than accepted. The main player is not involved at all.
+   *
+   * IT OPERATES ON CAPTIONS, NOT WORDS, unchanged: the selection is SNAPPED to
+   * the caption lines its words sit in (`openTiming`), because a caption's
+   * on-screen life IS its line's window (one `<Sequence>` per line,
+   * CaptionTrack.tsx:387 — word stamps only drive the karaoke highlight inside
+   * it).
    *
    * Everything the apply needs is CAPTURED at open, the `rangeEditing` rule:
-   * `track` is the whole line array as it stood at the gesture — the preview
-   * runs core's REAL apply pass over it — so a completed render swapping
-   * `liveLines` mid-drag cannot shift the group, its neighbours or its bounds
-   * under the open popover.
+   * `track` is the whole line array as it stood at the gesture, so a completed
+   * render swapping `liveLines` mid-drag cannot shift the group under the open
+   * widget.
    *
-   * `span` is the group's DERIVED window (first line's start, last line's
-   * end); `newSpan` is the LIVE drag target, seeded from the doc's existing
-   * entries so reopening resumes where the last Apply left off, and always
-   * kept inside `bounds` — which come from the NEIGHBOURS
-   * (`captionDragBounds`), not from the group's own edges.
+   * `span` is the group's DERIVED source span (first line's `srcStart`, last
+   * line's `srcEnd`); `newSpan` is the LIVE drag target, seeded from the doc's
+   * existing windows so reopening resumes where the last Apply left off.
+   * The BOUND is the audible window (`timingAudioWindow`), NOT the neighbours:
+   * overlap is legal now (`captionLineWindows`), so a neighbour is something
+   * to tint, not a wall.
    */
   const [timing, setTiming] = useState<{
     /** The caption track as captured at the open. */
@@ -630,12 +617,28 @@ export const TranscriptPanel: React.FC<{
     to: number;
     span: { start: number; end: number };
     newSpan: { start: number; end: number };
-    bounds: { lo: number; hi: number };
   } | null>(null);
-  /** True between the popover's Play and whatever pauses it — the span-end
-   * frameupdate watcher below, the Pause toggle, or the popover closing. */
+  /** True between the widget's Play and whatever stops it — the `timeupdate`
+   * watcher passing the window's end, the Pause toggle, or the widget
+   * closing. */
   const [timingPlaying, setTimingPlaying] = useState(false);
+  /** Loop the selection instead of stopping at its end — the gesture for
+   * "does this land on the right words?", which is asked by listening to the
+   * same two seconds repeatedly rather than by pressing Play again. */
+  const [timingLoop, setTimingLoop] = useState(false);
+  /** Where the widget's own audio element is, SOURCE seconds — the playhead
+   * line, and null when nothing is playing. */
+  const [timingPlayhead, setTimingPlayhead] = useState<number | null>(null);
+  /**
+   * The recording's length in seconds, 0 until something reports it. Either
+   * source answers: the decode the strip draws from (channel length over
+   * sample rate) or the audio element's own metadata, whichever arrives — and
+   * on jsdom neither does, which `timingAudioWindow` handles by not clamping
+   * the right edge.
+   */
+  const [audioDuration, setAudioDuration] = useState(0);
   const timingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const timingAudioRef = useRef<HTMLAudioElement | null>(null);
   /**
    * The live handle drag — STATE, not the ref it used to be (field report
    * 2026-08-18 round 5: "dragged and left the mouse button and it was still
@@ -1357,47 +1360,70 @@ export const TranscriptPanel: React.FC<{
     [liveLines, timingLines],
   );
 
-  /** The stored nudge a CAPTION carries, if any — keyed by the POST-HIDE
-   * line's first word, which is what `applyCaptionLineTiming` keys on. One
-   * lookup feeds the per-word marker, its title suffix, and `openTiming`'s
-   * resume, so all three agree with the doc even when a hide re-keyed the
-   * caption. */
-  const timingEntryOfLine = (
-    lineIndex: number,
-  ): { lead: number; tail: number } | undefined => {
+  /** A RENDERED line's caption KEY — its post-hide line's first word's source
+   * anchor, which is what every per-line caption record is keyed by. The one
+   * translation each timing surface goes through (`postHideLineIndices`), so
+   * the marker, the tint and the widget agree with the doc even when a hide
+   * re-keyed the caption. */
+  const lineKeyOf = (lineIndex: number): string | null => {
     const timed = timedLineIndex[lineIndex] ?? null;
-    if (timed === null) return undefined;
-    const key = captionAnchorOf(timingLines[timed]?.words[0]);
-    return key === null ? undefined : edits.doc.captionLineTiming[key];
+    if (timed === null) return null;
+    return captionAnchorOf(timingLines[timed]?.words[0]);
+  };
+
+  /**
+   * What a CAPTION's stored timing record says, as the title suffix the words
+   * of that caption carry — `undefined` when it carries none, which is also
+   * the dotted-marker gate.
+   *
+   * A WINDOW WINS OVER A NUDGE when a line carries both, because that is the
+   * order the render resolves them in (`applyCaptionLayers`: windows run last
+   * and state an absolute answer). Saying "nudged by 120ms" over a caption
+   * whose window has since been placed would describe a record that no longer
+   * decides anything.
+   */
+  const timingMarkOfLine = (lineIndex: number): string | undefined => {
+    const key = lineKeyOf(lineIndex);
+    if (key === null) return undefined;
+    const win = edits.doc.captionLineWindows[key];
+    if (win !== undefined) {
+      return `caption placed at ${win.srcStart.toFixed(2)}s–${win.srcEnd.toFixed(2)}s of the source — Timing to change`;
+    }
+    const nudge = edits.doc.captionLineTiming[key];
+    return nudge === undefined
+      ? undefined
+      : // ms readout, the doc's own unit rounded for humans — `in` is the
+        // caption's opening seam, `out` its closing one.
+        `caption timing adjusted (${Math.round(nudge.lead * 1000)}ms in / ${Math.round(nudge.tail * 1000)}ms out) — Timing to change`;
   };
 
   /** How many CAPTIONS the current selection covers — the gesture snaps to
-   * whole lines, so the toolbar has to say so before the popover opens. */
+   * whole lines, so the toolbar has to say so before the widget opens. */
   const selectedCaptionCount =
     selected.length === 0
       ? 0
       : selected[selected.length - 1]!.lineIndex - selected[0]!.lineIndex + 1;
 
   /**
-   * Open the timing popover over the selected words' CAPTIONS. The §137
+   * Open the timing widget over the selected words' CAPTIONS. The §137
    * refusal stays at the gesture like every sibling
    * (`openRetype`/`openRangeEdit`): the button is disabled for anchorless
    * words, and the per-line guard below backstops it. The capture is the
-   * `rangeEditing` idiom — the whole track frozen at the open, the drag
-   * target resumed from the doc's existing entries so a second visit
-   * continues where Apply left off.
+   * `rangeEditing` idiom — the whole track frozen at the open, the drag target
+   * resumed from the doc's existing windows so a second visit continues where
+   * Apply left off.
    */
   const openTiming = (): void => {
     if (selected.length === 0 || anySelectedAnchorless) return;
-    // SNAP TO CAPTIONS: a nudge moves LINE windows, so the word selection is
+    // SNAP TO CAPTIONS: a window places a LINE, so the word selection is
     // widened to the lines its words sit in. The selection is a contiguous
     // flat-index range, so its lines are a contiguous line range.
     //
-    // The track is the POST-HIDE one — the lines core will actually time
+    // The track is the POST-HIDE one — the lines core will actually place
     // (`postHideLineIndices`) — so the selection's RENDERED line indices are
     // translated into it. A caption the hide layer removed entirely maps to
     // null and the gesture is REFUSED, the §137 posture every sibling takes:
-    // there is no line left to nudge, and an Apply keyed to a word core never
+    // there is no line left to place, and an Apply keyed to a word core never
     // sees is the silent no-op this translation exists to remove.
     const track = timingLines;
     const from = timedLineIndex[selected[0]!.lineIndex] ?? null;
@@ -1416,39 +1442,39 @@ export const TranscriptPanel: React.FC<{
     }
     const first = lines[0]!;
     const last = lines[lines.length - 1]!;
-    const span = { start: first.start, end: last.end };
-    const bounds = captionDragBounds({
-      prev: from > 0 ? track[from - 1]! : null,
-      next: to < track.length - 1 ? track[to + 1]! : null,
-      // The group's derived window decides which side, if either, shares a
-      // boundary with its neighbour (`captionDragBounds`' coincidence test).
-      span,
-      track: { start: track[0]!.start, end: track[track.length - 1]!.end },
-    });
+    // The DERIVED span in SOURCE seconds — the words' own extent, which is
+    // exactly what the waveform underneath is showing.
+    const span = { start: first.srcStart, end: last.srcEnd };
     setTiming({
       track,
       from,
       to,
       span,
-      bounds,
-      // Seeded from the OUTER lines' stored deltas: the interior entries are
-      // `captionTimingEntries`' own output for this same span, so replaying
+      // Seeded from the OUTER lines' stored windows: the interior entries are
+      // `captionWindowEntries`' own output for this same span, so replaying
       // the outer two reproduces them (a fixpoint) — reopening resumes the
-      // group exactly where Apply left it.
-      newSpan: clampCaptionSpan(
-        {
-          start: span.start + (edits.doc.captionLineTiming[first.key]?.lead ?? 0),
-          end: span.end + (edits.doc.captionLineTiming[last.key]?.tail ?? 0),
-        },
-        bounds.lo,
-        bounds.hi,
-      ),
+      // group exactly where Apply left it. Clamped into the audible window so
+      // a hand-edited doc can never open the widget on a span its own drag
+      // could not reach.
+      newSpan: ((): { start: number; end: number } => {
+        const win = timingAudioWindow(span, audioDuration);
+        const stored = edits.doc.captionLineWindows;
+        return clampCaptionSpan(
+          {
+            start: stored[first.key]?.srcStart ?? span.start,
+            end: stored[last.key]?.srcEnd ?? span.end,
+          },
+          win.start,
+          win.end,
+        );
+      })(),
     });
   };
 
-  /** The open popover's captions: the dragged group and the two neighbours
-   * whose territory the drag reaches into. Derived from the CAPTURE, so a
-   * completed render cannot move them mid-drag. */
+  /** The open widget's captions, derived from the CAPTURE so a completed
+   * render cannot move them mid-drag. No neighbours: an absolute window shares
+   * no seam with anything (`captionLineWindows`), so the group is the whole
+   * subject of the gesture. */
   const timingCaptions = useMemo(() => {
     if (timing === null) return null;
     const lines: TimingLine[] = [];
@@ -1459,107 +1485,99 @@ export const TranscriptPanel: React.FC<{
       if (line === null) return null;
       lines.push(line);
     }
-    return {
-      lines,
-      prev: timing.from > 0 ? timingLineAt(timing.track, timing.from - 1) : null,
-      next:
-        timing.to < timing.track.length - 1 ? timingLineAt(timing.track, timing.to + 1) : null,
-    };
+    return lines;
   }, [timing]);
 
   /**
-   * The entries this drag implies — derived ONCE and reused by the preview,
-   * the readout and Apply (`captionTimingEntries`' contract), so the strip
-   * can never draw a nudge the doc would not store.
+   * The entries this drag implies — derived ONCE and reused by the strip, the
+   * readout, the overlap tint and Apply (`captionWindowEntries`' contract), so
+   * the widget can never draw a placement the doc would not store.
    */
-  const timingEntries = useMemo(() => {
+  const windowEntries = useMemo(() => {
     if (timing === null || timingCaptions === null) return null;
-    const { lines, prev, next } = timingCaptions;
-    const stored = edits.doc.captionLineTiming;
-    return captionTimingEntries({
-      lines,
+    return captionWindowEntries({
+      lines: timingCaptions,
       span: timing.span,
       newSpan: timing.newSpan,
-      // The neighbour's FAR-side delta rides through untouched — this gesture
-      // has nothing to say about it (see `captionTimingEntries`).
-      prev: prev === null ? null : { ...prev, lead: stored[prev.key]?.lead ?? 0 },
-      next: next === null ? null : { ...next, tail: stored[next.key]?.tail ?? 0 },
     });
-  }, [timing, timingCaptions, edits.doc.captionLineTiming]);
+  }, [timing, timingCaptions]);
 
   /**
-   * The previewed track: core's REAL apply pass over the captured lines with
-   * this drag's entries layered on the doc's own. Not an approximation of
-   * what Apply will do — it IS what Apply will do, seam sweep and
-   * `MIN_CAPTION_SEC` floor included, which is why a drag that a bound
-   * refuses simply stops on screen instead of snapping back on release.
+   * Every caption line's EFFECTIVE source window: what the open drag proposes,
+   * else what the doc stores, else the line's own derived extent. The one
+   * table the strip's context ticks and the overlap tint both read — two
+   * derivations is how the strip and the words would disagree about which
+   * captions are in conflict.
    */
-  const timingPreview = useMemo(() => {
-    if (timing === null || timingEntries === null) return null;
-    // The doc's OTHER nudges ride along so the strip shows the same track the
-    // render does; this drag's entries win their own keys. `captionKeyFor` is
-    // safe on these `srcStart`s — every one came from a `captionAnchorOf`
-    // that already vouched for it (`timingLineAt`).
-    const record: Record<string, { lead: number; tail: number }> = {
-      ...edits.doc.captionLineTiming,
-    };
-    for (const e of timingEntries) {
-      record[captionKeyFor(e.srcStart)] = { lead: e.lead, tail: e.tail };
+  const effectiveWindows = useMemo(() => {
+    const proposed = new Map<string, { srcStart: number; srcEnd: number }>();
+    for (const e of windowEntries ?? []) {
+      // `captionKeyFor` is safe on these — every `srcStart` came through a
+      // `captionAnchorOf` that already vouched for it (`timingLineAt`). A null
+      // window is the DELETE, i.e. back on the derived extent, which the
+      // fallback below already supplies.
+      if (e.window !== null) proposed.set(captionKeyFor(e.srcStart), e.window);
     }
-    return applyCaptionLineTiming(timing.track, record).lines;
-  }, [timing, timingEntries, edits.doc.captionLineTiming]);
+    const rows: Array<{ key: string; srcStart: number; srcEnd: number }> = [];
+    for (let i = 0; i < timingLines.length; i++) {
+      const line = timingLineAt(timingLines, i);
+      if (line === null) continue;
+      const win = proposed.get(line.key) ?? edits.doc.captionLineWindows[line.key];
+      rows.push({
+        key: line.key,
+        srcStart: win?.srcStart ?? line.srcStart,
+        srcEnd: win?.srcEnd ?? line.srcEnd,
+      });
+    }
+    return rows;
+  }, [timingLines, edits.doc.captionLineWindows, windowEntries]);
 
-  /** The group's previewed span — the readout, the handles and the band all
-   * read the SWEPT edges, not the raw drag target, so what is drawn is what
-   * Apply stores even where a floor moved an edge. */
-  const timedSpan = useMemo(() => {
-    if (timing === null || timingPreview === null) return null;
-    const first = timingPreview[timing.from];
-    const last = timingPreview[timing.to];
-    return first && last ? { start: first.start, end: last.end } : null;
-  }, [timing, timingPreview]);
+  /** The captions sharing a moment with another one — amber in the strip AND
+   * on their transcript words (`overlappingCaptionWindows`: reported, never
+   * resolved; the neighbour is the user's to move). */
+  const overlappingKeys = useMemo(
+    () => overlappingCaptionWindows(effectiveWindows),
+    [effectiveWindows],
+  );
 
-  /** How many captions the OPEN popover is moving — the readout's count and
+  /** How many captions the OPEN widget is placing — the readout's count and
    * every one of its titles' singular/plural, from the capture rather than
    * from the live selection (which a render could change under it). */
   const timedCaptionCount = timing === null ? 0 : timing.to - timing.from + 1;
 
-  /**
-   * The strip's window, in SOURCE seconds: the dragged captions PLUS the
-   * neighbours' territory, which is precisely how far the drag can reach
-   * (`captionDragBounds`) — a strip that stopped at the group's own edges
-   * would hide the material being taken from. audio.wav is source-time audio,
-   * so the window is a source extent; `outStart` is the OUTPUT time the same
-   * seam sits at, which is what the overlay is positioned in.
-   */
-  const timingWin = useMemo(() => {
-    if (timing === null || timingCaptions === null) return null;
-    const opening = timingCaptions.prev ?? timingCaptions.lines[0]!;
-    const closing = timingCaptions.next ?? timingCaptions.lines[timingCaptions.lines.length - 1]!;
-    return {
-      srcStart: opening.srcStart,
-      srcEnd: closing.srcEnd,
-      outStart: opening.start,
-      dur: closing.srcEnd - opening.srcStart + 2 * TIMING_WIN_PAD_SEC,
-    };
-  }, [timing, timingCaptions]);
+  /** The audible stretch: the selection's source span ±10s, clamped into the
+   * recording (`timingAudioWindow`). Taken from the CAPTURED span, never from
+   * the live drag target, so the window does not creep away under a pan. */
+  const timingWin = useMemo(
+    () => (timing === null ? null : timingAudioWindow(timing.span, audioDuration)),
+    [timing, audioDuration],
+  );
 
   // A decoded waveform belongs to the project it was fetched under: a switch
-  // (R17 §83, in-page) drops it, or the next popover would draw project A's
+  // (R17 §83, in-page) drops it, or the next widget would draw project A's
   // audio under project B's captions. The module cache is keyed the same way
   // (`loadSourceAudio`); this is the panel's own copy of it.
   useEffect(() => {
     setAudio(null);
+    setAudioDuration(0);
   }, [workdir]);
 
-  // Kick the audio load the first time a popover opens — not at mount,
-  // because most sessions never open one and the decode holds the whole
-  // channel in memory.
+  // Kick the audio decode the first time the widget opens — not at mount,
+  // because most sessions never open it and the decode holds the whole
+  // channel in memory. The `<audio>` element streams the same file with Range
+  // requests (edit.ts's `/media/` handler) and needs no decode at all; this is
+  // for the PICTURE.
   useEffect(() => {
     if (timing === null || audio !== null) return;
     let cancelled = false;
     void loadSourceAudio(workdir).then((a) => {
-      if (!cancelled && a !== null) setAudio(a);
+      if (!cancelled && a !== null) {
+        setAudio(a);
+        // The decode is the more reliable of the two duration sources — the
+        // element's metadata may never arrive (jsdom) — and both write the
+        // same state, whichever gets there.
+        if (a.sampleRate > 0) setAudioDuration(a.channel.length / a.sampleRate);
+      }
     });
     return () => {
       cancelled = true;
@@ -1567,33 +1585,25 @@ export const TranscriptPanel: React.FC<{
   }, [timing, audio, workdir]);
 
   /**
-   * OUTPUT seconds → x over the strip, the ONE mapping the draw effect, the
-   * handles and (inverted) the drag all use. The window opens at the
-   * neighbourhood's own first seam (`timingWin.outStart`) rather than at the
-   * group's, because the strip shows the neighbours' territory either side.
+   * SOURCE seconds → x over the strip, the ONE mapping the draw, the handles,
+   * the playhead and (inverted) the drag all use. No output-time conversion
+   * anywhere in it: the waveform and the record speak the same clock now, so
+   * the old strip's drift past a cut inside the window cannot happen.
    */
-  const timingToX = (outSec: number): number =>
+  const timingToX = (srcSec: number): number =>
     timingWin === null
       ? 0
-      : ((outSec - timingWin.outStart + TIMING_WIN_PAD_SEC) / timingWin.dur) * TIMING_CANVAS_W;
+      : ((srcSec - timingWin.start) / (timingWin.end - timingWin.start)) * TIMING_CANVAS_W;
 
-  // Redraw the strip on every drag change. audio.wav is SOURCE-time audio;
-  // the window is `[winSrcStart − pad, winSrcEnd + pad]` SOURCE seconds
-  // (`timingWin`), and the OUTPUT-time overlay is mapped onto it as
-  // `winSrcStart + (t − winOutStart)` — inside a kept span the output↔source
-  // map is identity plus offset, so the overlay lines up with the waveform.
-  // Known caveat, reaching further now the window spans three captions:
-  // within the ±1s pad — and anywhere a cut boundary falls INSIDE the window
-  // — the source audio on screen can hold material the output no longer
-  // contains, so the waveform drifts from the overlay past that seam. Context
-  // only, never draggable-to (the bounds are output-time), so accepted.
+  // Redraw the strip whenever the drag, the window or the decode changes. The
+  // PLAYHEAD is deliberately not drawn here — it moves several times a second
+  // and lives in its own absolutely-positioned element, so following it costs
+  // no waveform redraw.
   useEffect(() => {
-    if (timing === null || timedSpan === null || timingPreview === null || timingWin === null) {
-      return;
-    }
+    if (timing === null || timingWin === null) return;
     const canvas = timingCanvasRef.current;
     // jsdom implements no 2d context (getContext returns null there) — the
-    // popover's tests assert presence, never pixels.
+    // widget's tests assert presence, never pixels.
     const ctx = canvas?.getContext?.("2d") ?? null;
     if (!canvas || !ctx) return;
     const toX = timingToX;
@@ -1607,8 +1617,8 @@ export const TranscriptPanel: React.FC<{
         : peaksForWindow(
             audio.channel,
             audio.sampleRate,
-            timingWin.srcStart - TIMING_WIN_PAD_SEC,
-            timingWin.srcEnd + TIMING_WIN_PAD_SEC,
+            timingWin.start,
+            timingWin.end,
             bucketCount,
           ).buckets;
     ctx.fillStyle = "#4a4a58";
@@ -1617,60 +1627,52 @@ export const TranscriptPanel: React.FC<{
       const h = Math.max(1, buckets[i]! * (TIMING_CANVAS_H - 4));
       ctx.fillRect(i * barW, (TIMING_CANVAS_H - h) / 2, Math.max(1, barW - 1), h);
     }
-    // The NEIGHBOURS' territory, in a dimmer shade of the band's own colour:
-    // dragging the opening seam back TAKES those seconds from the previous
-    // caption, and a strip that showed only the group would hide who is
-    // paying for the move. Drawn from the PREVIEW, so it shrinks live as the
-    // band eats into it.
-    ctx.fillStyle = "rgba(255, 225, 77, 0.06)";
-    for (const i of [timing.from - 1, timing.to + 1]) {
-      const nb = timingPreview[i];
-      if (!nb) continue;
-      ctx.fillRect(toX(nb.start), 0, Math.max(1, toX(nb.end) - toX(nb.start)), TIMING_CANVAS_H);
+    // The OTHER captions in the window, as context: a faint block each, AMBER
+    // where it conflicts with something (`overlappingCaptionWindows`). This is
+    // the guard that replaces the old sweep — overlap is allowed, so the tool
+    // has to make it visible instead of preventing it.
+    const dragged = new Set(timingCaptions?.map((l) => l.key) ?? []);
+    for (const row of effectiveWindows) {
+      if (dragged.has(row.key)) continue;
+      const x = toX(row.srcStart);
+      const w = Math.max(1, toX(row.srcEnd) - x);
+      ctx.fillStyle = overlappingKeys.has(row.key)
+        ? "rgba(240, 165, 60, 0.28)"
+        : "rgba(255, 255, 255, 0.05)";
+      ctx.fillRect(x, 0, w, TIMING_CANVAS_H);
     }
-    // The span overlay: a translucent band with a bright line at each edge,
-    // where the drag handles sit.
-    const x0 = toX(timedSpan.start);
-    const x1 = toX(timedSpan.end);
-    ctx.fillStyle = "rgba(255, 225, 77, 0.18)";
+    // The selection region: a translucent band with a bright line at each
+    // edge, where the drag handles sit. Amber when this placement is the one
+    // in conflict, so the tint is on the thing the user is holding.
+    const x0 = toX(timing.newSpan.start);
+    const x1 = toX(timing.newSpan.end);
+    const conflicted = timingCaptions?.some((l) => overlappingKeys.has(l.key)) ?? false;
+    ctx.fillStyle = conflicted ? "rgba(240, 165, 60, 0.22)" : "rgba(255, 225, 77, 0.18)";
     ctx.fillRect(x0, 0, Math.max(1, x1 - x0), TIMING_CANVAS_H);
-    // CAPTION boundaries, faint and 1px — the interior seams of the group and
-    // the neighbours' outer edges. These are the ticks the field screenshot's
-    // 122-word comb used to be: word stamps say nothing about when a caption
-    // appears (that is the line's window), so drawing them was noise the eye
-    // could not read a seam out of.
-    ctx.fillStyle = "#7a7a88";
-    for (let i = Math.max(0, timing.from - 1); i <= timing.to + 1; i++) {
-      const line = timingPreview[i];
-      if (!line) continue;
-      // The two span edges get their own bright lines below; drawing a dim
-      // tick under them just muddies the edge the user is dragging.
-      if (i !== timing.from) ctx.fillRect(toX(line.start), 0, 1, TIMING_CANVAS_H);
-      if (i !== timing.to) ctx.fillRect(toX(line.end), 0, 1, TIMING_CANVAS_H);
-    }
-    ctx.fillStyle = "#FFE14D";
+    ctx.fillStyle = conflicted ? "#F0A53C" : "#FFE14D";
     ctx.fillRect(x0 - 1, 0, 2, TIMING_CANVAS_H);
     ctx.fillRect(x1 - 1, 0, 2, TIMING_CANVAS_H);
     // `timingToX` is remade every render and reads only `timingWin`, which is
     // a dep already.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timing, timedSpan, timingPreview, timingWin, audio]);
+  }, [timing, timingWin, timingCaptions, effectiveWindows, overlappingKeys, audio]);
 
   /** px → seconds for the drag: the canvas bitmap IS its CSS size
    * (TIMING_CANVAS_W), so no rect measure — jsdom-testable for free. */
-  const timingSecPerPx = timingWin === null ? 0 : timingWin.dur / TIMING_CANVAS_W;
+  const timingSecPerPx =
+    timingWin === null ? 0 : (timingWin.end - timingWin.start) / TIMING_CANVAS_W;
 
   /** The handles' x positions over the canvas, same mapping as the draw. */
   const timingHandleX =
-    timing === null || timedSpan === null || timingWin === null
+    timing === null || timingWin === null
       ? null
-      : { lead: timingToX(timedSpan.start), tail: timingToX(timedSpan.end) };
+      : { lead: timingToX(timing.newSpan.start), tail: timingToX(timing.newSpan.end) };
 
   const onTimingHandleDown =
     (edge: "lead" | "tail" | "band") =>
     (e: React.PointerEvent<HTMLElement>): void => {
       if (timing === null) return;
-      // Suppress the text selection a drag over the popover would otherwise
+      // Suppress the text selection a drag over the widget would otherwise
       // start (and, with it, the body's own drag-select mapping above).
       e.preventDefault();
       // No `setPointerCapture` (2026-08-18 round 5): capture was the ONLY
@@ -1685,7 +1687,7 @@ export const TranscriptPanel: React.FC<{
   /**
    * The live handle drag lives on WINDOW, not on the handle (the Timeline /
    * Overlay drag idiom, and the fix for "left the mouse button and it was
-   * still dragging"): a pointer that leaves the 10px strip — which every
+   * still dragging"): a pointer that leaves the 12px strip — which every
    * real drag does immediately — kept firing at the window while the element
    * heard nothing, so the release was missed and the next move re-entered the
    * drag. EVERY terminator ends it: pointerup, pointercancel (a touch turned
@@ -1697,21 +1699,20 @@ export const TranscriptPanel: React.FC<{
    * refreshes, which is the class of bug this whole rewrite is about.
    */
   useEffect(() => {
-    if (timingDrag === null || timing === null) return;
+    if (timingDrag === null || timing === null || timingWin === null) return;
     const onMove = (e: PointerEvent): void => {
-      // Clamped into the NEIGHBOURS' window (`captionDragBounds`, captured at
-      // the open) before anything else sees it: the seam sweep would clamp
-      // the same drag anyway, and stopping the target here is what keeps the
-      // handle under the pointer instead of running away from a preview that
-      // refuses to follow it.
+      // Clamped into the AUDIBLE window, which is the only bound left: a
+      // caption may be placed anywhere the user can hear (`timingAudioWindow`)
+      // and nowhere they cannot, and neighbours are tinted rather than
+      // enforced (`captionLineWindows`).
       setTiming({
         ...timing,
         newSpan: dragCaptionSpan({
           edge: timingDrag.edge,
           span: timingDrag.span,
           dSec: (e.clientX - timingDrag.startX) * timingSecPerPx,
-          lo: timing.bounds.lo,
-          hi: timing.bounds.hi,
+          lo: timingWin.start,
+          hi: timingWin.end,
         }),
       });
     };
@@ -1726,104 +1727,101 @@ export const TranscriptPanel: React.FC<{
       window.removeEventListener("pointercancel", onEnd);
       window.removeEventListener("blur", onEnd);
     };
-  }, [timingDrag, timing, timingSecPerPx]);
+  }, [timingDrag, timing, timingWin, timingSecPerPx]);
 
   // EVERY close path drops a live drag — Apply, Cancel, Escape, the
   // selection-change sweep and the word-click handler all just
   // `setTiming(null)`, so the clear lives here rather than at each of them
-  // (the span-play pause below is the same shape, for the same reason). This
-  // is what the old ref could not have: a drag that outlived its popover made
+  // (the playback stop below is the same shape, for the same reason). This
+  // is what the old ref could not have: a drag that outlived its widget made
   // the next BARE HOVER over a reopened handle jump by the stale startX.
   // Unmount needs nothing — the effect above removes its window listeners.
   useEffect(() => {
     if (timing === null && timingDrag !== null) setTimingDrag(null);
   }, [timing, timingDrag]);
 
-  /** Play just the nudged span. No playbackRange API exists on
-   * @remotion/player, so the "play this span" is a seek+play with the
-   * frameupdate watcher below pausing at the far edge. */
+  /**
+   * Play the selection — the widget's OWN audio element over the source file,
+   * not the main player (2026-08-26). The whole point of the tool is to hear
+   * the words the caption should sit on, and the player speaks OUTPUT time
+   * over a video that may not even contain them any more; `/media/audio.wav`
+   * is the whole recording, in the same source seconds everything else here
+   * uses. That also deletes the four coupling blocks this used to need (a
+   * seek+play, a frameupdate watcher to stop at the far edge, a mirror of the
+   * player's own pause events, and a close-path pause) — an element that
+   * plays a range is one `currentTime` write and one `timeupdate` test.
+   */
   const toggleTimingPlay = (): void => {
-    if (timedSpan === null) return;
-    const player = playerRef.current;
-    if (!player) return;
+    const el = timingAudioRef.current;
+    if (el === null || timing === null) return;
     if (timingPlaying) {
-      player.pause();
+      el.pause();
       setTimingPlaying(false);
+      setTimingPlayhead(null);
       return;
     }
-    // CEIL, the word-click rule above: rounding down can land the quantized
-    // playhead a fraction before the span, in the previous word's window.
-    // Mapped onto the player's clock FIRST (the `toPlayerSec` prop doc), then
-    // quantized — ceiling the old-clock frame would carry the rounding onto
-    // the wrong clock.
-    player.seekTo(Math.ceil(toPlayerSec(timedSpan.start) * fps));
-    player.play();
+    el.currentTime = timing.newSpan.start;
+    // `play()` is a promise in browsers and can reject (an autoplay policy, a
+    // 404 on the media) — and is a bare stub under jsdom, which implements no
+    // playback at all. Neither may throw into a click handler with no error
+    // boundary above it (`loadSourceAudio`'s posture: the audio is a help, not
+    // a dependency).
+    try {
+      const started = el.play?.();
+      if (started && typeof started.catch === "function") started.catch(() => {});
+    } catch {
+      /* nothing plays; the strip and the drag still work */
+    }
     setTimingPlaying(true);
+    setTimingPlayhead(timing.newSpan.start);
   };
 
-  // The span-end watcher — attached only WHILE the popover's own Play is
-  // live, so a frameupdate from ordinary playback (the transport bar, a
-  // word-click seek) can never be paused by a popover that happens to be
-  // open past its span.
-  useEffect(() => {
-    if (!timingPlaying || timedSpan === null) return;
-    const player = playerRef.current;
-    if (!player) return;
-    // The far edge, mapped once onto the player's clock (the `toPlayerSec`
-    // prop doc) — comparing the player's own frames against an old-clock
-    // edge would stop the span-play the revived seconds early.
-    const endSec = toPlayerSec(timedSpan.end);
-    const onFrame = (e: { detail: { frame: number } }): void => {
-      if (e.detail.frame / fps >= endSec) {
-        player.pause();
-        setTimingPlaying(false);
-      }
-    };
-    player.addEventListener("frameupdate", onFrame);
-    return () => player.removeEventListener("frameupdate", onFrame);
-  }, [timingPlaying, timedSpan, fps, playerRef, toPlayerSec]);
+  /**
+   * The far edge, tested on the element's own clock: `timeupdate` fires a few
+   * times a second, so the stop lands within a frame or two of the selection's
+   * end — which is what the old frameupdate watcher did against the player,
+   * minus the clock conversion. LOOP re-seeks instead of stopping, the "does
+   * this land on the right words?" gesture.
+   */
+  const onTimingTimeUpdate = (): void => {
+    const el = timingAudioRef.current;
+    if (el === null || timing === null || !timingPlaying) return;
+    if (el.currentTime < timing.newSpan.end) {
+      setTimingPlayhead(el.currentTime);
+      return;
+    }
+    if (timingLoop) {
+      el.currentTime = timing.newSpan.start;
+      setTimingPlayhead(timing.newSpan.start);
+      return;
+    }
+    el.pause();
+    setTimingPlaying(false);
+    setTimingPlayhead(null);
+  };
 
-  // The flag follows the REAL player, not just this popover's own button
-  // (2026-08-19 review): the global Space transport pauses playback without
-  // going through `toggleTimingPlay`, and a `timingPlaying` left true kept
-  // the span-end watcher above armed — so resuming with Space stopped
-  // ORDINARY playback dead at `timedSpan.end` with nothing on screen to
-  // explain it, while the button still read "Pause". Only PAUSE is mirrored:
-  // the watcher's contract is "attached while the popover's own Play is
-  // live", so an external play must not arm it.
-  //
-  // No dep array, the App.tsx:444 idiom for the same reason — `playerRef`
-  // fills after the first render that has props, so the subscription
-  // re-attaches until there is a player to attach to.
-  useEffect(() => {
-    const player = playerRef.current;
-    if (!player) return;
-    const onPause = (): void => setTimingPlaying(false);
-    player.addEventListener("pause", onPause);
-    return () => player.removeEventListener("pause", onPause);
-  });
-
-  // EVERY close path pauses a live span play — Apply, Cancel, Escape, and
-  // the selection-change sweep all just `setTiming(null)`, so the pause
-  // lives here rather than being repeated at each of them.
+  // EVERY close path stops playback — Apply, Cancel, Escape and the
+  // selection-change sweep all just `setTiming(null)`, so the stop lives here
+  // rather than being repeated at each of them. The element is left mounted
+  // (it is cheap and streams on demand), so this is a pause, not an unmount.
   useEffect(() => {
     if (timing !== null || !timingPlaying) return;
-    playerRef.current?.pause();
+    timingAudioRef.current?.pause();
     setTimingPlaying(false);
-  }, [timing, timingPlaying, playerRef]);
+    setTimingPlayhead(null);
+  }, [timing, timingPlaying]);
 
-  const applyTiming = (entries: NonNullable<typeof timingEntries>): void => {
-    // The SAME entries the strip previewed with (`timingEntries` feeds both),
-    // so nothing can be persisted that the user was not shown. ONE bulk
-    // action, however many captions: a drag is one gesture and must be one
-    // undo step — and one seam is shared by two captions, so a drag writes
-    // both sides (the `patchCaptionLineTiming` docstring). The reducer's
-    // sub-ms rule turns each unmoved caption — and a group dragged back to
-    // base — into a DELETE of its entry.
-    edits.patchCaptionLineTiming(entries);
-    // Close the popover but KEEP the selection — unlike the rewrite/delete
-    // gestures, a nudge is often iterated on, and re-selecting the same
-    // words to try again would be pure friction.
+  const applyWindows = (entries: NonNullable<typeof windowEntries>): void => {
+    // The SAME entries the strip drew with (`windowEntries` feeds both), so
+    // nothing can be persisted that the user was not shown. ONE bulk action,
+    // however many captions: a placement is one gesture and must be one undo
+    // step. A line back on its derived position comes through as `null` — the
+    // reducer's DELETE, which is how a group dragged back to base clears
+    // itself.
+    edits.patchCaptionLineWindows(entries);
+    // Close the widget but KEEP the selection — unlike the rewrite/delete
+    // gestures, timing is often iterated on, and re-selecting the same words
+    // to try again would be pure friction.
     setTiming(null);
   };
 
@@ -1986,7 +1984,14 @@ export const TranscriptPanel: React.FC<{
           // word would say a nudge belongs to one word of it. The suffix
           // COMPOSES with whatever the base title says — timing is orthogonal
           // to text edits and hides, so it must not displace their messages.
-          const timedEntry = timingEntryOfLine(w.lineIndex);
+          const timedEntry = timingMarkOfLine(w.lineIndex);
+          // The overlap tint, per CAPTION like the marker: the conflict is
+          // between two line WINDOWS, so every word of a conflicted caption
+          // carries it (`overlappingCaptionWindows`).
+          const overlapping = ((): boolean => {
+            const key = lineKeyOf(w.lineIndex);
+            return key !== null && overlappingKeys.has(key);
+          })();
           const baseTitle = isHidden(w)
             ? "hidden from captions — select and Restore"
             : rangeEntry !== undefined
@@ -2081,25 +2086,27 @@ export const TranscriptPanel: React.FC<{
                   }}
                   onDoubleClick={() => openRetype(w)}
                   title={
-                    timedEntry === undefined
-                      ? baseTitle
-                      : // ms readout, the doc's own unit rounded for humans —
-                        // `in` is the caption's opening seam, `out` its closing
-                        // one, which is what `lead`/`tail` mean now they move
-                        // LINE windows.
-                        `${baseTitle} · caption timing adjusted (${Math.round(timedEntry.lead * 1000)}ms in / ${Math.round(timedEntry.tail * 1000)}ms out) — Timing to change`
+                    // The suffix COMPOSES with whatever the base title says —
+                    // timing is orthogonal to text edits and hides, so it must
+                    // not displace their messages (`timingMarkOfLine` owns
+                    // which record speaks).
+                    `${baseTitle}${timedEntry === undefined ? "" : ` · ${timedEntry}`}${
+                      overlapping ? " · overlaps another caption" : ""
+                    }`
                   }
                   style={{
                     ...word,
-                    // A dotted BORDER, never textDecoration: underline is the
-                    // playhead marker (`currentStyle`) and line-through the
-                    // hide marker (`hiddenStyle`) — a border composes with
-                    // both where a second textDecoration would clobber them.
+                    // A dotted BORDER, never textDecoration: line-through is
+                    // the hide marker (`hiddenStyle`) and a second
+                    // textDecoration would clobber it. (Underline used to be
+                    // the playhead marker here too; since 2026-08-26 that is a
+                    // background, which is what gave hidden words their
+                    // strike-through back while the playhead sits on them.)
                     ...(timedEntry !== undefined ? timedWordStyle : {}),
-                    // Hidden and selected layer UNDER the find/edited/current
-                    // styles: a search hit or the playhead landing on a hidden
-                    // word must still read as a hit, and the strike-through
-                    // survives regardless (nothing above sets textDecoration).
+                    // Hidden layers UNDER the find/edited styles: a search hit
+                    // on a hidden word must still read as a hit, and the
+                    // strike-through survives regardless (nothing above sets
+                    // textDecoration).
                     ...(isHidden(w) ? hiddenStyle : {}),
                     // `editedStyle` layers UNDER the selection band (2026-08-18
                     // round 3): its edited tint is the same yellow the band is
@@ -2108,10 +2115,23 @@ export const TranscriptPanel: React.FC<{
                     // selected. The band's own #111 wins; the tint returns the
                     // moment the word is deselected.
                     ...(w.live !== w.base || w.synthetic ? editedStyle : {}),
+                    // The overlap tint layers with `editedStyle` (both are
+                    // colour only) and UNDER the selection band, the same rule
+                    // and for the same reason: amber-on-yellow is invisible
+                    // while selected, and the conflict is still there when the
+                    // selection moves on.
+                    ...(overlapping ? overlappingWordStyle : {}),
+                    // The playhead marker moved UNDER the selection band when
+                    // it became a background (2026-08-26). As an underline it
+                    // could sit on top and compose; as a background it would
+                    // punch a differently-coloured hole in the band — which is
+                    // the "the box fought the band" failure `currentStyle`'s
+                    // own docstring records, in a new form. `editedStyle` is
+                    // ordered here for exactly the same reason.
+                    ...(currentIndex === w.index ? currentStyle : {}),
                     ...(selLo !== null && w.index >= selLo && w.index <= selHi! ? selectedStyle : {}),
                     ...(matches?.has(w.index) ? matchStyle : {}),
                     ...(matchList[matchCursor] === w.index ? currentMatchStyle : {}),
-                    ...(currentIndex === w.index ? currentStyle : {}),
                   }}
                 >
                   {w.live}
@@ -2334,15 +2354,40 @@ export const TranscriptPanel: React.FC<{
           </div>
         </div>
       ) : null}
-        {/* The TIMING popover (2026-08-18 round 4; CAPTION-shaped since the
-            `captionLineTiming` rewrite), in the bar's place at the same
-            anchor — the range editor's swap idiom. A waveform strip of the
-            SOURCE audio around the selected CAPTIONS and the two either side,
-            the nudged span overlaid with a drag handle at each edge and a
-            grabbable band between them, and a row: Play/Pause · span readout
-            · Apply · Cancel. Escape cancels (the body keydown); selection
-            moves and word-count changes close it (the sweep). */}
-        {timing !== null && timedSpan !== null && menuPos !== null ? (
+        {/* The widget's OWN transport (`toggleTimingPlay` owns the why).
+            SOURCE seconds, the same clock as everything else here; the server
+            serves this file with Range support (edit.ts's `/media/` handler),
+            so seeking into the middle of a long recording does not fetch the
+            head of it. `preload="none"` because most opens never press Play.
+
+            MOUNTED OUTSIDE the widget, not inside it: every close path is a
+            plain `setTiming(null)`, and an element that unmounts in the same
+            commit takes the ref with it — the close-path effect then has
+            nothing to pause, and the audio kept playing over a widget that
+            was gone. */}
+        <audio
+          data-testid="transcript-timing-audio"
+          ref={timingAudioRef}
+          src="/media/audio.wav"
+          preload="none"
+          onTimeUpdate={onTimingTimeUpdate}
+          // The element's own metadata is the second duration source
+          // (`audioDuration`): whichever of it and the decode arrives first
+          // clamps the window to the end of the recording.
+          onLoadedMetadata={(e) => {
+            const d = e.currentTarget.duration;
+            if (Number.isFinite(d) && d > 0) setAudioDuration(d);
+          }}
+        />
+        {/* The TIMING widget (audio-first since 2026-08-26), in the bar's
+            place at the same anchor — the range editor's swap idiom. A
+            waveform strip of the SOURCE audio ±10s around the selected
+            CAPTIONS, the selection region overlaid with a drag handle at each
+            edge and a grabbable band between them, a playhead line while it
+            plays, and a row: Play/Pause · Loop · span readout · Apply ·
+            Cancel. Escape cancels (the body keydown); selection moves and
+            word-count changes close it (the sweep). */}
+        {timing !== null && timingWin !== null && menuPos !== null ? (
           <div
             data-testid="transcript-timing-popover"
             ref={menuRef}
@@ -2371,16 +2416,16 @@ export const TranscriptPanel: React.FC<{
               {timingHandleX !== null ? (
                 <>
                   {/* The BAND between the handles: a rigid PAN of both edges
-                      (`dragRunSpan`), the gesture for "these captions are all
-                      a beat late". Rendered BEFORE the handles so they paint
-                      over it — the two edges keep their own 12px zones, and
-                      the band only owns what is left between them. */}
+                      (`dragCaptionSpan`), the gesture for "these captions
+                      belong a beat later". Rendered BEFORE the handles so they
+                      paint over it — the two edges keep their own 12px zones,
+                      and the band only owns what is left between them. */}
                   <div
                     data-testid="transcript-timing-band"
                     title={
                       timedCaptionCount === 1
-                        ? "Drag to shift this caption, its duration intact"
-                        : "Drag to shift these captions, every duration intact"
+                        ? "Drag to move this caption onto the audio it belongs to, its duration intact"
+                        : "Drag to move these captions onto the audio they belong to, every duration intact"
                     }
                     onPointerDown={onTimingHandleDown("band")}
                     style={{
@@ -2390,7 +2435,7 @@ export const TranscriptPanel: React.FC<{
                       cursor: timingDrag?.edge === "band" ? "grabbing" : "grab",
                     }}
                   />
-                  {/* 12px hit zones centred on the span's edge lines — wider
+                  {/* 12px hit zones centred on the region's edge lines — wider
                       than the 2px grip they carry, or the drag would demand
                       pixel aim. Only pointerDOWN lives on the element: the
                       move and the release are window listeners (the drag
@@ -2399,8 +2444,8 @@ export const TranscriptPanel: React.FC<{
                     data-testid="transcript-timing-handle-lead"
                     title={
                       timedCaptionCount === 1
-                        ? "Drag to move when this caption comes in — the previous caption gives up the time"
-                        : "Drag to move when the first caption comes in — the previous caption gives up the time"
+                        ? "Drag to move when this caption comes in"
+                        : "Drag to move when the first caption comes in"
                     }
                     x={timingHandleX.lead}
                     active={timingDrag?.edge === "lead"}
@@ -2410,13 +2455,22 @@ export const TranscriptPanel: React.FC<{
                     data-testid="transcript-timing-handle-tail"
                     title={
                       timedCaptionCount === 1
-                        ? "Drag to move when this caption goes out — the next caption gives up the time"
-                        : "Drag to move when the last caption goes out — the next caption gives up the time"
+                        ? "Drag to move when this caption goes out"
+                        : "Drag to move when the last caption goes out"
                     }
                     x={timingHandleX.tail}
                     active={timingDrag?.edge === "tail"}
                     onPointerDown={onTimingHandleDown("tail")}
                   />
+                  {/* The playhead, only while something is playing — its own
+                      element rather than a canvas line, so following it costs
+                      no waveform redraw (the draw effect's note). */}
+                  {timingPlayhead !== null ? (
+                    <div
+                      data-testid="transcript-timing-playhead"
+                      style={{ ...timingPlayheadLine, left: timingToX(timingPlayhead) }}
+                    />
+                  ) : null}
                 </>
               ) : null}
             </div>
@@ -2429,32 +2483,52 @@ export const TranscriptPanel: React.FC<{
                   timingPlaying
                     ? "Pause"
                     : timedCaptionCount === 1
-                      ? "Play just this caption's span"
-                      : "Play just these captions' span"
+                      ? "Play the audio under this caption's window"
+                      : "Play the audio under these captions' window"
                 }
               >
                 {timingPlaying ? "Pause" : "Play"}
               </button>
+              <button
+                data-testid="transcript-timing-loop"
+                style={timingLoop ? { ...toolbarButton, ...toolbarButtonOn } : toolbarButton}
+                aria-pressed={timingLoop}
+                onClick={() => setTimingLoop((on) => !on)}
+                title={
+                  timingLoop
+                    ? "Stop at the end of the selection instead of repeating it"
+                    : "Repeat the selection so the same seconds can be checked against the words"
+                }
+              >
+                Loop
+              </button>
               <span data-testid="transcript-timing-span" style={menuLabel}>
-                {timedSpan.start.toFixed(2)}s – {timedSpan.end.toFixed(2)}s
+                {timing.newSpan.start.toFixed(2)}s – {timing.newSpan.end.toFixed(2)}s
                 {/* The CAPTION count, always — unlike the old word count it
                     is never noise: the gesture SNAPPED the selection to whole
                     captions, and the readout is where the user finds out how
                     many they are about to move. */}
                 {` · ${timedCaptionCount} caption${timedCaptionCount === 1 ? "" : "s"}`}
+                {/* The overlap is SAID as well as tinted: the tint answers
+                    "which ones", a word answers "is that deliberate?" —
+                    overlapping captions render stacked (`captionLineWindows`),
+                    which is legal and occasionally wanted. */}
+                {(timingCaptions ?? []).some((l) => overlappingKeys.has(l.key))
+                  ? " · overlaps"
+                  : ""}
               </span>
               <button
                 data-testid="transcript-timing-apply"
                 style={toolbarButton}
                 onClick={() => {
-                  // Non-null by construction — the popover only renders with
-                  // a previewed span, which is derived from these entries.
-                  if (timingEntries !== null) applyTiming(timingEntries);
+                  // Non-null by construction — the widget only renders with a
+                  // capture, which is what these entries are derived from.
+                  if (windowEntries !== null) applyWindows(windowEntries);
                 }}
                 title={
                   timedCaptionCount === 1
-                    ? "Store this caption's timing — the neighbour's matching seam moves with it"
-                    : "Store these captions' timing — one undo step for the whole gesture"
+                    ? "Store where this caption sits in the source audio"
+                    : "Store where these captions sit in the source audio — one undo step for the whole gesture"
                 }
               >
                 Apply
@@ -2463,7 +2537,7 @@ export const TranscriptPanel: React.FC<{
                 data-testid="transcript-timing-cancel"
                 style={toolbarButton}
                 onClick={() => setTiming(null)}
-                title="Discard the nudge (Esc)"
+                title="Discard the placement (Esc)"
               >
                 Cancel
               </button>
@@ -2656,20 +2730,44 @@ const editedStyle: React.CSSProperties = {
   color: "#FFE14D",
 };
 
-/** The word under the playhead — an underline ALWAYS (2026-08-18 round 3),
- * never a background or outline: the old dark box + blue outline vanished
- * against (and visually fought) the selection band, and ONE scheme that
- * composes with the selected/match/edited backgrounds beats per-state
- * variants. Known cost: while the playhead sits ON a hidden word, the
- * underline replaces its strike-through for that moment (single-property
- * textDecoration) — transient and accepted. */
+/**
+ * The word under the playhead — a ROUNDED-RECT background (2026-08-26), which
+ * is the shape the reference screenshot asks for and the differentiation from
+ * the selection band: same idea, different hue, and radius 4 against the
+ * band's deliberate square corners.
+ *
+ * Prior art, and why this is not a repeat of it: round 3 replaced a dark box
+ * + blue outline with an underline because that box "fought the band" — it
+ * was the same near-black fill the band's neighbours had, so the eye could not
+ * tell playhead from selection. A DISTINCT hue plus the corner difference is
+ * what settles that now. NO box-shadow bridge: that trick is selection-only
+ * (`selectedStyle`), where the point is one continuous band — bridging here
+ * would fuse the playing word into its neighbours and light up three.
+ *
+ * It also RESTORES strike-through on hidden words: `textDecoration` is a
+ * single property, so the old underline clobbered `hiddenStyle`'s line-through
+ * for exactly as long as the playhead sat on a hidden word. A background
+ * composes with it instead.
+ */
 const currentStyle: React.CSSProperties = {
-  textDecoration: "underline",
-  textUnderlineOffset: 4,
+  background: "#2E5CFF30",
+  color: "#F2F4FF",
+  borderRadius: 4,
+};
+
+/** A caption whose window overlaps another caption's (`captionLineWindows`:
+ * legal, tinted, never resolved). Amber TEXT rather than a background — the
+ * word may already be carrying the selection band or a search hit, and a
+ * fourth background would be the one that wins and hides them. */
+const overlappingWordStyle: React.CSSProperties = {
+  color: "#F0A53C",
 };
 
 /** Selected range — ONE continuous yellow band (2026-08-18 round 3, the
- * Opus look). Deliberately NO outline and radius 0: per-word outlines plus
+ * Opus look). Deliberately NO outline and radius 0 (restated explicitly
+ * 2026-08-26, when the playhead marker became a ROUNDED rect: square corners
+ * are now half of what tells the two apart, so this zero is load-bearing and
+ * not a default): per-word outlines plus
  * unstyled gaps at lineHeight 2 read as a checkerboard field, not a
  * selection, and rounded corners re-stripe the band at every span edge.
  *
@@ -2735,6 +2833,17 @@ const timingBand: React.CSSProperties = {
   top: 0,
   height: TIMING_CANVAS_H,
   touchAction: "none",
+};
+
+/** The widget's playhead while its audio plays — 1px, in the band's own
+ * yellow, `pointerEvents: none` so it never intercepts a drag it sits over. */
+const timingPlayheadLine: React.CSSProperties = {
+  position: "absolute",
+  top: 0,
+  width: 1,
+  height: TIMING_CANVAS_H,
+  background: "#FFFFFF",
+  pointerEvents: "none",
 };
 
 /** The VISIBLE part of a handle — the line the canvas draw already paints at
@@ -2867,6 +2976,16 @@ const toolbarButton: React.CSSProperties = {
   borderRadius: 6,
   cursor: "pointer",
   padding: "4px 8px",
+};
+
+/** A toolbar button that is ON — the Loop toggle. Spread OVER `toolbarButton`
+ * rather than replacing it, so the only difference between the two states is
+ * the thing that changed (`aria-pressed` carries the same fact for anyone not
+ * looking at the colour). */
+const toolbarButtonOn: React.CSSProperties = {
+  color: "#111",
+  background: "#FFE14D",
+  borderColor: "#FFE14D",
 };
 
 const editInput: React.CSSProperties = {

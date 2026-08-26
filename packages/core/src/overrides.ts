@@ -43,16 +43,75 @@ export const ElementTransformSchema = z.object({
 });
 export type ElementTransform = z.infer<typeof ElementTransformSchema>;
 
+/**
+ * A pinned scene window, in one of two clocks — the last unconverted
+ * old-clock field in the doc (source-anchoring audit, 2026-08-26).
+ *
+ *   {startSec, endSec} — LEGACY: absolute OUTPUT seconds on the clock of the
+ *     LAST RENDER. Semantics unchanged, and it stays in
+ *     `remapOverridesThroughRecut`'s hands: a re-cut moves those numbers.
+ *   {srcStart, srcEnd} — SOURCE seconds, the §155 principle ("key on the
+ *     property the disruption cannot move") that `cuts[].src`,
+ *     `cleanup.kept`, `splits[].src` and the caption keys already anchor on.
+ *     RECUT-IMMUNE by construction: the remap passes it through untouched,
+ *     and it is resolved onto whichever clock is in hand by
+ *     `resolveTimingPin`.
+ *
+ * The same DELIBERATE divergence `SplitSchema.src` claims applies here: the
+ * editor MAY write the src shape. A cut is a RANGE over props the editor did
+ * not compute; a pinned window is a pair of POINTS on a clock the editor
+ * holds exactly — the drag preview's own clock, converted at the gesture
+ * (`previewClockMappers.toSourceSec` under a live veto,
+ * `mapFromKeptSpans(spans).toSource` otherwise). That gesture-time
+ * conversion IS the fix: with a veto live, the preview seconds spoke the
+ * LIVE clock while `timing` spoke the last render's, so a dragged block was
+ * stored seconds from where it was dropped and snapped back (or vanished) on
+ * the next derive.
+ *
+ * No third shape and no dual-write: one of these is authoritative, and a
+ * doc that recorded both would need a rule for which clock wins after a
+ * re-cut moved only one of them.
+ */
+export const SceneTimingSchema = z.union([
+  z.object({
+    startSec: z.number().finite().nonnegative(),
+    endSec: z.number().finite().nonnegative(),
+  }),
+  // `.finite()` stated rather than assumed, `SplitSchema`'s reasoning: an
+  // overflowing literal (`1e400`) parses to Infinity, and a non-finite
+  // source second would resolve through `TimeMap` into a window nothing can
+  // render.
+  z
+    .object({
+      srcStart: z.number().finite().nonnegative(),
+      srcEnd: z.number().finite().nonnegative(),
+    })
+    // Ordered, because unlike the legacy arm there is no downstream clamp
+    // that could rescue it: `resolveTimingPin` maps both edges through the
+    // same map, so an inverted pair stays inverted and reaches `SceneLayer`,
+    // which assumes increasing windows.
+    .refine((t) => t.srcEnd > t.srcStart, { message: "srcEnd must be after srcStart" }),
+]);
+export type SceneTiming = z.infer<typeof SceneTimingSchema>;
+
+/** The src-anchored arm of `SceneTimingSchema` — a guard, so no consumer
+ * re-derives the discriminant (and gets it subtly wrong on a doc where a
+ * legacy entry happens to carry an extra key). */
+export function isSrcTiming(timing: SceneTiming): timing is { srcStart: number; srcEnd: number } {
+  return "srcStart" in timing;
+}
+
 export const SceneOverrideSchema = z.object({
   /** Merged over the producer's props, key by key. */
   props: z.record(z.string(), z.unknown()).default({}),
   /** Per-element nudges, keyed by the component's `data-edit-id`. */
   elements: z.record(z.string(), ElementTransformSchema).default({}),
   /**
-   * Absolute output time. Setting this PINS the scene: it stops tracking the
+   * An absolute window. Setting this PINS the scene: it stops tracking the
    * words it was anchored to, which is why the UI has to say so out loud.
+   * `SceneTimingSchema` above owns which clock the numbers speak.
    */
-  timing: z.object({ startSec: z.number().nonnegative(), endSec: z.number().nonnegative() }).optional(),
+  timing: SceneTimingSchema.optional(),
   /**
    * Component/layout swaps (design spec Scope: v1 in-scope). Optional — most
    * scenes never touch these — and validated against the same enums the
@@ -474,6 +533,62 @@ export const OverrideDocSchema = z.object({
     )
     .default({}),
   /**
+   * Per-LINE caption display WINDOWS — "show this caption from HERE to HERE",
+   * an ABSOLUTE span in SOURCE seconds, keyed by the LINE's FIRST WORD's
+   * SOURCE time (`captionKeyFor`, §137) like `captionLineTiming` above.
+   * Written by the editor's audio-first timing tool, which does all of its
+   * arithmetic against the waveform — SOURCE audio, the one clock a re-cut
+   * cannot move — so what the user heard while dragging is literally what is
+   * stored. Applied by `applyCaptionLineWindows` AFTER the nudge layer, which
+   * is what makes a window the LAST word on a line it is stored for.
+   *
+   * ABSOLUTE, NOT A DELTA, and that is the difference from `captionLineTiming`
+   * rather than a duplication of it. A nudge asks the derived window to move a
+   * bit and therefore has to be interpreted against whatever the derivation
+   * produced this run; a window states the answer. That is why this record
+   * needs NO SWEEP, NO COINCIDENCE RULE AND NO NEIGHBOUR WRITES: the sweep in
+   * `applyCaptionLineTiming` exists to keep SEAM edits ordered, and an
+   * absolute window is not a seam edit — the user placed it against the audio
+   * and only the user gets to say two captions may not share a moment.
+   * OVERLAP IS THEREFORE LEGAL here (the renderer mounts overlapping
+   * `<Sequence>`s happily, `CaptionTrack.tsx`); the editor TINTS a conflict
+   * instead of resolving it, because the neighbour it would have to move is
+   * material the user may be about to place too.
+   *
+   * Recut-immune BY CONSTRUCTION — both the key and the value are source
+   * seconds, so there is nothing in this record for `remapOverridesThroughRecut`
+   * to re-anchor and it deliberately has no entry there (the `splits[].src`
+   * property, and the reason the deltas above need none either). It DOES get
+   * re-keyed by `rekeyCaptionRecords` when a range re-transcription moves the
+   * stamps under it (Phase A): the KEY names a word whose stamp moved, and the
+   * value is a window the user placed against audio that did not.
+   *
+   * The floor and the ordering are the schema's, not a clamp: a window
+   * narrower than `MIN_CAPTION_SEC` is a delete wearing a timing gesture's
+   * clothes (the constant's own docstring) and an inverted one would mirror
+   * the line's word order through `scaleWordsIntoWindow`. The layer clamps
+   * once more in OUTPUT seconds anyway, because a cut INSIDE the window can
+   * narrow it however wide the source span was. `.default({})` keeps every
+   * pre-existing overrides.json parsing byte-identically, and the field never
+   * existed in the legacy positional-key era, so `migrateCaptionKeys` must not
+   * process it.
+   */
+  captionLineWindows: z
+    .record(
+      z.string(),
+      z
+        .object({ srcStart: z.number(), srcEnd: z.number() })
+        // The message states the floor literally rather than interpolating
+        // the constant: this schema is built at module load, `MIN_CAPTION_SEC`
+        // is declared further down, and a template literal here would read it
+        // in its temporal dead zone (the refine CALLBACK runs at parse time,
+        // long after, so it may name it).
+        .refine((w) => w.srcEnd - w.srcStart >= MIN_CAPTION_SEC, {
+          message: "caption window must be at least 50ms (MIN_CAPTION_SEC) wide, ordered start → end",
+        }),
+    )
+    .default({}),
+  /**
    * Scene split points (R16 §61 — Cmd/Ctrl+B at the playhead). Since the
    * cut-review rework (2026-08-26) `src` — SOURCE seconds — is the
    * authoritative anchor when present (recut-immune, the `cleanup.kept`
@@ -696,6 +811,77 @@ function effectiveOverride(
   };
 }
 
+/**
+ * A pinned window resolved onto the clock `map` defines — `resolveSplitPoints`'
+ * posture, for windows instead of points.
+ *
+ * A LEGACY entry passes through verbatim and needs no map at all: its numbers
+ * are already output seconds, meaningful exactly when `map` IS that clock
+ * (produce's situation after `remapOverridesThroughRecut` re-anchored them,
+ * and the editor's pass-1). A SRC entry maps both edges; `null` on EITHER
+ * means the material this pin names is removed on this clock, so the pin is
+ * INERT this run — never half-resolved and never clamped onto a seam, the
+ * `cleanup.kept`/`resolveSplitPoints` inert-entry posture: the doc keeps the
+ * entry and it wakes up when that material is kept again.
+ */
+export function resolveTimingPin(
+  timing: SceneTiming,
+  map: TimeMap,
+): { startSec: number; endSec: number } | null {
+  if (!isSrcTiming(timing)) return { startSec: timing.startSec, endSec: timing.endSec };
+  const startSec = map.toOutput(timing.srcStart);
+  const endSec = map.toOutput(timing.srcEnd);
+  if (startSec === null || endSec === null) return null;
+  return { startSec, endSec };
+}
+
+/**
+ * Resolve every SRC-anchored pin in `doc` onto the clock `map` defines,
+ * leaving a doc whose `timing` entries are all output-clock — what
+ * `applyOverrides` (and, downstream of it, `reclampPinnedTiming`) consumes.
+ *
+ * A PRE-PASS rather than a `map` parameter on `applyOverrides` deliberately:
+ * that function is called four times across two callers, on three different
+ * clocks, and an optional map would let a src pin silently no-op wherever the
+ * argument was forgotten. This shape makes the clock an explicit decision at
+ * every call site — the caller states which cue list, and therefore which
+ * clock, it is about to merge onto.
+ *
+ * The returned doc is for THAT merge only and must never be written back:
+ * persisting the resolved numbers would spend the source anchor and put the
+ * pin back on an old clock, which is the whole bug this schema arm fixes.
+ * Docs with no src pin get the SAME object back, so a session that has never
+ * written one computes bit-identical values to before this existed.
+ */
+export function resolveSrcTimingPins(
+  doc: OverrideDoc,
+  map: TimeMap,
+): { doc: OverrideDoc; reports: string[] } {
+  const pinned = Object.keys(doc.scenes).filter((id) => {
+    const t = doc.scenes[id]?.timing;
+    return t !== undefined && isSrcTiming(t);
+  });
+  if (pinned.length === 0) return { doc, reports: [] };
+  const reports: string[] = [];
+  const scenes = { ...doc.scenes };
+  for (const id of pinned) {
+    const scene = scenes[id]!;
+    const window = resolveTimingPin(scene.timing!, map);
+    if (window === null) {
+      // The pin LEAVES this doc rather than being carried unresolved: an
+      // unresolved src entry reaching `applyOverrides` is ignored there
+      // anyway, and dropping it here is what makes that ignoring provable
+      // rather than incidental.
+      const { timing: _inert, ...rest } = scene;
+      scenes[id] = rest;
+      reports.push(`pinned timing for "${id}" is not in this cut — pin inert`);
+      continue;
+    }
+    scenes[id] = { ...scene, timing: window };
+  }
+  return { doc: { ...doc, scenes }, reports };
+}
+
 export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): AppliedOverrides {
   const ids = new Set(cues.map((c) => c.id));
   const orphans = Object.keys(doc.scenes).filter((id) => !ids.has(id));
@@ -734,7 +920,13 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       // window to its first half — which kept the scene's id — would undo
       // the cut and overlap the second half. An unsplit pinned cue skips a
       // byte-identical re-application; a not-yet-pinned cue pins as before.
-      ...(o.timing && !cue.pinned
+      // A SRC-anchored pin is NOT applied here: this function has no map, and
+      // the numbers it would need depend on which clock `cues` is on. The
+      // caller resolves them first (`resolveSrcTimingPins`, above) — reaching
+      // this branch with a src entry means no pre-pass ran, and doing nothing
+      // is the only honest answer available (guessing an output window from a
+      // source second is exactly the old-clock lie this arm removes).
+      ...(o.timing && !isSrcTiming(o.timing) && !cue.pinned
         ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true }
         : {}),
     };
@@ -2080,11 +2272,100 @@ export function applyCaptionLineTiming(
   return { lines: out, dropped };
 }
 
+/**
+ * Apply per-LINE caption display WINDOWS (`captionLineWindows`) — the LAST
+ * layer of all, after the nudges, because a window is the user's FINAL answer
+ * about when a caption is on screen: it is stated absolutely, so anything that
+ * ran before it (a derived window, a nudge on top of that window) is exactly
+ * what it is overriding. A line carrying both records therefore shows its
+ * window, and the nudge is inert rather than compounded — the audio-first tool
+ * that writes windows replaced the nudge popover, so the pair only coexists on
+ * docs edited across the change.
+ *
+ * SOURCE SECONDS IN, OUTPUT SECONDS OUT. The window is stored against the
+ * waveform's clock (`captionLineWindows`' docstring: the one clock a re-cut
+ * cannot move) and the caption track speaks output seconds, so each edge goes
+ * through `map.toOutputClamped` — the same conversion `buildCaptionLines` uses
+ * for the derived windows this replaces, with the same documented behaviour on
+ * material that was cut: the edge lands on the nearest KEPT edge rather than
+ * disappearing. A window whose material was removed ENTIRELY collapses both
+ * edges onto one instant and comes back out at the floor below, sitting on the
+ * seam: the user's window is kept and made visible, not silently dropped,
+ * because the cut is the thing they are more likely to be about to undo.
+ *
+ * NO SWEEP, DELIBERATELY — see the field's docstring. Windows may overlap;
+ * ordering against neighbours is not this layer's business, and every line
+ * whose key carries no entry comes back VERBATIM (same reference, same word
+ * stamps) so one placed caption cannot perturb the rest of the track. The
+ * MIN_CAPTION_SEC floor is the ONE clamp, applied in output seconds because a
+ * cut inside the window can narrow it however wide the source span was.
+ *
+ * Words are re-stamped into the new window by `scaleWordsIntoWindow` — the
+ * karaoke highlight reads word stamps INSIDE the line's `<Sequence>`
+ * (`CaptionTrack.tsx`), so a window moved without them lights the wrong words
+ * or none.
+ *
+ * Same reporting contract as every other per-line layer: an anchor no line
+ * starts on is `found: null` (a cut removed the word, or a hide emptied the
+ * line), a second claimant is `duplicate-anchor`, and `expected` is always
+ * `""` because timing is text-orthogonal (`applyCaptionLineTiming`'s no-`was`
+ * reasoning applies unchanged).
+ */
+export function applyCaptionLineWindows(
+  lines: readonly CaptionLine[],
+  windows: Record<string, { srcStart: number; srcEnd: number }>,
+  map: TimeMap,
+): AppliedCaptionEdits {
+  const dropped: AppliedCaptionEdits["dropped"] = [];
+  // NO LINES is not "no windows to report" — `applyCaptionLineTiming`'s own
+  // note owns the why (silence here let produce report placements that never
+  // happened); the editor's false-banner guard lives at the caller.
+  if (lines.length === 0) {
+    for (const key of Object.keys(windows)) dropped.push({ key, expected: "", found: null });
+    return { lines: [], dropped };
+  }
+  if (Object.keys(windows).length === 0) return { lines: [...lines], dropped };
+
+  const seen = new Set<string>();
+  const out = lines.map((line) => {
+    // No anchor, no window — the same boundary rule as `applyCaptionEdits`: a
+    // pre-§137 word cannot be addressed, and the stored windows then fall out
+    // of the sweep below as `found: null`.
+    const key = captionAnchorOf(line.words[0]);
+    const entry = key === null ? undefined : windows[key];
+    if (key === null || !entry) return line;
+    // An earlier line already answered for this anchor — placing here too
+    // would fan one window onto a second line (captions.ts:44-50: ms-quantised
+    // anchors CAN collide).
+    if (seen.has(key)) {
+      dropped.push({ key, expected: "", found: line.words[0]!.text, reason: "duplicate-anchor" });
+      return line;
+    }
+    seen.add(key);
+    const start = map.toOutputClamped(entry.srcStart);
+    const end = Math.max(map.toOutputClamped(entry.srcEnd), start + MIN_CAPTION_SEC);
+    if (start === line.start && end === line.end) return line;
+    return {
+      ...line,
+      start,
+      end,
+      words: scaleWordsIntoWindow(line.words, line.start, line.end, start, end),
+    };
+  });
+
+  for (const key of Object.keys(windows)) {
+    if (!seen.has(key)) dropped.push({ key, expected: "", found: null });
+  }
+  return { lines: out, dropped };
+}
+
 export interface AppliedCaptionLayers {
   lines: CaptionLine[];
   /** Every layer's drop reports, tagged with which layer refused them. */
   dropped: Array<
-    AppliedCaptionEdits["dropped"][number] & { layer: "edit" | "range" | "hide" | "timing" }
+    AppliedCaptionEdits["dropped"][number] & {
+      layer: "edit" | "range" | "hide" | "timing" | "window";
+    }
   >;
 }
 
@@ -2108,22 +2389,34 @@ export interface AppliedCaptionLayers {
  * window to move (`applyCaptionLineTiming`). Drop reports carry which layer
  * refused them, since "the retype missed", "the rewrite missed" and "the
  * delete missed" send the user to different gestures.
+ *
+ * WINDOWS run after the nudges, last of all — `applyCaptionLineWindows` owns
+ * the why (an absolute answer overrides a relative one, never compounds with
+ * it). That layer is the reason this composer takes a `map`: a window is
+ * stored in SOURCE seconds and the caption track speaks output seconds, so
+ * placing one needs the same cutlist the lines were built through. Required,
+ * not optional — a caller without a map would silently skip the layer, which
+ * is how the editor preview and the render would come to disagree about when
+ * a caption is on screen (the one thing this chokepoint exists to prevent).
  */
 export function applyCaptionLayers(
   lines: readonly CaptionLine[],
   doc: OverrideDoc,
+  map: TimeMap,
 ): AppliedCaptionLayers {
   const edited = applyCaptionEdits(lines, doc.captions);
   const ranged = applyCaptionRangeEdits(edited.lines, doc.captionRangeEdits);
   const hidden = applyCaptionWordHides(ranged.lines, doc.captionWordsHidden);
   const timed = applyCaptionLineTiming(hidden.lines, doc.captionLineTiming);
+  const windowed = applyCaptionLineWindows(timed.lines, doc.captionLineWindows, map);
   return {
-    lines: timed.lines,
+    lines: windowed.lines,
     dropped: [
       ...edited.dropped.map((d) => ({ ...d, layer: "edit" as const })),
       ...ranged.dropped.map((d) => ({ ...d, layer: "range" as const })),
       ...hidden.dropped.map((d) => ({ ...d, layer: "hide" as const })),
       ...timed.dropped.map((d) => ({ ...d, layer: "timing" as const })),
+      ...windowed.dropped.map((d) => ({ ...d, layer: "window" as const })),
     ],
   };
 }

@@ -1,4 +1,4 @@
-import { SPLIT_MIN_PIECE_SEC, type OverrideDoc } from "./overrides";
+import { isSrcTiming, SPLIT_MIN_PIECE_SEC, type OverrideDoc } from "./overrides";
 import type { Segment } from "./schema";
 import { mapsClose, TimeMap } from "./timemap";
 
@@ -136,6 +136,14 @@ export function remapOverridesThroughRecut(
   const scenes = Object.fromEntries(
     Object.entries(doc.scenes).map(([id, scene]) => {
       if (!scene.timing) return [id, scene];
+      // A SRC-anchored pin is not remapped, for the same reason `cuts` below
+      // and `cleanup.kept` are not: source seconds are the one clock a re-cut
+      // cannot move, so re-anchoring one could only ever corrupt it — and a
+      // pin inside material THIS re-cut removed has no image on the new
+      // clock at all, which `remapPoint` would answer by clamping it onto
+      // the seam instead of leaving it inert (`resolveTimingPin` is where
+      // that verdict belongs). Legacy old-clock pins keep the remap verbatim.
+      if (isSrcTiming(scene.timing)) return [id, scene];
       const startSec = remapPoint(`"${id}" pinned start`, scene.timing.startSec, oldMap, newMap, reports);
       const endSec = remapPoint(`"${id}" pinned end`, scene.timing.endSec, oldMap, newMap, reports);
       return [id, { ...scene, timing: { startSec, endSec } }];

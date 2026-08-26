@@ -3,8 +3,11 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyOverrides,
   livePreviewMap,
   previewClockMappers,
+  resolveSrcTimingPins,
+  type OverrideDoc,
   type KeptSpan,
   type SceneCue,
   type Segment,
@@ -611,7 +614,13 @@ describe("Timeline — removal marker lane (field report 2026-08-26)", () => {
     { srcIn: 7, srcOut: 10, outIn: 5, outOut: 8 },
   ];
 
-  function LaneHarness({ onDoc }: { onDoc?: (kept: { srcIn: number; srcOut: number }[]) => void }) {
+  function LaneHarness({
+    onDoc,
+    onRevived,
+  }: {
+    onDoc?: (kept: { srcIn: number; srcOut: number }[]) => void;
+    onRevived?: (srcIn: number, srcOut: number) => void;
+  }) {
     const edits = useEdits();
     React.useEffect(() => {
       onDoc?.(edits.doc.cleanup.kept);
@@ -627,6 +636,7 @@ describe("Timeline — removal marker lane (field report 2026-08-26)", () => {
       selection: null,
       onSelect: vi.fn(),
       edits,
+      ...(onRevived ? { onRevived } : {}),
     });
   }
 
@@ -666,6 +676,25 @@ describe("Timeline — removal marker lane (field report 2026-08-26)", () => {
     });
     expect(kept).toEqual([]);
     expect(container.querySelector('[data-testid="timeline-kept-band-5-7"]')).toBeNull();
+  });
+
+  it("reports the revived range on the KEEP click only — a re-remove fires nothing", async () => {
+    const onRevived = vi.fn();
+    await act(async () => {
+      root.render(React.createElement(LaneHarness, { onRevived }));
+    });
+    const chip = container.querySelector<HTMLElement>('[data-testid="timeline-removal-5-7"]')!;
+    await act(async () => {
+      chip.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(onRevived.mock.calls).toEqual([[5, 7]]);
+    // Clicking the now-vetoed chip re-removes the material: re-decoding audio
+    // that is leaving the cut again is work nothing can display (Phase A).
+    const after = container.querySelector<HTMLElement>('[data-testid="timeline-removal-5-7"]')!;
+    await act(async () => {
+      after.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(onRevived).toHaveBeenCalledTimes(1);
   });
 
   it("no cutlist, no lane — the row never renders empty chrome", async () => {
@@ -831,5 +860,174 @@ describe("Timeline — marker context menu, dismissal, revived block", () => {
     expect(block).not.toBeNull();
     expect(block.textContent).toContain("KEPT");
     expect(block.style.border).toContain("dashed");
+  });
+});
+
+/**
+ * Source-anchored scene timing (2026-08-26) — THE field bug: with a cleanup
+ * veto live, dragging or edge-trimming a scene block landed it seconds away
+ * and snapped back on the next derive. The preview numbers speak the LIVE
+ * clock; `scenes[*].timing` used to mean LAST-RENDER seconds, so the commit
+ * silently changed clock. The commit now writes SOURCE seconds
+ * (`SceneTimingSchema`) through the same mapper ⌘B resolves `splits[].src`
+ * with.
+ */
+describe("Timeline — a drag commit is source-anchored under a live veto", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let realRect: () => DOMRect;
+
+  // Produce's labelled removals: two fillers. The user vetoes the FIRST
+  // (2–4s of source), which is what opens the live clock; the second stays
+  // removed, and its 2 seconds are exactly the shear that made the old
+  // write wrong for everything after it.
+  const proposal: Segment[] = [
+    { srcIn: 0, srcOut: 2, kind: "keep" },
+    { srcIn: 2, srcOut: 4, kind: "remove", reason: "filler" },
+    { srcIn: 4, srcOut: 6, kind: "keep" },
+    { srcIn: 6, srcOut: 8, kind: "remove", reason: "filler" },
+    { srcIn: 8, srcOut: 40, kind: "keep" },
+  ];
+  // What the LAST RENDER produced (both removals applied): 36s of output.
+  const renderSpans: KeptSpan[] = [
+    { srcIn: 0, srcOut: 2, outIn: 0, outOut: 2 },
+    { srcIn: 4, srcOut: 6, outIn: 2, outOut: 4 },
+    { srcIn: 8, srcOut: 40, outIn: 4, outOut: 36 },
+  ];
+  const clocks = livePreviewMap(
+    proposal,
+    { reasons: {}, kept: [{ srcIn: 2, srcOut: 4 }], dismissed: [] },
+    [],
+    renderSpans,
+  )!;
+  // The live clock the timeline draws: 0–6 is source 0–6, 6–34 is source
+  // 8–40. So live 13s IS source 15s — the two numbers the writer must not
+  // confuse.
+  const LIVE_DURATION = 34;
+  const PX_PER_SEC = 100;
+  const liveCue: SceneCue = { ...cue, startSec: 10, endSec: 14 };
+
+  function VetoHarness({ docRef }: { docRef: { current: OverrideDoc } }) {
+    const edits = useEdits();
+    docRef.current = edits.doc;
+    return React.createElement(Timeline, {
+      cues: [liveCue],
+      ghosts: [],
+      cuts: edits.doc.cuts,
+      durationSec: LIVE_DURATION,
+      fps: 30,
+      playerRef: { current: null } as never,
+      selection: null,
+      onSelect: vi.fn(),
+      edits,
+      // App's own wiring: `previewClockMappers(liveRecut).toSourceSec`.
+      pinSourceSec: previewClockMappers(clocks).toSourceSec,
+    });
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    // jsdom lays nothing out, so the track has zero width and every drag
+    // computes a zero delta. 100px per second across the live duration.
+    realRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (): DOMRect {
+      return {
+        left: 0, top: 0, right: LIVE_DURATION * PX_PER_SEC, bottom: 40,
+        width: LIVE_DURATION * PX_PER_SEC, height: 40, x: 0, y: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    };
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    Element.prototype.getBoundingClientRect = realRect;
+  });
+
+  async function drag(target: HTMLElement, fromX: number, toX: number) {
+    await act(async () => {
+      target.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: fromX }),
+      );
+    });
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: toX }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: toX }));
+    });
+  }
+
+  it("a body drag stores SOURCE seconds, and the block re-derives where it was dropped", async () => {
+    const docRef = { current: null as unknown as OverrideDoc };
+    await act(async () => {
+      root.render(React.createElement(VetoHarness, { docRef }));
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-scene-0"]')!;
+    // +3s on the live clock: the block goes from 10–14 to 13–17.
+    await drag(block, 1100, 1400);
+
+    const timing = docRef.current.scenes["scene-0"]!.timing!;
+    // Live 13–17 IS source 15–19 (both past the removal the veto did NOT
+    // touch), and source is what the doc holds.
+    expect(timing).toEqual({ srcStart: 15, srcEnd: 19 });
+
+    // Re-derive: the pin resolves back onto the live clock at exactly where
+    // the user dropped it — the assertion the field bug failed.
+    const resolved = resolveSrcTimingPins(docRef.current, clocks.newMap).doc;
+    const { cues: rederived } = applyOverrides([liveCue], resolved);
+    expect(rederived[0]!.startSec).toBeCloseTo(13, 6);
+    expect(rederived[0]!.endSec).toBeCloseTo(17, 6);
+    expect(rederived[0]!.pinned).toBe(true);
+
+    // What the OLD write did, stated once: the same 13 read as a LAST-RENDER
+    // second is source 17, which is live 15 — the block landing 2s away and
+    // snapping back.
+    expect(clocks.newMap.toOutput(clocks.oldMap.toSource(13))).toBeCloseTo(15, 6);
+  });
+
+  it("an edge trim stores SOURCE seconds too — both commit sites, one rule", async () => {
+    const docRef = { current: null as unknown as OverrideDoc };
+    await act(async () => {
+      root.render(React.createElement(VetoHarness, { docRef }));
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-scene-0"]')!;
+    // The two edge handles are the block's last children (start, then end).
+    const handles = block.querySelectorAll<HTMLElement>(":scope > div");
+    const endHandle = handles[handles.length - 1]!;
+    // Pull the END edge 2s right: live 10–16, source 12–18.
+    await drag(endHandle, 1400, 1600);
+
+    expect(docRef.current.scenes["scene-0"]!.timing).toEqual({ srcStart: 12, srcEnd: 18 });
+  });
+
+  it("with no mapper the commit falls back to today's legacy write", async () => {
+    const docRef = { current: null as unknown as OverrideDoc };
+    function NoMapperHarness() {
+      const edits = useEdits();
+      docRef.current = edits.doc;
+      return React.createElement(Timeline, {
+        cues: [liveCue],
+        ghosts: [],
+        cuts: edits.doc.cuts,
+        durationSec: LIVE_DURATION,
+        fps: 30,
+        playerRef: { current: null } as never,
+        selection: null,
+        onSelect: vi.fn(),
+        edits,
+      });
+    }
+    await act(async () => {
+      root.render(React.createElement(NoMapperHarness));
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-scene-0"]')!;
+    await drag(block, 1100, 1400);
+    expect(docRef.current.scenes["scene-0"]!.timing).toEqual({ startSec: 13, endSec: 17 });
   });
 });

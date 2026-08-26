@@ -1,6 +1,7 @@
 import {
   applyCaptionEdits,
   applyCaptionLineTiming,
+  applyCaptionLineWindows,
   applyCaptionRangeEdits,
   applyCaptionWordHides,
   buildCaptionLines,
@@ -39,7 +40,7 @@ export interface LiveCaptionTrack {
   /** Post-timing — what the Player renders. */
   lines: CaptionLine[];
   /**
-   * The TIMING layer's unplaced nudges. Re-packing is why this must leave the
+   * The TIMING and WINDOW layers' unplaced entries. Re-packing is why this must leave the
    * function: the rebuilt track is packed fresh from the transcript over
    * material the last render never had, so a stored nudge's key can stop
    * being any line's FIRST word even though its word is still on screen. The
@@ -91,5 +92,16 @@ export function rebuildCaptionTrack(
   const liveLines = applyCaptionRangeEdits(edited, doc.captionRangeEdits).lines;
   const timingLines = applyCaptionWordHides(liveLines, doc.captionWordsHidden).lines;
   const timed = applyCaptionLineTiming(timingLines, doc.captionLineTiming);
-  return { baseLines, liveLines, timingLines, lines: timed.lines, dropped: timed.dropped };
+  // WINDOWS last of all, on the map this track was just built through —
+  // `applyCaptionLayers`' order, and the reason the layer needs a map at all:
+  // a window is stored in SOURCE seconds precisely so it survives the re-cut
+  // that produced this clock, and `toOutputClamped` is where it lands on it.
+  const windowed = applyCaptionLineWindows(timed.lines, doc.captionLineWindows, map);
+  return {
+    baseLines,
+    liveLines,
+    timingLines,
+    lines: windowed.lines,
+    dropped: [...timed.dropped, ...windowed.dropped],
+  };
 }

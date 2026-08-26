@@ -9,6 +9,7 @@ import {
   clearTiming,
   emptyOverrideDoc,
   mintSplitId,
+  rekeyCaptionRecords,
   restoreElement,
   setElementTransform,
   stampSceneAnchors,
@@ -18,6 +19,8 @@ import {
   type RemovalReason,
   type SceneComponentId,
   type SceneCue,
+  type SceneTiming,
+  type StampMove,
 } from "@ossclip/core/browser";
 
 /** A hand-set graphic slot, frame fractions (R11 Task 2). */
@@ -67,7 +70,11 @@ export type EditAction =
    * `hideScene`/`restoreScene` below. */
   | { type: "hideElement"; sceneId: string; elementId: string }
   | { type: "restoreElement"; sceneId: string; elementId: string }
-  | { type: "patchTiming"; sceneId: string; startSec: number; endSec: number }
+  /** The pinned window, in whichever clock the writer resolved at the
+   * gesture (`SceneTimingSchema`) — stored VERBATIM: this reducer is not a
+   * place where clocks get converted, because it has no map and could only
+   * guess at which one the caller meant. */
+  | { type: "patchTiming"; sceneId: string; timing: SceneTiming }
   | {
       type: "patchVideo";
       sceneId: string;
@@ -181,6 +188,29 @@ export type EditAction =
       type: "patchCaptionLineTiming";
       entries: Array<{ srcStart: number; lead: number; tail: number }>;
     }
+  /** Per-LINE caption display WINDOWS (`captionLineWindows`) — the audio-first
+   * timing tool's write. `window` is an ABSOLUTE span in SOURCE seconds (what
+   * the user dragged against the waveform), `srcStart` the LINE's FIRST WORD's
+   * source time, i.e. the key (§137, the `patchCaption` anchor contract:
+   * callers pre-validate with `captionAnchorOf`, and `captionKeyFor` throwing
+   * on a non-finite `srcStart` is by design).
+   *
+   * BULK, like `patchCaptionLineTiming` above, but for a different reason:
+   * windows share no seams — one Apply places EVERY line in the selection, and
+   * that is one gesture and one undo step (the `hideCaptionWords` precedent).
+   * `window: null` DELETES the key, which is what the widget sends for a line
+   * dragged back onto its derived position: an entry that restates the
+   * derivation is still an override (the clearVideo/patchCaption
+   * clear-override rule), and the caller owns that comparison because only it
+   * knows the derived window. A fold that changes nothing returns the SAME
+   * state rather than minting a phantom undo step. */
+  | {
+      type: "patchCaptionLineWindows";
+      entries: Array<{
+        srcStart: number;
+        window: { srcStart: number; srcEnd: number } | null;
+      }>;
+    }
   /** Hide the selection's words from the captions in ONE commit — one gesture,
    * one undo step (the `patchCaptionStyleAll` precedent). Same anchor contract
    * as `patchCaption` above: callers pre-validate with `captionAnchorOf`, and
@@ -218,6 +248,15 @@ export type EditAction =
   | { type: "toggleKept"; srcIn: number; srcOut: number }
   | { type: "dismissRemoval"; srcIn: number; srcOut: number }
   | { type: "restoreDismissed"; srcIn: number; srcOut: number }
+  /**
+   * Move every caption record onto the stamps a range re-transcription just
+   * corrected (Phase A, 2026-08-26). The mapping is EXACT — it comes out of
+   * the splice `/api/retranscribe-range` performed, not out of a search — and
+   * the server deliberately does not apply it: `overrides.json` is
+   * client-owned, so the re-key has to happen HERE, as one commit, so one ⌘Z
+   * takes it back with the keep that triggered it.
+   */
+  | { type: "rekeyCaptionKeys"; mapping: readonly StampMove[] }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -312,7 +351,7 @@ export function editReducer(state: EditState, action: EditAction): EditState {
           ...state.doc.scenes,
           [action.sceneId]: {
             ...scene,
-            timing: { startSec: action.startSec, endSec: action.endSec },
+            timing: action.timing,
           },
         },
       });
@@ -832,6 +871,44 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       if (!changed) return state;
       return commit({ ...state.doc, captionLineTiming: timing });
     }
+    case "patchCaptionLineWindows": {
+      // Every entry folded onto ONE draft record and committed once — one
+      // Apply is one gesture (see the action docstring), the same shape as
+      // `patchCaptionLineTiming` above.
+      let windows = state.doc.captionLineWindows;
+      let changed = false;
+      for (const entry of action.entries) {
+        const key = captionKeyFor(entry.srcStart);
+        if (entry.window === null) {
+          // Back on its derived position: DELETE the key rather than storing a
+          // window that says what the derivation already says (the clearVideo/
+          // patchCaption clear-override rule).
+          if (!(key in windows)) continue;
+          const { [key]: _dropped, ...rest } = windows;
+          windows = rest;
+          changed = true;
+          continue;
+        }
+        // Already carrying exactly this window — an Apply that moved nothing
+        // must not mint an undo step (`patchCaptionLineTiming`'s guard; the
+        // widget re-sends every selected line's window on every Apply, so an
+        // unchanged neighbour routinely comes back untouched).
+        const prev = windows[key];
+        if (
+          prev !== undefined &&
+          prev.srcStart === entry.window.srcStart &&
+          prev.srcEnd === entry.window.srcEnd
+        ) {
+          continue;
+        }
+        windows = { ...windows, [key]: { ...entry.window } };
+        changed = true;
+      }
+      // An unchanged document must not mint an undo step (the restoreScene
+      // no-op-guard shape).
+      if (!changed) return state;
+      return commit({ ...state.doc, captionLineWindows: windows });
+    }
     case "hideCaptionWords": {
       // ONE commit for the whole selection, however many words it holds —
       // "delete these four words" is one gesture and must be one undo step,
@@ -975,6 +1052,18 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         cleanup: { ...state.doc.cleanup, dismissed: rest },
       });
     }
+    case "rekeyCaptionKeys": {
+      // An empty mapping is the common answer (the re-decode agreed with the
+      // stamps already there), and it must NOT commit: a no-op undo step in
+      // the middle of the user's history is a ⌘Z that appears to do nothing.
+      if (action.mapping.length === 0) return state;
+      const { doc, reports } = rekeyCaptionRecords(state.doc, action.mapping);
+      // Parked entries are named rather than silently dropped (§137's
+      // never-misapply rule, which `rekeyCaptionRecords` carries) — console
+      // is where the editor's other layer reports already land.
+      for (const line of reports) console.warn(`caption re-key: ${line}`);
+      return commit(doc);
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -1065,8 +1154,8 @@ export function useEdits() {
       dispatch({ type: "hideElement", sceneId, elementId }),
     restoreElement: (sceneId: string, elementId: string) =>
       dispatch({ type: "restoreElement", sceneId, elementId }),
-    patchTiming: (sceneId: string, startSec: number, endSec: number) =>
-      dispatch({ type: "patchTiming", sceneId, startSec, endSec }),
+    patchTiming: (sceneId: string, timing: SceneTiming) =>
+      dispatch({ type: "patchTiming", sceneId, timing }),
     clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),
     patchVideo: (
       sceneId: string,
@@ -1119,6 +1208,9 @@ export function useEdits() {
     patchCaptionLineTiming: (
       entries: Array<{ srcStart: number; lead: number; tail: number }>,
     ) => dispatch({ type: "patchCaptionLineTiming", entries }),
+    patchCaptionLineWindows: (
+      entries: Array<{ srcStart: number; window: { srcStart: number; srcEnd: number } | null }>,
+    ) => dispatch({ type: "patchCaptionLineWindows", entries }),
     hideCaptionWords: (words: Array<{ srcStart: number; was: string }>) =>
       dispatch({ type: "hideCaptionWords", words }),
     restoreCaptionWords: (srcStarts: number[]) =>
@@ -1139,6 +1231,8 @@ export function useEdits() {
       dispatch({ type: "dismissRemoval", srcIn, srcOut }),
     restoreDismissed: (srcIn: number, srcOut: number) =>
       dispatch({ type: "restoreDismissed", srcIn, srcOut }),
+    rekeyCaptionKeys: (mapping: readonly StampMove[]) =>
+      dispatch({ type: "rekeyCaptionKeys", mapping }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

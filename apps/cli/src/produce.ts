@@ -11,7 +11,7 @@ import {
   statSync,
 } from "node:fs";
 import { cpus } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
   LayoutSchema,
@@ -46,6 +46,9 @@ import {
   COVER_PROVENANCE_BASENAME,
   coverDecision,
   coverHeadline,
+  coverInVideoWindow,
+  COVER_IN_VIDEO_CAP_SEC,
+  COVER_IN_VIDEO_FLOOR_SEC,
   readCoverProvenance,
   writeCoverProvenance,
   cropFilter,
@@ -101,6 +104,7 @@ import {
   dismissedRemovals,
   carveKeptTakes,
   resolveSplitPoints,
+  resolveSrcTimingPins,
   applyUserCuts,
   pruneHidesInsideCuts,
   loadConfig,
@@ -618,6 +622,15 @@ export interface ProduceOptions {
    */
   watermark?: boolean;
   /**
+   * `--cover-in-video` / `--no-cover-in-video` tri-state, the watermark's
+   * contract verbatim: true/false when TYPED, undefined when not — undefined
+   * lets the config's `coverInVideo` key supply the default
+   * (`resolveCoverInVideo`). Default OFF: the overlay paints over the first
+   * fraction of the hook, which only earns its place on the platforms that
+   * ignore an uploaded cover.
+   */
+  coverInVideo?: boolean;
+  /**
    * `--youtube` / `--no-youtube` tri-state, the watermark's exact contract:
    * true/false when TYPED, undefined when not — undefined lets the config's
    * `youtube` key supply the default (`resolveYoutube`). One flag covers the
@@ -694,6 +707,66 @@ export function resolveWatermark(
   configValue: boolean | undefined,
 ): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * The effective `--cover-in-video` switch — resolveWatermark's semantics
+ * verbatim: a TYPED flag always wins (so `--no-cover-in-video` beats a
+ * config-on), and only then does the config supply the default. The config
+ * side is `=== true`, never truthiness: a hand-edited `"coverInVideo": "yes"`
+ * must not coerce an overlay onto the first frames of every render
+ * (parse-don't-coerce, CLAUDE.md). Pure, so the whole flag × config matrix is
+ * testable without a config file on disk.
+ */
+export function resolveCoverInVideo(
+  flag: boolean | undefined,
+  configValue: boolean | undefined,
+): boolean {
+  return flag ?? configValue === true;
+}
+
+/**
+ * Where the cover image lives right now, most-specific first — the EDITOR
+ * panel's ladder (`currentCoverImage` in edit.ts), deliberately the same one:
+ * the destination the last cover render used (`cover.json`'s `out`), else
+ * this run's `<out>.cover.jpg`. Two surfaces disagreeing about which file IS
+ * the project's cover is how the overlay would end up showing a stale image
+ * the panel says was replaced.
+ *
+ * Pure — the caller owns the `existsSync` walk — so the ladder is assertable
+ * without a workdir. Note what it CANNOT return: the cover this run is about
+ * to write, which does not exist yet (produce renders the cover after the
+ * video). See the staging site for why that is the intended behavior.
+ */
+export function coverInVideoCandidates(p: {
+  provenanceOut?: string | null;
+  outPath: string;
+}): string[] {
+  const out: string[] = [];
+  if (p.provenanceOut) out.push(p.provenanceOut);
+  out.push(artifactPath(p.outPath, ".cover.jpg"));
+  return out;
+}
+
+/**
+ * Fixed subfolder the staged cover overlay lands in, never the public dir's
+ * root — `SIDE_IMAGE_SUBDIR`'s reasoning applied to a file produce names
+ * itself: the public dir can BE the user's own input folder (a --no-mezzanine
+ * file run), and a root-level `cover-in-video.jpg` would silently overwrite a
+ * file of theirs that happened to share the name. Nothing else writes into
+ * this subfolder, so a collision is impossible by construction.
+ */
+export const COVER_IN_VIDEO_SUBDIR = "cover-in-video";
+
+/**
+ * The staged overlay's SERVED name, from the cover image being copied. Keeps
+ * the source's own extension (lowercased) so a `.png` cover is not served as
+ * a `.jpg`, and stays POSIX-literal — never `path.join` — because this string
+ * is a URL read back by `staticFile()` and the editor's `/media/` mount, both
+ * of which split on `/` only (sideImageDestRel's Windows lesson).
+ */
+export function coverInVideoFileName(source: string): string {
+  return `${COVER_IN_VIDEO_SUBDIR}/cover${extname(source).toLowerCase()}`;
 }
 
 /**
@@ -3433,7 +3506,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // reshape `map` in time) — applied here, AFTER assembly and routing, so
   // hand edits sit on top of whatever the producer just planned. Never
   // written to production.json — that file is ours to overwrite.
-  const { cues: editedCues } = applyOverrides(routed.cues, overrideDoc);
+  // Src-anchored pins (SceneTimingSchema) resolved onto THIS run's clock
+  // before anything merges them — the same posture as `resolveSplitPoints`
+  // below, and the reason `applyOverrides` never takes a map. A LOCAL doc,
+  // deliberately not written back over `overrideDoc`: its `timing` entries
+  // are now output seconds, and letting one of those reach the sanctioned
+  // overrides.json write would spend the source anchor and put the pin back
+  // on a clock the next re-cut moves.
+  const pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
+  for (const r of pinnedDoc.reports) console.log(`  ⚠ ${r}`);
+  const { cues: editedCues } = applyOverrides(routed.cues, pinnedDoc.doc);
   // Scenes the user deleted in the editor drop here — their windows become
   // plain takes in the fill below, which is Task C's payoff for Task A.
   // `splitThenDropHidden`, not a bare `dropHiddenCues`: this runs before
@@ -3513,7 +3595,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (overrideDoc.splits.length > 0) {
     console.log(`▸ ${overrideDoc.splits.length} scene split(s) from the edit layer`);
   }
-  const { cues: mergedCues, orphans: rawOrphans } = applyOverrides(split, overrideDoc);
+  // `pinnedDoc.doc` again, not `overrideDoc`: this pass is on the SAME clock
+  // as the first (the split above does not move time), and a src pin that
+  // reached here unresolved would be ignored rather than applied.
+  const { cues: mergedCues, orphans: rawOrphans } = applyOverrides(split, pinnedDoc.doc);
   // Halves of a TAKE the user deleted after splitting: a take id only exists
   // once the fill above runs, so its `id@<split id>` half couldn't have been seen by
   // `splitThenDropHidden` earlier (that pass only ever saw graphic scenes).
@@ -3879,7 +3964,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // by name below, and a run that cannot anchor one today is not permission to
   // delete it — the next run, against a different cut, may place it (final
   // review, Critical 1).
-  const captionWork = reconcileCaptionEdits(overrideDoc, baseCaptionLines);
+  const captionWork = reconcileCaptionEdits(overrideDoc, baseCaptionLines, map);
   overrideDoc = captionWork.doc;
   const captionLines = captionWork.lines;
   const captionKeysReanchored = captionWork.reanchored;
@@ -4213,6 +4298,71 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
+  // ---- Cover overlay on the opening frames (`--cover-in-video`) -----------
+  // Resolved and staged HERE, next to the props it feeds, the watermark's
+  // posture: one ▸ line when it is on, so a config-sourced overlay never
+  // surprises the author on upload.
+  //
+  // THE STAGED FILE IS THE CURRENT COVER AT RENDER TIME, and that is the
+  // whole state model: this run's own cover has not been rendered yet
+  // (produce writes it after the video, from the finished render's own
+  // geometry), so what gets copied is the cover the project has RIGHT NOW —
+  // the one `ossclip cover`, the editor's regenerate button, or the previous
+  // produce left behind, resolved down the panel's own ladder
+  // (`coverInVideoCandidates`). A regenerated cover therefore lands in the
+  // NEXT render and preview with no extra plumbing, exactly like a headline
+  // edit in `cover.json`. A project with no cover on disk at all (the first
+  // ever run) gets one ⚠ line and NO prop — an absent key is the
+  // absent-means-off contract, so the render is byte-identical to an
+  // overlay-less one rather than half-wired.
+  //
+  // Staged into the render's public dir AND the workdir when they differ, for
+  // the Nastaliq font's reason verbatim: the render bundles
+  // `dirname(renderVideo)`, `ossclip edit` serves the workdir at `/media/`,
+  // and both mounts fetch the same name.
+  const coverInVideoOn = resolveCoverInVideo(opts.coverInVideo, cfg.coverInVideo);
+  let coverInVideo: { fileName: string; durationSec: number } | undefined;
+  if (coverInVideoOn) {
+    const candidates = coverInVideoCandidates({
+      provenanceOut: (await readCoverProvenance(work))?.out,
+      outPath,
+    });
+    const source = candidates.find((p) => existsSync(p));
+    if (source === undefined) {
+      // Deliberately does NOT promise this run's cover: `--no-cover` may mean
+      // there will not be one, and a produce that says "next time" and then
+      // never delivers is worse than one that names what it looked for.
+      console.log(
+        `  ⚠ cover in video: no cover image yet (looked for ` +
+          `${candidates.join(", ")}) — no overlay this run; ` +
+          `it uses the cover a previous run or \`ossclip cover\` leaves behind`,
+      );
+    } else {
+      const fileName = coverInVideoFileName(source);
+      for (const dir of new Set([renderPublicDirPath, work])) {
+        // `join` on the filesystem side where `fileName` itself stays
+        // POSIX-literal — these are paths, that is a served URL (the
+        // Nastaliq staging's exact split).
+        const dest = join(dir, fileName);
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(source, dest);
+      }
+      // The window is derived from the OUTPUT clock's first word — the same
+      // caption words the renderer draws, post-cut (core's coverInVideoWindow
+      // owns the bounds). The first line WITH words, not `captionLines[0]`:
+      // an empty leading line would read as "no speech" and take the cap.
+      const durationSec = coverInVideoWindow(
+        captionLines.find((l) => l.words.length > 0)?.words ?? [],
+        { capSec: COVER_IN_VIDEO_CAP_SEC, floorSec: COVER_IN_VIDEO_FLOOR_SEC },
+      );
+      coverInVideo = { fileName, durationSec };
+      console.log(
+        `▸ cover in video: ${basename(source)} over the first ${durationSec.toFixed(2)}s` +
+          `${opts.coverInVideo === undefined ? " (from config; --no-cover-in-video overrides)" : ""}`,
+      );
+    }
+  }
+
   const props = {
     videoFileName: basename(renderVideo),
     spans: [...map.spans],
@@ -4327,6 +4477,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // an off run's render-props.json stays byte-identical to a pre-watermark
     // one, so nothing downstream can tell the feature ever shipped.
     ...(watermark ? { watermark: true } : {}),
+    // Written only when the overlay is BOTH switched on and backed by a file
+    // that exists (the staging block above): absent means no overlay, so an
+    // off run's render-props.json — and its rendered pixels — stay identical
+    // to a pre-feature one.
+    ...(coverInVideo ? { coverInVideo } : {}),
     // Same absent-means-default contract, polarity flipped (captions default
     // ON): written only when hidden, so a normal run's render-props.json
     // stays byte-identical to a pre-feature one. `captionsHiddenByFlag` is
@@ -4480,6 +4635,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // Jump-cuts pin: the RESOLVED mode, but only its typed states reach the
   // argv — "auto" has no flag spelling and stays unpinned (see
   // recordedProduceArgs for why that is safe today).
+  // Cover-overlay pin: the watermark's config-dependent-default rationale
+  // again, on the flag that paints the first frames — an unpinned record
+  // would gain or lose the overlay under a later `coverInVideo` config edit.
   // Youtube pin: the watermark's config-dependent-default rationale exactly —
   // resolved both ways, so a later config edit can't flip what Render
   // replays. Portrait and dictionary pin the RESOLVED values (a path and
@@ -4493,6 +4651,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     llmEffort,
     clipWindow: clipWindow ? `${clipWindow.startWord}:${clipWindow.endWord}` : undefined,
     watermark,
+    // The SWITCH's resolved state (`coverInVideoOn`), not "did an overlay
+    // actually happen": a run whose cover was simply missing yet still
+    // records `--cover-in-video` is correct — the pin exists so the replay
+    // resolves the same way this run did, and by then the cover may well be
+    // on disk. Same distinction the captions pin draws between the flag and
+    // the editor's override.
+    coverInVideo: coverInVideoOn,
     captions: opts.captions ?? true,
     jumpCuts: jumpCutsMode,
     dictionary,

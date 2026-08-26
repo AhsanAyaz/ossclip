@@ -75,6 +75,7 @@ describe("edit server", () => {
       captionWordsHidden: {},
       captionRangeEdits: [],
       captionLineTiming: {},
+      captionLineWindows: {},
       splits: [],
       cuts: [],
       cleanup: { reasons: {}, kept: [], dismissed: [] },
@@ -1937,5 +1938,218 @@ describe("GET /api/transcript (captions over revived material)", () => {
     const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
     close = server.close;
     expect((await fetch(`${server.url}/api/transcript`)).status).toBe(409);
+  });
+});
+
+describe("POST /api/retranscribe-range (stamps-only splice)", () => {
+  /**
+   * A workdir with the two files the endpoint reads, plus a fake model file
+   * so the existence check passes. `audio.wav` and the model are content-free
+   * on purpose: BOTH shell-outs are injected below, so nothing here ever runs
+   * ffmpeg or whisper (the `generateThumbnail` seam rule).
+   */
+  async function retranscribeWorkdir(
+    words: Array<{ text: string; start: number; end: number }>,
+  ): Promise<{ dir: string; cfg: () => Record<string, unknown> }> {
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "audio.wav"), "not-a-real-wav");
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words }));
+    await writeFile(join(dir, "ggml-base.en.bin"), "not-a-real-model");
+    return {
+      dir,
+      cfg: () => ({
+        ffmpegPath: "ffmpeg",
+        ffprobePath: "ffprobe",
+        whisperPath: "whisper-cli",
+        model: "base.en",
+        modelDir: dir,
+      }),
+    };
+  }
+
+  const post = (url: string, body: unknown): Promise<Response> =>
+    fetch(`${url}/api/retranscribe-range`, { method: "POST", body: JSON.stringify(body) });
+
+  it("re-stamps the range, writes transcript.json atomically and returns the mapping", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([
+      { text: "intro", start: 0, end: 1 },
+      { text: "could", start: 4, end: 4.5 },
+      { text: "read", start: 4.5, end: 5 },
+      { text: "outro", start: 9, end: 9.5 },
+    ]);
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      sliceAudio: async () => {},
+      // Clip-relative stamps, as whisper.cpp emits them for a slice.
+      runWhisper: async () => ({
+        language: "en",
+        words: [
+          { text: "could", start: 1.5, end: 2 },
+          { text: "read", start: 2, end: 2.4 },
+        ],
+      }),
+    });
+    close = server.close;
+    const body = await (await post(server.url, { srcIn: 3, srcOut: 6 })).json();
+    expect(body.ok).toBe(true);
+    const written = JSON.parse(await readFile(join(dir, "transcript.json"), "utf8"));
+    // Same words, same count — the whole doctrine — at the stamps the fresh
+    // decode heard, offset by the slice's own source start (3s).
+    expect(written.words.map((w: { text: string }) => w.text)).toEqual([
+      "intro",
+      "could",
+      "read",
+      "outro",
+    ]);
+    expect(written.words[1]).toEqual({ text: "could", start: 4.5, end: 5 });
+    expect(written.words[2]).toEqual({ text: "read", start: 5, end: 5.4 });
+    expect(body.mapping).toEqual([
+      { fromMs: 4000, toMs: 4500 },
+      { fromMs: 4500, toMs: 5000 },
+    ]);
+    // Words outside the range are untouched, and the scratch files are gone.
+    expect(written.words[0]).toEqual({ text: "intro", start: 0, end: 1 });
+    expect(existsSync(join(dir, "whisper-range.wav"))).toBe(false);
+    expect(existsSync(join(dir, "transcript.json.tmp"))).toBe(false);
+  });
+
+  it("reports every moved anchor at the caption key's millisecond", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([
+      { text: "could", start: 4, end: 4.5 },
+      { text: "read", start: 4.5, end: 5 },
+    ]);
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      sliceAudio: async () => {},
+      runWhisper: async () => ({
+        language: "en",
+        words: [
+          { text: "could", start: 1.25, end: 1.75 },
+          { text: "read", start: 1.75, end: 2.25 },
+        ],
+      }),
+    });
+    close = server.close;
+    const body = await (await post(server.url, { srcIn: 3, srcOut: 6 })).json();
+    expect(body.mapping).toEqual([
+      { fromMs: 4000, toMs: 4250 },
+      { fromMs: 4500, toMs: 4750 },
+    ]);
+  });
+
+  it("NEVER touches overrides.json — the doc is client-owned", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    const overrides = join(dir, "overrides.json");
+    await writeFile(overrides, JSON.stringify({ captions: { w4000: { text: "x", was: "could" } } }));
+    const before = { mtime: statSync(overrides).mtimeMs, text: await readFile(overrides, "utf8") };
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      sliceAudio: async () => {},
+      runWhisper: async () => ({ language: "en", words: [{ text: "could", start: 1.4, end: 1.9 }] }),
+    });
+    close = server.close;
+    expect((await (await post(server.url, { srcIn: 3, srcOut: 6 })).json()).ok).toBe(true);
+    expect(await readFile(overrides, "utf8")).toBe(before.text);
+    expect(statSync(overrides).mtimeMs).toBe(before.mtime);
+  });
+
+  it("409s a second decode while one is running", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    let release: () => void = () => {};
+    const blocked = new Promise<void>((r) => (release = r));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      sliceAudio: async () => {},
+      runWhisper: async () => {
+        await blocked;
+        return { language: "en", words: [{ text: "could", start: 1, end: 1.5 }] };
+      },
+    });
+    close = server.close;
+    const first = post(server.url, { srcIn: 3, srcOut: 6 });
+    // Give the first request time to reach the whisper stub before racing it.
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await post(server.url, { srcIn: 3, srcOut: 6 })).status).toBe(409);
+    release();
+    expect((await first).status).toBe(200);
+  });
+
+  it("answers {ok:false} with the setup hint when the model is missing", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    await unlink(join(dir, "ggml-base.en.bin"));
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: cfg });
+    close = server.close;
+    const res = await post(server.url, { srcIn: 3, srcOut: 6 });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("ossclip setup");
+  });
+
+  it("answers {ok:false} with the doctor hint when whisper is not configured", async () => {
+    const { dir } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({}),
+    });
+    close = server.close;
+    const body = await (await post(server.url, { srcIn: 3, srcOut: 6 })).json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("ossclip doctor");
+  });
+
+  it("answers {ok:false} when the decode itself fails, leaving transcript.json alone", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    const before = await readFile(join(dir, "transcript.json"), "utf8");
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      sliceAudio: async () => {},
+      runWhisper: async () => {
+        throw new Error("spawn whisper-cli ENOENT");
+      },
+    });
+    close = server.close;
+    const body = await (await post(server.url, { srcIn: 3, srcOut: 6 })).json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("ENOENT");
+    expect(await readFile(join(dir, "transcript.json"), "utf8")).toBe(before);
+  });
+
+  it("succeeds with an empty mapping when no word lies wholly inside the range", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 40, end: 40.5 }]);
+    const whisper = vi.fn();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      sliceAudio: async () => {},
+      runWhisper: whisper,
+    });
+    close = server.close;
+    const body = await (await post(server.url, { srcIn: 3, srcOut: 6 })).json();
+    expect(body).toMatchObject({ ok: true, mapping: [] });
+    expect(whisper).not.toHaveBeenCalled();
+  });
+
+  it("400s an inverted or negative range, and 409s with no workdir open", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: cfg });
+    close = server.close;
+    expect((await post(server.url, { srcIn: 6, srcOut: 3 })).status).toBe(400);
+    expect((await post(server.url, { srcIn: -1, srcOut: 3 })).status).toBe(400);
+    const empty = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
+    expect((await post(empty.url, { srcIn: 0, srcOut: 1 })).status).toBe(409);
+    empty.close();
   });
 });

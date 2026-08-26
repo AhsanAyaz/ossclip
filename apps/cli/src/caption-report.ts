@@ -3,6 +3,7 @@ import {
   applyCaptionRangeEdits,
   applyCaptionWordHides,
   applyCaptionLineTiming,
+  applyCaptionLineWindows,
   captionEditsToKeep,
   isLegacyCaptionKey,
   migrateCaptionKeys,
@@ -14,6 +15,7 @@ import type {
   CaptionKeyMigration,
   CaptionLine,
   OverrideDoc,
+  TimeMap,
 } from "@ossclip/core";
 
 /**
@@ -288,10 +290,17 @@ export interface CaptionReconciliation {
  * (`produce.ts` parses it at the top of the run). On raw `JSON.parse` output a
  * literal `"__proto__"` key would be assigned THROUGH rather than kept, and
  * the migration would report nothing lost while losing it.
+ *
+ * `map` is the run's own cutlist map — the one `baseLines` were built through
+ * — and exists for the WINDOW layer alone (`applyCaptionLineWindows`): windows
+ * are stored in source seconds and these lines speak output seconds. Taken as
+ * a parameter rather than rebuilt here for the usual reason: two maps is how
+ * this pass and the render would come to place a caption differently.
  */
 export function reconcileCaptionEdits(
   doc: OverrideDoc,
   baseLines: readonly CaptionLine[],
+  map: TimeMap,
 ): CaptionReconciliation {
   const log: string[] = [];
   const migration = migrateCaptionKeys(doc.captions, baseLines);
@@ -351,5 +360,21 @@ export function reconcileCaptionEdits(
   const nudged = appliedCaptionEditCount(doc.captionLineTiming, timed.dropped);
   if (nudged > 0) log.push(`▸ ${nudged} caption timing nudge(s) applied`);
   for (const d of timed.dropped) log.push(captionTimingDropLine(d));
-  return { doc: migrated, lines: timed.lines, reanchored: reanchored > 0, log };
+  // WINDOWS last of all — `applyCaptionLayers`' one authoritative order: an
+  // absolute window is the user's final answer about when a caption is on
+  // screen, so it runs after (and overrides) the nudge layer. Counted with
+  // `appliedCaptionEditCount` for the same reason the nudges are: this layer
+  // also reports a `duplicate-anchor` drop per EXTRA claimant, so a plain
+  // subtraction would erase the line for a window that did apply. No key
+  // migration: `captionLineWindows` postdates §137, and the write-back above
+  // spreads it through untouched. Drops reuse `captionTimingDropLine` rather
+  // than earning a fifth sentence: both records answer "when is this caption
+  // on screen", both drop for the SAME two reasons (no line starts there any
+  // more / a second claimant), and the fix — re-make it in the timing tool —
+  // is one gesture, which is the test that function's docstring sets.
+  const windowed = applyCaptionLineWindows(timed.lines, doc.captionLineWindows, map);
+  const placed = appliedCaptionEditCount(doc.captionLineWindows, windowed.dropped);
+  if (placed > 0) log.push(`▸ ${placed} caption window(s) placed by the editor`);
+  for (const d of windowed.dropped) log.push(captionTimingDropLine(d));
+  return { doc: migrated, lines: windowed.lines, reanchored: reanchored > 0, log };
 }

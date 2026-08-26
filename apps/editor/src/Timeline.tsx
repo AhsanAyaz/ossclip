@@ -9,6 +9,7 @@ import {
   clampZoom,
   formatTimecode,
   moveTiming,
+  pinTiming,
   snapTargets,
   sourceToOutputClamped,
   timeAtX,
@@ -79,6 +80,21 @@ interface TimelineProps {
    * from the SOURCE second actually playing at that point of the cut. */
   toSourceSec?: (outSec: number) => number;
   /**
+   * LIVE-clock output seconds → SOURCE seconds, for the timing PIN a drag
+   * commits (`SceneTimingSchema`; Inspector's prop of the same name is the
+   * cut writers' version of this). App threads
+   * `previewClockMappers(liveRecut).toSourceSec`, which is exact under a
+   * live veto and the spans' own conversion without one.
+   *
+   * Deliberately NOT `toSourceSec` above, close as the two look: that one is
+   * the FILMSTRIP's lookup and answers the first span's `srcIn` for any time
+   * outside the spans, because a thumbnail is allowed to fall back to
+   * something plausible. A pin is the doc's authoritative anchor, so it gets
+   * the clock's own conversion or none at all (`pinTiming` falls back to a
+   * legacy old-clock write when this is absent).
+   */
+  pinSourceSec?: ((sec: number) => number) | null;
+  /**
    * OLD-clock output seconds → the live (player) clock this ruler draws
    * (cut review step 4 follow-up, the struck band's DISPLAY half): a
    * NOT-YET-APPLIED cut's `startSec`/`endSec` speak the LAST RENDER's own
@@ -92,6 +108,21 @@ interface TimelineProps {
    * `src` through the live `spans` already.
    */
   toLive?: (sec: number) => number;
+  /**
+   * "This source range is now playing again" (Phase A, 2026-08-26) — called
+   * AFTER the keep/dismiss dispatch that revived it, so App can re-decode
+   * the span and correct the caption stamps whisper got wrong over material
+   * the first pass had cut.
+   *
+   * ONLY WHEN MATERIAL CAME BACK. A click on an ALREADY-vetoed seam
+   * re-removes it, and re-decoding audio that is about to leave the cut
+   * again is work whose result nothing can display — worse, it would fire a
+   * request on every toggle of a chip the user is flipping back and forth.
+   * The `seam.vetoed` guard at the call sites is that rule.
+   * Optional/defaulted, the `toSourceSec` back-compat rule: every existing
+   * caller (and test) predating it keeps compiling.
+   */
+  onRevived?: (srcIn: number, srcOut: number) => void;
 }
 
 interface DragState {
@@ -244,7 +275,9 @@ export const Timeline: React.FC<TimelineProps> = ({
   edits,
   videoSrc,
   toSourceSec,
+  pinSourceSec = null,
   toLive = (sec: number): number => sec,
+  onRevived,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -589,7 +622,14 @@ export const Timeline: React.FC<TimelineProps> = ({
           // commit — the guard just makes that explicit.)
           setDragPreview((preview) => {
             if (preview && preview.sceneId === press.sceneId) {
-              edits.patchTiming(press.sceneId, preview.startSec, preview.endSec);
+              // `pinTiming`, not the raw preview numbers: the preview speaks
+              // the clock this timeline draws, which under a live veto is
+              // NOT the clock `timing` used to be stored in (the field bug —
+              // a dragged block landed seconds away and snapped back).
+              edits.patchTiming(
+                press.sceneId,
+                pinTiming(preview.startSec, preview.endSec, pinSourceSec),
+              );
             }
             return null;
           });
@@ -614,7 +654,11 @@ export const Timeline: React.FC<TimelineProps> = ({
           preview.sceneId === drag.sceneId &&
           (preview.startSec !== drag.origStart || preview.endSec !== drag.origEnd);
         if (moved) {
-          edits.patchTiming(drag.sceneId, preview.startSec, preview.endSec);
+          // Source-anchored like the body-drag commit above, same reasoning.
+          edits.patchTiming(
+            drag.sceneId,
+            pinTiming(preview.startSec, preview.endSec, pinSourceSec),
+          );
         }
         return null;
       });
@@ -626,7 +670,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [cues, durationSec, edits, seekTrack, fps]);
+  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec]);
 
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 
@@ -652,8 +696,25 @@ export const Timeline: React.FC<TimelineProps> = ({
                 y={chipMenu.y}
                 onClose={() => setChipMenu(null)}
                 items={[
-                  { label: labels.keep, onPick: () => edits.toggleKept(srcIn, srcOut) },
-                  { label: labels.dismiss, onPick: () => edits.dismissRemoval(srcIn, srcOut) },
+                  {
+                    label: labels.keep,
+                    onPick: () => {
+                      edits.toggleKept(srcIn, srcOut);
+                      // The chip's own rule: this item RE-REMOVES an already
+                      // vetoed seam, and only the keep direction revives
+                      // material worth re-decoding (`onRevived`).
+                      if (!chipMenu.seam.vetoed) onRevived?.(srcIn, srcOut);
+                    },
+                  },
+                  {
+                    label: labels.dismiss,
+                    onPick: () => {
+                      edits.dismissRemoval(srcIn, srcOut);
+                      // A dismissal ("not a retake") always keeps the
+                      // material — there is no direction to guard here.
+                      onRevived?.(srcIn, srcOut);
+                    },
+                  },
                 ]}
               />
             );
@@ -741,6 +802,9 @@ export const Timeline: React.FC<TimelineProps> = ({
                               e.stopPropagation();
                               e.preventDefault();
                               edits.toggleKept(seam.srcIn, seam.srcOut);
+                              // AFTER the dispatch, and only on the keep
+                              // direction — `onRevived`'s docstring.
+                              if (!seam.vetoed) onRevived?.(seam.srcIn, seam.srcOut);
                             },
                             onContextMenu: (e: React.MouseEvent) => {
                               // Right-click opens the marker menu (keep /

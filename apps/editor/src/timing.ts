@@ -1,4 +1,4 @@
-import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
+import type { KeptSpan, SceneCue, SceneTiming } from "@ossclip/core/browser";
 
 /** Same floor assembly uses, so a hand nudge cannot make an unrenderable cue. */
 const MIN_SCENE_SEC = 1.2;
@@ -83,6 +83,43 @@ export function moveTiming(
   const hi = next ? next.startSec - GAP : duration;
   const start = Math.min(Math.max(cue.startSec + deltaSec, lo), Math.max(lo, hi - len));
   return { startSec: start, endSec: start + len };
+}
+
+/** Source seconds are persisted, so they are rounded to ms at the gesture —
+ * `Inspector`'s `cuts[].src` write uses the same quantum for the same
+ * reason: float noise from the clock arithmetic is not user intent. */
+const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+/**
+ * The `timing` entry a completed drag stores (source-anchoring audit,
+ * 2026-08-26). `startSec`/`endSec` are the PREVIEW's numbers, which speak
+ * whatever clock the timeline is currently drawing — under a live cleanup
+ * veto that is the re-cut LIVE clock, not the last render's, and storing
+ * them raw is what landed a dragged block seconds from where it was dropped
+ * (`SceneTimingSchema` owns the full argument).
+ *
+ * With a mapper in hand the window is converted to SOURCE seconds and the
+ * pin becomes recut-immune. Without one — no spans at all, a degenerate
+ * clock — it falls back to today's legacy write verbatim: an old-clock pin
+ * is worse than a source-anchored one but far better than a fabricated
+ * source second, and `remapOverridesThroughRecut` still looks after it.
+ *
+ * Pure (and exported) so the clock decision is testable without a DOM.
+ */
+export function pinTiming(
+  startSec: number,
+  endSec: number,
+  toSourceSec: ((sec: number) => number) | null | undefined,
+): SceneTiming {
+  if (!toSourceSec) return { startSec, endSec };
+  const srcStart = round3(toSourceSec(startSec));
+  const srcEnd = round3(toSourceSec(endSec));
+  // An ordered pair is the src arm's schema refinement: a clock that answered
+  // the same source second for both edges (a window entirely inside removed
+  // material, or a rounding tie on a sub-millisecond block) would write a doc
+  // that no longer parses. Legacy is the honest fallback there too.
+  if (!(srcEnd > srcStart)) return { startSec, endSec };
+  return { srcStart, srcEnd };
 }
 
 export function clampTiming(

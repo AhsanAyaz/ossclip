@@ -21,7 +21,9 @@ import {
   buildThumbnailPrompt,
   captionForProvider,
   createPostizProvider,
+  alignRestamp,
   emptyOverrideDoc,
+  extractAudioSpan,
   // Static import is fine here: the @google/genai SDK load is LAZY inside
   // this function (core's near-zero-dep rule), so the server pays for it
   // only when a regenerate actually runs.
@@ -32,7 +34,12 @@ import {
   PORTRAIT_MIME_TYPES,
   portraitMimeType,
   readCoverProvenance,
+  runWhisper,
   SegmentSchema,
+  spliceTranscript,
+  TranscriptSchema,
+  whisperPromptFor,
+  wordsInSpan,
   type Segment,
   thumbnailImageCacheName,
   type CoverProvenance,
@@ -62,6 +69,10 @@ import {
   type RecordedCommand,
 } from "./cover";
 import { expandHome } from "./paths";
+// The model-path and implied-language rules, from THE source doctor, setup and
+// produce all resolve through — a second copy here would send a user to a
+// model file the rest of the tool never looks for.
+import { modelImpliedLanguage, whisperModelPath } from "./setup/manifest";
 import {
   PORTRAIT_OVERRIDE_BASENAME,
   portraitExtensionForMime,
@@ -95,6 +106,78 @@ export function resolveEditorPageDir(): string | null {
         statSync(join(b, "index.html")).mtimeMs - statSync(join(a, "index.html")).mtimeMs,
     );
   return candidates[0] ?? null;
+}
+
+/**
+ * The config keys `/api/retranscribe-range` needs. Spelled structurally
+ * rather than as `OssclipConfig` so the `loadCfg` seam keeps accepting a test
+ * stub that supplies only what a case is about — the same shape the youtube/
+ * portrait keys above it are declared with.
+ */
+export interface RetranscribeConfig {
+  ffmpegPath?: string;
+  ffprobePath?: string;
+  whisperPath?: string;
+  model?: string;
+  modelDir?: string;
+  language?: unknown;
+  dictionary?: unknown;
+}
+
+/**
+ * How to spawn whisper for a range re-decode, or why we cannot.
+ *
+ * Pure — the `openCommand`/`openInBrowser` split — so the whole
+ * config × missing-binary × malformed-dictionary matrix is testable without
+ * whisper.cpp or a model on the runner.
+ *
+ * FROM THE CONFIG, not from the workdir's `transcript-key.json`, and that is
+ * a knowing limitation: reading the key would mean importing produce.ts,
+ * which statically pulls in @ossclip/renderer AND imports this module back
+ * (a cycle), for a server whose whole point is to start instantly. The
+ * failure when the two disagree is safe and REPORTED rather than silent: a
+ * range re-decoded with a different model produces words that match nothing,
+ * and `alignRestamp` answers "matched none — stamps left as they were".
+ *
+ * The dictionary is validated all-or-nothing, `validDictionary`'s rule
+ * (produce.ts): a hand-edited list with a number in it biases whisper with a
+ * vocabulary the user never reviewed, so the whole key is dropped instead.
+ * Same for `language`: typeof+trim, never truthiness, never coerced.
+ */
+export function retranscribeSettings(
+  cfg: RetranscribeConfig,
+):
+  | {
+      tools: { ffmpegPath: string; ffprobePath: string };
+      whisperPath: string;
+      modelPath: string;
+      language?: string;
+      prompt?: string;
+    }
+  | { error: string } {
+  if (!cfg.ffmpegPath || !cfg.ffprobePath || !cfg.whisperPath || !cfg.model || !cfg.modelDir) {
+    return {
+      error:
+        "ffmpeg or whisper is not configured — run `ossclip doctor` to see what is missing, " +
+        "then `ossclip setup` to install it.",
+    };
+  }
+  const dict = Array.isArray(cfg.dictionary)
+    && cfg.dictionary.length > 0
+    && cfg.dictionary.every((t) => typeof t === "string" && t.trim().length > 0)
+    ? (cfg.dictionary as string[]).map((t) => t.trim())
+    : [];
+  const language = typeof cfg.language === "string" && cfg.language.trim().length > 0
+    ? cfg.language.trim()
+    : modelImpliedLanguage(cfg.model);
+  const prompt = whisperPromptFor(dict);
+  return {
+    tools: { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath },
+    whisperPath: cfg.whisperPath,
+    modelPath: whisperModelPath(cfg.model, cfg.modelDir),
+    ...(language !== undefined ? { language } : {}),
+    ...(prompt !== undefined ? { prompt } : {}),
+  };
 }
 
 /**
@@ -161,6 +244,14 @@ const MIME: Record<string, string> = {
   // the type is stated while the change is one line rather than a debugging
   // session.
   ".wav": "audio/wav",
+  // The `--cover-in-video` overlay: produce stages the cover into the workdir
+  // as well as the render's public dir, and the Player fetches it through
+  // `/media/`. Browsers do sniff an image served as octet-stream, but a
+  // preview that depends on sniffing is a preview that breaks the first time
+  // something in front of it (a proxy, a stricter engine) declines to.
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
 };
 
 /**
@@ -262,7 +353,7 @@ export async function startEditServer(
       portrait?: unknown;
       thumbnailModel?: unknown;
       postizUrl?: string;
-    };
+    } & RetranscribeConfig;
     /** Env seam for the publish endpoints — tests inject their own so the
      * runner's real OSSCLIP_POSTIZ_API_KEY (or its absence) never decides a
      * test (the loadCfg rule applied to the environment). */
@@ -281,6 +372,14 @@ export async function startEditServer(
      * is also why cover.ts keeps that import lazy in the first place.
      */
     renderCover?: CoverSeams["renderCover"];
+    /**
+     * The two shell-outs `/api/retranscribe-range` makes — the
+     * `generateThumbnail` seam pattern, twice: tests stub a decode instead of
+     * needing ffmpeg, whisper.cpp and a multi-gigabyte model on the runner
+     * (`edit-server.test.ts` must stay a unit test).
+     */
+    sliceAudio?: typeof extractAudioSpan;
+    runWhisper?: typeof runWhisper;
   } = {},
 ): Promise<EditServer> {
   // MUTABLE since R17 §83: the server can start with no project (the page
@@ -370,6 +469,14 @@ export async function startEditServer(
   // headless browser, and a double-click must not run two renders at the same
   // destination. `thumbnailBusy`'s rule, for the same reason.
   let coverBusy = false;
+  /**
+   * One range re-decode at a time (`/api/retranscribe-range`). whisper is a
+   * CPU-bound spawn AND the endpoint read-modify-writes transcript.json, so
+   * two in flight is both a stalled box and a lost splice — the second write
+   * would be built on a transcript read before the first one landed.
+   * `coverBusy`'s rule with a second reason on top.
+   */
+  let retranscribeBusy = false;
   /** Where the JPEG lives right now: the destination the last cover used,
    * else `<recorded out>.cover.jpg`. Existence is the caller's check — a
    * recorded destination that was never rendered is a real state (the panel
@@ -588,6 +695,136 @@ export async function startEditServer(
             return send(200, { transcript: raw });
           } catch {
             return send(200, { transcript: null });
+          }
+        }
+
+        if (url.pathname === "/api/retranscribe-range" && req.method === "POST") {
+          // Re-decode ONE source span and re-stamp the words already there
+          // (Phase A, 2026-08-26): inside a kept retake whisper mis-POSITIONS
+          // words — the caption says "has its" while the audio says "could
+          // read 50 files" — because the first decode ran over material the
+          // cut had removed. See restamp.ts for why the splice is
+          // stamps-only.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          if (retranscribeBusy) {
+            return send(409, { error: "a re-transcription is already running" });
+          }
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          // TWO steerable values, both times, and nothing else — the cover
+          // regenerate rule: unknown keys are stripped by the parse, and an
+          // ordered non-negative pair is checked HERE rather than trusted,
+          // since an inverted range would slice a negative duration out of
+          // ffmpeg (CLAUDE.md's parse-never-coerce).
+          const parsed = z
+            .object({ srcIn: z.number().nonnegative(), srcOut: z.number().nonnegative() })
+            .refine((v) => v.srcOut > v.srcIn, { message: "srcOut must be after srcIn" })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: parsed.error.message });
+          const { srcIn, srcOut } = parsed.data;
+          // Every path server-derived, never from the body — the regenerate
+          // endpoint's stance. `whisper-range` is a distinct outBase from
+          // produce's `whisper`, so a range decode can never overwrite the
+          // artefact of the full one.
+          const dir = workdir;
+          const tmpWav = join(dir, "whisper-range.wav");
+          const outBase = join(dir, "whisper-range");
+          retranscribeBusy = true;
+          try {
+            const audio = join(dir, "audio.wav");
+            if (!existsSync(audio)) {
+              return send(200, {
+                ok: false,
+                error: "this workdir has no audio.wav to re-decode — re-run `ossclip produce`.",
+              });
+            }
+            const transcriptPath = join(dir, "transcript.json");
+            if (!existsSync(transcriptPath)) {
+              return send(200, {
+                ok: false,
+                error: "this workdir has no transcript.json to re-stamp — re-run `ossclip produce`.",
+              });
+            }
+            const settings = retranscribeSettings((opts.loadCfg ?? loadConfig)());
+            if ("error" in settings) return send(200, { ok: false, error: settings.error });
+            if (!existsSync(settings.modelPath)) {
+              // The `--transcript`-only install: whisper was never needed to
+              // make this project, so say what to run rather than 500ing.
+              return send(200, {
+                ok: false,
+                error:
+                  `whisper model not found at ${settings.modelPath} — run \`ossclip setup\` ` +
+                  `to download it.`,
+              });
+            }
+            // Parsed, not cast: this file is about to be rewritten, and a
+            // truncated one must fail loudly here rather than become the new
+            // transcript.
+            const transcript = TranscriptSchema.parse(
+              JSON.parse(await readFile(transcriptPath, "utf8")),
+            );
+            const range = wordsInSpan(transcript.words, srcIn, srcOut);
+            if (range.to === range.from) {
+              // Silence, or a range whose words all straddle its edges.
+              // Nothing to re-stamp is a SUCCESS with an empty mapping — the
+              // editor's no-op — not a failure the user has to read.
+              return send(200, {
+                ok: true,
+                mapping: [],
+                reports: ["no transcript words lie wholly inside that range"],
+              });
+            }
+            await (opts.sliceAudio ?? extractAudioSpan)(
+              settings.tools,
+              audio,
+              tmpWav,
+              srcIn,
+              srcOut - srcIn,
+            );
+            const fresh = await (opts.runWhisper ?? runWhisper)(
+              {
+                whisperPath: settings.whisperPath,
+                modelPath: settings.modelPath,
+                outBase,
+                ...(settings.language !== undefined ? { language: settings.language } : {}),
+                ...(settings.prompt !== undefined ? { prompt: settings.prompt } : {}),
+              },
+              tmpWav,
+            );
+            const restamped = alignRestamp(
+              transcript.words.slice(range.from, range.to),
+              fresh.words,
+              srcIn,
+            );
+            const next = spliceTranscript(transcript, range, restamped.words);
+            // Atomic, like the overrides write: produce may read this file at
+            // any moment (its cache-reuse branch reads it verbatim and writes
+            // back what it read), and a half-written transcript is worse than
+            // a stale one.
+            const tmp = `${transcriptPath}.tmp`;
+            await writeFile(tmp, JSON.stringify(next, null, 2));
+            await rename(tmp, transcriptPath);
+            // `overrides.json` IS NOT TOUCHED HERE, on purpose: the doc is
+            // client-owned — the editor holds unsaved edits and an undo stack
+            // over it — so the caption RE-KEY rides back as `mapping` and is
+            // applied by the `useEdits` reducer, one commit, one undo step.
+            return send(200, { ok: true, mapping: restamped.mapping, reports: restamped.reports });
+          } catch (err) {
+            // 200 {ok:false}, the cover regenerate posture: a missing whisper
+            // binary or a failed decode is a sentence the panel shows, not a
+            // dead 500 — and the editor keeps working on the old stamps.
+            const message = err instanceof Error ? err.message : String(err);
+            return send(200, {
+              ok: false,
+              error: `${message} — run \`ossclip doctor\` if ffmpeg or whisper is the problem.`,
+            });
+          } finally {
+            retranscribeBusy = false;
+            // Both artefacts are per-request scratch. `.catch()` because a
+            // decode that never got as far as writing one must not turn a
+            // reported failure into an unhandled rejection.
+            await unlink(tmpWav).catch(() => {});
+            await unlink(`${outBase}.json`).catch(() => {});
           }
         }
 

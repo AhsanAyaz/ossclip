@@ -45,9 +45,18 @@ describe("edit state", () => {
 
   it("records a timing patch as a pin", () => {
     const s = editReducer(initialEditState(), {
-      type: "patchTiming", sceneId: "scene-0", startSec: 2, endSec: 6,
+      type: "patchTiming", sceneId: "scene-0", timing: { startSec: 2, endSec: 6 },
     });
     expect(s.doc.scenes["scene-0"]!.timing).toEqual({ startSec: 2, endSec: 6 });
+  });
+
+  it("stores a SRC-anchored timing patch verbatim — the reducer converts no clocks", () => {
+    const s = editReducer(initialEditState(), {
+      type: "patchTiming", sceneId: "scene-0", timing: { srcStart: 21, srcEnd: 25 },
+    });
+    expect(s.doc.scenes["scene-0"]!.timing).toEqual({ srcStart: 21, srcEnd: 25 });
+    // Still one undo step, still the shape the schema accepts.
+    expect(editReducer(s, { type: "undo" }).doc.scenes["scene-0"]?.timing).toBeUndefined();
   });
 });
 
@@ -744,6 +753,103 @@ describe("caption LINE timing (patchCaptionLineTiming, 2026-08-18)", () => {
     });
     expect(OverrideDocSchema.parse(s.doc).captionLineTiming).toEqual({
       w4000: { lead: -1.5, tail: 2.25 },
+    });
+  });
+});
+
+describe("caption line WINDOWS (patchCaptionLineWindows, 2026-08-26)", () => {
+  it("writes every selected line's window in ONE undo step — one Apply is one gesture", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaptionLineWindows",
+      entries: [
+        { srcStart: 4, window: { srcStart: 3.5, srcEnd: 5.5 } },
+        { srcStart: 6, window: { srcStart: 5.5, srcEnd: 7.25 } },
+      ],
+    });
+    expect(s.doc.captionLineWindows).toEqual({
+      w4000: { srcStart: 3.5, srcEnd: 5.5 },
+      w6000: { srcStart: 5.5, srcEnd: 7.25 },
+    });
+    expect(s.past).toHaveLength(1);
+    // ONE undo puts the whole placement back — not two.
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.captionLineWindows).toEqual({});
+  });
+
+  it("keys by SOURCE time (§137) and stores SOURCE seconds — one clock end to end", () => {
+    const s = editReducer(initialEditState(), {
+      type: "patchCaptionLineWindows",
+      entries: [{ srcStart: 4.25, window: { srcStart: 4.25, srcEnd: 6 } }],
+    });
+    expect(s.doc.captionLineWindows).toEqual({ w4250: { srcStart: 4.25, srcEnd: 6 } });
+  });
+
+  it("a null window DELETES the key — a window that restates the derivation is not an override", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaptionLineWindows",
+      entries: [
+        { srcStart: 4, window: { srcStart: 3.5, srcEnd: 5.5 } },
+        { srcStart: 6, window: { srcStart: 5.5, srcEnd: 7.25 } },
+      ],
+    });
+    const depth = s.past.length;
+    s = editReducer(s, {
+      type: "patchCaptionLineWindows",
+      entries: [
+        { srcStart: 4, window: null },
+        // Mixed with a real write, the shape a re-drag actually has: one line
+        // back on its derived position, its neighbour moved again.
+        { srcStart: 6, window: { srcStart: 5.6, srcEnd: 7.4 } },
+      ],
+    });
+    expect(s.doc.captionLineWindows).toEqual({ w6000: { srcStart: 5.6, srcEnd: 7.4 } });
+    expect("w4000" in s.doc.captionLineWindows).toBe(false);
+    expect(s.past).toHaveLength(depth + 1);
+  });
+
+  it("a fold that changes nothing returns the SAME state — no phantom undo step", () => {
+    // Apply re-sends every selected line, including neighbours the drag never
+    // moved and lines that never had a key.
+    const s = editReducer(initialEditState(), {
+      type: "patchCaptionLineWindows",
+      entries: [{ srcStart: 4, window: { srcStart: 3.5, srcEnd: 5.5 } }],
+    });
+    expect(
+      editReducer(s, {
+        type: "patchCaptionLineWindows",
+        entries: [
+          { srcStart: 4, window: { srcStart: 3.5, srcEnd: 5.5 } },
+          { srcStart: 6, window: null },
+        ],
+      }),
+    ).toBe(s);
+  });
+
+  it("an empty entry list is a no-op", () => {
+    const s = initialEditState();
+    expect(editReducer(s, { type: "patchCaptionLineWindows", entries: [] })).toBe(s);
+  });
+
+  it("place → clear round-trips the doc to exactly what it was", () => {
+    const before = initialEditState();
+    let s = editReducer(before, {
+      type: "patchCaptionLineWindows",
+      entries: [{ srcStart: 4, window: { srcStart: 3.5, srcEnd: 5.5 } }],
+    });
+    s = editReducer(s, {
+      type: "patchCaptionLineWindows",
+      entries: [{ srcStart: 4, window: null }],
+    });
+    expect(s.doc).toEqual(before.doc);
+  });
+
+  it("writes a doc the schema still accepts — ordered and at least the floor wide", () => {
+    const s = editReducer(initialEditState(), {
+      type: "patchCaptionLineWindows",
+      entries: [{ srcStart: 4, window: { srcStart: 12.5, srcEnd: 14 } }],
+    });
+    expect(OverrideDocSchema.parse(s.doc).captionLineWindows).toEqual({
+      w4000: { srcStart: 12.5, srcEnd: 14 },
     });
   });
 });
@@ -1480,5 +1586,72 @@ describe("cleanup dismissals (cut-review rework, 2026-08-26)", () => {
     let s = editReducer(initialEditState(), { type: "dismissRemoval", srcIn: 5, srcOut: 7 });
     s = editReducer(s, { type: "undo" });
     expect(s.doc.cleanup.dismissed).toEqual([]);
+  });
+});
+
+describe("rekeyCaptionKeys — caption anchors after a range re-transcription (Phase A)", () => {
+  /** A doc holding one of each source-keyed caption record, all on w1000. */
+  const seeded = () => ({
+    ...initialEditState(),
+    doc: OverrideDocSchema.parse({
+      captions: { w1000: { text: "JSON", was: "Jason" } },
+      captionWordsHidden: { w1000: { was: "um" } },
+      captionLineTiming: { w1000: { lead: -0.2, tail: 0.4 } },
+      captionRangeEdits: [{ fromKey: "w1000", toKey: "w2000", text: "new", was: "old" }],
+    }),
+  });
+
+  it("moves every record type onto the corrected stamps in ONE commit", () => {
+    const s = editReducer(seeded(), {
+      type: "rekeyCaptionKeys",
+      mapping: [
+        { fromMs: 1000, toMs: 1420 },
+        { fromMs: 2000, toMs: 2380 },
+      ],
+    });
+    expect(s.doc.captions).toEqual({ w1420: { text: "JSON", was: "Jason" } });
+    expect(s.doc.captionWordsHidden).toEqual({ w1420: { was: "um" } });
+    expect(s.doc.captionLineTiming).toEqual({ w1420: { lead: -0.2, tail: 0.4 } });
+    expect(s.doc.captionRangeEdits[0]).toMatchObject({ fromKey: "w1420", toKey: "w2380" });
+    // ONE undo step, not four — the keep that triggered the re-decode and
+    // the re-key it caused come back together.
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("undo puts every anchor back where the user's edit was made", () => {
+    const before = seeded();
+    let s = editReducer(before, { type: "rekeyCaptionKeys", mapping: [{ fromMs: 1000, toMs: 1420 }] });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc).toEqual(before.doc);
+  });
+
+  it("an empty mapping is a no-op — never a ⌘Z that appears to do nothing", () => {
+    const before = seeded();
+    expect(editReducer(before, { type: "rekeyCaptionKeys", mapping: [] })).toBe(before);
+  });
+
+  it("parks a collided entry and warns rather than overwriting the other", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = editReducer(
+      {
+        ...initialEditState(),
+        doc: OverrideDocSchema.parse({
+          captions: { w1000: { text: "a", was: "a" }, w1200: { text: "b", was: "b" } },
+        }),
+      },
+      {
+        type: "rekeyCaptionKeys",
+        mapping: [
+          { fromMs: 1000, toMs: 1500 },
+          { fromMs: 1200, toMs: 1500 },
+        ],
+      },
+    );
+    expect(s.doc.captions).toEqual({
+      w1500: { text: "a", was: "a" },
+      w1200: { text: "b", was: "b" },
+    });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

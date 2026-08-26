@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { OverrideDocSchema, type CaptionLine } from "@ossclip/core";
+import { OverrideDocSchema, TimeMap, type CaptionLine, type OverrideDoc } from "@ossclip/core";
 import {
   appliedCaptionEditCount,
   captionDropLine,
@@ -8,6 +8,19 @@ import {
   reanchoredKeyCount,
   reconcileCaptionEdits,
 } from "../src/caption-report";
+
+/**
+ * Every `reconcileCaptionEdits` case in this file reasons about the TEXT
+ * layers, not the clock. One kept span over the whole source makes the pass's
+ * `map` an identity (`toOutputClamped(t) === t`), so the window layer
+ * (`applyCaptionLineWindows`, which is the only thing the map is there for) is
+ * a no-op and these cases read exactly as they did before it existed — the
+ * window layer's own behaviour is pinned in core, over a map with a cut in it,
+ * where it can actually say something.
+ */
+const IDENTITY_MAP = new TimeMap([{ srcIn: 0, srcOut: 3600, kind: "keep" }]);
+const reconcile = (d: OverrideDoc, ls: readonly CaptionLine[]) =>
+  reconcileCaptionEdits(d, ls, IDENTITY_MAP);
 
 /**
  * §137 Task 6 — what `produce` says about caption edits that did not apply.
@@ -196,7 +209,7 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
     // memory, `edits.load` leaves it clean, and a Render that saves nothing
     // hands produce the untouched legacy doc. Migrate-then-apply is what puts
     // the retype in the video.
-    const out = reconcileCaptionEdits(doc({ "1": { text: "Zsh,", was: "edge," } }), lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(doc({ "1": { text: "Zsh,", was: "edge," } }), lines(["status", 5], ["edge,", 6]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status", "Zsh,"]);
     expect(out.doc.captions).toEqual({ w6000: { text: "Zsh,", was: "edge," } });
     expect(out.reanchored).toBe(true);
@@ -205,7 +218,7 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
 
   it("leaves a source-keyed doc completely alone — no write-back, no noise", () => {
     const before = doc({ w6000: { text: "Zsh,", was: "edge," } });
-    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(before, lines(["status", 5], ["edge,", 6]));
     expect(out.doc).toEqual(before);
     expect(out.reanchored).toBe(false);
     // One line only: the count. A re-anchor line here would claim a migration
@@ -219,7 +232,7 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
     // that repaired nothing — every retype gone from the user's file and the
     // `.bak` (their last pre-cut copy) spent to record it.
     const before = doc({ "0": { text: "Zsh", was: "gone" } });
-    const out = reconcileCaptionEdits(before, lines(["status", 5]));
+    const out = reconcile(before, lines(["status", 5]));
     expect(out.doc.captions).toEqual({ "0": { text: "Zsh", was: "gone" } });
     expect(out.reanchored).toBe(false);
     expect(out.log.join("\n")).toContain('"gone"');
@@ -244,7 +257,7 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
       ...Array.from({ length: 12 }, (_, i): [string, number] => [`filler${i}`, 7 + i]),
     ];
     const before = doc({ "12": { text: "Zsh,", was: "edge," } });
-    const out = reconcileCaptionEdits(before, lines(...words));
+    const out = reconcile(before, lines(...words));
     expect(out.doc.captions).toEqual({ "12": { text: "Zsh,", was: "edge," } });
     expect(out.reanchored).toBe(false);
     expect(out.log.join("\n")).toContain("the word is still here");
@@ -258,7 +271,7 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
     // anything re-anchor", not "did the doc change" (final review, Critical
     // 2): a retirement costs nothing to leave on disk for another run, and an
     // unnecessary write is one more overwrite of a single-generation `.bak`.
-    const out = reconcileCaptionEdits(
+    const out = reconcile(
       doc({ "0": { text: "Zsh,", was: "edge," }, w6000: { text: "Fish,", was: "edge," } }),
       lines(["edge,", 6]),
     );
@@ -275,7 +288,7 @@ describe("reconcileCaptionEdits — produce's caption pass (§137 Task 6, Critic
       splits: [{ at: 5, id: "s1" }],
       captionsHidden: true,
     });
-    const out = reconcileCaptionEdits(before, lines(["edge,", 6]));
+    const out = reconcile(before, lines(["edge,", 6]));
     expect(out.doc.splits).toEqual(before.splits);
     expect(out.doc.captionsHidden).toBe(true);
   });
@@ -292,7 +305,7 @@ describe("reconcileCaptionEdits — the caption word-hide layer (§59b, revisite
 
   it("drops a hidden word from the returned captionLines and writes the doc back untouched", () => {
     const before = OverrideDocSchema.parse({ captionWordsHidden: { w6000: { was: "edge," } } });
-    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(before, lines(["status", 5], ["edge,", 6]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status"]);
     // The write-back carries the hide layer through as-is — hides never had a
     // positional-key era, so there is nothing for the migration to touch.
@@ -309,14 +322,14 @@ describe("reconcileCaptionEdits — the caption word-hide layer (§59b, revisite
       captions: { w6000: { text: "Zsh,", was: "edge," } },
       captionWordsHidden: { w6000: { was: "Zsh," } },
     });
-    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(before, lines(["status", 5], ["edge,", 6]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status"]);
     expect(out.log.join("\n")).not.toContain("hidden word");
   });
 
   it("reports a stale hide — text changed — with the hidden-word prefix, and keeps the word", () => {
     const before = OverrideDocSchema.parse({ captionWordsHidden: { w6000: { was: "edge," } } });
-    const out = reconcileCaptionEdits(before, lines(["hedge,", 6]));
+    const out = reconcile(before, lines(["hedge,", 6]));
     // Left visible rather than deleting a word the user never pointed at.
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["hedge,"]);
     const log = out.log.join("\n");
@@ -326,7 +339,7 @@ describe("reconcileCaptionEdits — the caption word-hide layer (§59b, revisite
 
   it("reports a hide whose word the cut removed — nothing left to hide", () => {
     const before = OverrideDocSchema.parse({ captionWordsHidden: { w6000: { was: "edge," } } });
-    const out = reconcileCaptionEdits(before, lines(["status", 5]));
+    const out = reconcile(before, lines(["status", 5]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status"]);
     const log = out.log.join("\n");
     expect(log).toContain('hidden word "edge,"');
@@ -350,7 +363,7 @@ describe("reconcileCaptionEdits — the caption RANGE-edit layer (2026-08-18)", 
         { fromKey: "w5000", toKey: "w6000", text: "one two three", was: "status edge," },
       ],
     });
-    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(before, lines(["status", 5], ["edge,", 6]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["one", "two", "three"]);
     expect(out.log.join("\n")).toContain("1 caption range(s) rewritten by the editor");
     // The write-back spreads the array through untouched — range edits never
@@ -370,7 +383,7 @@ describe("reconcileCaptionEdits — the caption RANGE-edit layer (2026-08-18)", 
         { fromKey: "w5000", toKey: "w6000", text: "rewritten run", was: "status Zsh," },
       ],
     });
-    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(before, lines(["status", 5], ["edge,", 6]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["rewritten", "run"]);
     expect(out.log.join("\n")).not.toContain("range edit");
   });
@@ -381,7 +394,7 @@ describe("reconcileCaptionEdits — the caption RANGE-edit layer (2026-08-18)", 
         { fromKey: "w5000", toKey: "w6000", text: "x y", was: "not the run" },
       ],
     });
-    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(before, lines(["status", 5], ["edge,", 6]));
     expect(out.lines[0]!.words.map((w) => w.text)).toEqual(["status", "edge,"]);
     const log = out.log.join("\n");
     expect(log).toContain('range edit "not the run"');
@@ -399,7 +412,7 @@ describe("reconcileCaptionEdits — the caption RANGE-edit layer (2026-08-18)", 
         { fromKey: "w5000", toKey: "w9000", text: "x y", was: "status gone" },
       ],
     });
-    const out = reconcileCaptionEdits(before, lines(["status", 5], ["edge,", 6]));
+    const out = reconcile(before, lines(["status", 5], ["edge,", 6]));
     const log = out.log.join("\n");
     expect(log).toContain('range edit "status gone"');
     expect(log).toContain("no longer sit at those source moments");
@@ -431,7 +444,7 @@ describe("reconcileCaptionEdits — the caption LINE TIMING layer (2026-08-18)",
     const before = OverrideDocSchema.parse({
       captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
     });
-    const out = reconcileCaptionEdits(before, lines());
+    const out = reconcile(before, lines());
     // The seam between the two lines moved, so BOTH windows did.
     expect(out.lines[1]!.start).toBeCloseTo(0.7, 10);
     expect(out.lines[0]!.end).toBeCloseTo(0.7, 10);
@@ -452,7 +465,7 @@ describe("reconcileCaptionEdits — the caption LINE TIMING layer (2026-08-18)",
       captionWordsHidden: { w9000: { was: "here" } },
       captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
     });
-    const out = reconcileCaptionEdits(before, lines());
+    const out = reconcile(before, lines());
     expect(out.lines).toHaveLength(1);
     const log = out.log.join("\n");
     expect(log).toContain("caption timing (w9000)");
@@ -463,7 +476,7 @@ describe("reconcileCaptionEdits — the caption LINE TIMING layer (2026-08-18)",
     const before = OverrideDocSchema.parse({
       captionLineTiming: { w99000: { lead: 0.1, tail: 0.1 } },
     });
-    const out = reconcileCaptionEdits(before, lines());
+    const out = reconcile(before, lines());
     const log = out.log.join("\n");
     expect(log).toContain("caption timing (w99000)");
     expect(log).toContain("no caption starts at that source moment");
@@ -504,7 +517,7 @@ describe("reconcileCaptionEdits — the caption LINE TIMING layer (2026-08-18)",
     const before = OverrideDocSchema.parse({
       captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
     });
-    const out = reconcileCaptionEdits(before, claimants(2));
+    const out = reconcile(before, claimants(2));
     // It applied — to the FIRST claimant, whose opening seam moved.
     expect(out.lines[1]!.start).toBeCloseTo(0.7, 10);
     const log = out.log.join("\n");
@@ -517,7 +530,7 @@ describe("reconcileCaptionEdits — the caption LINE TIMING layer (2026-08-18)",
     const before = OverrideDocSchema.parse({
       captionLineTiming: { w9000: { lead: -0.3, tail: 0 } },
     });
-    const out = reconcileCaptionEdits(before, claimants(3));
+    const out = reconcile(before, claimants(3));
     expect(out.lines[1]!.start).toBeCloseTo(0.7, 10);
     // `1 - 2 = -1` under the old count, which the `> 0` gate swallowed whole.
     expect(out.log.join("\n")).toContain("1 caption timing nudge(s) applied");

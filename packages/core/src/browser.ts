@@ -110,6 +110,14 @@ export {
   type RetimeablePreviewProps,
   type RetimedPreviewFields,
 } from "./retime-preview";
+// The caption re-key half of the re-transcribe splice (Phase A 2026-08-26),
+// browser-safe by construction: restamp.ts imports `captionKeyFor` from
+// ./overrides (already on this surface) plus types, and NOTHING else — see its
+// header for why the token normalizer is restated there rather than imported
+// from analyze.ts (which reaches child_process). The `useEdits` reducer owns
+// `overrides.json`; the server that re-decodes the audio never writes it, so
+// the re-key has to run in the browser.
+export { rekeyCaptionRecords, type RekeyResult, type StampMove } from "./restamp";
 export type {
   Probe,
   Production,

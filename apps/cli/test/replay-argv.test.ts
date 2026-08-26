@@ -153,6 +153,71 @@ describe("recordedProduceArgs (§129)", () => {
     expect(replayed).not.toContain("--watermark");
   });
 
+  // The cover-overlay pin — the watermark's case, live rather than
+  // future-proofing: `coverInVideo: true` in ~/.ossclip/config.json is the
+  // effective default when no flag was typed, so an unpinned record replays
+  // with a different FIRST FRAME wherever that config differs.
+  it("pins the resolved --cover-in-video state into the record, both directions", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ coverInVideo: true })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--cover-in-video",
+    ]);
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ coverInVideo: false })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--no-cover-in-video",
+    ]);
+  });
+
+  it("never doubles a cover-in-video flag the user already typed", () => {
+    setReplayArgv(["produce", "./a.mp4", "--cover-in-video"]);
+    const on = recordedProduceArgs({ coverInVideo: true });
+    expect(on.filter((a) => a === "--cover-in-video")).toHaveLength(1);
+    setReplayArgv(["produce", "./a.mp4", "--no-cover-in-video"]);
+    const off = recordedProduceArgs({ coverInVideo: false });
+    expect(off.filter((a) => a === "--no-cover-in-video")).toHaveLength(1);
+    expect(off).not.toContain("--cover-in-video");
+  });
+
+  // The watermark's drift scenario, on the overlay: an off-record replayed on
+  // a machine whose config turns the overlay on must still render an
+  // untouched first frame — the recorded --no-cover-in-video reaches
+  // commander as a TYPED false, which beats the config (resolveCoverInVideo).
+  it("an off-record replayed under a config-on still says off", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    const recorded = recordedProduceArgs({ coverInVideo: false });
+    expect(recorded).toContain("--no-cover-in-video");
+    setReplayArgv(recorded);
+    const replayed = recordedProduceArgs({ coverInVideo: false });
+    expect(replayed.filter((a) => a === "--no-cover-in-video")).toHaveLength(1);
+    expect(replayed).not.toContain("--cover-in-video");
+  });
+
+  // The pin is a FLAG state, so it must survive the real parse as one: a
+  // record's `--no-cover-in-video` has to come back as a typed false, or the
+  // bidirectional pin above is decorative.
+  it("the recorded flag replays through the real program as a typed value", async () => {
+    const { buildProgram } = await import("../src/program");
+    const program = buildProgram();
+    for (const cmd of [program, ...program.commands]) {
+      cmd.exitOverride();
+      cmd.configureOutput({ writeErr() {} });
+    }
+    const produceCmd = program.commands.find((c) => c.name() === "produce");
+    if (produceCmd === undefined) throw new Error("the real program has no `produce` command");
+    let captured: Record<string, unknown> = {};
+    produceCmd.action((_input: string | undefined, opts: Record<string, unknown>) => {
+      captured = opts;
+    });
+    setReplayArgv(["produce", "./a.mp4"]);
+    const recorded = recordedProduceArgs({ coverInVideo: false });
+    await program.parseAsync(["node", "ossclip", ...recorded]);
+    expect(captured.coverInVideo).toBe(false);
+  });
+
   // The captions pin — same both-ways shape as the watermark above, kept
   // unconditional even though captions' default is config-independent today
   // (recordedProduceArgs' own comment has the future-proofing case): every

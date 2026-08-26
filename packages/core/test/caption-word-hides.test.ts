@@ -5,6 +5,7 @@ import {
   OverrideDocSchema,
 } from "../src/overrides";
 import type { CaptionLine } from "../src/captions";
+import { TimeMap } from "../src/timemap";
 
 // This fixture has no cutlist and no `TimeMap`, so nothing here relates
 // source time to output time at all. `srcStart` is set equal to `start` as
@@ -163,12 +164,22 @@ describe("captionWordsHidden schema", () => {
 });
 
 describe("applyCaptionLayers (the one chokepoint)", () => {
+  /**
+   * None of these docs hold a `captionLineWindows` entry, so the window layer
+   * the composer runs last is inert — this map exists only because it takes
+   * one. A single kept span over the whole source also makes its src→output
+   * conversion a plain identity, so nothing here reads differently than it did
+   * before the layer existed (`applyCaptionLineWindows` is pinned on its own,
+   * over a map with a cut in it, in caption-line-windows.test.ts).
+   */
+  const noWindows = new TimeMap([{ srcIn: 0, srcOut: 3600, kind: "keep" }]);
+
   it("applies a retype and a hide on different words, tagging drops by layer", () => {
     const doc = OverrideDocSchema.parse({
       captions: { w0: { text: "always", was: "never" } },
       captionWordsHidden: { w400: { was: "gonna" }, w9999: { was: "gone" } },
     });
-    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc);
+    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc, noWindows);
     expect(out[0]!.words.map((w) => w.text)).toEqual(["always", "give"]);
     expect(dropped).toEqual([{ key: "w9999", expected: "gone", found: null, layer: "hide" }]);
   });
@@ -179,7 +190,7 @@ describe("applyCaptionLayers (the one chokepoint)", () => {
       // `was` is the LIVE text at hide time, i.e. the retype's output.
       captionWordsHidden: { w400: { was: "gunna" } },
     });
-    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc);
+    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc, noWindows);
     expect(out[0]!.words.map((w) => w.text)).toEqual(["never", "give"]);
     expect(dropped).toEqual([]);
   });
@@ -188,7 +199,7 @@ describe("applyCaptionLayers (the one chokepoint)", () => {
     const doc = OverrideDocSchema.parse({
       captions: { w0: { text: "always", was: "not-the-word" } },
     });
-    const { dropped } = applyCaptionLayers(makeLines(), doc);
+    const { dropped } = applyCaptionLayers(makeLines(), doc, noWindows);
     expect(dropped).toEqual([
       { key: "w0", expected: "not-the-word", found: "never", layer: "edit" },
     ]);

@@ -30,9 +30,6 @@ Concrete, scoped, mostly logged as findings already:
   the built-in default.
 - Caption band derived from live occupancy rather than per-layout hand-tuned
   anchors.
-- `--cover-in-video` — the cover frame as the short's first frames (real
-  A/V-sync work, deliberately not rushed; see §93 for the
-  cover-frame-outside-clip-window niggle).
 - "Eyes open" in cover frame selection.
 - `startSec`/`endSec` debug mirror on `production.json`.
 - Real-footage validation of `--clip` across more long-form sources (§89a) —

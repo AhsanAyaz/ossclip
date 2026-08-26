@@ -8,8 +8,18 @@ import {
   resolveCutSourceRanges,
   subtractRangesFromCutlist,
 } from "../src/recut";
-import { OverrideDocSchema } from "../src/overrides";
+import { isSrcTiming, OverrideDocSchema, type SceneTiming } from "../src/overrides";
 import type { Segment } from "../src/schema";
+
+/** Narrow a `timing` entry to the LEGACY output-clock arm — every assertion
+ * in this file is about the remap, which is legacy-only by design (the src
+ * arm passes through untouched, asserted separately). Throws rather than
+ * casts so a shape regression fails loudly here instead of comparing
+ * `undefined` to `undefined`. */
+function legacyTiming(timing: SceneTiming | undefined): { startSec: number; endSec: number } {
+  if (!timing || isSrcTiming(timing)) throw new Error(`expected a legacy timing, got ${JSON.stringify(timing)}`);
+  return timing;
+}
 
 /**
  * Build the TimeMap after removing an OUTPUT-time range [cutStart, cutEnd)
@@ -91,8 +101,8 @@ describe("remapOverridesThroughRecut — identity re-cut", () => {
           expect(reports).toEqual([]);
           expect(out.splits).toHaveLength(splits.length);
           out.splits.forEach((s, i) => expect(s.at).toBeCloseTo(splits[i]!, 6));
-          expect(out.scenes.s!.timing!.startSec).toBeCloseTo(pinStart, 6);
-          expect(out.scenes.s!.timing!.endSec).toBeCloseTo(map.outputDuration, 6);
+          expect(legacyTiming(out.scenes.s!.timing).startSec).toBeCloseTo(pinStart, 6);
+          expect(legacyTiming(out.scenes.s!.timing).endSec).toBeCloseTo(map.outputDuration, 6);
           // Same reference, not just an equal value — proof nothing here
           // recomputed it.
           expect(out.cuts).toBe(doc.cuts);
@@ -305,8 +315,29 @@ describe("remapOverridesThroughRecut — pinned timing (unit)", () => {
 
     const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
 
-    expect(out.scenes["scene-2"]!.timing!.startSec).toBeCloseTo(17, 6); // 20 - 3
-    expect(out.scenes["scene-2"]!.timing!.endSec).toBeCloseTo(21, 6); // 24 - 3
+    expect(legacyTiming(out.scenes["scene-2"]!.timing).startSec).toBeCloseTo(17, 6); // 20 - 3
+    expect(legacyTiming(out.scenes["scene-2"]!.timing).endSec).toBeCloseTo(21, 6); // 24 - 3
+    expect(reports).toEqual([]);
+  });
+
+  it("leaves a SRC-anchored pin untouched — source seconds are what a recut cannot move", () => {
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const newMap = cutOutputRange(oldMap, 5, 8);
+    const doc = OverrideDocSchema.parse({
+      scenes: {
+        "scene-2": { timing: { srcStart: 20, srcEnd: 24 } },
+        "scene-3": { timing: { startSec: 20, endSec: 24 } },
+      },
+    });
+
+    const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
+
+    expect(out.scenes["scene-2"]!.timing).toEqual({ srcStart: 20, srcEnd: 24 });
+    // Same entry object, not merely an equal value — proof nothing here
+    // recomputed it (the `cuts` pass-through assertion's posture).
+    expect(out.scenes["scene-2"]).toBe(doc.scenes["scene-2"]);
+    // ...and the legacy neighbour in the same doc still gets its remap.
+    expect(legacyTiming(out.scenes["scene-3"]!.timing).startSec).toBeCloseTo(17, 6);
     expect(reports).toEqual([]);
   });
 
@@ -321,8 +352,8 @@ describe("remapOverridesThroughRecut — pinned timing (unit)", () => {
 
     const { doc: out, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
 
-    expect(out.scenes["scene-2"]!.timing!.startSec).toBeCloseTo(20, 6);
-    expect(out.scenes["scene-2"]!.timing!.endSec).toBeCloseTo(20, 6);
+    expect(legacyTiming(out.scenes["scene-2"]!.timing).startSec).toBeCloseTo(20, 6);
+    expect(legacyTiming(out.scenes["scene-2"]!.timing).endSec).toBeCloseTo(20, 6);
     expect(reports).toHaveLength(2);
   });
 
@@ -610,8 +641,8 @@ describe("applyUserCuts", () => {
 
     expect(result.changed).toBe(true);
     expect(result.reports).toHaveLength(2);
-    expect(result.doc.scenes["scene-1"]!.timing!.startSec).toBeCloseTo(20, 6);
-    expect(result.doc.scenes["scene-1"]!.timing!.endSec).toBeCloseTo(20, 6);
+    expect(legacyTiming(result.doc.scenes["scene-1"]!.timing).startSec).toBeCloseTo(20, 6);
+    expect(legacyTiming(result.doc.scenes["scene-1"]!.timing).endSec).toBeCloseTo(20, 6);
   });
 
   it("is idempotent once `src` is resolved: a stable re-run makes no further changes", () => {

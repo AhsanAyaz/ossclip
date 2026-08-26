@@ -58,6 +58,8 @@ export function recordedProduceArgs(pins: {
   llmEffort?: "low" | "medium" | "high";
   clipWindow?: string;
   watermark?: boolean;
+  /** The RESOLVED cover-overlay switch — config-dependent, so pinned both ways. */
+  coverInVideo?: boolean;
   captions?: boolean;
   jumpCuts?: JumpCutsMode;
   /** The RESOLVED dictionary terms — pinned only when non-empty. */
@@ -109,6 +111,20 @@ export function recordedProduceArgs(pins: {
   // was only ever a nicety.
   if (pins.watermark !== undefined && !args.includes("--watermark") && !args.includes("--no-watermark")) {
     args.push(pins.watermark ? "--watermark" : "--no-watermark");
+  }
+  // The cover overlay, the watermark's rationale VERBATIM and for a live
+  // reason, not future-proofing: its effective default is config-dependent
+  // (`coverInVideo: true` in ~/.ossclip/config.json), so an unpinned record
+  // would gain — or lose — an overlay on the first frames of the replayed
+  // video the moment that config is edited, or the moment Render runs on
+  // another machine. Both directions, includes-guarded on BOTH spellings so a
+  // typed flag is never doubled.
+  if (
+    pins.coverInVideo !== undefined &&
+    !args.includes("--cover-in-video") &&
+    !args.includes("--no-cover-in-video")
+  ) {
+    args.push(pins.coverInVideo ? "--cover-in-video" : "--no-cover-in-video");
   }
   // The captions flag, pinned both ways like the watermark above — but here
   // as future-proofing plus consistency rather than a live bug: captions'

@@ -407,6 +407,19 @@ export function buildProgram(): Command {
     .option("--no-watermark", "no wordmark, even when the config turns it on")
     // Same tri-state shape as --watermark above (positive declared first so
     // commander's default stays undefined = "not typed"): the config's
+    // `coverInVideo` key supplies the default (resolveCoverInVideo), and a
+    // typed --no-cover-in-video still beats a config-on. A separate key from
+    // --cover/--no-cover, which is about WRITING the cover file at all.
+    .option(
+      "--cover-in-video",
+      "overlay the cover image on the video's first frames, for the platforms that ignore " +
+        "an uploaded cover and use frame 1. Nothing is inserted — the overlay ends at the " +
+        "first spoken word (max 0.5s), so no timing moves " +
+        "(set it once with coverInVideo: true in ~/.ossclip/config.json)",
+    )
+    .option("--no-cover-in-video", "no cover overlay, even when the config turns it on")
+    // Same tri-state shape as --watermark above (positive declared first so
+    // commander's default stays undefined = "not typed"): the config's
     // `youtube` key supplies the default (resolveYoutube), and a typed
     // --no-youtube still beats a config-on.
     .option(
@@ -645,6 +658,9 @@ export function buildProgram(): Command {
           zoom: opts.zoom,
           // undefined = "not typed", so produce can let the config decide.
           watermark: opts.watermark,
+          // The watermark's tri-state again, resolved by resolveCoverInVideo
+          // at the use site against the config's `coverInVideo`.
+          coverInVideo: opts.coverInVideo,
           // The same tri-state contract as watermark, resolved by
           // resolveYoutube at the use site; --portrait rides along untyped =
           // undefined so the config's path can supply it.

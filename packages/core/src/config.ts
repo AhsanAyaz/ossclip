@@ -68,6 +68,15 @@ export interface OssclipConfig {
    */
   watermark?: boolean;
   /**
+   * Overlay the cover image on the opening frames of every produce run, for
+   * the platforms that ignore an uploaded cover and use frame 1. DEFAULT OFF:
+   * the overlay costs the first fraction of the hook, so it is a choice about
+   * where you publish, not a default anyone should inherit.
+   * `--cover-in-video` / `--no-cover-in-video` win over this per run
+   * (`resolveCoverInVideo`), the `watermark` contract exactly.
+   */
+  coverInVideo?: boolean;
+  /**
    * Terms of art the speaker uses — "JSON", "ossclip", "Genkit" — biasing
    * transcription (whisper `--prompt`), vouching repair corrections, and
    * canonicalizing caption casing on every run (F4, 2026-08-16: "Jason" for
@@ -231,6 +240,11 @@ export function loadConfig(): OssclipConfig {
     // resolveWatermark), so a hand-edited non-boolean stays OFF, the safe
     // default for a credit.
     watermark: fileCfg.watermark,
+    // File-only, `watermark`'s posture verbatim: the strict `=== true` lives
+    // at the consumer (produce's resolveCoverInVideo), so a hand-edited
+    // non-boolean stays OFF — the safe default for something that paints over
+    // the first frames of the hook.
+    coverInVideo: fileCfg.coverInVideo,
     // File-only for the same reason as `watermark`: these are structured
     // values a hand-editable JSON file supplies, and parse-don't-coerce says
     // the strict checks live at the consumer — `validDictionary` /

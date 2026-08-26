@@ -7,6 +7,7 @@ import {
   scaleWordsIntoWindow,
 } from "../src/overrides";
 import type { CaptionLine } from "../src/captions";
+import { TimeMap } from "../src/timemap";
 
 /**
  * A GAP-FREE PARTITION — the shape a real caption stream actually has, and the
@@ -545,6 +546,16 @@ describe("captionLineTiming schema", () => {
 });
 
 describe("applyCaptionLayers — line timing is the LAST layer", () => {
+  /**
+   * None of these docs hold a `captionLineWindows` entry, so the window layer
+   * the composer runs last is inert — this map exists only because it takes
+   * one. A single kept span over the whole source also makes its src→output
+   * conversion a plain identity, so nothing here reads differently than it did
+   * before the layer existed (`applyCaptionLineWindows` is pinned on its own,
+   * over a map with a cut in it, in caption-line-windows.test.ts).
+   */
+  const noWindows = new TimeMap([{ srcIn: 0, srcOut: 3600, kind: "keep" }]);
+
   it("re-times the POST-hide window: a hide moved it, and the nudge moves it again", () => {
     const lines: CaptionLine[] = [
       {
@@ -567,7 +578,7 @@ describe("applyCaptionLayers — line timing is the LAST layer", () => {
       captionWordsHidden: { w11000: { was: "two" } },
       captionLineTiming: { w12000: { lead: -0.5, tail: 0 } },
     });
-    const { lines: out, dropped } = applyCaptionLayers(lines, doc);
+    const { lines: out, dropped } = applyCaptionLayers(lines, doc, noWindows);
     expect(out[0]!.words.map((w) => w.text)).toEqual(["one"]);
     // The hide left line 1 ending at 1.0 against line 2's start of 2.0 — a
     // GAP — so the nudge moves line 2's start into it and NOTHING else. That
@@ -591,7 +602,7 @@ describe("applyCaptionLayers — line timing is the LAST layer", () => {
       captionWordsHidden: { w11000: { was: "two" } },
       captionLineTiming: { w11000: { lead: 0.1, tail: 0 } },
     });
-    const { dropped } = applyCaptionLayers(lines, doc);
+    const { dropped } = applyCaptionLayers(lines, doc, noWindows);
     expect(dropped).toEqual([{ key: "w11000", expected: "", found: null, layer: "timing" }]);
   });
 });

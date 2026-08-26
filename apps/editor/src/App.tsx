@@ -15,6 +15,7 @@ import {
   splitCues,
   atSplitPoints,
   resolveSplitPoints,
+  resolveSrcTimingPins,
   carveKeptTakes,
   dismissedRemovals,
   vetoedRemovals,
@@ -256,6 +257,72 @@ export const App: React.FC = () => {
     language: string;
     words: { text: string; start: number; end: number }[];
   } | null>(null);
+  /**
+   * One range re-decode in flight at a time, client side (Phase A,
+   * 2026-08-26). The server single-flights too (409), but a chip that fires
+   * a doomed request is a request whose failure the user then reads about
+   * for nothing — and a ref, not state, because nothing renders from it.
+   */
+  const retranscribeBusy = useRef(false);
+  /**
+   * Re-decode the source range a keep/dismissal just revived, and move the
+   * caption records onto the corrected stamps.
+   *
+   * FIRE-AND-FORGET on purpose: the veto is already committed and the
+   * preview already plays the revived material — the re-stamp is an
+   * improvement that lands when it lands. Every failure path is a
+   * `console.warn` and nothing else: the editor keeps working on the old
+   * stamps, which is exactly what it did before this endpoint existed.
+   *
+   * The re-key is dispatched BEFORE the transcript refetch, and both are
+   * needed: the mapping moves the user's caption EDITS onto the new anchors,
+   * and the refetched transcript is what the live caption memo re-derives
+   * the line windows from (`rebuildCaptionTrack`).
+   */
+  const retranscribeRange = useCallback(
+    (srcIn: number, srcOut: number): void => {
+      if (retranscribeBusy.current) return;
+      retranscribeBusy.current = true;
+      void (async () => {
+        try {
+          const res = await fetch("/api/retranscribe-range", {
+            method: "POST",
+            body: JSON.stringify({ srcIn, srcOut }),
+          });
+          const body = (await res.json()) as {
+            ok?: boolean;
+            error?: string;
+            mapping?: { fromMs: number; toMs: number }[];
+            reports?: string[];
+          };
+          if (!body.ok) {
+            console.warn(`re-transcribe failed: ${body.error ?? res.status}`);
+            return;
+          }
+          for (const line of body.reports ?? []) console.warn(`re-transcribe: ${line}`);
+          // Empty mapping is a no-op in the reducer (no undo step) — dispatch
+          // unconditionally rather than restating that rule here.
+          edits.rekeyCaptionKeys(body.mapping ?? []);
+          const fresh = await fetch("/api/transcript");
+          const doc = (await fresh.json()) as {
+            transcript?: { language?: string; words?: { text: string; start: number; end: number }[] } | null;
+          };
+          const t = doc.transcript;
+          if (t && Array.isArray(t.words)) {
+            setTranscriptDoc({
+              language: typeof t.language === "string" ? t.language : "en",
+              words: t.words,
+            });
+          }
+        } catch (err) {
+          console.warn(`re-transcribe failed: ${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          retranscribeBusy.current = false;
+        }
+      })();
+    },
+    [edits],
+  );
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -983,6 +1050,18 @@ export const App: React.FC = () => {
     transcript?: LiveCaptionTrack;
   } | null>(() => {
     if (!renderProps) return null;
+    // The LAST RENDER's clock, from its own spans. Declared here (it used to
+    // sit just above its single use at the bottom of this memo) because the
+    // override passes below now need it too — malformed spans degrade to
+    // `null`, never a thrown clock, the `identityToSource` guard's rule.
+    const spansMap = (): TimeMap | null => {
+      try {
+        const spans = renderProps.spans ?? [];
+        return spans.length > 0 ? mapFromKeptSpans(spans) : null;
+      } catch {
+        return null;
+      }
+    };
     // Always merge onto the PRISTINE base, never onto `renderProps.sceneCues`/
     // `theme` themselves — those are what `produce` actually rendered (its
     // own override-applied output), and merging the CURRENT override doc
@@ -997,7 +1076,21 @@ export const App: React.FC = () => {
       (c) => c.kind !== "plain",
     );
     const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
-    const { cues: graphicCues } = applyOverrides(baseCues, edits.doc);
+    // The clock THESE cues are on — one derivation, three uses below.
+    const oldClockMap = spansMap();
+    // Src-anchored pins resolved onto that clock BEFORE the merge
+    // (`resolveSrcTimingPins` owns why this is a pre-pass and not a `map`
+    // argument on `applyOverrides`). Old-clock here, deliberately: these two
+    // passes reason on the last render's cue windows, and `retimeForPreview`
+    // below moves the whole merged result onto the live clock in one batch —
+    // resolving live here would double-apply the veto's revived seconds.
+    // A pin whose material only EXISTS on the live clock (dropped inside
+    // revived footage) is inert in this pass and lands in `finishOnClock`'s
+    // pass instead, which is why these reports are NOT surfaced: on that
+    // path the pin does apply, and "pin inert" would be a lie about the
+    // frame the user is looking at.
+    const oldClockDoc = oldClockMap ? resolveSrcTimingPins(edits.doc, oldClockMap).doc : edits.doc;
+    const { cues: graphicCues } = applyOverrides(baseCues, oldClockDoc);
     // Same sequence as `produce.ts`: overrides → split, then drop the deleted
     // scenes → fill the gaps with plain takes (a deleted scene's window
     // becomes an editable take — Task C's payoff for doing A first) → a
@@ -1026,7 +1119,8 @@ export const App: React.FC = () => {
     // an `at`. Src-only splits (minted inside revived material) have no image
     // on this clock; they apply in the post-retime pass below.
     const splitted = splitCues(filled, atSplitPoints(edits.doc.splits));
-    const { cues: mergedCues } = applyOverrides(splitted, edits.doc);
+    // `oldClockDoc` again — same clock as pass 1 (a split does not move time).
+    const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);
     const { cues } = dropHiddenCues(mergedCues, edits.doc);
     // The framing preview applies LAST, onto the fully-merged cue, so what
     // the Player shows mid-gesture is exactly what committing would store.
@@ -1061,6 +1155,31 @@ export const App: React.FC = () => {
       captionsHidden:
         renderProps.captionsHiddenByFlag === true || edits.doc.captionsHidden === true,
       videoFileName: `/media/${renderProps.videoFileName}`,
+      // The `--cover-in-video` overlay, re-pointed at the server's `/media/`
+      // mount exactly like the video above: produce stages the image into the
+      // WORKDIR as well as the render's public dir precisely so this URL
+      // resolves (see the staging block in produce.ts), and `staticFile()`
+      // leaves an already-rooted path alone (ProductionComposition's rule).
+      // Kept a conditional spread rather than an unconditional rewrite so a
+      // props file with no overlay — the default — stays byte-for-byte the
+      // object the Player got before this feature existed.
+      //
+      // No existence probe, because the state it would guard against cannot
+      // arise: the prop and the staged copy are written by the SAME produce
+      // block into the SAME directory `render-props.json` itself lives in, so
+      // a workdir that has the key has the file. Only a hand-deleted image
+      // breaks it, and then Remotion's `<Img>` reports a load failure rather
+      // than silently drawing nothing — which is the honest reading of a
+      // workdir someone edited underneath the editor, and costs the RENDER
+      // nothing (it re-stages from the current cover on every run).
+      ...(renderProps.coverInVideo
+        ? {
+            coverInVideo: {
+              ...renderProps.coverInVideo,
+              fileName: `/media/${renderProps.coverInVideo.fileName}`,
+            },
+          }
+        : {}),
     };
     // Cut review step 4, LAST — a final transform over the fully-merged
     // props, so every layer above (overrides, splits, fill, captions,
@@ -1117,7 +1236,16 @@ export const App: React.FC = () => {
       // One more override pass so framing edits on `take-kept-*` (and on
       // src-split halves) preview live — idempotent on already-merged cues,
       // the memo's own documented property.
-      const { cues: finalCues } = applyOverrides(splitted2, edits.doc);
+      // Src pins resolved on THIS clock (`clockMap`), which is the clock
+      // `splitted2` is on: the live map under a veto, the spans map
+      // otherwise. A cue the passes above already pinned is skipped by
+      // `applyOverrides` itself (R16 §68's already-pinned guard), so this is
+      // the pass that catches exactly the pins with no old-clock image —
+      // one dropped inside revived material, or onto a `take-kept-*` block
+      // that did not exist until `carveKeptTakes` ran a moment ago. These
+      // reports DO surface: this clock is the one the user is watching.
+      const pinned = resolveSrcTimingPins(edits.doc, clockMap);
+      const { cues: finalCues } = applyOverrides(splitted2, pinned.doc);
       // Captions over the REVIVED material (field report 2026-08-26): the
       // retimed captionLines only cover words the LAST RENDER kept — the
       // revived stretch's words exist nowhere in render-props. Rebuild the
@@ -1147,19 +1275,11 @@ export const App: React.FC = () => {
       }
       return {
         props: { ...props, sceneCues: finalCues, captionLines },
-        reports: [...priorReports, ...carved.reports, ...resolved.reports],
+        reports: [...priorReports, ...carved.reports, ...resolved.reports, ...pinned.reports],
         transcript,
       };
     };
-    const spansMap = (): TimeMap | null => {
-      try {
-        const spans = renderProps.spans ?? [];
-        return spans.length > 0 ? mapFromKeptSpans(spans) : null;
-      } catch {
-        return null;
-      }
-    };
-    if (!liveRecut) return finishOnClock(base, [], spansMap());
+    if (!liveRecut) return finishOnClock(base, [], oldClockMap);
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
     return finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap);
   }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut, cleanupCutlist, transcriptDoc]);
@@ -2281,11 +2401,20 @@ export const App: React.FC = () => {
         selection={selection}
         onSelect={setSelection}
         edits={edits}
+        // The revived-range hook (Phase A): Timeline calls this AFTER the
+        // keep/dismiss dispatch, and only when material came BACK — see
+        // `onRevived`'s docstring for why a re-remove must not fire it.
+        onRevived={retranscribeRange}
         videoSrc={live.videoFileName}
         // The struck band's DISPLAY half (step 4 follow-up): a fresh cut's
         // doc window is old-clock, this ruler is the live one — the Timeline
         // prop doc owns the argument; identity when no veto is live.
         toLive={clock.toLive}
+        // The pin's own conversion (source-anchoring audit, 2026-08-26): a
+        // drag commit stores SOURCE seconds, so the block stays where it was
+        // dropped across the next re-cut. Same mapper ⌘B's `splits[].src`
+        // resolves through — one clock, both anchors.
+        pinSourceSec={clock.toSourceSec}
         toSourceSec={(outSec) => {
           // Output→source through the spans (R20 §97) — the filmstrip frame
           // must be the source second actually playing there, not the raw

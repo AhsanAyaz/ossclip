@@ -6,6 +6,7 @@ import {
   OverrideDocSchema,
 } from "../src/overrides";
 import type { CaptionLine } from "../src/captions";
+import { TimeMap } from "../src/timemap";
 
 // Same inert-stand-in convention as caption-word-hides.test.ts: no cutlist
 // and no TimeMap here, so `srcStart` is set equal to `start` — NOT because
@@ -348,6 +349,16 @@ describe("captionRangeEdits schema", () => {
 });
 
 describe("applyCaptionLayers — range edits between retypes and hides", () => {
+  /**
+   * None of these docs hold a `captionLineWindows` entry, so the window layer
+   * the composer runs last is inert — this map exists only because it takes
+   * one. A single kept span over the whole source also makes its src→output
+   * conversion a plain identity, so nothing here reads differently than it did
+   * before the layer existed (`applyCaptionLineWindows` is pinned on its own,
+   * over a map with a cut in it, in caption-line-windows.test.ts).
+   */
+  const noWindows = new TimeMap([{ srcIn: 0, srcOut: 3600, kind: "keep" }]);
+
   it("composes edit → range → hide and tags a range drop as layer: range", () => {
     const doc = OverrideDocSchema.parse({
       captions: { w0: { text: "always", was: "never" } },
@@ -358,7 +369,7 @@ describe("applyCaptionLayers — range edits between retypes and hides", () => {
       ],
       captionWordsHidden: { w2000: { was: "up" } },
     });
-    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc);
+    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc, noWindows);
     expect(out[0]!.words.map((w) => w.text)).toEqual(["always", "will", "hand"]);
     expect(out[1]!.words.map((w) => w.text)).toEqual(["you"]);
     expect(dropped).toEqual([
@@ -373,7 +384,7 @@ describe("applyCaptionLayers — range edits between retypes and hides", () => {
       captions: { w400: { text: "gunna", was: "gonna" } },
       captionRangeEdits: [edit("w400", "w700", "will hand", "gunna give")],
     });
-    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc);
+    const { lines: out, dropped } = applyCaptionLayers(makeLines(), doc, noWindows);
     expect(out[0]!.words.map((w) => w.text)).toEqual(["never", "will", "hand"]);
     expect(dropped).toEqual([]);
   });

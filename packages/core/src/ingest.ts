@@ -86,6 +86,40 @@ export async function extractAudio(tools: IngestTools, src: string, outWav: stri
 }
 
 /**
+ * Extract ONE span of an existing wav, same 16 kHz mono PCM shape
+ * (2026-08-26, the caption re-alignment pass).
+ *
+ * Fed the workdir's `audio.wav`, which `extractAudio` above already wrote at
+ * 16k/mono/pcm_s16le — so this is a sample-exact cut, not a re-encode, and it
+ * costs milliseconds even on a long source. Re-slicing from the ORIGINAL video
+ * would decode video frames for nothing and hand whisper an audio stream
+ * conditioned differently from the one the first pass decoded, which is
+ * exactly the variable a re-transcription is trying to hold still.
+ *
+ * `-ss` goes BEFORE `-i`: as an input option ffmpeg seeks the demuxer and
+ * starts decoding at the span, instead of decoding the whole file and
+ * discarding everything ahead of it. On PCM that seek is exact, so the clip's
+ * stamps are `spanStart`-relative with no drift to compensate for
+ * (`alignRestamp` adds the offset back).
+ */
+export async function extractAudioSpan(
+  tools: IngestTools,
+  wav: string,
+  outWav: string,
+  fromSec: number,
+  durSec: number,
+): Promise<void> {
+  await run(tools.ffmpegPath, [
+    "-y",
+    "-ss", fromSec.toFixed(3),
+    "-i", wav,
+    "-t", durSec.toFixed(3),
+    "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+    outWav,
+  ]);
+}
+
+/**
  * Headroom over the exact displayed size so a zoomed span never renders from
  * below-native pixels (2026-08-17 render-speed pass). The two motion drivers
  * stack to at most ZOOM_MAX_SCALE (1.05) × FACE_PUNCH_SCALE (1.015) ≈ 1.066

@@ -3,6 +3,7 @@ import {
   clampTiming,
   clampZoom,
   moveTiming,
+  pinTiming,
   sourceToOutputClamped,
   timeAtX,
   zoomedScrollLeft,
@@ -173,5 +174,34 @@ describe("sourceToOutputClamped (PLAN 2026-08-04 Task 4c fix wave, review findin
 
   it("is 0 on an empty spans array — no crash, no NaN", () => {
     expect(sourceToOutputClamped([], 5)).toBe(0);
+  });
+});
+
+describe("pinTiming (source-anchored scene timing, 2026-08-26)", () => {
+  // The live clock the field bug is about: a kept (revived) range put 2s
+  // back at the head of the timeline, so live second 5 is source second 3.
+  const toSource = (sec: number): number => sec - 2;
+
+  it("converts the preview window to SOURCE seconds when a mapper exists", () => {
+    expect(pinTiming(5, 9, toSource)).toEqual({ srcStart: 3, srcEnd: 7 });
+  });
+
+  it("rounds to milliseconds — clock arithmetic noise is not user intent", () => {
+    expect(pinTiming(5.00004, 9.00051, (sec) => sec)).toEqual({
+      srcStart: 5,
+      srcEnd: 9.001,
+    });
+  });
+
+  it("falls back to today's legacy write with no mapper", () => {
+    expect(pinTiming(5, 9, null)).toEqual({ startSec: 5, endSec: 9 });
+    expect(pinTiming(5, 9, undefined)).toEqual({ startSec: 5, endSec: 9 });
+  });
+
+  it("falls back to legacy rather than writing a window the schema refuses", () => {
+    // A clock that collapses both edges onto one source second (the whole
+    // window inside removed material) would otherwise mint `srcEnd ===
+    // srcStart`, which `SceneTimingSchema` rejects on the next load.
+    expect(pinTiming(5, 9, () => 4)).toEqual({ startSec: 5, endSec: 9 });
   });
 });

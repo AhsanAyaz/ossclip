@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, EdlVideo, SceneLayer, VideoStage, Watermark, punchPropsFor, showCaptions, showWatermark, type PunchPlan } from "@ossclip/scenes";
+import { CaptionTrack, CoverInVideo, EdlVideo, SceneLayer, VideoStage, Watermark, coverInVideoPropsFor, punchPropsFor, showCaptions, showWatermark, type CoverInVideoProps, type PunchPlan } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -110,6 +110,21 @@ export interface ProductionCompProps {
    * hand-mangled plan also falls back to legacy rather than NaN scales.
    */
   punch?: PunchPlan;
+  /**
+   * OPT-IN cover overlay on the opening frames (`--cover-in-video` / config
+   * `coverInVideo`), for the platforms that ignore an uploaded cover and use
+   * frame 1. `fileName` is an image in the render's public dir (or an http(s)
+   * URL, or the editor's `/media/…`); `durationSec` is OUTPUT seconds from
+   * frame 0, derived by produce from the first word's start.
+   *
+   * Optional and absent-means-off so every pre-feature render-props.json
+   * parses and renders BYTE-IDENTICALLY — this is an overlay, so a present
+   * value changes pixels only, never the clock (core's cover-in-video.ts has
+   * the §93 argument). Gated through `coverInVideoPropsFor` below (parse,
+   * never coerce), so a hand-mangled entry falls back to no overlay rather
+   * than a NaN-frame Sequence over the hook.
+   */
+  coverInVideo?: CoverInVideoProps;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -145,6 +160,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   captionsHidden,
   staticCamera,
   punch,
+  coverInVideo,
 }) => {
   if (!videoFileName) {
     return (
@@ -170,6 +186,9 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   // EdlVideo has no idea what shape its slot is or that the camera is off.
   const punchPlan =
     sourceFit === "contain" || staticCamera === true ? null : punchPropsFor(punch);
+  // Gated here rather than at the mount below so the parse runs once per
+  // render and the JSX stays a plain presence check (punchPlan's shape).
+  const coverInVideoProps = coverInVideoPropsFor(coverInVideo);
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
       <VideoStage
@@ -229,6 +248,12 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
       {showWatermark(watermark) ? (
         <Watermark theme={theme} frame={{ width: settings.width, height: settings.height }} />
       ) : null}
+      {/* LAST, so it is above even the credit: for the frames it covers, the
+          cover IS the video — a wordmark or a caption showing through would
+          be exactly the composite the overlay exists to avoid. It occupies
+          only its own opening window (CoverInVideo mounts a Sequence), so
+          everything above renders normally the moment it ends. */}
+      {coverInVideoProps ? <CoverInVideo cover={coverInVideoProps} /> : null}
     </AbsoluteFill>
   );
 };
