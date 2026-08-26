@@ -948,6 +948,56 @@ describe("patchCaptionRange — multi-word free-text rewrite (2026-08-18)", () =
     expect(s.doc.captionLineTiming).toEqual({ w20000: { lead: 0.1, tail: 0 } });
   });
 
+  it("scrub-on-create: removes line WINDOWS keyed INSIDE the interval, keeps the ones outside", () => {
+    // The line-timing scrub's hazard, one layer over: a window's key is a
+    // line's FIRST word's anchor, and a rewrite covering that word re-mints
+    // it — the record would dangle forever, `found: null`, misdiagnosed by
+    // the banner as "the cut removed the caption you placed".
+    let s = editReducer(initialEditState(), {
+      type: "patchCaptionLineWindows",
+      entries: [
+        // Keyed to a line whose first word sits INSIDE the rewritten run…
+        { srcStart: 5, window: { srcStart: 4.8, srcEnd: 6.5 } },
+        // …and one whose first word is well outside it.
+        { srcStart: 9, window: { srcStart: 8.9, srcEnd: 10.2 } },
+      ],
+    });
+    const depth = s.past.length;
+    s = editReducer(s, {
+      type: "patchCaptionRange", fromSrcStart: 4, toSrcStart: 6, text: "new run", was: "a c e",
+    });
+    expect(s.doc.captionLineWindows).toEqual({ w9000: { srcStart: 8.9, srcEnd: 10.2 } });
+    // ONE commit for the whole scrub — the window goes with the rewrite it
+    // could no longer address, in the same undo step.
+    expect(s.past).toHaveLength(depth + 1);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.captionLineWindows).toEqual({
+      w5000: { srcStart: 4.8, srcEnd: 6.5 },
+      w9000: { srcStart: 8.9, srcEnd: 10.2 },
+    });
+  });
+
+  it("the bulk range apply scrubs line WINDOWS per occurrence too", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchCaptionLineWindows",
+      entries: [
+        { srcStart: 5, window: { srcStart: 4.8, srcEnd: 6.5 } },
+        { srcStart: 12, window: { srcStart: 11.9, srcEnd: 13.1 } },
+        { srcStart: 20, window: { srcStart: 19.5, srcEnd: 21 } },
+      ],
+    });
+    s = editReducer(s, {
+      type: "patchCaptionRangeAllOccurrences",
+      entries: [
+        { fromSrcStart: 4, toSrcStart: 6, was: "a c e" },
+        { fromSrcStart: 11, toSrcStart: 13, was: "a c e" },
+      ],
+      text: "new run",
+    });
+    // Only the window outside every rewritten interval survives.
+    expect(s.doc.captionLineWindows).toEqual({ w20000: { srcStart: 19.5, srcEnd: 21 } });
+  });
+
   it("the LINE-TIMING scrub never coerces legacy positional keys either", () => {
     // The `patchCaptionRange` legacy guard covers all three maps: a bare
     // positional key is not source-time addressable, and `Number("17")`

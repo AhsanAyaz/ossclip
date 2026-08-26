@@ -724,6 +724,12 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       const captionLineTiming = Object.fromEntries(
         Object.entries(state.doc.captionLineTiming).filter(([key]) => !inInterval(key)),
       );
+      // The WINDOW layer scrubs on the same interval, same hazard as the
+      // timing keys above (2026-08-26 review): its keys are a line's FIRST
+      // word's anchor too, and nothing else prunes these records anywhere.
+      const captionLineWindows = Object.fromEntries(
+        Object.entries(state.doc.captionLineWindows).filter(([key]) => !inInterval(key)),
+      );
       const captionRangeEdits = [
         ...state.doc.captionRangeEdits.filter((e) => {
           const eLo = Math.min(Number(e.fromKey.slice(1)), Number(e.toKey.slice(1)));
@@ -737,6 +743,7 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         captions,
         captionWordsHidden,
         captionLineTiming,
+        captionLineWindows,
         captionRangeEdits,
       });
     }
@@ -823,6 +830,11 @@ export function editReducer(state: EditState, action: EditAction): EditState {
           // keyed to a word no line begins on, dangling forever.
           captionLineTiming: Object.fromEntries(
             Object.entries(doc.captionLineTiming).filter(([key]) => !inInterval(key)),
+          ),
+          // The WINDOW scrub too — same first-word key, same dangle
+          // (`patchCaptionRange`'s 2026-08-26 note).
+          captionLineWindows: Object.fromEntries(
+            Object.entries(doc.captionLineWindows).filter(([key]) => !inInterval(key)),
           ),
           captionRangeEdits: [
             ...doc.captionRangeEdits.filter((e) => {

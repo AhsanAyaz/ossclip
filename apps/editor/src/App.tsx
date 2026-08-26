@@ -37,7 +37,11 @@ import {
   type Theme,
 } from "@ossclip/core/browser";
 import { useEdits } from "./useEdits";
-import { rebuildCaptionTrack, type LiveCaptionTrack } from "./liveCaptionTrack";
+import {
+  applyWindowsOnLastRenderClock,
+  rebuildCaptionTrack,
+  type LiveCaptionTrack,
+} from "./liveCaptionTrack";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector, type RunInfo } from "./Inspector";
 import { Timeline } from "./Timeline";
@@ -971,6 +975,23 @@ export const App: React.FC = () => {
     return applyCaptionLineTiming(appliedCaptionHides.lines, edits.doc.captionLineTiming);
   }, [renderProps, appliedCaptionHides, edits.doc.captionLineTiming]);
 
+  // The WINDOW layer, LAST OF ALL — `applyCaptionLayers`' full order at last
+  // (edits → ranges → hides → timing → windows; 2026-08-26 carry-over): this
+  // chain used to stop one layer short, so on a workdir too old to rebuild
+  // the track a PLACED caption previewed at its derived position and rendered
+  // at its window. `applyWindowsOnLastRenderClock` owns the clock conversion
+  // (the props file's own `spans`) and the no-clock degrade.
+  const appliedCaptionWindows = useMemo<AppliedCaptionEdits>(() => {
+    // The same null-props guard as the four layers above, for the same
+    // reason: nothing loaded yet is not "every placement is stale".
+    if (!renderProps) return { lines: [], dropped: [] };
+    return applyWindowsOnLastRenderClock(
+      appliedCaptionTiming.lines,
+      edits.doc.captionLineWindows,
+      renderProps.spans ?? [],
+    );
+  }, [renderProps, appliedCaptionTiming, edits.doc.captionLineWindows]);
+
   // Both halves of what the user is owed about caption edits: the ones the
   // load-time key migration could not place (an event, held in state) and the
   // ones that do not fit the lines on screen (a live property of the doc).
@@ -1139,12 +1160,13 @@ export const App: React.FC = () => {
     const base: PlayerProductionProps = {
       ...renderProps,
       sceneCues: previewed,
-      // POST-timing lines (post-hide until 2026-08-18): a caption-only word
-      // hide or timing nudge previews instantly, unlike the cuts this memo
-      // refuses to apply (the DECIDE note above) — both reshape nothing but
-      // the caption stream itself, no EDL, no re-cut, so the browser can show
-      // exactly what produce will render.
-      captionLines: appliedCaptionTiming.lines,
+      // POST-window lines (post-timing until 2026-08-26, post-hide until
+      // 2026-08-18): a caption-only word hide, timing nudge or window
+      // placement previews instantly, unlike the cuts this memo refuses to
+      // apply (the DECIDE note above) — all reshape nothing but the caption
+      // stream itself, no EDL, no re-cut, so the browser can show exactly
+      // what produce will render.
+      captionLines: appliedCaptionWindows.lines,
       theme: resolveTheme(baseTheme, edits.doc),
       // Recomposed, never inherited from the spread above: the baked
       // `captionsHidden` has the LAST-saved doc merged in (add-only — an
@@ -1282,7 +1304,7 @@ export const App: React.FC = () => {
     if (!liveRecut) return finishOnClock(base, [], oldClockMap);
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
     return finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap);
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut, cleanupCutlist, transcriptDoc]);
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc]);
   const live = liveRetimed === null ? null : liveRetimed.props;
   // ONE boolean for the two surfaces that must agree about which clock the
   // Transcript panel speaks (cut-review rework phase 2): the panel wiring
@@ -1308,6 +1330,10 @@ export const App: React.FC = () => {
         ...droppedRangeNotices(appliedCaptionRanges.dropped),
         ...droppedHideNotices(appliedCaptionHides.dropped),
         ...droppedLineTimingNotices(appliedCaptionTiming.dropped),
+        // The window layer's reports, same channel and phrasing as the
+        // nudges — the rebuilt track already merges its window drops into
+        // `dropped` below, so this only adds the fallback chain's own.
+        ...droppedLineTimingNotices(appliedCaptionWindows.dropped),
       ];
       // The rebuilt track's own dropped nudges (cut-review rework phase 2).
       // A live clock re-PACKS the caption lines, so a stored nudge's key can
@@ -1329,6 +1355,7 @@ export const App: React.FC = () => {
       appliedCaptionRanges,
       appliedCaptionHides,
       appliedCaptionTiming,
+      appliedCaptionWindows,
       liveRetimed,
     ],
   );

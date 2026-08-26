@@ -6,8 +6,10 @@ import {
   applyCaptionWordHides,
   buildCaptionLines,
   captionPackingFor,
+  mapFromKeptSpans,
   type AppliedCaptionEdits,
   type CaptionLine,
+  type KeptSpan,
   type OverrideDoc,
   type TimeMap,
   type Transcript,
@@ -48,6 +50,44 @@ export interface LiveCaptionTrack {
    * never silently, which is the rule §137 established for retypes.
    */
   dropped: AppliedCaptionEdits["dropped"];
+}
+
+/**
+ * The WINDOW layer for App's NO-TRANSCRIPT fallback chain (2026-08-26): the
+ * old-clock chain used to stop at the timing layer while `applyCaptionLayers`
+ * (the render) runs windows last of all, so a placed caption previewed at its
+ * derived position and rendered at its window — the divergence the composer's
+ * docstring names as the one thing the chokepoint exists to prevent, live on
+ * every workdir old enough to have no transcript to rebuild from.
+ *
+ * The fallback's lines speak the LAST RENDER's clock, and a window is stored
+ * in SOURCE seconds, so the map is rebuilt from the props file's own `spans`
+ * (`mapFromKeptSpans` — the `playheadClockRef` conversion, same source of
+ * truth). No spans, no clock: a window then CANNOT be placed honestly, and it
+ * is dropped with a report (§137's rule) rather than skipped silently or laid
+ * on the output clock unconverted — a state only a hand-edited props file can
+ * reach, since `spans` predates the window layer. Malformed spans degrade the
+ * same way, the `identityToSource` guard's never-throw rule.
+ */
+export function applyWindowsOnLastRenderClock(
+  lines: readonly CaptionLine[],
+  windows: OverrideDoc["captionLineWindows"],
+  spans: readonly KeptSpan[],
+): AppliedCaptionEdits {
+  if (Object.keys(windows).length === 0) return { lines: [...lines], dropped: [] };
+  let map: TimeMap | null = null;
+  try {
+    map = spans.length > 0 ? mapFromKeptSpans(spans) : null;
+  } catch {
+    map = null;
+  }
+  if (map === null) {
+    return {
+      lines: [...lines],
+      dropped: Object.keys(windows).map((key) => ({ key, expected: "", found: null })),
+    };
+  }
+  return applyCaptionLineWindows(lines, windows, map);
 }
 
 /**

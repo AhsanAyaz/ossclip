@@ -9,7 +9,7 @@ import {
   type Segment,
   type Transcript,
 } from "@ossclip/core/browser";
-import { rebuildCaptionTrack } from "../src/liveCaptionTrack";
+import { applyWindowsOnLastRenderClock, rebuildCaptionTrack } from "../src/liveCaptionTrack";
 
 /**
  * The field bug, at the seam where it is provable (cut-review rework phase 2):
@@ -22,6 +22,75 @@ import { rebuildCaptionTrack } from "../src/liveCaptionTrack";
  * repo's own split — there is no App harness, and the interesting decision is
  * not in the JSX.
  */
+/**
+ * The NO-TRANSCRIPT fallback's window layer (2026-08-26 carry-over): on an old
+ * workdir the track cannot be rebuilt, so the Player gets App's old-clock
+ * chain — which stopped at the timing layer while `applyCaptionLayers` (the
+ * render) ran windows last of all. A placed caption then previewed at its
+ * derived position and rendered at its window: exactly the divergence the
+ * composer's docstring says the chokepoint exists to prevent. This helper is
+ * the fallback chain's missing last stop, pure so the divergence is provable
+ * without an App harness (the `rebuildCaptionTrack` split, one file up).
+ */
+describe("applyWindowsOnLastRenderClock — the fallback chain's window layer", () => {
+  /** The last render kept 0..5 and 7..10, so source 8 plays at output 6. */
+  const spans = new TimeMap([
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 7, kind: "remove", reason: "pause", confidence: 0.9 },
+    { srcIn: 7, srcOut: 10, kind: "keep" },
+  ]).spans;
+  const transcript: Transcript = {
+    language: "en",
+    words: [
+      { text: "early", start: 3, end: 3.3 },
+      { text: "late", start: 8, end: 8.3 },
+    ],
+  };
+  const lines = () =>
+    buildCaptionLines(transcript, new TimeMap([
+      { srcIn: 0, srcOut: 5, kind: "keep" },
+      { srcIn: 7, srcOut: 10, kind: "keep" },
+    ]), {});
+
+  it("places a stored window through the LAST RENDER's clock — source seconds in, output out", () => {
+    // The window spans source 7.5..9, which the kept spans play at output
+    // 5.5..7 — the exact conversion the render's own layer makes.
+    const applied = applyWindowsOnLastRenderClock(
+      lines(),
+      { [captionKeyFor(8)]: { srcStart: 7.5, srcEnd: 9 } },
+      spans,
+    );
+    const late = applied.lines.find((l) => l.words[0]!.text === "late")!;
+    expect(late.start).toBeCloseTo(5.5, 6);
+    expect(late.end).toBeCloseTo(7, 6);
+    expect(applied.dropped).toEqual([]);
+  });
+
+  it("no windows is a verbatim pass-through, whatever the spans", () => {
+    const base = lines();
+    for (const s of [spans, [] as typeof spans]) {
+      const applied = applyWindowsOnLastRenderClock(base, {}, s);
+      expect(applied.lines).toEqual(base);
+      expect(applied.dropped).toEqual([]);
+    }
+  });
+
+  it("windows with NO spans to build a clock from are dropped WITH a report, never guessed", () => {
+    // A props file that stores windows but no spans should not exist (spans
+    // predate the window layer) — but a hand-edited one must not place a
+    // SOURCE-seconds window on the output clock unconverted, and must not
+    // vanish it silently either (§137's rule).
+    const base = lines();
+    const applied = applyWindowsOnLastRenderClock(
+      base,
+      { [captionKeyFor(8)]: { srcStart: 7.5, srcEnd: 9 } },
+      [],
+    );
+    expect(applied.lines).toEqual(base);
+    expect(applied.dropped).toEqual([{ key: captionKeyFor(8), expected: "", found: null }]);
+  });
+});
+
 describe("rebuildCaptionTrack over revived material", () => {
   /** The last render cut source 5..7; the veto puts it back. */
   const proposal: Segment[] = [
