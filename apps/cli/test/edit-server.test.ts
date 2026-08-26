@@ -1915,3 +1915,27 @@ describe("publish endpoints (2026-08-26)", () => {
     expect(existsSync(join(dir, "publish-receipt.json"))).toBe(false);
   });
 });
+
+describe("GET /api/transcript (captions over revived material)", () => {
+  it("serves the workdir's transcript verbatim, and null when absent or corrupt", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "transcript.json"),
+      JSON.stringify({ language: "en", words: [{ text: "um", start: 4.6, end: 4.9 }] }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(body.transcript.words).toEqual([{ text: "um", start: 4.6, end: 4.9 }]);
+
+    await writeFile(join(dir, "transcript.json"), "{not json");
+    const corrupt = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(corrupt.transcript).toBeNull();
+  });
+
+  it("409 with no workdir open, like every workdir endpoint", async () => {
+    const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/transcript`)).status).toBe(409);
+  });
+});

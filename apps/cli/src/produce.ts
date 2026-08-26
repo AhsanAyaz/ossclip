@@ -28,6 +28,7 @@ import {
   remapSceneOverrides,
   assembleScenes,
   buildCaptionLines,
+  captionPackingFor,
   buildCutlist,
   canonicalizeDictionaryCasing,
   captionsNeedNastaliq,
@@ -1637,14 +1638,10 @@ export function resolveCaptionsHidden(
  * stay byte-identical. Pure so the matrix is testable without a produce
  * run.
  */
-export function captionPackingFor(landscape: boolean): {
-  maxWordsPerLine: number;
-  maxLineDuration: number;
-} {
-  return landscape
-    ? { maxWordsPerLine: 6, maxLineDuration: 2.4 }
-    : { maxWordsPerLine: 3, maxLineDuration: 1.2 };
-}
+// Moved to core (captions.ts) so the editor's live caption rebuild packs
+// with the SAME matrix (cut-review rework follow-up: captions over revived
+// material). Re-exported here so existing imports and tests keep working.
+export { captionPackingFor } from "@ossclip/core";
 
 function sha1File(path: string): Promise<string> {
   return new Promise((res, rej) => {

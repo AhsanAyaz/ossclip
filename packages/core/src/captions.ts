@@ -146,6 +146,25 @@ export interface CaptionOptions {
  */
 export const MAX_CAPTION_WORD_LEAD_SEC = 2;
 
+/**
+ * Landscape draws captions at 44px on a 1920px frame against portrait's
+ * 64px on 1080px (`captionFontSizeFor`) — roughly 2.6× the horizontal text
+ * budget — so the portrait default's 3-word lines look sparse there;
+ * landscape packs 6 words over 2.4s, double the core defaults. Portrait
+ * returns those defaults VERBATIM — the core defaults are portrait's
+ * contract and its output must stay byte-identical. Lived in produce.ts
+ * until the cut-review follow-up; the editor's live caption rebuild packs
+ * with this same matrix, so it moved to the one browser-safe home.
+ */
+export function captionPackingFor(landscape: boolean): {
+  maxWordsPerLine: number;
+  maxLineDuration: number;
+} {
+  return landscape
+    ? { maxWordsPerLine: 6, maxLineDuration: 2.4 }
+    : { maxWordsPerLine: 3, maxLineDuration: 1.2 };
+}
+
 export function buildCaptionLines(
   transcript: Transcript,
   map: TimeMap,

@@ -18,6 +18,8 @@ import {
   carveKeptTakes,
   dismissedRemovals,
   vetoedRemovals,
+  buildCaptionLines,
+  captionPackingFor,
   resolveTheme,
   defaultTheme,
   cutRangeToOldClock,
@@ -235,6 +237,15 @@ export const App: React.FC = () => {
   // same pure functions produce renders with. Timeline draws it as
   // reason-coloured seams; CleanupPanel derives its per-reason checkboxes.
   const [cleanupCutlist, setCleanupCutlist] = useState<Segment[]>([]);
+  // The full transcript, SOURCE-timed words (cut-review rework follow-up):
+  // the live memo rebuilds the caption track over revived material with
+  // produce's own buildCaptionLines, and render-props' captionLines only
+  // cover what the last render kept. Null until loaded / when absent —
+  // captions over revived material then stay absent, never a crash.
+  const [transcriptDoc, setTranscriptDoc] = useState<{
+    language: string;
+    words: { text: string; start: number; end: number }[];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -712,6 +723,24 @@ export const App: React.FC = () => {
         ),
       )
       .catch(() => setCleanupCutlist([]));
+    void fetch("/api/transcript")
+      .then(async (r) => {
+        const body = r.ok
+          ? ((await r.json()) as {
+              transcript?: {
+                language?: string;
+                words?: { text: string; start: number; end: number }[];
+              } | null;
+            })
+          : { transcript: null };
+        const t = body.transcript;
+        setTranscriptDoc(
+          t && Array.isArray(t.words)
+            ? { language: typeof t.language === "string" ? t.language : "en", words: t.words }
+            : null,
+        );
+      })
+      .catch(() => setTranscriptDoc(null));
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
     // progress, no logs, and no way to cancel it from the UI. Since
@@ -1083,8 +1112,39 @@ export const App: React.FC = () => {
       // src-split halves) preview live — idempotent on already-merged cues,
       // the memo's own documented property.
       const { cues: finalCues } = applyOverrides(splitted2, edits.doc);
+      // Captions over the REVIVED material (field report 2026-08-26): the
+      // retimed captionLines only cover words the LAST RENDER kept — the
+      // revived stretch's words exist nowhere in render-props. Rebuild the
+      // whole track from the transcript on this clock with produce's own
+      // builder + packing matrix (one implementation, two callers), then
+      // re-run the caption edit layers — their keys are source-anchored
+      // (§137), so every retype/hide/nudge lands on the rebuilt lines too.
+      // No transcript on disk → the retimed lines stand (captions over the
+      // revived stretch stay absent, said by the endpoint's own leniency).
+      let captionLines = props.captionLines;
+      if (ranges.length > 0 && transcriptDoc !== null) {
+        const rebuilt = buildCaptionLines(transcriptDoc, clockMap, {
+          breakpoints: finalCues
+            .filter((c) => c.kind !== "plain")
+            .flatMap((c) => [c.startSec, c.endSec]),
+          ...captionPackingFor(
+            (renderProps.settings?.width ?? 1080) > (renderProps.settings?.height ?? 1920),
+          ),
+        });
+        const layered = applyCaptionLineTiming(
+          applyCaptionWordHides(
+            applyCaptionRangeEdits(
+              applyCaptionEdits(rebuilt, sourceKeyedCaptionEdits(edits.doc.captions)).lines,
+              edits.doc.captionRangeEdits,
+            ).lines,
+            edits.doc.captionWordsHidden,
+          ).lines,
+          edits.doc.captionLineTiming,
+        );
+        captionLines = layered.lines;
+      }
       return {
-        props: { ...props, sceneCues: finalCues },
+        props: { ...props, sceneCues: finalCues, captionLines },
         reports: [...priorReports, ...carved.reports, ...resolved.reports],
       };
     };
@@ -1099,7 +1159,7 @@ export const App: React.FC = () => {
     if (!liveRecut) return finishOnClock(base, [], spansMap());
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
     return finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap);
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut, cleanupCutlist]);
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionTiming, liveRecut, cleanupCutlist, transcriptDoc]);
   const live = liveRetimed === null ? null : liveRetimed.props;
 
   // Feed the live cue list to the edit layer so `save()` can stamp each scene

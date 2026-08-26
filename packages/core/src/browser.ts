@@ -35,6 +35,11 @@ export {
 // set need the bundled font" (2026-08-17 — two conditions would drift).
 export {
   backfillSrcStart,
+  // The editor rebuilds the caption track over REVIVED material with the
+  // same builder + packing matrix produce renders with (cut-review rework
+  // follow-up) — a second packer is how preview and render would drift.
+  buildCaptionLines,
+  captionPackingFor,
   captionsNeedNastaliq,
   lineDirection,
   NASTALIQ_FONT_NAME,

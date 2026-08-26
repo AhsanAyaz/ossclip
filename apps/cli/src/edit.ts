@@ -570,6 +570,27 @@ export async function startEditServer(
           });
         }
 
+        if (url.pathname === "/api/transcript" && req.method === "GET") {
+          // The FULL transcript, source-timed words included (cut-review
+          // rework follow-up): the editor rebuilds the caption track over
+          // REVIVED material with produce's own `buildCaptionLines`, and
+          // render-props' captionLines only cover what the last render kept
+          // — the revived words exist nowhere else client-side. Lenient like
+          // /api/cleanup: a missing or corrupt transcript.json degrades to
+          // null (captions over revived material stay absent, never a 500).
+          if (!workdir) return send(409, { error: "no workdir open" });
+          try {
+            const raw = JSON.parse(await readFile(join(workdir, "transcript.json"), "utf8")) as {
+              language?: unknown;
+              words?: unknown;
+            };
+            if (!Array.isArray(raw.words)) return send(200, { transcript: null });
+            return send(200, { transcript: raw });
+          } catch {
+            return send(200, { transcript: null });
+          }
+        }
+
         if (url.pathname === "/api/cleanup" && req.method === "GET") {
           // The labeled removals: since cut review step 3 this serves the
           // PROPOSAL (`cutlistProposed` — the automatic cutlist before the
