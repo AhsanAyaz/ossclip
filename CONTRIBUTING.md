@@ -54,7 +54,7 @@ apps/editor        the direct-manipulation editor (`ossclip edit`)
 
 ## Scope
 
-Things deliberately **not** in scope, so you don't build one and find out at review: a hosted version, a web uploader, a GUI installer, stock B-roll, TTS, speaker diarisation. (`ossclip setup` is not the rejected GUI installer — it's CLI provisioning of the same toolchain doctor checks, and it deliberately stays that.) Long-form highlight selection is a real gap, not a rejected one — see the README's scope note if you want to take it on, and open an issue first so the design gets discussed before the code. The roadmap — what's next, what needs a design issue first, what's rejected — lives in [`ROADMAP.md`](./ROADMAP.md).
+Things deliberately **not** in scope, so you don't build one and find out at review: a hosted version, a web uploader, a GUI installer, stock B-roll, TTS, speaker diarisation. (`ossclip setup` is not the rejected GUI installer — it's CLI provisioning of the same toolchain doctor checks, and it deliberately stays that. Likewise `ossclip publish` is not the rejected web uploader — it posts from your machine, on your own accounts, through a Postiz instance you run yourself.) Long-form highlight selection is a real gap, not a rejected one — see the README's scope note if you want to take it on, and open an issue first so the design gets discussed before the code. The roadmap — what's next, what needs a design issue first, what's rejected — lives in [`ROADMAP.md`](./ROADMAP.md).
 
 ## Where docs live
 

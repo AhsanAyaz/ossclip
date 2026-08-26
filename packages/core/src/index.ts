@@ -28,6 +28,7 @@ export * from "./normalize";
 export * from "./framing";
 export * from "./face";
 export * from "./cover";
+export * from "./publish/index";
 export * from "./thumbnail";
 export * from "./source-text";
 export * from "./report";

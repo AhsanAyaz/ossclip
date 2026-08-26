@@ -89,7 +89,9 @@ to be renumbered twice. A finding takes the next free number when it lands.
   seconds and would silently drift after a re-cut.
 - **Agent-authored scenes** — as a `Scene[]` file the existing
   `--scenes` flag consumes, NOT an endpoint on the edit server, which is
-  replay-only by deliberate design.
+  replay-only by deliberate design (the one carve-out is `/api/publish`,
+  which is gated on the user's own Postiz config and fires only on an
+  explicit button press — see the publish comment in `edit.ts`).
 - **Multi-clip**: `--clip` producing N outputs from one take. Its own round
   by decision — the selection, dedup, and naming semantics all need design.
 - **Per-frame face tracking** (the "Phase 4" deferral) — today framing is
@@ -104,7 +106,10 @@ to be renumbered twice. A finding takes the next free number when it lands.
 
 The rejected list, so nobody builds one and finds out at review: a hosted
 version, a web uploader, a GUI installer, stock B-roll, TTS, speaker
-diarisation. A Dockerfile stays out until someone actually asks for it in an
+diarisation. (`ossclip publish` is not the rejected web uploader — that item
+is a hosted service uploading on ossclip's credentials; `publish` posts from
+YOUR machine, on your accounts, through a Postiz instance you run, and it
+deliberately stays that.) A Dockerfile stays out until someone actually asks for it in an
 issue — for the target user, Docker Desktop is a taller cliff than
 `ossclip setup`.
 

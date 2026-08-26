@@ -8,7 +8,7 @@
 
 <p align="center"><em>Left: the raw take. Right: what <code>ossclip produce</code> returns — cuts, word-timed captions, face-aware framing and code-rendered graphics.</em></p>
 
-**A local-first CLI that turns a talking-head take into a finished short.** It cuts silence and filler words, writes word-timed kinetic captions, frames on the measured face, and has an LLM plan **code-rendered on-screen graphics** — title cards, stat cards, diagrams, terminal and chat mockups — from what was actually said. Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones, on your own key or your existing Claude Code subscription. Vertical 9:16 by default, landscape 16:9 with `--aspect`.
+**A local-first CLI that turns a talking-head take into a finished short.** It cuts silence and filler words, writes word-timed kinetic captions, frames on the measured face, and has an LLM plan **code-rendered on-screen graphics** — title cards, stat cards, diagrams, terminal and chat mockups — from what was actually said. Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones — on your own key or your existing Claude Code subscription — and, only when you run `ossclip publish`, the upload to a [Postiz](https://postiz.com) instance you host yourself. Vertical 9:16 by default, landscape 16:9 with `--aspect`.
 
 The graphics layer is the part comparable tools don't have: nine Zod-typed scene components ([`packages/core/src/scene-registry.ts`](./packages/core/src/scene-registry.ts)) each carry a `whenToUse` contract the LLM producer plans against, every planned scene validates against its schema before it renders, and a fit contract keeps every component inside the platform-safe area on real copy. Open-source alternatives stop at find → crop → caption; commercial tools gate the graphics layer behind paid tiers.
 
@@ -136,6 +136,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `produce <input>` | the full pipeline: transcribe → analyze → cut → captions → scenes → render (+ cover). `<input>` can be a single video file, or a folder of clips — concatenated in order (by name, or `--sort mtime`) before anything else runs |
 | `edit [workdir]` | direct-manipulation editor; bare `edit` opens a project picker |
 | `cover [workdir]` | rebuild the cover image — a new headline (`--text`) or a new frame (`--at <seconds>`, `--from final \| source`) — in seconds, with no video re-render. `--at` omitted re-uses the still the last cover was built from and runs no ffmpeg at all. Your headline is remembered: a later `produce` keeps it instead of the generated one (`--cover-text-reset` opts back in). Bare `cover` resolves the run under the current directory, like `edit` |
+| `publish [workdir]` | push the finished render to your social accounts through your own self-hosted [Postiz](https://postiz.com) instance — now, or scheduled with `--at <iso>`. Captions come from the run's `--youtube` pack (LinkedIn/Instagram/TikTok/X/Facebook each get their own), pick accounts interactively or with `--platforms` / `--accounts` / `--all`, preview everything with `--dry-run`. A workdir that already published refuses to double-post without `--force`. Needs `postizUrl` in `~/.ossclip/config.json` and `OSSCLIP_POSTIZ_API_KEY` in the environment. The editor's **Publish** button is the same thing with checkboxes |
 | `setup` | install ffmpeg, whisper.cpp and the model into `~/.ossclip` — the one-command onboarding (`--model <name>`, `--skip-llm`, `--force`, `--yes`) |
 | `doctor` | check every prerequisite and print the exact fix for anything missing |
 | `transcribe <input>` | stops after the transcript and cut report — no render |
@@ -218,9 +219,12 @@ Prices are a built-in per-family assumption. Override for your account in `~/.os
   "ffmpegPath": "ffmpeg",
   "whisperPath": "whisper-cli",
   "modelDir": "~/.ossclip/models",
-  "browserExecutable": "/path/to/chrome"
+  "browserExecutable": "/path/to/chrome",
+  "postizUrl": "https://postiz.example.com"
 }
 ```
+
+`postizUrl` is the base URL of the self-hosted Postiz instance `ossclip publish` posts through; its API key is `OSSCLIP_POSTIZ_API_KEY`, environment-only like every secret.
 
 Provider keys are read from the environment, and ossclip loads `.env` files before it picks a provider — first hit wins per key, and a real environment variable always beats a file:
 

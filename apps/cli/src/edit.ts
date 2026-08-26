@@ -19,6 +19,8 @@ import {
   ThumbnailConceptSchema,
   approvedOverlayText,
   buildThumbnailPrompt,
+  captionForProvider,
+  createPostizProvider,
   emptyOverrideDoc,
   // Static import is fine here: the @google/genai SDK load is LAZY inside
   // this function (core's near-zero-dep rule), so the server pays for it
@@ -68,6 +70,7 @@ import {
   type ResolvedPortrait,
 } from "./portrait-override";
 import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
+import { buildPublishPosts, publishConfigured, publishReceiptPath, readPublishReceipt } from "./publish";
 
 /**
  * Where the built editor page lives (R18 §90b): `editor-dist/` inside this
@@ -254,7 +257,19 @@ export async function startEditServer(
     /** Config seam for the thumbnail panel — tests inject `() => ({})` so a
      * run never reads the runner's real ~/.ossclip/config.json (the
      * `recentDir` rule applied to reads). */
-    loadCfg?: () => { youtube?: unknown; portrait?: unknown; thumbnailModel?: unknown };
+    loadCfg?: () => {
+      youtube?: unknown;
+      portrait?: unknown;
+      thumbnailModel?: unknown;
+      postizUrl?: string;
+    };
+    /** Env seam for the publish endpoints — tests inject their own so the
+     * runner's real OSSCLIP_POSTIZ_API_KEY (or its absence) never decides a
+     * test (the loadCfg rule applied to the environment). */
+    publishEnv?: NodeJS.ProcessEnv;
+    /** Fetch seam for the publish endpoints — tests stub Postiz instead of
+     * needing an instance on the runner (createPostizProvider's fetchImpl). */
+    publishFetch?: typeof fetch;
     /** File-manager reveal seam (the `generateThumbnail` pattern) — tests
      * observe the revealed path instead of popping a real Finder/Explorer
      * window on the runner. */
@@ -1183,6 +1198,123 @@ export async function startEditServer(
           const mdPath = await recordedArtifactPath(".youtube.md");
           if (mdPath !== null) await writeFile(mdPath, formatYoutubeMarkdown(pack));
           return send(200, { ok: true, mdPath });
+        }
+
+        // ---- Publish (2026-08-26) -----------------------------------------
+        // The server's FIRST outbound-network endpoints, against the
+        // roadmap's "replay-only by deliberate design" posture — allowed
+        // because all three gates hold: they exist behaviorally only when the
+        // user configured their own Postiz instance (unconfigured → a hint,
+        // never a control), they fire only on an explicit button press, and
+        // the API key never reaches the browser — the server (already running
+        // in the user's shell env) does the upload.
+        if (url.pathname === "/api/publish" && req.method === "GET") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const configured = publishConfigured((opts.loadCfg ?? loadConfig)(), opts.publishEnv ?? process.env);
+          if (!configured.ok) {
+            return send(200, { configured: false, reason: configured.message });
+          }
+          const cmd = await readCommandRecord();
+          const out = cmd ? recordedOutPath(cmd) : null;
+          const pack = await currentYoutubePack();
+          let integrations: Array<{ id: string; provider: string; name: string; caption: string }> = [];
+          try {
+            const provider = createPostizProvider({
+              baseUrl: configured.baseUrl,
+              apiKey: configured.apiKey,
+              fetchImpl: opts.publishFetch,
+            });
+            const targets = await provider.listTargets();
+            integrations = targets.map((t) => ({
+              ...t,
+              // The caption the publish WOULD use — authored-else-derived —
+              // so the panel previews truth, not a guess of it.
+              caption: pack !== null ? captionForProvider(pack, t.provider) : "",
+            }));
+          } catch (err) {
+            return send(200, {
+              configured: true,
+              reachable: false,
+              reason: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return send(200, {
+            configured: true,
+            reachable: true,
+            integrations,
+            packAvailable: pack !== null,
+            outPathExists: out !== null && existsSync(out),
+            receipt: await readPublishReceipt(workdir),
+          });
+        }
+
+        if (url.pathname === "/api/publish" && req.method === "POST") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const configured = publishConfigured((opts.loadCfg ?? loadConfig)(), opts.publishEnv ?? process.env);
+          if (!configured.ok) return send(412, { error: configured.message });
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          const parsed = z
+            .object({
+              integrationIds: z.array(z.string()).min(1),
+              // ISO-8601, validated as a real FUTURE instant below — zod can
+              // say "string", only a clock can say "future".
+              at: z.string().optional(),
+              // Per-integration caption overrides typed in the panel; absent
+              // ids fall back to the pack's authored-else-derived caption.
+              captions: z.record(z.string(), z.string()).optional(),
+              force: z.boolean().optional(),
+            })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: parsed.error.message });
+          let when: { kind: "now" } | { kind: "at"; iso: string } = { kind: "now" };
+          if (parsed.data.at !== undefined) {
+            const ms = Date.parse(parsed.data.at);
+            if (Number.isNaN(ms)) return send(400, { error: `not an ISO-8601 time: "${parsed.data.at}"` });
+            if (ms <= Date.now()) return send(400, { error: `schedule time already passed: "${parsed.data.at}"` });
+            when = { kind: "at", iso: new Date(ms).toISOString() };
+          }
+          const cmd = await readCommandRecord();
+          const out = cmd ? recordedOutPath(cmd) : null;
+          if (out === null || !existsSync(out)) {
+            return send(412, { error: "no finished render to publish — render first" });
+          }
+          const pack = await currentYoutubePack();
+          if (pack === null) {
+            return send(412, { error: "no YouTube pack — approve one in the SEO panel first" });
+          }
+          const receipt = await readPublishReceipt(workdir);
+          if (receipt !== null && parsed.data.force !== true) {
+            return send(412, {
+              error: `already published on ${receipt.publishedAt} — pass force to publish again`,
+              receipt,
+            });
+          }
+          try {
+            const provider = createPostizProvider({
+              baseUrl: configured.baseUrl,
+              apiKey: configured.apiKey,
+              fetchImpl: opts.publishFetch,
+            });
+            const targets = await provider.listTargets();
+            const picked = parsed.data.integrationIds.map((id) => {
+              const hit = targets.find((t) => t.id === id);
+              if (!hit) throw new Error(`no integration with id "${id}" in Postiz`);
+              return hit;
+            });
+            const posts = buildPublishPosts(pack, picked).map((p) => ({
+              ...p,
+              caption: parsed.data.captions?.[p.target.id] ?? p.caption,
+            }));
+            const result = await provider.publish({ videoPath: out, posts, when });
+            await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);
+            return send(200, { ok: true, receipt: result });
+          } catch (err) {
+            // Fail loud, verbatim — Postiz's own validation message is the
+            // most specific thing anyone has (per-provider settings are its
+            // domain, not ours).
+            return send(502, { error: err instanceof Error ? err.message : String(err) });
+          }
         }
 
         if (url.pathname === "/api/cover" && req.method === "GET") {

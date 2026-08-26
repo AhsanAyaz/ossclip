@@ -10,6 +10,7 @@ import { ExportFormatSchema, runAnalyze } from "./analyze";
 import { expandHome } from "./paths";
 import { phaseBucketProps } from "./phase-timing";
 import { dictionaryFlag, jumpCutsFlag, produce, reviewFlag } from "./produce";
+import { accountsFlag, atFlag, platformsFlag } from "./publish";
 // The one interactive import that is STATIC rather than `await import()`: the
 // `resetInputSource()` run boundary in `buildProgram` has to run synchronously
 // while the program is being built, and `buildProgram` cannot await. The graph
@@ -989,6 +990,52 @@ export function buildProgram(): Command {
         // anchor, so there is one site applying `expandHome` to the user half.
         outPath: flags.outPath,
       });
+    });
+
+  program
+    .command("publish")
+    .description(
+      "push the finished render to your social accounts through your own self-hosted " +
+        "Postiz instance — now, or scheduled with --at",
+    )
+    // Optional like `edit`'s and `cover`'s: no argument resolves the run
+    // under the CURRENT directory.
+    .argument("[workdir]", "a work directory, or the folder you produced in")
+    .option(
+      "--at <iso>",
+      "schedule instead of publishing now — an ISO-8601 time in the future " +
+        "(e.g. 2026-09-01T08:00:00+02:00)",
+      // Wrapped: commander's parseArg passes (value, previous), and atFlag's
+      // second parameter is its injectable clock — not a place for `previous`.
+      (v: string) => atFlag(v),
+    )
+    .option(
+      "--platforms <list>",
+      "only these platforms, comma-separated (linkedin,instagram,tiktok,x,facebook,youtube)",
+      platformsFlag,
+    )
+    .option("--accounts <ids>", "explicit Postiz integration ids, comma-separated (the no-TTY path)", accountsFlag)
+    .option("--all", "every connected account (after --platforms, when both are given)", false)
+    .option("--dry-run", "print the targets and the exact payload; send nothing", false)
+    .option("-y, --yes", "skip the confirmation prompt", false)
+    .option("--force", "publish again even though this workdir already has a publish receipt", false)
+    .action(async (workdir: string | undefined, opts) => {
+      const { runPublish } = await import("./publish");
+      const target = await resolveWorkdirArgument(workdir ?? ".", "publish");
+      await runPublish(target, {
+        at: opts.at,
+        platforms: opts.platforms,
+        accounts: opts.accounts,
+        all: opts.all,
+        dryRun: opts.dryRun,
+        yes: opts.yes,
+        force: opts.force,
+      });
+      telemetry.record("publish_run", {
+        scheduled: opts.at !== undefined,
+        dry_run: opts.dryRun === true,
+      });
+      await telemetry.flush();
     });
 
   program

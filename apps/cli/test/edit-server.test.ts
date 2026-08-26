@@ -1730,3 +1730,188 @@ describe("GET /api/cleanup (cut review step 2, 2026-08-19)", () => {
     expect((await fetch(`${server.url}/api/cleanup`)).status).toBe(409);
   });
 });
+
+describe("publish endpoints (2026-08-26)", () => {
+  const pack = {
+    titles: ["How agents actually work", "5 agent mistakes", "Agents in 8 minutes"],
+    description: "d",
+    hashtags: ["#agents"],
+    tags: [],
+    linkedinPost: "authored linkedin post",
+  };
+  const env = { OSSCLIP_POSTIZ_API_KEY: "sekret" } as NodeJS.ProcessEnv;
+  const cfg = () => ({ postizUrl: "https://p.example.com" });
+
+  const jsonRes = (status: number, body: unknown): Response =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  /** A workdir with a pack, a recorded out AND the final mp4 on disk. */
+  async function publishWorkdir(): Promise<{ dir: string; out: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-edit-"));
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({ videoFileName: "clip.mp4", sceneCues: [], captionLines: [], spans: [] }),
+    );
+    await writeFile(join(dir, "clip.mp4"), CLIP_CONTENT);
+    const out = join(dir, "final.mp4");
+    await writeFile(out, "rendered");
+    await writeFile(join(dir, "youtube-aaaaaaaa.json"), JSON.stringify(pack));
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4"],
+        cwd: dir,
+        out,
+      }),
+    );
+    return { dir, out };
+  }
+
+  it("unconfigured: GET says so with the fix, POST is 412 — the endpoint exists only once Postiz is set up", async () => {
+    const { dir } = await publishWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({}),
+      publishEnv: {} as NodeJS.ProcessEnv,
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/publish`)).json();
+    expect(body.configured).toBe(false);
+    expect(body.reason).toContain("postizUrl");
+    const post = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"] }),
+    });
+    expect(post.status).toBe(412);
+  });
+
+  it("GET lists integrations with the caption the publish WOULD use — the API key never reaches the browser", async () => {
+    const { dir } = await publishWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async () =>
+        jsonRes(200, [{ id: "a", name: "Ahsan", identifier: "linkedin" }]),
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/publish`)).json();
+    expect(body).toMatchObject({
+      configured: true,
+      reachable: true,
+      packAvailable: true,
+      outPathExists: true,
+      receipt: null,
+    });
+    expect(body.integrations).toEqual([
+      { id: "a", provider: "linkedin", name: "Ahsan", caption: "authored linkedin post" },
+    ]);
+    expect(JSON.stringify(body)).not.toContain("sekret");
+  });
+
+  it("an unreachable Postiz is a labeled state, not a 500 — the panel renders the hint", async () => {
+    const { dir } = await publishWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/publish`)).json();
+    expect(body.configured).toBe(true);
+    expect(body.reachable).toBe(false);
+  });
+
+  it("POST publishes to the picked integrations and writes the receipt", async () => {
+    const { dir } = await publishWorkdir();
+    const calls: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u) => {
+        calls.push(String(u));
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [{ id: "a", name: "Ahsan", identifier: "linkedin" }]);
+        if (String(u).endsWith("/upload")) return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"], captions: { a: "edited caption" } }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.receipt.postIds).toEqual(["post-1"]);
+    expect(existsSync(join(dir, "publish-receipt.json"))).toBe(true);
+    expect(calls.some((u) => u.endsWith("/posts"))).toBe(true);
+
+    // The receipt now guards a double-post: same POST without force is 412.
+    const again = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"] }),
+    });
+    expect(again.status).toBe(412);
+    const forced = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"], force: true }),
+    });
+    expect(forced.status).toBe(200);
+  });
+
+  it("zod 400s: no integrationIds; a past schedule time is rejected", async () => {
+    const { dir } = await publishWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async () => jsonRes(200, []),
+    });
+    close = server.close;
+    const missing = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: [] }),
+    });
+    expect(missing.status).toBe(400);
+    const past = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"], at: "2020-01-01T00:00:00Z" }),
+    });
+    expect(past.status).toBe(400);
+  });
+
+  it("a Postiz-side failure surfaces verbatim as 502 and writes NO receipt", async () => {
+    const { dir } = await publishWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [{ id: "a", name: "Ahsan", identifier: "linkedin" }]);
+        return new Response("bad settings", { status: 400 });
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"] }),
+    });
+    expect(res.status).toBe(502);
+    expect(existsSync(join(dir, "publish-receipt.json"))).toBe(false);
+  });
+});

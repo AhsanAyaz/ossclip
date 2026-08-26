@@ -1,0 +1,58 @@
+/**
+ * The one seam between ossclip and any social-publishing backend, mirroring
+ * `producer/provider.ts`: no backend types leak past this interface (the
+ * PHASE1 §4 posture, applied to publishing). One implementation today —
+ * Postiz (`postiz.ts`) — but the CLI, the edit server and the tests all
+ * speak this shape, so a direct per-platform adapter later is a new file,
+ * not a rewrite.
+ */
+
+/** One connected account at the backend — an "integration" in Postiz terms. */
+export interface PublishTarget {
+  /** The backend's own id for the connected account. */
+  id: string;
+  /** The platform identifier the backend reports, e.g. "linkedin", "x". */
+  provider: string;
+  /** Human-readable account name, for pickers and receipts. */
+  name: string;
+}
+
+export type PublishWhen = { kind: "now" } | { kind: "at"; iso: string };
+
+export interface PublishPost {
+  target: PublishTarget;
+  caption: string;
+  /**
+   * Some platforms carry a title separate from the caption (YouTube).
+   * Optional — most don't.
+   */
+  title?: string;
+}
+
+export interface PublishRequest {
+  /** Absolute path of the rendered video. */
+  videoPath: string;
+  posts: PublishPost[];
+  when: PublishWhen;
+}
+
+/**
+ * What `publish()` returns AND what `<workdir>/publish-receipt.json` holds —
+ * the double-post guard reads this file, so it records enough to tell the
+ * user what already went out, and when.
+ */
+export interface PublishReceipt {
+  backend: string;
+  /** Backend post ids, when the backend reports them; may be empty. */
+  postIds: string[];
+  /** ISO time the publish request was accepted (not the scheduled time). */
+  publishedAt: string;
+  when: PublishWhen;
+  targets: PublishTarget[];
+}
+
+export interface PublishProvider {
+  readonly name: string;
+  listTargets(): Promise<PublishTarget[]>;
+  publish(req: PublishRequest): Promise<PublishReceipt>;
+}

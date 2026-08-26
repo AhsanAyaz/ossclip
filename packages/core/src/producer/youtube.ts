@@ -30,7 +30,7 @@ import { cappedText } from "./beats";
  * changes the answer, so the Y2 pack cache key carries this (the §78
  * cache-key posture) — an old cached pack must not survive a new prompt.
  */
-export const YOUTUBE_PROMPT_VERSION = "v2";
+export const YOUTUBE_PROMPT_VERSION = "v3";
 
 export const YoutubeChapterSchema = z.object({
   /** Output-timeline seconds — the produced video's clock, not the source's. */
@@ -72,6 +72,22 @@ export const YoutubePackSchema = z.object({
   linkedinPost: cappedText(1500).optional(),
   /** A short YouTube community post for existing subscribers. Optional. */
   communityPost: cappedText(400).optional(),
+  /**
+   * Ready-to-post captions for the other short-video platforms (prompt v3,
+   * 2026-08-26), written by the same call that already has the transcript
+   * and audience in context — a publish step that derived these from titles
+   * would ship title-spam as its ceiling. Every field optional: pre-v3
+   * approved packs must keep parsing verbatim forever, and `deriveCaption`
+   * (publish/captions.ts) fills any gap deterministically at publish time.
+   */
+  platformCaptions: z
+    .object({
+      instagram: cappedText(2200).optional(),
+      tiktok: cappedText(2200).optional(),
+      x: cappedText(280).optional(),
+      facebook: cappedText(2200).optional(),
+    })
+    .optional(),
 });
 export type YoutubePack = z.infer<typeof YoutubePackSchema>;
 
@@ -295,7 +311,13 @@ export function buildYoutubePrompt(args: YoutubePromptArgs): { system: string; u
     "- linkedinPost: a story-driven LinkedIn post about this video: short lines with line " +
     "breaks, a curiosity gap, no hashtag spam, ending by pointing to the link in the comments " +
     "(the LinkedIn convention for off-platform links).\n" +
-    "- communityPost: a short, casual YouTube community post for existing subscribers.";
+    "- communityPost: a short, casual YouTube community post for existing subscribers.\n" +
+    "- platformCaptions: ready-to-post captions for the OTHER platforms this short goes to, " +
+    "each written for that platform's culture, not copies of each other: \"instagram\" — a " +
+    "hook line, short scannable lines, 3-5 hashtags at the end (max 2200 chars); \"tiktok\" — " +
+    "casual and direct, 2-4 hashtags (max 2200 chars); \"x\" — ONE punchy post, max 280 " +
+    "characters INCLUDING hashtags, no link (links go in a reply); \"facebook\" — " +
+    "conversational, a question or hook up front, minimal hashtags (max 2200 chars).";
   const capped =
     args.transcriptText.length > YOUTUBE_TRANSCRIPT_CHAR_CAP
       ? // Slice + say so: the model must know it is reading an excerpt, or it
@@ -430,5 +452,17 @@ export function formatYoutubeMarkdown(
   if (pack.hook60) lines.push("", "## First-60s hook strategy", "", pack.hook60.trimEnd());
   if (pack.linkedinPost) lines.push("", "## LinkedIn post", "", pack.linkedinPost.trimEnd());
   if (pack.communityPost) lines.push("", "## Community post", "", pack.communityPost.trimEnd());
+  const captions = pack.platformCaptions;
+  if (captions) {
+    const order = [
+      ["Instagram", captions.instagram],
+      ["TikTok", captions.tiktok],
+      ["X", captions.x],
+      ["Facebook", captions.facebook],
+    ] as const;
+    for (const [label, text] of order) {
+      if (text) lines.push("", `## ${label} caption`, "", text.trimEnd());
+    }
+  }
   return `${lines.join("\n")}\n`;
 }

@@ -204,7 +204,11 @@ export class StageAnimator {
       const spinner = SPINNERS.neural[this.frameIndex % SPINNERS.neural.length];
       const dots = SPINNERS.dots[this.frameIndex % SPINNERS.dots.length];
       visual =
-        `${ansi.bold}${ansi.brightMagenta}⚡ GEMINI 3.7 FLASH // NEURAL SCENE PLANNER${ansi.reset} ` +
+        // The caller's title, not a hardcoded model name: this header once
+        // said "GEMINI 3.7 FLASH" over a claude-cli run (2026-08-26 field
+        // report) — the subtitle names the real provider, and the header
+        // must not contradict it.
+        `${ansi.bold}${ansi.brightMagenta}⚡ ${this.title}${ansi.reset} ` +
         `${ansi.cyan}[${spinner}]${ansi.reset} ${ansi.dim}(${elapsedSec}s)${ansi.reset}\n` +
         `  ${ansi.brightCyan}${dots}${ansi.reset} ${ansi.brightWhite}${clamp(this.subtitle)}${ansi.reset}`;
     } else if (this.type === "whisper") {

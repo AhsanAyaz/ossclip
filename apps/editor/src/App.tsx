@@ -46,6 +46,7 @@ import { ThumbnailPanel } from "./ThumbnailPanel";
 import { CleanupPanel } from "./CleanupPanel";
 import { YoutubePanel } from "./YoutubePanel";
 import { CoverPanel } from "./CoverPanel";
+import { PublishPanel } from "./PublishPanel";
 import {
   formatElapsed,
   pinnedInfoLines,
@@ -436,6 +437,11 @@ export const App: React.FC = () => {
   // or not --youtube ran, and filing it under YouTube would tell users it
   // belongs to a feature they may never turn on.
   const [showCover, setShowCover] = useState(false);
+  // The publish panel (2026-08-26) — server-owned state like the three
+  // panels above (see PublishPanel.tsx / /api/publish in edit.ts). Its own
+  // top-bar button, not a YouTube-menu item: it posts to EVERY connected
+  // platform, and filing it under YouTube would say otherwise.
+  const [showPublish, setShowPublish] = useState(false);
   // The cleanup review panel (cut review step 3) — UNLIKE the three panels
   // above it edits the overrides doc (cleanup.reasons through useEdits), so
   // undo/redo/dirty/save all apply to its checkboxes; only the open/closed
@@ -1371,6 +1377,14 @@ export const App: React.FC = () => {
             ) : null}
           </div>
           <button
+            data-testid="publish-button"
+            style={{ ...ghostButton, ...(showPublish ? { borderColor: "#5b8cff" } : {}) }}
+            onClick={() => setShowPublish(true)}
+            title="Push the finished render to your social accounts via your Postiz instance"
+          >
+            Publish
+          </button>
+          <button
             style={{ ...ghostButton, ...(edits.dirty ? primaryButton : {}) }}
             onClick={onSave}
             // Finding 1, PLAN 2026-08-04 fix wave final review: belt-and-
@@ -1453,6 +1467,7 @@ export const App: React.FC = () => {
         />
       ) : null}
       {showYoutubeSeo ? <YoutubePanel onClose={() => setShowYoutubeSeo(false)} /> : null}
+      {showPublish ? <PublishPanel onClose={() => setShowPublish(false)} /> : null}
       {showCover ? (
         <CoverPanel
           onClose={() => setShowCover(false)}

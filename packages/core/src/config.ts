@@ -134,6 +134,16 @@ export interface OssclipConfig {
    */
   renderConcurrency?: number;
   /**
+   * Base URL of the user's own self-hosted Postiz instance
+   * (https://postiz.com), the backend `ossclip publish` posts through —
+   * "https://postiz.example.com" or "http://localhost:5000". Non-secret, so
+   * it may live here; the API key is `OSSCLIP_POSTIZ_API_KEY` in the
+   * ENVIRONMENT only (env.ts's documented rule — secrets never live in
+   * config.json). File-only like `audience`; validated at the consumer
+   * (`publishConfigured` in the CLI), never coerced.
+   */
+  postizUrl?: string;
+  /**
    * USD per million tokens, keyed by model id or family substring — overrides
    * the built-in assumptions in `producer/usage.ts` so a run's cost line
    * reflects the account's actual rates instead of ours.

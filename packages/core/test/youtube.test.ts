@@ -108,7 +108,7 @@ describe("YOUTUBE_PROMPT_VERSION", () => {
     // Prompt changes change the answer (the §78 posture). If a prompt edit
     // ships without bumping this, every warm workdir keeps serving packs the
     // old prompt wrote — this pin makes the bump a conscious act.
-    expect(YOUTUBE_PROMPT_VERSION).toBe("v2");
+    expect(YOUTUBE_PROMPT_VERSION).toBe("v3");
   });
 });
 
