@@ -15,6 +15,10 @@ import type { YoutubePack } from "../producer/youtube";
 export const CAPTION_CAPS: Record<string, number> = {
   x: 280,
   linkedin: 1500,
+  // A company page is the same network with the same limit — Postiz reports
+  // it as its own provider (`linkedin-page`), so it needs its own entry or it
+  // silently takes DEFAULT_CAPTION_CAP (2026-08-27 live E2E).
+  "linkedin-page": 1500,
   instagram: 2200,
   tiktok: 2200,
   facebook: 2200,
@@ -61,7 +65,11 @@ export function deriveCaption(pack: YoutubePack, provider: string): string {
 export function captionForProvider(pack: YoutubePack, provider: string): string {
   const captions = pack.platformCaptions;
   const authored =
-    provider === "linkedin"
+    // `linkedin-page` (a company page) reads the SAME authored field: same
+    // network, same idiom, same cap. Without this arm a page fell through to
+    // the title-plus-hashtags floor while the personal feed published the
+    // authored post — the shape the 2026-08-27 live E2E caught in its dry run.
+    provider === "linkedin" || provider === "linkedin-page"
       ? pack.linkedinPost
       : provider === "instagram"
         ? captions?.instagram

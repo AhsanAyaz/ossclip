@@ -70,6 +70,18 @@ describe("captionForProvider", () => {
     expect(captionForProvider(pack, "linkedin")).toBe("authored linkedin post");
   });
 
+  it("linkedin-page reads linkedinPost too — a company page is still LinkedIn", () => {
+    // The 2026-08-27 live E2E's third catch: Postiz reports a company page as
+    // the `linkedin-page` provider, which fell through every arm here and got
+    // the title-plus-hashtags floor while the personal feed got the authored
+    // post. Same network, same idiom, same 1500-char cap — one pack field
+    // serves both, and a page publishing a 94-char stub next to the personal
+    // account's 983-char post is nobody's intent.
+    const pack: YoutubePack = { ...basePack, linkedinPost: "authored linkedin post" };
+    expect(captionForProvider(pack, "linkedin-page")).toBe("authored linkedin post");
+    expect(captionCap("linkedin-page")).toBe(1500);
+  });
+
   it("a pre-v3 pack (no platformCaptions) falls back to derive", () => {
     expect(captionForProvider(basePack, "facebook")).toBe(deriveCaption(basePack, "facebook"));
   });
