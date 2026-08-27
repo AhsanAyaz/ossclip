@@ -1790,6 +1790,39 @@ describe("publish endpoints (2026-08-26)", () => {
     expect(post.status).toBe(412);
   });
 
+  it("a key written to the env file AFTER startup is picked up — no editor restart to finish setup", async () => {
+    // 2026-08-27: the panel read `loadConfig()` fresh on every request (so
+    // postizUrl was live) but the API key only from the process env, frozen
+    // at startup — so configuring publish while the editor was open left it
+    // saying "not configured" until a restart, with half the config live and
+    // half stale. `OSSCLIP_ENV_FILE` is the documented first source, so this
+    // drives the real mechanism rather than poking process.env.
+    const { dir } = await publishWorkdir();
+    const envFile = join(dir, "late.env");
+    const saved = process.env.OSSCLIP_ENV_FILE;
+    const savedKey = process.env.OSSCLIP_POSTIZ_API_KEY;
+    delete process.env.OSSCLIP_POSTIZ_API_KEY;
+    process.env.OSSCLIP_ENV_FILE = envFile;
+    try {
+      const server = await startEditServer(dir, {
+        port: 0,
+        recentDir: SHARED_RECENTS,
+        loadCfg: () => ({ postizUrl: "https://p.example.com" }),
+        publishFetch: async () => new Response("[]", { status: 200 }),
+      });
+      close = server.close;
+      // The key arrives AFTER the server is already listening.
+      await writeFile(envFile, "OSSCLIP_POSTIZ_API_KEY=late-key\n");
+      const body = await (await fetch(`${server.url}/api/publish`)).json();
+      expect(body.configured).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.OSSCLIP_ENV_FILE;
+      else process.env.OSSCLIP_ENV_FILE = saved;
+      if (savedKey === undefined) delete process.env.OSSCLIP_POSTIZ_API_KEY;
+      else process.env.OSSCLIP_POSTIZ_API_KEY = savedKey;
+    }
+  });
+
   it("GET lists integrations with the caption the publish WOULD use — the API key never reaches the browser", async () => {
     const { dir } = await publishWorkdir();
     const server = await startEditServer(dir, {

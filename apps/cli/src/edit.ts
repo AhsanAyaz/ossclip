@@ -51,6 +51,7 @@ import {
 // drags in @ossclip/core's process runner and llm-detect, worth deferring off
 // server startup — open.ts is node:child_process + node:path and pure command
 // building, with nothing to defer.
+import { loadEnvFiles } from "./env";
 import { revealInFileManager } from "./open";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
 // cover` needs the same out-resolution rule this server's thumbnail dest,
@@ -531,6 +532,25 @@ export async function startEditServer(
   // panel round-trips through youtube-pack-approved.json, which produce's Y2
   // block honors VERBATIM on every replay — an edit persisted there survives
   // into future renders with zero new plumbing.
+  /**
+   * The publish config, resolved FRESH per request — both halves of it.
+   *
+   * `loadConfig()` already re-read `config.json` every time, but the API key
+   * came from the process env, which is populated once at CLI startup: a user
+   * who set up Postiz while the editor was open got "not configured" until a
+   * restart, with `postizUrl` live and the key stale (2026-08-27). Re-running
+   * `loadEnvFiles` costs two small file reads on a button press and keeps the
+   * documented precedence exactly — it never clobbers a key the real
+   * environment already set, so a shell-provided key still wins.
+   *
+   * Skipped entirely when the caller injected `publishEnv` (tests own their
+   * environment, and reading the developer's real `~/.ossclip/.env` into a
+   * test would make the suite depend on the machine it runs on).
+   */
+  const resolvePublishConfig = (): ReturnType<typeof publishConfigured> => {
+    if (opts.publishEnv === undefined) loadEnvFiles();
+    return publishConfigured((opts.loadCfg ?? loadConfig)(), opts.publishEnv ?? process.env);
+  };
   const approvedPackPath = (): string => join(workdir!, YOUTUBE_APPROVED_BASENAME);
   /** The pack the panel shows: the approved file first (the user's
    * decision), else the newest valid `youtube-<key>.json` cache (what the
@@ -1468,7 +1488,7 @@ export async function startEditServer(
         // in the user's shell env) does the upload.
         if (url.pathname === "/api/publish" && req.method === "GET") {
           if (!workdir) return send(409, { error: "no workdir open" });
-          const configured = publishConfigured((opts.loadCfg ?? loadConfig)(), opts.publishEnv ?? process.env);
+          const configured = resolvePublishConfig();
           if (!configured.ok) {
             return send(200, { configured: false, reason: configured.message });
           }
@@ -1508,7 +1528,7 @@ export async function startEditServer(
 
         if (url.pathname === "/api/publish" && req.method === "POST") {
           if (!workdir) return send(409, { error: "no workdir open" });
-          const configured = publishConfigured((opts.loadCfg ?? loadConfig)(), opts.publishEnv ?? process.env);
+          const configured = resolvePublishConfig();
           if (!configured.ok) return send(412, { error: configured.message });
           const chunks: Buffer[] = [];
           for await (const c of req) chunks.push(c as Buffer);
