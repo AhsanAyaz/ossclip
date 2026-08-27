@@ -218,22 +218,39 @@ export function loadConfig(): OssclipConfig {
   } catch {
     // no config file — fine
   }
+  return resolveConfig(fileCfg, process.env);
+}
+
+/**
+ * The pure half of `loadConfig` — the file-vs-env-vs-default resolution with
+ * no homedir read, so the mapping itself is testable (config.test.ts). Split
+ * out after the 2026-08-27 publish E2E: `postizUrl` sat on the TYPE and in
+ * the docs but this hand-written mapping never copied it, so publish reported
+ * "missing postizUrl" against a config.json that plainly had it — a key that
+ * exists only in the type is invisible at runtime, and nothing could say so
+ * while the mapping lived behind the filesystem.
+ */
+export function resolveConfig(
+  fileCfg: Partial<OssclipConfig>,
+  env: NodeJS.ProcessEnv,
+): OssclipConfig {
   return {
-    ffmpegPath: process.env.OSSCLIP_FFMPEG ?? fileCfg.ffmpegPath ?? DEFAULTS.ffmpegPath,
-    ffprobePath: process.env.OSSCLIP_FFPROBE ?? fileCfg.ffprobePath ?? DEFAULTS.ffprobePath,
-    whisperPath: process.env.OSSCLIP_WHISPER ?? fileCfg.whisperPath ?? DEFAULTS.whisperPath,
-    modelDir: process.env.OSSCLIP_MODEL_DIR ?? fileCfg.modelDir ?? DEFAULTS.modelDir,
-    model: process.env.OSSCLIP_MODEL ?? fileCfg.model ?? DEFAULTS.model,
-    fastModel: process.env.OSSCLIP_FAST_MODEL ?? fileCfg.fastModel,
+    ffmpegPath: env.OSSCLIP_FFMPEG ?? fileCfg.ffmpegPath ?? DEFAULTS.ffmpegPath,
+    ffprobePath: env.OSSCLIP_FFPROBE ?? fileCfg.ffprobePath ?? DEFAULTS.ffprobePath,
+    whisperPath: env.OSSCLIP_WHISPER ?? fileCfg.whisperPath ?? DEFAULTS.whisperPath,
+    modelDir: env.OSSCLIP_MODEL_DIR ?? fileCfg.modelDir ?? DEFAULTS.modelDir,
+    model: env.OSSCLIP_MODEL ?? fileCfg.model ?? DEFAULTS.model,
+    fastModel: env.OSSCLIP_FAST_MODEL ?? fileCfg.fastModel,
     // File-only, the `dictionary` posture — and deliberately NO env spelling
     // (flag + config are the whole interface): validated where it is USED
     // (`resolveLlmEffort` in produce.ts), so a hand-edited `"max"` earns one
     // warning there and agy's default, never a coerced effort.
     llmEffort: fileCfg.llmEffort,
-    speaker: process.env.OSSCLIP_SPEAKER ?? fileCfg.speaker,
-    openEditorAfterProduce: (process.env.OSSCLIP_OPEN_EDITOR ??
-      fileCfg.openEditorAfterProduce) as OpenEditorPref | undefined,
-    browserExecutable: process.env.OSSCLIP_BROWSER ?? fileCfg.browserExecutable,
+    speaker: env.OSSCLIP_SPEAKER ?? fileCfg.speaker,
+    openEditorAfterProduce: (env.OSSCLIP_OPEN_EDITOR ?? fileCfg.openEditorAfterProduce) as
+      | OpenEditorPref
+      | undefined,
+    browserExecutable: env.OSSCLIP_BROWSER ?? fileCfg.browserExecutable,
     // File-only, like `pricing`: an env spelling would arrive as a string,
     // and "false" is truthy — parse-don't-coerce says no such trap. The
     // strict `=== true` check lives at the consumer (produce's
@@ -272,5 +289,9 @@ export function loadConfig(): OssclipConfig {
     thumbnailBrief: fileCfg.thumbnailBrief,
     thumbnailModel: fileCfg.thumbnailModel,
     pricing: fileCfg.pricing,
+    // File-only, non-secret by declaration (the field's own doc): the API key
+    // deliberately lives in the environment (publish.ts's
+    // `publishConfigured`), so this is only the instance URL.
+    postizUrl: fileCfg.postizUrl,
   };
 }

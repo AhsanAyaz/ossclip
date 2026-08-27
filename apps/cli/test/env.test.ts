@@ -1,12 +1,21 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadEnvFiles } from "../src/env";
 
-const KEYS = ["OSSCLIP_TEST_A", "OSSCLIP_TEST_B", "GEMINI_API_KEY", "OSSCLIP_ENV_FILE"];
+const KEYS = ["OSSCLIP_TEST_A", "OSSCLIP_TEST_B", "GEMINI_API_KEY", "OSSCLIP_ENV_FILE", "HOME"];
 const saved = new Map<string, string | undefined>();
 for (const k of KEYS) saved.set(k, process.env[k]);
+
+// Point `~` at an empty temp dir: `loadEnvFiles` legitimately reads
+// `~/.ossclip/.env` (source 3 in its order), so on a machine where that file
+// EXISTS the path-list assertions below would grow an extra entry — which is
+// how this suite first broke, the day a real key landed there (2026-08-27,
+// the Postiz E2E). `os.homedir()` re-reads $HOME per call on POSIX.
+beforeEach(() => {
+  process.env.HOME = mkdtempSync(join(tmpdir(), "ossclip-home-"));
+});
 
 afterEach(() => {
   for (const k of KEYS) {

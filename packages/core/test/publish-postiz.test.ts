@@ -67,6 +67,20 @@ describe("buildPostsPayload", () => {
     );
   });
 
+  it("carries a top-level tags array — Postiz 400s without it", () => {
+    // The 2026-08-27 live E2E's catch: /posts validates `tags` as a required
+    // top-level array ("tags should not be null or undefined"), and the very
+    // first real request against a live instance bounced on it. Always [] —
+    // calendar tags are a Postiz-UI concept ossclip has no gesture for.
+    const payload = buildPostsPayload({
+      posts: [{ target: li, caption: "c" }],
+      when: { kind: "now" },
+      dateIso: "2026-08-26T10:00:00.000Z",
+      media,
+    }) as { tags: unknown };
+    expect(payload.tags).toEqual([]);
+  });
+
   it("schedule uses the requested time, not the caller's clock", () => {
     const payload = buildPostsPayload({
       posts: [{ target: li, caption: "c" }],

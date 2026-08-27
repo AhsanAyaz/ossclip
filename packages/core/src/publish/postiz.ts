@@ -80,6 +80,11 @@ export function buildPostsPayload(args: {
     type: args.when.kind === "now" ? "now" : "schedule",
     date: args.when.kind === "at" ? args.when.iso : args.dateIso,
     shortLink: false,
+    // Required by /posts' DTO as a top-level array ("tags should not be null
+    // or undefined" — the 2026-08-27 live E2E's first real request bounced on
+    // it). Always empty: calendar tags are a Postiz-UI concept ossclip has no
+    // gesture for.
+    tags: [],
     posts: args.posts.map((p) => ({
       integration: { id: p.target.id },
       value: [{ content: p.caption, image }],
