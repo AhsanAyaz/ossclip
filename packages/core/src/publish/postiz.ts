@@ -137,7 +137,14 @@ export class PostizHttpError extends Error {
       status === 401 || status === 403
         ? " — Postiz rejected the API key (Settings → Public API in your Postiz instance)"
         : status === 413
-          ? " — the upload exceeds the Postiz instance's size limit"
+          ? // Usually NOT Postiz: a reverse proxy in front of it refuses the
+            // body first (Cloudflare's free plan caps a proxied upload at
+            // 100MB — a 171MB render bounced on it during the 2026-08-27 live
+            // E2E, with Cloudflare's own HTML as the "Postiz" answer). Name the
+            // proxy and the way through, since tuning Postiz would do nothing.
+            " — the upload was refused as too large. A reverse proxy in front of Postiz is the" +
+            " usual cause (Cloudflare's free plan caps proxied uploads at 100MB); point" +
+            " postizUrl at the instance directly (its LAN/VPN address) or raise the proxy's limit"
           : status === 429
             ? " — Postiz rate limit (90 posts/hour per self-hosted instance)"
             : "";

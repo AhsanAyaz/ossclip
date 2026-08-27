@@ -158,7 +158,7 @@ describe("createPostizProvider", () => {
 
   it.each([
     [401, "rejected the API key"],
-    [413, "size limit"],
+    [413, "refused as too large"],
     [429, "90 posts/hour"],
     [500, "failed: 500"],
   ])("a %i answer throws loudly with the hint", async (status, needle) => {
@@ -168,6 +168,18 @@ describe("createPostizProvider", () => {
       fetchImpl: async () => new Response("boom", { status }),
     });
     await expect(provider.listTargets()).rejects.toThrow(needle);
+  });
+
+  it("413 names the PROXY as the likely culprit, with the fix", () => {
+    // The 2026-08-27 live E2E hit this for real: a 171MB render through a
+    // Cloudflare Tunnel bounced 413 with Cloudflare's own HTML error page,
+    // while Postiz itself would have taken the file happily. Blaming "the
+    // Postiz instance's size limit" sends the user to tune the wrong box —
+    // the proxy in front is what refused, and pointing `postizUrl` at the
+    // instance directly (LAN/VPN address) is the one-line way through.
+    const msg = new PostizHttpError("POST", "/upload", 413, "").message;
+    expect(msg).toMatch(/proxy/i);
+    expect(msg).toMatch(/postizUrl/);
   });
 
   it("an unreachable instance names the base URL, not a bare ECONNREFUSED", async () => {
