@@ -153,6 +153,14 @@ export interface OssclipConfig {
    */
   postizUrl?: string;
   /**
+   * `--resolution`'s default for this machine: "auto" (keep what the source
+   * has, capped at 2160), "1080" (the built-in default), "1440" or "2160".
+   * File-only, the `watermark` posture: validated where it is USED
+   * (`resolveResolution` in produce.ts), so a hand-edited "4k" earns one
+   * warning and the 1080 default rather than a coerced render size.
+   */
+  resolution?: string;
+  /**
    * USD per million tokens, keyed by model id or family substring — overrides
    * the built-in assumptions in `producer/usage.ts` so a run's cost line
    * reflects the account's actual rates instead of ours.
@@ -293,5 +301,6 @@ export function resolveConfig(
     // deliberately lives in the environment (publish.ts's
     // `publishConfigured`), so this is only the instance URL.
     postizUrl: fileCfg.postizUrl,
+    resolution: fileCfg.resolution,
   };
 }

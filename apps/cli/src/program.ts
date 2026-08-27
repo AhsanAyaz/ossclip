@@ -3,7 +3,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
-import { CleanupLevelSchema, COVER_MAX_WORDS, SceneComponentIdSchema } from "@ossclip/core";
+import {
+  CleanupLevelSchema,
+  COVER_MAX_WORDS,
+  RESOLUTION_CHOICES,
+  ResolutionChoiceSchema,
+  SceneComponentIdSchema,
+} from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { ExportFormatSchema, runAnalyze } from "./analyze";
@@ -299,6 +305,22 @@ export function buildProgram(): Command {
       "--aspect <ratio>",
       "output shape: 9:16 (vertical, default) or 16:9 (landscape, 1920x1080)",
       "9:16",
+    )
+    .option(
+      "--resolution <height>",
+      "output height: 1080 (default), 1440, 2160, or auto (keep what the source has, " +
+        "capped at 2160). Config key: \"resolution\"",
+      (v: string) => {
+        // Parse, never coerce (CLAUDE.md): a typo'd `--resolution 2610` must
+        // not silently render 1080p, and `Number()` on "auto" is NaN.
+        const parsed = ResolutionChoiceSchema.safeParse(v.trim());
+        if (!parsed.success) {
+          throw new InvalidArgumentError(
+            `--resolution wants one of ${RESOLUTION_CHOICES.join(", ")}, got "${v}"`,
+          );
+        }
+        return parsed.data;
+      },
     )
     .option("--produce", "run the LLM producer brain to plan title cards & graphics", false)
     .option(
@@ -687,6 +709,9 @@ export function buildProgram(): Command {
           // Validated by concurrencyFlag at parse time; undefined = "not
           // typed", which is what lets the config supply it.
           concurrency: opts.concurrency,
+          // Same contract: validated by the flag's own parser, and undefined
+          // means "not typed" so the config's `resolution` can supply it.
+          resolution: opts.resolution,
         });
         // Counts, buckets and names only — the duration crosses the wire as a
         // bucket, and nothing here can carry a path (assertSafeProps enforces

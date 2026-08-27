@@ -166,7 +166,12 @@ import {
   AGY_PRINT_TIMEOUT,
   type Production,
   ossclipOutputPathFor,
+  resolveOutputFrame,
+  RESOLUTION_CHOICES,
+  smallestSource,
+  ResolutionChoiceSchema,
   type ProviderName,
+  type ResolutionChoice,
   type Scene,
   type SceneComponentId,
   type Segment,
@@ -585,6 +590,16 @@ export interface ProduceOptions {
    */
   aspect?: "9:16" | "16:9";
   /**
+   * `--resolution <height>`: how big the output actually renders. `auto`
+   * keeps what the source has (capped at 2160); an explicit height scales the
+   * 1080-wide composition to it. Already validated by commander (or by
+   * `ResolutionChoiceSchema` when it comes from the config), so this is a
+   * choice, never a raw string. `resolveOutputFrame` owns the math and the
+   * why; the value reaches THREE stages that would otherwise each pin 1080p:
+   * the folder-concat target, the mezzanine, and the render's own scale.
+   */
+  resolution?: ResolutionChoice;
+  /**
    * `--concurrency <n>`: how many browser tabs the render opens at once,
    * beating the config's `renderConcurrency` and the cpus-2 default
    * (`resolveRenderConcurrency`). Already validated by commander
@@ -707,6 +722,32 @@ export function resolveWatermark(
   configValue: boolean | undefined,
 ): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * The effective `--resolution` — `resolveWatermark`'s precedence verbatim: a
+ * TYPED flag always wins, and only then does the config supply the default.
+ *
+ * The config side is ZOD-PARSED rather than trusted: `loadConfig` hands back
+ * whatever the hand-editable JSON held, and an unparsed `"4k"` would reach
+ * `Number("4k")` inside `resolveOutputFrame` as NaN and size the whole render
+ * off it. A malformed value earns one warning naming the key and falls back
+ * to 1080 — the value every existing run already produces, so a typo costs a
+ * message rather than a surprise 4K render (CLAUDE.md: parse, never coerce).
+ * Pure, so the flag × config matrix is testable without a config file.
+ */
+export function resolveResolution(
+  flag: ResolutionChoice | undefined,
+  configValue: unknown,
+): ResolutionChoice {
+  if (flag !== undefined) return flag;
+  if (configValue === undefined) return "1080";
+  const parsed = ResolutionChoiceSchema.safeParse(configValue);
+  if (parsed.success) return parsed.data;
+  console.log(
+    `⚠ config resolution ignored — expected one of ${RESOLUTION_CHOICES.join(", ")}, using 1080`,
+  );
+  return "1080";
 }
 
 /**
@@ -2078,6 +2119,46 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   const tools = { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath };
 
+  // `--resolution` (2026-08-27), resolved before ANY stage that sizes pixels:
+  // the folder concat, the mezzanine and the render each used to pin 1080p
+  // independently, so a 4K take lost three quarters of its pixels before
+  // anything looked at it. `auto` needs the SOURCE's size, which for a folder
+  // means probing the clips here — the concat target is chosen before the
+  // concatenated file (and its probe) exists.
+  const resolution = resolveResolution(opts.resolution, cfg.resolution);
+  const autoSource = async (): Promise<{ width: number; height: number } | null> => {
+    if (resolution !== "auto") return null;
+    if (isFolder && folderListing) {
+      // Metadata-only probes, and only under `auto`: the default path adds no
+      // ffprobe calls at all (the 4m32s probe-storm lesson, concat.ts:272).
+      const sizes: Array<{ width: number; height: number }> = [];
+      for (const entry of folderListing.entries) {
+        try {
+          const p = await probe(tools, join(input, entry.name));
+          sizes.push({ width: p.width, height: p.height });
+        } catch {
+          // A clip that will not probe is the concat guard's problem, not
+          // this sizing pass's — skip it rather than fail the run here.
+        }
+      }
+      return smallestSource(sizes);
+    }
+    try {
+      const p = await probe(tools, input);
+      return { width: p.width, height: p.height };
+    } catch {
+      return null;
+    }
+  };
+  const output = resolveOutputFrame({
+    frame,
+    source: (await autoSource()) ?? { width: 0, height: 0 },
+    resolution,
+  });
+  if (output.scale !== 1) {
+    console.log(`▸ resolution: ${output.width}x${output.height} (${resolution})`);
+  }
+
   // Resolved ONCE for the whole run — whisper biasing, repair vouching and
   // caption casing must all see the same list, or the passes disagree about
   // what a term is spelled like. A typed --dictionary wholesale beats the
@@ -2182,9 +2263,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (isFolder && folderListing) {
     const sort = opts.sort ?? "name";
     const result = await phases.time("ffmpeg", () =>
+      // The concat target carries the RESOLVED size, not the base frame:
+      // letterboxing every take into 1080p here would throw the pixels away
+      // before the mezzanine or the render ever saw them (`--resolution`).
       concatFolder(tools, input, folderListing!, work, sort, {
-        w: frame.width,
-        h: frame.height,
+        w: output.width,
+        h: output.height,
       }),
     );
     console.log(
@@ -3829,7 +3913,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     scenes: scenes.length > 0 ? scenes : undefined,
     producer: producerStamp,
     theme,
-    render: { ...frame, fps: 30 },
+    // The EFFECTIVE output size, not the base frame (`--resolution`): this is
+    // what the file on disk actually is, and it is read downstream by the
+    // mezzanine's scale decision, the NLE exports and the editor — all of
+    // which would otherwise describe a 1080p file that isn't there.
+    render: { width: output.width, height: output.height, fps: 30 },
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
@@ -4383,7 +4471,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // ~/.ossclip/config.json's theme the first time anyone touched a color.
     baseTheme: configBaseTheme,
     baseCaptionLines,
-    settings: production.render,
+    // The COMPOSITION's size, which is the BASE frame — never
+    // `production.render` (2026-08-27). `production.render` describes the
+    // FILE, and under `--resolution` those differ by the render's `scale`:
+    // Remotion enlarges this composition by that factor, so sizing the
+    // composition from the scaled dims applies it TWICE (2160×3840 became
+    // 4320×7680 frames, which h264_videotoolbox refuses outright, at stitch
+    // time, after every frame had been paid for). The Player reads these too,
+    // and previewing at the base size is what keeps the editor cheap.
+    settings: { ...frame, fps: production.render.fps },
     outputDurationSec: map.outputDuration,
     // The aspect travels with the measurement because the crop math needs it:
     // `object-fit: cover` spills vertically for a portrait source and
@@ -4890,6 +4986,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         outPath: rawPath,
         browserExecutable: cfg.browserExecutable,
         concurrency: renderConcurrency.concurrency,
+        // The composition stays 1080-wide and Remotion renders it larger
+        // (`--resolution`) — rebuilding the stage at 2160 would keep
+        // `captionFontSizeFor`'s absolute 64px and draw quarter-size captions.
+        scale: output.scale,
         cancelSignal: renderCancel.cancelSignal,
         onPhase: (phase: RenderPhase) => {
           signalPhase = renderSignalPhaseOf(phase);

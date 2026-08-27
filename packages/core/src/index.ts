@@ -42,4 +42,5 @@ export * from "./export-premiere-xml";
 export * from "./export-premiere-project";
 export * from "./export-xmeml-util";
 export * from "./config";
+export * from "./resolution";
 export { run } from "./exec";

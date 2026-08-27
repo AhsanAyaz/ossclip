@@ -40,6 +40,17 @@ export interface RenderJobOptions {
    */
   offthreadVideoCacheSizeInBytes?: number;
   /**
+   * Renders the composition larger by this factor (`--resolution`, 2026-08-27):
+   * 2 turns the 1080-wide composition into a 2160-wide file. Remotion scales
+   * the whole browser viewport, so fonts, strokes and graphics grow with it —
+   * which is the point, since `captionFontSizeFor` answers in ABSOLUTE px and
+   * a composition rebuilt at 2160 would draw quarter-size captions.
+   *
+   * Left undefined (Remotion's own default of 1) by every caller that has not
+   * opted in, so existing renders are byte-identical.
+   */
+  scale?: number;
+  /**
    * `makeCancelSignal().cancelSignal` — firing its `cancel()` tears the
    * browser and the ffmpeg children down instead of orphaning them. The CLI
    * wires this to SIGINT/SIGTERM around the render phase (produce.ts).
@@ -116,6 +127,7 @@ export function renderMediaOptions(args: {
     imageFormat: "jpeg",
     jpegQuality: 90,
     concurrency: opts.concurrency,
+    ...(opts.scale !== undefined && opts.scale !== 1 ? { scale: opts.scale } : {}),
     // See DEFAULT_OFFTHREAD_VIDEO_CACHE_BYTES for the whole-browser OOM this
     // bounds (option name verified against @remotion/renderer 4.0.499, which
     // forwards it to the compositor as maximum_frame_cache_size_in_bytes).
