@@ -91,6 +91,22 @@ export function buildPostsPayload(args: {
       settings: {
         __type: p.target.provider,
         ...(p.title !== undefined ? { title: p.title } : {}),
+        // YouTube's privacy status is REQUIRED by Postiz's DTO (`type`,
+        // @IsDefined) — without it the whole /posts call is rejected at
+        // validation and nothing publishes, not just the YouTube post
+        // (2026-08-28). `private` is the default on purpose: the other
+        // platforms post publicly, but an accidental `--all` must not push to
+        // a subscriber list, and making a private video public in YouTube
+        // Studio is one click where un-publishing is not.
+        ...(p.target.provider === "youtube"
+          ? { type: p.youtubePrivacy ?? "private" }
+          : {}),
+        // Instagram's own required setting (`post_type`, @IsDefined — the
+        // second one a real publish found, at the same cost: a 400 AFTER the
+        // whole video had uploaded). Always `post`: ossclip renders a
+        // finished short, and a story expires in 24 hours, which nobody
+        // publishing a produced video is asking for.
+        ...(p.target.provider === "instagram" ? { post_type: "post" } : {}),
       },
     })),
   };

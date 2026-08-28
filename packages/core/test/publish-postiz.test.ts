@@ -81,6 +81,65 @@ describe("buildPostsPayload", () => {
     expect(payload.tags).toEqual([]);
   });
 
+  it("a YouTube post carries a privacy status — Postiz REQUIRES it", () => {
+    // 2026-08-28: Postiz's YoutubeSettingsDto marks `type` @IsDefined(), so a
+    // payload with only {__type, title} is rejected at validation and the
+    // whole /posts call fails — ossclip could not publish to YouTube at all.
+    // Defaulted to `private` deliberately: every other platform posts
+    // publicly, but an accidental --all run must not push to a subscriber
+    // list, and flipping a private video public in YouTube Studio is one
+    // click while un-publishing is not.
+    const yt: PublishTarget = { id: "int-3", provider: "youtube", name: "Channel" };
+    const payload = buildPostsPayload({
+      posts: [{ target: yt, caption: "desc", title: "The title" }],
+      when: { kind: "now" },
+      dateIso: "2026-08-26T10:00:00.000Z",
+      media,
+    }) as { posts: Array<{ settings: Record<string, unknown> }> };
+    expect(payload.posts[0]!.settings).toEqual({
+      __type: "youtube",
+      title: "The title",
+      type: "private",
+    });
+  });
+
+  it("an explicit YouTube privacy wins over the safe default", () => {
+    const yt: PublishTarget = { id: "int-3", provider: "youtube", name: "Channel" };
+    const payload = buildPostsPayload({
+      posts: [{ target: yt, caption: "desc", title: "T", youtubePrivacy: "public" }],
+      when: { kind: "now" },
+      dateIso: "2026-08-26T10:00:00.000Z",
+      media,
+    }) as { posts: Array<{ settings: Record<string, unknown> }> };
+    expect(payload.posts[0]!.settings.type).toBe("public");
+  });
+
+  it("an Instagram post carries post_type — Postiz REQUIRES it too", () => {
+    // The second required per-provider setting, found the same way as
+    // YouTube's `type`: a real publish 400'd with "posts.0.settings.post_type
+    // should not be null or undefined ... must be one of: post, story"
+    // (2026-08-28), AFTER the 171MB upload had been paid for. Always `post`:
+    // ossclip renders a finished short, and a story expires in 24 hours —
+    // nobody publishes a produced video expecting it to vanish.
+    const payload = buildPostsPayload({
+      posts: [{ target: ig, caption: "c" }],
+      when: { kind: "now" },
+      dateIso: "2026-08-26T10:00:00.000Z",
+      media,
+    }) as { posts: Array<{ settings: Record<string, unknown> }> };
+    expect(payload.posts[0]!.settings).toEqual({ __type: "instagram", post_type: "post" });
+  });
+
+  it("a NON-youtube post carries no privacy key — the settings stay per-provider", () => {
+    const payload = buildPostsPayload({
+      posts: [{ target: li, caption: "c" }],
+      when: { kind: "now" },
+      dateIso: "2026-08-26T10:00:00.000Z",
+      media,
+    }) as { posts: Array<{ settings: Record<string, unknown> }> };
+    expect(payload.posts[0]!.settings).toEqual({ __type: "linkedin" });
+  });
+
   it("schedule uses the requested time, not the caller's clock", () => {
     const payload = buildPostsPayload({
       posts: [{ target: li, caption: "c" }],
@@ -100,7 +159,13 @@ describe("buildPostsPayload", () => {
       dateIso: "2026-08-26T10:00:00.000Z",
       media,
     }) as { posts: Array<{ settings: Record<string, unknown> }> };
-    expect(payload.posts[0]!.settings).toEqual({ __type: "youtube", title: "The title" });
+    // `type` rides along since 2026-08-28 — Postiz requires it (see the
+    // privacy-status case below for the why).
+    expect(payload.posts[0]!.settings).toEqual({
+      __type: "youtube",
+      title: "The title",
+      type: "private",
+    });
   });
 });
 

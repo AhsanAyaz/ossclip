@@ -27,6 +27,13 @@ export interface PublishPost {
    * Optional — most don't.
    */
   title?: string;
+  /**
+   * YouTube's privacy status — REQUIRED by Postiz's own DTO (`type`,
+   * @IsDefined), so a YouTube post without it fails validation and takes the
+   * whole /posts call with it (2026-08-28). Optional here because only
+   * YouTube has the concept; `buildPostsPayload` supplies the default.
+   */
+  youtubePrivacy?: "public" | "unlisted" | "private";
 }
 
 export interface PublishRequest {

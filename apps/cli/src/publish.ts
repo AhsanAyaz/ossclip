@@ -155,12 +155,46 @@ export function selectTargets(
  * the pack's first title — the one required settings field Postiz won't
  * default.
  */
-export function buildPublishPosts(pack: YoutubePack, targets: PublishTarget[]): PublishPost[] {
+export function buildPublishPosts(
+  pack: YoutubePack,
+  targets: PublishTarget[],
+  opts: { youtubePrivacy?: YoutubePrivacy } = {},
+): PublishPost[] {
   return targets.map((target) => ({
     target,
     caption: captionForProvider(pack, target.provider),
-    ...(target.provider === "youtube" ? { title: pack.titles[0] } : {}),
+    ...(target.provider === "youtube"
+      ? {
+          title: pack.titles[0],
+          // Undefined here means `buildPostsPayload`'s own safe default
+          // (private) — one place decides it, not two (2026-08-28).
+          ...(opts.youtubePrivacy !== undefined
+            ? { youtubePrivacy: opts.youtubePrivacy }
+            : {}),
+        }
+      : {}),
   }));
+}
+
+/** `--youtube-privacy` — the values Postiz's own DTO accepts, nothing else. */
+export const YOUTUBE_PRIVACIES = ["public", "unlisted", "private"] as const;
+export type YoutubePrivacy = (typeof YOUTUBE_PRIVACIES)[number];
+
+/**
+ * `--youtube-privacy <public|unlisted|private>` → a validated choice.
+ * Rejected rather than coerced (§93a, the `--clip` idiom): a typo'd
+ * `--youtube-privacy pubic` must not silently fall back to a value that
+ * publishes to a subscriber list. Exported so the rejection matrix is
+ * testable without commander's exit behaviour.
+ */
+export function youtubePrivacyFlag(v: string): YoutubePrivacy {
+  const found = YOUTUBE_PRIVACIES.find((p) => p === v.trim());
+  if (found === undefined) {
+    throw new InvalidArgumentError(
+      `--youtube-privacy wants one of ${YOUTUBE_PRIVACIES.join(", ")}, got "${v}"`,
+    );
+  }
+  return found;
 }
 
 /**
@@ -237,6 +271,8 @@ export interface PublishFlags {
   dryRun?: boolean;
   yes?: boolean;
   force?: boolean;
+  /** `--youtube-privacy`; undefined = the payload's safe `private` default. */
+  youtubePrivacy?: YoutubePrivacy;
 }
 
 /**
@@ -310,7 +346,7 @@ export async function runPublish(
   }
 
   const when: PublishWhen = flags.at ? { kind: "at", iso: flags.at } : { kind: "now" };
-  const posts = buildPublishPosts(pack, picked);
+  const posts = buildPublishPosts(pack, picked, { youtubePrivacy: flags.youtubePrivacy });
   console.log(summarizePosts(posts, when));
 
   if (flags.dryRun === true) {
