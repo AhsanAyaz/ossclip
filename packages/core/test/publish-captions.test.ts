@@ -82,6 +82,22 @@ describe("captionForProvider", () => {
     expect(captionCap("linkedin-page")).toBe(1500);
   });
 
+  it("youtube's caption IS the pack's description — the field written for exactly that box", () => {
+    // 2026-08-28, found by connecting a real YouTube channel: the title
+    // mapped (`buildPublishPosts` sets it from `titles[0]`) but the caption
+    // fell through every arm to the title-plus-hashtags floor, so a pack
+    // carrying a full YouTube description published 94 characters of it.
+    // `description` is the one pack field whose whole purpose is this box.
+    const pack: YoutubePack = { ...basePack, description: "The full YouTube description." };
+    expect(captionForProvider(pack, "youtube")).toBe("The full YouTube description.");
+    expect(captionCap("youtube")).toBe(5000);
+  });
+
+  it("an empty description still falls back to derive rather than publishing nothing", () => {
+    const pack: YoutubePack = { ...basePack, description: "   " };
+    expect(captionForProvider(pack, "youtube")).toBe(deriveCaption(pack, "youtube"));
+  });
+
   it("a pre-v3 pack (no platformCaptions) falls back to derive", () => {
     expect(captionForProvider(basePack, "facebook")).toBe(deriveCaption(basePack, "facebook"));
   });

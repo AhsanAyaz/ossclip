@@ -69,7 +69,14 @@ export function captionForProvider(pack: YoutubePack, provider: string): string 
     // network, same idiom, same cap. Without this arm a page fell through to
     // the title-plus-hashtags floor while the personal feed published the
     // authored post — the shape the 2026-08-27 live E2E caught in its dry run.
-    provider === "linkedin" || provider === "linkedin-page"
+    // YouTube's caption is the DESCRIPTION box, and `description` is the one
+    // pack field written for exactly it (the title rides `settings.title`,
+    // set by `buildPublishPosts`). Without this arm a pack carrying a full
+    // description published the title-plus-hashtags floor — 94 characters of
+    // it — which the 2026-08-28 channel connection showed in its dry run.
+    provider === "youtube"
+      ? pack.description
+      : provider === "linkedin" || provider === "linkedin-page"
       ? pack.linkedinPost
       : provider === "instagram"
         ? captions?.instagram
