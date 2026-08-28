@@ -54,6 +54,15 @@ describe("captionCap", () => {
     expect(captionCap("x")).toBe(280);
     expect(captionCap("mastodon")).toBe(DEFAULT_CAPTION_CAP);
   });
+
+  it("threads is 500 — its own hard limit, not the generic default", () => {
+    // 2026-08-28, found by connecting a real Threads account: the provider
+    // had no entry, so it inherited DEFAULT_CAPTION_CAP (1500) and an
+    // authored caption between 500 and 1500 chars would be sent over the
+    // platform's limit — rejected or silently cut by Threads, either way
+    // not what the pack said.
+    expect(captionCap("threads")).toBe(500);
+  });
 });
 
 describe("captionForProvider", () => {
@@ -96,6 +105,31 @@ describe("captionForProvider", () => {
   it("an empty description still falls back to derive rather than publishing nothing", () => {
     const pack: YoutubePack = { ...basePack, description: "   " };
     expect(captionForProvider(pack, "youtube")).toBe(deriveCaption(pack, "youtube"));
+  });
+
+  it("threads borrows the INSTAGRAM caption, trimmed to its own 500-char limit", () => {
+    // Threads has no field of its own in the pack, and the pack is the only
+    // author (this module never invents copy — the module docstring's rule).
+    // Instagram is the closest idiom the pack actually writes: same company,
+    // same audience, same short-video framing. The 500 cap still applies, so
+    // a long Instagram caption arrives trimmed at a word boundary rather
+    // than rejected by Threads.
+    const pack: YoutubePack = {
+      ...basePack,
+      platformCaptions: { instagram: "authored instagram caption" },
+    };
+    expect(captionForProvider(pack, "threads")).toBe("authored instagram caption");
+    const long: YoutubePack = {
+      ...basePack,
+      platformCaptions: { instagram: "word ".repeat(200).trim() },
+    };
+    const trimmed = captionForProvider(long, "threads");
+    expect(trimmed.length).toBeLessThanOrEqual(500);
+    expect(trimmed.endsWith("word")).toBe(true);
+  });
+
+  it("threads with no instagram caption still derives rather than publishing nothing", () => {
+    expect(captionForProvider(basePack, "threads")).toBe(deriveCaption(basePack, "threads"));
   });
 
   it("a pre-v3 pack (no platformCaptions) falls back to derive", () => {

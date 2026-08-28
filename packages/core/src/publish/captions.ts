@@ -19,6 +19,9 @@ export const CAPTION_CAPS: Record<string, number> = {
   // it as its own provider (`linkedin-page`), so it needs its own entry or it
   // silently takes DEFAULT_CAPTION_CAP (2026-08-27 live E2E).
   "linkedin-page": 1500,
+  // Threads' own hard limit, well under the generic default it used to
+  // inherit (2026-08-28).
+  threads: 500,
   instagram: 2200,
   tiktok: 2200,
   facebook: 2200,
@@ -78,7 +81,12 @@ export function captionForProvider(pack: YoutubePack, provider: string): string 
       ? pack.description
       : provider === "linkedin" || provider === "linkedin-page"
       ? pack.linkedinPost
-      : provider === "instagram"
+      : // Threads has no field of its own, and this module never invents
+      // copy — so it borrows the closest idiom the pack DOES write. Same
+      // company, same audience, same short-video framing; the 500-char cap
+      // above trims it at a word boundary rather than letting Threads
+      // reject it (2026-08-28, a real connected account).
+      provider === "instagram" || provider === "threads"
         ? captions?.instagram
         : provider === "tiktok"
           ? captions?.tiktok
