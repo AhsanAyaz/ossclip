@@ -1,9 +1,9 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { existsSync, statSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import type { GenerateThumbnailImageOptions } from "@ossclip/core";
+import { YOUTUBE_APPROVED_BASENAME, type GenerateThumbnailImageOptions } from "@ossclip/core";
 import { startEditServer } from "../src/edit";
 
 let close: (() => void) | undefined;
@@ -2755,6 +2755,215 @@ describe("publish caption regenerate (2026-08-29)", () => {
     // first is provably inside the provider call.
     await startedP;
     const second = await post(server.url, args);
+    expect(second.status).toBe(409);
+    release();
+    expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+describe("on-demand youtube pack generate (2026-08-29)", () => {
+  const noCfg = (): Record<string, never> => ({});
+
+  /** The full pack the fake model answers with — YoutubePackSchema-valid, so
+   * the endpoint's own post-parse guards run on the real path. */
+  const answeredPack = {
+    titles: ["How agents actually work", "5 agent mistakes", "Agents in 8 minutes"],
+    description: "generated description",
+    hashtags: ["#agents"],
+    tags: [],
+    linkedinPost: "generated linkedin post",
+  };
+
+  /** The caption-regen suite's fake provider, answering a PACK: the endpoint
+   * runs generateYoutubePack, whose schemaName is youtube_pack. */
+  const packProvider = (
+    answer: () => Promise<Record<string, unknown>>,
+  ): import("@ossclip/core").LlmProvider & { usage: import("@ossclip/core").LlmUsage[] } => {
+    const usage: import("@ossclip/core").LlmUsage[] = [];
+    return {
+      name: "gemini",
+      usage,
+      async complete(req) {
+        const pack = await answer();
+        usage.push({
+          provider: "gemini",
+          model: "gemini-2.5-flash",
+          schemaName: req.schemaName,
+          inputTokens: 1000,
+          outputTokens: 100,
+          exact: true,
+          billed: true,
+          ms: 5,
+        });
+        return req.schema.parse(pack);
+      },
+    };
+  };
+
+  /**
+   * A workdir the publish GET can serve (recorded out + final mp4, the
+   * publish suite's fixture) but with NO pack — the real portrait-short
+   * report: produced without --youtube, publish dead-ends. Transcript +
+   * gemini usage.json make the provider resolvable under the hermetic
+   * `publishEnv: {}`.
+   */
+  async function noPackWorkdir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-edit-"));
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({ videoFileName: "clip.mp4", sceneCues: [], captionLines: [], spans: [] }),
+    );
+    await writeFile(join(dir, "clip.mp4"), CLIP_CONTENT);
+    const out = join(dir, "final.mp4");
+    await writeFile(out, "rendered");
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4"],
+        cwd: dir,
+        out,
+      }),
+    );
+    await writeFile(
+      join(dir, "transcript.json"),
+      JSON.stringify({
+        language: "en",
+        words: "imagine fifty teams applied to your hackathon".split(" ").map((text, i) => ({
+          text,
+          start: i * 0.5,
+          end: i * 0.5 + 0.4,
+        })),
+      }),
+    );
+    await writeFile(
+      join(dir, "usage.json"),
+      JSON.stringify({
+        runs: [
+          {
+            at: "2026-08-28T00:00:00.000Z",
+            provider: "gemini",
+            models: ["gemini-2.5-flash"],
+            cached: false,
+            records: [],
+            totals: {},
+          },
+        ],
+        records: [],
+        totals: {},
+      }),
+    );
+    return dir;
+  }
+
+  const generate = (url: string): Promise<Response> =>
+    fetch(`${url}/api/youtube/generate`, { method: "POST" });
+
+  const packFiles = async (dir: string): Promise<string[]> =>
+    (await readdir(dir)).filter((n) => n.startsWith("youtube-") && n.endsWith(".json"));
+
+  it("happy path: writes a youtube-*.json cache (NEVER the approved file) that GET /api/publish serves captions from", async () => {
+    const dir = await noPackWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({ postizUrl: "https://p.example.com" }),
+      publishEnv: { OSSCLIP_POSTIZ_API_KEY: "sekret" } as NodeJS.ProcessEnv,
+      publishFetch: async () =>
+        new Response(JSON.stringify([{ id: "a", name: "Ahsan", identifier: "linkedin" }]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      probeVideo: async () => ({ duration: 60, width: 1080, height: 1920, fps: 30, hasAudio: true }),
+      makeLlmProvider: (() => packProvider(async () => answeredPack)) as never,
+    });
+    close = server.close;
+    // The dead-end this endpoint exists to open: no pack yet.
+    const before = await (await fetch(`${server.url}/api/publish`)).json();
+    expect(before.packAvailable).toBe(false);
+    const res = await generate(server.url);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    // The spend line, produce's own spelling.
+    expect(body.usage).toContain("▸ llm: 1 calls");
+    // One provider-keyed cache, produce's Y2 filename shape — and NOT the
+    // approved file: approval stays the user's explicit PUT.
+    const files = await packFiles(dir);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^youtube-[0-9a-f]{8}\.json$/);
+    expect(existsSync(join(dir, YOUTUBE_APPROVED_BASENAME))).toBe(false);
+    // The publish GET now serves the generated captions.
+    const after = await (await fetch(`${server.url}/api/publish`)).json();
+    expect(after.packAvailable).toBe(true);
+    expect(after.integrations[0].caption).toBe("generated linkedin post");
+    // The spend survives the session — appended into the workdir's log.
+    const log = JSON.parse(await readFile(join(dir, "usage.json"), "utf8"));
+    expect(log.runs).toHaveLength(2);
+    expect(log.runs[1].records[0].schemaName).toBe("youtube_pack");
+  });
+
+  it("412 with no transcript — the pack would be invented metadata", async () => {
+    const dir = await noPackWorkdir();
+    await unlink(join(dir, "transcript.json"));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() => packProvider(async () => answeredPack)) as never,
+    });
+    close = server.close;
+    const res = await generate(server.url);
+    expect(res.status).toBe(412);
+    expect((await res.json()).error).toContain("no transcript");
+  });
+
+  it("a provider failure is 200/ok:false with the message VERBATIM, and nothing is cached (§106)", async () => {
+    const dir = await noPackWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() =>
+        packProvider(async () => {
+          throw new Error("quota exceeded for gemini-2.5-flash");
+        })) as never,
+    });
+    close = server.close;
+    const res = await generate(server.url);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ ok: false, error: "quota exceeded for gemini-2.5-flash" });
+    expect(await packFiles(dir)).toEqual([]);
+  });
+
+  it("409 while a generation is already in flight — an LLM call costs money", async () => {
+    const dir = await noPackWorkdir();
+    let release!: () => void;
+    const gate = new Promise<Record<string, unknown>>((r) => (release = () => r(answeredPack)));
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => (started = r));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() =>
+        packProvider(() => {
+          started();
+          return gate;
+        })) as never,
+    });
+    close = server.close;
+    const first = generate(server.url);
+    // Deterministic, not a sleep: the second request goes out only once the
+    // first is provably inside the provider call.
+    await startedP;
+    const second = await generate(server.url);
     expect(second.status).toBe(409);
     release();
     expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);

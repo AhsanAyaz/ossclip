@@ -715,6 +715,84 @@ describe("PublishPanel", () => {
     ).toBe("new x");
   });
 
+  it("no pack: Generate captions POSTs the endpoint, and success refetches so the controls appear", async () => {
+    // The dead-end this button opens (2026-08-29): a render produced without
+    // --youtube has no pack, and the modal's only advice was a re-produce.
+    let generateCalls = 0;
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string }) => {
+      if (String(url).endsWith("/api/youtube/generate") && init?.method === "POST") {
+        generateCalls++;
+        return {
+          ok: true,
+          json: async () => ({ ok: true, usage: "▸ llm: 1 calls · 1,000 in / 100 out tokens" }),
+        };
+      }
+      // The refetch after a successful generate finds the pack in place.
+      return { ok: true, json: async () => (generateCalls > 0 ? ready : { ...ready, packAvailable: false }) };
+    }) as unknown as typeof fetch;
+    await mount();
+    // The explanation stays, the button rides with it; no send controls yet.
+    expect(container.querySelector('[data-testid="publish-no-pack"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="publish-send"]')).toBeNull();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="publish-generate-pack"]')!
+        .click();
+    });
+    expect(generateCalls).toBe(1);
+    // The refetch replaced the dead-end with the real controls…
+    expect(container.querySelector('[data-testid="publish-no-pack"]')).toBeNull();
+    expect(container.querySelector('[data-testid="publish-chip-a"]')).not.toBeNull();
+    // …and the generation's spend line survives the state swap.
+    expect(
+      container.querySelector('[data-testid="publish-generate-usage"]')?.textContent,
+    ).toContain("▸ llm: 1 calls");
+  });
+
+  it("while the generate runs, the button says one LLM call is in flight", async () => {
+    let resolveGen: (v: unknown) => void = () => {};
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string }) => {
+      if (String(url).endsWith("/api/youtube/generate") && init?.method === "POST") {
+        await new Promise((r) => (resolveGen = r));
+        return { ok: true, json: async () => ({ ok: true, usage: "u" }) };
+      }
+      return { ok: true, json: async () => ({ ...ready, packAvailable: false }) };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="publish-generate-pack"]')!
+        .click();
+    });
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="publish-generate-pack"]',
+    );
+    expect(button?.textContent).toBe("Generating captions… (one LLM call)");
+    expect(button?.disabled).toBe(true);
+    await act(async () => {
+      resolveGen(undefined);
+    });
+  });
+
+  it("a generate failure rides verbatim and the dead-end state stays put", async () => {
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string }) => {
+      if (String(url).endsWith("/api/youtube/generate") && init?.method === "POST") {
+        return { ok: true, json: async () => ({ ok: false, error: "quota exceeded" }) };
+      }
+      return { ok: true, json: async () => ({ ...ready, packAvailable: false }) };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="publish-generate-pack"]')!
+        .click();
+    });
+    expect(
+      container.querySelector('[data-testid="publish-generate-error"]')?.textContent,
+    ).toBe("quota exceeded");
+    expect(container.querySelector('[data-testid="publish-no-pack"]')).not.toBeNull();
+  });
+
   it("an existing receipt shows the already-published note and labels the button Publish again (force)", async () => {
     const receipt = {
       backend: "postiz",

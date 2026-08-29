@@ -223,6 +223,14 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
     index: number;
     total: number;
   } | null>(null);
+  // On-demand pack generation (2026-08-29): a render produced without
+  // --youtube has no captions, and this modal dead-ended on "run produce
+  // with --youtube" — a full re-produce just to buy one LLM call. The server
+  // writes the cache file produce would have (never the approved one), and
+  // the refetch is what fills the caption boxes.
+  const [genBusy, setGenBusy] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [genUsage, setGenUsage] = useState<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -410,6 +418,28 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
     }
   };
 
+  const onGeneratePack = async (): Promise<void> => {
+    setGenBusy(true);
+    setGenError(null);
+    try {
+      const res = await fetch("/api/youtube/generate", { method: "POST" });
+      const body = (await res.json()) as { ok?: boolean; usage?: string; error?: string };
+      if (!res.ok || body.ok !== true) {
+        // The server's message rides VERBATIM (the publish error posture).
+        setGenError(body.error ?? `generate failed: ${res.status}`);
+        return;
+      }
+      setGenUsage(body.usage ?? null);
+      // The pack now exists server-side — refetch so packAvailable flips
+      // and the caption boxes prefill from it.
+      await load();
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenBusy(false);
+    }
+  };
+
   const receipt = sent ?? info?.receipt ?? null;
 
   return (
@@ -438,6 +468,24 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
         ) : !info.packAvailable ? (
           <div data-testid="publish-no-pack" style={{ ...subtitle, marginTop: 12 }}>
             {NO_PACK_MESSAGE}
+            <div style={{ marginTop: 10 }}>
+              {/* The way out that costs one LLM call instead of a re-produce:
+                  POST /api/youtube/generate asks the run's own provider. */}
+              <button
+                type="button"
+                data-testid="publish-generate-pack"
+                disabled={genBusy}
+                onClick={() => void onGeneratePack()}
+                style={chipStyle}
+              >
+                {genBusy ? "Generating captions… (one LLM call)" : "Generate captions"}
+              </button>
+            </div>
+            {genError !== null ? (
+              <div data-testid="publish-generate-error" style={errorText}>
+                {genError}
+              </div>
+            ) : null}
           </div>
         ) : !info.outPathExists ? (
           <div data-testid="publish-no-render" style={{ ...subtitle, marginTop: 12 }}>
@@ -453,6 +501,14 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
           </div>
         ) : (
           <>
+            {genUsage !== null ? (
+              // The generation's spend line survives the refetch that just
+              // replaced the no-pack state with these controls — the cost
+              // must stay visible after the state it was shown in is gone.
+              <div data-testid="publish-generate-usage" style={{ ...subtitle, marginTop: 8 }}>
+                {genUsage}
+              </div>
+            ) : null}
             {receipt !== null ? (
               <div data-testid="publish-receipt-note" style={{ ...subtitle, marginTop: 8 }}>
                 This project already published on {receipt.publishedAt} to{" "}

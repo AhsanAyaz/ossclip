@@ -28,6 +28,8 @@ import {
   encodeEta,
   formatUsageLine,
   generateCaptionRegen,
+  generateYoutubePack,
+  YOUTUBE_PROMPT_VERSION,
   deliveryEncodePlan,
   ensureDeliveryFile,
   PLATFORM_DURATION_CAPS_SEC,
@@ -378,6 +380,9 @@ export async function startEditServer(
       portrait?: unknown;
       thumbnailModel?: unknown;
       postizUrl?: string;
+      /** produce's config fallback for `--audience` — the on-demand pack
+       * generation reads it the same way (typeof, never truthiness). */
+      audience?: unknown;
       /** The caption-regenerate spend report prices through the same table
        * produce does — absent in a stub, the defaults apply. */
       pricing?: Record<string, ModelPrice>;
@@ -519,6 +524,13 @@ export async function startEditServer(
    * rule, its own flag: a caption rewrite must not block a thumbnail.
    */
   let captionRegenBusy = false;
+  /**
+   * One pack generation at a time (`/api/youtube/generate`) — an LLM call
+   * costs money, and a double-click must not buy two. `captionRegenBusy`'s
+   * rule, its own flag: generating the pack must not block a caption rewrite
+   * already in flight (they are different buttons in different panels).
+   */
+  let packGenBusy = false;
   /**
    * Where the in-flight publish is right now, for the panel's poll
    * (2026-08-29): the POST runs the delivery encode synchronously — minutes
@@ -1571,6 +1583,205 @@ export async function startEditServer(
           const mdPath = await recordedArtifactPath(".youtube.md");
           if (mdPath !== null) await writeFile(mdPath, formatYoutubeMarkdown(pack));
           return send(200, { ok: true, mdPath });
+        }
+
+        if (url.pathname === "/api/youtube/generate" && req.method === "POST") {
+          // Generate the pack ON DEMAND (2026-08-29): a render produced
+          // without --youtube has no caption pack, and the publish modal
+          // dead-ended on "run produce with --youtube" — a full re-produce
+          // just to buy one LLM call. This writes the same CACHE file
+          // produce's Y2 block would have, never the approved file: approval
+          // stays the user's explicit act (PUT /api/youtube), and the user
+          // still reviews the captions before anything sends.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          // An LLM call costs money — one at a time, a second is a 409 like
+          // a second caption rewrite.
+          if (packGenBusy) {
+            return send(409, { error: "a caption-pack generation is already running" });
+          }
+          // Lenient transcript read but a 412 when it yields nothing — the
+          // /api/publish/regenerate posture, same reason: a pack with no
+          // transcript would be invented metadata. The words joined raw is
+          // the honest input the server has (regenerate made the same call);
+          // produce's stamped transcript needs the cut map, which only a
+          // produce run holds — the prompt tolerates plain text, the model
+          // just gets no measured chapters worth trusting.
+          let words: Array<{ text: string }> = [];
+          let lastWordEnd: number | null = null;
+          try {
+            const raw = JSON.parse(await readFile(join(workdir, "transcript.json"), "utf8")) as {
+              words?: unknown;
+            };
+            if (Array.isArray(raw.words)) {
+              words = raw.words.filter(
+                (w): w is { text: string } =>
+                  typeof (w as { text?: unknown } | null)?.text === "string",
+              );
+              for (const w of raw.words) {
+                const end = (w as { end?: unknown } | null)?.end;
+                if (typeof end === "number" && Number.isFinite(end)) {
+                  lastWordEnd = Math.max(lastWordEnd ?? 0, end);
+                }
+              }
+            }
+          } catch {
+            // absent/corrupt → the 412 below
+          }
+          if (words.length === 0) {
+            return send(412, {
+              error:
+                "no transcript in this workdir — the pack would have nothing to ground " +
+                "against; re-run `ossclip produce`.",
+            });
+          }
+          // The prompt's runtime ceiling: the output duration produce
+          // measured (render-props.json), else the transcript's last word
+          // end — source-clock, but the honest number available, and a
+          // raw-text transcript gets no measured chapters anyway.
+          let durationSec: number | null = null;
+          try {
+            const props = JSON.parse(await readFile(propsPath(), "utf8")) as {
+              outputDurationSec?: unknown;
+            };
+            if (
+              typeof props.outputDurationSec === "number" &&
+              Number.isFinite(props.outputDurationSec) &&
+              props.outputDurationSec > 0
+            ) {
+              durationSec = props.outputDurationSec;
+            }
+          } catch {
+            // corrupt props — the transcript fallback below
+          }
+          if (durationSec === null && lastWordEnd !== null && lastWordEnd > 0) {
+            durationSec = lastWordEnd;
+          }
+          if (durationSec === null) {
+            return send(412, {
+              error: "cannot determine the video's duration — re-run `ossclip produce`.",
+            });
+          }
+          const cmd = await readCommandRecord();
+          const cfg = (opts.loadCfg ?? loadConfig)();
+          // The editorial steer produce would have used: the recorded flags
+          // first, then produce's own defaults when a flag is absent —
+          // intent has none, audience falls back to the config's `audience`
+          // (produce.ts's typed read: typeof, never truthiness).
+          const intent = lastFlagValue(cmd?.args ?? [], ["--intent"]);
+          const audience =
+            lastFlagValue(cmd?.args ?? [], ["--audience"]) ??
+            (typeof cfg.audience === "string" ? cfg.audience : undefined);
+          // hook/coverText come from the beat sheet in produce; a produce
+          // run that planned left its sheet cached in the workdir. The
+          // shipped cover headline (cover.json, possibly the user's own
+          // words) backstops coverText. All optional — buildYoutubePrompt
+          // omits absent lines, exactly as a no-beat-sheet produce does.
+          let hook: string | undefined;
+          let coverText: string | undefined;
+          const beatCache = await newestWorkdirFile(
+            (n) => n.startsWith("beatsheet-") && n.endsWith(".json"),
+          );
+          if (beatCache !== null) {
+            try {
+              const sheet = JSON.parse(await readFile(beatCache, "utf8")) as {
+                hook?: unknown;
+                coverText?: unknown;
+              };
+              if (typeof sheet.hook === "string" && sheet.hook.trim().length > 0) {
+                hook = sheet.hook;
+              }
+              if (typeof sheet.coverText === "string" && sheet.coverText.trim().length > 0) {
+                coverText = sheet.coverText;
+              }
+            } catch {
+              // a corrupt cache loses a steer line, never the generation
+            }
+          }
+          if (coverText === undefined) {
+            const provenance = await readCoverProvenance(workdir);
+            if (provenance !== null && provenance.text.trim().length > 0) {
+              coverText = provenance.text;
+            }
+          }
+          // Env fresh per press, then the caption regenerate's provider
+          // resolution verbatim — the same "which LLM does this project
+          // use" question with the same three-rung answer.
+          if (opts.publishEnv === undefined) loadEnvFiles();
+          const env = opts.publishEnv ?? process.env;
+          const usagePath = join(workdir, "usage.json");
+          let usageLog: unknown = null;
+          try {
+            usageLog = JSON.parse(await readFile(usagePath, "utf8"));
+          } catch {
+            // no log yet — the resolution falls through to the pin/detection
+          }
+          const resolved = captionRegenProvider({
+            usageLog,
+            commandArgs: cmd?.args ?? null,
+            env,
+            hasBin: (bin) => binOnPath(bin, env),
+          });
+          if (resolved.status === "unavailable") {
+            return send(412, { error: resolved.reason });
+          }
+          const provider = (opts.makeLlmProvider ?? createProvider)(resolved.provider);
+          packGenBusy = true;
+          try {
+            let pack: YoutubePack;
+            try {
+              pack = await generateYoutubePack(provider, {
+                transcriptText: words.map((w) => w.text).join(" "),
+                ...(intent !== undefined ? { intent } : {}),
+                ...(hook !== undefined ? { hook } : {}),
+                ...(coverText !== undefined ? { coverText } : {}),
+                ...(audience !== undefined ? { audience } : {}),
+                durationSec,
+              });
+            } catch (err) {
+              // 200 with ok:false, the caption regenerate's posture: a
+              // provider failure is a sentence the panel shows VERBATIM,
+              // never a dead 500. Nothing is cached (§106).
+              return send(200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+            }
+            const pricing = cfg.pricing ?? {};
+            // The spend is real, so it survives the session — the caption
+            // regenerate's append, atomically.
+            const nextLog = appendUsageRun(
+              usageLog,
+              { at: new Date().toISOString(), records: provider.usage },
+              pricing,
+            );
+            const usageTmp = `${usagePath}.tmp`;
+            await writeFile(usageTmp, JSON.stringify(nextLog, null, 2));
+            await rename(usageTmp, usagePath);
+            // A `youtube-<key>.json` cache, keyed on the provider asked like
+            // produce's Y2 write — deliberately NOT produce's exact key: that
+            // key hashes the cut map's spans and the stamped transcript,
+            // which only a produce run holds, and matching it would falsely
+            // claim cache identity with an answer built from different
+            // inputs. mtime is what makes this pack current: both
+            // currentYoutubePack and loadPublishPack sort caches newest
+            // first. Atomic like the approved-pack write.
+            const key = createHash("sha1")
+              .update(
+                JSON.stringify([
+                  YOUTUBE_PROMPT_VERSION,
+                  resolved.provider,
+                  intent ?? "",
+                  audience ?? "",
+                  words.map((w) => w.text),
+                ]),
+              )
+              .digest("hex")
+              .slice(0, 8);
+            const packPath = join(workdir, `youtube-${key}.json`);
+            const packTmp = `${packPath}.tmp`;
+            await writeFile(packTmp, JSON.stringify(pack, null, 2));
+            await rename(packTmp, packPath);
+            return send(200, { ok: true, usage: formatUsageLine(provider.usage, pricing) });
+          } finally {
+            packGenBusy = false;
+          }
         }
 
         // ---- Publish (2026-08-26) -----------------------------------------
