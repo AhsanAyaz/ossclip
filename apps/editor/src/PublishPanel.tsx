@@ -78,6 +78,33 @@ export function scheduleIso(local: string): string | null {
   return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 
+/**
+ * `<input type="datetime-local">` wants LOCAL wall-clock text, not an ISO
+ * string — `toISOString()` here would silently shift the user's slot by their
+ * UTC offset. Built from the local getters for that reason.
+ */
+export function toLocalInputValue(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+/** The two slots worth one click; the picker covers everything else. */
+export const SCHEDULE_PRESETS: Array<{ label: string; at: (now: Date) => string }> = [
+  { label: "In an hour", at: (now) => toLocalInputValue(new Date(now.getTime() + 3600_000)) },
+  {
+    label: "Tomorrow 9am",
+    at: (now) => {
+      const d = new Date(now);
+      d.setDate(d.getDate() + 1);
+      d.setHours(9, 0, 0, 0);
+      return toLocalInputValue(d);
+    },
+  },
+];
+
 export interface PublishPanelProps {
   onClose: () => void;
 }
@@ -88,6 +115,7 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [captions, setCaptions] = useState<Record<string, string>>({});
   const [scheduleLocal, setScheduleLocal] = useState("");
+  const scheduleRef = React.useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sent, setSent] = useState<PublishReceiptInfo | null>(null);
@@ -302,12 +330,47 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
               <label style={labelStyle}>When</label>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <input
+                  ref={scheduleRef}
                   data-testid="publish-schedule"
                   type="datetime-local"
                   value={scheduleLocal}
                   onChange={(e) => setScheduleLocal(e.target.value)}
-                  style={{ ...textInput, width: "auto" }}
+                  // The WHOLE field opens the calendar, not just the browser's
+                  // 12px icon (2026-08-29): the native control reads as a text
+                  // mask, so it looked like something to type by hand.
+                  // `showPicker` throws without a user gesture and is absent in
+                  // some engines — either way typing still works, which is why
+                  // this is a bare try/catch rather than a capability probe.
+                  onClick={() => {
+                    try {
+                      scheduleRef.current?.showPicker?.();
+                    } catch {
+                      // Typing still works; nothing to report.
+                    }
+                  }}
+                  style={{ ...textInput, width: "auto", cursor: "pointer" }}
                 />
+                {SCHEDULE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    data-testid={`publish-when-${preset.label.replace(/\s+/g, "-").toLowerCase()}`}
+                    onClick={() => setScheduleLocal(preset.at(new Date()))}
+                    style={chipStyle}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                {scheduleLocal.trim().length > 0 ? (
+                  <button
+                    type="button"
+                    data-testid="publish-when-clear"
+                    onClick={() => setScheduleLocal("")}
+                    style={chipStyle}
+                  >
+                    Clear
+                  </button>
+                ) : null}
                 <span style={subtitle}>
                   {schedule === null ? "empty = publish now" : `scheduled: ${schedule}`}
                 </span>

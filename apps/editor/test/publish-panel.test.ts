@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NOT_CONFIGURED_MESSAGE,
   PublishPanel,
+  SCHEDULE_PRESETS,
   panelCaptionCap,
   scheduleIso,
+  toLocalInputValue,
   type PublishInfo,
 } from "../src/PublishPanel";
 
@@ -27,6 +29,34 @@ describe("panelCaptionCap", () => {
   it("mirrors core's caps — x 280, unknown falls back to 1500", () => {
     expect(panelCaptionCap("x")).toBe(280);
     expect(panelCaptionCap("mastodon")).toBe(1500);
+  });
+});
+
+describe("schedule presets", () => {
+  // The field is a native datetime-local, which reads as a text mask — the
+  // presets and the click-to-open picker are what make it feel pickable
+  // (2026-08-29). The VALUE must be local wall-clock text: an ISO string
+  // would shift the user's slot by their UTC offset and the input would
+  // reject it outright.
+  it("formats local wall-clock, not UTC", () => {
+    const d = new Date(2026, 7, 29, 18, 5);
+    expect(toLocalInputValue(d)).toBe("2026-08-29T18:05");
+  });
+
+  it("tomorrow 9am is the next day at 09:00 local", () => {
+    const preset = SCHEDULE_PRESETS.find((p) => p.label === "Tomorrow 9am")!;
+    expect(preset.at(new Date(2026, 7, 29, 23, 40))).toBe("2026-08-30T09:00");
+  });
+
+  it("in an hour rolls the date over midnight", () => {
+    const preset = SCHEDULE_PRESETS.find((p) => p.label === "In an hour")!;
+    expect(preset.at(new Date(2026, 7, 29, 23, 30))).toBe("2026-08-30T00:30");
+  });
+
+  it("every preset parses back through scheduleIso", () => {
+    for (const preset of SCHEDULE_PRESETS) {
+      expect(scheduleIso(preset.at(new Date(2026, 7, 29, 12, 0)))).not.toBeNull();
+    }
   });
 });
 
