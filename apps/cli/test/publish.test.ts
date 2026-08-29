@@ -17,6 +17,7 @@ import {
   PUBLISH_RECEIPT_BASENAME,
   accountsFlag,
   atFlag,
+  attachDeliveryMedia,
   buildPublishPosts,
   deliveryFlag,
   describeUpload,
@@ -24,10 +25,13 @@ import {
   encodeProgressLine,
   formatMinSec,
   loadPublishPack,
+  masterOverCapWarning,
   platformsFlag,
   publishConfigured,
   runPublish,
   selectTargets,
+  sizeCapGroups,
+  sizeCapUnattainableMessages,
   summarizePosts,
 } from "../src/publish";
 
@@ -220,6 +224,51 @@ describe("loadPublishPack", () => {
   });
 });
 
+describe("size-cap grouping and messages", () => {
+  const li = targets[0]!;
+  const insta = targets[1]!;
+
+  it("groups only capped providers, by their byte ceiling — uncapped ride the default", () => {
+    const groups = sizeCapGroups([li, insta]);
+    expect([...groups.keys()]).toEqual([95_000_000]);
+    expect(groups.get(95_000_000)!.map((t) => t.id)).toEqual(["b"]);
+  });
+
+  it("two capped accounts on one platform share a group — one encode, not two", () => {
+    const insta2: PublishTarget = { id: "b2", provider: "instagram", name: "second" };
+    expect(sizeCapGroups([insta, insta2]).get(95_000_000)).toHaveLength(2);
+  });
+
+  it("the unattainable line names the cap, the length and the doomed bitrate per channel", () => {
+    expect(sizeCapUnattainableMessages([insta], 95_000_000, 730, 800)).toEqual([
+      "▸ instagram needs ≤95MB but a 13:20 video fits only ~730 kbps — " +
+        "skipping codewithahsan; publish it manually or shorten the cut",
+    ]);
+  });
+
+  it("attachDeliveryMedia sets videoPath only on capped posts, never a redundant default", () => {
+    const posts = buildPublishPosts(pack, [li, insta]);
+    const withMedia = attachDeliveryMedia(
+      posts,
+      "/w/delivery-1920x1080@10000k.mp4",
+      new Map([[95_000_000, "/w/delivery-1920x1080@2113k.mp4"]]),
+    );
+    expect(withMedia[0]!.videoPath).toBeUndefined();
+    expect(withMedia[1]!.videoPath).toBe("/w/delivery-1920x1080@2113k.mp4");
+    // The capped plan can land on the default file's name (fitted ≥ target
+    // bitrate) — same file means no override, not a redundant one.
+    const same = attachDeliveryMedia(posts, "/w/d.mp4", new Map([[95_000_000, "/w/d.mp4"]]));
+    expect(same[1]!.videoPath).toBeUndefined();
+  });
+
+  it("the master-mode warning names both sizes and that the choice was explicit", () => {
+    expect(masterOverCapWarning([insta], 95_000_000, 409_000_000)).toBe(
+      "▸ WARNING: the master is 409MB, over the 95MB instagram cap — " +
+        "uploading it anyway (--delivery master)",
+    );
+  });
+});
+
 describe("summarizePosts", () => {
   it("says NOW or the scheduled time, one row per target with char counts", () => {
     const posts = buildPublishPosts(pack, [targets[0]!]);
@@ -280,7 +329,7 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
         return receipt;
       },
     };
-    const ensureCalls: string[] = [];
+    const ensureCalls: Array<{ masterPath: string; sizeCapBytes: number | undefined }> = [];
     const deps = {
       provider,
       config: {
@@ -294,12 +343,18 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
         _tools: unknown,
         workdir: string,
         masterPath: string,
-        opts: { onStart?: (name: string) => void } = {},
+        opts: { onStart?: (name: string) => void; sizeCapBytes?: number } = {},
       ) => {
-        ensureCalls.push(masterPath);
-        opts.onStart?.("delivery-1920x1080@10000k.mp4");
+        ensureCalls.push({ masterPath, sizeCapBytes: opts.sizeCapBytes });
+        // The 3840×2160 320s master's two real plans: 10 Mbps default, and
+        // 2113 kbps fitted under instagram's 95MB (fitBitrateKbps arithmetic).
+        const name =
+          opts.sizeCapBytes !== undefined
+            ? "delivery-1920x1080@2113k.mp4"
+            : "delivery-1920x1080@10000k.mp4";
+        opts.onStart?.(name);
         return {
-          path: join(workdir, "delivery-1920x1080@10000k.mp4"),
+          path: join(workdir, name),
           encoded: true,
           probe: overrides.probe ?? masterProbe,
         };
@@ -310,13 +365,89 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
 
   it("the provider receives the DELIVERY path, and the encode announces itself", async () => {
     const { dir } = await workdirWithRender();
-    const { published, ensureCalls, deps } = fakes();
+    // LinkedIn only — no size-capped platform, so exactly one encode runs.
+    const { published, ensureCalls, deps } = fakes({ targets: [targets[0]!, targets[2]!] });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await runPublish(dir, { all: true, yes: true }, deps);
     expect(ensureCalls).toHaveLength(1);
     expect(published[0]!.videoPath).toBe(join(dir, "delivery-1920x1080@10000k.mp4"));
     const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(output).toContain("▸ encoding delivery file delivery-1920x1080@10000k.mp4 (cached in workdir)");
+  });
+
+  it("a size-capped platform gets its own encode and carries it per post; the rest keep the default", async () => {
+    const { dir } = await workdirWithRender();
+    // Default targets include instagram (id "b") — its 95MB cap forms one
+    // group beside the uncapped default encode.
+    const { published, ensureCalls, deps } = fakes();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runPublish(dir, { all: true, yes: true }, deps);
+    expect(ensureCalls.map((c) => c.sizeCapBytes)).toEqual([undefined, 95_000_000]);
+    expect(published[0]!.videoPath).toBe(join(dir, "delivery-1920x1080@10000k.mp4"));
+    const mediaById = Object.fromEntries(
+      published[0]!.posts.map((p) => [p.target.id, p.videoPath]),
+    );
+    expect(mediaById["b"]).toBe(join(dir, "delivery-1920x1080@2113k.mp4"));
+    expect(mediaById["a"]).toBeUndefined();
+    expect(mediaById["c"]).toBeUndefined();
+    // The confirm summary named BOTH files before the "yes".
+    const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain("▸ upload: delivery-1920x1080@10000k.mp4 (delivery encode, cached in workdir)");
+    expect(output).toContain(
+      "▸ upload (instagram): delivery-1920x1080@2113k.mp4 (delivery encode, cached in workdir)",
+    );
+  });
+
+  it("an unattainable size cap drops the channel loudly before the confirm; the rest publish", async () => {
+    const { dir } = await workdirWithRender();
+    // 800s is under instagram's 900s duration cap, but its 95MB size cap
+    // fits only ~730 kbps — below the 1000 kbps quality floor.
+    const { published, ensureCalls, deps } = fakes({
+      targets: [targets[0]!, targets[1]!],
+      probe: { ...masterProbe, duration: 800 },
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runPublish(dir, { all: true, yes: true }, deps);
+    const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain(
+      "▸ instagram needs ≤95MB but a 13:20 video fits only ~730 kbps — " +
+        "skipping codewithahsan; publish it manually or shorten the cut",
+    );
+    expect(published[0]!.posts.map((p) => p.target.provider)).toEqual(["linkedin"]);
+    // The dropped group never bought an encode — only the default ran.
+    expect(ensureCalls.map((c) => c.sizeCapBytes)).toEqual([undefined]);
+  });
+
+  it("every channel size-unattainable aborts with a clear error — no encode, no upload", async () => {
+    const { dir } = await workdirWithRender();
+    const { published, ensureCalls, deps } = fakes({
+      targets: [targets[1]!],
+      probe: { ...masterProbe, duration: 800 },
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await expect(runPublish(dir, { all: true, yes: true }, deps)).rejects.toThrow(
+      /size cap is unattainable/,
+    );
+    expect(published).toHaveLength(0);
+    expect(ensureCalls).toHaveLength(0);
+  });
+
+  it("--delivery master with an over-cap master WARNS and proceeds — the user chose master", async () => {
+    const { dir, out } = await workdirWithRender();
+    // 96MB master vs instagram's 95MB cap — master mode skips the capped
+    // encode by definition, so the only honest move is a loud warning.
+    await writeFile(out, Buffer.alloc(96_000_000));
+    const { published, ensureCalls, deps } = fakes({ targets: [targets[1]!] });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runPublish(dir, { all: true, yes: true, delivery: "master" }, deps);
+    const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain(
+      "▸ WARNING: the master is 96MB, over the 95MB instagram cap — " +
+        "uploading it anyway (--delivery master)",
+    );
+    expect(ensureCalls).toHaveLength(0);
+    expect(published[0]!.videoPath).toBe(out);
+    expect(published[0]!.posts[0]!.videoPath).toBeUndefined();
   });
 
   it("--delivery master bypasses the encode and uploads the untouched render, saying so", async () => {

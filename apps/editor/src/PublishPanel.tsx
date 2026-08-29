@@ -92,6 +92,10 @@ export interface PublishProgressInfo {
   pct: number | null;
   etaSec: number | null;
   speed: number | null;
+  /** The delivery file being encoded — a size-capped publish runs two
+   * sequential encodes, so pct restarts mid-publish and only the file name
+   * says why. Optional: an older server omits it. */
+  file?: string | null;
 }
 
 /**
@@ -107,7 +111,11 @@ export function publishBusyLabel(progress: PublishProgressInfo | null): string {
   if (progress.phase === "uploading") return "Uploading…";
   const pct = progress.pct !== null ? `${progress.pct}%` : "…";
   const eta = progress.etaSec !== null ? ` · ~${formatMinSec(progress.etaSec)} left` : "";
-  return `Encoding ${pct}${eta}`;
+  // Name the file when the server says which one — a size-capped publish
+  // encodes two, and a percent that resets to 0 mid-publish reads as a hang
+  // without the name explaining the restart.
+  const file = progress.file != null ? ` ${progress.file}` : "";
+  return `Encoding${file} ${pct}${eta}`;
 }
 
 /**

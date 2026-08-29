@@ -59,6 +59,22 @@ describe("publishBusyLabel", () => {
     );
   });
 
+  it("names the encoding file when the server says which one — a size-capped publish runs two encodes", () => {
+    expect(
+      publishBusyLabel({
+        phase: "encoding",
+        pct: 42,
+        etaSec: 110,
+        speed: 1.6,
+        file: "delivery-1920x1080@2106k.mp4",
+      }),
+    ).toBe("Encoding delivery-1920x1080@2106k.mp4 42% · ~1:50 left");
+    // An older server (or a pre-onStart poll) omits the field — no name.
+    expect(publishBusyLabel({ phase: "encoding", pct: 42, etaSec: null, speed: null, file: null })).toBe(
+      "Encoding 42%",
+    );
+  });
+
   it("degrades instead of printing garbage: missing pieces drop off, null falls back", () => {
     // ffmpeg's warm-up block has no ETA yet.
     expect(publishBusyLabel({ phase: "encoding", pct: 42, etaSec: null, speed: null })).toBe(

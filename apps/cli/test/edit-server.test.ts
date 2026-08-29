@@ -1850,6 +1850,7 @@ describe("publish endpoints (2026-08-26)", () => {
         jsonRes(200, [
           { id: "a", name: "Ahsan", identifier: "linkedin" },
           { id: "t", name: "Ahsan", identifier: "threads" },
+          { id: "i", name: "codewithahsan", identifier: "instagram" },
         ]),
       probeVideo,
     });
@@ -1872,6 +1873,8 @@ describe("publish endpoints (2026-08-26)", () => {
       // No LinkedIn duration cap — null means unlimited, and the panel
       // must not gray a channel out on a guess.
       durationCapSec: null,
+      // Same posture for the byte ceiling: null means uncapped.
+      sizeCapBytes: null,
     });
     // Threads' caption is DERIVED (no authored one in the pack) — this test
     // pins only the cap riding along, captions have their own tests.
@@ -1879,6 +1882,14 @@ describe("publish endpoints (2026-08-26)", () => {
       id: "t",
       provider: "threads",
       durationCapSec: 300,
+    });
+    // Instagram carries BOTH caps — the panel can say why its upload will be
+    // a smaller file.
+    expect(body.integrations[2]).toMatchObject({
+      id: "i",
+      provider: "instagram",
+      durationCapSec: 900,
+      sizeCapBytes: 95_000_000,
     });
     expect(JSON.stringify(body)).not.toContain("sekret");
   });
@@ -2098,6 +2109,118 @@ describe("publish endpoints (2026-08-26)", () => {
     expect(ensureCalls).toEqual([out]);
   });
 
+  it("POST gives a size-capped platform its own encode and maps each post to its media", async () => {
+    const { dir } = await publishWorkdir();
+    const ensureCaps: Array<number | undefined> = [];
+    const postBodies: string[] = [];
+    let uploadN = 0;
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u, init) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [
+            { id: "a", name: "Ahsan", identifier: "linkedin" },
+            { id: "i", name: "codewithahsan", identifier: "instagram" },
+          ]);
+        if (String(u).endsWith("/upload")) {
+          // Echo the uploaded file's name back as the media path so the
+          // /posts payload says exactly which file each post carries.
+          const file = (init as { body?: FormData }).body?.get("file") as File;
+          return jsonRes(200, { id: `m-${++uploadN}`, path: `/up/${file.name}` });
+        }
+        postBodies.push(String((init as { body?: unknown })?.body ?? ""));
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+      probeVideo,
+      ensureDelivery: async (_t, _w, _master, o = {}) => {
+        ensureCaps.push(o.sizeCapBytes);
+        const name = o.sizeCapBytes !== undefined ? "delivery-cap.mp4" : "delivery-default.mp4";
+        const p = join(dir, name);
+        // The upload streams the returned path — the fake must put a real
+        // file there, exactly what the real encode would have done.
+        await writeFile(p, name);
+        return { path: p, encoded: true, probe: fakeProbe };
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a", "i"] }),
+    });
+    expect(res.status).toBe(200);
+    // One encode per distinct cap group: the default, then instagram's.
+    expect(ensureCaps).toEqual([undefined, 95_000_000]);
+    const payload = JSON.parse(postBodies[0]!) as {
+      posts: Array<{ integration: { id: string }; value: Array<{ image: Array<{ path: string }> }> }>;
+    };
+    const mediaByIntegration = Object.fromEntries(
+      payload.posts.map((p) => [p.integration.id, p.value[0]!.image[0]!.path]),
+    );
+    expect(mediaByIntegration["a"]).toBe("/up/delivery-default.mp4");
+    expect(mediaByIntegration["i"]).toBe("/up/delivery-cap.mp4");
+  });
+
+  it("POST drops a size-unattainable channel with a reason, before any encode buys it", async () => {
+    const { dir } = await publishWorkdir();
+    const ensureCaps: Array<number | undefined> = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [
+            { id: "a", name: "Ahsan", identifier: "linkedin" },
+            { id: "i", name: "codewithahsan", identifier: "instagram" },
+          ]);
+        if (String(u).endsWith("/upload")) return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+      // A 4K master (so an encode is unavoidable — a tiny in-spec master
+      // would null-skip the cap) at 800s: under instagram's 900s duration
+      // cap, but its 95MB size cap fits only ~730 kbps — below the 1000 kbps
+      // quality floor.
+      probeVideo: async () => ({ ...fakeProbe, width: 3840, height: 2160, duration: 800 }),
+      ensureDelivery: async (_t, _w, master, o = {}) => {
+        ensureCaps.push(o.sizeCapBytes);
+        return { path: master, encoded: false, probe: { ...fakeProbe, duration: 800 } };
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a", "i"] }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    // Additive `reason`/`sizeCapBytes` fields — duration drops keep their
+    // original shape, so an older panel reading `dropped` still works.
+    expect(body.dropped).toEqual([
+      {
+        id: "i",
+        provider: "instagram",
+        name: "codewithahsan",
+        sizeCapBytes: 95_000_000,
+        reason: "size",
+      },
+    ]);
+    // Only the default encode ran — the dropped group never bought one.
+    expect(ensureCaps).toEqual([undefined]);
+
+    // Every pick size-unattainable → 412, and still no capped encode.
+    const all = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["i"], force: true }),
+    });
+    expect(all.status).toBe(412);
+    expect((await all.json()).error).toMatch(/size cap is unattainable/);
+    expect(ensureCaps).toEqual([undefined]);
+  });
+
   it("GET /api/publish/progress tracks the in-flight POST: null → encoding pct/eta → uploading → null", async () => {
     const { dir } = await publishWorkdir();
     // Both phases held open on deferreds so the poll can observe them —
@@ -2150,6 +2273,9 @@ describe("publish endpoints (2026-08-26)", () => {
       pct: 50,
       etaSec: 15,
       speed: 2,
+      // The fake never fired onStart (a cache-hit-shaped encode), so no file
+      // name to show — null, not a stale one from a previous publish.
+      file: null,
     });
 
     releaseEncode();
@@ -2160,6 +2286,7 @@ describe("publish endpoints (2026-08-26)", () => {
       pct: null,
       etaSec: null,
       speed: null,
+      file: null,
     });
 
     releaseUpload();

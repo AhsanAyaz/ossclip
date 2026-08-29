@@ -32,6 +32,41 @@ export const DELIVERY_MAX_LONG_EDGE = 1920;
 export const DELIVERY_VIDEO_BITRATE_KBPS = 10000;
 export const DELIVERY_MAX_BITRATE_KBPS = 12000;
 
+/** What encodeDelivery's `-b:a` always is — fitBitrateKbps must budget for it. */
+export const DELIVERY_AUDIO_BITRATE_KBPS = 192;
+
+/**
+ * Below ~1 Mbps, 1080p h264 is visibly broken — a size cap that forces the
+ * video bitrate under this floor is unattainable, and refusing the channel
+ * beats publishing mush the platform would host forever.
+ */
+export const DELIVERY_MIN_VIDEO_BITRATE_KBPS = 1000;
+
+/**
+ * mp4 container overhead margin (~3%) between raw stream bitrates and the
+ * bytes on disk. Checked against the field data (2026-08-29): a 2000k video +
+ * 192k audio encode of a 321s take landed at 88MB, i.e. within this margin of
+ * the naive stream sum — so budgeting streams at cap/1.03 keeps the file
+ * under the cap without giving away real bitrate.
+ */
+const DELIVERY_MUX_OVERHEAD = 1.03;
+
+/**
+ * The video bitrate (kbps, floored) that fits a delivery file under
+ * `capBytes`: total byte budget shrunk by the mux-overhead margin, minus the
+ * audio's share. May come out below the quality floor (or negative) for long
+ * videos — `deliveryEncodePlan` turns that into an explicit `unattainable`
+ * verdict rather than clamping.
+ */
+export function fitBitrateKbps(
+  capBytes: number,
+  durationSec: number,
+  audioKbps: number = DELIVERY_AUDIO_BITRATE_KBPS,
+): number {
+  const totalKbps = (capBytes * 8) / DELIVERY_MUX_OVERHEAD / durationSec / 1000;
+  return Math.floor(totalKbps - audioKbps);
+}
+
 export interface DeliverySource {
   width: number;
   height: number;
@@ -59,6 +94,20 @@ export function deliveryFileName(width: number, height: number, videoBitrateKbps
 }
 
 /**
+ * The verdict when a size cap cannot be met above the quality floor —
+ * distinct from null (no encode NEEDED) so a caller can refuse the channel
+ * with the number that doomed it. The verdict lives in the plan's return
+ * rather than a separate `sizeCapAttainable()` checker because the fit
+ * arithmetic would then exist twice and drift — a caller cannot plan and
+ * forget to check when the plan IS the check.
+ */
+export interface DeliveryUnattainable {
+  unattainable: true;
+  /** The video kbps the cap would have needed — for the refusal message. */
+  fittedKbps: number;
+}
+
+/**
  * What the delivery encode should be, or null when the master is already
  * uploadable as-is (dims within caps AND measured bitrate ≤ the ceiling —
  * masters are always h264/aac out of Remotion, so codec never enters the
@@ -68,8 +117,23 @@ export function deliveryFileName(width: number, height: number, videoBitrateKbps
  * min(1, 1080/short-edge, 1920/long-edge) lands landscape on 1920×1080 and
  * portrait on 1080×1920, and never upscales — a small master re-encoded
  * larger would soften every frame for zero bytes saved.
+ *
+ * `sizeCapBytes` is the per-platform upload ceiling (2026-08-29, live:
+ * Instagram's URL-fetch ingest rejected the 409MB 10 Mbps delivery file with
+ * 2207077 twice, then published the same 1080p take at 88MB/2 Mbps — see
+ * `PLATFORM_SIZE_CAP_BYTES`). When set, the bitrate is fitted under the cap;
+ * the null-skip additionally requires the master itself to fit, since an
+ * in-spec master can still be over a platform's byte ceiling.
  */
-export function deliveryEncodePlan(src: DeliverySource): DeliveryPlan | null {
+export function deliveryEncodePlan(src: DeliverySource): DeliveryPlan | null;
+export function deliveryEncodePlan(
+  src: DeliverySource,
+  opts: { sizeCapBytes?: number },
+): DeliveryPlan | DeliveryUnattainable | null;
+export function deliveryEncodePlan(
+  src: DeliverySource,
+  opts: { sizeCapBytes?: number } = {},
+): DeliveryPlan | DeliveryUnattainable | null {
   if (src.width <= 0 || src.height <= 0 || src.duration <= 0) return null;
   const k = Math.min(
     1,
@@ -77,17 +141,26 @@ export function deliveryEncodePlan(src: DeliverySource): DeliveryPlan | null {
     DELIVERY_MAX_LONG_EDGE / Math.max(src.width, src.height),
   );
   const measuredKbps = (src.sizeBytes * 8) / src.duration / 1000;
-  if (k === 1 && measuredKbps <= DELIVERY_MAX_BITRATE_KBPS) return null;
+  const fitsCap = opts.sizeCapBytes === undefined || src.sizeBytes <= opts.sizeCapBytes;
+  if (k === 1 && measuredKbps <= DELIVERY_MAX_BITRATE_KBPS && fitsCap) return null;
   // At k === 1 keep the exact source dims — even-rounding a size that is not
   // being rescaled would manufacture a 1px no-op rescale (mezzanineScale
   // learned the same lesson).
   const width = k < 1 ? evenDim(src.width * k) : src.width;
   const height = k < 1 ? evenDim(src.height * k) : src.height;
+  let videoBitrateKbps = DELIVERY_VIDEO_BITRATE_KBPS;
+  if (opts.sizeCapBytes !== undefined) {
+    const fitted = fitBitrateKbps(opts.sizeCapBytes, src.duration);
+    if (fitted < DELIVERY_MIN_VIDEO_BITRATE_KBPS) {
+      return { unattainable: true, fittedKbps: fitted };
+    }
+    videoBitrateKbps = Math.min(DELIVERY_VIDEO_BITRATE_KBPS, fitted);
+  }
   return {
     width,
     height,
-    videoBitrateKbps: DELIVERY_VIDEO_BITRATE_KBPS,
-    fileName: deliveryFileName(width, height, DELIVERY_VIDEO_BITRATE_KBPS),
+    videoBitrateKbps,
+    fileName: deliveryFileName(width, height, videoBitrateKbps),
   };
 }
 
@@ -140,7 +213,8 @@ export async function encodeDelivery(
       "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
       "-b:v", `${plan.videoBitrateKbps}k`,
       "-maxrate", `${DELIVERY_MAX_BITRATE_KBPS}k`, "-bufsize", "20000k",
-      "-c:a", "aac", "-b:a", "192k",
+      // The audio rate fitBitrateKbps budgets for — one constant, no drift.
+      "-c:a", "aac", "-b:a", `${DELIVERY_AUDIO_BITRATE_KBPS}k`,
       "-movflags", "+faststart",
       partial,
     ], { onStdout });
@@ -177,17 +251,39 @@ export async function ensureDeliveryFile(
      * both already hold the master's duration). Never fires on a skip or a
      * cache hit, which is why the consumers keep a static fallback line. */
     onProgress?: (p: FfmpegProgress) => void;
+    /**
+     * Per-platform upload ceiling (`PLATFORM_SIZE_CAP_BYTES`) — the bitrate
+     * fits under it, and the bitrate-bearing filename caches the capped
+     * variant BESIDE the default one (delivery-1920x1080@10000k.mp4 and
+     * @2106k.mp4 coexist), so a multi-platform publish encodes each at most
+     * once.
+     */
+    sizeCapBytes?: number;
   } = {},
 ): Promise<DeliveryResult> {
   const [masterProbe, masterStat] = await Promise.all([probe(tools, masterPath), stat(masterPath)]);
-  const plan = deliveryEncodePlan({
-    width: masterProbe.width,
-    height: masterProbe.height,
-    fps: masterProbe.fps,
-    duration: masterProbe.duration,
-    sizeBytes: masterStat.size,
-  });
+  const plan = deliveryEncodePlan(
+    {
+      width: masterProbe.width,
+      height: masterProbe.height,
+      fps: masterProbe.fps,
+      duration: masterProbe.duration,
+      sizeBytes: masterStat.size,
+    },
+    { sizeCapBytes: opts.sizeCapBytes },
+  );
   if (!plan) return { path: masterPath, encoded: false, probe: masterProbe };
+  if ("unattainable" in plan) {
+    // A throw, not a silent fallback: falling back to the 10 Mbps file would
+    // re-run the exact 2207077 failure the cap exists to prevent. Callers
+    // that want to refuse the channel gracefully pre-check with the pure
+    // deliveryEncodePlan before spending an encode.
+    throw new Error(
+      `a ${opts.sizeCapBytes} byte cap needs ~${plan.fittedKbps} kbps for ` +
+        `${Math.round(masterProbe.duration)}s of video — under the ` +
+        `${DELIVERY_MIN_VIDEO_BITRATE_KBPS} kbps quality floor; the video is too long for this platform's size cap`,
+    );
+  }
   const deliveryPath = join(workdir, plan.fileName);
   if (existsSync(deliveryPath)) {
     const deliveryStat = await stat(deliveryPath);

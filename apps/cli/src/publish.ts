@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
 import {
+  PLATFORM_SIZE_CAP_BYTES,
   YOUTUBE_APPROVED_BASENAME,
   YoutubePackSchema,
   buildPostsPayload,
@@ -272,6 +273,85 @@ export function durationCapMessages(violations: DurationViolation[], durationSec
 }
 
 /**
+ * The surviving targets grouped by their platform's byte ceiling
+ * (`PLATFORM_SIZE_CAP_BYTES`) — one delivery encode per distinct cap, not per
+ * channel, so two capped accounts on the same platform share one file.
+ * Uncapped targets don't appear; they ride the default delivery encode.
+ */
+export function sizeCapGroups(targets: PublishTarget[]): Map<number, PublishTarget[]> {
+  const groups = new Map<number, PublishTarget[]>();
+  for (const t of targets) {
+    const capBytes = PLATFORM_SIZE_CAP_BYTES[t.provider];
+    if (capBytes === undefined) continue;
+    const group = groups.get(capBytes);
+    if (group !== undefined) group.push(t);
+    else groups.set(capBytes, [t]);
+  }
+  return groups;
+}
+
+/**
+ * One loud line per refused channel when a platform's size cap cannot be met
+ * above the quality floor (delivery.ts: below ~1 Mbps, 1080p h264 is mush the
+ * platform would host forever) — same drop-and-continue semantics as the
+ * duration caps. The line carries the arithmetic that doomed the channel so
+ * the fix (shorten, or publish by hand) is obvious. Pure so the wording is
+ * pinned by a test.
+ */
+export function sizeCapUnattainableMessages(
+  group: PublishTarget[],
+  capBytes: number,
+  fittedKbps: number,
+  durationSec: number,
+): string[] {
+  const capMb = Math.round(capBytes / 1_000_000);
+  return group.map(
+    (t) =>
+      `▸ ${t.provider} needs ≤${capMb}MB but a ${formatMinSec(durationSec)} video fits only ` +
+      `~${fittedKbps} kbps — skipping ${t.name}; publish it manually or shorten the cut`,
+  );
+}
+
+/**
+ * The over-cap warning for `--delivery master`: master mode bypasses the
+ * encode entirely, INCLUDING the size-capped variant, so a capped platform
+ * may get a file its ingest will bounce (Instagram's 2207077). The user
+ * explicitly chose master, so this warns loudly and proceeds — the one size
+ * decision the user is allowed to overrule. Pure so the wording is pinned.
+ */
+export function masterOverCapWarning(
+  group: PublishTarget[],
+  capBytes: number,
+  masterBytes: number,
+): string {
+  const providers = [...new Set(group.map((t) => t.provider))].join(", ");
+  return (
+    `▸ WARNING: the master is ${Math.round(masterBytes / 1_000_000)}MB, over the ` +
+    `${Math.round(capBytes / 1_000_000)}MB ${providers} cap — uploading it anyway (--delivery master)`
+  );
+}
+
+/**
+ * Posts → posts with their per-platform media override set: a size-capped
+ * platform carries its own smaller encode (`PublishPost.videoPath`), everyone
+ * else rides the request's default. A capped path that EQUALS the default
+ * (the fitted bitrate came out at the 10 Mbps target, so both plans named the
+ * same file) sets no override — the provider would dedupe the upload anyway,
+ * but a redundant override obscures which posts genuinely differ.
+ */
+export function attachDeliveryMedia(
+  posts: PublishPost[],
+  defaultPath: string,
+  cappedPaths: ReadonlyMap<number, string>,
+): PublishPost[] {
+  return posts.map((p) => {
+    const capBytes = PLATFORM_SIZE_CAP_BYTES[p.target.provider];
+    const path = capBytes !== undefined ? cappedPaths.get(capBytes) : undefined;
+    return path !== undefined && path !== defaultPath ? { ...p, videoPath: path } : p;
+  });
+}
+
+/**
  * What the confirm prompt says will upload — decided BEFORE the "yes" so the
  * user approves the actual file, not a surprise re-encode after it. Pure;
  * the encode itself runs post-confirm.
@@ -457,25 +537,69 @@ export async function runPublish(
       );
     }
   }
-  // The plan is recomputed pure here so the confirm prompt can NAME the file
-  // that will upload; ensureDeliveryFile re-derives it (and re-probes, one
-  // cheap ffprobe) after the "yes" to keep its cache logic self-contained.
+  // The plans are recomputed pure here so the confirm prompt can NAME the
+  // files that will upload; ensureDeliveryFile re-derives them (and re-probes,
+  // one cheap ffprobe each) after the "yes" to keep its cache logic
+  // self-contained.
   const deliveryMode = flags.delivery ?? "auto";
-  const plan =
-    deliveryMode === "master"
-      ? null
-      : deliveryEncodePlan({
-          width: masterProbe.width,
-          height: masterProbe.height,
-          fps: masterProbe.fps,
-          duration: masterProbe.duration,
-          sizeBytes: (await stat(out)).size,
-        });
+  const masterSizeBytes = (await stat(out)).size;
+  const src = {
+    width: masterProbe.width,
+    height: masterProbe.height,
+    fps: masterProbe.fps,
+    duration: masterProbe.duration,
+    sizeBytes: masterSizeBytes,
+  };
+  // Size-capped platforms get their own smaller encode (2026-08-29, live:
+  // Instagram's URL-fetch ingest bounced the 409MB file with 2207077 twice,
+  // then published the same take at 88MB — PLATFORM_SIZE_CAP_BYTES). A cap
+  // the video cannot fit above the quality floor drops the channel HERE,
+  // before the confirm and before a wasted encode, with the duration caps'
+  // drop-and-continue semantics.
+  let capGroups = sizeCapGroups(picked);
+  const cappedPlans = new Map<number, DeliveryPlan | null>();
+  if (deliveryMode === "auto") {
+    for (const [capBytes, group] of capGroups) {
+      const capped = deliveryEncodePlan(src, { sizeCapBytes: capBytes });
+      if (capped !== null && "unattainable" in capped) {
+        for (const line of sizeCapUnattainableMessages(
+          group,
+          capBytes,
+          capped.fittedKbps,
+          masterProbe.duration,
+        )) {
+          console.log(line);
+        }
+        const over = new Set(group.map((t) => t.id));
+        picked = picked.filter((t) => !over.has(t.id));
+      } else {
+        cappedPlans.set(capBytes, capped);
+      }
+    }
+    if (picked.length === 0) {
+      throw new Error(
+        `every selected channel's size cap is unattainable for a ` +
+          `${formatMinSec(masterProbe.duration)} video — nothing to publish ` +
+          "(shorten the cut, or publish it manually)",
+      );
+    }
+    capGroups = sizeCapGroups(picked);
+  }
+  const plan = deliveryMode === "master" ? null : deliveryEncodePlan(src);
 
   const when: PublishWhen = flags.at ? { kind: "at", iso: flags.at } : { kind: "now" };
   const posts = buildPublishPosts(pack, picked, { youtubePrivacy: flags.youtubePrivacy });
   console.log(summarizePosts(posts, when));
   console.log(`▸ upload: ${describeUpload(deliveryMode, plan)}`);
+  for (const [capBytes, group] of capGroups) {
+    const label = [...new Set(group.map((t) => t.provider))].join(", ");
+    console.log(
+      `▸ upload (${label}): ${describeUpload(deliveryMode, cappedPlans.get(capBytes) ?? null)}`,
+    );
+    if (deliveryMode === "master" && masterSizeBytes > capBytes) {
+      console.log(masterOverCapWarning(group, capBytes, masterSizeBytes));
+    }
+  }
 
   if (flags.dryRun === true) {
     const payload = buildPostsPayload({
@@ -502,45 +626,64 @@ export async function runPublish(
     }
   }
 
-  // The encode runs AFTER the confirm — 1–3 minutes of x264 is a bad price
-  // for a "no" — and before the upload, which takes the delivery path.
+  // The encodes run AFTER the confirm — 1–3 minutes of x264 each is a bad
+  // price for a "no" — and before the upload, which takes the delivery paths.
   let uploadPath = out;
+  const cappedPaths = new Map<number, string>();
   if (deliveryMode === "auto") {
     // Live progress (2026-08-29): a TTY gets one \r-rewritten line; anything
     // else (CI, a pipe) gets a plain line per 10% step — a 5-minute encode at
-    // 2 blocks/sec would otherwise write ~600 lines into the log.
+    // 2 blocks/sec would otherwise write ~600 lines into the log. The state
+    // is per encode: the size-capped variant restarts the decile counter, and
+    // the onStart line names each file so the two encodes stay
+    // distinguishable in the log.
     const isTty = process.stdout.isTTY === true;
-    let progressShown = false;
-    let lastDecile = -1;
-    const ensured = await (deps.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out, {
-      onStart: (name) => console.log(`▸ encoding delivery file ${name} (cached in workdir)`),
-      onProgress: (p) => {
-        const line = encodeProgressLine(masterProbe.duration, p);
-        if (isTty) {
-          progressShown = true;
-          process.stdout.write(`\r${line}`);
-        } else {
-          const decile =
-            p.outTimeSec !== undefined && masterProbe.duration > 0
-              ? Math.floor((p.outTimeSec / masterProbe.duration) * 10)
-              : 0;
-          if (decile > lastDecile) {
-            lastDecile = decile;
-            console.log(line);
+    const runEnsure = async (sizeCapBytes?: number): ReturnType<typeof ensureDeliveryFile> => {
+      let progressShown = false;
+      let lastDecile = -1;
+      const ensured = await (deps.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out, {
+        ...(sizeCapBytes !== undefined ? { sizeCapBytes } : {}),
+        onStart: (name) => console.log(`▸ encoding delivery file ${name} (cached in workdir)`),
+        onProgress: (p) => {
+          const line = encodeProgressLine(masterProbe.duration, p);
+          if (isTty) {
+            progressShown = true;
+            process.stdout.write(`\r${line}`);
+          } else {
+            const decile =
+              p.outTimeSec !== undefined && masterProbe.duration > 0
+                ? Math.floor((p.outTimeSec / masterProbe.duration) * 10)
+                : 0;
+            if (decile > lastDecile) {
+              lastDecile = decile;
+              console.log(line);
+            }
           }
-        }
-      },
-    });
-    // The \r line never newline-terminated itself — without this the
-    // "uploading" line would overwrite it mid-sentence.
-    if (progressShown) process.stdout.write("\n");
+        },
+      });
+      // The \r line never newline-terminated itself — without this the next
+      // line would overwrite it mid-sentence.
+      if (progressShown) process.stdout.write("\n");
+      return ensured;
+    };
+    const ensured = await runEnsure();
     uploadPath = ensured.path;
     if (!ensured.encoded && ensured.path !== out) {
       console.log(`▸ delivery file already cached — reusing ${ensured.path}`);
     }
+    // Size-capped variants next, sequentially — two ffmpegs racing for cores
+    // would slow BOTH encodes down, and the unattainable groups were already
+    // dropped above so ensureDeliveryFile's throw cannot fire here.
+    for (const capBytes of capGroups.keys()) {
+      cappedPaths.set(capBytes, (await runEnsure(capBytes)).path);
+    }
   }
   console.log(`▸ uploading ${uploadPath} to Postiz...`);
-  const result = await provider.publish({ videoPath: uploadPath, posts, when });
+  const result = await provider.publish({
+    videoPath: uploadPath,
+    posts: attachDeliveryMedia(posts, uploadPath, cappedPaths),
+    when,
+  });
   await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);
   const where = configured.baseUrl.replace(/\/+$/, "");
   console.log(

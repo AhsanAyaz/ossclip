@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
-import { copyFile, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -28,8 +28,10 @@ import {
   encodeEta,
   formatUsageLine,
   generateCaptionRegen,
+  deliveryEncodePlan,
   ensureDeliveryFile,
   PLATFORM_DURATION_CAPS_SEC,
+  PLATFORM_SIZE_CAP_BYTES,
   probe,
   alignRestamp,
   emptyOverrideDoc,
@@ -97,7 +99,14 @@ import {
 import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
 import { captionRegenProvider } from "./caption-regen-panel";
 import { binOnPath } from "./llm-detect";
-import { buildPublishPosts, publishConfigured, publishReceiptPath, readPublishReceipt } from "./publish";
+import {
+  attachDeliveryMedia,
+  buildPublishPosts,
+  publishConfigured,
+  publishReceiptPath,
+  readPublishReceipt,
+  sizeCapGroups,
+} from "./publish";
 
 /**
  * Where the built editor page lives (R18 §90b): `editor-dist/` inside this
@@ -523,6 +532,11 @@ export async function startEditServer(
     pct: number | null;
     etaSec: number | null;
     speed: number | null;
+    /** The delivery file being encoded (from onStart) — a size-capped
+     * publish runs two sequential encodes, and a bare pct that resets to 0
+     * mid-publish looks like a hang unless the label names which file it
+     * restarted for. Null before the first onStart and while uploading. */
+    file: string | null;
   } | null = null;
   /** Where the JPEG lives right now: the destination the last cover used,
    * else `<recorded out>.cover.jpg`. Existence is the caller's check — a
@@ -1594,6 +1608,7 @@ export async function startEditServer(
             name: string;
             caption: string;
             durationCapSec: number | null;
+            sizeCapBytes: number | null;
           }> = [];
           try {
             const provider = createPostizProvider({
@@ -1610,6 +1625,10 @@ export async function startEditServer(
               // Null = no cap (limits.ts: absence means unlimited) — the
               // panel grays out a channel only against a cap that exists.
               durationCapSec: PLATFORM_DURATION_CAPS_SEC[t.provider] ?? null,
+              // The platform's upload byte ceiling, same posture: null means
+              // uncapped, a number means this channel gets its own smaller
+              // delivery encode (limits.ts: Instagram's ~100MB URL-fetch cap).
+              sizeCapBytes: PLATFORM_SIZE_CAP_BYTES[t.provider] ?? null,
             }));
           } catch (err) {
             return send(200, {
@@ -1693,7 +1712,10 @@ export async function startEditServer(
             const tools = publishTools();
             const masterProbe = await (opts.probeVideo ?? probe)(tools, out);
             const violations = checkDurationCaps(picked, masterProbe.duration);
-            const dropped = violations.map((v) => ({
+            // Duration entries keep their original shape; size entries carry
+            // a `reason` and the cap that doomed them — additive fields only,
+            // so an older panel reading `dropped` keeps working.
+            const dropped: Array<Record<string, unknown>> = violations.map((v) => ({
               id: v.target.id,
               provider: v.target.provider,
               name: v.target.name,
@@ -1711,19 +1733,74 @@ export async function startEditServer(
                 });
               }
             }
+            // Size-cap pre-check with the pure plan (the CLI's semantics,
+            // one spelling): an unattainable cap drops the channel BEFORE
+            // any encode — ensureDeliveryFile THROWS on unattainable, and a
+            // 502 with ffmpeg arithmetic in it is not a drop-and-continue.
+            const masterSizeBytes = (await stat(out)).size;
+            const src = {
+              width: masterProbe.width,
+              height: masterProbe.height,
+              fps: masterProbe.fps,
+              duration: masterProbe.duration,
+              sizeBytes: masterSizeBytes,
+            };
+            let capGroups = sizeCapGroups(picked);
+            if (parsed.data.delivery !== "master") {
+              for (const [capBytes, group] of capGroups) {
+                const capped = deliveryEncodePlan(src, { sizeCapBytes: capBytes });
+                if (capped !== null && "unattainable" in capped) {
+                  for (const t of group) {
+                    dropped.push({
+                      id: t.id,
+                      provider: t.provider,
+                      name: t.name,
+                      sizeCapBytes: capBytes,
+                      reason: "size",
+                    });
+                  }
+                  const over = new Set(group.map((t) => t.id));
+                  picked = picked.filter((t) => !over.has(t.id));
+                }
+              }
+              if (picked.length === 0) {
+                return send(412, {
+                  error:
+                    `every picked channel's size cap is unattainable for a ` +
+                    `${Math.round(masterProbe.duration)}s video — nothing to publish`,
+                  dropped,
+                });
+              }
+              capGroups = sizeCapGroups(picked);
+            }
             const posts = buildPublishPosts(pack, picked).map((p) => ({
               ...p,
               caption: parsed.data.captions?.[p.target.id] ?? p.caption,
             }));
-            // Synchronous encode (~1–3 min, fetch won't time out) — a
+            // Synchronous encodes (~1–3 min each, fetch won't time out) — a
             // job/poll model for the WORK is a noted follow-up, but the
             // PROGRESS is polled: /api/publish/progress reads the state the
-            // onProgress callback below keeps current.
+            // onProgress callback below keeps current. Sequential per cap
+            // group (two ffmpegs racing for cores would slow both), so pct
+            // simply runs 0→100 once per file and `file` names which one.
             let uploadPath = out;
+            const cappedPaths = new Map<number, string>();
             if (parsed.data.delivery !== "master") {
-              publishProgress = { phase: "encoding", pct: 0, etaSec: null, speed: null };
-              uploadPath = (
-                await (opts.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out, {
+              // `workdir` is a mutable binding, so its non-null narrowing
+              // from the top of the handler doesn't survive into a closure —
+              // capture it while narrowed.
+              const wd = workdir;
+              const runEnsure = async (
+                sizeCapBytes?: number,
+              ): ReturnType<typeof ensureDeliveryFile> => {
+                let currentFile: string | null = null;
+                publishProgress = { phase: "encoding", pct: 0, etaSec: null, speed: null, file: null };
+                return (opts.ensureDelivery ?? ensureDeliveryFile)(tools, wd, out, {
+                  ...(sizeCapBytes !== undefined ? { sizeCapBytes } : {}),
+                  onStart: (name) => {
+                    currentFile = name;
+                    publishProgress = { phase: "encoding", pct: 0, etaSec: null, speed: null, file: name };
+                  },
                   onProgress: (p) => {
                     publishProgress = {
                       phase: "encoding",
@@ -1741,15 +1818,27 @@ export async function startEditServer(
                           ? encodeEta(masterProbe.duration, p.outTimeSec, p.speed)
                           : null,
                       speed: p.speed ?? null,
+                      file: currentFile,
                     };
                   },
-                })
-              ).path;
+                });
+              };
+              uploadPath = (await runEnsure()).path;
+              // One encode per DISTINCT cap — the bitrate-bearing filename is
+              // the cache key, so a capped plan that lands on the default
+              // file's name cache-hits instead of re-encoding.
+              for (const capBytes of capGroups.keys()) {
+                cappedPaths.set(capBytes, (await runEnsure(capBytes)).path);
+              }
             }
             // No upload ETA — Postiz's multipart upload gives us nothing to
             // measure, so the phase alone is the signal.
-            publishProgress = { phase: "uploading", pct: null, etaSec: null, speed: null };
-            const result = await provider.publish({ videoPath: uploadPath, posts, when });
+            publishProgress = { phase: "uploading", pct: null, etaSec: null, speed: null, file: null };
+            const result = await provider.publish({
+              videoPath: uploadPath,
+              posts: attachDeliveryMedia(posts, uploadPath, cappedPaths),
+              when,
+            });
             await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);
             return send(200, { ok: true, receipt: result, dropped });
           } catch (err) {

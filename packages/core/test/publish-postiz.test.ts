@@ -140,6 +140,52 @@ describe("buildPostsPayload", () => {
     expect(payload.posts[0]!.settings).toEqual({ __type: "linkedin" });
   });
 
+  it("the map form routes each post to ITS media — size-capped platforms carry a different file (2026-08-29)", () => {
+    // The field case behind per-post media: Instagram bounced the 409MB
+    // delivery file (2207077) but published the 88MB re-encode, while
+    // LinkedIn took the big file fine — so the posts in ONE request point at
+    // two different uploads.
+    const igUpload = { id: "m-ig", path: "/uploads/ig.mp4" };
+    const payload = buildPostsPayload({
+      posts: [
+        { target: li, caption: "linkedin text" },
+        { target: ig, caption: "insta text", videoPath: "/work/delivery-ig.mp4" },
+      ],
+      when: { kind: "now" },
+      dateIso: "2026-08-29T10:00:00.000Z",
+      media: new Map([
+        ["/work/delivery.mp4", media],
+        ["/work/delivery-ig.mp4", igUpload],
+      ]),
+      defaultVideoPath: "/work/delivery.mp4",
+    }) as { posts: Array<{ value: Array<{ image: Array<{ id: string }> }> }> };
+    expect(payload.posts[0]!.value[0]!.image).toEqual([{ id: "m-1", path: "/uploads/x.mp4" }]);
+    expect(payload.posts[1]!.value[0]!.image).toEqual([{ id: "m-ig", path: "/uploads/ig.mp4" }]);
+  });
+
+  it("a per-post videoPath against the single-upload form throws — the wrong video is worse than no post", () => {
+    expect(() =>
+      buildPostsPayload({
+        posts: [{ target: ig, caption: "c", videoPath: "/work/delivery-ig.mp4" }],
+        when: { kind: "now" },
+        dateIso: "2026-08-29T10:00:00.000Z",
+        media,
+      }),
+    ).toThrow(/media map/);
+  });
+
+  it("a path with no upload in the map throws with the path — never a silent wrong mapping", () => {
+    expect(() =>
+      buildPostsPayload({
+        posts: [{ target: ig, caption: "c", videoPath: "/work/missing.mp4" }],
+        when: { kind: "now" },
+        dateIso: "2026-08-29T10:00:00.000Z",
+        media: new Map([["/work/delivery.mp4", media]]),
+        defaultVideoPath: "/work/delivery.mp4",
+      }),
+    ).toThrow(/\/work\/missing\.mp4/);
+  });
+
   it("schedule uses the requested time, not the caller's clock", () => {
     const payload = buildPostsPayload({
       posts: [{ target: li, caption: "c" }],
@@ -289,6 +335,82 @@ describe("createPostizProvider", () => {
     };
     expect(posted.posts[0]!.value[0]!.image[0]!.id).toBe("m-9");
     expect(receipt).toMatchObject({ backend: "postiz", postIds: ["post-1"], targets: [li] });
+  });
+
+  it("per-post media: each DISTINCT file uploads once and its posts point at it", async () => {
+    // The 2026-08-29 field shape: LinkedIn keeps the default 10 Mbps file,
+    // Instagram gets its size-capped encode — two uploads, one /posts call.
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-publish-"));
+    const defaultPath = join(dir, "delivery.mp4");
+    const igPath = join(dir, "delivery-ig.mp4");
+    await writeFile(defaultPath, "big");
+    await writeFile(igPath, "small");
+    const uploadedNames: string[] = [];
+    const provider = createPostizProvider({
+      baseUrl: "https://p.example.com",
+      apiKey: "k",
+      fetchImpl: async (u, init) => {
+        if (String(u).endsWith("/upload")) {
+          const file = (init?.body as FormData).get("file") as File;
+          uploadedNames.push(file.name);
+          return jsonResponse(200, { id: `m-${uploadedNames.length}`, path: `/up/${file.name}` });
+        }
+        return jsonResponse(200, [{ id: "post-1" }]);
+      },
+    });
+    await provider.publish({
+      videoPath: defaultPath,
+      posts: [
+        { target: li, caption: "li" },
+        { target: ig, caption: "ig", videoPath: igPath },
+      ],
+      when: { kind: "now" },
+    });
+    expect(uploadedNames).toEqual(["delivery.mp4", "delivery-ig.mp4"]);
+  });
+
+  it("posts sharing the default file share ONE upload — no re-upload per post", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-publish-"));
+    const videoPath = join(dir, "short.mp4");
+    await writeFile(videoPath, "x");
+    let uploadCalls = 0;
+    let posted: { posts: Array<{ value: Array<{ image: Array<{ id: string }> }> }> } | undefined;
+    const provider = createPostizProvider({
+      baseUrl: "https://p.example.com",
+      apiKey: "k",
+      fetchImpl: async (u, init) => {
+        if (String(u).endsWith("/upload")) {
+          uploadCalls += 1;
+          return jsonResponse(200, { id: "m-1", path: "/up/s.mp4" });
+        }
+        posted = JSON.parse(init?.body as string);
+        return jsonResponse(200, [{ id: "post-1" }]);
+      },
+    });
+    await provider.publish({
+      videoPath,
+      posts: [
+        { target: li, caption: "li" },
+        { target: ig, caption: "ig" },
+      ],
+      when: { kind: "now" },
+    });
+    expect(uploadCalls).toBe(1);
+    expect(posted!.posts.map((p) => p.value[0]!.image[0]!.id)).toEqual(["m-1", "m-1"]);
+  });
+
+  it("an upload failure names WHICH file — several can be in flight now", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-publish-"));
+    const videoPath = join(dir, "short.mp4");
+    await writeFile(videoPath, "x");
+    const provider = createPostizProvider({
+      baseUrl: "https://p.example.com",
+      apiKey: "k",
+      fetchImpl: async () => new Response("boom", { status: 500 }),
+    });
+    await expect(
+      provider.publish({ videoPath, posts: [{ target: li, caption: "c" }], when: { kind: "now" } }),
+    ).rejects.toThrow(/while uploading .*short\.mp4/);
   });
 
   it("a /posts failure after a good upload names the media id so a retry is cheap", async () => {

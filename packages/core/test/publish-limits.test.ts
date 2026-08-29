@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PLATFORM_DURATION_CAPS_SEC, checkDurationCaps } from "../src/publish/limits";
+import { PLATFORM_DURATION_CAPS_SEC, PLATFORM_SIZE_CAP_BYTES, checkDurationCaps } from "../src/publish/limits";
 import type { PublishTarget } from "../src/publish/provider";
 
 /**
@@ -36,5 +36,17 @@ describe("checkDurationCaps", () => {
 
   it("no targets, no violations", () => {
     expect(checkDurationCaps([], 10000)).toEqual([]);
+  });
+});
+
+describe("PLATFORM_SIZE_CAP_BYTES", () => {
+  it("instagram sits with margin under the observed ~100MB URL-fetch ceiling; absence means uncapped", () => {
+    // 2026-08-29, live: 409MB → error 2207077 twice, the same take at 88MB →
+    // published. LinkedIn took the 409MB file fine, so it (and every other
+    // platform) must NOT appear here — a wrong refusal is worse than a
+    // platform error.
+    expect(PLATFORM_SIZE_CAP_BYTES.instagram).toBe(95_000_000);
+    expect(PLATFORM_SIZE_CAP_BYTES.linkedin).toBeUndefined();
+    expect(PLATFORM_SIZE_CAP_BYTES.youtube).toBeUndefined();
   });
 });

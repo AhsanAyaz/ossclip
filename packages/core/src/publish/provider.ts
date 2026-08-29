@@ -34,16 +34,25 @@ export interface PublishPost {
    * YouTube has the concept; `buildPostsPayload` supplies the default.
    */
   youtubePrivacy?: "public" | "unlisted" | "private";
+  /**
+   * This post's media, when it must differ from the request's default
+   * `videoPath`. Size-capped platforms are the reason it exists (2026-08-29,
+   * live: Instagram bounced the 409MB delivery file with 2207077 but
+   * published the 88MB re-encode — `PLATFORM_SIZE_CAP_BYTES`): they carry
+   * their own smaller encode while everyone else keeps the 10 Mbps file.
+   * Each distinct file uploads once; posts map to their media.
+   */
+  videoPath?: string;
 }
 
 export interface PublishRequest {
   /**
-   * Absolute path of the rendered video — the delivery encode, or the master
-   * when none is needed (`ensureDeliveryFile`). ONE file for every post:
-   * sending the master to YouTube and the delivery encode elsewhere needs
-   * per-post media (a `PublishPost` media field, two uploads in
-   * `postiz.publish()`, per-post mapping in `buildPostsPayload`) — a deferred
-   * follow-up, not this change (2026-08-29 plan).
+   * Absolute path of the default media — the delivery encode, or the master
+   * when none is needed (`ensureDeliveryFile`). A post whose platform needs
+   * a different file sets its own `PublishPost.videoPath`; the provider
+   * uploads each distinct file once and maps posts to their media. Sending
+   * the MASTER to YouTube via that mechanism remains the noted follow-up
+   * (2026-08-29 plan).
    */
   videoPath: string;
   posts: PublishPost[];

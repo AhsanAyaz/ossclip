@@ -68,14 +68,52 @@ export function parseIntegrations(json: unknown): PublishTarget[] {
  * sends the minimum and surfaces Postiz's errors verbatim rather than
  * duplicating (and drifting from) that matrix. YouTube is the one platform
  * whose settings carry a required title, so a post's `title` passes through.
+ *
+ * Media comes in two shapes because posts can carry per-post files now
+ * (2026-08-29: Instagram's size cap gets its own smaller encode, everyone
+ * else shares the default — `PublishPost.videoPath`): a single upload keeps
+ * the original one-file contract for callers with no per-post media (the
+ * CLI's dry-run placeholder included), while the map form pairs every
+ * distinct `videoPath` with its upload and REQUIRES the default path the
+ * lookup falls back to — the union makes forgetting it a type error, not a
+ * runtime surprise.
  */
-export function buildPostsPayload(args: {
-  posts: PublishPost[];
-  when: PublishWhen;
-  dateIso: string;
-  media: PostizUpload;
-}): Record<string, unknown> {
-  const image = [{ id: args.media.id, path: args.media.path }];
+export type PostsPayloadMedia =
+  | { media: PostizUpload; defaultVideoPath?: undefined }
+  | { media: ReadonlyMap<string, PostizUpload>; defaultVideoPath: string };
+
+export function buildPostsPayload(
+  args: {
+    posts: PublishPost[];
+    when: PublishWhen;
+    dateIso: string;
+  } & PostsPayloadMedia,
+): Record<string, unknown> {
+  // instanceof on the property does not narrow the sibling `defaultVideoPath`
+  // through the union, so split the two shapes once up front.
+  const byPath = args.media instanceof Map ? (args.media as ReadonlyMap<string, PostizUpload>) : null;
+  const single = byPath === null ? (args.media as PostizUpload) : null;
+  const uploadFor = (p: PublishPost): PostizUpload => {
+    if (single !== null) {
+      // Single-upload shape: there is no path→upload pairing to consult, so a
+      // post asking for its own file would silently get the WRONG video —
+      // worse than any throw (2207077 at least fails; a LinkedIn post carrying
+      // the Instagram encode publishes).
+      if (p.videoPath !== undefined) {
+        throw new Error(
+          `post for ${p.target.provider} carries its own videoPath but buildPostsPayload got a single upload — pass the media map`,
+        );
+      }
+      return single;
+    }
+    const path = p.videoPath ?? args.defaultVideoPath;
+    const upload = path === undefined ? undefined : byPath!.get(path);
+    // publish() derives its upload set from the same `p.videoPath ??
+    // default` expression, so a miss is a caller bug — but see above: wrong
+    // video beats no video for worst outcome.
+    if (upload === undefined) throw new Error(`no upload for media path ${path}`);
+    return upload;
+  };
   return {
     type: args.when.kind === "now" ? "now" : "schedule",
     date: args.when.kind === "at" ? args.when.iso : args.dateIso,
@@ -85,30 +123,33 @@ export function buildPostsPayload(args: {
     // it). Always empty: calendar tags are a Postiz-UI concept ossclip has no
     // gesture for.
     tags: [],
-    posts: args.posts.map((p) => ({
-      integration: { id: p.target.id },
-      value: [{ content: p.caption, image }],
-      settings: {
-        __type: p.target.provider,
-        ...(p.title !== undefined ? { title: p.title } : {}),
-        // YouTube's privacy status is REQUIRED by Postiz's DTO (`type`,
-        // @IsDefined) — without it the whole /posts call is rejected at
-        // validation and nothing publishes, not just the YouTube post
-        // (2026-08-28). `private` is the default on purpose: the other
-        // platforms post publicly, but an accidental `--all` must not push to
-        // a subscriber list, and making a private video public in YouTube
-        // Studio is one click where un-publishing is not.
-        ...(p.target.provider === "youtube"
-          ? { type: p.youtubePrivacy ?? "private" }
-          : {}),
-        // Instagram's own required setting (`post_type`, @IsDefined — the
-        // second one a real publish found, at the same cost: a 400 AFTER the
-        // whole video had uploaded). Always `post`: ossclip renders a
-        // finished short, and a story expires in 24 hours, which nobody
-        // publishing a produced video is asking for.
-        ...(p.target.provider === "instagram" ? { post_type: "post" } : {}),
-      },
-    })),
+    posts: args.posts.map((p) => {
+      const upload = uploadFor(p);
+      return {
+        integration: { id: p.target.id },
+        value: [{ content: p.caption, image: [{ id: upload.id, path: upload.path }] }],
+        settings: {
+          __type: p.target.provider,
+          ...(p.title !== undefined ? { title: p.title } : {}),
+          // YouTube's privacy status is REQUIRED by Postiz's DTO (`type`,
+          // @IsDefined) — without it the whole /posts call is rejected at
+          // validation and nothing publishes, not just the YouTube post
+          // (2026-08-28). `private` is the default on purpose: the other
+          // platforms post publicly, but an accidental `--all` must not push to
+          // a subscriber list, and making a private video public in YouTube
+          // Studio is one click where un-publishing is not.
+          ...(p.target.provider === "youtube"
+            ? { type: p.youtubePrivacy ?? "private" }
+            : {}),
+          // Instagram's own required setting (`post_type`, @IsDefined — the
+          // second one a real publish found, at the same cost: a 400 AFTER the
+          // whole video had uploaded). Always `post`: ossclip renders a
+          // finished short, and a story expires in 24 hours, which nobody
+          // publishing a produced video is asking for.
+          ...(p.target.provider === "instagram" ? { post_type: "post" } : {}),
+        },
+      };
+    }),
   };
 }
 
@@ -220,20 +261,38 @@ export function createPostizProvider(opts: PostizProviderOptions): PublishProvid
       return parseIntegrations(await request("GET", "/integrations"));
     },
     async publish(req: PublishRequest): Promise<PublishReceipt> {
-      // openAsBlob streams the file into multipart form-data without ever
-      // holding the whole video in memory — a rendered short is routinely
-      // hundreds of MB, and a string/Buffer round-trip would double it.
       const { openAsBlob } = await import("node:fs");
-      const blob = await openAsBlob(req.videoPath, { type: "video/mp4" });
-      const form = new FormData();
-      form.append("file", blob, basename(req.videoPath));
-      const media = PostizUploadSchema.parse(await request("POST", "/upload", form));
+      // Each DISTINCT file uploads exactly once: a size-capped platform
+      // carries its own smaller encode (`PublishPost.videoPath`, 2026-08-29)
+      // while the rest share the request default, and posts then map to
+      // their own media in the payload. Sequential on purpose — uploads are
+      // hundreds of MB, and parallelism buys contention, not time.
+      const paths = [...new Set(req.posts.map((p) => p.videoPath ?? req.videoPath))];
+      const uploads = new Map<string, PostizUpload>();
+      for (const path of paths) {
+        // openAsBlob streams the file into multipart form-data without ever
+        // holding the whole video in memory — a rendered short is routinely
+        // hundreds of MB, and a string/Buffer round-trip would double it.
+        const blob = await openAsBlob(path, { type: "video/mp4" });
+        const form = new FormData();
+        form.append("file", blob, basename(path));
+        try {
+          uploads.set(path, PostizUploadSchema.parse(await request("POST", "/upload", form)));
+        } catch (err) {
+          // "POST /upload failed" alone no longer says WHICH file when
+          // several are in flight — name it.
+          throw new Error(
+            `${err instanceof Error ? err.message : String(err)}\n(while uploading ${path})`,
+          );
+        }
+      }
 
       const payload = buildPostsPayload({
         posts: req.posts,
         when: req.when,
         dateIso: new Date().toISOString(),
-        media,
+        media: uploads,
+        defaultVideoPath: req.videoPath,
       });
       let answer: unknown;
       try {
@@ -243,9 +302,10 @@ export function createPostizProvider(opts: PostizProviderOptions): PublishProvid
       } catch (err) {
         // The media is already up — say so, so a retry is one request, not
         // a re-upload of the whole video.
+        const ids = [...uploads.values()].map((u) => u.id).join(", ");
         throw new Error(
           `${err instanceof Error ? err.message : String(err)}\n` +
-            `(the video uploaded fine — media id ${media.id}; retrying will re-upload it)`,
+            `(the video uploaded fine — media id ${ids}; retrying will re-upload it)`,
         );
       }
       return {

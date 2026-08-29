@@ -14,6 +14,21 @@ export const PLATFORM_DURATION_CAPS_SEC: Record<string, number> = {
   instagram: 900,
 };
 
+/**
+ * Per-platform upload size caps, in bytes, same shape and posture as the
+ * duration caps: absence means uncapped, because a wrong refusal is worse
+ * than a platform error. The Instagram number is empirical (2026-08-29,
+ * live): its URL-fetch ingest rejected the 409MB 10 Mbps delivery file with
+ * error 2207077 TWICE, then published the very same 1080p landscape take at
+ * 88MB (2 Mbps, same 192k audio) — the ceiling sits around 100MB, and 95MB
+ * leaves margin under it. LinkedIn took the 409MB file fine the same day, so
+ * capped platforms get their own smaller encode and everyone else keeps the
+ * 10 Mbps file.
+ */
+export const PLATFORM_SIZE_CAP_BYTES: Record<string, number> = {
+  instagram: 95_000_000,
+};
+
 export interface DurationViolation {
   target: PublishTarget;
   capSec: number;
