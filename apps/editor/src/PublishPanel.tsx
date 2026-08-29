@@ -101,6 +101,16 @@ export function overCapNote(
   return `video ${formatMinSec(durationSec)} > ${formatMinSec(capSec)} cap`;
 }
 
+/**
+ * The collapsed advisory line above the grounding-note list. One regenerate
+ * produced ~45 `⚠ grounding: …` lines and drowned the panel (2026-08-29
+ * screenshot) — the COUNT is the signal, the list is on demand. Pure so the
+ * singular/plural matrix is testable without a mount.
+ */
+export function regenNotesSummary(count: number): string {
+  return `⚠ ${count} word${count === 1 ? "" : "s"} not in the take`;
+}
+
 /** `<input type="datetime-local">`'s value → the ISO the server validates.
  * Pure so the empty/garbage matrix is testable without a mount. */
 export function scheduleIso(local: string): string | null {
@@ -162,6 +172,20 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const [regenResult, setRegenResult] = useState<
     Record<string, { usage?: string; notes?: string[]; error?: string }>
   >({});
+  // Grounding-note lists start COLLAPSED behind their count (2026-08-29):
+  // one regenerate produced ~45 advisory lines — common paraphrase words —
+  // and drowned the panel. Errors never collapse: they're actionable.
+  const [notesOpen, setNotesOpen] = useState<Record<string, boolean>>({});
+  // One instruction for every selected network (2026-08-29): regenerating
+  // six captions one by one was the tedium the feedback named. The batch
+  // runs SEQUENTIALLY — the server's regenerate is global single-flight and
+  // 409s a concurrent call.
+  const [batchInstruction, setBatchInstruction] = useState("");
+  const [batchProgress, setBatchProgress] = useState<{
+    network: string;
+    index: number;
+    total: number;
+  } | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -200,6 +224,11 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const capById: Record<string, number | null> = Object.fromEntries(
     (info?.integrations ?? []).map((i) => [i.id, i.durationCapSec ?? null]),
   );
+  // Grouped once HERE so the batch handler and the JSX walk the SAME list —
+  // the batch must target exactly the groups the panel shows.
+  const groups = groupByNetwork(
+    (info?.integrations ?? []).map((i) => ({ ...i, caption: captions[i.id] ?? i.caption })),
+  );
   const schedule = scheduleIso(scheduleLocal);
   const scheduleInvalid = scheduleLocal.trim().length > 0 && schedule === null;
   const hasReceipt = (info?.receipt ?? null) !== null || sent !== null;
@@ -235,11 +264,19 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
     }
   };
 
-  const onRegenerate = async (network: string, ids: string[], currentCaption: string): Promise<void> => {
-    const instruction = (regenInstruction[network] ?? "").trim();
-    if (instruction.length === 0) return;
-    setRegenBusy(network);
+  // The one POST both the per-network button and the batch share — errors
+  // land in regenResult and never throw, which is what lets the batch loop
+  // continue past a failed network.
+  const regenerateOne = async (
+    network: string,
+    ids: string[],
+    currentCaption: string,
+    instruction: string,
+  ): Promise<void> => {
     setRegenResult((prev) => ({ ...prev, [network]: {} }));
+    // A fresh result starts collapsed again — the old expansion was consent
+    // to read the OLD list, not whatever the next run produces.
+    setNotesOpen((prev) => ({ ...prev, [network]: false }));
     try {
       const res = await fetch("/api/publish/regenerate", {
         method: "POST",
@@ -279,8 +316,44 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
         ...prev,
         [network]: { error: err instanceof Error ? err.message : String(err) },
       }));
+    }
+  };
+
+  const onRegenerate = async (network: string, ids: string[], currentCaption: string): Promise<void> => {
+    const instruction = (regenInstruction[network] ?? "").trim();
+    if (instruction.length === 0) return;
+    setRegenBusy(network);
+    try {
+      await regenerateOne(network, ids, currentCaption, instruction);
     } finally {
       setRegenBusy(null);
+    }
+  };
+
+  const onRegenerateAll = async (): Promise<void> => {
+    const shared = batchInstruction.trim();
+    if (shared.length === 0) return;
+    // Only the groups whose caption box is on screen: ≥1 selected channel is
+    // exactly the condition the box renders under.
+    const targets = groups.filter((g) => g.channels.some((c) => selected[c.id] === true));
+    if (targets.length === 0) return;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const group = targets[i]!;
+        const ids = group.channels.map((c) => c.id);
+        const perNetwork = (regenInstruction[group.network] ?? "").trim();
+        // A non-empty per-network instruction WINS over the shared one: a
+        // network-specific correction shouldn't be flattened by the batch.
+        const instruction = perNetwork.length > 0 ? perNetwork : shared;
+        setBatchProgress({ network: group.network, index: i + 1, total: targets.length });
+        setRegenBusy(group.network);
+        // Sequential on purpose (server single-flight, 409 on parallel); a
+        // failed network stores its error and the loop moves on.
+        await regenerateOne(group.network, ids, captions[ids[0]!] ?? group.caption, instruction);
+      }
+    } finally {
+      setRegenBusy(null);
+      setBatchProgress(null);
     }
   };
 
@@ -341,9 +414,38 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                   No accounts connected in Postiz yet — connect them there first.
                 </div>
               ) : null}
-              {groupByNetwork(
-                (info.integrations ?? []).map((i) => ({ ...i, caption: captions[i.id] ?? i.caption })),
-              ).map((group) => {
+              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                <input
+                  data-testid="publish-regen-all-instruction"
+                  placeholder='One instruction for every selected network, e.g. "shorter, no hashtags"'
+                  value={batchInstruction}
+                  onChange={(e) => setBatchInstruction(e.target.value)}
+                  style={{ ...textInput, flex: 1, padding: "6px 10px", fontSize: 12 }}
+                />
+                <button
+                  type="button"
+                  data-testid="publish-regen-all"
+                  disabled={
+                    regenBusy !== null ||
+                    batchProgress !== null ||
+                    batchInstruction.trim().length === 0 ||
+                    pickedIds.length === 0
+                  }
+                  onClick={() => void onRegenerateAll()}
+                  style={chipStyle}
+                >
+                  Regenerate selected captions
+                </button>
+              </div>
+              {batchProgress !== null ? (
+                <div
+                  data-testid="publish-regen-all-progress"
+                  style={{ ...subtitle, marginBottom: 8 }}
+                >
+                  Regenerating {batchProgress.network}… {batchProgress.index}/{batchProgress.total}
+                </div>
+              ) : null}
+              {groups.map((group) => {
                 // ONE caption per NETWORK (publishGroups.ts owns the why):
                 // four LinkedIn channels are one post, not four. A group is
                 // selected when ANY of its channels is, and typing writes the
@@ -447,6 +549,7 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                             data-testid={`publish-regen-${group.network}`}
                             disabled={
                               regenBusy !== null ||
+                              batchProgress !== null ||
                               (regenInstruction[group.network] ?? "").trim().length === 0
                             }
                             onClick={() => void onRegenerate(group.network, ids, text)}
@@ -471,18 +574,44 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                             {regenResult[group.network]!.usage}
                           </div>
                         ) : null}
-                        {(regenResult[group.network]?.notes ?? []).map((note) => (
-                          // Advisory grounding notes, the produce report's
-                          // spelling — captions carry brand words the take
-                          // never speaks, so these inform, never block.
-                          <div
-                            key={note}
-                            data-testid={`publish-regen-note-${group.network}`}
-                            style={{ ...subtitle, marginTop: 2, color: "#E5B300" }}
-                          >
-                            {note}
-                          </div>
-                        ))}
+                        {(regenResult[group.network]?.notes ?? []).length > 0 ? (
+                          <>
+                            {/* Collapsed by default (the ~45-line flood):
+                                the transcript help-toggle idiom, a button
+                                with aria-expanded, not a native <details> —
+                                nothing else in the editor uses one. */}
+                            <button
+                              type="button"
+                              data-testid={`publish-regen-notes-toggle-${group.network}`}
+                              aria-expanded={notesOpen[group.network] === true}
+                              onClick={() =>
+                                setNotesOpen((prev) => ({
+                                  ...prev,
+                                  [group.network]: prev[group.network] !== true,
+                                }))
+                              }
+                              style={notesToggle}
+                            >
+                              {regenNotesSummary(regenResult[group.network]!.notes!.length)}{" "}
+                              {notesOpen[group.network] === true ? "▾" : "▸"}
+                            </button>
+                            {notesOpen[group.network] === true
+                              ? regenResult[group.network]!.notes!.map((note) => (
+                                  // Advisory grounding notes, the produce
+                                  // report's spelling — captions carry brand
+                                  // words the take never speaks, so these
+                                  // inform, never block.
+                                  <div
+                                    key={note}
+                                    data-testid={`publish-regen-note-${group.network}`}
+                                    style={{ ...subtitle, marginTop: 2, color: "#E5B300" }}
+                                  >
+                                    {note}
+                                  </div>
+                                ))
+                              : null}
+                          </>
+                        ) : null}
                       </>
                     ) : null}
                   </div>
@@ -721,6 +850,18 @@ const captionArea: React.CSSProperties = {
   fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace",
   outline: "none",
   resize: "vertical",
+};
+
+const notesToggle: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  padding: 0,
+  marginTop: 4,
+  cursor: "pointer",
+  textAlign: "left",
+  fontSize: 12,
+  color: "#E5B300",
+  fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace",
 };
 
 const counterText: React.CSSProperties = {

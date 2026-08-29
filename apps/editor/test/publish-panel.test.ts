@@ -9,6 +9,7 @@ import {
   formatMinSec,
   overCapNote,
   panelCaptionCap,
+  regenNotesSummary,
   scheduleIso,
   toLocalInputValue,
   type PublishInfo,
@@ -50,6 +51,14 @@ describe("panelCaptionCap", () => {
   it("mirrors core's caps — x 280, unknown falls back to 1500", () => {
     expect(panelCaptionCap("x")).toBe(280);
     expect(panelCaptionCap("mastodon")).toBe(1500);
+  });
+});
+
+describe("regenNotesSummary", () => {
+  it("counts the flood instead of showing it, with singular/plural", () => {
+    // The 45-line grounding flood is the bug this line exists for.
+    expect(regenNotesSummary(45)).toBe("⚠ 45 words not in the take");
+    expect(regenNotesSummary(1)).toBe("⚠ 1 word not in the take");
   });
 });
 
@@ -375,10 +384,19 @@ describe("PublishPanel", () => {
       container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]')
         ?.value,
     ).toBe("rewritten caption");
-    // Usage + grounding advisory under the box.
+    // Usage under the box; the grounding advisory is behind its count toggle
+    // (the ~45-line flood, 2026-08-29) — collapsed by default, expandable.
     expect(
       container.querySelector('[data-testid="publish-regen-usage-linkedin"]')?.textContent,
     ).toContain("▸ llm: 1 calls");
+    expect(container.querySelector('[data-testid="publish-regen-note-linkedin"]')).toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[data-testid="publish-regen-notes-toggle-linkedin"]',
+    )!;
+    expect(toggle.textContent).toContain("1 word not in the take");
+    await act(async () => {
+      toggle.click();
+    });
     expect(
       container.querySelector('[data-testid="publish-regen-note-linkedin"]')?.textContent,
     ).toContain('"revenue"');
@@ -415,6 +433,177 @@ describe("PublishPanel", () => {
       container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]')
         ?.value,
     ).toBe("authored linkedin post");
+  });
+
+  // The batch tests share this: type into an input the way React sees it.
+  const setInput = async (el: HTMLInputElement, value: string): Promise<void> => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+
+  // The batch loop awaits each POST; click returns before it finishes, so
+  // the assertions need the timers flushed a few rounds.
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    }
+  };
+
+  it("batch regenerate hits only the selected networks, one POST at a time", async () => {
+    // start/end pairs prove SEQUENTIAL: the server's regenerate is global
+    // single-flight and 409s a concurrent call, so interleaved starts would
+    // be the real-world failure.
+    const events: string[] = [];
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string; body?: string }) => {
+      if (String(url).endsWith("/api/publish/regenerate")) {
+        const body = JSON.parse(init?.body ?? "{}") as { network: string };
+        events.push(`start:${body.network}`);
+        await new Promise((r) => setTimeout(r, 0));
+        events.push(`end:${body.network}`);
+        return {
+          ok: true,
+          json: async () => ({ ok: true, caption: `new ${body.network}`, usage: "u", notes: [] }),
+        };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-b"]')!.click();
+    });
+    const all = container.querySelector<HTMLButtonElement>('[data-testid="publish-regen-all"]')!;
+    // Empty shared instruction: nothing to apply, so the button is disabled.
+    expect(all.disabled).toBe(true);
+    await setInput(
+      container.querySelector<HTMLInputElement>('[data-testid="publish-regen-all-instruction"]')!,
+      "shorter everywhere",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-regen-all"]')!.click();
+    });
+    await flush();
+    expect(events).toEqual(["start:linkedin", "end:linkedin", "start:x", "end:x"]);
+    // Each result fanned into its own group's box.
+    expect(
+      container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]')
+        ?.value,
+    ).toBe("new linkedin");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-x"]')?.value,
+    ).toBe("new x");
+  });
+
+  it("batch skips networks with nothing selected", async () => {
+    const networks: string[] = [];
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string; body?: string }) => {
+      if (String(url).endsWith("/api/publish/regenerate")) {
+        networks.push((JSON.parse(init?.body ?? "{}") as { network: string }).network);
+        return { ok: true, json: async () => ({ ok: true, caption: "new", usage: "u", notes: [] }) };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    // Only x picked — linkedin's group has no selected channel, no box, and
+    // must cost no LLM call.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-b"]')!.click();
+    });
+    await setInput(
+      container.querySelector<HTMLInputElement>('[data-testid="publish-regen-all-instruction"]')!,
+      "shorter",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-regen-all"]')!.click();
+    });
+    await flush();
+    expect(networks).toEqual(["x"]);
+  });
+
+  it("a non-empty per-network instruction wins over the shared one during a batch", async () => {
+    // A network-specific correction ("drop the emoji on LinkedIn") shouldn't
+    // be flattened by the batch's blanket instruction.
+    const bodies: Array<{ network: string; instruction: string }> = [];
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string; body?: string }) => {
+      if (String(url).endsWith("/api/publish/regenerate")) {
+        bodies.push(JSON.parse(init?.body ?? "{}"));
+        return { ok: true, json: async () => ({ ok: true, caption: "new", usage: "u", notes: [] }) };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-b"]')!.click();
+    });
+    await setInput(
+      container.querySelector<HTMLInputElement>(
+        '[data-testid="publish-regen-instruction-linkedin"]',
+      )!,
+      "no emoji here",
+    );
+    await setInput(
+      container.querySelector<HTMLInputElement>('[data-testid="publish-regen-all-instruction"]')!,
+      "shorter everywhere",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-regen-all"]')!.click();
+    });
+    await flush();
+    expect(bodies.map((b) => [b.network, b.instruction])).toEqual([
+      ["linkedin", "no emoji here"],
+      ["x", "shorter everywhere"],
+    ]);
+  });
+
+  it("one failed network shows its error and the batch continues to the rest", async () => {
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string; body?: string }) => {
+      if (String(url).endsWith("/api/publish/regenerate")) {
+        const body = JSON.parse(init?.body ?? "{}") as { network: string };
+        if (body.network === "linkedin") {
+          return { ok: true, json: async () => ({ ok: false, error: "quota exceeded" }) };
+        }
+        return { ok: true, json: async () => ({ ok: true, caption: "new x", usage: "u", notes: [] }) };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-b"]')!.click();
+    });
+    await setInput(
+      container.querySelector<HTMLInputElement>('[data-testid="publish-regen-all-instruction"]')!,
+      "shorter",
+    );
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-regen-all"]')!.click();
+    });
+    await flush();
+    // The failure is VISIBLE (never collapsed — it's actionable) and the
+    // failed network's caption is untouched…
+    expect(
+      container.querySelector('[data-testid="publish-regen-error-linkedin"]')?.textContent,
+    ).toBe("quota exceeded");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]')
+        ?.value,
+    ).toBe("authored linkedin post");
+    // …while the network after it still got its rewrite.
+    expect(
+      container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-x"]')?.value,
+    ).toBe("new x");
   });
 
   it("an existing receipt shows the already-published note and labels the button Publish again (force)", async () => {

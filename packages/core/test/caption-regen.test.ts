@@ -4,6 +4,7 @@ import {
   CaptionRegenSchema,
   buildCaptionRegenPrompt,
   generateCaptionRegen,
+  stripDashes,
 } from "../src/producer/caption-regen";
 import { YOUTUBE_TRANSCRIPT_CHAR_CAP } from "../src/producer/youtube";
 import type { LlmProvider } from "../src/producer/provider";
@@ -42,6 +43,30 @@ describe("buildCaptionRegenPrompt", () => {
   it("leaves a transcript under the cap alone — no truncation note on a full read", () => {
     const { user } = buildCaptionRegenPrompt(args);
     expect(user).not.toContain("[transcript truncated");
+  });
+
+  it("bans dashes and names the platform practice — the author's voice rules", () => {
+    const { system, user } = buildCaptionRegenPrompt(args);
+    expect(system).toContain("NEVER use an em-dash");
+    expect(system).toContain("ellipsis");
+    expect(user).toContain("Platform practice: LinkedIn:");
+  });
+
+  it("says nothing about practice for a network without one", () => {
+    const { user } = buildCaptionRegenPrompt({ ...args, network: "mastodon" });
+    expect(user).not.toContain("Platform practice:");
+  });
+});
+
+describe("stripDashes", () => {
+  it("replaces a mid-sentence em/en dash with the author's ellipsis pause", () => {
+    expect(stripDashes("built it — shipped it")).toBe("built it... shipped it");
+    expect(stripDashes("built it – shipped it")).toBe("built it... shipped it");
+  });
+
+  it("leaves dash-free text byte-identical", () => {
+    const text = "plain text... with hyphens like re-encode left alone";
+    expect(stripDashes(text)).toBe(text);
   });
 });
 

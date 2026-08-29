@@ -36,6 +36,35 @@ export interface CaptionRegenArgs {
  * that constant is module-private and this note's wording is its own). */
 const TRUNCATION_NOTE = "[transcript truncated — the video continues]";
 
+/**
+ * Platform idiom the model is told to write toward — the author's own
+ * per-platform shapes (his voice guide), not generic social-media advice.
+ * Keyed by publish provider name; absence falls through to nothing extra.
+ */
+const NETWORK_PRACTICES: Record<string, string> = {
+  linkedin:
+    "LinkedIn: the fullest version — the reader's gap first, then what was built, one " +
+    "technical detail worth defending, the honest limitation inline, warm low-key close. " +
+    "Short paragraphs, but never one-line 'broetry' stacked for the algorithm.",
+  "linkedin-page":
+    "LinkedIn page: same shape as a personal LinkedIn post — gap first, specifics over " +
+    "adjectives, honest limitation inline, no broetry.",
+  youtube:
+    "YouTube description: plain what-it-does in the first two lines (that is all most " +
+    "viewers see), keep any existing timestamps/chapters and links intact.",
+  facebook:
+    "Facebook: conversational, front-load the reader's problem in the first sentence, " +
+    "shorter than LinkedIn.",
+  instagram:
+    "Instagram: short — the visual leads, the caption carries ONE specific. Links do not " +
+    "work in captions, so 'link in bio' phrasing, never a raw URL. Keep existing hashtags " +
+    "unless instructed.",
+  threads:
+    "Threads: short and conversational like Instagram; one specific, no hashtag walls.",
+  x: "X: the gap and the one surprising detail — nothing padded.",
+  tiktok: "TikTok: short hook line plus existing hashtags.",
+};
+
 export function buildCaptionRegenPrompt(args: CaptionRegenArgs): { system: string; user: string } {
   const system =
     "You rewrite ONE social media caption for a finished video, applying the user's " +
@@ -44,11 +73,19 @@ export function buildCaptionRegenPrompt(args: CaptionRegenArgs): { system: strin
     "uses a number or story as an EXAMPLE or hypothetical, never state it as a fact — this " +
     "exact failure has shipped: a video said \"imagine 50 teams applied\" as an example, and " +
     "the published caption stated \"50 teams applied\" as fact.\n" +
+    "- NEVER use an em-dash (—) or en-dash (–) anywhere in the caption. Where a pause or " +
+    "soft pivot is needed, use an ellipsis (\"...\") — that is the author's voice, not a typo " +
+    "to clean up.\n" +
+    "- Specifics over adjectives: no \"powerful\", \"seamless\", \"game-changing\". Name the " +
+    "actual number or detail, and only numbers the transcript supports.\n" +
+    "- No engagement bait (\"thoughts?\", \"drop a comment\", \"who else...\"), no emoji " +
+    "bullets or rocket emoji; at most a single \":)\".\n" +
     "- Respect the character cap given for this network — the platform truncates or rejects " +
     "anything longer.\n" +
     "- Keep the author's voice and structure from the current caption unless the instruction " +
     "says otherwise: this is a correction, not a rewrite from scratch.\n" +
     "- Output only the caption text, nothing else.";
+  const practice = NETWORK_PRACTICES[args.network];
   // The same cap buildYoutubePrompt applies, imported rather than restated:
   // slice + say so, so the model knows it is reading an excerpt.
   const capped =
@@ -56,11 +93,22 @@ export function buildCaptionRegenPrompt(args: CaptionRegenArgs): { system: strin
       ? `${args.transcriptText.slice(0, YOUTUBE_TRANSCRIPT_CHAR_CAP)}\n${TRUNCATION_NOTE}`
       : args.transcriptText;
   const user =
-    `Network: ${args.network} (character cap: ${args.charCap})\n\n` +
+    `Network: ${args.network} (character cap: ${args.charCap})\n` +
+    (practice ? `Platform practice: ${practice}\n` : "") +
+    "\n" +
     `Current caption:\n${args.currentCaption}\n\n` +
     `Instruction from the author:\n${args.instruction}\n\n` +
     `Transcript:\n${capped}`;
   return { system, user };
+}
+
+/**
+ * The em/en-dash ban enforced mechanically — the prompt asks, this
+ * guarantees. Ellipsis replaces a mid-sentence dash (the author's own pause
+ * idiom); a dash already followed by ellipsis-like punctuation just drops.
+ */
+export function stripDashes(text: string): string {
+  return text.replace(/\s*[—–]\s*/g, "... ").replace(/\.\.\.\s+(?=[.…])/g, "");
 }
 
 /** One editorial call → the replacement caption, capped at a word boundary
@@ -80,5 +128,5 @@ export async function generateCaptionRegen(
     // which is exactly the judgement tier the beat sheet buys.
     tier: "editorial",
   });
-  return truncateAtWordBoundary(caption, args.charCap);
+  return truncateAtWordBoundary(stripDashes(caption), args.charCap);
 }
