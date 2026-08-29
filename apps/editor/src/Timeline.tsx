@@ -16,7 +16,13 @@ import {
   zoomedScrollLeft,
 } from "./timing";
 import type { useEdits } from "./useEdits";
-import { nearestSfxWord, type SfxMarker, type SfxWordAnchor } from "./sfxLane";
+import { nearestSfxWord, sfxAudioUrl, type SfxMarker, type SfxWordAnchor } from "./sfxLane";
+import {
+  previewVolume,
+  sfxPreloadIds,
+  sfxToFire,
+  type SfxPlaybackMarker,
+} from "./sfxPlayback";
 import { blurTypingElement, type Selection } from "./Overlay";
 
 /** One `doc.cuts` entry, as far as the Timeline needs it — mirrors
@@ -275,6 +281,128 @@ const useTakeThumbs = (
 };
 
 /**
+ * Sound effects PLAYING with the preview (Phase 4 follow-up, 2026-08-29), so a
+ * placement can be judged where it lands instead of only through the
+ * Inspector's click-to-hear.
+ *
+ * The I/O half of `sfxPlayback.ts` — every decision (crossed, muted, a seek
+ * rather than playback, the volume) is made there, and this owns only the
+ * elements and the subscription, `useTakeThumbs`' shape and the
+ * `openCommand`/`openInBrowser` rule.
+ *
+ * SUBSCRIBED TO THE PLAYER, not to a rAF loop of our own: `frameupdate` is the
+ * clock every other live surface in the editor follows (the playhead, the
+ * transcript's current line), and a second loop racing it would put the sounds
+ * on a different time than the picture they are being judged against.
+ *
+ * The markers arrive through a ref rather than the effect's deps so a drag, a
+ * mute or an add previews at its edited position WITHOUT tearing down the
+ * listener — App re-derives `sfxLaneMarkers` on every doc change, and
+ * re-subscribing per keystroke is the cost the `zoomRef` trick exists to
+ * avoid.
+ */
+const useSfxPreview = (
+  playerRef: React.RefObject<PlayerRef | null>,
+  fps: number,
+  markers: readonly SfxPlaybackMarker[] | null,
+  enabled: boolean,
+): void => {
+  const liveRef = useRef<{ markers: readonly SfxPlaybackMarker[]; enabled: boolean }>({
+    markers: [],
+    enabled: false,
+  });
+  // Off, or no lane at all, is simply an empty schedule — one gate, read per
+  // sample, instead of a listener that comes and goes with the toggle.
+  liveRef.current = { markers: markers ?? [], enabled: enabled && markers !== null };
+  const poolRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+
+  // Preload one element per DISTINCT sound the lane can fire. Lazy — nothing
+  // is fetched for a production whose lane is hidden or whose preview is
+  // off — and re-run as the lane changes, so a sound swapped in this session
+  // is warm by the time the playhead reaches it. Failures are swallowed
+  // (Inspector's `previewSound` rule): a missing pack file, or an environment
+  // with no `Audio` at all, must cost the preview, never the playback.
+  const preload = markers === null || !enabled ? [] : sfxPreloadIds(markers);
+  const preloadKey = preload.join(",");
+  useEffect(() => {
+    const pool = poolRef.current;
+    for (const id of preloadKey === "" ? [] : preloadKey.split(",")) {
+      if (pool.has(id)) continue;
+      try {
+        const el = new Audio(sfxAudioUrl(id));
+        el.preload = "auto";
+        pool.set(id, el);
+      } catch {
+        // no Audio in this environment — the fire below no-ops for this id
+      }
+    }
+  }, [preloadKey]);
+
+  useEffect(() => {
+    const player = playerRef.current;
+    if (!player) return;
+    // ONLY WHILE PLAYING, mirrored off the player's own play/pause events —
+    // App's `data-playing` rule ("the PLAYER's intent, straight from its own
+    // events"). `frameupdate` also fires for a scrub, a frame step and a
+    // programmatic `seekTo`, and a sound on every ruler drag would make the
+    // timeline unusable. Seeded from the player in case this ever re-attaches
+    // mid-playback (an fps change), tolerating a ref stub without the method.
+    let playing = player.isPlaying?.() ?? false;
+    // The previous sample, or null for "no baseline yet". Reset on BOTH
+    // transport events: a seek made while paused moves the playhead under a
+    // stale `prev`, and pressing play would then fire everything between the
+    // two positions whenever that gap slipped under the seek threshold.
+    // Seeding on the first frame after play costs at most that one frame's
+    // markers (33ms at 30fps) — cheaper than a phantom volley.
+    let prevSec: number | null = null;
+    const onFrame = (e: { detail: { frame: number } }): void => {
+      if (!playing) return;
+      const curSec = e.detail.frame / fps;
+      const prev = prevSec;
+      // Advanced even when the toggle is OFF (below), so flipping it on
+      // mid-playback resumes from HERE rather than replaying the stretch it
+      // spent muted.
+      prevSec = curSec;
+      const { markers: live, enabled: on } = liveRef.current;
+      if (prev === null || !on) return;
+      for (const m of sfxToFire(prev, curSec, live)) {
+        const el = poolRef.current.get(m.soundId);
+        if (!el) continue;
+        try {
+          el.volume = previewVolume(m.gain);
+          // Restart the SAME element rather than mixing a clone: two
+          // placements of one sound closer together than its own length
+          // retrigger instead of overlapping, which the render (an ffmpeg
+          // mix) would layer. The gain clamp's rule — a preview-fidelity
+          // limit of `HTMLAudioElement`, not a bug.
+          el.currentTime = 0;
+          void el.play()?.catch(() => {});
+        } catch {
+          // a pack file deleted since the library loaded, an element the
+          // browser refuses to start — never at the cost of the playback
+        }
+      }
+    };
+    const onPlay = (): void => {
+      playing = true;
+      prevSec = null;
+    };
+    const onPause = (): void => {
+      playing = false;
+      prevSec = null;
+    };
+    player.addEventListener("frameupdate", onFrame);
+    player.addEventListener("play", onPlay);
+    player.addEventListener("pause", onPause);
+    return () => {
+      player.removeEventListener("frameupdate", onFrame);
+      player.removeEventListener("play", onPlay);
+      player.removeEventListener("pause", onPause);
+    };
+  }, [playerRef, fps]);
+};
+
+/**
  * The bottom strip: one block per scene positioned against the clip's
  * duration, a playhead synced to the Player's own clock, click-to-seek, and
  * draggable edges that nudge a scene's timing (through `clampTiming`, so a
@@ -369,6 +497,13 @@ export const Timeline: React.FC<TimelineProps> = ({
     [cues, toSourceSec],
   );
   const takeThumbs = useTakeThumbs(videoSrc, takeThumbTimes);
+  // "SFX in preview", default ON — the sounds are the point of the lane, and a
+  // feature that has to be switched on to be noticed is a feature nobody
+  // finds. SESSION-LOCAL on purpose (plain state, no localStorage): this is a
+  // monitoring choice like a soloed track, not an edit, and nothing it does
+  // reaches the doc or the render.
+  const [sfxPreview, setSfxPreview] = useState(true);
+  useSfxPreview(playerRef, fps, sfxMarkers, sfxPreview);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const zoomAnchorRef = useRef<{ prevZoom: number; anchorX: number } | null>(null);
 
@@ -811,6 +946,39 @@ export const Timeline: React.FC<TimelineProps> = ({
           })()
         : null}
       <div style={zoomBar}>
+        {sfxMarkers === null ? null : (
+          // "SFX in preview" — the lane's own chrome, so it lives with the
+          // lane: no plan, no lane, no toggle (the `sfxMarkers === null` rule
+          // the row itself follows). Pushed to the LEFT of the zoom controls
+          // by its own margin, over the diamonds it governs, rather than
+          // joining the view controls it has nothing to do with.
+          <button
+            data-testid="sfx-preview-toggle"
+            style={{
+              ...zoomButton,
+              marginRight: "auto",
+              width: "auto",
+              padding: "0 6px",
+              // Off reads as OFF at a glance: the lane's colour when live, the
+              // zoom controls' muted grey when it is not.
+              color: sfxPreview ? SFX_COLOR : "#9A9AA3",
+              borderColor: sfxPreview ? SFX_COLOR : "#2A2A33",
+            }}
+            aria-pressed={sfxPreview}
+            onClick={() => setSfxPreview((v) => !v)}
+            title={
+              sfxPreview
+                ? "Sound effects play with the preview — click to mute them"
+                : "Sound effects are muted in the preview — click to hear them"
+            }
+          >
+            {/* A glyph, not an emoji — the strip's own vocabulary (`▾ logs`,
+                `▸ Hear it`), and the word says which state it is IN, not
+                which one the click would reach: this button is a monitor
+                state, and the timeline has room to say so. */}
+            {sfxPreview ? "♪ sfx on" : "♪ sfx off"}
+          </button>
+        )}
         {/* Zoom controls (R14 §53), always visible so the feature is
             discoverable — buttons anchor about the viewport centre,
             ctrl/cmd+wheel about the cursor. */}

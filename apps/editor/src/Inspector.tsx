@@ -229,8 +229,10 @@ const round3 = (v: number): number => Math.round(v * 1000) / 1000;
  * PLAY is here — the `openCommand`/`openInBrowser` split. Failures are
  * swallowed on purpose: a browser that refuses to start audio without a
  * gesture, or a pack file deleted since the library loaded (a 404), must cost
- * the click, never the panel. There is no synced in-player preview in v1
- * (YAGNI, the plan's own note) — click-to-hear is the affordance.
+ * the click, never the panel. This stays the AUDITION affordance — "what does
+ * this sound like" with the player parked — alongside the timeline's synced
+ * preview (`useSfxPreview`, 2026-08-29), which answers the different question
+ * of how it lands in the cut.
  */
 const previewSound = (soundId: string): void => {
   try {

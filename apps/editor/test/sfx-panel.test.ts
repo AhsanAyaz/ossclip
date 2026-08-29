@@ -60,12 +60,17 @@ function LaneHarness({
   onDocChange,
   onSelectSfx = () => {},
   sfxSelected = null,
+  playerRef = { current: null },
 }: {
   plan: SfxPlan | null;
   initialSfx?: OverrideDoc["sfx"];
   onDocChange?: (doc: OverrideDoc) => void;
   onSelectSfx?: (key: string | null) => void;
   sfxSelected?: string | null;
+  /** Loosely typed on purpose (Timeline.test.ts' rule): the preview tests hand
+   * in a tiny event-emitting stub, not a whole Remotion player. Every other
+   * test here takes the null default, which is the pre-preview wiring. */
+  playerRef?: { current: unknown };
 }) {
   const edits = useEdits();
   React.useEffect(() => {
@@ -83,7 +88,7 @@ function LaneHarness({
     ghosts: [],
     durationSec: DURATION,
     fps: 30,
-    playerRef: { current: null } as never,
+    playerRef: playerRef as never,
     selection: null,
     onSelect: () => {},
     edits,
@@ -227,6 +232,210 @@ describe("Timeline — the SFX marker lane (Phase 4)", () => {
       edits: {},
       added: [{ id: "pop-1", soundId: "pop", word: 3 }],
     });
+  });
+});
+
+/**
+ * A player that emits nothing on its own — the test drives the clock.
+ *
+ * The TranscriptPanel suite's stub, extended with the transport events the
+ * preview gates on: `frameupdate` alone is a scrub, and only `play` makes the
+ * samples that follow it playback.
+ */
+function stubPlayer() {
+  const listeners: Record<string, Array<(e: { detail: { frame: number } }) => void>> = {};
+  let playing = false;
+  const emit = (name: string, frame = 0): void => {
+    for (const cb of listeners[name] ?? []) cb({ detail: { frame } });
+  };
+  return {
+    ref: {
+      current: {
+        getCurrentFrame: () => 0,
+        seekTo: () => {},
+        isPlaying: () => playing,
+        addEventListener: (name: string, cb: (e: { detail: { frame: number } }) => void) => {
+          (listeners[name] ??= []).push(cb);
+        },
+        removeEventListener: (name: string, cb: (e: { detail: { frame: number } }) => void) => {
+          listeners[name] = (listeners[name] ?? []).filter((c) => c !== cb);
+        },
+      },
+    },
+    play: () => {
+      playing = true;
+      emit("play");
+    },
+    pause: () => {
+      playing = false;
+      emit("pause");
+    },
+    /** One playhead sample, in SECONDS — the harness runs at 30fps. */
+    frameAt: (sec: number) => emit("frameupdate", Math.round(sec * 30)),
+  };
+}
+
+/** Every `new Audio(src)` the preview makes, with its play calls — the
+ * `sfx-preview` button's own stub idiom, kept as a list because the preview
+ * pools one element per sound. */
+function stubAudio() {
+  const created: Array<{ src: string; plays: number; volume: number; currentTimes: number[] }> = [];
+  vi.stubGlobal(
+    "Audio",
+    class {
+      preload = "";
+      volume = 1;
+      #rec: (typeof created)[number];
+      constructor(src: string) {
+        this.#rec = { src, plays: 0, volume: 1, currentTimes: [] };
+        created.push(this.#rec);
+      }
+      set currentTime(v: number) {
+        this.#rec.currentTimes.push(v);
+      }
+      play() {
+        this.#rec.plays += 1;
+        this.#rec.volume = this.volume;
+        return Promise.resolve();
+      }
+    },
+  );
+  return created;
+}
+
+describe("Timeline — SFX play with the preview (Phase 4 follow-up)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  const mount = async (props: Parameters<typeof LaneHarness>[0]) => {
+    await act(async () => {
+      root.render(React.createElement(LaneHarness, props));
+    });
+  };
+
+  /** Word 1 at 1s, a second placement at 3s — the lane the tests play across. */
+  const PLAN: SfxPlan = {
+    level: "normal",
+    placements: [
+      { soundId: "ding", word: 1 },
+      { soundId: "vine-boom", word: 3, gain: 2 },
+    ],
+  };
+
+  it("plays a sound when playback crosses its marker, through the preview route", async () => {
+    const audio = stubAudio();
+    const player = stubPlayer();
+    await mount({ plan: PLAN, playerRef: player.ref });
+    // One element per DISTINCT sound, preloaded from the id — never a path.
+    expect(audio.map((a) => a.src)).toEqual([
+      "/api/sfx/audio?id=ding",
+      "/api/sfx/audio?id=vine-boom",
+    ]);
+    await act(async () => {
+      player.play();
+      player.frameAt(0.9); // seeds the baseline; fires nothing
+      player.frameAt(1.05); // crosses word 1
+    });
+    expect(audio[0]!.plays).toBe(1);
+    expect(audio[0]!.currentTimes).toEqual([0]); // restarted, not resumed
+    expect(audio[1]!.plays).toBe(0);
+    // …and the second placement fires on its own crossing, at the element's
+    // ceiling: gain 2 is legal in the doc and previews at 1.
+    await act(async () => {
+      player.frameAt(2.95);
+      player.frameAt(3.05);
+    });
+    expect(audio[1]!.plays).toBe(1);
+    expect(audio[1]!.volume).toBe(1);
+  });
+
+  it("fires nothing while the player is merely SCRUBBED — a seek is not playback", async () => {
+    const audio = stubAudio();
+    const player = stubPlayer();
+    await mount({ plan: PLAN, playerRef: player.ref });
+    await act(async () => {
+      player.frameAt(0.9);
+      player.frameAt(1.05);
+    });
+    expect(audio[0]!.plays).toBe(0);
+  });
+
+  it("the toggle gates it: OFF plays nothing, and back ON plays again", async () => {
+    const audio = stubAudio();
+    const player = stubPlayer();
+    await mount({ plan: PLAN, playerRef: player.ref });
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[data-testid="sfx-preview-toggle"]',
+    )!;
+    // Default ON — the sounds are the point of the lane.
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => {
+      toggle.click();
+    });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => {
+      player.play();
+      player.frameAt(0.9);
+      player.frameAt(1.05);
+    });
+    expect(audio[0]!.plays).toBe(0);
+    await act(async () => {
+      toggle.click();
+    });
+    await act(async () => {
+      player.frameAt(2.95);
+      player.frameAt(3.05);
+    });
+    expect(audio[1]!.plays).toBe(1);
+  });
+
+  it("previews a MUTED placement silently and an edited one at its NEW word", async () => {
+    // The lane's own derivation feeds the preview, so an edit made this
+    // session is heard where the user put it — with no render in between.
+    const audio = stubAudio();
+    const player = stubPlayer();
+    await mount({
+      plan: PLAN,
+      initialSfx: {
+        edits: { "ding@1": { word: 4 }, "vine-boom@3": { muted: true } },
+        added: [],
+      },
+      playerRef: player.ref,
+    });
+    await act(async () => {
+      player.play();
+      player.frameAt(0.9);
+      player.frameAt(1.05); // the PLANNED position — now empty
+      player.frameAt(2.95);
+      player.frameAt(3.05); // the muted placement's position
+    });
+    expect(audio.find((a) => a.src.endsWith("ding"))!.plays).toBe(0);
+    expect(audio.every((a) => a.plays === 0)).toBe(true);
+    await act(async () => {
+      player.frameAt(3.95);
+      player.frameAt(4.05); // word 4, where the drag put it
+    });
+    expect(audio.find((a) => a.src.endsWith("ding"))!.plays).toBe(1);
+  });
+
+  it("offers no toggle at all on a production planned without --sfx", async () => {
+    const player = stubPlayer();
+    await mount({ plan: null, playerRef: player.ref });
+    expect(container.querySelector('[data-testid="sfx-preview-toggle"]')).toBeNull();
   });
 });
 
