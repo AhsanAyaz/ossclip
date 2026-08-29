@@ -3,7 +3,7 @@ import React, { useEffect, useState } from "react";
 export interface RenderModalProps {
   defaultOutPath?: string;
   onCancel: () => void;
-  onConfirm: (outPath?: string) => void;
+  onConfirm: (outPath?: string, replan?: boolean) => void;
 }
 
 export const RenderModal: React.FC<RenderModalProps> = ({
@@ -12,6 +12,10 @@ export const RenderModal: React.FC<RenderModalProps> = ({
   onConfirm,
 }) => {
   const [outPath, setOutPath] = useState(defaultOutPath ?? "");
+  // Default OFF: a render from the editor reproduces the plan on screen.
+  // Ticking this asks the LLM for a fresh one, which renumbers scenes and
+  // can orphan edits anchored to the old numbering (renderReplayArgs).
+  const [replan, setReplan] = React.useState(false);
   const [isPicking, setIsPicking] = useState(false);
 
   useEffect(() => {
@@ -21,12 +25,12 @@ export const RenderModal: React.FC<RenderModalProps> = ({
         onCancel();
       } else if (e.key === "Enter" && !isPicking) {
         e.preventDefault();
-        onConfirm(outPath.trim() ? outPath.trim() : undefined);
+        onConfirm(outPath.trim() ? outPath.trim() : undefined, replan);
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onCancel, onConfirm, outPath, isPicking]);
+  }, [onCancel, onConfirm, outPath, isPicking, replan]);
 
   const handleBrowse = async () => {
     setIsPicking(true);
@@ -94,10 +98,19 @@ export const RenderModal: React.FC<RenderModalProps> = ({
           <button style={cancelBtn} onClick={onCancel}>
             Cancel
           </button>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, margin: "12px 0", fontSize: 13, opacity: 0.85 }}>
+            <input
+              type="checkbox"
+              data-testid="render-replan"
+              checked={replan}
+              onChange={(e) => setReplan(e.target.checked)}
+            />
+            Re-plan graphics with the LLM (discards the reviewed plan)
+          </label>
           <button
             data-testid="render-confirm-btn"
             style={confirmBtn}
-            onClick={() => onConfirm(outPath.trim() ? outPath.trim() : undefined)}
+            onClick={() => onConfirm(outPath.trim() ? outPath.trim() : undefined, replan)}
           >
             Start Render ⚡
           </button>

@@ -53,6 +53,7 @@ import {
 // building, with nothing to defer.
 import { loadEnvFiles } from "./env";
 import { revealInFileManager } from "./open";
+import { REVIEWED_SCENES_BASENAME, renderReplayArgs } from "./render-replay-args";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
 // cover` needs the same out-resolution rule this server's thumbnail dest,
 // youtube markdown and reveal endpoint derive from, and two spellings of it
@@ -990,13 +991,16 @@ export async function startEditServer(
           const chunks: Buffer[] = [];
           for await (const c of req) chunks.push(c as Buffer);
           let customOut: string | undefined;
+          let replan = false;
           try {
             const raw = Buffer.concat(chunks).toString();
             if (raw.trim()) {
-              const body = JSON.parse(raw) as { out?: string };
+              const body = JSON.parse(raw) as { out?: string; replan?: boolean };
               if (typeof body.out === "string" && body.out.trim()) {
                 customOut = body.out.trim();
               }
+              // Opt back into a fresh LLM plan (renderReplayArgs' why).
+              replan = body.replan === true;
             }
           } catch {
             // ignore
@@ -1051,6 +1055,30 @@ export async function startEditServer(
             filteredArgs.push("--out", customOut);
             args = filteredArgs;
           }
+          // THE EDITOR IS THE AUTHORITY for a render started here: pin the
+          // plan the user just reviewed (`production.json`'s scenes) instead
+          // of letting `--produce` plan a fresh one that renumbers scenes and
+          // orphans their edits (renderReplayArgs owns the full why). Written
+          // to its own file rather than reusing `scenes-<key>.json`, which is
+          // keyed to a beat sheet this render may no longer match.
+          let scenesPath: string | undefined;
+          if (!replan) {
+            try {
+              const production = JSON.parse(
+                await readFile(join(workdir!, "production.json"), "utf8"),
+              ) as { scenes?: unknown };
+              if (Array.isArray(production.scenes) && production.scenes.length > 0) {
+                scenesPath = join(workdir!, REVIEWED_SCENES_BASENAME);
+                await writeFile(scenesPath, `${JSON.stringify(production.scenes, null, 2)}\n`);
+              }
+            } catch {
+              // No production.json, an old one without `scenes`, or an
+              // unwritable workdir: replay the recorded command rather than
+              // refuse to render (renderReplayArgs' no-plan case).
+              scenesPath = undefined;
+            }
+          }
+          args = renderReplayArgs(args, { scenesPath, replan });
           renderLines = [];
           renderExit = null;
           renderStartedAt = Date.now();

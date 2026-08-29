@@ -1462,13 +1462,20 @@ export const App: React.FC = () => {
   // selection are all KEPT (no edits.load — the server's doc is exactly what
   // was just saved). On failure the log panel stays up with the tail.
   const onRender = useCallback(
-    async (customOut?: string): Promise<void> => {
+    async (customOut?: string, replan?: boolean): Promise<void> => {
       try {
         if (edits.dirty) await edits.save();
         const res = await fetch("/api/render", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(customOut ? { out: customOut } : {}),
+          // `replan` asks the server for a FRESH LLM plan; without it the
+          // render pins the plan on screen, so a re-render reproduces what
+          // was reviewed instead of renumbering scenes and orphaning edits
+          // (renderReplayArgs, 2026-08-29).
+          body: JSON.stringify({
+            ...(customOut ? { out: customOut } : {}),
+            ...(replan === true ? { replan: true } : {}),
+          }),
         });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -1855,9 +1862,9 @@ export const App: React.FC = () => {
         <RenderModal
           defaultOutPath={defaultOutPath}
           onCancel={() => setShowRenderModal(false)}
-          onConfirm={(customOut) => {
+          onConfirm={(customOut, replan) => {
             setShowRenderModal(false);
-            void onRender(customOut);
+            void onRender(customOut, replan);
           }}
         />
       ) : null}
