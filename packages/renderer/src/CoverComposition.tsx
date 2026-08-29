@@ -100,10 +100,21 @@ export const CoverComposition: React.FC<CoverCompProps> = ({
       />
       <AbsoluteFill
         style={{
-          paddingTop: `${rect.y * 100}%`,
-          paddingBottom: `${(1 - rect.y - rect.h) * 100}%`,
-          paddingLeft: `${rect.x * 100}%`,
-          paddingRight: `${(1 - rect.x - rect.w) * 100}%`,
+          // TOP/HEIGHT, never percentage PADDING (2026-08-29). A vertical
+          // percentage padding resolves against the container's WIDTH in CSS,
+          // so on a 1920x1080 cover `paddingTop: 67%` is 1296px inside a
+          // 1080px-tall frame: the banner rendered entirely below the image
+          // and every landscape cover shipped as a bare still, with no error
+          // anywhere. Portrait hid it because there the width IS the short
+          // edge. `top`/`height` on an absolutely positioned box resolve
+          // against the HEIGHT, which is what these fractions have always
+          // meant (`coverTextRect` returns frame fractions).
+          top: `${rect.y * 100}%`,
+          height: `${rect.h * 100}%`,
+          left: `${rect.x * 100}%`,
+          width: `${rect.w * 100}%`,
+          bottom: "auto",
+          right: "auto",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
