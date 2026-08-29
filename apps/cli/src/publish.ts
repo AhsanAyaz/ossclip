@@ -1,14 +1,21 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InvalidArgumentError } from "commander";
+import { z } from "zod/v4";
 import {
   YOUTUBE_APPROVED_BASENAME,
   YoutubePackSchema,
   buildPostsPayload,
   captionForProvider,
+  checkDurationCaps,
   createPostizProvider,
+  deliveryEncodePlan,
+  ensureDeliveryFile,
   loadConfig,
+  probe,
+  type DeliveryPlan,
+  type DurationViolation,
   type OssclipConfig,
   type PublishPost,
   type PublishProvider,
@@ -197,6 +204,60 @@ export function youtubePrivacyFlag(v: string): YoutubePrivacy {
   return found;
 }
 
+/** `--delivery` — what actually uploads (2026-08-29 handoff, item 1). */
+export const DELIVERY_MODES = ["auto", "master"] as const;
+export type DeliveryMode = (typeof DELIVERY_MODES)[number];
+
+/**
+ * `--delivery <auto|master>` → a validated choice, zod-parsed and rejected
+ * rather than coerced (§93a): a typo'd `--delivery masterr` silently falling
+ * back to `auto` would re-encode the one run where the user explicitly wanted
+ * the untouched master. Exported so the rejection matrix is testable without
+ * commander's exit behaviour.
+ */
+export function deliveryFlag(v: string): DeliveryMode {
+  const parsed = z.enum(DELIVERY_MODES).safeParse(v.trim());
+  if (!parsed.success) {
+    throw new InvalidArgumentError(
+      `--delivery wants one of ${DELIVERY_MODES.join(", ")}, got "${v}"`,
+    );
+  }
+  return parsed.data;
+}
+
+/** Seconds → "5:20" for the duration-cap messages — a cap named in seconds
+ * ("video is 320s") makes the user do the platform's arithmetic. */
+export function formatMinSec(sec: number): string {
+  const whole = Math.round(sec);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+/**
+ * One loud line per refused channel — the platform hard-fails an over-cap
+ * upload anyway (the 5:20 take was doomed on Threads' 5:00 cap before a
+ * single byte uploaded), so the refusal names the cap instead of letting the
+ * platform's opaque error do it. Pure so the wording is pinned by a test.
+ */
+export function durationCapMessages(violations: DurationViolation[], durationSec: number): string[] {
+  return violations.map(
+    (v) =>
+      `▸ ${v.target.provider} capped at ${formatMinSec(v.capSec)}, video is ` +
+      `${formatMinSec(durationSec)} — skipping ${v.target.name}`,
+  );
+}
+
+/**
+ * What the confirm prompt says will upload — decided BEFORE the "yes" so the
+ * user approves the actual file, not a surprise re-encode after it. Pure;
+ * the encode itself runs post-confirm.
+ */
+export function describeUpload(mode: DeliveryMode, plan: DeliveryPlan | null): string {
+  if (mode === "master") return "master (--delivery master)";
+  return plan === null
+    ? "master (already within delivery limits)"
+    : `${plan.fileName} (delivery encode, cached in workdir)`;
+}
+
 /**
  * The pack this publish reads: the APPROVED file when the editor wrote one
  * (an edited pack is the user's decision), else the provider-keyed cache
@@ -273,6 +334,8 @@ export interface PublishFlags {
   force?: boolean;
   /** `--youtube-privacy`; undefined = the payload's safe `private` default. */
   youtubePrivacy?: YoutubePrivacy;
+  /** `--delivery`; undefined = `auto` (upload the delivery encode). */
+  delivery?: DeliveryMode;
 }
 
 /**
@@ -287,6 +350,12 @@ export async function runPublish(
     provider?: PublishProvider;
     config?: OssclipConfig;
     env?: NodeJS.ProcessEnv;
+    /** The two ffmpeg-family shell-outs, injectable so tests never spawn a
+     * binary (the `provider` seam applied to ffprobe/ffmpeg): `probeVideo`
+     * feeds the duration caps and the upload summary, `ensureDelivery`
+     * builds — or reuses — the cached delivery encode. */
+    probeVideo?: typeof probe;
+    ensureDelivery?: typeof ensureDeliveryFile;
   } = {},
 ): Promise<void> {
   const config = deps.config ?? loadConfig();
@@ -345,9 +414,43 @@ export async function runPublish(
     ) as PublishTarget[];
   }
 
+  // Probe ONCE, before the confirm prompt: the duration caps and the upload
+  // summary both need it, and a channel this video can never land on must be
+  // refused before the user says yes — not after minutes of x264 (2026-08-29
+  // handoff: Threads' 5:00 cap vs a 5:20 take).
+  const tools = { ffmpegPath: config.ffmpegPath, ffprobePath: config.ffprobePath };
+  const masterProbe = await (deps.probeVideo ?? probe)(tools, out);
+  const violations = checkDurationCaps(picked, masterProbe.duration);
+  if (violations.length > 0) {
+    for (const line of durationCapMessages(violations, masterProbe.duration)) console.log(line);
+    const over = new Set(violations.map((v) => v.target.id));
+    picked = picked.filter((t) => !over.has(t.id));
+    if (picked.length === 0) {
+      throw new Error(
+        `every selected channel refuses a ${formatMinSec(masterProbe.duration)} video — ` +
+          "nothing to publish (shorten the cut, or pick channels without a duration cap)",
+      );
+    }
+  }
+  // The plan is recomputed pure here so the confirm prompt can NAME the file
+  // that will upload; ensureDeliveryFile re-derives it (and re-probes, one
+  // cheap ffprobe) after the "yes" to keep its cache logic self-contained.
+  const deliveryMode = flags.delivery ?? "auto";
+  const plan =
+    deliveryMode === "master"
+      ? null
+      : deliveryEncodePlan({
+          width: masterProbe.width,
+          height: masterProbe.height,
+          fps: masterProbe.fps,
+          duration: masterProbe.duration,
+          sizeBytes: (await stat(out)).size,
+        });
+
   const when: PublishWhen = flags.at ? { kind: "at", iso: flags.at } : { kind: "now" };
   const posts = buildPublishPosts(pack, picked, { youtubePrivacy: flags.youtubePrivacy });
   console.log(summarizePosts(posts, when));
+  console.log(`▸ upload: ${describeUpload(deliveryMode, plan)}`);
 
   if (flags.dryRun === true) {
     const payload = buildPostsPayload({
@@ -374,8 +477,20 @@ export async function runPublish(
     }
   }
 
-  console.log(`▸ uploading ${out} to Postiz...`);
-  const result = await provider.publish({ videoPath: out, posts, when });
+  // The encode runs AFTER the confirm — 1–3 minutes of x264 is a bad price
+  // for a "no" — and before the upload, which takes the delivery path.
+  let uploadPath = out;
+  if (deliveryMode === "auto") {
+    const ensured = await (deps.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out, {
+      onStart: (name) => console.log(`▸ encoding delivery file ${name} (cached in workdir)`),
+    });
+    uploadPath = ensured.path;
+    if (!ensured.encoded && ensured.path !== out) {
+      console.log(`▸ delivery file already cached — reusing ${ensured.path}`);
+    }
+  }
+  console.log(`▸ uploading ${uploadPath} to Postiz...`);
+  const result = await provider.publish({ videoPath: uploadPath, posts, when });
   await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);
   const where = configured.baseUrl.replace(/\/+$/, "");
   console.log(

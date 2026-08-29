@@ -21,6 +21,9 @@ export interface PublishIntegrationInfo {
   name: string;
   /** The caption the publish WOULD use (authored-else-derived, server-side). */
   caption: string;
+  /** The platform's video duration cap in seconds; null/absent = no cap
+   * (core's PLATFORM_DURATION_CAPS_SEC, resolved server-side). */
+  durationCapSec?: number | null;
 }
 
 export interface PublishReceiptInfo {
@@ -38,6 +41,10 @@ export interface PublishInfo {
   integrations?: PublishIntegrationInfo[];
   packAvailable?: boolean;
   outPathExists?: boolean;
+  /** The finished render's duration in seconds; null when the server could
+   * not probe it (the panel then skips the pre-flight gray-out — the server
+   * still refuses over-cap channels on POST). */
+  durationSec?: number | null;
   receipt?: PublishReceiptInfo | null;
 }
 
@@ -69,6 +76,30 @@ export const NO_PACK_MESSAGE =
   "No captions to post yet — run produce with --youtube (or approve a pack in the SEO " +
   "panel) so publish has copy to send.";
 export const NO_RENDER_MESSAGE = "No finished render to publish — render first.";
+
+/** Seconds → "5:20" — mirrors the CLI's formatMinSec, hardcoded for the same
+ * reason as PANEL_CAPTION_CAPS (importing the CLI would drag node built-ins
+ * into the Vite bundle). */
+export function formatMinSec(sec: number): string {
+  const whole = Math.round(sec);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+/**
+ * The chip's over-cap annotation, or null when the channel can take the
+ * video. Unknown duration or an uncapped platform is null too — a gray-out
+ * on a guess would block a publish the server would have accepted. Pure so
+ * the matrix is testable without a mount.
+ */
+export function overCapNote(
+  durationSec: number | null | undefined,
+  capSec: number | null | undefined,
+): string | null {
+  if (typeof durationSec !== "number" || typeof capSec !== "number") return null;
+  // Strictly over — a video exactly at the cap is what the cap permits.
+  if (durationSec <= capSec) return null;
+  return `video ${formatMinSec(durationSec)} > ${formatMinSec(capSec)} cap`;
+}
 
 /** `<input type="datetime-local">`'s value → the ISO the server validates.
  * Pure so the empty/garbage matrix is testable without a mount. */
@@ -152,6 +183,11 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const pickedIds = Object.entries(selected)
     .filter(([, on]) => on)
     .map(([id]) => id);
+  // Per-channel duration cap, looked up by id at chip-render time — grouping
+  // (publishGroups.ts) stays presentation-only and cap-unaware.
+  const capById: Record<string, number | null> = Object.fromEntries(
+    (info?.integrations ?? []).map((i) => [i.id, i.durationCapSec ?? null]),
+  );
   const schedule = scheduleIso(scheduleLocal);
   const scheduleInvalid = scheduleLocal.trim().length > 0 && schedule === null;
   const hasReceipt = (info?.receipt ?? null) !== null || sent !== null;
@@ -268,18 +304,30 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                         {group.channels.map((channel) => {
                           const picked = selected[channel.id] === true;
+                          // Over-cap channels are unpickable, not silently
+                          // dropped at send time: the 5:20-vs-Threads-5:00
+                          // publish should be refused HERE, with the cap
+                          // named, before anything uploads.
+                          const note = overCapNote(info.durationSec, capById[channel.id]);
                           return (
                             <button
                               key={channel.id}
                               type="button"
                               data-testid={`publish-chip-${channel.id}`}
                               aria-pressed={picked}
+                              disabled={note !== null}
+                              title={note ?? undefined}
                               onClick={() =>
                                 setSelected((prev) => ({ ...prev, [channel.id]: !picked }))
                               }
-                              style={{ ...chipStyle, ...(picked ? chipOnStyle : {}) }}
+                              style={{
+                                ...chipStyle,
+                                ...(picked ? chipOnStyle : {}),
+                                ...(note !== null ? chipOverCapStyle : {}),
+                              }}
                             >
                               {channel.name}
+                              {note !== null ? ` — ${note}` : ""}
                             </button>
                           );
                         })}
@@ -381,6 +429,12 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                 {sendError}
               </div>
             ) : null}
+            {busy ? (
+              <div data-testid="publish-busy-note" style={{ ...subtitle, marginTop: 12 }}>
+                Encoding the delivery file and uploading through Postiz — this can take a few
+                minutes for a long video.
+              </div>
+            ) : null}
             <div style={footerRow}>
               <div style={footNote}>
                 Sends through your Postiz instance, on your accounts — nothing goes anywhere
@@ -393,7 +447,10 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                 onClick={() => void onPublish()}
               >
                 {busy
-                  ? "Publishing…"
+                  ? // The POST runs the delivery encode synchronously before
+                    // the upload (edit.ts), so the button says what the wait
+                    // actually is.
+                    "Encoding & publishing…"
                   : hasReceipt
                     ? "Publish again"
                     : schedule !== null
@@ -470,6 +527,11 @@ const chipStyle: React.CSSProperties = {
   cursor: "pointer",
   fontSize: 12,
   padding: "4px 10px",
+};
+
+const chipOverCapStyle: React.CSSProperties = {
+  opacity: 0.45,
+  cursor: "not-allowed",
 };
 
 const chipOnStyle: React.CSSProperties = {

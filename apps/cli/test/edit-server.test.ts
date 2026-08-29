@@ -1743,6 +1743,21 @@ describe("publish endpoints (2026-08-26)", () => {
   const env = { OSSCLIP_POSTIZ_API_KEY: "sekret" } as NodeJS.ProcessEnv;
   const cfg = () => ({ postizUrl: "https://p.example.com" });
 
+  // The publish endpoints' shell-out seams (probe + delivery encode) — the
+  // fake mp4s here would fail a real ffprobe, and the suite must never spawn
+  // ffmpeg anyway. 60s is under every platform cap.
+  const fakeProbe = { duration: 60, width: 1920, height: 1080, fps: 30, hasAudio: true };
+  const probeVideo = async (): Promise<typeof fakeProbe> => fakeProbe;
+  const passthroughDelivery = async (
+    _tools: unknown,
+    _workdir: string,
+    masterPath: string,
+  ): Promise<{ path: string; encoded: boolean; probe: typeof fakeProbe }> => ({
+    path: masterPath,
+    encoded: false,
+    probe: fakeProbe,
+  });
+
   const jsonRes = (status: number, body: unknown): Response =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -1809,6 +1824,7 @@ describe("publish endpoints (2026-08-26)", () => {
         recentDir: SHARED_RECENTS,
         loadCfg: () => ({ postizUrl: "https://p.example.com" }),
         publishFetch: async () => new Response("[]", { status: 200 }),
+        probeVideo,
       });
       close = server.close;
       // The key arrives AFTER the server is already listening.
@@ -1831,7 +1847,11 @@ describe("publish endpoints (2026-08-26)", () => {
       loadCfg: cfg,
       publishEnv: env,
       publishFetch: async () =>
-        jsonRes(200, [{ id: "a", name: "Ahsan", identifier: "linkedin" }]),
+        jsonRes(200, [
+          { id: "a", name: "Ahsan", identifier: "linkedin" },
+          { id: "t", name: "Ahsan", identifier: "threads" },
+        ]),
+      probeVideo,
     });
     close = server.close;
     const body = await (await fetch(`${server.url}/api/publish`)).json();
@@ -1840,11 +1860,26 @@ describe("publish endpoints (2026-08-26)", () => {
       reachable: true,
       packAvailable: true,
       outPathExists: true,
+      // The pre-flight duration the panel grays out over-cap channels with.
+      durationSec: 60,
       receipt: null,
     });
-    expect(body.integrations).toEqual([
-      { id: "a", provider: "linkedin", name: "Ahsan", caption: "authored linkedin post" },
-    ]);
+    expect(body.integrations[0]).toEqual({
+      id: "a",
+      provider: "linkedin",
+      name: "Ahsan",
+      caption: "authored linkedin post",
+      // No LinkedIn duration cap — null means unlimited, and the panel
+      // must not gray a channel out on a guess.
+      durationCapSec: null,
+    });
+    // Threads' caption is DERIVED (no authored one in the pack) — this test
+    // pins only the cap riding along, captions have their own tests.
+    expect(body.integrations[1]).toMatchObject({
+      id: "t",
+      provider: "threads",
+      durationCapSec: 300,
+    });
     expect(JSON.stringify(body)).not.toContain("sekret");
   });
 
@@ -1858,6 +1893,7 @@ describe("publish endpoints (2026-08-26)", () => {
       publishFetch: async () => {
         throw new Error("ECONNREFUSED");
       },
+      probeVideo,
     });
     close = server.close;
     const body = await (await fetch(`${server.url}/api/publish`)).json();
@@ -1880,6 +1916,8 @@ describe("publish endpoints (2026-08-26)", () => {
         if (String(u).endsWith("/upload")) return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
         return jsonRes(200, [{ id: "post-1" }]);
       },
+      probeVideo,
+      ensureDelivery: passthroughDelivery,
     });
     close = server.close;
     const res = await fetch(`${server.url}/api/publish`, {
@@ -1939,6 +1977,8 @@ describe("publish endpoints (2026-08-26)", () => {
           return jsonRes(200, [{ id: "a", name: "Ahsan", identifier: "linkedin" }]);
         return new Response("bad settings", { status: 400 });
       },
+      probeVideo,
+      ensureDelivery: passthroughDelivery,
     });
     close = server.close;
     const res = await fetch(`${server.url}/api/publish`, {
@@ -1947,6 +1987,115 @@ describe("publish endpoints (2026-08-26)", () => {
     });
     expect(res.status).toBe(502);
     expect(existsSync(join(dir, "publish-receipt.json"))).toBe(false);
+  });
+
+  it("POST drops over-cap channels, publishes the rest, and names the dropped in the response", async () => {
+    const { dir } = await publishWorkdir();
+    const postBodies: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u, init) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [
+            { id: "t", name: "Ahsan", identifier: "threads" },
+            { id: "a", name: "Ahsan", identifier: "linkedin" },
+          ]);
+        if (String(u).endsWith("/upload")) return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
+        postBodies.push(String((init as { body?: unknown })?.body ?? ""));
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+      // 320s vs Threads' 300s cap — the 2026-08-29 handoff's exact failure,
+      // refused server-side even if a stale panel let the pick through.
+      probeVideo: async () => ({ ...fakeProbe, duration: 320 }),
+      ensureDelivery: passthroughDelivery,
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["t", "a"] }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.dropped).toEqual([{ id: "t", provider: "threads", name: "Ahsan", capSec: 300 }]);
+    // The /posts payload carries ONLY the surviving channel.
+    expect(postBodies).toHaveLength(1);
+    expect(postBodies[0]).toContain('"a"');
+    expect(postBodies[0]).not.toContain('"t"');
+  });
+
+  it("POST is 412 when EVERY picked channel is over its cap — nothing encodes, nothing uploads", async () => {
+    const { dir } = await publishWorkdir();
+    const ensureCalls: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [{ id: "t", name: "Ahsan", identifier: "threads" }]);
+        throw new Error("nothing past /integrations should be called");
+      },
+      probeVideo: async () => ({ ...fakeProbe, duration: 320 }),
+      ensureDelivery: async (_t, _w, master) => {
+        ensureCalls.push(master);
+        return { path: master, encoded: false, probe: { ...fakeProbe, duration: 320 } };
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["t"] }),
+    });
+    const body = await res.json();
+    expect(res.status).toBe(412);
+    expect(body.dropped).toEqual([{ id: "t", provider: "threads", name: "Ahsan", capSec: 300 }]);
+    expect(ensureCalls).toHaveLength(0);
+    expect(existsSync(join(dir, "publish-receipt.json"))).toBe(false);
+  });
+
+  it("POST uploads the delivery file; delivery:'master' bypasses the encode", async () => {
+    const { dir, out } = await publishWorkdir();
+    const ensureCalls: string[] = [];
+    const deliveryPath = join(dir, "delivery-1920x1080@10000k.mp4");
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [{ id: "a", name: "Ahsan", identifier: "linkedin" }]);
+        if (String(u).endsWith("/upload")) return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+      probeVideo,
+      ensureDelivery: async (_t, _w, master) => {
+        ensureCalls.push(master);
+        // The upload reads the returned path, so the fake must put a real
+        // file there — exactly what the real encode would have done.
+        await writeFile(deliveryPath, "delivery");
+        return { path: deliveryPath, encoded: true, probe: fakeProbe };
+      },
+    });
+    close = server.close;
+    const auto = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"] }),
+    });
+    expect(auto.status).toBe(200);
+    expect(ensureCalls).toEqual([out]);
+
+    const master = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"], delivery: "master", force: true }),
+    });
+    expect(master.status).toBe(200);
+    // Still one call — master mode never touched the encode path.
+    expect(ensureCalls).toEqual([out]);
   });
 });
 

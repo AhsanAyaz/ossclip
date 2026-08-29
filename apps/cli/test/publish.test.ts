@@ -1,18 +1,31 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { InvalidArgumentError } from "commander";
-import type { PublishTarget, YoutubePack } from "@ossclip/core";
+import type {
+  OssclipConfig,
+  Probe,
+  PublishProvider,
+  PublishReceipt,
+  PublishRequest,
+  PublishTarget,
+  YoutubePack,
+} from "@ossclip/core";
 import {
   POSTIZ_API_KEY_ENV,
   PUBLISH_RECEIPT_BASENAME,
   accountsFlag,
   atFlag,
   buildPublishPosts,
+  deliveryFlag,
+  describeUpload,
+  durationCapMessages,
+  formatMinSec,
   loadPublishPack,
   platformsFlag,
   publishConfigured,
+  runPublish,
   selectTargets,
   summarizePosts,
 } from "../src/publish";
@@ -41,6 +54,49 @@ describe("platformsFlag / accountsFlag", () => {
   it("rejects an empty list", () => {
     expect(() => platformsFlag(" , ")).toThrow(InvalidArgumentError);
     expect(() => accountsFlag(",")).toThrow(InvalidArgumentError);
+  });
+});
+
+describe("deliveryFlag", () => {
+  it("accepts the two modes, trimmed", () => {
+    expect(deliveryFlag("auto")).toBe("auto");
+    expect(deliveryFlag(" master ")).toBe("master");
+  });
+
+  it.each(["masterr", "AUTO", "original", ""])(
+    'rejects "%s" — a typo must not silently re-encode (or skip the encode)',
+    (v) => {
+      expect(() => deliveryFlag(v)).toThrow(InvalidArgumentError);
+    },
+  );
+});
+
+describe("formatMinSec / durationCapMessages / describeUpload", () => {
+  it("formats seconds as M:SS", () => {
+    expect(formatMinSec(320)).toBe("5:20");
+    expect(formatMinSec(300)).toBe("5:00");
+    expect(formatMinSec(59.6)).toBe("1:00");
+  });
+
+  it("names the platform, its cap and the video's length per dropped target", () => {
+    const lines = durationCapMessages(
+      [{ target: { id: "t", provider: "threads", name: "Ahsan" }, capSec: 300 }],
+      320,
+    );
+    expect(lines).toEqual(["▸ threads capped at 5:00, video is 5:20 — skipping Ahsan"]);
+  });
+
+  it("says which file uploads: the planned delivery name, or master with the reason", () => {
+    expect(describeUpload("master", null)).toBe("master (--delivery master)");
+    expect(describeUpload("auto", null)).toBe("master (already within delivery limits)");
+    expect(
+      describeUpload("auto", {
+        width: 1920,
+        height: 1080,
+        videoBitrateKbps: 10000,
+        fileName: "delivery-1920x1080@10000k.mp4",
+      }),
+    ).toBe("delivery-1920x1080@10000k.mp4 (delivery encode, cached in workdir)");
   });
 });
 
@@ -149,6 +205,144 @@ describe("summarizePosts", () => {
   });
 });
 
+describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const masterProbe: Probe = {
+    duration: 320,
+    width: 3840,
+    height: 2160,
+    fps: 30,
+    hasAudio: true,
+  };
+  const receipt: PublishReceipt = {
+    backend: "postiz",
+    postIds: ["post-1"],
+    publishedAt: "2026-08-29T12:00:00.000Z",
+    when: { kind: "now" },
+    targets: [],
+  } as unknown as PublishReceipt;
+
+  /** A workdir with the recorded out, the final mp4 and a pack on disk. */
+  async function workdirWithRender(): Promise<{ dir: string; out: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-pub-run-"));
+    const out = join(dir, "final.mp4");
+    await writeFile(out, "rendered");
+    await writeFile(join(dir, "youtube-aaaaaaaa.json"), JSON.stringify(pack));
+    await writeFile(
+      join(dir, "command.json"),
+      JSON.stringify({
+        execPath: process.execPath,
+        execArgv: [],
+        script: join(dir, "recorded.cjs"),
+        args: ["produce", "in.mp4"],
+        cwd: dir,
+        out,
+      }),
+    );
+    return { dir, out };
+  }
+
+  function fakes(overrides: { targets?: PublishTarget[]; probe?: Probe } = {}) {
+    const published: PublishRequest[] = [];
+    const provider: PublishProvider = {
+      name: "fake",
+      listTargets: async () => overrides.targets ?? targets,
+      publish: async (req) => {
+        published.push(req);
+        return receipt;
+      },
+    };
+    const ensureCalls: string[] = [];
+    const deps = {
+      provider,
+      config: {
+        postizUrl: "https://p.example.com",
+        ffmpegPath: "ffmpeg-not-run",
+        ffprobePath: "ffprobe-not-run",
+      } as OssclipConfig,
+      env: { [POSTIZ_API_KEY_ENV]: "k" } as NodeJS.ProcessEnv,
+      probeVideo: async () => overrides.probe ?? masterProbe,
+      ensureDelivery: async (
+        _tools: unknown,
+        workdir: string,
+        masterPath: string,
+        opts: { onStart?: (name: string) => void } = {},
+      ) => {
+        ensureCalls.push(masterPath);
+        opts.onStart?.("delivery-1920x1080@10000k.mp4");
+        return {
+          path: join(workdir, "delivery-1920x1080@10000k.mp4"),
+          encoded: true,
+          probe: overrides.probe ?? masterProbe,
+        };
+      },
+    };
+    return { published, ensureCalls, deps };
+  }
+
+  it("the provider receives the DELIVERY path, and the encode announces itself", async () => {
+    const { dir } = await workdirWithRender();
+    const { published, ensureCalls, deps } = fakes();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runPublish(dir, { all: true, yes: true }, deps);
+    expect(ensureCalls).toHaveLength(1);
+    expect(published[0]!.videoPath).toBe(join(dir, "delivery-1920x1080@10000k.mp4"));
+    const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain("▸ encoding delivery file delivery-1920x1080@10000k.mp4 (cached in workdir)");
+  });
+
+  it("--delivery master bypasses the encode and uploads the untouched render, saying so", async () => {
+    const { dir, out } = await workdirWithRender();
+    const { published, ensureCalls, deps } = fakes();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runPublish(dir, { all: true, yes: true, delivery: "master" }, deps);
+    expect(ensureCalls).toHaveLength(0);
+    expect(published[0]!.videoPath).toBe(out);
+    const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain("▸ upload: master (--delivery master)");
+  });
+
+  it("over-cap targets are dropped loudly BEFORE upload; the rest still publish", async () => {
+    const { dir } = await workdirWithRender();
+    const mixed: PublishTarget[] = [
+      { id: "t", provider: "threads", name: "Ahsan" },
+      { id: "a", provider: "linkedin", name: "Ahsan" },
+    ];
+    // 320s vs Threads' 300s cap — the 2026-08-29 handoff's exact failure.
+    const { published, deps } = fakes({ targets: mixed });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runPublish(dir, { all: true, yes: true }, deps);
+    const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(output).toContain("▸ threads capped at 5:00, video is 5:20 — skipping Ahsan");
+    expect(published).toHaveLength(1);
+    expect(published[0]!.posts.map((p) => p.target.provider)).toEqual(["linkedin"]);
+  });
+
+  it("every target over its cap aborts with a clear error — no encode, no upload", async () => {
+    const { dir } = await workdirWithRender();
+    const only: PublishTarget[] = [{ id: "t", provider: "threads", name: "Ahsan" }];
+    const { published, ensureCalls, deps } = fakes({ targets: only });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await expect(runPublish(dir, { all: true, yes: true }, deps)).rejects.toThrow(
+      /every selected channel refuses a 5:20 video/,
+    );
+    expect(published).toHaveLength(0);
+    expect(ensureCalls).toHaveLength(0);
+  });
+
+  it("--delivery master still enforces the duration caps — the probe serves both", async () => {
+    const { dir } = await workdirWithRender();
+    const only: PublishTarget[] = [{ id: "t", provider: "threads", name: "Ahsan" }];
+    const { published, deps } = fakes({ targets: only });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    await expect(
+      runPublish(dir, { all: true, yes: true, delivery: "master" }, deps),
+    ).rejects.toThrow(/every selected channel refuses/);
+    expect(published).toHaveLength(0);
+  });
+});
+
 describe("publish argv (the real program)", () => {
   const parse = async (argv: string[]): Promise<{ workdir?: string; opts: Record<string, unknown> }> => {
     const { buildProgram } = await import("../src/program");
@@ -184,6 +378,15 @@ describe("publish argv (the real program)", () => {
     expect(opts.dryRun).toBe(true);
     expect(opts.yes).toBe(true);
     expect(opts.force).toBe(false);
+    // The delivery encode is the default — uploading the master is the
+    // explicit escape hatch, never the accident.
+    expect(opts.delivery).toBe("auto");
+  });
+
+  it("--delivery master parses; garbage fails at parse", async () => {
+    const { opts } = await parse(["publish", "--delivery", "master", "-y"]);
+    expect(opts.delivery).toBe("master");
+    await expect(parse(["publish", "--delivery", "masterr"])).rejects.toThrow();
   });
 
   it("a garbage --at fails at parse, before any action runs", async () => {

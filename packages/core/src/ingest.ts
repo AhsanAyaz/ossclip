@@ -137,7 +137,7 @@ export interface MezzanineScale {
 }
 
 /** Nearest even dimension — yuv420 chroma subsampling needs both axes even. */
-function evenDim(v: number): number {
+export function evenDim(v: number): number {
   return Math.max(2, 2 * Math.round(v / 2));
 }
 

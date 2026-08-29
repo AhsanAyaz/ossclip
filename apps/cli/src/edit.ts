@@ -20,7 +20,11 @@ import {
   approvedOverlayText,
   buildThumbnailPrompt,
   captionForProvider,
+  checkDurationCaps,
   createPostizProvider,
+  ensureDeliveryFile,
+  PLATFORM_DURATION_CAPS_SEC,
+  probe,
   alignRestamp,
   emptyOverrideDoc,
   extractAudioSpan,
@@ -363,6 +367,11 @@ export async function startEditServer(
     /** Fetch seam for the publish endpoints — tests stub Postiz instead of
      * needing an instance on the runner (createPostizProvider's fetchImpl). */
     publishFetch?: typeof fetch;
+    /** The publish endpoints' two ffmpeg-family shell-outs (the sliceAudio/
+     * runWhisper seam pattern) — tests stub a probe and a delivery encode
+     * instead of needing ffmpeg/ffprobe and a real render on the runner. */
+    probeVideo?: typeof probe;
+    ensureDelivery?: typeof ensureDeliveryFile;
     /** File-manager reveal seam (the `generateThumbnail` pattern) — tests
      * observe the revealed path instead of popping a real Finder/Explorer
      * window on the runner. */
@@ -551,6 +560,14 @@ export async function startEditServer(
   const resolvePublishConfig = (): ReturnType<typeof publishConfigured> => {
     if (opts.publishEnv === undefined) loadEnvFiles();
     return publishConfigured((opts.loadCfg ?? loadConfig)(), opts.publishEnv ?? process.env);
+  };
+  /** ffmpeg/ffprobe for the publish endpoints' probe + delivery encode —
+   * from the same config read the rest of the panel resolves through. The
+   * `?? "ffmpeg"` legs exist only for the narrowed `loadCfg` seam; the real
+   * `loadConfig()` always fills both. */
+  const publishTools = (): { ffmpegPath: string; ffprobePath: string } => {
+    const cfg = (opts.loadCfg ?? loadConfig)();
+    return { ffmpegPath: cfg.ffmpegPath ?? "ffmpeg", ffprobePath: cfg.ffprobePath ?? "ffprobe" };
   };
   const approvedPackPath = (): string => join(workdir!, YOUTUBE_APPROVED_BASENAME);
   /** The pack the panel shows: the approved file first (the user's
@@ -1523,7 +1540,25 @@ export async function startEditServer(
           const cmd = await readCommandRecord();
           const out = cmd ? recordedOutPath(cmd) : null;
           const pack = await currentYoutubePack();
-          let integrations: Array<{ id: string; provider: string; name: string; caption: string }> = [];
+          // Pre-flight duration for the panel, read leniently (the
+          // /api/cleanup posture): a missing ffprobe or an unreadable render
+          // degrades to null — the panel loses the gray-out, never the modal —
+          // and POST re-checks the caps authoritatively anyway.
+          let durationSec: number | null = null;
+          if (out !== null && existsSync(out)) {
+            try {
+              durationSec = (await (opts.probeVideo ?? probe)(publishTools(), out)).duration;
+            } catch {
+              // degrade — the caps still apply server-side on POST
+            }
+          }
+          let integrations: Array<{
+            id: string;
+            provider: string;
+            name: string;
+            caption: string;
+            durationCapSec: number | null;
+          }> = [];
           try {
             const provider = createPostizProvider({
               baseUrl: configured.baseUrl,
@@ -1536,6 +1571,9 @@ export async function startEditServer(
               // The caption the publish WOULD use — authored-else-derived —
               // so the panel previews truth, not a guess of it.
               caption: pack !== null ? captionForProvider(pack, t.provider) : "",
+              // Null = no cap (limits.ts: absence means unlimited) — the
+              // panel grays out a channel only against a cap that exists.
+              durationCapSec: PLATFORM_DURATION_CAPS_SEC[t.provider] ?? null,
             }));
           } catch (err) {
             return send(200, {
@@ -1550,6 +1588,7 @@ export async function startEditServer(
             integrations,
             packAvailable: pack !== null,
             outPathExists: out !== null && existsSync(out),
+            durationSec,
             receipt: await readPublishReceipt(workdir),
           });
         }
@@ -1570,6 +1609,9 @@ export async function startEditServer(
               // ids fall back to the pack's authored-else-derived caption.
               captions: z.record(z.string(), z.string()).optional(),
               force: z.boolean().optional(),
+              // What uploads (the CLI's --delivery): auto (default) builds
+              // the cached delivery encode, master sends the untouched render.
+              delivery: z.enum(["auto", "master"]).optional(),
             })
             .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
           if (!parsed.success) return send(400, { error: parsed.error.message });
@@ -1603,18 +1645,49 @@ export async function startEditServer(
               fetchImpl: opts.publishFetch,
             });
             const targets = await provider.listTargets();
-            const picked = parsed.data.integrationIds.map((id) => {
+            let picked = parsed.data.integrationIds.map((id) => {
               const hit = targets.find((t) => t.id === id);
               if (!hit) throw new Error(`no integration with id "${id}" in Postiz`);
               return hit;
             });
+            // Same core helpers, same semantics as the CLI (checkDurationCaps
+            // + ensureDeliveryFile — one spelling of the rules): drop the
+            // channels this video can never land on, publish the rest, and
+            // only when EVERY pick is over its cap refuse the whole request.
+            const tools = publishTools();
+            const masterProbe = await (opts.probeVideo ?? probe)(tools, out);
+            const violations = checkDurationCaps(picked, masterProbe.duration);
+            const dropped = violations.map((v) => ({
+              id: v.target.id,
+              provider: v.target.provider,
+              name: v.target.name,
+              capSec: v.capSec,
+            }));
+            if (violations.length > 0) {
+              const over = new Set(violations.map((v) => v.target.id));
+              picked = picked.filter((t) => !over.has(t.id));
+              if (picked.length === 0) {
+                return send(412, {
+                  error:
+                    `every picked channel refuses a ${Math.round(masterProbe.duration)}s video — ` +
+                    "nothing to publish",
+                  dropped,
+                });
+              }
+            }
             const posts = buildPublishPosts(pack, picked).map((p) => ({
               ...p,
               caption: parsed.data.captions?.[p.target.id] ?? p.caption,
             }));
-            const result = await provider.publish({ videoPath: out, posts, when });
+            // Synchronous encode (~1–3 min, fetch won't time out) — a
+            // job/poll model is a noted follow-up, not this change.
+            const uploadPath =
+              parsed.data.delivery === "master"
+                ? out
+                : (await (opts.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out)).path;
+            const result = await provider.publish({ videoPath: uploadPath, posts, when });
             await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);
-            return send(200, { ok: true, receipt: result });
+            return send(200, { ok: true, receipt: result, dropped });
           } catch (err) {
             // Fail loud, verbatim — Postiz's own validation message is the
             // most specific thing anyone has (per-provider settings are its

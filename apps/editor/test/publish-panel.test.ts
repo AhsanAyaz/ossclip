@@ -6,6 +6,8 @@ import {
   NOT_CONFIGURED_MESSAGE,
   PublishPanel,
   SCHEDULE_PRESETS,
+  formatMinSec,
+  overCapNote,
   panelCaptionCap,
   scheduleIso,
   toLocalInputValue,
@@ -22,6 +24,25 @@ describe("scheduleIso", () => {
     expect(scheduleIso("   ")).toBeNull();
     expect(scheduleIso("whenever")).toBeNull();
     expect(scheduleIso("2026-09-01T08:00")).toBe(new Date("2026-09-01T08:00").toISOString());
+  });
+});
+
+describe("formatMinSec / overCapNote", () => {
+  it("formats seconds as M:SS", () => {
+    expect(formatMinSec(320)).toBe("5:20");
+    expect(formatMinSec(300)).toBe("5:00");
+  });
+
+  it("annotates only a KNOWN duration strictly over a KNOWN cap", () => {
+    expect(overCapNote(320, 300)).toBe("video 5:20 > 5:00 cap");
+    // At the cap is what the cap permits.
+    expect(overCapNote(300, 300)).toBeNull();
+    // Unknown duration or an uncapped platform must not gray out a channel
+    // on a guess — the server still refuses over-cap picks on POST.
+    expect(overCapNote(null, 300)).toBeNull();
+    expect(overCapNote(undefined, 300)).toBeNull();
+    expect(overCapNote(320, null)).toBeNull();
+    expect(overCapNote(320, undefined)).toBeNull();
   });
 });
 
@@ -219,6 +240,54 @@ describe("PublishPanel", () => {
     expect(container.querySelector('[data-testid="publish-done"]')?.textContent).toContain(
       "Published to 1 account(s)",
     );
+  });
+
+  it("an over-cap channel's chip is disabled and annotated with the cap", async () => {
+    stubGet({
+      ...ready,
+      durationSec: 320,
+      integrations: [
+        { id: "a", provider: "linkedin", name: "Ahsan", caption: "authored linkedin post", durationCapSec: null },
+        { id: "t", provider: "threads", name: "Ahsan", caption: "short", durationCapSec: 300 },
+      ],
+    });
+    await mount();
+    const threads = container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-t"]');
+    expect(threads?.disabled).toBe(true);
+    expect(threads?.textContent).toContain("video 5:20 > 5:00 cap");
+    // The uncapped channel stays pickable.
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')?.disabled,
+    ).toBe(false);
+  });
+
+  it("while the POST runs, the button and a note say encoding is part of the wait", async () => {
+    let resolvePost: (v: unknown) => void = () => {};
+    global.fetch = vi.fn(async (_url: unknown, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        // Held open — the encode+upload is synchronous server-side, and this
+        // pins what the panel shows during it.
+        await new Promise((r) => (resolvePost = r));
+        return { ok: true, json: async () => ({ ok: true, receipt: null }) };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
+    });
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')?.textContent,
+    ).toBe("Encoding & publishing…");
+    expect(
+      container.querySelector('[data-testid="publish-busy-note"]')?.textContent,
+    ).toContain("Encoding the delivery file");
+    await act(async () => {
+      resolvePost(undefined);
+    });
   });
 
   it("a server error rides verbatim into the panel", async () => {

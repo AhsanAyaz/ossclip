@@ -37,7 +37,14 @@ export interface PublishPost {
 }
 
 export interface PublishRequest {
-  /** Absolute path of the rendered video. */
+  /**
+   * Absolute path of the rendered video — the delivery encode, or the master
+   * when none is needed (`ensureDeliveryFile`). ONE file for every post:
+   * sending the master to YouTube and the delivery encode elsewhere needs
+   * per-post media (a `PublishPost` media field, two uploads in
+   * `postiz.publish()`, per-post mapping in `buildPostsPayload`) — a deferred
+   * follow-up, not this change (2026-08-29 plan).
+   */
   videoPath: string;
   posts: PublishPost[];
   when: PublishWhen;

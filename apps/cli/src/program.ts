@@ -16,7 +16,7 @@ import { ExportFormatSchema, runAnalyze } from "./analyze";
 import { expandHome } from "./paths";
 import { phaseBucketProps } from "./phase-timing";
 import { dictionaryFlag, jumpCutsFlag, produce, reviewFlag } from "./produce";
-import { accountsFlag, atFlag, platformsFlag, youtubePrivacyFlag } from "./publish";
+import { accountsFlag, atFlag, deliveryFlag, platformsFlag, youtubePrivacyFlag } from "./publish";
 // The one interactive import that is STATIC rather than `await import()`: the
 // `resetInputSource()` run boundary in `buildProgram` has to run synchronously
 // while the program is being built, and `buildProgram` cannot await. The graph
@@ -1079,6 +1079,13 @@ export function buildProgram(): Command {
       "YouTube visibility: private (default), unlisted or public",
       youtubePrivacyFlag,
     )
+    .option(
+      "--delivery <mode>",
+      "what to upload — auto: a ≤1080p ~10 Mbps delivery encode, built once and " +
+        "cached in the workdir; master: the untouched render",
+      deliveryFlag,
+      "auto",
+    )
     .action(async (workdir: string | undefined, opts) => {
       const { runPublish } = await import("./publish");
       const target = await resolveWorkdirArgument(workdir ?? ".", "publish");
@@ -1093,6 +1100,7 @@ export function buildProgram(): Command {
         // Validated by youtubePrivacyFlag at parse time; undefined means the
         // payload's own safe default (private).
         youtubePrivacy: opts.youtubePrivacy,
+        delivery: opts.delivery,
       });
       telemetry.record("publish_run", {
         scheduled: opts.at !== undefined,
