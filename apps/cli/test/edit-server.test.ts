@@ -1989,6 +1989,50 @@ describe("publish endpoints (2026-08-26)", () => {
     expect(forced.status).toBe(200);
   });
 
+  it("youtubePrivacy rides into the /posts settings; absent keeps the safe private default", async () => {
+    // 2026-08-29: the panel had no way to say anything but private, so every
+    // panel publish landed private — the user found two videos they believed
+    // were published sitting private on the channel. The CLI's
+    // `--youtube-privacy` plumbing was already there; this is the same
+    // options object reaching it from the server.
+    const { dir } = await publishWorkdir();
+    const postBodies: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u, init) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [{ id: "y", name: "Code with Ahsan", identifier: "youtube" }]);
+        if (String(u).endsWith("/upload")) return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
+        postBodies.push(String((init as { body?: unknown })?.body ?? ""));
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+      probeVideo,
+      ensureDelivery: passthroughDelivery,
+    });
+    close = server.close;
+    const settingsOf = (raw: string): { type?: string } =>
+      (JSON.parse(raw) as { posts: Array<{ settings: { type?: string } }> }).posts[0]!.settings;
+
+    const pub = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["y"], youtubePrivacy: "public" }),
+    });
+    expect(pub.status).toBe(200);
+    expect(settingsOf(postBodies[0]!).type).toBe("public");
+
+    // Absent → buildPostsPayload's own default, the one safe place that
+    // decides it (force: the first publish wrote a receipt).
+    const silent = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["y"], force: true }),
+    });
+    expect(silent.status).toBe(200);
+    expect(settingsOf(postBodies[1]!).type).toBe("private");
+  });
+
   it("zod 400s: no integrationIds; a past schedule time is rejected", async () => {
     const { dir } = await publishWorkdir();
     const server = await startEditServer(dir, {
@@ -2009,6 +2053,14 @@ describe("publish endpoints (2026-08-26)", () => {
       body: JSON.stringify({ integrationIds: ["a"], at: "2020-01-01T00:00:00Z" }),
     });
     expect(past.status).toBe(400);
+    // A typo'd privacy is REFUSED, never coerced (§93a, the flag's own rule):
+    // falling back to a value that publishes to a subscriber list is exactly
+    // the accident this enum exists to prevent.
+    const privacy = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"], youtubePrivacy: "pubic" }),
+    });
+    expect(privacy.status).toBe(400);
   });
 
   it("a Postiz-side failure surfaces verbatim as 502 and writes NO receipt", async () => {

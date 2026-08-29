@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NOT_CONFIGURED_MESSAGE,
+  PANEL_YOUTUBE_PRIVACIES,
   PublishPanel,
   SCHEDULE_PRESETS,
   formatMinSec,
@@ -13,6 +14,7 @@ import {
   regenNotesSummary,
   scheduleIso,
   toLocalInputValue,
+  youtubePrivacyNote,
   type PublishInfo,
 } from "../src/PublishPanel";
 
@@ -86,6 +88,21 @@ describe("publishBusyLabel", () => {
     // Null = the server reports nothing (cache hit, skip-plan, or the poll
     // hasn't answered yet) — the old static line, never a lie of 0%.
     expect(publishBusyLabel(null)).toBe("Encoding & publishing…");
+  });
+});
+
+describe("youtubePrivacyNote", () => {
+  it("warns only for public — the status that reaches an audience the moment it lands", () => {
+    expect(youtubePrivacyNote("public")).toContain("subscribers' feeds");
+    // The safe default and the quiet middle need no warning.
+    expect(youtubePrivacyNote("private")).toBeNull();
+    expect(youtubePrivacyNote("unlisted")).toBeNull();
+  });
+
+  it("offers exactly the CLI's statuses, private first", () => {
+    // Drift from the CLI's YOUTUBE_PRIVACIES costs a server 400, never a
+    // wrong privacy — but the list is meant to be the same one.
+    expect([...PANEL_YOUTUBE_PRIVACIES]).toEqual(["private", "unlisted", "public"]);
   });
 });
 
@@ -791,6 +808,102 @@ describe("PublishPanel", () => {
       container.querySelector('[data-testid="publish-generate-error"]')?.textContent,
     ).toBe("quota exceeded");
     expect(container.querySelector('[data-testid="publish-no-pack"]')).not.toBeNull();
+  });
+
+  // The YouTube privacy selector (2026-08-29): every panel publish took
+  // postiz.ts's private default with no way to override it, and the user
+  // found two videos they believed were published sitting private.
+  const withYoutube: PublishInfo = {
+    ...ready,
+    integrations: [
+      { id: "a", provider: "linkedin", name: "Ahsan", caption: "authored linkedin post" },
+      { id: "y", provider: "youtube", name: "Code with Ahsan", caption: "yt caption" },
+    ],
+  };
+
+  const setSelect = async (el: HTMLSelectElement, value: string): Promise<void> => {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(el, value);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  };
+
+  it("the privacy selector belongs to the YouTube group only, and starts private", async () => {
+    stubGet(withYoutube);
+    await mount();
+    // A picked NON-YouTube group opens its caption box without one — privacy
+    // is a YouTube-only concept, not a shared publish setting.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="publish-youtube-privacy"]')).toBeNull();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-y"]')!.click();
+    });
+    const select = container.querySelector<HTMLSelectElement>(
+      '[data-testid="publish-youtube-privacy"]',
+    );
+    expect(select?.value).toBe("private");
+    // No warning under the safe default, and nothing offered beyond the
+    // three statuses the server accepts.
+    expect(container.querySelector('[data-testid="publish-youtube-privacy-note"]')).toBeNull();
+    expect([...select!.options].map((o) => o.value)).toEqual([...PANEL_YOUTUBE_PRIVACIES]);
+  });
+
+  it("choosing public warns what it means and rides into the publish POST", async () => {
+    const receipt = {
+      backend: "postiz",
+      postIds: ["p1"],
+      publishedAt: "2026-08-29T12:00:00.000Z",
+      when: { kind: "now" as const },
+      targets: [{ id: "y", provider: "youtube", name: "Code with Ahsan" }],
+    };
+    const bodies: Array<Record<string, unknown>> = [];
+    global.fetch = vi.fn(async (_url: unknown, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") {
+        bodies.push(JSON.parse(init.body ?? "{}"));
+        return { ok: true, json: async () => ({ ok: true, receipt }) };
+      }
+      return { ok: true, json: async () => withYoutube };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-y"]')!.click();
+    });
+    await setSelect(
+      container.querySelector<HTMLSelectElement>('[data-testid="publish-youtube-privacy"]')!,
+      "public",
+    );
+    // The safe-default doctrine surfaced: public is offered, never silently.
+    expect(
+      container.querySelector('[data-testid="publish-youtube-privacy-note"]')?.textContent,
+    ).toContain("subscribers' feeds");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
+    });
+    expect(bodies[0]!.youtubePrivacy).toBe("public");
+  });
+
+  it("no YouTube channel picked: the field stays off the request entirely", async () => {
+    // Absent means the server's own private default (postiz.ts) — a privacy
+    // setting for a LinkedIn-only publish would be noise.
+    const bodies: Array<Record<string, unknown>> = [];
+    global.fetch = vi.fn(async (_url: unknown, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") {
+        bodies.push(JSON.parse(init.body ?? "{}"));
+        return { ok: true, json: async () => ({ ok: true, receipt: null }) };
+      }
+      return { ok: true, json: async () => withYoutube };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
+    });
+    expect(bodies[0]!.youtubePrivacy).toBeUndefined();
   });
 
   it("an existing receipt shows the already-published note and labels the button Publish again (force)", async () => {

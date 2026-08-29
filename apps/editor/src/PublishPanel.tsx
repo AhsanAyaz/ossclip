@@ -67,6 +67,30 @@ export function panelCaptionCap(provider: string): number {
   return PANEL_CAPTION_CAPS[provider] ?? 1500;
 }
 
+/**
+ * YouTube's privacy statuses, hardcoded to match the CLI's YOUTUBE_PRIVACIES
+ * (`--youtube-privacy`) for the PANEL_CAPTION_CAPS reason — importing the CLI
+ * would drag node built-ins into the Vite bundle. The server re-parses this
+ * with zod against its own list, so drift costs a 400, never a wrong privacy.
+ * Ordered private-first: it is both the default and the safe one.
+ */
+export const PANEL_YOUTUBE_PRIVACIES = ["private", "unlisted", "public"] as const;
+export type PanelYoutubePrivacy = (typeof PANEL_YOUTUBE_PRIVACIES)[number];
+
+/**
+ * The one-line consequence shown under the selector, or null when there is
+ * nothing to warn about. Public is the only status that reaches an audience
+ * the moment the post lands, and the safe default (postiz.ts's own comment:
+ * `type: p.youtubePrivacy ?? "private"`) is only a real safety if choosing
+ * past it is deliberate — so the panel says what "public" means rather than
+ * offering it silently. Pure so the matrix is testable without a mount.
+ */
+export function youtubePrivacyNote(privacy: PanelYoutubePrivacy): string | null {
+  return privacy === "public"
+    ? "Public goes live immediately and straight to subscribers' feeds."
+    : null;
+}
+
 /** The plain sentences the panel's blocked states show instead of controls. */
 export const NOT_CONFIGURED_MESSAGE =
   "Publishing goes through your own self-hosted Postiz instance (postiz.com): set " +
@@ -189,6 +213,13 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [captions, setCaptions] = useState<Record<string, string>>({});
   const [scheduleLocal, setScheduleLocal] = useState("");
+  // YouTube's privacy for THIS publish, always starting at private
+  // (2026-08-29). Deliberately not persisted anywhere — not the pack, not the
+  // workdir, not localStorage: postiz.ts defaults an absent privacy to
+  // private precisely because publishing to a subscriber list must be an act,
+  // and a remembered "public" would turn the next publish into one nobody
+  // chose. Every open of this modal asks again.
+  const [youtubePrivacy, setYoutubePrivacy] = useState<PanelYoutubePrivacy>("private");
   const scheduleRef = React.useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   // Where the in-flight POST is — fed by the poll onPublish starts, null
@@ -274,6 +305,12 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const groups = groupByNetwork(
     (info?.integrations ?? []).map((i) => ({ ...i, caption: captions[i.id] ?? i.caption })),
   );
+  // Whether the privacy choice is even about anything: no YouTube channel
+  // picked means no YouTube post, and the field stays off the request rather
+  // than riding along as a setting for platforms that have no such concept.
+  const youtubePicked = (info?.integrations ?? []).some(
+    (i) => i.provider === "youtube" && selected[i.id] === true,
+  );
   const schedule = scheduleIso(scheduleLocal);
   const scheduleInvalid = scheduleLocal.trim().length > 0 && schedule === null;
   const hasReceipt = (info?.receipt ?? null) !== null || sent !== null;
@@ -303,6 +340,10 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
           integrationIds: pickedIds,
           ...(schedule !== null ? { at: schedule } : {}),
           captions: Object.fromEntries(pickedIds.map((id) => [id, captions[id] ?? ""])),
+          // Only when a YouTube channel is actually going out — absent means
+          // the server's (postiz.ts's) safe private default, which is the
+          // same thing this panel shows when nobody touched the selector.
+          ...(youtubePicked ? { youtubePrivacy } : {}),
           // A receipt on file means this workdir already went out — the
           // button below says "Publish again", so the intent IS the force.
           ...(hasReceipt ? { force: true } : {}),
@@ -640,6 +681,52 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                             ? ` · posts to ${pickedInGroup.length} channels`
                             : ""}
                         </div>
+                        {group.network === "youtube" ? (
+                          // The one platform whose upload carries a privacy
+                          // status, so the control lives in ITS group rather
+                          // than in the shared footer. Before this, every
+                          // panel publish took postiz.ts's private default
+                          // with no way to override it, and two videos the
+                          // user believed were published sat private on the
+                          // channel (2026-08-29).
+                          <div style={{ marginTop: 8 }}>
+                            <label style={{ ...counterText, marginRight: 8 }} htmlFor="publish-youtube-privacy">
+                              Privacy
+                            </label>
+                            <select
+                              id="publish-youtube-privacy"
+                              data-testid="publish-youtube-privacy"
+                              value={youtubePrivacy}
+                              onChange={(e) =>
+                                // The option list is PANEL_YOUTUBE_PRIVACIES,
+                                // so the cast names what the DOM already
+                                // guarantees; the server re-parses with zod
+                                // regardless — a wrong word is a 400, never a
+                                // silent fallback to a wider audience.
+                                setYoutubePrivacy(e.target.value as PanelYoutubePrivacy)
+                              }
+                              style={selectStyle}
+                            >
+                              {PANEL_YOUTUBE_PRIVACIES.map((p) => (
+                                <option key={p} value={p}>
+                                  {p === "private"
+                                    ? "Private (default)"
+                                    : p === "unlisted"
+                                      ? "Unlisted"
+                                      : "Public"}
+                                </option>
+                              ))}
+                            </select>
+                            {youtubePrivacyNote(youtubePrivacy) !== null ? (
+                              <div
+                                data-testid="publish-youtube-privacy-note"
+                                style={{ ...subtitle, color: "#E5B300" }}
+                              >
+                                {youtubePrivacyNote(youtubePrivacy)}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                           <input
                             data-testid={`publish-regen-instruction-${group.network}`}
@@ -923,6 +1010,16 @@ const textInput: React.CSSProperties = {
   fontSize: 13,
   fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace",
   outline: "none",
+};
+
+// The modal palette's `textInput`, sized for a three-option dropdown sitting
+// beside its label rather than a full-width field.
+const selectStyle: React.CSSProperties = {
+  ...textInput,
+  width: "auto",
+  padding: "5px 8px",
+  fontSize: 12,
+  cursor: "pointer",
 };
 
 const accountBox: React.CSSProperties = {

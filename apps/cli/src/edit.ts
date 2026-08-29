@@ -119,6 +119,7 @@ import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
 import { captionRegenProvider } from "./caption-regen-panel";
 import { binOnPath } from "./llm-detect";
 import {
+  YOUTUBE_PRIVACIES,
   attachDeliveryMedia,
   buildPublishPosts,
   publishConfigured,
@@ -1971,6 +1972,14 @@ export async function startEditServer(
               // What uploads (the CLI's --delivery): auto (default) builds
               // the cached delivery encode, master sends the untouched render.
               delivery: z.enum(["auto", "master"]).optional(),
+              // YouTube's privacy status (the CLI's --youtube-privacy),
+              // spelled ONCE — the flag's own value list, so the panel and
+              // the CLI can never accept different words. Absent leaves
+              // buildPostsPayload's safe private default alone: until this
+              // rode along, every panel publish landed private with no way
+              // to say otherwise, and two videos the user believed were
+              // published sat private on the channel (2026-08-29).
+              youtubePrivacy: z.enum(YOUTUBE_PRIVACIES).optional(),
             })
             .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
           if (!parsed.success) return send(400, { error: parsed.error.message });
@@ -2077,7 +2086,14 @@ export async function startEditServer(
               }
               capGroups = sizeCapGroups(picked);
             }
-            const posts = buildPublishPosts(pack, picked).map((p) => ({
+            // Same options object the CLI's publish path passes — undefined
+            // stays undefined so buildPostsPayload's safe private default is
+            // still the ONE place that decides an absent privacy.
+            const posts = buildPublishPosts(pack, picked, {
+              ...(parsed.data.youtubePrivacy !== undefined
+                ? { youtubePrivacy: parsed.data.youtubePrivacy }
+                : {}),
+            }).map((p) => ({
               ...p,
               caption: parsed.data.captions?.[p.target.id] ?? p.caption,
             }));
