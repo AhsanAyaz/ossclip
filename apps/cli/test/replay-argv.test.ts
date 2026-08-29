@@ -472,6 +472,84 @@ describe("recordedProduceArgs (§129)", () => {
     setReplayArgv(force);
     expect(recordedProduceArgs({ jumpCuts: "force" })).toEqual(force);
   });
+
+  // The SFX pins (Phase 3, 2026-08-29). `sfx`/`sfxLevel` are both config
+  // keys, so an unpinned record replays a different amount of sound design —
+  // or none — after a config edit. It bites harder than the watermark: an
+  // editor render carries the REVIEWED plan forward instead of re-placing,
+  // so `--sfx` decides whether the sound the user dragged into place is in
+  // the video at all.
+  it("pins a config-resolved --sfx and its level into the record", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ sfx: true, sfxLevel: "meme" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--sfx",
+      "--sfx-level",
+      "meme",
+    ]);
+  });
+
+  it("never doubles flags the user typed — a typed level already settles the switch", () => {
+    setReplayArgv(["produce", "./a.mp4", "--sfx", "--sfx-level", "subtle"]);
+    const typed = recordedProduceArgs({ sfx: true, sfxLevel: "subtle" });
+    expect(typed.filter((a) => a === "--sfx")).toHaveLength(1);
+    expect(typed.filter((a) => a === "--sfx-level")).toHaveLength(1);
+    // `--sfx-level` IMPLIES `--sfx` (sfxFlag), so a record that only carries
+    // the level must not gain a redundant switch beside it.
+    setReplayArgv(["produce", "./a.mp4", "--sfx-level", "meme"]);
+    expect(recordedProduceArgs({ sfx: true, sfxLevel: "meme" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--sfx-level",
+      "meme",
+    ]);
+  });
+
+  it("an OFF run pins nothing — there is no --no-sfx spelling to record", () => {
+    // The jump-cuts "auto" case, not the watermark's both-directions rule:
+    // program.ts declares `--sfx` alone so the config key can supply the
+    // default. The accepted cost is that an off-record replayed under a later
+    // config-on gains sound effects; the day `--no-sfx` exists, this pin
+    // becomes unconditional.
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ sfx: false, sfxLevel: "normal" })).toEqual([
+      "produce",
+      "./a.mp4",
+    ]);
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
+  });
+
+  it("an sfx record re-records byte-identically — the pin survives its own replay", () => {
+    setReplayArgv(["produce", "./a.mp4"]);
+    const first = recordedProduceArgs({ sfx: true, sfxLevel: "normal" });
+    setReplayArgv(first);
+    expect(recordedProduceArgs({ sfx: true, sfxLevel: "normal" })).toEqual(first);
+  });
+
+  it("the recorded flags replay through the real program as typed values", async () => {
+    // The pins are only worth anything if commander accepts them back: the
+    // level parser is a zod gate (program.ts), so a pin it would refuse is a
+    // record that dies at the front door — §129's own failure.
+    const { buildProgram } = await import("../src/program");
+    const program = buildProgram();
+    for (const cmd of [program, ...program.commands]) {
+      cmd.exitOverride();
+      cmd.configureOutput({ writeErr() {} });
+    }
+    const produceCmd = program.commands.find((c) => c.name() === "produce");
+    if (produceCmd === undefined) throw new Error("the real program has no `produce` command");
+    let captured: Record<string, unknown> = {};
+    produceCmd.action((_input: string | undefined, opts: Record<string, unknown>) => {
+      captured = opts;
+    });
+    setReplayArgv(["produce", "./a.mp4"]);
+    const recorded = recordedProduceArgs({ sfx: true, sfxLevel: "meme" });
+    await program.parseAsync(["node", "ossclip", ...recorded]);
+    expect(captured.sfx).toBe(true);
+    expect(captured.sfxLevel).toBe("meme");
+  });
 });
 
 describe("program.ts stashes at re-entry (§129)", () => {

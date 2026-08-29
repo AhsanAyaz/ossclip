@@ -9,7 +9,7 @@ import {
   type SceneComponentId,
   type Theme,
 } from "./scene-schema";
-import { RemovalReasonSchema } from "./schema";
+import { RemovalReasonSchema, type ProductionSfx } from "./schema";
 import type { TimeMap } from "./timemap";
 import { resolveSceneProps } from "./scene-registry";
 import type { CaptionLine, CaptionWord } from "./captions";
@@ -443,6 +443,87 @@ export function mintSplitId(at: number, existing: readonly Split[]): string {
   }
 }
 
+/**
+ * The key an SFX edit is stored under: `${soundId}@${word}` of the PLANNED
+ * placement it edits.
+ *
+ * Content-derived, not positional, for §137's reason applied to a track of
+ * instants: an index into `production.json`'s `sfx.placements` is exactly the
+ * key a re-plan renumbers, and the placement a user muted would come back as
+ * the placement after it. The pair (which sound, which word) IS the identity
+ * of a placement — the plan cannot hold two of them (`normalizeSfxPlan`'s
+ * spacing pass drops the second effect within 1.5s, and two placements on one
+ * word are 0s apart) — so the key survives a re-plan whenever the placement
+ * itself does, and stales exactly when it does not.
+ *
+ * `@` is the separator the split-half namespace already uses (`splitCues`),
+ * and it is why an ADDED placement's id may not contain one (see
+ * `SfxAddedPlacementSchema`): the two namespaces share this record's
+ * vocabulary in the editor, and one spelling must never read as the other.
+ */
+export function sfxPlacementKey(placement: { soundId: string; word: number }): string {
+  return `${placement.soundId}@${placement.word}`;
+}
+
+/**
+ * One edited planned placement. Every field is optional and ABSENT MEANS
+ * "as planned" — this is a patch over the plan, not a replacement for it, so
+ * a user who only dragged a marker stores `{word}` and still inherits a later
+ * re-plan's gain for that sound.
+ *
+ * `muted` NEGATES a planned placement rather than deleting the entry (the
+ * plan's own record is in production.json and produce rewrites it every run,
+ * so there is nothing to delete there): the placement drops out of the render
+ * and the editor still has something to show as a restorable ghost, the
+ * `SceneOverrideSchema.hidden` contract. Restore DELETES the key rather than
+ * writing `muted: false` — an override with nothing to say (the
+ * clearVideo/restoreScene rule).
+ *
+ * `gain` shares the sound library's own 0–2 range (`SfxSoundSchema.gain`), and
+ * the two multiply at resolve time (`resolveSfxCues` does the ONE
+ * multiplication).
+ */
+export const SfxPlacementEditSchema = z.object({
+  /** Retimed to another transcript word — word indices, never seconds. */
+  word: z.number().int().nonnegative().optional(),
+  /** Swapped for another sound in the library. */
+  soundId: z.string().min(1).optional(),
+  gain: z.number().min(0).max(2).optional(),
+  muted: z.boolean().optional(),
+});
+export type SfxPlacementEdit = z.infer<typeof SfxPlacementEditSchema>;
+
+/**
+ * A placement the USER added, which the model never planned.
+ *
+ * It carries its own `id` because it has no plan entry to be keyed against:
+ * `${soundId}@${word}` would re-key itself the moment the user dragged or
+ * swapped it, and an array index would renumber on every delete —
+ * `mintSplitId`'s reasoning, and the id is a persisted name for the same
+ * reason (it must be reproducible from the doc alone, so it is minted once and
+ * never recomputed).
+ *
+ * The pattern forbids `@` deliberately: `sfxPlacementKey` builds planned keys
+ * with it, and an added id that could spell one would let a stale-key report
+ * name something that is not a plan key at all — the kept-takes rule ("minting
+ * `@` names here would collide with the split-id namespace"). It also forbids
+ * `/`, `.` and everything else that could read as a path: this id is a NAME,
+ * and nothing may ever resolve a file against it.
+ *
+ * Uniqueness is the minter's job, not the schema's: nothing in this module
+ * indexes by the id (an added placement is a plain array entry here), so a
+ * duplicate costs the editor a confused selection, and REFUSING the document
+ * would cost the user their whole edit layer — produce throws on an invalid
+ * overrides.json by design.
+ */
+export const SfxAddedPlacementSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9_-]+$/),
+  soundId: z.string().min(1),
+  word: z.number().int().nonnegative(),
+  gain: z.number().min(0).max(2).optional(),
+});
+export type SfxAddedPlacement = z.infer<typeof SfxAddedPlacementSchema>;
+
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */
   theme: ThemeSchema.partial().default({}),
@@ -729,6 +810,37 @@ export const OverrideDocSchema = z.object({
         .default([]),
     })
     .default({ reasons: {}, kept: [], dismissed: [] }),
+  /**
+   * The user's layer over the `--sfx` placement plan (2026-08-29): retime,
+   * swap, gain and mute on what the model planned, plus placements of the
+   * user's own. Applied by `applySfxOverrides` in produce, between loading the
+   * plan and resolving it to cues.
+   *
+   * ONE record, in overrides.json, and deliberately NOT a `sfx-reviewed.json`
+   * beside `scenes-reviewed.json`: scene review needed its own file because it
+   * predates the override doc, and SFX has this doc from day one. So there is
+   * exactly one write path (the editor's `PUT /api/overrides`) and exactly one
+   * thing a render replays.
+   *
+   * Optional with NO default, the `captionsHidden` rule: every overrides.json
+   * written before this key existed parses byte-identically, and a project
+   * that never touched a sound effect grows no key. Absent means "the plan, as
+   * planned".
+   *
+   * RECUT-IMMUNE BY CONSTRUCTION, so it deliberately has no entry in
+   * `remapOverridesThroughRecut` (the `cleanup.kept`/`captionLineWindows`
+   * property): every value in here is a WORD INDEX or an id, and
+   * `transcript.words` is never spliced — a re-cut moves output seconds, which
+   * this record does not hold. The output instant is re-derived through the
+   * new TimeMap on every run (`resolveSfxCues`).
+   */
+  sfx: z
+    .object({
+      /** Keyed by `sfxPlacementKey` — see `SfxPlacementEditSchema`. */
+      edits: z.record(z.string(), SfxPlacementEditSchema).default({}),
+      added: z.array(SfxAddedPlacementSchema).default([]),
+    })
+    .optional(),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 
@@ -2601,4 +2713,119 @@ export function reclampPinnedTiming(cues: readonly SceneCue[]): ReclampResult {
     }
   }
   return { cues: out, adjusted };
+}
+
+/** A placement as `production.json` stores it — the editor-safe shape
+ * (`ProductionSfxSchema`), never the producer's: this module is in the
+ * EDITOR's runtime graph and `producer/sfx.ts` reaches node:child_process
+ * (schema.ts's ProductionSfxSchema docstring has the whole argument). */
+export type SfxPlannedPlacement = ProductionSfx["placements"][number];
+
+export interface AppliedSfxOverrides {
+  /** The plan the resolver should place — edits applied, mutes removed, the
+   * user's own placements appended. */
+  placements: SfxPlannedPlacement[];
+  /**
+   * Edit keys that matched no planned placement. `"stale key"` is the re-plan
+   * case: the placement the user edited is not in the plan any more, so their
+   * work on it is lost and saying so is the whole point (the `was`-guard
+   * posture — `applyCaptionEdits` reports rather than guessing at a nearby
+   * word, and the field failure §137 pins was a DROP nobody printed).
+   * `"duplicate key"` is a second placement answering to a key an earlier one
+   * already claimed: the edit applied, to the first, and the later one is left
+   * as planned rather than edited twice (`applyCaptionEdits`'
+   * `duplicate-anchor` rule).
+   *
+   * A plain TS union rather than a zod enum, unlike `SfxDropReasonSchema`:
+   * these reasons are computed here and printed, never written to a file and
+   * read back, so there is no boundary for a parse to guard.
+   */
+  dropped: Array<{ key: string; reason: "stale key" | "duplicate key" }>;
+}
+
+/**
+ * The user's SFX layer over a placement plan (`OverrideDocSchema.sfx`).
+ *
+ * Applied in produce between loading the plan and `resolveSfxCues`, so the
+ * resolver's word→output arithmetic, its cut-word drops and its gain product
+ * all run over what the USER approved rather than what the model wrote. The
+ * plan itself is never rewritten: `production.json` keeps the model's
+ * placements, which is what the edit keys are derived from — folding the edits
+ * into the stored plan would re-key every one of them on the next run and
+ * stale the user's whole layer (the same reason `cuts[].startSec` is left as
+ * the user drew it).
+ *
+ * Deliberately does NOT re-run the spacing or density passes
+ * (`normalizeSfxPlan`): those price the MODEL's plan, and a user who drags two
+ * effects together or adds a ninth to a `subtle` video has said what they want
+ * — an explicit user action outranks a deterministic budget, exactly as a user
+ * cut outranks a cleanup veto in produce. The resolver's own drops (unknown
+ * sound, missing file, cut word) still apply, because those are about whether
+ * the effect can be PLAYED at all.
+ *
+ * Pure: no filesystem, no library — an edit naming a sound that does not exist
+ * is the resolver's "unknown sound", reported there with every other one.
+ */
+export function applySfxOverrides(
+  planned: readonly SfxPlannedPlacement[],
+  sfx: OverrideDoc["sfx"],
+): AppliedSfxOverrides {
+  const dropped: AppliedSfxOverrides["dropped"] = [];
+  if (sfx === undefined) return { placements: [...planned], dropped };
+
+  const claimed = new Set<string>();
+  const placements: SfxPlannedPlacement[] = [];
+  for (const p of planned) {
+    const key = sfxPlacementKey(p);
+    const edit = sfx.edits[key];
+    if (edit === undefined) {
+      placements.push(p);
+      continue;
+    }
+    if (claimed.has(key)) {
+      dropped.push({ key, reason: "duplicate key" });
+      placements.push(p);
+      continue;
+    }
+    claimed.add(key);
+    // A mute keeps the ENTRY (the editor draws a restorable ghost from it) and
+    // removes the PLACEMENT — `SceneOverrideSchema.hidden`'s contract for a
+    // track of instants.
+    if (edit.muted === true) continue;
+    placements.push({
+      ...p,
+      ...(edit.soundId !== undefined ? { soundId: edit.soundId } : {}),
+      ...(edit.word !== undefined ? { word: edit.word } : {}),
+      ...(edit.gain !== undefined ? { gain: edit.gain } : {}),
+    });
+  }
+  for (const key of Object.keys(sfx.edits)) {
+    if (!claimed.has(key)) dropped.push({ key, reason: "stale key" });
+  }
+
+  // The user's own placements, appended as plain placements: past this
+  // function an added effect is indistinguishable from a planned one, which is
+  // what makes the resolver, the stager and the accounting need no idea the
+  // override layer exists. The `id` does not travel — it names the doc entry
+  // the editor edits, and nothing downstream addresses a placement by name.
+  for (const add of sfx.added) {
+    placements.push({
+      soundId: add.soundId,
+      word: add.word,
+      ...(add.gain !== undefined ? { gain: add.gain } : {}),
+    });
+  }
+
+  // Word order, stable: a retimed or added placement would otherwise sit where
+  // the model happened to put it, and the plan handed to the resolver is also
+  // what the accounting indexes into (`SfxValidationIssue.placement`) — a
+  // human reading a warning against production.json should meet the same order
+  // `normalizeSfxPlan` left the plan in.
+  return {
+    placements: placements
+      .map((p, i) => ({ p, i }))
+      .sort((a, b) => a.p.word - b.p.word || a.i - b.i)
+      .map((e) => e.p),
+    dropped,
+  };
 }

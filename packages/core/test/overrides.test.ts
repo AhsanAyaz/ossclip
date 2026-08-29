@@ -1124,6 +1124,31 @@ describe("captionsHidden (doc-global captions OFF switch)", () => {
     expect("captionsHidden" in doc).toBe(false);
   });
 
+  it("an old overrides.json parses unchanged, with no sfx slot defaulted in either", () => {
+    // The same contract one key later (Phase 3, 2026-08-29): the `sfx` layer
+    // is optional-with-NO-default for `captionsHidden`'s reason, so a doc
+    // written before sound effects existed round-trips byte-identically —
+    // ⌘S in the editor must not grow the user's file a key they never used.
+    const before = {
+      theme: { accent: "#FFE14D" },
+      scenes: { "scene-0": { props: { value: "1%" } } },
+      captions: { w500: { text: "escape", was: "scape" } },
+      splits: [{ at: 1.2, id: "1200" }],
+      cuts: [{ startSec: 3, endSec: 4 }],
+    };
+    const doc = OverrideDocSchema.parse(before);
+    expect(doc.sfx).toBeUndefined();
+    expect("sfx" in doc).toBe(false);
+    // Every pre-existing key still reads exactly as it did (the theme's own
+    // token defaults are ThemeSchema's, and predate all of this).
+    expect(doc.theme.accent).toBe("#FFE14D");
+    expect(doc.captions).toEqual(before.captions);
+    expect(doc.splits).toEqual([{ at: 1.2, src: undefined, id: "1200" }]);
+    expect(doc.cuts).toEqual(before.cuts);
+    // And what the editor writes back carries no `sfx` either.
+    expect(JSON.parse(JSON.stringify(doc))).not.toHaveProperty("sfx");
+  });
+
   it("accepts a boolean and nothing else — hand-editable data is validated", () => {
     expect(OverrideDocSchema.parse({ captionsHidden: true }).captionsHidden).toBe(true);
     expect(OverrideDocSchema.parse({ captionsHidden: false }).captionsHidden).toBe(false);

@@ -3,7 +3,12 @@ import { existsSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { YOUTUBE_APPROVED_BASENAME, type GenerateThumbnailImageOptions } from "@ossclip/core";
+import {
+  YOUTUBE_APPROVED_BASENAME,
+  type GenerateThumbnailImageOptions,
+  type LoadedSfxSound,
+  type SfxLibrary,
+} from "@ossclip/core";
 import { startEditServer } from "../src/edit";
 
 let close: (() => void) | undefined;
@@ -2967,5 +2972,158 @@ describe("on-demand youtube pack generate (2026-08-29)", () => {
     expect(second.status).toBe(409);
     release();
     expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
+  });
+});
+
+/**
+ * The SFX palette routes (Phase 3, 2026-08-29): what the swap dropdown offers
+ * and what click-to-preview plays.
+ *
+ * The library is INJECTED (`loadSfx`), so nothing here depends on the bundled
+ * pack riding this checkout — nor on whatever the developer keeps in
+ * ~/.ossclip/sfx, which the real loader merges in (the `loadCfg` rule applied
+ * to the pack loader).
+ */
+describe("GET /api/sfx/library + /api/sfx/audio", () => {
+  const MP3 = Buffer.from("ID3not-a-real-mp3");
+
+  /** A two-sound library over real files in a tmp dir. */
+  async function fixtureLibrary(): Promise<{ dir: string; loadSfx: () => SfxLibrary }> {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-sfx-lib-"));
+    await writeFile(join(dir, "ding.mp3"), MP3);
+    await writeFile(join(dir, "boom.wav"), MP3);
+    const sounds: LoadedSfxSound[] = [
+      {
+        id: "ding",
+        kind: "sound" as const,
+        file: "ding.mp3",
+        whenToUse: "a point lands",
+        tags: [],
+        gain: 1,
+        durationSec: 0.4,
+        absPath: join(dir, "ding.mp3"),
+        packName: "ossclip-starter",
+      },
+      {
+        id: "vine-boom",
+        kind: "sound" as const,
+        file: "boom.wav",
+        whenToUse: "comedic beat",
+        tags: ["meme"],
+        gain: 0.8,
+        absPath: join(dir, "boom.wav"),
+        packName: "my-pack",
+      },
+    ];
+    return {
+      dir,
+      loadSfx: () => ({ sounds, issues: [{ pack: "my-pack", issue: 'skipped "x": missing file' }] }),
+    };
+  }
+
+  it("serves the library as METADATA — never an absolute path", async () => {
+    const dir = await fixtureWorkdir();
+    const lib = await fixtureLibrary();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadSfx: lib.loadSfx,
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/sfx/library`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.sounds).toEqual([
+      {
+        id: "ding",
+        whenToUse: "a point lands",
+        tags: [],
+        gain: 1,
+        durationSec: 0.4,
+        packName: "ossclip-starter",
+      },
+      // No `durationSec` key at all when the pack didn't state one — the
+      // dropdown shows what the pack says, not a zero it invented.
+      { id: "vine-boom", whenToUse: "comedic beat", tags: ["meme"], gain: 0.8, packName: "my-pack" },
+    ]);
+    // A user pack's typo is shown, not swallowed — the panel is the only
+    // surface a ~/.ossclip/sfx author ever sees.
+    expect(body.issues).toEqual([{ pack: "my-pack", issue: 'skipped "x": missing file' }]);
+    // The paths stay server-side, whatever shape the response grows later.
+    expect(JSON.stringify(body)).not.toContain(lib.dir);
+  });
+
+  it("serves the library with NO workdir open — it is machine-global, not a project's", async () => {
+    const lib = await fixtureLibrary();
+    const server = await startEditServer(undefined, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadSfx: lib.loadSfx,
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/sfx/library`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).sounds).toHaveLength(2);
+  });
+
+  it("streams a sound by id, with the content-type an <audio> element needs", async () => {
+    const dir = await fixtureWorkdir();
+    const lib = await fixtureLibrary();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadSfx: lib.loadSfx,
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/sfx/audio?id=ding`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/mpeg");
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(MP3);
+    // A user pack may ship something else; the extension decides, and an
+    // unknown one still streams (as octet-stream) rather than 404ing.
+    const wav = await fetch(`${server.url}/api/sfx/audio?id=vine-boom`);
+    expect(wav.status).toBe(200);
+    expect(wav.headers.get("content-type")).toBe("audio/wav");
+  });
+
+  it("404s an unknown id, a missing id, and anything shaped like a path", async () => {
+    const dir = await fixtureWorkdir();
+    const lib = await fixtureLibrary();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadSfx: lib.loadSfx,
+    });
+    close = server.close;
+    // The traversal case is not a path this route rejects — it is an id
+    // nothing answers to. The file served is ALWAYS the one the library
+    // resolved, so a client-supplied path has nowhere to land.
+    for (const q of [
+      "?id=nope",
+      "",
+      "?id=../../../etc/passwd",
+      `?id=${encodeURIComponent(join(lib.dir, "ding.mp3"))}`,
+      "?id=..%2F..%2Fetc%2Fpasswd",
+    ]) {
+      const res = await fetch(`${server.url}/api/sfx/audio${q}`);
+      expect(res.status).toBe(404);
+      expect((await res.json()).error).toMatch(/no sound/);
+    }
+  });
+
+  it("404s a sound whose file vanished since the library was read", async () => {
+    // `resolveSfxCues`' re-check, at the preview: a pack deleted while the
+    // editor is open must be a 404, never a 500 out of statSync.
+    const dir = await fixtureWorkdir();
+    const lib = await fixtureLibrary();
+    await unlink(join(lib.dir, "ding.mp3"));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadSfx: lib.loadSfx,
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/sfx/audio?id=ding`);
+    expect(res.status).toBe(404);
   });
 });

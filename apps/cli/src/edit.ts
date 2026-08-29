@@ -43,6 +43,10 @@ import {
   // only when a regenerate actually runs.
   generateThumbnailImage,
   loadConfig,
+  // The SFX palette's one source of sounds (2026-08-29): the same loader
+  // produce plans against, so the dropdown can never offer a sound a render
+  // would not find.
+  loadSfxLibrary,
   outInsideInputFolderMessage,
   outPathInsideInput,
   PORTRAIT_MIME_TYPES,
@@ -271,6 +275,12 @@ const MIME: Record<string, string> = {
   // the type is stated while the change is one line rather than a debugging
   // session.
   ".wav": "audio/wav",
+  // The sound-effect preview (`/api/sfx/audio`) and the staged `sfx/` copies
+  // the workdir serves over `/media/`: the starter pack is mono mp3, and an
+  // `<audio>` element handed an octet-stream is exactly the sniffing-dependent
+  // preview the `.jpg` note below refuses to rely on. Anything else a user
+  // pack ships still falls back to octet-stream rather than being refused.
+  ".mp3": "audio/mpeg",
   // The `--cover-in-video` overlay: produce stages the cover into the workdir
   // as well as the render's public dir, and the Player fetches it through
   // `/media/`. Browsers do sniff an image served as octet-stream, but a
@@ -421,6 +431,14 @@ export async function startEditServer(
      */
     sliceAudio?: typeof extractAudioSpan;
     runWhisper?: typeof runWhisper;
+    /**
+     * The sound library the SFX routes serve (`loadCfg`'s rule applied to the
+     * pack loader): tests inject a hand-written library over a tmp dir, so the
+     * suite never depends on the bundled pack riding a given runner's checkout
+     * — nor on whatever the developer happens to have in ~/.ossclip/sfx, which
+     * the real loader merges in.
+     */
+    loadSfx?: typeof loadSfxLibrary;
   } = {},
 ): Promise<EditServer> {
   // MUTABLE since R17 §83: the server can start with no project (the page
@@ -2393,6 +2411,61 @@ export async function startEditServer(
           } finally {
             coverBusy = false;
           }
+        }
+
+        if (url.pathname === "/api/sfx/library" && req.method === "GET") {
+          // The sound palette: what the swap dropdown offers and what a
+          // click-to-preview can play. NO workdir guard, unlike its siblings —
+          // the library is machine-global (the bundled pack plus every pack in
+          // ~/.ossclip/sfx), so it has nothing to do with which project is
+          // open, and the panel can render its menu before one is.
+          const library = (opts.loadSfx ?? loadSfxLibrary)();
+          return send(200, {
+            // METADATA only: `absPath` stays server-side. The client addresses
+            // a sound by id through /api/sfx/audio, which is what keeps the
+            // filesystem out of a value the page could ever hand back (the
+            // audio route's path rule is the other half of the same decision).
+            sounds: library.sounds.map((s) => ({
+              id: s.id,
+              whenToUse: s.whenToUse,
+              tags: s.tags,
+              gain: s.gain,
+              ...(s.durationSec !== undefined ? { durationSec: s.durationSec } : {}),
+              packName: s.packName,
+            })),
+            // A user pack with a typo is a thing to SHOW, not to swallow: the
+            // loader already degraded rather than throwing, and the panel is
+            // the only surface a `~/.ossclip/sfx` author ever sees.
+            issues: library.issues,
+          });
+        }
+
+        if (url.pathname === "/api/sfx/audio" && req.method === "GET") {
+          // Click-to-preview. The path comes from the LOADED LIBRARY, never
+          // from the client: the query carries an id, the id is looked up, and
+          // the file that answers is whatever `loadSfxLibrary` resolved for it.
+          // A traversal attempt is therefore not a path to reject but an id
+          // nothing answers to — a plain 404, the same as any other unknown id
+          // (and `SfxSoundSchema.id` is a slug, so no id can ever spell a path
+          // in the first place).
+          const id = url.searchParams.get("id") ?? "";
+          const sound = (opts.loadSfx ?? loadSfxLibrary)().sounds.find((s) => s.id === id);
+          // Existence is re-checked here for `resolveSfxCues`' reason: a pack
+          // deleted since the library was read must be a 404, not a 500 out of
+          // `statSync` inside `sendFile`.
+          if (sound === undefined || !existsSync(sound.absPath)) {
+            return send(404, { error: `no sound "${id}" in the library` });
+          }
+          // No range support: these are sub-second files an `<audio>` element
+          // plays whole, and a preview has nothing to seek through.
+          sendFile(
+            req,
+            res,
+            sound.absPath,
+            MIME[extname(sound.absPath).toLowerCase()] ?? "application/octet-stream",
+            false,
+          );
+          return;
         }
 
         if (url.pathname.startsWith("/media/")) {

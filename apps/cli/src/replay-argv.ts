@@ -20,6 +20,9 @@
 // Type-only, so no runtime edge back into produce.ts (which imports this
 // module): the tri-state's vocabulary belongs to its resolver.
 import type { JumpCutsMode } from "./produce";
+// Type-only for the same reason: the level's own zod enum lives in core's
+// producer half, and this module must stay a pure argv builder.
+import type { SfxLevel } from "@ossclip/core";
 
 let stashed: string[] | null = null;
 
@@ -71,6 +74,10 @@ export function recordedProduceArgs(pins: {
   audience?: string;
   /** The RESOLVED thumbnail brief — pinned only when non-empty. */
   thumbnailBrief?: string;
+  /** The RESOLVED `--sfx` switch (flag or config), pinned only when ON. */
+  sfx?: boolean;
+  /** The RESOLVED `--sfx-level`, pinned alongside an ON `sfx`. */
+  sfxLevel?: SfxLevel;
 }): string[] {
   // --review and --no-render are stripped at record (cut-review step 1):
   // command.json exists for exactly one consumer — the editor's Render
@@ -200,6 +207,29 @@ export function recordedProduceArgs(pins: {
     !args.includes("--thumbnail-brief")
   ) {
     args.push("--thumbnail-brief", pins.thumbnailBrief);
+  }
+  // The sound-effect pins, the watermark's config-dependent-default rationale
+  // on a pair of flags: `sfx`/`sfxLevel` are both config keys, so an unpinned
+  // record replays a different amount of sound design — or none — the moment
+  // that config is edited or the replay runs on another machine. It matters
+  // more here than for the watermark: an editor render carries the REVIEWED
+  // plan forward from production.json instead of re-placing (produce's
+  // `priorSfxPlan`), so `--sfx` is what decides whether the sound design the
+  // user just dragged into place is in the video at all.
+  //
+  // ON ONLY, and that is the jump-cuts "auto" case rather than the watermark's
+  // both-directions rule: there is no `--no-sfx` spelling to pin an off-run
+  // with (program.ts declares `--sfx` alone, so the config key can still
+  // supply the default). An off-record replayed under a later config-on
+  // therefore GAINS sound effects — the accepted cost of a flag with one
+  // spelling, and the day `--no-sfx` exists this pin becomes unconditional
+  // like the watermark's. `--sfx-level` implies `--sfx`, so a typed level in
+  // the argv already settles the switch and the includes-guard leaves it be.
+  if (pins.sfx === true) {
+    if (!args.includes("--sfx") && !args.includes("--sfx-level")) args.push("--sfx");
+    if (pins.sfxLevel !== undefined && !args.includes("--sfx-level")) {
+      args.push("--sfx-level", pins.sfxLevel);
+    }
   }
   return args;
 }

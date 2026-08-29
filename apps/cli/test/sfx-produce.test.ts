@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { produce } from "../src/produce";
+import { priorSfxPlan, produce } from "../src/produce";
 
 /**
  * `--sfx` end to end through the real pipeline, on the offline provider
@@ -30,7 +30,9 @@ interface Props {
 }
 interface Artefacts {
   workdir: string;
-  production: { sfx?: { level: string; placements: Array<{ soundId: string; word: number }> } };
+  production: {
+    sfx?: { level: string; placements: Array<{ soundId: string; word: number; gain?: number }> };
+  };
   props: Props;
   report: string;
   logs: string;
@@ -68,7 +70,13 @@ describe.skipIf(!hasFfmpeg)("--sfx end to end", () => {
   });
 
   const run = async (
-    opts: { sfx?: boolean; sfxLevel?: "subtle" | "normal" | "meme" },
+    opts: {
+      sfx?: boolean;
+      sfxLevel?: "subtle" | "normal" | "meme";
+      /** The editor's Render shape: a pinned plan, no `--produce`. */
+      scenes?: string;
+      produce?: boolean;
+    },
     workdir: string,
   ): Promise<Artefacts> => {
     const logs: string[] = [];
@@ -160,4 +168,164 @@ describe.skipIf(!hasFfmpeg)("--sfx end to end", () => {
     },
     180_000,
   );
+
+  /**
+   * The editor round trip (Phase 3): Render pins the reviewed plan with
+   * `--scenes` and drops `--produce`, so the run never reaches the placement
+   * call — and the reviewed state it must reproduce is the PRIOR
+   * production.json's plan with overrides.json applied on top.
+   */
+  it(
+    "a --scenes replay carries the reviewed plan forward and applies the editor's edits",
+    async () => {
+      const first = await run({ sfx: true, sfxLevel: "meme" }, "work-carry");
+      const planned = first.production.sfx!.placements;
+      // The mapping the edits below are written against: with nothing cut out
+      // from under them, every planned placement is a cue, in word order.
+      expect(first.props.sfxCues).toHaveLength(planned.length);
+      expect(planned.length).toBeGreaterThanOrEqual(2);
+
+      // A mute, a gain and one placement of the user's own — written the way
+      // the editor writes them: keyed by `${soundId}@${word}`, through the one
+      // sanctioned overrides.json.
+      const muted = planned[0]!;
+      const regained = planned[1]!;
+      writeFileSync(
+        join(first.workdir, "overrides.json"),
+        JSON.stringify({
+          sfx: {
+            edits: {
+              [`${muted.soundId}@${muted.word}`]: { muted: true },
+              [`${regained.soundId}@${regained.word}`]: { gain: 0.25 },
+            },
+            added: [{ id: "u1", soundId: muted.soundId, word: muted.word, gain: 0.5 }],
+          },
+        }),
+      );
+      // The editor's own Render argv: a pinned plan, no producer.
+      const scenesPath = join(dir, "scenes-reviewed.json");
+      writeFileSync(scenesPath, "[]");
+      const replay = await run(
+        { sfx: true, sfxLevel: "meme", scenes: scenesPath, produce: false },
+        "work-carry",
+      );
+
+      expect(replay.logs).toContain("sfx carried forward from the reviewed plan");
+      // production.json keeps the MODEL's plan, untouched by the edit layer —
+      // the edit keys are derived from it, so folding them in would re-key the
+      // user's whole layer on the next run and stale all of it.
+      expect(replay.production.sfx).toEqual(first.production.sfx);
+
+      const cues = replay.props.sfxCues!;
+      // One placement muted, one added at the same word: the count holds, and
+      // the added cue plays at the muted one's instant with ITS gain.
+      expect(cues).toHaveLength(planned.length);
+      const before = first.props.sfxCues!;
+      const mutedCue = before[0]!;
+      const added = cues.find((c) => c.atSec === mutedCue.atSec)!;
+      expect(added.soundFile).toBe(mutedCue.soundFile);
+      // The sound's own gain times the placement's — resolved once, in the
+      // resolver — so the edited gain shows up as a RATIO of the planned cue.
+      expect(added.gain).toBeCloseTo(mutedCue.gain * 0.5, 6);
+      const regainedCue = cues.find((c) => c.atSec === before[1]!.atSec)!;
+      expect(regainedCue.gain).toBeCloseTo(
+        (before[1]!.gain / (regained.gain ?? 1)) * 0.25,
+        6,
+      );
+
+      // The chain does not break: the plan written back is the one the NEXT
+      // replay carries forward, with the same edits still on top.
+      const again = await run(
+        { sfx: true, sfxLevel: "meme", scenes: scenesPath, produce: false },
+        "work-carry",
+      );
+      expect(again.props.sfxCues).toEqual(cues);
+    },
+    180_000,
+  );
+
+  it(
+    "reports a stale edit key instead of applying it to whatever is there now",
+    async () => {
+      const first = await run({ sfx: true, sfxLevel: "meme" }, "work-stale");
+      writeFileSync(
+        join(first.workdir, "overrides.json"),
+        JSON.stringify({ sfx: { edits: { "no-such-sound@3": { muted: true } } } }),
+      );
+      const scenesPath = join(dir, "scenes-reviewed.json");
+      writeFileSync(scenesPath, "[]");
+      const replay = await run(
+        { sfx: true, sfxLevel: "meme", scenes: scenesPath, produce: false },
+        "work-stale",
+      );
+      expect(replay.logs).toContain('sfx edit "no-such-sound@3" no longer matches');
+      // The user's lost work costs a warning, never the run or the rest of the
+      // sound design.
+      expect(replay.props.sfxCues).toEqual(first.props.sfxCues);
+    },
+    180_000,
+  );
+
+  it(
+    "a --scenes run with NO prior plan still says why there are no effects",
+    async () => {
+      const scenesPath = join(dir, "scenes-reviewed.json");
+      writeFileSync(scenesPath, "[]");
+      const out = await run(
+        { sfx: true, sfxLevel: "meme", scenes: scenesPath, produce: false },
+        "work-noprior",
+      );
+      expect(out.logs).toContain("sound effects are placed against the producer's beat sheet");
+      expect("sfx" in out.production).toBe(false);
+      expect("sfxCues" in out.props).toBe(false);
+    },
+    180_000,
+  );
+});
+
+/**
+ * The carried-forward read on its own — NOT behind the ffmpeg gate, because
+ * the rule it pins (parse, never trust; a bad record means "no prior sound
+ * design", never a crash) is the one thing about this path that must hold on
+ * every runner.
+ */
+describe("priorSfxPlan (the reviewed plan a --scenes replay carries)", () => {
+  const workdirWith = (production: unknown): string => {
+    const work = mkdtempSync(join(tmpdir(), "ossclip-prior-sfx-"));
+    if (production !== undefined) {
+      writeFileSync(join(work, "production.json"), JSON.stringify(production));
+    }
+    return work;
+  };
+
+  it("reads the plan the last run wrote", () => {
+    const work = workdirWith({
+      sfx: { level: "meme", placements: [{ soundId: "ding", word: 4, gain: 0.5 }] },
+    });
+    expect(priorSfxPlan(work)).toEqual({
+      level: "meme",
+      placements: [{ soundId: "ding", word: 4, gain: 0.5 }],
+    });
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  it("a missing, unreadable or sfx-less file all mean no prior sound design", () => {
+    const empty = mkdtempSync(join(tmpdir(), "ossclip-prior-sfx-"));
+    expect(priorSfxPlan(empty)).toBeUndefined();
+    const corrupt = workdirWith(undefined);
+    writeFileSync(join(corrupt, "production.json"), "{not json");
+    expect(priorSfxPlan(corrupt)).toBeUndefined();
+    expect(priorSfxPlan(workdirWith({ version: 1 }))).toBeUndefined();
+  });
+
+  it("parses, never coerces — a hand-edited level is no level at all", () => {
+    // production.json is as hand-editable as anything else in the workdir,
+    // and a "MEME" reaching the report as a level is the coercion CLAUDE.md
+    // refuses. A refused record degrades to "no prior plan", which prints the
+    // actionable notice rather than rendering something nobody planned.
+    expect(priorSfxPlan(workdirWith({ sfx: { level: "MEME", placements: [] } }))).toBeUndefined();
+    expect(
+      priorSfxPlan(workdirWith({ sfx: { level: "normal", placements: [{ soundId: "x", word: 1.5 }] } })),
+    ).toBeUndefined();
+  });
 });

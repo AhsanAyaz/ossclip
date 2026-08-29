@@ -178,6 +178,10 @@ import {
   sfxLibraryHash,
   generateSfxPlan,
   resolveSfxCues,
+  // The user's layer over that plan (Phase 3), and the schema the carried
+  // forward plan is parsed back through.
+  applySfxOverrides,
+  ProductionSfxSchema,
   sfxStagedFile,
   formatSfxAccounting,
   SfxLevelSchema,
@@ -431,6 +435,38 @@ export function existingProducerStamp(work: string): Production["producer"] | un
       producer?: Production["producer"];
     };
     return raw.producer;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The `sfx` plan the workdir's LAST run wrote, or undefined (Phase 3).
+ *
+ * This is how a `--scenes` replay keeps its sound design. The editor's Render
+ * pins the reviewed plan with `--scenes` and drops `--produce`
+ * (render-replay-args.ts), so the run never reaches the placement call — and
+ * the placement call is not what should decide, because the SCENES-REVIEWED
+ * doctrine says a render started from the editor must reproduce what the user
+ * reviewed. For SFX that reviewed state is exactly `production.json`'s plan
+ * plus `overrides.json`'s edits on top of it: re-placing would hand the user a
+ * different set of effects than the ones they just dragged, and skipping would
+ * hand them silence.
+ *
+ * Tolerant like `existingProducerStamp` above — a missing, unreadable or
+ * sfx-less file all mean "no prior sound design", which is what a first run
+ * says too. Parsed through `ProductionSfxSchema`, never cast: production.json
+ * is as hand-editable as anything else in the workdir, and a level of "MEME"
+ * must not reach the report as a level.
+ */
+export function priorSfxPlan(work: string): { level: SfxLevel; placements: SfxPlacement[] } | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(work, "production.json"), "utf8")) as {
+      sfx?: unknown;
+    };
+    if (raw.sfx === undefined) return undefined;
+    const parsed = ProductionSfxSchema.safeParse(raw.sfx);
+    return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
   }
@@ -3403,13 +3439,50 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   // `--sfx` on a run that never reached the placement call — `--scenes` (which
   // is what the editor's Render replays), or a plain cut with no producer at
-  // all. Never a silent ignore, and the message names the missing half rather
-  // than the flag the user typed.
+  // all.
+  //
+  // The plan carries FORWARD from the workdir's last `production.json` here
+  // (Phase 3), and that is the scenes-reviewed doctrine applied to sound: an
+  // editor render replays the REVIEWED state, and for SFX the reviewed state
+  // is the prior plan plus overrides.json's edits on top of it (`priorSfxPlan`
+  // has the full argument). The level comes from that record too — the user
+  // reviewed effects placed at THAT level, and re-reading `--sfx-level` here
+  // would describe them with a number they were never planned under. It is
+  // written back below like any other run's plan, so a chain of editor renders
+  // never breaks.
+  //
+  // No prior record is the only case left with nothing to carry: never a
+  // silent ignore, and the message names the missing half rather than the flag
+  // the user typed.
   if (sfxOn && !sfxAttempted) {
-    console.log(
-      "  ⚠ sfx: sound effects are placed against the producer's beat sheet — " +
-        "add --produce (the editor's re-plan) to get them",
-    );
+    const prior = priorSfxPlan(work);
+    if (prior === undefined) {
+      console.log(
+        "  ⚠ sfx: sound effects are placed against the producer's beat sheet — " +
+          "add --produce (the editor's re-plan) to get them",
+      );
+    } else {
+      // The same library the producer branch loads, and for the same two
+      // consumers: the resolver needs each sound's gain and path, the stager
+      // needs its file. An empty library costs the effects, never the video.
+      const library = loadSfxLibrary();
+      for (const issue of library.issues) console.log(`  ⚠ sfx pack ${issue.pack}: ${issue.issue}`);
+      if (library.sounds.length === 0) {
+        console.log("  ⚠ sfx: no usable sounds in the library — skipping sound effects");
+      } else {
+        sfxSounds = library.sounds;
+        sfxPlan = prior;
+        // `planned` is the reviewed plan's own size: this run made no model
+        // call, so the only honest denominator for "N of M planned placed" is
+        // what the user approved (the cached-plan branch's rule — the count
+        // belongs to the plan, not to the run).
+        sfxPlanned = prior.placements.length;
+        console.log(
+          `▸ sfx carried forward from the reviewed plan ` +
+            `(${prior.placements.length} placement(s), level ${prior.level})`,
+        );
+      }
+    }
   }
 
   // Every LLM call is behind us — repair, beat sheet, one per scene — so this
@@ -4192,7 +4265,29 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   let sfxAllIssues: SfxValidationIssue[] = sfxIssues;
   let sfxLine: string | undefined;
   if (sfxPlan) {
-    const resolved = resolveSfxCues(sfxPlan.placements, transcript, map, sfxSounds, {
+    // The user's layer FIRST (Phase 3): retimes, swaps, gains, mutes and the
+    // placements they added themselves, applied before any of the resolver's
+    // arithmetic so a dragged effect is timed, cut-checked and mixed exactly
+    // like a planned one. `sfxPlan` itself is left alone — production.json
+    // stores the MODEL's plan, which is what these edit keys are derived from
+    // (`sfxPlacementKey`), and folding them in would re-key the whole layer on
+    // the next run.
+    const edited = applySfxOverrides(sfxPlan.placements, overrideDoc.sfx);
+    for (const d of edited.dropped) {
+      console.log(
+        d.reason === "stale key"
+          ? `  ⚠ sfx edit "${d.key}" no longer matches any planned placement — ` +
+              `the re-plan dropped it`
+          : `  ⚠ sfx edit "${d.key}" matches more than one placement — applied to the first`,
+      );
+    }
+    // The accounting's denominator moves with the user's layer, because the
+    // layer changes the SIZE of the plan the resolver saw: a mute REMOVES a
+    // placement (it was un-planned by the user, not dropped by the pipeline)
+    // and an add appends one. Without this, muting an effect would print as a
+    // reasonless "1 dropped" and adding one as "6 of 5 planned placed".
+    sfxPlanned += edited.placements.length - sfxPlan.placements.length;
+    const resolved = resolveSfxCues(edited.placements, transcript, map, sfxSounds, {
       // The real check, injected (the resolver stays pure): a pack deleted
       // between planning and this render must cost the cue here, not a
       // Remotion 404 after the render has spent its minutes.
@@ -5123,6 +5218,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     portrait,
     audience,
     thumbnailBrief,
+    // The SFX switch and level, RESOLVED (flag + config folded) — the
+    // watermark's rationale on a flag whose default is config-dependent
+    // (`sfx`/`sfxLevel` in ~/.ossclip/config.json). Unpinned, the editor's
+    // Render would place a DIFFERENT amount of sound design the moment that
+    // config is edited, or none at all on a machine without it — and since
+    // the replay carries the reviewed plan forward rather than re-placing
+    // (`priorSfxPlan`), an unpinned `--sfx` is the difference between the
+    // reviewed sound design and a silent video.
+    sfx: sfxOn,
+    sfxLevel,
   });
   // produce is the ONLY command that may write command.json — edit.ts's §129
   // heal prepends the "produce" literal to any record that doesn't start
