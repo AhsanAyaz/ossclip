@@ -2982,10 +2982,13 @@ describe("on-demand youtube pack generate (2026-08-29)", () => {
  * The library is INJECTED (`loadSfx`), so nothing here depends on the bundled
  * pack riding this checkout — nor on whatever the developer keeps in
  * ~/.ossclip/sfx, which the real loader merges in (the `loadCfg` rule applied
- * to the pack loader).
+ * to the pack loader). The config is injected for the same reason now that the
+ * routes read `sfxBundledPack` through it.
  */
 describe("GET /api/sfx/library + /api/sfx/audio", () => {
   const MP3 = Buffer.from("ID3not-a-real-mp3");
+  /** No config file at all — the routes' own default has to decide. */
+  const noCfg = (): Record<string, never> => ({});
 
   /** A two-sound library over real files in a tmp dir. */
   async function fixtureLibrary(): Promise<{ dir: string; loadSfx: () => SfxLibrary }> {
@@ -3028,6 +3031,7 @@ describe("GET /api/sfx/library + /api/sfx/audio", () => {
       port: 0,
       recentDir: SHARED_RECENTS,
       loadSfx: lib.loadSfx,
+      loadCfg: noCfg,
     });
     close = server.close;
     const res = await fetch(`${server.url}/api/sfx/library`);
@@ -3059,6 +3063,7 @@ describe("GET /api/sfx/library + /api/sfx/audio", () => {
       port: 0,
       recentDir: SHARED_RECENTS,
       loadSfx: lib.loadSfx,
+      loadCfg: noCfg,
     });
     close = server.close;
     const res = await fetch(`${server.url}/api/sfx/library`);
@@ -3073,6 +3078,7 @@ describe("GET /api/sfx/library + /api/sfx/audio", () => {
       port: 0,
       recentDir: SHARED_RECENTS,
       loadSfx: lib.loadSfx,
+      loadCfg: noCfg,
     });
     close = server.close;
     const res = await fetch(`${server.url}/api/sfx/audio?id=ding`);
@@ -3093,6 +3099,7 @@ describe("GET /api/sfx/library + /api/sfx/audio", () => {
       port: 0,
       recentDir: SHARED_RECENTS,
       loadSfx: lib.loadSfx,
+      loadCfg: noCfg,
     });
     close = server.close;
     // The traversal case is not a path this route rejects — it is an id
@@ -3121,10 +3128,87 @@ describe("GET /api/sfx/library + /api/sfx/audio", () => {
       port: 0,
       recentDir: SHARED_RECENTS,
       loadSfx: lib.loadSfx,
+      loadCfg: noCfg,
     });
     close = server.close;
     const res = await fetch(`${server.url}/api/sfx/audio?id=ding`);
     expect(res.status).toBe(404);
+  });
+
+  /**
+   * `sfxBundledPack` reaches the LOADER from both routes. Asserted on the opts
+   * the seam was called with, not on the payload, because that is the actual
+   * risk: a route that resolved the config but never passed it would serve a
+   * menu with the stock sounds still in it, and the next produce run — which
+   * does pass it — would refuse to place them.
+   */
+  describe("the sfxBundledPack config gate", () => {
+    /** Records what the routes asked the loader for. */
+    function spyLibrary(): { calls: Array<boolean | undefined>; loadSfx: () => SfxLibrary } {
+      const calls: Array<boolean | undefined> = [];
+      return {
+        calls,
+        loadSfx: (o: { includeBundled?: boolean } = {}) => {
+          calls.push(o.includeBundled);
+          return { sounds: [], issues: [] };
+        },
+      };
+    }
+
+    const askedWith = async (
+      sfxBundledPack: unknown,
+    ): Promise<Array<boolean | undefined>> => {
+      const spy = spyLibrary();
+      const server = await startEditServer(undefined, {
+        port: 0,
+        recentDir: SHARED_RECENTS,
+        loadSfx: spy.loadSfx,
+        loadCfg: () => ({ sfxBundledPack }),
+      });
+      close = server.close;
+      // BOTH routes: they must agree, or the dropdown offers what preview 404s.
+      await fetch(`${server.url}/api/sfx/library`);
+      await fetch(`${server.url}/api/sfx/audio?id=ding`);
+      return spy.calls;
+    };
+
+    it("passes false through to the loader from library AND audio", async () => {
+      expect(await askedWith(false)).toEqual([false, false]);
+    });
+
+    it("passes true, and defaults to true with no key at all", async () => {
+      expect(await askedWith(true)).toEqual([true, true]);
+      expect(await askedWith(undefined)).toEqual([true, true]);
+    });
+
+    it("keeps the bundled pack on a hand-edited non-boolean — parse, never coerce", async () => {
+      // `"no"` is truthy; coercion would read it as `true` by accident rather
+      // than by rule. Either way the pack stays, but for the stated reason.
+      expect(await askedWith("no")).toEqual([true, true]);
+      expect(await askedWith(0)).toEqual([true, true]);
+    });
+
+    it("shows the loader's empty-library issue instead of an empty menu with no reason", async () => {
+      // The user excluded the bundled pack and has no packs of their own. The
+      // panel is the only surface that can say so.
+      const server = await startEditServer(undefined, {
+        port: 0,
+        recentDir: SHARED_RECENTS,
+        loadCfg: () => ({ sfxBundledPack: false }),
+        loadSfx: (o: { includeBundled?: boolean } = {}) => ({
+          sounds: [],
+          issues: o.includeBundled
+            ? []
+            : [{ pack: "ossclip-starter", issue: "bundled pack excluded and no user packs found" }],
+        }),
+      });
+      close = server.close;
+      const body = await (await fetch(`${server.url}/api/sfx/library`)).json();
+      expect(body.sounds).toEqual([]);
+      expect(body.issues).toEqual([
+        { pack: "ossclip-starter", issue: expect.stringContaining("bundled pack excluded") },
+      ]);
+    });
   });
 });
 

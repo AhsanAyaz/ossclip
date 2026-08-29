@@ -134,7 +134,52 @@ function readPack(dir: string, label: string): SfxLibrary {
 }
 
 /**
+ * The bundled starter pack's label in `SfxPackIssue.pack` — the pack's declared
+ * name, which is also what `readPack` falls back to when its manifest is
+ * unreadable and there is no declared name to quote.
+ */
+const BUNDLED_PACK_LABEL = "ossclip-starter";
+
+/**
+ * The `sfxBundledPack` config key, resolved. Default TRUE — the bundled pack is
+ * the library everyone who never wrote a pack has, so an absent key must keep
+ * the shipped behaviour.
+ *
+ * `typeof === "boolean"`, never truthiness (CLAUDE.md's parse-don't-coerce):
+ * a hand-edited `"sfxBundledPack": "no"` is a string, and coercing it would
+ * read as `true` — the opposite of what its author typed. It earns one warning
+ * and the default instead, and the warning is RETURNED rather than printed so
+ * this stays pure (`resolveSfxLevel`'s shape).
+ *
+ * It lives HERE, next to the loader, rather than beside its siblings in the
+ * CLI's produce.ts, because BOTH consumers need it — produce's sfx step and
+ * the edit server's sfx routes — and produce.ts already imports edit.ts, so
+ * the reverse import that would share it is a cycle. Two copies of this rule
+ * is the failure the editor cannot afford: it would offer sounds produce
+ * refuses to use.
+ */
+export function resolveSfxBundledPack(configValue: unknown): {
+  include: boolean;
+  warning?: string;
+} {
+  if (typeof configValue === "boolean") return { include: configValue };
+  if (configValue === undefined) return { include: true };
+  return {
+    include: true,
+    warning:
+      "⚠ config sfxBundledPack ignored — expected true or false, " +
+      "keeping the bundled pack in the library",
+  };
+}
+
+/**
  * The bundled pack plus every user pack under `userDir`, merged by id.
+ *
+ * `includeBundled: false` (config `sfxBundledPack`) drops the bundled pack
+ * entirely, so ONLY `~/.ossclip/sfx` feeds the placement menu. It is not the
+ * same as overriding ids one by one: a user with their own pack still met
+ * `pop`, `click` and `riser-short` in every prompt, and the only way to get
+ * them out of the model's menu is to not load them.
  *
  * Duplicate policy:
  *  - user pack over bundled, silently — overriding a stock sound with your own
@@ -146,18 +191,23 @@ function readPack(dir: string, label: string): SfxLibrary {
  * `userDir` is a parameter with a default rather than a read of `homedir()`
  * inside, so tests point it at a tmp dir and never touch a real home.
  */
-export function loadSfxLibrary(opts: { userDir?: string } = {}): SfxLibrary {
+export function loadSfxLibrary(
+  opts: { userDir?: string; includeBundled?: boolean } = {},
+): SfxLibrary {
   const userDir = opts.userDir ?? userSfxDir();
+  const includeBundled = opts.includeBundled ?? true;
   const issues: SfxPackIssue[] = [];
   const byId = new Map<string, LoadedSfxSound>();
   /** Which pack currently owns each id, and whether it was a user pack. */
   const owner = new Map<string, { pack: string; user: boolean }>();
 
-  const bundled = readPack(bundledSfxDir(), "ossclip-starter");
-  issues.push(...bundled.issues);
-  for (const s of bundled.sounds) {
-    byId.set(s.id, s);
-    owner.set(s.id, { pack: s.packName, user: false });
+  if (includeBundled) {
+    const bundled = readPack(bundledSfxDir(), BUNDLED_PACK_LABEL);
+    issues.push(...bundled.issues);
+    for (const s of bundled.sounds) {
+      byId.set(s.id, s);
+      owner.set(s.id, { pack: s.packName, user: false });
+    }
   }
 
   let dirs: string[] = [];
@@ -192,6 +242,19 @@ export function loadSfxLibrary(opts: { userDir?: string } = {}): SfxLibrary {
   // Sorted by id so the menu, the hash and every report read the same on
   // every machine — merge order must not leak into the prompt.
   const sounds = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // Excluded the only pack there was. Every caller already warns-and-skips on
+  // an empty library, but "no usable sounds" alone reads as a packaging bug in
+  // ossclip; the user turned this off in config and has nothing else on disk,
+  // and only the loader knows that. So it is named here, as an issue like any
+  // other, and the existing zero-sounds path prints it verbatim.
+  if (!includeBundled && sounds.length === 0) {
+    issues.push({
+      pack: BUNDLED_PACK_LABEL,
+      issue:
+        `bundled pack excluded ("sfxBundledPack": false) and no user packs found in ` +
+        `${userDir} — add a pack there, or set "sfxBundledPack": true to get it back`,
+    });
+  }
   return { sounds, issues };
 }
 

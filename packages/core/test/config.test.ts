@@ -25,6 +25,17 @@ describe("resolveConfig — file keys actually reach the resolved config", () =>
     expect(cfg.postizUrl).toBe("http://localhost:4007");
   });
 
+  it("passes sfxBundledPack through, including the `false` that is its whole point", () => {
+    // The postizUrl lesson verbatim: a mapping that drops this key would let a
+    // user write `"sfxBundledPack": false` and still hear every stock sound,
+    // with nothing anywhere able to say why.
+    expect(resolveConfig({ sfxBundledPack: false }, {}).sfxBundledPack).toBe(false);
+    expect(resolveConfig({ sfxBundledPack: true }, {}).sfxBundledPack).toBe(true);
+    // Absent stays absent — the consumer's default (include) is the one that
+    // decides, not a value invented here.
+    expect(resolveConfig({}, {}).sfxBundledPack).toBeUndefined();
+  });
+
   it("an absent file yields defaults with postizUrl undefined — publish then names the miss", () => {
     const cfg = resolveConfig({}, {});
     expect(cfg.postizUrl).toBeUndefined();

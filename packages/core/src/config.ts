@@ -93,6 +93,22 @@ export interface OssclipConfig {
    */
   sfxLevel?: string;
   /**
+   * Whether the bundled starter pack feeds the sound-effect menu. DEFAULT ON —
+   * it is the whole library for anyone who never wrote a pack. Set `false` and
+   * only `~/.ossclip/sfx` is loaded, which is the ask of someone whose own pack
+   * overrides a few stock ids and who wants the REST of them (pop, click,
+   * riser-short…) out of the model's menu entirely — overriding ids one at a
+   * time cannot do that.
+   *
+   * Config-level on purpose, with no CLI flag: which packs you own is a
+   * property of the machine, not of a run. File-only, the `sfxLevel` posture:
+   * validated where it is USED (`resolveSfxBundledPack`, next to the loader in
+   * sfx-pack.ts, because the edit server needs the same answer), so a
+   * hand-edited `"no"` earns one warning and the bundled pack, never a coerced
+   * exclusion.
+   */
+  sfxBundledPack?: boolean;
+  /**
    * Terms of art the speaker uses — "JSON", "ossclip", "Genkit" — biasing
    * transcription (whisper `--prompt`), vouching repair corrections, and
    * canonicalizing caption casing on every run (F4, 2026-08-16: "Jason" for
@@ -292,6 +308,12 @@ export function resolveConfig(
     // misspelled level earns a warning and `normal`.
     sfx: fileCfg.sfx,
     sfxLevel: fileCfg.sfxLevel,
+    // File-only too, and NO env spelling for the `watermark` reason: "false"
+    // arrives truthy from an environment. The typeof check lives at the
+    // consumer (`resolveSfxBundledPack` in sfx-pack.ts), where an absent or
+    // malformed value keeps the bundled pack — the safe default, since the
+    // alternative is a library that may be empty.
+    sfxBundledPack: fileCfg.sfxBundledPack,
     // File-only for the same reason as `watermark`: these are structured
     // values a hand-editable JSON file supplies, and parse-don't-coerce says
     // the strict checks live at the consumer — `validDictionary` /

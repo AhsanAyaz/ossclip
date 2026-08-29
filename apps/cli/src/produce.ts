@@ -176,6 +176,10 @@ import {
   // deterministic gate, and the resolver that turns word anchors into cues.
   loadSfxLibrary,
   sfxLibraryHash,
+  // The `sfxBundledPack` config gate. It lives in core, not beside `resolveSfx`
+  // below, because the edit server has to resolve it identically — its own
+  // doc-comment has the reason.
+  resolveSfxBundledPack,
   generateSfxPlan,
   resolveSfxCues,
   // Scene id → final start second, the scene-anchored placements' clock
@@ -3029,6 +3033,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const sfxLevelResolved = resolveSfxLevel(opts.sfxLevel, cfg.sfxLevel);
   if (sfxOn && sfxLevelResolved.warning) console.log(sfxLevelResolved.warning);
   const sfxLevel = sfxLevelResolved.level;
+  // Which packs this machine offers (`sfxBundledPack`) — resolved next to the
+  // level, and for the same reason: BOTH library loads below (the placement
+  // step and the carry-forward branch) must read one answer, or a run would
+  // plan against one library and stage from another.
+  const sfxBundled = resolveSfxBundledPack(cfg.sfxBundledPack);
+  if (sfxOn && sfxBundled.warning) console.log(sfxBundled.warning);
+  /** The loader's opts, shared by both library loads. */
+  const sfxLoad = { includeBundled: sfxBundled.include };
   /** Who planned this run (R16 §78) — stamped into production.json below. */
   let producerStamp: Production["producer"];
   /** The resolved `--clip` window (R19 §93) — set only on a clip run; feeds
@@ -3371,7 +3383,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // the notice for that case is printed by the caller below.
     if (sfxOn) {
       sfxAttempted = true;
-      const library = loadSfxLibrary();
+      const library = loadSfxLibrary(sfxLoad);
       for (const issue of library.issues) console.log(`  ⚠ sfx pack ${issue.pack}: ${issue.issue}`);
       if (library.sounds.length === 0) {
         // Warn and continue, never kill: an empty library is a packaging or a
@@ -3468,7 +3480,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // The same library the producer branch loads, and for the same two
       // consumers: the resolver needs each sound's gain and path, the stager
       // needs its file. An empty library costs the effects, never the video.
-      const library = loadSfxLibrary();
+      const library = loadSfxLibrary(sfxLoad);
       for (const issue of library.issues) console.log(`  ⚠ sfx pack ${issue.pack}: ${issue.issue}`);
       if (library.sounds.length === 0) {
         console.log("  ⚠ sfx: no usable sounds in the library — skipping sound effects");

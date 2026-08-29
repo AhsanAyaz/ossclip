@@ -7,6 +7,7 @@ import {
   SfxPackSchema,
   bundledSfxDir,
   loadSfxLibrary,
+  resolveSfxBundledPack,
   sfxLibraryHash,
   type SfxSound,
 } from "../src/sfx-pack";
@@ -145,6 +146,85 @@ describe("loadSfxLibrary merge", () => {
 
   it("a missing user directory is the normal case", () => {
     expect(loadSfxLibrary({ userDir: join(emptyUserDir(), "nope") }).issues).toEqual([]);
+  });
+});
+
+describe("loadSfxLibrary — excluding the bundled pack (`sfxBundledPack: false`)", () => {
+  it("serves ONLY the user packs — the stock ids leave the menu entirely", () => {
+    // The field ask: a personal pack overrides `ding`, and the REST of the
+    // bundled sounds (pop, click, riser-short…) must not reach the model.
+    // Overriding ids one at a time cannot do this.
+    const root = emptyUserDir();
+    writePack(root, "mine", { name: "mine", sounds: [sound({ whenToUse: "my own ding" })] }, ["ding.mp3"]);
+    const { sounds, issues } = loadSfxLibrary({ userDir: root, includeBundled: false });
+    expect(issues).toEqual([]);
+    expect(sounds.map((s) => s.id)).toEqual(["ding"]);
+    expect(sounds[0]!.packName).toBe("mine");
+    expect(sounds[0]!.whenToUse).toBe("my own ding");
+  });
+
+  it("defaults to including it, so an absent option is the shipped behaviour", () => {
+    const root = emptyUserDir();
+    expect(loadSfxLibrary({ userDir: root }).sounds).toHaveLength(11);
+    expect(loadSfxLibrary({ userDir: root, includeBundled: true }).sounds).toHaveLength(11);
+  });
+
+  it("no bundled pack and no user packs is empty WITH an actionable issue", () => {
+    // The callers' zero-sounds path is warn-and-skip, and "no usable sounds"
+    // on its own reads as a packaging bug in ossclip. Only the loader knows
+    // the user asked for this, so it says so.
+    const root = emptyUserDir();
+    const { sounds, issues } = loadSfxLibrary({ userDir: root, includeBundled: false });
+    expect(sounds).toEqual([]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.issue).toContain("bundled pack excluded");
+    expect(issues[0]!.issue).toContain("no user packs found");
+    // Actionable: it names the directory to drop a pack into and the key to
+    // flip back.
+    expect(issues[0]!.issue).toContain(root);
+    expect(issues[0]!.issue).toContain("sfxBundledPack");
+  });
+
+  it("does not add that issue when a user pack answered", () => {
+    const root = emptyUserDir();
+    writePack(root, "mine", { name: "mine", sounds: [sound({ id: "custom", file: "c.mp3", whenToUse: "mine" })] }, ["c.mp3"]);
+    expect(loadSfxLibrary({ userDir: root, includeBundled: false }).issues).toEqual([]);
+  });
+
+  it("still reports a broken user pack — exclusion is not silence", () => {
+    const root = emptyUserDir();
+    const dir = join(root, "broken");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "pack.json"), "{ this is not json");
+    const { sounds, issues } = loadSfxLibrary({ userDir: root, includeBundled: false });
+    expect(sounds).toEqual([]);
+    // Two issues: the unreadable pack, and the empty-library explanation.
+    expect(issues.map((i) => i.issue)).toEqual([
+      expect.stringContaining("unreadable pack.json"),
+      expect.stringContaining("bundled pack excluded"),
+    ]);
+  });
+});
+
+describe("resolveSfxBundledPack", () => {
+  it("defaults to true when the key is absent — the shipped library", () => {
+    expect(resolveSfxBundledPack(undefined)).toEqual({ include: true });
+  });
+
+  it("takes a real boolean, in both directions", () => {
+    expect(resolveSfxBundledPack(true)).toEqual({ include: true });
+    expect(resolveSfxBundledPack(false)).toEqual({ include: false });
+  });
+
+  it("warns and keeps the bundled pack on anything else — parse, never coerce", () => {
+    // `"no"` is the trap: truthiness would read it as `true`, the opposite of
+    // what its author meant. It is not a boolean, so it earns a warning and
+    // the safe default (a library that is never accidentally empty).
+    for (const bad of ["yes", "no", "false", 0, 1, null, {}, []]) {
+      const out = resolveSfxBundledPack(bad);
+      expect(out.include, JSON.stringify(bad)).toBe(true);
+      expect(out.warning).toContain("sfxBundledPack");
+    }
   });
 });
 

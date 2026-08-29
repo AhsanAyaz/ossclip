@@ -52,6 +52,10 @@ import {
   // produce plans against, so the dropdown can never offer a sound a render
   // would not find.
   loadSfxLibrary,
+  // …and the config gate that decides whether the bundled pack is part of it.
+  // Resolved here too, not just in produce: an editor that offered stock sounds
+  // the config excludes would let a user pick one the next render drops.
+  resolveSfxBundledPack,
   outInsideInputFolderMessage,
   outPathInsideInput,
   PORTRAIT_MIME_TYPES,
@@ -401,6 +405,10 @@ export async function startEditServer(
       /** The caption-regenerate spend report prices through the same table
        * produce does — absent in a stub, the defaults apply. */
       pricing?: Record<string, ModelPrice>;
+      /** Whether the bundled starter pack feeds the SFX routes' library —
+       * `unknown` because it is file-only and typed at the consumer
+       * (`resolveSfxBundledPack`), the `audience` rule. */
+      sfxBundledPack?: unknown;
     } & RetranscribeConfig;
     /** Env seam for the publish endpoints — tests inject their own so the
      * runner's real OSSCLIP_POSTIZ_API_KEY (or its absence) never decides a
@@ -441,7 +449,9 @@ export async function startEditServer(
      * pack loader): tests inject a hand-written library over a tmp dir, so the
      * suite never depends on the bundled pack riding a given runner's checkout
      * — nor on whatever the developer happens to have in ~/.ossclip/sfx, which
-     * the real loader merges in.
+     * the real loader merges in. It is called with the resolved `includeBundled`
+     * (see `sfxLibrary` below), so a test can assert the config gate reached the
+     * loader rather than only that the routes serve what they were handed.
      */
     loadSfx?: typeof loadSfxLibrary;
   } = {},
@@ -654,6 +664,27 @@ export async function startEditServer(
     const cfg = (opts.loadCfg ?? loadConfig)();
     return { ffmpegPath: cfg.ffmpegPath ?? "ffmpeg", ffprobePath: cfg.ffprobePath ?? "ffprobe" };
   };
+  /**
+   * The sound library the SFX routes serve, loaded through the SAME config gate
+   * produce's sfx step uses (`sfxBundledPack` → `resolveSfxBundledPack`). One
+   * helper rather than the resolution inline at each route, because /library
+   * and /audio must agree: a menu offering `pop` while /audio 404s it — or
+   * worse, while the next render drops it — is the exact mismatch the gate
+   * exists to avoid.
+   *
+   * Read per request, like every other `loadCfg` consumer here: the server
+   * outlives config edits (R17 §83's mutable-workdir posture), and a user who
+   * flips the key gets it on the next refresh instead of on a restart.
+   *
+   * The malformed-value warning is dropped on purpose — this is a request path
+   * with no console the user is watching, and produce prints it on the run that
+   * actually places effects. The loader's own issues DO reach the panel, which
+   * is where a `~/.ossclip/sfx` author sees them.
+   */
+  const sfxLibrary = (): ReturnType<typeof loadSfxLibrary> =>
+    (opts.loadSfx ?? loadSfxLibrary)({
+      includeBundled: resolveSfxBundledPack((opts.loadCfg ?? loadConfig)().sfxBundledPack).include,
+    });
   const approvedPackPath = (): string => join(workdir!, YOUTUBE_APPROVED_BASENAME);
   /** The pack the panel shows: the approved file first (the user's
    * decision), else the newest valid `youtube-<key>.json` cache (what the
@@ -2529,10 +2560,11 @@ export async function startEditServer(
         if (url.pathname === "/api/sfx/library" && req.method === "GET") {
           // The sound palette: what the swap dropdown offers and what a
           // click-to-preview can play. NO workdir guard, unlike its siblings —
-          // the library is machine-global (the bundled pack plus every pack in
-          // ~/.ossclip/sfx), so it has nothing to do with which project is
-          // open, and the panel can render its menu before one is.
-          const library = (opts.loadSfx ?? loadSfxLibrary)();
+          // the library is machine-global (every pack in ~/.ossclip/sfx, plus
+          // the bundled one unless `sfxBundledPack` excludes it), so it has
+          // nothing to do with which project is open, and the panel can render
+          // its menu before one is.
+          const library = sfxLibrary();
           return send(200, {
             // METADATA only: `absPath` stays server-side. The client addresses
             // a sound by id through /api/sfx/audio, which is what keeps the
@@ -2562,7 +2594,7 @@ export async function startEditServer(
           // (and `SfxSoundSchema.id` is a slug, so no id can ever spell a path
           // in the first place).
           const id = url.searchParams.get("id") ?? "";
-          const sound = (opts.loadSfx ?? loadSfxLibrary)().sounds.find((s) => s.id === id);
+          const sound = sfxLibrary().sounds.find((s) => s.id === id);
           // Existence is re-checked here for `resolveSfxCues`' reason: a pack
           // deleted since the library was read must be a 404, not a 500 out of
           // `statSync` inside `sendFile`.

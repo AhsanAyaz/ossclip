@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { SFX_PROMPT_VERSION } from "@ossclip/core";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SFX_PROMPT_VERSION, loadSfxLibrary, sfxLibraryHash } from "@ossclip/core";
 import { resolveSfx, resolveSfxLevel, sfxCacheKey, sfxFlag } from "../src/produce";
 
 /**
@@ -99,6 +102,56 @@ describe("sfxCacheKey — §78: a change that changes the plan changes the key",
     // The beat key's rule, for the beat key's reason: a repair that swaps
     // "coach and" for "code churn" leaves the count identical.
     expect(sfxCacheKey({ ...base, words: ["one", "two", "four"] })).not.toBe(sfxCacheKey(base));
+  });
+});
+
+/**
+ * `sfxBundledPack` rides the SAME §78 key everything else does, through the
+ * library hash — nothing was added to `sfxCacheKey` for it. That is a claim
+ * about the real loader and the real hash, so this exercises both rather than
+ * asserting it from the shape of the code: excluding the bundled pack is a
+ * smaller menu, a smaller menu is a different prompt, and a different prompt
+ * must not be answered from the previous run's cache file.
+ */
+describe("excluding the bundled pack invalidates the plan cache", () => {
+  const base = {
+    promptVersion: SFX_PROMPT_VERSION,
+    beatKey: "abc123",
+    level: "normal" as const,
+    words: ["one", "two", "three"],
+  };
+  /** One user pack over a tmp dir — never the developer's ~/.ossclip/sfx. */
+  const userDirWithPack = (): string => {
+    const root = mkdtempSync(join(tmpdir(), "ossclip-sfx-key-"));
+    const dir = join(root, "mine");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "ding.mp3"), "not really audio");
+    writeFileSync(
+      join(dir, "pack.json"),
+      JSON.stringify({
+        name: "mine",
+        sounds: [
+          { id: "ding", kind: "sound", file: "ding.mp3", whenToUse: "my own ding", tags: [], gain: 1 },
+        ],
+      }),
+    );
+    return root;
+  };
+
+  it("changes the key when the flag flips, with the user packs identical", () => {
+    const userDir = userDirWithPack();
+    const withBundled = loadSfxLibrary({ userDir, includeBundled: true });
+    const without = loadSfxLibrary({ userDir, includeBundled: false });
+    // The premise: the exclusion really is a different menu (and the override
+    // of `ding` survives it — that sound is the user's).
+    expect(without.sounds.map((s) => s.id)).toEqual(["ding"]);
+    expect(withBundled.sounds.length).toBeGreaterThan(without.sounds.length);
+    const key = (lib: typeof without): string =>
+      sfxCacheKey({ ...base, libraryHash: sfxLibraryHash(lib.sounds) });
+    expect(key(without)).not.toBe(key(withBundled));
+    // …and it is stable, so flipping BACK re-hits the earlier plan rather than
+    // re-billing the call.
+    expect(key(loadSfxLibrary({ userDir, includeBundled: false }))).toBe(key(without));
   });
 });
 
