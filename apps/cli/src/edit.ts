@@ -17,11 +17,16 @@ import {
   type YoutubePack,
   ThumbnailConceptApprovedSchema,
   ThumbnailConceptSchema,
+  appendUsageRun,
   approvedOverlayText,
   buildThumbnailPrompt,
+  captionCap,
   captionForProvider,
   checkDurationCaps,
   createPostizProvider,
+  createProvider,
+  formatUsageLine,
+  generateCaptionRegen,
   ensureDeliveryFile,
   PLATFORM_DURATION_CAPS_SEC,
   probe,
@@ -42,8 +47,10 @@ import {
   SegmentSchema,
   spliceTranscript,
   TranscriptSchema,
+  ungroundedTokens,
   whisperPromptFor,
   wordsInSpan,
+  type ModelPrice,
   type Segment,
   thumbnailImageCacheName,
   type CoverProvenance,
@@ -87,6 +94,8 @@ import {
   type ResolvedPortrait,
 } from "./portrait-override";
 import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
+import { captionRegenProvider } from "./caption-regen-panel";
+import { binOnPath } from "./llm-detect";
 import { buildPublishPosts, publishConfigured, publishReceiptPath, readPublishReceipt } from "./publish";
 
 /**
@@ -359,6 +368,9 @@ export async function startEditServer(
       portrait?: unknown;
       thumbnailModel?: unknown;
       postizUrl?: string;
+      /** The caption-regenerate spend report prices through the same table
+       * produce does — absent in a stub, the defaults apply. */
+      pricing?: Record<string, ModelPrice>;
     } & RetranscribeConfig;
     /** Env seam for the publish endpoints — tests inject their own so the
      * runner's real OSSCLIP_POSTIZ_API_KEY (or its absence) never decides a
@@ -376,6 +388,9 @@ export async function startEditServer(
      * observe the revealed path instead of popping a real Finder/Explorer
      * window on the runner. */
     reveal?: (path: string) => void;
+    /** The caption-regenerate LLM seam (the `generateThumbnail` pattern for
+     * text): tests inject a fake provider factory and never touch a model. */
+    makeLlmProvider?: typeof createProvider;
     /**
      * The cover render seam, exactly like `generateThumbnail` above. Without
      * it `regenerateCover` lazily imports @ossclip/renderer and boots a
@@ -488,6 +503,12 @@ export async function startEditServer(
    * `coverBusy`'s rule with a second reason on top.
    */
   let retranscribeBusy = false;
+  /**
+   * One caption regeneration at a time (`/api/publish/regenerate`) — an LLM
+   * call costs money, and a double-click must not buy two. `thumbnailBusy`'s
+   * rule, its own flag: a caption rewrite must not block a thumbnail.
+   */
+  let captionRegenBusy = false;
   /** Where the JPEG lives right now: the destination the last cover used,
    * else `<recorded out>.cover.jpg`. Existence is the caller's check — a
    * recorded destination that was never rendered is a real state (the panel
@@ -1693,6 +1714,135 @@ export async function startEditServer(
             // most specific thing anyone has (per-provider settings are its
             // domain, not ours).
             return send(502, { error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+
+        if (url.pathname === "/api/publish/regenerate" && req.method === "POST") {
+          // Rewrite ONE network's caption with the LLM the produce run used
+          // (handoff 2026-08-29 item 4): the prompt carries the transcript,
+          // the caption AS THE PANEL HOLDS IT and the user's correction, and
+          // the replacement text rides back into the panel's box. Nothing
+          // auto-sends and nothing writes to the pack — the user still
+          // reviews, edits and presses Publish.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          // An LLM call costs money — one at a time, a second is a 409 like
+          // a second thumbnail.
+          if (captionRegenBusy) {
+            return send(409, { error: "a caption regeneration is already running" });
+          }
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          // `currentCaption` is deliberately the client's text — the ONE
+          // body-steered value beyond the ask itself, because the box may
+          // hold the user's manual edits and the model must see what the
+          // user sees. It steers only prompt text, never a path or a spawn.
+          const parsed = z
+            .object({
+              network: z.string().min(1),
+              instruction: z.string().min(1),
+              currentCaption: z.string(),
+            })
+            .safeParse(JSON.parse(Buffer.concat(chunks).toString() || "{}"));
+          if (!parsed.success) return send(400, { error: parsed.error.message });
+          // Lenient transcript read (the GET /api/transcript posture), but a
+          // 412 when it yields nothing: a rewrite with no transcript would be
+          // a rewrite with no factual evidence, which is the exact failure
+          // this endpoint exists to repair.
+          let transcript: { language: string; words: Array<{ text: string }> } | null = null;
+          try {
+            const raw = JSON.parse(await readFile(join(workdir, "transcript.json"), "utf8")) as {
+              language?: unknown;
+              words?: unknown;
+            };
+            if (Array.isArray(raw.words)) {
+              transcript = {
+                language: typeof raw.language === "string" ? raw.language : "en",
+                words: raw.words.filter(
+                  (w): w is { text: string } =>
+                    typeof (w as { text?: unknown } | null)?.text === "string",
+                ),
+              };
+            }
+          } catch {
+            // absent/corrupt → the 412 below
+          }
+          if (transcript === null || transcript.words.length === 0) {
+            return send(412, {
+              error:
+                "no transcript in this workdir — the rewrite would have nothing to " +
+                "ground against; re-run `ossclip produce`.",
+            });
+          }
+          // Env fresh per press, resolvePublishConfig's rule: a key set after
+          // startup must count. Skipped when tests own the environment.
+          if (opts.publishEnv === undefined) loadEnvFiles();
+          const env = opts.publishEnv ?? process.env;
+          const usagePath = join(workdir, "usage.json");
+          let usageLog: unknown = null;
+          try {
+            usageLog = JSON.parse(await readFile(usagePath, "utf8"));
+          } catch {
+            // no log yet — the resolution falls through to the pin/detection
+          }
+          const cmd = await readCommandRecord();
+          const resolved = captionRegenProvider({
+            usageLog,
+            commandArgs: cmd?.args ?? null,
+            env,
+            hasBin: (bin) => binOnPath(bin, env),
+          });
+          if (resolved.status === "unavailable") {
+            // Precondition, not a generation failure — 412 like a thumbnail
+            // regenerate on an unavailable project.
+            return send(412, { error: resolved.reason });
+          }
+          const provider = (opts.makeLlmProvider ?? createProvider)(resolved.provider);
+          captionRegenBusy = true;
+          try {
+            let caption: string;
+            try {
+              caption = await generateCaptionRegen(provider, {
+                network: parsed.data.network,
+                currentCaption: parsed.data.currentCaption,
+                instruction: parsed.data.instruction,
+                transcriptText: transcript.words.map((w) => w.text).join(" "),
+                charCap: captionCap(parsed.data.network),
+              });
+            } catch (err) {
+              // 200 with ok:false, the thumbnail regenerate's posture: a
+              // provider failure is a sentence the panel shows VERBATIM,
+              // never a dead 500.
+              return send(200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+            }
+            const pricing = (opts.loadCfg ?? loadConfig)().pricing ?? {};
+            // The spend is real, so it survives the session: appended into
+            // the workdir's usage log the way produce appends its runs.
+            // Atomic like the overrides write — /api/usage may read it at
+            // any moment.
+            const nextLog = appendUsageRun(
+              usageLog,
+              { at: new Date().toISOString(), records: provider.usage },
+              pricing,
+            );
+            const tmp = `${usagePath}.tmp`;
+            await writeFile(tmp, JSON.stringify(nextLog, null, 2));
+            await rename(tmp, usagePath);
+            // Advisory ONLY, never a block: captions legitimately carry
+            // brand and platform words the take never speaks. The `--speaker`
+            // pin counts as spoken vocabulary for checkGrounding's §39
+            // reason — the channel name is in nearly every caption.
+            const speaker = lastFlagValue(cmd?.args ?? [], ["--speaker"]);
+            const notes = [...new Set(ungroundedTokens(caption, transcript, speaker))].map(
+              (token) => `⚠ grounding: "${token}" — not in the take`,
+            );
+            return send(200, {
+              ok: true,
+              caption,
+              usage: formatUsageLine(provider.usage, pricing),
+              notes,
+            });
+          } finally {
+            captionRegenBusy = false;
           }
         }
 

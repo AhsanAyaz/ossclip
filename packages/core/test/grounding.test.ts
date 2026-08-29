@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkGrounding } from "../src/grounding";
+import { checkGrounding, ungroundedTokens } from "../src/grounding";
 import type { Scene } from "../src/scene-schema";
 import type { Transcript } from "../src/schema";
 
@@ -113,6 +113,40 @@ describe("speaker vocabulary (FINDINGS §39)", () => {
   it("still flags an invented noun when a speaker is given", () => {
     const issues = checkGrounding([scene({ title: "REVENUE" })], transcript, "Ahsan");
     expect(issues.map((i) => i.token)).toContain("revenue");
+  });
+});
+
+/**
+ * The extracted single-string spelling of the rule (caption regenerate,
+ * 2026-08-29): `checkGrounding` now walks scene fields THROUGH
+ * `ungroundedTokens`, so these cases and the scene cases above are proving
+ * the same code — one spelling, per the module header's §17 history.
+ */
+describe("ungroundedTokens (caption-regen advisory)", () => {
+  it("flags only the tokens the take nowhere contains, in order, duplicates kept", () => {
+    expect(ungroundedTokens("REVENUE from code churn REVENUE", transcript)).toEqual([
+      "revenue",
+      "revenue",
+    ]);
+  });
+
+  it("exempts numbers, short glue and stopwords — the §30 precision rule", () => {
+    expect(ungroundedTokens("50 teams went all in, but at 861 percent", transcript)).toEqual([]);
+  });
+
+  it("tolerates singular/plural drift, like the scene check", () => {
+    expect(ungroundedTokens("the agent went all in", transcript)).toEqual([]);
+  });
+
+  it("counts the speaker hint as spoken vocabulary (§39)", () => {
+    expect(ungroundedTokens("CODE WITH AHSAN", transcript, "Ahsan")).toEqual([]);
+    expect(ungroundedTokens("CODE WITH AHSAN", transcript)).toEqual(["ahsan"]);
+  });
+
+  it("agrees token-for-token with checkGrounding over the same copy — the refactor is behavior-preserving", () => {
+    const label = "CODECHUN REVENUE churn agents";
+    const issues = checkGrounding([scene("StatCard", { label })], transcript);
+    expect(issues.map((i) => i.token)).toEqual(ungroundedTokens(label, transcript));
   });
 });
 

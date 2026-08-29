@@ -2335,3 +2335,231 @@ describe("POST /api/retranscribe-range (stamps-only splice)", () => {
     empty.close();
   });
 });
+
+describe("publish caption regenerate (2026-08-29)", () => {
+  const noCfg = (): Record<string, never> => ({});
+
+  /** A tiny LlmProvider whose answer is scripted — the FakeProvider shape
+   * from core's caption-regen tests, here so the endpoint's whole path runs
+   * without a model. */
+  const fakeProvider = (
+    answer: () => Promise<string>,
+  ): import("@ossclip/core").LlmProvider & { usage: import("@ossclip/core").LlmUsage[] } => {
+    const usage: import("@ossclip/core").LlmUsage[] = [];
+    return {
+      name: "gemini",
+      usage,
+      async complete(req) {
+        const caption = await answer();
+        usage.push({
+          provider: "gemini",
+          model: "gemini-2.5-flash",
+          schemaName: req.schemaName,
+          inputTokens: 1000,
+          outputTokens: 100,
+          exact: true,
+          billed: true,
+          ms: 5,
+        });
+        return req.schema.parse({ caption });
+      },
+    };
+  };
+
+  /** transcript.json + a usage.json whose last calling run names gemini —
+   * the provider resolution's first rung, so the hermetic `publishEnv: {}`
+   * (no keys, no bins) still resolves. */
+  async function regenWorkdir(): Promise<string> {
+    const dir = await fixtureWorkdir();
+    await writeFile(
+      join(dir, "transcript.json"),
+      JSON.stringify({
+        language: "en",
+        words: "imagine fifty teams applied to your hackathon".split(" ").map((text, i) => ({
+          text,
+          start: i * 0.5,
+          end: i * 0.5 + 0.4,
+        })),
+      }),
+    );
+    await writeFile(
+      join(dir, "usage.json"),
+      JSON.stringify({
+        runs: [
+          {
+            at: "2026-08-28T00:00:00.000Z",
+            provider: "gemini",
+            models: ["gemini-2.5-flash"],
+            cached: false,
+            records: [],
+            totals: {},
+          },
+        ],
+        records: [],
+        totals: {},
+      }),
+    );
+    return dir;
+  }
+
+  const post = (url: string, body: unknown): Promise<Response> =>
+    fetch(`${url}/api/publish/regenerate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("happy path: the usage-log provider is asked, the caption + spend line + notes ride back, the spend persists", async () => {
+    const dir = await regenWorkdir();
+    const asked: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: ((name: string) => {
+        asked.push(name);
+        return fakeProvider(async () => "imagine fifty teams applied");
+      }) as never,
+    });
+    close = server.close;
+    const res = await post(server.url, {
+      network: "linkedin",
+      instruction: "the 50 teams figure was an example, not a fact",
+      currentCaption: "50 teams applied.",
+    });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.caption).toBe("imagine fifty teams applied");
+    // The spend line, produce's own spelling.
+    expect(body.usage).toContain("▸ llm: 1 calls");
+    // Every token grounded — no advisory notes.
+    expect(body.notes).toEqual([]);
+    expect(asked).toEqual(["gemini"]);
+    // The spend survives the session: a second run appended to usage.json.
+    const log = JSON.parse(await readFile(join(dir, "usage.json"), "utf8"));
+    expect(log.runs).toHaveLength(2);
+    expect(log.runs[1].records[0].schemaName).toBe("caption_regen");
+  });
+
+  it("an ungrounded token in the rewrite rides back as an advisory note, never a block", async () => {
+    const dir = await regenWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() => fakeProvider(async () => "REVENUE up for teams")) as never,
+    });
+    close = server.close;
+    const body = await (
+      await post(server.url, { network: "x", instruction: "shorter", currentCaption: "c" })
+    ).json();
+    expect(body.ok).toBe(true);
+    expect(body.notes).toEqual(['⚠ grounding: "revenue" — not in the take']);
+  });
+
+  it("412 with no transcript in the workdir — nothing to ground a rewrite against", async () => {
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() => fakeProvider(async () => "x")) as never,
+    });
+    close = server.close;
+    const res = await post(server.url, { network: "x", instruction: "i", currentCaption: "c" });
+    expect(res.status).toBe(412);
+    expect((await res.json()).error).toContain("no transcript");
+  });
+
+  it("412 when no provider is resolvable — the actionable sentence, never a doomed call", async () => {
+    const dir = await fixtureWorkdir();
+    // A transcript but NO usage.json, no command.json pin, and an empty env.
+    await writeFile(
+      join(dir, "transcript.json"),
+      JSON.stringify({ language: "en", words: [{ text: "hello", start: 0, end: 0.4 }] }),
+    );
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+    });
+    close = server.close;
+    const res = await post(server.url, { network: "x", instruction: "i", currentCaption: "c" });
+    expect(res.status).toBe(412);
+    expect((await res.json()).error).toContain("GEMINI_API_KEY");
+  });
+
+  it("a provider failure is 200/ok:false with the message VERBATIM", async () => {
+    const dir = await regenWorkdir();
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() =>
+        fakeProvider(async () => {
+          throw new Error("quota exceeded for gemini-2.5-flash");
+        })) as never,
+    });
+    close = server.close;
+    const res = await post(server.url, { network: "x", instruction: "i", currentCaption: "c" });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ ok: false, error: "quota exceeded for gemini-2.5-flash" });
+  });
+
+  it("a malformed body is a 400, never a paid call", async () => {
+    const dir = await regenWorkdir();
+    let called = false;
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() => {
+        called = true;
+        return fakeProvider(async () => "x");
+      }) as never,
+    });
+    close = server.close;
+    // instruction may not be empty — an instructionless rewrite has nothing
+    // to apply.
+    const res = await post(server.url, { network: "x", instruction: "", currentCaption: "c" });
+    expect(res.status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it("409 while a regeneration is already in flight — an LLM call costs money", async () => {
+    const dir = await regenWorkdir();
+    let release!: () => void;
+    const gate = new Promise<string>((r) => (release = () => r("done")));
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => (started = r));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() =>
+        fakeProvider(() => {
+          started();
+          return gate;
+        })) as never,
+    });
+    close = server.close;
+    const args = { network: "x", instruction: "i", currentCaption: "c" };
+    const first = post(server.url, args);
+    // Deterministic, not a sleep: the second request goes out only once the
+    // first is provably inside the provider call.
+    await startedP;
+    const second = await post(server.url, args);
+    expect(second.status).toBe(409);
+    release();
+    expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
+  });
+});

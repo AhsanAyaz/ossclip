@@ -309,6 +309,114 @@ describe("PublishPanel", () => {
     );
   });
 
+  it("regenerate POSTs the CURRENT text + instruction, and the result fans out to every group id", async () => {
+    // The box's live text — the user's manual edit included — is what the
+    // server (and so the model) must see, not the server's original preview.
+    const bodies: Array<{ network: string; instruction: string; currentCaption: string }> = [];
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string; body?: string }) => {
+      if (String(url).endsWith("/api/publish/regenerate")) {
+        bodies.push(JSON.parse(init?.body ?? "{}"));
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            caption: "rewritten caption",
+            usage: "▸ llm: 1 calls · 1,000 in / 100 out tokens",
+            notes: ['⚠ grounding: "revenue" — not in the take'],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    // Edit the caption by hand first — the POST must carry this text.
+    const area = container.querySelector<HTMLTextAreaElement>(
+      '[data-testid="publish-caption-linkedin"]',
+    )!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(area, "hand-edited caption");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const instruction = container.querySelector<HTMLInputElement>(
+      '[data-testid="publish-regen-instruction-linkedin"]',
+    )!;
+    // Empty instruction: the button stays disabled — nothing to apply.
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="publish-regen-linkedin"]',
+    )!;
+    expect(button.disabled).toBe(true);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(instruction, "the 50 teams figure was an example");
+      instruction.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="publish-regen-linkedin"]')!
+        .click();
+    });
+    expect(bodies).toEqual([
+      {
+        network: "linkedin",
+        instruction: "the 50 teams figure was an example",
+        currentCaption: "hand-edited caption",
+      },
+    ]);
+    // The rewrite landed in the box, and via the fan-out both LinkedIn ids
+    // now carry it — proven by the box after picking the page chip too.
+    expect(
+      container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]')
+        ?.value,
+    ).toBe("rewritten caption");
+    // Usage + grounding advisory under the box.
+    expect(
+      container.querySelector('[data-testid="publish-regen-usage-linkedin"]')?.textContent,
+    ).toContain("▸ llm: 1 calls");
+    expect(
+      container.querySelector('[data-testid="publish-regen-note-linkedin"]')?.textContent,
+    ).toContain('"revenue"');
+  });
+
+  it("a regenerate failure rides verbatim into the panel and the caption is untouched", async () => {
+    global.fetch = vi.fn(async (url: unknown) => {
+      if (String(url).endsWith("/api/publish/regenerate")) {
+        return { ok: true, json: async () => ({ ok: false, error: "quota exceeded" }) };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    const instruction = container.querySelector<HTMLInputElement>(
+      '[data-testid="publish-regen-instruction-linkedin"]',
+    )!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(instruction, "shorter");
+      instruction.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-testid="publish-regen-linkedin"]')!
+        .click();
+    });
+    expect(
+      container.querySelector('[data-testid="publish-regen-error-linkedin"]')?.textContent,
+    ).toBe("quota exceeded");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]')
+        ?.value,
+    ).toBe("authored linkedin post");
+  });
+
   it("an existing receipt shows the already-published note and labels the button Publish again (force)", async () => {
     const receipt = {
       backend: "postiz",

@@ -102,6 +102,39 @@ function stringsOf(value: unknown): string[] {
   return [];
 }
 
+/**
+ * The tokens in `text` that the transcript nowhere supports, in text order,
+ * duplicates kept. This IS the grounding rule — `checkGrounding` walks scene
+ * fields through it, and the publish panel's caption regenerate runs it over
+ * a rewritten caption as an ADVISORY (captions legitimately contain brand and
+ * platform words never spoken, so its callers show notes, never a block).
+ * One spelling on purpose: the module header's §17 history is what a second
+ * copy of the supported() relaxation would eventually re-earn.
+ *
+ * The spoken set is rebuilt per call — cheap at real transcript sizes, and
+ * the price of keeping the rule callable on a single string.
+ *
+ * The transcript parameter demands only spoken text, which is all the rule
+ * reads: a full `Transcript` satisfies it, and so does the edit server's
+ * leniently-read transcript.json (words filtered to those with string text,
+ * timing not re-validated for a check that never looks at it).
+ */
+export function ungroundedTokens(
+  text: string,
+  transcript: { words: ReadonlyArray<{ text: string }> },
+  speaker?: string,
+): string[] {
+  const spoken = new Set([
+    ...transcript.words.flatMap((w) => tokenize(w.text)),
+    ...(speaker ? tokenize(speaker) : []),
+  ]);
+  const supported = (token: string): boolean =>
+    spoken.has(token) ||
+    spoken.has(`${token}s`) ||
+    (token.endsWith("s") && spoken.has(token.slice(0, -1)));
+  return tokenize(text).filter((token) => needsSupport(token) && !supported(token));
+}
+
 export function checkGrounding(
   scenes: readonly Scene[],
   transcript: Transcript,
@@ -113,25 +146,14 @@ export function checkGrounding(
    */
   speaker?: string,
 ): GroundingIssue[] {
-  const spoken = new Set([
-    ...transcript.words.flatMap((w) => tokenize(w.text)),
-    ...(speaker ? tokenize(speaker) : []),
-  ]);
-  const supported = (token: string): boolean =>
-    spoken.has(token) ||
-    spoken.has(`${token}s`) ||
-    (token.endsWith("s") && spoken.has(token.slice(0, -1)));
-
   const issues: GroundingIssue[] = [];
   for (const scene of scenes) {
     const fields = CHECKED_FIELDS[scene.component] ?? [];
     const merged = { ...scene.props, ...scene.overrides };
     for (const field of fields) {
       for (const text of stringsOf(merged[field])) {
-        for (const token of tokenize(text)) {
-          if (needsSupport(token) && !supported(token)) {
-            issues.push({ sceneId: scene.id, component: scene.component, field, token });
-          }
+        for (const token of ungroundedTokens(text, transcript, speaker)) {
+          issues.push({ sceneId: scene.id, component: scene.component, field, token });
         }
       }
     }

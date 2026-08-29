@@ -150,6 +150,18 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const [busy, setBusy] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sent, setSent] = useState<PublishReceiptInfo | null>(null);
+  // Caption regenerate (2026-08-29, handoff item 4): a per-network
+  // instruction box + button beside the caption. The server calls the run's
+  // own LLM; the result lands in the caption STATE only — nothing auto-sends,
+  // the user still reviews and presses Publish.
+  const [regenInstruction, setRegenInstruction] = useState<Record<string, string>>({});
+  // The network whose regenerate is in flight, or null. One at a time — the
+  // server 409s a second anyway (its call costs money), so every button
+  // disables while any runs.
+  const [regenBusy, setRegenBusy] = useState<string | null>(null);
+  const [regenResult, setRegenResult] = useState<
+    Record<string, { usage?: string; notes?: string[]; error?: string }>
+  >({});
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -220,6 +232,55 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
       setSendError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onRegenerate = async (network: string, ids: string[], currentCaption: string): Promise<void> => {
+    const instruction = (regenInstruction[network] ?? "").trim();
+    if (instruction.length === 0) return;
+    setRegenBusy(network);
+    setRegenResult((prev) => ({ ...prev, [network]: {} }));
+    try {
+      const res = await fetch("/api/publish/regenerate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // `currentCaption` is what the box holds RIGHT NOW, manual edits
+        // included — the model must see what the user sees.
+        body: JSON.stringify({ network, instruction, currentCaption }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        caption?: string;
+        usage?: string;
+        notes?: string[];
+        error?: string;
+      };
+      if (!res.ok || body.ok !== true || typeof body.caption !== "string") {
+        // The server's message rides VERBATIM (the publish error posture).
+        setRegenResult((prev) => ({
+          ...prev,
+          [network]: { error: body.error ?? `regenerate failed: ${res.status}` },
+        }));
+        return;
+      }
+      const next = body.caption;
+      // The caption fan-out the textarea's onChange uses: one network's text
+      // writes to every channel id in the group.
+      setCaptions((prev) => ({
+        ...prev,
+        ...Object.fromEntries(ids.map((id) => [id, next])),
+      }));
+      setRegenResult((prev) => ({
+        ...prev,
+        [network]: { usage: body.usage, notes: body.notes ?? [] },
+      }));
+    } catch (err) {
+      setRegenResult((prev) => ({
+        ...prev,
+        [network]: { error: err instanceof Error ? err.message : String(err) },
+      }));
+    } finally {
+      setRegenBusy(null);
     }
   };
 
@@ -368,6 +429,60 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                             ? ` · posts to ${pickedInGroup.length} channels`
                             : ""}
                         </div>
+                        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                          <input
+                            data-testid={`publish-regen-instruction-${group.network}`}
+                            placeholder='Fix the caption, e.g. "the 50 teams figure was an example, not a fact"'
+                            value={regenInstruction[group.network] ?? ""}
+                            onChange={(e) =>
+                              setRegenInstruction((prev) => ({
+                                ...prev,
+                                [group.network]: e.target.value,
+                              }))
+                            }
+                            style={{ ...textInput, flex: 1, padding: "6px 10px", fontSize: 12 }}
+                          />
+                          <button
+                            type="button"
+                            data-testid={`publish-regen-${group.network}`}
+                            disabled={
+                              regenBusy !== null ||
+                              (regenInstruction[group.network] ?? "").trim().length === 0
+                            }
+                            onClick={() => void onRegenerate(group.network, ids, text)}
+                            style={chipStyle}
+                          >
+                            {regenBusy === group.network ? "Regenerating…" : "Regenerate"}
+                          </button>
+                        </div>
+                        {regenResult[group.network]?.error !== undefined ? (
+                          <div
+                            data-testid={`publish-regen-error-${group.network}`}
+                            style={errorText}
+                          >
+                            {regenResult[group.network]!.error}
+                          </div>
+                        ) : null}
+                        {regenResult[group.network]?.usage !== undefined ? (
+                          <div
+                            data-testid={`publish-regen-usage-${group.network}`}
+                            style={{ ...subtitle, marginTop: 4 }}
+                          >
+                            {regenResult[group.network]!.usage}
+                          </div>
+                        ) : null}
+                        {(regenResult[group.network]?.notes ?? []).map((note) => (
+                          // Advisory grounding notes, the produce report's
+                          // spelling — captions carry brand words the take
+                          // never speaks, so these inform, never block.
+                          <div
+                            key={note}
+                            data-testid={`publish-regen-note-${group.network}`}
+                            style={{ ...subtitle, marginTop: 2, color: "#E5B300" }}
+                          >
+                            {note}
+                          </div>
+                        ))}
                       </>
                     ) : null}
                   </div>
