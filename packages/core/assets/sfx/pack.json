@@ -1,0 +1,16 @@
+{
+  "name": "ossclip-starter",
+  "sounds": [
+    { "id": "whoosh-soft", "kind": "sound", "file": "whoosh-soft.mp3", "whenToUse": "A graphic or scene sliding in; gentle transitions between points.", "tags": [], "gain": 0.9, "durationSec": 0.7 },
+    { "id": "whoosh-fast", "kind": "sound", "file": "whoosh-fast.mp3", "whenToUse": "Quick cuts, list items landing, fast pace moments.", "tags": [], "gain": 0.9, "durationSec": 0.35 },
+    { "id": "swoosh-exit", "kind": "sound", "file": "swoosh-exit.mp3", "whenToUse": "Something being dismissed, deleted, or leaving the frame.", "tags": [], "gain": 0.9, "durationSec": 0.6 },
+    { "id": "riser-short", "kind": "sound", "file": "riser-short.mp3", "whenToUse": "Build-up right before a reveal, result, or big claim.", "tags": [], "gain": 0.8, "durationSec": 1.1 },
+    { "id": "ding", "kind": "sound", "file": "ding.mp3", "whenToUse": "Confirmation that something works; a key takeaway landing.", "tags": [], "gain": 1, "durationSec": 0.6 },
+    { "id": "pop", "kind": "sound", "file": "pop.mp3", "whenToUse": "A small element appearing; a light touch on a minor point.", "tags": [], "gain": 1, "durationSec": 0.3 },
+    { "id": "click", "kind": "sound", "file": "click.mp3", "whenToUse": "Describing a UI interaction: clicking, selecting, toggling.", "tags": [], "gain": 1, "durationSec": 0.2 },
+    { "id": "error-buzz", "kind": "sound", "file": "error-buzz.mp3", "whenToUse": "Something failing, a wrong approach, a bug being shown.", "tags": [], "gain": 0.9, "durationSec": 0.5 },
+    { "id": "scratch", "kind": "sound", "file": "scratch.mp3", "whenToUse": "A record-scratch 'wait, what?' pivot or sudden correction.", "tags": ["meme"], "gain": 1, "durationSec": 0.4 },
+    { "id": "boom-dramatic", "kind": "sound", "file": "boom-dramatic.mp3", "whenToUse": "Dramatic emphasis on an absurd or shocking statement.", "tags": ["meme"], "gain": 0.85, "durationSec": 1.6 },
+    { "id": "tape-stop", "kind": "sound", "file": "tape-stop.mp3", "whenToUse": "Everything stopping for an interjection or hard pivot.", "tags": ["meme"], "gain": 0.85, "durationSec": 1.1 }
+  ]
+}

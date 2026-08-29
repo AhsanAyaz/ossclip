@@ -19,6 +19,7 @@ export * from "./blooper";
 export * from "./retake";
 export * from "./captions";
 export * from "./fonts";
+export * from "./sfx-pack";
 export * from "./dictionary";
 export * from "./zoom";
 export * from "./grounding";

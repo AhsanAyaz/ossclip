@@ -27,6 +27,7 @@ export * from "./provider";
 export * from "./usage";
 export * from "./beats";
 export * from "./youtube";
+export * from "./sfx";
 export * from "./caption-regen";
 export * from "./scene-props";
 export * from "./repair";
