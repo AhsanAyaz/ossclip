@@ -51,9 +51,67 @@ The tunnel's `cert.pem` on the mini carries a zone-scoped Cloudflare API
 token that can write DNS records (used for TikTok's verification TXT). No
 separate API token needed for future DNS work.
 
+## The first real multi-platform publish FAILED — read this first
+
+The user published `IMG_2709` (5m20s landscape, **589MB, ~56 Mbps**) to six
+channels. One queued, five errored:
+
+| channel | state | worker error |
+|---|---|---|
+| LinkedIn page | QUEUE | still processing at handoff time |
+| LinkedIn profile | ERROR | `Media server did not honor the range request (status 200)` |
+| Instagram | ERROR | `Media upload has failed with error code 2207077` |
+| Threads | ERROR | `UNKNOWN` |
+| Facebook ×2 | ERROR | `Unknown Error` |
+
+Two distinct causes, and the first one is the important one:
+
+1. **We upload the MASTER render.** `publish()` sends the file produce wrote —
+   here 589MB at ~56 Mbps, because `--resolution auto` now keeps the source's
+   pixels. Every one of these platforms re-encodes to roughly 6–12 Mbps, so
+   the bitrate buys nothing and the size buys failures. Meta's `2207077` is
+   its generic "could not fetch/transcode your media"; the two Facebook
+   `Unknown Error`s and the Threads `UNKNOWN` are the same shape. An earlier
+   163MB / 104s render published fine to LinkedIn, which is the contrast.
+
+   **Threads additionally caps video at 5 minutes** — this take is 5:20, so
+   it could never have succeeded whatever the size.
+
+2. **LinkedIn's uploader issues a RANGED GET** and our media server answered
+   `200` instead of `206`. That is a serving-side gap (Postiz's uploads path
+   behind the tunnel), independent of size, though a large file makes it
+   fatal rather than slow.
+
+### What to build (now the highest-value item)
+
+A **delivery encode for publish**: before upload, transcode the master to
+something platform-shaped — 1080p, ~8–12 Mbps, h264/aac — and send that.
+Roughly 40MB for this video instead of 589MB. Likely fixes Instagram,
+Facebook and any under-5-minute Threads post in one change, and makes the
+LinkedIn range issue far less likely to bite.
+
+Open design questions: cache the delivery encode in the workdir beside the
+master (it is deterministic per render, so it should be built once); whether
+to refuse or warn when a video exceeds a platform's duration cap (Threads
+5 min, TikTok 10 min, Instagram Reels 15 min) rather than letting the
+platform fail it; and whether `--resolution auto` should stay decoupled from
+what gets published, which it should — the master is for the user's archive
+and YouTube, the delivery encode is for everyone else.
+
 ## Open items, in the order I would take them
 
-### 1. Ground the caption copy (root cause, matters most)
+### 1. Delivery encode for publish
+
+See the failure analysis above — publishing is effectively broken for any
+long or large render until this exists.
+
+### 2. LinkedIn range requests
+
+`Media server did not honor the range request (status 200)`. Postiz serves
+the uploaded media; find out whether the 206 is lost in its uploads handler,
+in nginx, or at the Cloudflare tunnel, and fix the layer that drops it.
+
+### 3. Ground the caption copy (root cause of the wrong copy)
 
 The last produce printed `⚠ grounding: … "example" — not in the take` for
 several scene props — that check exists for graphics. The YouTube/LinkedIn
@@ -64,7 +122,7 @@ user hit this in real copy on real accounts.
 Fixing the pack prompt (or adding a grounding pass over `platformCaptions`)
 prevents the error; the regenerate button below only repairs it after.
 
-### 2. Regenerate a caption from the editor (designed, not built)
+### 4. Regenerate a caption from the editor (designed, not built)
 
 Approved design, bounded:
 
@@ -76,7 +134,7 @@ Approved design, bounded:
 - Returns replacement text into the panel's box. The user still reviews and
   edits; nothing auto-sends. Report the spend the way produce does.
 
-### 3. YouTube thumbnail
+### 5. YouTube thumbnail
 
 `publish()` uploads exactly one file — the video. `IMG_2709.ossclip.cover.jpg`
 and `.thumbnail.png` are written for the user and reach no platform.
@@ -85,7 +143,7 @@ so this is wireable: upload the cover as a second media, pass it as
 `settings.thumbnail`. The other four networks have no cover concept for a
 video post — nothing to wire there.
 
-### 4. TikTok production access
+### 6. TikTok production access
 
 Connected via **sandbox** only. An unaudited client can post only to accounts
 that are **private at the time of posting**, with `SELF_ONLY` visibility —
@@ -100,7 +158,7 @@ take Postiz's default and hit the same refusal. Either exclude TikTok from
 `--all` runs until approved, or add a privacy setting the way YouTube's was
 added.
 
-### 5. Smaller, carried
+### 7. Smaller, carried
 
 - Rotate the Facebook and Threads app secrets — they were pasted in chat.
 - The editor's render modal has a "Re-plan graphics" checkbox; there is no
