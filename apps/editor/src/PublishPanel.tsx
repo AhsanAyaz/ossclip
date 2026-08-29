@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { groupByNetwork } from "./publishGroups";
 
 /**
  * The publish panel (2026-08-26): pick connected accounts, tweak the
@@ -215,43 +216,71 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                   No accounts connected in Postiz yet — connect them there first.
                 </div>
               ) : null}
-              {(info.integrations ?? []).map((integration) => {
-                const on = selected[integration.id] === true;
-                const cap = panelCaptionCap(integration.provider);
-                const text = captions[integration.id] ?? "";
+              {groupByNetwork(
+                (info.integrations ?? []).map((i) => ({ ...i, caption: captions[i.id] ?? i.caption })),
+              ).map((group) => {
+                // ONE caption per NETWORK (publishGroups.ts owns the why):
+                // four LinkedIn channels are one post, not four. A group is
+                // selected when ANY of its channels is, and typing writes the
+                // text to every channel in it — the request still carries a
+                // caption per integration id, so the server is unchanged.
+                const ids = group.channels.map((c) => c.id);
+                const on = ids.some((id) => selected[id] === true);
+                const cap = panelCaptionCap(group.channels[0]!.provider);
+                const text = captions[ids[0]!] ?? group.caption;
                 return (
-                  <div key={integration.id} style={accountBox}>
+                  <div key={group.network} style={accountBox}>
                     <label style={accountRow}>
                       <input
-                        data-testid={`publish-check-${integration.id}`}
+                        data-testid={`publish-check-${group.network}`}
                         type="checkbox"
                         checked={on}
                         onChange={(e) =>
-                          setSelected((prev) => ({ ...prev, [integration.id]: e.target.checked }))
+                          setSelected((prev) => ({
+                            ...prev,
+                            ...Object.fromEntries(ids.map((id) => [id, e.target.checked])),
+                          }))
                         }
                       />
-                      <span style={providerTag}>{integration.provider}</span>
-                      <span style={accountName}>{integration.name}</span>
+                      <span style={providerTag}>{group.network}</span>
+                      <span style={accountName}>
+                        {group.channels.map((c) => c.name).join(", ")}
+                      </span>
                     </label>
                     {on ? (
                       <>
+                        {group.mixed ? (
+                          <div
+                            data-testid={`publish-mixed-${group.network}`}
+                            style={{ ...subtitle, marginBottom: 6 }}
+                          >
+                            These channels had different captions — editing here sets one for all
+                            {group.channels.length} of them.
+                          </div>
+                        ) : null}
                         <textarea
-                          data-testid={`publish-caption-${integration.id}`}
+                          data-testid={`publish-caption-${group.network}`}
                           value={text}
                           rows={4}
                           onChange={(e) =>
-                            setCaptions((prev) => ({ ...prev, [integration.id]: e.target.value }))
+                            setCaptions((prev) => ({
+                              ...prev,
+                              ...Object.fromEntries(ids.map((id) => [id, e.target.value])),
+                            }))
                           }
                           style={captionArea}
                         />
                         <div
-                          data-testid={`publish-count-${integration.id}`}
+                          data-testid={`publish-count-${group.network}`}
                           style={{
                             ...counterText,
                             ...(text.length > cap ? { color: "#FF5C5C" } : {}),
                           }}
                         >
                           {text.length} / {cap}
+                          {group.channels.length > 1
+                            ? ` · posts to ${group.channels.length} channels`
+                            : ""}
                         </div>
                       </>
                     ) : null}

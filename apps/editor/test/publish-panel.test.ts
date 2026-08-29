@@ -67,6 +67,10 @@ describe("PublishPanel", () => {
     receipt: null,
     integrations: [
       { id: "a", provider: "linkedin", name: "Ahsan", caption: "authored linkedin post" },
+      // A company PAGE alongside the profile: one network, one caption box
+      // (publishGroups.ts). The publish request must still carry the text
+      // under BOTH integration ids.
+      { id: "p", provider: "linkedin-page", name: "Code with Ahsan", caption: "authored linkedin post" },
       { id: "b", provider: "x", name: "Ahsan", caption: "short x post" },
     ],
   };
@@ -101,15 +105,16 @@ describe("PublishPanel", () => {
     // Nothing selected: the send button is disabled and no caption shows.
     const send = container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]');
     expect(send?.disabled).toBe(true);
-    expect(container.querySelector('[data-testid="publish-caption-a"]')).toBeNull();
-    const check = container.querySelector<HTMLInputElement>('[data-testid="publish-check-a"]');
+    expect(container.querySelector('[data-testid="publish-caption-linkedin"]')).toBeNull();
+    const check = container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]');
     await act(async () => {
       check!.click();
     });
-    const area = container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-a"]');
+    const area = container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]');
     expect(area?.value).toBe("authored linkedin post");
-    expect(container.querySelector('[data-testid="publish-count-a"]')?.textContent).toBe(
-      `${"authored linkedin post".length} / 1500`,
+    expect(container.querySelector('[data-testid="publish-count-linkedin"]')?.textContent).toBe(
+      // The counter names the fan-out: one box, both LinkedIn channels.
+      `${"authored linkedin post".length} / 1500 · posts to 2 channels`,
     );
     expect(
       container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')?.disabled,
@@ -134,13 +139,13 @@ describe("PublishPanel", () => {
     }) as unknown as typeof fetch;
     await mount();
     await act(async () => {
-      container.querySelector<HTMLInputElement>('[data-testid="publish-check-a"]')!.click();
+      container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]')!.click();
     });
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
     });
     expect(bodies[0]).toMatchObject({
-      integrationIds: ["a"],
+      integrationIds: ["a", "p"],
       captions: { a: "authored linkedin post" },
     });
     // Publish-now: no `at` rides along.
@@ -159,7 +164,7 @@ describe("PublishPanel", () => {
     }) as unknown as typeof fetch;
     await mount();
     await act(async () => {
-      container.querySelector<HTMLInputElement>('[data-testid="publish-check-a"]')!.click();
+      container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]')!.click();
     });
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
@@ -190,7 +195,7 @@ describe("PublishPanel", () => {
       container.querySelector('[data-testid="publish-receipt-note"]')?.textContent,
     ).toContain("2026-08-25T10:00:00.000Z");
     await act(async () => {
-      container.querySelector<HTMLInputElement>('[data-testid="publish-check-a"]')!.click();
+      container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]')!.click();
     });
     const send = container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]');
     expect(send?.textContent).toBe("Publish again");
