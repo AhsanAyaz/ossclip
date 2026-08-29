@@ -75,6 +75,7 @@ describe("produceArgv", () => {
             captions: false,
             watermark: true,
             jumpCuts: false,
+            sfx: "meme",
             youtube: true,
             portrait: "/me.jpg",
             llm: "claude-cli",
@@ -93,6 +94,7 @@ describe("produceArgv", () => {
       "--watermark",
       "--no-captions",
       "--no-jump-cuts",
+      "--sfx-level", "meme",
       "--youtube",
       "--portrait", "/me.jpg",
       "--llm", "claude-cli",
@@ -201,6 +203,34 @@ describe("produceArgv", () => {
     ]);
     expect(produceArgv(answers({ extras: { youtube: true, audience: "" } }))).toEqual([
       "produce", "./take.mp4", "--youtube",
+    ]);
+  });
+
+  // Sound effects (2026-08-29) share the watermark's polarity — present is
+  // ON, absent emits nothing — but the level decides the SPELLING. `normal`
+  // is the CLI's own default, so it must never appear on the taught command
+  // line: the bare `--sfx` says everything. The other two levels ride
+  // `--sfx-level` ALONE, because that flag already implies `--sfx`
+  // (program.ts's sfxFlag, the same rule replay-argv pins with) and the pair
+  // would teach a redundant flag.
+  it("emits --sfx for the normal level and --sfx-level alone for the others", () => {
+    expect(produceArgv(answers({ graphics: true, extras: { sfx: "normal" } }))).toEqual([
+      "produce", "./take.mp4", "--produce", "--sfx",
+    ]);
+    expect(produceArgv(answers({ graphics: true, extras: { sfx: "subtle" } }))).toEqual([
+      "produce", "./take.mp4", "--produce", "--sfx-level", "subtle",
+    ]);
+    expect(produceArgv(answers({ graphics: true, extras: { sfx: "meme" } }))).toEqual([
+      "produce", "./take.mp4", "--produce", "--sfx-level", "meme",
+    ]);
+  });
+
+  // Unpicked means the field is never set, and an unset sfx must stay silent:
+  // off is the default, and the config's `sfx` key is what decides for a
+  // config-on user (there is no `--no-sfx` for the wizard to emit anyway).
+  it("emits nothing for an unpicked sfx extra", () => {
+    expect(produceArgv(answers({ graphics: true, extras: {} }))).toEqual([
+      "produce", "./take.mp4", "--produce",
     ]);
   });
 

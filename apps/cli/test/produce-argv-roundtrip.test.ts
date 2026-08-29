@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { SfxLevel } from "@ossclip/core";
 import { produceArgv, type ProduceAnswers } from "../src/interactive/produce-argv";
 import { extrasFor, rememberPatch, youtubeFollowups } from "../src/interactive/produce-wizard";
-import { dictionaryFlag, jumpCutsFlag, resolveJumpCuts, reviewFlag } from "../src/produce";
+import { dictionaryFlag, jumpCutsFlag, resolveJumpCuts, reviewFlag, sfxFlag } from "../src/produce";
 
 const answers = (over: Partial<ProduceAnswers> = {}): ProduceAnswers => ({
   input: "./take.mp4",
@@ -324,8 +325,43 @@ describe("wizard argv survives the real commander parse", () => {
       expect(entry?.hint).toMatch(/--youtube/);
       expect(entry?.hint).toMatch(/approve the thumbnail concept before render/);
     }
-    expect(extrasFor(true)).toHaveLength(11);
-    expect(extrasFor(false)).toHaveLength(10); // graphicsClip filtered out
+    expect(extrasFor(true)).toHaveLength(12);
+    expect(extrasFor(false)).toHaveLength(10); // graphicsClip + sfx filtered out
+  });
+
+  // Sound effects (2026-08-29) follow the clip extra's gate: they are placed
+  // against the producer's beat sheet, so a --sfx run without --produce warns
+  // ("add --produce") and renders silent. Listing the entry to someone who
+  // just answered "no" to graphics is offering a menu item that does nothing.
+  it("never offers the sfx extra without graphics — the beat sheet only exists under --produce", () => {
+    expect(extrasFor(false).some((e) => e.value === "sfx")).toBe(false);
+    const entry = extrasFor(true).find((e) => e.value === "sfx");
+    // Opt-in polarity, watermark's shape: the hint teaches the positive flag
+    // because there is no --no-sfx spelling for the wizard to offer.
+    expect(entry?.hint).toBe("--sfx");
+  });
+
+  // The wizard's two sfx spellings against the REAL option declarations: the
+  // bare --sfx (the normal level's emission) must land as sfx: true, and
+  // --sfx-level must carry the parsed level — and imply the switch through
+  // the action's own sfxFlag, which is why produceArgv emits it alone.
+  it("the wizard's --sfx and --sfx-level reach produce as an on switch plus a level", async () => {
+    const normal = await parse(produceArgv(answers({ graphics: true, extras: { sfx: "normal" } })));
+    expect(normal.sfx).toBe(true);
+    expect(normal.sfxLevel).toBeUndefined();
+    expect(sfxFlag(normal.sfx as boolean | undefined, normal.sfxLevel as SfxLevel | undefined)).toBe(
+      true,
+    );
+    const meme = await parse(produceArgv(answers({ graphics: true, extras: { sfx: "meme" } })));
+    expect(meme.sfx).toBeUndefined();
+    expect(meme.sfxLevel).toBe("meme");
+    expect(sfxFlag(meme.sfx as boolean | undefined, meme.sfxLevel as SfxLevel | undefined)).toBe(
+      true,
+    );
+    // Untyped stays undefined — the tri-state the config's `sfx` key fills.
+    const bare = await parse(produceArgv(answers({ graphics: true })));
+    expect(bare.sfx).toBeUndefined();
+    expect(bare.sfxLevel).toBeUndefined();
   });
 
   // The youtube follow-up gating (thumbnail UX, 2026-08-16): each follow-up

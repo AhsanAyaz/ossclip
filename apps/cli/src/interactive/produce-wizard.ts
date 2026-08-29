@@ -12,8 +12,9 @@ import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } 
 /**
  * The produce wizard. Forty-one flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
- * five flags (--out, --cleanup, --aspect, --produce, --intent) — eleven
- * behind one "anything else?" multiselect, and the remaining stay flags-only:
+ * five flags (--out, --cleanup, --aspect, --produce, --intent) — twelve
+ * behind one "anything else?" multiselect (--sfx being the twelfth, with
+ * --sfx-level as its follow-up prompt rather than an entry of its own), and the remaining stay flags-only:
  * debug/internal surfaces, replay-only fields, --no-watermark (the
  * multiselect only turns the credit ON; off is already the default),
  * --no-youtube (the same shape: the pack entry only turns it ON),
@@ -48,6 +49,11 @@ const EXTRAS = [
   { value: "sourceIsEdited", label: "Source already has burned-in text", hint: "--source-is-edited" },
   { value: "captionsOff", label: "Turn the burned-in captions off", hint: "--no-captions" },
   { value: "jumpCutsOff", label: "No punch-in zooms at cuts", hint: "--no-jump-cuts" },
+  // Watermark/youtube polarity: OFF is the default and the entry only ever
+  // turns it ON — `--no-sfx` does not exist (program.ts declares `--sfx`
+  // alone so the config's `sfx` key can still supply it), so there is no OFF
+  // spelling to mirror in a second entry.
+  { value: "sfx", label: "Add sound effects (whoosh, ding…)", hint: "--sfx" },
   { value: "watermark", label: 'Credit the tool with a small "made with ossclip"', hint: "--watermark" },
   // The hint says the approval part out loud (thumbnail UX, 2026-08-16):
   // ticking this adds an interactive stop before the render, and a surprise
@@ -69,6 +75,15 @@ const EXTRAS = [
  * graphics is already on. Exported and kept pure so this can be asserted
  * without a TTY.
  *
+ * The sfx entry is gated on the same precedent (2026-08-29). Sound effects
+ * are placed against the producer's beat sheet, so a `--sfx` run without
+ * `--produce` reaches produce.ts's own "sound effects are placed against the
+ * producer's beat sheet — add --produce" warning and renders silent (a
+ * previous run's plan in the workdir is the only thing that saves it, which
+ * is not something a menu can promise). A guaranteed-inert menu item is the
+ * same broken offer as the clip one, softer only in that it warns instead of
+ * throwing — so it is only ever listed once graphics is already on.
+ *
  * `watermarkFromConfig` (review, minor a): on a config-on machine the
  * watermark entry sits UNCHECKED while the credit will render anyway —
  * unchecked is "don't emit the flag", not "off", and the multiselect has no
@@ -81,7 +96,9 @@ export function extrasFor(
   graphics: boolean,
   opts: { watermarkFromConfig?: boolean } = {},
 ): { value: (typeof EXTRAS)[number]["value"]; label: string; hint: string }[] {
-  const list = graphics ? [...EXTRAS] : EXTRAS.filter((e) => e.value !== "graphicsClip");
+  const list = graphics
+    ? [...EXTRAS]
+    : EXTRAS.filter((e) => e.value !== "graphicsClip" && e.value !== "sfx");
   if (opts.watermarkFromConfig !== true) return [...list];
   return list.map((e) =>
     e.value === "watermark"
@@ -346,6 +363,26 @@ export async function produceWizard(
   // Same OFF-switch shape (the punch defaults ON, face-only): a tick maps
   // to `jumpCuts: false` and produceArgv emits `--no-jump-cuts`.
   if (chosen.includes("jumpCutsOff")) extras.jumpCuts = false;
+  if (chosen.includes("sfx")) {
+    // Follow-up under the same extra, like --clip's seconds prompt: the level
+    // only means anything once effects are on. `normal` is preselected
+    // because it is the CLI's own default — and picking it still emits the
+    // bare `--sfx` rather than `--sfx-level normal`, produceArgv's
+    // default-elision rule. The hints say what the level actually CHANGES
+    // (density, and whether the meme-tagged sounds are eligible at all),
+    // because "subtle/normal/meme" alone reads as a volume knob.
+    extras.sfx = unwrap(
+      await select({
+        message: "How much sound design?",
+        initialValue: "normal",
+        options: [
+          { value: "subtle", label: "subtle", hint: "a couple of accents a minute" },
+          { value: "normal", label: "normal", hint: "recommended" },
+          { value: "meme", label: "meme", hint: "denser, and meme-tagged sounds become eligible" },
+        ],
+      }),
+    ) as ProduceExtras["sfx"];
+  }
   if (chosen.includes("watermark")) extras.watermark = true;
   if (chosen.includes("youtube")) {
     extras.youtube = true;

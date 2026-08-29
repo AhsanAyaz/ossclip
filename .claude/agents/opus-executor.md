@@ -33,6 +33,15 @@ is done; your job is to land it correctly.
   repo root (never `pnpm --filter … test` — the filter form exits 0 running
   nothing). Paste real output. Never report a step complete on failing tests
   or a partial implementation.
+- **A new CLI flag is not done until the wizard has been considered.** The
+  interactive wizard (`apps/cli/src/interactive/produce-wizard.ts`) is a
+  parallel surface: `--sfx` shipped flags-only and a wizard run simply could
+  not enable it (2026-08-29). When your step adds or changes a produce-facing
+  flag, check the wizard's tier doctrine (its header sorts every flag into
+  direct prompt / extras multiselect / deliberately flags-only) and either
+  add the wizard entry in the same step or state in your report which tier it
+  belongs to and why you left it out. Silence about the wizard is the failure
+  mode, not a wrong tier choice.
 
 ## Escalate instead of guessing
 

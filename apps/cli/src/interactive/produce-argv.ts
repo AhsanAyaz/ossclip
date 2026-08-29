@@ -1,4 +1,4 @@
-import type { ProviderName } from "@ossclip/core";
+import type { ProviderName, SfxLevel } from "@ossclip/core";
 
 /**
  * Wizard answers → the argv a user could have typed.
@@ -35,6 +35,16 @@ export interface ProduceExtras {
    * it exists to beat a future config-off, and emitting it here would
    * restate the default. */
   jumpCuts?: boolean;
+  /** Sound effects, the watermark's polarity with a level attached: PRESENT
+   * means on (the wizard only ever turns it ON — off is the default, there is
+   * no `--no-sfx` spelling to mirror, and a config-on user who wants silence
+   * for one run edits the config's `sfx` key), and the value is whatever the
+   * level follow-up answered. Typed as core's `SfxLevel`, not an inline
+   * union, for `llm`'s reason: a level added to `SfxLevelSchema` must not be
+   * silently unofferable here. Only reachable under graphics — sound effects
+   * are placed against the producer's beat sheet, so `extrasFor` gates the
+   * entry the way it gates `--clip`. */
+  sfx?: SfxLevel;
   /** The YouTube pack (Y2): the wizard only ever turns it ON — off is the
    * default, and a config-on user who wants it off for one run types
    * `--no-youtube`, flags-only like `--no-watermark`. */
@@ -116,6 +126,13 @@ export function produceArgv(a: ProduceAnswers): string[] {
   // negative spelling — auto must stay an ABSENT flag, or the taught
   // command line restates a default.
   if (e.jumpCuts === false) argv.push("--no-jump-cuts");
+  // One flag, never both: `--sfx-level` already implies `--sfx` (program.ts's
+  // `sfxFlag`), which is why replay-argv pins a level WITHOUT the switch too —
+  // emitting the pair would teach a flag that changes nothing. And `normal` is
+  // the CLI's own default, so naming it would restate a default per the
+  // elision rule above: a normal-level run's whole sound design is `--sfx`.
+  if (e.sfx === "normal") argv.push("--sfx");
+  else if (e.sfx !== undefined) argv.push("--sfx-level", e.sfx);
   // Watermark's shape: only the ON tick emits (off is the default, elided),
   // and the portrait only rides along with a value — the wizard already
   // dropped empty answers.
