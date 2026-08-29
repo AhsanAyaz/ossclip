@@ -3,6 +3,7 @@ import { rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { run } from "../exec";
 import { evenDim, probe, type IngestTools } from "../ingest";
+import { parseFfmpegProgress, type FfmpegProgress } from "./progress";
 import type { Probe } from "../schema";
 
 /**
@@ -100,8 +101,30 @@ export async function encodeDelivery(
   src: { path: string; width: number; height: number },
   dest: string,
   plan: DeliveryPlan,
+  opts: { onProgress?: (p: FfmpegProgress) => void } = {},
 ): Promise<void> {
   const scaling = plan.width !== src.width || plan.height !== src.height;
+  // ffmpeg's -progress stream vs. chunk boundaries: a data event can split a
+  // line mid-value ("out_time_us=12" + "345\n" parses as the wrong number),
+  // so only complete lines reach the parser and the tail carries over. The
+  // merged latest goes out per chunk — undefined never overwrites a value
+  // already seen.
+  let carry = "";
+  const latest: { outTimeSec?: number; speed?: number } = {};
+  const onStdout = (chunk: string): void => {
+    const text = carry + chunk;
+    const lastNewline = text.lastIndexOf("\n");
+    if (lastNewline < 0) {
+      carry = text;
+      return;
+    }
+    carry = text.slice(lastNewline + 1);
+    const parsed = parseFfmpegProgress(text.slice(0, lastNewline + 1));
+    if (parsed.outTimeSec === undefined && parsed.speed === undefined) return;
+    if (parsed.outTimeSec !== undefined) latest.outTimeSec = parsed.outTimeSec;
+    if (parsed.speed !== undefined) latest.speed = parsed.speed;
+    opts.onProgress?.({ ...latest });
+  };
   // Encode to a sibling temp path, rename only on success (R27 §125): ffmpeg
   // writes the container header as it goes, so an encode that dies mid-run
   // leaves a valid-looking file, and the existence-keyed cache below would
@@ -110,6 +133,9 @@ export async function encodeDelivery(
   try {
     await run(tools.ffmpegPath, [
       "-y", "-i", src.path,
+      // Machine-readable progress on stdout, and -nostats so the human
+      // frame-counter doesn't spam stderr alongside it.
+      "-progress", "pipe:1", "-nostats",
       ...(scaling ? ["-vf", `scale=${plan.width}:${plan.height}`] : []),
       "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
       "-b:v", `${plan.videoBitrateKbps}k`,
@@ -117,7 +143,7 @@ export async function encodeDelivery(
       "-c:a", "aac", "-b:a", "192k",
       "-movflags", "+faststart",
       partial,
-    ]);
+    ], { onStdout });
     await rename(partial, dest);
   } catch (err) {
     await rm(partial, { force: true });
@@ -145,7 +171,13 @@ export async function ensureDeliveryFile(
   tools: IngestTools,
   workdir: string,
   masterPath: string,
-  opts: { onStart?: (fileName: string) => void } = {},
+  opts: {
+    onStart?: (fileName: string) => void;
+    /** Live encode progress (percent/ETA are the caller's arithmetic —
+     * both already hold the master's duration). Never fires on a skip or a
+     * cache hit, which is why the consumers keep a static fallback line. */
+    onProgress?: (p: FfmpegProgress) => void;
+  } = {},
 ): Promise<DeliveryResult> {
   const [masterProbe, masterStat] = await Promise.all([probe(tools, masterPath), stat(masterPath)]);
   const plan = deliveryEncodePlan({
@@ -169,6 +201,7 @@ export async function ensureDeliveryFile(
     { path: masterPath, width: masterProbe.width, height: masterProbe.height },
     deliveryPath,
     plan,
+    { onProgress: opts.onProgress },
   );
   return { path: deliveryPath, encoded: true, probe: masterProbe };
 }

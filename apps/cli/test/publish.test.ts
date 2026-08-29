@@ -21,6 +21,7 @@ import {
   deliveryFlag,
   describeUpload,
   durationCapMessages,
+  encodeProgressLine,
   formatMinSec,
   loadPublishPack,
   platformsFlag,
@@ -97,6 +98,32 @@ describe("formatMinSec / durationCapMessages / describeUpload", () => {
         fileName: "delivery-1920x1080@10000k.mp4",
       }),
     ).toBe("delivery-1920x1080@10000k.mp4 (delivery encode, cached in workdir)");
+  });
+});
+
+describe("encodeProgressLine", () => {
+  it("percent, ETA and speed when ffmpeg has said all three", () => {
+    // 300s master, 126s encoded at 1.6x → 42%, (300-126)/1.6 ≈ 109s left.
+    expect(encodeProgressLine(300, { outTimeSec: 126, speed: 1.6 })).toBe(
+      "▸ encoding delivery … 42% · ~1:49 left (1.6x)",
+    );
+  });
+
+  it("drops ETA/speed rather than print garbage while ffmpeg warms up", () => {
+    // The first -progress block is all N/A → the parser yields nothing.
+    expect(encodeProgressLine(300, {})).toBe("▸ encoding delivery … 0%");
+    // out_time without speed: percent only.
+    expect(encodeProgressLine(300, { outTimeSec: 30 })).toBe("▸ encoding delivery … 10%");
+    // speed=0x would make the ETA Infinity — encodeEta refuses, so no tail.
+    expect(encodeProgressLine(300, { outTimeSec: 30, speed: 0 })).toBe(
+      "▸ encoding delivery … 10%",
+    );
+  });
+
+  it("caps at 100% — out_time can overshoot the probed duration at the tail", () => {
+    expect(encodeProgressLine(300, { outTimeSec: 301, speed: 2 })).toBe(
+      "▸ encoding delivery … 100% · ~0:00 left (2.0x)",
+    );
   });
 });
 

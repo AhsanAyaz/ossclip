@@ -2097,6 +2097,76 @@ describe("publish endpoints (2026-08-26)", () => {
     // Still one call — master mode never touched the encode path.
     expect(ensureCalls).toEqual([out]);
   });
+
+  it("GET /api/publish/progress tracks the in-flight POST: null → encoding pct/eta → uploading → null", async () => {
+    const { dir } = await publishWorkdir();
+    // Both phases held open on deferreds so the poll can observe them —
+    // the suite's stubbed-slow pattern (the fake fires onProgress like the
+    // real encode's -progress stream would, then blocks until released).
+    let releaseEncode: () => void = () => {};
+    let releaseUpload: () => void = () => {};
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [{ id: "a", name: "Ahsan", identifier: "linkedin" }]);
+        if (String(u).endsWith("/upload")) {
+          await new Promise<void>((r) => (releaseUpload = r));
+          return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
+        }
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+      probeVideo,
+      ensureDelivery: async (_t, _w, masterPath, o = {}) => {
+        // 30s of a 60s master at 2x realtime → pct 50, eta (60-30)/2 = 15.
+        o.onProgress?.({ outTimeSec: 30, speed: 2 });
+        await new Promise<void>((r) => (releaseEncode = r));
+        return { path: masterPath, encoded: true, probe: fakeProbe };
+      },
+    });
+    close = server.close;
+    const getProgress = async (): Promise<{
+      progress: { phase: string; pct: number | null; etaSec: number | null; speed: number | null } | null;
+    }> => (await fetch(`${server.url}/api/publish/progress`)).json();
+    const until = async (pred: () => Promise<boolean>): Promise<void> => {
+      for (let i = 0; i < 200 && !(await pred()); i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+
+    // Idle: 200 with an explicit null, never a 404 the panel would misread.
+    expect(await getProgress()).toEqual({ progress: null });
+
+    const posting = fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a"] }),
+    });
+    await until(async () => (await getProgress()).progress?.pct === 50);
+    expect((await getProgress()).progress).toEqual({
+      phase: "encoding",
+      pct: 50,
+      etaSec: 15,
+      speed: 2,
+    });
+
+    releaseEncode();
+    await until(async () => (await getProgress()).progress?.phase === "uploading");
+    // No upload ETA to measure — the phase alone is the signal.
+    expect((await getProgress()).progress).toEqual({
+      phase: "uploading",
+      pct: null,
+      etaSec: null,
+      speed: null,
+    });
+
+    releaseUpload();
+    expect((await posting).status).toBe(200);
+    // The finally reset: a finished publish leaves nothing behind.
+    expect(await getProgress()).toEqual({ progress: null });
+  });
 });
 
 describe("GET /api/transcript (captions over revived material)", () => {

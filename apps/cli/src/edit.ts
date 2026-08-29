@@ -25,6 +25,7 @@ import {
   checkDurationCaps,
   createPostizProvider,
   createProvider,
+  encodeEta,
   formatUsageLine,
   generateCaptionRegen,
   ensureDeliveryFile,
@@ -509,6 +510,20 @@ export async function startEditServer(
    * rule, its own flag: a caption rewrite must not block a thumbnail.
    */
   let captionRegenBusy = false;
+  /**
+   * Where the in-flight publish is right now, for the panel's poll
+   * (2026-08-29): the POST runs the delivery encode synchronously — minutes
+   * of x264 behind one fetch — so `GET /api/publish/progress` reads this
+   * instead of the panel staring at a static button. Null whenever no publish
+   * is in flight; a POST's `finally` owns the reset so an error can't leave a
+   * stale "encoding" behind. Per server instance like the busy flags above.
+   */
+  let publishProgress: {
+    phase: "encoding" | "uploading";
+    pct: number | null;
+    etaSec: number | null;
+    speed: number | null;
+  } | null = null;
   /** Where the JPEG lives right now: the destination the last cover used,
    * else `<recorded out>.cover.jpg`. Existence is the caller's check — a
    * recorded destination that was never rendered is a real state (the panel
@@ -1701,11 +1716,39 @@ export async function startEditServer(
               caption: parsed.data.captions?.[p.target.id] ?? p.caption,
             }));
             // Synchronous encode (~1–3 min, fetch won't time out) — a
-            // job/poll model is a noted follow-up, not this change.
-            const uploadPath =
-              parsed.data.delivery === "master"
-                ? out
-                : (await (opts.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out)).path;
+            // job/poll model for the WORK is a noted follow-up, but the
+            // PROGRESS is polled: /api/publish/progress reads the state the
+            // onProgress callback below keeps current.
+            let uploadPath = out;
+            if (parsed.data.delivery !== "master") {
+              publishProgress = { phase: "encoding", pct: 0, etaSec: null, speed: null };
+              uploadPath = (
+                await (opts.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out, {
+                  onProgress: (p) => {
+                    publishProgress = {
+                      phase: "encoding",
+                      // Percent against the MASTER's duration — the delivery
+                      // encode preserves it, so out_time maps 1:1.
+                      pct:
+                        p.outTimeSec !== undefined && masterProbe.duration > 0
+                          ? Math.min(
+                              100,
+                              Math.round((p.outTimeSec / masterProbe.duration) * 100),
+                            )
+                          : null,
+                      etaSec:
+                        p.outTimeSec !== undefined && p.speed !== undefined
+                          ? encodeEta(masterProbe.duration, p.outTimeSec, p.speed)
+                          : null,
+                      speed: p.speed ?? null,
+                    };
+                  },
+                })
+              ).path;
+            }
+            // No upload ETA — Postiz's multipart upload gives us nothing to
+            // measure, so the phase alone is the signal.
+            publishProgress = { phase: "uploading", pct: null, etaSec: null, speed: null };
             const result = await provider.publish({ videoPath: uploadPath, posts, when });
             await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);
             return send(200, { ok: true, receipt: result, dropped });
@@ -1714,7 +1757,16 @@ export async function startEditServer(
             // most specific thing anyone has (per-provider settings are its
             // domain, not ours).
             return send(502, { error: err instanceof Error ? err.message : String(err) });
+          } finally {
+            publishProgress = null;
           }
+        }
+
+        if (url.pathname === "/api/publish/progress" && req.method === "GET") {
+          // Where the in-flight publish is — 200 always, `progress: null`
+          // when idle (a cache hit or a skip-plan publish never enters the
+          // encoding phase, and the panel keeps its static line for that).
+          return send(200, { progress: publishProgress });
         }
 
         if (url.pathname === "/api/publish/regenerate" && req.method === "POST") {

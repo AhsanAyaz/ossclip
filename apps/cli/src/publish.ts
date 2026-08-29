@@ -11,7 +11,9 @@ import {
   checkDurationCaps,
   createPostizProvider,
   deliveryEncodePlan,
+  encodeEta,
   ensureDeliveryFile,
+  formatMinSec,
   loadConfig,
   probe,
   type DeliveryPlan,
@@ -226,10 +228,33 @@ export function deliveryFlag(v: string): DeliveryMode {
 }
 
 /** Seconds → "5:20" for the duration-cap messages — a cap named in seconds
- * ("video is 320s") makes the user do the platform's arithmetic. */
-export function formatMinSec(sec: number): string {
-  const whole = Math.round(sec);
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+ * ("video is 320s") makes the user do the platform's arithmetic. Moved to
+ * core with the encode-progress work (2026-08-29) so the editor server spells
+ * ETAs the same way; re-exported here so callers keep their import. */
+export { formatMinSec } from "@ossclip/core";
+
+/**
+ * The encode-progress line: `▸ encoding delivery … 42% · ~1:50 left (1.6x)`.
+ * ETA and speed drop off rather than print garbage when ffmpeg hasn't said
+ * yet (its warm-up block is all N/A). Pure so the wording is pinned by a
+ * test; whether it lands as a \r-rewrite or a log line is the TTY shell's
+ * call below.
+ */
+export function encodeProgressLine(
+  durationSec: number,
+  p: { outTimeSec?: number; speed?: number },
+): string {
+  const pct =
+    durationSec > 0 && p.outTimeSec !== undefined
+      ? Math.min(100, Math.floor((p.outTimeSec / durationSec) * 100))
+      : 0;
+  const eta =
+    p.outTimeSec !== undefined && p.speed !== undefined
+      ? encodeEta(durationSec, p.outTimeSec, p.speed)
+      : null;
+  const tail =
+    eta !== null ? ` · ~${formatMinSec(eta)} left (${p.speed!.toFixed(1)}x)` : "";
+  return `▸ encoding delivery … ${pct}%${tail}`;
 }
 
 /**
@@ -481,9 +506,34 @@ export async function runPublish(
   // for a "no" — and before the upload, which takes the delivery path.
   let uploadPath = out;
   if (deliveryMode === "auto") {
+    // Live progress (2026-08-29): a TTY gets one \r-rewritten line; anything
+    // else (CI, a pipe) gets a plain line per 10% step — a 5-minute encode at
+    // 2 blocks/sec would otherwise write ~600 lines into the log.
+    const isTty = process.stdout.isTTY === true;
+    let progressShown = false;
+    let lastDecile = -1;
     const ensured = await (deps.ensureDelivery ?? ensureDeliveryFile)(tools, workdir, out, {
       onStart: (name) => console.log(`▸ encoding delivery file ${name} (cached in workdir)`),
+      onProgress: (p) => {
+        const line = encodeProgressLine(masterProbe.duration, p);
+        if (isTty) {
+          progressShown = true;
+          process.stdout.write(`\r${line}`);
+        } else {
+          const decile =
+            p.outTimeSec !== undefined && masterProbe.duration > 0
+              ? Math.floor((p.outTimeSec / masterProbe.duration) * 10)
+              : 0;
+          if (decile > lastDecile) {
+            lastDecile = decile;
+            console.log(line);
+          }
+        }
+      },
     });
+    // The \r line never newline-terminated itself — without this the
+    // "uploading" line would overwrite it mid-sentence.
+    if (progressShown) process.stdout.write("\n");
     uploadPath = ensured.path;
     if (!ensured.encoded && ensured.path !== out) {
       console.log(`▸ delivery file already cached — reusing ${ensured.path}`);

@@ -9,6 +9,7 @@ import {
   formatMinSec,
   overCapNote,
   panelCaptionCap,
+  publishBusyLabel,
   regenNotesSummary,
   scheduleIso,
   toLocalInputValue,
@@ -44,6 +45,31 @@ describe("formatMinSec / overCapNote", () => {
     expect(overCapNote(undefined, 300)).toBeNull();
     expect(overCapNote(320, null)).toBeNull();
     expect(overCapNote(320, undefined)).toBeNull();
+  });
+});
+
+describe("publishBusyLabel", () => {
+  it("live percent + ETA while encoding, phase-only while uploading", () => {
+    expect(publishBusyLabel({ phase: "encoding", pct: 42, etaSec: 110, speed: 1.6 })).toBe(
+      "Encoding 42% · ~1:50 left",
+    );
+    // No upload ETA to measure server-side — the phase alone is the signal.
+    expect(publishBusyLabel({ phase: "uploading", pct: null, etaSec: null, speed: null })).toBe(
+      "Uploading…",
+    );
+  });
+
+  it("degrades instead of printing garbage: missing pieces drop off, null falls back", () => {
+    // ffmpeg's warm-up block has no ETA yet.
+    expect(publishBusyLabel({ phase: "encoding", pct: 42, etaSec: null, speed: null })).toBe(
+      "Encoding 42%",
+    );
+    expect(publishBusyLabel({ phase: "encoding", pct: null, etaSec: null, speed: null })).toBe(
+      "Encoding …",
+    );
+    // Null = the server reports nothing (cache hit, skip-plan, or the poll
+    // hasn't answered yet) — the old static line, never a lie of 0%.
+    expect(publishBusyLabel(null)).toBe("Encoding & publishing…");
   });
 });
 
@@ -294,6 +320,73 @@ describe("PublishPanel", () => {
     expect(
       container.querySelector('[data-testid="publish-busy-note"]')?.textContent,
     ).toContain("Encoding the delivery file");
+    await act(async () => {
+      resolvePost(undefined);
+    });
+  });
+
+  it("the progress poll's answer renders live on the button and the progress line", async () => {
+    let resolvePost: (v: unknown) => void = () => {};
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        // Held open — the poll runs WHILE this is in flight.
+        await new Promise((r) => (resolvePost = r));
+        return { ok: true, json: async () => ({ ok: true, receipt: null }) };
+      }
+      if (String(url).includes("/api/publish/progress")) {
+        return {
+          ok: true,
+          json: async () => ({
+            progress: { phase: "encoding", pct: 42, etaSec: 110, speed: 1.6 },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
+    });
+    // The first tick fires immediately (no 1s blank stare), so the label is
+    // live without advancing timers.
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')?.textContent,
+    ).toBe("Encoding 42% · ~1:50 left");
+    expect(container.querySelector('[data-testid="publish-progress"]')?.textContent).toBe(
+      "Encoding 42% · ~1:50 left",
+    );
+    await act(async () => {
+      resolvePost(undefined);
+    });
+  });
+
+  it("a null progress answer falls back to the static busy label", async () => {
+    // A cached delivery file (or delivery: master) never enters the encoding
+    // phase — the server answers null and the old line must hold.
+    let resolvePost: (v: unknown) => void = () => {};
+    global.fetch = vi.fn(async (url: unknown, init?: { method?: string }) => {
+      if (init?.method === "POST") {
+        await new Promise((r) => (resolvePost = r));
+        return { ok: true, json: async () => ({ ok: true, receipt: null }) };
+      }
+      if (String(url).includes("/api/publish/progress")) {
+        return { ok: true, json: async () => ({ progress: null }) };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="publish-progress"]')?.textContent).toBe(
+      "Encoding & publishing…",
+    );
     await act(async () => {
       resolvePost(undefined);
     });

@@ -85,6 +85,31 @@ export function formatMinSec(sec: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
+/** GET /api/publish/progress's payload — where the in-flight POST is
+ * (edit.ts keeps it current from the encode's ffmpeg progress stream). */
+export interface PublishProgressInfo {
+  phase: "encoding" | "uploading";
+  pct: number | null;
+  etaSec: number | null;
+  speed: number | null;
+}
+
+/**
+ * What the busy button (and the progress line) says: live percent + ETA
+ * while the delivery encode runs, "Uploading…" once it hands off, and the
+ * old static line whenever the server has nothing — a cache hit or a
+ * skip-plan publish never enters the encoding phase, and a poll that hasn't
+ * answered yet must not look like one that failed. Pure so the matrix is
+ * testable without a mount.
+ */
+export function publishBusyLabel(progress: PublishProgressInfo | null): string {
+  if (progress === null) return "Encoding & publishing…";
+  if (progress.phase === "uploading") return "Uploading…";
+  const pct = progress.pct !== null ? `${progress.pct}%` : "…";
+  const eta = progress.etaSec !== null ? ` · ~${formatMinSec(progress.etaSec)} left` : "";
+  return `Encoding ${pct}${eta}`;
+}
+
 /**
  * The chip's over-cap annotation, or null when the channel can take the
  * video. Unknown duration or an uncapped platform is null too — a gray-out
@@ -158,6 +183,10 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const [scheduleLocal, setScheduleLocal] = useState("");
   const scheduleRef = React.useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  // Where the in-flight POST is — fed by the poll onPublish starts, null
+  // between publishes (and when the server reports nothing, e.g. a cached
+  // delivery file skipping the encode entirely).
+  const [progress, setProgress] = useState<PublishProgressInfo | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sent, setSent] = useState<PublishReceiptInfo | null>(null);
   // Caption regenerate (2026-08-29, handoff item 4): a per-network
@@ -236,6 +265,20 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const onPublish = async (): Promise<void> => {
     setBusy(true);
     setSendError(null);
+    // Poll the encode's progress while the POST is in flight (2026-08-29):
+    // the server runs the delivery encode synchronously behind this one
+    // fetch, so this side-channel is the only live feedback. First tick
+    // fires immediately — a 1s blank stare before the first number would
+    // read as a hang. Poll errors are swallowed: the POST's own error
+    // handling is the loud path, a missed sample is not.
+    const tick = (): void => {
+      void fetch("/api/publish/progress")
+        .then((res) => res.json() as Promise<{ progress?: PublishProgressInfo | null }>)
+        .then((body) => setProgress(body.progress ?? null))
+        .catch(() => {});
+    };
+    tick();
+    const poll = window.setInterval(tick, 1000);
     try {
       const res = await fetch("/api/publish", {
         method: "POST",
@@ -260,6 +303,8 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err));
     } finally {
+      window.clearInterval(poll);
+      setProgress(null);
       setBusy(false);
     }
   };
@@ -679,6 +724,13 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                 minutes for a long video.
               </div>
             ) : null}
+            {busy ? (
+              // The live line the poll feeds — same text as the button, in a
+              // place a screen reader and a test can both find it.
+              <div data-testid="publish-progress" style={{ ...subtitle, marginTop: 4 }}>
+                {publishBusyLabel(progress)}
+              </div>
+            ) : null}
             <div style={footerRow}>
               <div style={footNote}>
                 Sends through your Postiz instance, on your accounts — nothing goes anywhere
@@ -692,9 +744,11 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
               >
                 {busy
                   ? // The POST runs the delivery encode synchronously before
-                    // the upload (edit.ts), so the button says what the wait
-                    // actually is.
-                    "Encoding & publishing…"
+                    // the upload (edit.ts), so the button says where that
+                    // wait IS — live percent/ETA from the progress poll,
+                    // falling back to the static line when the server
+                    // reports nothing.
+                    publishBusyLabel(progress)
                   : hasReceipt
                     ? "Publish again"
                     : schedule !== null
