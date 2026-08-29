@@ -106,19 +106,55 @@ describe("PublishPanel", () => {
     const send = container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]');
     expect(send?.disabled).toBe(true);
     expect(container.querySelector('[data-testid="publish-caption-linkedin"]')).toBeNull();
-    const check = container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]');
+    const check = container.querySelector<HTMLInputElement>('[data-testid="publish-chip-a"]');
     await act(async () => {
       check!.click();
     });
     const area = container.querySelector<HTMLTextAreaElement>('[data-testid="publish-caption-linkedin"]');
     expect(area?.value).toBe("authored linkedin post");
     expect(container.querySelector('[data-testid="publish-count-linkedin"]')?.textContent).toBe(
-      // The counter names the fan-out: one box, both LinkedIn channels.
-      `${"authored linkedin post".length} / 1500 · posts to 2 channels`,
+      // One chip picked, so no fan-out suffix — the count names the CHANNELS
+      // this caption will actually post to, not the group's size.
+      `${"authored linkedin post".length} / 1500`,
     );
     expect(
       container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')?.disabled,
     ).toBe(false);
+  });
+
+  it("picking two channels in one group posts to both, with one shared caption", async () => {
+    // The correction to the first grouping pass (2026-08-29): the CAPTION is
+    // per network, the SELECTION is per channel. Picking two of four LinkedIn
+    // channels must post to exactly those two, both carrying the one caption.
+    const receipt = {
+      backend: "postiz",
+      postIds: ["p1"],
+      publishedAt: "2026-08-26T12:00:00.000Z",
+      when: { kind: "now" as const },
+      targets: [{ id: "a", provider: "linkedin", name: "Ahsan" }],
+    };
+    const bodies: Array<{ integrationIds: string[]; captions: Record<string, string> }> = [];
+    global.fetch = vi.fn(async (_url: unknown, init?: { method?: string; body?: string }) => {
+      if (init?.method === "POST") {
+        bodies.push(JSON.parse(init.body ?? "{}"));
+        return { ok: true, json: async () => ({ ok: true, receipt }) };
+      }
+      return { ok: true, json: async () => ready };
+    }) as unknown as typeof fetch;
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-a"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-chip-p"]')!.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
+    });
+    expect(bodies).toHaveLength(1);
+    expect([...bodies[0]!.integrationIds].sort()).toEqual(["a", "p"]);
+    // One box, so both ids carry the same text.
+    expect(bodies[0]!.captions.a).toBe(bodies[0]!.captions.p);
   });
 
   it("publish POSTs the picked ids and captions, then shows the receipt", async () => {
@@ -139,13 +175,13 @@ describe("PublishPanel", () => {
     }) as unknown as typeof fetch;
     await mount();
     await act(async () => {
-      container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]')!.click();
+      container.querySelector<HTMLInputElement>('[data-testid="publish-chip-a"]')!.click();
     });
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
     });
     expect(bodies[0]).toMatchObject({
-      integrationIds: ["a", "p"],
+      integrationIds: ["a"],
       captions: { a: "authored linkedin post" },
     });
     // Publish-now: no `at` rides along.
@@ -164,7 +200,7 @@ describe("PublishPanel", () => {
     }) as unknown as typeof fetch;
     await mount();
     await act(async () => {
-      container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]')!.click();
+      container.querySelector<HTMLInputElement>('[data-testid="publish-chip-a"]')!.click();
     });
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]')!.click();
@@ -195,7 +231,7 @@ describe("PublishPanel", () => {
       container.querySelector('[data-testid="publish-receipt-note"]')?.textContent,
     ).toContain("2026-08-25T10:00:00.000Z");
     await act(async () => {
-      container.querySelector<HTMLInputElement>('[data-testid="publish-check-linkedin"]')!.click();
+      container.querySelector<HTMLInputElement>('[data-testid="publish-chip-a"]')!.click();
     });
     const send = container.querySelector<HTMLButtonElement>('[data-testid="publish-send"]');
     expect(send?.textContent).toBe("Publish again");

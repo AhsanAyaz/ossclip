@@ -225,28 +225,38 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                 // text to every channel in it — the request still carries a
                 // caption per integration id, so the server is unchanged.
                 const ids = group.channels.map((c) => c.id);
-                const on = ids.some((id) => selected[id] === true);
+                // SELECTION is per channel, the CAPTION is per network. One
+                // box for four LinkedIn channels is what nobody wants to type
+                // four times; one checkbox for four channels is not — picking
+                // two of three Facebook pages is a normal thing to want.
+                const pickedInGroup = ids.filter((id) => selected[id] === true);
+                const on = pickedInGroup.length > 0;
                 const cap = panelCaptionCap(group.channels[0]!.provider);
                 const text = captions[ids[0]!] ?? group.caption;
                 return (
                   <div key={group.network} style={accountBox}>
-                    <label style={accountRow}>
-                      <input
-                        data-testid={`publish-check-${group.network}`}
-                        type="checkbox"
-                        checked={on}
-                        onChange={(e) =>
-                          setSelected((prev) => ({
-                            ...prev,
-                            ...Object.fromEntries(ids.map((id) => [id, e.target.checked])),
-                          }))
-                        }
-                      />
+                    <div style={accountRow}>
                       <span style={providerTag}>{group.network}</span>
-                      <span style={accountName}>
-                        {group.channels.map((c) => c.name).join(", ")}
-                      </span>
-                    </label>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {group.channels.map((channel) => {
+                          const picked = selected[channel.id] === true;
+                          return (
+                            <button
+                              key={channel.id}
+                              type="button"
+                              data-testid={`publish-chip-${channel.id}`}
+                              aria-pressed={picked}
+                              onClick={() =>
+                                setSelected((prev) => ({ ...prev, [channel.id]: !picked }))
+                              }
+                              style={{ ...chipStyle, ...(picked ? chipOnStyle : {}) }}
+                            >
+                              {channel.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                     {on ? (
                       <>
                         {group.mixed ? (
@@ -254,8 +264,8 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                             data-testid={`publish-mixed-${group.network}`}
                             style={{ ...subtitle, marginBottom: 6 }}
                           >
-                            These channels had different captions — editing here sets one for all
-                            {group.channels.length} of them.
+                            These channels had different captions — editing here sets one for
+                            every channel you pick in this group.
                           </div>
                         ) : null}
                         <textarea
@@ -278,8 +288,8 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                           }}
                         >
                           {text.length} / {cap}
-                          {group.channels.length > 1
-                            ? ` · posts to ${group.channels.length} channels`
+                          {pickedInGroup.length > 1
+                            ? ` · posts to ${pickedInGroup.length} channels`
                             : ""}
                         </div>
                       </>
@@ -387,6 +397,23 @@ const subtitle: React.CSSProperties = {
   color: "#8B8B9E",
   marginTop: 6,
   lineHeight: 1.4,
+};
+
+const chipStyle: React.CSSProperties = {
+  background: "transparent",
+  border: "1px solid #3a3a44",
+  borderRadius: 999,
+  color: "#c9c9d4",
+  cursor: "pointer",
+  fontSize: 12,
+  padding: "4px 10px",
+};
+
+const chipOnStyle: React.CSSProperties = {
+  background: "#5b8cff",
+  borderColor: "#5b8cff",
+  color: "#0b0b0f",
+  fontWeight: 700,
 };
 
 const labelStyle: React.CSSProperties = {
