@@ -9,13 +9,14 @@ import {
   RESOLUTION_CHOICES,
   ResolutionChoiceSchema,
   SceneComponentIdSchema,
+  SfxLevelSchema,
 } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
 import { ExportFormatSchema, runAnalyze } from "./analyze";
 import { expandHome } from "./paths";
 import { phaseBucketProps } from "./phase-timing";
-import { dictionaryFlag, jumpCutsFlag, produce, reviewFlag } from "./produce";
+import { dictionaryFlag, jumpCutsFlag, produce, reviewFlag, sfxFlag } from "./produce";
 import { accountsFlag, atFlag, deliveryFlag, platformsFlag, youtubePrivacyFlag } from "./publish";
 // The one interactive import that is STATIC rather than `await import()`: the
 // `resetInputSource()` run boundary in `buildProgram` has to run synchronously
@@ -344,6 +345,31 @@ export function buildProgram(): Command {
     )
     .option("--intent <text>", "what the video should be ('educational video about agents…')")
     .option(
+      "--sfx",
+      // No commander default, the `--watermark` contract: untyped must stay
+      // UNDEFINED so the config's `sfx` key can supply it — a `false` default
+      // here would make every run's flag beat the config it was written for.
+      "place sound effects from the bundled pack (and any pack in ~/.ossclip/sfx) " +
+        "on the beats the producer planned. Requires --produce. Config key: \"sfx\"",
+    )
+    .option(
+      "--sfx-level <level>",
+      "how much sound design: subtle | normal (default) | meme (unlocks the " +
+        "meme-tagged sounds). Implies --sfx. Config key: \"sfxLevel\"",
+      (v: string) => {
+        // Parse, never coerce (CLAUDE.md): a typo'd `--sfx-level mem` must not
+        // silently fall back to `normal` — the level decides whether a vine
+        // boom can land in the video at all.
+        const parsed = SfxLevelSchema.safeParse(v.trim());
+        if (!parsed.success) {
+          throw new InvalidArgumentError(
+            `--sfx-level wants one of ${SfxLevelSchema.options.join(", ")}, got "${v}"`,
+          );
+        }
+        return parsed.data;
+      },
+    )
+    .option(
       "--llm <provider>",
       // Must state `defaultProviderName`'s real order — the old text omitted
       // the GEMINI-first branch and promised claude-first (field report
@@ -661,6 +687,12 @@ export function buildProgram(): Command {
           noiseDb: opts.noiseDb,
           produce: opts.produce,
           intent: opts.intent,
+          // `--sfx-level` implies `--sfx` (sfxFlag), resolved HERE so the
+          // implication is one pure function rather than a condition produce
+          // has to remember. Untyped stays undefined, which is what lets the
+          // config's `sfx` key decide (`resolveSfx` at the use site).
+          sfx: sfxFlag(opts.sfx, opts.sfxLevel),
+          sfxLevel: opts.sfxLevel,
           provider,
           llmModel: opts.llmModel,
           llmFastModel: opts.llmFastModel,

@@ -59,6 +59,23 @@ describe("renderReplayArgs", () => {
     expect(args).toEqual(["produce", "in.mp4", "--captions", "--scenes", "/w/new.json"]);
   });
 
+  it("carries --sfx and its level through the --produce swap", () => {
+    // Only --produce and --scenes are dropped, and this pins that: --sfx-level
+    // is a VALUE option, so a filter that treated it as a bare flag would
+    // orphan `meme` into the argv as a stray positional and the replay would
+    // die at commander's front door (§129's failure shape).
+    const withSfx = ["produce", "in.mp4", "--produce", "--sfx", "--sfx-level", "meme"];
+    expect(renderReplayArgs(withSfx, { scenesPath: "/w/s.json" })).toEqual([
+      "produce",
+      "in.mp4",
+      "--sfx",
+      "--sfx-level",
+      "meme",
+      "--scenes",
+      "/w/s.json",
+    ]);
+  });
+
   it("no reviewed plan on disk means the recorded args ride unchanged", () => {
     // Old workdirs whose production.json predates the scenes array, and any
     // run whose plan could not be written: replaying the recorded command is

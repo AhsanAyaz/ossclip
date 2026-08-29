@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, CoverInVideo, EdlVideo, SceneLayer, VideoStage, Watermark, coverInVideoPropsFor, punchPropsFor, showCaptions, showWatermark, type CoverInVideoProps, type PunchPlan } from "@ossclip/scenes";
+import { CaptionTrack, CoverInVideo, EdlVideo, SceneLayer, SfxTrack, VideoStage, Watermark, coverInVideoPropsFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type CoverInVideoProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -125,6 +125,19 @@ export interface ProductionCompProps {
    * than a NaN-frame Sequence over the hook.
    */
   coverInVideo?: CoverInVideoProps;
+  /**
+   * `--sfx`: sound effects at output-time instants, already resolved from word
+   * anchors and gain-multiplied by produce (`resolveSfxCues`). Files live under
+   * the render's public dir as `sfx/<id>.<ext>`.
+   *
+   * Optional and absent-means-SILENCE, so every pre-feature render-props.json
+   * parses and renders byte-identically — an absent key is not an empty track,
+   * it is no track at all (the mount below is gated on a non-empty list, so a
+   * silent run bundles no `<Audio>` and its audio graph is unchanged). Gated
+   * through `sfxCuesFor` (parse, never coerce), so a hand-mangled entry falls
+   * back to silence rather than an `undefined` src or a NaN-frame Sequence.
+   */
+  sfxCues?: SfxCueProps[];
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -161,6 +174,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   staticCamera,
   punch,
   coverInVideo,
+  sfxCues,
 }) => {
   if (!videoFileName) {
     return (
@@ -189,6 +203,9 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   // Gated here rather than at the mount below so the parse runs once per
   // render and the JSX stays a plain presence check (punchPlan's shape).
   const coverInVideoProps = coverInVideoPropsFor(coverInVideo);
+  // Gated here for the same reason, so the per-entry parse runs once per
+  // render rather than once per frame.
+  const sfx = sfxCuesFor(sfxCues);
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
       <VideoStage
@@ -218,6 +235,12 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         />
       </VideoStage>
       <SceneLayer cues={sceneCues} theme={theme} />
+      {/* After the scene layer, before the captions: the track draws nothing,
+          so its position is about the audio graph, not the stacking order —
+          and mounted only when there ARE cues, so a run without --sfx builds
+          the same tree it always did (SfxTrack.tsx has the loudnorm argument
+          for why the mixing happens in here at all). */}
+      {sfx.length > 0 ? <SfxTrack cues={sfx} /> : null}
       {/* Hidden pulls the WHOLE layer, CTA keyword styling included: the
           §16/§22 quote-and-capitalize treatment is a styling OF caption
           words — there is no keyword to emphasize once the track is gone.

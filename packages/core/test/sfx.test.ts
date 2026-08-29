@@ -4,6 +4,7 @@ import type { Transcript } from "../src/schema";
 import type { LlmProvider, CallTier } from "../src/producer/provider";
 import type { BeatSheet } from "../src/producer/beats";
 import type { LoadedSfxSound } from "../src/sfx-pack";
+import { MockProvider } from "../src/producer/mock";
 import {
   SFX_MIN_SPACING_SEC,
   SfxPlanSchema,
@@ -289,5 +290,40 @@ describe("generateSfxPlan", () => {
     expect(formatSfxAccounting(out.placements.length, planned, "normal", issues)).toBe(
       "sfx: 1 of 3 planned placed (level normal, 2 dropped: 1 unknown sound, 1 meme level)",
     );
+  });
+});
+
+/**
+ * The offline path (2026-08-29, Phase 2): the fixture pipeline runs `--sfx`
+ * with `--llm mock`, so the mock has to answer `sfx_plan` — and answer
+ * DETERMINISTICALLY, since "the cue list is reproducible" is the claim
+ * verify-ossclip makes about a fixture run.
+ */
+describe("MockProvider — sfx_plan", () => {
+  const run = async (level: SfxLevel) => {
+    const transcript = withRuntime(mkTranscript(120), 60);
+    return generateSfxPlan(new MockProvider(), transcript, sheet, sounds, level);
+  };
+
+  it("places the stated budget, evenly spread, and survives the deterministic gate", async () => {
+    const { plan: out, planned, issues } = await run("normal");
+    // 60s at level normal = 4, and none of them lost to spacing or budget:
+    // an evenly spread plan is exactly what the gate is happy with.
+    expect(planned).toBe(4);
+    expect(issues).toEqual([]);
+    expect(out.placements.map((p) => p.word)).toEqual([24, 48, 72, 96]);
+  });
+
+  it("answers identically twice — the determinism the fixture asserts", async () => {
+    expect((await run("normal")).plan).toEqual((await run("normal")).plan);
+  });
+
+  it("picks only from the menu it was shown, so a sub-meme level stays clean", async () => {
+    // `scratch` is meme-tagged and omitted from the menu below `meme`; the
+    // mock reads the MENU rather than naming sounds, so it cannot reach it.
+    const { plan: out } = await run("subtle");
+    expect(out.placements.every((p) => p.soundId !== "scratch")).toBe(true);
+    const { plan: memeOut } = await run("meme");
+    expect(memeOut.placements.some((p) => p.soundId === "scratch")).toBe(true);
   });
 });

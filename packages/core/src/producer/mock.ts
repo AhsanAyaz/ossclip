@@ -26,7 +26,9 @@ export class MockProvider implements LlmProvider {
           ? // A deterministic no-op: the offline path must exercise the repair
             // call without inventing corrections a real provider would justify.
             req.schema.parse({ repairs: [] })
-          : this.sceneProps(req.user, req.schema, req.schemaName);
+          : req.schemaName === "sfx_plan"
+            ? this.sfxPlan(req.user, req.schema)
+            : this.sceneProps(req.user, req.schema, req.schemaName);
     // Estimated, and costing exactly nothing — but recorded, because the
     // offline path is first-class and "how big are the prompts this pipeline
     // sends" is worth answering without spending anything to find out.
@@ -75,6 +77,37 @@ export class MockProvider implements LlmProvider {
         : {}),
     };
     return schema.parse(sheet);
+  }
+
+  /**
+   * A scripted SFX plan (`--sfx`): the budget the prompt states, spread evenly
+   * across the take, cycling through the menu the prompt offered.
+   *
+   * Reads the MENU rather than naming sounds, so the fixture pipeline keeps
+   * working when the starter pack changes and so a `--sfx-level` below `meme`
+   * can never be handed a meme sound the menu withheld. Evenly spread because
+   * the deterministic gate is the point of the offline path: bunched
+   * placements would be eaten by the 1.5s spacing pass and the fixture would
+   * assert whatever survived rather than what was planned.
+   */
+  private sfxPlan<T>(user: string, schema: z.ZodType<T>): T {
+    // The `- <id>: <whenToUse>` menu lines only — the graphics plan's bullets
+    // read `- words [3..7] …`, which has no `<slug>:` head.
+    const ids = [...user.matchAll(/^- ([a-z0-9-]+): /gm)].map((m) => m[1]!);
+    const wordCount = (user.match(/\[\d+\]/g) ?? []).length;
+    const max = Number.parseInt(/Place AT MOST (\d+) sound effects/.exec(user)?.[1] ?? "0", 10);
+    const n = Math.min(Number.isFinite(max) ? max : 0, ids.length > 0 ? wordCount : 0);
+    const placements = [];
+    for (let k = 0; k < n; k++) {
+      placements.push({
+        soundId: ids[k % ids.length]!,
+        // Interior anchors (k+1 of n+1): word 0 is the hook's first syllable,
+        // and an effect on it fires before the viewer has heard anything.
+        word: Math.min(wordCount - 1, Math.floor(((k + 1) * wordCount) / (n + 1))),
+        rationale: `mock: evenly spaced placement ${k + 1} of ${n}`,
+      });
+    }
+    return schema.parse({ placements });
   }
 
   private sceneProps<T>(_user: string, schema: z.ZodType<T>, schemaName: string): T {

@@ -99,6 +99,35 @@ export type RenderSettings = z.infer<typeof RenderSettingsSchema>;
 
 import { SceneSchema, ThemeSchema } from "./scene-schema";
 
+/**
+ * The sound-effect plan as `production.json` STORES it: the level it was
+ * planned at plus the surviving placements.
+ *
+ * Restated here rather than imported from `producer/sfx.ts` on purpose, and
+ * the duplication is load-bearing: this module is in the EDITOR's runtime
+ * graph (browser.ts → overrides.ts → `RemovalReasonSchema`), while
+ * `producer/sfx.ts` reaches `beats.ts` → `cover.ts` → `node:child_process`.
+ * Importing the model-facing schema here would drag the whole producer — and
+ * node — into the Remotion/editor bundle. The two shapes are pinned equal by
+ * a test (`sfx-production-slot.test.ts`), which is what keeps this from
+ * becoming a silent second truth: the model-facing one caps `rationale` on the
+ * way IN (R27 §123's `cappedText`), and by the time a placement is stored the
+ * cap has already been applied.
+ */
+export const ProductionSfxSchema = z.object({
+  level: z.enum(["subtle", "normal", "meme"]),
+  placements: z.array(
+    z.object({
+      soundId: z.string(),
+      /** Index into the REPAIRED transcript — word indices, never seconds. */
+      word: z.number().int().nonnegative(),
+      gain: z.number().min(0).max(2).optional(),
+      rationale: z.string().optional(),
+    }),
+  ),
+});
+export type ProductionSfx = z.infer<typeof ProductionSfxSchema>;
+
 /** The single source of truth for a production. Every pipeline stage is a pure function over this. */
 export const ProductionSchema = z.object({
   version: z.literal(1),
@@ -184,6 +213,18 @@ export const ProductionSchema = z.object({
     })
     .optional(),
   scenes: z.array(SceneSchema).optional(),
+  /**
+   * The `--sfx` placement plan (level + word-anchored placements), post
+   * `normalizeSfxPlan`. Optional and absent-means-no-sound-design, so every
+   * pre-feature `production.json` parses unchanged — and so a run without the
+   * flag writes a file byte-identical to what it always wrote.
+   *
+   * WORDS, not seconds, like every other anchor in this file: the cutlist can
+   * change under a re-render, and a second-stamped placement would drift off
+   * the moment it does (the resolver re-derives output time through the
+   * TimeMap, `resolveSfxCues`).
+   */
+  sfx: ProductionSfxSchema.optional(),
   /**
    * WHO planned this production (R16 §78). `usage.json` answers "what did
    * that cost", but it describes one run and a fully-cached re-run makes no

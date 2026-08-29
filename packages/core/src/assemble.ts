@@ -1,6 +1,8 @@
 import type { Transcript } from "./schema";
 import type { Scene, SceneCue } from "./scene-schema";
 import { resolveSceneProps } from "./scene-registry";
+import type { LoadedSfxSound } from "./sfx-pack";
+import type { SfxPlacement, SfxValidationIssue } from "./producer/sfx";
 import type { TimeMap } from "./timemap";
 
 /** Scenes shorter than this on screen get extended; still shorter → dropped. */
@@ -119,5 +121,130 @@ export function assembleScenes(
     }
   }
 
+  return { cues, dropped };
+}
+
+/**
+ * One sound effect, ready for the renderer: a staged file, an OUTPUT-time
+ * instant, and the mix level it plays at. No word index survives — by this
+ * point the anchor has done its job (timemap.ts:13's "all overlay timings live
+ * in OUTPUT time").
+ */
+export interface SfxCue {
+  /** Path under the render's public dir — `sfx/<id>.<ext>`, POSIX-literal. */
+  soundFile: string;
+  atSec: number;
+  /** The sound's own gain times the placement's, resolved once here. */
+  gain: number;
+}
+
+/** Where staged sounds live inside the render's public dir. */
+export const SFX_PUBLIC_SUBDIR = "sfx";
+
+/**
+ * The staged name for a sound, keyed on its ID rather than its own filename:
+ * two packs may both ship a `whoosh.mp3`, and the id is what the plan actually
+ * references (ids are unique by construction — `loadSfxLibrary` merges by id).
+ *
+ * POSIX-literal `/`, never `join()` — this is a URL `staticFile()` resolves,
+ * not a filesystem path, and a Windows `\` here would be served verbatim
+ * (produce.ts's `sideImageDestRel` lesson). The extension is taken with a
+ * regex rather than `extname` to keep this module free of node built-ins.
+ */
+export function sfxStagedFile(sound: { id: string; file: string }): string {
+  const ext = /\.[^./\\]+$/.exec(sound.file)?.[0] ?? "";
+  return `${SFX_PUBLIC_SUBDIR}/${sound.id}${ext}`;
+}
+
+/**
+ * Word-anchored SFX placements → output-timed cues, the `assembleScenes`
+ * contract for a track of instants rather than spans (PHASE1 §5).
+ *
+ * Every drop is reported with the SAME machine-readable `reason` vocabulary
+ * the planning passes use, so `formatSfxAccounting` can count planning drops
+ * and render drops in one line. `placement` is the index in the plan handed
+ * in, which is the plan `production.json` stores — the editor can name the
+ * entry a warning is about.
+ *
+ * `exists` is injected (the `defaultProviderName(env, hasBin)` seam): the
+ * check is a real one — a user who deletes a pack between planning and
+ * re-rendering must get a dropped cue, not a Remotion 404 after the render has
+ * already spent its minutes — but the filesystem stays the CALLER's business,
+ * so the whole matrix is testable without writing mp3s to a tmp dir. The
+ * default assumes present: a caller that cannot see a filesystem has no basis
+ * for dropping anything.
+ */
+export function resolveSfxCues(
+  placements: readonly SfxPlacement[],
+  transcript: Transcript,
+  map: TimeMap,
+  sounds: readonly LoadedSfxSound[],
+  opts: { exists?: (absPath: string) => boolean } = {},
+): { cues: SfxCue[]; dropped: SfxValidationIssue[] } {
+  const exists = opts.exists ?? (() => true);
+  const byId = new Map(sounds.map((s) => [s.id, s]));
+  const cues: SfxCue[] = [];
+  const dropped: SfxValidationIssue[] = [];
+
+  for (let i = 0; i < placements.length; i++) {
+    const p = placements[i]!;
+    // Identity first, then position — `normalizeSfxPlan`'s pass order, so a
+    // placement naming a sound that no longer exists reads as an unknown
+    // sound whether it was dropped at planning or here.
+    const sound = byId.get(p.soundId);
+    if (!sound) {
+      dropped.push({
+        placement: i,
+        reason: "unknown sound",
+        issue: `"${p.soundId}" is not in the sound library any more`,
+      });
+      continue;
+    }
+    if (!exists(sound.absPath)) {
+      dropped.push({
+        placement: i,
+        reason: "missing file",
+        issue: `"${p.soundId}" points at ${sound.absPath}, which is gone`,
+      });
+      continue;
+    }
+    const word = transcript.words[p.word];
+    if (!word) {
+      dropped.push({
+        placement: i,
+        reason: "outside transcript",
+        issue: `word ${p.word} is beyond this transcript (${transcript.words.length} words)`,
+      });
+      continue;
+    }
+    // The cut check, `assembleScenes`' rule for a single anchor: a scene whose
+    // words were cut is dropped rather than slid to the nearest kept instant,
+    // and an effect is even less forgiving — it would fire over speech that
+    // never motivated it.
+    const mapped = map.mapWord(word);
+    if (mapped === null) {
+      dropped.push({
+        placement: i,
+        reason: "cut word",
+        issue: `"${p.soundId}" was anchored to word ${p.word} ("${word.text}"), which this cut removed`,
+      });
+      continue;
+    }
+    cues.push({
+      soundFile: sfxStagedFile(sound),
+      // The word's START: the effect fires as the word lands, which is what
+      // the model was asked to place ("the effect fires at that word").
+      atSec: mapped.start,
+      // ONE multiplication, here — the renderer receives a number and does no
+      // mixing arithmetic of its own, so what the editor shows as a gain and
+      // what the render plays can never disagree.
+      gain: sound.gain * (p.gain ?? 1),
+    });
+  }
+
+  // Sorted by time: the plan is already word-sorted, but a cut can only ever
+  // preserve order, and a track the renderer walks in time order is one a
+  // human reading render-props.json can check against the video.
+  cues.sort((a, b) => a.atSec - b.atSec);
   return { cues, dropped };
 }

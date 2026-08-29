@@ -69,22 +69,37 @@ export const SFX_MIN_PLACEMENTS: Record<SfxLevel, number> = { subtle: 1, normal:
  */
 export const SFX_MIN_SPACING_SEC = 1.5;
 
-/** Why a placement is not in the final plan. */
-export type SfxDropReason =
-  | "unknown sound"
-  | "meme level"
-  | "outside transcript"
-  | "too close"
-  | "over budget"
-  | "invalid"
-  /** Emitted by the resolver, not here: the anchor word was cut. Named in this
-   * union so `formatSfxAccounting` — shared by console and report.txt — can
-   * count it alongside the planning drops. */
-  | "cut word";
+/**
+ * Why a placement is not in the final plan.
+ *
+ * A zod enum rather than a bare TS union because these reasons come BACK from
+ * disk: produce caches the accounting beside the plan (`sfx-<key>.json`) so a
+ * cached re-run can print the same line, and a value read from a file is
+ * parsed, never coerced (CLAUDE.md). The last two are the RESOLVER's
+ * (`resolveSfxCues`), emitted long after planning — named here so
+ * `formatSfxAccounting`, shared by the console and report.txt, counts them
+ * alongside the planning drops:
+ *  - "cut word": the anchor word was removed by the cut.
+ *  - "missing file": the library still knows the sound, but its file is gone
+ *    (a user pack deleted between planning and a re-render) — distinct from
+ *    "unknown sound", which is an id the library no longer has at all.
+ */
+export const SfxDropReasonSchema = z.enum([
+  "unknown sound",
+  "meme level",
+  "outside transcript",
+  "too close",
+  "over budget",
+  "invalid",
+  "cut word",
+  "missing file",
+]);
+export type SfxDropReason = z.infer<typeof SfxDropReasonSchema>;
 
 /** Fixed print order, so the accounting line is stable run to run. */
 const DROP_REASONS: SfxDropReason[] = [
   "cut word",
+  "missing file",
   "unknown sound",
   "meme level",
   "outside transcript",
@@ -93,12 +108,13 @@ const DROP_REASONS: SfxDropReason[] = [
   "invalid",
 ];
 
-export interface SfxValidationIssue {
+export const SfxValidationIssueSchema = z.object({
   /** Index of the offending placement in the model's plan, or -1 plan-wide. */
-  placement: number;
-  reason: SfxDropReason;
-  issue: string;
-}
+  placement: z.number().int(),
+  reason: SfxDropReasonSchema,
+  issue: z.string(),
+});
+export type SfxValidationIssue = z.infer<typeof SfxValidationIssueSchema>;
 
 /**
  * The sounds a level may use. Meme-tagged sounds are omitted from the menu

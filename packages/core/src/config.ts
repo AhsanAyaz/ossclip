@@ -77,6 +77,22 @@ export interface OssclipConfig {
    */
   coverInVideo?: boolean;
   /**
+   * Place sound effects on every produce run (`--sfx`), so a creator who
+   * always wants sound design writes it once instead of typing the flag.
+   * DEFAULT OFF: effects are an editorial choice, and inheriting them
+   * silently would change how every existing project sounds. `--sfx` wins
+   * per run (`resolveSfx`, the `watermark` contract).
+   */
+  sfx?: boolean;
+  /**
+   * How much sound design `--sfx` places: "subtle" | "normal" (the default) |
+   * "meme". File-only, the `resolution` posture: validated where it is USED
+   * (`resolveSfxLevel` in produce.ts), so a hand-edited "loud" earns one
+   * warning and `normal` rather than a coerced level — and never `meme`,
+   * which is the one that unlocks the meme-tagged sounds.
+   */
+  sfxLevel?: string;
+  /**
    * Terms of art the speaker uses — "JSON", "ossclip", "Genkit" — biasing
    * transcription (whisper `--prompt`), vouching repair corrections, and
    * canonicalizing caption casing on every run (F4, 2026-08-16: "Jason" for
@@ -270,6 +286,12 @@ export function resolveConfig(
     // non-boolean stays OFF — the safe default for something that paints over
     // the first frames of the hook.
     coverInVideo: fileCfg.coverInVideo,
+    // File-only, `watermark`'s posture again: the strict `=== true` lives at
+    // the consumer (produce's `resolveSfx`) and the level is zod-parsed there
+    // (`resolveSfxLevel`), so a hand-edited non-boolean stays OFF and a
+    // misspelled level earns a warning and `normal`.
+    sfx: fileCfg.sfx,
+    sfxLevel: fileCfg.sfxLevel,
     // File-only for the same reason as `watermark`: these are structured
     // values a hand-editable JSON file supplies, and parse-don't-coerce says
     // the strict checks live at the consumer — `validDictionary` /

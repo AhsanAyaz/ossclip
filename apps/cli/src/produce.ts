@@ -156,6 +156,8 @@ import {
   sliceTranscript,
   type Analysis,
   type AppliedRepair,
+  type BeatSheet,
+  BeatSheetSchema,
   type BeatsValidationIssue,
   type CleanupLevel,
   type ClipWindow,
@@ -170,6 +172,23 @@ import {
   RESOLUTION_CHOICES,
   smallestSource,
   ResolutionChoiceSchema,
+  // The --sfx path (2026-08-29): the library loader, the placement call, its
+  // deterministic gate, and the resolver that turns word anchors into cues.
+  loadSfxLibrary,
+  sfxLibraryHash,
+  generateSfxPlan,
+  resolveSfxCues,
+  sfxStagedFile,
+  formatSfxAccounting,
+  SfxLevelSchema,
+  SfxPlanSchema,
+  SfxValidationIssueSchema,
+  SFX_PROMPT_VERSION,
+  type LoadedSfxSound,
+  type SfxCue,
+  type SfxLevel,
+  type SfxPlacement,
+  type SfxValidationIssue,
   type ProviderName,
   type ResolutionChoice,
   type Scene,
@@ -716,6 +735,21 @@ export interface ProduceOptions {
    */
   sort?: "name" | "mtime";
   /**
+   * `--sfx` (2026-08-29): place sound effects from the loaded pack on the
+   * beats the producer planned. Tri-state like `watermark` — true/false when
+   * TYPED, undefined when not, so the config's `sfx` key can supply the
+   * default (`resolveSfx`). Requires a beat sheet, so it rides `--produce`;
+   * without one the step says so and skips.
+   */
+  sfx?: boolean;
+  /**
+   * `--sfx-level`: how much sound design (`subtle | normal | meme`). Already
+   * zod-parsed to the union by program.ts, which also folds the implication
+   * (`sfxFlag`: a typed level turns `sfx` on); the CONFIG's `sfxLevel` arrives
+   * separately as an unvalidated value and `resolveSfxLevel` arbitrates.
+   */
+  sfxLevel?: SfxLevel;
+  /**
    * Whether `--sort` was TYPED, as opposed to commander filling in its
    * `"name"` default. `sort` alone can't tell those apart, and `--sort` does
    * nothing on a file input — final-review fix wave, cheap minor c: print a
@@ -782,6 +816,103 @@ export function resolveCoverInVideo(
   configValue: boolean | undefined,
 ): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * `--sfx-level` implies `--sfx`: typing a level is asking for sound effects,
+ * and a run that quietly did nothing because the boolean was missing is the
+ * worst possible reading of it. Returns the tri-state `--sfx` carries —
+ * `undefined` when neither was typed, so the config's `sfx` key still gets its
+ * turn (`resolveSfx`). Pure, so the implication is testable without commander,
+ * the `jumpCutsFlag` posture.
+ */
+export function sfxFlag(
+  sfx: boolean | undefined,
+  sfxLevel: SfxLevel | undefined,
+): boolean | undefined {
+  return sfxLevel !== undefined ? true : sfx;
+}
+
+/**
+ * The effective `--sfx` switch — `resolveCoverInVideo`'s semantics verbatim: a
+ * TYPED flag wins, and only then does the config's `sfx` supply the default,
+ * `=== true` rather than truthy so a hand-edited `"sfx": "yes"` cannot coerce
+ * sound effects onto every render.
+ */
+export function resolveSfx(flag: boolean | undefined, configValue: unknown): boolean {
+  return flag ?? configValue === true;
+}
+
+/**
+ * The effective `--sfx-level`. `resolveLlmEffort`'s shape — the warning is
+ * RETURNED, not printed, so the resolution stays pure — and its precedence: a
+ * typed flag beats a config key, and a malformed config key costs a warning
+ * and the default rather than a coerced level. The default matters: `meme`
+ * unlocks the meme-tagged sounds, so a typo must never fall UP into it.
+ */
+export function resolveSfxLevel(
+  flag: SfxLevel | undefined,
+  configValue: unknown,
+): { level: SfxLevel; warning?: string } {
+  if (flag !== undefined) return { level: flag };
+  if (configValue === undefined) return { level: "normal" };
+  const parsed = SfxLevelSchema.safeParse(configValue);
+  if (parsed.success) return { level: parsed.data };
+  return {
+    level: "normal",
+    warning: `⚠ config sfxLevel ignored — expected ${SfxLevelSchema.options.join("|")}, using normal`,
+  };
+}
+
+/**
+ * What `sfx-<key>.json` holds: the normalized plan plus the accounting a
+ * cached re-run would otherwise have to invent — `planned` is the count the
+ * MODEL returned, which nothing on disk could re-derive, and `issues` are the
+ * planning drops the report explains the shortfall with (the beat-sheet
+ * cache's `graphics`/`issues` rule, §78).
+ *
+ * Parsed on read, never trusted: a workdir file is as hand-editable as
+ * anything else here, and a mangled one must cost a re-plan, not a crash.
+ */
+const SfxPlanCacheSchema = SfxPlanSchema.extend({
+  planned: z.number().int().nonnegative().default(0),
+  issues: z.array(SfxValidationIssueSchema).default([]),
+});
+
+/**
+ * The placement-plan cache key: everything that changes the PLAN — which
+ * prompt asked, about which words, against which beat sheet, at what level,
+ * over which library. The §78 posture the beat sheet's key carries, and pure
+ * for the same reason: "a change that changes the answer must change the key"
+ * has to be assertable without a workdir or an LLM.
+ *
+ * `beatKey` folds the whole beat-sheet key in (provider, model, intent,
+ * framing, clip window…) rather than restating it: the graphics plan is IN the
+ * placement prompt, so a re-plan of the beats is a different question about
+ * the same words. `libraryHash` is pack METADATA only (`sfxLibraryHash`), so
+ * dropping a user pack in `~/.ossclip/sfx` invalidates while re-encoding an
+ * mp3 does not.
+ */
+export function sfxCacheKey(parts: {
+  promptVersion: number;
+  beatKey: string;
+  level: SfxLevel;
+  libraryHash: string;
+  /** The repaired transcript's TEXT — the beat key's rule, for the same reason. */
+  words: readonly string[];
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify([
+        parts.promptVersion,
+        parts.beatKey,
+        parts.level,
+        parts.libraryHash,
+        parts.words,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
 }
 
 /**
@@ -2821,11 +2952,44 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   let scenes: Scene[] = [];
   /** Editorial output kept for the cover (§31): hook + its thumbnail form. */
   let beatSheet: { hook: string; coverText?: string } | undefined;
+  /**
+   * The FULL sheet, moments included — the graphics plan the SFX call needs in
+   * context (a whoosh syncs with a graphic entrance). Separate from
+   * `beatSheet` above, which is deliberately the cover's two fields: this one
+   * exists only while a plan is in hand this run, and is undefined on the
+   * paths that never had one (`--scenes`, a pre-`--sfx` scenes cache).
+   */
+  let fullSheet: BeatSheet | undefined;
   /** The graphics accounting line for report.txt (§118b), and the beat-sheet
    * issues that explain it. Cached alongside the beat sheet so a cached
    * re-run's report keeps the accounting instead of erasing it (§78). */
   let graphicsLine: string | undefined;
   let beatIssues: BeatsValidationIssue[] = [];
+  /**
+   * The `--sfx` plan: the level it was planned at and the placements that
+   * survived `normalizeSfxPlan`, stored on production.json and resolved to
+   * cues once the cut is final (`resolveSfxCues`). Undefined = this run has no
+   * sound design at all, which is what an absent `sfx` field means.
+   */
+  let sfxPlan: { level: SfxLevel; placements: SfxPlacement[] } | undefined;
+  /** The library the plan was made against — the resolver needs the same
+   * sounds (gain, absPath) it planned over, and the stager needs their files. */
+  let sfxSounds: LoadedSfxSound[] = [];
+  /** Planning drops + the count the MODEL returned, carried to the one
+   * accounting line the console and report.txt share (§118b's contract). */
+  let sfxIssues: SfxValidationIssue[] = [];
+  let sfxPlanned = 0;
+  /** Whether the placement step actually ran — see the notice below the
+   * scenes block for the runs where `--sfx` cannot reach it. */
+  let sfxAttempted = false;
+  // Resolved HERE, above the branch that uses it, so BOTH the placement step
+  // and the "this run has no beat sheet" notice read one answer. Typed beats
+  // config for the switch; the level is zod-parsed out of the config, never
+  // coerced (`resolveSfxLevel`).
+  const sfxOn = resolveSfx(opts.sfx, cfg.sfx);
+  const sfxLevelResolved = resolveSfxLevel(opts.sfxLevel, cfg.sfxLevel);
+  if (sfxOn && sfxLevelResolved.warning) console.log(sfxLevelResolved.warning);
+  const sfxLevel = sfxLevelResolved.level;
   /** Who planned this run (R16 §78) — stamped into production.json below. */
   let producerStamp: Production["producer"];
   /** The resolved `--clip` window (R19 §93) — set only on a clip run; feeds
@@ -3008,6 +3172,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // cache under the post-resolution key so re-runs and replays hit it.
       scenes = clipFresh.scenes;
       beatSheet = { hook: clipFresh.beatSheet.hook, coverText: clipFresh.beatSheet.coverText };
+      fullSheet = clipFresh.beatSheet;
       console.log(`▸ hook: ${clipFresh.beatSheet.hook}`);
       console.log(
         `▸ planned ${clipFresh.beatSheet.moments.length} moments, ${scenes.length} scenes` +
@@ -3035,7 +3200,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       await writeFile(join(work, `scenes-${adoptKey}.json`), JSON.stringify(scenes, null, 2));
       await writeFile(
         join(work, `beatsheet-${adoptKey}.json`),
-        JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
+        JSON.stringify(
+          { ...beatSheet, moments: fullSheet.moments, graphics: graphicsLine, issues: beatIssues },
+          null,
+          2,
+        ),
       );
     } else if (existsSync(sceneCache)) {
       scenes = z.array(SceneSchema).parse(JSON.parse(await readFile(sceneCache, "utf8")));
@@ -3054,12 +3223,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         const cached = JSON.parse(await readFile(beatCache, "utf8")) as {
           hook: string;
           coverText?: string;
+          moments?: unknown;
           graphics?: string;
           issues?: BeatsValidationIssue[];
         };
         beatSheet = { hook: cached.hook, coverText: cached.coverText };
         graphicsLine = cached.graphics;
         beatIssues = cached.issues ?? [];
+        // The MOMENTS ride the cache too (2026-08-29, --sfx): this file used to
+        // keep only the cover's two fields, so a cached run had no graphics
+        // plan to put in front of the placement call — and "produce once, add
+        // --sfx later" is the normal way anyone reaches this feature. Parsed,
+        // not trusted (a hand-edited or pre-`--sfx` file simply has no
+        // `moments`), and its absence costs the SFX step alone: everything the
+        // cache did before this is read above and unaffected.
+        const sheet = BeatSheetSchema.safeParse({
+          hook: cached.hook,
+          coverText: cached.coverText,
+          moments: cached.moments,
+        });
+        if (sheet.success) fullSheet = sheet.data;
       }
     } else {
       const aiAnim = isInteractive()
@@ -3106,6 +3289,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       if (aiAnim) aiAnim.stop();
       scenes = result.scenes;
       beatSheet = { hook: result.beatSheet.hook, coverText: result.beatSheet.coverText };
+      fullSheet = result.beatSheet;
       console.log(`▸ hook: ${result.beatSheet.hook}`);
       console.log(
         `▸ planned ${result.beatSheet.moments.length} moments, ${scenes.length} scenes` +
@@ -3132,9 +3316,100 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       await writeFile(join(work, `scenes-${freshKey}.json`), JSON.stringify(scenes, null, 2));
       await writeFile(
         join(work, `beatsheet-${freshKey}.json`),
-        JSON.stringify({ ...beatSheet, graphics: graphicsLine, issues: beatIssues }, null, 2),
+        JSON.stringify(
+          { ...beatSheet, moments: fullSheet.moments, graphics: graphicsLine, issues: beatIssues },
+          null,
+          2,
+        ),
       );
     }
+
+    // ---- Sound effects (`--sfx`): the placement call -----------------------
+    // HERE, inside the producer branch, because the placement prompt needs the
+    // graphics plan in front of it (Approach A: a whoosh syncs with a graphic
+    // entrance) — and because a beat sheet is the one thing this feature
+    // cannot do without. `--scenes` and a plain run never reach this block;
+    // the notice for that case is printed by the caller below.
+    if (sfxOn) {
+      sfxAttempted = true;
+      const library = loadSfxLibrary();
+      for (const issue of library.issues) console.log(`  ⚠ sfx pack ${issue.pack}: ${issue.issue}`);
+      if (library.sounds.length === 0) {
+        // Warn and continue, never kill: an empty library is a packaging or a
+        // user-pack problem, and it costs sound effects, not the video.
+        console.log("  ⚠ sfx: no usable sounds in the library — skipping sound effects");
+      } else {
+        sfxSounds = library.sounds;
+        const sfxKey = sfxCacheKey({
+          promptVersion: SFX_PROMPT_VERSION,
+          // The beat key, not its parts: the graphics plan is IN this prompt,
+          // so a different sheet is a different question (see `sfxCacheKey`).
+          beatKey: hitKey,
+          level: sfxLevel,
+          libraryHash: sfxLibraryHash(library.sounds),
+          words: beatKeyParts.words,
+        });
+        const sfxCache = join(work, `sfx-${sfxKey}.json`);
+        if (existsSync(sfxCache)) {
+          // Parsed, never trusted — a cache file is as hand-editable as any
+          // other artefact in the workdir. A malformed one is a re-plan, not a
+          // crash, so it falls through to the call below.
+          const cached = SfxPlanCacheSchema.safeParse(
+            JSON.parse(await readFile(sfxCache, "utf8")),
+          );
+          if (cached.success) {
+            sfxPlan = { level: sfxLevel, placements: cached.data.placements };
+            sfxPlanned = cached.data.planned;
+            sfxIssues = cached.data.issues;
+            console.log(`▸ sfx cached (${sfxPlan.placements.length} placement(s), level ${sfxLevel})`);
+          }
+        }
+        if (!sfxPlan && fullSheet === undefined) {
+          // The one case the cache cannot cover: a workdir planned before
+          // `--sfx` existed (or by a pre-2026-08-29 build) has scenes but no
+          // moments, so there is no graphics plan to place against. Say what
+          // to do rather than silently rendering a mute video.
+          console.log(
+            "  ⚠ sfx: this workdir's cached plan has no beat sheet to place against — " +
+              "re-plan (delete its scenes-*.json) to get sound effects",
+          );
+        } else if (!sfxPlan) {
+          console.log(`▸ placing sound effects (level ${sfxLevel})…`);
+          const result = await phases.time("llm", () =>
+            generateSfxPlan(provider!, transcript, fullSheet!, library.sounds, sfxLevel),
+          );
+          sfxPlan = { level: sfxLevel, placements: result.plan.placements };
+          sfxPlanned = result.planned;
+          sfxIssues = result.issues;
+          await writeFile(
+            sfxCache,
+            // The accounting rides the cache for §78's reason, the same one
+            // `graphics`/`issues` ride the beat-sheet cache: a cached re-run
+            // must be able to print the SAME accounting line rather than
+            // erasing it, and `planned` is a count only the call itself knew.
+            JSON.stringify(
+              { placements: sfxPlan.placements, planned: sfxPlanned, issues: sfxIssues },
+              null,
+              2,
+            ),
+          );
+        }
+        for (const issue of sfxIssues) {
+          console.log(`  ⚠ sfx placement ${issue.placement}: ${issue.issue}`);
+        }
+      }
+    }
+  }
+
+  // `--sfx` on a run that never reached the placement call — `--scenes` (which
+  // is what the editor's Render replays), or a plain cut with no producer at
+  // all. Never a silent ignore, and the message names the missing half rather
+  // than the flag the user typed.
+  if (sfxOn && !sfxAttempted) {
+    console.log(
+      "  ⚠ sfx: sound effects are placed against the producer's beat sheet — " +
+        "add --produce (the editor's re-plan) to get them",
+    );
   }
 
   // Every LLM call is behind us — repair, beat sheet, one per scene — so this
@@ -3906,6 +4181,48 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
+  // ---- Sound effects: word anchors → cues, and the files they name --------
+  // AFTER the cut is final (`applyUserCuts` above) and after the public dir is
+  // known, because both are inputs: a placement anchored to a word the user's
+  // own cut removed is dropped here, and the copies must land where
+  // `staticFile()` will look.
+  let sfxCues: SfxCue[] = [];
+  /** Planning drops + render drops, counted together by the one accounting
+   * line the console and report.txt share (`formatSfxAccounting`). */
+  let sfxAllIssues: SfxValidationIssue[] = sfxIssues;
+  let sfxLine: string | undefined;
+  if (sfxPlan) {
+    const resolved = resolveSfxCues(sfxPlan.placements, transcript, map, sfxSounds, {
+      // The real check, injected (the resolver stays pure): a pack deleted
+      // between planning and this render must cost the cue here, not a
+      // Remotion 404 after the render has spent its minutes.
+      exists: existsSync,
+    });
+    sfxCues = resolved.cues;
+    sfxAllIssues = [...sfxIssues, ...resolved.dropped];
+    for (const d of resolved.dropped) console.log(`  ⚠ sfx: ${d.issue}`);
+    // Staged into the render's public dir AND the workdir when they differ,
+    // for the Nastaliq font's reason verbatim: the render bundles
+    // `dirname(renderVideo)`, `ossclip edit` serves the workdir, and both
+    // mounts fetch the same served name. Only the sounds actually CUED are
+    // copied — the library is a menu, not a payload.
+    const staged = new Set(sfxCues.map((c) => c.soundFile));
+    for (const sound of sfxSounds) {
+      const rel = sfxStagedFile(sound);
+      if (!staged.has(rel)) continue;
+      for (const dir of new Set([renderPublicDirPath, work])) {
+        // `join` on the filesystem side where `rel` itself stays
+        // POSIX-literal — it is a served URL, these are paths (the
+        // `sideImageDestRel` split).
+        const dest = join(dir, ...rel.split("/"));
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(sound.absPath, dest);
+      }
+    }
+    sfxLine = formatSfxAccounting(sfxCues.length, sfxPlanned, sfxPlan.level, sfxAllIssues);
+    console.log(`▸ ${sfxLine}`);
+  }
+
   const production: Production = {
     version: 1,
     // `originalInput`, not `input`: for a folder run `input` is by now
@@ -3935,6 +4252,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       ? { clip: { targetSec: clipTargetSec, ...clipWindow } }
       : {}),
     scenes: scenes.length > 0 ? scenes : undefined,
+    // The PLAN, not the cues: word anchors survive a re-cut and the editor
+    // edits them (Phase 3), while `render-props.json` carries the resolved
+    // instants. Absent when this run has no sound design, so a no-`--sfx`
+    // production.json is byte-identical to a pre-feature one.
+    sfx: sfxPlan,
     producer: producerStamp,
     theme,
     // The EFFECTIVE output size, not the base frame (`--resolution`): this is
@@ -4021,6 +4343,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         .filter((i) => !i.issue.startsWith("graphics:"))
         .map((i) => `  ⚠ moment ${i.moment}: ${i.issue}\n`)
         .join("");
+  }
+  // The SFX accounting, the graphics block's contract exactly (§118b): ONE
+  // formatter feeds the console line printed above and this one, so the two
+  // can never say different things about the same run. The drops are listed
+  // under it for the same reason the beat issues are listed under the graphics
+  // line — the number alone does not say WHICH effect went missing.
+  if (sfxLine) {
+    report +=
+      `\n${sfxLine}\n` +
+      sfxAllIssues.map((i) => `  ⚠ placement ${i.placement}: ${i.issue}\n`).join("");
   }
   if (provider) {
     report += formatUsageReport(provider.usage, cfg.pricing);
@@ -4614,6 +4946,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // actually render.
     ...(captionsHidden ? { captionsHidden: true } : {}),
     ...(opts.captions === false ? { captionsHiddenByFlag: true } : {}),
+    // `--sfx`, written only when there is something to play (the watermark's
+    // absent-means-off contract): a run without sound effects keeps a
+    // render-props.json — and an audio graph — byte-identical to a pre-feature
+    // one, and the composition reads an absent key as silence, not as an empty
+    // track it still has to mount.
+    ...(sfxCues.length > 0 ? { sfxCues } : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 
