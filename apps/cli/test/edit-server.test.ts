@@ -3127,3 +3127,165 @@ describe("GET /api/sfx/library + /api/sfx/audio", () => {
     expect(res.status).toBe(404);
   });
 });
+
+/**
+ * The SFX plan route (Phase 4, 2026-08-29): the placement plan AND the word
+ * space its indices are counted in.
+ *
+ * The word space is the whole point of the route. `production.sfx.placements[]
+ * .word` indexes the REPAIRED transcript, and `transcript.json` — what
+ * /api/transcript serves — is the raw one produce wrote before it repaired
+ * anything: `applyRepairs` splices, so a repair that changes a word COUNT
+ * shifts every index after it. The repair fixture below is deliberately one
+ * that does exactly that (two heard words → one corrected word), so a route
+ * that served the raw words would fail here rather than merely differ.
+ */
+describe("GET /api/sfx/plan", () => {
+  /** Five raw words; the repair below collapses words 2–3 into one. */
+  const RAW_WORDS = [
+    { text: "we", start: 0, end: 0.3 },
+    { text: "shipped", start: 0.3, end: 0.7 },
+    { text: "code", start: 0.7, end: 1.0 },
+    { text: "chun", start: 1.0, end: 1.4 },
+    { text: "today", start: 1.4, end: 1.8 },
+  ];
+
+  const writeProduction = async (dir: string, production: unknown): Promise<void> => {
+    await writeFile(join(dir, "production.json"), JSON.stringify(production));
+  };
+
+  it("serves the plan plus the REPAIRED word space, not transcript.json's raw one", async () => {
+    const dir = await fixtureWorkdir();
+    // transcript.json exists and is RAW — exactly the trap: it is right there,
+    // it parses, and its indices are wrong.
+    await writeFile(
+      join(dir, "transcript.json"),
+      JSON.stringify({ language: "en", words: RAW_WORDS }),
+    );
+    await writeProduction(dir, {
+      transcript: { language: "en", words: RAW_WORDS },
+      repairs: [
+        {
+          startWord: 2,
+          endWord: 3,
+          heard: "code chun",
+          correction: "codechurn",
+          applied: true,
+        },
+      ],
+      sfx: {
+        level: "normal",
+        placements: [{ soundId: "ding", word: 3, gain: 0.5, rationale: "the point lands" }],
+      },
+    });
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      // No dictionary from the runner's own config (the loadCfg rule).
+      loadCfg: () => ({}),
+    });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    expect(body.sfx).toEqual({
+      level: "normal",
+      placements: [{ soundId: "ding", word: 3, gain: 0.5, rationale: "the point lands" }],
+    });
+    // FOUR words, not five: the repair merged two. Word 3 — the one the
+    // placement is anchored to — is "today" here and "chun" in the raw file.
+    expect(body.words).toEqual([
+      { text: "we", start: 0, end: 0.3 },
+      { text: "shipped", start: 0.3, end: 0.7 },
+      { text: "codechurn", start: 0.7, end: 1.4 },
+      { text: "today", start: 1.4, end: 1.8 },
+    ]);
+    expect(body.words[body.sfx.placements[0].word].text).toBe("today");
+  });
+
+  it("serves the raw words verbatim when the run repaired nothing", async () => {
+    const dir = await fixtureWorkdir();
+    await writeProduction(dir, {
+      transcript: { language: "en", words: RAW_WORDS },
+      sfx: { level: "meme", placements: [] },
+    });
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    expect(body.sfx).toEqual({ level: "meme", placements: [] });
+    expect(body.words).toEqual(RAW_WORDS);
+  });
+
+  it("answers sfx:null for a production planned without --sfx, and still serves the words", async () => {
+    const dir = await fixtureWorkdir();
+    await writeProduction(dir, { transcript: { language: "en", words: RAW_WORDS } });
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    // `sfx: null` is the editor's lane-visibility signal — no plan, no lane,
+    // and no palette either (produce only applies the override layer when a
+    // plan exists).
+    expect(body.sfx).toBeNull();
+    expect(body.words).toEqual(RAW_WORDS);
+  });
+
+  it("answers sfx:null for a hand-edited sfx field that does not parse", async () => {
+    const dir = await fixtureWorkdir();
+    await writeProduction(dir, {
+      transcript: { language: "en", words: RAW_WORDS },
+      // `level` is an enum and `word` an index — neither coerces (CLAUDE.md).
+      sfx: { level: "loud", placements: [{ soundId: "ding", word: "3" }] },
+    });
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    expect(body.sfx).toBeNull();
+    expect(body.words).toEqual(RAW_WORDS);
+  });
+
+  it("refuses the WHOLE word list when a stored repair no longer replays", async () => {
+    // A repair produce recorded as applied that this replay refuses means the
+    // reconstruction is not the array the placements were counted against —
+    // and the refused splice can change the count. Serving it anyway would put
+    // every marker one word off with nothing said (§137's never-misapply
+    // rule), so the list is refused and the lane hides.
+    const dir = await fixtureWorkdir();
+    await writeProduction(dir, {
+      transcript: { language: "en", words: RAW_WORDS },
+      repairs: [
+        { startWord: 2, endWord: 3, heard: "code chun", correction: "banana split pie", applied: true },
+      ],
+      sfx: { level: "normal", placements: [{ soundId: "ding", word: 3 }] },
+    });
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    expect(body.words).toBeNull();
+    // The plan still rides back — it parsed. The editor hides the lane on the
+    // missing word space, which is the honest half to withhold.
+    expect(body.sfx).not.toBeNull();
+  });
+
+  it("degrades to nulls on a missing or corrupt production.json, never a 500", async () => {
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const missing = await fetch(`${server.url}/api/sfx/plan`);
+    expect(missing.status).toBe(200);
+    expect(await missing.json()).toEqual({ sfx: null, words: null });
+    await writeFile(join(dir, "production.json"), "{not json");
+    const corrupt = await fetch(`${server.url}/api/sfx/plan`);
+    expect(corrupt.status).toBe(200);
+    expect(await corrupt.json()).toEqual({ sfx: null, words: null });
+    // A production.json with no transcript at all (a hand-trimmed file) loses
+    // the words, not the server.
+    await writeProduction(dir, { sfx: { level: "subtle", placements: [] } });
+    const noWords = await fetch(`${server.url}/api/sfx/plan`);
+    expect(await noWords.json()).toEqual({ sfx: { level: "subtle", placements: [] }, words: null });
+  });
+
+  it("409s with no workdir open — unlike the library, this route IS a project's", async () => {
+    const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/sfx/plan`);
+    expect(res.status).toBe(409);
+  });
+});

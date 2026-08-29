@@ -16,6 +16,7 @@ import {
   zoomedScrollLeft,
 } from "./timing";
 import type { useEdits } from "./useEdits";
+import { nearestSfxWord, type SfxMarker, type SfxWordAnchor } from "./sfxLane";
 import { blurTypingElement, type Selection } from "./Overlay";
 
 /** One `doc.cuts` entry, as far as the Timeline needs it — mirrors
@@ -123,6 +124,27 @@ interface TimelineProps {
    * caller (and test) predating it keeps compiling.
    */
   onRevived?: (srcIn: number, srcOut: number) => void;
+  /**
+   * The sound-effect lane (Phase 4, 2026-08-29): the plan ∩ overrides merge,
+   * already resolved to output instants (`sfxLaneMarkers`).
+   *
+   * NULL/absent means this production has no `sfx` plan at all, and the lane
+   * is not drawn — no row, no palette, nothing: produce only applies the
+   * override layer when a plan exists (`if (sfxPlan)`, produce.ts), so an
+   * effect added here would be silently dropped at render time. An EMPTY array
+   * is a different fact — a plan whose placements are all on cut words — and
+   * still draws the (empty) lane, so the feature stays where the user left it.
+   */
+  sfxMarkers?: readonly SfxMarker[] | null;
+  /** Snap targets for a marker drag: every transcript word still in the
+   * output, at its output instant (`sfxWordAnchors`). A drag with none of
+   * these to land on writes nothing — a marker is anchored to a WORD, never to
+   * a second. */
+  sfxWords?: readonly SfxWordAnchor[];
+  /** The selected marker's doc key, or null — the SFX namespace's half of the
+   * one-selection-at-a-time rule App owns. */
+  sfxSelected?: string | null;
+  onSelectSfx?: (key: string | null) => void;
 }
 
 interface DragState {
@@ -278,6 +300,10 @@ export const Timeline: React.FC<TimelineProps> = ({
   pinSourceSec = null,
   toLive = (sec: number): number => sec,
   onRevived,
+  sfxMarkers = null,
+  sfxWords = [],
+  sfxSelected = null,
+  onSelectSfx,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -296,6 +322,22 @@ export const Timeline: React.FC<TimelineProps> = ({
   const [chipMenu, setChipMenu] = useState<{ x: number; y: number; seam: RemovalSeam } | null>(
     null,
   );
+  // A press on an SFX diamond, threshold-gated like every other press on this
+  // strip (BlockPress' rule): below `MOVE_THRESHOLD_PX` it stays a bare
+  // SELECT, so clicking a marker to edit it in the Inspector can never
+  // silently retime it by a pixel of hand wobble.
+  const sfxPressRef = useRef<{ marker: SfxMarker; startX: number; moved: boolean } | null>(null);
+  /** The word a live marker drag is currently resting on — its own channel, so
+   * the diamond can follow the pointer without touching the doc until the
+   * mouseup commits. */
+  const [sfxDrag, setSfxDrag] = useState<{ key: string; word: number; atSec: number } | null>(null);
+  // …mirrored into a ref, read by the mouseup commit below. The `zoomRef`
+  // trick, for a different reason: reading the live value out of a
+  // `setSfxDrag(prev => …)` updater would run the COMMIT during React's
+  // render phase (a dispatch into the parent's reducer from inside a child's
+  // render — React warns, and the warning is right).
+  const sfxDragRef = useRef(sfxDrag);
+  sfxDragRef.current = sfxDrag;
   const [dragPreview, setDragPreview] = useState<{
     sceneId: string;
     startSec: number;
@@ -498,8 +540,34 @@ export const Timeline: React.FC<TimelineProps> = ({
     };
     const onMove = (e: MouseEvent) => {
       const gestureLive =
-        scrubbingRef.current || blockPressRef.current?.moved === true || dragRef.current !== null;
+        scrubbingRef.current ||
+        blockPressRef.current?.moved === true ||
+        sfxPressRef.current?.moved === true ||
+        dragRef.current !== null;
       if (gestureLive) pageAtEdge(e.clientX);
+      // The SFX marker drag, BEFORE the scrub/block branches: a press that
+      // started on a diamond owns the gesture (its own mousedown already
+      // stopped propagation), and the lane sits outside the track, so nothing
+      // below could claim it anyway.
+      const sfxPress = sfxPressRef.current;
+      if (sfxPress) {
+        if (!sfxPress.moved && Math.abs(e.clientX - sfxPress.startX) < MOVE_THRESHOLD_PX) return;
+        sfxPress.moved = true;
+        const track = trackRef.current;
+        const r = track?.getBoundingClientRect();
+        if (!r || durationSec <= 0) return;
+        // SNAP TO A WORD, always — there is no free-time position for a sound
+        // effect to hold: the doc stores a word INDEX (recut-immune by
+        // construction, `OverrideDocSchema.sfx`), and the output second is
+        // re-derived through the new TimeMap on every run. A pointer over a
+        // stretch with no words left (all cut) simply keeps the last landing.
+        const word = nearestSfxWord(sfxWords, timeAtX(e.clientX, r.left, r.width, durationSec));
+        if (word === null) return;
+        const atSec = sfxWords.find((w) => w.word === word)?.atSec;
+        if (atSec === undefined) return;
+        setSfxDrag({ key: sfxPress.marker.key, word, atSec });
+        return;
+      }
       // A track scrub follows the pointer continuously (Task 3) — like any
       // video player's seek bar, not click-only.
       if (scrubbingRef.current) {
@@ -612,6 +680,28 @@ export const Timeline: React.FC<TimelineProps> = ({
     };
     const onUp = (e: MouseEvent) => {
       scrubbingRef.current = false;
+      const sfxPress = sfxPressRef.current;
+      if (sfxPress) {
+        sfxPressRef.current = null;
+        const drag = sfxDragRef.current;
+        setSfxDrag(null);
+        // A press that never travelled stays a select (the mousedown already
+        // did that), and a drag that landed back on the marker's own word
+        // writes nothing — the reducer's no-op guard would refuse it anyway,
+        // but not dispatching keeps the undo stack honest at the call site too.
+        if (sfxPress.moved && drag && drag.key === sfxPress.marker.key) {
+          const m = sfxPress.marker;
+          if (drag.word !== m.word) {
+            // The two namespaces write through different doors: a PLANNED
+            // placement patches its `sfx.edits` entry against the plan (so a
+            // drag back onto the planned word clears the override), an ADDED
+            // one just moves its own record.
+            if (m.kind === "added") edits.patchSfxAdded(m.key, { word: drag.word });
+            else if (m.planned) edits.patchSfx(m.key, { word: drag.word }, m.planned);
+          }
+        }
+        return;
+      }
       const press = blockPressRef.current;
       if (press) {
         blockPressRef.current = null;
@@ -670,7 +760,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec]);
+  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec, sfxWords]);
 
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 
@@ -871,6 +961,75 @@ export const Timeline: React.FC<TimelineProps> = ({
               </div>
             );
           })()}
+          {sfxMarkers === null ? null : (
+            // The sound-effect lane (Phase 4): one diamond per placement at
+            // the output instant its word lands on, in its own row above the
+            // ruler — the removal lane's shape, for the same reason (a marker
+            // belongs above the timeline, not fighting the track's
+            // seek/drag/trim surfaces). Drawn from the PLAN + overrides merge,
+            // never from render-props' `sfxCues` (sfxLane.ts's header owns the
+            // argument): a muted placement has no cue and must still show as
+            // a restorable ghost.
+            <div data-testid="sfx-lane" style={sfxLane}>
+              {sfxMarkers.map((m) => {
+                const dragging = sfxDrag?.key === m.key;
+                const atSec = dragging ? sfxDrag.atSec : m.atSec;
+                const word = dragging ? sfxDrag.word : m.word;
+                const leftPct =
+                  durationSec > 0 ? Math.min(100, Math.max(0, (atSec / durationSec) * 100)) : 0;
+                const selected = sfxSelected === m.key;
+                return (
+                  <div
+                    key={m.key}
+                    data-testid={`sfx-marker-${m.key}`}
+                    {...(m.muted ? { "data-muted": "true" } : {})}
+                    {...(selected ? { "data-selected": "true" } : {})}
+                    title={
+                      `${m.soundId} · word ${word} · gain ${m.gain}` +
+                      (m.muted ? " · muted (restore it in the panel)" : "") +
+                      (m.kind === "added" ? " · added by you" : "") +
+                      " — drag to another word"
+                    }
+                    onMouseDown={(e) => {
+                      // The strip's own idiom: act on mousedown, stop the
+                      // press reaching the surfaces underneath (the lane sits
+                      // over nothing clickable today, but the removal chips
+                      // learned this the hard way). Blur discipline comes free
+                      // from the strip's capture-phase `blurTypingElement`.
+                      if (e.button === 2) return;
+                      e.stopPropagation();
+                      e.preventDefault();
+                      onSelectSfx?.(m.key);
+                      sfxPressRef.current = { marker: m, startX: e.clientX, moved: false };
+                    }}
+                    style={{
+                      ...sfxMarkerHit,
+                      left: `${leftPct}%`,
+                      // A diamond at the very end anchors by its own centre
+                      // like every other, but its hit box would hang past the
+                      // lane — the removal chip's tail rule, halved because
+                      // this mark is already centred on its instant.
+                      zIndex: selected || dragging ? 3 : 2,
+                    }}
+                  >
+                    <div
+                      style={{
+                        ...sfxDiamond,
+                        // Selection wins the border, as it does on a block;
+                        // a MUTED marker is hollow and dimmed — the vetoed
+                        // chip's "still here, not happening" vocabulary,
+                        // which is exactly what a mute is.
+                        border: `1px solid ${selected ? "#5b8cff" : SFX_COLOR}`,
+                        background: m.muted ? "transparent" : SFX_COLOR,
+                        opacity: m.muted ? 0.45 : 1,
+                        ...(m.kind === "added" ? { borderStyle: "dashed" } : {}),
+                      }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div
             data-testid="ruler"
             style={ruler}
@@ -1502,6 +1661,44 @@ const markerChip: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   userSelect: "none",
+};
+
+/** The sound lane's own colour — a family of its own, deliberately not the
+ * playhead's yellow, the cut's red, or the kept band's violet: an effect is
+ * neither a time, a removal, nor a revival. */
+const SFX_COLOR = "#4ECDC4";
+
+/** The SFX row (Phase 4), above the ruler and inside the zoom-width content so
+ * the diamonds scroll and zoom with the track — the removal lane's shape at
+ * half its height, because a diamond carries no label. */
+const sfxLane: React.CSSProperties = {
+  position: "relative",
+  height: 14,
+  marginBottom: 2,
+};
+
+/** The clickable/draggable zone around a diamond — wider than the paint, the
+ * "wide hit / thin paint" split `playheadGrab` and the cut seam both use. */
+const sfxMarkerHit: React.CSSProperties = {
+  position: "absolute",
+  top: 0,
+  bottom: 0,
+  width: 14,
+  marginLeft: -7,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  cursor: "pointer",
+};
+
+/** The mark itself: a small square rotated 45°, which is the marker shape
+ * every NLE uses for an INSTANT (as opposed to the chips' spans). */
+const sfxDiamond: React.CSSProperties = {
+  width: 8,
+  height: 8,
+  transform: "rotate(45deg)",
+  borderRadius: 1,
+  pointerEvents: "none",
 };
 
 /** Under a KEPT chip, the span the revived material now occupies on the live

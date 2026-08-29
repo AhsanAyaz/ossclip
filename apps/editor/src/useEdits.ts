@@ -20,6 +20,8 @@ import {
   type SceneComponentId,
   type SceneCue,
   type SceneTiming,
+  type SfxAddedPlacement,
+  type SfxPlacementEdit,
   type StampMove,
 } from "@ossclip/core/browser";
 
@@ -257,6 +259,57 @@ export type EditAction =
    * takes it back with the keep that triggered it.
    */
   | { type: "rekeyCaptionKeys"; mapping: readonly StampMove[] }
+  /**
+   * Retime / swap / re-gain ONE planned sound effect (`sfx.edits`, Phase 4),
+   * keyed by `sfxPlacementKey` — the PLAN's own `${soundId}@${word}`, never a
+   * key derived from the live (already-edited) values: re-keying on every drag
+   * is exactly what the content-derived key exists to avoid (the schema's own
+   * argument, packages/core/src/overrides.ts).
+   *
+   * `planned` is the plan's values for this placement, and it is what makes
+   * this a PATCH: a field dragged back onto what the model planned DELETES
+   * that field rather than storing it (the clearVideo/patchCaption
+   * clear-override rule — an override restating the base would keep winning
+   * after a re-plan moved the placement underneath it), and an entry left with
+   * nothing to say goes entirely. Absent `planned.gain` reads as 1, the same
+   * `p.gain ?? 1` the resolver multiplies by.
+   */
+  | {
+      type: "patchSfx";
+      key: string;
+      patch: { word?: number; soundId?: string; gain?: number };
+      planned: { word: number; soundId: string; gain?: number };
+      coalesce?: string;
+    }
+  /** Delete a PLANNED placement: `muted: true` NEGATES it (the plan itself
+   * lives in production.json and produce rewrites it every run, so there is
+   * nothing to delete there) and the lane keeps a restorable ghost — the
+   * `hideScene` contract for a track of instants. */
+  | { type: "muteSfx"; key: string }
+  /**
+   * The way back. Drops `muted`, and DELETES the whole entry when nothing else
+   * remains — which for the mute-only entry this normally undoes is exactly
+   * the schema's "restore deletes the key" (never `muted: false`, the
+   * restoreScene rule). A user who also dragged or re-gained the placement
+   * keeps that work: silently discarding an edit the gesture never mentioned
+   * would be the §137 failure, a change nobody printed.
+   */
+  | { type: "restoreSfx"; key: string }
+  /** A placement of the user's OWN (`sfx.added`) — id minted here, once, and
+   * never recomputed (`mintSfxAddedId`). */
+  | { type: "addSfx"; soundId: string; word: number; gain?: number }
+  /** The added placement's editor. No `planned` counterpart, because there is
+   * no plan to restate: every field of an added placement IS the user's, so a
+   * value equal to yesterday's is still the whole record. */
+  | {
+      type: "patchSfxAdded";
+      id: string;
+      patch: { word?: number; soundId?: string; gain?: number };
+      coalesce?: string;
+    }
+  /** Delete an ADDED placement: spliced out, not muted — there is no plan
+   * entry left behind for a ghost to negate. */
+  | { type: "removeSfxAdded"; id: string }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -273,6 +326,66 @@ export const initialEditState = (): EditState => ({
 
 const withScene = (doc: OverrideDoc, id: string) =>
   doc.scenes[id] ?? { props: {}, elements: {} };
+
+/** The sfx slot as a value, for reducers that have to read it before it
+ * exists — the doc's own key stays ABSENT until something is actually stored
+ * (see `withSfx`). */
+const sfxSlot = (doc: OverrideDoc): { edits: Record<string, SfxPlacementEdit>; added: SfxAddedPlacement[] } =>
+  doc.sfx ?? { edits: {}, added: [] };
+
+/**
+ * Write the sfx slot back, or REMOVE it when it has nothing left to say.
+ *
+ * The `captionsHidden`/`clearVideo` rule, applied to a whole record: `sfx` is
+ * optional with no default precisely so an overrides.json written before the
+ * key existed parses byte-identically, and a project whose last SFX edit was
+ * just undone must not keep an empty `{edits:{},added:[]}` as dead weight in
+ * every save from then on.
+ */
+const withSfx = (
+  doc: OverrideDoc,
+  next: { edits: Record<string, SfxPlacementEdit>; added: SfxAddedPlacement[] },
+): OverrideDoc => {
+  if (Object.keys(next.edits).length > 0 || next.added.length > 0) return { ...doc, sfx: next };
+  if (doc.sfx === undefined) return doc;
+  const { sfx: _dropped, ...rest } = doc;
+  return rest;
+};
+
+/**
+ * An id for a user-added placement that no entry in `existing` already holds.
+ *
+ * `mintSplitId`'s contract, restated for the other namespace this editor
+ * mints into (that function's doc comment owns the full argument): the id is
+ * PERSISTED in overrides.json and is the only thing tying an edit to the
+ * placement it names, so it is minted ONCE at the gesture and never
+ * recomputed — `${soundId}@${word}` would re-key itself the instant the user
+ * dragged or swapped it, and an array index renumbers on every delete. The
+ * suffix is a COUNTER, not a nonce or a timestamp, so the value is
+ * reproducible from the document alone.
+ *
+ * The base is sanitised rather than trusted: every id must match
+ * `SfxAddedPlacementSchema`'s `/^[A-Za-z0-9_-]+$/` — no `@`, which is the
+ * separator `sfxPlacementKey` builds PLANNED keys with, and nothing that
+ * could read as a path — and produce THROWS on an overrides.json that fails
+ * to parse. The library's own ids are slugs today, but this invariant must
+ * not depend on a promise made in another package.
+ */
+export function mintSfxAddedId(
+  soundId: string,
+  word: number,
+  existing: readonly { id: string }[],
+): string {
+  const slug = soundId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  const base = `${slug === "" ? "sfx" : slug}-${Math.max(0, Math.trunc(word))}`;
+  const taken = new Set(existing.map((e) => e.id));
+  if (!taken.has(base)) return base;
+  // Starts at 2 so the first collision reads as "the second `ding-4`".
+  for (let n = 2; ; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
 
 export function editReducer(state: EditState, action: EditAction): EditState {
   const commit = (doc: OverrideDoc, coalesce?: string): EditState => {
@@ -1076,6 +1189,122 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       for (const line of reports) console.warn(`caption re-key: ${line}`);
       return commit(doc);
     }
+    case "patchSfx": {
+      const slot = sfxSlot(state.doc);
+      const prev = slot.edits[action.key];
+      const next: SfxPlacementEdit = { ...prev };
+      // Per FIELD, against the plan (see the action docstring): equal to what
+      // the model planned ⇒ DELETE the field, so the placement goes back to
+      // inheriting a later re-plan's value for it.
+      if (action.patch.word !== undefined) {
+        if (action.patch.word === action.planned.word) delete next.word;
+        else next.word = action.patch.word;
+      }
+      if (action.patch.soundId !== undefined) {
+        if (action.patch.soundId === action.planned.soundId) delete next.soundId;
+        else next.soundId = action.patch.soundId;
+      }
+      if (action.patch.gain !== undefined) {
+        // Absent in the plan means 1 (`resolveSfxCues`' `p.gain ?? 1`), so a
+        // slider dragged back to 1 on an ungained placement clears itself.
+        if (action.patch.gain === (action.planned.gain ?? 1)) delete next.gain;
+        else next.gain = action.patch.gain;
+      }
+      // A gesture that changed nothing must not mint an undo step (the
+      // restoreScene no-op-guard shape) — a drag that ends on the word it
+      // started on re-sends the same value on every pointer-up.
+      const same =
+        prev !== undefined &&
+        prev.word === next.word &&
+        prev.soundId === next.soundId &&
+        prev.gain === next.gain &&
+        prev.muted === next.muted;
+      if (same) return state;
+      const edits = { ...slot.edits };
+      // An entry with no fields left is an override with nothing to say — it
+      // goes, rather than sitting in overrides.json as `{}` (the clearVideo
+      // rule).
+      if (Object.keys(next).length === 0) {
+        if (prev === undefined) return state;
+        delete edits[action.key];
+      } else {
+        edits[action.key] = next;
+      }
+      return commit(withSfx(state.doc, { ...slot, edits }), action.coalesce);
+    }
+    case "muteSfx": {
+      const slot = sfxSlot(state.doc);
+      const prev = slot.edits[action.key];
+      if (prev?.muted === true) return state;
+      return commit(
+        withSfx(state.doc, {
+          ...slot,
+          // MERGED onto whatever is stored: a placement the user retimed and
+          // then muted keeps its retime, so restoring it puts it back where
+          // they dragged it rather than where the model planned it.
+          edits: { ...slot.edits, [action.key]: { ...prev, muted: true } },
+        }),
+      );
+    }
+    case "restoreSfx": {
+      const slot = sfxSlot(state.doc);
+      const prev = slot.edits[action.key];
+      if (prev?.muted !== true) return state;
+      const { muted: _dropped, ...rest } = prev;
+      const edits = { ...slot.edits };
+      // Nothing else stored ⇒ the whole key goes: `muted: false` is an
+      // override restating the default (the schema's own "restore DELETES the
+      // key" rule), and `{}` is the same thing spelled differently.
+      if (Object.keys(rest).length === 0) delete edits[action.key];
+      else edits[action.key] = rest;
+      return commit(withSfx(state.doc, { ...slot, edits }));
+    }
+    case "addSfx": {
+      const slot = sfxSlot(state.doc);
+      return commit(
+        withSfx(state.doc, {
+          ...slot,
+          added: [
+            ...slot.added,
+            {
+              id: mintSfxAddedId(action.soundId, action.word, slot.added),
+              soundId: action.soundId,
+              word: action.word,
+              // Spread, not `gain: action.gain` — a default-gain add must not
+              // grow a `gain: undefined` key (the `cutChunk` src rule).
+              ...(action.gain !== undefined ? { gain: action.gain } : {}),
+            },
+          ],
+        }),
+      );
+    }
+    case "patchSfxAdded": {
+      const slot = sfxSlot(state.doc);
+      const i = slot.added.findIndex((a) => a.id === action.id);
+      // A patch for an id nothing answers to is a caller bug, dropped rather
+      // than stored as a placement with no sound (`addSplit`'s posture).
+      if (i === -1) return state;
+      const prev = slot.added[i]!;
+      const next: SfxAddedPlacement = {
+        ...prev,
+        ...(action.patch.soundId !== undefined ? { soundId: action.patch.soundId } : {}),
+        ...(action.patch.word !== undefined ? { word: action.patch.word } : {}),
+        ...(action.patch.gain !== undefined ? { gain: action.patch.gain } : {}),
+      };
+      // The no-op guard again — a drag that lands where it started.
+      if (next.soundId === prev.soundId && next.word === prev.word && next.gain === prev.gain) {
+        return state;
+      }
+      const added = slot.added.slice();
+      added[i] = next;
+      return commit(withSfx(state.doc, { ...slot, added }), action.coalesce);
+    }
+    case "removeSfxAdded": {
+      const slot = sfxSlot(state.doc);
+      const added = slot.added.filter((a) => a.id !== action.id);
+      if (added.length === slot.added.length) return state;
+      return commit(withSfx(state.doc, { ...slot, added }));
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -1245,6 +1474,26 @@ export function useEdits() {
       dispatch({ type: "restoreDismissed", srcIn, srcOut }),
     rekeyCaptionKeys: (mapping: readonly StampMove[]) =>
       dispatch({ type: "rekeyCaptionKeys", mapping }),
+    /** `planned` is the PLAN's values for this placement (the action's
+     * docstring): the caller holds them on the marker it is editing, and they
+     * are what makes a drag back onto the planned word clear the override
+     * instead of pinning it. */
+    patchSfx: (
+      key: string,
+      patch: { word?: number; soundId?: string; gain?: number },
+      planned: { word: number; soundId: string; gain?: number },
+      coalesce?: string,
+    ) => dispatch({ type: "patchSfx", key, patch, planned, coalesce }),
+    muteSfx: (key: string) => dispatch({ type: "muteSfx", key }),
+    restoreSfx: (key: string) => dispatch({ type: "restoreSfx", key }),
+    addSfx: (soundId: string, word: number, gain?: number) =>
+      dispatch({ type: "addSfx", soundId, word, gain }),
+    patchSfxAdded: (
+      id: string,
+      patch: { word?: number; soundId?: string; gain?: number },
+      coalesce?: string,
+    ) => dispatch({ type: "patchSfxAdded", id, patch, coalesce }),
+    removeSfxAdded: (id: string) => dispatch({ type: "removeSfxAdded", id }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

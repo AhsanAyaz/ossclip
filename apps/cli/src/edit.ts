@@ -18,6 +18,11 @@ import {
   ThumbnailConceptApprovedSchema,
   ThumbnailConceptSchema,
   appendUsageRun,
+  // The SFX plan route's word-space derivation (Phase 4) — the repaired
+  // transcript rebuilt from production.json's own stored pair, which is the
+  // index space `production.sfx.placements[].word` counts in.
+  applyRepairs,
+  ProductionSfxSchema,
   approvedOverlayText,
   buildThumbnailPrompt,
   captionCap,
@@ -2411,6 +2416,114 @@ export async function startEditServer(
           } finally {
             coverBusy = false;
           }
+        }
+
+        if (url.pathname === "/api/sfx/plan" && req.method === "GET") {
+          // The MODEL's placement plan plus the word space it is written in
+          // (Phase 4). Two values, one route, because they are useless apart:
+          // a placement is `{soundId, word}` and `word` is an INDEX, so the
+          // editor can only draw a marker — or write one — against the exact
+          // array produce counted.
+          //
+          // And that array is NOT `transcript.json`, which is what
+          // /api/transcript serves: produce writes that file straight off
+          // whisper (produce.ts, `writeFile(transcriptCache, …)`) and only
+          // THEN applies repairs and the `--clip` slice, planning sound
+          // effects against the result. `applyRepairs` splices, so the two
+          // index spaces need not line up at all — clip.ts's own note on
+          // slicing says it outright ("repairs may change word counts, so raw
+          // and repaired index spaces need not line up"). An editor drawing
+          // this lane off transcript.json would place every marker on the
+          // wrong word the moment one repair changed a word count, and its
+          // drags would WRITE those wrong indices into overrides.json, where
+          // produce reads them in the other space. So the derivation happens
+          // HERE, once, on the server that has the pieces.
+          //
+          // The derivation is `ProductionSchema.repairs`' own stated contract:
+          // `applyRepairs(transcript, repairs.filter(r => r.applied))`
+          // reconstructs exactly what was rendered. No clip windowing on top:
+          // production.json's `transcript` is ALREADY the sliced raw one and
+          // its `repairs` were re-indexed with it (produce.ts's `--clip`
+          // block: `rawTranscript = rawSlice.transcript` / `repairs =
+          // sliceRepairs(…)`), so a second slice here would shift every index
+          // by the clip's offset — the very bug this route exists to avoid.
+          //
+          // Its own route rather than a field on /api/production: that endpoint
+          // is the page's hot load path and reads render-props.json, and this
+          // needs production.json plus a repair replay. Lenient throughout —
+          // any missing or corrupt piece answers `null` and the editor hides
+          // the lane, exactly the /api/cleanup posture. A sound-effect lane is
+          // never worth a 500.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          let production: Record<string, unknown> | null = null;
+          try {
+            production = JSON.parse(
+              await readFile(join(workdir, "production.json"), "utf8"),
+            ) as Record<string, unknown>;
+          } catch {
+            return send(200, { sfx: null, words: null });
+          }
+          // Parsed, never cast (CLAUDE.md) — production.json is a file a user
+          // can hand-edit, and the editor has no zod of its own, so the parse
+          // that guards this payload has to be this one. A `sfx` field that
+          // fails it is the same as none: no lane.
+          const parsedSfx = ProductionSfxSchema.safeParse(production.sfx);
+          const parsedTranscript = TranscriptSchema.safeParse(production.transcript);
+          let words: Array<{ text: string; start: number; end: number }> | null = null;
+          if (parsedTranscript.success) {
+            const stored = Array.isArray(production.repairs)
+              ? (production.repairs as Array<Record<string, unknown>>)
+              : [];
+            const applied = stored.filter((r) => r.applied === true);
+            if (applied.length === 0) {
+              words = parsedTranscript.data.words;
+            } else {
+              // The dictionary rides along for the reason produce's own repair
+              // REPLAY passes it (its cached-repairs block): a
+              // dictionary-vouched correction clears the phonetic gate only
+              // when the vouched set is present, and `applyRepairs` re-decides
+              // every proposal it is handed rather than trusting the stored
+              // verdict.
+              // `dictionary` is `unknown` on the config (file-only, validated
+              // at the consumer — config.ts's posture), narrowed here the same
+              // way `retranscribeSettings` narrows it a few hundred lines up.
+              const rawDict = (opts.loadCfg ?? loadConfig)().dictionary;
+              const dictionary =
+                Array.isArray(rawDict) && rawDict.every((t) => typeof t === "string")
+                  ? (rawDict as string[])
+                  : undefined;
+              const decided = applyRepairs(
+                parsedTranscript.data,
+                applied.map((r) => ({
+                  startWord: Number(r.startWord),
+                  endWord: Number(r.endWord),
+                  heard: String(r.heard),
+                  correction: String(r.correction),
+                })),
+                { dictionary },
+              );
+              // A repair that produce APPLIED but this replay refuses means the
+              // reconstruction is not the array the placements were counted
+              // against — and a refused splice can change the word count, so
+              // every index after it would be off by one with nothing to say
+              // so. Refuse the whole word list rather than serve a plausible
+              // wrong one (§137's never-misapply rule): the lane hides, and no
+              // gesture can write an index into the wrong space.
+              words = decided.applied.every((r) => r.applied)
+                ? decided.transcript.words
+                : null;
+            }
+          }
+          return send(200, {
+            sfx: parsedSfx.success ? parsedSfx.data : null,
+            // METADATA only, like the library route: text and SOURCE seconds,
+            // which is all the client needs to map an index through its own
+            // live TimeMap.
+            words:
+              words === null
+                ? null
+                : words.map((w) => ({ text: w.text, start: w.start, end: w.end })),
+          });
         }
 
         if (url.pathname === "/api/sfx/library" && req.method === "GET") {

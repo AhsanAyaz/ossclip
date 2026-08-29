@@ -42,6 +42,14 @@ import {
   rebuildCaptionTrack,
   type LiveCaptionTrack,
 } from "./liveCaptionTrack";
+import {
+  nearestSfxWord,
+  sfxLaneMarkers,
+  sfxWordAnchors,
+  type SfxLibrarySound,
+  type SfxPlan,
+  type SfxWordAnchor,
+} from "./sfxLane";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector, type RunInfo } from "./Inspector";
 import { Timeline } from "./Timeline";
@@ -262,6 +270,29 @@ export const App: React.FC = () => {
     words: { text: string; start: number; end: number }[];
   } | null>(null);
   /**
+   * The sound-effect plan and the word space it is written in (Phase 4,
+   * 2026-08-29) — `/api/sfx/plan`, read-only display data fetched per project
+   * open like `cleanupCutlist` above. The user's response to it lives in
+   * `edits.doc.sfx`, and the two only meet in `sfxLaneMarkers`, the editor's
+   * side of the merge `applySfxOverrides` renders with.
+   *
+   * `words` is deliberately NOT `transcriptDoc` above: that one is
+   * transcript.json, the RAW words produce wrote before it repaired anything,
+   * and a placement's `word` indexes the REPAIRED array (the route's header
+   * owns the whole argument). Two word lists, two index spaces, and mixing
+   * them would put every marker on the wrong word.
+   */
+  const [sfxPlan, setSfxPlan] = useState<{
+    sfx: SfxPlan | null;
+    words: { text: string; start: number; end: number }[] | null;
+  }>({ sfx: null, words: null });
+  /** `/api/sfx/library` — the swap dropdown's and palette's options. */
+  const [sfxLibrary, setSfxLibrary] = useState<SfxLibrarySound[]>([]);
+  /** The selected SFX marker's doc key. Its own state, not `selection`: a
+   * marker is not a scene cue and has no `sceneId` to borrow — the two
+   * namespaces stay exclusive through `selectScene`/`selectSfx` below. */
+  const [sfxSelection, setSfxSelection] = useState<string | null>(null);
+  /**
    * One range re-decode in flight at a time, client side (Phase A,
    * 2026-08-26). The server single-flights too (409), but a chip that fires
    * a doomed request is a request whose failure the user then reads about
@@ -329,6 +360,22 @@ export const App: React.FC = () => {
   );
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
+  /**
+   * ONE selection at a time across the two namespaces (Phase 4): picking a
+   * scene or an element drops the SFX marker, and picking a marker drops the
+   * scene. The Inspector shows exactly one panel, so two live selections would
+   * leave a stale one silently winning it — and the marker panel is the first
+   * branch, so a forgotten marker key would shadow every scene the user
+   * selected afterwards.
+   */
+  const selectScene = useCallback((sel: Selection | null) => {
+    setSelection(sel);
+    setSfxSelection(null);
+  }, []);
+  const selectSfx = useCallback((key: string | null) => {
+    setSfxSelection(key);
+    if (key !== null) setSelection(null);
+  }, []);
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
   // A live, uncommitted framing tweak (PLAN Task B3): the stage drag and the
@@ -822,6 +869,31 @@ export const App: React.FC = () => {
         );
       })
       .catch(() => setTranscriptDoc(null));
+    // The SFX plan + its word space, and the sound library (Phase 4). The
+    // /api/cleanup posture throughout: any failure degrades to "no lane, no
+    // palette" — the server already answers `{sfx: null, words: null}` for a
+    // production with no plan (or none it can honestly reconstruct the word
+    // space for), so this only has to survive the request itself.
+    void fetch("/api/sfx/plan")
+      .then(async (r) =>
+        setSfxPlan(
+          r.ok
+            ? ((await r.json()) as {
+                sfx: SfxPlan | null;
+                words: { text: string; start: number; end: number }[] | null;
+              })
+            : { sfx: null, words: null },
+        ),
+      )
+      .catch(() => setSfxPlan({ sfx: null, words: null }));
+    void fetch("/api/sfx/library")
+      .then(async (r) =>
+        setSfxLibrary(r.ok ? (((await r.json()) as { sounds?: SfxLibrarySound[] }).sounds ?? []) : []),
+      )
+      .catch(() => setSfxLibrary([]));
+    // A marker key belongs to the project that was open when it was picked
+    // (the §137 Task 6 review's Minor 6 rule, applied to this selection).
+    setSfxSelection(null);
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
     // progress, no logs, and no way to cancel it from the UI. Since
@@ -1358,6 +1430,44 @@ export const App: React.FC = () => {
       appliedCaptionWindows,
       liveRetimed,
     ],
+  );
+  // The SFX lane's data (Phase 4), BELOW the live memo for the same reason
+  // `droppedEditLines` is: it reads `liveRecut`, and a memo factory runs
+  // during render, so reading it from above its declaration is a TDZ crash.
+  //
+  // The clock is the one the RULER draws — `liveRecut.newMap` while a veto or
+  // a live cut is in play, the render-props spans otherwise — because a marker
+  // is placed against the timeline the user is looking at. Malformed spans
+  // degrade to no map (the `identityToSource` guard's never-throw rule), which
+  // yields no anchors and an empty lane rather than a wall of markers at zero.
+  const sfxWords = useMemo<SfxWordAnchor[]>(() => {
+    const words = sfxPlan.words;
+    if (words === null || words.length === 0) return [];
+    let map: TimeMap | null = liveRecut?.newMap ?? null;
+    if (map === null) {
+      try {
+        const spans = renderProps?.spans ?? [];
+        map = spans.length > 0 ? mapFromKeptSpans(spans) : null;
+      } catch {
+        map = null;
+      }
+    }
+    return sfxWordAnchors(words, map);
+  }, [sfxPlan, liveRecut, renderProps]);
+  const sfxMarkers = useMemo(
+    // `sfx: null` (no plan) yields no markers AND no lane — the Timeline prop
+    // is null in that case, which is a different fact from an empty array
+    // (see its prop doc).
+    () => sfxLaneMarkers(sfxPlan.sfx, edits.doc.sfx, sfxWords),
+    [sfxPlan.sfx, edits.doc.sfx, sfxWords],
+  );
+  // The selected marker, resolved off the SAME list the lane draws: a key
+  // whose placement a re-plan (or a delete) removed simply resolves to null
+  // and the panel falls back — no stale marker can be edited into a doc entry
+  // nothing draws.
+  const selectedSfx = useMemo(
+    () => sfxMarkers.find((m) => m.key === sfxSelection) ?? null,
+    [sfxMarkers, sfxSelection],
   );
   // The dismissal is aimed at ONE list, not at the notice forever: a later,
   // DIFFERENT drop raises it again. Held as the dismissed list itself rather
@@ -2321,7 +2431,7 @@ export const App: React.FC = () => {
             <Overlay
               stageRef={stageRef}
               selection={selection}
-              onSelect={setSelection}
+              onSelect={selectScene}
               edits={edits}
               onSave={onSave}
               settings={live.settings}
@@ -2398,7 +2508,7 @@ export const App: React.FC = () => {
             frame={{ width: live.settings.width, height: live.settings.height }}
             allSceneIds={live.sceneCues.map((c) => c.id)}
             edits={edits}
-            onSelect={setSelection}
+            onSelect={selectScene}
             resolvedTheme={live.theme}
             anchorText={anchorText}
             onVideoPreview={setVideoPreview}
@@ -2413,6 +2523,20 @@ export const App: React.FC = () => {
             hasOldClockPreimage={clock.hasOldClockPreimage}
             toSourceSec={clock.toSourceSec}
             onClockRefused={setClockRefusedNotice}
+            // The SFX panel (Phase 4). `sfxEnabled` is the lane's own
+            // visibility signal — a production with no plan gets no palette,
+            // because produce would drop what it added (the prop's doc).
+            sfxMarker={selectedSfx}
+            sfxLibrary={sfxLibrary}
+            sfxEnabled={sfxPlan.sfx !== null}
+            sfxWordAtPlayhead={() => {
+              // Read at the CLICK, off the player (the CoverPanel's
+              // `playheadSec` idiom), and resolved through the same anchors
+              // the lane draws — so "at the playhead" means the word the
+              // marker would actually appear over.
+              const t = (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps;
+              return nearestSfxWord(sfxWords, t);
+            }}
           />
         </div>
       </div>
@@ -2433,7 +2557,7 @@ export const App: React.FC = () => {
         fps={live.settings.fps}
         playerRef={playerRef}
         selection={selection}
-        onSelect={setSelection}
+        onSelect={selectScene}
         edits={edits}
         // The revived-range hook (Phase A): Timeline calls this AFTER the
         // keep/dismiss dispatch, and only when material came BACK — see
@@ -2449,6 +2573,13 @@ export const App: React.FC = () => {
         // dropped across the next re-cut. Same mapper ⌘B's `splits[].src`
         // resolves through — one clock, both anchors.
         pinSourceSec={clock.toSourceSec}
+        // The sound lane (Phase 4): NULL when this production has no plan, so
+        // the row is not drawn at all — an empty array would draw an empty
+        // lane, which is a different (and real) state (the prop's doc).
+        sfxMarkers={sfxPlan.sfx === null ? null : sfxMarkers}
+        sfxWords={sfxWords}
+        sfxSelected={sfxSelection}
+        onSelectSfx={selectSfx}
         toSourceSec={(outSec) => {
           // Output→source through the spans (R20 §97) — the filmstrip frame
           // must be the source second actually playing there, not the raw

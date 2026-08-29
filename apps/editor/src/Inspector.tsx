@@ -10,6 +10,7 @@ import {
 } from "@ossclip/core/browser";
 import { clampGraphicRect, graphicSlotFor, layoutSlots } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
+import { sfxAudioUrl, type SfxLibrarySound, type SfxMarker } from "./sfxLane";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
 /** What planned this video and what it cost (R21 §104) — `/api/usage`'s
@@ -112,6 +113,37 @@ interface InspectorProps {
    * anchor it with instead — App's dismissible notice, the same non-fatal
    * chrome as its other gesture refusals. */
   onClockRefused?: (message: string) => void;
+  /**
+   * The SFX marker the timeline lane has selected, already merged (plan +
+   * overrides) by `sfxLaneMarkers`. Non-null takes the WHOLE panel, above the
+   * element/scene branches — App keeps the two selection namespaces mutually
+   * exclusive, so this can never be showing over a scene the user also thinks
+   * is selected.
+   */
+  sfxMarker?: SfxMarker | null;
+  /**
+   * `/api/sfx/library` — every sound INSTALLED, level-agnostic on purpose:
+   * the model's `--sfx-level` gate prices the model's own plan, and an
+   * explicit user choice outranks it (Phase 3 doctrine), so the dropdown
+   * offers a meme sound on a `subtle` video without comment.
+   */
+  sfxLibrary?: readonly SfxLibrarySound[];
+  /**
+   * This production HAS a `sfx` plan — the same signal that draws the lane.
+   * Gates the "add a sound" palette, because produce only applies the override
+   * layer when a plan exists (`if (sfxPlan)`, produce.ts): offering an add on
+   * a workdir produced without `--sfx` would promise an effect no render would
+   * ever play.
+   */
+  sfxEnabled?: boolean;
+  /**
+   * The transcript word under the playhead, read AT THE CLICK — the
+   * CoverPanel's `playheadSec` idiom: the panel must not re-render on every
+   * frame just to keep a number it needs once. Null when no word is there to
+   * anchor to (a gap, or a clip with no words left), and the palette says so
+   * rather than guessing an index.
+   */
+  sfxWordAtPlayhead?: () => number | null;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -189,6 +221,126 @@ const roundShown = (v: number): string => String(Math.round(v * 1000) / 1000);
  * the clock the gesture happened to be on. Also what makes the reducer's
  * src-equality dedupe an exact comparison rather than a tolerance. */
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
+
+/**
+ * Play one sound through the edit server's own preview route.
+ *
+ * The URL is built by `sfxAudioUrl` (the pure half, tested), and only the
+ * PLAY is here — the `openCommand`/`openInBrowser` split. Failures are
+ * swallowed on purpose: a browser that refuses to start audio without a
+ * gesture, or a pack file deleted since the library loaded (a 404), must cost
+ * the click, never the panel. There is no synced in-player preview in v1
+ * (YAGNI, the plan's own note) — click-to-hear is the affordance.
+ */
+const previewSound = (soundId: string): void => {
+  try {
+    void new Audio(sfxAudioUrl(soundId)).play()?.catch(() => {});
+  } catch {
+    // no audio element, or the environment refuses one — nothing to report
+  }
+};
+
+/**
+ * The library dropdown's options, with the CURRENT sound guaranteed present.
+ *
+ * A placement can name a sound the library no longer has (a user pack removed
+ * between produce and this session — `resolveSfxCues`' "unknown sound" drop).
+ * Without its own option the select would render blank and the first change
+ * event would silently rewrite the placement to whatever sorted first, so the
+ * missing id is offered explicitly and says what it is.
+ */
+const soundOptions = (
+  library: readonly SfxLibrarySound[],
+  current: string | null,
+): React.ReactNode[] => {
+  const options = library.map((s) => (
+    <option key={s.id} value={s.id}>
+      {s.id} — {s.whenToUse}
+    </option>
+  ));
+  if (current !== null && !library.some((s) => s.id === current)) {
+    options.unshift(
+      <option key={current} value={current}>
+        {current} — not in the library any more
+      </option>,
+    );
+  }
+  return options;
+};
+
+/**
+ * "Add a sound" — the palette every USER-added placement comes from.
+ *
+ * Anchored to the word under the playhead, never to the playhead's second:
+ * the doc stores a word index (recut-immune by construction,
+ * `OverrideDocSchema.sfx`), and the output instant is re-derived on every run.
+ * No word under the playhead ⇒ the button refuses out loud rather than
+ * guessing an index — the `onClockRefused` posture, said in place.
+ */
+const SfxAddSection: React.FC<{
+  edits: ReturnType<typeof useEdits>;
+  library: readonly SfxLibrarySound[];
+  wordAtPlayhead: () => number | null;
+}> = ({ edits, library, wordAtPlayhead }) => {
+  const [soundId, setSoundId] = React.useState<string>("");
+  const [refused, setRefused] = React.useState(false);
+  const chosen = soundId || library[0]?.id || "";
+  return (
+    <div style={section} data-testid="sfx-add-section">
+      <span style={label}>Add a sound</span>
+      {library.length === 0 ? (
+        <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+          No sounds installed — drop a pack in ~/.ossclip/sfx.
+        </div>
+      ) : (
+        <>
+          <select
+            data-testid="sfx-add-sound"
+            style={numberInput}
+            value={chosen}
+            onChange={(e) => setSoundId(e.target.value)}
+          >
+            {soundOptions(library, null)}
+          </select>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              data-testid="sfx-add"
+              style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}
+              onClick={() => {
+                blurActive();
+                const word = wordAtPlayhead();
+                if (word === null) {
+                  setRefused(true);
+                  return;
+                }
+                setRefused(false);
+                edits.addSfx(chosen, word);
+              }}
+            >
+              Add at playhead
+            </button>
+            <button
+              data-testid="sfx-add-preview"
+              style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}
+              onClick={() => {
+                blurActive();
+                previewSound(chosen);
+              }}
+            >
+              ▸ Hear it
+            </button>
+          </div>
+          {refused ? (
+            <div data-testid="sfx-add-refused" style={{ fontSize: 12, color: "#FFE14D" }}>
+              No transcript word under the playhead — a sound effect is anchored to a word, so
+              park the playhead over speech and try again.
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+};
 
 const NumberField: React.FC<{
   id: string;
@@ -343,7 +495,145 @@ export const Inspector: React.FC<InspectorProps> = ({
   hasOldClockPreimage = (): boolean => true,
   toSourceSec = null,
   onClockRefused = (): void => {},
+  sfxMarker = null,
+  sfxLibrary = [],
+  sfxEnabled = false,
+  sfxWordAtPlayhead = (): number | null => null,
 }) => {
+  if (sfxMarker) {
+    // The selected sound effect. FIRST branch on purpose: an SFX selection is
+    // exclusive with the scene/element one (App clears each when the other is
+    // made), so reaching this at all means the lane owns the panel.
+    const m = sfxMarker;
+    const added = m.kind === "added";
+    // The two write paths, chosen once here rather than at four call sites: a
+    // PLANNED placement patches its `sfx.edits` entry against the plan (so a
+    // field set back to what the model planned clears itself), an ADDED one
+    // just rewrites its own record.
+    const patch = (
+      p: { word?: number; soundId?: string; gain?: number },
+      coalesce?: string,
+    ): void => {
+      if (added) edits.patchSfxAdded(m.key, p, coalesce);
+      else if (m.planned) edits.patchSfx(m.key, p, m.planned, coalesce);
+    };
+    return (
+      <div>
+        <div style={section}>
+          <span style={label}>Sound effect</span>
+          <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
+            {m.soundId}
+            {m.muted ? <span style={{ color: "#9A9AA3", fontWeight: 400 }}> (muted)</span> : null}
+            {added ? <span style={{ color: "#9A9AA3", fontWeight: 400 }}> (added)</span> : null}
+          </div>
+          <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+            {/* The WORD, not a timecode: that is what the doc stores, and it
+                is why the effect survives the next re-cut (the schema's
+                recut-immune note). Drag the diamond to move it. */}
+            anchored to word {m.word} · drag the diamond to retime
+          </div>
+        </div>
+        <div style={section}>
+          <div style={row}>
+            <span style={label}>Sound</span>
+            <select
+              data-testid="sfx-sound"
+              style={numberInput}
+              value={m.soundId}
+              onChange={(e) => patch({ soundId: e.target.value })}
+            >
+              {soundOptions(sfxLibrary, m.soundId)}
+            </select>
+          </div>
+          <button
+            data-testid="sfx-preview"
+            style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}
+            onClick={() => {
+              blurActive();
+              previewSound(m.soundId);
+            }}
+          >
+            ▸ Hear it
+          </button>
+        </div>
+        <div style={section}>
+          {/* One scrub is one undo step (the B5 coalesce rule), and the value
+              is the PLACEMENT's multiplier — the sound's own `gain` multiplies
+              on top, once, at resolve time (`resolveSfxCues`). */}
+          <div style={row}>
+            <span style={label}>
+              gain{"  "}
+              <span style={{ color: "#EDEDF2" }}>{m.gain.toFixed(2)}×</span>
+            </span>
+            <input
+              type="range"
+              data-testid="sfx-gain-slider"
+              min={0}
+              max={2}
+              step={0.05}
+              value={m.gain}
+              onChange={(e) => patch({ gain: Number(e.target.value) }, `sfx:${m.key}:gain`)}
+            />
+          </div>
+        </div>
+        <div style={section}>
+          {added ? (
+            // No mute for an added placement: there is no plan entry left
+            // behind for a ghost to negate, so deleting it splices the record
+            // out (⌘Z is the way back, like every other edit here).
+            <button
+              data-testid="sfx-delete"
+              style={button}
+              onClick={() => {
+                blurActive();
+                edits.removeSfxAdded(m.key);
+              }}
+            >
+              Delete this sound
+            </button>
+          ) : m.muted ? (
+            <>
+              <button
+                data-testid="sfx-restore"
+                style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}
+                onClick={() => {
+                  blurActive();
+                  edits.restoreSfx(m.key);
+                }}
+              >
+                Restore this sound
+              </button>
+              <div style={{ fontSize: 12, color: "#9A9AA3", marginTop: 8 }}>
+                Muted: it stays in the plan and out of the render.
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Deleting a PLANNED placement IS a mute: production.json holds
+                  the model's plan and produce rewrites it every run, so the
+                  only way to remove one is to negate it — which is also what
+                  keeps it restorable (the `hideScene` contract). */}
+              <button
+                data-testid="sfx-mute"
+                style={button}
+                onClick={() => {
+                  blurActive();
+                  edits.muteSfx(m.key);
+                }}
+              >
+                Delete this sound
+              </button>
+              <div style={{ fontSize: 12, color: "#9A9AA3", marginTop: 8 }}>
+                It stays in the lane as a ghost you can restore.
+              </div>
+            </>
+          )}
+        </div>
+        <SfxAddSection edits={edits} library={sfxLibrary} wordAtPlayhead={sfxWordAtPlayhead} />
+      </div>
+    );
+  }
+
   if (selection?.elementId && cue) {
     const elementId = selection.elementId;
     const transform = cue.elements?.[elementId] ?? {};
@@ -1357,6 +1647,14 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         ) : null}
       </div>
+      {sfxEnabled ? (
+        // The palette lives on the no-selection panel beside the global
+        // Captions switch, because "add a sound" is a decision about the whole
+        // video rather than about the selected scene — and it is the one
+        // surface `sfx.added` placements come from. Gated on the production
+        // actually having a plan (the prop's own doc).
+        <SfxAddSection edits={edits} library={sfxLibrary} wordAtPlayhead={sfxWordAtPlayhead} />
+      ) : null}
       {producer || totals ? (
         <div style={section} data-testid="run-info">
           {/* Provenance and cost (R21 §104) — the same accounting report.txt
