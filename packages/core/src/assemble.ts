@@ -157,6 +157,38 @@ export function sfxStagedFile(sound: { id: string; file: string }): string {
 }
 
 /**
+ * Scene id → the output second that scene STARTS on, the scene-timing context
+ * `resolveSfxCues` places a scene-anchored placement against (2026-08-29).
+ *
+ * Built from the FINAL cue list — after `applyOverrides`, the splits, the
+ * pinned-timing reclamp and the hidden-cue drop — because that is the only
+ * list that knows where the user actually put the graphic. Feeding it the
+ * producer's raw scenes would reintroduce the exact field failure the scene
+ * link exists to fix.
+ *
+ * Keyed on the ROOT id (`splitCues` mints a second half as `<root>@<split
+ * id>`) and keeping the EARLIEST start, because a sound marks an ENTRANCE: a
+ * half the user split off later is the same graphic continuing, not a second
+ * appearance. A hidden scene is absent from the cues and therefore from this
+ * map, which is what makes "scene gone" a fact the resolver can report.
+ *
+ * Pure and cue-shaped rather than `SceneCue`-typed so the EDITOR can build the
+ * same map from the cue list its player is drawing — one implementation, or
+ * the diamond and the render's cue disagree about where scene-3 starts.
+ */
+export function sceneStartSeconds(
+  cues: readonly { id: string; startSec: number }[],
+): Map<string, number> {
+  const starts = new Map<string, number>();
+  for (const c of cues) {
+    const root = c.id.split("@")[0]!;
+    const prev = starts.get(root);
+    if (prev === undefined || c.startSec < prev) starts.set(root, c.startSec);
+  }
+  return starts;
+}
+
+/**
  * Word-anchored SFX placements → output-timed cues, the `assembleScenes`
  * contract for a track of instants rather than spans (PHASE1 §5).
  *
@@ -173,15 +205,32 @@ export function sfxStagedFile(sound: { id: string; file: string }): string {
  * so the whole matrix is testable without writing mp3s to a tmp dir. The
  * default assumes present: a caller that cannot see a filesystem has no basis
  * for dropping anything.
+ *
+ * `sceneStarts` is the other injected seam (`sceneStartSeconds` builds it):
+ * a placement carrying a `sceneId` fires at that scene's FINAL start — the
+ * user's moves and trims already in it — instead of at the word the model
+ * rationalised it against. Defaults to empty, which is honest rather than
+ * silent: with no scene context every scene link reports "scene gone" and
+ * falls back to its word, which is exactly what happens when the scene really
+ * is gone.
+ *
+ * Not every entry in `dropped` is a drop. "scene gone" is an ISSUE — the cue
+ * is still emitted, on the word anchor — and is named in the same list so the
+ * console and report.txt say why the effect moved (`SfxDropReasonSchema` owns
+ * the distinction, and `DROP_REASONS` keeps it out of the casualty count).
  */
 export function resolveSfxCues(
   placements: readonly SfxPlacement[],
   transcript: Transcript,
   map: TimeMap,
   sounds: readonly LoadedSfxSound[],
-  opts: { exists?: (absPath: string) => boolean } = {},
+  opts: {
+    exists?: (absPath: string) => boolean;
+    sceneStarts?: ReadonlyMap<string, number>;
+  } = {},
 ): { cues: SfxCue[]; dropped: SfxValidationIssue[] } {
   const exists = opts.exists ?? (() => true);
+  const sceneStarts = opts.sceneStarts ?? new Map<string, number>();
   const byId = new Map(sounds.map((s) => [s.id, s]));
   const cues: SfxCue[] = [];
   const dropped: SfxValidationIssue[] = [];
@@ -208,33 +257,55 @@ export function resolveSfxCues(
       });
       continue;
     }
-    const word = transcript.words[p.word];
-    if (!word) {
-      dropped.push({
-        placement: i,
-        reason: "outside transcript",
-        issue: `word ${p.word} is beyond this transcript (${transcript.words.length} words)`,
-      });
-      continue;
-    }
-    // The cut check, `assembleScenes`' rule for a single anchor: a scene whose
-    // words were cut is dropped rather than slid to the nearest kept instant,
-    // and an effect is even less forgiving — it would fire over speech that
-    // never motivated it.
-    const mapped = map.mapWord(word);
-    if (mapped === null) {
-      dropped.push({
-        placement: i,
-        reason: "cut word",
-        issue: `"${p.soundId}" was anchored to word ${p.word} ("${word.text}"), which this cut removed`,
-      });
-      continue;
+    // The SCENE anchor outranks the word (field report, 2026-08-29): a sound
+    // placed "as the TitleCard enters" has to follow the card when the user
+    // moves or trims it, and the map already carries the scene's final start.
+    // The word passes below are SKIPPED when it resolves, deliberately — the
+    // graphic is on screen whether or not the speech that motivated it
+    // survived the cut, so a cut-word drop here would silence an effect that
+    // has a perfectly good instant to fire on.
+    let atSec = p.sceneId === undefined ? undefined : sceneStarts.get(p.sceneId);
+    if (atSec === undefined) {
+      if (p.sceneId !== undefined) {
+        // An ISSUE, not a drop: `word` is required precisely so a placement
+        // outlives the scene it was synced to (deleted, hidden or renumbered
+        // by a re-plan are all normal). Printed so report.txt says why the
+        // whoosh is back on the speech.
+        dropped.push({
+          placement: i,
+          reason: "scene gone",
+          issue: `"${p.soundId}" scene ${p.sceneId} gone — using word anchor`,
+        });
+      }
+      const word = transcript.words[p.word];
+      if (!word) {
+        dropped.push({
+          placement: i,
+          reason: "outside transcript",
+          issue: `word ${p.word} is beyond this transcript (${transcript.words.length} words)`,
+        });
+        continue;
+      }
+      // The cut check, `assembleScenes`' rule for a single anchor: a scene whose
+      // words were cut is dropped rather than slid to the nearest kept instant,
+      // and an effect is even less forgiving — it would fire over speech that
+      // never motivated it.
+      const mapped = map.mapWord(word);
+      if (mapped === null) {
+        dropped.push({
+          placement: i,
+          reason: "cut word",
+          issue: `"${p.soundId}" was anchored to word ${p.word} ("${word.text}"), which this cut removed`,
+        });
+        continue;
+      }
+      // The word's START: the effect fires as the word lands, which is what
+      // the model was asked to place ("the effect fires at that word").
+      atSec = mapped.start;
     }
     cues.push({
       soundFile: sfxStagedFile(sound),
-      // The word's START: the effect fires as the word lands, which is what
-      // the model was asked to place ("the effect fires at that word").
-      atSec: mapped.start,
+      atSec,
       // ONE multiplication, here — the renderer receives a number and does no
       // mixing arithmetic of its own, so what the editor shows as a gain and
       // what the render plays can never disagree.

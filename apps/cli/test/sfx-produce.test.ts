@@ -27,11 +27,16 @@ const hasFfmpeg = (() => {
 
 interface Props {
   sfxCues?: Array<{ soundFile: string; atSec: number; gain: number }>;
+  /** The resolved scene windows — where a scene-anchored cue must land. */
+  sceneCues?: Array<{ id: string; startSec: number; endSec: number }>;
 }
 interface Artefacts {
   workdir: string;
   production: {
-    sfx?: { level: string; placements: Array<{ soundId: string; word: number; gain?: number }> };
+    sfx?: {
+      level: string;
+      placements: Array<{ soundId: string; word: number; gain?: number; sceneId?: string }>;
+    };
   };
   props: Props;
   report: string;
@@ -262,6 +267,122 @@ describe.skipIf(!hasFfmpeg)("--sfx end to end", () => {
       // The user's lost work costs a warning, never the run or the rest of the
       // sound design.
       expect(replay.props.sfxCues).toEqual(first.props.sfxCues);
+    },
+    180_000,
+  );
+
+  /**
+   * The scene anchor end to end (field report, 2026-08-29): a whoosh
+   * rationalised "as the TitleCard enters" used to fire at a WORD, so the
+   * moment the user moved the card in the editor the sound stayed behind.
+   *
+   * Driven through the `--scenes` replay because that IS the editor's Render
+   * argv: a pinned scene plan plus overrides.json, which is exactly the shape
+   * the field failure arrived in.
+   */
+  it(
+    "a scene-anchored placement follows the scene when the user retimes it",
+    async () => {
+      const first = await run({ sfx: true, sfxLevel: "meme" }, "work-scene");
+      const planned = first.production.sfx!.placements;
+      expect(planned.length).toBeGreaterThanOrEqual(1);
+
+      // The scene the sound will be linked to, pinned the way the editor pins
+      // a reviewed plan. Anchored to words 5–7, deliberately NOT to the word
+      // the linked placement sits on: with the two coinciding, "followed the
+      // scene" and "stayed on its word" would be the same number and the test
+      // would pass without the feature (it did, at anchor 2–4).
+      const scenesPath = join(dir, "scenes-linked.json");
+      writeFileSync(
+        scenesPath,
+        JSON.stringify([
+          {
+            id: "scene-0",
+            anchor: { startWord: 5, endWord: 7 },
+            layout: "pip-bubble",
+            component: "TitleCard",
+            props: { title: "THE POINT" },
+            overrides: {},
+          },
+        ]),
+      );
+      // The link itself, written into the plan the replay carries forward —
+      // production.json is where `sceneId` lives, and `priorSfxPlan` parses it
+      // back out through `ProductionSfxSchema`.
+      const productionPath = join(first.workdir, "production.json");
+      const doc = JSON.parse(readFileSync(productionPath, "utf8")) as Record<string, unknown>;
+      const sfx = doc.sfx as Artefacts["production"]["sfx"];
+      const linked = sfx!.placements[0]!;
+      linked.sceneId = "scene-0";
+      writeFileSync(productionPath, JSON.stringify(doc));
+
+      const asPlanned = await run(
+        { sfx: true, sfxLevel: "meme", scenes: scenesPath, produce: false },
+        "work-scene",
+      );
+      const sceneAt = (a: Artefacts): number =>
+        a.props.sceneCues!.find((c) => c.id === "scene-0")!.startSec;
+      const cueFor = (a: Artefacts): number => {
+        const file = `sfx/${linked.soundId}`;
+        return a.props.sfxCues!.find((c) => c.soundFile.startsWith(file))!.atSec;
+      };
+      // Already the SCENE's instant, not the word's — the link is live before
+      // anybody edits anything. The second assertion is what stops the first
+      // from passing vacuously: `first` resolved this same placement with NO
+      // link, on the same cut and the same clock, so its instant is the WORD's
+      // and the two must not be the same number.
+      expect(cueFor(asPlanned)).toBeCloseTo(sceneAt(asPlanned), 5);
+      expect(cueFor(first)).not.toBeCloseTo(sceneAt(asPlanned), 3);
+      expect(asPlanned.logs).not.toContain("gone — using word anchor");
+
+      // Now the gesture that used to break it: the user drags the scene.
+      const moved = sceneAt(asPlanned) + 2;
+      writeFileSync(
+        join(first.workdir, "overrides.json"),
+        JSON.stringify({
+          scenes: { "scene-0": { timing: { startSec: moved, endSec: moved + 2 } } },
+        }),
+      );
+      const retimed = await run(
+        { sfx: true, sfxLevel: "meme", scenes: scenesPath, produce: false },
+        "work-scene",
+      );
+      // The scene really moved…
+      expect(sceneAt(retimed)).toBeCloseTo(moved, 5);
+      expect(sceneAt(retimed)).not.toBeCloseTo(sceneAt(asPlanned), 3);
+      // …and the sound went with it. This is the whole feature.
+      expect(cueFor(retimed)).toBeCloseTo(sceneAt(retimed), 5);
+      // production.json still stores the MODEL's plan — a word anchor and the
+      // link, never the resolved second (the form that survives a re-cut).
+      expect(retimed.production.sfx!.placements[0]).toEqual(linked);
+    },
+    180_000,
+  );
+
+  it(
+    "a scene-anchored placement falls back to its word, loudly, when the scene is gone",
+    async () => {
+      const first = await run({ sfx: true, sfxLevel: "meme" }, "work-scene-gone");
+      const productionPath = join(first.workdir, "production.json");
+      const doc = JSON.parse(readFileSync(productionPath, "utf8")) as Record<string, unknown>;
+      const sfx = doc.sfx as Artefacts["production"]["sfx"];
+      // A scene id no plan will ever have — a deleted or re-planned graphic
+      // reaches the resolver looking exactly like this.
+      sfx!.placements[0]!.sceneId = "scene-gone";
+      writeFileSync(productionPath, JSON.stringify(doc));
+
+      const scenesPath = join(dir, "scenes-reviewed.json");
+      writeFileSync(scenesPath, "[]");
+      const replay = await run(
+        { sfx: true, sfxLevel: "meme", scenes: scenesPath, produce: false },
+        "work-scene-gone",
+      );
+      expect(replay.logs).toContain('scene scene-gone gone — using word anchor');
+      // The sound is NOT lost: `word` is required precisely so a broken link
+      // costs the sync intent and nothing else, and the cue list is unchanged.
+      expect(replay.props.sfxCues).toEqual(first.props.sfxCues);
+      // …and the accounting does not price the issue as a casualty.
+      expect(replay.report).toMatch(/sfx: (\d+) of \1 planned placed \(level meme\)/);
     },
     180_000,
   );

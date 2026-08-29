@@ -26,6 +26,11 @@ export interface SfxPlanPlacement {
    * `words` are in, never `/api/transcript`'s raw one (that route's header
    * owns the argument). */
   word: number;
+  /** The scene whose ENTRANCE this sound marks, when it has one — the marker
+   * then sits at that scene's LIVE start rather than at its word
+   * (`SfxPlacementSchema` owns the full argument). Absent on every plan
+   * written before 2026-08-29, which is why nothing here may require it. */
+  sceneId?: string;
   gain?: number;
   rationale?: string;
 }
@@ -75,6 +80,16 @@ export interface SfxMarker {
   muted: boolean;
   /** Output seconds, through the same clock the ruler draws. */
   atSec: number;
+  /**
+   * Set exactly when this marker is POSITIONED BY a scene: the link is live
+   * and that scene is on the timeline, so `atSec` is its start rather than
+   * the word's. Absent covers all three of the other cases — no link, a link
+   * the user broke by dragging (`applySfxOverrides`' rule, mirrored below),
+   * and a link whose scene is gone (which falls back to the word here exactly
+   * as `resolveSfxCues` does). So a surface reading this can say "follows
+   * scene-3" without having to re-check whether it really does.
+   */
+  sceneId?: string;
   /**
    * The PLAN's own values for this placement, absent on an added one. The
    * clear-override rule needs them: an edit that restates the plan is still an
@@ -153,11 +168,20 @@ export function nearestSfxWord(anchors: readonly SfxWordAnchor[], sec: number): 
  * would promise an effect the render will not play (the Timeline's own
  * no-spans rule — "skipping the seam entirely is safer than a parked,
  * misleading target").
+ *
+ * `sceneStarts` is the LIVE scene positions (`sceneStartSeconds` over the cue
+ * list the player is drawing, so the user's in-session move or trim is
+ * already in it): a placement with a `sceneId` draws at its scene's start, not
+ * at its word, which is the whole point of the link — the diamond has to move
+ * WITH the graphic, not after the next produce. Defaults to empty, and an
+ * empty map behaves like every scene being gone: back to the word anchor,
+ * the same fallback `resolveSfxCues` takes.
  */
 export function sfxLaneMarkers(
   plan: SfxPlan | null,
   sfx: OverrideDoc["sfx"],
   anchors: readonly SfxWordAnchor[],
+  sceneStarts: ReadonlyMap<string, number> = new Map(),
 ): SfxMarker[] {
   if (plan === null) return [];
   const atSec = new Map(anchors.map((a) => [a.word, a.atSec]));
@@ -171,7 +195,19 @@ export function sfxLaneMarkers(
     const edit = claimed.has(key) ? undefined : sfx?.edits[key];
     claimed.add(key);
     const word = edit?.word ?? p.word;
-    const at = atSec.get(word);
+    // The scene link, mirrored from `applySfxOverrides` (that function's
+    // comment owns the why): an explicit retime BREAKS it, so a dragged
+    // marker stays where the user dropped it instead of snapping back to the
+    // graphic. Mirrored rather than shared because the two sides answer
+    // different questions — the render's is "where does this fire", the
+    // lane's is "where do I draw it" — and they must agree, which is what the
+    // paired tests pin.
+    const sceneId = edit?.word !== undefined ? undefined : p.sceneId;
+    const sceneAt = sceneId === undefined ? undefined : sceneStarts.get(sceneId);
+    // A scene that is gone falls back to the word, `resolveSfxCues`' rule:
+    // the word anchor is required precisely so nothing is orphaned by a
+    // deleted graphic.
+    const at = sceneAt ?? atSec.get(word);
     if (at === undefined) continue;
     markers.push({
       key,
@@ -181,6 +217,8 @@ export function sfxLaneMarkers(
       gain: edit?.gain ?? p.gain ?? 1,
       muted: edit?.muted === true,
       atSec: at,
+      // Only when the scene is what PUT it there (see the field's doc).
+      ...(sceneAt !== undefined && sceneId !== undefined ? { sceneId } : {}),
       planned: {
         soundId: p.soundId,
         word: p.word,

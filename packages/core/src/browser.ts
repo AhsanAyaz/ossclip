@@ -11,6 +11,13 @@ export * from "./overrides";
 // The editor derives its plain takes with the SAME function the pipeline
 // uses — a copy would drift and the two timelines would disagree.
 export * from "./fill";
+// The SFX lane positions scene-anchored markers off the SAME map produce
+// resolves their cues from (`resolveSfxCues`) — a second "where does scene-3
+// start" is how the editor's diamond and the render's cue would disagree.
+// `assemble.ts` is browser-safe (type imports plus `scene-registry`, already
+// on this surface), but only this one function is exposed: the rest of the
+// module is the pipeline's, not the bundle's.
+export { sceneStartSeconds } from "./assemble";
 export { ZOOM_MAX_SCALE, zoomScaleAt, type ZoomSegment } from "./zoom";
 // Pure geometry only — the ffmpeg/cache half lives in ./content-rect-detect
 // and must never enter the Remotion bundle.

@@ -121,6 +121,14 @@ export const ProductionSfxSchema = z.object({
       soundId: z.string(),
       /** Index into the REPAIRED transcript — word indices, never seconds. */
       word: z.number().int().nonnegative(),
+      /**
+       * The scene whose ENTRANCE this sound marks, when it has one
+       * (2026-08-29). Optional and absent-means-speech-synced, so every plan
+       * written before the field parses byte-identically. `word` above stays
+       * required beside it — it is the fallback when the scene is deleted or
+       * re-planned away (`SfxPlacementSchema` owns the full argument).
+       */
+      sceneId: z.string().optional(),
       gain: z.number().min(0).max(2).optional(),
       rationale: z.string().optional(),
     }),

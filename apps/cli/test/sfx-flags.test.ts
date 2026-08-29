@@ -72,7 +72,12 @@ describe("sfxCacheKey — §78: a change that changes the plan changes the key",
   it("changes with the prompt version", () => {
     // The one regenerate lever: an edited SFX prompt must not keep serving
     // plans the old one asked for.
-    expect(sfxCacheKey({ ...base, promptVersion: 2 })).not.toBe(sfxCacheKey(base));
+    // Derived from the CURRENT version, never a literal: a hardcoded `2` here
+    // stopped testing anything the day `SFX_PROMPT_VERSION` reached 2 — it
+    // compared the key against itself and passed for the wrong reason.
+    expect(sfxCacheKey({ ...base, promptVersion: SFX_PROMPT_VERSION + 1 })).not.toBe(
+      sfxCacheKey(base),
+    );
   });
 
   it("changes with the beat sheet it was planned against", () => {

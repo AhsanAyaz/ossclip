@@ -2,6 +2,10 @@ import { z } from "zod/v4";
 import type { Transcript } from "../schema";
 import { SFX_MEME_TAG, type LoadedSfxSound } from "../sfx-pack";
 import { cappedText, type BeatSheet } from "./beats";
+// The scene-id formula, imported rather than restated: the ids this prompt
+// offers must be the ones `generateScenes` actually mints (see
+// `momentSceneId`).
+import { momentSceneId } from "./scene-props";
 import type { LlmProvider } from "./provider";
 
 /**
@@ -27,6 +31,24 @@ export type SfxLevel = z.infer<typeof SfxLevelSchema>;
 export const SfxPlacementSchema = z.object({
   soundId: z.string(),
   word: z.number().int().nonnegative(),
+  /**
+   * The scene whose ENTRANCE this sound marks (field report, 2026-08-29).
+   *
+   * The failure it fixes: the model placed whooshes rationalised "as the
+   * TitleCard enters" but could only anchor them to WORDS, so the moment the
+   * user moved or trimmed that scene in the editor the graphic started
+   * somewhere else and the whoosh played over nothing. With the link stored,
+   * `resolveSfxCues` takes the scene's FINAL start — user timing overrides
+   * included — as the instant.
+   *
+   * `word` stays REQUIRED beside it, and that is the whole compatibility
+   * story: it is the speech-sync anchor for the sounds that have no scene,
+   * and the FALLBACK for the ones whose scene is deleted or re-planned away.
+   * A placement can therefore never be orphaned by a scene disappearing —
+   * `resolveSfxCues` reports "scene gone" and still fires it on its word.
+   * Optional, so every plan written before this field parses unchanged.
+   */
+  sceneId: z.string().optional(),
   /** Per-placement trim, multiplied by the sound's own gain at render time. */
   gain: z.number().min(0).max(2).optional(),
   rationale: cappedText(120).optional(),
@@ -49,7 +71,7 @@ export type SfxPlan = z.infer<typeof SfxPlanSchema>;
  * PRODUCER_PROMPT_VERSION and YOUTUBE_PROMPT_VERSION. An old cached plan must
  * not survive a new prompt.
  */
-export const SFX_PROMPT_VERSION = 1;
+export const SFX_PROMPT_VERSION = 2;
 
 /** Placements per minute of runtime, by level. */
 export const SFX_PER_MIN: Record<SfxLevel, number> = { subtle: 2, normal: 4, meme: 8 };
@@ -83,6 +105,13 @@ export const SFX_MIN_SPACING_SEC = 1.5;
  *  - "missing file": the library still knows the sound, but its file is gone
  *    (a user pack deleted between planning and a re-render) — distinct from
  *    "unknown sound", which is an id the library no longer has at all.
+ *
+ * "scene gone" is the ODD ONE OUT and the name is kept honest below: it is an
+ * ISSUE, never a drop. A placement whose `sceneId` names no scene keeps its
+ * required `word` anchor and still fires — the sync intent is lost, the sound
+ * is not. It lives in this enum because it travels the same cached
+ * `SfxValidationIssue[]` to disk, and is deliberately absent from
+ * `DROP_REASONS` so `formatSfxAccounting` never counts it as a casualty.
  */
 export const SfxDropReasonSchema = z.enum([
   "unknown sound",
@@ -93,10 +122,16 @@ export const SfxDropReasonSchema = z.enum([
   "invalid",
   "cut word",
   "missing file",
+  "scene gone",
 ]);
 export type SfxDropReason = z.infer<typeof SfxDropReasonSchema>;
 
-/** Fixed print order, so the accounting line is stable run to run. */
+/**
+ * Fixed print order, so the accounting line is stable run to run — and the
+ * BREAKDOWN vocabulary: a reason absent from this list costs no placement and
+ * so has no business in "N dropped: …". "scene gone" is the one such reason
+ * (see `SfxDropReasonSchema`); it still prints as its own warning line.
+ */
 const DROP_REASONS: SfxDropReason[] = [
   "cut word",
   "missing file",
@@ -128,6 +163,20 @@ export function eligibleSfxSounds(
 ): LoadedSfxSound[] {
   if (level === "meme") return [...sounds];
   return sounds.filter((s) => !s.tags.includes(SFX_MEME_TAG));
+}
+
+/**
+ * The scene ids a placement may anchor to: one per GRAPHIC moment, in the
+ * exact form `generateScenes` will mint (`momentSceneId`). Talking-head
+ * moments (`sceneKind === "none"`) become no scene at all, so an id for one
+ * would name nothing in production.json.
+ *
+ * ONE implementation, called by the prompt (which OFFERS the ids) and
+ * `normalizeSfxPlan` (which ENFORCES them) — `sfxBudget`'s rule: two copies
+ * is how the model gets shown a menu the deterministic pass then rejects.
+ */
+export function sfxSceneIds(sheet: BeatSheet): string[] {
+  return sheet.moments.flatMap((m, i) => (m.sceneKind === "none" ? [] : [momentSceneId(i)]));
 }
 
 /** Runtime in seconds, measured like beats.ts: first word start → last word end. */
@@ -178,6 +227,7 @@ Rules:
 - Effects punctuate; they do not score. Long stretches with no effect are correct.
 - Never two effects on top of each other — leave at least ${SFX_MIN_SPACING_SEC} seconds of speech between placements.
 - Sync with the graphics plan where it helps: a whoosh on the word a graphic enters on reads as one gesture.
+- When a sound marks a GRAPHIC APPEARING, also set "sceneId" to that moment's scene id (shown in brackets beside it). The effect then FOLLOWS that graphic if it is later moved or trimmed. Omit "sceneId" for speech-synced sounds — a sound that lands on what is being said is not a scene's sound. The anchor word is required either way.
 - Match the sound to what is being SAID, using its "when to use" line. A confirmation sound on a failure is worse than silence.
 - Respect the placement budget stated in the prompt. Fewer, better-placed effects beat hitting the number.`;
 
@@ -204,9 +254,12 @@ export function buildSfxUserPrompt(
   const { max, runtimeSec } = sfxBudget(transcript, level);
   const moments = sheet.moments
     .map(
-      (m) =>
+      (m, i) =>
         `- words [${m.startWord}..${m.endWord}] ${m.sceneKind === "none" ? "talking head" : m.sceneKind}` +
-        (m.sceneKind === "none" ? "" : `: "${m.onScreenCopy}"`) +
+        // The scene id, shown only for GRAPHIC moments because only they mint
+        // a scene (`sfxSceneIds`): offering an id beside "talking head" is
+        // offering an id `normalizeSfxPlan` would strip straight back off.
+        (m.sceneKind === "none" ? "" : ` [${momentSceneId(i)}]: "${m.onScreenCopy}"`) +
         ` — ${m.purpose}`,
     )
     .join("\n");
@@ -217,7 +270,8 @@ export function buildSfxUserPrompt(
     // The graphics plan sits above the transcript for the same reason the
     // framing brief does in beats.ts: the constraint is read before the
     // content it constrains.
-    `Graphics plan (hook: "${sheet.hook}") — a graphic ENTERS at its first word:\n${moments}\n\n` +
+    `Graphics plan (hook: "${sheet.hook}") — a graphic ENTERS at its first word, ` +
+    `and [scene-N] is the id to put in "sceneId" when a sound marks that entrance:\n${moments}\n\n` +
     `Word-indexed transcript (word indices refer to THIS list):\n${words}`
   );
 }
@@ -231,15 +285,26 @@ export function buildSfxUserPrompt(
  * Order matters: identity first (unknown id, meme gate), then position, then
  * the relational passes (spacing, budget) which only make sense once the
  * survivors are known and sorted.
+ *
+ * `sheet` is here for ONE pass — the scene link (`sceneId`) is checked against
+ * the ids the prompt actually offered (`sfxSceneIds`). Required rather than
+ * optional because every caller has the sheet in hand: an optional "no scene
+ * context" mode would silently pass hallucinated ids straight through to the
+ * resolver, which is the drift this gate exists to stop.
  */
 export function normalizeSfxPlan(
   plan: SfxPlan,
   transcript: Transcript,
   sounds: readonly LoadedSfxSound[],
   level: SfxLevel,
+  sheet: BeatSheet,
 ): { plan: SfxPlan; issues: SfxValidationIssue[] } {
   const issues: SfxValidationIssue[] = [];
   const byId = new Map(sounds.map((s) => [s.id, s]));
+  // The ids the prompt offered, so an id the model invented (or one left over
+  // from a sheet that has since changed) is caught here rather than reaching
+  // the resolver as a scene that was never planned.
+  const knownScenes = new Set(sfxSceneIds(sheet));
   const maxIndex = transcript.words.length - 1;
   const drop = (placement: number, reason: SfxDropReason, issue: string): void => {
     issues.push({ placement, reason, issue });
@@ -270,7 +335,25 @@ export function normalizeSfxPlan(
       drop(i, "outside transcript", `word ${p.word} beyond transcript (${Math.max(0, maxIndex)})`);
       continue;
     }
-    kept.push({ index: i, placement: p });
+    // The scene link, checked LAST because it is the only thing here that is
+    // not a drop: a `sceneId` naming no graphic moment is STRIPPED and the
+    // placement kept on its word. The word anchor is required precisely so a
+    // broken link costs the sync intent rather than the sound — the same
+    // fallback `resolveSfxCues` takes when a scene is gone by render time,
+    // and the reason this reason is not in `DROP_REASONS`.
+    let placement = p;
+    if (p.sceneId !== undefined && !knownScenes.has(p.sceneId)) {
+      const { sceneId: _unknown, ...withoutScene } = p;
+      placement = withoutScene;
+      issues.push({
+        placement: i,
+        reason: "scene gone",
+        issue:
+          `"${p.soundId}" names scene ${p.sceneId}, which this beat sheet has no graphic for — ` +
+          `keeping it on word ${p.word}`,
+      });
+    }
+    kept.push({ index: i, placement });
   }
 
   // Stable sort by anchor: two placements on the same word keep the model's
@@ -375,5 +458,8 @@ export async function generateSfxPlan(
     // getting it wrong costs a dropped placement, not a bad video.
     tier: "mechanical",
   });
-  return { ...normalizeSfxPlan(raw, transcript, sounds, level), planned: raw.placements.length };
+  return {
+    ...normalizeSfxPlan(raw, transcript, sounds, level, sheet),
+    planned: raw.placements.length,
+  };
 }

@@ -3214,6 +3214,32 @@ describe("GET /api/sfx/plan", () => {
     expect(body.words).toEqual(RAW_WORDS);
   });
 
+  it("carries a placement's sceneId through to the lane", async () => {
+    // The scene link (2026-08-29) is what puts the diamond on the graphic
+    // rather than on the word, and this route is the only path it takes into
+    // the editor. `ProductionSfxSchema` is the parse that guards the payload,
+    // so a field it did not know about would be silently stripped here.
+    const dir = await fixtureWorkdir();
+    await writeProduction(dir, {
+      transcript: { language: "en", words: RAW_WORDS },
+      sfx: {
+        level: "normal",
+        placements: [
+          { soundId: "whoosh-soft", word: 1, sceneId: "scene-0" },
+          { soundId: "ding", word: 4 },
+        ],
+      },
+    });
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    expect(body.sfx.placements).toEqual([
+      { soundId: "whoosh-soft", word: 1, sceneId: "scene-0" },
+      // …and a speech-synced placement stays speech-synced: no key invented.
+      { soundId: "ding", word: 4 },
+    ]);
+  });
+
   it("answers sfx:null for a production planned without --sfx, and still serves the words", async () => {
     const dir = await fixtureWorkdir();
     await writeProduction(dir, { transcript: { language: "en", words: RAW_WORDS } });

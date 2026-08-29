@@ -11,6 +11,24 @@ import {
   type FramingContext,
 } from "../framing";
 
+/**
+ * The id `generateScenes` mints for the scene a moment becomes.
+ *
+ * Exported because a SECOND caller depends on the formula now (2026-08-29):
+ * the SFX placement prompt offers these ids to the model so a whoosh can
+ * anchor to a graphic's ENTRANCE (`buildSfxUserPrompt`), and
+ * `normalizeSfxPlan` checks the ids that come back against them. Two copies
+ * of `scene-${i}` is exactly §154's two-copies failure — the prompt would
+ * offer ids the plan never mints, and every scene link would strip on
+ * arrival.
+ *
+ * The index is the MOMENT's, not a running scene counter: talking-head
+ * moments mint no scene, so scene ids are sparse by design.
+ */
+export function momentSceneId(momentIndex: number): string {
+  return `scene-${momentIndex}`;
+}
+
 export interface ScenePropsFailure {
   momentIndex: number;
   component: SceneComponentId;
@@ -186,7 +204,7 @@ export async function generateScenes(
       const fallbackTitle = moment.onScreenCopy.slice(0, 48) || "—";
       failures.push({ momentIndex: i, component, error: lastError, fellBackTo: "TitleCard" });
       scenes.push({
-        id: `scene-${i}`,
+        id: momentSceneId(i),
         anchor: { startWord: moment.startWord, endWord: moment.endWord },
         layout: SCENE_REGISTRY.TitleCard.defaultLayout,
         component: "TitleCard",
@@ -198,7 +216,7 @@ export async function generateScenes(
     }
 
     scenes.push({
-      id: `scene-${i}`,
+      id: momentSceneId(i),
       anchor: { startWord: moment.startWord, endWord: moment.endWord },
       layout,
       component,

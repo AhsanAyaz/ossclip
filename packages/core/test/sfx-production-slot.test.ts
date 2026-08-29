@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { ProductionSchema, ProductionSfxSchema } from "../src/schema";
 import { SfxPlacementSchema, normalizeSfxPlan } from "../src/producer/sfx";
+import type { BeatSheet } from "../src/producer/beats";
 import type { LoadedSfxSound } from "../src/sfx-pack";
 import type { Transcript } from "../src/schema";
+
+/** One graphic moment, so `scene-0` is a link `normalizeSfxPlan` accepts. */
+const sheet: BeatSheet = {
+  hook: "THE HOOK",
+  moments: [
+    { startWord: 0, endWord: 9, purpose: "open", onScreenCopy: "OPEN", sceneKind: "TitleCard" },
+  ],
+};
 
 /**
  * `production.json`'s `sfx` slot: an OPTIONAL field, and the copy of the
@@ -37,6 +46,10 @@ describe("ProductionSchema.sfx", () => {
         level: "meme",
         placements: [
           { soundId: "ding", word: 12 },
+          // The scene link rides the round trip: the editor reads this field
+          // back out of production.json through `/api/sfx/plan` to place the
+          // marker on the graphic rather than on the word.
+          { soundId: "whoosh-soft", word: 20, sceneId: "scene-0" },
           { soundId: "scratch", word: 40, gain: 0.6, rationale: "the pivot" },
         ],
       },
@@ -67,6 +80,27 @@ describe("ProductionSchema.sfx", () => {
     // if Phase 3 adds a field to one, this fails until it is added to both.
     const stored = Object.keys(ProductionSfxSchema.shape.placements.element.shape).sort();
     expect(stored).toEqual(Object.keys(SfxPlacementSchema.shape).sort());
+    // Named out loud as well as compared, so a field DELETED from both at
+    // once still trips this — `sceneId` is the one the editor and the
+    // resolver both read back off disk (2026-08-29).
+    expect(stored).toContain("sceneId");
+  });
+
+  it("keeps sceneId OPTIONAL — a pre-2026-08-29 plan has none", () => {
+    // Every plan on disk predates the field, and the whole compatibility
+    // claim is that they parse byte-identically.
+    const parsed = ProductionSfxSchema.parse({
+      level: "normal",
+      placements: [{ soundId: "ding", word: 12 }],
+    });
+    expect(parsed.placements[0]).toEqual({ soundId: "ding", word: 12 });
+    // …and a hand-edited non-string is refused, not coerced to one.
+    expect(() =>
+      ProductionSfxSchema.parse({
+        level: "normal",
+        placements: [{ soundId: "ding", word: 12, sceneId: 3 }],
+      }),
+    ).toThrow();
   });
 
   it("stores what normalizeSfxPlan actually produces", () => {
@@ -93,6 +127,7 @@ describe("ProductionSchema.sfx", () => {
       transcript,
       sounds,
       "normal",
+      sheet,
     );
     expect(() =>
       ProductionSfxSchema.parse({ level: "normal", placements: plan.placements }),

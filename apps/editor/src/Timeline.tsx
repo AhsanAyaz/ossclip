@@ -831,6 +831,17 @@ export const Timeline: React.FC<TimelineProps> = ({
             // placement patches its `sfx.edits` entry against the plan (so a
             // drag back onto the planned word clears the override), an ADDED
             // one just moves its own record.
+            //
+            // Dragging a SCENE-ANCHORED marker (`m.sceneId`) writes a `word`
+            // through this same door, which BREAKS the link
+            // (`applySfxOverrides` clears `sceneId` on any edit carrying a
+            // word) — the marker then stays where it was dropped instead of
+            // following the graphic. That is the intent: the user has just
+            // said where this fires, and an explicit position outranks the
+            // model's sync. The one way back is dragging it onto the PLANNED
+            // word, which clears the override entirely and so restores the
+            // plan whole — scene link included, so the marker returns to the
+            // graphic rather than to that word.
             if (m.kind === "added") edits.patchSfxAdded(m.key, { word: drag.word });
             else if (m.planned) edits.patchSfx(m.key, { word: drag.word }, m.planned);
           }

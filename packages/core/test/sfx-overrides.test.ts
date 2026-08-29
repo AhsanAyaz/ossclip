@@ -119,6 +119,61 @@ describe("applySfxOverrides (the SFX edit layer)", () => {
     expect(out.placements.filter((p) => p.word === 3)).toHaveLength(3);
   });
 
+  /**
+   * The scene link's edit rule (2026-08-29): an explicit user position
+   * outranks the model's inferred sync, so a retime CUTS the link — otherwise
+   * the dragged marker would snap back to the graphic on the next render and
+   * the drag would look like it never happened.
+   */
+  describe("the scene link", () => {
+    const linked: SfxPlannedPlacement[] = [
+      { soundId: "whoosh-soft", word: 3, sceneId: "scene-0" },
+      { soundId: "ding", word: 12, gain: 0.8, sceneId: "scene-2" },
+    ];
+
+    it("survives an untouched placement", () => {
+      expect(applySfxOverrides(linked, undefined).placements).toEqual(linked);
+    });
+
+    it("is CUT by a retime, and the field is gone rather than undefined", () => {
+      const out = applySfxOverrides(linked, doc({ edits: { "whoosh-soft@3": { word: 5 } } }));
+      const moved = out.placements.find((p) => p.soundId === "whoosh-soft")!;
+      expect(moved).toEqual({ soundId: "whoosh-soft", word: 5 });
+      expect("sceneId" in moved).toBe(false);
+      // The other placement's link is untouched — this is per placement.
+      expect(out.placements.find((p) => p.soundId === "ding")!.sceneId).toBe("scene-2");
+    });
+
+    it("SURVIVES a gain-, sound- or mute-only edit — none of them is a position", () => {
+      const gained = applySfxOverrides(linked, doc({ edits: { "ding@12": { gain: 0.2 } } }));
+      expect(gained.placements.find((p) => p.soundId === "ding")!.sceneId).toBe("scene-2");
+      const swapped = applySfxOverrides(
+        linked,
+        doc({ edits: { "ding@12": { soundId: "vine-boom" } } }),
+      );
+      expect(swapped.placements.find((p) => p.soundId === "vine-boom")!.sceneId).toBe("scene-2");
+      // A mute removes the placement entirely; restoring it must find the
+      // link intact, which it does because the plan is never rewritten.
+      const muted = applySfxOverrides(linked, doc({ edits: { "ding@12": { muted: true } } }));
+      expect(muted.placements.map((p) => p.sceneId)).toEqual(["scene-0"]);
+    });
+
+    it("keys the edit on (sound, word) regardless of the link", () => {
+      // `sfxPlacementKey` deliberately never took `sceneId` into it: the key
+      // has to survive the link being cut, or the retime that cuts it would
+      // orphan its own edit on the next run.
+      expect(sfxPlacementKey(linked[0]!)).toBe("whoosh-soft@3");
+    });
+
+    it("never invents a link on a placement the USER added", () => {
+      const out = applySfxOverrides(linked, doc({ added: [{ id: "u1", soundId: "pop", word: 8 }] }));
+      expect(out.placements.find((p) => p.soundId === "pop")).toEqual({
+        soundId: "pop",
+        word: 8,
+      });
+    });
+  });
+
   it("leaves the caller's plan array alone", () => {
     const before = JSON.stringify(plan);
     applySfxOverrides(plan, doc({ edits: { "ding@12": { word: 99, muted: true } } }));

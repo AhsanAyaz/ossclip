@@ -213,6 +213,116 @@ describe("sfxLaneMarkers", () => {
     );
     expect(markers.map((m) => m.key)).toEqual(["ding@1"]);
   });
+
+  /**
+   * The scene link in the lane (field report, 2026-08-29): the diamond has to
+   * sit on the GRAPHIC, and it has to move with it while the user drags the
+   * scene — which is why the positions come from the live cue list rather than
+   * from anything produce wrote.
+   */
+  describe("scene-anchored markers", () => {
+    const scenes = (entries: Array<[string, number]>) => new Map(entries);
+
+    it("draws at the scene's LIVE start, not at the anchor word", () => {
+      const markers = sfxLaneMarkers(
+        plan([{ soundId: "ding", word: 2, sceneId: "scene-0" }]),
+        undefined,
+        anchors,
+        scenes([["scene-0", 3.5]]),
+      );
+      expect(markers[0]!.atSec).toBe(3.5);
+      // The word is still what the doc stores and what a drag compares against.
+      expect(markers[0]!.word).toBe(2);
+      expect(markers[0]!.sceneId).toBe("scene-0");
+    });
+
+    it("MOVES when the scene moves — the in-session drag, before any render", () => {
+      const at = (start: number) =>
+        sfxLaneMarkers(
+          plan([{ soundId: "ding", word: 2, sceneId: "scene-0" }]),
+          undefined,
+          anchors,
+          scenes([["scene-0", start]]),
+        )[0]!.atSec;
+      expect(at(0.25)).toBe(0.25);
+      expect(at(4.75)).toBe(4.75);
+    });
+
+    it("falls back to the word when the scene is gone, and says so by omitting sceneId", () => {
+      // `resolveSfxCues`' own fallback, mirrored: the word anchor is required
+      // precisely so a deleted graphic costs the sync, not the sound.
+      const markers = sfxLaneMarkers(
+        plan([{ soundId: "ding", word: 2, sceneId: "scene-9" }]),
+        undefined,
+        anchors,
+        scenes([["scene-0", 3.5]]),
+      );
+      expect(markers[0]!.atSec).toBe(2);
+      expect(markers[0]!.sceneId).toBeUndefined();
+    });
+
+    it("no scene map at all is the same as every scene being gone", () => {
+      const markers = sfxLaneMarkers(
+        plan([{ soundId: "ding", word: 2, sceneId: "scene-0" }]),
+        undefined,
+        anchors,
+      );
+      expect(markers[0]!.atSec).toBe(2);
+      expect(markers[0]!.sceneId).toBeUndefined();
+    });
+
+    it("a RETIME breaks the link, so the dragged marker stays where it was dropped", () => {
+      // `applySfxOverrides` clears `sceneId` on any edit carrying a word; the
+      // lane must agree, or the diamond would snap back to the graphic and the
+      // drag would look like it never happened.
+      const markers = sfxLaneMarkers(
+        plan([{ soundId: "ding", word: 2, sceneId: "scene-0" }]),
+        docSfx({ edits: { "ding@2": { word: 4 } } }),
+        anchors,
+        scenes([["scene-0", 3.5]]),
+      );
+      expect(markers[0]!.atSec).toBe(4);
+      expect(markers[0]!.sceneId).toBeUndefined();
+    });
+
+    it("a gain- or mute-only edit leaves the link intact", () => {
+      const markers = sfxLaneMarkers(
+        plan([{ soundId: "ding", word: 2, sceneId: "scene-0" }]),
+        docSfx({ edits: { "ding@2": { gain: 0.2, muted: true } } }),
+        anchors,
+        scenes([["scene-0", 3.5]]),
+      );
+      expect(markers[0]).toMatchObject({ atSec: 3.5, sceneId: "scene-0", muted: true });
+    });
+
+    it("keeps a scene-anchored marker whose WORD the cut removed", () => {
+      // Words 2–3 are gone from `cutMap`, so the word path would drop this —
+      // but the graphic is on screen either way (`resolveSfxCues`' rule).
+      const markers = sfxLaneMarkers(
+        plan([{ soundId: "ding", word: 2, sceneId: "scene-0" }]),
+        undefined,
+        sfxWordAnchors(WORDS, cutMap()),
+        scenes([["scene-0", 1.5]]),
+      );
+      expect(markers.map((m) => m.atSec)).toEqual([1.5]);
+    });
+
+    it("sorts scene-anchored and word-anchored markers together, by time", () => {
+      const markers = sfxLaneMarkers(
+        plan([
+          { soundId: "ding", word: 4, sceneId: "scene-0" },
+          { soundId: "pop", word: 3 },
+        ]),
+        undefined,
+        anchors,
+        scenes([["scene-0", 1]]),
+      );
+      expect(markers.map((m) => [m.soundId, m.atSec])).toEqual([
+        ["ding", 1],
+        ["pop", 3],
+      ]);
+    });
+  });
 });
 
 describe("sfxAudioUrl", () => {

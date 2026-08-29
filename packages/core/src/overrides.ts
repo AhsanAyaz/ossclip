@@ -2792,12 +2792,28 @@ export function applySfxOverrides(
     // removes the PLACEMENT — `SceneOverrideSchema.hidden`'s contract for a
     // track of instants.
     if (edit.muted === true) continue;
-    placements.push({
+    const retimed = edit.word !== undefined;
+    const next: SfxPlannedPlacement = {
       ...p,
       ...(edit.soundId !== undefined ? { soundId: edit.soundId } : {}),
-      ...(edit.word !== undefined ? { word: edit.word } : {}),
+      ...(retimed ? { word: edit.word! } : {}),
       ...(edit.gain !== undefined ? { gain: edit.gain } : {}),
-    });
+    };
+    // An explicit retime BREAKS the scene link (2026-08-29). `sceneId` says
+    // "fire when this graphic enters" — an intent the MODEL inferred — and a
+    // user dragging the marker onto a word says "fire HERE". An explicit user
+    // position outranks an inferred sync, the same doctrine that lets a user
+    // cut outrank a cleanup veto and a user's own placement outrank the
+    // density budget above. Without this the marker would snap back to the
+    // graphic on the next render and the drag would look like it never
+    // happened.
+    //
+    // It is also why `sfxPlacementKey` stays `${soundId}@${word}` and never
+    // takes `sceneId` into it: the key has to survive the link being cut, and
+    // a re-plan that keeps the sound and the word keeps the edit regardless of
+    // whether it re-linked the scene.
+    if (retimed) delete next.sceneId;
+    placements.push(next);
   }
   for (const key of Object.keys(sfx.edits)) {
     if (!claimed.has(key)) dropped.push({ key, reason: "stale key" });
@@ -2808,6 +2824,10 @@ export function applySfxOverrides(
   // what makes the resolver, the stager and the accounting need no idea the
   // override layer exists. The `id` does not travel — it names the doc entry
   // the editor edits, and nothing downstream addresses a placement by name.
+  //
+  // No `sceneId` either, and `SfxAddedPlacementSchema` has no field for one:
+  // the user chose this word themselves, which is the same explicit-position
+  // fact the retime above cuts the link for.
   for (const add of sfx.added) {
     placements.push({
       soundId: add.soundId,

@@ -27,6 +27,7 @@ import {
   mapsClose,
   previewClockMappers,
   retimeForPreview,
+  sceneStartSeconds,
   type AppliedCaptionEdits,
   type LivePreviewClocks,
   type TimeMap,
@@ -1454,12 +1455,27 @@ export const App: React.FC = () => {
     }
     return sfxWordAnchors(words, map);
   }, [sfxPlan, liveRecut, renderProps]);
+  /**
+   * Scene id → its LIVE start second, for the scene-anchored markers
+   * (2026-08-29).
+   *
+   * `live.sceneCues` is the list the player is actually drawing — this
+   * session's moves, trims, splits and deletes already merged by the live
+   * memo — so a diamond follows its graphic AS the user drags it, not after
+   * the next produce. Produce builds the same map from ITS final cue list
+   * with the same function (`sceneStartSeconds`); two derivations of "where
+   * does scene-3 start" is how the preview and the render would disagree.
+   */
+  const sfxSceneStarts = useMemo(
+    () => sceneStartSeconds(live?.sceneCues ?? []),
+    [live],
+  );
   const sfxMarkers = useMemo(
     // `sfx: null` (no plan) yields no markers AND no lane — the Timeline prop
     // is null in that case, which is a different fact from an empty array
     // (see its prop doc).
-    () => sfxLaneMarkers(sfxPlan.sfx, edits.doc.sfx, sfxWords),
-    [sfxPlan.sfx, edits.doc.sfx, sfxWords],
+    () => sfxLaneMarkers(sfxPlan.sfx, edits.doc.sfx, sfxWords, sfxSceneStarts),
+    [sfxPlan.sfx, edits.doc.sfx, sfxWords, sfxSceneStarts],
   );
   // The selected marker, resolved off the SAME list the lane draws: a key
   // whose placement a re-plan (or a delete) removed simply resolves to null

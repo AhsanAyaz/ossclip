@@ -178,6 +178,9 @@ import {
   sfxLibraryHash,
   generateSfxPlan,
   resolveSfxCues,
+  // Scene id → final start second, the scene-anchored placements' clock
+  // (2026-08-29). Built from `sceneCues`, never from the raw plan.
+  sceneStartSeconds,
   // The user's layer over that plan (Phase 3), and the schema the carried
   // forward plan is parsed back through.
   applySfxOverrides,
@@ -4292,6 +4295,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // between planning and this render must cost the cue here, not a
       // Remotion 404 after the render has spent its minutes.
       exists: existsSync,
+      // The scene timing context, from `sceneCues` — the FINAL list, with the
+      // user's moves, trims, splits, pins and deletes already applied. That is
+      // the whole point of the scene link (2026-08-29): a whoosh placed "as
+      // the TitleCard enters" fired at a word, so moving the card in the
+      // editor left the sound behind. Reading the producer's raw `scenes`
+      // here instead would rebuild that bug exactly.
+      sceneStarts: sceneStartSeconds(sceneCues),
     });
     sfxCues = resolved.cues;
     sfxAllIssues = [...sfxIssues, ...resolved.dropped];

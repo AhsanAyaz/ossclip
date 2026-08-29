@@ -5,8 +5,10 @@ import type { LlmProvider, CallTier } from "../src/producer/provider";
 import type { BeatSheet } from "../src/producer/beats";
 import type { LoadedSfxSound } from "../src/sfx-pack";
 import { MockProvider } from "../src/producer/mock";
+import { momentSceneId } from "../src/producer/scene-props";
 import {
   SFX_MIN_SPACING_SEC,
+  SFX_SYSTEM,
   SfxPlanSchema,
   buildSfxUserPrompt,
   eligibleSfxSounds,
@@ -14,6 +16,7 @@ import {
   generateSfxPlan,
   normalizeSfxPlan,
   sfxBudget,
+  sfxSceneIds,
   type SfxLevel,
   type SfxPlan,
 } from "../src/producer/sfx";
@@ -86,7 +89,7 @@ describe("buildSfxUserPrompt", () => {
     const prompt = buildSfxUserPrompt(transcript, sheet, sounds, "normal");
     expect(prompt).toContain("- ding: use ding here");
     expect(prompt).toContain("- whoosh-soft: use whoosh-soft here");
-    expect(prompt).toContain('words [0..9] TitleCard: "OPEN"');
+    expect(prompt).toContain('words [0..9] TitleCard [scene-0]: "OPEN"');
     expect(prompt).toContain("words [10..19] talking head");
     expect(prompt).toContain('hook: "THE HOOK"');
     expect(prompt).toContain("[0]word0 [1]word1");
@@ -102,6 +105,27 @@ describe("buildSfxUserPrompt", () => {
     expect(buildSfxUserPrompt(transcript, sheet, sounds, "meme")).toContain("- scratch: use scratch here");
     expect(eligibleSfxSounds(sounds, "meme")).toHaveLength(3);
   });
+
+  it("offers a scene id beside GRAPHIC moments only, and says what it is for", () => {
+    // A talking-head moment mints no scene, so an id beside one would be an id
+    // `normalizeSfxPlan` strips straight back off.
+    const prompt = buildSfxUserPrompt(transcript, sheet, sounds, "normal");
+    expect(prompt).toContain("[scene-0]");
+    expect(prompt).not.toContain("[scene-1]");
+    expect(prompt).toContain('is the id to put in "sceneId"');
+    expect(SFX_SYSTEM).toContain("GRAPHIC APPEARING");
+  });
+});
+
+describe("sfxSceneIds", () => {
+  it("names the graphic moments only, in the form generateScenes mints", () => {
+    // The pin against §154's two-copies failure: this list and
+    // `momentSceneId` are the SAME formula, so the prompt can never offer an
+    // id the plan will not have.
+    expect(sfxSceneIds(sheet)).toEqual(["scene-0"]);
+    expect(sfxSceneIds(sheet)[0]).toBe(momentSceneId(0));
+    expect(sfxSceneIds({ hook: "h", moments: [] })).toEqual([]);
+  });
 });
 
 describe("normalizeSfxPlan", () => {
@@ -113,6 +137,7 @@ describe("normalizeSfxPlan", () => {
       transcript,
       sounds,
       "normal",
+      sheet,
     );
     expect(out.placements.map((p) => p.soundId)).toEqual(["ding"]);
     expect(issues).toEqual([
@@ -123,11 +148,11 @@ describe("normalizeSfxPlan", () => {
   it("gates meme sounds at every level below meme", () => {
     const p = plan({ soundId: "scratch", word: 0 });
     for (const level of ["subtle", "normal"] as SfxLevel[]) {
-      const { plan: out, issues } = normalizeSfxPlan(p, transcript, sounds, level);
+      const { plan: out, issues } = normalizeSfxPlan(p, transcript, sounds, level, sheet);
       expect(out.placements).toEqual([]);
       expect(issues[0]!.reason).toBe("meme level");
     }
-    const { plan: allowed, issues } = normalizeSfxPlan(p, transcript, sounds, "meme");
+    const { plan: allowed, issues } = normalizeSfxPlan(p, transcript, sounds, "meme", sheet);
     expect(allowed.placements).toHaveLength(1);
     expect(issues).toEqual([]);
   });
@@ -138,6 +163,7 @@ describe("normalizeSfxPlan", () => {
       transcript,
       sounds,
       "normal",
+      sheet,
     );
     expect(out.placements).toEqual([]);
     expect(issues[0]).toEqual({
@@ -151,7 +177,7 @@ describe("normalizeSfxPlan", () => {
     // Not reachable through SfxPlanSchema — this is the cached-plan path, where
     // the object arrives as JSON someone may have edited.
     const raw = { placements: [{ soundId: "ding", word: -1 }, { soundId: "ding", word: 2.5 }] } as SfxPlan;
-    const { plan: out, issues } = normalizeSfxPlan(raw, transcript, sounds, "normal");
+    const { plan: out, issues } = normalizeSfxPlan(raw, transcript, sounds, "normal", sheet);
     expect(out.placements).toEqual([]);
     expect(issues.map((i) => i.reason)).toEqual(["outside transcript", "outside transcript"]);
   });
@@ -168,6 +194,7 @@ describe("normalizeSfxPlan", () => {
       transcript,
       sounds,
       "normal",
+      sheet,
     );
     expect(out.placements.map((p) => p.word)).toEqual([0, 3]);
     expect(issues).toEqual([
@@ -187,6 +214,7 @@ describe("normalizeSfxPlan", () => {
       transcript,
       sounds,
       "normal",
+      sheet,
     );
     expect(out.placements.map((p) => p.word)).toEqual([0, 20, 40, 60]);
     expect(issues).toEqual([
@@ -205,6 +233,7 @@ describe("normalizeSfxPlan", () => {
       short,
       sounds,
       "normal",
+      sheet,
     );
     expect(out.placements.map((p) => p.word)).toEqual([0, 5]);
     expect(issues.map((i) => i.reason)).toEqual(["over budget"]);
@@ -214,7 +243,7 @@ describe("normalizeSfxPlan", () => {
     const raw = SfxPlanSchema.parse({
       placements: [{ soundId: "ding", word: 4, gain: 0.5, rationale: "the takeaway lands" }],
     });
-    expect(normalizeSfxPlan(raw, transcript, sounds, "normal").plan.placements[0]).toEqual({
+    expect(normalizeSfxPlan(raw, transcript, sounds, "normal", sheet).plan.placements[0]).toEqual({
       soundId: "ding",
       word: 4,
       gain: 0.5,
@@ -222,10 +251,44 @@ describe("normalizeSfxPlan", () => {
     });
   });
 
+  it("keeps a sceneId the beat sheet actually has", () => {
+    const raw = { placements: [{ soundId: "ding", word: 4, sceneId: "scene-0" }] } as SfxPlan;
+    const { plan: out, issues } = normalizeSfxPlan(raw, transcript, sounds, "normal", sheet);
+    expect(out.placements).toEqual([{ soundId: "ding", word: 4, sceneId: "scene-0" }]);
+    expect(issues).toEqual([]);
+  });
+
+  it("STRIPS an unknown sceneId and keeps the placement on its word", () => {
+    // The whole reason `word` stays required: a hallucinated (or re-planned
+    // away) scene costs the sync intent, never the sound. A drop here would
+    // silence an effect that has a perfectly good instant to fire on.
+    const raw = {
+      placements: [
+        { soundId: "ding", word: 4, sceneId: "scene-9" },
+        // `scene-1` is the TALKING-HEAD moment: a real index, no scene.
+        { soundId: "whoosh-soft", word: 20, sceneId: "scene-1" },
+      ],
+    } as SfxPlan;
+    const { plan: out, issues } = normalizeSfxPlan(raw, transcript, sounds, "normal", sheet);
+    expect(out.placements).toEqual([
+      { soundId: "ding", word: 4 },
+      { soundId: "whoosh-soft", word: 20 },
+    ]);
+    expect(issues.map((i) => [i.placement, i.reason])).toEqual([
+      [0, "scene gone"],
+      [1, "scene gone"],
+    ]);
+    expect(issues[0]!.issue).toContain("keeping it on word 4");
+    // An ISSUE, not a drop: the accounting must not price it as one.
+    expect(formatSfxAccounting(out.placements.length, 2, "normal", issues)).toBe(
+      "sfx: 2 of 2 planned placed (level normal)",
+    );
+  });
+
   it("never throws on an empty plan or an empty transcript", () => {
-    expect(normalizeSfxPlan(plan(), transcript, sounds, "normal").plan.placements).toEqual([]);
+    expect(normalizeSfxPlan(plan(), transcript, sounds, "normal", sheet).plan.placements).toEqual([]);
     const empty: Transcript = { language: "en", words: [] };
-    const { plan: out, issues } = normalizeSfxPlan(plan({ soundId: "ding", word: 0 }), empty, sounds, "meme");
+    const { plan: out, issues } = normalizeSfxPlan(plan({ soundId: "ding", word: 0 }), empty, sounds, "meme", sheet);
     expect(out.placements).toEqual([]);
     expect(issues[0]!.reason).toBe("outside transcript");
   });
