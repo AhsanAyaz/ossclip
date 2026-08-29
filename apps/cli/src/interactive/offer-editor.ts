@@ -11,7 +11,17 @@ import { renderCommand } from "./render";
  */
 export async function offerEditor(
   result: ProduceResult,
-  opts: { flag: boolean | undefined; port: number },
+  opts: {
+    flag: boolean | undefined;
+    port: number;
+    /**
+     * Whether the user TYPED `--editor-port`. Commander's 5174 default is not
+     * a choice anybody made, so the common case must be free to attach or step
+     * around a busy port; only a typed port is defended (edit-port.ts's
+     * `pinned`, and the `--port` half of the same rule in program.ts).
+     */
+    portPinned: boolean;
+  },
 ): Promise<void> {
   const pref: OpenEditorPref = loadConfig().openEditorAfterProduce ?? "ask";
   const decision = decideOpenEditor({
@@ -64,8 +74,23 @@ export async function offerEditor(
     );
     return;
   }
-  const server = await startEditServer(result.workdir, { port: opts.port, pageDir });
-  console.log(`▸ editor at ${server.url}`);
+  // The same busy-port ladder `ossclip edit` runs (edit-port.ts): a produce
+  // finishing into an already-open editor on THIS project attaches to it
+  // instead of dying on EADDRINUSE — which here would throw away the run's
+  // whole summary behind a stack trace. `liveEditPortDeps` reads the real
+  // `isInteractive()`, so the three-way prompt is available exactly where this
+  // offer already asks questions, and absent in a piped run.
+  const { openEditServer, liveEditPortDeps } = await import("../edit-port");
+  const opened = await openEditServer(
+    result.workdir,
+    { port: opts.port, pinned: opts.portPinned },
+    liveEditPortDeps((port) => startEditServer(result.workdir, { port, pageDir })),
+  );
+  if (opened.kind === "cancelled") return;
+  const url = opened.kind === "attached" ? opened.url : opened.server.url;
+  // The attach path already printed "▸ already open at …"; a second line
+  // underneath it would read as a second server.
+  if (opened.kind === "started") console.log(`▸ editor at ${url}`);
   const { openInBrowser } = await import("../open");
-  openInBrowser(server.url);
+  openInBrowser(url);
 }

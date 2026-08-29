@@ -29,6 +29,16 @@ vi.mock("../src/produce", async (importOriginal) => {
   return { ...actual, produce: produceSpy };
 });
 
+/**
+ * The end-of-run editor offer, stubbed: it is the one call in the action that
+ * would START A SERVER on a real port during this suite. Its own options are
+ * captured here for the same reason produce's are — `--editor-port`'s
+ * "did the user type it" bit only exists at THIS call site, so a parse-level
+ * test could not see it go missing.
+ */
+const offerEditorSpy = vi.fn(async () => {});
+vi.mock("../src/interactive/offer-editor", () => ({ offerEditor: offerEditorSpy }));
+
 const runProduce = async (argv: string[]): Promise<Record<string, unknown>> => {
   produceSpy.mockClear();
   const { buildProgram } = await import("../src/program");
@@ -51,5 +61,21 @@ describe("produce flag forwarding", () => {
   it("an untyped --resolution arrives undefined, so the config can supply it", async () => {
     const opts = await runProduce(["produce", "in.mp4", "--no-render"]);
     expect(opts.resolution).toBeUndefined();
+  });
+
+  it("commander's own 5174 does NOT count as a pinned --editor-port", async () => {
+    // Untyped means nobody chose that number, so a busy port must attach or
+    // bump rather than refuse (edit-port.ts's `pinned`). Reported as typed
+    // here, the common produce → editor path would end in an error instead of
+    // an open editor.
+    offerEditorSpy.mockClear();
+    await runProduce(["produce", "in.mp4", "--no-render", "--open-editor"]);
+    expect(offerEditorSpy.mock.calls[0]![1]).toMatchObject({ port: 5174, portPinned: false });
+  });
+
+  it("a typed --editor-port is pinned, and reaches the offer", async () => {
+    offerEditorSpy.mockClear();
+    await runProduce(["produce", "in.mp4", "--no-render", "--open-editor", "--editor-port", "5200"]);
+    expect(offerEditorSpy.mock.calls[0]![1]).toMatchObject({ port: 5200, portPinned: true });
   });
 });

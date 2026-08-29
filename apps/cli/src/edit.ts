@@ -81,6 +81,10 @@ import {
 // server startup — open.ts is node:child_process + node:path and pure command
 // building, with nothing to defer.
 import { loadEnvFiles } from "./env";
+// The identity endpoint's one spelling, shared with the CLI-side probe in
+// edit-port.ts (which imports only the TYPE of this module's server, so there
+// is no cycle and nothing interactive rides in here).
+import { EDIT_HEALTH_PATH, editHealthBody } from "./edit-health";
 import { revealInFileManager } from "./open";
 import { REVIEWED_SCENES_BASENAME, renderReplayArgs } from "./render-replay-args";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
@@ -146,6 +150,29 @@ export function resolveEditorPageDir(): string | null {
         statSync(join(b, "index.html")).mtimeMs - statSync(join(a, "index.html")).mtimeMs,
     );
   return candidates[0] ?? null;
+}
+
+/**
+ * This package's version for `/api/health`, read from the manifest exactly as
+ * `--version` does (R22 §113: never a literal, or it reports the number a
+ * developer typed). Memoized because it sits on a request path, and
+ * `undefined` when unreadable — the health body's `version` is optional
+ * precisely so an odd install still identifies itself as ossclip.
+ */
+let cachedVersion: string | undefined | null = null;
+function packageVersion(): string | undefined {
+  if (cachedVersion === null) {
+    try {
+      cachedVersion = (
+        JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+          version: string;
+        }
+      ).version;
+    } catch {
+      cachedVersion = undefined;
+    }
+  }
+  return cachedVersion;
 }
 
 /**
@@ -742,6 +769,18 @@ export async function startEditServer(
     void (async () => {
       try {
         const url = new URL(req.url ?? "/", "http://localhost");
+
+        if (url.pathname === EDIT_HEALTH_PATH && req.method === "GET") {
+          // Who is on this port (edit-health.ts owns the contract). This is
+          // what makes a second `ossclip edit` on the same project an ATTACH
+          // instead of an EADDRINUSE stack, and it answers with the CURRENT
+          // workdir — mutable since R17 §83, so a server whose project was
+          // switched from the page identifies as the project it is serving now.
+          return send(
+            200,
+            editHealthBody({ version: packageVersion(), workdir, pid: process.pid }),
+          );
+        }
 
         if (url.pathname === "/api/production" && req.method === "GET") {
           if (!workdir) {
@@ -2638,7 +2677,22 @@ export async function startEditServer(
     })();
   });
 
-  await new Promise<void>((r) => server.listen(opts.port ?? 5174, "127.0.0.1", r));
+  // REJECT on a failed bind, don't crash. Without the error listener an
+  // EADDRINUSE is an unhandled 'error' event on the server object, which is
+  // fatal to the whole process — that raw Node stack (plus the package
+  // manager's ELIFECYCLE after it) is exactly what a busy 5174 printed at
+  // users, and `openEditServer` (edit-port.ts) cannot offer to attach to the
+  // editor already running there unless the failure comes back as a rejection
+  // it can catch. The listener is removed on success so a LATER runtime error
+  // (a client resetting a connection) keeps whatever handling http gives it.
+  await new Promise<void>((res, rej) => {
+    const onError = (err: Error): void => rej(err);
+    server.once("error", onError);
+    server.listen(opts.port ?? 5174, "127.0.0.1", () => {
+      server.off("error", onError);
+      res();
+    });
+  });
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : (opts.port ?? 5174);
   return {

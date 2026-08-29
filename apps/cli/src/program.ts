@@ -793,7 +793,13 @@ export function buildProgram(): Command {
         // run does write. Reusing this path is what gives --review the edit
         // command's whole posture (resolveEditorPageDir's loud "run pnpm
         // build" degrade, startEditServer, openInBrowser) for free.
-        await offerEditor(result, { flag: openEditor, port: opts.editorPort });
+        await offerEditor(result, {
+          flag: openEditor,
+          port: opts.editorPort,
+          // Typed-only, like `edit`'s --port: commander's 5174 default is not
+          // a choice, so a busy port still attaches or bumps for it.
+          portPinned: command.getOptionValueSource("editorPort") === "cli",
+        });
         // Deliberately LAST — after the render summary and the editor offer —
         // so the one question ossclip ever asks is the last thing on screen.
         await maybeAskRating(telemetry);
@@ -988,7 +994,7 @@ export function buildProgram(): Command {
     .argument("[workdir]", "a work directory containing render-props.json")
     .option("--port <n>", "port to listen on", (v) => Number.parseInt(v, 10), 5174)
     .option("--no-open", "do not open a browser")
-    .action(async (workdir: string | undefined, opts) => {
+    .action(async (workdir: string | undefined, opts, command: Command) => {
       const { startEditServer, resolveEditorPageDir } = await import("./edit");
       // An npm install ships the page prebuilt (editor-dist/); a clone builds
       // it once with `pnpm build`. A server that starts fine but 404s every
@@ -1008,11 +1014,29 @@ export function buildProgram(): Command {
       const target =
         workdir === undefined ? undefined : await resolveWorkdirArgument(workdir, "edit");
 
-      const server = await startEditServer(target, { port: opts.port, pageDir });
-      console.log(`▸ editor at ${server.url}`);
+      // A busy port is not a crash. `openEditServer` owns the whole ladder —
+      // attach to our own editor already serving THIS project, prompt about
+      // one serving another, step around a stranger — and it needs to know
+      // whether the port was TYPED: someone who passes `--port` has a reason
+      // for that number (a bookmark, a tunnel), so their run refuses rather
+      // than silently landing somewhere else. `getOptionValueSource` is the
+      // same "did the user type it" test `--sort` uses.
+      const { openEditServer, liveEditPortDeps } = await import("./edit-port");
+      const opened = await openEditServer(
+        target ?? null,
+        { port: opts.port, pinned: command.getOptionValueSource("port") === "cli" },
+        liveEditPortDeps((port) => startEditServer(target, { port, pageDir })),
+      );
+      // The user picked "cancel" at the conflict prompt: nothing started,
+      // nothing to open, exit 0.
+      if (opened.kind === "cancelled") return;
+      const url = opened.kind === "attached" ? opened.url : opened.server.url;
+      // The attach path already printed "▸ already open at …" — saying
+      // "editor at" underneath it would read as a second server.
+      if (opened.kind === "started") console.log(`▸ editor at ${url}`);
       if (opts.open) {
         const { openInBrowser } = await import("./open");
-        openInBrowser(server.url);
+        openInBrowser(url);
       }
       // Fire-and-forget on purpose: the server keeps the process alive for
       // the request's lifetime, and awaiting here would put a metrics POST

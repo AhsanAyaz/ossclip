@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -10,6 +10,7 @@ import {
   type SfxLibrary,
 } from "@ossclip/core";
 import { startEditServer } from "../src/edit";
+import { EditHealthSchema } from "../src/edit-health";
 
 let close: (() => void) | undefined;
 afterEach(() => close?.());
@@ -85,6 +86,35 @@ describe("edit server", () => {
       cuts: [],
       cleanup: { reasons: {}, kept: [], dismissed: [] },
     });
+  });
+
+  it("identifies itself and its project on /api/health", async () => {
+    // The contract the port-conflict flow attaches on (edit-health.ts): a
+    // second `ossclip edit` on this same workdir must be able to recognise
+    // THIS server rather than dying on EADDRINUSE.
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/health`);
+    expect(res.status).toBe(200);
+    const body = EditHealthSchema.parse(await res.json());
+    expect(body.workdir).toBe(dir);
+    expect(body.pid).toBe(process.pid);
+    // Read from the manifest, never a literal (R22 §113) — so this asserts
+    // agreement with package.json rather than a number typed twice.
+    expect(body.version).toBe(
+      JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version,
+    );
+  });
+
+  it("reports the picker state on /api/health when no project is open", async () => {
+    // Null, not omitted: the flow compares workdirs, and a bare `ossclip edit`
+    // attaching to a server that HAS a project open would silently switch the
+    // user's project (R17 §83's mutable workdir).
+    const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const body = EditHealthSchema.parse(await (await fetch(`${server.url}/api/health`)).json());
+    expect(body.workdir).toBeNull();
   });
 
   it("saves overrides to disk", async () => {
