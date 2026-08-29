@@ -66,6 +66,21 @@ describe("whisperArgs", () => {
     ]);
   });
 
+  // whisper's TRANSLATE task: decode non-English speech straight to English
+  // text (2026-08-29). Distinct from `-l`, which only says what is being
+  // SPOKEN — a `-l ur` run emits Urdu script, which is the right answer for
+  // Urdu captions and the wrong one for an English-captioned short.
+  it("appends -tr when translate is set, alongside the language", () => {
+    const args = whisperArgs({ ...opts, language: "ur", translate: true }, "/w/audio.wav");
+    expect(args).toContain("-tr");
+    expect(args.slice(-3)).toEqual(["-l", "ur", "-tr"]);
+  });
+
+  it("passes no -tr when translate is unset or false — byte-identical to every prior run", () => {
+    expect(whisperArgs(opts, "/w/audio.wav")).not.toContain("-tr");
+    expect(whisperArgs({ ...opts, translate: false }, "/w/audio.wav")).not.toContain("-tr");
+  });
+
   // No prompt = byte-identical args — same contract as the -l conditional:
   // the dictionary must never perturb a run that has none (F4, 2026-08-16).
   it("passes no --prompt when the prompt is unset", () => {

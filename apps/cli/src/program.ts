@@ -379,6 +379,12 @@ export function buildProgram(): Command {
       "--whisper-language <code>",
       "transcription language code for a multilingual model, e.g. ur | de | auto (whisper defaults to en)",
     )
+    .option(
+      "--whisper-translate",
+      "translate the speech to ENGLISH captions instead of transcribing it verbatim " +
+        "(whisper's -tr; pair with --whisper-language for the SOURCE language)",
+      false,
+    )
     // COMMA-SEPARATED in one value, not variadic: a variadic option swallows
     // the optional positional [input] whenever the flag precedes the path,
     // and commander offers no way to give the positional priority.
@@ -666,6 +672,7 @@ export function buildProgram(): Command {
           repair: opts.repair,
           whisperModel: opts.whisperModel,
           whisperLanguage,
+          whisperTranslate: opts.whisperTranslate === true,
           // Split/trim/drop-empties (dictionaryFlag) — undefined stays
           // undefined so the config's dictionary can supply the default.
           dictionary: dictionaryFlag(opts.dictionary),
@@ -783,6 +790,12 @@ export function buildProgram(): Command {
       "--whisper-language <code>",
       "transcription language code for a multilingual model, e.g. ur | de | auto (whisper defaults to en)",
     )
+    .option(
+      "--whisper-translate",
+      "translate the speech to ENGLISH captions instead of transcribing it verbatim " +
+        "(whisper's -tr; pair with --whisper-language for the SOURCE language)",
+      false,
+    )
     .action(async (input: string, opts) => {
       const cleanup = CleanupLevelSchema.parse(opts.cleanup);
       const result = await produce(input, {
@@ -794,6 +807,7 @@ export function buildProgram(): Command {
         noiseDb: opts.noiseDb,
         whisperModel: opts.whisperModel,
         // Same guard as produce's: empty must error, not become a bare `-l`.
+        whisperTranslate: opts.whisperTranslate === true,
         whisperLanguage:
           opts.whisperLanguage !== undefined
             ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)

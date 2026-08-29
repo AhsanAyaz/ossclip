@@ -235,6 +235,16 @@ export interface WhisperOptions {
    * silently dropping the user's terms.
    */
   prompt?: string;
+  /**
+   * whisper's TRANSLATE task (`-tr`): decode non-English speech straight to
+   * ENGLISH text (2026-08-29). Orthogonal to `language`, which only says what
+   * is being SPOKEN — `-l ur` alone emits Urdu script, correct for Urdu
+   * captions and wrong for an English-captioned short. Pass both together:
+   * whisper still needs to know the source language to decode it well.
+   *
+   * Left unset, the spawned args stay byte-identical to every prior run.
+   */
+  translate?: boolean;
 }
 
 /**
@@ -261,6 +271,9 @@ export function whisperArgs(opts: WhisperOptions, wavPath: string): string[] {
     "--no-prints",
   ];
   if (opts.language !== undefined) args.push("-l", opts.language);
+  // AFTER `-l`: whisper reads the pair as "this language, translated", and
+  // keeping the order fixed is what makes the arg list assertable.
+  if (opts.translate === true) args.push("-tr");
   if (opts.prompt !== undefined) args.push("--prompt", opts.prompt);
   return args;
 }

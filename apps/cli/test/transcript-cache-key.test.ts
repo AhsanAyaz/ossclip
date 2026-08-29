@@ -20,6 +20,38 @@ describe("transcriptCacheReusable", () => {
     expect(v.reuse).toBe(true);
   });
 
+  it("re-transcribes when only TRANSLATE differs — the same trap, one flag over", () => {
+    // 2026-08-29: `-tr` changes the decoded TEXT (Urdu speech → English
+    // words), so a warm workdir would otherwise serve the Urdu-script
+    // transcript to a translate run and caption the short in the wrong
+    // language — the 2026-08-05 staleness, exactly.
+    const v = transcriptCacheReusable(
+      { model: "medium-urdu", language: "ur" },
+      { model: "medium-urdu", language: "ur", translate: true },
+      DEFAULT,
+    );
+    expect(v.reuse).toBe(false);
+  });
+
+  it("reuses when translate matches on both sides", () => {
+    expect(
+      transcriptCacheReusable(
+        { model: "medium-urdu", language: "ur", translate: true },
+        { model: "medium-urdu", language: "ur", translate: true },
+        DEFAULT,
+      ).reuse,
+    ).toBe(true);
+    // Absent and false are the same "no translation", so pre-flag key files
+    // still reuse under a non-translate request (the dictionary contract).
+    expect(
+      transcriptCacheReusable(
+        { model: "medium-urdu", language: "ur" },
+        { model: "medium-urdu", language: "ur", translate: false },
+        DEFAULT,
+      ).reuse,
+    ).toBe(true);
+  });
+
   it("re-transcribes when only the language differs — the motivating retry", () => {
     const v = transcriptCacheReusable(
       { model: "medium-urdu" },

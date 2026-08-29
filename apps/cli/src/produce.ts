@@ -261,6 +261,14 @@ export const TranscriptKeySchema = z.object({
    * runs) means "no biasing".
    */
   dictionary: z.array(z.string()).optional(),
+  /**
+   * Whether whisper ran its TRANSLATE task (`-tr`, 2026-08-29). It changes
+   * the decoded TEXT — Urdu speech comes back as English words — so it
+   * re-keys the cache exactly like the language does, or a warm workdir
+   * serves the Urdu-script transcript to a translate run. Absent (old key
+   * files) means "no translation", the `dictionary` contract.
+   */
+  translate: z.boolean().optional(),
 });
 export type TranscriptKey = z.infer<typeof TranscriptKeySchema>;
 
@@ -285,6 +293,9 @@ export function transcriptCacheReusable(
       // "" and absent both mean whisper's en default — program.ts rejects an
       // empty code, but a key file predating that guard must not wedge.
       (effective.language ?? "") === (requested.language ?? "") &&
+      // Absent and false are the same "no translation", so pre-flag key
+      // files reuse under a non-translate request.
+      (effective.translate ?? false) === (requested.translate ?? false) &&
       // ORDER-SENSITIVE by choice: the dictionary becomes whisper's --prompt
       // text verbatim, so a reordered list genuinely is a different decoder
       // input — treating it as equal would serve a transcript biased by a
@@ -542,6 +553,13 @@ export interface ProduceOptions {
    * decodes garbage (Urdu field test 2026-08-05).
    */
   whisperLanguage?: string;
+  /**
+   * `--whisper-translate`: whisper's TRANSLATE task (`-tr`) — non-English
+   * speech decoded straight to ENGLISH text. Distinct from
+   * `whisperLanguage`, which says what is SPOKEN; the two are passed
+   * together (whisper decodes better knowing the source language).
+   */
+  whisperTranslate?: boolean;
   /**
    * Vocabulary terms for this run (`--dictionary`, F4 2026-08-16), already
    * split/trimmed by the action. Wholesale beats the config's `dictionary`
@@ -2388,6 +2406,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const requestedKey: TranscriptKey = {
     model: requestedModel,
     ...(whisperLang.language !== undefined ? { language: whisperLang.language } : {}),
+    // Omitted when off, so a non-translate run's key stays byte-identical to
+    // every pre-flag key file (the dictionary posture).
+    ...(opts.whisperTranslate === true ? { translate: true } : {}),
     // Omitted when empty, not written as [] — pre-dictionary key files have
     // no `dictionary` at all, and transcriptCacheReusable reads absent and
     // empty as the same "no biasing", so old workdirs must not re-transcribe.
@@ -2458,6 +2479,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           language: requestedKey.language,
           // Vocabulary biasing (F4) — undefined for an empty dictionary, so
           // the spawned args stay byte-identical to every pre-dictionary run.
+          // From the KEY, like the language: whatever re-keys the cache is
+          // what actually ran, so the two can never disagree.
+          ...(requestedKey.translate === true ? { translate: true } : {}),
           prompt: whisperPromptFor(dictionary),
         },
         audioPath,
