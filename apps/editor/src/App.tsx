@@ -366,6 +366,16 @@ export const App: React.FC = () => {
   );
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Sidebar width (field report 2026-08-31): user-draggable, persisted as a
+  // per-browser convenience. Guarded read — storage can throw or be empty.
+  const [sidebarW, setSidebarW] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem("ossclip-sidebar-w"));
+      return Number.isFinite(v) && v >= 220 && v <= 560 ? v : 260;
+    } catch {
+      return 260;
+    }
+  });
   /**
    * ONE selection at a time across the two namespaces (Phase 4): picking a
    * scene or an element drops the SFX marker, and picking a marker drops the
@@ -2436,6 +2446,18 @@ export const App: React.FC = () => {
             ref={stageAreaRefCb}
             style={stageArea}
             onMouseDown={(e) => {
+              // Click-away deselects (field report 2026-08-31): a press on
+              // the empty dark area AROUND the player clears the selection —
+              // presses inside the stage keep their existing meanings
+              // (element select, pan), so this only fires when the target is
+              // outside the stage subtree. Same gesture as every canvas app.
+              if (
+                e.button === 0 &&
+                !e.altKey &&
+                !(e.target as HTMLElement).closest?.('[data-testid="stage"]')
+              ) {
+                selectScene(null);
+              }
               // View pan (§55b): Alt-drag or middle-drag moves the camera.
               // preventDefault kills the browser's middle-click autoscroll;
               // the Overlay ignores these presses, so no edit can start.
@@ -2553,7 +2575,53 @@ export const App: React.FC = () => {
             <span style={viewZoomHint}>⌥-drag pans</span>
           </div>
         </div>
-        <div style={sidebar}>
+        <div
+          data-testid="sidebar"
+          style={{ ...sidebar, width: sidebarW, position: "relative" }}
+          onMouseDown={(e) => {
+            // Click-away in the panel too (field report 2026-08-31): only a
+            // press on the container's OWN empty run (below the last
+            // section) clears — anything inside a section belongs to its
+            // controls.
+            if (e.target === e.currentTarget) selectScene(null);
+          }}
+        >
+          {/* Resize handle (field report 2026-08-31): drag the panel's left
+              edge. Width persists per browser as a convenience; failure to
+              read/write storage silently keeps the default. */}
+          <div
+            data-testid="sidebar-resize"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+              const onMove = (ev: PointerEvent): void => {
+                const w = Math.min(560, Math.max(220, window.innerWidth - ev.clientX));
+                setSidebarW(w);
+              };
+              const onUp = (ev: PointerEvent): void => {
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("pointerup", onUp);
+                try {
+                  const w = Math.min(560, Math.max(220, window.innerWidth - ev.clientX));
+                  localStorage.setItem("ossclip-sidebar-w", String(w));
+                } catch {
+                  // Storage unavailable (private window, blocked) — width
+                  // just resets next session.
+                }
+              };
+              window.addEventListener("pointermove", onMove);
+              window.addEventListener("pointerup", onUp);
+            }}
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: 6,
+              cursor: "col-resize",
+              zIndex: 4,
+            }}
+          />
           <Inspector
             selection={selection}
             cue={selectedCue}
@@ -2881,7 +2949,8 @@ const viewZoomHint: React.CSSProperties = {
 };
 
 const sidebar: React.CSSProperties = {
-  width: 260,
+  // Width comes from state (user-resizable, field report 2026-08-31); 260 is
+  // the historical default applied there.
   flexShrink: 0,
   borderLeft: "1px solid #1E1E24",
   background: "#111116",

@@ -1479,3 +1479,32 @@ test("color grade: picking a preset previews live and saves the doc-global overr
   const doc2 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   expect(doc2.colorGrade).toBe(false);
 });
+
+test("click-away deselects, and the sidebar resizes by its edge (field report 2026-08-31)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+
+  // Select a block — the Inspector leaves the global panel.
+  await selectBlockAt(page, page.locator('[data-testid^="timeline-block-"]').first());
+  await expect(page.getByText("Nothing selected — global tokens.")).toHaveCount(0);
+
+  // A press on the empty dark area AROUND the player clears the selection.
+  // The stage is centered, so a point just inside the stage area's left edge
+  // (vertically centered, clear of the zoom bar) is outside the stage box.
+  const area = (await page.getByTestId("stage").locator("..").locator("..").boundingBox())!;
+  await page.mouse.click(area.x + 8, area.y + area.height * 0.5);
+  await expect(page.getByText("Nothing selected — global tokens.")).toBeVisible();
+
+  // The sidebar's left edge drags to resize, and the width sticks.
+  const sidebar = page.getByTestId("sidebar");
+  const before = (await sidebar.boundingBox())!;
+  const handle = (await page.getByTestId("sidebar-resize").boundingBox())!;
+  await page.mouse.move(handle.x + 3, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x - 100, handle.y + handle.height / 2, { steps: 5 });
+  await page.mouse.up();
+  const after = (await sidebar.boundingBox())!;
+  expect(after.width).toBeGreaterThan(before.width + 50);
+});
