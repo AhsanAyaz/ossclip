@@ -118,11 +118,18 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
                   );
                   // User gain composes ON the fade. Boosts above 1 land in
                   // the render via allowAmplificationDuringRender below, and
-                  // in the Player via its own WebAudio gain node
-                  // (remotion/use-amplification) — preview and render agree.
+                  // in the Player via its WebAudio gain node — which is OFF
+                  // by default: without useWebAudioApi the preview path is
+                  // literally `element.volume = Math.min(volume, 1)`
+                  // (remotion/use-amplification, shouldUseTraditionalVolume),
+                  // so a 200% take sounded identical to 100% (field report
+                  // 2026-08-31). Enabled only when a boost exists — the
+                  // routed-through-AudioContext path is the exception, not
+                  // the default audio graph.
                   return fade * gainAtSec(gain, (from + f) / fps);
                 }}
                 allowAmplificationDuringRender
+                useWebAudioApi={gain.some((g) => g.gain > 1)}
               />
             </AbsoluteFill>
           </Sequence>
