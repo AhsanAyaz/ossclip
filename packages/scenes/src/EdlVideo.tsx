@@ -30,6 +30,11 @@ export interface EdlVideoProps {
    * and lets the backdrop through.
    */
   background?: string;
+  /**
+   * Per-window user gain (cue `video.volume`), output clock. Empty/absent =
+   * unity everywhere — the pre-feature tree, byte for byte.
+   */
+  gain?: readonly GainSegment[];
 }
 
 /**
@@ -37,6 +42,25 @@ export interface EdlVideoProps {
  * Jump cuts are concealed by alternating a slight punch-in whenever the
  * removed gap is long enough to produce a visible jump.
  */
+/** One window of user audio gain on the OUTPUT clock (cue windows). */
+export interface GainSegment {
+  startSec: number;
+  endSec: number;
+  gain: number;
+}
+
+/**
+ * The user gain at one output second — 1 outside every segment. Last match
+ * wins, mirroring how later cues paint over earlier ones; windows come from
+ * cues, which tile rather than overlap, so the rule is a tiebreak, not a
+ * feature.
+ */
+export function gainAtSec(segments: readonly GainSegment[], sec: number): number {
+  let g = 1;
+  for (const s of segments) if (sec >= s.startSec && sec < s.endSec) g = s.gain;
+  return g;
+}
+
 export const EdlVideo: React.FC<EdlVideoProps> = ({
   src,
   spans: rawSpans,
@@ -45,6 +69,7 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
   punchThresholdSec = 0.15,
   audioFadeSec = 0.01,
   background = "black",
+  gain = [],
 }) => {
   const { fps } = useVideoConfig();
 
@@ -86,12 +111,18 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
                   // for a portrait source, horizontal for a landscape one.
                   objectPosition: "var(--ossclip-obj-x, 50%) var(--ossclip-obj-y, 50%)",
                 }}
-                volume={(f) =>
-                  Math.max(
+                volume={(f) => {
+                  const fade = Math.max(
                     0,
                     Math.min(1, (f + 1) / fadeFrames, (durationInFrames - f) / fadeFrames),
-                  )
-                }
+                  );
+                  // User gain composes ON the fade. The preview's <video>
+                  // element caps at 1.0, so a boost only fully lands in the
+                  // render (allowAmplificationDuringRender below) — the same
+                  // documented fidelity limit as the SFX preview gain.
+                  return fade * gainAtSec(gain, (from + f) / fps);
+                }}
+                allowAmplificationDuringRender
               />
             </AbsoluteFill>
           </Sequence>

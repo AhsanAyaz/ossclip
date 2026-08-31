@@ -1527,3 +1527,30 @@ test("click-away also clears the transcript selection and its menu (field report
   await page.mouse.click(area.x + 8, area.y + area.height * 0.5);
   await expect(page.getByTestId("transcript-selection-menu")).toHaveCount(0);
 });
+
+test("per-take volume: the Audio slider writes video.volume and badges the block (2026-08-31)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  const take = page.locator('[data-testid^="timeline-block-take-"]').first();
+  const takeId = (await take.getAttribute("data-testid"))!.replace("timeline-block-", "");
+  await selectBlockAt(page, take);
+
+  const slider = page.getByTestId("volume-slider");
+  await expect(slider).toBeVisible();
+  await slider.fill("0.5");
+  // The badge appears where time lives; the control stays in the panel.
+  await expect(page.getByTestId(`volume-badge-${takeId}`)).toHaveText("50%");
+
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc.scenes[takeId].video.volume).toBeCloseTo(0.5, 6);
+
+  // Back to unity for the shared workdir — and the badge goes with it.
+  await slider.fill("1");
+  await expect(page.getByTestId(`volume-badge-${takeId}`)).toHaveCount(0);
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+});

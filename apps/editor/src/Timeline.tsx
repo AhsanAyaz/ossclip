@@ -1390,6 +1390,14 @@ export const Timeline: React.FC<TimelineProps> = ({
                   >
                     {cue.kept !== undefined ? "KEPT" : cue.id}
                   </span>
+                  {/* Non-default gain reads at a glance where time lives
+                      (field report 2026-08-31); the control itself is the
+                      Inspector's Audio slider. */}
+                  {cue.video?.volume !== undefined && cue.video.volume !== 1 ? (
+                    <span data-testid={`volume-badge-${cue.id}`} style={pinBadge}>
+                      {cue.video.volume === 0 ? "MUTE" : `${Math.round(cue.video.volume * 100)}%`}
+                    </span>
+                  ) : null}
                   {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
                   {!isPlain ? (
                     <>

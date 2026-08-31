@@ -224,6 +224,14 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   // Gated here for the same once-per-render reason; VideoStage receives an
   // already-parsed spec (or null) and never sees the raw props value.
   const grade = colorGradePropsFor(colorGrade);
+  // Per-window user gain (`video.volume` on a cue, 2026-08-31): cue windows
+  // become EdlVideo gain segments. Only non-unity entries — an empty list is
+  // the pre-feature audio graph, byte for byte.
+  const gainSegments = sceneCues.flatMap((c) =>
+    c.video?.volume !== undefined && c.video.volume !== 1
+      ? [{ startSec: c.startSec, endSec: c.endSec, gain: c.video.volume }]
+      : [],
+  );
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
       <VideoStage
@@ -248,6 +256,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         <EdlVideo
           src={src}
           spans={spans}
+          {...(gainSegments.length > 0 ? { gain: gainSegments } : {})}
           {...(punchPlan ? { punch: punchPlan } : {})}
           {...(sourceFit === "contain" ? { punchInScale: 1, background: "transparent" } : {})}
           {...(staticCamera === true ? { punchInScale: 1 } : {})}

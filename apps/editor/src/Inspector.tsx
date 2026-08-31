@@ -1242,6 +1242,40 @@ export const Inspector: React.FC<InspectorProps> = ({
             </button>
           ) : null}
         </div>
+        <div style={section}>
+          <span style={label}>Audio</span>
+          <div style={row}>
+            <span style={label}>
+              volume{"  "}
+              <span style={{ color: "#EDEDF2" }}>
+                {Math.round((cue.video?.volume ?? 1) * 100)}%
+                {(cue.video?.volume ?? 1) === 0 ? " · muted" : ""}
+              </span>
+            </span>
+          </div>
+          <input
+            type="range"
+            data-testid="volume-slider"
+            min={0}
+            max={2}
+            step={0.05}
+            value={cue.video?.volume ?? 1}
+            // Committed per change under ONE coalesce key — a slider gesture
+            // is one undo step. No scrub-preview channel like zoom's: gain is
+            // heard, not seen, and the player is paused mid-drag anyway.
+            onChange={(e) =>
+              edits.patchVideo(
+                selection.sceneId,
+                { volume: Number(e.target.value) },
+                `video:${selection.sceneId}:volume`,
+              )
+            }
+          />
+          <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+            This window only — for a clip recorded quieter than the rest.
+            Above 100% amplifies in the render; the preview caps at 100%.
+          </div>
+        </div>
         {cue.layout === "pip-bubble"
           ? (() => {
               // PiP bubble (R14 §52): mask roundness and placement, per scene.

@@ -146,6 +146,9 @@ export const SceneCueSchema = z
       dx: z.number().optional(),
       /** `false` switches the automatic idle-zoom layer off for this scene. */
       autoZoom: z.boolean().optional(),
+      /** Audio gain for this window, 1 = as recorded — mirror of
+       * `SceneOverrideSchema.video.volume`, which owns the argument. */
+      volume: z.number().min(0).max(2).optional(),
     })
     .optional(),
   /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { frameWindow, playableSpans } from "../src/frames";
+import { gainAtSec } from "../src/EdlVideo";
 
 /**
  * FINDINGS §115. Adjacent <Sequence> windows must never share a frame: the
@@ -127,5 +128,20 @@ describe("playableSpans (§ADK crash, 2026-08-31)", () => {
 
   it("empty input passes through", () => {
     expect(playableSpans([], 30)).toEqual([]);
+  });
+});
+
+describe("gainAtSec (per-window user volume, 2026-08-31)", () => {
+  const segs = [
+    { startSec: 10, endSec: 20, gain: 0.5 },
+    { startSec: 30, endSec: 40, gain: 2 },
+  ];
+  it("unity outside every window, the segment's gain inside, half-open edges", () => {
+    expect(gainAtSec(segs, 5)).toBe(1);
+    expect(gainAtSec(segs, 10)).toBe(0.5);
+    expect(gainAtSec(segs, 19.99)).toBe(0.5);
+    expect(gainAtSec(segs, 20)).toBe(1);
+    expect(gainAtSec(segs, 35)).toBe(2);
+    expect(gainAtSec([], 12)).toBe(1);
   });
 });

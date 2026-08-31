@@ -143,6 +143,16 @@ export const SceneOverrideSchema = z.object({
       dx: z.number().optional(),
       /** `false` switches the automatic idle-zoom layer off for this scene. */
       autoZoom: z.boolean().optional(),
+      /**
+       * Audio gain for this window's footage, 1 = as recorded (field report
+       * 2026-08-31: one concatenated clip was recorded quieter than the
+       * rest). Lives inside `video` on purpose — it is a property of this
+       * window's playback, and the key already merges per scene, inherits
+       * across split halves, and has patch/clear plumbing. 0 mutes. Above 1
+       * amplifies in the RENDER; the editor's preview caps at the element's
+       * own 1.0 (same documented fidelity limit as the SFX preview gain).
+       */
+      volume: z.number().min(0).max(2).optional(),
     })
     .optional(),
   /**

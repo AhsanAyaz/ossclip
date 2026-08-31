@@ -80,7 +80,7 @@ export type EditAction =
   | {
       type: "patchVideo";
       sceneId: string;
-      patch: { scale?: number; dy?: number; dx?: number; autoZoom?: boolean };
+      patch: { scale?: number; dy?: number; dx?: number; autoZoom?: boolean; volume?: number };
       coalesce?: string;
     }
   | { type: "clearVideo"; sceneId: string }
@@ -1420,7 +1420,7 @@ export function useEdits() {
     clearTiming: (sceneId: string) => dispatch({ type: "clearTiming", sceneId }),
     patchVideo: (
       sceneId: string,
-      patch: { scale?: number; dy?: number; dx?: number; autoZoom?: boolean },
+      patch: { scale?: number; dy?: number; dx?: number; autoZoom?: boolean; volume?: number },
       coalesce?: string,
     ) => dispatch({ type: "patchVideo", sceneId, patch, coalesce }),
     clearVideo: (sceneId: string) => dispatch({ type: "clearVideo", sceneId }),
