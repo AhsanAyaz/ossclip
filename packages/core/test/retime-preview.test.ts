@@ -450,3 +450,42 @@ describe("live user cuts (src written at the gesture) apply in the preview", () 
     expect(withFallback.oldToSourceSec).toBe(withFallback.toSourceSec);
   });
 });
+
+describe("the whole preview pipeline yields only playable spans (§ADK crash, 2026-08-31)", () => {
+  // The full editor path with the real crash data: a "Delete this chunk" cut
+  // whose src was rounded to 3 decimals at the write boundary, applied by
+  // livePreviewMap + retimeForPreview to a cutlist carrying full float
+  // precision. Every span the pipeline hands the player must survive
+  // EdlVideo's per-frame rounding — trimBefore === trimAfter is a Remotion
+  // THROW that blanks the Player, which is how the bug shipped: the units
+  // around each stage were green while the composed pipeline emitted a
+  // 125µs span. This test composes the stages.
+  const adkCutlist: Segment[] = [
+    { srcIn: 0, srcOut: 3.9701880000000003, kind: "keep" },
+    { srcIn: 3.9701880000000003, srcOut: 4.884438, kind: "remove", reason: "silence", confidence: 0.9 },
+    { srcIn: 4.884438, srcOut: 6.659125, kind: "keep" },
+    { srcIn: 6.659125, srcOut: 7.71825, kind: "remove", reason: "silence", confidence: 0.9 },
+    { srcIn: 7.71825, srcOut: 94.58, kind: "keep" },
+  ];
+  const adkSpans = new TimeMap(adkCutlist).spans;
+
+  it("a 3-decimal-rounded delete leaves every span at least one frame long at any real fps", () => {
+    const cut = {
+      startSec: 3.9701880000000003,
+      endSec: 5.744875,
+      src: { startSec: 3.97, endSec: 6.659 }, // exactly what the gesture saved
+    };
+    const clocks = livePreviewMap(adkCutlist, undefined, [cut], adkSpans);
+    expect(clocks).not.toBeNull();
+    const { fields } = retimeForPreview(
+      { outputDurationSec: new TimeMap(adkCutlist).outputDuration, captionLines: [], sceneCues: [] },
+      clocks!.oldMap,
+      clocks!.newMap,
+    );
+    for (const fps of [24, 25, 30, 60]) {
+      for (const sp of fields.spans) {
+        expect(Math.round(sp.srcOut * fps)).toBeGreaterThan(Math.round(sp.srcIn * fps));
+      }
+    }
+  });
+});

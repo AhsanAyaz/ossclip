@@ -67,7 +67,7 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow|recut)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
@@ -78,6 +78,10 @@ export default defineConfig({
     // everything else for the same reason `landscape` is, and last because its
     // rewrite is the one that changes what other specs would MEASURE.
     { name: "recut", testMatch: /recut\.spec\.ts/, dependencies: ["renderflow"] },
+    // Rewrites the shared overrides.json with a sliver-producing saved cut
+    // (the 2026-08-31 ADK crash) and restores it after — serialized behind
+    // everything for the same reason the other rewriters are.
+    { name: "sliver-cut", testMatch: /sliver-cut\.spec\.ts/, dependencies: ["recut"] },
   ],
   use: {
     baseURL: "http://127.0.0.1:5173",
