@@ -1257,7 +1257,7 @@ export const Inspector: React.FC<InspectorProps> = ({
             type="range"
             data-testid="volume-slider"
             min={0}
-            max={2}
+            max={4}
             step={0.05}
             value={cue.video?.volume ?? 1}
             // Committed per change under ONE coalesce key — a slider gesture
@@ -1273,7 +1273,8 @@ export const Inspector: React.FC<InspectorProps> = ({
           />
           <div style={{ fontSize: 12, color: "#9A9AA3" }}>
             This window only — for a clip recorded quieter than the rest.
-            Above 100% amplifies in the render; the preview caps at 100%.
+            Above 100% amplifies (preview and render); very high boosts also
+            raise the recording's noise floor.
           </div>
         </div>
         {cue.layout === "pip-bubble"

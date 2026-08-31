@@ -148,7 +148,7 @@ export const SceneCueSchema = z
       autoZoom: z.boolean().optional(),
       /** Audio gain for this window, 1 = as recorded — mirror of
        * `SceneOverrideSchema.video.volume`, which owns the argument. */
-      volume: z.number().min(0).max(2).optional(),
+      volume: z.number().min(0).max(4).optional(),
     })
     .optional(),
   /**

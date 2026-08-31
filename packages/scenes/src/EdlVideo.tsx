@@ -116,10 +116,10 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
                     0,
                     Math.min(1, (f + 1) / fadeFrames, (durationInFrames - f) / fadeFrames),
                   );
-                  // User gain composes ON the fade. The preview's <video>
-                  // element caps at 1.0, so a boost only fully lands in the
-                  // render (allowAmplificationDuringRender below) — the same
-                  // documented fidelity limit as the SFX preview gain.
+                  // User gain composes ON the fade. Boosts above 1 land in
+                  // the render via allowAmplificationDuringRender below, and
+                  // in the Player via its own WebAudio gain node
+                  // (remotion/use-amplification) — preview and render agree.
                   return fade * gainAtSec(gain, (from + f) / fps);
                 }}
                 allowAmplificationDuringRender

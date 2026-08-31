@@ -149,10 +149,13 @@ export const SceneOverrideSchema = z.object({
        * rest). Lives inside `video` on purpose — it is a property of this
        * window's playback, and the key already merges per scene, inherits
        * across split halves, and has patch/clear plumbing. 0 mutes. Above 1
-       * amplifies in the RENDER; the editor's preview caps at the element's
-       * own 1.0 (same documented fidelity limit as the SFX preview gain).
+       * amplifies — in the render via allowAmplificationDuringRender, and in
+       * the preview via the Player's own WebAudio gain (Remotion ≥4.0.5xx,
+       * use-amplification). Max 4: a field clip arrived quiet enough that 2x
+       * did not reach its neighbours (2026-08-31); past 4x you are boosting
+       * noise floor, not speech.
        */
-      volume: z.number().min(0).max(2).optional(),
+      volume: z.number().min(0).max(4).optional(),
     })
     .optional(),
   /**
