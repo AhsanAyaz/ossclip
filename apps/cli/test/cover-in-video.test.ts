@@ -160,9 +160,16 @@ const hasFfmpeg = (() => {
  */
 describe.skipIf(!hasFfmpeg)("--cover-in-video in render-props", () => {
   let dir: string;
+  let realHome: string | undefined;
 
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "ossclip-cover-in-video-props-"));
+    // HERMETIC HOME (2026-08-31): produce() reads ~/.ossclip/config.json via
+    // loadConfig, so the machine's own `coverInVideo: true` flipped the
+    // "default writes NO key" assertion below. os.homedir() honours $HOME on
+    // posix; pointing it at the temp dir gives this suite an empty config.
+    realHome = process.env.HOME;
+    process.env.HOME = dir;
     execFileSync("ffmpeg", [
       "-v", "error",
       "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=4",
@@ -193,6 +200,7 @@ describe.skipIf(!hasFfmpeg)("--cover-in-video in render-props", () => {
   });
 
   afterAll(() => {
+    if (realHome !== undefined) process.env.HOME = realHome;
     rmSync(dir, { recursive: true, force: true });
   });
 
