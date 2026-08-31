@@ -626,6 +626,31 @@ export const TranscriptPanel: React.FC<{
    * "does this land on the right words?", which is asked by listening to the
    * same two seconds repeatedly rather than by pressing Play again. */
   const [timingLoop, setTimingLoop] = useState(false);
+
+  // Click-away clears the panel's transient state (field report 2026-08-31,
+  // the same gesture that deselects a timeline block): a press anywhere
+  // OUTSIDE the panel drops the word selection, the anchored menus (range
+  // editor, retype box, timing popover) and the browser's own highlight.
+  // Document-level on purpose — the empty stage, the sidebar, the timeline
+  // are all "outside" without this file knowing any of them. Guarded so a
+  // click with nothing open sets no state (no re-render). `mousedown`, not
+  // click, so the close beats whatever the press goes on to do.
+  useEffect(() => {
+    const onDown = (e: MouseEvent): void => {
+      const root = rootRef.current;
+      if (!root || root.contains(e.target as Node)) return;
+      if (sel !== null) setSel(null);
+      if (rangeEditing !== null) setRangeEditing(null);
+      if (editing !== null) setEditing(null);
+      if (timing !== null) setTiming(null);
+      const native = window.getSelection();
+      if (native && native.anchorNode && root.contains(native.anchorNode)) {
+        native.removeAllRanges();
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [sel, rangeEditing, editing, timing]);
   /** Where the widget's own audio element is, SOURCE seconds — the playhead
    * line, and null when nothing is playing. */
   const [timingPlayhead, setTimingPlayhead] = useState<number | null>(null);
@@ -687,6 +712,8 @@ export const TranscriptPanel: React.FC<{
    * effect below), Escape (which clears the selection) and either action. */
   const [deleteOpen, setDeleteOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  /** The panel's outermost element — the outside-click boundary below. */
+  const rootRef = useRef<HTMLDivElement | null>(null);
   /** Whichever of the three anchored surfaces is currently mounted — the bar,
    * the range editor or the timing popover. They share one anchor and one
    * `menuPos`, so they share the ref the layout effect measures. */
@@ -1826,7 +1853,7 @@ export const TranscriptPanel: React.FC<{
   };
 
   return (
-    <div data-testid="transcript-panel" style={{ ...panel, width }}>
+    <div data-testid="transcript-panel" ref={rootRef} style={{ ...panel, width }}>
       <div style={header}>
         <span style={title}>Transcript</span>
         {/* ONE hint line (2026-08-18): the old four-line scope paragraph is

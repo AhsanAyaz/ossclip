@@ -1508,3 +1508,22 @@ test("click-away deselects, and the sidebar resizes by its edge (field report 20
   const after = (await sidebar.boundingBox())!;
   expect(after.width).toBeGreaterThan(before.width + 50);
 });
+
+test("click-away also clears the transcript selection and its menu (field report 2026-08-31)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("transcript-toggle").click();
+  await expect(page.getByTestId("transcript-panel")).toBeVisible();
+
+  // Select a word — the anchored selection menu appears.
+  await page.getByTestId("transcript-word-3").click();
+  await expect(page.getByTestId("transcript-selection-menu")).toBeVisible();
+
+  // A press on the empty stage area (outside the panel) closes the menu and
+  // drops the selection — same gesture that deselects a timeline block.
+  const area = (await page.getByTestId("stage").locator("..").locator("..").boundingBox())!;
+  await page.mouse.click(area.x + 8, area.y + area.height * 0.5);
+  await expect(page.getByTestId("transcript-selection-menu")).toHaveCount(0);
+});
