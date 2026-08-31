@@ -249,8 +249,45 @@ export const App: React.FC = () => {
   const captionsRef = useRef(edits.doc.captions);
   captionsRef.current = edits.doc.captions;
   // The drop notice the user has dismissed, as the exact list they dismissed
-  // (see `showDropNotice` below for why it is not a boolean).
-  const [dismissedDrops, setDismissedDrops] = useState<string | null>(null);
+  // (see `showDropNotice` below for why it is not a boolean). Persisted per
+  // browser (field report 2026-08-31: a refresh brought every dismissed
+  // notice back) — the signature IS the dismissal, so a later DIFFERENT drop
+  // list still raises the banner; storage failing just means session-only
+  // dismissal, the old behavior.
+  const [dismissedDrops, setDismissedDropsState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("ossclip-dismissed-drops");
+    } catch {
+      return null;
+    }
+  });
+  const setDismissedDrops = useCallback((sig: string | null) => {
+    setDismissedDropsState(sig);
+    try {
+      if (sig === null) localStorage.removeItem("ossclip-dismissed-drops");
+      else localStorage.setItem("ossclip-dismissed-drops", sig);
+    } catch {
+      // Blocked storage — the dismissal still holds for this session.
+    }
+  }, []);
+  // Same persistence for the caption-migration banner — its lines are
+  // recomputed from the doc on every load, so a state-only dismissal
+  // resurfaced on refresh.
+  const [dismissedMigration, setDismissedMigrationState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("ossclip-dismissed-migration");
+    } catch {
+      return null;
+    }
+  });
+  const setDismissedMigration = useCallback((sig: string) => {
+    setDismissedMigrationState(sig);
+    try {
+      localStorage.setItem("ossclip-dismissed-migration", sig);
+    } catch {
+      // Blocked storage — session-only dismissal, the old behavior.
+    }
+  }, []);
   const [renderProps, setRenderProps] = useState<RawRenderProps | null>(null);
   // Run provenance/cost for the Inspector's no-selection view (R21 §104).
   const [runInfo, setRunInfo] = useState<RunInfo | null>(null);
@@ -2282,7 +2319,8 @@ export const App: React.FC = () => {
           </button>
         </div>
       ) : null}
-      {migrationLossLines.length > 0 || renderCaptionLoss.length > 0 ? (
+      {(migrationLossLines.length > 0 || renderCaptionLoss.length > 0) &&
+      [...migrationLossLines, ...renderCaptionLoss].join("\n") !== dismissedMigration ? (
         // §137: caption edits this project's older, position-keyed
         // overrides.json could not be matched to a word in the current cut,
         // and (final review, Important 4) any retype that did not come back
@@ -2299,6 +2337,10 @@ export const App: React.FC = () => {
           <button
             style={{ ...ghostButton, marginLeft: 10, padding: "2px 8px" }}
             onClick={() => {
+              // Signature-persisted like the drop notice below (field report
+              // 2026-08-31): the load migration re-runs on every refresh, so
+              // clearing the arrays alone brought the banner straight back.
+              setDismissedMigration([...migrationLossLines, ...renderCaptionLoss].join("\n"));
               setCaptionMigrationLoss([]);
               setRenderCaptionLoss([]);
             }}
@@ -2654,6 +2696,7 @@ export const App: React.FC = () => {
             // one offers its Restore (field report 2026-08-31 — the ghost
             // block is gone from the timeline, the take IS the selection).
             deletedScenes={ghostCues}
+            playheadSec={() => (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps}
             sfxWordAtPlayhead={() => {
               // Read at the CLICK, off the player (the CoverPanel's
               // `playheadSec` idiom), and resolved through the same anchors

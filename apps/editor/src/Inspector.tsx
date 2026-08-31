@@ -170,6 +170,16 @@ interface InspectorProps {
    * rather than guessing an index.
    */
   sfxWordAtPlayhead?: () => number | null;
+  /**
+   * The player's current second, read AT RENDER (same pull-idiom as
+   * `sfxWordAtPlayhead` — the panel must not re-render per frame). Fresh
+   * whenever the panel re-renders, which includes every slider tick — so the
+   * "playhead is outside this block" hint below is current exactly when the
+   * user is editing, which is when it matters (field report 2026-08-31: a
+   * caption moved on a block the playhead was not in, and the edit looked
+   * like it did nothing until playback entered the window).
+   */
+  playheadSec?: () => number;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -560,6 +570,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   lutMenu = EMPTY_LUT_MENU,
   deletedScenes = [],
   sfxWordAtPlayhead = (): number | null => null,
+  playheadSec,
 }) => {
   if (sfxMarker) {
     // The selected sound effect. FIRST branch on purpose: an SFX selection is
@@ -1016,6 +1027,15 @@ export const Inspector: React.FC<InspectorProps> = ({
           <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
             {selection.sceneId}
           </div>
+          {(() => {
+            const ph = playheadSec?.();
+            return ph !== undefined && (ph < cue.startSec || ph >= cue.endSec) ? (
+              <div data-testid="playhead-outside-hint" style={{ fontSize: 12, color: "#FFE14D" }}>
+                The playhead is outside this block — edits here preview once
+                playback enters its window.
+              </div>
+            ) : null;
+          })()}
           {isPlain ? (
             <div style={{ fontSize: 12, color: "#9A9AA3" }}>
               A continuous stretch of the talking head — no graphic. Frame it

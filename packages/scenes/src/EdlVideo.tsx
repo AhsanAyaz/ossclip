@@ -96,13 +96,24 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
         // duration that is one frame long also skews the fade ramp below,
         // which measures against `durationInFrames`.
         const { from, durationInFrames } = frameWindow(sp.outIn, sp.outOut, fps);
+        // premountFor 3s, up from 1s (field report 2026-08-31): each span is
+        // its own <video> seeking a large mezzanine, and one second of
+        // premount was not always enough — entering the next span played
+        // black/silent until a scrub-back forced a reload. Three seconds
+        // costs at most one extra warm element and covers a cold seek.
         return (
-          <Sequence key={i} from={from} durationInFrames={durationInFrames} premountFor={fps}>
+          <Sequence key={i} from={from} durationInFrames={durationInFrames} premountFor={fps * 3}>
             <AbsoluteFill style={{ transform: `scale(${scales[i]})` }}>
               <OffthreadVideo
                 src={src}
                 trimBefore={Math.round(sp.srcIn * fps)}
                 trimAfter={Math.round(sp.srcOut * fps)}
+                // A span whose media is STILL not ready pauses the player
+                // instead of playing on silently over a black frame — the
+                // stall is visible and recovers by itself, where the silent
+                // variant looked broken until the user scrubbed (same field
+                // report).
+                pauseWhenBuffering
                 style={{
                   width: "100%",
                   height: "100%",
