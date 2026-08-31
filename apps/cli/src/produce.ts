@@ -124,6 +124,18 @@ import {
   makeMezzanine,
   mezzanineFileName,
   mezzanineScale,
+  // The color-grade pipeline (2026-08-30): validation, the preset/LUT split,
+  // the SVG filter spec preset grades ride render-props as, and the .cube
+  // bake+hash LUT grades ride the mezzanine as.
+  CONFIG_DIR,
+  resolveColorGrade,
+  resolveGradeToLook,
+  gradeToSvgFilterSpec,
+  parseCubeLut,
+  bakeCube,
+  lutHash,
+  type ColorGrade,
+  type SvgGradeFilterSpec,
   scaleContentTimeline,
   scaleFramingWindows,
   measureFace,
@@ -726,6 +738,16 @@ export interface ProduceOptions {
    */
   coverInVideo?: boolean;
   /**
+   * `--color-grade <look>` / `--no-color-grade` — the watermark's tri-state
+   * carrying a VALUE: a string when typed (a preset id, or a `.cube`
+   * filename — `colorGradeFlagValue` classifies by extension), `false` for a
+   * typed --no-color-grade, undefined when neither so overrides.json and
+   * then the config's `colorGrade` decide (`resolveProductionColorGrade`).
+   * Deliberately unparsed in transit: validation warns-and-proceeds at the
+   * use site, because a grade typo must cost the look, never the run.
+   */
+  colorGrade?: string | false;
+  /**
    * `--youtube` / `--no-youtube` tri-state, the watermark's exact contract:
    * true/false when TYPED, undefined when not — undefined lets the config's
    * `youtube` key supply the default (`resolveYoutube`). One flag covers the
@@ -859,6 +881,71 @@ export function resolveCoverInVideo(
   configValue: boolean | undefined,
 ): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * `--color-grade`'s value classified into the ColorGradeSchema shape: a value
+ * ending in `.cube` names a LUT file in `~/.ossclip/luts`, anything else
+ * names a preset. Sniffed by extension rather than split into two flags
+ * because the user already knows which they typed — `kodak.cube` cannot be a
+ * preset id (presets never carry a dot) and a preset id cannot be a LUT
+ * (`.cube` is the one format the parser reads), so the classification is
+ * lossless. Case-insensitive on the extension: `KODAK.CUBE` is the same file
+ * on the case-preserving filesystems the LUT dir lives on. Validation is NOT
+ * here — the shape goes through `resolveColorGrade` like every other layer.
+ */
+export function colorGradeFlagValue(value: string): { preset?: string; lut?: string } {
+  return value.toLowerCase().endsWith(".cube") ? { lut: value } : { preset: value };
+}
+
+/**
+ * The effective color grade across all three surfaces — override > flag >
+ * config, `resolveWatermark`'s typed-beats-config precedence grown one layer:
+ * the overrides doc is the editor's per-project say, so it beats even a typed
+ * flag (the `resolveSrcTimingPins` rationale — a per-project decision made in
+ * the editor outranks a per-run flag, never merges with it). An explicit
+ * `false` at a switching layer (`colorGrade: false` in the doc, or a typed
+ * `--no-color-grade`) is OFF, not fall-through: "no grade" is a decision, and
+ * letting a lower layer overrule it would make the disable impossible to
+ * express.
+ *
+ * Every layer is validated through `resolveColorGrade`, and an INVALID layer
+ * is ignored — warned about by name, then the NEXT layer applies (decision
+ * 2026-08-30): the alternative, an invalid override going all the way to
+ * "off", would let one stale editor write silently strip the config grade a
+ * channel's whole look depends on. Warnings are RETURNED, not printed
+ * (`resolveSfxLevel`'s shape), so the whole matrix is testable without a TTY.
+ * `source` names the winning layer so the ▸ line can say where a grade came
+ * from — the watermark's "(from config; --no-… overrides)" visibility rule.
+ */
+export function resolveProductionColorGrade(p: {
+  override: ColorGrade | false | undefined;
+  flag: string | false | undefined;
+  config: unknown;
+}): { grade?: ColorGrade; source?: "override" | "flag" | "config"; warnings: string[] } {
+  const warnings: string[] = [];
+  if (p.override === false) return { warnings };
+  if (p.override !== undefined) {
+    // Schema-valid already (OverrideDocSchema parsed the doc), but the
+    // unknown-preset check lives in resolveColorGrade, not the schema — this
+    // is the layer where a preset the editor knew and this build doesn't
+    // falls through instead of failing the doc.
+    const r = resolveColorGrade(p.override, "overrides.json");
+    if (r.grade) return { grade: r.grade, source: "override", warnings };
+    if (r.warning) warnings.push(r.warning);
+  }
+  if (p.flag === false) return { warnings };
+  if (p.flag !== undefined) {
+    const r = resolveColorGrade(colorGradeFlagValue(p.flag), "--color-grade");
+    if (r.grade) return { grade: r.grade, source: "flag", warnings };
+    if (r.warning) warnings.push(r.warning);
+  }
+  // "config", not "config colorGrade": resolveColorGrade's warning already
+  // spells the key (`⚠ <source> colorGrade ignored — …`).
+  const r = resolveColorGrade(p.config, "config");
+  if (r.grade) return { grade: r.grade, source: "config", warnings };
+  if (r.warning) warnings.push(r.warning);
+  return { warnings };
 }
 
 /**
@@ -4714,6 +4801,88 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // on a bar-free source): there is no re-encode to scale, the render plays
   // the source itself, and the window emissions below must then stay in true
   // source pixels — which the identity `mezzFactor` below guarantees.
+  // ---- Color grade (`--color-grade` / config `colorGrade` / the editor's
+  // overrides.json) ---------------------------------------------------------
+  // Resolved HERE, before the mezzanine encode, because the feature's two
+  // halves split at exactly this seam: a PRESET grade rides render-props as
+  // an SVG filter spec (the props assembly below), while a LUT grade is baked
+  // INTO the mezzanine (ingest.ts's `lut` option) — ffmpeg's lut3d on the
+  // encode pass costs nothing per rendered frame, where a 33³ trilinear
+  // lookup in the browser would. Precedence and validation live in
+  // `resolveProductionColorGrade`; every warning it returns prints once here,
+  // and every failure path proceeds UNGRADED — a grade must cost the look at
+  // worst, never the run.
+  const gradeResolution = resolveProductionColorGrade({
+    override: overrideDoc.colorGrade,
+    flag: opts.colorGrade,
+    config: cfg.colorGrade,
+  });
+  for (const w of gradeResolution.warnings) console.log(w);
+  /** Preset grades: the spec render-props carries (absent = no grade). */
+  let colorGradeSpec: SvgGradeFilterSpec | undefined;
+  /** LUT grades: the baked .cube the mezzanine encode applies (absent = none). */
+  let gradeLut: { path: string; hash: string } | undefined;
+  if (gradeResolution.grade !== undefined) {
+    // The watermark's visibility rule: a grade sourced anywhere but the
+    // typed flag says so, so a config- or editor-sourced look never
+    // surprises the author on upload.
+    const gradeFromNote =
+      gradeResolution.source === "config"
+        ? " (from config; --no-color-grade overrides)"
+        : gradeResolution.source === "override"
+          ? " (editor override)"
+          : "";
+    const resolvedLook = resolveGradeToLook(gradeResolution.grade);
+    if (resolvedLook.kind === "preset") {
+      colorGradeSpec = gradeToSvgFilterSpec(resolvedLook);
+      console.log(`▸ color grade: ${gradeResolution.grade.preset}${gradeFromNote}`);
+    } else if (!mezzanineWillBuild) {
+      // --no-mezzanine on a bar-free source: the render plays the source
+      // file itself, so there is no encode to bake the LUT into. Warn and
+      // proceed ungraded rather than force a mezzanine the user refused.
+      console.log(
+        `⚠ color grade skipped — a .cube LUT is baked into the mezzanine, ` +
+          `and --no-mezzanine means this run doesn't build one`,
+      );
+    } else {
+      try {
+        // Basename only, enforced before any path math: `lut` is a NAME the
+        // schema documents as living in ~/.ossclip/luts, and resolving a
+        // separator-carrying value would turn a config key into a file probe
+        // (the SfxAddedPlacement id's "nothing may ever resolve a path
+        // against it" rule, applied at the one place this name meets the
+        // filesystem).
+        if (basename(resolvedLook.lutRef) !== resolvedLook.lutRef) {
+          throw new Error(
+            `"${resolvedLook.lutRef}" is not a bare filename — LUTs live in ${join(CONFIG_DIR, "luts")}`,
+          );
+        }
+        const lutPath = join(CONFIG_DIR, "luts", resolvedLook.lutRef);
+        const baseLut = parseCubeLut(readFileSync(lutPath, "utf8"));
+        // Tweaks + intensity are baked into the cube (bakeCube composes
+        // `params` on top of the base sample), so the hash keys the WHOLE
+        // grade: change the intensity and the mezzanine filename changes
+        // with it (`mezzanineFileName`'s existence-keyed cache).
+        const cubeText = bakeCube({
+          base: baseLut,
+          params: resolvedLook.tweaks,
+          intensity: resolvedLook.intensity,
+        });
+        const hash = lutHash(cubeText);
+        const bakedPath = join(work, `grade-${hash}.cube`);
+        await writeFile(bakedPath, cubeText);
+        gradeLut = { path: bakedPath, hash };
+        console.log(`▸ color grade: LUT ${resolvedLook.lutRef}${gradeFromNote}`);
+      } catch (err) {
+        // ENOENT and a malformed .cube land here alike: name the problem,
+        // proceed ungraded. parseCubeLut's errors already carry the line.
+        console.log(
+          `⚠ color grade skipped — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
   const mezzScale = mezzanineWillBuild
     ? mezzanineScale(
         { width: contentRect.w, height: contentRect.h, fps: sourceProbe.fps },
@@ -4726,7 +4895,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // why): mezzanine caching is existence-keyed, so a pre-pass full-res
     // mezzanine.mp4 must not satisfy a run that emits mezzanine-sized
     // windows — the scaled file rebuilds once under its own name.
-    const mezz = join(work, mezzanineFileName(!contentRect.full, mezzScale));
+    // `gradeLut?.hash` rides the name so a graded mezzanine can never satisfy
+    // an ungraded run (or vice versa) — the LUT is pixels in the file, and
+    // the cache is existence-keyed.
+    const mezz = join(work, mezzanineFileName(!contentRect.full, mezzScale, gradeLut?.hash));
     if (!existsSync(mezz)) {
       const mezzAnim = isInteractive()
         ? new StageAnimator(
@@ -4747,6 +4919,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       await makeMezzanine(tools, input, mezz, {
         cropVf: cropVf || undefined,
         scale: mezzScale ?? undefined,
+        // The LUT grade's whole delivery: baked into the encode, so the
+        // render (and the editor's preview, which plays the same file) see
+        // graded pixels with no per-frame cost.
+        lut: gradeLut,
       });
       if (mezzAnim) mezzAnim.stop();
     }
@@ -5069,6 +5245,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // one, and the composition reads an absent key as silence, not as an empty
     // track it still has to mount.
     ...(sfxCues.length > 0 ? { sfxCues } : {}),
+    // `--color-grade` PRESET looks, written only when one resolved (the
+    // watermark's absent-means-off contract): the two-stage SVG filter spec
+    // ({tableR, tableG, tableB, colorMatrix}, gradeToSvgFilterSpec) the
+    // composition mounts over the video. A LUT grade deliberately writes
+    // NOTHING here — it was baked into the mezzanine above, so the pixels
+    // the renderer plays already carry it, and a spec on top would grade
+    // twice.
+    ...(colorGradeSpec ? { colorGrade: colorGradeSpec } : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 

@@ -1454,3 +1454,41 @@ test("a component's boolean props are editable from the Inspector (§153)", asyn
   // "image" while the prop is "src", so selecting it offered nothing to edit.
   await expect(page.locator('[data-edit-id="src"]').first()).toHaveCount(1);
 });
+
+test("color grade: picking a preset previews live and saves the doc-global override", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+
+  // The Color section rides the NO-selection panel (doc-global, like the
+  // theme tokens) — a fresh load has nothing selected, so it is already up.
+  const source = page.getByTestId("grade-source");
+  await expect(source).toBeVisible();
+
+  // The fixture workdir has no baked grade and no config default, so the
+  // stage starts filter-free — the assertion below is then unambiguous.
+  await expect(page.locator('filter[id^="ossclip-grade-"]')).toHaveCount(0);
+  await source.selectOption("preset:punchy");
+
+  // Live preview, parametric path: the spec is computed client-side with
+  // core's own gradeToSvgFilterSpec and lands in the Player's props — the
+  // VideoStage mounts its SVG filter the moment the prop arrives.
+  await expect(page.locator('filter[id^="ossclip-grade-"]').first()).toBeAttached();
+  // …and the sliders appear, showing the preset's own default intensity.
+  await expect(page.getByTestId("grade-intensity")).toBeVisible();
+
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc.colorGrade).toEqual({ preset: "punchy" });
+
+  // "Off" is an explicit false, not a deleted key — produce's override layer
+  // treats them differently (off vs fall-through), so the write must too.
+  await source.selectOption("off");
+  await expect(page.locator('filter[id^="ossclip-grade-"]')).toHaveCount(0);
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  const doc2 = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+  expect(doc2.colorGrade).toBe(false);
+});

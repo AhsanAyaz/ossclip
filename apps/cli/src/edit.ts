@@ -4,7 +4,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod/v4";
 import {
@@ -56,6 +56,14 @@ import {
   // Resolved here too, not just in produce: an editor that offered stock sounds
   // the config excludes would let a user pick one the next render drops.
   resolveSfxBundledPack,
+  // The Color panel's .cube menu (2026-08-30): the same loader produce's LUT
+  // bake resolves against, the loadSfxLibrary rule for grades.
+  loadLutLibrary,
+  // …and the validator every grade layer goes through — the /api/luts payload
+  // carries the CONFIG grade so the panel can label its "Default" entry, and
+  // a malformed config value must read as "no default" there exactly as it
+  // reads in produce (`resolveProductionColorGrade` falls through to off).
+  resolveColorGrade,
   outInsideInputFolderMessage,
   outPathInsideInput,
   PORTRAIT_MIME_TYPES,
@@ -437,6 +445,10 @@ export async function startEditServer(
        * `unknown` because it is file-only and typed at the consumer
        * (`resolveSfxBundledPack`), the `audience` rule. */
       sfxBundledPack?: unknown;
+      /** The config-level default grade the Color panel's "Default" entry
+       * names — `unknown` because it is file-only and typed at the consumer
+       * (`resolveColorGrade`), the `sfxBundledPack` rule. */
+      colorGrade?: unknown;
     } & RetranscribeConfig;
     /** Env seam for the publish endpoints — tests inject their own so the
      * runner's real OSSCLIP_POSTIZ_API_KEY (or its absence) never decides a
@@ -482,6 +494,10 @@ export async function startEditServer(
      * loader rather than only that the routes serve what they were handed.
      */
     loadSfx?: typeof loadSfxLibrary;
+    /** The LUT library `/api/luts` serves — the `loadSfx` seam for grades:
+     * tests inject a hand-written library instead of depending on whatever
+     * the developer keeps in ~/.ossclip/luts. */
+    loadLuts?: typeof loadLutLibrary;
   } = {},
 ): Promise<EditServer> {
   // MUTABLE since R17 §83: the server can start with no project (the page
@@ -2637,6 +2653,39 @@ export async function startEditServer(
             // loader already degraded rather than throwing, and the panel is
             // the only surface a `~/.ossclip/sfx` author ever sees.
             issues: library.issues,
+          });
+        }
+
+        if (url.pathname === "/api/luts" && req.method === "GET") {
+          // The Color panel's .cube menu plus the config-level default grade.
+          // NO workdir guard, /api/sfx/library's rule: both halves are
+          // machine-global (~/.ossclip/luts and config.json), so the panel can
+          // build its dropdown before a project is open. Read per request like
+          // every other loadCfg consumer — a LUT dropped while the editor is
+          // up appears on the next refresh, not on a restart.
+          const library = (opts.loadLuts ?? loadLutLibrary)();
+          // The config grade rides along VALIDATED, not raw: a malformed
+          // config value is what produce ignores (`resolveProductionColorGrade`
+          // warns and proceeds without it), so a "Default (…)" entry built
+          // from it would offer an inherit that renders as nothing. Null means
+          // the panel shows no Default entry, and the warning is dropped for
+          // the sfxLibrary helper's reason — no console here, produce prints
+          // it on the run that grades.
+          const configGrade = resolveColorGrade(
+            (opts.loadCfg ?? loadConfig)().colorGrade,
+            "config",
+          ).grade;
+          return send(200, {
+            // METADATA only, the sfx library rule: the absolute `path` stays
+            // server-side. `file` (the basename, extension and all) is what an
+            // editor-written override must carry — `ColorGrade.lut` documents
+            // the basename, produce joins it against ~/.ossclip/luts verbatim,
+            // and a stem-only id would drop the `.CUBE` an exporter spelled.
+            items: library.items.map((l) => ({ id: l.id, title: l.title, file: basename(l.path) })),
+            // A ~/.ossclip/luts author's only surface, like the sfx panel:
+            // the loader degraded instead of throwing, so show the reason.
+            issues: library.issues,
+            configGrade: configGrade ?? null,
           });
         }
 

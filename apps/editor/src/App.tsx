@@ -53,6 +53,7 @@ import {
 } from "./sfxLane";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector, type RunInfo } from "./Inspector";
+import { EMPTY_LUT_MENU, liveGradeSpec, type LutMenu } from "./colorPanel";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
@@ -289,6 +290,10 @@ export const App: React.FC = () => {
   }>({ sfx: null, words: null });
   /** `/api/sfx/library` — the swap dropdown's and palette's options. */
   const [sfxLibrary, setSfxLibrary] = useState<SfxLibrarySound[]>([]);
+  /** `/api/luts` — the Color section's .cube menu plus the config default
+   * grade. Machine-global like the sfx library, refreshed on each project
+   * load for the same edit-config-while-open reason. */
+  const [lutMenu, setLutMenu] = useState<LutMenu>(EMPTY_LUT_MENU);
   /** The selected SFX marker's doc key. Its own state, not `selection`: a
    * marker is not a scene cue and has no `sceneId` to borrow — the two
    * namespaces stay exclusive through `selectScene`/`selectSfx` below. */
@@ -892,6 +897,11 @@ export const App: React.FC = () => {
         setSfxLibrary(r.ok ? (((await r.json()) as { sounds?: SfxLibrarySound[] }).sounds ?? []) : []),
       )
       .catch(() => setSfxLibrary([]));
+    // The Color panel's menu — the sfx-library posture: any failure degrades
+    // to the empty menu (presets and Off still work with no server help).
+    void fetch("/api/luts")
+      .then(async (r) => setLutMenu(r.ok ? ((await r.json()) as LutMenu) : EMPTY_LUT_MENU))
+      .catch(() => setLutMenu(EMPTY_LUT_MENU));
     // A marker key belongs to the project that was open when it was picked
     // (the §137 Task 6 review's Minor 6 rule, applied to this selection).
     setSfxSelection(null);
@@ -1249,6 +1259,12 @@ export const App: React.FC = () => {
       // for the flag (see RawRenderProps).
       captionsHidden:
         renderProps.captionsHiddenByFlag === true || edits.doc.captionsHidden === true,
+      // Recomposed like captionsHidden above, never inherited from the
+      // spread: the baked spec is the LAST render's grade, and the doc's
+      // three-way key (absent/false/object) has its own say now —
+      // `liveGradeSpec` (colorPanel.ts) owns the mapping, including why a
+      // .cube selection previews as NO grade rather than a fake one.
+      colorGrade: liveGradeSpec(edits.doc.colorGrade, renderProps.colorGrade),
       videoFileName: `/media/${renderProps.videoFileName}`,
       // The `--cover-in-video` overlay, re-pointed at the server's `/media/`
       // mount exactly like the video above: produce stages the image into the
@@ -2545,6 +2561,7 @@ export const App: React.FC = () => {
             sfxMarker={selectedSfx}
             sfxLibrary={sfxLibrary}
             sfxEnabled={sfxPlan.sfx !== null}
+            lutMenu={lutMenu}
             sfxWordAtPlayhead={() => {
               // Read at the CLICK, off the player (the CoverPanel's
               // `playheadSec` idiom), and resolved through the same anchors

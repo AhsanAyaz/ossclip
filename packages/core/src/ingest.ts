@@ -190,11 +190,56 @@ export function mezzanineScale(
  * the legacy names so existing workdir caches stay valid; a scaled run
  * rebuilds once under its own name and old workdirs' render-props keep
  * referencing (and rendering from) the file they were emitted against.
+ *
+ * The LUT hash is in the name for the same reason: grading is baked into the
+ * mezzanine at build time, so a warm workdir keyed only on crop/scale would
+ * satisfy a graded run with UNGRADED frames (or a re-graded run with the old
+ * look). No LUT keeps today's names byte-for-byte, so existing warm workdirs
+ * stay valid.
  */
-export function mezzanineFileName(cropped: boolean, scale: MezzanineScale | null): string {
+export function mezzanineFileName(cropped: boolean, scale: MezzanineScale | null, lutHash?: string): string {
   const base = cropped ? "mezzanine-content" : "mezzanine";
-  if (!scale) return `${base}.mp4`;
-  return `${base}-${scale.width}x${scale.height}@${Math.round(scale.fps)}.mp4`;
+  const scaleSeg = scale ? `-${scale.width}x${scale.height}@${Math.round(scale.fps)}` : "";
+  const lutSeg = lutHash ? `-lut${lutHash}` : "";
+  return `${base}${scaleSeg}${lutSeg}.mp4`;
+}
+
+/** A 3D LUT to bake into the mezzanine; `hash` keys the cache (see `mezzanineFileName`). */
+export interface MezzanineLut {
+  path: string;
+  hash: string;
+}
+
+/**
+ * Escape a filesystem path for use as an ffmpeg filter option value.
+ *
+ * A `-vf` string is parsed twice: once as a filtergraph (where `\` `'` `[`
+ * `]` `,` `;` are special) and once as the filter's option value (where `:`
+ * `\` `'` are special — `:` is the option separator, so an unescaped drive
+ * letter like `C:` truncates the path there). Each level strips one layer of
+ * backslashes, so the option-level escapes must themselves be escaped for
+ * the graph level: `:` → `\\:`, `'` → `\\\'`, `\` → `\\\\`. Spaces need
+ * nothing — the argv goes straight to ffmpeg, no shell in between.
+ */
+export function escapeFilterPath(p: string): string {
+  // Level 1: filter option value — `:` `\` `'` are special.
+  const option = p.replace(/[\\':]/g, (c) => `\\${c}`);
+  // Level 2: filtergraph — escape again so level-1 backslashes survive.
+  return option.replace(/[\\'[\],;]/g, (c) => `\\${c}`);
+}
+
+/**
+ * The mezzanine's `-vf` chain, pure so the ordering contract is testable:
+ * LUT strictly AFTER crop/scale — grading the letterbox bars would be
+ * wasted math, and grading pre-scale pixels the render never sees changes
+ * nothing but costs full-res per-pixel lookups.
+ */
+export function mezzanineVf(opts: { cropVf?: string; scale?: MezzanineScale; lut?: MezzanineLut }): string {
+  return [
+    ...(opts.cropVf ? [opts.cropVf] : []),
+    ...(opts.scale ? [`scale=${opts.scale.width}:${opts.scale.height}`] : []),
+    ...(opts.lut ? [`lut3d=file=${escapeFilterPath(opts.lut.path)}:interp=tetrahedral`] : []),
+  ].join(",");
 }
 
 /**
@@ -206,17 +251,15 @@ export function mezzanineFileName(cropped: boolean, scale: MezzanineScale | null
  *
  * `scale` (from `mezzanineScale`) downsizes to display size in the SAME
  * pass, crop first — the scale dims are computed on the post-crop picture.
+ * `lut` bakes a 3D grade in last, on exactly the pixels the render will see.
  */
 export async function makeMezzanine(
   tools: IngestTools,
   src: string,
   out: string,
-  opts: { cropVf?: string; scale?: MezzanineScale } = {},
+  opts: { cropVf?: string; scale?: MezzanineScale; lut?: MezzanineLut } = {},
 ): Promise<void> {
-  const vf = [
-    ...(opts.cropVf ? [opts.cropVf] : []),
-    ...(opts.scale ? [`scale=${opts.scale.width}:${opts.scale.height}`] : []),
-  ].join(",");
+  const vf = mezzanineVf(opts);
   await run(tools.ffmpegPath, [
     "-y", "-i", src,
     ...(vf ? ["-vf", vf] : []),

@@ -9,7 +9,7 @@ passed. Check this index before claiming a change is proven.
 | Feature | File | Drive cost | Proven |
 |---|---|---|---|
 | Cut and caption a take (`transcribe`) | [transcribe.md](transcribe.md) | ~2s, offline | **yes** — baseline in `../SKILL.md` |
-| Render a finished video (`produce`) | [produce.md](produce.md) | slow, ffmpeg render | no |
+| Render a finished video (`produce`) | [produce.md](produce.md) | slow, ffmpeg render | **yes** (offline path, 2026-08-30) — `docs/verification/2026-08-30-color-grade/` |
 | Export cuts as NLE markers (`analyze`) | [analyze.md](analyze.md) | ~2s, offline | no |
 | Edit captions and framing in the browser (`edit`) | [edit.md](edit.md) | needs a browser | no |
 | Provision prerequisites (`setup` / `doctor`) | [setup-doctor.md](setup-doctor.md) | doctor is instant | doctor only |

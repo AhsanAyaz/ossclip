@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, CoverInVideo, EdlVideo, SceneLayer, SfxTrack, VideoStage, Watermark, coverInVideoPropsFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type CoverInVideoProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
+import { CaptionTrack, CoverInVideo, EdlVideo, SceneLayer, SfxTrack, VideoStage, Watermark, colorGradePropsFor, coverInVideoPropsFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -138,6 +138,20 @@ export interface ProductionCompProps {
    * back to silence rather than an `undefined` src or a NaN-frame Sequence.
    */
   sfxCues?: SfxCueProps[];
+  /**
+   * `--grade`: the color grade as an SVG filter spec, fully precomputed by
+   * produce (core's `gradeToSvgFilterSpec` — per-channel transfer tables plus
+   * one 5x4 feColorMatrix). The composition stays dumb: it serializes the
+   * numbers into a `<filter>`, no grade math in here or in scenes.
+   *
+   * Optional and absent-means-UNGRADED, so every pre-feature
+   * render-props.json parses and renders byte-identically — an absent key
+   * mounts zero new DOM, not an identity filter. Gated through
+   * `colorGradePropsFor` below (parse, never coerce), so a hand-mangled spec
+   * falls back to no grade rather than an feColorMatrix that blanks the
+   * picture.
+   */
+  colorGrade?: ColorGradeProps;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -175,6 +189,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   punch,
   coverInVideo,
   sfxCues,
+  colorGrade,
 }) => {
   if (!videoFileName) {
     return (
@@ -206,6 +221,9 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   // Gated here for the same reason, so the per-entry parse runs once per
   // render rather than once per frame.
   const sfx = sfxCuesFor(sfxCues);
+  // Gated here for the same once-per-render reason; VideoStage receives an
+  // already-parsed spec (or null) and never sees the raw props value.
+  const grade = colorGradePropsFor(colorGrade);
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
       <VideoStage
@@ -220,6 +238,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         sourceSize={sourceSize}
         contentCropMode={contentCropMode}
         sourceFit={sourceFit}
+        colorGrade={grade}
       >
         {/* Under `contain` the cut punch-in would scale an exactly-fitted
             picture and crop it back, and the video's own black backing would

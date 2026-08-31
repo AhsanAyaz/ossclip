@@ -36,6 +36,17 @@ describe("resolveConfig — file keys actually reach the resolved config", () =>
     expect(resolveConfig({}, {}).sfxBundledPack).toBeUndefined();
   });
 
+  it("passes colorGrade through untouched — validation lives at the consumer", () => {
+    // The postizUrl lesson again: a structured key the mapping drops is
+    // invisible at runtime. Passed as `unknown` on purpose — produce's
+    // resolveProductionColorGrade is where a malformed grade earns its
+    // warning, so even a bogus value must survive the trip there.
+    const grade = { preset: "talking-head", intensity: 0.5 };
+    expect(resolveConfig({ colorGrade: grade }, {}).colorGrade).toEqual(grade);
+    expect(resolveConfig({ colorGrade: "not-a-grade" }, {}).colorGrade).toBe("not-a-grade");
+    expect(resolveConfig({}, {}).colorGrade).toBeUndefined();
+  });
+
   it("an absent file yields defaults with postizUrl undefined — publish then names the miss", () => {
     const cfg = resolveConfig({}, {});
     expect(cfg.postizUrl).toBeUndefined();

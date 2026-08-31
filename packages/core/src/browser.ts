@@ -18,6 +18,21 @@ export * from "./fill";
 // on this surface), but only this one function is exposed: the rest of the
 // module is the pipeline's, not the bundle's.
 export { sceneStartSeconds } from "./assemble";
+// The editor's live grade preview computes the SVG filter spec with the SAME
+// math produce bakes into render-props (`gradeToSvgFilterSpec`) — a browser
+// copy of the curve sampler is how the preview and the render would drift.
+// color-grade.ts is already in this surface's runtime graph (./overrides
+// imports ColorGradeSchema for the doc-global `colorGrade` key), so these
+// value exports add no new modules; only the functions the preview needs are
+// exposed, the `sceneStartSeconds` posture.
+export {
+  GRADE_PRESETS,
+  gradeToSvgFilterSpec,
+  resolveGradeToLook,
+  type ColorGrade,
+  type GradePresetId,
+  type SvgGradeFilterSpec,
+} from "./color-grade";
 export { ZOOM_MAX_SCALE, zoomScaleAt, type ZoomSegment } from "./zoom";
 // Pure geometry only — the ffmpeg/cache half lives in ./content-rect-detect
 // and must never enter the Remotion bundle.

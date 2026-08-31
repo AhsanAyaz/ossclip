@@ -10,6 +10,16 @@ import {
 } from "@ossclip/core/browser";
 import { clampGraphicRect, graphicSlotFor, layoutSlots } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
+import {
+  EMPTY_LUT_MENU,
+  GRADE_PRESET_IDS,
+  configGradeName,
+  effectiveGrade,
+  gradeForSource,
+  gradeSliderState,
+  gradeSourceValue,
+  type LutMenu,
+} from "./colorPanel";
 import { sfxAudioUrl, type SfxLibrarySound, type SfxMarker } from "./sfxLane";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
@@ -136,6 +146,14 @@ interface InspectorProps {
    * ever play.
    */
   sfxEnabled?: boolean;
+  /**
+   * `/api/luts` — the Color section's .cube menu plus the config-level
+   * default grade. Doc-global like the theme tokens, so it rides the
+   * no-selection panel. Absent (fetch failed / old server) degrades to the
+   * empty menu: presets and Off still work, only the LUT entries and the
+   * "Default" label go missing.
+   */
+  lutMenu?: LutMenu;
   /**
    * The transcript word under the playhead, read AT THE CLICK — the
    * CoverPanel's `playheadSec` idiom: the panel must not re-render on every
@@ -344,6 +362,37 @@ const SfxAddSection: React.FC<{
   );
 };
 
+/**
+ * One Color slider — the sfx gain slider's shape (readout in the label, one
+ * scrub = one undo step via the caller's coalesce key). No double-click
+ * reset: no slider in this editor has one, and inventing the gesture for one
+ * section would make it the only place it works.
+ */
+const GradeSlider: React.FC<{
+  id: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onCommit: (v: number) => void;
+}> = ({ id, value, min, max, step, onCommit }) => (
+  <div style={row}>
+    <span style={label}>
+      {id}{"  "}
+      <span style={{ color: "#EDEDF2" }}>{value.toFixed(2)}</span>
+    </span>
+    <input
+      type="range"
+      data-testid={`grade-${id}`}
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      onChange={(e) => onCommit(Number(e.target.value))}
+    />
+  </div>
+);
+
 const NumberField: React.FC<{
   id: string;
   value: number;
@@ -500,6 +549,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   sfxMarker = null,
   sfxLibrary = [],
   sfxEnabled = false,
+  lutMenu = EMPTY_LUT_MENU,
   sfxWordAtPlayhead = (): number | null => null,
 }) => {
   if (sfxMarker) {
@@ -1649,6 +1699,74 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         ) : null}
       </div>
+      {(() => {
+        // Color grade — doc-global like the Captions switch above (one look
+        // for the whole video, `OverrideDocSchema.colorGrade`), so it lives
+        // on the no-selection panel. The dropdown maps the key's three
+        // states EXACTLY (colorPanel.ts owns the mapping): "Default" deletes
+        // the key, "Off" stores `false`, a look stores an object.
+        const docGrade = edits.doc.colorGrade;
+        const eff = effectiveGrade(docGrade, lutMenu.configGrade);
+        // A slider write is the whole effective grade with one field changed
+        // — on an inherited default this PROMOTES it to an editor override,
+        // which is the only layer produce lets outlive the next run.
+        const slide = (field: string, v: number): void => {
+          if (eff === null) return;
+          edits.setColorGrade({ ...eff, [field]: v }, `colorGrade:${field}`);
+        };
+        const sliders = eff === null ? null : gradeSliderState(eff);
+        return (
+          <div style={section} data-testid="color-section">
+            <span style={label}>Color</span>
+            <select
+              data-testid="grade-source"
+              style={numberInput}
+              value={gradeSourceValue(docGrade, lutMenu.configGrade)}
+              onChange={(e) => edits.setColorGrade(gradeForSource(e.target.value, docGrade))}
+            >
+              <option value="off">Off</option>
+              {lutMenu.configGrade !== null ? (
+                <option value="default">Default ({configGradeName(lutMenu.configGrade)})</option>
+              ) : null}
+              {GRADE_PRESET_IDS.map((id) => (
+                <option key={id} value={`preset:${id}`}>
+                  {id}
+                </option>
+              ))}
+              {lutMenu.items.map((l) => (
+                <option key={l.file} value={`lut:${l.file}`}>
+                  {l.title} (.cube)
+                </option>
+              ))}
+            </select>
+            {eff !== null && eff.lut !== undefined ? (
+              // A .cube bakes into the mezzanine at render time — there is no
+              // browser-side 3D LUT to preview with, and faking one would
+              // show a grade no render produces (colorPanel.ts's
+              // `liveGradeSpec` is where the preview declines).
+              <div data-testid="grade-lut-note" style={{ fontSize: 12, color: "#9A9AA3" }}>
+                LUT grades apply on the next render — the preview stays ungraded.
+              </div>
+            ) : null}
+            {sliders !== null ? (
+              <>
+                <GradeSlider id="intensity" value={sliders.intensity} min={0} max={1} step={0.01} onCommit={(v) => slide("intensity", v)} />
+                <GradeSlider id="exposure" value={sliders.exposure} min={-2} max={2} step={0.05} onCommit={(v) => slide("exposure", v)} />
+                <GradeSlider id="temperature" value={sliders.temperature} min={-100} max={100} step={1} onCommit={(v) => slide("temperature", v)} />
+                <GradeSlider id="saturation" value={sliders.saturation} min={0} max={2} step={0.01} onCommit={(v) => slide("saturation", v)} />
+                <GradeSlider id="contrast" value={sliders.contrast} min={0} max={2} step={0.01} onCommit={(v) => slide("contrast", v)} />
+              </>
+            ) : null}
+            {lutMenu.issues.length > 0 ? (
+              // A ~/.ossclip/luts author's only surface — the sfx panel's
+              // show-don't-swallow rule for pack issues, applied to LUTs.
+              <div data-testid="grade-lut-issues" style={{ fontSize: 12, color: "#FFE14D" }}>
+                {lutMenu.issues.map((i) => `${i.file}: ${i.message}`).join(" · ")}
+              </div>
+            ) : null}
+          </div>
+        );
+      })()}
       {sfxEnabled ? (
         // The palette lives on the no-selection panel beside the global
         // Captions switch, because "add a sound" is a decision about the whole

@@ -17,6 +17,7 @@ import {
   type SourceFit,
   type SpanLike,
 } from "./content-crop";
+import { colorGradeFilterId, stageFilterFor, type ColorGradeProps } from "./color-grade";
 
 /**
  * The stage (PHASE1 §1): a solid backdrop that fades in when a scene demotes
@@ -68,6 +69,13 @@ export const VideoStage: React.FC<{
    * without it there is nothing to fit and this falls back to cover.
    */
   sourceFit?: SourceFit;
+  /**
+   * The `--grade` SVG filter spec, already parsed by the composition
+   * (`colorGradePropsFor` — parse, never coerce). Absent/null means no grade
+   * and ZERO new DOM: no `<svg>`, no `url()` in the filter list, so a
+   * grade-less render builds the exact tree it always did.
+   */
+  colorGrade?: ColorGradeProps | null;
   children: React.ReactNode;
 }> = ({
   cues,
@@ -81,6 +89,7 @@ export const VideoStage: React.FC<{
   sourceSize,
   contentCropMode = "cover",
   sourceFit = "cover",
+  colorGrade,
   children,
 }) => {
   const frame = useCurrentFrame();
@@ -131,8 +140,33 @@ export const VideoStage: React.FC<{
   // consumed by it (see contentTransformFor's contract).
   const contentTransform = contentTransformFor(zoom, userScale, userDx, userDy);
 
+  // Value-derived id (see colorGradeFilterId): two stages in one document can
+  // only collide when their grades are identical, which makes the collision
+  // a no-op instead of one stage silently wearing the other's grade.
+  const gradeId = colorGrade ? colorGradeFilterId(colorGrade) : null;
+
   return (
     <AbsoluteFill>
+      {colorGrade ? (
+        // Zero-sized and absolute: the element exists only to define the
+        // filter the slot's `filter: url(#…)` references; it must never take
+        // layout space in the stage.
+        <svg width={0} height={0} style={{ position: "absolute" }} aria-hidden>
+          {/* colorInterpolationFilters="sRGB" is LOAD-BEARING: the SVG spec
+              defaults filter math to linearRGB, but core sampled the transfer
+              tables and built the matrix in sRGB (gamma) space — without the
+              override the browser un-gammas the pixels first and the whole
+              grade shifts brighter/washed. */}
+          <filter id={gradeId!} colorInterpolationFilters="sRGB">
+            <feComponentTransfer>
+              <feFuncR type="table" tableValues={colorGrade.tableR.join(" ")} />
+              <feFuncG type="table" tableValues={colorGrade.tableG.join(" ")} />
+              <feFuncB type="table" tableValues={colorGrade.tableB.join(" ")} />
+            </feComponentTransfer>
+            <feColorMatrix type="matrix" values={colorGrade.colorMatrix.join(" ")} />
+          </filter>
+        </svg>
+      ) : null}
       <AbsoluteFill style={{ background: theme.bg, opacity: backdrop }} />
       <div
         // Which scene's framing a grab on the picture edits (PLAN 2026-07-30
@@ -163,7 +197,9 @@ export const VideoStage: React.FC<{
           style={{
             position: "absolute",
             inset: 0,
-            filter: slot.blurPx > 0.5 ? `blur(${slot.blurPx}px)` : undefined,
+            // Grade before blur (stageFilterFor has the ordering argument);
+            // without a grade this is the exact blur string it always was.
+            filter: stageFilterFor(gradeId, slot.blurPx),
             transform: contentTransform,
             // Zoom toward the face, which the crop bias keeps in the upper part.
             transformOrigin: "50% 40%",

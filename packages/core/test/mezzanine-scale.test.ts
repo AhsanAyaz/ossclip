@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { MEZZANINE_SCALE_MARGIN, mezzanineFileName, mezzanineScale } from "../src/ingest";
+import {
+  MEZZANINE_SCALE_MARGIN,
+  escapeFilterPath,
+  mezzanineFileName,
+  mezzanineScale,
+  mezzanineVf,
+} from "../src/ingest";
 
 /**
  * 2026-08-17 render-speed pass. The field case: a 3456x2234@60 source fed a
@@ -83,5 +89,72 @@ describe("mezzanineFileName", () => {
     expect(mezzanineFileName(true, { width: 1838, height: 1188, fps: 23.976 })).toBe(
       "mezzanine-content-1838x1188@24.mp4",
     );
+  });
+
+  it("no LUT keeps names byte-for-byte identical to the pre-LUT era", () => {
+    // Grading landed after scaled names shipped; an ungraded run must keep
+    // resolving to the file a warm workdir already holds, or every existing
+    // cache is silently invalidated.
+    expect(mezzanineFileName(false, null, undefined)).toBe("mezzanine.mp4");
+    expect(mezzanineFileName(true, null, undefined)).toBe("mezzanine-content.mp4");
+    expect(mezzanineFileName(false, { width: 2112, height: 1366, fps: 30 }, undefined)).toBe(
+      "mezzanine-2112x1366@30.mp4",
+    );
+  });
+
+  it("folds the LUT hash in so an ungraded cache can never serve a graded run", () => {
+    expect(mezzanineFileName(false, null, "abc123")).toBe("mezzanine-lutabc123.mp4");
+    expect(mezzanineFileName(true, { width: 2112, height: 1366, fps: 30 }, "abc123")).toBe(
+      "mezzanine-content-2112x1366@30-lutabc123.mp4",
+    );
+  });
+});
+
+describe("mezzanineVf", () => {
+  const scale = { width: 2112, height: 1366, fps: 30 };
+  const lut = { path: "/luts/teal.cube", hash: "abc123" };
+
+  it("orders crop, then scale, then lut — grading runs on exactly the pixels the render sees", () => {
+    expect(mezzanineVf({ cropVf: "crop=1920:800:0:140", scale, lut })).toBe(
+      "crop=1920:800:0:140,scale=2112:1366,lut3d=file=/luts/teal.cube:interp=tetrahedral",
+    );
+  });
+
+  it("emits an empty chain when there is nothing to do (caller drops -vf)", () => {
+    expect(mezzanineVf({})).toBe("");
+  });
+
+  it("emits crop/scale alone, unchanged from the pre-LUT chain", () => {
+    expect(mezzanineVf({ cropVf: "crop=1920:800:0:140" })).toBe("crop=1920:800:0:140");
+    expect(mezzanineVf({ scale })).toBe("scale=2112:1366");
+  });
+
+  it("a lone LUT still forms a valid chain", () => {
+    expect(mezzanineVf({ lut })).toBe("lut3d=file=/luts/teal.cube:interp=tetrahedral");
+  });
+
+  it("escapes the LUT path inside the chain", () => {
+    expect(mezzanineVf({ lut: { path: "C:\\LUTs\\teal.cube", hash: "abc123" } })).toBe(
+      "lut3d=file=C\\\\:\\\\\\\\LUTs\\\\\\\\teal.cube:interp=tetrahedral",
+    );
+  });
+});
+
+describe("escapeFilterPath", () => {
+  it("colons get both escape levels — an unescaped `:` ends the option value", () => {
+    // Level 1 makes `\:`, level 2 escapes that backslash: `\\:`.
+    expect(escapeFilterPath("C:/luts/a.cube")).toBe("C\\\\:/luts/a.cube");
+  });
+
+  it("backslashes are doubled at each level", () => {
+    expect(escapeFilterPath("C:\\a.cube")).toBe("C\\\\:\\\\\\\\a.cube");
+  });
+
+  it("single quotes survive both parse levels", () => {
+    expect(escapeFilterPath("/luts/dee's.cube")).toBe("/luts/dee\\\\\\'s.cube");
+  });
+
+  it("spaces pass through untouched — argv reaches ffmpeg without a shell", () => {
+    expect(escapeFilterPath("/my luts/warm look.cube")).toBe("/my luts/warm look.cube");
   });
 });

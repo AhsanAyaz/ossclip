@@ -1110,6 +1110,42 @@ describe("pip override (R14 §52)", () => {
   });
 });
 
+describe("colorGrade (doc-global grade, or false to disable the config's)", () => {
+  it("an old overrides.json parses unchanged, with no colorGrade defaulted in", () => {
+    // captionsHidden's back-compat contract, one key later: optional with NO
+    // default, so a round-trip through the schema can't grow the user's file.
+    const doc = OverrideDocSchema.parse({ theme: { accent: "#FFE14D" } });
+    expect(doc.colorGrade).toBeUndefined();
+    expect("colorGrade" in doc).toBe(false);
+  });
+
+  it("accepts the ColorGrade shape and the explicit false", () => {
+    expect(
+      OverrideDocSchema.parse({ colorGrade: { preset: "punchy", intensity: 0.5 } }).colorGrade,
+    ).toEqual({ preset: "punchy", intensity: 0.5 });
+    // Unlike captionsHidden, an explicit false is MEANINGFUL and kept: it
+    // disables a config-level default grade, which deleting the key cannot.
+    expect(OverrideDocSchema.parse({ colorGrade: false }).colorGrade).toBe(false);
+  });
+
+  it("rejects a malformed grade — hand-editable data is validated", () => {
+    // ColorGradeSchema's own rules apply through the union: exactly one of
+    // preset/lut, and no invented switch values.
+    expect(OverrideDocSchema.safeParse({ colorGrade: {} }).success).toBe(false);
+    expect(
+      OverrideDocSchema.safeParse({ colorGrade: { preset: "mono", lut: "a.cube" } }).success,
+    ).toBe(false);
+    expect(OverrideDocSchema.safeParse({ colorGrade: true }).success).toBe(false);
+  });
+
+  it("an unknown preset id passes the SCHEMA — the consumer's fall-through catches it", () => {
+    // Deliberate: the schema can't list what exists without going stale, and
+    // failing the whole doc over one stale grade would cost the user their
+    // entire edit layer. resolveColorGrade warns and the next layer applies.
+    expect(OverrideDocSchema.safeParse({ colorGrade: { preset: "nope" } }).success).toBe(true);
+  });
+});
+
 describe("captionsHidden (doc-global captions OFF switch)", () => {
   // Back-compat is the schema's contract: every overrides.json written
   // before this key existed must parse EXACTLY as it always did — no new

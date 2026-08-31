@@ -129,6 +129,21 @@ export interface OssclipConfig {
    */
   theme?: Partial<Theme>;
   /**
+   * Color grade applied to every produce run — the `ColorGradeSchema` shape
+   * (`{"preset": "talking-head"}` or `{"lut": "kodak.cube"}`, plus optional
+   * intensity/exposure/temperature/saturation/contrast tweaks), for a channel
+   * whose look is a standing decision rather than a per-run flag.
+   * `--color-grade` / `--no-color-grade` win over this per run, and an
+   * overrides.json `colorGrade` beats both (`resolveProductionColorGrade` in
+   * produce.ts). File-only, the `theme` posture: a structured value from
+   * hand-edited JSON, validated where it is USED (via core's
+   * `resolveColorGrade`), so a malformed grade or unknown preset earns one
+   * warning naming the source and an ungraded run, never a coerced look.
+   * Typed `unknown` deliberately — the type promising `ColorGrade` here would
+   * imply a parse `loadConfig` never performs.
+   */
+  colorGrade?: unknown;
+  /**
    * Run the `--youtube` pack (SEO metadata + AI thumbnail) on every produce,
    * so the preference is a one-time config write like `watermark`.
    * `--youtube` / `--no-youtube` win over this per run (`resolveYoutube`).
@@ -321,6 +336,13 @@ export function resolveConfig(
     // warning naming the problem and the safe default, never a coercion.
     dictionary: fileCfg.dictionary,
     theme: fileCfg.theme,
+    // File-only, the `theme` posture, and NO env spelling (a grade is a
+    // structured object no env var can carry honestly): validated at the
+    // consumer (`resolveProductionColorGrade` in produce.ts via
+    // `resolveColorGrade`), where a malformed value earns one warning naming
+    // the source and an ungraded run — the postizUrl lesson says the mapping
+    // must still copy it, or the key is invisible at runtime.
+    colorGrade: fileCfg.colorGrade,
     // File-only, the same posture: both are validated where they are USED —
     // `validModelSources` / `resolveWhisperLanguage` — so a hand-edited
     // non-record or non-string earns one warning there, never a coercion.

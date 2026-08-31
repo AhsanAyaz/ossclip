@@ -63,6 +63,23 @@ describe("produce flag forwarding", () => {
     expect(opts.resolution).toBeUndefined();
   });
 
+  it("--color-grade reaches produce as its raw value", async () => {
+    // Raw on purpose: the value may be a preset id or a .cube filename, and
+    // classification/validation live at the use site (colorGradeFlagValue /
+    // resolveProductionColorGrade), never in transit.
+    const opts = await runProduce(["produce", "in.mp4", "--color-grade", "punchy", "--no-render"]);
+    expect(opts.colorGrade).toBe("punchy");
+  });
+
+  it("--no-color-grade arrives as false, and untyped as undefined", async () => {
+    // The tri-state's whole point: false is a typed disable that beats a
+    // config grade, and undefined is what lets overrides.json/config decide.
+    const off = await runProduce(["produce", "in.mp4", "--no-color-grade", "--no-render"]);
+    expect(off.colorGrade).toBe(false);
+    const untyped = await runProduce(["produce", "in.mp4", "--no-render"]);
+    expect(untyped.colorGrade).toBeUndefined();
+  });
+
   it("commander's own 5174 does NOT count as a pinned --editor-port", async () => {
     // Untyped means nobody chose that number, so a busy port must attach or
     // bump rather than refuse (edit-port.ts's `pinned`). Reported as typed

@@ -7,6 +7,7 @@ import {
   YOUTUBE_APPROVED_BASENAME,
   type GenerateThumbnailImageOptions,
   type LoadedSfxSound,
+  type LutLibrary,
   type SfxLibrary,
 } from "@ossclip/core";
 import { startEditServer } from "../src/edit";
@@ -3291,6 +3292,81 @@ describe("GET /api/sfx/library + /api/sfx/audio", () => {
         { pack: "ossclip-starter", issue: expect.stringContaining("bundled pack excluded") },
       ]);
     });
+  });
+});
+
+/**
+ * The Color panel's LUT menu (2026-08-30): the .cube library plus the
+ * config-level default grade. The library is INJECTED (`loadLuts`), the
+ * `loadSfx` rule — nothing here depends on what the developer keeps in
+ * ~/.ossclip/luts.
+ */
+describe("GET /api/luts", () => {
+  const fixtureLuts = (): { dir: string; loadLuts: () => LutLibrary } => {
+    const dir = "/fake/luts";
+    return {
+      dir,
+      loadLuts: () => ({
+        items: [
+          { id: "kodak", title: "Kodak 2383", path: join(dir, "kodak.cube") },
+          { id: "warm", title: "warm", path: join(dir, "WARM.CUBE") },
+        ],
+        issues: [{ file: "broken.cube", message: ".cube: missing LUT_3D_SIZE" }],
+      }),
+    };
+  };
+
+  it("serves items as metadata (id, title, file) — never an absolute path", async () => {
+    const lut = fixtureLuts();
+    // No workdir at all, /api/sfx/library's rule: the menu is machine-global.
+    const server = await startEditServer(undefined, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadLuts: lut.loadLuts,
+      loadCfg: () => ({}),
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/luts`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.items).toEqual([
+      // `file` keeps the extension as spelled — produce joins it verbatim
+      // against ~/.ossclip/luts, and a stem would lose a `.CUBE`.
+      { id: "kodak", title: "Kodak 2383", file: "kodak.cube" },
+      { id: "warm", title: "warm", file: "WARM.CUBE" },
+    ]);
+    // A ~/.ossclip/luts author's typo is shown, not swallowed.
+    expect(body.issues).toEqual([
+      { file: "broken.cube", message: expect.stringContaining("LUT_3D_SIZE") },
+    ]);
+    expect(JSON.stringify(body)).not.toContain(lut.dir);
+  });
+
+  it("carries the config grade VALIDATED — a malformed value reads as no default", async () => {
+    const lut = fixtureLuts();
+    const withCfg = async (colorGrade: unknown): Promise<unknown> => {
+      const server = await startEditServer(undefined, {
+        port: 0,
+        recentDir: SHARED_RECENTS,
+        loadLuts: lut.loadLuts,
+        loadCfg: () => ({ colorGrade }),
+      });
+      close = server.close;
+      const body = await (await fetch(`${server.url}/api/luts`)).json();
+      server.close();
+      return body.configGrade;
+    };
+    expect(await withCfg({ preset: "punchy", intensity: 0.5 })).toEqual({
+      preset: "punchy",
+      intensity: 0.5,
+    });
+    // Absent, malformed and unknown-preset all read as null: produce would
+    // ignore them too, and a "Default (…)" entry built from one would offer
+    // an inherit that renders as nothing.
+    expect(await withCfg(undefined)).toBeNull();
+    expect(await withCfg({ preset: "punchy", lut: "x.cube" })).toBeNull();
+    expect(await withCfg({ preset: "not-a-preset" })).toBeNull();
+    expect(await withCfg("punchy")).toBeNull();
   });
 });
 

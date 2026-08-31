@@ -10,6 +10,8 @@ an LLM-planned graphics pass and a cover image.
 - `--produce` runs the LLM producer brain for title cards and graphics; `--scenes` supplies them by hand instead
 - Cover image beside the video (`--no-cover` / `--cover <path>`)
 - Watermark from config, `--no-watermark` overrides
+- Color grade: `--color-grade <preset|file.cube>` / `--no-color-grade`; presets ride render props
+  (SVG filter in the composition), a `.cube` from `~/.ossclip/luts` bakes into a hash-suffixed mezzanine
 - YouTube pack (`--no-youtube` opts out)
 - Portrait / long-form windowing, zoom and punch planning
 
@@ -35,8 +37,8 @@ pnpm ossclip produce fixtures/fixture.mp4 \
 
 ## Gotchas
 
-- **Unproven.** No run of this has been captured yet. Treat the commands above as derived from the code and the
-  README, not as verified. Prove it before relying on it, then update `README.md`'s Proven column.
+- Proven 2026-08-30 for the offline path incl. `--color-grade` (both lanes):
+  evidence in `docs/verification/2026-08-30-color-grade/`. The `--produce` LLM pass is still unproven.
 - Real rendering is slow and CPU-heavy. Do not put it in a tight loop.
 - Skip `--produce` unless the change is about the LLM planner: it needs a provider and costs money. `--scenes` is
   the deterministic substitute.

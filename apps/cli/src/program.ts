@@ -472,6 +472,21 @@ export function buildProgram(): Command {
         "(set it once with coverInVideo: true in ~/.ossclip/config.json)",
     )
     .option("--no-cover-in-video", "no cover overlay, even when the config turns it on")
+    // The watermark's tri-state carrying a VALUE: commander folds the pair
+    // onto one key (string when typed, false for --no-color-grade, undefined
+    // when neither — which is what lets overrides.json and then the config's
+    // `colorGrade` decide). The value is NOT parsed here, unlike --sfx-level:
+    // it may be a preset id OR a .cube filename, so an enum parse can't hold
+    // it — classification and validation live at the consumer
+    // (colorGradeFlagValue / resolveProductionColorGrade in produce.ts),
+    // where a typo warns and the run proceeds ungraded rather than dying.
+    .option(
+      "--color-grade <look>",
+      "color grade the footage: a preset (talking-head | teal-orange | filmic-fade | " +
+        "cwa | punchy | mono) or a .cube LUT filename from ~/.ossclip/luts " +
+        '(set it once with colorGrade: {"preset": "..."} in ~/.ossclip/config.json)',
+    )
+    .option("--no-color-grade", "no color grade, even when the config sets one")
     // Same tri-state shape as --watermark above (positive declared first so
     // commander's default stays undefined = "not typed"): the config's
     // `youtube` key supplies the default (resolveYoutube), and a typed
@@ -722,6 +737,12 @@ export function buildProgram(): Command {
           // The watermark's tri-state again, resolved by resolveCoverInVideo
           // at the use site against the config's `coverInVideo`.
           coverInVideo: opts.coverInVideo,
+          // string | false | undefined straight through: undefined = "not
+          // typed" lets overrides.json and then the config's `colorGrade`
+          // decide, and the value itself is classified and validated at the
+          // use site (resolveProductionColorGrade) — see the option's own
+          // comment for why no parse happens here.
+          colorGrade: opts.colorGrade,
           // The same tri-state contract as watermark, resolved by
           // resolveYoutube at the use site; --portrait rides along untyped =
           // undefined so the config's path can supply it.

@@ -10,7 +10,7 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Forty-one flags (plus the positional input path)
+ * The produce wizard. Forty-three flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
  * five flags (--out, --cleanup, --aspect, --produce, --intent) — twelve
  * behind one "anything else?" multiselect (--sfx being the twelfth, with
@@ -18,6 +18,12 @@ import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } 
  * debug/internal surfaces, replay-only fields, --no-watermark (the
  * multiselect only turns the credit ON; off is already the default),
  * --no-youtube (the same shape: the pack entry only turns it ON),
+ * --color-grade (2026-08-30, the --resolution shape: a channel's look is a
+ * durable machine preference, set once as `colorGrade` in
+ * ~/.ossclip/config.json rather than re-picked per wizard run — and an
+ * honest prompt would need to enumerate ~/.ossclip/luts and preview five
+ * presets, a design nobody has made; --no-color-grade then mirrors
+ * --no-watermark's tier for the same off-is-default reason),
  * --captions (the mirror case: ON is already the default, so the
  * multiselect entry is the OFF switch and the positive flag exists only for
  * replay pinning), --add-jump-cuts (same mirror: auto already punches, the

@@ -1490,6 +1490,51 @@ describe("setCaptionsHidden (the global Captions toggle)", () => {
   });
 });
 
+describe("setColorGrade (the global Color section)", () => {
+  it("stores an object, an explicit false, and DELETES the key on undefined — three states, not two", () => {
+    let s = editReducer(initialEditState(), {
+      type: "setColorGrade", value: { preset: "punchy", intensity: 0.5 },
+    });
+    expect(s.doc.colorGrade).toEqual({ preset: "punchy", intensity: 0.5 });
+    expect(s.dirty).toBe(true);
+    s = editReducer(s, { type: "setColorGrade", value: false });
+    expect(s.doc.colorGrade).toBe(false);
+    // `undefined` is "inherit", a DIFFERENT decision from `false` (produce's
+    // override layer falls through vs switches off) — so the key must go,
+    // not flip.
+    s = editReducer(s, { type: "setColorGrade", value: undefined });
+    expect("colorGrade" in s.doc).toBe(false);
+  });
+
+  it("no-op guards: re-committing the current state mints no undo step", () => {
+    const fresh = initialEditState();
+    expect(editReducer(fresh, { type: "setColorGrade", value: undefined })).toBe(fresh);
+    const graded = editReducer(fresh, { type: "setColorGrade", value: { preset: "mono" } });
+    expect(editReducer(graded, { type: "setColorGrade", value: { preset: "mono" } })).toBe(graded);
+  });
+
+  it("slider commits under one coalesce key collapse into one undo step (B5)", () => {
+    let s = editReducer(initialEditState(), {
+      type: "setColorGrade", value: { preset: "mono", intensity: 0.4 }, coalesce: "colorGrade:intensity",
+    });
+    s = editReducer(s, {
+      type: "setColorGrade", value: { preset: "mono", intensity: 0.6 }, coalesce: "colorGrade:intensity",
+    });
+    expect(s.past).toHaveLength(1);
+    s = editReducer(s, { type: "undo" });
+    expect("colorGrade" in s.doc).toBe(false);
+  });
+
+  it("round-trips the overrides schema — what the editor writes, produce parses", () => {
+    const s = editReducer(initialEditState(), {
+      type: "setColorGrade", value: { lut: "kodak.cube", exposure: 0.5 },
+    });
+    expect(OverrideDocSchema.safeParse(s.doc).success).toBe(true);
+    const off = editReducer(s, { type: "setColorGrade", value: false });
+    expect(OverrideDocSchema.safeParse(off.doc).success).toBe(true);
+  });
+});
+
 describe("cleanup veto actions (cut review step 3)", () => {
   it("setReasonEnabled(false) writes the category veto, and dirty/undo come free from commit()", () => {
     let s = editReducer(initialEditState(), {

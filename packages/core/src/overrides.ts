@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { ColorGradeSchema } from "./color-grade";
 import {
   LayoutSchema,
   SceneAnchorSchema,
@@ -527,6 +528,24 @@ export type SfxAddedPlacement = z.infer<typeof SfxAddedPlacementSchema>;
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */
   theme: ThemeSchema.partial().default({}),
+  /**
+   * Doc-global color grade — the `ColorGradeSchema` shape, or `false` for
+   * "explicitly no grade on this project". Doc-global like `theme`: a grade
+   * is one decision about the whole output, not a per-scene key. Optional
+   * with NO default (the `captionsHidden` rule) so every overrides.json
+   * written before the key existed parses byte-identically — but UNLIKE
+   * `captionsHidden`, an explicit `false` is meaningful and kept: it
+   * disables a config-level default grade for this one project, which
+   * deleting the key cannot express (absent means "let the flag, then the
+   * config, decide" — `resolveProductionColorGrade` in produce.ts owns that
+   * precedence). Schema-valid is not yet USABLE: an unknown preset id passes
+   * here (the schema cannot list what exists without going stale) and is
+   * caught by `resolveColorGrade` at the consumer, where it warns and falls
+   * through to the next layer instead of failing the whole doc. Timeless —
+   * no seconds anywhere — so `remapOverridesThroughRecut`'s `...doc` spreads
+   * carry it through a recut untouched.
+   */
+  colorGrade: z.union([ColorGradeSchema, z.literal(false)]).optional(),
   /**
    * Captions OFF for the whole video. Doc-global like `theme`, deliberately
    * NOT a per-scene key: visibility is one decision about the output —

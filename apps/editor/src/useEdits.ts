@@ -107,6 +107,14 @@ export type EditAction =
    * the hideScene/restoreScene semantics (write `true` / DELETE the key,
    * no-op guard) either way. */
   | { type: "setCaptionsHidden"; hidden: boolean }
+  /** The doc-global Color source/sliders — ONE action for all three states
+   * the key can hold (`OverrideDocSchema.colorGrade`): `undefined` DELETES
+   * the key (inherit produce's flag/config layers — the `setCaptionsHidden`
+   * delete rule, because an absent key is a different decision from `false`
+   * here, not just tidier), `false` is the explicit off, an object is the
+   * editor's own grade. `coalesce` for the sliders — one scrub, one undo
+   * step (B5). */
+  | { type: "setColorGrade"; value: OverrideDoc["colorGrade"]; coalesce?: string }
   | { type: "hideScene"; sceneId: string }
   | { type: "restoreScene"; sceneId: string }
   /** `startSec`/`endSec` are the OLD-clock historical record; `src` — when
@@ -608,6 +616,18 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // every overrides.json saved after one toggle round-trip.
       const { captionsHidden: _dropped, ...rest } = state.doc;
       return commit(rest);
+    }
+    case "setColorGrade": {
+      if (action.value === undefined) {
+        if (state.doc.colorGrade === undefined) return state;
+        const { colorGrade: _dropped, ...rest } = state.doc;
+        return commit(rest);
+      }
+      // No-op guard (setCaptionsHidden's rule): JSON equality is exact here —
+      // both sides are small plain objects this editor built with the same
+      // key order, so re-choosing the current state mints no undo step.
+      if (JSON.stringify(action.value) === JSON.stringify(state.doc.colorGrade)) return state;
+      return commit({ ...state.doc, colorGrade: action.value }, action.coalesce);
     }
     case "hideScene": {
       const scene = withScene(state.doc, action.sceneId);
@@ -1420,6 +1440,8 @@ export function useEdits() {
     addSplit: (split: { at?: number; src?: number }) =>
       dispatch({ type: "addSplit", at: split.at, src: split.src }),
     setCaptionsHidden: (hidden: boolean) => dispatch({ type: "setCaptionsHidden", hidden }),
+    setColorGrade: (value: OverrideDoc["colorGrade"], coalesce?: string) =>
+      dispatch({ type: "setColorGrade", value, coalesce }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
     restoreScene: (sceneId: string) => dispatch({ type: "restoreScene", sceneId }),
     /** `src` is OPTIONAL and its absence is meaningful: a writer with no
