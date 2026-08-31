@@ -1677,6 +1677,26 @@ export const App: React.FC = () => {
     [live, selection, ghostCues],
   );
 
+  // A deleted scene is no longer selectable (field report 2026-08-31): its
+  // window belongs to the take `fillPlainCues` minted, and edits keyed to
+  // the DELETED id land nowhere the player reads — the Inspector's sliders
+  // moved and nothing changed on stage. So a selection resolving to a hidden
+  // scene remaps to the live cue covering its window (the take), where the
+  // same controls actually work; Restore rides that take's panel. Runs for a
+  // fresh delete (selection was on the scene when the modal committed) and
+  // for a stale selection restored from any earlier state.
+  useEffect(() => {
+    if (!selection || !live) return;
+    if (edits.doc.scenes[selection.sceneId]?.hidden !== true) return;
+    const ghost = ghostCues.find((c) => c.id === selection.sceneId);
+    const mid = ghost ? (ghost.startSec + ghost.endSec) / 2 : null;
+    const covering =
+      mid !== null
+        ? live.sceneCues.find((c) => c.startSec <= mid && mid < c.endSec)
+        : undefined;
+    setSelection(covering ? { sceneId: covering.id, elementId: null } : null);
+  }, [selection, live, edits.doc.scenes, ghostCues]);
+
   // The words the selected cue is on screen FOR — "tracking transcript" as a
   // checkable fact rather than a claim (PLAN Task 6). Captions are the words
   // in output time, so the cue's window selects exactly its anchor text.
@@ -2562,6 +2582,10 @@ export const App: React.FC = () => {
             sfxLibrary={sfxLibrary}
             sfxEnabled={sfxPlan.sfx !== null}
             lutMenu={lutMenu}
+            // Deleted scenes at their live windows: the plain take covering
+            // one offers its Restore (field report 2026-08-31 — the ghost
+            // block is gone from the timeline, the take IS the selection).
+            deletedScenes={ghostCues}
             sfxWordAtPlayhead={() => {
               // Read at the CLICK, off the player (the CoverPanel's
               // `playheadSec` idiom), and resolved through the same anchors
@@ -2575,7 +2599,6 @@ export const App: React.FC = () => {
       </div>
       <Timeline
         cues={live.sceneCues}
-        ghosts={ghostCues}
         cuts={edits.doc.cuts}
         // The CURRENT render-props' spans (PLAN 2026-08-04 Task 4c fix
         // wave, review finding 1) — Timeline needs these to place an

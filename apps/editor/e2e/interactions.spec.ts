@@ -442,34 +442,21 @@ test("Delete turns a scene into a restorable ghost and its window into a take (T
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("delete-scene-modal")).toHaveCount(0);
 
-  // The block goes ghost — dashed, still selectable under the same testid —
-  // and stays selected, so the Inspector is already offering the way back.
-  await expect(block).toHaveCSS("border-style", "dashed");
-  await expect(page.getByTestId("restore-scene")).toBeVisible();
+  // The scene block is GONE from the timeline — not a selectable ghost
+  // (field report 2026-08-31: edits on the deleted id landed nowhere the
+  // player reads). The selection remaps to the take that took over the
+  // window, whose panel carries the way back.
+  await expect(block).toHaveCount(0);
+  await expect(page.getByTestId("restore-scene-scene-3")).toBeVisible();
   // …and on disk the delete is soft: hidden: true under the scene's id.
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
   const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
   expect(doc.scenes["scene-3"].hidden).toBe(true);
 
-  // The freed window became a plain take (Task C7's payoff for Task A):
-  // some take block now spans the ghost's centre.
-  const ghostBox = (await block.boundingBox())!;
-  const ghostCentre = ghostBox.x + ghostBox.width / 2;
-  const takes = page.locator('[data-testid^="timeline-block-take-"]');
-  await expect
-    .poll(async () => {
-      const n = await takes.count();
-      for (let i = 0; i < n; i++) {
-        const b = await takes.nth(i).boundingBox();
-        if (b && b.x <= ghostCentre && b.x + b.width >= ghostCentre) return true;
-      }
-      return false;
-    })
-    .toBe(true);
-
-  // Restore DELETES the key — not hidden: false — and the block comes back solid.
-  await page.getByTestId("restore-scene").click();
+  // Restore DELETES the key — not hidden: false — and the block comes back.
+  await page.getByTestId("restore-scene-scene-3").click();
+  await expect(block).toHaveCount(1);
   await expect(block).toHaveCSS("border-style", "solid");
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);

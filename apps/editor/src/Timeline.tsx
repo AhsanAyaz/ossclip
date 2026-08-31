@@ -40,8 +40,6 @@ interface CutEntry {
 interface TimelineProps {
   /** The LIVE (override-applied) cues — same array the Player renders from. */
   cues: readonly SceneCue[];
-  /** Deleted scenes at their base timing — drawn as restorable ghosts. */
-  ghosts: readonly SceneCue[];
   /**
    * User cuts (`doc.cuts`, PLAN 2026-08-04 Task 4c). Two rendering modes,
    * keyed on `src` (review fix wave, finding 1) — see the `cuts.map` below
@@ -413,7 +411,6 @@ const useSfxPreview = (
  */
 export const Timeline: React.FC<TimelineProps> = ({
   cues,
-  ghosts,
   cuts = [],
   spans = [],
   cleanup = [],
@@ -1406,42 +1403,6 @@ export const Timeline: React.FC<TimelineProps> = ({
                       />
                     </>
                   ) : null}
-                </div>
-              );
-            })}
-            {ghosts.map((cue) => {
-              // A deleted scene (PLAN Task C5): dashed, hollow, painted ABOVE the
-              // plain take that took over its window (DOM order stacks it later).
-              // Same testid shape as a live block so selection — and the e2e —
-              // keep working; clicking it is how the Inspector offers Restore.
-              const left = durationSec > 0 ? (cue.startSec / durationSec) * 100 : 0;
-              const width =
-                durationSec > 0 ? Math.max(0, ((cue.endSec - cue.startSec) / durationSec) * 100) : 0;
-              const isSelected = selection?.sceneId === cue.id;
-              return (
-                <div
-                  key={`ghost-${cue.id}`}
-                  data-testid={`timeline-block-${cue.id}`}
-                  onMouseDown={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    onSelect({ sceneId: cue.id, elementId: null });
-                  }}
-                  style={{
-                    ...block,
-                    left: `${left}%`,
-                    width: `${width}%`,
-                    // Level 2: "the ghost paints above the take that took over
-                    // its window" is now a stated rule, not an accident of DOM
-                    // order (PLAN R11 Task 1). Selected ghosts join level 3.
-                    zIndex: isSelected ? 3 : 2,
-                    border: isSelected ? "2px dashed #5b8cff" : "1px dashed #6a6a75",
-                    background: "transparent",
-                  }}
-                >
-                  <span style={{ ...blockLabel, color: "#6a6a75", textDecoration: "line-through" }}>
-                    {cue.id}
-                  </span>
                 </div>
               );
             })}

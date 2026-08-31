@@ -51,21 +51,24 @@ test("Delete asks before it deletes, naming the scene and preselecting the graph
   await expect(page.getByTestId("timeline-block-scene-5")).toHaveCSS("border-style", "solid");
 });
 
-test("Enter takes the default: the graphic goes ghost, and ⌘Z brings it back", async ({ page }) => {
+test("Enter takes the default: the block leaves the timeline, and ⌘Z brings it back", async ({ page }) => {
   const modal = await openOn(page, "scene-5");
   await expect(modal).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(modal).toHaveCount(0);
 
+  // The deleted scene has no block and no selection of its own any more
+  // (field report 2026-08-31) — the selection remaps to the covering take,
+  // whose panel carries the Restore chip.
   const block = page.getByTestId("timeline-block-scene-5");
-  await expect(block).toHaveCSS("border-style", "dashed");
-  await expect(page.getByTestId("restore-scene")).toBeVisible();
+  await expect(block).toHaveCount(0);
+  await expect(page.getByTestId("restore-scene-scene-5")).toBeVisible();
 
   // Undoable like every other edit — the modal adds friction, not a second
   // edit mechanism that escapes the history.
   await page.keyboard.press("Meta+z");
-  await expect(block).toHaveCSS("border-style", "solid");
-  await expect(page.getByTestId("restore-scene")).toHaveCount(0);
+  await expect(block).toHaveCount(1);
+  await expect(page.getByTestId("restore-scene-scene-5")).toHaveCount(0);
 });
 
 test("Escape cancels, deleting nothing and leaving the selection alone", async ({ page }) => {
@@ -137,18 +140,18 @@ test("the shortcuts reference documents the key", async ({ page }) => {
   await expect(page.getByTestId("shortcuts-modal")).toContainText("graphic or whole take");
 });
 
-test("a deleted scene keeps its take controls — Restore is a button, not the whole panel (2026-08-31)", async ({
+test("deleting a scene lands on the covering take: real controls plus a Restore chip (2026-08-31)", async ({
   page,
 }) => {
   const modal = await openOn(page, "scene-5");
   await page.keyboard.press("Enter");
   await expect(modal).toHaveCount(0);
 
-  // The ghost window plays as a plain take, so the panel must offer what a
-  // plain take's does — framing, layout, the chunk delete — with Restore as
-  // a banner on top. The original ghost branch returned Restore ALONE and
-  // silently dropped every take control (field report 2026-08-31).
-  await expect(page.getByTestId("restore-scene")).toBeVisible();
+  // The window plays as the take `fillPlainCues` minted, and the selection
+  // remapped onto it — so the panel is a REAL take panel (edits land on the
+  // id the player reads; the first fix put the controls on the deleted id,
+  // where every slider was dead) with the Restore chip riding it.
+  await expect(page.getByTestId("restore-scene-scene-5")).toBeVisible();
   await expect(page.getByTestId("layout-select")).toBeVisible();
   await expect(page.getByTestId("zoom-slider")).toBeVisible();
   await expect(page.getByTestId("cut-chunk")).toBeVisible();
@@ -156,5 +159,5 @@ test("a deleted scene keeps its take controls — Restore is a button, not the w
   await expect(page.getByTestId("delete-scene")).toHaveCount(0);
 
   await page.keyboard.press("Meta+z");
-  await expect(page.getByTestId("restore-scene")).toHaveCount(0);
+  await expect(page.getByTestId("restore-scene-scene-5")).toHaveCount(0);
 });

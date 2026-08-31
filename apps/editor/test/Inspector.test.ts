@@ -248,7 +248,7 @@ describe("Inspector — destructive/mutating buttons blur on click (PLAN 2026-08
     container.remove();
   });
 
-  it("delete-scene: the click swaps the whole panel (unmounts the button) — focus lands on body either way", async () => {
+  it("delete-scene: the click hides the scene and blurs — the panel swap is App's remap now", async () => {
     await act(async () => {
       root.render(React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }));
     });
@@ -259,8 +259,10 @@ describe("Inspector — destructive/mutating buttons blur on click (PLAN 2026-08
     await act(async () => {
       btn.click();
     });
-    // The button is gone — this IS the ghost/restore panel now.
-    expect(container.querySelector('[data-testid="delete-scene"]')).toBeNull();
+    // Since the 2026-08-31 redesign the Inspector no longer branches on
+    // `hidden` itself — a hidden selection is remapped by App onto the
+    // covering take (which carries the Restore chip), so in this harness the
+    // panel stays mounted. The button's own blur contract still holds.
     expect(document.activeElement).toBe(document.body);
   });
 

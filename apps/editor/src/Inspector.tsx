@@ -155,6 +155,14 @@ interface InspectorProps {
    */
   lutMenu?: LutMenu;
   /**
+   * Deleted scenes at their LIVE windows (App's ghostCues) — the plain take
+   * covering one offers its Restore chip. A hidden scene has no block and no
+   * selection of its own any more (field report 2026-08-31): the take the
+   * fill minted is the cue the player reads, so it owns the controls AND the
+   * way back.
+   */
+  deletedScenes?: readonly SceneCue[];
+  /**
    * The transcript word under the playhead, read AT THE CLICK — the
    * CoverPanel's `playheadSec` idiom: the panel must not re-render on every
    * frame just to keep a number it needs once. Null when no word is there to
@@ -550,6 +558,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   sfxLibrary = [],
   sfxEnabled = false,
   lutMenu = EMPTY_LUT_MENU,
+  deletedScenes = [],
   sfxWordAtPlayhead = (): number | null => null,
 }) => {
   if (sfxMarker) {
@@ -894,15 +903,19 @@ export const Inspector: React.FC<InspectorProps> = ({
   }
 
   if (selection && cue) {
-    // A deleted scene (PLAN Task C4, widened 2026-08-31): its window plays
-    // as a plain take, so the panel IS the plain-take panel — layout,
-    // framing, captions, timing, Delete this chunk — with the Restore banner
-    // on top. The original ghost branch returned Restore ALONE, which lost
-    // every take control the user still legitimately owns on that window
-    // (the graphic's own prop editors stay gated off via `isPlain` below —
-    // those really would edit a scene that isn't rendering).
-    const ghostScene = edits.doc.scenes[selection.sceneId]?.hidden === true;
-    const isPlain = cue.kind === "plain" || ghostScene;
+    const isPlain = cue.kind === "plain";
+    // Deleted scenes whose window this cue covers (field report 2026-08-31,
+    // second round): a hidden scene is not selectable anywhere any more —
+    // App remaps such a selection to the take `fillPlainCues` minted, which
+    // is the cue the player actually reads, so the framing/caption controls
+    // WORK (edits keyed to the deleted id landed nowhere). Restore rides
+    // this take's panel as a chip per covered scene.
+    const restorableScenes = isPlain
+      ? deletedScenes.filter((g) => {
+          const mid = (g.startSec + g.endSec) / 2;
+          return mid >= cue.startSec && mid < cue.endSec;
+        })
+      : [];
     // A cut chunk, NOT YET APPLIED (PLAN 2026-08-04 Task 4c; keyed to
     // `src`-LESS cuts only per the review fix wave's finding 1): matched by
     // exact window equality against `cue`'s OWN startSec/endSec. Safe as
@@ -999,37 +1012,40 @@ export const Inspector: React.FC<InspectorProps> = ({
     return (
       <div>
         <div style={section}>
-          <span style={label}>{ghostScene ? "Scene" : isPlain ? "Take" : "Scene"}</span>
+          <span style={label}>{isPlain ? "Take" : "Scene"}</span>
           <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
             {selection.sceneId}
-            {ghostScene ? (
-              <span style={{ color: "#9A9AA3", fontWeight: 400 }}> (deleted)</span>
-            ) : null}
           </div>
-          {ghostScene ? (
-            <>
-              <div style={{ fontSize: 12, color: "#9A9AA3" }}>
-                Its window plays as a plain take — frame it below. Restore
-                brings the graphic back.
-              </div>
-              <button
-                data-testid="restore-scene"
-                style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
-                onClick={() => {
-                  blurActive();
-                  edits.restoreScene(selection.sceneId);
-                }}
-              >
-                Restore scene
-              </button>
-            </>
-          ) : isPlain ? (
+          {isPlain ? (
             <div style={{ fontSize: 12, color: "#9A9AA3" }}>
               A continuous stretch of the talking head — no graphic. Frame it
               below; its window follows the cut.
             </div>
           ) : null}
         </div>
+        {restorableScenes.length > 0 ? (
+          <div style={section}>
+            <span style={label}>Deleted here</span>
+            {restorableScenes.map((g) => (
+              <React.Fragment key={g.id}>
+                <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+                  <span style={{ fontFamily: "ui-monospace, monospace" }}>{g.id}</span>
+                  {" — its graphic is off; the window plays as this take."}
+                </div>
+                <button
+                  data-testid={`restore-scene-${g.id}`}
+                  style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
+                  onClick={() => {
+                    blurActive();
+                    edits.restoreScene(g.id);
+                  }}
+                >
+                  Restore {g.id}
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
+        ) : null}
         <div style={section}>
           {!isPlain && cue.component ? (
             <div style={row}>
