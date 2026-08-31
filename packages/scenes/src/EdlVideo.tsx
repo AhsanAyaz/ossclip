@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { AbsoluteFill, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import type { KeptSpan } from "@ossclip/core/browser";
-import { frameWindow } from "./frames";
+import { frameWindow, playableSpans } from "./frames";
 import { punchScalesFor, type PunchPlan } from "./punch-plan";
 
 export interface EdlVideoProps {
@@ -39,7 +39,7 @@ export interface EdlVideoProps {
  */
 export const EdlVideo: React.FC<EdlVideoProps> = ({
   src,
-  spans,
+  spans: rawSpans,
   punchInScale = 1.07,
   punch = null,
   punchThresholdSec = 0.15,
@@ -47,6 +47,12 @@ export const EdlVideo: React.FC<EdlVideoProps> = ({
   background = "black",
 }) => {
   const { fps } = useVideoConfig();
+
+  // A span whose source window rounds to zero frames would mount
+  // <OffthreadVideo trimBefore={n} trimAfter={n}> — a Remotion validation
+  // THROW that blanks the whole Player (the 2026-08-31 ADK crash). Filtered
+  // here, not just at the writers, so docs saved by older versions render.
+  const spans = useMemo(() => playableSpans(rawSpans, fps), [rawSpans, fps]);
 
   // Extracted to punch-plan.ts so the mask/parity interaction is testable
   // without mounting a composition; the loop there is the reference

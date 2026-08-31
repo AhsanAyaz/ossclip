@@ -28,3 +28,19 @@ export function frameWindow(
   const to = Math.round(endSec * fps);
   return { from, durationInFrames: Math.max(1, to - from) };
 }
+
+/**
+ * Drop spans whose SOURCE window rounds to zero frames at this fps. Such a
+ * span cannot be played — `<OffthreadVideo trimBefore={n} trimAfter={n}>` is
+ * a Remotion validation THROW, and inside the Player that error boundary
+ * blanks the entire preview and stops playback (the 2026-08-31 ADK crash:
+ * a 3-decimal-rounded user cut left a 125µs keep sliver). recut.ts absorbs
+ * new slivers at the source; this filter is the defense-in-depth for docs
+ * older versions already saved.
+ */
+export function playableSpans<T extends { srcIn: number; srcOut: number }>(
+  spans: readonly T[],
+  fps: number,
+): T[] {
+  return spans.filter((sp) => Math.round(sp.srcOut * fps) > Math.round(sp.srcIn * fps));
+}

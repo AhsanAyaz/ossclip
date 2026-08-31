@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { frameWindow } from "../src/frames";
+import { frameWindow, playableSpans } from "../src/frames";
 
 /**
  * FINDINGS §115. Adjacent <Sequence> windows must never share a frame: the
@@ -101,5 +101,31 @@ describe("frameWindow (§115: the end frame comes from the end TIME)", () => {
     expect(frameWindow(1.0, 2.0, 30)).toEqual({ from: 30, durationInFrames: 30 });
     // 1.49 frames of lead-in rounds to 1, not truncated to 0.
     expect(frameWindow(0.049, 1.0, 30).from).toBe(1);
+  });
+});
+
+describe("playableSpans (§ADK crash, 2026-08-31)", () => {
+  // A span whose source window rounds to zero frames must never reach
+  // <OffthreadVideo>: trimBefore === trimAfter is a Remotion throw that
+  // takes down the whole player, not one blank span. The core-side sliver
+  // absorption (recut.ts) prevents NEW slivers; this filter is the
+  // defense-in-depth for spans already saved by older versions.
+  it("drops a span that rounds to an empty trim window", () => {
+    const spans = [
+      { srcIn: 0, srcOut: 3.97, outIn: 0, outOut: 3.97 },
+      { srcIn: 6.659, srcOut: 6.659125, outIn: 3.97, outOut: 3.970125 },
+      { srcIn: 7.718, srcOut: 32.123, outIn: 3.970125, outOut: 28.375125 },
+    ];
+    const out = playableSpans(spans, 30);
+    expect(out.map((s) => s.srcIn)).toEqual([0, 7.718]);
+  });
+
+  it("keeps a one-frame span — short but playable", () => {
+    const spans = [{ srcIn: 1, srcOut: 1.034, outIn: 0, outOut: 0.034 }];
+    expect(playableSpans(spans, 30)).toEqual(spans);
+  });
+
+  it("empty input passes through", () => {
+    expect(playableSpans([], 30)).toEqual([]);
   });
 });

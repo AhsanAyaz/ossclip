@@ -269,6 +269,11 @@ export function resolveCutSourceRanges(
  * user cut exactly like an automatic one, with no separate report path
  * needed for "what got removed."
  */
+/** See the sliver comment inside `subtractRangesFromCutlist` — a keep this
+ * short only ever comes from rounded cut edges meeting full-precision span
+ * floats, and it crashes the Remotion player if it survives. */
+const SLIVER_EPS = 0.002;
+
 export function subtractRangesFromCutlist(
   cutlist: readonly Segment[],
   ranges: readonly { start: number; end: number }[],
@@ -292,11 +297,35 @@ export function subtractRangesFromCutlist(
       const overlapStart = Math.max(cursor, r.start);
       const overlapEnd = Math.min(seg.srcOut, r.end);
       if (overlapStart >= overlapEnd) continue;
-      if (overlapStart > cursor) out.push({ srcIn: cursor, srcOut: overlapStart, kind: "keep" });
-      out.push({ srcIn: overlapStart, srcOut: overlapEnd, kind: "remove", reason: "user", confidence: 1 });
+      // A keep sliver shorter than SLIVER_EPS joins the removal instead of
+      // surviving as its own segment (2026-08-31, the ADK crash): the cut
+      // writers round `src` to 3 decimals while the cutlist keeps full float
+      // precision, so the honest set difference can leave a keep of ~100µs.
+      // EdlVideo rounds both ends of such a span to the SAME frame and
+      // Remotion throws ("trimAfter must be greater than trimBefore"),
+      // blanking the whole player — in the preview AND the next render.
+      // 2ms covers the worst rounding drift (0.5ms per edge) and is far
+      // under one frame at any real fps, so nothing watchable is lost.
+      if (overlapStart - cursor >= SLIVER_EPS) {
+        out.push({ srcIn: cursor, srcOut: overlapStart, kind: "keep" });
+        out.push({ srcIn: overlapStart, srcOut: overlapEnd, kind: "remove", reason: "user", confidence: 1 });
+      } else {
+        out.push({ srcIn: cursor, srcOut: overlapEnd, kind: "remove", reason: "user", confidence: 1 });
+      }
       cursor = overlapEnd;
     }
-    if (cursor < seg.srcOut) out.push({ srcIn: cursor, srcOut: seg.srcOut, kind: "keep" });
+    if (seg.srcOut - cursor >= SLIVER_EPS) {
+      out.push({ srcIn: cursor, srcOut: seg.srcOut, kind: "keep" });
+    } else if (cursor < seg.srcOut) {
+      // Tail sliver: extend the removal that ends at `cursor` (there always
+      // is one — cursor only advances past a pushed removal).
+      const last = out[out.length - 1];
+      if (last && last.kind === "remove" && last.srcOut === cursor) {
+        out[out.length - 1] = { ...last, srcOut: seg.srcOut };
+      } else {
+        out.push({ srcIn: cursor, srcOut: seg.srcOut, kind: "remove", reason: "user", confidence: 1 });
+      }
+    }
   }
   return out;
 }

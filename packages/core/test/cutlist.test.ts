@@ -727,3 +727,50 @@ describe("dismissedRemovals + the applyCleanupChoices union (cut-review rework, 
     expect(dismissedRemovals(withUser, { dismissed: [{ srcIn: 5, srcOut: 6 }] })).toEqual([]);
   });
 });
+
+describe("subtractRangesFromCutlist absorbs sub-frame keep slivers (§ADK crash, 2026-08-31)", () => {
+  // The real numbers from the crash: the delete gesture rounds `src` to 3
+  // decimals (App.tsx write boundary), the cutlist keeps full float
+  // precision, and the honest set difference left keep slivers of 0.000125s.
+  // EdlVideo rounds both ends of such a span to the SAME frame and Remotion
+  // throws "trimAfter must be greater than trimBefore" — the player blanks.
+  const cutlist: Segment[] = [
+    { srcIn: 0, srcOut: 3.9701880000000003, kind: "keep" },
+    { srcIn: 3.9701880000000003, srcOut: 4.884438, kind: "remove", reason: "silence", confidence: 0.9 },
+    { srcIn: 4.884438, srcOut: 6.659125, kind: "keep" },
+    { srcIn: 6.659125, srcOut: 7.71825, kind: "remove", reason: "silence", confidence: 0.9 },
+    { srcIn: 7.71825, srcOut: 94.58, kind: "keep" },
+  ];
+
+  const expectNoKeepSlivers = (segments: Segment[]): void => {
+    for (const seg of segments) {
+      if (seg.kind === "keep") expect(seg.srcOut - seg.srcIn).toBeGreaterThan(0.002);
+    }
+  };
+
+  it("a rounded user cut leaves no sub-frame keep sliver (the ADK repro)", () => {
+    const out = subtractRangesFromCutlist(cutlist, [{ start: 3.97, end: 6.659 }]);
+    expectNoKeepSlivers(out);
+    // Still a full partition — TimeMap accepts it, nothing lost.
+    expect(out[0]!.srcIn).toBe(0);
+    expect(out[out.length - 1]!.srcOut).toBe(94.58);
+    for (let i = 1; i < out.length; i++) expect(out[i]!.srcIn).toBe(out[i - 1]!.srcOut);
+    expect(() => new TimeMap(out)).not.toThrow();
+    // The sliver's material is REMOVED (it joined the user cut), not kept.
+    const holder = out.find((s) => s.srcIn <= 6.6591 && 6.6591 < s.srcOut);
+    expect(holder?.kind).toBe("remove");
+  });
+
+  it("a sliver at the START of a keep segment is absorbed too", () => {
+    // Cut begins a hair after a keep boundary: [4.8845..6.659125] leaves
+    // a 62µs head sliver at 4.884438.
+    const out = subtractRangesFromCutlist(cutlist, [{ start: 4.8845, end: 6.659125 }]);
+    expectNoKeepSlivers(out);
+    expect(() => new TimeMap(out)).not.toThrow();
+  });
+
+  it("a legitimate short keep well above the epsilon survives", () => {
+    const out = subtractRangesFromCutlist(cutlist, [{ start: 4.884438, end: 6.5 }]);
+    expect(out).toContainEqual({ srcIn: 6.5, srcOut: 6.659125, kind: "keep" });
+  });
+});
