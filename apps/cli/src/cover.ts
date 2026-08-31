@@ -468,6 +468,24 @@ export function coverTextHold(args: {
         `(--cover-text-reset, or deleting ${COVER_PROVENANCE_BASENAME}, goes back to the generated one)`,
     };
   }
+  // The replay-render gap (field report 2026-08-31): a run without --produce
+  // generates NO headline, and letting that empty string win silently
+  // downgraded a banner cover to a bare frame on every render-from-the-
+  // editor. A persisted headline of ANY source outranks an empty generation
+  // — there is no fresher text to prefer. `reset` still goes bare: that is
+  // the user explicitly asking for the generated (here: no) headline.
+  if (
+    !args.reset &&
+    args.generated.trim() === "" &&
+    args.persisted !== null &&
+    args.persisted.text.trim() !== ""
+  ) {
+    return {
+      text: args.persisted.text,
+      textSource: args.persisted.textSource,
+      message: `▸ cover: keeping the previous headline "${args.persisted.text}" (this run generated none)`,
+    };
+  }
   return { text: args.generated, textSource: "beatsheet" };
 }
 

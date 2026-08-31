@@ -506,6 +506,37 @@ describe("coverTextHold", () => {
     }
   });
 
+  // The replay-render gap (field report 2026-08-31): a run WITHOUT --produce
+  // generates no headline at all, and letting the empty string beat the
+  // persisted beatsheet text silently downgraded a banner cover to a bare
+  // frame on every render-from-the-editor.
+  it("an empty generated text falls back to the persisted headline, any source", () => {
+    const held = coverTextHold({
+      generated: "",
+      persisted: { text: "LAST RUN'S", textSource: "beatsheet" },
+      reset: false,
+    });
+    expect(held.text).toBe("LAST RUN'S");
+    expect(held.textSource).toBe("beatsheet");
+    expect(held.message).toContain("LAST RUN'S");
+  });
+
+  it("an empty generated text with nothing persisted stays a bare cover", () => {
+    expect(coverTextHold({ generated: "", persisted: null, reset: false })).toEqual({
+      text: "",
+      textSource: "beatsheet",
+    });
+  });
+
+  it("--cover-text-reset on an empty generated text goes bare, as asked", () => {
+    const held = coverTextHold({
+      generated: "",
+      persisted: { text: "LAST RUN'S", textSource: "beatsheet" },
+      reset: true,
+    });
+    expect(held.text).toBe("");
+  });
+
   // produce persists the text it RENDERED, so a §34 run (the frame carried
   // the source's own title) writes text: "". Holding that would silently ban
   // the banner from every future run of this project.
