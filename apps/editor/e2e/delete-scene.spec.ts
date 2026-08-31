@@ -136,3 +136,25 @@ test("the shortcuts reference documents the key", async ({ page }) => {
   await expect(page.getByTestId("shortcuts-modal")).toContainText("delete / backspace");
   await expect(page.getByTestId("shortcuts-modal")).toContainText("graphic or whole take");
 });
+
+test("a deleted scene keeps its take controls — Restore is a button, not the whole panel (2026-08-31)", async ({
+  page,
+}) => {
+  const modal = await openOn(page, "scene-5");
+  await page.keyboard.press("Enter");
+  await expect(modal).toHaveCount(0);
+
+  // The ghost window plays as a plain take, so the panel must offer what a
+  // plain take's does — framing, layout, the chunk delete — with Restore as
+  // a banner on top. The original ghost branch returned Restore ALONE and
+  // silently dropped every take control (field report 2026-08-31).
+  await expect(page.getByTestId("restore-scene")).toBeVisible();
+  await expect(page.getByTestId("layout-select")).toBeVisible();
+  await expect(page.getByTestId("zoom-slider")).toBeVisible();
+  await expect(page.getByTestId("cut-chunk")).toBeVisible();
+  // The graphic's own editors stay off — that scene is not rendering.
+  await expect(page.getByTestId("delete-scene")).toHaveCount(0);
+
+  await page.keyboard.press("Meta+z");
+  await expect(page.getByTestId("restore-scene")).toHaveCount(0);
+});

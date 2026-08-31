@@ -894,35 +894,15 @@ export const Inspector: React.FC<InspectorProps> = ({
   }
 
   if (selection && cue) {
-    const isPlain = cue.kind === "plain";
-    // A deleted scene (PLAN Task C4): the ghost selection resolves here, and
-    // the ONLY offer is the way back — its other controls would edit a scene
-    // that isn't rendering.
-    if (edits.doc.scenes[selection.sceneId]?.hidden === true) {
-      return (
-        <div>
-          <div style={section}>
-            <span style={label}>Scene</span>
-            <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
-              {selection.sceneId} <span style={{ color: "#9A9AA3", fontWeight: 400 }}>(deleted)</span>
-            </div>
-            <div style={{ fontSize: 12, color: "#9A9AA3" }}>
-              Its window plays as a plain take. Restore brings the graphic back.
-            </div>
-            <button
-              data-testid="restore-scene"
-              style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
-              onClick={() => {
-                blurActive();
-                edits.restoreScene(selection.sceneId);
-              }}
-            >
-              Restore scene
-            </button>
-          </div>
-        </div>
-      );
-    }
+    // A deleted scene (PLAN Task C4, widened 2026-08-31): its window plays
+    // as a plain take, so the panel IS the plain-take panel — layout,
+    // framing, captions, timing, Delete this chunk — with the Restore banner
+    // on top. The original ghost branch returned Restore ALONE, which lost
+    // every take control the user still legitimately owns on that window
+    // (the graphic's own prop editors stay gated off via `isPlain` below —
+    // those really would edit a scene that isn't rendering).
+    const ghostScene = edits.doc.scenes[selection.sceneId]?.hidden === true;
+    const isPlain = cue.kind === "plain" || ghostScene;
     // A cut chunk, NOT YET APPLIED (PLAN 2026-08-04 Task 4c; keyed to
     // `src`-LESS cuts only per the review fix wave's finding 1): matched by
     // exact window equality against `cue`'s OWN startSec/endSec. Safe as
@@ -1019,11 +999,31 @@ export const Inspector: React.FC<InspectorProps> = ({
     return (
       <div>
         <div style={section}>
-          <span style={label}>{isPlain ? "Take" : "Scene"}</span>
+          <span style={label}>{ghostScene ? "Scene" : isPlain ? "Take" : "Scene"}</span>
           <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
             {selection.sceneId}
+            {ghostScene ? (
+              <span style={{ color: "#9A9AA3", fontWeight: 400 }}> (deleted)</span>
+            ) : null}
           </div>
-          {isPlain ? (
+          {ghostScene ? (
+            <>
+              <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+                Its window plays as a plain take — frame it below. Restore
+                brings the graphic back.
+              </div>
+              <button
+                data-testid="restore-scene"
+                style={{ ...button, color: "#5FBF77", border: "1px solid #24402c" }}
+                onClick={() => {
+                  blurActive();
+                  edits.restoreScene(selection.sceneId);
+                }}
+              >
+                Restore scene
+              </button>
+            </>
+          ) : isPlain ? (
             <div style={{ fontSize: 12, color: "#9A9AA3" }}>
               A continuous stretch of the talking head — no graphic. Frame it
               below; its window follows the cut.
