@@ -874,8 +874,12 @@ export function buildProgram(): Command {
     )
     .option(
       "--whisper-backend <backend>",
+      // Same sentence as produce's, deliberately: `transcribe` is the command
+      // a user drives while SETTING remote transcription up, so the half that
+      // says the URL is the real switch cannot be the half that is dropped here.
       "local | remote. local (default) runs whisper.cpp on this machine; remote posts the " +
-        "audio to the OpenAI-compatible server in OSSCLIP_WHISPER_URL (config: whisperUrl)",
+        "audio to the OpenAI-compatible server in OSSCLIP_WHISPER_URL (config: whisperUrl) — " +
+        "configuring that URL already implies remote, so this flag is mainly `local` to opt out",
     )
     .action(async (input: string, opts) => {
       const cleanup = CleanupLevelSchema.parse(opts.cleanup);
@@ -937,8 +941,12 @@ export function buildProgram(): Command {
     )
     .option(
       "--whisper-backend <backend>",
+      // Same sentence as produce's, deliberately: `transcribe` is the command
+      // a user drives while SETTING remote transcription up, so the half that
+      // says the URL is the real switch cannot be the half that is dropped here.
       "local | remote. local (default) runs whisper.cpp on this machine; remote posts the " +
-        "audio to the OpenAI-compatible server in OSSCLIP_WHISPER_URL (config: whisperUrl)",
+        "audio to the OpenAI-compatible server in OSSCLIP_WHISPER_URL (config: whisperUrl) — " +
+        "configuring that URL already implies remote, so this flag is mainly `local` to opt out",
     )
     .option(
       "--blooper-marker <word>",
