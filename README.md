@@ -210,6 +210,7 @@ Worth knowing:
 - **`--whisper-translate` needs the local backend.** The API translates on a different endpoint *and* a different default model, so ossclip refuses the combination rather than silently swapping both.
 - **Your audio leaves the machine** on this path — that is the trade. The local backend is the default precisely because it is the private one.
 - The opus encode needs `libopus`; the ffmpeg `ossclip setup` installs has it, a minimal custom build may not (ffmpeg's own error says so).
+- **Corporate networks with TLS inspection**: if `curl` reaches the server but ossclip says `remote transcription unreachable … fetch failed`, your network re-signs TLS with a company CA that macOS trusts but Node does not (Node ships its own CA list and ignores the system keychain). Export the company root CA to a `.pem` and set `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` — found live on such a network 2026-09-01: `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` under the hood.
 
 ### Which model runs
 
