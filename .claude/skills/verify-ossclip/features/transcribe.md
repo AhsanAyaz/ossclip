@@ -11,6 +11,13 @@ heart of the product: everything else consumes what it decides.
 - Caption line layout, written into `render-props.json` as `captionLines`
 - Framing: face detection, subject classification per span, crop and zoom planning
 - Non-Latin languages via `--whisper-language` (Urdu shipped 2026-08-19)
+- Remote transcription via an OpenAI-compatible server (`OSSCLIP_WHISPER_URL`, `--whisper-backend`).
+  Proven live 2026-09-01 against Groq (`whisper-large-v3-turbo`): fixture gave the same 22 words in
+  0.5s, `transcript-key.json` carried `backend: "remote:…"`, and re-running without the URL printed
+  the cache-mismatch line and re-transcribed locally. Drive it with
+  `OSSCLIP_WHISPER_URL=… pnpm ossclip transcribe fixtures/fixture.mp4 --workdir $(mktemp -d)` —
+  no `--transcript`, or branch C never runs. On a TLS-inspecting network export the corp CA and set
+  `NODE_EXTRA_CA_CERTS`, else node fetch dies with UNABLE_TO_GET_ISSUER_CERT_LOCALLY while curl works.
 
 ## How to get to it (user POV)
 
