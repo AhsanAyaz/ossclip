@@ -1,0 +1,2 @@
+ts	phase	decision	why	evidence	result
+2026-09-01T19:23:41Z	decision	lut-from-stills feature killed by user after prototype review: user's new motivated-lighting footage beat both LUT variants; movie-reference transfer fights any scene whose palette disagrees	prototype-before-feature caught this for the cost of ~200 throwaway lines; branch deleted (was never pushed)	~/Desktop/lut-review triptychs	killed
