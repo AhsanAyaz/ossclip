@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   dropRepetitionBursts,
+  normalizeWords,
   parseWhisperJson,
   parseWhisperOutput,
   REPETITION_BURST_MIN,
@@ -351,5 +352,65 @@ describe("parseWhisperOutput — §130 token-split multibyte repair", () => {
     const t = parseWhisperOutput(buf);
     expect(t.words.map((w) => w.text)).toEqual(["ok", "done"]);
     expect(t.words[0]).toMatchObject({ start: 0, end: 0.4 });
+  });
+});
+
+describe("normalizeWords — the stamp hygiene every backend shares", () => {
+  // Extracted from parseWhisperJson's tail (2026-09-01) so the remote backend
+  // runs the identical two passes; these pin it directly, since a remote
+  // response never goes through the whisper.cpp parser that used to own them.
+  it("gives a zero-length word the 50ms floor", () => {
+    expect(normalizeWords([{ text: "a", start: 1, end: 1 }])).toEqual([
+      { text: "a", start: 1, end: 1.05 },
+    ]);
+  });
+
+  it("repairs an inverted stamp the same way", () => {
+    expect(normalizeWords([{ text: "a", start: 2, end: 1.5 }])).toEqual([
+      { text: "a", start: 2, end: 2.05 },
+    ]);
+  });
+
+  it("clamps an overlapping neighbor's start to the previous end", () => {
+    expect(
+      normalizeWords([
+        { text: "a", start: 0, end: 1 },
+        { text: "b", start: 0.5, end: 2 },
+      ]),
+    ).toEqual([
+      { text: "a", start: 0, end: 1 },
+      { text: "b", start: 1, end: 2 },
+    ]);
+  });
+
+  it("drops a repetition burst of REPETITION_BURST_MIN words", () => {
+    const burst = Array.from({ length: REPETITION_BURST_MIN }, (_, i) => ({
+      text: `t${i}`,
+      start: 31.04,
+      end: 31.04,
+    }));
+    expect(normalizeWords([{ text: "real", start: 30, end: 31 }, ...burst])).toEqual([
+      { text: "real", start: 30, end: 31 },
+    ]);
+  });
+
+  it("drops the burst BEFORE repairing stamps — the other order fabricates 50ms words", () => {
+    // The ordering is the whole bug (field case 2026-08-18): repair first and
+    // every burst member gets a distinct monotone stamp, so the shared
+    // timestamp — the only evidence a burst existed — is gone and the phrase
+    // ships twice. Proven by contradiction here: repairing first would leave
+    // all 8 words, marching forward at exactly 0.05s each.
+    const burst = Array.from({ length: REPETITION_BURST_MIN }, (_, i) => ({
+      text: `t${i}`,
+      start: 31.04,
+      end: 31.04,
+    }));
+    expect(normalizeWords(burst)).toEqual([]);
+  });
+
+  it("leaves the caller's array untouched — the repair used to mutate in place", () => {
+    const input = [{ text: "a", start: 1, end: 1 }];
+    normalizeWords(input);
+    expect(input[0]!.end).toBe(1);
   });
 });

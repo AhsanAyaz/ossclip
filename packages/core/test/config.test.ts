@@ -47,6 +47,42 @@ describe("resolveConfig — file keys actually reach the resolved config", () =>
     expect(resolveConfig({}, {}).colorGrade).toBeUndefined();
   });
 
+  it("passes whisperUrl/whisperRemoteModel through, env beating file", () => {
+    // The postizUrl lesson applied to the remote-transcription keys
+    // (2026-09-01): a key the mapping drops would have `resolveWhisperBackend`
+    // report "no whisperUrl" against a config.json that plainly has one.
+    // These two DO get env spellings, unlike postizUrl — the Groq quickstart
+    // is "export two vars and run", so the env has to win.
+    const fromFile = resolveConfig(
+      { whisperUrl: "http://localhost:8000/v1", whisperRemoteModel: "Systran/faster-whisper-large-v3" },
+      {},
+    );
+    expect(fromFile.whisperUrl).toBe("http://localhost:8000/v1");
+    expect(fromFile.whisperRemoteModel).toBe("Systran/faster-whisper-large-v3");
+
+    const fromEnv = resolveConfig(
+      { whisperUrl: "http://localhost:8000/v1", whisperRemoteModel: "from-file" },
+      {
+        OSSCLIP_WHISPER_URL: "https://api.groq.com/openai/v1",
+        OSSCLIP_WHISPER_REMOTE_MODEL: "whisper-large-v3-turbo",
+      },
+    );
+    expect(fromEnv.whisperUrl).toBe("https://api.groq.com/openai/v1");
+    expect(fromEnv.whisperRemoteModel).toBe("whisper-large-v3-turbo");
+  });
+
+  it("absent whisperUrl stays undefined, and OSSCLIP_WHISPER still means the BINARY path", () => {
+    // Two different env vars one letter apart in meaning: OSSCLIP_WHISPER is
+    // the local whisper-cli path (config.ts's own resolution order), while
+    // OSSCLIP_WHISPER_URL selects the remote backend. Neither may leak into
+    // the other — a whisperPath landing in whisperUrl would send audio to a
+    // "URL" like /usr/local/bin/whisper-cli.
+    const cfg = resolveConfig({}, { OSSCLIP_WHISPER: "/usr/local/bin/whisper-cli" });
+    expect(cfg.whisperPath).toBe("/usr/local/bin/whisper-cli");
+    expect(cfg.whisperUrl).toBeUndefined();
+    expect(cfg.whisperRemoteModel).toBeUndefined();
+  });
+
   it("an absent file yields defaults with postizUrl undefined — publish then names the miss", () => {
     const cfg = resolveConfig({}, {});
     expect(cfg.postizUrl).toBeUndefined();
