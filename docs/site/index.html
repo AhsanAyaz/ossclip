@@ -392,7 +392,7 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--scenes &lt;path&gt;</td><td>hand-authored scenes JSON — no LLM in the loop</td></tr>
   <tr><td>--source-is-edited</td><td>the source already has burned-in graphics — keep ossclip's off them <em>(also what turns the source-text scan on)</em></td></tr>
   <tr><td>--blooper-marker &lt;word&gt;</td><td>say the word on camera and the flubbed take is cut, back to the start of the sentence it spoiled. Matching is fuzzy (edit distance), so a mishearing like <em>looker</em> still counts — every fuzzy hit is named in the report. Off unless given</td></tr>
-  <tr><td>--collapse-retakes</td><td>deterministically collapse consecutive near-identical sentences, keeping only the last complete attempt — no marker, no LLM. Every kept/cut decision named in the report. Off by default</td></tr>
+  <tr><td>--collapse-retakes</td><td>legacy no-op, kept parseable for recorded-run replays. Retake collapsing — consecutive near-identical sentences reduced to the last complete attempt, every kept/cut decision named in the report — runs automatically with <code>--blooper-marker</code>; no marker, no retake cuts</td></tr>
   <tr><td>--sort &lt;order&gt;</td><td>folder input only: <em>name</em> (default, plain codepoint sort, matches <code>ls</code>) or <em>mtime</em> (oldest first) — the concatenation order</td></tr>
   <tr><td>--watermark / --no-watermark</td><td>opt-in credit: a small "made with ossclip" wordmark in the top-left safe area. Off by default; <code>"watermark": true</code> in <code>config.json</code> defaults it on, a typed <em>--no-watermark</em> still wins</td></tr>
   <tr><td>--no-captions</td><td>no burned-in captions — everything else intact. The CTA keyword styling rides the caption track, so it goes too</td></tr>
@@ -432,7 +432,7 @@ ossclip produce take.mp4 --produce --sfx-level meme      # implies --sfx</code><
   <tr><td>--format resolve-edl</td><td>DaVinci Resolve</td><td>import the timeline first, then Media Pool → right-click the timeline → Timelines → Import → <strong>Timeline Markers from EDL</strong>. Colour-coded by reason: silence Blue, pause Sky, filler Yellow, retake Red, kept pauses Lavender</td></tr>
   <tr><td>--format fcpxml (default)</td><td>Final Cut Pro</td><td>File → Import → XML</td></tr>
 </table>
-<p><code>--out &lt;path&gt;</code> overrides the destination (default: beside the input). The analysis flags above — <code>--cleanup</code>, <code>--blooper-marker</code>, <code>--collapse-retakes</code>, <code>--whisper-model</code> — all apply. <code>analyse</code> works too.</p>
+<p><code>--out &lt;path&gt;</code> overrides the destination (default: beside the input). The analysis flags above — <code>--cleanup</code>, <code>--blooper-marker</code>, <code>--whisper-model</code> — all apply. <code>analyse</code> works too.</p>
 
 <h2 id="publish">publish — the finished short to your socials</h2>
 <p><code>ossclip publish</code> pushes a produced render to your social accounts through <strong>your own self-hosted <a href="https://postiz.com">Postiz</a> instance</strong> — no ossclip service in the middle. Set <code>"postizUrl"</code> in <code>~/.ossclip/config.json</code> and <code>OSSCLIP_POSTIZ_API_KEY</code> in the environment (secrets stay environment-only, like every key here).</p>
