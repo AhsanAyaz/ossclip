@@ -2609,6 +2609,87 @@ describe("POST /api/retranscribe-range (stamps-only splice)", () => {
     expect(whisper).not.toHaveBeenCalled();
   });
 
+  // The remote backend (2026-09-01 weak-CPU field report): with a whisperUrl
+  // configured the span goes to an OpenAI-compatible server, and the machine
+  // that needs that most is the one with no whisper.cpp and no model at all.
+  it("remote configured → the span goes to transcribeRemote, with no model on disk", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    // The whole local install is gone: no model file, no whisper binary
+    // configured. A remote run must not care.
+    await unlink(join(dir, "ggml-base.en.bin"));
+    const whisper = vi.fn();
+    const remote = vi.fn(async () => ({
+      language: "en",
+      words: [{ text: "could", start: 1.4, end: 1.9 }],
+    }));
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({
+        ...cfg(),
+        whisperPath: undefined,
+        whisperUrl: "https://api.groq.com/openai/v1",
+        // The dictionary/language rules are shared with the local path, so
+        // the bias must still reach the provider.
+        language: "ur",
+        dictionary: ["ossclip"],
+      }),
+      sliceAudio: async () => {},
+      runWhisper: whisper,
+      transcribeRemote: remote,
+    });
+    close = server.close;
+    const body = await (await post(server.url, { srcIn: 3, srcOut: 6 })).json();
+    expect(body.ok).toBe(true);
+    expect(whisper).not.toHaveBeenCalled();
+    expect(remote).toHaveBeenCalledTimes(1);
+    // The span wav is uploaded AS IS — no opus sidecar for a few seconds of
+    // audio — with the same language and dictionary prompt local would use.
+    expect(remote.mock.calls[0]![0]).toBe(join(dir, "whisper-range.wav"));
+    expect(remote.mock.calls[0]![1]).toMatchObject({ language: "ur" });
+    expect(String(remote.mock.calls[0]![1].prompt)).toContain("ossclip");
+    const written = JSON.parse(await readFile(join(dir, "transcript.json"), "utf8"));
+    expect(written.words[0]).toEqual({ text: "could", start: 4.4, end: 4.9 });
+  });
+
+  it("a remote failure stays 200 {ok:false} with the hint the panel shows", async () => {
+    const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    const before = await readFile(join(dir, "transcript.json"), "utf8");
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({ ...cfg(), whisperUrl: "https://api.groq.com/openai/v1" }),
+      sliceAudio: async () => {},
+      transcribeRemote: async () => {
+        throw new Error(
+          "remote transcription POST https://api.groq.com/openai/v1/audio/transcriptions failed: 401 — the server rejected OSSCLIP_WHISPER_API_KEY",
+        );
+      },
+    });
+    close = server.close;
+    const res = await post(server.url, { srcIn: 3, srcOut: 6 });
+    // A dead 500 would leave the panel with nothing to say (the cover
+    // regenerate posture) — and the old stamps must survive.
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("OSSCLIP_WHISPER_API_KEY");
+    expect(await readFile(join(dir, "transcript.json"), "utf8")).toBe(before);
+  });
+
+  it("remote configured but no ffmpeg → the doctor hint, since the span is still sliced locally", async () => {
+    const { dir } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({ whisperUrl: "https://api.groq.com/openai/v1" }),
+    });
+    close = server.close;
+    const body = await (await post(server.url, { srcIn: 3, srcOut: 6 })).json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("ossclip doctor");
+  });
+
   it("400s an inverted or negative range, and 409s with no workdir open", async () => {
     const { dir, cfg } = await retranscribeWorkdir([{ text: "could", start: 4, end: 4.5 }]);
     const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: cfg });

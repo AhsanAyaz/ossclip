@@ -160,6 +160,7 @@ Edits land in `<workdir>/overrides.json` — a file the producer never writes. R
 | `--no-repair` | skip the ASR mishearing repair; captions then show the raw transcription |
 | `--whisper-model <name>` | transcription model for this run — a stock name, or any converted GGML model in `~/.ossclip/models` |
 | `--whisper-language <code>` | language for a multilingual model, e.g. `ur`, `de`, `auto` (whisper defaults to `en`) |
+| `--whisper-backend <where>` | `local` (default) or `remote` — see [Remote transcription](#remote-transcription-weak-cpu-machines). Configuring a server already implies `remote`, so this flag is mostly `local`, the per-run opt-out |
 | `--scenes <path>` | hand-authored scenes JSON — no LLM in the loop |
 | `--force-component <id>` | debug: render every graphic with one component (e.g. `FlowDiagram`) to exercise it on real copy |
 | `--source-is-edited` | the source is already an edited reel with burned-in text — keep ossclip's graphics off it (also what enables the source-text scan) |
@@ -188,6 +189,27 @@ Each NLE reads a different dialect, so pick the format for yours (this matters: 
 | `fcpxml` (default) | Final Cut Pro | File → Import → XML |
 
 Pauses the analyzer *detected but kept* (below the cut bar) are exported too — `pause 0.40s (kept)`, Lavender in Resolve — so a gap you can see in your waveform is never unexplained. `--out <path>` overrides the destination (default: beside the input, e.g. `take.xml`); the analysis flags above (`--cleanup`, `--blooper-marker`, `--collapse-retakes`, `--whisper-model`, …) all apply. Everything here was shaped by a working editor's feedback on real footage — FINDINGS §142.
+
+### Remote transcription (weak-CPU machines)
+
+Transcription runs on **your machine by default**, and nothing here changes that. But on an older CPU whisper is the dominant cost of a run — minutes of decode per minute of video — so ossclip can post the audio to any OpenAI-compatible `/v1/audio/transcriptions` server instead. [Groq](https://console.groq.com) has a free tier with word-level timestamps that covers any realistic creator volume:
+
+```sh
+# 1. Get a free key at console.groq.com
+export OSSCLIP_WHISPER_URL=https://api.groq.com/openai/v1
+export OSSCLIP_WHISPER_API_KEY=gsk_...
+ossclip produce myvideo.mp4
+```
+
+Configuring the URL is the whole switch — set it and every run transcribes remotely; `--whisper-backend local` opts one run back out. The durable spelling is `"whisperUrl"` in `~/.ossclip/config.json` (with `"whisperRemoteModel"` for the model name, default `whisper-large-v3-turbo`); the key stays environment-only, like every secret. With a server configured, `ossclip doctor` and `ossclip setup` stop asking for whisper.cpp and the model file — neither is needed.
+
+Worth knowing:
+
+- **Self-hosted works and needs no key.** [speaches](https://github.com/speaches-ai/speaches), a whisper.cpp server, anything speaking that API shape: point `OSSCLIP_WHISPER_URL` at it and leave `OSSCLIP_WHISPER_API_KEY` unset. The server must support `response_format=verbose_json` with `timestamp_granularities[]=word` — ossclip's cuts, captions and zooms are all word-stamp driven, so a text-only answer is an error, not a degraded success.
+- **One file per run, ~24 MB.** The upload is a 32 kbps opus sidecar (`audio-upload.ogg` in the workdir), which is about **100 minutes** of speech under the cap. A longer take errors before anything is uploaded, naming the size; transcribe it with `--whisper-backend local`, or split it.
+- **`--whisper-translate` needs the local backend.** The API translates on a different endpoint *and* a different default model, so ossclip refuses the combination rather than silently swapping both.
+- **Your audio leaves the machine** on this path — that is the trade. The local backend is the default precisely because it is the private one.
+- The opus encode needs `libopus`; the ffmpeg `ossclip setup` installs has it, a minimal custom build may not (ffmpeg's own error says so).
 
 ### Which model runs
 
@@ -239,7 +261,7 @@ $OSSCLIP_ENV_FILE   →   .env, walking up from the cwd   →   ~/.ossclip/.env
 GEMINI_API_KEY=…
 ```
 
-Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`, `OSSCLIP_CLAUDE_BIN`, `OSSCLIP_AGY_BIN`.
+Env vars override the file: `OSSCLIP_FFMPEG`, `OSSCLIP_FFPROBE`, `OSSCLIP_WHISPER`, `OSSCLIP_MODEL_DIR`, `OSSCLIP_MODEL`, `OSSCLIP_FAST_MODEL`, `OSSCLIP_SPEAKER`, `OSSCLIP_BROWSER`, `OSSCLIP_CLAUDE_BIN`, `OSSCLIP_AGY_BIN`, `OSSCLIP_WHISPER_URL`, `OSSCLIP_WHISPER_REMOTE_MODEL`.
 
 One more that has no config-file equivalent: `OSSCLIP_NO_PICKER` — set it to a non-empty value to disable the wizard's native file picker, so the input prompt falls back to suggestions and typing. Truthiness, not presence, the same rule `CI` gets: an empty `OSSCLIP_NO_PICKER=` leaves the picker on.
 

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { OssclipConfig } from "@ossclip/core";
 import { modelUrl, validModelSources, whisperModelPath } from "./setup/manifest";
+import { WHISPER_API_KEY_ENV, resolveWhisperBackend } from "./whisper-backend";
 
 /**
  * `ossclip doctor` (R18 §90a): check every prerequisite and print the exact
@@ -106,12 +107,23 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
         }),
   });
 
+  // Remote transcription (2026-09-01 weak-CPU field report) makes the next
+  // two checks OPTIONAL rather than blocking: a machine that transcribes on
+  // Groq has no reason to own whisper.cpp or a 1.5 GB model, and doctor
+  // reporting two red lines on a working install is how a user concludes the
+  // tool is broken. The LLM-provider posture, one level up: pass with a
+  // detail that says why nothing is needed.
+  const remote = resolveWhisperBackend(undefined, cfg, p.env);
+  const remoteBackend = remote.ok && remote.backend.kind === "remote" ? remote.backend : null;
+  const notNeeded = (found: string): string =>
+    `${found} not found — not needed: remote transcription configured`;
+
   const whisperOk = await p.binRuns(cfg.whisperPath, "--help");
   checks.push({
     name: "whisper-cli",
-    ok: whisperOk,
-    detail: cfg.whisperPath,
-    ...(whisperOk
+    ok: whisperOk || remoteBackend !== null,
+    detail: whisperOk ? cfg.whisperPath : remoteBackend !== null ? notNeeded(cfg.whisperPath) : cfg.whisperPath,
+    ...(whisperOk || remoteBackend !== null
       ? {}
       : {
           fix: viaSetup(
@@ -134,9 +146,9 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
   const modelOk = p.exists(modelPath);
   checks.push({
     name: `whisper model (${cfg.model})`,
-    ok: modelOk,
-    detail: modelPath,
-    ...(modelOk
+    ok: modelOk || remoteBackend !== null,
+    detail: modelOk ? modelPath : remoteBackend !== null ? notNeeded(modelPath) : modelPath,
+    ...(modelOk || remoteBackend !== null
       ? {}
       : {
           fix: viaSetup(
@@ -145,6 +157,26 @@ export async function runDoctor(cfg: OssclipConfig, p: DoctorProbes): Promise<Do
           ),
         }),
   });
+
+  // NO network call, unlike every other backend doctor could probe: a
+  // transcription request costs the user's metered free tier, and `doctor` is
+  // run repeatedly while fixing something else. This line reports the
+  // CONFIGURATION — the three things a 401 or a 404 would be about — and the
+  // provider's own status hints name the rest when a real run happens.
+  // Omitted entirely when remote is not configured: the local install is the
+  // default, and an extra "not configured" line for an opt-in feature is
+  // noise on every other machine.
+  if (remoteBackend !== null) {
+    checks.push({
+      name: "remote transcription",
+      ok: true,
+      detail:
+        `${remoteBackend.baseUrl} · model ${remoteBackend.model} · ` +
+        (remoteBackend.apiKey !== undefined
+          ? `${WHISPER_API_KEY_ENV} set`
+          : `no API key (fine for self-hosted; Groq needs ${WHISPER_API_KEY_ENV})`),
+    });
+  }
 
   // Provider, in the same order auto-detection uses (agy → claude CLI →
   // gemini key → anthropic key): subscription CLIs beat ambient env keys

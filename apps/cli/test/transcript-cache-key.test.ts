@@ -122,4 +122,50 @@ describe("transcriptCacheReusable", () => {
       transcriptCacheReusable({ model: DEFAULT, dictionary: [] }, { model: DEFAULT }, DEFAULT).reuse,
     ).toBe(true);
   });
+
+  // The backend (2026-09-01): two engines on the same audio produce different
+  // words, so a warm workdir must not serve one run's transcript to the
+  // other's — the 2026-08-05 staleness with the engine as the variable.
+  const REMOTE = { model: "whisper-large-v3-turbo", backend: "remote:https://api.groq.com/openai/v1/audio/transcriptions" };
+
+  it("a local cache never answers a remote request, or the reverse", () => {
+    expect(transcriptCacheReusable({ model: DEFAULT }, REMOTE, DEFAULT).reuse).toBe(false);
+    expect(transcriptCacheReusable(REMOTE, { model: DEFAULT }, DEFAULT).reuse).toBe(false);
+    // Even with the model names contrived to match, the backend still splits
+    // them — the engine is the difference, not the label.
+    expect(
+      transcriptCacheReusable(
+        { model: "whisper-large-v3-turbo" },
+        { model: "whisper-large-v3-turbo", backend: REMOTE.backend },
+        DEFAULT,
+      ).reuse,
+    ).toBe(false);
+  });
+
+  it("reuses a remote cache for the same server and model", () => {
+    expect(transcriptCacheReusable(REMOTE, { ...REMOTE }, DEFAULT).reuse).toBe(true);
+  });
+
+  it("re-transcribes when the server changes, or the remote model does", () => {
+    expect(
+      transcriptCacheReusable(
+        REMOTE,
+        { ...REMOTE, backend: "remote:http://box.local:8000/v1/audio/transcriptions" },
+        DEFAULT,
+      ).reuse,
+    ).toBe(false);
+    // The remote model rides the existing `model` field, so switching Groq
+    // models re-keys through the rule that was already there.
+    expect(
+      transcriptCacheReusable(REMOTE, { ...REMOTE, model: "whisper-large-v3" }, DEFAULT).reuse,
+    ).toBe(false);
+  });
+
+  it("a keyless workdir counts as LOCAL, so a remote request re-transcribes", () => {
+    // Every key file written before 2026-09-01 has no `backend` at all, and
+    // every one of them came from local whisper.cpp.
+    expect(transcriptCacheReusable(null, REMOTE, DEFAULT).reuse).toBe(false);
+    // …and a default local request against one still reuses, unchanged.
+    expect(transcriptCacheReusable(null, { model: DEFAULT }, DEFAULT).reuse).toBe(true);
+  });
 });

@@ -10,7 +10,7 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Forty-three flags (plus the positional input path)
+ * The produce wizard. Forty-four flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
  * five flags (--out, --cleanup, --aspect, --produce, --intent) — twelve
  * behind one "anything else?" multiselect (--sfx being the twelfth, with
@@ -28,7 +28,12 @@ import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } 
  * multiselect entry is the OFF switch and the positive flag exists only for
  * replay pinning), --add-jump-cuts (same mirror: auto already punches, the
  * multiselect entry is the OFF switch, and the force flag exists to beat a
- * future config-off), or
+ * future config-off),
+ * --whisper-backend (2026-09-01, the --color-grade shape: it selects machine
+ * INFRASTRUCTURE — which transcription engine this box owns, alongside
+ * whisperPath and modelDir — not a per-run editorial choice, and the durable
+ * spelling is `whisperUrl` in ~/.ossclip/config.json; an honest prompt would
+ * also have to explain a base URL and an API key at a menu), or
  * (final-review fix wave, Finding 1) --sort. A folder's clip order only means anything once the
  * folder has been enumerated, and that enumeration happens inside
  * `produce()` — after the wizard has already returned argv — so there is
