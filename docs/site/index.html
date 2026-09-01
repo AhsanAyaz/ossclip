@@ -114,6 +114,7 @@
   <a href="#layouts">Layouts</a>
   <a href="#flags">produce flags</a>
   <a href="#analyze">analyze</a>
+  <a href="#publish">publish</a>
   <a href="#config">Configuration</a>
   <a href="#telemetry">Telemetry</a>
   <a href="#licensing">Licensing</a>
@@ -287,12 +288,18 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <div class="card"><b>Direct manipulation</b><span>Click to select, drag to move, corner handles to resize, panel fields for precision. Graphic boxes, elements, video framing, pip bubble — every element on every component is grabbable.</span></div>
   <div class="card"><b>Timeline</b><span>Zoom 1–16×, scrub, drag blocks in time, resize edges, split at the playhead (⌘B — each half inherits the scene's edits), soft-delete with a way back. The view follows the cursor.</span></div>
   <div class="card"><b>Cut &amp; restore</b><span>Split any take or scene, "Delete this chunk" — struck-through until the next Render, Restore one click away. Cuts are source-anchored, so a re-produce never drifts your splits, pins, or captions. Hidden graphic elements get the same treatment: per-element Restore in the scene panel.</span></div>
+  <div class="card"><b>Deleted, not lost</b><span>A deleted scene's window keeps playing as a plain take with every take control on it — layout, framing, captions, timing. The covering take's panel grows a <em>Deleted here</em> section with a Restore chip per scene it covers, and selecting into that window lands on the take that is actually rendering, so a slider you drag there is one the player reads.</span></div>
+  <div class="card"><b>Per-take audio</b><span>A volume slider, 0–400%, for the one clip in a folder run recorded quieter than the rest. Above 100% really amplifies — preview and render both. The timeline block carries a read-only badge (50%, MUTE), so a changed take is visible where time lives.</span></div>
+  <div class="card"><b>SFX lane</b><span>On a <code>--sfx</code> run every planned placement is a diamond: drag to retime, swap the sound, set a per-placement gain, <em>Hear it</em> before committing. Deleting a planned sound leaves a restorable ghost; the palette adds your own at the word under the playhead. They play in the preview on the player's own clock.</span></div>
+  <div class="card"><b>Color</b><span>Pick the whole video's look — a preset, a <code>.cube</code> from <code>~/.ossclip/luts</code>, Off, or your config's Default — plus intensity, exposure, temperature, saturation, contrast. Presets preview live; a LUT bakes in at render time and the panel says so instead of faking it.</span></div>
   <div class="card"><b>Cover</b><span>Retype the headline or re-cut the frame from the top bar — <em>Use current playhead</em> takes the frame you are looking at, put on the original take's clock when you ask for a source frame, and it says so when that instant was cut away. <em>Preview</em> tries a frame without spending the cover you already have. Seconds, not a re-render; the video is never touched.</span></div>
   <div class="card"><b>Captions</b><span>Double-click a word to retype it (1:1 — timings stay). Position and scale per scene, or applied to every scene at once. A global Show-captions toggle hides the track everywhere — instant, undo-able, survives re-produces.</span></div>
   <div class="card"><b>Transcript view</b><span>The whole transcript, searchable — ‹ › chevrons (or Enter/⇧Enter) walk the matches — in a drag-resizable pane that follows playback; click a word to jump the preview, double-click to fix it.</span></div>
   <div class="card"><b>Render from the editor</b><span>Replays the recorded produce invocation — same flags, same provider — with live progress, elapsed time, token/cost lines, cancel, and a collapsible scrolling log. Survives a refresh.</span></div>
   <div class="card"><b>Preview</b><span>Fills the window in either aspect; ⌘+scroll zooms the view 25%–800% — magnify to inspect or shrink to arrange, never an edit — and ⌥-drag pans.</span></div>
   <div class="card"><b>Projects</b><span>Undo/redo in the top bar, and Open switches projects in place: recent produce runs plus a folder browser, no server restart.</span></div>
+  <div class="card"><b>Getting out of the way</b><span>A press on the empty dark area around the player — or on the sidebar's empty run below its last section — clears the selection, like every canvas app. The sidebar resizes by dragging its left edge, 220–560px, remembered per browser.</span></div>
+  <div class="card"><b>Publish</b><span>The <code>ossclip publish</code> panel with checkboxes: pick accounts, per-platform captions, YouTube privacy, schedule or send. Channels the video is too long for are grayed out with the cap named. See <a href="#publish">publish</a>.</span></div>
 </div>
 
 <h2 id="keybinds">Keybinds</h2>
@@ -365,10 +372,21 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--cleanup &lt;level&gt;</td><td><em>exact | light | standard | aggressive</em> — how hard to cut silence and fillers</td></tr>
   <tr><td>--aspect &lt;ratio&gt;</td><td><em>9:16</em> (default) or <em>16:9</em> — landscape export with landscape-native layouts</td></tr>
   <tr><td>--source-fit &lt;mode&gt;</td><td><em>cover</em> crops to fill; <em>contain</em> shows the whole frame inset — the landscape-source escape hatch</td></tr>
+  <tr><td>--resolution &lt;height&gt;</td><td><em>1080</em> (default) | <em>1440</em> | <em>2160</em> | <em>auto</em> — <em>auto</em> keeps the pixels a 4K source still has after the crop, never under 1080p, capped at 2160. Config key <code>"resolution"</code></td></tr>
+  <tr><td>--color-grade &lt;look&gt;</td><td>a preset (<em>talking-head | teal-orange | filmic-fade | cwa | punchy | mono</em>) or a <code>.cube</code> LUT filename from <code>~/.ossclip/luts</code>. <em>--no-color-grade</em> is a hard off. See <a href="#grading">Color grading</a></td></tr>
+  <tr><td>--sfx / --sfx-level &lt;level&gt;</td><td>sound effects on the producer's beats — <em>subtle | normal | meme</em> (<em>--sfx-level</em> implies <em>--sfx</em>; requires <em>--produce</em>). See <a href="#sfx">Sound effects</a></td></tr>
+  <tr><td>--youtube / --no-youtube</td><td>a YouTube pack beside the video: SEO title options, description, hashtags and tags in <code>&lt;out&gt;.youtube.md</code>, plus an AI thumbnail (<code>&lt;out&gt;.thumbnail.png</code>) whose concept you approve before the render. Brings its own LLM provider, so it works without <em>--produce</em>. Config key <code>"youtube"</code></td></tr>
+  <tr><td>--portrait &lt;path&gt;</td><td>your portrait photo, the likeness reference for the <em>--youtube</em> thumbnail. Without one (or without a <code>GEMINI_API_KEY</code>) the frame-grab cover stands, and the run says which was missing. Config key <code>"portrait"</code></td></tr>
+  <tr><td>--audience &lt;text&gt;</td><td>who watches the channel — steers the pack's titles and tags and the thumbnail's concept. Config key <code>"audience"</code></td></tr>
+  <tr><td>--thumbnail-brief &lt;text&gt;</td><td>a standing instruction the thumbnail concept must honor, e.g. <em>"always show the terminal, never stock imagery"</em>. Config key <code>"thumbnailBrief"</code></td></tr>
+  <tr><td>--cover-in-video</td><td>overlay the cover on the opening frames, for the platforms that ignore an uploaded cover and use frame 1. Nothing is inserted — the overlay ends at the first spoken word, so no timing moves. Off by default; <code>"coverInVideo": true</code> defaults it on, <em>--no-cover-in-video</em> still wins</td></tr>
   <tr><td>--llm &lt;provider&gt;</td><td><em>antigravity | claude | claude-cli | gemini | mock</em></td></tr>
   <tr><td>--llm-model / --llm-fast-model</td><td>override the editorial / mechanical model (<em>same</em> disables tiering)</td></tr>
+  <tr><td>--llm-effort &lt;level&gt;</td><td><em>low | medium | high</em> — reasoning effort, on the antigravity provider only</td></tr>
   <tr><td>--whisper-model &lt;name&gt;</td><td>transcription model for this run (<em>base.en | small.en | medium.en</em>, or any converted GGML model in <code>~/.ossclip/models</code>)</td></tr>
   <tr><td>--whisper-language &lt;code&gt;</td><td>language for a multilingual model, e.g. <em>ur | de | auto</em> (whisper defaults to <em>en</em>)</td></tr>
+  <tr><td>--whisper-translate</td><td>English captions from non-English speech — whisper translates instead of transcribing verbatim (its <code>-tr</code>). Pair with <em>--whisper-language</em> for the SOURCE language. Local backend only</td></tr>
+  <tr><td>--dictionary &lt;terms&gt;</td><td>comma-separated terms of art the speaker uses (<em>"JSON, ossclip, Genkit"</em>) — biases transcription toward these spellings, vouches them for repair, canonicalizes their casing in captions. Replaces the config's <code>dictionary</code> for the run</td></tr>
   <tr><td>--whisper-backend &lt;where&gt;</td><td><em>local</em> (default) or <em>remote</em> — post the audio to an OpenAI-compatible server instead of decoding it here (<a href="#tut-remote-whisper">weak-CPU tutorial</a>). Configuring the URL already implies <em>remote</em>, so this flag is mostly <em>local</em>, the per-run opt-out</td></tr>
   <tr><td>--no-repair</td><td>skip the ASR mishearing repair</td></tr>
   <tr><td>--scenes &lt;path&gt;</td><td>hand-authored scenes JSON — no LLM in the loop</td></tr>
@@ -378,10 +396,32 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--sort &lt;order&gt;</td><td>folder input only: <em>name</em> (default, plain codepoint sort, matches <code>ls</code>) or <em>mtime</em> (oldest first) — the concatenation order</td></tr>
   <tr><td>--watermark / --no-watermark</td><td>opt-in credit: a small "made with ossclip" wordmark in the top-left safe area. Off by default; <code>"watermark": true</code> in <code>config.json</code> defaults it on, a typed <em>--no-watermark</em> still wins</td></tr>
   <tr><td>--no-captions</td><td>no burned-in captions — everything else intact. The CTA keyword styling rides the caption track, so it goes too</td></tr>
+  <tr><td>--no-jump-cuts / --add-jump-cuts</td><td>the subtle punch-in zooms that conceal jump cuts, off or forced on. Narrower than <em>--no-zoom</em>; a screen share is never punched either way</td></tr>
+  <tr><td>--no-zoom</td><td>static camera: no idle push, no cut punch-in — for close framings where any motion crops the head. Per-scene control stays in the editor</td></tr>
+  <tr><td>--noise-db &lt;db&gt;</td><td>override the measured silence threshold, e.g. <em>-30</em></td></tr>
   <tr><td>--no-cover / --cover &lt;path&gt;</td><td>skip, or redirect, the cover image</td></tr>
+  <tr><td>--cover-text-reset</td><td>use this run's generated cover headline even if <code>ossclip cover --text</code> set one — that headline is user-owned and kept by default</td></tr>
+  <tr><td>--review</td><td>produce without rendering, then open the editor to review the cut before rendering once</td></tr>
+  <tr><td>--open-editor / --no-open-editor</td><td>open the editor when the run finishes (or never ask), on <code>--editor-port</code></td></tr>
+  <tr><td>--concurrency &lt;n&gt;</td><td>how many browser tabs render frames in parallel (default: CPU cores − 2, floor 2). Turn it DOWN if the render logs a browser crash — that is memory, not one bad frame</td></tr>
   <tr><td>--no-render</td><td>stop after writing the props</td></tr>
   <tr><td>--workdir &lt;dir&gt;</td><td>where the cache lives</td></tr>
 </table>
+<p>That is the list worth typing. The debug and replay flags — <code>--transcript</code>, <code>--no-mezzanine</code>, <code>--force-component</code>, <code>--clip-window</code>, and the positive halves that exist only so a recorded run can pin its own state — live in <code>ossclip produce --help</code>, which is always complete.</p>
+
+<h3 id="grading">Color grading</h3>
+<p>Two engines behind one flag. A <strong>preset</strong> — <em>talking-head</em>, <em>teal-orange</em>, <em>filmic-fade</em>, <em>cwa</em>, <em>punchy</em>, <em>mono</em> — is parametric and rides the render props as an sRGB filter, so the editor's player previews <em>exactly</em> what renders. A <strong><code>.cube</code> LUT</strong> you drop in <code>~/.ossclip/luts</code> is baked into the mezzanine by ffmpeg instead; its filename carries the LUT's hash, so a warm work directory can never hand you ungraded frames. LUT grades therefore apply on the next render and the editor says so rather than faking a preview no render would match.</p>
+<pre><code>ossclip produce take.mp4 --produce --color-grade cwa
+ossclip produce take.mp4 --produce --color-grade kodak-2383.cube
+ossclip produce take.mp4 --produce --no-color-grade      # hard off, even if the config sets one</code></pre>
+<p>The editor's <strong>Color</strong> section (no selection) picks the look for the whole video and exposes intensity, exposure, temperature, saturation and contrast. Precedence: <code>overrides.json</code> (what you set in the editor) beats <code>--color-grade</code>/<code>--no-color-grade</code>, which beats <code>"colorGrade"</code> in <code>~/.ossclip/config.json</code> — <code>{"preset": "cwa"}</code> or <code>{"lut": "kodak-2383.cube"}</code>, plus the same optional tweaks — which beats off. An unknown preset or a missing LUT earns one warning naming the layer it came from, and the run proceeds ungraded.</p>
+
+<h3 id="sfx">Sound effects</h3>
+<p><code>--sfx</code> places sounds on the beats the producer planned — so it needs <code>--produce</code>; without it the run warns and stays silent. <code>--sfx-level</code> sets how much: <em>subtle</em>, <em>normal</em> (the default), or <em>meme</em>, which is the only level that unlocks the meme-tagged sounds (record scratch, tape stop, dramatic boom). The level is also the density budget — 2, 4 and 8 placements per minute — and unknown ids, out-of-range anchors and anything under 1.5&nbsp;s apart are dropped deterministically after the model answers, never clamped.</p>
+<pre><code>ossclip produce take.mp4 --produce --sfx
+ossclip produce take.mp4 --produce --sfx-level meme      # implies --sfx</code></pre>
+<p>The library is a bundled CC0 starter pack (whooshes, a riser, ding, pop, click, error buzz, plus the meme three). Your own packs live in <code>~/.ossclip/sfx/&lt;pack&gt;/pack.json</code> — a <code>whenToUse</code> line per sound, which is the menu entry the model plans against — and a user pack beats the bundled one on a shared id. <code>"sfxBundledPack": false</code> in <code>~/.ossclip/config.json</code> takes the starter pack out of the menu entirely, for someone who wants only their own sounds. <code>"sfx"</code> and <code>"sfxLevel"</code> are the config keys for the flags themselves.</p>
+<p>Placements are anchored to <strong>words</strong>, not timecodes, so they survive the next re-cut — and the editor owns them from there: see the SFX lane in <a href="#editor">Editing</a>.</p>
 
 <h2 id="analyze">analyze — cut suggestions in your own editor</h2>
 <p>For editors who already have a workflow and just want the analysis: <code>ossclip analyze &lt;input&gt;</code> runs the pipeline up to the cut report — <strong>no LLM, no render</strong>, so it finishes in roughly transcription time — and writes a marker file your NLE imports. Every marker is a <strong>span</strong> covering the whole suggested cut (where it starts <em>and</em> where content resumes), named in the report's vocabulary: <code>silence −1.77s (conf 0.95)</code>. Nothing is cut for you — they are labels to review. Pauses the analyzer <em>detected but kept</em> export too (<code>pause 0.40s (kept)</code>), so a gap you can see in your waveform is never unexplained.</p>
@@ -393,6 +433,20 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--format fcpxml (default)</td><td>Final Cut Pro</td><td>File → Import → XML</td></tr>
 </table>
 <p><code>--out &lt;path&gt;</code> overrides the destination (default: beside the input). The analysis flags above — <code>--cleanup</code>, <code>--blooper-marker</code>, <code>--collapse-retakes</code>, <code>--whisper-model</code> — all apply. <code>analyse</code> works too.</p>
+
+<h2 id="publish">publish — the finished short to your socials</h2>
+<p><code>ossclip publish</code> pushes a produced render to your social accounts through <strong>your own self-hosted <a href="https://postiz.com">Postiz</a> instance</strong> — no ossclip service in the middle. Set <code>"postizUrl"</code> in <code>~/.ossclip/config.json</code> and <code>OSSCLIP_POSTIZ_API_KEY</code> in the environment (secrets stay environment-only, like every key here).</p>
+<pre><code>ossclip publish "&lt;work directory&gt;" --dry-run              # the targets and the exact payload, nothing sent
+ossclip publish --platforms linkedin,youtube               # or --accounts &lt;ids&gt;, or --all
+ossclip publish --at 2026-09-01T08:00:00+02:00             # schedule instead of now
+ossclip publish --youtube-privacy unlisted                 # private is the default</code></pre>
+<ul>
+  <li><strong>Captions come from the run's <code>--youtube</code> pack</strong> — LinkedIn, Instagram, TikTok, X and Facebook each get their own — and can be generated or regenerated from the editor's Publish panel without re-running produce. Bare <code>publish</code> resolves the run under the current directory, like <code>edit</code>; a workdir that already published refuses to double-post without <code>--force</code>.</li>
+  <li><strong>What uploads is a delivery encode, not the master.</strong> ≤1080p h264/aac at ~10&nbsp;Mbps with <code>+faststart</code>, built lazily and cached in the work directory. This is not a preference: the first real multi-platform publish sent the master (589&nbsp;MB, ~56&nbsp;Mbps, a <code>--resolution auto</code> 4K render) and failed 5 of 6 channels. Every platform re-encodes to 6–12&nbsp;Mbps on ingest, so the extra bytes bought nothing but failures. The master stays untouched for your archive; <code>--delivery master</code> uploads it anyway.</li>
+  <li><strong>Size-capped platforms get their own fitted encode.</strong> Instagram's URL-fetch ingest rejected a 409&nbsp;MB file twice and then published the identical video at 88&nbsp;MB, so a capped platform gets a second encode with the bitrate fitted to <em>this</em> video's duration — one encode per distinct cap, everyone else riding the 10&nbsp;Mbps file. The encode reports percent and ETA, not a spinner. A video too long to fit its cap above the quality floor is refused by name before the confirm, not opaquely mid-upload.</li>
+  <li><strong>Duration caps are checked before a byte moves</strong> — Threads 5:00, TikTok 10:00, Instagram 15:00. The violating channels are refused and named; the rest publish. The editor's Publish panel grays them out for the same reason.</li>
+  <li><strong>YouTube ships private by default.</strong> <code>--youtube-privacy public | unlisted | private</code> (and a select in the editor's panel, which resets to private on every mount): making something public is an explicit per-publish choice, never a sticky preference, because an accidental <code>--all</code> must not blast a subscriber feed.</li>
+</ul>
 
 <h2 id="config">Configuration</h2>
 <p><code>~/.ossclip/config.json</code> — all optional:</p>
@@ -407,7 +461,7 @@ ossclip edit                        # bare: pick from recent projects, or browse
   "pricing": { "claude-opus-5": { "inputPerMTok": 15, "outputPerMTok": 75 } }
 }</code></pre>
 <p><strong>Provider keys</strong> come from the environment, and ossclip loads <code>.env</code> files before choosing a provider — first hit wins per key, a real environment variable always beats a file: <code>$OSSCLIP_ENV_FILE</code> → <code>.env</code> walking up from the cwd → <code>~/.ossclip/.env</code>.</p>
-<p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>, <code>OSSCLIP_WHISPER_URL</code>, <code>OSSCLIP_WHISPER_REMOTE_MODEL</code>.</p>
+<p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>, <code>OSSCLIP_CLAUDE_BIN</code>, <code>OSSCLIP_AGY_BIN</code>, <code>OSSCLIP_WHISPER_URL</code>, <code>OSSCLIP_WHISPER_REMOTE_MODEL</code>.</p>
 
 <h2 id="telemetry">Telemetry</h2>
 <p>ossclip reports a few <strong>anonymous usage events</strong> — command counts, wall-clock durations, the provider <em>name</em>, the source length as a bucket (<code>&lt;1m</code>…<code>&gt;15m</code>) — so effort goes where the tool is actually used. On by default; the first run prints a notice saying so. <strong>Never sent:</strong> footage, transcripts, file names, paths, <code>--intent</code> text, prompts, or keys — enforced by a guard in the code the test suite pins, not just by policy. The full event list is in the README's Telemetry section.</p>
