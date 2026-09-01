@@ -117,6 +117,9 @@ export interface AnalyzeOptions {
   noiseDb?: number;
   whisperModel?: string;
   whisperLanguage?: string;
+  /** `--whisper-backend`, already zod-parsed by program.ts; undefined lets a
+   *  configured `whisperUrl` decide (resolveWhisperBackend in produce). */
+  whisperBackend?: "local" | "remote";
   blooperMarker?: string;
   collapseRetakes?: boolean;
   sort?: "name" | "mtime";
@@ -157,6 +160,7 @@ export async function runAnalyze(
     noiseDb: opts.noiseDb,
     whisperModel: opts.whisperModel,
     whisperLanguage: opts.whisperLanguage,
+    whisperBackend: opts.whisperBackend,
     blooperMarker: opts.blooperMarker,
     collapseRetakes: opts.collapseRetakes,
     sort: opts.sort,

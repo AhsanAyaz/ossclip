@@ -411,6 +411,12 @@ export function buildProgram(): Command {
         "(whisper's -tr; pair with --whisper-language for the SOURCE language)",
       false,
     )
+    .option(
+      "--whisper-backend <backend>",
+      "local | remote. local (default) runs whisper.cpp on this machine; remote posts the " +
+        "audio to the OpenAI-compatible server in OSSCLIP_WHISPER_URL (config: whisperUrl) — " +
+        "configuring that URL already implies remote, so this flag is mainly `local` to opt out",
+    )
     // COMMA-SEPARATED in one value, not variadic: a variadic option swallows
     // the optional positional [input] whenever the flag precedes the path,
     // and commander offers no way to give the positional priority.
@@ -661,6 +667,14 @@ export function buildProgram(): Command {
         opts.whisperLanguage !== undefined
           ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
           : undefined;
+      // An enum, unlike --whisper-language: there are exactly two backends,
+      // and a typo'd `--whisper-backend groq` silently running local whisper
+      // on the weak CPU the flag exists to spare is the --source-fit crop
+      // all over again.
+      const whisperBackend =
+        opts.whisperBackend !== undefined
+          ? z.enum(["local", "remote"]).parse(opts.whisperBackend)
+          : undefined;
       // --add-jump-cuts / --no-jump-cuts land on DIFFERENT commander keys
       // (see the option declarations for why the pair can't share one);
       // jumpCutsFlag reunites them into the tri-state ProduceOptions
@@ -720,6 +734,9 @@ export function buildProgram(): Command {
           whisperModel: opts.whisperModel,
           whisperLanguage,
           whisperTranslate: opts.whisperTranslate === true,
+          // undefined = "not typed", so a configured whisperUrl decides
+          // (resolveWhisperBackend at the use site).
+          whisperBackend,
           // Split/trim/drop-empties (dictionaryFlag) — undefined stays
           // undefined so the config's dictionary can supply the default.
           dictionary: dictionaryFlag(opts.dictionary),
@@ -855,6 +872,15 @@ export function buildProgram(): Command {
         "(whisper's -tr; pair with --whisper-language for the SOURCE language)",
       false,
     )
+    .option(
+      "--whisper-backend <backend>",
+      // Same sentence as produce's, deliberately: `transcribe` is the command
+      // a user drives while SETTING remote transcription up, so the half that
+      // says the URL is the real switch cannot be the half that is dropped here.
+      "local | remote. local (default) runs whisper.cpp on this machine; remote posts the " +
+        "audio to the OpenAI-compatible server in OSSCLIP_WHISPER_URL (config: whisperUrl) — " +
+        "configuring that URL already implies remote, so this flag is mainly `local` to opt out",
+    )
     .action(async (input: string, opts) => {
       const cleanup = CleanupLevelSchema.parse(opts.cleanup);
       const result = await produce(input, {
@@ -870,6 +896,12 @@ export function buildProgram(): Command {
         whisperLanguage:
           opts.whisperLanguage !== undefined
             ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
+            : undefined,
+        // Parsed, not coerced — produce's reasoning: a typo must error, not
+        // fall back to the local backend the flag exists to avoid.
+        whisperBackend:
+          opts.whisperBackend !== undefined
+            ? z.enum(["local", "remote"]).parse(opts.whisperBackend)
             : undefined,
       });
       telemetry.record("transcribe_completed", {
@@ -908,6 +940,15 @@ export function buildProgram(): Command {
       "transcription language code for a multilingual model, e.g. ur | de | auto (whisper defaults to en)",
     )
     .option(
+      "--whisper-backend <backend>",
+      // Same sentence as produce's, deliberately: `transcribe` is the command
+      // a user drives while SETTING remote transcription up, so the half that
+      // says the URL is the real switch cannot be the half that is dropped here.
+      "local | remote. local (default) runs whisper.cpp on this machine; remote posts the " +
+        "audio to the OpenAI-compatible server in OSSCLIP_WHISPER_URL (config: whisperUrl) — " +
+        "configuring that URL already implies remote, so this flag is mainly `local` to opt out",
+    )
+    .option(
       "--blooper-marker <word>",
       "mark the flubbed take wherever you say this word out loud (e.g. blooper). Off unless given",
     )
@@ -934,6 +975,12 @@ export function buildProgram(): Command {
           whisperLanguage:
             opts.whisperLanguage !== undefined
               ? z.string().trim().min(1, "--whisper-language needs a code, e.g. ur").parse(opts.whisperLanguage)
+              : undefined,
+          // Parsed, not coerced — produce's reasoning: a typo must error, not
+          // fall back to the local backend the flag exists to avoid.
+          whisperBackend:
+            opts.whisperBackend !== undefined
+              ? z.enum(["local", "remote"]).parse(opts.whisperBackend)
               : undefined,
           blooperMarker: opts.blooperMarker,
           collapseRetakes: opts.collapseRetakes,

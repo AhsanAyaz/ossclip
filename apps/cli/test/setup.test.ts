@@ -166,6 +166,40 @@ describe("setup planner", () => {
     expect(model.detail).toContain("ggml-small.en.bin");
   });
 
+  // Remote transcription (2026-09-01 weak-CPU field report): downloading a
+  // 466 MB model to run an engine too slow to use is exactly the cliff
+  // remote removes — but it is reported with a reason, never skipped silently.
+  it("remote configured → the whisper and model steps are satisfied, saying why", async () => {
+    const steps = await planSetup(
+      { ...CFG, whisperUrl: "https://api.groq.com/openai/v1" },
+      healthy({ binRuns: async (b) => b !== "whisper-cli", exists: () => false }),
+      OPTS,
+    );
+    for (const kind of ["whisper", "model"] as const) {
+      const step = byKind(steps, kind);
+      expect(step.status).toBe("satisfied");
+      expect(step.detail).toContain("remote transcription configured (https://api.groq.com/openai/v1)");
+      expect(step.detail).toContain("local whisper not needed");
+    }
+    // Nothing is downloaded for a machine that transcribes remotely.
+    expect(formatPlan(steps)).not.toContain("ggml-small.en.bin");
+  });
+
+  it("a local whisper and model already present are still reported as found", async () => {
+    // Ground rule one: setup never uninstalls, and a user with both keeps
+    // `--whisper-backend local` working — so the plan names the real paths.
+    const steps = await planSetup(
+      { ...CFG, whisperUrl: "https://api.groq.com/openai/v1" },
+      healthy(),
+      OPTS,
+    );
+    expect(byKind(steps, "whisper")).toMatchObject({ status: "satisfied", detail: "whisper-cli" });
+    expect(byKind(steps, "model")).toMatchObject({
+      status: "satisfied",
+      detail: "/home/u/.ossclip/models/ggml-small.en.bin",
+    });
+  });
+
   it("provider: --skip-llm and a detected provider are both satisfied; neither prompts", async () => {
     // No agy and no claude (§132: the CLIs are now probed before the keys) —
     // "missing" must mean ALL four detection branches came up empty.

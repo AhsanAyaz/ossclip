@@ -122,7 +122,7 @@
 
 <h1>ossclip<span class="dot">.</span></h1>
 <p class="lede">A local-first CLI that turns a talking-head take into a finished short: filler words and dead air cut, word-timed kinetic captions, face-aware framing, and <strong>LLM-planned, code-rendered on-screen graphics</strong> — title cards, stat cards, diagrams, terminal and chat mockups — planned against a hand-built, Zod-typed scene library. Plus a cover image sized for the platform.</p>
-<p><strong>Your footage never leaves your machine.</strong> Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones — on your own API key, or on your existing Claude Code subscription.</p>
+<p><strong>Your footage never leaves your machine.</strong> Transcription is local (whisper.cpp), rendering is local (Remotion); the only network calls are the LLM planning ones — on your own API key, or on your existing Claude Code subscription. One opt-in exception, off unless you configure it: <a href="#tut-remote-whisper">remote transcription</a>, for a machine whose CPU makes whisper the whole cost of a run.</p>
 <p>Scope, honestly: ossclip is at its best <strong>polishing a take you have already cut down</strong>. For long-form input, <code>--clip &lt;seconds&gt;</code> selects the single strongest window (the producer's judgement, sentence-snapped) and produces only that — one clip, not N. Without it, 20 minutes in is a polished 20 minutes out.</p>
 <p>AI can make mistakes: the cut, captions and graphics are generated — review the output before publishing.</p>
 <span class="status">working end to end · pre-1.0</span>
@@ -232,6 +232,20 @@ ossclip produce take.mp4 --whisper-model medium-urdu --whisper-language ur -o ou
   <li><strong>Don't skip <code>--whisper-language</code>:</strong> whisper defaults to English decoding, and a multilingual model forced through English produces garbage, not a warning. <code>auto</code> works when the take mixes languages.</li>
   <li>RTL captions (Urdu, Arabic, Hebrew) lay out right-to-left with the active-word highlight following spoken order.</li>
   <li>The work directory records which model and language wrote its transcript — switching models re-transcribes instead of silently serving the cached English text, so A/B-ing <code>base.en</code> vs <code>small.en</code> vs a fine-tune on your own footage is just re-running with a different <code>--whisper-model</code>.</li>
+</ul>
+
+<h3 id="tut-remote-whisper">5 · A weak CPU: transcribe somewhere else</h3>
+<p>Transcription runs on your machine by default, and nothing here changes that. But on an older CPU whisper is the dominant cost of a run — minutes of decode per minute of video — so ossclip can post the audio to any OpenAI-compatible <code>/v1/audio/transcriptions</code> server instead. <a href="https://console.groq.com">Groq</a> has a free tier with word-level timestamps that covers any realistic creator volume:</p>
+<pre><code># 1. Get a free key at console.groq.com
+export OSSCLIP_WHISPER_URL=https://api.groq.com/openai/v1
+export OSSCLIP_WHISPER_API_KEY=gsk_...
+
+ossclip produce myvideo.mp4</code></pre>
+<ul>
+  <li>Configuring the URL is the whole switch — every run then transcribes remotely, and <code>--whisper-backend local</code> opts a single run back out. The durable spelling is <code>"whisperUrl"</code> in <code>~/.ossclip/config.json</code> (with <code>"whisperRemoteModel"</code> for the model name, default <code>whisper-large-v3-turbo</code>); the key stays environment-only, like every secret. With a server configured, <code>ossclip doctor</code> and <code>ossclip setup</code> stop asking for whisper.cpp and the model file — neither is needed.</li>
+  <li><strong>Self-hosted works and needs no key:</strong> <a href="https://github.com/speaches-ai/speaches">speaches</a>, a whisper.cpp server, anything speaking that API shape. It must answer <code>response_format=verbose_json</code> with <code>timestamp_granularities[]=word</code> — ossclip's cuts, captions and zooms are all word-stamp driven, so a text-only answer is an error, not a degraded success.</li>
+  <li><strong>One file per run, ~24&nbsp;MB.</strong> The upload is a 32&nbsp;kbps opus sidecar, about <strong>100 minutes</strong> of speech under the cap. A longer take errors before anything is uploaded, naming the size; transcribe it with <code>--whisper-backend local</code>, or split it.</li>
+  <li><strong>Your audio leaves the machine</strong> on this path — that is the trade. The local backend is the default precisely because it is the private one.</li>
 </ul>
 
 <h2 id="pipeline">How it works</h2>
@@ -355,6 +369,7 @@ ossclip edit                        # bare: pick from recent projects, or browse
   <tr><td>--llm-model / --llm-fast-model</td><td>override the editorial / mechanical model (<em>same</em> disables tiering)</td></tr>
   <tr><td>--whisper-model &lt;name&gt;</td><td>transcription model for this run (<em>base.en | small.en | medium.en</em>, or any converted GGML model in <code>~/.ossclip/models</code>)</td></tr>
   <tr><td>--whisper-language &lt;code&gt;</td><td>language for a multilingual model, e.g. <em>ur | de | auto</em> (whisper defaults to <em>en</em>)</td></tr>
+  <tr><td>--whisper-backend &lt;where&gt;</td><td><em>local</em> (default) or <em>remote</em> — post the audio to an OpenAI-compatible server instead of decoding it here (<a href="#tut-remote-whisper">weak-CPU tutorial</a>). Configuring the URL already implies <em>remote</em>, so this flag is mostly <em>local</em>, the per-run opt-out</td></tr>
   <tr><td>--no-repair</td><td>skip the ASR mishearing repair</td></tr>
   <tr><td>--scenes &lt;path&gt;</td><td>hand-authored scenes JSON — no LLM in the loop</td></tr>
   <tr><td>--source-is-edited</td><td>the source already has burned-in graphics — keep ossclip's off them <em>(also what turns the source-text scan on)</em></td></tr>
@@ -392,7 +407,7 @@ ossclip edit                        # bare: pick from recent projects, or browse
   "pricing": { "claude-opus-5": { "inputPerMTok": 15, "outputPerMTok": 75 } }
 }</code></pre>
 <p><strong>Provider keys</strong> come from the environment, and ossclip loads <code>.env</code> files before choosing a provider — first hit wins per key, a real environment variable always beats a file: <code>$OSSCLIP_ENV_FILE</code> → <code>.env</code> walking up from the cwd → <code>~/.ossclip/.env</code>.</p>
-<p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>.</p>
+<p>Env vars override the file: <code>OSSCLIP_FFMPEG</code>, <code>OSSCLIP_FFPROBE</code>, <code>OSSCLIP_WHISPER</code>, <code>OSSCLIP_MODEL_DIR</code>, <code>OSSCLIP_MODEL</code>, <code>OSSCLIP_FAST_MODEL</code>, <code>OSSCLIP_SPEAKER</code>, <code>OSSCLIP_BROWSER</code>, <code>OSSCLIP_WHISPER_URL</code>, <code>OSSCLIP_WHISPER_REMOTE_MODEL</code>.</p>
 
 <h2 id="telemetry">Telemetry</h2>
 <p>ossclip reports a few <strong>anonymous usage events</strong> — command counts, wall-clock durations, the provider <em>name</em>, the source length as a bucket (<code>&lt;1m</code>…<code>&gt;15m</code>) — so effort goes where the tool is actually used. On by default; the first run prints a notice saying so. <strong>Never sent:</strong> footage, transcripts, file names, paths, <code>--intent</code> text, prompts, or keys — enforced by a guard in the code the test suite pins, not just by policy. The full event list is in the README's Telemetry section.</p>

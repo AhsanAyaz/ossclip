@@ -66,6 +66,10 @@ import {
   splitThenDropHidden,
   emptyOverrideDoc,
   extractAudio,
+  encodeUploadAudio,
+  REMOTE_UPLOAD_MAX_BYTES,
+  createOpenAiCompatibleProvider,
+  openaiTranscriptionsUrl,
   fillPlainCues,
   splitCues,
   landscapeLayout,
@@ -249,6 +253,7 @@ import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from 
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
+import { remoteWhisperHost, resolveWhisperBackend } from "./whisper-backend";
 import { makeCancelSignal, renderCover, renderProduction } from "@ossclip/renderer";
 import type { RenderPhase } from "@ossclip/renderer";
 import {
@@ -311,6 +316,17 @@ export const TranscriptKeySchema = z.object({
    * files) means "no translation", the `dictionary` contract.
    */
   translate: z.boolean().optional(),
+  /**
+   * Which BACKEND decoded it (2026-09-01): `remote:<normalized endpoint>`, or
+   * absent for local whisper.cpp — the `dictionary`/`translate` contract, so
+   * every key file written before remote existed still reads as local. Two
+   * engines on the same audio produce different words, so without this a warm
+   * workdir serves the local transcript to a remote run (and vice versa) —
+   * the exact staleness `language` and `translate` were added for. The
+   * remote MODEL name rides in `model` above, so switching Groq models
+   * re-keys through the existing field.
+   */
+  backend: z.string().optional(),
 });
 export type TranscriptKey = z.infer<typeof TranscriptKeySchema>;
 
@@ -338,6 +354,10 @@ export function transcriptCacheReusable(
       // Absent and false are the same "no translation", so pre-flag key
       // files reuse under a non-translate request.
       (effective.translate ?? false) === (requested.translate ?? false) &&
+      // Absent means LOCAL on both sides, so every pre-2026-09-01 key file
+      // still reuses under a local request — and a remote request against
+      // one of them re-transcribes, which is the point.
+      (effective.backend ?? "") === (requested.backend ?? "") &&
       // ORDER-SENSITIVE by choice: the dictionary becomes whisper's --prompt
       // text verbatim, so a reordered list genuinely is a different decoder
       // input — treating it as equal would serve a transcript biased by a
@@ -634,6 +654,13 @@ export interface ProduceOptions {
    * together (whisper decodes better knowing the source language).
    */
   whisperTranslate?: boolean;
+  /**
+   * `--whisper-backend`, already zod-parsed to the union by program.ts
+   * (2026-09-01 weak-CPU field report). Undefined means "not typed", which
+   * is what lets a configured `whisperUrl` select remote — the flag is
+   * mainly `local`, the per-run opt-out.
+   */
+  whisperBackend?: "local" | "remote";
   /**
    * Vocabulary terms for this run (`--dictionary`, F4 2026-08-16), already
    * split/trimmed by the action. Wholesale beats the config's `dictionary`
@@ -2664,9 +2691,34 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         `--whisper-language overrides)`,
     );
   }
+  // Local whisper.cpp or an OpenAI-compatible server (2026-09-01 weak-CPU
+  // field report). Resolved BEFORE the key, like the language, so what
+  // actually decodes is what the cache is keyed on.
+  const backendPick = resolveWhisperBackend(opts.whisperBackend, cfg, process.env);
+  if (!backendPick.ok) throw new Error(backendPick.message);
+  const backend = backendPick.backend;
+  // BEFORE the key is built, so a translate request can never cross the
+  // cache with a remote one: the OpenAI-compatible API translates on a
+  // DIFFERENT endpoint with a DIFFERENT default model, and swapping both
+  // behind one flag would be a surprise rather than a convenience.
+  if (backend.kind === "remote" && opts.whisperTranslate === true) {
+    throw new Error(
+      "--whisper-translate needs the local backend (the OpenAI-compatible API translates on a " +
+        "different endpoint and model) — use --whisper-backend local, or drop the flag.",
+    );
+  }
   const requestedKey: TranscriptKey = {
-    model: requestedModel,
+    // The REMOTE model name when remote — one field, both engines, so an
+    // A/B between two Groq models re-keys the cache exactly like a local one.
+    model: backend.kind === "remote" ? backend.model : requestedModel,
     ...(whisperLang.language !== undefined ? { language: whisperLang.language } : {}),
+    // Spread-omitted on local so local key files stay byte-identical to
+    // every one written before remote existed (the translate posture). The
+    // URL goes through openaiTranscriptionsUrl so ".../v1" and ".../v1/"
+    // key identically — a trailing slash is not a different server.
+    ...(backend.kind === "remote"
+      ? { backend: `remote:${openaiTranscriptionsUrl(backend.baseUrl)}` }
+      : {}),
     // Omitted when off, so a non-translate run's key stays byte-identical to
     // every pre-flag key file (the dictionary posture).
     ...(opts.whisperTranslate === true ? { translate: true } : {}),
@@ -2704,51 +2756,100 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           `re-transcribing with ${fmt(requestedKey)}`,
       );
     }
-    await preflight(
-      cfg.whisperPath,
-      "Run `ossclip setup`, install whisper.cpp yourself (https://github.com/ggml-org/whisper.cpp), or set OSSCLIP_WHISPER.",
-    );
-    const model = requestedKey.model;
-    // whisperModelPath/modelUrl are THE resolution and URL sources (shared
-    // with doctor and setup) — this error used to hold its own copy of the
-    // ggerganov URL, which 404'd for curated/custom names and the suggested
-    // `curl -L` then saved the 404 HTML as a fake model.
-    const modelPath = whisperModelPath(model, cfg.modelDir);
-    if (!existsSync(modelPath)) {
-      throw new Error(
-        `whisper model not found at ${modelPath}.\n` +
-          `Run \`ossclip setup${model === cfg.model ? "" : ` --model ${model}`}\` to download it — or manually:\n` +
-          `  curl -L -o ${modelPath} ${modelUrl(model, validModelSources(cfg.modelSources))}`,
+    if (backend.kind === "remote") {
+      // No whisper binary and no model file on this branch — the whole point
+      // of remote is that neither is installed (2026-09-01 field report).
+      // ffmpeg still is: the upload sidecar is an encode.
+      const host = remoteWhisperHost(backend.baseUrl);
+      const uploadPath = join(work, "audio-upload.ogg");
+      transcript = await phases.time("transcribe", async () => {
+        await encodeUploadAudio(tools, audioPath, uploadPath);
+        const bytes = statSync(uploadPath).size;
+        if (bytes > REMOTE_UPLOAD_MAX_BYTES) {
+          // Named here rather than paid for as somebody else's 413 after the
+          // whole upload: chunking is out of scope for v1, so the error has
+          // to carry both escape hatches itself.
+          throw new Error(
+            `the compressed audio is ${(bytes / 1_000_000).toFixed(1)} MB, over the ` +
+              `${(REMOTE_UPLOAD_MAX_BYTES / 1_000_000).toFixed(0)} MB single-file limit for remote ` +
+              `transcription (about 100 minutes of speech at this bitrate).\n` +
+              `Transcribe locally with --whisper-backend local, split the take, or point ` +
+              `OSSCLIP_WHISPER_URL at a server with a larger cap (Groq's dev tier allows 100 MB).`,
+          );
+        }
+        const anim = isInteractive()
+          ? new StageAnimator(
+              "REMOTE ASR",
+              `Transcribing via ${host} (${backend.model})...`,
+              "whisper",
+            ).start()
+          : null;
+        if (!anim) console.log(`▸ transcribing remotely (${host}, ${backend.model})…`);
+        try {
+          return await createOpenAiCompatibleProvider({
+            baseUrl: backend.baseUrl,
+            model: backend.model,
+            ...(backend.apiKey !== undefined ? { apiKey: backend.apiKey } : {}),
+          }).transcribe(uploadPath, {
+            // From the KEY, like the local branch: whatever re-keys the cache
+            // is what actually decoded, so the two can never disagree.
+            language: requestedKey.language,
+            prompt: whisperPromptFor(dictionary),
+          });
+        } finally {
+          // In a finally, unlike the local branch's trailing stop(): an HTTP
+          // failure here is EXPECTED (a wrong key, a rate limit), and a
+          // spinner still animating would overwrite the hint the user needs.
+          anim?.stop();
+        }
+      });
+    } else {
+      await preflight(
+        cfg.whisperPath,
+        "Run `ossclip setup`, install whisper.cpp yourself (https://github.com/ggml-org/whisper.cpp), or set OSSCLIP_WHISPER.",
       );
+      const model = requestedKey.model;
+      // whisperModelPath/modelUrl are THE resolution and URL sources (shared
+      // with doctor and setup) — this error used to hold its own copy of the
+      // ggerganov URL, which 404'd for curated/custom names and the suggested
+      // `curl -L` then saved the 404 HTML as a fake model.
+      const modelPath = whisperModelPath(model, cfg.modelDir);
+      if (!existsSync(modelPath)) {
+        throw new Error(
+          `whisper model not found at ${modelPath}.\n` +
+            `Run \`ossclip setup${model === cfg.model ? "" : ` --model ${model}`}\` to download it — or manually:\n` +
+            `  curl -L -o ${modelPath} ${modelUrl(model, validModelSources(cfg.modelSources))}`,
+        );
+      }
+      const whisperAnim = isInteractive()
+        ? new StageAnimator(
+            "WHISPER ASR",
+            `Transcribing audio stream with ${basename(modelPath)}...`,
+            "whisper",
+          ).start()
+        : null;
+      if (!whisperAnim) console.log(`▸ transcribing (${basename(modelPath)})…`);
+      transcript = await phases.time("transcribe", () =>
+        runWhisper(
+          {
+            whisperPath: cfg.whisperPath,
+            modelPath,
+            outBase: join(work, "whisper"),
+            // The RESOLVED language, not the raw flag — a config/model-implied
+            // code must reach the spawn exactly as it reached the cache key.
+            language: requestedKey.language,
+            // Vocabulary biasing (F4) — undefined for an empty dictionary, so
+            // the spawned args stay byte-identical to every pre-dictionary run.
+            // From the KEY, like the language: whatever re-keys the cache is
+            // what actually ran, so the two can never disagree.
+            ...(requestedKey.translate === true ? { translate: true } : {}),
+            prompt: whisperPromptFor(dictionary),
+          },
+          audioPath,
+        ),
+      );
+      if (whisperAnim) whisperAnim.stop();
     }
-    const whisperAnim = isInteractive()
-      ? new StageAnimator(
-          "WHISPER ASR",
-          `Transcribing audio stream with ${basename(modelPath)}...`,
-          "whisper",
-        ).start()
-      : null;
-    if (!whisperAnim) console.log(`▸ transcribing (${basename(modelPath)})…`);
-    transcript = await phases.time("transcribe", () =>
-      runWhisper(
-        {
-          whisperPath: cfg.whisperPath,
-          modelPath,
-          outBase: join(work, "whisper"),
-          // The RESOLVED language, not the raw flag — a config/model-implied
-          // code must reach the spawn exactly as it reached the cache key.
-          language: requestedKey.language,
-          // Vocabulary biasing (F4) — undefined for an empty dictionary, so
-          // the spawned args stay byte-identical to every pre-dictionary run.
-          // From the KEY, like the language: whatever re-keys the cache is
-          // what actually ran, so the two can never disagree.
-          ...(requestedKey.translate === true ? { translate: true } : {}),
-          prompt: whisperPromptFor(dictionary),
-        },
-        audioPath,
-      ),
-    );
-    if (whisperAnim) whisperAnim.stop();
     console.log(`▸ transcribed ${transcript.words.length} words`);
     await writeFile(transcriptKeyPath, JSON.stringify(requestedKey, null, 2));
   }

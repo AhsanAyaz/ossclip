@@ -90,6 +90,55 @@ describe("produce flag forwarding", () => {
     expect(offerEditorSpy.mock.calls[0]![1]).toMatchObject({ port: 5174, portPinned: false });
   });
 
+  // --whisper-backend (2026-09-01): the flag that decides whether the audio
+  // is decoded on this machine or posted to a server. It rides THREE
+  // commands, and the two that are not `produce` reach produce() through
+  // their own action bodies — the `--resolution` failure mode, three times
+  // over.
+  it("--whisper-backend reaches produce, and untyped stays undefined", async () => {
+    const remote = await runProduce(["produce", "in.mp4", "--whisper-backend", "remote", "--no-render"]);
+    expect(remote.whisperBackend).toBe("remote");
+    const local = await runProduce(["produce", "in.mp4", "--whisper-backend", "local", "--no-render"]);
+    expect(local.whisperBackend).toBe("local");
+    // Untyped means "let a configured whisperUrl decide" — a default here
+    // would make the config unable to select remote at all.
+    const untyped = await runProduce(["produce", "in.mp4", "--no-render"]);
+    expect(untyped.whisperBackend).toBeUndefined();
+  });
+
+  it("a typo'd --whisper-backend is an error, never a silent local run", async () => {
+    // CLAUDE.md's parse-don't-coerce: falling back to local is exactly the
+    // slow decode the flag exists to avoid on a weak CPU.
+    await expect(
+      runProduce(["produce", "in.mp4", "--whisper-backend", "groq", "--no-render"]),
+    ).rejects.toThrow();
+  });
+
+  it("--whisper-backend reaches produce through `transcribe` too", async () => {
+    const opts = await runProduce(["transcribe", "in.mp4", "--whisper-backend", "remote"]);
+    expect(opts.whisperBackend).toBe("remote");
+    await expect(runProduce(["transcribe", "in.mp4", "--whisper-backend", "groq"])).rejects.toThrow();
+  });
+
+  it("--whisper-backend reaches produce through `analyze`'s two hops", async () => {
+    // analyze forwards through runAnalyze, so this pins BOTH hops. The
+    // command then dies reading a production.json the stubbed produce never
+    // wrote — irrelevant to what is under test, which is the options object
+    // produce was handed.
+    produceSpy.mockClear();
+    const { buildProgram } = await import("../src/program");
+    const program = buildProgram();
+    for (const cmd of [program, ...program.commands]) {
+      cmd.exitOverride();
+      cmd.configureOutput({ writeErr() {} });
+    }
+    await program
+      .parseAsync(["node", "ossclip", "analyze", "in.mp4", "--whisper-backend", "remote"])
+      .catch(() => {});
+    expect(produceSpy).toHaveBeenCalledTimes(1);
+    expect(produceSpy.mock.calls[0]![1]).toMatchObject({ whisperBackend: "remote" });
+  });
+
   it("a typed --editor-port is pinned, and reaches the offer", async () => {
     offerEditorSpy.mockClear();
     await runProduce(["produce", "in.mp4", "--no-render", "--open-editor", "--editor-port", "5200"]);

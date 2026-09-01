@@ -9,6 +9,7 @@ import {
   whisperAsset,
   whisperModelPath,
 } from "./manifest";
+import { resolveWhisperBackend } from "../whisper-backend";
 
 /**
  * The planning half of `ossclip setup` — pure over injected probes, like
@@ -111,10 +112,25 @@ export async function planSetup(
     }
   }
 
+  // Remote transcription (2026-09-01 weak-CPU field report) makes whisper.cpp
+  // and the model OPTIONAL: on the machine the report came from, downloading
+  // a 1.5 GB model to run an engine that is too slow to use is exactly the
+  // cliff remote exists to remove. Reported as `satisfied` with the reason,
+  // never as a silent skip — and a local install that ALREADY works still
+  // reports itself (ground rule one: setup never uninstalls, and a user who
+  // has both keeps the `--whisper-backend local` escape hatch working).
+  const remote = resolveWhisperBackend(undefined, cfg, p.env);
+  const remoteDetail =
+    remote.ok && remote.backend.kind === "remote"
+      ? `remote transcription configured (${remote.backend.baseUrl}) — local whisper not needed`
+      : null;
+
   const whisperOk = await p.binRuns(cfg.whisperPath, "--help");
   const whisperForceable = isManaged(cfg.whisperPath, opts.configDir);
   if (whisperOk && !(opts.force && whisperForceable)) {
     steps.push({ kind: "whisper", status: "satisfied", detail: cfg.whisperPath });
+  } else if (remoteDetail !== null) {
+    steps.push({ kind: "whisper", status: "satisfied", detail: remoteDetail });
   } else {
     const asset = whisperAsset(p.platform, p.arch);
     if (asset) {
@@ -153,6 +169,8 @@ export async function planSetup(
   const known = MODELS[model];
   if (p.exists(modelPath)) {
     steps.push({ kind: "model", status: "satisfied", detail: modelPath });
+  } else if (remoteDetail !== null) {
+    steps.push({ kind: "model", status: "satisfied", detail: remoteDetail });
   } else if (isAbsolute(model)) {
     steps.push({
       kind: "model",

@@ -168,6 +168,67 @@ describe("ossclip doctor (R18 §90a)", () => {
     expect(formatDoctor(checks)).toContain("1 check failed");
   });
 
+  // Remote transcription (2026-09-01 weak-CPU field report): the machine
+  // that needs it most is the one that never installed whisper.cpp, and
+  // doctor printing two red lines on a working install is how a user
+  // concludes the tool is broken.
+  const REMOTE_CFG: OssclipConfig = { ...CFG, whisperUrl: "https://api.groq.com/openai/v1" };
+
+  it("remote configured → a missing whisper-cli and model still pass, saying why", async () => {
+    const checks = await runDoctor(
+      REMOTE_CFG,
+      healthy({ binRuns: async (bin) => bin !== "whisper-cli", exists: () => false }),
+    );
+    const whisper = byName(checks, "whisper-cli");
+    expect(whisper.ok).toBe(true);
+    expect(whisper.detail).toContain("not needed: remote transcription configured");
+    // No fix line: there is nothing to fix.
+    expect(whisper.fix).toBeUndefined();
+    const model = byName(checks, "whisper model");
+    expect(model.ok).toBe(true);
+    expect(model.detail).toContain("not needed: remote transcription configured");
+    expect(model.detail).toContain("/home/u/.ossclip/models/ggml-small.en.bin");
+    expect(formatDoctor(checks)).toContain("All checks passed");
+  });
+
+  it("a local whisper that DOES work still reports its own path", async () => {
+    // Having both is a supported install — `--whisper-backend local` is the
+    // escape hatch, and it must not be reported as unavailable.
+    const checks = await runDoctor(REMOTE_CFG, healthy());
+    expect(byName(checks, "whisper-cli").detail).toBe("whisper-cli");
+    expect(byName(checks, "whisper model").detail).toBe("/home/u/.ossclip/models/ggml-small.en.bin");
+  });
+
+  it("the remote line reports url · model · key presence — and makes no network call", async () => {
+    const withKey = await runDoctor(
+      { ...REMOTE_CFG, whisperRemoteModel: "whisper-large-v3" },
+      healthy({ env: { GEMINI_API_KEY: "k", OSSCLIP_WHISPER_API_KEY: "gsk_x" } }),
+    );
+    const line = byName(withKey, "remote transcription");
+    expect(line.ok).toBe(true);
+    expect(line.detail).toContain("https://api.groq.com/openai/v1");
+    expect(line.detail).toContain("model whisper-large-v3");
+    expect(line.detail).toContain("OSSCLIP_WHISPER_API_KEY set");
+    // The default model when none is configured, and the keyless wording:
+    // a self-hosted server needs no key, so this must not read as a failure.
+    const keyless = await runDoctor(REMOTE_CFG, healthy({ env: {} }));
+    const noKey = byName(keyless, "remote transcription");
+    expect(noKey.ok).toBe(true);
+    expect(noKey.detail).toContain("model whisper-large-v3-turbo");
+    expect(noKey.detail).toContain("fine for self-hosted");
+  });
+
+  it("unconfigured → no remote line at all, and the local checks fail as they always did", async () => {
+    const checks = await runDoctor(
+      CFG,
+      healthy({ binRuns: async (bin) => bin !== "whisper-cli", exists: () => false }),
+    );
+    expect(checks.find((c) => c.name === "remote transcription")).toBeUndefined();
+    expect(byName(checks, "whisper-cli").ok).toBe(false);
+    expect(byName(checks, "whisper-cli").fix).toContain("OSSCLIP_WHISPER");
+    expect(byName(checks, "whisper model").ok).toBe(false);
+  });
+
   it("a missing editor page names the one-time build", async () => {
     const checks = await runDoctor(CFG, healthy({ editorPageDir: null }));
     const page = byName(checks, "editor page");

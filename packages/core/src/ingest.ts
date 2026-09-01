@@ -86,6 +86,42 @@ export async function extractAudio(tools: IngestTools, src: string, outWav: stri
 }
 
 /**
+ * Pure: ffmpeg args for the compressed remote-upload sidecar (2026-09-01,
+ * the remote-transcription backend). Split from the spawn the same way
+ * `openCommand()` is split from `openInBrowser()` — the codec choice is the
+ * whole decision here, so it must be assertable without an ffmpeg on the box.
+ *
+ * Opus 32 kbps 16 kHz mono: ASR-transparent for speech and ~240 KB/min, so
+ * ~100 minutes of audio fit under Groq's free-tier 25 MB per-file cap. The
+ * PCM wav `extractAudio` writes is 1.92 MB/min and hits that cap at ~13
+ * minutes — unusable for a normal recording session. FLAC was rejected:
+ * lossless buys ASR nothing and only reaches ~25 minutes.
+ */
+export function uploadAudioArgs(wavPath: string, outOgg: string): string[] {
+  return ["-y", "-i", wavPath, "-vn", "-c:a", "libopus", "-b:a", "32k", "-ar", "16000", "-ac", "1", outOgg];
+}
+
+/**
+ * Encode the remote-upload sidecar. libopus is in the bundled static ffmpeg;
+ * a user's own minimal build may lack it, in which case `run` surfaces
+ * ffmpeg's own "Unknown encoder" verbatim — better than a guess at the cause.
+ */
+export async function encodeUploadAudio(tools: IngestTools, wav: string, outOgg: string): Promise<void> {
+  await run(tools.ffmpegPath, uploadAudioArgs(wav, outOgg));
+}
+
+/**
+ * 24 million bytes: Groq's free tier caps a file at "25MB" without saying
+ * whether that is decimal or MiB — 24_000_000 sits under BOTH readings
+ * (25,000,000 and 26,214,336), so a boundary file fails HERE with our message
+ * (naming the ~100-minute ceiling and the local-backend escape hatch) instead
+ * of coming back as somebody else's 413 after the whole upload was paid for.
+ * (24 MiB = 25,165,824 would EXCEED a decimal cap — caught 2026-09-01.)
+ * Chunking is out of scope for v1.
+ */
+export const REMOTE_UPLOAD_MAX_BYTES = 24_000_000;
+
+/**
  * Extract ONE span of an existing wav, same 16 kHz mono PCM shape
  * (2026-08-26, the caption re-alignment pass).
  *

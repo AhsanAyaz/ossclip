@@ -200,6 +200,30 @@ export interface OssclipConfig {
    */
   postizUrl?: string;
   /**
+   * Base URL of an OpenAI-compatible transcription server, ending in `/v1`
+   * (Groq: "https://api.groq.com/openai/v1"; a self-hosted speaches:
+   * "http://localhost:8000/v1"). Set, transcription runs REMOTELY instead of
+   * on this machine's CPU — the 2026-09-01 field report from an i3 2nd gen,
+   * where whisper is the dominant cost of a run. Unset, local whisper-cli
+   * stays the default, and `--whisper-backend local` overrides per run.
+   *
+   * Non-secret, the `postizUrl` posture, so it may live here; the API key is
+   * `OSSCLIP_WHISPER_API_KEY` in the ENVIRONMENT only (env.ts's documented
+   * rule) — and OPTIONAL, because self-hosted servers run keyless. Validated
+   * at the consumer (`resolveWhisperBackend` in the CLI), never coerced.
+   */
+  whisperUrl?: string;
+  /**
+   * Model name sent to that server ("whisper-large-v3-turbo" on Groq,
+   * "Systran/faster-whisper-large-v3" on a speaches box). Deliberately NOT
+   * `model`, which names the local ggml file — a remote run must not be able
+   * to send "small.en" to a server that has never heard of it. The default
+   * lives at the consumer (`resolveWhisperBackend`), not in DEFAULTS: an
+   * unset key here must stay unset so nothing writes a remote model name into
+   * a local-only config.
+   */
+  whisperRemoteModel?: string;
+  /**
    * `--resolution`'s default for this machine: "auto" (keep what the source
    * has, capped at 2160), "1080" (the built-in default), "1440" or "2160".
    * File-only, the `watermark` posture: validated where it is USED
@@ -367,6 +391,15 @@ export function resolveConfig(
     // deliberately lives in the environment (publish.ts's
     // `publishConfigured`), so this is only the instance URL.
     postizUrl: fileCfg.postizUrl,
+    // Env spellings ON PURPOSE, unlike postizUrl: the Groq quickstart is
+    // "export two vars and run", and a user trying a free tier for the first
+    // time should not have to hand-edit config.json to do it. Env beats file
+    // so a one-off `OSSCLIP_WHISPER_URL=… ossclip produce` works against a
+    // machine whose config says otherwise. Both are strings straight through
+    // — validated at the consumer (`resolveWhisperBackend`), never coerced,
+    // and the postizUrl lesson above is why they are copied here at all.
+    whisperUrl: env.OSSCLIP_WHISPER_URL ?? fileCfg.whisperUrl,
+    whisperRemoteModel: env.OSSCLIP_WHISPER_REMOTE_MODEL ?? fileCfg.whisperRemoteModel,
     resolution: fileCfg.resolution,
   };
 }

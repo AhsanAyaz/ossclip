@@ -70,6 +70,11 @@ import {
   portraitMimeType,
   readCoverProvenance,
   runWhisper,
+  // The remote transcription backend (2026-09-01) — the span re-decode goes
+  // through it whenever `whisperUrl` is configured.
+  createOpenAiCompatibleProvider,
+  type TranscribeRequest,
+  type Transcript,
   SegmentSchema,
   spliceTranscript,
   TranscriptSchema,
@@ -116,6 +121,7 @@ import { expandHome } from "./paths";
 // produce all resolve through — a second copy here would send a user to a
 // model file the rest of the tool never looks for.
 import { modelImpliedLanguage, whisperModelPath } from "./setup/manifest";
+import { resolveWhisperBackend } from "./whisper-backend";
 import {
   PORTRAIT_OVERRIDE_BASENAME,
   portraitExtensionForMime,
@@ -198,6 +204,37 @@ export interface RetranscribeConfig {
   modelDir?: string;
   language?: unknown;
   dictionary?: unknown;
+  /** The remote-backend pair (2026-09-01): a configured URL means this span
+   *  is decoded by an OpenAI-compatible server instead of whisper.cpp, so the
+   *  server must see the same two keys `resolveWhisperBackend` reads. */
+  whisperUrl?: string;
+  whisperRemoteModel?: string;
+}
+
+/**
+ * The half of a range re-decode that is the same on BOTH backends: the
+ * decoder bias. Extracted (2026-09-01) so the remote path shares these rules
+ * verbatim instead of growing a second copy that drifts — the validation is
+ * the load-bearing part, and it is unchanged from the local-only version.
+ */
+function retranscribeBias(cfg: RetranscribeConfig): { language?: string; prompt?: string } {
+  const dict = Array.isArray(cfg.dictionary)
+    && cfg.dictionary.length > 0
+    && cfg.dictionary.every((t) => typeof t === "string" && t.trim().length > 0)
+    ? (cfg.dictionary as string[]).map((t) => t.trim())
+    : [];
+  // `cfg.model` can be absent on the remote backend (a machine that never
+  // installed a local model), and no model name implies no language.
+  const language = typeof cfg.language === "string" && cfg.language.trim().length > 0
+    ? cfg.language.trim()
+    : cfg.model !== undefined
+      ? modelImpliedLanguage(cfg.model)
+      : undefined;
+  const prompt = whisperPromptFor(dict);
+  return {
+    ...(language !== undefined ? { language } : {}),
+    ...(prompt !== undefined ? { prompt } : {}),
+  };
 }
 
 /**
@@ -238,21 +275,38 @@ export function retranscribeSettings(
         "then `ossclip setup` to install it.",
     };
   }
-  const dict = Array.isArray(cfg.dictionary)
-    && cfg.dictionary.length > 0
-    && cfg.dictionary.every((t) => typeof t === "string" && t.trim().length > 0)
-    ? (cfg.dictionary as string[]).map((t) => t.trim())
-    : [];
-  const language = typeof cfg.language === "string" && cfg.language.trim().length > 0
-    ? cfg.language.trim()
-    : modelImpliedLanguage(cfg.model);
-  const prompt = whisperPromptFor(dict);
   return {
     tools: { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath },
     whisperPath: cfg.whisperPath,
     modelPath: whisperModelPath(cfg.model, cfg.modelDir),
-    ...(language !== undefined ? { language } : {}),
-    ...(prompt !== undefined ? { prompt } : {}),
+    ...retranscribeBias(cfg),
+  };
+}
+
+/**
+ * The same thing for the REMOTE backend (2026-09-01): no whisper binary and
+ * no model file, because the point of remote is that neither is installed —
+ * but ffmpeg still is, since the span is sliced out of `audio.wav` locally
+ * before it is uploaded.
+ *
+ * Pure, like its local twin: the whole "remote configured but ffmpeg isn't"
+ * corner is testable without a network.
+ */
+export function retranscribeRemoteSettings(
+  cfg: RetranscribeConfig,
+):
+  | { tools: { ffmpegPath: string; ffprobePath: string }; language?: string; prompt?: string }
+  | { error: string } {
+  if (!cfg.ffmpegPath || !cfg.ffprobePath) {
+    return {
+      error:
+        "ffmpeg is not configured — run `ossclip doctor` to see what is missing, " +
+        "then `ossclip setup` to install it. (Remote transcription still slices the span locally.)",
+    };
+  }
+  return {
+    tools: { ffmpegPath: cfg.ffmpegPath, ffprobePath: cfg.ffprobePath },
+    ...retranscribeBias(cfg),
   };
 }
 
@@ -484,6 +538,13 @@ export async function startEditServer(
      */
     sliceAudio?: typeof extractAudioSpan;
     runWhisper?: typeof runWhisper;
+    /**
+     * The remote backend's half of the `runWhisper` seam (2026-09-01): with a
+     * `whisperUrl` configured the span goes to an OpenAI-compatible server
+     * instead of whisper.cpp, and a test must be able to observe that —
+     * including the failure sentence — without a network or an API key.
+     */
+    transcribeRemote?: (wavPath: string, req: TranscribeRequest) => Promise<Transcript>;
     /**
      * The sound library the SFX routes serve (`loadCfg`'s rule applied to the
      * pack loader): tests inject a hand-written library over a tmp dir, so the
@@ -955,17 +1016,67 @@ export async function startEditServer(
                 error: "this workdir has no transcript.json to re-stamp — re-run `ossclip produce`.",
               });
             }
-            const settings = retranscribeSettings((opts.loadCfg ?? loadConfig)());
-            if ("error" in settings) return send(200, { ok: false, error: settings.error });
-            if (!existsSync(settings.modelPath)) {
-              // The `--transcript`-only install: whisper was never needed to
-              // make this project, so say what to run rather than 500ing.
-              return send(200, {
-                ok: false,
-                error:
-                  `whisper model not found at ${settings.modelPath} — run \`ossclip setup\` ` +
-                  `to download it.`,
+            const cfg = (opts.loadCfg ?? loadConfig)();
+            // Which engine re-decodes the span, resolved HERE rather than in
+            // retranscribeSettings (2026-09-01): the flag is a CLI thing and
+            // there is no CLI in this loop, so a configured `whisperUrl` is
+            // the whole switch. `undefined` as the flag can only answer ok —
+            // only an explicit `--whisper-backend remote` with nothing
+            // configured fails — so this is a narrowing, not a live branch.
+            const backendPick = resolveWhisperBackend(undefined, cfg, process.env);
+            if (!backendPick.ok) return send(200, { ok: false, error: backendPick.message });
+            const backend = backendPick.backend;
+            // One plan, two shapes: the local one needs a binary and a model
+            // file on disk, the remote one needs neither. Both need ffmpeg —
+            // the span is always sliced here.
+            let plan: {
+              tools: { ffmpegPath: string; ffprobePath: string };
+              language?: string;
+              prompt?: string;
+              decode: (wavPath: string, req: TranscribeRequest) => Promise<Transcript>;
+            };
+            if (backend.kind === "remote") {
+              const settings = retranscribeRemoteSettings(cfg);
+              if ("error" in settings) return send(200, { ok: false, error: settings.error });
+              const provider = createOpenAiCompatibleProvider({
+                baseUrl: backend.baseUrl,
+                model: backend.model,
+                ...(backend.apiKey !== undefined ? { apiKey: backend.apiKey } : {}),
               });
+              plan = {
+                ...settings,
+                // Uploaded AS-IS, no opus sidecar (produce's rule does not
+                // apply): a span is seconds long, so its wav is far under any
+                // upload cap and the encode would cost more than it saves.
+                decode: opts.transcribeRemote ?? ((wavPath, r) => provider.transcribe(wavPath, r)),
+              };
+            } else {
+              const settings = retranscribeSettings(cfg);
+              if ("error" in settings) return send(200, { ok: false, error: settings.error });
+              if (!existsSync(settings.modelPath)) {
+                // The `--transcript`-only install: whisper was never needed to
+                // make this project, so say what to run rather than 500ing.
+                return send(200, {
+                  ok: false,
+                  error:
+                    `whisper model not found at ${settings.modelPath} — run \`ossclip setup\` ` +
+                    `to download it.`,
+                });
+              }
+              plan = {
+                ...settings,
+                decode: (wavPath, r) =>
+                  (opts.runWhisper ?? runWhisper)(
+                    {
+                      whisperPath: settings.whisperPath,
+                      modelPath: settings.modelPath,
+                      outBase,
+                      ...(r.language !== undefined ? { language: r.language } : {}),
+                      ...(r.prompt !== undefined ? { prompt: r.prompt } : {}),
+                    },
+                    wavPath,
+                  ),
+              };
             }
             // Parsed, not cast: this file is about to be rewritten, and a
             // truncated one must fail loudly here rather than become the new
@@ -985,22 +1096,16 @@ export async function startEditServer(
               });
             }
             await (opts.sliceAudio ?? extractAudioSpan)(
-              settings.tools,
+              plan.tools,
               audio,
               tmpWav,
               srcIn,
               srcOut - srcIn,
             );
-            const fresh = await (opts.runWhisper ?? runWhisper)(
-              {
-                whisperPath: settings.whisperPath,
-                modelPath: settings.modelPath,
-                outBase,
-                ...(settings.language !== undefined ? { language: settings.language } : {}),
-                ...(settings.prompt !== undefined ? { prompt: settings.prompt } : {}),
-              },
-              tmpWav,
-            );
+            const fresh = await plan.decode(tmpWav, {
+              ...(plan.language !== undefined ? { language: plan.language } : {}),
+              ...(plan.prompt !== undefined ? { prompt: plan.prompt } : {}),
+            });
             const restamped = alignRestamp(
               transcript.words.slice(range.from, range.to),
               fresh.words,
