@@ -40,6 +40,14 @@ ossclip edit "<work directory>"
 
 **Scope, honestly:** ossclip is at its best polishing a take you have already cut down. `--clip` selects a single strongest window from long-form input — one clip, not N.
 
+**Color grading:** `--color-grade <preset|file.cube>` grades the footage — six presets (`talking-head`, `teal-orange`, `filmic-fade`, `cwa`, `punchy`, `mono`), or any `.cube` LUT you drop in `~/.ossclip/luts`. Presets preview live in the editor, where intensity, exposure, temperature, saturation and contrast are sliders; a LUT bakes into the mezzanine at render time. `"colorGrade"` in `~/.ossclip/config.json` sets a channel's look once, and `--no-color-grade` is a hard off for one run.
+
+**Sound effects:** `--sfx` places whooshes, dings and risers on the beats the producer planned (`--sfx-level subtle|normal|meme` — `meme` is what unlocks the record scratch). Needs `--produce`. A CC0 starter pack ships with the CLI; your own packs live in `~/.ossclip/sfx`. The editor gets an SFX lane: retime, swap, gain, mute-with-a-way-back, or add one at the playhead, audible in the preview.
+
+**Keep a 4K source's pixels:** `--resolution auto` renders at what the source still has after the crop (capped at 2160, never under 1080p) instead of forcing 1080p — invisible on the platforms that cap at 1080p, real on YouTube. `1080` (default), `1440` and `2160` are the fixed choices.
+
+**Frame 1 is the cover on some platforms:** `--cover-in-video` overlays the cover image on the opening frames — nothing is inserted, the overlay ends at the first spoken word, so no audio or caption timing moves. Off by default; `"coverInVideo": true` in the config turns it on for good.
+
 **Keep your own editor:** `ossclip analyze` exports every suggested cut as a labelled span marker — reason, duration, confidence — in the dialect your NLE actually reads (`premiere-xml`, `resolve-edl` with colours, or `fcpxml` for Final Cut). Review the markers, cut in your own timeline; nothing is applied for you. Import steps per NLE are in the repo README.
 
 **Weak CPU?** On an older machine whisper is the dominant cost of a run, so transcription can go to any OpenAI-compatible `/v1/audio/transcriptions` server instead — [Groq](https://console.groq.com)'s free tier, or your own [speaches](https://github.com/speaches-ai/speaches)/whisper.cpp server, which needs no key. Export `OSSCLIP_WHISPER_URL` (plus `OSSCLIP_WHISPER_API_KEY` where the server wants one) and every run transcribes remotely; `--whisper-backend local` opts a single run back out, and `ossclip doctor` and `ossclip setup` stop asking for whisper.cpp and the model file. Your audio leaves the machine on that path — which is why it is off until you configure it. Caps and self-hosting notes in the repo README.
