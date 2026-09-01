@@ -30,6 +30,9 @@ describe("uploadAudioArgs", () => {
 
 describe("REMOTE_UPLOAD_MAX_BYTES", () => {
   it("is 24MiB — margin under Groq's 25MB cap so a boundary file fails with OUR message", () => {
-    expect(REMOTE_UPLOAD_MAX_BYTES).toBe(24 * 1024 * 1024);
+    // Must sit under Groq's cap in BOTH readings of "25MB": decimal
+    // 25,000,000 and 25 MiB. 24 MiB (25,165,824) fails the first.
+    expect(REMOTE_UPLOAD_MAX_BYTES).toBe(24_000_000);
+    expect(REMOTE_UPLOAD_MAX_BYTES).toBeLessThan(25_000_000);
   });
 });

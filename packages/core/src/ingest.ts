@@ -111,13 +111,15 @@ export async function encodeUploadAudio(tools: IngestTools, wav: string, outOgg:
 }
 
 /**
- * 24 MiB: Groq's free tier caps a file at 25 MB, and the margin means a
- * boundary file fails HERE with our message (naming the ~100-minute ceiling
- * and the local-backend escape hatch) instead of coming back as somebody
- * else's 413 after the whole upload was paid for. Chunking is out of scope
- * for v1.
+ * 24 million bytes: Groq's free tier caps a file at "25MB" without saying
+ * whether that is decimal or MiB — 24_000_000 sits under BOTH readings
+ * (25,000,000 and 26,214,336), so a boundary file fails HERE with our message
+ * (naming the ~100-minute ceiling and the local-backend escape hatch) instead
+ * of coming back as somebody else's 413 after the whole upload was paid for.
+ * (24 MiB = 25,165,824 would EXCEED a decimal cap — caught 2026-09-01.)
+ * Chunking is out of scope for v1.
  */
-export const REMOTE_UPLOAD_MAX_BYTES = 24 * 1024 * 1024;
+export const REMOTE_UPLOAD_MAX_BYTES = 24_000_000;
 
 /**
  * Extract ONE span of an existing wav, same 16 kHz mono PCM shape
