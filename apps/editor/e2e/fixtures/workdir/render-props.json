@@ -1126,5 +1126,42 @@
       "startSec": 27.61,
       "endSec": 31.650000000000002
     }
+  ],
+  "sfxCues": [
+    {
+      "soundFile": "sfx/whoosh-soft.mp3",
+      "atSec": 1.0,
+      "gain": 0.9
+    },
+    {
+      "soundFile": "sfx/whoosh-soft.mp3",
+      "atSec": 4.5,
+      "gain": 0.9
+    },
+    {
+      "soundFile": "sfx/whoosh-soft.mp3",
+      "atSec": 8.0,
+      "gain": 0.9
+    },
+    {
+      "soundFile": "sfx/whoosh-soft.mp3",
+      "atSec": 11.5,
+      "gain": 0.9
+    },
+    {
+      "soundFile": "sfx/whoosh-soft.mp3",
+      "atSec": 15.0,
+      "gain": 0.9
+    },
+    {
+      "soundFile": "sfx/whoosh-soft.mp3",
+      "atSec": 18.5,
+      "gain": 0.9
+    },
+    {
+      "soundFile": "sfx/whoosh-soft.mp3",
+      "atSec": 22.0,
+      "gain": 0.9
+    }
   ]
 }

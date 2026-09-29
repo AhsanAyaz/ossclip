@@ -1,0 +1,7 @@
+{
+  "cutlistProposed": [
+    { "srcIn": 0, "srcOut": 22.5, "kind": "keep" },
+    { "srcIn": 22.5, "srcOut": 25.5, "kind": "remove", "reason": "retake", "confidence": 0.9 },
+    { "srcIn": 25.5, "srcOut": 31.92458, "kind": "keep" }
+  ]
+}

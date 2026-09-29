@@ -14,10 +14,15 @@ import { visibleSfxCues, type SfxCueProps } from "./sfx-track";
  * overlay would have meant (and would have needed its own gain staging to
  * avoid clipping the take it lands on).
  *
- * No duration on the Sequences: an effect plays for its own length. That is
- * also why cues can overlap the composition's own end — Remotion truncates the
- * tail at the last frame, and a whoosh clipped by the end of the video is the
- * same thing an editor would do by hand.
+ * BOUNDED Sequences (2026-09-18). These carried no duration at all — "an
+ * effect plays for its own length" — which is true of the SOUND and false of
+ * the tag: an unbounded Sequence keeps its `<Audio>` mounted to the end of the
+ * composition, so the mounted count climbed with the playhead until the
+ * editor's Player ran out of shared audio tags and the error boundary ate the
+ * whole stage (`SFX_FALLBACK_DURATION_SEC` has the field report). The length
+ * comes from the pack's `durationSec`, and cues still overlap the
+ * composition's end — `visibleSfxCues` clamps there, the same truncation
+ * Remotion would have done at the last frame.
  *
  * Deliberately invisible to the editor, the Watermark/CoverInVideo rule: no
  * `data-edit-id`, nothing to hit-test, nothing rendered at all. Placement
@@ -34,6 +39,7 @@ export const SfxTrack: React.FC<{ cues: readonly SfxCueProps[] }> = ({ cues }) =
           // key, and React would remount one of them on any list change.
           key={`${cue.from}-${i}`}
           from={cue.from}
+          durationInFrames={cue.durationInFrames}
           layout="none"
         >
           <Audio

@@ -136,6 +136,13 @@ export interface SfxCue {
   atSec: number;
   /** The sound's own gain times the placement's, resolved once here. */
   gain: number;
+  /**
+   * The sound's own length, when its pack declared one. Carried into
+   * render-props so the renderer can BOUND the cue's Sequence — an unbounded
+   * one kept every started effect's `<Audio>` mounted and exhausted the
+   * editor Player's shared audio tags (scenes' `SFX_FALLBACK_DURATION_SEC`).
+   */
+  durationSec?: number;
 }
 
 /** Where staged sounds live inside the render's public dir. */
@@ -310,6 +317,11 @@ export function resolveSfxCues(
       // mixing arithmetic of its own, so what the editor shows as a gain and
       // what the render plays can never disagree.
       gain: sound.gain * (p.gain ?? 1),
+      // Optional all the way down: a pack that declares no length gets the
+      // renderer's fallback bound, which is why an OLD render-props.json
+      // (every one written before 2026-09-18) needs no re-produce to stop
+      // taking the preview down.
+      ...(sound.durationSec === undefined ? {} : { durationSec: sound.durationSec }),
     });
   }
 

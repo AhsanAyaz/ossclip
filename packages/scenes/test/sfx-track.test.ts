@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { SFX_MAX_VOLUME, sfxCuesFor, visibleSfxCues } from "../src/sfx-track";
+import {
+  SFX_FALLBACK_DURATION_SEC,
+  SFX_MAX_VOLUME,
+  sfxCuesFor,
+  visibleSfxCues,
+} from "../src/sfx-track";
 
 /**
  * The `--sfx` track's props gate and frame math. Pure, so the matrix runs
@@ -74,5 +79,43 @@ describe("visibleSfxCues", () => {
       { soundFile: "b.mp3", atSec: 2.01, gain: 1 },
     ];
     expect(visibleSfxCues(cues, 30, 300).map((c) => c.from)).toEqual([60, 60]);
+  });
+});
+
+describe("the cue's Sequence length (field report 2026-09-18)", () => {
+  it("bounds a cue with a declared length", () => {
+    // The pack's own `durationSec`, which is what stops the `<Audio>` staying
+    // mounted for the rest of the composition.
+    const cues = sfxCuesFor([{ soundFile: "a.mp3", atSec: 1, gain: 1, durationSec: 2.5 }]);
+    expect(cues[0]!.durationSec).toBe(2.5);
+    expect(visibleSfxCues(cues, 30, 900)[0]!.durationInFrames).toBe(75);
+  });
+
+  it("bounds a cue with NO declared length — the old props files", () => {
+    // Every render-props.json written before this fix, including the one that
+    // took the editor down. They must stop leaking tags without a re-produce,
+    // so the fallback applies to the parsed cue, not to a re-planned one.
+    const cues = sfxCuesFor([{ soundFile: "a.mp3", atSec: 1, gain: 1 }]);
+    expect(cues[0]!.durationSec).toBeUndefined();
+    expect(visibleSfxCues(cues, 30, 3000)[0]!.durationInFrames).toBe(
+      SFX_FALLBACK_DURATION_SEC * 30,
+    );
+  });
+
+  it("refuses a mangled length but keeps the cue", () => {
+    // A cue is a sound; a length is bookkeeping with a fallback. Dropping the
+    // whoosh over an unreadable number would be the worse trade.
+    for (const bad of ["2", Number.NaN, 0, -1]) {
+      const cues = sfxCuesFor([{ soundFile: "a.mp3", atSec: 1, gain: 1, durationSec: bad }]);
+      expect(cues.map((c) => c.soundFile)).toEqual(["a.mp3"]);
+      expect(cues[0]!.durationSec).toBeUndefined();
+    }
+  });
+
+  it("clamps at the composition's end instead of asking for frames past it", () => {
+    // Remotion truncates the tail anyway; a Sequence that runs to the last
+    // frame is the same mounted-forever tag the bound exists to retire.
+    const cues = sfxCuesFor([{ soundFile: "a.mp3", atSec: 9, gain: 1, durationSec: 5 }]);
+    expect(visibleSfxCues(cues, 30, 300)[0]!.durationInFrames).toBe(30);
   });
 });

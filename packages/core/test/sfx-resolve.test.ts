@@ -302,3 +302,22 @@ describe("sceneStartSeconds", () => {
     expect(sceneStartSeconds([{ id: "take-0", startSec: 0 }]).has("scene-0")).toBe(false);
   });
 });
+
+describe("the sound's own length on the cue (field report 2026-09-18)", () => {
+  it("carries a declared durationSec into the cue", () => {
+    // The renderer bounds each cue's Sequence with it — an unbounded one kept
+    // every started effect's `<Audio>` mounted and exhausted the editor
+    // Player's shared audio tags (scenes' SFX_FALLBACK_DURATION_SEC).
+    const timed: LoadedSfxSound = { ...sound("ding", 1), durationSec: 2.95 };
+    const { cues } = resolveSfxCues([place("ding", 0)], transcript, identity, [timed]);
+    expect(cues[0]!.durationSec).toBe(2.95);
+  });
+
+  it("omits the key when the pack declares no length", () => {
+    // Optional all the way down: the renderer's fallback covers it, so a pack
+    // without the field needs no migration.
+    const { cues } = resolveSfxCues([place("ding", 0)], transcript, identity, sounds);
+    expect(cues[0]!.durationSec).toBeUndefined();
+    expect("durationSec" in cues[0]!).toBe(false);
+  });
+});

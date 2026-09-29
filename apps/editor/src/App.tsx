@@ -1275,18 +1275,33 @@ export const App: React.FC = () => {
     const { cues } = dropHiddenCues(mergedCues, edits.doc);
     // The framing preview applies LAST, onto the fully-merged cue, so what
     // the Player shows mid-gesture is exactly what committing would store.
-    let previewed = videoPreview
-      ? cues.map((c) =>
-          c.id === videoPreview.sceneId
-            ? { ...c, video: { ...c.video, ...videoPreview.patch } }
-            : c,
-        )
-      : cues;
-    if (graphicPreview) {
-      previewed = previewed.map((c) =>
-        c.id === graphicPreview.sceneId ? { ...c, graphicRect: graphicPreview.rect } : c,
-      );
-    }
+    //
+    // Run TWICE (field report 2026-09-18): here, and again at the end of
+    // `finishOnClock` once the carve has minted the `take-kept-*` blocks. A
+    // carved block does not exist in this list, so the preview patch matched
+    // NOTHING for it — and the zoom slider is a CONTROLLED input reading
+    // `cue.video.scale` back out of these cues, so mid-drag it snapped to 1×
+    // and its pointerup committed that 1 over the user's framing. (The
+    // number fields kept working, which is what made it look like "framing
+    // is broken on a kept take" rather than "the slider is dead".) Idempotent
+    // by construction — same id, same patch — so the second pass costs the
+    // ordinary path nothing.
+    const withStagePreviews = (list: readonly SceneCue[]): SceneCue[] => {
+      let out = videoPreview
+        ? list.map((c) =>
+            c.id === videoPreview.sceneId
+              ? { ...c, video: { ...c.video, ...videoPreview.patch } }
+              : c,
+          )
+        : [...list];
+      if (graphicPreview) {
+        out = out.map((c) =>
+          c.id === graphicPreview.sceneId ? { ...c, graphicRect: graphicPreview.rect } : c,
+        );
+      }
+      return out;
+    };
+    const previewed = withStagePreviews(cues);
     const base: PlayerProductionProps = {
       ...renderProps,
       sceneCues: previewed,
@@ -1313,6 +1328,20 @@ export const App: React.FC = () => {
       // .cube selection previews as NO grade rather than a fake one.
       colorGrade: liveGradeSpec(edits.doc.colorGrade, renderProps.colorGrade),
       videoFileName: `/media/${renderProps.videoFileName}`,
+      // NO sfx track inside the Player (field report 2026-09-18). The editor
+      // has its own sound preview — `useSfxPreview`, off the LANE, so it
+      // honours a mute or a drag this session and the "♪ sfx on" toggle —
+      // and the composition's `SfxTrack` was a second, worse copy of it:
+      // its `soundFile` is a workdir-relative `sfx/<id>.mp3` that resolves to
+      // `/sfx/…` in the browser and 404s, and every cue the playhead passed
+      // held one of the Player's FIVE shared audio tags. The sixth cue threw
+      // "Tried to simultaneously mount 6 <Html5Audio /> tags", the error
+      // boundary replaced the stage with a warning triangle, and the preview
+      // stayed dead — earlier takes included — until a reload. Dropping the
+      // key here is what the editor wants anyway; the RENDER still mixes the
+      // track (and now bounds each cue's Sequence, scenes' SfxTrack).
+      sfxCues: undefined,
+
       // The `--cover-in-video` overlay, re-pointed at the server's `/media/`
       // mount exactly like the video above: produce stages the image into the
       // WORKDIR as well as the render's public dir precisely so this URL
@@ -1403,7 +1432,10 @@ export const App: React.FC = () => {
       // that did not exist until `carveKeptTakes` ran a moment ago. These
       // reports DO surface: this clock is the one the user is watching.
       const pinned = resolveSrcTimingPins(edits.doc, clockMap);
-      const { cues: finalCues } = applyOverrides(splitted2, pinned.doc);
+      const { cues: merged } = applyOverrides(splitted2, pinned.doc);
+      // The stage preview, re-applied on the cues the Inspector actually
+      // reads — see `withStagePreviews` for the slider that died without it.
+      const finalCues = withStagePreviews(merged);
       // Captions over the REVIVED material (field report 2026-08-26): the
       // retimed captionLines only cover words the LAST RENDER kept — the
       // revived stretch's words exist nowhere in render-props. Rebuild the
