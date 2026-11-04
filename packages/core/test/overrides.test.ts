@@ -1830,3 +1830,74 @@ describe("cleanup (the veto layer over the automatic cutlist, cut review step 3)
     ).toEqual({});
   });
 });
+
+describe("reveal timing across edits (reveal-timing final review I-3, M-2)", () => {
+  /** A cued FlowDiagram as `assembleScenes` emits it: start moved onto the
+   * entry word (7.0s − the 0.3s lead), two items on their words. */
+  const cued = (): SceneCue => ({
+    id: "scene-0",
+    layout: "graphic-only",
+    component: "FlowDiagram",
+    props: { nodes: ["IDEA", "BUILD"], emphasizeLast: true },
+    startSec: 6.7,
+    endSec: 9.9,
+    entryAtSec: 7.0,
+    reveal: { itemAtSec: [6.85, 8.35] },
+  });
+
+  it("a component swap resets item times to all-unmatched, sized to the NEW component's items", () => {
+    // The old item words belong to the old component's items — riding them
+    // onto the new one's would put item i on a word that is not its text.
+    // All-null (not absent) keeps it a new plan, so the items pace (spec §7).
+    const doc = OverrideDocSchema.parse({
+      scenes: {
+        "scene-0": {
+          component: "StrikethroughReveal",
+          props: { lines: [{ text: "a" }, { text: "b" }, { text: "c" }] },
+        },
+      },
+    });
+    const out = applyOverrides([cued()], doc).cues[0]!;
+    expect(out.reveal).toEqual({ itemAtSec: [null, null, null] });
+    // The graphic still enters where it did — the swap does not move it.
+    expect(out.startSec).toBe(6.7);
+    expect(out.entryAtSec).toBe(7.0);
+  });
+
+  it("a swap to a component that does not stagger drops reveal entirely", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { component: "TitleCard" } } });
+    expect("reveal" in applyOverrides([cued()], doc).cues[0]!).toBe(false);
+  });
+
+  it("no swap (same component, prop edit) keeps the matched item times", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { component: "FlowDiagram", props: { emphasizeLast: false } } },
+    });
+    expect(applyOverrides([cued()], doc).cues[0]!.reveal).toEqual({ itemAtSec: [6.85, 8.35] });
+  });
+
+  it("a swap on a legacy cue (no reveal) does not grow one", () => {
+    const { reveal: _r, entryAtSec: _e, ...legacy } = cued();
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { component: "StrikethroughReveal", props: { lines: [{ text: "a" }] } } },
+    });
+    expect("reveal" in applyOverrides([legacy], doc).cues[0]!).toBe(false);
+  });
+
+  it("a timing pin drops entryAtSec: the pinned window wins over the entry word", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { timing: { startSec: 2, endSec: 5 } } },
+    });
+    const out = applyOverrides([cued()], doc).cues[0]!;
+    expect(out.startSec).toBe(2);
+    expect("entryAtSec" in out).toBe(false);
+  });
+
+  it("a split's second half does not carry the entry word — it starts at the split", () => {
+    const [first, second] = splitCues([cued()], [{ at: 8.5, id: "8500" }]);
+    expect(first!.entryAtSec).toBe(7.0);
+    expect("entryAtSec" in second!).toBe(false);
+    // Items stay inherited (absolute seconds — no re-basing needed).
+    expect(second!.reveal).toEqual({ itemAtSec: [6.85, 8.35] });
+  });
+});

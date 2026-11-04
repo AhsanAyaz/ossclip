@@ -46,6 +46,19 @@ export const ENTRY_LEAD_SEC = 0.3;
  */
 export const ITEM_LEAD_SEC = 0.15;
 
+/**
+ * The on-screen floor for a take of this length. Never let the floor eat the
+ * video: a 3s minimum is right on a 30s take and absurd on a 6s one, so it is
+ * also capped at a share of the runtime. Exported so the editor's live
+ * preview re-applies the on-cue floor exactly as a fresh assemble would on
+ * the re-cut clock (`retimeForPreview`, reveal-timing spec §2).
+ */
+export function minSceneSec(outputDurationSec: number): number {
+  return outputDurationSec < SHORT_TAKE_SEC
+    ? Math.max(MIN_SCENE_SEC, Math.min(SHORT_TAKE_MIN_SCENE_SEC, outputDurationSec * 0.15))
+    : MIN_SCENE_SEC;
+}
+
 export interface AssembleResult {
   cues: SceneCue[];
   dropped: Array<{ id: string; reason: string }>;
@@ -107,12 +120,7 @@ export function assembleScenes(
 
   resolved.sort((a, b) => a.startSec - b.startSec);
 
-  // Never let the floor eat the video: a 3s minimum is right on a 30s take and
-  // absurd on a 6s one, so it is also capped at a share of the runtime.
-  const minScene =
-    map.outputDuration < SHORT_TAKE_SEC
-      ? Math.max(MIN_SCENE_SEC, Math.min(SHORT_TAKE_MIN_SCENE_SEC, map.outputDuration * 0.15))
-      : MIN_SCENE_SEC;
+  const minScene = minSceneSec(map.outputDuration);
 
   // Scenes are exclusive — one stage state at a time.
   const cues: SceneCue[] = [];
@@ -155,10 +163,19 @@ export function assembleScenes(
     const plan = planned.get(cue);
     if (!plan) continue;
     if (plan.entryAtSec !== null) {
-      cue.startSec = Math.max(
+      const start = Math.max(
         cue.startSec,
         Math.min(plan.entryAtSec - ENTRY_LEAD_SEC, cue.endSec - minScene),
       );
+      // The entry word's own second rides along ONLY when it moved the
+      // start: the editor's live preview re-times the start from the word,
+      // not from `startSec`, whose lead can sit across a seam from the word
+      // (final review I-3). An unmoved start has nothing to re-derive, so
+      // that cue stays field-for-field the legacy cue.
+      if (start !== cue.startSec) {
+        cue.startSec = start;
+        cue.entryAtSec = plan.entryAtSec;
+      }
     }
     if (plan.reveal) cue.reveal = plan.reveal;
   }
@@ -168,7 +185,7 @@ export function assembleScenes(
 
 /** A cued scene's plan-time answers, resolved into output time. */
 interface PlannedCue {
-  /** Output second of the entry word (or its fallback); null → legacy start. */
+  /** Output second of the entry word (or its fallback), lead-free; null → legacy start. */
   entryAtSec: number | null;
   reveal?: NonNullable<SceneCue["reveal"]>;
 }
@@ -200,19 +217,14 @@ function plannedCue(
   // let a stale index start the graphic outside the words it belongs to.
   const entry = Math.min(Math.max(entryWord, startWord), endWord);
   let entryAt = mapAt(entry);
-  if (entryAt === null) {
-    // The entry word was cut (Review Focus 1): enter on the next item that
-    // is still spoken — the earliest surviving item word AFTER the entry,
-    // within the scene — never on an earlier one the plan did not choose,
-    // and failing that on the legacy start exactly as today.
-    const later = (itemWords ?? [])
-      .filter((w): w is number => w !== null && w > entry && w <= endWord)
-      .sort((a, b) => a - b);
-    for (const w of later) {
-      entryAt = mapAt(w);
-      if (entryAt !== null) break;
-    }
-  }
+  // The entry word was cut (Review Focus 1): enter on the first word still
+  // spoken AFTER it within the scene — the moment the speaker reaches the
+  // entry point in the cut video — never on an earlier one the plan did not
+  // choose, and failing that on the legacy start exactly as today. Any
+  // transcript word, not only item words: a later item can be seconds past
+  // the cut, leaving the graphic up late over the words that led into it
+  // (final review I-2).
+  for (let w = entry + 1; entryAt === null && w <= endWord; w++) entryAt = mapAt(w);
   const entryAtSec = entryAt === null ? null : entryAt.start;
 
   // Index i of `itemWords` must BE rendered item i. A prop edit since

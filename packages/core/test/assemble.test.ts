@@ -278,7 +278,7 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
     expect(cued.reveal!.itemAtSec[0]).toBeCloseTo(6.85, 9);
   });
 
-  it("a cut entry word falls to the next surviving item word; a cut item is null (Review Focus 1)", () => {
+  it("a cut entry word falls to the next surviving transcript word in the moment; a cut item is null (Review Focus 1)", () => {
     // Removes source 6.9–7.5 — all of word 14 (7.0–7.4) — so everything
     // after shifts 0.6s earlier.
     const cutMap = new TimeMap([
@@ -287,25 +287,39 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
       { srcIn: 7.5, srcOut: 50, kind: "keep" },
     ]);
     const cued = one(flow("s", 0, 19, { entryWord: 14, itemWords: [14, 17] }), cutMap);
-    // Word 17: source 8.5 → output 7.9, minus the entry lead.
-    expect(cued.startSec).toBeCloseTo(7.6, 9);
+    // Word 15 (source 7.5 → output 6.9) is the first word still spoken after
+    // the cut entry — not item word 17 two words later — minus the entry lead.
+    expect(cued.startSec).toBeCloseTo(6.6, 9);
     expect(cued.reveal!.itemAtSec[0]).toBeNull();
     expect(cued.reveal!.itemAtSec[1]).toBeCloseTo(7.75, 9);
   });
 
-  it("a cut entry word with no surviving later item falls back to the moment's start", () => {
+  it("the fallback is any surviving word, item or not: an earlier item word never becomes the entry", () => {
     const cutMap = new TimeMap([
       { srcIn: 0, srcOut: 6.9, kind: "keep" },
       { srcIn: 6.9, srcOut: 7.5, kind: "remove", reason: "user" },
       { srcIn: 7.5, srcOut: 50, kind: "keep" },
     ]);
     // Item 0 (word 10) survives but is EARLIER than the entry word, so it is
-    // not a fallback entry — the start returns to the moment, never to a
-    // time the plan did not choose.
+    // not the fallback; word 15, after the entry, is.
     const cued = one(flow("s", 0, 19, { entryWord: 14, itemWords: [10, 14] }), cutMap);
-    expect(cued.startSec).toBeCloseTo(0, 9);
+    expect(cued.startSec).toBeCloseTo(6.6, 9);
     expect(cued.reveal!.itemAtSec[0]).toBeCloseTo(4.85, 9);
     expect(cued.reveal!.itemAtSec[1]).toBeNull();
+  });
+
+  it("a cut entry word with no surviving word after it in the moment keeps the legacy start", () => {
+    // Removes source 8.9–10 — words 18 and 19, the moment's last two.
+    const cutMap = new TimeMap([
+      { srcIn: 0, srcOut: 8.9, kind: "keep" },
+      { srcIn: 8.9, srcOut: 10, kind: "remove", reason: "user" },
+      { srcIn: 10, srcOut: 50, kind: "keep" },
+    ]);
+    const cued = one(flow("s", 0, 19, { entryWord: 18, itemWords: [10, 18] }), cutMap);
+    const legacy = one(flow("s", 0, 19), cutMap);
+    expect(cued.startSec).toBe(legacy.startSec);
+    // Word 20 survives but is outside the moment — never an entry.
+    expect(cued.entryAtSec).toBeUndefined();
   });
 
   it("an item list that no longer matches the rendered items goes all-null (paced), never misaligned", () => {
@@ -378,6 +392,21 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
     const q = assembleScenes(plans[1]!, long, longMap).cues[1]!;
     expect(q.endSec).toBeCloseTo(19.95, 9);
     expect(q.startSec).toBeCloseTo(9.7, 9);
+  });
+
+  it("entryAtSec records the entry word's lead-free output second, only when the start moved", () => {
+    // Moved: the preview needs the word itself to re-time from (spec §2) —
+    // the start's lead can sit in the previous kept span across a seam.
+    const moved = one(flow("s", 0, 19, { entryWord: 14 }));
+    expect(moved.entryAtSec).toBeCloseTo(7.0, 9);
+    // Floor-pulled is still moved: the entry word is still what it tracks.
+    expect(one(flow("s", 0, 19, { entryWord: 19 })).entryAtSec).toBeCloseTo(9.5, 9);
+    // Not moved (the floor held it on the legacy start): no key at all, so
+    // the cue's timing fields are the legacy cue's exactly.
+    expect("entryAtSec" in one(flow("s", 18, 19, { entryWord: 19 }))).toBe(false);
+    expect("entryAtSec" in one(flow("s", 0, 19, { entryWord: 0 }))).toBe(false);
+    // A legacy plan never grows the key.
+    expect("entryAtSec" in one(flow("s", 0, 19))).toBe(false);
   });
 
   it("a component that does not stagger never carries a reveal", () => {

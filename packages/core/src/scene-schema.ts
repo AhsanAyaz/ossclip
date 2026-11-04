@@ -55,8 +55,8 @@ export const SceneSchema = z.object({
   /** Why the producer chose this — surfaced in the report for taste-debugging. */
   rationale: z.string().optional(),
   /**
-   * Where the graphic enters and where each item is spoken, in SOURCE word
-   * indices — the matcher's answer, computed ONCE at plan time
+   * Where the graphic enters and where each item is spoken, in the same
+   * word-index space as `anchor` (the clip slice on clip runs) — the matcher's answer, computed ONCE at plan time
    * (`planCue`, reveal-timing spec §7). Its presence is the gate: assembly
    * applies on-cue starts and synced items only to a scene that carries it,
    * so an old plan / production.json / scenes-reviewed.json (no `cue`)
@@ -66,9 +66,9 @@ export const SceneSchema = z.object({
    */
   cue: z
     .object({
-      /** Source word index the graphic enters on (before the lead-in). */
+      /** Word index (`anchor`'s space) the graphic enters on, before the lead-in. */
       entryWord: z.number().int().nonnegative(),
-      /** Per staggered item, the source word it is spoken on, or null. */
+      /** Per staggered item, the word index (`anchor`'s space) it is spoken on, or null. */
       itemWords: z.array(z.number().int().nonnegative().nullable()).optional(),
     })
     .optional(),
@@ -209,6 +209,19 @@ export const SceneCueSchema = z
   reveal: z
     .object({ itemAtSec: z.array(z.number().nonnegative().nullable()) })
     .optional(),
+  /**
+   * The OUTPUT second the entry word is spoken on — lead-free, the word
+   * itself — set by `assembleScenes` only when the on-cue post-pass actually
+   * moved `startSec` (reveal-timing spec §2). The editor's live preview
+   * re-times the start from THIS, not from `startSec`: the start's lead can
+   * fall in the kept span before a seam the word sits after, so a veto
+   * restoring that seam's gap would otherwise move the graphic early by the
+   * whole restored gap (final review I-3). Dropped on a pinned cue (the pin
+   * wins) and on a split's second half (it starts at the split, not on the
+   * word). Optional and absent on every legacy / unmoved cue, which
+   * therefore stays byte-identical.
+   */
+  entryAtSec: z.number().nonnegative().optional(),
   })
   .superRefine((cue, ctx) => {
     if (cue.kind !== "plain" && (cue.component === undefined || cue.props === undefined)) {
