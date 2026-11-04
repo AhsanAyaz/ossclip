@@ -8,6 +8,33 @@ import { type Layout, type SceneComponentId } from "./scene-schema";
  * (short, numeric, high-contrast — BRAINSTORM §4.5).
  */
 
+/**
+ * The default share of a scene a paced reveal takes (reveal-timing spec §5):
+ * the last item lands about two-thirds in, so the full graphic holds before
+ * the cut. Lives here, not in the renderer, because the editor's slider shows
+ * it as the value of an unset `revealSpeed` and the two must agree.
+ */
+export const REVEAL_SPEED_DEFAULT = 0.66;
+
+/**
+ * Author-only reveal controls for the four item-revealing components (spec
+ * §5). Every one is OPTIONAL with no `.default()` on purpose: absence is how
+ * the renderer tells "the author never touched this" from an explicit choice,
+ * and a legacy scene must keep its legacy stagger until someone does (plan
+ * Review Focus 5). A default here would flip every old scene onto the paced
+ * path the moment it re-parsed.
+ *
+ * The LLM never sees these — see `llmPropsSchema`.
+ */
+const RevealPropsShape = {
+  reveal: z.enum(["auto", "synced", "paced"]).optional(),
+  pacing: z.enum(["even", "accelerate", "decelerate", "ease-in-out"]).optional(),
+  revealSpeed: z.number().min(0.1).max(1).optional(),
+  entrance: z.enum(["pop", "fade", "rise", "bounce"]).optional(),
+};
+
+export const REVEAL_PROP_KEYS = ["reveal", "pacing", "revealSpeed", "entrance"] as const;
+
 export const TitleCardProps = z.object({
   eyebrow: z.string().max(28).optional(),
   title: z
@@ -56,6 +83,7 @@ export const StrikethroughRevealProps = z.object({
     )
     .min(1)
     .max(4),
+  ...RevealPropsShape,
 });
 
 /**
@@ -75,6 +103,7 @@ export const FlowDiagramProps = z.object({
   nodes: z.array(z.string().min(1).max(16)).min(2).max(5),
   /** Emphasize the terminal node (white chip, like CHURN in the reference). */
   emphasizeLast: z.boolean().default(true),
+  ...RevealPropsShape,
 });
 
 export const TerminalMockProps = z.object({
@@ -89,6 +118,7 @@ export const TerminalMockProps = z.object({
     .max(5),
   /** Fan-out label under the windows ("OUTPUT ×1"). */
   fanOut: z.string().max(20).optional(),
+  ...RevealPropsShape,
 });
 
 export const ChatMockProps = z.object({
@@ -120,6 +150,7 @@ export const ChatMockProps = z.object({
         "'reply with a number/which one', where there is no word to type. Never a " +
         "referential filler like 'number', 'answer', 'comment' or 'below'.",
     ),
+  ...RevealPropsShape,
 });
 
 export const ScreenshotFrameProps = z.object({
@@ -243,6 +274,25 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
       "Use this for lists instead of bending TitleCard or StrikethroughReveal around them.",
   },
 };
+
+/**
+ * The copy of a component's props schema the prop-writing LLM call is shown
+ * (reveal-timing spec, "The LLM does not set"). Reveal props are an author's
+ * call, not copy: the model has no idea how the take sounds, and offering it
+ * the keys would invite it to "fill" them — and it would change the schema
+ * text in every prop-call prompt. Omitting them keeps that prompt
+ * byte-identical to before the props existed.
+ *
+ * Components without reveal props get their registry schema back untouched.
+ */
+export function llmPropsSchema(component: SceneComponentId): z.ZodType {
+  const schema = SCENE_REGISTRY[component].propsSchema;
+  if (!(schema instanceof z.ZodObject)) return schema as z.ZodType;
+  const present = REVEAL_PROP_KEYS.filter((k) => k in schema.shape);
+  if (present.length === 0) return schema as z.ZodType;
+  const mask = Object.fromEntries(present.map((k) => [k, true as const]));
+  return (schema as z.ZodObject).omit(mask) as z.ZodType;
+}
 
 /**
  * Resolution order per PHASE1 §2: componentDefaults ← props ← overrides.

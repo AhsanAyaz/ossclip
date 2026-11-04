@@ -1,7 +1,7 @@
 import { z } from "zod/v4";
 import type { Transcript } from "../schema";
 import type { Layout, Scene, SceneComponentId } from "../scene-schema";
-import { SCENE_REGISTRY } from "../scene-registry";
+import { SCENE_REGISTRY, llmPropsSchema } from "../scene-registry";
 import type { LlmProvider } from "./provider";
 import type { Moment } from "./beats";
 import {
@@ -81,11 +81,14 @@ async function generateScenePropsBatch(
   });
   const blocks = indices.map((i) => {
     const moment = moments[i]!;
-    const meta = SCENE_REGISTRY[moment.sceneKind as SceneComponentId];
+    // The LLM-facing copy: reveal props are the author's, never the model's
+    // (reveal-timing spec, "The LLM does not set"). The parse below keeps the
+    // full schema — an omitted key is simply absent there.
+    const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId);
     return (
       `--- moment ${i} ---\n` +
       `${buildPropsPrompt(moment, transcript)}\n` +
-      `Props schema: ${JSON.stringify(z.toJSONSchema(meta.propsSchema as z.ZodType))}`
+      `Props schema: ${JSON.stringify(z.toJSONSchema(llmSchema))}`
     );
   });
   let raw: z.infer<typeof schema>;
@@ -174,8 +177,11 @@ export async function generateScenes(
     const moment = moments[i]!;
     if (moment.sceneKind === "none") continue;
     const component = moment.sceneKind;
-    const meta = SCENE_REGISTRY[component];
-    const schema = meta.propsSchema as z.ZodType<Record<string, unknown>>;
+    // The provider both shows this schema to the model and parses the reply
+    // with it, so the per-moment path must be handed the LLM-facing copy:
+    // the reveal props stay out of the prompt (spec, "The LLM does not
+    // set"), and a reply that invents one is stripped rather than kept.
+    const schema = llmPropsSchema(component) as z.ZodType<Record<string, unknown>>;
     const layout = layoutFor(component, moment);
 
     let props: Record<string, unknown> | null = batched.get(i) ?? null;

@@ -1102,7 +1102,9 @@ export const Inspector: React.FC<InspectorProps> = ({
               prop at all. */}
           {!isPlain && cue.component
             ? scalarPropControls(cue.component).map((control) =>
-                control.kind === "boolean" ? (
+                // The revealSpeed slider is reveal-timing Task 7; until then a
+                // number control renders nothing rather than an empty select.
+                control.kind === "number" ? null : control.kind === "boolean" ? (
                   <div style={row} key={control.key}>
                     <span style={label}>{control.key}</span>
                     <input
