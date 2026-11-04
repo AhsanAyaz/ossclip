@@ -64,7 +64,7 @@ export type EditAction =
    * `patchProps` with `undefined`: an optional reveal prop's absence is a
    * state of its own — unset `pacing` keeps a legacy scene on its legacy
    * stagger, `pacing: "even"` does not (reveal-timing plan, Review Focus 5) —
-   * so "auto" must leave no key behind in overrides.json, and a patch value
+   * so "default" must leave no key behind in overrides.json, and a patch value
    * of `undefined` reads as a write to anyone skimming the call site. */
   | { type: "clearProp"; sceneId: string; key: string }
   | {
@@ -448,7 +448,7 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       );
     }
     case "clearProp": {
-      // No-op guard BEFORE commit (the restoreScene shape): re-picking "auto"
+      // No-op guard BEFORE commit (the restoreScene shape): re-picking "default"
       // on a prop that is already unset must not push an empty undo step.
       const scene = state.doc.scenes[action.sceneId];
       if (!scene || !(action.key in scene.props)) return state;
