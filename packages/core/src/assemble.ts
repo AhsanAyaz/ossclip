@@ -218,9 +218,17 @@ function plannedCue(
   // Index i of `itemWords` must BE rendered item i. A prop edit since
   // planning can change the count (ChatMock: a removed keyword turns one
   // bubble into the message list) — then every later item would ride its
-  // neighbour's word, so the list is dropped and the renderer paces.
-  const rendered = revealItemTexts(scene.component, props)?.length;
-  if (itemWords === undefined || itemWords.length !== rendered) return { entryAtSec };
+  // neighbour's word, so no word survives: every item is unmatched (null)
+  // and the renderer paces them. Emitted rather than omitted, because a
+  // present `reveal` is how the renderer knows this is a NEW plan — an
+  // omitted one would put it back on the legacy stagger, and new items
+  // added in the editor are paced (spec §7). A component that does not
+  // stagger (null / no items) carries no reveal at all.
+  const rendered = revealItemTexts(scene.component, props)?.length ?? 0;
+  if (rendered === 0) return { entryAtSec };
+  if (itemWords === undefined || itemWords.length !== rendered) {
+    return { entryAtSec, reveal: { itemAtSec: Array.from({ length: rendered }, () => null) } };
+  }
   return {
     entryAtSec,
     reveal: {

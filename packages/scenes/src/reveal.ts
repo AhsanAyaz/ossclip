@@ -1,5 +1,6 @@
 import { REVEAL_SPEED_DEFAULT, syncDecision } from "@ossclip/core/browser";
-import { useEnter } from "./anim";
+import { useCurrentFrame, useVideoConfig } from "remotion";
+import { enterFrames, enterProgress } from "./anim";
 
 /**
  * One reveal schedule for every staggered graphic (reveal-timing spec §4):
@@ -64,22 +65,35 @@ function pacedFrames(count: number, windowFrames: number, pacing: string | undef
  *    it is a style, and picking `fade` must not also re-time the items.
  *  - synced: forced, or `auto` with item times the shared `syncDecision`
  *    accepts — the same rule plan time used, never a restated threshold.
- *  - paced: everything else, spread over `revealSpeed × duration`.
+ *  - paced: everything else, spread over `revealSpeed × (duration − one
+ *    entrance)`.
  */
 export function revealFrames(input: RevealInput): number[] {
   const { count, legacyStepFrames, fps, durationInFrames, cueStartSec, props } = input;
   // A length mismatch means the items were edited after matching; applying
   // the times anyway would put item i on item j's word. Absent is safer.
-  const itemAtSec = input.itemAtSec?.length === count ? input.itemAtSec : undefined;
-
   const timingTouched =
     props.reveal !== undefined || props.pacing !== undefined || props.revealSpeed !== undefined;
-  if (itemAtSec === undefined && !timingTouched) {
+  if (input.itemAtSec === undefined && !timingTouched) {
     return Array.from({ length: count }, (_, i) => i * legacyStepFrames);
   }
+  // Present-but-wrong-length still marks a NEW plan: the items were edited
+  // after matching, and new items added in the editor are paced (spec §7).
+  // So it reads as all-unmatched — paced — never as legacy, and never
+  // applied as-is (that would put item i on item j's word).
+  const itemAtSec =
+    input.itemAtSec === undefined || input.itemAtSec.length === count
+      ? input.itemAtSec
+      : Array.from({ length: count }, () => null);
 
-  const windowFrames = (props.revealSpeed ?? REVEAL_SPEED_DEFAULT) * durationInFrames;
-  const paced = pacedFrames(count, windowFrames, props.pacing);
+  // Every item must FINISH entering before the cut, so the latest a delay
+  // may be is one entrance short of the end; a scene shorter than one
+  // entrance starts everything at 0.
+  const latest = Math.max(0, durationInFrames - enterFrames(fps));
+  const clamp = (f: number): number => Math.min(latest, Math.max(0, Math.round(f)));
+
+  const windowFrames = (props.revealSpeed ?? REVEAL_SPEED_DEFAULT) * latest;
+  const paced = pacedFrames(count, windowFrames, props.pacing).map(clamp);
 
   const anyMatched = itemAtSec?.some((t) => t !== null) ?? false;
   const synced =
@@ -90,7 +104,7 @@ export function revealFrames(input: RevealInput): number[] {
     (props.reveal === "synced" ? anyMatched : syncDecision(itemAtSec) === "synced");
   if (!synced) return paced;
 
-  return syncedFrames(itemAtSec, fps, cueStartSec, windowFrames, count);
+  return syncedFrames(itemAtSec, fps, cueStartSec, windowFrames, count).map(clamp);
 }
 
 /**
@@ -124,14 +138,18 @@ function syncedFrames(
     const next = matched.find((m) => m > i)!;
     return raw[prev]! + ((raw[next]! - raw[prev]!) * (i - prev)) / (next - prev);
   });
-  // A word said before the final start (floor / de-overlap moved it later)
-  // shows from the first frame rather than a negative delay.
-  return frames.map((f) => Math.max(0, Math.round(f)));
+  // Unrounded: the caller rounds and clamps — a word said before the final
+  // start (floor / de-overlap moved it later) to frame 0, a late word or a
+  // trailing null to the last frame an entrance can still finish by.
+  return frames;
 }
 
 /** Per-item entrance progress 0→1 for a schedule from `revealFrames`. */
 export function useReveal(delays: readonly number[]): number[] {
-  // Hooks in a loop are safe here: an item list's length is fixed for the
-  // life of a mounted cue (the props are the cue's, not animated).
-  return delays.map((d) => useEnter(d));
+  // One frame read for the whole list, then a pure map: the item count is
+  // NOT fixed for a mounted cue (an editor prop patch adds or removes a chip
+  // live), so a hook per item would change the hook count between renders.
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  return delays.map((d) => enterProgress(frame, fps, d));
 }

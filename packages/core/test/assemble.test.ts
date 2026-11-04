@@ -215,8 +215,9 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
     expect(legacy.startSec).toBeCloseTo(0, 9);
     expect(cued.startSec).toBeCloseTo(6.7, 9);
     expect(cued.endSec).toBe(legacy.endSec);
-    // No itemWords → no reveal: the renderer paces.
-    expect(cued.reveal).toBeUndefined();
+    // No itemWords for a staggering component → every item unmatched: a
+    // present all-null reveal, so the renderer paces instead of going legacy.
+    expect(cued.reveal).toEqual({ itemAtSec: [null, null] });
   });
 
   it("an entry word near the moment's end pulls the start back to hold the floor (Review Focus 4)", () => {
@@ -232,7 +233,11 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
     const cued = one(flow("s", 18, 19, { entryWord: 19 }));
     const legacy = one(flow("s", 18, 19));
     expect(cued.startSec).toBeCloseTo(9.0, 9);
-    expect(cued).toEqual(legacy);
+    // Timing identical to legacy; the only difference is the all-null reveal
+    // a cued plan without itemWords carries (it paces rather than going legacy).
+    const { reveal, ...timing } = cued;
+    expect(timing).toEqual(legacy);
+    expect(reveal).toEqual({ itemAtSec: [null, null] });
   });
 
   it("a stale entry word outside the anchor is clamped into the scene's own words", () => {
@@ -303,7 +308,7 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
     expect(cued.reveal!.itemAtSec[1]).toBeNull();
   });
 
-  it("an item list that no longer matches the rendered items is dropped, never misaligned", () => {
+  it("an item list that no longer matches the rendered items goes all-null (paced), never misaligned", () => {
     // Planned with the CTA keyword — ONE bubble, one item word — then the
     // keyword was removed in the editor: two bubbles render now.
     const chat: Scene = {
@@ -323,7 +328,8 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
     };
     const cued = one(chat);
     expect(cued.startSec).toBeCloseTo(6.7, 9);
-    expect(cued.reveal).toBeUndefined();
+    // Still present (a new plan → paced, not legacy), one null per bubble.
+    expect(cued.reveal).toEqual({ itemAtSec: [null, null] });
     // With the keyword still set, the single item lines up and is kept.
     const intact = one({ ...chat, overrides: {} });
     expect(intact.reveal!.itemAtSec).toHaveLength(1);

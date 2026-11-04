@@ -9,11 +9,30 @@ import type { CSSProperties } from "react";
 export function useEnter(delayFrames = 0): number {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  return enterProgress(frame, fps, delayFrames);
+}
+
+/**
+ * How long one entrance takes, in frames. Exported because the reveal
+ * schedule must end every item's entrance before the cut (reveal-timing
+ * spec §4): an item whose delay lands in the last half-second is never
+ * seen whole, and at delay === duration it is never seen at all.
+ */
+export function enterFrames(fps: number): number {
+  return Math.round(fps * 0.5);
+}
+
+/**
+ * The entrance spring as a pure function of the frame, so a list of items
+ * can share ONE `useCurrentFrame()` — a hook per item breaks React's hook
+ * order the moment the editor adds or removes a chip on a mounted cue.
+ */
+export function enterProgress(frame: number, fps: number, delayFrames = 0): number {
   return spring({
     frame: frame - delayFrames,
     fps,
     config: { damping: 200, stiffness: 130 },
-    durationInFrames: Math.round(fps * 0.5),
+    durationInFrames: enterFrames(fps),
   });
 }
 
