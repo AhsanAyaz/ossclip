@@ -50,6 +50,22 @@ describe("locateSpoken (spec §1)", () => {
     expect(m).toEqual([0, 4]);
   });
 
+  it("gives an identical repeated label the later occurrence, never the same word", () => {
+    const words = wordsOf("we write code and then we ship code");
+    const m = locateSpoken(["CODE", "CODE"], words, { startWord: 0, endWord: words.length - 1 });
+    expect(m).toEqual([2, 7]);
+    // Only one "code" in the window: the second chip is unmatched, not
+    // stacked on the first.
+    expect(locateSpoken(["CODE", "CODE"], words, { startWord: 0, endWord: 6 })).toEqual([2, null]);
+  });
+
+  it("matches an alternatives item where ANY alternative is first said", () => {
+    // A TerminalMock window: its title is never said, its second line is.
+    const m = locateSpoken([["DEPLOY-BOT", "npm start", "amazing ideas"], ["FRAMEWORK"]], FIELD, all);
+    expect(m).toEqual([idx("amazing"), null]);
+    expect(locateSpoken([["IDEAS", "FRAMEWORK"]], FIELD, all)).toEqual([idx("framework")]);
+  });
+
   it("never matches a stop word or a lone token under 3 letters", () => {
     const words = wordsOf("it is the thing and AI is it");
     const w = { startWord: 0, endWord: words.length - 1 };
@@ -110,12 +126,26 @@ describe("revealItemTexts", () => {
         ],
       }),
     ).toEqual(["hi", "hello"]);
+    // A window is ONE item matching on its title or any line (spec §1).
     expect(
-      revealItemTexts("TerminalMock", { windows: [{ title: "PROJECT-A", lines: ["npm start"] }] }),
-    ).toEqual(["PROJECT-A npm start"]);
+      revealItemTexts("TerminalMock", {
+        windows: [{ title: "PROJECT-A", lines: ["npm start", "npm test"] }],
+      }),
+    ).toEqual([["PROJECT-A", "npm start", "npm test"]]);
     expect(
       revealItemTexts("StrikethroughReveal", { lines: [{ text: "X", struck: true }, { text: "Y" }] }),
     ).toEqual(["X", "Y"]);
+  });
+
+  it("is the keyword's one bubble when a ChatMock keyword is set", () => {
+    // The render collapses to that single bubble (FINDINGS §28b, scenes'
+    // chatBubbles), so the messages are not items at all.
+    expect(
+      revealItemTexts("ChatMock", { messages: [{ from: "user", text: "hi" }], keyword: "slot" }),
+    ).toEqual(["slot"]);
+    expect(
+      revealItemTexts("ChatMock", { messages: [{ from: "user", text: "hi" }], keyword: "" }),
+    ).toEqual(["hi"]);
   });
 
   it("is null for every non-staggered component", () => {
@@ -133,11 +163,15 @@ describe("revealItemTexts", () => {
 });
 
 describe("entryTexts", () => {
-  it("uses item texts for the staggered four, plus ChatMock's keyword", () => {
+  it("uses item texts for the staggered four, flattening alternatives", () => {
     expect(entryTexts("FlowDiagram", { nodes: ["A", "B"] })).toEqual(["A", "B"]);
     expect(entryTexts("ChatMock", { messages: [{ from: "user", text: "hi" }], keyword: "slot" })).toEqual(
-      ["hi", "slot"],
+      ["slot"],
     );
+    expect(entryTexts("ChatMock", { messages: [{ from: "user", text: "hi" }] })).toEqual(["hi"]);
+    expect(entryTexts("TerminalMock", { windows: [{ title: "", lines: ["npm start"] }] })).toEqual([
+      "npm start",
+    ]);
   });
 
   it("uses the single-text fields of the others, skipping missing ones", () => {

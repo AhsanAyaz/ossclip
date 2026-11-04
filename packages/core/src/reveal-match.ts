@@ -84,18 +84,29 @@ function contentTokens(item: string): string[] {
 }
 
 /**
+ * One staggered item's text. Usually a single string; a list is ALTERNATIVES —
+ * the item counts as spoken where any one of them first is (a TerminalMock
+ * window "matches on its title or any of its lines", spec §1). Alternatives
+ * rather than one joined string because a joined title-plus-lines item has so
+ * many tokens it can never fit inside the `tokens + 2` span.
+ */
+export type RevealItem = string | readonly string[];
+
+/**
  * Per item, the source word index where it is first spoken inside
  * `window` (inclusive both ends, the `SceneAnchor` convention), or null.
  *
  * An item matches where its content tokens appear in order within a span of
  * `tokens + 2` (multi-word chips are said with a filler between: "new… idea").
- * Matches are monotonic: an item's match never precedes the previous MATCHED
- * item's, so a repeated label takes the later occurrence and an out-of-order
- * hit is no match at all (spec §1). Equal indices are allowed — two items can
- * be said by one phrase.
+ * Matches are STRICTLY monotonic: an item's word must come after the previous
+ * MATCHED item's word, so a repeated label takes the later occurrence and an
+ * out-of-order hit is no match at all (spec §1). Strict, not "at or after":
+ * two chips "CODE", "CODE" over "code … code" would otherwise both land on
+ * the first "code" — a confident wrong match for the second (spec
+ * anti-goal). An unmatched item leaves the floor where it was.
  */
 export function locateSpoken(
-  items: readonly string[],
+  items: readonly RevealItem[],
   words: readonly { text: string }[],
   window: { startWord: number; endWord: number },
 ): (number | null)[] {
@@ -112,13 +123,24 @@ export function locateSpoken(
   const out: (number | null)[] = [];
   let floor = 0; // stream position the next item may not start before
   for (const item of items) {
-    const want = contentTokens(item);
-    const hit = want.length === 0 ? null : findFrom(stream, want, floor);
+    const alternatives = typeof item === "string" ? [item] : item;
+    let hit: number | null = null;
+    for (const alt of alternatives) {
+      const want = contentTokens(alt);
+      if (want.length === 0) continue;
+      const at = findFrom(stream, want, floor);
+      if (at !== null && (hit === null || at < hit)) hit = at;
+    }
     if (hit === null) {
       out.push(null);
     } else {
-      out.push(stream[hit]!.word);
+      const word = stream[hit]!.word;
+      out.push(word);
+      // Past every token of the matched WORD, not just the matched token:
+      // a "project-a" word is two stream tokens but one word index, and the
+      // next item must land on a later word.
       floor = hit;
+      while (floor < stream.length && stream[floor]!.word === word) floor++;
     }
   }
   return out;
@@ -175,18 +197,24 @@ const textOf = (v: unknown): string =>
 export function revealItemTexts(
   component: SceneComponentId,
   props: Record<string, unknown>,
-): string[] | null {
+): RevealItem[] | null {
   switch (component) {
     case "FlowDiagram":
       return arr(props.nodes).map(str);
-    case "ChatMock":
+    case "ChatMock": {
+      // A keyword collapses the scene to ONE bubble carrying it (FINDINGS
+      // §28b) — the same `if (keyword)` test as scenes' `chatBubbles`, so the
+      // item list is the bubble list the render lays out.
+      const keyword = str(props.keyword);
+      if (keyword) return [keyword];
       return arr(props.messages).map(textOf);
+    }
     case "TerminalMock":
-      // One item per window — the window is what staggers in, and its title
-      // plus lines is all the copy the viewer could hear named.
+      // One item per window — the window is what staggers in — matching on
+      // its title OR any one line (spec §1), as alternatives.
       return arr(props.windows).map((w) => {
         const win = w && typeof w === "object" ? (w as Record<string, unknown>) : {};
-        return [str(win.title), ...arr(win.lines).map(str)].join(" ");
+        return [str(win.title), ...arr(win.lines).map(str)];
       });
     case "StrikethroughReveal":
       return arr(props.lines).map(textOf);
@@ -208,10 +236,12 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
     case "FlowDiagram":
     case "TerminalMock":
     case "StrikethroughReveal":
-      texts = revealItemTexts(component, props) ?? [];
-      break;
     case "ChatMock":
-      texts = [...(revealItemTexts(component, props) ?? []), ...fields("keyword")];
+      // A TerminalMock window's alternatives are each an entry text; ChatMock's
+      // keyword arrives through revealItemTexts' single-bubble case.
+      texts = (revealItemTexts(component, props) ?? []).flatMap((item) =>
+        typeof item === "string" ? [item] : [...item],
+      );
       break;
     case "TitleCard":
       texts = fields("title", "emphasis");

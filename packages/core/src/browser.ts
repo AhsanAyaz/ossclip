@@ -149,6 +149,7 @@ export {
   entryTexts,
   locateSpoken,
   revealItemTexts,
+  type RevealItem,
   SYNC_MIN_SHARE,
   syncDecision,
 } from "./reveal-match";
