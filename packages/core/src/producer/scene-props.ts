@@ -82,8 +82,7 @@ async function generateScenePropsBatch(
   const blocks = indices.map((i) => {
     const moment = moments[i]!;
     // The LLM-facing copy: reveal props are the author's, never the model's
-    // (reveal-timing spec, "The LLM does not set"). The parse below keeps the
-    // full schema — an omitted key is simply absent there.
+    // (reveal-timing spec, "The LLM does not set").
     const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId);
     return (
       `--- moment ${i} ---\n` +
@@ -111,8 +110,14 @@ async function generateScenePropsBatch(
   for (const entry of raw.scenes) {
     const moment = moments[entry.index];
     if (!moment || !indices.includes(entry.index)) continue;
-    const meta = SCENE_REGISTRY[moment.sceneKind as SceneComponentId];
-    const parsed = (meta.propsSchema as z.ZodType<Record<string, unknown>>).safeParse(entry.props);
+    // Parsed with the SAME LLM-facing copy the prompt showed, not the full
+    // registry schema: a reply that invents `pacing` would otherwise survive
+    // into scene.props and silently flip the scene onto the paced reveal —
+    // the LLM must neither see nor set the reveal keys. The per-moment path
+    // strips them the same way, because the provider parses with the schema
+    // it was handed.
+    const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId);
+    const parsed = (llmSchema as z.ZodType<Record<string, unknown>>).safeParse(entry.props);
     if (parsed.success) out.set(entry.index, parsed.data);
   }
   return out;

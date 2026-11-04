@@ -1,5 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
+import type { LlmProvider } from "../src/producer/provider";
+import type { Moment } from "../src/producer/beats";
+import { generateScenes } from "../src/producer/scene-props";
+import type { Transcript } from "../src/schema";
+import type { SceneComponentId } from "../src/scene-schema";
 import {
   ChatMockProps,
   FlowDiagramProps,
@@ -66,11 +72,39 @@ describe("reveal props on the four item-revealing components", () => {
   }
 });
 
+/**
+ * The LLM-facing props schema of every component exactly as it was BEFORE the
+ * reveal props existed — generated from the registry at 8d81238 (the commit
+ * before reveal-timing Task 2) with `JSON.stringify(z.toJSONSchema(schema))`.
+ * Regenerate it only for a deliberate change to what the LLM is shown; a
+ * reveal prop leaking into the prompt is exactly the diff this catches.
+ */
+const PRE_REVEAL_LLM_SCHEMAS = JSON.parse(
+  readFileSync(new URL("./fixtures/llm-props-schemas.pre-reveal.json", import.meta.url), "utf8"),
+) as Record<SceneComponentId, string>;
+
 describe("llmPropsSchema", () => {
-  it("hides the reveal props from the LLM but keeps the content props", () => {
-    const text = JSON.stringify(z.toJSONSchema(llmPropsSchema("FlowDiagram")));
-    for (const k of REVEAL_PROP_KEYS) expect(text).not.toContain(`"${k}"`);
-    expect(text).toContain("nodes");
+  for (const [id, content] of [
+    ["FlowDiagram", "nodes"],
+    ["ChatMock", "messages"],
+    ["TerminalMock", "windows"],
+    ["StrikethroughReveal", "lines"],
+  ] as const) {
+    it(`hides the reveal props of ${id} from the LLM but keeps its content props`, () => {
+      const text = JSON.stringify(z.toJSONSchema(llmPropsSchema(id)));
+      for (const k of REVEAL_PROP_KEYS) expect(text).not.toContain(`"${k}"`);
+      expect(text).toContain(content);
+    });
+  }
+
+  it("shows the LLM byte-for-byte the schema it saw before reveal props existed", () => {
+    // Spec, "The LLM does not set": the prop-writing prompt is untouched.
+    expect(Object.keys(PRE_REVEAL_LLM_SCHEMAS).sort()).toEqual(Object.keys(SCENE_REGISTRY).sort());
+    for (const id of Object.keys(SCENE_REGISTRY) as SceneComponentId[]) {
+      expect(JSON.stringify(z.toJSONSchema(llmPropsSchema(id))), id).toBe(
+        PRE_REVEAL_LLM_SCHEMAS[id],
+      );
+    }
   });
 
   it("is the registry schema verbatim for components without reveal props", () => {
@@ -104,5 +138,55 @@ describe("scalarPropControls — reveal controls", () => {
     expect(scalarPropControls("StatCard")).toEqual([
       { key: "inverted", kind: "boolean", fallback: false },
     ]);
+  });
+});
+
+describe("generateScenes never lets the LLM set a reveal prop", () => {
+  const transcript: Transcript = {
+    language: "en",
+    words: Array.from({ length: 8 }, (_, i) => ({ text: `w${i}`, start: i * 0.5, end: i * 0.5 + 0.4 })),
+  };
+  const moment = (sceneKind: Moment["sceneKind"]): Moment => ({
+    startWord: 0,
+    endWord: 3,
+    purpose: "p",
+    onScreenCopy: "COPY",
+    sceneKind,
+  });
+  /** Answers every call with `reply`, parsed by the schema it was handed — as real providers do. */
+  const replying = (reply: (schemaName: string) => unknown): LlmProvider => ({
+    name: "fake",
+    usage: [],
+    async complete<T>(req: { schema: z.ZodType<T>; schemaName: string }): Promise<T> {
+      return req.schema.parse(reply(req.schemaName));
+    },
+  });
+  const invented = { pacing: "accelerate", revealSpeed: 0.3, entrance: "bounce", reveal: "paced" };
+
+  it("strips reveal keys an LLM invents in a BATCH reply", async () => {
+    const provider = replying(() => ({
+      scenes: [
+        { index: 0, props: { nodes: ["A", "B"], ...invented } },
+        { index: 1, props: { messages: [{ from: "user", text: "hi" }], ...invented } },
+      ],
+    }));
+    const { scenes, failures } = await generateScenes(
+      provider,
+      [moment("FlowDiagram"), moment("ChatMock")],
+      transcript,
+    );
+    expect(failures).toHaveLength(0);
+    expect(scenes).toHaveLength(2);
+    for (const scene of scenes) {
+      for (const k of REVEAL_PROP_KEYS) expect(k in scene.props).toBe(false);
+    }
+    expect(scenes[0]!.props).toMatchObject({ nodes: ["A", "B"] });
+  });
+
+  it("strips them from a PER-MOMENT reply too", async () => {
+    const provider = replying(() => ({ nodes: ["A", "B"], ...invented }));
+    const { scenes } = await generateScenes(provider, [moment("FlowDiagram")], transcript);
+    expect(scenes[0]!.component).toBe("FlowDiagram");
+    for (const k of REVEAL_PROP_KEYS) expect(k in scenes[0]!.props).toBe(false);
   });
 });
