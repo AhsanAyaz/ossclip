@@ -1101,16 +1101,23 @@ export const Inspector: React.FC<InspectorProps> = ({
               hand-wiring is what let ScreenshotFrame ship an edit id naming no
               prop at all. */}
           {!isPlain && cue.component
-            ? scalarPropControls(cue.component).map((control) =>
-                control.kind === "number" ? (
+            ? scalarPropControls(cue.component).map((control) => {
+                // A number prop counts as SET only when it is a number. The
+                // readout, the slider and the reset button all read this one
+                // value, so they cannot disagree about whether it is unset.
+                const setNumber =
+                  typeof cue.props?.[control.key] === "number"
+                    ? (cue.props[control.key] as number)
+                    : undefined;
+                return control.kind === "number" ? (
                   <div style={row} key={control.key}>
                     <span style={label}>
                       {control.key}
                       {"  "}
                       <span style={{ color: "#EDEDF2" }}>
-                        {typeof cue.props?.[control.key] === "number"
-                          ? (cue.props[control.key] as number).toFixed(2)
-                          : `auto (${control.fallback.toFixed(2)})`}
+                        {setNumber !== undefined
+                          ? setNumber.toFixed(2)
+                          : `default (${control.fallback.toFixed(2)})`}
                       </span>
                     </span>
                     {/* Unset shows the renderer's own default (`fallback`) but
@@ -1125,11 +1132,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                       min={control.min}
                       max={control.max}
                       step={control.step}
-                      value={
-                        typeof cue.props?.[control.key] === "number"
-                          ? (cue.props[control.key] as number)
-                          : control.fallback
-                      }
+                      value={setNumber ?? control.fallback}
                       onChange={(e) =>
                         edits.patchProps(
                           selection.sceneId,
@@ -1140,18 +1143,18 @@ export const Inspector: React.FC<InspectorProps> = ({
                     />
                     {control.optional ? (
                       // The slider has no position meaning "unset", so the way
-                      // back to auto is a button — the enum's "auto" option,
-                      // for a control that cannot hold one.
+                      // back to unset is a button — the enum's "default"
+                      // option, for a control that cannot hold one.
                       <button
-                        data-testid={`prop-${control.key}-auto`}
+                        data-testid={`prop-${control.key}-default`}
                         style={button}
-                        disabled={cue.props?.[control.key] === undefined}
+                        disabled={setNumber === undefined}
                         onClick={() => {
                           blurActive();
                           edits.clearProp(selection.sceneId, control.key);
                         }}
                       >
-                        auto
+                        default
                       </button>
                     ) : null}
                   </div>
@@ -1189,13 +1192,17 @@ export const Inspector: React.FC<InspectorProps> = ({
                           (control.optional ? "" : (control.options?.[0] ?? "")),
                       )}
                       onChange={(e) =>
-                        // "auto" DELETES the key — never writes "".
+                        // "default" DELETES the key — never writes "".
                         e.target.value === "" && control.optional
                           ? edits.clearProp(selection.sceneId, control.key)
                           : edits.patchProps(selection.sceneId, { [control.key]: e.target.value })
                       }
                     >
-                      {control.optional ? <option value="">auto</option> : null}
+                      {/* Labelled "default", not "auto": `reveal` has an
+                          explicit "auto" of its own, which DOES move a scene
+                          off the legacy path — two "auto"s meaning different
+                          things in one list would be a trap. */}
+                      {control.optional ? <option value="">default</option> : null}
                       {(control.options ?? []).map((o) => (
                         <option key={o} value={o}>
                           {o}
@@ -1203,8 +1210,8 @@ export const Inspector: React.FC<InspectorProps> = ({
                       ))}
                     </select>
                   </div>
-                ),
-              )
+                );
+              })
             : null}
           <div style={row}>
             <span style={label}>Layout</span>

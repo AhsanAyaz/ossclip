@@ -1458,7 +1458,7 @@ test("reveal timing: pacing and speed are set from the Inspector, and auto delet
     return (doc.scenes["scene-2"]?.props ?? {}) as Record<string, unknown>;
   };
 
-  // Unset reads as "auto", not as the first option: `pacing: "even"` would
+  // Unset reads as "default", not as the first option: `pacing: "even"` would
   // move a legacy scene onto the paced reveal (Review Focus 5).
   const pacing = page.getByTestId("prop-pacing");
   await expect(pacing).toHaveValue("");
@@ -1487,11 +1487,11 @@ test("reveal timing: pacing and speed are set from the Inspector, and auto delet
   expect("revealSpeed" in undone).toBe(false);
   expect(undone.pacing).toBe("decelerate");
 
-  // "auto" is a DELETE on both controls — no `""`, no explicit default.
+  // "default" is a DELETE on both controls — no `""`, no explicit default.
   await speed.focus();
   await page.keyboard.press("ArrowLeft");
   await expect.poll(async () => "revealSpeed" in (await saved())).toBe(true);
-  await page.getByTestId("prop-revealSpeed-auto").click();
+  await page.getByTestId("prop-revealSpeed-default").click();
   await pacing.selectOption("");
   const cleared = await saved();
   expect("revealSpeed" in cleared).toBe(false);

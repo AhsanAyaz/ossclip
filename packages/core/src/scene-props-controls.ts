@@ -101,7 +101,10 @@ export function scalarPropControls(component: SceneComponentId): PropControl[] {
         kind: "number",
         min: prop.minimum,
         max: prop.maximum,
-        step: 0.05,
+        // Fine enough that the slider can rest exactly on a two-decimal
+        // fallback (0.66): at 0.05 from a 0.1 minimum the browser snapped an
+        // unset slider to 0.65 while the readout said 0.66.
+        step: 0.01,
         fallback,
         ...optional,
       });

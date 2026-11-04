@@ -121,7 +121,7 @@ describe("scalarPropControls — reveal controls", () => {
         kind: "number",
         min: 0.1,
         max: 1,
-        step: 0.05,
+        step: 0.01,
         fallback: REVEAL_SPEED_DEFAULT,
       }),
     );

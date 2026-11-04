@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyOverrides,
   defaultTheme,
+  scalarPropControls,
   livePreviewMap,
   previewClockMappers,
   type KeptSpan,
@@ -1011,7 +1012,7 @@ describe("Inspector — per-scene caption controls under a global hide", () => {
 /**
  * Reveal-timing Task 7: the reveal controls round-trip through the REAL
  * reducer and a cue re-derived from `edits.doc` (App.tsx's `live` memo), so
- * "auto" is observed as an absent key, not just as a select's value.
+ * "default" is observed as an absent key, not just as a select's value.
  */
 function RevealHarness({ onDocChange }: { onDocChange: (doc: OverrideDoc) => void }) {
   const edits = useEdits();
@@ -1072,7 +1073,7 @@ describe("Inspector — reveal controls: unset is its own state (reveal-timing T
   const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`)!;
   const props = () => doc.scenes["scene-1"]?.props ?? {};
 
-  it("an unset optional enum shows a leading auto entry; picking it deletes the key", async () => {
+  it("an unset optional enum shows a leading default entry; picking it deletes the key", async () => {
     const pacing = q<HTMLSelectElement>("prop-pacing");
     expect(pacing.options[0]!.value).toBe("");
     expect(pacing.value).toBe("");
@@ -1084,17 +1085,21 @@ describe("Inspector — reveal controls: unset is its own state (reveal-timing T
     expect(q<HTMLSelectElement>("prop-pacing").value).toBe("");
   });
 
-  it("the speed slider shows the fallback when unset, writes a number, and auto deletes it", async () => {
+  it("the speed slider shows the fallback when unset, writes a number, and default deletes it", async () => {
     const speed = q<HTMLInputElement>("prop-revealSpeed");
     expect(speed.min).toBe("0.1");
     expect(speed.max).toBe("1");
-    expect(speed.step).toBe("0.05");
-    expect(q<HTMLButtonElement>("prop-revealSpeed-auto").disabled).toBe(true);
+    const control = scalarPropControls("FlowDiagram").find((c) => c.key === "revealSpeed")!;
+    if (control.kind !== "number") throw new Error("revealSpeed should be a number control");
+    // Read from core, not a literal: the step is core's call, and the claim
+    // here is only that the Inspector passes it through.
+    expect(speed.step).toBe(String(control.step));
+    expect(q<HTMLButtonElement>("prop-revealSpeed-default").disabled).toBe(true);
     // Displayed, never written: nothing in the doc until the author moves it.
     expect("revealSpeed" in props()).toBe(false);
     await act(async () => setControl(speed, "0.4"));
     expect(props().revealSpeed).toBe(0.4);
-    const reset = q<HTMLButtonElement>("prop-revealSpeed-auto");
+    const reset = q<HTMLButtonElement>("prop-revealSpeed-default");
     expect(reset.disabled).toBe(false);
     await act(async () => reset.click());
     expect("revealSpeed" in props()).toBe(false);
