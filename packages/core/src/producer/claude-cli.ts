@@ -55,6 +55,9 @@ export class ClaudeCliProvider implements LlmProvider {
       } catch (err) {
         attemptMs.push(Date.now() - started);
         lastError = err instanceof Error ? err.message : String(err);
+        // A signed-out CLI fails identically on retry, and the second spawn
+        // only doubles the wait before the user learns to run /login.
+        if (classifyClaudeCliFailure(lastError) === "auth") break;
         continue;
       }
       // Recorded per ATTEMPT, before validation: a reply that failed the

@@ -81,11 +81,12 @@ export const DEFAULT_FAST_MODEL: Partial<Record<ProviderName, string>> = {
   claude: "claude-haiku-4-5-20251001",
   "claude-cli": "claude-haiku-4-5-20251001",
   gemini: "gemini-3.5-flash-lite",
-  // Substring-matches the `gemini-3.7-flash` pricing family, so mechanical
-  // calls price from the existing table with no changes; the editorial tier
-  // (agy's own default, reported as "antigravity-default") matches nothing and
-  // reports "cost unknown" — the house honesty rule, not an oversight.
-  antigravity: "gemini-3.7-flash-low",
+  // An alias, not a slug: resolved against `agy models` at call time to the
+  // newest `gemini-X.Y-flash-low` (see `resolveAgyModelAlias`). The pinned
+  // `gemini-3.7-flash-low` broke every mechanical call the day agy retired it
+  // (2026-11-04). The resolved slug prices only if its family is in the usage
+  // table; one that is not reports "cost unknown" — the house honesty rule.
+  antigravity: "gemini-flash-low",
 };
 
 export interface TieringOptions {

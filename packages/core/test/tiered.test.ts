@@ -80,8 +80,8 @@ describe("model tiering (FINDINGS §37)", () => {
     expect(createTieredProvider("antigravity")).toBeInstanceOf(TieredProvider);
     expect(DEFAULT_FAST_MODEL["claude-cli"]).toBeTruthy();
     expect(DEFAULT_FAST_MODEL.gemini).toBeTruthy();
-    // Pinned exactly: the slug substring-matches the gemini-3.7-flash pricing
-    // family, so mechanical antigravity calls price without table changes.
-    expect(DEFAULT_FAST_MODEL.antigravity).toBe("gemini-3.7-flash-low");
+    // An alias, not a slug: a pinned slug broke the day agy retired it
+    // (2026-11-04). Resolved against `agy models` at call time.
+    expect(DEFAULT_FAST_MODEL.antigravity).toBe("gemini-flash-low");
   });
 });

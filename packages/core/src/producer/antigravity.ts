@@ -328,6 +328,80 @@ export class AgyError extends Error {
 }
 
 /**
+ * A version-free model name ("gemini-flash-low") that tracks whatever the
+ * newest matching slug in `agy models` is. agy has no alias of its own —
+ * `gemini-flash` and `gemini-flash-latest` are both rejected as "invalid
+ * model selection" (measured 2026-11-04) — and its catalogue retires slugs
+ * out from under a pin: `gemini-3.7-flash-low` was the default fast model
+ * until agy dropped it for 3.8, and every mechanical call (repair, scene
+ * props, the sfx plan) failed fail-fast with nothing a user could do short of
+ * finding `--llm-fast-model`. An alias is matched against the catalogue at
+ * call time, so the next bump needs no release.
+ *
+ * Only names with no digits are aliases: an explicit slug like
+ * `gemini-3.8-flash-low` is the user's choice and goes on the wire verbatim.
+ */
+export function isAgyModelAlias(model: string): boolean {
+  return /^gemini-[a-z-]+$/.test(model);
+}
+
+/**
+ * Pick the highest-versioned slug in `agy models` output that is `alias`
+ * with a version spliced in after `gemini-`. Pure — the catalogue text is a
+ * parameter so this is testable without agy. Returns undefined when nothing
+ * matches; the caller decides what that means.
+ *
+ * Output shape (agy, measured): one `slug<TAB>Display Name` row per model on
+ * stdout; the spinner goes to stderr.
+ */
+export function resolveAgyModelAlias(alias: string, modelsStdout: string): string | undefined {
+  const rest = alias.replace(/^gemini-/, "");
+  let best: { slug: string; version: number[] } | undefined;
+  for (const line of modelsStdout.split("\n")) {
+    const slug = line.split("\t")[0]?.trim() ?? "";
+    const m = /^gemini-(\d+(?:\.\d+)*)-(.+)$/.exec(slug);
+    if (!m || m[2] !== rest) continue;
+    const version = m[1]!.split(".").map(Number);
+    if (!best || compareVersions(version, best.version) > 0) best = { slug, version };
+  }
+  return best?.slug;
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+// One `agy models` per bin per process: it is a network round trip (~1s) and
+// the catalogue does not change mid-run. Keyed on the promise so concurrent
+// calls share a single spawn.
+const agyCatalogue = new Map<string, Promise<string | undefined>>();
+
+/**
+ * Turn an alias into a concrete slug, or undefined when it cannot be resolved
+ * (agy models failed, or nothing matched). Undefined means "omit --model":
+ * agy's own default answers instead — a call that runs on a different model
+ * beats a call that cannot run, and the usage row records
+ * "antigravity-default" so the substitution is not hidden.
+ */
+async function resolveAgyModel(model: string | undefined, bin: string): Promise<string | undefined> {
+  if (!model || !isAgyModelAlias(model)) return model;
+  let catalogue = agyCatalogue.get(bin);
+  if (!catalogue) {
+    catalogue = run(bin, ["models"], { allowNonZero: true }).then(
+      (r) => r.stdout,
+      () => undefined,
+    );
+    agyCatalogue.set(bin, catalogue);
+  }
+  const text = await catalogue;
+  return text === undefined ? undefined : resolveAgyModelAlias(model, text);
+}
+
+/**
  * Google Antigravity via the locally installed `agy` CLI. Uses whatever auth
  * the CLI holds — a logged-in subscription, so producing a video consumes
  * plan usage rather than pay-per-token API credits (`billed: false`, and agy
@@ -374,6 +448,7 @@ export class AntigravityProvider implements LlmProvider {
     // that got as far as an envelope: a call killed by --print-timeout never
     // does, and a 10-minute hang is exactly the attempt a user needs to see.
     const attemptMs: number[] = [];
+    const model = await resolveAgyModel(this.model, this.bin);
     for (let attempt = 0; attempt < 2; attempt++) {
       const prompt =
         attempt === 0
@@ -401,7 +476,7 @@ export class AntigravityProvider implements LlmProvider {
         ({ stdout, stderr } = await run(
           this.bin,
           buildAgyArgs(prompt, {
-            model: this.model,
+            model,
             effort: this.opts.effort,
             schemaJson: schemaText,
           }),
@@ -433,7 +508,7 @@ export class AntigravityProvider implements LlmProvider {
           provider: this.name,
           // The envelope names no model, so record what was asked for — or the
           // honest placeholder, which the cost report declines to price.
-          model: this.model ?? "antigravity-default",
+          model: model ?? "antigravity-default",
           schemaName: req.schemaName,
           inputTokens: envelope.inputTokens ?? estimateTokens(prompt),
           outputTokens: envelope.outputTokens ?? estimateTokens(envelope.response ?? stdout),

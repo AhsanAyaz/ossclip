@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -191,5 +191,42 @@ describe("claude CLI failure classification", () => {
     expect(claudeCliFailureMessage({ ...facts, lastError: MEASURED_BAD_MODEL })).toContain(
       "--llm-model",
     );
+  });
+});
+
+/**
+ * 2026-11-04 field run, signed-out CLI: "claude -p … failed (exit 1):" and then
+ * nothing — the reason was in the stdout envelope and run() kept only the
+ * (empty) stderr. The envelope text below is inferred, not measured: no test
+ * may sign the user out to capture it.
+ */
+describe("claude CLI signed out", () => {
+  it("surfaces the stdout reason, gives the login hint, and does not retry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-claude-auth-"));
+    const calls = join(dir, "calls");
+    const out = JSON.stringify({
+      type: "result",
+      is_error: true,
+      result: "Not logged in · Please run /login",
+    });
+    const bin = join(dir, "claude");
+    writeFileSync(
+      bin,
+      [
+        "#!/usr/bin/env bash",
+        "cat > /dev/null",
+        `echo x >> "${calls}"`,
+        `cat <<'EOF'\n${out}\nEOF`,
+        "exit 1",
+      ].join("\n"),
+    );
+    chmodSync(bin, 0o755);
+    const p = new ClaudeCliProvider(undefined, bin);
+    const err = await p
+      .complete({ system: "s", user: "u", schema, schemaName: "beat_sheet" })
+      .catch((e: Error) => e);
+    expect(String(err)).toContain("Please run /login");
+    expect(String(err)).toContain("logged in?");
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
   });
 });

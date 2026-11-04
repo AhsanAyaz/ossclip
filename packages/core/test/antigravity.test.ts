@@ -11,8 +11,10 @@ import {
   AntigravityProvider,
   buildAgyArgs,
   classifyAgyFailure,
+  isAgyModelAlias,
   isNonRetryableAgyFailure,
   parseAgyEnvelope,
+  resolveAgyModelAlias,
 } from "../src/producer/antigravity";
 
 const schema = z.object({ title: z.string().min(1) });
@@ -517,5 +519,59 @@ describe("agy failure classification", () => {
     expect(msg).toContain("--llm claude-cli");
     expect(msg).toContain("GEMINI_API_KEY");
     expect(msg).toContain("--produce");
+  });
+});
+
+/**
+ * The 2026-11-04 break: agy retired `gemini-3.7-flash-low` for 3.8 and the
+ * pinned default fast model failed every mechanical call. agy offers no alias
+ * of its own, so ours resolves against `agy models`.
+ */
+describe("agy model aliases", () => {
+  // Captured from `agy models` stdout on 2026-11-04 (trimmed).
+  const CATALOGUE = [
+    "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
+    "gemini-4-argon-low\tGemini 4 Argon (Low)",
+    "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+    "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+    "gemini-3.10-flash-low\tGemini 3.10 Flash (Low)",
+    "gemini-3.9-flash-lite-low\tGemini 3.9 Flash Lite (Low)",
+    "claude-opus-5-5-low\tClaude Opus 5.5 (Low)",
+  ].join("\n");
+
+  it("treats only digit-free gemini names as aliases", () => {
+    expect(isAgyModelAlias("gemini-flash-low")).toBe(true);
+    expect(isAgyModelAlias("gemini-3.8-flash-low")).toBe(false);
+    expect(isAgyModelAlias("claude-opus-5-5-low")).toBe(false);
+  });
+
+  it("picks the highest version numerically, matching the family exactly", () => {
+    // 3.10 > 3.8 — a string sort would get this wrong. flash-lite-low must
+    // not satisfy flash-low.
+    expect(resolveAgyModelAlias("gemini-flash-low", CATALOGUE)).toBe("gemini-3.10-flash-low");
+    expect(resolveAgyModelAlias("gemini-argon-low", CATALOGUE)).toBe("gemini-4-argon-low");
+    expect(resolveAgyModelAlias("gemini-flash-medium", CATALOGUE)).toBeUndefined();
+  });
+
+  it("sends the resolved slug on the wire and records it in usage", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-agy-alias-"));
+    const argv = join(dir, "argv");
+    const ok = JSON.stringify({ status: "SUCCESS", response: '{"title":"ok"}' });
+    const bin = join(dir, "agy");
+    writeFileSync(
+      bin,
+      [
+        "#!/usr/bin/env bash",
+        `if [ "$1" = "models" ]; then printf '%s\\n' 'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)'; exit 0; fi`,
+        `printf '%s\\n' "$@" > "${argv}"`,
+        `cat <<'EOF'\n${ok}\nEOF`,
+      ].join("\n"),
+    );
+    chmodSync(bin, 0o755);
+    const p = new AntigravityProvider("gemini-flash-low", bin);
+    await p.complete({ system: "s", user: "u", schema, schemaName: "t" });
+    const args = readFileSync(argv, "utf8").split("\n");
+    expect(args[args.indexOf("--model") + 1]).toBe("gemini-3.8-flash-low");
+    expect(p.usage[0]?.model).toBe("gemini-3.8-flash-low");
   });
 });
