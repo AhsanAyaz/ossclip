@@ -22,6 +22,7 @@
  * bundle, and every function here is testable without a TTY or a filesystem.
  */
 
+import { ENTRY_LEAD_SEC, ITEM_LEAD_SEC, minSceneSec } from "./assemble";
 import type { CaptionLine } from "./captions";
 import { applyCleanupChoices, type CleanupChoices } from "./cutlist";
 import { remapPoint, subtractRangesFromCutlist, type UserCut } from "./recut";
@@ -400,16 +401,56 @@ export function retimeForPreview(
       })),
     })),
     sceneCues: props.sceneCues.flatMap((c) => {
-      const startSec = at(`scene "${c.id}" start`, c.startSec);
+      // The on-cue start (reveal-timing spec §2) is re-derived from its
+      // WORD, not remapped from `startSec`: the 0.3s lead can sit in the kept
+      // span BEFORE a seam the word sits after, so remapping the lead moved
+      // the graphic by the whole gap a veto restored (final review I-3 probe:
+      // preview 3.7s vs render 5.7s). The legacy remap is still computed — it
+      // is the lower bound, as the legacy start is in `assembleScenes` — but
+      // into a throwaway sink on that path: its lead falling in a new cut is
+      // not the graphic being cut, and the entry word's own remap reports
+      // when it is. A pin wins (`applyOverrides` drops the key; the guard is
+      // belt and braces for a hand-made cue).
+      const fromWord = c.entryAtSec !== undefined && !c.pinned;
+      const legacyStart = fromWord
+        ? remapPoint(`scene "${c.id}" start`, c.startSec, oldMap, newMap, [])
+        : at(`scene "${c.id}" start`, c.startSec);
       const endSec = at(`scene "${c.id}" end`, c.endSec);
       // Collapsed by a live cut (the doc's own paragraph) — dropped, and
       // said out loud, the `remapPoint` "nothing moves without saying so"
       // rule applied to a block that stopped existing.
-      if (endSec - startSec < EPS) {
+      if (endSec - legacyStart < EPS) {
         reports.push(`scene "${c.id}" removed from the live preview by a cut`);
         return [];
       }
-      return [{ ...c, startSec, endSec }];
+      const entryAtSec =
+        fromWord && c.entryAtSec !== undefined
+          ? at(`scene "${c.id}" entry word`, c.entryAtSec)
+          : undefined;
+      // `assembleScenes`' own post-pass, on the new clock: never before the
+      // legacy start, held to the floor before the end.
+      const startSec =
+        entryAtSec === undefined
+          ? legacyStart
+          : Math.max(
+              legacyStart,
+              Math.min(entryAtSec - ENTRY_LEAD_SEC, endSec - minSceneSec(newMap.outputDuration)),
+            );
+      const timing = { startSec, endSec, ...(entryAtSec !== undefined ? { entryAtSec } : {}) };
+      // Item times are ABSOLUTE output seconds (reveal-timing spec,
+      // "Builder-check answers") — the same clock as `startSec`, so they take
+      // the same old → source → new trip, clamp and report included; a null
+      // (paced) item has no instant to move. The WORD is what is remapped
+      // (time + lead), then the lead re-applied, for the same seam reason as
+      // the start; floored at 0 as assembly floors it. A cue without
+      // `reveal` stays without one rather than growing an `undefined` key.
+      if (!c.reveal) return [{ ...c, ...timing }];
+      const itemAtSec = c.reveal.itemAtSec.map((t, i) =>
+        t === null
+          ? null
+          : Math.max(0, at(`scene "${c.id}" item ${i + 1}`, t + ITEM_LEAD_SEC) - ITEM_LEAD_SEC),
+      );
+      return [{ ...c, ...timing, reveal: { ...c.reveal, itemAtSec } }];
     }),
     punch: { scale: 1, allowed: [] },
   };

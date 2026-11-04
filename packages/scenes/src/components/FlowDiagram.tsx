@@ -1,25 +1,34 @@
 import React from "react";
+import { useVideoConfig } from "remotion";
 import { z } from "zod/v4";
 import { FlowDiagramProps, type Theme } from "@ossclip/core/browser";
-import { pop, useEnter } from "../anim";
+import { entranceStyle, useEnter } from "../anim";
+import {
+  componentRevealFrames,
+  isLegacyReveal,
+  latestEntryFrame,
+  type RevealTiming,
+} from "../reveal";
 import { flowMetrics } from "../fit";
 import { editStyle, type ElementEdits } from "../editable";
 
 const Chip: React.FC<{
   text: string;
   emphasized: boolean;
+  entrance: z.infer<typeof FlowDiagramProps>["entrance"];
   delay: number;
   fontSize: number;
   theme: Theme;
   editId: string;
   edits?: ElementEdits;
-}> = ({ text, emphasized, delay, fontSize, theme, editId, edits }) => {
+}> = ({ text, emphasized, entrance, delay, fontSize, theme, editId, edits }) => {
   const p = useEnter(delay);
   return (
     <div
       data-edit-id={editId}
       style={{
-        ...pop(p),
+        // Unset is `pop`, this chip's style since day one (spec §4).
+        ...entranceStyle(entrance, p),
         background: emphasized ? theme.fg : theme.cardBg,
         color: emphasized ? theme.bg : theme.fg,
         border: `2px solid ${emphasized ? theme.fg : theme.cardBorder}`,
@@ -85,6 +94,28 @@ export function flowLayout(
 /** Fallback when the stage isn't supplying a budget (tests, direct use). */
 const DEFAULT_FLOW_WIDTH_PX = 864;
 
+/**
+ * When each chip and the arrow into it enter. Chips take the shared reveal
+ * schedule (spec §4) at the historical 6-frame step; the arrow stays a
+ * component-local 3 frames after ITS chip on every path, so it still
+ * follows the chip it points into once the chips are spoken-timed. On the
+ * timed path the arrow is held to the entry limit: a chip synced onto a
+ * word near the cut already sits AT the limit, and chip + 3 would still be
+ * fading in on the last frame. Legacy keeps chip + 3 exactly.
+ */
+export function flowDelays(
+  props: z.infer<typeof FlowDiagramProps>,
+  fps: number,
+  timing?: RevealTiming,
+): Array<{ chip: number; arrow: number }> {
+  const chips = componentRevealFrames(props.nodes.length, 6, fps, props, timing);
+  if (timing === undefined || isLegacyReveal(timing.itemAtSec, props)) {
+    return chips.map((chip) => ({ chip, arrow: chip + 3 }));
+  }
+  const latest = latestEntryFrame(fps, timing.durationInFrames);
+  return chips.map((chip) => ({ chip, arrow: Math.min(chip + 3, Math.max(chip, latest)) }));
+}
+
 export const FlowDiagram: React.FC<{
   props: z.infer<typeof FlowDiagramProps>;
   theme: Theme;
@@ -92,10 +123,14 @@ export const FlowDiagram: React.FC<{
   widthPx?: number;
   heightPx?: number;
   edits?: ElementEdits;
-}> = ({ props, theme, widthPx, heightPx, edits }) => {
+  /** The cue's timing, from SceneLayer; absent → today's stagger. */
+  timing?: RevealTiming;
+}> = ({ props, theme, widthPx, heightPx, edits, timing }) => {
   // The stage hands down the budget; no measurement needed because the slot
   // geometry is known up front.
   const { mode, fontSize } = flowLayout(props.nodes, widthPx, heightPx);
+  const { fps } = useVideoConfig();
+  const delays = flowDelays(props, fps, timing);
   const row = mode === "row";
   return (
     <div
@@ -121,11 +156,12 @@ export const FlowDiagram: React.FC<{
             gap: row ? fontSize * 0.55 : fontSize * 0.45,
           }}
         >
-          {i > 0 ? <Arrow delay={i * 6 + 3} fontSize={fontSize} theme={theme} down={!row} /> : null}
+          {i > 0 ? <Arrow delay={delays[i]!.arrow} fontSize={fontSize} theme={theme} down={!row} /> : null}
           <Chip
             text={node}
             emphasized={props.emphasizeLast && i === props.nodes.length - 1}
-            delay={i * 6}
+            entrance={props.entrance}
+            delay={delays[i]!.chip}
             fontSize={fontSize}
             theme={theme}
             editId={`node-${i}`}

@@ -1442,6 +1442,63 @@ test("a component's boolean props are editable from the Inspector (§153)", asyn
   await expect(page.locator('[data-edit-id="src"]').first()).toHaveCount(1);
 });
 
+test("reveal timing: pacing and speed are set from the Inspector, and auto deletes the key (reveal-timing Task 7)", async ({
+  page,
+}) => {
+  // The fixture's StrikethroughReveal (scene-2) carries the reveal props — the
+  // fixture has no FlowDiagram, and adding a cue would shift every other
+  // spec's timeline coordinates.
+  await page.goto("/");
+  await settle(page);
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-2"));
+  const saved = async () => {
+    await page.keyboard.press("Meta+s");
+    await expect(page.getByTestId("dirty")).toHaveCount(0);
+    const doc = JSON.parse(await readFile(join(WORKDIR, "overrides.json"), "utf8"));
+    return (doc.scenes["scene-2"]?.props ?? {}) as Record<string, unknown>;
+  };
+
+  // Unset reads as "default", not as the first option: `pacing: "even"` would
+  // move a legacy scene onto the paced reveal (Review Focus 5).
+  const pacing = page.getByTestId("prop-pacing");
+  await expect(pacing).toHaveValue("");
+  await pacing.selectOption("decelerate");
+
+  // One drag across the slider — many ticks, one coalesce key.
+  const speed = page.getByTestId("prop-revealSpeed");
+  await expect(speed).toBeVisible();
+  const box = (await speed.boundingBox())!;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + box.width * 0.8, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.3, y, { steps: 8 });
+  await page.mouse.up();
+  const props = await saved();
+  expect(props.pacing).toBe("decelerate");
+  expect(typeof props.revealSpeed).toBe("number");
+  expect(props.revealSpeed as number).toBeGreaterThanOrEqual(0.1);
+  expect(props.revealSpeed as number).toBeLessThanOrEqual(1);
+
+  // ONE undo takes back the whole drag and leaves the pacing pick standing.
+  // Blur first: Meta+z's keyup on a focused control must not re-commit.
+  await speed.evaluate((el) => (el as HTMLElement).blur());
+  await page.keyboard.press("Meta+z");
+  const undone = await saved();
+  expect("revealSpeed" in undone).toBe(false);
+  expect(undone.pacing).toBe("decelerate");
+
+  // "default" is a DELETE on both controls — no `""`, no explicit default.
+  await speed.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(async () => "revealSpeed" in (await saved())).toBe(true);
+  await page.getByTestId("prop-revealSpeed-default").click();
+  await pacing.selectOption("");
+  const cleared = await saved();
+  expect("revealSpeed" in cleared).toBe(false);
+  expect("pacing" in cleared).toBe(false);
+  await expect(pacing).toHaveValue("");
+});
+
 test("color grade: picking a preset previews live and saves the doc-global override", async ({
   page,
 }) => {

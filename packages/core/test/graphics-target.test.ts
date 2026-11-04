@@ -211,7 +211,7 @@ describe("producerSystem — the system prompt describes the frame it will fill"
     // Prompt changes change the answer (the §78 posture). If a prompt edit
     // ships without bumping this, every warm workdir keeps serving the sheet
     // the old prompt wrote — this pin makes the bump a conscious act.
-    expect(PRODUCER_PROMPT_VERSION).toBe("v2");
+    expect(PRODUCER_PROMPT_VERSION).toBe("v3");
   });
 });
 

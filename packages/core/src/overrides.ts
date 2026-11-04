@@ -13,6 +13,7 @@ import {
 import { RemovalReasonSchema, type ProductionSfx } from "./schema";
 import type { TimeMap } from "./timemap";
 import { resolveSceneProps } from "./scene-registry";
+import { revealItemTexts } from "./reveal-match";
 import type { CaptionLine, CaptionWord } from "./captions";
 
 /**
@@ -1046,8 +1047,14 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     // user's own placement and still wins below.
     const layoutSwapped = o.layout !== undefined && o.layout !== cue.layout;
     const { graphicRect: _staleRouted, ...cueSansRoutedRect } = cue;
-    return {
-      ...(layoutSwapped ? cueSansRoutedRect : cue),
+    const base: SceneCue = layoutSwapped ? cueSansRoutedRect : cue;
+    // A pin is the user's absolute window and wins over the entry word
+    // (reveal-timing final review I-3): the preview must not re-derive a
+    // pinned start from `entryAtSec`. Same guard as the pin itself below.
+    const pins = o.timing !== undefined && !isSrcTiming(o.timing) && !cue.pinned;
+    const { entryAtSec: _pinnedEntry, ...baseSansEntry } = base;
+    const merged: SceneCue = {
+      ...(pins ? baseSansEntry : base),
       component,
       layout: o.layout ?? cue.layout,
       props,
@@ -1070,12 +1077,31 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       // this branch with a src entry means no pre-pass ran, and doing nothing
       // is the only honest answer available (guessing an output window from a
       // source second is exactly the old-clock lie this arm removes).
-      ...(o.timing && !isSrcTiming(o.timing) && !cue.pinned
+      ...(pins && o.timing && !isSrcTiming(o.timing)
         ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true }
         : {}),
     };
+    return swapped ? withSwappedReveal(merged) : merged;
   });
   return { cues: out, orphans };
+}
+
+/**
+ * A component swap re-sizes the cue's item times (reveal-timing final review
+ * M-2). The matched times belong to the OLD component's items — kept, item i
+ * of the new component would ride a word that is not its text. All-null, at
+ * the NEW component's rendered count, keeps the cue a new plan so the items
+ * pace (spec §7); a new component that does not stagger carries no reveal,
+ * the same rule `assembleScenes` applies. A legacy cue (no `reveal`) stays
+ * legacy. `entryAtSec` is kept: the swap does not move where the graphic
+ * enters, and the start is still that word's.
+ */
+function withSwappedReveal(cue: SceneCue): SceneCue {
+  if (!cue.reveal || cue.component === undefined || cue.props === undefined) return cue;
+  const { reveal: _stale, ...rest } = cue;
+  const count = revealItemTexts(cue.component, cue.props)?.length ?? 0;
+  if (count === 0) return rest;
+  return { ...rest, reveal: { itemAtSec: Array.from({ length: count }, () => null) } };
 }
 
 /**
@@ -1124,11 +1150,19 @@ export function splitCues(
       1,
       { ...cue, endSec: s.at },
       // The suffix comes from the SPLIT's own id, not from `s.at` — that is
-      // the §137 fix.
-      { ...cue, id: `${cue.id.split("@")[0]}@${s.id}`, startSec: s.at },
+      // the §137 fix. The second half starts AT the split, not on the entry
+      // word, so it drops `entryAtSec` — kept, the live preview would
+      // re-derive its start from the first half's word (reveal-timing final
+      // review I-3).
+      { ...secondHalfBase(cue), id: `${cue.id.split("@")[0]}@${s.id}`, startSec: s.at },
     );
   }
   return out;
+}
+
+function secondHalfBase(cue: SceneCue): SceneCue {
+  const { entryAtSec: _firstHalfEntry, ...rest } = cue;
+  return rest;
 }
 
 export interface DropHiddenResult {

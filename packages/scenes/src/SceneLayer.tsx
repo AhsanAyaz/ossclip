@@ -15,11 +15,19 @@ import { ScreenshotFrame } from "./components/ScreenshotFrame";
 import { BulletList } from "./components/BulletList";
 import { compensateEdits, type ElementEdits } from "./editable";
 import { easeOutQuad, entranceExitSec } from "./motion";
+import type { RevealTiming } from "./reveal";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- props are registry-validated upstream */
 const COMPONENTS: Record<
   NonNullable<SceneCue["component"]>,
-  React.FC<{ props: any; theme: Theme; widthPx?: number; heightPx?: number; edits?: ElementEdits }>
+  React.FC<{
+    props: any;
+    theme: Theme;
+    widthPx?: number;
+    heightPx?: number;
+    edits?: ElementEdits;
+    timing?: RevealTiming;
+  }>
 > = {
   TitleCard,
   StatCard,
@@ -228,6 +236,16 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
                     // `scale`, so they are counter-divided here or a drag lands
                     // `scale`× past where it was dropped (PLAN Task 1).
                     edits={compensateEdits(cue.elements, scale)}
+                    // Inside its <Sequence> a component sees only local
+                    // frames; the item times are absolute output seconds, so
+                    // it needs the cue's FINAL start to place them (spec
+                    // "items stay on their spoken words"). Components that do
+                    // not stagger ignore it.
+                    timing={{
+                      cueStartSec: cue.startSec,
+                      durationInFrames,
+                      itemAtSec: cue.reveal?.itemAtSec,
+                    }}
                   />
                 </div>
               </ExitFade>

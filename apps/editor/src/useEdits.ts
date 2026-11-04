@@ -60,6 +60,13 @@ export const COALESCE_MS = 600;
 export type EditAction =
   | { type: "load"; doc: OverrideDoc }
   | { type: "patchProps"; sceneId: string; patch: Record<string, unknown>; coalesce?: string }
+  /** Take ONE prop out of the scene's override, back to absent. Not a
+   * `patchProps` with `undefined`: an optional reveal prop's absence is a
+   * state of its own — unset `pacing` keeps a legacy scene on its legacy
+   * stagger, `pacing: "even"` does not (reveal-timing plan, Review Focus 5) —
+   * so "default" must leave no key behind in overrides.json, and a patch value
+   * of `undefined` reads as a write to anyone skimming the call site. */
+  | { type: "clearProp"; sceneId: string; key: string }
   | {
       type: "patchElement";
       sceneId: string;
@@ -439,6 +446,17 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         },
         action.coalesce,
       );
+    }
+    case "clearProp": {
+      // No-op guard BEFORE commit (the restoreScene shape): re-picking "default"
+      // on a prop that is already unset must not push an empty undo step.
+      const scene = state.doc.scenes[action.sceneId];
+      if (!scene || !(action.key in scene.props)) return state;
+      const { [action.key]: _dropped, ...props } = scene.props;
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, props } },
+      });
     }
     case "patchElement":
       return commit(
@@ -1407,6 +1425,7 @@ export function useEdits() {
     },
     patchProps: (sceneId: string, patch: Record<string, unknown>, coalesce?: string) =>
       dispatch({ type: "patchProps", sceneId, patch, coalesce }),
+    clearProp: (sceneId: string, key: string) => dispatch({ type: "clearProp", sceneId, key }),
     patchElement: (sceneId: string, elementId: string, patch: ElementTransform, coalesce?: string) =>
       dispatch({ type: "patchElement", sceneId, elementId, patch, coalesce }),
     clearElement: (sceneId: string, elementId: string) =>

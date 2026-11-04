@@ -60,6 +60,23 @@ export const MomentSchema = z.object({
     "stage layout for this scene; omit for the component default. NEVER a layout the framing brief marks UNAVAILABLE for these words",
   ),
   rationale: cappedText(120).optional(),
+  /**
+   * Where the graphic enters, when its own text is never said (reveal-timing
+   * spec §2): the matcher locates a graphic's props in the speech first, and
+   * only a scene whose copy is a paraphrase ("SKILLS THAT STILL MATTER" over
+   * speech that never says "matter") rides this. The fallback exists so the
+   * matcher never has to be loosened for such a scene. Optional so a cached
+   * pre-v3 sheet still parses; `normalizeBeatSheet` drops one outside the
+   * moment rather than failing the sheet.
+   */
+  cueWord: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      "word index where the graphic should appear — where its content is first said; omit if it is the moment's first word",
+    ),
 });
 export type Moment = z.infer<typeof MomentSchema>;
 
@@ -120,8 +137,14 @@ export const ClipBeatSheetSchema = BeatSheetSchema.extend({
  *
  * v2: the system prompt stopped calling every output "vertical" (see
  * `producerSystem`).
+ *
+ * v3 (2026-11-04): the sheet asks for an optional per-moment `cueWord` and
+ * the rules gained the CUE line (reveal-timing spec §6). Decision 2 of
+ * docs/superpowers/specs/2026-11-04-reveal-timing-design.md accepts the cost:
+ * the next terminal `produce` on an existing take re-plans it. Editor Render
+ * is unaffected — it replays `scenes-reviewed.json`.
  */
-export const PRODUCER_PROMPT_VERSION = "v2";
+export const PRODUCER_PROMPT_VERSION = "v3";
 
 /**
  * The editorial system prompt, in the shape the output actually has.
@@ -151,6 +174,7 @@ Virality grammar — follow these as hard policies:
 - Use contrast/negation beats (StrikethroughReveal, RuleCard with struck alternatives) when the speaker rejects an idea.
 - End with a payoff or takeaway moment.
 - A moment spans the FULL stretch of speech about its beat — typically 5-15 seconds — in transcript order, non-overlapping. The graphic stays on screen for the ENTIRE moment, so the word range must cover everything the graphic refers to: a stat card leaves when the speaker moves on, not before.
+- CUE: set \`cueWord\` to the word where the graphic's content is first said — the payoff phrase, not the start of the topic. The moment still spans the whole beat; only the graphic's entrance moves.
 - COUNT: the user prompt states how many graphic moments this take should get. That number is a TARGET, not a maximum — hit it. Planning under it is the most common failure: a take that makes five distinct points and gets two graphics has been under-produced, whatever the coverage percentage says.
 - COVERAGE: graphics should be on screen for roughly 40-50% of the runtime. A graphic spends its whole moment against that budget, so when the target implies many graphics, make each moment SHORTER rather than dropping moments — more, tighter graphics beats fewer, longer ones. Spread them evenly: never leave a stretch longer than ~10 seconds with no graphic.
 - VARIETY: never the same component twice in a row, and prefer a component you have NOT used yet in this video — reuse a treatment only when the beat genuinely calls for it. A repeat reads as a template.
@@ -409,6 +433,18 @@ export function normalizeBeatSheet(
       }
       issues.push({ moment: i, issue: `overlapped previous; startWord ${m.startWord} → ${shifted}` });
       m.startWord = shifted;
+    }
+    // After the clamp and the overlap shift, so the check runs against the
+    // window the moment actually ends up with. Dropped, not fatal: a stray
+    // cueWord only loses the entrance hint (spec §2 — "validated to lie
+    // inside the moment; failing that, the moment's start"), and an entrance
+    // outside the moment is the confident-wrong cue the spec forbids.
+    if (m.cueWord !== undefined && (m.cueWord < m.startWord || m.cueWord > m.endWord)) {
+      issues.push({
+        moment: i,
+        issue: `cueWord ${m.cueWord} outside [${m.startWord}, ${m.endWord}]; dropped`,
+      });
+      delete m.cueWord;
     }
     moments.push(m);
   }

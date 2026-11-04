@@ -7,7 +7,9 @@ import {
   retimeForPreview,
   type RetimeablePreviewProps,
 } from "../src/retime-preview";
-import type { SceneCue } from "../src/scene-schema";
+import { assembleScenes, ENTRY_LEAD_SEC, ITEM_LEAD_SEC } from "../src/assemble";
+import type { Scene, SceneCue } from "../src/scene-schema";
+import type { Transcript } from "../src/schema";
 import type { Segment } from "../src/schema";
 import { mapFromKeptSpans, TimeMap } from "../src/timemap";
 
@@ -487,5 +489,181 @@ describe("the whole preview pipeline yields only playable spans (§ADK crash, 20
         expect(Math.round(sp.srcOut * fps)).toBeGreaterThan(Math.round(sp.srcIn * fps));
       }
     }
+  });
+});
+
+describe("retimeForPreview carries spoken item times (reveal-timing, Builder-check answers)", () => {
+  it("every non-null itemAtSec rides the same old → new mapping as the cue's start; nulls stay null", () => {
+    // The live cut removes source 1–2: everything after it is 1s earlier.
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = new TimeMap([
+      { srcIn: 0, srcOut: 1, kind: "keep" },
+      { srcIn: 1, srcOut: 2, kind: "remove", reason: "user" },
+      { srcIn: 2, srcOut: 10, kind: "keep" },
+    ]);
+    const cue: SceneCue = {
+      id: "flow",
+      layout: "graphic-only",
+      component: "FlowDiagram",
+      props: { nodes: ["A", "B", "C"] },
+      startSec: 2.5,
+      endSec: 8,
+      reveal: { itemAtSec: [3, null, 5.5] },
+    };
+    const { fields } = retimeForPreview(
+      { outputDurationSec: 10, captionLines: [], sceneCues: [cue] },
+      oldMap,
+      newMap,
+    );
+    const out = fields.sceneCues[0]!;
+    expect(out.startSec).toBeCloseTo(1.5, 9);
+    expect(out.reveal!.itemAtSec[0]).toBeCloseTo(2, 9);
+    expect(out.reveal!.itemAtSec[1]).toBeNull();
+    expect(out.reveal!.itemAtSec[2]).toBeCloseTo(4.5, 9);
+  });
+
+  it("an item time the cut removed clamps to the seam the way a start does, and is reported", () => {
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = new TimeMap([
+      { srcIn: 0, srcOut: 1, kind: "keep" },
+      { srcIn: 1, srcOut: 2, kind: "remove", reason: "user" },
+      { srcIn: 2, srcOut: 10, kind: "keep" },
+    ]);
+    const cue: SceneCue = {
+      id: "flow",
+      layout: "graphic-only",
+      component: "FlowDiagram",
+      props: { nodes: ["A", "B"] },
+      startSec: 0.5,
+      endSec: 8,
+      reveal: { itemAtSec: [1.5, 3] },
+    };
+    const { fields, reports } = retimeForPreview(
+      { outputDurationSec: 10, captionLines: [], sceneCues: [cue] },
+      oldMap,
+      newMap,
+    );
+    // The item's WORD (1.65s, its time plus the lead) is what the cut
+    // removed: it snaps to the seam, and the item keeps its lead ahead of it.
+    expect(fields.sceneCues[0]!.reveal!.itemAtSec[0]).toBeCloseTo(1 - ITEM_LEAD_SEC, 9);
+    expect(reports.some((r) => r.includes('scene "flow" item 1'))).toBe(true);
+  });
+
+  it("a cue without reveal stays without one", () => {
+    const map = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const { fields } = retimeForPreview(
+      {
+        outputDurationSec: 10,
+        captionLines: [],
+        sceneCues: [{ id: "p", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 5 }],
+      },
+      map,
+      map,
+    );
+    expect("reveal" in fields.sceneCues[0]!).toBe(false);
+  });
+});
+
+describe("retimeForPreview re-times cued scenes from their WORDS, not their leads (final review I-3)", () => {
+  /**
+   * The probe: "framework" (word 10) is spoken at 7.0s right after a 2s
+   * silence (5–7s). The start's 0.3s lead and the item's 0.15s lead fall
+   * INSIDE that silence — so when the silence is cut they sit in the kept
+   * span BEFORE the seam, and remapping the lead-carrying instants across a
+   * veto/cut moves the graphic by the whole gap. A fresh assemble on the
+   * new clock is the truth the preview must match.
+   */
+  const transcript: Transcript = {
+    language: "en",
+    words: Array.from({ length: 20 }, (_, i) => {
+      const start = i < 10 ? i * 0.5 : 7 + (i - 10) * 0.5;
+      return { text: i === 10 ? "framework" : `w${i}`, start, end: start + 0.4 };
+    }),
+  };
+  const scene: Scene = {
+    id: "flow",
+    anchor: { startWord: 0, endWord: 19 },
+    layout: "graphic-only",
+    component: "FlowDiagram",
+    props: { nodes: ["FRAMEWORK", "W14"] },
+    overrides: {},
+    cue: { entryWord: 10, itemWords: [10, 14] },
+  };
+  // 60s of source so the floor is the plain 1.2s on both clocks. The pause
+  // removal stops 0.1s short of the word, as cleanup's SILENCE_PAD_OUT does
+  // (cutlist.ts) — a word start never sits exactly on a produced seam, where
+  // `toSource` would have to pick between the seam's two preimages.
+  const kept = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+  const silenceCut = new TimeMap([
+    { srcIn: 0, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 6.9, kind: "remove", reason: "pause" },
+    { srcIn: 6.9, srcOut: 60, kind: "keep" },
+  ]);
+  const assembled = (map: TimeMap): SceneCue => {
+    const { cues } = assembleScenes([scene], transcript, map);
+    expect(cues).toHaveLength(1);
+    return cues[0]!;
+  };
+  const retime = (cue: SceneCue, oldMap: TimeMap, newMap: TimeMap) =>
+    retimeForPreview(
+      { outputDurationSec: oldMap.outputDuration, captionLines: [], sceneCues: [cue] },
+      oldMap,
+      newMap,
+    );
+
+  it("cut, then veto: start and items land where a fresh assemble on the vetoed clock puts them", () => {
+    const rendered = assembled(silenceCut);
+    // Sanity: the render had "framework" at 5.1s, start 4.8s — the lead in
+    // the span BEFORE the seam.
+    expect(rendered.startSec).toBeCloseTo(5.1 - ENTRY_LEAD_SEC, 9);
+    const { fields } = retime(rendered, silenceCut, kept);
+    const fresh = assembled(kept);
+    const out = fields.sceneCues[0]!;
+    expect(Math.abs(out.startSec - fresh.startSec)).toBeLessThan(1e-6);
+    expect(Math.abs(out.reveal!.itemAtSec[0]! - fresh.reveal!.itemAtSec[0]!)).toBeLessThan(1e-6);
+    expect(Math.abs(out.reveal!.itemAtSec[1]! - fresh.reveal!.itemAtSec[1]!)).toBeLessThan(1e-6);
+    expect(out.endSec).toBeCloseTo(fresh.endSec, 9);
+    // Carried forward on the new clock, so a SECOND live edit re-times from it.
+    expect(Math.abs(out.entryAtSec! - fresh.entryAtSec!)).toBeLessThan(1e-6);
+  });
+
+  it("a live cut of the silence before the word reports nothing; items match a fresh assemble", () => {
+    // The leads (6.7s, 6.85s) are inside the new cut; the words are not. A
+    // report here would tell the user their graphic was cut when it was not.
+    const rendered = assembled(kept);
+    const { fields, reports } = retime(rendered, kept, silenceCut);
+    const fresh = assembled(silenceCut);
+    const out = fields.sceneCues[0]!;
+    expect(reports).toEqual([]);
+    expect(Math.abs(out.reveal!.itemAtSec[0]! - fresh.reveal!.itemAtSec[0]!)).toBeLessThan(1e-6);
+    // The start is held to the legacy remap of `startSec` — the lower bound —
+    // which the cut clamped forward to the seam (5.0s): the graphic enters
+    // 0.1s before the word rather than the fresh assemble's 0.3s, never late.
+    expect(out.startSec).toBeCloseTo(5, 9);
+    expect(fresh.startSec).toBeCloseTo(5.1 - ENTRY_LEAD_SEC, 9);
+  });
+
+  it("the start never lands before where the legacy remap puts it, nor past the floor", () => {
+    // Entry word near the end: assemble pulled the start back to end − 1.2.
+    const late: Scene = { ...scene, cue: { entryWord: 19 } };
+    const rendered = assembleScenes([late], transcript, silenceCut).cues[0]!;
+    const { fields } = retime(rendered, silenceCut, kept);
+    const fresh = assembleScenes([late], transcript, kept).cues[0]!;
+    expect(Math.abs(fields.sceneCues[0]!.startSec - fresh.startSec)).toBeLessThan(1e-6);
+    expect(fields.sceneCues[0]!.startSec).toBeCloseTo(fresh.endSec - 1.2, 9);
+  });
+
+  it("a pinned cue ignores entryAtSec: the pin's own instant is what moves", () => {
+    const rendered = { ...assembled(silenceCut), startSec: 1, pinned: true };
+    const { fields } = retime(rendered, silenceCut, kept);
+    expect(fields.sceneCues[0]!.startSec).toBeCloseTo(1, 9);
+  });
+
+  it("a legacy cue (no entryAtSec) remaps its start exactly as before", () => {
+    const { cue: _cue, ...legacyScene } = scene;
+    const rendered = assembleScenes([legacyScene], transcript, silenceCut).cues[0]!;
+    const { fields } = retime(rendered, silenceCut, kept);
+    expect(fields.sceneCues[0]).toEqual({ ...rendered, startSec: 0, endSec: 11.9 });
+    expect("entryAtSec" in fields.sceneCues[0]!).toBe(false);
   });
 });

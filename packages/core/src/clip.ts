@@ -216,11 +216,21 @@ export function sliceTranscript(transcript: Transcript, window: ClipWindow): Tra
 export function sliceMoments(moments: readonly Moment[], window: ClipWindow): Moment[] {
   return moments.flatMap((m) => {
     if (m.endWord < window.startWord || m.startWord > window.endWord) return [];
+    // `cueWord` is a word index too (reveal-timing spec §2) and must move
+    // with the anchors: spread through unshifted it would point `startWord`
+    // words late in the slice and could still land inside the moment —
+    // a wrong entrance nothing downstream can detect. One the clamp cut off
+    // is dropped, the same verdict `normalizeBeatSheet` gives any cueWord
+    // outside its moment.
+    const { cueWord, ...rest } = m;
+    const inSlice =
+      cueWord !== undefined && cueWord >= window.startWord && cueWord <= window.endWord;
     return [
       {
-        ...m,
+        ...rest,
         startWord: Math.max(m.startWord, window.startWord) - window.startWord,
         endWord: Math.min(m.endWord, window.endWord) - window.startWord,
+        ...(inSlice ? { cueWord: cueWord - window.startWord } : {}),
       },
     ];
   });

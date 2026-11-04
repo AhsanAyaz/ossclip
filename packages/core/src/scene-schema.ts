@@ -54,6 +54,24 @@ export const SceneSchema = z.object({
   overrides: z.record(z.string(), z.unknown()).default({}),
   /** Why the producer chose this — surfaced in the report for taste-debugging. */
   rationale: z.string().optional(),
+  /**
+   * Where the graphic enters and where each item is spoken, in the same
+   * word-index space as `anchor` (the clip slice on clip runs) — the matcher's answer, computed ONCE at plan time
+   * (`planCue`, reveal-timing spec §7). Its presence is the gate: assembly
+   * applies on-cue starts and synced items only to a scene that carries it,
+   * so an old plan / production.json / scenes-reviewed.json (no `cue`)
+   * renders with today's timing exactly — "new plans only" (decision 1) is
+   * structural rather than a version check, and the editor's Render replays
+   * the cue that was reviewed instead of re-matching edited props.
+   */
+  cue: z
+    .object({
+      /** Word index (`anchor`'s space) the graphic enters on, before the lead-in. */
+      entryWord: z.number().int().nonnegative(),
+      /** Per staggered item, the word index (`anchor`'s space) it is spoken on, or null. */
+      itemWords: z.array(z.number().int().nonnegative().nullable()).optional(),
+    })
+    .optional(),
 });
 export type Scene = z.infer<typeof SceneSchema>;
 
@@ -176,6 +194,34 @@ export const SceneCueSchema = z
   captionScale: z.number().min(0.2).max(3).optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
+  /**
+   * Per staggered item, the ABSOLUTE output second it enters on (its spoken
+   * word's start minus `ITEM_LEAD_SEC`), or null for an item to be paced —
+   * set by `assembleScenes` only from a planned `scene.cue` whose item list
+   * still matches the rendered items. Absolute rather than relative to the
+   * cue start (reveal-timing spec, "Builder-check answers", superseding §3's
+   * `itemSec`): items stay on their words wherever the final start lands —
+   * floor, de-overlap, editor drag, `timing` pin — and a split's second half
+   * inherits them through `...cue` with no re-basing. Optional so every
+   * render-props.json / production.json written before it parses unchanged;
+   * absence means "pace the items", today's stagger.
+   */
+  reveal: z
+    .object({ itemAtSec: z.array(z.number().nonnegative().nullable()) })
+    .optional(),
+  /**
+   * The OUTPUT second the entry word is spoken on — lead-free, the word
+   * itself — set by `assembleScenes` only when the on-cue post-pass actually
+   * moved `startSec` (reveal-timing spec §2). The editor's live preview
+   * re-times the start from THIS, not from `startSec`: the start's lead can
+   * fall in the kept span before a seam the word sits after, so a veto
+   * restoring that seam's gap would otherwise move the graphic early by the
+   * whole restored gap (final review I-3). Dropped on a pinned cue (the pin
+   * wins) and on a split's second half (it starts at the split, not on the
+   * word). Optional and absent on every legacy / unmoved cue, which
+   * therefore stays byte-identical.
+   */
+  entryAtSec: z.number().nonnegative().optional(),
   })
   .superRefine((cue, ctx) => {
     if (cue.kind !== "plain" && (cue.component === undefined || cue.props === undefined)) {

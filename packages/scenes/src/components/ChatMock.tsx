@@ -1,26 +1,30 @@
 import React from "react";
+import { useVideoConfig } from "remotion";
 import { z } from "zod/v4";
 import { ChatMockProps, type Theme } from "@ossclip/core/browser";
-import { pop, useEnter } from "../anim";
+import { entranceStyle, useEnter } from "../anim";
+import { componentRevealFrames, type RevealTiming } from "../reveal";
 import { chatBubbles, chatMetrics } from "../fit";
 import { editStyle, type ElementEdits } from "../editable";
 
 const Bubble: React.FC<{
   from: "user" | "agent";
   text: string;
+  entrance: z.infer<typeof ChatMockProps>["entrance"];
   delay: number;
   fontSize: number;
   theme: Theme;
   editId: string;
   edits?: ElementEdits;
-}> = ({ from, text, delay, fontSize, theme, editId, edits }) => {
+}> = ({ from, text, entrance, delay, fontSize, theme, editId, edits }) => {
   const p = useEnter(delay);
   const mine = from === "user";
   return (
     <div
       data-edit-id={editId}
       style={{
-        ...pop(p),
+        // Unset is `pop`, the bubble's style since day one (spec §4).
+        ...entranceStyle(entrance, p),
         alignSelf: mine ? "flex-end" : "flex-start",
         background: mine ? theme.fg : theme.cardBg,
         color: mine ? theme.bg : theme.fg,
@@ -58,14 +62,32 @@ export function applyCtaKeyword(text: string, keyword: string | undefined): stri
 
 export { chatBubbles } from "../fit";
 
+/**
+ * When each RENDERED bubble enters: one per `chatBubbles` entry — a set
+ * `keyword` collapses the scene to one bubble, and the plan's item list
+ * (`revealItemTexts`) collapses the same way, so index i is bubble i. The
+ * historical step is 8 frames, not the others' 6.
+ */
+export function chatDelays(
+  props: z.infer<typeof ChatMockProps>,
+  fps: number,
+  timing?: RevealTiming,
+): number[] {
+  return componentRevealFrames(chatBubbles(props).length, 8, fps, props, timing);
+}
+
 export const ChatMock: React.FC<{
   props: z.infer<typeof ChatMockProps>;
   theme: Theme;
   widthPx?: number;
   heightPx?: number;
   edits?: ElementEdits;
-}> = ({ props, theme, widthPx, heightPx, edits }) => {
+  /** The cue's timing, from SceneLayer; absent → today's stagger. */
+  timing?: RevealTiming;
+}> = ({ props, theme, widthPx, heightPx, edits, timing }) => {
   const bubbles = chatBubbles(props);
+  const { fps } = useVideoConfig();
+  const delays = chatDelays(props, fps, timing);
   // Self-fitting (R11 Task 3): the type solves against the REAL slot, both
   // axes — the stage no longer magnifies this component.
   const fontSize = chatMetrics(bubbles.map((b) => b.text), { widthPx, heightPx });
@@ -84,7 +106,8 @@ export const ChatMock: React.FC<{
           key={i}
           from={b.from}
           text={b.text}
-          delay={i * 8}
+          entrance={props.entrance}
+          delay={delays[i]!}
           fontSize={fontSize}
           theme={theme}
           editId={`message-${i}`}
