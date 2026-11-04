@@ -57,6 +57,65 @@ function pacedFrames(count: number, windowFrames: number, pacing: string | undef
 }
 
 /**
+ * The legacy path's test, exported so a component whose rendered elements
+ * are NOT one-per-item (StrikethroughReveal's wrapped rows, TerminalMock's
+ * fan-out tail) can keep today's per-element stagger exactly on that path
+ * without restating the rule.
+ */
+export function isLegacyReveal(
+  itemAtSec: RevealInput["itemAtSec"],
+  props: RevealInput["props"],
+): boolean {
+  const timingTouched =
+    props.reveal !== undefined || props.pacing !== undefined || props.revealSpeed !== undefined;
+  return itemAtSec === undefined && !timingTouched;
+}
+
+/**
+ * The latest frame an entrance may start and still finish before the cut
+ * (spec §4); a scene shorter than one entrance starts everything at 0.
+ * Exported so a component's follow-on element (a wrapped row, the fan-out
+ * tail) is held to the same limit as the items themselves.
+ */
+export function latestEntryFrame(fps: number, durationInFrames: number): number {
+  return Math.max(0, durationInFrames - enterFrames(fps));
+}
+
+/**
+ * The cue's timing as SceneLayer knows it — the component does not: inside
+ * its <Sequence> it sees only local frames. Absent (tests, direct use)
+ * means legacy, whatever the props say, because there is no cue to time to.
+ */
+export interface RevealTiming {
+  cueStartSec: number;
+  durationInFrames: number;
+  itemAtSec?: readonly (number | null)[];
+}
+
+/**
+ * `revealFrames` for a component: the shape each of the four calls, so none
+ * of them re-derives the "no timing → legacy" rule.
+ */
+export function componentRevealFrames(
+  count: number,
+  legacyStepFrames: number,
+  fps: number,
+  props: RevealInput["props"],
+  timing: RevealTiming | undefined,
+): number[] {
+  if (timing === undefined) return Array.from({ length: count }, (_, i) => i * legacyStepFrames);
+  return revealFrames({
+    count,
+    legacyStepFrames,
+    fps,
+    durationInFrames: timing.durationInFrames,
+    cueStartSec: timing.cueStartSec,
+    itemAtSec: timing.itemAtSec,
+    props,
+  });
+}
+
+/**
  * Per-item entrance delay in frames from the cue's first frame, each ≥ 0.
  * Three paths, in order:
  *  - legacy: no item times and no timing prop → `i * legacyStepFrames`
@@ -70,11 +129,7 @@ function pacedFrames(count: number, windowFrames: number, pacing: string | undef
  */
 export function revealFrames(input: RevealInput): number[] {
   const { count, legacyStepFrames, fps, durationInFrames, cueStartSec, props } = input;
-  // A length mismatch means the items were edited after matching; applying
-  // the times anyway would put item i on item j's word. Absent is safer.
-  const timingTouched =
-    props.reveal !== undefined || props.pacing !== undefined || props.revealSpeed !== undefined;
-  if (input.itemAtSec === undefined && !timingTouched) {
+  if (isLegacyReveal(input.itemAtSec, props)) {
     return Array.from({ length: count }, (_, i) => i * legacyStepFrames);
   }
   // Present-but-wrong-length still marks a NEW plan: the items were edited
@@ -89,7 +144,7 @@ export function revealFrames(input: RevealInput): number[] {
   // Every item must FINISH entering before the cut, so the latest a delay
   // may be is one entrance short of the end; a scene shorter than one
   // entrance starts everything at 0.
-  const latest = Math.max(0, durationInFrames - enterFrames(fps));
+  const latest = latestEntryFrame(fps, durationInFrames);
   const clamp = (f: number): number => Math.min(latest, Math.max(0, Math.round(f)));
 
   const windowFrames = (props.revealSpeed ?? REVEAL_SPEED_DEFAULT) * latest;
