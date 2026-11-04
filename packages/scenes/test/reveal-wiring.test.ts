@@ -54,6 +54,16 @@ describe("FlowDiagram", () => {
     const paced = FlowDiagramProps.parse({ nodes: ["A", "B", "C"], reveal: "paced" });
     expect(flowDelays(paced, FPS).map((d) => d.chip)).toEqual([0, 6, 12]);
   });
+
+  it("timed: an arrow into a chip at the entry limit is held to it, not drawn past the cut", () => {
+    // Last chip on a word near the cut → clamped to LATEST; chip+3 would
+    // still be fading in at the last frame.
+    expect(flowDelays(props, FPS, timed([10, 11, 19.9]))).toEqual([
+      { chip: 0, arrow: 3 },
+      { chip: 30, arrow: 33 },
+      { chip: LATEST, arrow: LATEST },
+    ]);
+  });
 });
 
 describe("ChatMock", () => {
@@ -121,12 +131,19 @@ describe("StrikethroughReveal", () => {
   ];
 
   it("legacy: row i*6 by RENDERED row, so a wrap still pushes later lines back", () => {
-    expect(strikeRowDelays(rows, props, FPS)).toEqual([0, 6, 12, 18]);
-    expect(strikeRowDelays(rows, props, FPS, timed(undefined))).toEqual([0, 6, 12, 18]);
+    // The strike is exactly 8 frames after its row on this path, unclamped.
+    const legacy = [0, 6, 12, 18].map((row) => ({ row, strike: row + 8 }));
+    expect(strikeRowDelays(rows, props, FPS)).toEqual(legacy);
+    expect(strikeRowDelays(rows, props, FPS, timed(undefined))).toEqual(legacy);
   });
 
   it("synced: each line on its word, a wrapped row 6 frames after its line's first", () => {
-    expect(strikeRowDelays(rows, props, FPS, timed([10, 11, 12]))).toEqual([0, 6, 30, 60]);
+    expect(strikeRowDelays(rows, props, FPS, timed([10, 11, 12])).map((d) => d.row)).toEqual([
+      0, 6, 30, 60,
+    ]);
+    expect(strikeRowDelays(rows, props, FPS, timed([10, 11, 12])).map((d) => d.strike)).toEqual([
+      8, 14, 38, 68,
+    ]);
   });
 
   it("a wrapped row of a line at the entry limit is held to it", () => {
@@ -136,6 +153,12 @@ describe("StrikethroughReveal", () => {
       { lineIndex: 1, rowInLine: 1 },
     ];
     const two = StrikethroughRevealProps.parse({ lines: [{ text: "a" }, { text: "b" }] });
-    expect(strikeRowDelays(late, two, FPS, timed([10, 19.9]))).toEqual([0, LATEST, LATEST]);
+    // The strike too: row + 8 on a row already at the limit would still be
+    // drawing at the cut.
+    expect(strikeRowDelays(late, two, FPS, timed([10, 19.9]))).toEqual([
+      { row: 0, strike: 8 },
+      { row: LATEST, strike: LATEST },
+      { row: LATEST, strike: LATEST },
+    ]);
   });
 });

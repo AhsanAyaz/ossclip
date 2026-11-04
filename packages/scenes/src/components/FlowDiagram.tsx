@@ -3,7 +3,12 @@ import { useVideoConfig } from "remotion";
 import { z } from "zod/v4";
 import { FlowDiagramProps, type Theme } from "@ossclip/core/browser";
 import { entranceStyle, useEnter } from "../anim";
-import { componentRevealFrames, type RevealTiming } from "../reveal";
+import {
+  componentRevealFrames,
+  isLegacyReveal,
+  latestEntryFrame,
+  type RevealTiming,
+} from "../reveal";
 import { flowMetrics } from "../fit";
 import { editStyle, type ElementEdits } from "../editable";
 
@@ -93,17 +98,22 @@ const DEFAULT_FLOW_WIDTH_PX = 864;
  * When each chip and the arrow into it enter. Chips take the shared reveal
  * schedule (spec §4) at the historical 6-frame step; the arrow stays a
  * component-local 3 frames after ITS chip on every path, so it still
- * follows the chip it points into once the chips are spoken-timed.
+ * follows the chip it points into once the chips are spoken-timed. On the
+ * timed path the arrow is held to the entry limit: a chip synced onto a
+ * word near the cut already sits AT the limit, and chip + 3 would still be
+ * fading in on the last frame. Legacy keeps chip + 3 exactly.
  */
 export function flowDelays(
   props: z.infer<typeof FlowDiagramProps>,
   fps: number,
   timing?: RevealTiming,
 ): Array<{ chip: number; arrow: number }> {
-  return componentRevealFrames(props.nodes.length, 6, fps, props, timing).map((chip) => ({
-    chip,
-    arrow: chip + 3,
-  }));
+  const chips = componentRevealFrames(props.nodes.length, 6, fps, props, timing);
+  if (timing === undefined || isLegacyReveal(timing.itemAtSec, props)) {
+    return chips.map((chip) => ({ chip, arrow: chip + 3 }));
+  }
+  const latest = latestEntryFrame(fps, timing.durationInFrames);
+  return chips.map((chip) => ({ chip, arrow: Math.min(chip + 3, Math.max(chip, latest)) }));
 }
 
 export const FlowDiagram: React.FC<{

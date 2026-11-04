@@ -31,14 +31,15 @@ const Row: React.FC<{
   mark: "none" | "cross" | "check";
   entrance: z.infer<typeof StrikethroughRevealProps>["entrance"];
   delay: number;
+  /** From `strikeRowDelays` — held to the entry limit on the timed path. */
+  strikeDelay: number;
   fontSize: number;
   theme: Theme;
   editId: string;
   edits?: ElementEdits;
-}> = ({ text, struck, mark, entrance, delay, fontSize, theme, editId, edits }) => {
+}> = ({ text, struck, mark, entrance, delay, strikeDelay, fontSize, theme, editId, edits }) => {
   const p = useEnter(delay);
-  // The strike draws 8 frames after ITS row lands, on every path.
-  const strike = useEnter(delay + 8);
+  const strike = useEnter(strikeDelay);
   // Unset — and an explicit `rise` — is this row's own 30px rise, not the
   // shared helper's 26px: picking the style it already has must not move it.
   const enter = entrance === undefined || entrance === "rise" ? rise(p, 30) : entranceStyle(entrance, p);
@@ -88,28 +89,35 @@ const Row: React.FC<{
 };
 
 /**
- * When each RENDERED row enters. The reveal item is the logical line (the
- * plan matched `props.lines`), but a wrapped line renders several rows:
+ * When each RENDERED row enters, and when its strike starts drawing. The
+ * reveal item is the logical line (the plan matched `props.lines`), but a
+ * wrapped line renders several rows:
  *  - legacy: row i at `i * 6` by ROW index, exactly as today — a wrapped
  *    line pushes every later line 6 frames back, and that must not change;
+ *    the strike exactly 8 frames after its row, unclamped, as today;
  *  - timed: a line's first row on the line's scheduled frame, each further
  *    row of it the same 6 frames later as today, held to the entry limit so
- *    the tail of a late line still lands before the cut.
+ *    the tail of a late line still lands before the cut. The strike is held
+ *    to the same limit: a row synced onto a word near the cut already sits
+ *    AT the limit, and row + 8 would still be drawing on the last frame
+ *    (spec §4 — every entrance finishes before the cut).
  */
 export function strikeRowDelays(
   rows: ReadonlyArray<{ lineIndex: number; rowInLine: number }>,
   props: z.infer<typeof StrikethroughRevealProps>,
   fps: number,
   timing?: RevealTiming,
-): number[] {
+): Array<{ row: number; strike: number }> {
   if (timing === undefined || isLegacyReveal(timing.itemAtSec, props)) {
-    return rows.map((_, i) => i * 6);
+    return rows.map((_, i) => ({ row: i * 6, strike: i * 6 + 8 }));
   }
   const lines = componentRevealFrames(props.lines.length, 6, fps, props, timing);
   const latest = latestEntryFrame(fps, timing.durationInFrames);
   return rows.map(({ lineIndex, rowInLine }) => {
     const first = lines[lineIndex]!;
-    return rowInLine === 0 ? first : Math.min(first + rowInLine * 6, Math.max(first, latest));
+    const row =
+      rowInLine === 0 ? first : Math.min(first + rowInLine * 6, Math.max(first, latest));
+    return { row, strike: Math.min(row + 8, Math.max(row, latest)) };
   });
 }
 
@@ -162,7 +170,8 @@ export const StrikethroughReveal: React.FC<{
           struck={row.struck}
           mark={row.mark}
           entrance={props.entrance}
-          delay={delays[i]!}
+          delay={delays[i]!.row}
+          strikeDelay={delays[i]!.strike}
           fontSize={fontSize}
           theme={theme}
           editId={`line-${row.lineIndex}`}
