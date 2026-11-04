@@ -65,15 +65,9 @@ export function assembleScenes(
 ): AssembleResult {
   const dropped: AssembleResult["dropped"] = [];
   const resolved: SceneCue[] = [];
-
-  // Never let the floor eat the video: a 3s minimum is right on a 30s take and
-  // absurd on a 6s one, so it is also capped at a share of the runtime.
-  // Computed up front (it depends on the map alone) because an on-cue start
-  // has to honour the same floor before the de-overlap loop runs.
-  const minScene =
-    map.outputDuration < SHORT_TAKE_SEC
-      ? Math.max(MIN_SCENE_SEC, Math.min(SHORT_TAKE_MIN_SCENE_SEC, map.outputDuration * 0.15))
-      : MIN_SCENE_SEC;
+  // The plan-time cue answers for each cued scene, applied AFTER the legacy
+  // pipeline below (keyed by cue object — the loops mutate cues in place).
+  const planned = new Map<SceneCue, PlannedCue>();
 
   for (const scene of scenes) {
     const words = transcript.words.slice(scene.anchor.startWord, scene.anchor.endWord + 1);
@@ -93,11 +87,7 @@ export function assembleScenes(
       dropped.push({ id: scene.id, reason: `invalid props for ${scene.component}` });
       continue;
     }
-    const moment = {
-      startSec: Math.min(...mapped.map((m) => m.start)),
-      endSec: Math.max(...mapped.map((m) => m.end)),
-    };
-    resolved.push({
+    const cue: SceneCue = {
       id: scene.id,
       // The cue remembers which words it was planned against, so edits keyed
       // to it can survive a re-plan's id renumbering (handoff-edit-anchoring).
@@ -105,14 +95,24 @@ export function assembleScenes(
       layout: scene.layout,
       component: scene.component,
       props,
-      // `scene.cue` is the gate (spec decision 1, "new plans only"): a scene
-      // planned before reveal timing takes the moment's span exactly as it
-      // always did, so its cue is byte-identical to the pre-cue assembler's.
-      ...(scene.cue ? onCueTiming(scene, scene.cue, props, transcript, map, moment, minScene) : moment),
-    });
+      startSec: Math.min(...mapped.map((m) => m.start)),
+      endSec: Math.max(...mapped.map((m) => m.end)),
+    };
+    resolved.push(cue);
+    // `scene.cue` is the gate (spec decision 1, "new plans only"): a scene
+    // planned before reveal timing never enters the post-pass, so its cue is
+    // byte-identical to the pre-cue assembler's.
+    if (scene.cue) planned.set(cue, plannedCue(scene, scene.cue, props, transcript, map));
   }
 
   resolved.sort((a, b) => a.startSec - b.startSec);
+
+  // Never let the floor eat the video: a 3s minimum is right on a 30s take and
+  // absurd on a 6s one, so it is also capped at a share of the runtime.
+  const minScene =
+    map.outputDuration < SHORT_TAKE_SEC
+      ? Math.max(MIN_SCENE_SEC, Math.min(SHORT_TAKE_MIN_SCENE_SEC, map.outputDuration * 0.15))
+      : MIN_SCENE_SEC;
 
   // Scenes are exclusive — one stage state at a time.
   const cues: SceneCue[] = [];
@@ -142,26 +142,50 @@ export function assembleScenes(
     }
   }
 
+  // On-cue starts, as a post-pass over the FINISHED legacy cues (reveal-
+  // timing spec §2; anti-goal "changing scene ends, the 15s cap, de-overlap").
+  // Moving starts before the sort/de-overlap re-ordered a cued scene behind
+  // one nested in its moment and re-measured the 15s cap, so scenes ended
+  // earlier than in the legacy plan (Task 4 review). Here only `startSec`
+  // moves, and only LATER, so ends, order and gaps are legacy by
+  // construction. The floor caps how late: an entry near the end pulls back
+  // to `end − minScene` (Review Focus 4), never before the legacy start —
+  // a cue already shorter than the floor keeps its legacy start.
+  for (const cue of cues) {
+    const plan = planned.get(cue);
+    if (!plan) continue;
+    if (plan.entryAtSec !== null) {
+      cue.startSec = Math.max(
+        cue.startSec,
+        Math.min(plan.entryAtSec - ENTRY_LEAD_SEC, cue.endSec - minScene),
+      );
+    }
+    if (plan.reveal) cue.reveal = plan.reveal;
+  }
+
   return { cues, dropped };
 }
 
+/** A cued scene's plan-time answers, resolved into output time. */
+interface PlannedCue {
+  /** Output second of the entry word (or its fallback); null → legacy start. */
+  entryAtSec: number | null;
+  reveal?: NonNullable<SceneCue["reveal"]>;
+}
+
 /**
- * A planned scene's on-cue start and spoken item times (reveal-timing spec
- * §2/§3, applied from the plan-time `scene.cue` — §7). Only `startSec` moves
- * relative to the moment: the end is the moment's, held to the same 15s
- * ceiling the legacy path ends up with, so a later entry never buys a longer
- * hold (spec anti-goal: "changing scene ends, the 15s cap"). The de-overlap
- * and floor loop in `assembleScenes` still runs over the result, unchanged.
+ * A planned scene's entry instant and spoken item times (reveal-timing spec
+ * §2/§3, from the plan-time `scene.cue` — §7). Returns times only; WHERE the
+ * start may land is the post-pass's call in `assembleScenes`, against the
+ * finished legacy cue.
  */
-function onCueTiming(
+function plannedCue(
   scene: Scene,
   cue: NonNullable<Scene["cue"]>,
   props: Record<string, unknown>,
   transcript: Transcript,
   map: TimeMap,
-  moment: { startSec: number; endSec: number },
-  minScene: number,
-): Pick<SceneCue, "startSec" | "endSec" | "reveal"> {
+): PlannedCue {
   const { startWord, endWord } = scene.anchor;
   const { entryWord, itemWords } = cue;
   // Plan-time indices, so a missing word (a stale cue past the transcript)
@@ -180,7 +204,7 @@ function onCueTiming(
     // The entry word was cut (Review Focus 1): enter on the next item that
     // is still spoken — the earliest surviving item word AFTER the entry,
     // within the scene — never on an earlier one the plan did not choose,
-    // and failing that on the moment's start exactly as today.
+    // and failing that on the legacy start exactly as today.
     const later = (itemWords ?? [])
       .filter((w): w is number => w !== null && w > entry && w <= endWord)
       .sort((a, b) => a - b);
@@ -189,28 +213,16 @@ function onCueTiming(
       if (entryAt !== null) break;
     }
   }
-
-  // The legacy loop caps at `startSec + MAX_SCENE_SEC`; measured from a
-  // later start that would extend a long moment's card past where it ends
-  // today. Capping from the moment's start first keeps the end put.
-  const endSec = Math.min(moment.endSec, moment.startSec + MAX_SCENE_SEC);
-  let startSec =
-    entryAt === null ? moment.startSec : Math.max(moment.startSec, entryAt.start - ENTRY_LEAD_SEC);
-  // An entry near the moment's end must not leave a flicker (Review Focus
-  // 4): pull back to the floor, never before the moment itself.
-  if (endSec - startSec < minScene) {
-    startSec = Math.max(moment.startSec, endSec - minScene);
-  }
+  const entryAtSec = entryAt === null ? null : entryAt.start;
 
   // Index i of `itemWords` must BE rendered item i. A prop edit since
   // planning can change the count (ChatMock: a removed keyword turns one
   // bubble into the message list) — then every later item would ride its
   // neighbour's word, so the list is dropped and the renderer paces.
   const rendered = revealItemTexts(scene.component, props)?.length;
-  if (itemWords === undefined || itemWords.length !== rendered) return { startSec, endSec };
+  if (itemWords === undefined || itemWords.length !== rendered) return { entryAtSec };
   return {
-    startSec,
-    endSec,
+    entryAtSec,
     reveal: {
       itemAtSec: itemWords.map((w) => {
         // Outside the scene's words is a stale index (same reasoning as

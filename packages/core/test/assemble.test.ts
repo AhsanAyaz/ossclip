@@ -245,8 +245,8 @@ describe("assembleScenes â€” on-cue start and spoken item times (reveal-timing Â
   });
 
   it("a moment longer than the 15s cap keeps its legacy end when the start moves later", () => {
-    // 25s moment, entry at 10s. Without the pre-clamp the cap would be
-    // measured from the later start and the card would stay until 24.9s.
+    // 25s moment, entry at 10s. Were the start moved before the legacy loop,
+    // the cap would be measured from it and the card would stay until 24.9s.
     const legacy = one(flow("s", 0, 49));
     const cued = one(flow("s", 0, 49, { entryWord: 20 }));
     expect(legacy.endSec).toBeCloseTo(15, 9);
@@ -327,6 +327,51 @@ describe("assembleScenes â€” on-cue start and spoken item times (reveal-timing Â
     // With the keyword still set, the single item lines up and is kept.
     const intact = one({ ...chat, overrides: {} });
     expect(intact.reveal!.itemAtSec).toHaveLength(1);
+  });
+
+  it("cued plans keep every legacy end, the legacy order and no overlap; starts only move later", () => {
+    // The pass bar "no scene ends earlier than in the current plan" (spec,
+    // Builder-check answers), over overlapping and nested moments â€” both
+    // Task 4 review probes included: a scene nested inside a cued moment
+    // (A/B), and a preceding scene pushing a long cued moment (P/Q).
+    const plans: Scene[][] = [
+      [flow("A", 0, 19, { entryWord: 14 }), flow("B", 12, 15)],
+      [flow("P", 0, 9), flow("Q", 8, 57, { entryWord: 20 })],
+      [
+        flow("s0", 0, 9, { entryWord: 6, itemWords: [6, 8] }),
+        flow("s1", 5, 12),
+        flow("s2", 11, 30, { entryWord: 28 }),
+        flow("s3", 20, 24, { entryWord: 22 }),
+        flow("s4", 29, 80, { entryWord: 50, itemWords: [50, 60] }),
+        flow("s5", 79, 81, { entryWord: 81 }),
+      ],
+    ];
+    for (const plan of plans) {
+      const legacyPlan = plan.map(({ cue: _cue, ...rest }) => rest);
+      const legacy = assembleScenes(legacyPlan, long, longMap);
+      const cued = assembleScenes(plan, long, longMap);
+      expect(cued.cues.map((c) => c.id)).toEqual(legacy.cues.map((c) => c.id));
+      expect(cued.dropped).toEqual(legacy.dropped);
+      cued.cues.forEach((c, i) => {
+        const l = legacy.cues[i]!;
+        expect(c.endSec).toBe(l.endSec);
+        expect(c.startSec).toBeGreaterThanOrEqual(l.startSec);
+        expect(c.endSec - c.startSec).toBeGreaterThan(0);
+        const next = cued.cues[i + 1];
+        if (next) expect(c.endSec).toBeLessThanOrEqual(next.startSec);
+      });
+    }
+    // Probe 1 specifically: B stays where legacy put it, after A, and A
+    // keeps its whole moment's end.
+    const [a, b] = assembleScenes(plans[0]!, long, longMap).cues;
+    expect(a!.id).toBe("A");
+    expect(a!.startSec).toBeCloseTo(6.7, 9);
+    expect(a!.endSec).toBeCloseTo(9.9, 9);
+    expect(b!.startSec).toBeCloseTo(9.95, 9);
+    // Probe 2: Q keeps the end it gets from its pushed legacy start.
+    const q = assembleScenes(plans[1]!, long, longMap).cues[1]!;
+    expect(q.endSec).toBeCloseTo(19.95, 9);
+    expect(q.startSec).toBeCloseTo(9.7, 9);
   });
 
   it("a component that does not stagger never carries a reveal", () => {
