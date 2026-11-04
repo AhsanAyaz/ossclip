@@ -1007,3 +1007,96 @@ describe("Inspector — per-scene caption controls under a global hide", () => {
     expect(hint.textContent).not.toContain("Theme panel");
   });
 });
+
+/**
+ * Reveal-timing Task 7: the reveal controls round-trip through the REAL
+ * reducer and a cue re-derived from `edits.doc` (App.tsx's `live` memo), so
+ * "auto" is observed as an absent key, not just as a select's value.
+ */
+function RevealHarness({ onDocChange }: { onDocChange: (doc: OverrideDoc) => void }) {
+  const edits = useEdits();
+  const base: SceneCue = {
+    id: "scene-1",
+    kind: "graphic",
+    layout: "video-top",
+    component: "FlowDiagram",
+    props: { nodes: ["PLAN", "BUILD", "SHIP"] },
+    startSec: 0,
+    endSec: 6,
+  };
+  const cue = React.useMemo(() => applyOverrides([base], edits.doc).cues[0]!, [edits.doc]);
+  React.useEffect(() => {
+    onDocChange(edits.doc);
+  });
+  return React.createElement(Inspector, {
+    selection: { sceneId: "scene-1", elementId: null },
+    cue,
+    frame: { width: 1080, height: 1920 },
+    allSceneIds: ["scene-1"],
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+  });
+}
+
+/** Set a form control's value the way a user gesture does — through the
+ * native setter, so React's tracked value sees a change and fires onChange. */
+const setControl = (el: HTMLSelectElement | HTMLInputElement, value: string) => {
+  const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+  el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+};
+
+describe("Inspector — reveal controls: unset is its own state (reveal-timing Task 7)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let doc: OverrideDoc;
+
+  beforeEach(async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(RevealHarness, { onDocChange: (d) => (doc = d) }));
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`)!;
+  const props = () => doc.scenes["scene-1"]?.props ?? {};
+
+  it("an unset optional enum shows a leading auto entry; picking it deletes the key", async () => {
+    const pacing = q<HTMLSelectElement>("prop-pacing");
+    expect(pacing.options[0]!.value).toBe("");
+    expect(pacing.value).toBe("");
+    // "even" is now a real change — it used to be the displayed unset value.
+    await act(async () => setControl(pacing, "even"));
+    expect(props().pacing).toBe("even");
+    await act(async () => setControl(q<HTMLSelectElement>("prop-pacing"), ""));
+    expect("pacing" in props()).toBe(false);
+    expect(q<HTMLSelectElement>("prop-pacing").value).toBe("");
+  });
+
+  it("the speed slider shows the fallback when unset, writes a number, and auto deletes it", async () => {
+    const speed = q<HTMLInputElement>("prop-revealSpeed");
+    expect(speed.min).toBe("0.1");
+    expect(speed.max).toBe("1");
+    expect(speed.step).toBe("0.05");
+    expect(q<HTMLButtonElement>("prop-revealSpeed-auto").disabled).toBe(true);
+    // Displayed, never written: nothing in the doc until the author moves it.
+    expect("revealSpeed" in props()).toBe(false);
+    await act(async () => setControl(speed, "0.4"));
+    expect(props().revealSpeed).toBe(0.4);
+    const reset = q<HTMLButtonElement>("prop-revealSpeed-auto");
+    expect(reset.disabled).toBe(false);
+    await act(async () => reset.click());
+    expect("revealSpeed" in props()).toBe(false);
+  });
+});

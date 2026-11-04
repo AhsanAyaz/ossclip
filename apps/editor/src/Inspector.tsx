@@ -1102,9 +1102,60 @@ export const Inspector: React.FC<InspectorProps> = ({
               prop at all. */}
           {!isPlain && cue.component
             ? scalarPropControls(cue.component).map((control) =>
-                // The revealSpeed slider is reveal-timing Task 7; until then a
-                // number control renders nothing rather than an empty select.
-                control.kind === "number" ? null : control.kind === "boolean" ? (
+                control.kind === "number" ? (
+                  <div style={row} key={control.key}>
+                    <span style={label}>
+                      {control.key}
+                      {"  "}
+                      <span style={{ color: "#EDEDF2" }}>
+                        {typeof cue.props?.[control.key] === "number"
+                          ? (cue.props[control.key] as number).toFixed(2)
+                          : `auto (${control.fallback.toFixed(2)})`}
+                      </span>
+                    </span>
+                    {/* Unset shows the renderer's own default (`fallback`) but
+                        never writes it: an unset revealSpeed and an explicit
+                        0.66 are different scenes to a legacy cue (Review
+                        Focus 5). Committed per tick under ONE coalesce key —
+                        the sfx gain slider's rule: the doc IS the live
+                        preview, and one drag is one undo step. */}
+                    <input
+                      type="range"
+                      data-testid={`prop-${control.key}`}
+                      min={control.min}
+                      max={control.max}
+                      step={control.step}
+                      value={
+                        typeof cue.props?.[control.key] === "number"
+                          ? (cue.props[control.key] as number)
+                          : control.fallback
+                      }
+                      onChange={(e) =>
+                        edits.patchProps(
+                          selection.sceneId,
+                          { [control.key]: Number(e.target.value) },
+                          `props:${selection.sceneId}:${control.key}`,
+                        )
+                      }
+                    />
+                    {control.optional ? (
+                      // The slider has no position meaning "unset", so the way
+                      // back to auto is a button — the enum's "auto" option,
+                      // for a control that cannot hold one.
+                      <button
+                        data-testid={`prop-${control.key}-auto`}
+                        style={button}
+                        disabled={cue.props?.[control.key] === undefined}
+                        onClick={() => {
+                          blurActive();
+                          edits.clearProp(selection.sceneId, control.key);
+                        }}
+                      >
+                        auto
+                      </button>
+                    ) : null}
+                  </div>
+                ) : control.kind === "boolean" ? (
                   <div style={row} key={control.key}>
                     <span style={label}>{control.key}</span>
                     <input
@@ -1129,11 +1180,22 @@ export const Inspector: React.FC<InspectorProps> = ({
                     <select
                       style={numberInput}
                       data-testid={`prop-${control.key}`}
-                      value={String(cue.props?.[control.key] ?? control.options?.[0] ?? "")}
+                      // An optional enum's unset state is its own entry, not
+                      // `options[0]`: showing "even" for an unset pacing both
+                      // misdescribes a legacy scene and makes picking "even"
+                      // a no-op change event (Review Focus 5).
+                      value={String(
+                        cue.props?.[control.key] ??
+                          (control.optional ? "" : (control.options?.[0] ?? "")),
+                      )}
                       onChange={(e) =>
-                        edits.patchProps(selection.sceneId, { [control.key]: e.target.value })
+                        // "auto" DELETES the key — never writes "".
+                        e.target.value === "" && control.optional
+                          ? edits.clearProp(selection.sceneId, control.key)
+                          : edits.patchProps(selection.sceneId, { [control.key]: e.target.value })
                       }
                     >
+                      {control.optional ? <option value="">auto</option> : null}
                       {(control.options ?? []).map((o) => (
                         <option key={o} value={o}>
                           {o}

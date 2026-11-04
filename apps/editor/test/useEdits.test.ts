@@ -182,6 +182,39 @@ describe("delete a scene with a way back (PLAN 2026-07-30 Task C)", () => {
   });
 });
 
+describe("clearProp — an optional prop back to absent (reveal-timing Task 7)", () => {
+  // Unset `pacing` keeps a legacy scene on its legacy stagger; `pacing:"even"`
+  // moves it to the paced reveal (Review Focus 5) — so "auto" must DELETE.
+  const withPacing = () =>
+    editReducer(initialEditState(), {
+      type: "patchProps", sceneId: "scene-2", patch: { pacing: "decelerate", revealSpeed: 0.4 },
+    });
+
+  it("deletes the key, keeps the scene's other props, and saves without it", () => {
+    const s = editReducer(withPacing(), { type: "clearProp", sceneId: "scene-2", key: "pacing" });
+    expect("pacing" in s.doc.scenes["scene-2"]!.props).toBe(false);
+    expect(s.doc.scenes["scene-2"]!.props.revealSpeed).toBe(0.4);
+    // What `save` writes: the parsed doc, serialized — no `pacing` anywhere.
+    expect(JSON.stringify(OverrideDocSchema.parse(s.doc))).not.toContain("pacing");
+  });
+
+  it("is one undo step; undo brings the value back and redo clears it again", () => {
+    let s = editReducer(withPacing(), { type: "clearProp", sceneId: "scene-2", key: "pacing" });
+    expect(s.past).toHaveLength(2);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["scene-2"]!.props.pacing).toBe("decelerate");
+    s = editReducer(s, { type: "redo" });
+    expect("pacing" in s.doc.scenes["scene-2"]!.props).toBe(false);
+  });
+
+  it("clearing a prop that is already absent is a no-op", () => {
+    const s = withPacing();
+    expect(editReducer(s, { type: "clearProp", sceneId: "scene-2", key: "entrance" })).toBe(s);
+    const empty = initialEditState();
+    expect(editReducer(empty, { type: "clearProp", sceneId: "scene-2", key: "pacing" })).toBe(empty);
+  });
+});
+
 describe("delete an individual element with a way back (PLAN Task 2)", () => {
   it("hideElement writes hidden: true onto that element's entry", () => {
     const s = editReducer(initialEditState(), {
