@@ -489,3 +489,73 @@ describe("the whole preview pipeline yields only playable spans (§ADK crash, 20
     }
   });
 });
+
+describe("retimeForPreview carries spoken item times (reveal-timing, Builder-check answers)", () => {
+  it("every non-null itemAtSec rides the same old → new mapping as the cue's start; nulls stay null", () => {
+    // The live cut removes source 1–2: everything after it is 1s earlier.
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = new TimeMap([
+      { srcIn: 0, srcOut: 1, kind: "keep" },
+      { srcIn: 1, srcOut: 2, kind: "remove", reason: "user" },
+      { srcIn: 2, srcOut: 10, kind: "keep" },
+    ]);
+    const cue: SceneCue = {
+      id: "flow",
+      layout: "graphic-only",
+      component: "FlowDiagram",
+      props: { nodes: ["A", "B", "C"] },
+      startSec: 2.5,
+      endSec: 8,
+      reveal: { itemAtSec: [3, null, 5.5] },
+    };
+    const { fields } = retimeForPreview(
+      { outputDurationSec: 10, captionLines: [], sceneCues: [cue] },
+      oldMap,
+      newMap,
+    );
+    const out = fields.sceneCues[0]!;
+    expect(out.startSec).toBeCloseTo(1.5, 9);
+    expect(out.reveal!.itemAtSec[0]).toBeCloseTo(2, 9);
+    expect(out.reveal!.itemAtSec[1]).toBeNull();
+    expect(out.reveal!.itemAtSec[2]).toBeCloseTo(4.5, 9);
+  });
+
+  it("an item time the cut removed clamps to the seam the way a start does, and is reported", () => {
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = new TimeMap([
+      { srcIn: 0, srcOut: 1, kind: "keep" },
+      { srcIn: 1, srcOut: 2, kind: "remove", reason: "user" },
+      { srcIn: 2, srcOut: 10, kind: "keep" },
+    ]);
+    const cue: SceneCue = {
+      id: "flow",
+      layout: "graphic-only",
+      component: "FlowDiagram",
+      props: { nodes: ["A", "B"] },
+      startSec: 0.5,
+      endSec: 8,
+      reveal: { itemAtSec: [1.5, 3] },
+    };
+    const { fields, reports } = retimeForPreview(
+      { outputDurationSec: 10, captionLines: [], sceneCues: [cue] },
+      oldMap,
+      newMap,
+    );
+    expect(fields.sceneCues[0]!.reveal!.itemAtSec[0]).toBeCloseTo(1, 9);
+    expect(reports.some((r) => r.includes('scene "flow" item 1'))).toBe(true);
+  });
+
+  it("a cue without reveal stays without one", () => {
+    const map = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const { fields } = retimeForPreview(
+      {
+        outputDurationSec: 10,
+        captionLines: [],
+        sceneCues: [{ id: "p", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 5 }],
+      },
+      map,
+      map,
+    );
+    expect("reveal" in fields.sceneCues[0]!).toBe(false);
+  });
+});

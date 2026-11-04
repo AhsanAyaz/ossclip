@@ -194,6 +194,21 @@ export const SceneCueSchema = z
   captionScale: z.number().min(0.2).max(3).optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
+  /**
+   * Per staggered item, the ABSOLUTE output second it enters on (its spoken
+   * word's start minus `ITEM_LEAD_SEC`), or null for an item to be paced —
+   * set by `assembleScenes` only from a planned `scene.cue` whose item list
+   * still matches the rendered items. Absolute rather than relative to the
+   * cue start (reveal-timing spec, "Builder-check answers", superseding §3's
+   * `itemSec`): items stay on their words wherever the final start lands —
+   * floor, de-overlap, editor drag, `timing` pin — and a split's second half
+   * inherits them through `...cue` with no re-basing. Optional so every
+   * render-props.json / production.json written before it parses unchanged;
+   * absence means "pace the items", today's stagger.
+   */
+  reveal: z
+    .object({ itemAtSec: z.array(z.number().nonnegative().nullable()) })
+    .optional(),
   })
   .superRefine((cue, ctx) => {
     if (cue.kind !== "plain" && (cue.component === undefined || cue.props === undefined)) {

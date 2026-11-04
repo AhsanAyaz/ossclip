@@ -409,7 +409,16 @@ export function retimeForPreview(
         reports.push(`scene "${c.id}" removed from the live preview by a cut`);
         return [];
       }
-      return [{ ...c, startSec, endSec }];
+      // Item times are ABSOLUTE output seconds (reveal-timing spec,
+      // "Builder-check answers") — the same clock as `startSec`, so they take
+      // the same old → source → new trip, clamp and report included; a null
+      // (paced) item has no instant to move. A cue without `reveal` stays
+      // without one rather than growing an `undefined` key.
+      if (!c.reveal) return [{ ...c, startSec, endSec }];
+      const itemAtSec = c.reveal.itemAtSec.map((t, i) =>
+        t === null ? null : at(`scene "${c.id}" item ${i + 1}`, t),
+      );
+      return [{ ...c, startSec, endSec, reveal: { ...c.reveal, itemAtSec } }];
     }),
     punch: { scale: 1, allowed: [] },
   };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleScenes } from "../src/assemble";
+import { assembleScenes, ENTRY_LEAD_SEC, ITEM_LEAD_SEC } from "../src/assemble";
 import { fillPlainCues } from "../src/fill";
 import { TimeMap } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
@@ -140,5 +140,207 @@ describe("assembleScenes", () => {
       longMap,
     ).cues[0]!;
     expect(capped.endSec - capped.startSec).toBeCloseTo(15, 5);
+  });
+});
+
+describe("assembleScenes — legacy plans (no scene.cue) are byte-identical (reveal-timing decision 1)", () => {
+  it("a 3-scene plan through a cut assembles exactly as it did before on-cue starts existed", () => {
+    // Recorded from the pre-reveal-timing assemble.ts (2026-11-04). A cut,
+    // an override merge, an overlap and a de-overlap push are all in here, so
+    // any change to the legacy path shows up as a diff against this literal.
+    const words = Array.from({ length: 20 }, (_, i) => ({
+      text: `w${i}`,
+      start: i * 0.5,
+      end: i * 0.5 + 0.4,
+    }));
+    const map = new TimeMap([
+      { srcIn: 0, srcOut: 3, kind: "keep" },
+      { srcIn: 3, srcOut: 4, kind: "remove", reason: "pause" },
+      { srcIn: 4, srcOut: 10, kind: "keep" },
+    ]);
+    const scenes: Scene[] = [
+      { id: "scene-0", anchor: { startWord: 0, endWord: 3 }, layout: "pip-bubble", component: "TitleCard", props: { title: "HELLO" }, overrides: {} },
+      { id: "scene-1", anchor: { startWord: 5, endWord: 9 }, layout: "lower-third", component: "FlowDiagram", props: { nodes: ["IDEA", "BUILD"] }, overrides: { emphasizeLast: false } },
+      { id: "scene-2", anchor: { startWord: 8, endWord: 19 }, layout: "graphic-only", component: "ChatMock", props: { messages: [{ from: "user", text: "hi" }, { from: "agent", text: "yo" }] }, overrides: {} },
+    ];
+    expect(assembleScenes(scenes, { language: "en", words }, map)).toEqual({
+      cues: [
+        { id: "scene-0", anchor: { startWord: 0, endWord: 3 }, layout: "pip-bubble", component: "TitleCard", props: { title: "HELLO" }, startSec: 0, endSec: 1.9 },
+        { id: "scene-1", anchor: { startWord: 5, endWord: 9 }, layout: "lower-third", component: "FlowDiagram", props: { nodes: ["IDEA", "BUILD"], emphasizeLast: false }, startSec: 2.5, endSec: 3.9000000000000004 },
+        { id: "scene-2", anchor: { startWord: 8, endWord: 19 }, layout: "graphic-only", component: "ChatMock", props: { messages: [{ from: "user", text: "hi" }, { from: "agent", text: "yo" }] }, startSec: 3.95, endSec: 8.9 },
+      ],
+      dropped: [],
+    });
+  });
+});
+
+describe("assembleScenes — on-cue start and spoken item times (reveal-timing §2, §3)", () => {
+  /**
+   * A 50s take (100 words, 0.5s apart) so the floor is the plain
+   * MIN_SCENE_SEC (1.2) — under SHORT_TAKE_SEC the floor scales with the
+   * runtime and the arithmetic below would stop being readable.
+   */
+  const long: Transcript = {
+    language: "en",
+    words: Array.from({ length: 100 }, (_, i) => ({
+      text: `w${i}`,
+      start: i * 0.5,
+      end: i * 0.5 + 0.4,
+    })),
+  };
+  const longMap = new TimeMap([{ srcIn: 0, srcOut: 50, kind: "keep" } satisfies Segment]);
+  const flow = (id: string, startWord: number, endWord: number, cue?: Scene["cue"]): Scene => ({
+    id,
+    anchor: { startWord, endWord },
+    layout: "graphic-only",
+    component: "FlowDiagram",
+    props: { nodes: ["IDEA", "BUILD"] },
+    overrides: {},
+    ...(cue ? { cue } : {}),
+  });
+  const one = (s: Scene, map: TimeMap = longMap) => {
+    const { cues } = assembleScenes([s], long, map);
+    expect(cues).toHaveLength(1);
+    return cues[0]!;
+  };
+
+  it("exports the spec's lead-ins", () => {
+    expect(ENTRY_LEAD_SEC).toBe(0.3);
+    expect(ITEM_LEAD_SEC).toBe(0.15);
+  });
+
+  it("a 10s moment whose entry word is at 7.0s starts at 6.7s; its end does not move", () => {
+    const legacy = one(flow("s", 0, 19));
+    const cued = one(flow("s", 0, 19, { entryWord: 14 }));
+    expect(legacy.startSec).toBeCloseTo(0, 9);
+    expect(cued.startSec).toBeCloseTo(6.7, 9);
+    expect(cued.endSec).toBe(legacy.endSec);
+    // No itemWords → no reveal: the renderer paces.
+    expect(cued.reveal).toBeUndefined();
+  });
+
+  it("an entry word near the moment's end pulls the start back to hold the floor (Review Focus 4)", () => {
+    // Entry at 9.5s → 9.2s would leave 0.7s before the 9.9s end.
+    const cued = one(flow("s", 0, 19, { entryWord: 19 }));
+    expect(cued.endSec).toBeCloseTo(9.9, 9);
+    expect(cued.startSec).toBeCloseTo(9.9 - 1.2, 9);
+  });
+
+  it("the floor's pull-back never goes before the moment's own start", () => {
+    // Moment 9.0 → 9.9s: end − floor (8.7) is before the moment, so the start
+    // stays on the moment start and the existing floor loop extends the end.
+    const cued = one(flow("s", 18, 19, { entryWord: 19 }));
+    const legacy = one(flow("s", 18, 19));
+    expect(cued.startSec).toBeCloseTo(9.0, 9);
+    expect(cued).toEqual(legacy);
+  });
+
+  it("a stale entry word outside the anchor is clamped into the scene's own words", () => {
+    // An anchor edit after planning can leave the cue pointing anywhere —
+    // even past the transcript. Clamped to the anchor's last word, the floor
+    // then decides, exactly as for a real late entry.
+    const cued = one(flow("s", 0, 19, { entryWord: 500 }));
+    expect(cued.startSec).toBeCloseTo(9.9 - 1.2, 9);
+    expect(cued.endSec).toBeCloseTo(9.9, 9);
+  });
+
+  it("a moment longer than the 15s cap keeps its legacy end when the start moves later", () => {
+    // 25s moment, entry at 10s. Without the pre-clamp the cap would be
+    // measured from the later start and the card would stay until 24.9s.
+    const legacy = one(flow("s", 0, 49));
+    const cued = one(flow("s", 0, 49, { entryWord: 20 }));
+    expect(legacy.endSec).toBeCloseTo(15, 9);
+    expect(cued.startSec).toBeCloseTo(9.7, 9);
+    expect(cued.endSec).toBe(legacy.endSec);
+  });
+
+  it("items carry ABSOLUTE output seconds, each its word's start minus the item lead", () => {
+    const cued = one(flow("s", 0, 19, { entryWord: 14, itemWords: [14, 17] }));
+    expect(cued.reveal!.itemAtSec).toHaveLength(2);
+    expect(cued.reveal!.itemAtSec[0]).toBeCloseTo(6.85, 9);
+    expect(cued.reveal!.itemAtSec[1]).toBeCloseTo(8.35, 9);
+  });
+
+  it("an unmatched item stays null", () => {
+    const cued = one(flow("s", 0, 19, { entryWord: 14, itemWords: [14, null] }));
+    expect(cued.reveal!.itemAtSec[0]).toBeCloseTo(6.85, 9);
+    expect(cued.reveal!.itemAtSec[1]).toBeNull();
+  });
+
+  it("an entry word spoken AFTER an item is legitimate — texts are not always said in order", () => {
+    const cued = one(flow("s", 0, 19, { entryWord: 17, itemWords: [14, 17] }));
+    expect(cued.startSec).toBeCloseTo(8.2, 9);
+    expect(cued.reveal!.itemAtSec[0]).toBeCloseTo(6.85, 9);
+  });
+
+  it("a cut entry word falls to the next surviving item word; a cut item is null (Review Focus 1)", () => {
+    // Removes source 6.9–7.5 — all of word 14 (7.0–7.4) — so everything
+    // after shifts 0.6s earlier.
+    const cutMap = new TimeMap([
+      { srcIn: 0, srcOut: 6.9, kind: "keep" },
+      { srcIn: 6.9, srcOut: 7.5, kind: "remove", reason: "user" },
+      { srcIn: 7.5, srcOut: 50, kind: "keep" },
+    ]);
+    const cued = one(flow("s", 0, 19, { entryWord: 14, itemWords: [14, 17] }), cutMap);
+    // Word 17: source 8.5 → output 7.9, minus the entry lead.
+    expect(cued.startSec).toBeCloseTo(7.6, 9);
+    expect(cued.reveal!.itemAtSec[0]).toBeNull();
+    expect(cued.reveal!.itemAtSec[1]).toBeCloseTo(7.75, 9);
+  });
+
+  it("a cut entry word with no surviving later item falls back to the moment's start", () => {
+    const cutMap = new TimeMap([
+      { srcIn: 0, srcOut: 6.9, kind: "keep" },
+      { srcIn: 6.9, srcOut: 7.5, kind: "remove", reason: "user" },
+      { srcIn: 7.5, srcOut: 50, kind: "keep" },
+    ]);
+    // Item 0 (word 10) survives but is EARLIER than the entry word, so it is
+    // not a fallback entry — the start returns to the moment, never to a
+    // time the plan did not choose.
+    const cued = one(flow("s", 0, 19, { entryWord: 14, itemWords: [10, 14] }), cutMap);
+    expect(cued.startSec).toBeCloseTo(0, 9);
+    expect(cued.reveal!.itemAtSec[0]).toBeCloseTo(4.85, 9);
+    expect(cued.reveal!.itemAtSec[1]).toBeNull();
+  });
+
+  it("an item list that no longer matches the rendered items is dropped, never misaligned", () => {
+    // Planned with the CTA keyword — ONE bubble, one item word — then the
+    // keyword was removed in the editor: two bubbles render now.
+    const chat: Scene = {
+      id: "chat",
+      anchor: { startWord: 0, endWord: 19 },
+      layout: "graphic-only",
+      component: "ChatMock",
+      props: {
+        messages: [
+          { from: "user", text: "hi" },
+          { from: "agent", text: "yo" },
+        ],
+        keyword: "agents",
+      },
+      overrides: { keyword: "" },
+      cue: { entryWord: 14, itemWords: [14] },
+    };
+    const cued = one(chat);
+    expect(cued.startSec).toBeCloseTo(6.7, 9);
+    expect(cued.reveal).toBeUndefined();
+    // With the keyword still set, the single item lines up and is kept.
+    const intact = one({ ...chat, overrides: {} });
+    expect(intact.reveal!.itemAtSec).toHaveLength(1);
+  });
+
+  it("a component that does not stagger never carries a reveal", () => {
+    const card: Scene = {
+      id: "card",
+      anchor: { startWord: 0, endWord: 19 },
+      layout: "graphic-only",
+      component: "TitleCard",
+      props: { title: "HELLO" },
+      overrides: {},
+      cue: { entryWord: 14, itemWords: [14] },
+    };
+    const cued = one(card);
+    expect(cued.startSec).toBeCloseTo(6.7, 9);
+    expect(cued.reveal).toBeUndefined();
   });
 });
