@@ -59,6 +59,11 @@ export interface AppliedRepair {
   applied: boolean;
   /** Why a proposal was refused — surfaced, never swallowed. */
   rejected?: string;
+  /**
+   * The verdict is the USER's, from the CLI confirmation prompt — the report
+   * lists these apart from what the gates decided on their own.
+   */
+  byUser?: true;
 }
 
 export const REPAIR_SYSTEM = `You correct speech-recognition errors in a transcript. The corrected words are shown on screen as captions, so this job is narrow and literal.
@@ -192,6 +197,17 @@ export interface ApplyRepairsOptions {
    * gate. Every other guard still applies.
    */
   dictionary?: readonly string[];
+  /**
+   * Proposals the USER confirmed at the CLI prompt (2026-11-04). The rewrite
+   * gates — sound-alike, length, word-count delta — exist to stop the MODEL
+   * inventing text; a person saying "this is what I said" is the authority
+   * those gates approximate, so a confirmed proposal skips them. Field case:
+   * "Esmeyaz." → "Ahsan Ayaz." refused as a rewrite, and correct. The
+   * structural guards (locating the span, overlap, cuts, words too short to
+   * survive the time map) still apply: those protect the timeline, not the
+   * wording.
+   */
+  confirmed?: (r: TranscriptRepair) => boolean;
 }
 
 export function applyRepairs(
@@ -293,6 +309,7 @@ export function applyRepairs(
 
     const originals = transcript.words.slice(located.startWord, located.endWord + 1);
     const actual = originals.map((w) => w.text).join(" ");
+    const byUser = opts.confirmed?.(r) === true;
     const tokens = r.correction.split(/\s+/).filter(Boolean);
     if (tokens.length === 0) {
       record("empty correction");
@@ -302,7 +319,7 @@ export function applyRepairs(
       record("correction is identical to what was heard");
       continue;
     }
-    if (Math.abs(tokens.length - originals.length) > MAX_TOKEN_DELTA) {
+    if (!byUser && Math.abs(tokens.length - originals.length) > MAX_TOKEN_DELTA) {
       record(`${originals.length} words → ${tokens.length} restructures the sentence`);
       continue;
     }
@@ -313,11 +330,11 @@ export function applyRepairs(
     // gate below is what actually separates a repair from a rewrite.
     const ratio = r.correction.length / Math.max(1, actual.length);
     const absDelta = Math.abs(r.correction.length - actual.length);
-    if (absDelta > MAX_LENGTH_DELTA && (ratio > MAX_LENGTH_RATIO || ratio < 1 / MAX_LENGTH_RATIO)) {
+    if (!byUser && absDelta > MAX_LENGTH_DELTA && (ratio > MAX_LENGTH_RATIO || ratio < 1 / MAX_LENGTH_RATIO)) {
       record(`"${r.correction}" is too different in length from "${actual}"`);
       continue;
     }
-    if (!soundsSimilar(actual, r.correction) && !userVouched(r.correction)) {
+    if (!byUser && !soundsSimilar(actual, r.correction) && !userVouched(r.correction)) {
       // The gate that keeps this a repair pass and not a rewrite pass.
       record(`"${r.correction}" does not sound like "${actual}" — rewrite, not a repair`);
       continue;

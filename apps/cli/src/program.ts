@@ -400,6 +400,10 @@ export function buildProgram(): Command {
       "--no-repair",
       "skip the ASR mishearing repair pass (captions then show the raw transcription)",
     )
+    .option(
+      "--no-confirm-repairs",
+      "don't stop to confirm transcript repairs (decisions saved earlier for this take still apply)",
+    )
     .option("--whisper-model <name>", "transcription model for this run, e.g. base.en | small.en | medium.en")
     .option(
       "--whisper-language <code>",
@@ -731,6 +735,7 @@ export function buildProgram(): Command {
           speaker: opts.speaker,
           scenes: opts.scenes,
           repair: opts.repair,
+          confirmRepairs: opts.confirmRepairs,
           whisperModel: opts.whisperModel,
           whisperLanguage,
           whisperTranslate: opts.whisperTranslate === true,

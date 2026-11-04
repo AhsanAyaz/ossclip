@@ -23,6 +23,7 @@ import {
   analyze,
   applyOverrides,
   applyRepairs,
+  saveConfigPatch,
   isParkedOverrideKey,
   parkedOverrideBaseKey,
   remapSceneOverrides,
@@ -249,6 +250,17 @@ import { artifactPath, ensureParentDir, expandHome, moveFile } from "./paths";
 import { portraitOverridePath, resolvePortrait } from "./portrait-override";
 import { approveThumbnailConcept, thumbnailRetryLoop } from "./interactive/thumbnail-approve";
 import { isInteractive } from "./interactive/tty";
+import {
+  REPAIR_DECISIONS_FILE,
+  cacheKeyDictionary,
+  clackRepairPrompts,
+  confirmRepairs,
+  decidedProposals,
+  loadRepairDecisions,
+  newDictionaryTerms,
+  saveRepairDecisions,
+  unseenProposals,
+} from "./interactive/repair-confirm";
 import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from "./ui/animation";
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
@@ -639,6 +651,11 @@ export interface ProduceOptions {
   speaker?: string;
   /** Repair ASR mishearings before captions/producer/grounding (default on). */
   repair?: boolean;
+  /**
+   * `--no-confirm-repairs`: never stop to ask about repairs. Saved decisions
+   * in the workdir still apply. Undefined = ask when interactive.
+   */
+  confirmRepairs?: boolean;
   /** Override the whisper model for this run (A/B base.en vs small.en). */
   whisperModel?: string;
   /**
@@ -2707,6 +2724,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         "different endpoint and model) — use --whisper-backend local, or drop the flag.",
     );
   }
+  // Repair decisions the user made at the CLI on an earlier run of this take
+  // (2026-11-04). Read before the transcript key: the dictionary terms those
+  // decisions added are left out of the transcript and repair cache keys, so
+  // adding them keeps this take's transcript (the author's choice "b").
+  const repairDecisionsPath = join(work, REPAIR_DECISIONS_FILE);
+  let repairDecisions = await loadRepairDecisions(repairDecisionsPath);
+  const keyDictionary = cacheKeyDictionary(dictionary, repairDecisions.addedTerms);
   const requestedKey: TranscriptKey = {
     // The REMOTE model name when remote — one field, both engines, so an
     // A/B between two Groq models re-keys the cache exactly like a local one.
@@ -2725,7 +2749,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // Omitted when empty, not written as [] — pre-dictionary key files have
     // no `dictionary` at all, and transcriptCacheReusable reads absent and
     // empty as the same "no biasing", so old workdirs must not re-transcribe.
-    ...(dictionary.length > 0 ? { dictionary } : {}),
+    ...(keyDictionary.length > 0 ? { dictionary: keyDictionary } : {}),
   };
   let cacheVerdict: ReturnType<typeof transcriptCacheReusable> | null = null;
   if (!opts.transcript && existsSync(transcriptCache)) {
@@ -3024,7 +3048,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             opts.speaker ?? cfg.speaker,
             // The dictionary changes both the prompt and the vouched set (F4),
             // so cached repairs from a different vocabulary must not be reused.
-            dictionary,
+            // Minus the terms this take's own confirmations added — see
+            // repairDecisionsPath.
+            keyDictionary,
             rawTranscript.words.map((w) => w.text),
             // Repair runs on the EDITORIAL tier (repair.ts: deciding what a
             // person actually said is semantic work), so the §143 effort knob
@@ -3119,11 +3145,60 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         );
       }
     }
+    // ---- Repair confirmation (2026-11-04) ----------------------------------
+    // Before planning, so the beat sheet and graphics see the corrected words
+    // — fixing a caption in the editor afterwards cannot reach them.
+    const unseen = unseenProposals(repairs, repairDecisions.decisions);
+    if (unseen.length > 0 && opts.confirmRepairs !== false && isInteractive()) {
+      const fresh = await confirmRepairs(unseen, clackRepairPrompts());
+      const added = newDictionaryTerms(fresh, dictionary);
+      repairDecisions = {
+        decisions: [...repairDecisions.decisions, ...fresh],
+        addedTerms: [...repairDecisions.addedTerms, ...added],
+      };
+      await saveRepairDecisions(repairDecisionsPath, repairDecisions);
+      if (added.length > 0) {
+        // Only over a valid or absent config list — a hand-broken value is
+        // the user's to fix, not ours to overwrite (validDictionary warned).
+        if (cfg.dictionary === undefined || configDictionary !== undefined) {
+          saveConfigPatch({ dictionary: [...(configDictionary ?? []), ...added] });
+          console.log(`  ▸ added to your dictionary: ${added.join(", ")}`);
+        } else {
+          console.log(
+            `  ⚠ not added to your dictionary (config value is invalid): ${added.join(", ")}`,
+          );
+        }
+      }
+    }
+    // Only when the user has ruled on at least one of THESE proposals — with
+    // no decision in play, the gates' verdict above stands untouched.
+    if (unseenProposals(repairs, repairDecisions.decisions).length < repairs.length) {
+      const decided = decidedProposals(repairs, repairDecisions.decisions);
+      const reapplied = applyRepairs(rawTranscript, decided.proposals, {
+        dictionary,
+        confirmed: decided.confirmed,
+        isCut: (startSec, endSec) =>
+          cutlist.some((c) => c.kind === "remove" && c.srcIn < endSec && c.srcOut > startSec),
+      });
+      transcript = reapplied.transcript;
+      repairs = [
+        ...reapplied.applied.map((r, i) =>
+          decided.confirmed(decided.proposals[i]!) ? { ...r, byUser: true as const } : r,
+        ),
+        ...decided.dropped,
+      ];
+      console.log(`  ▸ your repair decisions applied (${REPAIR_DECISIONS_FILE} in the workdir)`);
+    }
+    // Printed AFTER the decisions, so a re-run never shows "refused" for a fix
+    // the user's saved call then applied.
     for (const r of repairs) {
+      const yours = r.byUser ? " (your call)" : "";
       console.log(
         r.applied
-          ? `  ▸ repaired "${r.heard}" → "${r.correction}"`
-          : `  ⚠ repair refused: "${r.heard}" → "${r.correction}" (${r.rejected})`,
+          ? `  ▸ repaired "${r.heard}" → "${r.correction}"${yours}`
+          : r.byUser && r.rejected === "you unticked it"
+            ? `  ▸ kept as heard: "${r.heard}" (your call)`
+            : `  ⚠ repair refused: "${r.heard}" → "${r.correction}" (${r.rejected})${yours}`,
       );
     }
   }
@@ -4615,14 +4690,27 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       cutResult.reports.map((r) => `  ${r}`).join("\n") +
       "\n";
   }
-  const landed = repairs.filter((r) => r.applied);
+  const yours = repairs.filter((r) => r.byUser);
+  if (yours.length > 0) {
+    report +=
+      "\nrepairs you decided (CLI confirmation — repair-decisions.json in the workdir):\n" +
+      yours
+        .map((r) =>
+          r.applied
+            ? `  "${r.heard}" → "${r.correction}"`
+            : `  "${r.heard}" kept as heard${r.rejected === "you unticked it" ? "" : ` (your fix "${r.correction}" could not apply: ${r.rejected})`}`,
+        )
+        .join("\n") +
+      "\n";
+  }
+  const landed = repairs.filter((r) => r.applied && !r.byUser);
   if (landed.length > 0) {
     report +=
       "\ntranscript repairs (mishearings corrected before captions — FINDINGS §17/§21):\n" +
       landed.map((r) => `  "${r.heard}" → "${r.correction}"`).join("\n") +
       "\n";
   }
-  const refused = repairs.filter((r) => !r.applied);
+  const refused = repairs.filter((r) => !r.applied && !r.byUser);
   if (refused.length > 0) {
     report +=
       "\nrepairs refused (proposed but not a mishearing):\n" +

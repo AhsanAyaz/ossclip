@@ -531,3 +531,35 @@ describe("non-Latin transcripts (2026-08-18 Urdu field case)", () => {
     expect(applied[0]!.rejected).toMatch(/does not sound like/);
   });
 });
+
+describe("applyRepairs — user-confirmed proposals (2026-11-04)", () => {
+  // The field case: the gate refused the right answer.
+  const take = mk(["I'm", "Esmeyaz.", "and", "I", "build"]);
+  const proposal = { startWord: 1, endWord: 1, heard: "Esmeyaz.", correction: "Ahsan Ayaz." };
+
+  it("refuses the rewrite without confirmation", () => {
+    const { applied } = applyRepairs(take, [proposal]);
+    expect(applied[0]!.rejected).toMatch(/does not sound like/);
+  });
+
+  it("applies it when the user confirmed it", () => {
+    const { transcript, applied } = applyRepairs(take, [proposal], { confirmed: () => true });
+    expect(applied[0]).toMatchObject({ applied: true });
+    expect(transcript.words.map((w) => w.text)).toEqual(["I'm", "Ahsan", "Ayaz.", "and", "I", "build"]);
+  });
+
+  it("skips the word-count gate for a confirmed correction too", () => {
+    const words = mk(["it", "costs", "nothing"], 2);
+    const p = { startWord: 2, endWord: 2, heard: "nothing", correction: "next to no money" };
+    expect(applyRepairs(words, [p]).applied[0]!.applied).toBe(false);
+    expect(applyRepairs(words, [p], { confirmed: () => true }).applied[0]!.applied).toBe(true);
+  });
+
+  it("still refuses a confirmed proposal that straddles a cut", () => {
+    const { applied } = applyRepairs(take, [proposal], {
+      confirmed: () => true,
+      isCut: () => true,
+    });
+    expect(applied[0]!.rejected).toBe("span straddles a cut");
+  });
+});
