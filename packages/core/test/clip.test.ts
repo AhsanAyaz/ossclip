@@ -142,6 +142,24 @@ describe("slicing (§93.1: slice, then run the pipeline unchanged)", () => {
     ]);
   });
 
+  it("sliceMoments shifts cueWord with the anchors, dropping one the clamp cut off", () => {
+    const m = (startWord: number, endWord: number, cueWord: number): Moment => ({
+      startWord,
+      endWord,
+      cueWord,
+      purpose: "p",
+      onScreenCopy: "C",
+      sceneKind: "none",
+    });
+    const out = sliceMoments([m(90, 110, 105), m(90, 110, 95), m(150, 160, 155)], window);
+    expect(out.map((x) => x.cueWord)).toEqual([5, undefined, 55]);
+    // Absent, not `cueWord: undefined` — old moments must stay key-identical.
+    expect("cueWord" in out[1]!).toBe(false);
+    expect("cueWord" in sliceMoments([{ ...m(150, 160, 0), cueWord: undefined }], window)[0]!).toBe(
+      false,
+    );
+  });
+
   it("sliceRawTranscript slices by TIME, so a raw/repaired index drift cannot misalign it", () => {
     const { transcript: sliced, offset } = sliceRawTranscript(t, window);
     expect(offset).toBe(100);

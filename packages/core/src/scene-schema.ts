@@ -54,6 +54,24 @@ export const SceneSchema = z.object({
   overrides: z.record(z.string(), z.unknown()).default({}),
   /** Why the producer chose this — surfaced in the report for taste-debugging. */
   rationale: z.string().optional(),
+  /**
+   * Where the graphic enters and where each item is spoken, in SOURCE word
+   * indices — the matcher's answer, computed ONCE at plan time
+   * (`planCue`, reveal-timing spec §7). Its presence is the gate: assembly
+   * applies on-cue starts and synced items only to a scene that carries it,
+   * so an old plan / production.json / scenes-reviewed.json (no `cue`)
+   * renders with today's timing exactly — "new plans only" (decision 1) is
+   * structural rather than a version check, and the editor's Render replays
+   * the cue that was reviewed instead of re-matching edited props.
+   */
+  cue: z
+    .object({
+      /** Source word index the graphic enters on (before the lead-in). */
+      entryWord: z.number().int().nonnegative(),
+      /** Per staggered item, the source word it is spoken on, or null. */
+      itemWords: z.array(z.number().int().nonnegative().nullable()).optional(),
+    })
+    .optional(),
 });
 export type Scene = z.infer<typeof SceneSchema>;
 

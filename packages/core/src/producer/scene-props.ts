@@ -4,6 +4,7 @@ import type { Layout, Scene, SceneComponentId } from "../scene-schema";
 import { SCENE_REGISTRY, llmPropsSchema } from "../scene-registry";
 import type { LlmProvider } from "./provider";
 import type { Moment } from "./beats";
+import { entryTexts, locateSpoken, revealItemTexts } from "../reveal-match";
 import {
   layoutFeasible,
   momentSourceWindow,
@@ -27,6 +28,39 @@ import {
  */
 export function momentSceneId(momentIndex: number): string {
   return `scene-${momentIndex}`;
+}
+
+/**
+ * Where a new scene's graphic enters and where each of its items is spoken
+ * (reveal-timing spec §2/§7) — run ONCE, here, so the plan carries its timing
+ * and an old plan without `cue` keeps today's. Matching is confined to the
+ * moment's own window: a match outside it is the confident-wrong cue the
+ * spec's anti-goal names.
+ *
+ * Entry is the earliest of any item's word and any entry text's word, each
+ * entry text located ON ITS OWN. Not one `locateSpoken` pass over all entry
+ * texts: that pass is monotonic, so a StatCard whose value is said before its
+ * label would lose the value once the label matched — the entrance must be
+ * the first time ANY of the copy is said. Failing every match, the
+ * producer's `cueWord` (already validated inside the moment by
+ * `normalizeBeatSheet`), else the moment's start exactly as today.
+ */
+export function planCue(
+  component: SceneComponentId,
+  props: Record<string, unknown>,
+  moment: Pick<Moment, "startWord" | "endWord" | "cueWord">,
+  words: readonly { text: string }[],
+): NonNullable<Scene["cue"]> {
+  const window = { startWord: moment.startWord, endWord: moment.endWord };
+  const items = revealItemTexts(component, props);
+  const itemWords = items ? locateSpoken(items, words, window) : undefined;
+  const entryHits = entryTexts(component, props).map(
+    (text) => locateSpoken([text], words, window)[0] ?? null,
+  );
+  const spoken = [...(itemWords ?? []), ...entryHits].filter((w): w is number => w !== null);
+  const entryWord =
+    spoken.length > 0 ? Math.min(...spoken) : (moment.cueWord ?? moment.startWord);
+  return itemWords ? { entryWord, itemWords } : { entryWord };
 }
 
 export interface ScenePropsFailure {
@@ -213,15 +247,19 @@ export async function generateScenes(
     if (props === null) {
       // Degrade, don't fail the render (PHASE1 acceptance #4).
       const fallbackTitle = moment.onScreenCopy.slice(0, 48) || "—";
+      const fallbackProps = { title: fallbackTitle };
       failures.push({ momentIndex: i, component, error: lastError, fellBackTo: "TitleCard" });
       scenes.push({
         id: momentSceneId(i),
         anchor: { startWord: moment.startWord, endWord: moment.endWord },
         layout: SCENE_REGISTRY.TitleCard.defaultLayout,
         component: "TitleCard",
-        props: { title: fallbackTitle },
+        props: fallbackProps,
         overrides: {},
         rationale: `fallback after ${component} props failed: ${lastError.slice(0, 120)}`,
+        // Matched against the TitleCard it actually renders, not the
+        // component that failed — the fallback is still a new-plan scene.
+        cue: planCue("TitleCard", fallbackProps, moment, transcript.words),
       });
       continue;
     }
@@ -234,6 +272,7 @@ export async function generateScenes(
       props,
       overrides: {},
       rationale: moment.rationale ?? moment.purpose,
+      cue: planCue(component, props, moment, transcript.words),
     });
   }
 
