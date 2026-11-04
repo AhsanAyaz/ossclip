@@ -25,6 +25,7 @@ export * from "./lut-library";
 export * from "./dictionary";
 export * from "./zoom";
 export * from "./grounding";
+export * from "./reveal-match";
 export * from "./cta";
 export * from "./content-rect";
 export * from "./content-rect-detect";

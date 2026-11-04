@@ -140,6 +140,18 @@ export {
 // `overrides.json`; the server that re-decodes the audio never writes it, so
 // the re-key has to run in the browser.
 export { rekeyCaptionRecords, type RekeyResult, type StampMove } from "./restamp";
+// The reveal matcher (reveal-timing spec §1), browser-safe: reveal-match.ts
+// imports only a scene-schema TYPE. The scenes package decides "synced vs
+// paced" for an author-chosen reveal with the SAME `syncDecision` /
+// `SYNC_MIN_SHARE` plan time used — a restated 2/3 threshold is how the plan
+// and the render would disagree about which scenes are synced.
+export {
+  entryTexts,
+  locateSpoken,
+  revealItemTexts,
+  SYNC_MIN_SHARE,
+  syncDecision,
+} from "./reveal-match";
 export type {
   Probe,
   Production,
