@@ -54,7 +54,7 @@ export class ClaudeCliProvider implements LlmProvider {
         ({ stdout } = await run(this.bin, args, { stdin: prompt }));
       } catch (err) {
         attemptMs.push(Date.now() - started);
-        lastError = err instanceof Error ? err.message : String(err);
+        lastError = claudeCliErrorText(err instanceof Error ? err.message : String(err));
         // A signed-out CLI fails identically on retry, and the second spawn
         // only doubles the wait before the user learns to run /login.
         if (classifyClaudeCliFailure(lastError) === "auth") break;
@@ -87,9 +87,37 @@ export class ClaudeCliProvider implements LlmProvider {
       }
     }
     throw new Error(
-      claudeCliFailureMessage({ bin: this.bin, schemaName: req.schemaName, lastError, attemptMs }),
+      claudeCliFailureMessage({
+        bin: this.bin,
+        schemaName: req.schemaName,
+        lastError,
+        attemptMs,
+        oauthTokenEnv: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN),
+      }),
     );
   }
+}
+
+/**
+ * Boil a `run()` rejection down to the CLI's own reason. An auth failure
+ * (2026-11-04, measured: expired CLAUDE_CODE_OAUTH_TOKEN) exits 1 with an
+ * empty stderr and a ~1.5KB envelope on stdout whose `result` — "Failed to
+ * authenticate. API Error: 401 OAuth access token has expired…" — sits at the
+ * END, past the 400-char cut the failure message applies. So the envelope is
+ * parsed and replaced by its `result`; anything unparseable passes through.
+ */
+export function claudeCliErrorText(message: string): string {
+  const brace = message.indexOf("{");
+  if (brace < 0) return message;
+  try {
+    const env = JSON.parse(message.slice(brace)) as { result?: unknown };
+    if (env && typeof env.result === "string" && env.result.trim()) {
+      return `${message.slice(0, brace)}${env.result}`;
+    }
+  } catch {
+    // Not an envelope (stderr text with a brace in it) — keep it whole.
+  }
+  return message;
 }
 
 /** What the failure text says went wrong. See `classifyClaudeCliFailure`. */
@@ -138,6 +166,9 @@ export function claudeCliFailureMessage(parts: {
   schemaName: string;
   lastError: string;
   attemptMs: readonly number[];
+  /** Whether CLAUDE_CODE_OAUTH_TOKEN is in the environment — a parameter so
+   * this stays pure; the caller reads process.env. */
+  oauthTokenEnv?: boolean;
 }): string {
   const cls = classifyClaudeCliFailure(parts.lastError);
   const headline =
@@ -152,8 +183,14 @@ export function claudeCliFailureMessage(parts: {
     attemptFactsLine(parts.attemptMs),
   ];
   if (cls === "auth") {
+    // The env token wins over `claude auth login`, so re-logging in fixes
+    // nothing while it is set — the 2026-11-04 field run lost an afternoon to
+    // a stale export in ~/.zshrc.
     lines.push(
-      `Is Claude Code installed and logged in? (npm i -g @anthropic-ai/claude-code; run 'claude' once to /login)`,
+      parts.oauthTokenEnv
+        ? `CLAUDE_CODE_OAUTH_TOKEN is set in this environment and overrides 'claude auth login'. ` +
+            `Unset it, or replace it with a fresh one from 'claude setup-token'.`
+        : `Is Claude Code installed and logged in? (npm i -g @anthropic-ai/claude-code; run 'claude' once to /login)`,
     );
   }
   if (cls === "model") {

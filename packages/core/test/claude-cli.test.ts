@@ -1,10 +1,11 @@
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 import {
   ClaudeCliProvider,
+  claudeCliErrorText,
   classifyClaudeCliFailure,
   claudeCliFailureMessage,
   extractJsonObject,
@@ -221,6 +222,9 @@ describe("claude CLI signed out", () => {
       ].join("\n"),
     );
     chmodSync(bin, 0o755);
+    // The hint depends on this var; a developer shell that exports it must
+    // not flip the assertion below.
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "");
     const p = new ClaudeCliProvider(undefined, bin);
     const err = await p
       .complete({ system: "s", user: "u", schema, schemaName: "beat_sheet" })
@@ -228,5 +232,41 @@ describe("claude CLI signed out", () => {
     expect(String(err)).toContain("Please run /login");
     expect(String(err)).toContain("logged in?");
     expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+    vi.unstubAllEnvs();
+  });
+});
+
+describe("claude CLI expired env token", () => {
+  // Measured 2026-11-04: the real envelope for an expired CLAUDE_CODE_OAUTH_TOKEN,
+  // padded to its real size so the reason lands past the 400-char cut.
+  const ENVELOPE = JSON.stringify({
+    duration_api_ms: 0,
+    usage: { input_tokens: 0, output_tokens: 0 },
+    padding: "x".repeat(1200),
+    terminal_reason: "api_error",
+    is_error: true,
+    api_error_status: 401,
+    result:
+      "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue.",
+    type: "result",
+  });
+  const REJECTION = `claude -p --output-format json --max-turns 1 failed (exit 1):\n${ENVELOPE}`;
+
+  it("replaces the envelope with its result", () => {
+    expect(claudeCliErrorText(REJECTION)).toBe(
+      "claude -p --output-format json --max-turns 1 failed (exit 1):\n" +
+        "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue.",
+    );
+    expect(claudeCliErrorText("plain stderr {not json")).toBe("plain stderr {not json");
+  });
+
+  it("names the env token when it is set, since re-login cannot help", () => {
+    const lastError = claudeCliErrorText(REJECTION);
+    expect(classifyClaudeCliFailure(lastError)).toBe("auth");
+    const facts = { bin: "claude", schemaName: "beat_sheet", attemptMs: [2_250], lastError };
+    const withToken = claudeCliFailureMessage({ ...facts, oauthTokenEnv: true });
+    expect(withToken).toContain("OAuth access token has expired");
+    expect(withToken).toContain("CLAUDE_CODE_OAUTH_TOKEN is set");
+    expect(claudeCliFailureMessage(facts)).toContain("logged in?");
   });
 });
