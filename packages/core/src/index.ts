@@ -22,6 +22,7 @@ export * from "./fonts";
 export * from "./sfx-pack";
 export * from "./color-grade";
 export * from "./lut-library";
+export * from "./overlay-library";
 export * from "./dictionary";
 export * from "./zoom";
 export * from "./grounding";
