@@ -19,6 +19,7 @@
   ],
   "dependencies": {
     "@ossclip/core": "workspace:*",
+    "@remotion/gif": "4.0.499",
     "zod": "^3.25.0"
   },
   "peerDependencies": {

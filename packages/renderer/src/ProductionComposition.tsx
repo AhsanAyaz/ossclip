@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, CoverInVideo, EdlVideo, SceneLayer, SfxTrack, VideoStage, Watermark, colorGradePropsFor, coverInVideoPropsFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
+import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, captionTopAtFor, colorGradePropsFor, coverInVideoPropsFor, graphicRectAtFor, overlayCuesFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -152,6 +152,18 @@ export interface ProductionCompProps {
    * picture.
    */
   colorGrade?: ColorGradeProps;
+  /**
+   * Library logos, images and GIFs on cue (overlay-library spec §Rendering),
+   * resolved to output seconds by produce (core's `resolveOverlayCues`).
+   * Files live under the render's public dir as `library/<id>.<ext>`; their
+   * pops ride in `sfxCues` like any other effect.
+   *
+   * Optional and absent-means-NONE, so every pre-feature render-props.json
+   * parses and renders byte-identically — the mount below is gated on a
+   * non-empty parsed list, and the caption track only gains a `hideDuring`
+   * when a card exists. Gated through `overlayCuesFor` (parse, never coerce).
+   */
+  overlayCues?: OverlayCueProps[];
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -190,6 +202,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   coverInVideo,
   sfxCues,
   colorGrade,
+  overlayCues,
 }) => {
   if (!videoFileName) {
     return (
@@ -224,6 +237,16 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   // Gated here for the same once-per-render reason; VideoStage receives an
   // already-parsed spec (or null) and never sees the raw props value.
   const grade = colorGradePropsFor(colorGrade);
+  // Gated here for the same once-per-render reason.
+  const overlays = overlayCuesFor(overlayCues);
+  // A card owns the whole frame, so its window hides the captions — the one
+  // look allowed to (spec §Rendering, card look). An overlay never hides
+  // them; it is placed clear of them instead.
+  const cardWindows = overlays
+    .filter((c) => c.look === "card")
+    .map((c) => ({ start: c.atSec, end: c.endSec }));
+  const captionsOn = showCaptions(captionsHidden);
+  const stageFrame = { width: settings.width, height: settings.height };
   // Per-window user gain (`video.volume` on a cue, 2026-08-31): cue windows
   // become EdlVideo gain segments. Only non-unity entries — an empty list is
   // the pre-feature audio graph, byte for byte.
@@ -276,7 +299,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
           --no-captions (or the editor's Captions toggle) also removes the
           CTA emphasis, rather than promoting the keyword to some new
           caption-less overlay this feature never designed. */}
-      {showCaptions(captionsHidden) ? (
+      {captionsOn ? (
         <CaptionTrack
           lines={captionLines}
           cues={sceneCues}
@@ -289,6 +312,27 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
           ctaKeyword={ctaKeyword}
           ctaWindow={ctaWindow}
           sourceTextRegions={sourceTextRegions}
+          {...(cardWindows.length > 0 ? { hideDuring: cardWindows } : {})}
+        />
+      ) : null}
+      {/* After the captions so an overlay paints above them — its placement,
+          not this order, keeps it off them: the box is computed against the
+          caption block's actual top through the same anchor chain
+          CaptionTrack runs (captionTopAtFor). Captions off → nothing to
+          clear. Below the credit and the cover, which outrank everything. */}
+      {overlays.length > 0 ? (
+        <OverlayTrack
+          cues={overlays}
+          captionTopAt={
+            captionsOn
+              ? captionTopAtFor(captionLines, {
+                  cues: sceneCues,
+                  sourceTextRegions: sourceTextRegions ?? [],
+                  frame: stageFrame,
+                })
+              : () => null
+          }
+          graphicRectAt={graphicRectAtFor(sceneCues, stageFrame)}
         />
       ) : null}
       {/* Its own TOP layer, above scenes and captions: the credit must never

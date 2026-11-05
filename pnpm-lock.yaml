@@ -148,6 +148,9 @@ importers:
       '@ossclip/core':
         specifier: workspace:*
         version: link:../core
+      '@remotion/gif':
+        specifier: 4.0.499
+        version: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       zod:
         specifier: ^3.25.0
         version: 3.25.76
@@ -767,6 +770,12 @@ packages:
 
   '@remotion/drag-and-drop@4.0.499':
     resolution: {integrity: sha512-0BBcRlRvkfbTo/ZhLLCOlaXvtFGO4Am6M8YGemEjh/HS7wkIkftpWlLDEEJwNeAlWEa11/EYpgWxFGF3huYOBQ==}
+
+  '@remotion/gif@4.0.499':
+    resolution: {integrity: sha512-SBbFhWcpP3M6lR/x4gmyMaVtIwKBMMFuVxylQVkS5wRp34XwCTDk/TDmTNmYQbVrPMjiY5+TsGH9KhTaUeYJ7w==}
+    peerDependencies:
+      react: '>=16.8.0'
+      react-dom: '>=16.8.0'
 
   '@remotion/licensing@4.0.499':
     resolution: {integrity: sha512-dKjaYAJsxCUXDvAjJW8bHIUe+dYAXEcq2M0RVrqdS1CEUZPUQXhzIbYILX+slcVb5c8/DD5t+edm7d2VSY81Tg==}
@@ -2936,6 +2945,12 @@ snapshots:
     optional: true
 
   '@remotion/drag-and-drop@4.0.499': {}
+
+  '@remotion/gif@4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)':
+    dependencies:
+      react: 18.3.1
+      react-dom: 18.3.1(react@18.3.1)
+      remotion: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
 
   '@remotion/licensing@4.0.499': {}
 
