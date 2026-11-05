@@ -70,6 +70,18 @@ describe("resolveOverlayCues", () => {
     expect(out.issues).toEqual([]);
   });
 
+  it("a hand-placed rect rides onto the cue; none means no key (overlay-transform)", () => {
+    const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.15 };
+    const out = resolveOverlayCues(
+      { entries: [gde], placements: [match("gde", 3, { rect }), match("gde", 9)] },
+      words,
+      keepAll(30),
+      30,
+    );
+    expect(out.cues[0]!.rect).toEqual(rect);
+    expect("rect" in out.cues[1]!).toBe(false);
+  });
+
   it("an explicit durationSec wins over the look default", () => {
     const out = resolveOverlayCues(
       { entries: [gde], placements: [match("gde", 3, { durationSec: 4 })] },

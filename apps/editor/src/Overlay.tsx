@@ -64,6 +64,12 @@ function applyBoxHandle(start: GraphicRect, handle: BoxHandle, fdx: number, fdy:
 const PLAYER_CONTROLS_STRIP_PX = 64;
 
 interface OverlayProps {
+  /**
+   * A press landed on a library overlay's picture (overlay-transform):
+   * App selects it and starts the move drag. Absent = overlays are not
+   * grabbable here, and the press falls through to whatever is below.
+   */
+  onOverlayPress?: (id: string, clientX: number, clientY: number) => void;
   /** The DOM node the Player mounted into — the coordinate space to hit-test. */
   stageRef: React.RefObject<HTMLDivElement>;
   selection: Selection | null;
@@ -386,6 +392,7 @@ export const Overlay: React.FC<OverlayProps> = ({
   hasOldClockPreimage = (): boolean => true,
   toSourceSec = null,
   onClockRefused = (): void => {},
+  onOverlayPress,
 }) => {
   const [rect, setRect] = useState<DOMRect | null>(null);
   /** An in-progress drag-to-pan on the video slot (PLAN Task B). `base` is
@@ -511,6 +518,9 @@ export const Overlay: React.FC<OverlayProps> = ({
         el.hasAttribute("data-edit-id") ||
         el.hasAttribute("data-edit-scene") ||
         el.hasAttribute("data-caption-word") ||
+        // A library overlay's picture (overlay-transform) — on top of the
+        // scene while it shows, so it wins the press, like any top layer.
+        el.hasAttribute("data-edit-overlay") ||
         // Inside the video slot (any descendant — the deepest hit is usually
         // the <video> itself): stop, `findVideoFrom` walks up to the tag.
         el.closest("[data-edit-video]") !== null ||
@@ -601,9 +611,11 @@ export const Overlay: React.FC<OverlayProps> = ({
       // keeps the split unambiguous: plain drag edits, Alt-drag moves the
       // camera, and neither can be mistaken for the other.
       if (e.altKey || e.button !== 0) return;
+      const below = elementBelow(e.clientX, e.clientY);
       const editorOwnsIt =
         (selectionRef.current?.elementId && boxRef.current?.contains(e.target as Node)) ||
-        findEditableFrom(elementBelow(e.clientX, e.clientY)) !== null;
+        findEditableFrom(below) !== null ||
+        below?.closest("[data-edit-overlay]") != null;
       if (editorOwnsIt) e.stopPropagation();
     };
     window.addEventListener("pointerdown", onPointerDownCapture, true);
@@ -627,6 +639,10 @@ export const Overlay: React.FC<OverlayProps> = ({
       // this listener is global precisely so pass-through works, but it must
       // not react to unrelated clicks.
       if (!stage.contains(e.target as Node)) return;
+      // The library overlay's own selection box (OverlayImageBox) runs its
+      // gestures itself; re-resolving the press here would select whatever
+      // sits under the picture and drop the overlay selection mid-drag.
+      if (e.target instanceof Element && e.target.closest("[data-overlay-box]")) return;
       // A mousedown that lands INSIDE the currently-focused field is the
       // field being USED — placing the cursor, drag-selecting text in the
       // caption editor — not a click away from it. The caption editor
@@ -733,6 +749,13 @@ export const Overlay: React.FC<OverlayProps> = ({
         return;
       }
       const el = elementBelow(e.clientX, e.clientY);
+      // A library overlay's picture: select it and grab it in one press
+      // (overlay-transform). App owns the overlay selection namespace.
+      const overlayEl = el?.closest<HTMLElement>("[data-edit-overlay]");
+      if (overlayEl && onOverlayPress) {
+        onOverlayPress(overlayEl.dataset.editOverlay!, e.clientX, e.clientY);
+        return;
+      }
       const hit = findEditableFrom(el);
       if (!hit) {
         // Missed every tagged leaf — still select the scene itself if the
@@ -1060,7 +1083,7 @@ export const Overlay: React.FC<OverlayProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [edits, stageRef, settings, playerRef, onVideoPreview, onGraphicPreview, canvasBox, cues]);
+  }, [edits, stageRef, settings, playerRef, onVideoPreview, onGraphicPreview, canvasBox, cues, onOverlayPress]);
 
   // Element INLINE editing is gone (R12 §49, the author's call): the
   // floating input painted over the element while the un-edited render was

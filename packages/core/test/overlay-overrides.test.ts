@@ -46,6 +46,17 @@ describe("applyOverlayOverrides", () => {
     expect(out.dropped).toEqual([]);
   });
 
+  it("edit carries a hand-placed rect (overlay-transform)", () => {
+    const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.15 };
+    const out = applyOverlayOverrides(plan, layer({ edits: { "gde@3": { rect } } }));
+    expect(out.placements[0]).toEqual({ ...plan.placements[0], rect });
+  });
+
+  it("refuses a rect outside the schema bounds", () => {
+    expect(() => layer({ edits: { "gde@3": { rect: { x: 0.1, y: 0.2, w: 0.001, h: 0.1 } } } })).toThrow();
+    expect(() => layer({ edits: { "gde@3": { rect: { x: 1.5, y: 0.2, w: 0.1, h: 0.1 } } } })).toThrow();
+  });
+
   it("edit can swap the entry and move the word", () => {
     const out = applyOverlayOverrides(plan, layer({ edits: { "gde@3": { entryId: "fb", word: 5 } } }));
     // The id stays the plan's — it is the key the edit is stored under.

@@ -11,6 +11,7 @@ import {
   overlayLaneMarkers,
   overlayMediaUrl,
   overlayPreview,
+  overlaySeekSec,
   type OverlayPlan,
 } from "../src/overlayLane";
 
@@ -181,3 +182,13 @@ describe("overlayMediaUrl", () => {
     expect(overlayMediaUrl("library/gde.png")).toBe("/media/library/gde.png");
   });
 });
+
+describe("overlaySeekSec (overlay-transform: a chip click seeks into the window)", () => {
+  it("lands 0.4s in, past the entrance pop", () => {
+    expect(overlaySeekSec({ atSec: 2, endSec: 3.5 })).toBeCloseTo(2.4, 9);
+  });
+  it("never overshoots a short window — capped at its middle", () => {
+    expect(overlaySeekSec({ atSec: 2, endSec: 2.5 })).toBeCloseTo(2.25, 9);
+  });
+});
+

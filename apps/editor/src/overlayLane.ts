@@ -60,6 +60,9 @@ export interface OverlayMarker {
   added: boolean;
   /** The stored duration, absent = the look's default (the Inspector's "default" readout). */
   durationSec?: number;
+  /** True when the user moved/resized it (overlay-transform) — the
+   * Inspector's "Reset position" is live only then. */
+  placedByHand: boolean;
   /** The effective pop: the placement's, else the entry's, else `pop`; null = silent. */
   sound: string | null;
   /** What the entry alone would play (entry's, else `pop`) — where the
@@ -164,6 +167,7 @@ export function overlayLaneMarkers(
       file: c.file,
       added: addedIds.has(c.id),
       ...(p.durationSec !== undefined ? { durationSec: p.durationSec } : {}),
+      placedByHand: p.rect !== undefined,
       // `!== undefined`, never `??`: null is an explicit silence at either
       // level, the resolver's own rule.
       sound: p.sound !== undefined ? p.sound : entry.sound !== undefined ? entry.sound : DEFAULT_SOUND,
@@ -221,3 +225,15 @@ export function overlayPreview(
     }),
   };
 }
+
+/**
+ * Where a click on an overlay chip parks the playhead (overlay-transform):
+ * selecting an overlay you cannot see leaves nothing on the stage to move,
+ * so the click also seeks INTO its window. A little past the start, so the
+ * entrance pop has settled and the box the user grabs is the full-size one;
+ * capped at the window's middle so a short overlay is never overshot.
+ */
+export function overlaySeekSec(m: { atSec: number; endSec: number }): number {
+  return m.atSec + Math.min(0.4, Math.max(0, m.endSec - m.atSec) / 2);
+}
+

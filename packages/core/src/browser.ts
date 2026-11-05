@@ -182,6 +182,7 @@ export {
 export type {
   OverlayEntrySnapshot,
   OverlayPlacement,
+  OverlayRect,
   Probe,
   Production,
   ProductionOverlays,
