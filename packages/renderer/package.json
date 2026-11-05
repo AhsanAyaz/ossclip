@@ -20,12 +20,12 @@
   "dependencies": {
     "@ossclip/core": "workspace:*",
     "@ossclip/scenes": "workspace:*",
-    "@remotion/bundler": "^4.0.0",
-    "@remotion/cli": "^4.0.0",
-    "@remotion/renderer": "^4.0.0",
+    "@remotion/bundler": "4.0.499",
+    "@remotion/cli": "4.0.499",
+    "@remotion/renderer": "4.0.499",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "remotion": "^4.0.0"
+    "remotion": "4.0.499"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

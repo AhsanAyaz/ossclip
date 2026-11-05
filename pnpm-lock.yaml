@@ -66,7 +66,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/scenes
       '@remotion/player':
-        specifier: ^4.0.0
+        specifier: 4.0.499
         version: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       react:
         specifier: ^18.3.1
@@ -75,7 +75,7 @@ importers:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
       remotion:
-        specifier: ^4.0.0
+        specifier: 4.0.499
         version: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     devDependencies:
       '@playwright/test':
@@ -118,13 +118,13 @@ importers:
         specifier: workspace:*
         version: link:../scenes
       '@remotion/bundler':
-        specifier: ^4.0.0
+        specifier: 4.0.499
         version: 4.0.499(postcss@8.5.23)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@remotion/cli':
-        specifier: ^4.0.0
+        specifier: 4.0.499
         version: 4.0.499(postcss@8.5.23)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3)
       '@remotion/renderer':
-        specifier: ^4.0.0
+        specifier: 4.0.499
         version: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       react:
         specifier: ^18.3.1
@@ -133,7 +133,7 @@ importers:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
       remotion:
-        specifier: ^4.0.0
+        specifier: 4.0.499
         version: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
     devDependencies:
       '@types/react':
@@ -162,7 +162,7 @@ importers:
         specifier: ^18.3.1
         version: 18.3.1
       remotion:
-        specifier: ^4.0.0
+        specifier: 4.0.499
         version: 4.0.499(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
 
 packages:
@@ -2502,7 +2502,7 @@ snapshots:
 
   '@babel/parser@7.24.1':
     dependencies:
-      '@babel/types': 7.24.0
+      '@babel/types': 7.29.7
 
   '@babel/parser@7.29.7':
     dependencies:
@@ -3281,7 +3281,7 @@ snapshots:
 
   '@svgr/hast-util-to-babel-ast@8.0.0':
     dependencies:
-      '@babel/types': 7.24.0
+      '@babel/types': 7.29.7
       entities: 4.5.0
 
   '@svgr/plugin-jsx@8.1.0(@svgr/core@8.1.0(typescript@5.9.3))':

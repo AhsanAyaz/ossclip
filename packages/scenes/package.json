@@ -24,12 +24,12 @@
   },
   "peerDependencies": {
     "react": ">=18",
-    "remotion": "^4.0.0"
+    "remotion": "4.0.499"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
     "react": "^18.3.1",
-    "remotion": "^4.0.0"
+    "remotion": "4.0.499"
   },
   "homepage": "https://github.com/AhsanAyaz/ossclip#readme",
   "bugs": {
