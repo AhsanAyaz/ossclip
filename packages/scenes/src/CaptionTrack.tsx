@@ -282,14 +282,15 @@ export interface CaptionGeometryOpts {
 }
 
 /**
- * The TOP of one line's caption block, as a fraction of frame height:
- * `anchor − rows × lineHeight / 2`. The block is centred on its anchor
+ * One line's caption block as `{top, bottom}` fractions of frame height:
+ * `anchor ∓ rows × lineHeight / 2`. The block is centred on its anchor
  * (`translateY(-50%)`), and the line height is the one LineView renders with
  * — `captionLineHeightFor(direction)` × the resolved, scene-scaled font — so
  * this cannot disagree with the caption's own box except through the row
- * estimate above.
+ * estimate above (which errs tall, so both edges err outward — the harmless
+ * side for an overlay dodging either one).
  */
-export function captionBlockTop(line: CaptionLine, opts: CaptionGeometryOpts): number {
+function captionBlockExtent(line: CaptionLine, opts: CaptionGeometryOpts): { top: number; bottom: number } {
   const { frame } = opts;
   const { anchor, scale } = captionAnchorForLine(
     opts.cues ?? [],
@@ -303,8 +304,21 @@ export function captionBlockTop(line: CaptionLine, opts: CaptionGeometryOpts): n
   const direction = lineDirection(texts.join(" "));
   const safe = safeAreaFor(frame);
   const rows = estimateCaptionRows(texts, fontPx, frame.width * (1 - safe.left - safe.right));
-  const lineHeightFrac = (fontPx * captionLineHeightFor(direction)) / frame.height;
-  return anchor - (rows * lineHeightFrac) / 2;
+  const half = (rows * ((fontPx * captionLineHeightFor(direction)) / frame.height)) / 2;
+  return { top: anchor - half, bottom: anchor + half };
+}
+
+/** The TOP of one line's caption block, as a fraction of frame height (`captionBlockExtent`). */
+export function captionBlockTop(line: CaptionLine, opts: CaptionGeometryOpts): number {
+  return captionBlockExtent(line, opts).top;
+}
+
+/**
+ * The BOTTOM of one line's caption block — the mirror of `captionBlockTop`,
+ * for the overlay's band below a caption hand-moved high (ruling R19).
+ */
+export function captionBlockBottom(line: CaptionLine, opts: CaptionGeometryOpts): number {
+  return captionBlockExtent(line, opts).bottom;
 }
 
 /**
@@ -324,6 +338,26 @@ export function captionTopAtFor(
       top = top === null ? t : Math.min(top, t);
     }
     return top;
+  };
+}
+
+/**
+ * `tSec → the LOWEST caption bottom on screen`, or null when no line is —
+ * `captionTopAtFor`'s mirror (ruling R19): an overlay placed below the
+ * captions must clear every line sharing the frame.
+ */
+export function captionBottomAtFor(
+  lines: readonly CaptionLine[],
+  opts: CaptionGeometryOpts,
+): (tSec: number) => number | null {
+  return (tSec) => {
+    let bottom: number | null = null;
+    for (const line of lines) {
+      if (tSec < line.start || tSec >= line.end) continue;
+      const b = captionBlockBottom(line, opts);
+      bottom = bottom === null ? b : Math.max(bottom, b);
+    }
+    return bottom;
   };
 }
 

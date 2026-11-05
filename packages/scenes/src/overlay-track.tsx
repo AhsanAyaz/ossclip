@@ -185,8 +185,9 @@ const OverlayLook: React.FC<{
   cue: OverlayCueProps;
   durationInFrames: number;
   captionTopAt: (tSec: number) => number | null;
+  captionBottomAt: (tSec: number) => number | null;
   graphicRectAt: (tSec: number) => Rect | undefined;
-}> = ({ cue, durationInFrames, captionTopAt, graphicRectAt }) => {
+}> = ({ cue, durationInFrames, captionTopAt, captionBottomAt, graphicRectAt }) => {
   const local = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const frame = { width, height };
@@ -199,11 +200,13 @@ const OverlayLook: React.FC<{
   const box = React.useMemo(
     () =>
       cue.look === "overlay"
-        ? overlayBoxForCue(cue, fps, { width, height }, captionTopAt, graphicRectAt)
+        ? overlayBoxForCue(cue, fps, { width, height }, captionTopAt, graphicRectAt, captionBottomAt)
         : null,
     // Keyed on the cue's look and timing, not the object: the parsed list is
     // rebuilt per composition render, and the box depends on nothing else.
-    [cue.look, cue.atSec, cue.endSec, fps, width, height, captionTopAt, graphicRectAt],
+    // The lookups must be stable for this to hold — ProductionComposition
+    // memoises them (final review M3).
+    [cue.look, cue.atSec, cue.endSec, fps, width, height, captionTopAt, captionBottomAt, graphicRectAt],
   );
   if (cue.look === "card" || box === null) {
     return (
@@ -245,8 +248,10 @@ const OverlayLook: React.FC<{
 export const OverlayTrack: React.FC<{
   cues: OverlayCueProps[];
   captionTopAt: (tSec: number) => number | null;
+  /** The lowest caption bottom on screen — the band below a high caption (ruling R19). */
+  captionBottomAt: (tSec: number) => number | null;
   graphicRectAt: (tSec: number) => Rect | undefined;
-}> = ({ cues, captionTopAt, graphicRectAt }) => {
+}> = ({ cues, captionTopAt, captionBottomAt, graphicRectAt }) => {
   const { fps, durationInFrames: total } = useVideoConfig();
   return (
     <>
@@ -266,6 +271,7 @@ export const OverlayTrack: React.FC<{
               cue={cue}
               durationInFrames={durationInFrames}
               captionTopAt={captionTopAt}
+              captionBottomAt={captionBottomAt}
               graphicRectAt={graphicRectAt}
             />
           </Sequence>

@@ -56,10 +56,15 @@ const bandH = (b: Band): number => b.bottom - b.top;
  * 1. bottom edge a gap above the caption top, below any graphic in the way;
  * 2. the top safe area, above that graphic;
  * 3. above the captions, over the graphic;
- * 4. nothing fits even that: the top safe area, shrunk to whatever space the
- *    captions leave — possibly none. A caption hand-placed at the very top
- *    (captionY is free in 0..1) costs the overlay its size, never the
- *    captions their visibility.
+ * 4. BELOW the caption block, a gap under its bottom down to the safe-area
+ *    bottom (ruling R19) — a caption hand-placed high (captionY is free in
+ *    0..1) leaves the room under it, and shrinking into the sliver above
+ *    used to collapse the box to nothing while its pop still played (final
+ *    review I3). Like 3, it may sit over a graphic. Needs `captionBottom`;
+ *    absent, the block's extent is unknown and this band is not tried;
+ * 5. nothing fits even that: the top safe area, shrunk to whatever space the
+ *    captions leave — possibly none (`overlayFits` then says no). A caption
+ *    never loses its visibility to an overlay.
  *
  * `captionTop` null = no caption on screen for the overlay's whole window;
  * it then sits where the default layout's caption WOULD be, so an overlay
@@ -69,6 +74,12 @@ export function overlayRect(args: {
   frame: FrameSize;
   /** Fraction of frame height; null = no caption on screen. */
   captionTop: number | null;
+  /**
+   * The LOWEST caption bottom over the window (fraction of frame height).
+   * null = no caption on screen (the default block's bottom is used, as for
+   * `captionTop`); absent = unknown, so the below-captions band is skipped.
+   */
+  captionBottom?: number | null;
   /** The active scene graphic's rect, if one is on screen. */
   graphicRect?: Rect;
 }): Rect {
@@ -78,8 +89,14 @@ export function overlayRect(args: {
   const x = (1 - w) / 2;
   const desiredH = (w * frame.width) / frame.height;
   const minH = desiredH * MIN_BOX_SHARE;
-  const captionTop =
-    args.captionTop ?? layoutSlots("full-bleed", undefined, [], frame).captionAnchor - CAPTION_HALF_BAND;
+  const defaultAnchor = layoutSlots("full-bleed", undefined, [], frame).captionAnchor;
+  const captionTop = args.captionTop ?? defaultAnchor - CAPTION_HALF_BAND;
+  const captionBottom =
+    args.captionBottom === undefined
+      ? undefined
+      : args.captionTop === null || args.captionBottom === null
+        ? defaultAnchor + CAPTION_HALF_BAND
+        : args.captionBottom;
   const floor = Math.min(captionTop - OVERLAY_GAP, 1 - safe.bottom);
 
   const bottomAnchored = (b: Band): Rect => {
@@ -107,8 +124,23 @@ export function overlayRect(args: {
     if (bandH(overGraphic) >= minH) return topAnchored(overGraphic);
   }
   if (bandH(aboveCaptions) >= minH) return bottomAnchored(aboveCaptions);
+  if (captionBottom !== undefined) {
+    const belowCaptions: Band = { top: Math.max(safe.top, captionBottom + OVERLAY_GAP), bottom: 1 - safe.bottom };
+    if (bandH(belowCaptions) >= minH) return topAnchored(belowCaptions);
+  }
   const h = Math.max(0, bandH(aboveCaptions));
   return { x, y: Math.min(safe.top, Math.max(0, floor)), w, h };
+}
+
+/**
+ * Whether an overlay box is big enough to show at all (ruling R19): the same
+ * half-height floor the candidates are tried against. `overlayRect`'s last
+ * resort can shrink to a sliver or to nothing, and a logo that small must
+ * not be drawn — nor its pop played without a picture.
+ */
+export function overlayFits(box: Rect, frame: FrameSize): boolean {
+  const desiredH = (OVERLAY_WIDTH_FRAC * frame.width) / frame.height;
+  return box.h >= desiredH * MIN_BOX_SHARE;
 }
 
 /**
@@ -172,8 +204,9 @@ export function graphicRectAtFor(
  * One box for a cue's WHOLE window, not one per frame: placing per frame
  * would make the overlay hop every time the caption under it changed line or
  * row count. Sampled at every frame the cue covers, it takes the HIGHEST
- * caption top seen (it must clear all of them) and the bounding box of every
- * graphic seen (it must dodge each one).
+ * caption top and the LOWEST caption bottom seen (it must clear all of them,
+ * above or below — ruling R19) and the bounding box of every graphic seen
+ * (it must dodge each one).
  */
 export function overlayBoxForCue(
   cue: { atSec: number; endSec: number },
@@ -181,14 +214,18 @@ export function overlayBoxForCue(
   frame: FrameSize,
   captionTopAt: (tSec: number) => number | null,
   graphicRectAt: (tSec: number) => Rect | undefined,
+  captionBottomAt: (tSec: number) => number | null,
 ): Rect {
   const { from, durationInFrames } = frameWindow(cue.atSec, cue.endSec, fps);
   let captionTop: number | null = null;
+  let captionBottom: number | null = null;
   let graphic: Rect | undefined;
   for (let f = from; f < from + durationInFrames; f++) {
     const t = f / fps;
     const top = captionTopAt(t);
     if (top !== null) captionTop = captionTop === null ? top : Math.min(captionTop, top);
+    const bottom = captionBottomAt(t);
+    if (bottom !== null) captionBottom = captionBottom === null ? bottom : Math.max(captionBottom, bottom);
     const g = graphicRectAt(t);
     if (g) {
       if (!graphic) graphic = g;
@@ -204,5 +241,5 @@ export function overlayBoxForCue(
       }
     }
   }
-  return overlayRect({ frame, captionTop, ...(graphic ? { graphicRect: graphic } : {}) });
+  return overlayRect({ frame, captionTop, captionBottom, ...(graphic ? { graphicRect: graphic } : {}) });
 }

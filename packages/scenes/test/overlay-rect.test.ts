@@ -5,6 +5,7 @@ import {
   containedRect,
   graphicRectAtFor,
   overlayBoxForCue,
+  overlayFits,
   overlayRect,
 } from "../src/overlay-rect";
 import {
@@ -94,6 +95,31 @@ describe("overlayRect", () => {
     );
   });
 
+  it("captions placed high → the box goes BELOW the caption block, not to nothing (ruling R19)", () => {
+    // Final review I3: caption top 0.1 on 9:16 left no band above, and the
+    // shrink fallback collapsed the box to height 0 while its pop played.
+    const r = overlayRect({ frame: PORTRAIT_FRAME, captionTop: 0.1, captionBottom: 0.18 });
+    expect(r.y).toBeCloseTo(0.18 + 0.02);
+    expect(r.h).toBeCloseTo(360 / 1920);
+    expect(r.y + r.h).toBeLessThanOrEqual(1 - SAFE_AREA.bottom + EPS);
+    expect(overlayFits(r, PORTRAIT_FRAME)).toBe(true);
+    // Without the block's bottom the band cannot be placed: the old shrink.
+    expect(overlayRect({ frame: PORTRAIT_FRAME, captionTop: 0.1 }).h).toBe(0);
+  });
+
+  it("still room above → above wins over below", () => {
+    expect(overlayRect({ frame: PORTRAIT_FRAME, captionTop: 0.66, captionBottom: 0.72 })).toEqual(
+      overlayRect({ frame: PORTRAIT_FRAME, captionTop: 0.66 }),
+    );
+  });
+
+  it("no room above or below → a box overlayFits refuses", () => {
+    // A tall block from the very top to near the safe-area bottom.
+    const r = overlayRect({ frame: PORTRAIT_FRAME, captionTop: 0.05, captionBottom: 0.7 });
+    expect(r.y + r.h).toBeLessThanOrEqual(0.05 + EPS);
+    expect(overlayFits(r, PORTRAIT_FRAME)).toBe(false);
+  });
+
   it("null captionTop → above the default caption anchor", () => {
     for (const frame of [PORTRAIT_FRAME, LANDSCAPE_FRAME]) {
       const anchor = layoutSlots("full-bleed", undefined, [], frame).captionAnchor;
@@ -164,18 +190,24 @@ describe("overlayBoxForCue", () => {
   it("clears the HIGHEST caption top seen over the window, so the box never hops", () => {
     // A caption that rises mid-window (a hand-moved line) still bounds the box.
     const captionTopAt = (t: number) => (t < 1.5 ? 0.66 : 0.5);
-    const r = overlayBoxForCue({ atSec: 1, endSec: 2.5 }, 30, PORTRAIT_FRAME, captionTopAt, () => undefined);
+    const r = overlayBoxForCue({ atSec: 1, endSec: 2.5 }, 30, PORTRAIT_FRAME, captionTopAt, () => undefined, () => null);
     expect(r).toEqual(overlayRect({ frame: PORTRAIT_FRAME, captionTop: 0.5 }));
   });
   it("no caption anywhere in the window → the null-caption placement", () => {
-    const r = overlayBoxForCue({ atSec: 0, endSec: 1 }, 30, PORTRAIT_FRAME, () => null, () => undefined);
+    const r = overlayBoxForCue({ atSec: 0, endSec: 1 }, 30, PORTRAIT_FRAME, () => null, () => undefined, () => null);
     expect(r).toEqual(overlayRect({ frame: PORTRAIT_FRAME, captionTop: null }));
+  });
+  it("clears the LOWEST caption bottom seen when it goes below the captions", () => {
+    const captionBottomAt = (t: number) => (t < 1.5 ? 0.15 : 0.25);
+    const r = overlayBoxForCue({ atSec: 1, endSec: 2.5 }, 30, PORTRAIT_FRAME, () => 0.1, () => undefined, captionBottomAt);
+    expect(r).toEqual(overlayRect({ frame: PORTRAIT_FRAME, captionTop: 0.1, captionBottom: 0.25 }));
+    expect(r.y).toBeGreaterThanOrEqual(0.25);
   });
   it("dodges every graphic seen in the window (their bounding box)", () => {
     const g1 = { x: 0.07, y: 0.12, w: 0.77, h: 0.1 };
     const g2 = { x: 0.07, y: 0.2, w: 0.77, h: 0.1 };
     const graphicRectAt = (t: number) => (t < 1.5 ? g1 : g2);
-    const r = overlayBoxForCue({ atSec: 1, endSec: 2.5 }, 30, PORTRAIT_FRAME, () => 0.66, graphicRectAt);
+    const r = overlayBoxForCue({ atSec: 1, endSec: 2.5 }, 30, PORTRAIT_FRAME, () => 0.66, graphicRectAt, () => 0.74);
     expect(r.y).toBeGreaterThanOrEqual(0.3);
     expect(r.y + r.h).toBeLessThanOrEqual(0.66);
   });

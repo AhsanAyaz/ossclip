@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, captionTopAtFor, colorGradePropsFor, coverInVideoPropsFor, graphicRectAtFor, overlayCuesFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
+import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, captionBottomAtFor, captionTopAtFor, colorGradePropsFor, coverInVideoPropsFor, graphicRectAtFor, overlayCuesFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -204,6 +204,25 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   colorGrade,
   overlayCues,
 }) => {
+  // The overlay's caption/graphic lookups, MEMOISED (final review M3) and
+  // ahead of the early return to keep the hook order: OverlayLook memoises
+  // each box on these function identities, and rebuilding them every render
+  // re-sampled every frame of every overlay's window on every frame. They
+  // depend only on the props below, which are stable across a render's
+  // frames.
+  const captionsVisible = showCaptions(captionsHidden);
+  const overlayGeometry = React.useMemo(() => {
+    const opts = {
+      cues: sceneCues,
+      sourceTextRegions: sourceTextRegions ?? [],
+      frame: { width: settings.width, height: settings.height },
+    };
+    return {
+      captionTopAt: captionsVisible ? captionTopAtFor(captionLines, opts) : () => null,
+      captionBottomAt: captionsVisible ? captionBottomAtFor(captionLines, opts) : () => null,
+      graphicRectAt: graphicRectAtFor(sceneCues, opts.frame),
+    };
+  }, [captionsVisible, captionLines, sceneCues, sourceTextRegions, settings.width, settings.height]);
   if (!videoFileName) {
     return (
       <AbsoluteFill
@@ -245,8 +264,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   const cardWindows = overlays
     .filter((c) => c.look === "card")
     .map((c) => ({ start: c.atSec, end: c.endSec }));
-  const captionsOn = showCaptions(captionsHidden);
-  const stageFrame = { width: settings.width, height: settings.height };
+  const captionsOn = captionsVisible;
   // Per-window user gain (`video.volume` on a cue, 2026-08-31): cue windows
   // become EdlVideo gain segments. Only non-unity entries — an empty list is
   // the pre-feature audio graph, byte for byte.
@@ -323,16 +341,9 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
       {overlays.length > 0 ? (
         <OverlayTrack
           cues={overlays}
-          captionTopAt={
-            captionsOn
-              ? captionTopAtFor(captionLines, {
-                  cues: sceneCues,
-                  sourceTextRegions: sourceTextRegions ?? [],
-                  frame: stageFrame,
-                })
-              : () => null
-          }
-          graphicRectAt={graphicRectAtFor(sceneCues, stageFrame)}
+          captionTopAt={overlayGeometry.captionTopAt}
+          captionBottomAt={overlayGeometry.captionBottomAt}
+          graphicRectAt={overlayGeometry.graphicRectAt}
         />
       ) : null}
       {/* Its own TOP layer, above scenes and captions: the credit must never

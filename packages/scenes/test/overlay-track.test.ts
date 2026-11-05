@@ -13,7 +13,9 @@ import {
 import { overlayRect } from "../src/overlay-rect";
 import {
   captionAnchorForLine,
+  captionBlockBottom,
   captionBlockTop,
+  captionBottomAtFor,
   captionLineHeightFor,
   captionTopAtFor,
   DEFAULT_CAPTION_ANCHOR,
@@ -275,6 +277,25 @@ describe("caption block top", () => {
     expect(at(0.5)).toBeNull();
     expect(at(1.5)).toBeCloseTo(captionBlockTop(a, { frame: PORTRAIT_FRAME }));
     expect(at(1.95)).toBeCloseTo(captionBlockTop(b, { frame: PORTRAIT_FRAME }));
+    expect(at(3)).toBeNull();
+  });
+
+  it("captionBlockBottom mirrors the top about the anchor (ruling R19)", () => {
+    const l = captionLine(["abcdefghijkl", "abcdefghijkl"], 1, 2);
+    const top = captionBlockTop(l, { frame: PORTRAIT_FRAME });
+    const bottom = captionBlockBottom(l, { frame: PORTRAIT_FRAME });
+    expect((top + bottom) / 2).toBeCloseTo(0.76);
+    expect(bottom - top).toBeCloseTo((2 * 64 * captionLineHeightFor("ltr")) / 1920);
+  });
+
+  it("captionBottomAtFor: null between lines, the LOWEST bottom when two share a moment", () => {
+    const a = captionLine(["ship", "it"], 1, 2);
+    const b = captionLine(["abcdefghijkl", "abcdefghijkl"], 1.9, 3);
+    const at = captionBottomAtFor([a, b], { frame: PORTRAIT_FRAME });
+    expect(at(0.5)).toBeNull();
+    expect(at(1.5)).toBeCloseTo(captionBlockBottom(a, { frame: PORTRAIT_FRAME }));
+    expect(at(1.95)).toBeCloseTo(captionBlockBottom(b, { frame: PORTRAIT_FRAME }));
+    expect(at(1.95)).toBeGreaterThan(captionBlockBottom(a, { frame: PORTRAIT_FRAME }));
     expect(at(3)).toBeNull();
   });
 });

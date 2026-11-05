@@ -2,6 +2,7 @@ export { EdlVideo, type EdlVideoProps } from "./EdlVideo";
 export {
   CaptionTrack,
   captionAnchorForLine,
+  captionBottomAtFor,
   captionTopAtFor,
   type CaptionGeometryOpts,
   type CaptionTrackProps,
