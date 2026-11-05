@@ -369,6 +369,14 @@ export type EditAction =
    * forward to the next mention (ruling R5: `entry@word` ids only ever key
    * `edits`). */
   | { type: "addOverlayMatches"; placements: OverlayPlacement[]; entries: OverlayEntrySnapshot[] }
+  /** The tray's swap mode: point placement `id` at `entry` AND upsert its
+   * snapshot, in ONE undo step. Not `patchOverlay({entryId})` alone — that
+   * would leave an entry id no snapshot in the layer answers to, and a swap
+   * to an entry production.json never matched would render nothing (spec
+   * "Snapshot": tray-added entries live in `overrides.json.overlays.entries`).
+   * A re-pick of the same entry still upserts, because staging re-copied its
+   * art and the snapshot's `ext` may have changed with it. */
+  | { type: "swapOverlay"; id: string; entry: OverlayEntrySnapshot }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -1553,6 +1561,31 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       }
       return commit(withOverlays(state.doc, { ...slot, added, entries: upsertEntries(slot.entries, action.entries) }));
     }
+    case "swapOverlay": {
+      const slot = overlaySlot(state.doc);
+      const entries = upsertEntries(slot.entries, [action.entry]);
+      // Snapshots are flat JSON records, so a serialised compare is exact.
+      const sameEntries = JSON.stringify(entries) === JSON.stringify(slot.entries);
+      // The `patchOverlay` door by id: an added record is rewritten, anything
+      // else is a match whose edit carries the swap.
+      const i = slot.added.findIndex((a) => a.id === action.id);
+      if (i !== -1) {
+        const prev = slot.added[i]!;
+        if (prev.entryId === action.entry.id && sameEntries) return state;
+        const added = slot.added.slice();
+        added[i] = { ...prev, entryId: action.entry.id };
+        return commit(withOverlays(state.doc, { ...slot, added, entries }));
+      }
+      const prev = slot.edits[action.id];
+      if (prev?.entryId === action.entry.id && sameEntries) return state;
+      return commit(
+        withOverlays(state.doc, {
+          ...slot,
+          edits: { ...slot.edits, [action.id]: { ...prev, entryId: action.entry.id } },
+          entries,
+        }),
+      );
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -1757,6 +1790,7 @@ export function useEdits() {
       dispatch({ type: "addOverlay", entry, word, source }),
     addOverlayMatches: (placements: OverlayPlacement[], entries: OverlayEntrySnapshot[]) =>
       dispatch({ type: "addOverlayMatches", placements, entries }),
+    swapOverlay: (id: string, entry: OverlayEntrySnapshot) => dispatch({ type: "swapOverlay", id, entry }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

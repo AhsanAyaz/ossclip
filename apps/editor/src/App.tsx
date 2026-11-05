@@ -32,6 +32,8 @@ import {
   type LivePreviewClocks,
   type TimeMap,
   type CaptionKeyMigration,
+  type OverlayEntrySnapshot,
+  type OverlayPlacement,
   type OverrideDoc,
   type SceneCue,
   type Segment,
@@ -57,6 +59,8 @@ import {
   type OverlayPlan,
   type OverlayTrayRequest,
 } from "./overlayLane";
+import { OverlayTray } from "./OverlayTray";
+import { matchSummary } from "./overlayTrayModel";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector, type RunInfo } from "./Inspector";
 import { EMPTY_LUT_MENU, liveGradeSpec, type LutMenu } from "./colorPanel";
@@ -1695,6 +1699,49 @@ export const App: React.FC = () => {
     },
     [overlayWords, openOverlayTray],
   );
+  /** A tray pick, staged by the server: placed at the word (add) or swapped
+   * into the placement (swap) — both one reducer commit, so ⌘Z takes it back. */
+  const onOverlayStaged = useCallback(
+    (entry: OverlayEntrySnapshot) => {
+      if (overlayTray === null) return;
+      if (overlayTray.mode === "add") edits.addOverlay(entry, overlayTray.word);
+      else edits.swapOverlay(overlayTray.id, entry);
+      setOverlayTray(null);
+    },
+    [overlayTray, edits],
+  );
+  const closeOverlayTray = useCallback(() => setOverlayTray(null), []);
+  /**
+   * "Find library matches" (spec §Editor): the server matches the library
+   * against THIS page's layer — unsaved edits included, so a just-removed
+   * match is not re-added — and returns placements the reducer stores in one
+   * undo step. Resolves to the sentence the lane header shows; a refusal
+   * resolves too (as the server's own words), because it is a report, not a
+   * crash. JSON content-type or the server answers 415 (ruling R14).
+   */
+  const findOverlayMatches = useCallback(async (): Promise<string> => {
+    try {
+      const res = await fetch("/api/overlays/match", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ overlays: edits.doc.overlays }),
+      });
+      const body = (await res.json().catch(() => null)) as
+        | {
+            error?: string;
+            placements: OverlayPlacement[];
+            entries: OverlayEntrySnapshot[];
+            skipped: number;
+            dropped: { entryId: string; word: number; reason: string }[];
+          }
+        | null;
+      if (!res.ok || body === null) return `could not match: ${body?.error ?? `request failed (${res.status})`}`;
+      edits.addOverlayMatches(body.placements, body.entries);
+      return matchSummary(body);
+    } catch (e) {
+      return `could not match: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }, [edits]);
   // The dismissal is aimed at ONE list, not at the notice forever: a later,
   // DIFFERENT drop raises it again. Held as the dismissed list itself rather
   // than a boolean for exactly that (§137 Task 6 review, Important 4 — a
@@ -2223,6 +2270,9 @@ export const App: React.FC = () => {
             void onRender(customOut, replan);
           }}
         />
+      ) : null}
+      {overlayTray !== null ? (
+        <OverlayTray request={overlayTray} onStaged={onOverlayStaged} onClose={closeOverlayTray} />
       ) : null}
       {deletePlan ? (
         <DeleteSceneModal
@@ -2907,6 +2957,7 @@ export const App: React.FC = () => {
         onSelectOverlay={selectOverlay}
         overlaySounds={overlayLive.sounds}
         onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
+        onFindOverlayMatches={overlayPlan.words === null ? undefined : findOverlayMatches}
         toSourceSec={(outSec) => {
           // Output→source through the spans (R20 §97) — the filmstrip frame
           // must be the source second actually playing there, not the raw

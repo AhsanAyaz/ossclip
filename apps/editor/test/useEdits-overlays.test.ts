@@ -147,3 +147,47 @@ describe("mintOverlayAddedId", () => {
     expect(mintOverlayAddedId("", 2, [{ id: "overlay-2" }])).toBe("overlay-2-2");
   });
 });
+
+describe("swapOverlay (the tray's swap mode)", () => {
+  const CLOUD: OverlayEntrySnapshot = { id: "cloud", name: "Cloud", names: ["Cloud"], kind: "logo", ext: "svg" };
+
+  it("points a MATCH at the new entry through its edit AND upserts the snapshot, in one undo step", () => {
+    const s = editReducer(state({ edits: { "gde@3": { look: "card" } } }), {
+      type: "swapOverlay",
+      id: "gde@3",
+      entry: CLOUD,
+    });
+    expect(s.doc.overlays).toEqual({
+      edits: { "gde@3": { look: "card", entryId: "cloud" } },
+      added: [],
+      entries: [CLOUD],
+    });
+    expect(s.past).toHaveLength(1);
+    // Undo returns to the pre-swap doc, snapshot and all.
+    const u = editReducer(s, { type: "undo" });
+    expect(u.doc.overlays).toEqual({ edits: { "gde@3": { look: "card" } }, added: [], entries: [] });
+  });
+
+  it("rewrites an ADDED placement's own record, replacing a re-staged snapshot in place", () => {
+    const restaged: OverlayEntrySnapshot = { ...GDE, ext: "gif", kind: "gif" };
+    const s = editReducer(
+      state({ added: [{ id: "gde-1", entryId: "gde", word: 1, source: "user" }], entries: [GDE] }),
+      { type: "swapOverlay", id: "gde-1", entry: restaged },
+    );
+    expect(s.doc.overlays?.added).toEqual([{ id: "gde-1", entryId: "gde", word: 1, source: "user" }]);
+    expect(s.doc.overlays?.entries).toEqual([restaged]);
+    expect(s.doc.overlays?.edits).toEqual({});
+  });
+
+  it("is a no-op when the same entry is picked again with the same snapshot", () => {
+    const s0 = state({ added: [{ id: "gde-1", entryId: "gde", word: 1, source: "user" }], entries: [GDE] });
+    expect(editReducer(s0, { type: "swapOverlay", id: "gde-1", entry: { ...GDE } })).toBe(s0);
+  });
+
+  it("an undone swap on an untouched project leaves no overlays slot", () => {
+    const s0 = state();
+    const s = editReducer(s0, { type: "swapOverlay", id: "gde@3", entry: CLOUD });
+    expect(s.doc.overlays).toBeDefined();
+    expect(editReducer(s, { type: "undo" }).doc.overlays).toBeUndefined();
+  });
+});

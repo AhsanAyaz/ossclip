@@ -173,6 +173,13 @@ interface TimelineProps {
   /** "Add logo/image here…" on the lane's right-click, at that OUTPUT second
    * (App resolves it to a word and opens the tray in add mode). */
   onAddOverlayAt?: (sec: number) => void;
+  /**
+   * "Find library matches" (spec §Editor, "a button in the overlay lane
+   * header"): App does the round-trip and the dispatch, and resolves to the
+   * sentence to show — "added N, skipped M …" or the server's refusal. The
+   * Timeline only owns the button, its busy state and that one line.
+   */
+  onFindOverlayMatches?: () => Promise<string>;
 }
 
 interface DragState {
@@ -459,6 +466,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   onSelectOverlay,
   overlaySounds = NO_SOUNDS,
   onAddOverlayAt,
+  onFindOverlayMatches,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -502,6 +510,9 @@ export const Timeline: React.FC<TimelineProps> = ({
   overlayDragRef.current = overlayDrag;
   /** The overlay lane's right-click menu: where it opened, and the output second under it. */
   const [overlayMenu, setOverlayMenu] = useState<{ x: number; y: number; sec: number } | null>(null);
+  /** "Find library matches": in flight, and the last report it gave. */
+  const [overlayMatching, setOverlayMatching] = useState(false);
+  const [overlayMatchStatus, setOverlayMatchStatus] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{
     sceneId: string;
     startSec: number;
@@ -1040,39 +1051,68 @@ export const Timeline: React.FC<TimelineProps> = ({
           })()
         : null}
       <div style={zoomBar}>
-        {sfxMarkers === null ? null : (
-          // "SFX in preview" — the lane's own chrome, so it lives with the
-          // lane: no plan, no lane, no toggle (the `sfxMarkers === null` rule
-          // the row itself follows). Pushed to the LEFT of the zoom controls
-          // by its own margin, over the diamonds it governs, rather than
-          // joining the view controls it has nothing to do with.
-          <button
-            data-testid="sfx-preview-toggle"
-            style={{
-              ...zoomButton,
-              marginRight: "auto",
-              width: "auto",
-              padding: "0 6px",
-              // Off reads as OFF at a glance: the lane's colour when live, the
-              // zoom controls' muted grey when it is not.
-              color: sfxPreview ? SFX_COLOR : "#9A9AA3",
-              borderColor: sfxPreview ? SFX_COLOR : "#2A2A33",
-            }}
-            aria-pressed={sfxPreview}
-            onClick={() => setSfxPreview((v) => !v)}
-            title={
-              sfxPreview
-                ? "Sound effects play with the preview — click to mute them"
-                : "Sound effects are muted in the preview — click to hear them"
-            }
-          >
-            {/* A glyph, not an emoji — the strip's own vocabulary (`▾ logs`,
-                `▸ Hear it`), and the word says which state it is IN, not
-                which one the click would reach: this button is a monitor
-                state, and the timeline has room to say so. */}
-            {sfxPreview ? "♪ sfx on" : "♪ sfx off"}
-          </button>
-        )}
+        {/* The lanes' own chrome, grouped on the LEFT by one auto margin, over
+            the rows they govern — away from the view controls on the right. */}
+        <div style={laneControls}>
+          {overlayMarkers === null || !onFindOverlayMatches ? null : (
+            // The overlay lane header's one action (spec §Editor). Lives with
+            // the lane: no word space, no lane, no button.
+            <>
+              <button
+                data-testid="overlay-find-matches"
+                style={{ ...zoomButton, width: "auto", padding: "0 6px", color: OVERLAY_COLOR, borderColor: OVERLAY_COLOR }}
+                disabled={overlayMatching}
+                title="Place the first spoken mention of every library entry not already placed or removed"
+                onClick={() => {
+                  setOverlayMatching(true);
+                  void onFindOverlayMatches()
+                    .then(setOverlayMatchStatus)
+                    .finally(() => setOverlayMatching(false));
+                }}
+              >
+                {overlayMatching ? "matching…" : "Find library matches"}
+              </button>
+              {overlayMatchStatus === null ? null : (
+                <span data-testid="overlay-match-status" role="status" style={laneStatus}>
+                  {overlayMatchStatus}
+                </span>
+              )}
+            </>
+          )}
+          {sfxMarkers === null ? null : (
+            // "SFX in preview" — the lane's own chrome, so it lives with the
+            // lane: no plan, no lane, no toggle (the `sfxMarkers === null` rule
+            // the row itself follows). Pushed to the LEFT of the zoom controls
+            // by the lane-controls group's margin, over the diamonds it
+            // governs, rather than joining the view controls it has nothing
+            // to do with.
+            <button
+              data-testid="sfx-preview-toggle"
+              style={{
+                ...zoomButton,
+                width: "auto",
+                padding: "0 6px",
+                // Off reads as OFF at a glance: the lane's colour when live, the
+                // zoom controls' muted grey when it is not.
+                color: sfxPreview ? SFX_COLOR : "#9A9AA3",
+                borderColor: sfxPreview ? SFX_COLOR : "#2A2A33",
+              }}
+              aria-pressed={sfxPreview}
+              onClick={() => setSfxPreview((v) => !v)}
+              title={
+                sfxPreview
+                  ? "Sound effects play with the preview — click to mute them"
+                  : "Sound effects are muted in the preview — click to hear them"
+              }
+            >
+              {/* A glyph, not an emoji — the strip's own vocabulary (`▾ logs`,
+                  `▸ Hear it`), and the word says which state it is IN, not
+                  which one the click would reach: this button is a monitor
+                  state, and the timeline has room to say so. */}
+              {sfxPreview ? "♪ sfx on" : "♪ sfx off"}
+            </button>
+          )}
+        </div>
         {/* Zoom controls (R14 §53), always visible so the feature is
             discoverable — buttons anchor about the viewport centre,
             ctrl/cmd+wheel about the cursor. */}
@@ -1302,6 +1342,10 @@ export const Timeline: React.FC<TimelineProps> = ({
               style={overlayLane}
               onContextMenu={(e) => {
                 e.preventDefault();
+                // Stopped, as the seam chip's is: the menu's window-level
+                // "contextmenu" closer is registered before this event
+                // finishes bubbling, and would close it on the spot.
+                e.stopPropagation();
                 const r = trackRef.current?.getBoundingClientRect();
                 if (!r || durationSec <= 0 || !onAddOverlayAt) return;
                 setOverlayMenu({ x: e.clientX, y: e.clientY, sec: timeAtX(e.clientX, r.left, r.width, durationSec) });
@@ -1758,6 +1802,21 @@ const zoomBar: React.CSSProperties = {
   alignItems: "center",
   gap: 6,
   marginBottom: 4,
+};
+
+/** The lane controls' group: one auto margin pushes the zoom controls right. */
+const laneControls: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  marginRight: "auto",
+};
+
+/** The find-matches report: readable, unlike the zoom hint's whisper grey. */
+const laneStatus: React.CSSProperties = {
+  fontSize: 10,
+  color: "#9A9AA3",
+  userSelect: "none",
 };
 
 const zoomButton: React.CSSProperties = {

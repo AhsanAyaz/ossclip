@@ -2137,6 +2137,14 @@ export const TranscriptPanel: React.FC<{
                     ? {
                         onContextMenu: (e: React.MouseEvent) => {
                           e.preventDefault();
+                          // Stopped, the seam chip's rule (Timeline): the
+                          // menu's own window "contextmenu" closer registers
+                          // while THIS event is still bubbling (React flushes
+                          // a discrete event's effects synchronously), so an
+                          // unstopped right-click opened and closed the menu
+                          // in one gesture — invisible to jsdom, caught by
+                          // the overlays e2e.
+                          e.stopPropagation();
                           setWordMenu({ x: e.clientX, y: e.clientY, sec: toPlayerSec(w.start) });
                         },
                       }
