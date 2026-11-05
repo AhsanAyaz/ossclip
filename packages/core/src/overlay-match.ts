@@ -47,7 +47,17 @@ const DEFAULT_MIN_GAP_SEC = 1.5;
  */
 const SHORT_NAME_MAX_LETTERS = 3;
 
-const EDGE_PUNCTUATION = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+/**
+ * Edge punctuation is an explicit list of real sentence punctuation, NOT
+ * "anything that isn't a letter or digit" (task-2 review): that wider class
+ * reduced `C++` / `C#` / `F#` to a bare `C` / `F` and `.NET` to `NET`, so a
+ * "C#" logo popped on "C++" and on a spelled-out letter "C", which is the
+ * wrong-word pop the spec's §Matching exists to prevent. `+`, `#` and the
+ * like are part of a name. A LEADING `.` survives (`.NET`); a TRAILING one
+ * is sentence-final and strips (`GDE.` becomes `GDE`).
+ */
+const LEADING_PUNCTUATION = /^[\s,!?;:"'“”‘’()[\]{}…—–-]+/u;
+const TRAILING_PUNCTUATION = /[\s.,!?;:"'“”‘’()[\]{}…—–-]+$/u;
 const POSSESSIVE = /['’][sS]$/u;
 
 /**
@@ -57,8 +67,8 @@ const POSSESSIVE = /['’][sS]$/u;
  * `“GDE’s”` both land on `GDE`. A plural "GDEs" stays "GDEs" — no stemming.
  */
 export function normalizeMatchToken(text: string): string {
-  const bare = text.trim().replace(EDGE_PUNCTUATION, "");
-  return bare.replace(POSSESSIVE, "").replace(EDGE_PUNCTUATION, "");
+  const stripEdges = (t: string): string => t.replace(LEADING_PUNCTUATION, "").replace(TRAILING_PUNCTUATION, "");
+  return stripEdges(stripEdges(text.trim()).replace(POSSESSIVE, ""));
 }
 
 interface CompiledName {
@@ -98,6 +108,11 @@ function prepareSpoken(words: readonly MatchWord[], kept?: (i: number) => boolea
   words.forEach((w, i) => {
     if (kept && !kept(i)) return;
     const token = normalizeMatchToken(w.text);
+    // A punctuation-only word (a standalone "—") normalizes to "" and is
+    // skipped, the same way empty NAME tokens are dropped in compileName. If
+    // it stayed in the sequence, "Google - Cloud" could never match a spoken
+    // "Google — Cloud" (task-2 review). Original word indices are kept.
+    if (!token) return;
     spoken.index.push(i);
     spoken.exact.push(token);
     spoken.lower.push(token.toLowerCase());

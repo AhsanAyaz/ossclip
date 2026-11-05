@@ -14,6 +14,14 @@ describe("normalizeMatchToken", () => {
     expect(normalizeMatchToken("GDEs")).toBe("GDEs");
     expect(normalizeMatchToken("—")).toBe("");
   });
+
+  it("keeps symbols that are part of a name, and a leading dot", () => {
+    expect(normalizeMatchToken("C++,")).toBe("C++");
+    expect(normalizeMatchToken("C#.")).toBe("C#");
+    expect(normalizeMatchToken(".NET")).toBe(".NET");
+    expect(normalizeMatchToken("(.NET),")).toBe(".NET");
+    expect(normalizeMatchToken("GDE.")).toBe("GDE");
+  });
 });
 
 describe("matchLibrary", () => {
@@ -44,6 +52,23 @@ describe("matchLibrary", () => {
     expect(matchLibrary(say(["GDE's"]), gde).placements).toHaveLength(1);
     expect(matchLibrary(say(["GDEs"]), gde).placements).toEqual([]);
     expect(matchLibrary(say(["gde"]), gde).placements).toEqual([]);
+  });
+
+  it("symbol names never collapse to a bare letter", () => {
+    const csharp = [{ id: "csharp", names: ["C#"] }];
+    expect(matchLibrary(say(["I", "write", "C++"]), csharp).placements).toEqual([]);
+    expect(matchLibrary(say(["plan", "C"]), csharp).placements).toEqual([]);
+    expect(matchLibrary(say(["I", "write", "C#,"]), csharp).placements.map((p) => p.word)).toEqual([2]);
+    const dotnet = [{ id: "dotnet", names: [".NET"] }];
+    expect(matchLibrary(say(["the", "NET"]), dotnet).placements).toEqual([]);
+    expect(matchLibrary(say(["on", ".NET."]), dotnet).placements.map((p) => p.word)).toEqual([1]);
+  });
+
+  it("punctuation-only spoken words are skipped, keeping original indices", () => {
+    const entries = [{ id: "gc", names: ["Google - Cloud"] }];
+    const { placements } = matchLibrary(say(["on", "Google", "—", "Cloud"]), entries);
+    expect(placements).toEqual([{ id: "gc@1", entryId: "gc", word: 1, source: "match" }]);
+    expect(mentionsOf(say(["—", "Google", "—", "Cloud"]), ["Google - Cloud"])).toEqual([1]);
   });
 
   it("no stemming", () => {
