@@ -2,8 +2,21 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { LoadedLibraryEntry, LoadedSfxSound, OverlayEntrySnapshot, SfxCue } from "@ossclip/core";
-import { priorOverlayPlan, snapshotEntry, stageOverlayFiles, stageSfxSounds } from "../src/overlays";
+import type {
+  LoadedLibraryEntry,
+  LoadedSfxSound,
+  OverlayCue,
+  OverlayEntrySnapshot,
+  OverlayIssue,
+  SfxCue,
+} from "@ossclip/core";
+import {
+  formatOverlayAccounting,
+  priorOverlayPlan,
+  snapshotEntry,
+  stageOverlayFiles,
+  stageSfxSounds,
+} from "../src/overlays";
 
 /**
  * The produce-side overlay helpers (overlay-library spec §Placement schema
@@ -183,5 +196,49 @@ describe("stageSfxSounds (the one stager sfx and overlay pops share)", () => {
     // The second's absPath does not exist: reaching it would throw.
     stageSfxSounds([first, second], [cue("sfx/pop.mp3")], [out, out]);
     expect(readFileSync(join(out, "sfx", "pop.mp3"), "utf8")).toBe("pop");
+  });
+});
+
+describe("formatOverlayAccounting (the spec §CLI line)", () => {
+  const fb: OverlayEntrySnapshot = { id: "fb", name: "Firebase", names: ["Firebase"], kind: "logo", ext: "png" };
+  const applied = {
+    entries: [snap, fb],
+    placements: [
+      { id: "gde@3", entryId: "gde", word: 3, source: "match" as const },
+      { id: "fb@9", entryId: "fb", word: 9, source: "match" as const },
+      { id: "gde@20", entryId: "gde", word: 20, source: "match" as const },
+      { id: "u1", entryId: "fb", word: 30, source: "user" as const },
+    ],
+  };
+  const cueOf = (id: string, atSec: number): OverlayCue => ({
+    id,
+    file: "library/x.png",
+    kind: "logo",
+    look: "overlay",
+    atSec,
+    endSec: atSec + 1.5,
+  });
+  const issue = (placement: string, reason: OverlayIssue["reason"]): OverlayIssue => ({ placement, reason, issue: "x" });
+
+  it("names the placed entries once each, in play order", () => {
+    const cues = [cueOf("fb@9", 2), cueOf("gde@3", 5), cueOf("u1", 9)];
+    expect(formatOverlayAccounting(applied, cues, [], 0)).toBe("overlays: 3 placed (Firebase, Google Developers Expert), 0 skipped");
+  });
+
+  it("skipped = matcher drops + resolver drops; moved-forward and unknown-sound overlays still render", () => {
+    const cues = [cueOf("gde@3", 1), cueOf("fb@9", 4)];
+    const issues = [
+      issue("gde@3", "moved forward"),
+      issue("fb@9", "unknown sound"),
+      issue("gde@20", "cut word"),
+      issue("u1", "missing file"),
+    ];
+    expect(formatOverlayAccounting(applied, cues, issues, 1)).toBe(
+      "overlays: 2 placed (Google Developers Expert, Firebase), 3 skipped",
+    );
+  });
+
+  it("nothing placed → no name list", () => {
+    expect(formatOverlayAccounting(applied, [], [issue("gde@3", "unknown entry")], 0)).toBe("overlays: 0 placed, 1 skipped");
   });
 });

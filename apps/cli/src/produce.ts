@@ -227,6 +227,7 @@ import {
   overlayStagedFile,
   type LoadedLibraryEntry,
   type OverlayCue,
+  type OverlayIssue,
   type ProductionOverlays,
   type ProviderName,
   type ResolutionChoice,
@@ -276,7 +277,13 @@ import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from 
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
-import { priorOverlayPlan, snapshotEntry, stageOverlayFiles, stageSfxSounds } from "./overlays";
+import {
+  formatOverlayAccounting,
+  priorOverlayPlan,
+  snapshotEntry,
+  stageOverlayFiles,
+  stageSfxSounds,
+} from "./overlays";
 import { remoteWhisperHost, resolveWhisperBackend } from "./whisper-backend";
 import { makeCancelSignal, renderCover, renderProduction } from "@ossclip/renderer";
 import type { RenderPhase } from "@ossclip/renderer";
@@ -4558,6 +4565,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // own cut removed is dropped here, and the copies must land where
   // `staticFile()` will look.
   let sfxCues: SfxCue[] = [];
+  /** `sfxCues[k]`'s index in the edited plan (`resolveSfxCues`' cuePlacements),
+   * so a cue the overlay pass drops is reported against its placement. */
+  let sfxCuePlacements: number[] = [];
   /** Planning drops + render drops, counted together by the one accounting
    * line the console and report.txt share (`formatSfxAccounting`). */
   let sfxAllIssues: SfxValidationIssue[] = sfxIssues;
@@ -4599,6 +4609,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       sceneStarts: sceneStartSeconds(sceneCues),
     });
     sfxCues = resolved.cues;
+    sfxCuePlacements = resolved.cuePlacements;
     sfxAllIssues = [...sfxIssues, ...resolved.dropped];
     for (const d of resolved.dropped) console.log(`  ⚠ sfx: ${d.issue}`);
   }
@@ -4615,8 +4626,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   let overlaySoundCues: SfxCue[] = [];
   /** The pops' own library (see `overlaySoundFile`); undefined = never needed. */
   let overlaySounds: LoadedSfxSound[] | undefined;
-  /** Planned sfx the overlay pops outranked — listed under the sfx line. */
-  let sfxNearOverlay: SfxCue[] = [];
   /** One accounting line + its ⚠s, shared by the console and report.txt (§118b). */
   let overlayLine: string | undefined;
   const overlayWarnings: string[] = [];
@@ -4677,7 +4686,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         `too close to the overlay before it`,
     );
   }
-  let overlaySkipped = matchDrops.length;
+  let overlayIssues: OverlayIssue[] = [];
   if (appliedOverlays.placements.length > 0) {
     const usedIds = new Set(appliedOverlays.placements.map((p) => p.entryId));
     const toStage = appliedOverlays.entries.filter((e) => usedIds.has(e.id));
@@ -4713,26 +4722,26 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     });
     overlayCues = resolved.cues;
     overlaySoundCues = resolved.soundCues;
-    for (const i of resolved.issues) {
-      overlayWarn(i.issue);
-      // "moved forward" and "unknown sound" keep the overlay (OverlayIssue).
-      if (i.reason !== "moved forward" && i.reason !== "unknown sound") overlaySkipped++;
-    }
+    overlayIssues = resolved.issues;
+    for (const i of overlayIssues) overlayWarn(i.issue);
+    // Spacing against planned sfx (spec §Resolve): the pop wins, and each
+    // casualty is an ordinary sfx drop with reason "overlay", so the
+    // accounting line names it like any other (`formatSfxAccounting`).
     const near = dropSfxNearOverlays(sfxCues, overlaySoundCues);
-    sfxCues = near.kept;
-    sfxNearOverlay = near.dropped;
-    for (const d of sfxNearOverlay) {
-      console.log(`  ⚠ sfx: dropped near overlay — ${d.soundFile} at ${d.atSec.toFixed(2)}s`);
+    for (const [k, idx] of near.droppedIndices.entries()) {
+      const c = near.dropped[k]!;
+      const issue = {
+        placement: sfxCuePlacements[idx]!,
+        reason: "overlay" as const,
+        issue: `${c.soundFile} at ${c.atSec.toFixed(2)}s dropped — an overlay pops within 0.5s`,
+      };
+      sfxAllIssues = [...sfxAllIssues, issue];
+      console.log(`  ⚠ sfx: ${issue.issue}`);
     }
+    sfxCues = near.kept;
   }
   if (appliedOverlays.placements.length > 0 || overlayWarnings.length > 0) {
-    const nameOf = new Map(appliedOverlays.entries.map((e) => [e.id, e.name]));
-    const entryOf = new Map(appliedOverlays.placements.map((p) => [p.id, p.entryId]));
-    const names = [...new Set(overlayCues.map((c) => nameOf.get(entryOf.get(c.id) ?? "") ?? c.id))];
-    overlayLine =
-      `overlays: ${overlayCues.length} placed` +
-      (names.length > 0 ? ` (${names.join(", ")})` : "") +
-      `, ${overlaySkipped} skipped`;
+    overlayLine = formatOverlayAccounting(appliedOverlays, overlayCues, overlayIssues, matchDrops.length);
     console.log(`▸ ${overlayLine}`);
   }
 
@@ -4897,10 +4906,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (sfxLine) {
     report +=
       `\n${sfxLine}\n` +
-      sfxAllIssues.map((i) => `  ⚠ placement ${i.placement}: ${i.issue}\n`).join("") +
-      sfxNearOverlay
-        .map((c) => `  ⚠ dropped near overlay: ${c.soundFile} at ${c.atSec.toFixed(2)}s\n`)
-        .join("");
+      sfxAllIssues.map((i) => `  ⚠ placement ${i.placement}: ${i.issue}\n`).join("");
   }
   // The overlay accounting, the sfx block's contract: one line the console
   // printed too (spec §CLI "overlays: 2 placed (GDE, Firebase), 1 skipped"),

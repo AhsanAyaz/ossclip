@@ -198,18 +198,23 @@ export function resolveOverlayCues(
  * Spacing against planned sfx (spec §Resolve, my call there): a planned
  * effect within `windowSec` of an overlay sound, either side, is dropped so
  * the two never stack into mush — the overlay pop wins. Inclusive at the
- * window edge. The caller reports `dropped` with reason `"overlay"`.
+ * window edge. The caller reports `dropped` with reason `"overlay"`;
+ * `droppedIndices[k]` is `dropped[k]`'s index in `sfx`, which is how it finds
+ * the placement to report against (`resolveSfxCues`' `cuePlacements`).
  */
 export function dropSfxNearOverlays(
   sfx: readonly SfxCue[],
   overlaySounds: readonly SfxCue[],
   windowSec: number = SFX_NEAR_OVERLAY_SEC,
-): { kept: SfxCue[]; dropped: SfxCue[] } {
+): { kept: SfxCue[]; dropped: SfxCue[]; droppedIndices: number[] } {
   const kept: SfxCue[] = [];
   const dropped: SfxCue[] = [];
-  for (const s of sfx) {
-    if (overlaySounds.some((o) => Math.abs(s.atSec - o.atSec) <= windowSec)) dropped.push(s);
-    else kept.push(s);
-  }
-  return { kept, dropped };
+  const droppedIndices: number[] = [];
+  sfx.forEach((s, i) => {
+    if (overlaySounds.some((o) => Math.abs(s.atSec - o.atSec) <= windowSec)) {
+      dropped.push(s);
+      droppedIndices.push(i);
+    } else kept.push(s);
+  });
+  return { kept, dropped, droppedIndices };
 }

@@ -215,6 +215,16 @@ describe("dropSfxNearOverlays", () => {
     expect(kept.map((c) => c.atSec)).toEqual([9.4, 10.6, 3]);
   });
 
+  it("droppedIndices point each dropped cue back into the input list", () => {
+    // The caller maps these through `resolveSfxCues`' cuePlacements to report
+    // the drop against its placement with reason "overlay".
+    const overlay = [{ soundFile: "sfx/pop.mp3", atSec: 10, gain: 1 }];
+    const planned = [cue(3), cue(9.8), cue(12), cue(10.1)];
+    const { dropped, droppedIndices } = dropSfxNearOverlays(planned, overlay);
+    expect(droppedIndices).toEqual([1, 3]);
+    expect(droppedIndices.map((i) => planned[i])).toEqual(dropped);
+  });
+
   it("no overlay sounds → everything kept", () => {
     const { kept, dropped } = dropSfxNearOverlays([cue(1)], []);
     expect(kept).toHaveLength(1);

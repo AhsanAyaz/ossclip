@@ -17,7 +17,10 @@ import {
   sfxStagedFile,
   type LoadedLibraryEntry,
   type LoadedSfxSound,
+  type OverlayCue,
   type OverlayEntrySnapshot,
+  type OverlayIssue,
+  type OverlayPlacement,
   type ProductionOverlays,
   type SfxCue,
 } from "@ossclip/core";
@@ -160,4 +163,32 @@ export function stageSfxSounds(
       copyFileSync(sound.absPath, dest);
     }
   }
+}
+
+/**
+ * The overlay accounting line (spec §CLI: "overlays: 2 placed (GDE,
+ * Firebase), 1 skipped"), shared by the console and report.txt — the
+ * `formatSfxAccounting` contract (§118b), one formatter so the two never
+ * disagree.
+ *
+ * Names are the entries' display names in the order their cues play, once
+ * each. "Skipped" is every placement that does NOT reach the screen: the
+ * matcher's overlap drops plus the resolver's drops. "moved forward" and
+ * "unknown sound" are ISSUES, not drops — the overlay still renders (on a
+ * later word, or silent) — so they print as ⚠ lines but are not counted.
+ */
+export function formatOverlayAccounting(
+  applied: { entries: readonly OverlayEntrySnapshot[]; placements: readonly OverlayPlacement[] },
+  cues: readonly OverlayCue[],
+  issues: readonly OverlayIssue[],
+  matchDrops: number,
+): string {
+  const nameOf = new Map(applied.entries.map((e) => [e.id, e.name]));
+  const entryOf = new Map(applied.placements.map((p) => [p.id, p.entryId]));
+  const names = [...new Set(cues.map((c) => nameOf.get(entryOf.get(c.id) ?? "") ?? c.id))];
+  const skipped =
+    matchDrops + issues.filter((i) => i.reason !== "moved forward" && i.reason !== "unknown sound").length;
+  return (
+    `overlays: ${cues.length} placed` + (names.length > 0 ? ` (${names.join(", ")})` : "") + `, ${skipped} skipped`
+  );
 }
