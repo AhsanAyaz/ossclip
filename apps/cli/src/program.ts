@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { z } from "zod/v4";
 import {
   CleanupLevelSchema,
@@ -369,6 +369,14 @@ export function buildProgram(): Command {
         return parsed.data;
       },
     )
+    .addOption(
+      // Hidden (ruling R4): a test-isolation seam, not a user feature — the
+      // overlay library's home is ~/.ossclip/library, and tests plus the
+      // verify-ossclip drive point a fresh run at a temp library through
+      // this instead. Never pinned into command.json: a replay carries its
+      // overlays forward and never re-matches, so it has no use for a library.
+      new Option("--library-dir <dir>", "internal: overlay library folder (default ~/.ossclip/library)").hideHelp(),
+    )
     .option(
       "--llm <provider>",
       // Must state `defaultProviderName`'s real order — the old text omitted
@@ -726,6 +734,8 @@ export function buildProgram(): Command {
           // config's `sfx` key decide (`resolveSfx` at the use site).
           sfx: sfxFlag(opts.sfx, opts.sfxLevel),
           sfxLevel: opts.sfxLevel,
+          // expandHome before resolve — the 2026-08-16 rule for typed paths.
+          libraryDir: opts.libraryDir !== undefined ? resolve(expandHome(opts.libraryDir)) : undefined,
           provider,
           llmModel: opts.llmModel,
           llmFastModel: opts.llmFastModel,

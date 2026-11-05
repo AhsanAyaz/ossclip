@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 /**
@@ -78,6 +79,21 @@ describe("produce flag forwarding", () => {
     expect(off.colorGrade).toBe(false);
     const untyped = await runProduce(["produce", "in.mp4", "--no-render"]);
     expect(untyped.colorGrade).toBeUndefined();
+  });
+
+  it("the hidden --library-dir reaches produce resolved, and untyped stays undefined", async () => {
+    // Undefined is what lets produce fall back to ~/.ossclip/library; a
+    // relative dir must arrive absolute, the expandHome-then-resolve rule.
+    const typed = await runProduce(["produce", "in.mp4", "--library-dir", "lib", "--no-render"]);
+    expect(typed.libraryDir).toBe(resolve("lib"));
+    const untyped = await runProduce(["produce", "in.mp4", "--no-render"]);
+    expect(untyped.libraryDir).toBeUndefined();
+  });
+
+  it("--library-dir stays out of --help (an internal test seam)", async () => {
+    const { buildProgram } = await import("../src/program");
+    const produceCmd = buildProgram().commands.find((c) => c.name() === "produce")!;
+    expect(produceCmd.helpInformation()).not.toContain("--library-dir");
   });
 
   it("commander's own 5174 does NOT count as a pinned --editor-port", async () => {

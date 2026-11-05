@@ -217,6 +217,17 @@ import {
   type SfxLevel,
   type SfxPlacement,
   type SfxValidationIssue,
+  // The overlay library (overlay-library spec): first-mention matching on a
+  // fresh run, the user's layer over it, and the resolver to output-time cues.
+  loadOverlayLibrary,
+  matchLibrary,
+  applyOverlayOverrides,
+  resolveOverlayCues,
+  dropSfxNearOverlays,
+  overlayStagedFile,
+  type LoadedLibraryEntry,
+  type OverlayCue,
+  type ProductionOverlays,
   type ProviderName,
   type ResolutionChoice,
   type Scene,
@@ -265,6 +276,7 @@ import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from 
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
+import { priorOverlayPlan, snapshotEntry, stageOverlayFiles, stageSfxSounds } from "./overlays";
 import { remoteWhisperHost, resolveWhisperBackend } from "./whisper-backend";
 import { makeCancelSignal, renderCover, renderProduction } from "@ossclip/renderer";
 import type { RenderPhase } from "@ossclip/renderer";
@@ -858,6 +870,14 @@ export interface ProduceOptions {
    * separately as an unvalidated value and `resolveSfxLevel` arbitrates.
    */
   sfxLevel?: SfxLevel;
+  /**
+   * The overlay library folder (overlay-library plan Global Constraints, test
+   * isolation): `~/.ossclip/library/` when absent. The hidden
+   * `--library-dir` reaches it, so tests and the verify-ossclip drive point
+   * a fresh run at a temp library instead of the user's. Already
+   * `expandHome`d by program.ts.
+   */
+  libraryDir?: string;
   /**
    * Whether `--sort` was TYPED, as opposed to commander filling in its
    * `"name"` default. `sort` alone can't tell those apart, and `--sort` does
@@ -4581,27 +4601,154 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     sfxCues = resolved.cues;
     sfxAllIssues = [...sfxIssues, ...resolved.dropped];
     for (const d of resolved.dropped) console.log(`  ⚠ sfx: ${d.issue}`);
-    // Staged into the render's public dir AND the workdir when they differ,
-    // for the Nastaliq font's reason verbatim: the render bundles
-    // `dirname(renderVideo)`, `ossclip edit` serves the workdir, and both
-    // mounts fetch the same served name. Only the sounds actually CUED are
-    // copied — the library is a menu, not a payload.
-    const staged = new Set(sfxCues.map((c) => c.soundFile));
-    for (const sound of sfxSounds) {
-      const rel = sfxStagedFile(sound);
-      if (!staged.has(rel)) continue;
-      for (const dir of new Set([renderPublicDirPath, work])) {
-        // `join` on the filesystem side where `rel` itself stays
-        // POSIX-literal — it is a served URL, these are paths (the
-        // `sideImageDestRel` split).
-        const dest = join(dir, ...rel.split("/"));
-        mkdirSync(dirname(dest), { recursive: true });
-        copyFileSync(sound.absPath, dest);
+  }
+
+  // ---- Overlays: library matches → placements → cues (overlay-library spec) -
+  // HERE, with the FINAL map and after the sfx resolve, for three reasons:
+  // matching runs on the KEPT words (spec §Matching) and the user's own cuts
+  // decide what is kept; the matcher's 1.5s overlap gap is measured on SCREEN
+  // (ruling R12); and a planned sfx near an overlay pop is dropped (spec
+  // §Resolve, "Spacing") before either is staged.
+  /** The MATCHED plan production.json stores — never the user's layer. */
+  let overlayPlan: ProductionOverlays | undefined;
+  let overlayCues: OverlayCue[] = [];
+  let overlaySoundCues: SfxCue[] = [];
+  /** The pops' own library (see `overlaySoundFile`); undefined = never needed. */
+  let overlaySounds: LoadedSfxSound[] | undefined;
+  /** Planned sfx the overlay pops outranked — listed under the sfx line. */
+  let sfxNearOverlay: SfxCue[] = [];
+  /** One accounting line + its ⚠s, shared by the console and report.txt (§118b). */
+  let overlayLine: string | undefined;
+  const overlayWarnings: string[] = [];
+  const overlayWarn = (w: string): void => {
+    overlayWarnings.push(w);
+    console.log(`  ⚠ overlay: ${w}`);
+  };
+  // Loaded at most once: always on a fresh run (to match), and on a replay
+  // only when a workdir copy has gone missing and the library is the one
+  // place left to restore it from (spec "Staging").
+  let overlayLibrary: LoadedLibraryEntry[] | undefined;
+  const loadLibrary = (): LoadedLibraryEntry[] => {
+    if (overlayLibrary === undefined) {
+      const lib = loadOverlayLibrary(opts.libraryDir);
+      for (const i of lib.issues) overlayWarn(`library ${i.file}: ${i.message}`);
+      overlayLibrary = lib.entries;
+    }
+    return overlayLibrary;
+  };
+  let matchDrops: { entryId: string; word: number }[] = [];
+  if (opts.scenes) {
+    // A replay (the editor's Render re-runs command.json with `--scenes`)
+    // carries the plan forward and never re-matches (spec §Placement schema,
+    // "When matching runs"): an old project must not change because the
+    // library grew. `--scenes` is the replay's mark, the sfx carry-forward's.
+    overlayPlan = priorOverlayPlan(work);
+    if (overlayPlan) console.log(`▸ overlays carried forward (${overlayPlan.placements.length})`);
+  } else {
+    const library = loadLibrary();
+    if (library.length > 0) {
+      const at = transcript.words.map((w) => map.mapWord(w));
+      // Output-time starts on the kept words (ruling R12): two names 3s apart
+      // in the source with a 2s pause cut between them land 1s apart on
+      // screen, and that is the gap that decides whether the logos stack.
+      const words = transcript.words.map((w, i) => (at[i] ? { ...w, start: at[i]!.start, end: at[i]!.end } : w));
+      const matched = matchLibrary(words, library, { kept: (i) => at[i] !== null });
+      matchDrops = matched.dropped;
+      if (matched.placements.length > 0) {
+        const used = new Set(matched.placements.map((p) => p.entryId));
+        overlayPlan = {
+          entries: library.filter((e) => used.has(e.id)).map(snapshotEntry),
+          placements: matched.placements,
+        };
       }
     }
+  }
+  // The user's layer on top in EVERY case (spec): a removed match stays
+  // removed on a re-match because its id is stable, and the tray's own adds
+  // ride `overrides.json.overlays` with their snapshots.
+  const appliedOverlays = applyOverlayOverrides(overlayPlan, overrideDoc.overlays);
+  for (const d of appliedOverlays.dropped) {
+    overlayWarn(`edit "${d.key}" no longer matches any placement — the re-match dropped it`);
+  }
+  for (const d of matchDrops) {
+    const name = overlayLibrary?.find((e) => e.id === d.entryId)?.names[0] ?? d.entryId;
+    overlayWarn(
+      `"${name}" on word ${d.word} ("${transcript.words[d.word]?.text ?? "?"}") skipped — ` +
+        `too close to the overlay before it`,
+    );
+  }
+  let overlaySkipped = matchDrops.length;
+  if (appliedOverlays.placements.length > 0) {
+    const usedIds = new Set(appliedOverlays.placements.map((p) => p.entryId));
+    const toStage = appliedOverlays.entries.filter((e) => usedIds.has(e.id));
+    const workCopyMissing = toStage.some((e) => !existsSync(join(work, ...overlayStagedFile(e).split("/"))));
+    const stage = stageOverlayFiles(toStage, workCopyMissing ? loadLibrary() : [], work, renderPublicDirPath);
+    for (const i of stage.issues) overlayWarn(i);
+    // Overlay sounds play REGARDLESS of `--sfx` (spec §Resolve, author's
+    // call), from a library loaded with the bundled pack ALWAYS in, so `pop`
+    // keeps working when `sfxBundledPack` excludes it (spec, "my call").
+    // Lazy: the resolver only asks for a placement it emits with a non-null
+    // sound, so an all-silent project never reads a pack. Without this the
+    // pops would render silent with no ⚠ line at all.
+    const overlaySoundFile = (soundId: string) => {
+      if (overlaySounds === undefined) {
+        const lib = loadSfxLibrary({ includeBundled: true });
+        // An `--sfx` run already printed this pack's issues from its own load.
+        if (!sfxOn) for (const issue of lib.issues) console.log(`  ⚠ sfx pack ${issue.pack}: ${issue.issue}`);
+        overlaySounds = lib.sounds;
+      }
+      const s = overlaySounds.find((x) => x.id === soundId);
+      if (!s) return undefined;
+      return {
+        soundFile: sfxStagedFile(s),
+        gain: s.gain,
+        ...(s.durationSec === undefined ? {} : { durationSec: s.durationSec }),
+      };
+    };
+    const resolved = resolveOverlayCues(appliedOverlays, transcript.words, map, map.outputDuration, {
+      // The staged WORKDIR copy is what renders (spec "Staging"), so it is
+      // what decides — `staged` only holds entries whose workdir file exists.
+      exists: (rel) => stage.staged.has(rel),
+      soundFile: overlaySoundFile,
+    });
+    overlayCues = resolved.cues;
+    overlaySoundCues = resolved.soundCues;
+    for (const i of resolved.issues) {
+      overlayWarn(i.issue);
+      // "moved forward" and "unknown sound" keep the overlay (OverlayIssue).
+      if (i.reason !== "moved forward" && i.reason !== "unknown sound") overlaySkipped++;
+    }
+    const near = dropSfxNearOverlays(sfxCues, overlaySoundCues);
+    sfxCues = near.kept;
+    sfxNearOverlay = near.dropped;
+    for (const d of sfxNearOverlay) {
+      console.log(`  ⚠ sfx: dropped near overlay — ${d.soundFile} at ${d.atSec.toFixed(2)}s`);
+    }
+  }
+  if (appliedOverlays.placements.length > 0 || overlayWarnings.length > 0) {
+    const nameOf = new Map(appliedOverlays.entries.map((e) => [e.id, e.name]));
+    const entryOf = new Map(appliedOverlays.placements.map((p) => [p.id, p.entryId]));
+    const names = [...new Set(overlayCues.map((c) => nameOf.get(entryOf.get(c.id) ?? "") ?? c.id))];
+    overlayLine =
+      `overlays: ${overlayCues.length} placed` +
+      (names.length > 0 ? ` (${names.join(", ")})` : "") +
+      `, ${overlaySkipped} skipped`;
+    console.log(`▸ ${overlayLine}`);
+  }
+
+  // The sfx accounting counts PLANNED effects only — an overlay pop is not a
+  // placement the plan made, so it joins the cue list after the count.
+  if (sfxPlan) {
     sfxLine = formatSfxAccounting(sfxCues.length, sfxPlanned, sfxPlan.level, sfxAllIssues);
     console.log(`▸ ${sfxLine}`);
   }
+  if (overlaySoundCues.length > 0) {
+    sfxCues = [...sfxCues, ...overlaySoundCues].sort((a, b) => a.atSec - b.atSec);
+  }
+  // Staged into the render's public dir AND the workdir when they differ,
+  // for the Nastaliq font's reason verbatim (`stageSfxSounds`). The `--sfx`
+  // library first, so a planned effect plays the sound it was planned with.
+  stageSfxSounds([...sfxSounds, ...(overlaySounds ?? [])], sfxCues, [renderPublicDirPath, work]);
 
   const production: Production = {
     version: 1,
@@ -4637,6 +4784,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // instants. Absent when this run has no sound design, so a no-`--sfx`
     // production.json is byte-identical to a pre-feature one.
     sfx: sfxPlan,
+    // The MATCHED plan with its entry snapshots, never the user's layer (the
+    // `sfx` reason: edit keys are derived from these ids). Undefined unless a
+    // match landed or a replay carried one, so a run without a library writes
+    // a production.json byte-identical to a pre-feature one.
+    overlays: overlayPlan,
     producer: producerStamp,
     theme,
     // The EFFECTIVE output size, not the base frame (`--resolution`): this is
@@ -4745,7 +4897,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (sfxLine) {
     report +=
       `\n${sfxLine}\n` +
-      sfxAllIssues.map((i) => `  ⚠ placement ${i.placement}: ${i.issue}\n`).join("");
+      sfxAllIssues.map((i) => `  ⚠ placement ${i.placement}: ${i.issue}\n`).join("") +
+      sfxNearOverlay
+        .map((c) => `  ⚠ dropped near overlay: ${c.soundFile} at ${c.atSec.toFixed(2)}s\n`)
+        .join("");
+  }
+  // The overlay accounting, the sfx block's contract: one line the console
+  // printed too (spec §CLI "overlays: 2 placed (GDE, Firebase), 1 skipped"),
+  // then a ⚠ per issue so the count says WHICH logo went missing and why.
+  if (overlayLine) {
+    report += `\n${overlayLine}\n` + overlayWarnings.map((w) => `  ⚠ ${w}\n`).join("");
   }
   if (provider) {
     report += formatUsageReport(provider.usage, cfg.pricing);
@@ -5434,6 +5595,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // one, and the composition reads an absent key as silence, not as an empty
     // track it still has to mount.
     ...(sfxCues.length > 0 ? { sfxCues } : {}),
+    // Library overlays (overlay-library spec §Resolve), the same
+    // absent-means-off contract: no cues, no key, so a run without a library
+    // keeps a render-props.json byte-identical to a pre-feature one.
+    ...(overlayCues.length > 0 ? { overlayCues } : {}),
     // `--color-grade` PRESET looks, written only when one resolved (the
     // watermark's absent-means-off contract): the two-stage SVG filter spec
     // ({tableR, tableG, tableB, colorMatrix}, gradeToSvgFilterSpec) the
