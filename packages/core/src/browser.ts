@@ -153,6 +153,19 @@ export {
   SYNC_MIN_SHARE,
   syncDecision,
 } from "./reveal-match";
+// The library matcher (overlay-library spec §Matching), browser-safe:
+// overlay-match.ts has NO imports — it re-declares the `{id, names}` entry
+// shape rather than importing ./overlay-library, which is node-only. The
+// resolver's fall-forward and the edit server's "Find library matches" use
+// the SAME `mentionsOf` / `matchLibrary`, so a fall-forward can only land
+// where a fresh match could.
+export {
+  matchLibrary,
+  mentionsOf,
+  normalizeMatchToken,
+  type MatchablePlacement,
+  type MatchDrop,
+} from "./overlay-match";
 export type {
   Probe,
   Production,
