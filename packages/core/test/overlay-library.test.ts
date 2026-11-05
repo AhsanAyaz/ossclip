@@ -47,6 +47,21 @@ describe("loadOverlayLibrary", () => {
     ]);
   });
 
+  it("a lowercase ≤3-char name loads but reports it cannot auto-place (ruling R18)", () => {
+    const dir = emptyDir();
+    writeFileSync(join(dir, "go.png"), PNG_1X1);
+    writeFileSync(join(dir, "AWS.png"), PNG_1X1);
+    writeFileSync(join(dir, "ai.png"), PNG_1X1);
+    writeIndex(dir, [{ id: "ai", file: "ai.png", names: ["ai", "Artificial Intelligence"], kind: "logo" }]);
+    const { entries, issues } = loadOverlayLibrary(dir);
+    // Still loaded: the tray can place them by hand.
+    expect(entries.map((e) => e.id).sort()).toEqual(["ai", "aws", "go"]);
+    expect(issues).toEqual([
+      { file: "ai.png", message: expect.stringMatching(/"ai" is too short to auto-place.*library\.json/) },
+      { file: "go.png", message: expect.stringMatching(/"go" is too short.*name it in library\.json to auto-place/) },
+    ]);
+  });
+
   it("a missing directory is an empty library, not an issue", () => {
     expect(loadOverlayLibrary(join(emptyDir(), "nope"))).toEqual({ entries: [], issues: [] });
   });
@@ -109,10 +124,11 @@ describe("loadOverlayLibrary", () => {
 
   it("bad JSON → issues, unindexed files still load", () => {
     const dir = emptyDir();
-    writeFileSync(join(dir, "gde.png"), PNG_1X1);
+    // Not `gde.png`: a lowercase 3-letter stem is its own issue (ruling R18).
+    writeFileSync(join(dir, "firebase.png"), PNG_1X1);
     writeFileSync(join(dir, LIBRARY_INDEX_FILE), "{ not json");
     const { entries, issues } = loadOverlayLibrary(dir);
-    expect(entries.map((e) => e.id)).toEqual(["gde"]);
+    expect(entries.map((e) => e.id)).toEqual(["firebase"]);
     expect(issues).toHaveLength(1);
     expect(issues[0]?.file).toBe(LIBRARY_INDEX_FILE);
   });

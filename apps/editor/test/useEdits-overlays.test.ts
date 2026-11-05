@@ -87,6 +87,18 @@ describe("removeOverlay / restoreOverlay", () => {
     expect(s.doc.overlays).toBeUndefined();
   });
 
+  it("a deleted Find-matches placement leaves an entry@word tombstone (ruling R17)", () => {
+    // Splicing alone erased the only record of the deletion, so the next
+    // fresh produce matched the same first mention right back.
+    const s = editReducer(
+      state({ added: [{ id: "gde-19", entryId: "gde", word: 19, source: "match" }], entries: [GDE] }),
+      { type: "removeOverlay", id: "gde-19" },
+    );
+    expect(s.doc.overlays?.added).toEqual([]);
+    expect(s.doc.overlays?.edits).toEqual({ "gde@19": { removed: true } });
+    expect(s.past).toHaveLength(1);
+  });
+
   it("restore of something not removed is a no-op", () => {
     const s0 = state();
     expect(editReducer(s0, { type: "restoreOverlay", id: "gde@3" })).toBe(s0);

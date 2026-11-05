@@ -222,6 +222,7 @@ import {
   loadOverlayLibrary,
   matchLibrary,
   applyOverlayOverrides,
+  overlayRematchGuards,
   resolveOverlayCues,
   dropSfxNearOverlays,
   overlayStagedFile,
@@ -4661,7 +4662,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // in the source with a 2s pause cut between them land 1s apart on
       // screen, and that is the gap that decides whether the logos stack.
       const words = transcript.words.map((w, i) => (at[i] ? { ...w, start: at[i]!.start, end: at[i]!.end } : w));
-      const matched = matchLibrary(words, library, { kept: (i) => at[i] !== null });
+      // The user's layer is honoured BEFORE matching (ruling R17), with the
+      // SAME guards "Find library matches" uses: without them a fresh run
+      // re-matched the GDE that Find-matches had already put in `added`
+      // (an `@`-free id, ruling R5, so no edit key could collide) — two cues
+      // and two pops on one word — and resurrected a deleted one, whose only
+      // record is the editor's `entry@word` tombstone. No plan is passed:
+      // this run is re-deriving it, and skipping the old plan's entries
+      // would mean nothing ever re-matched.
+      const guards = overlayRematchGuards(undefined, overrideDoc.overlays, transcript.words, map);
+      const matched = matchLibrary(words, library, { kept: (i) => at[i] !== null, ...guards });
       matchDrops = matched.dropped;
       if (matched.placements.length > 0) {
         const used = new Set(matched.placements.map((p) => p.entryId));
@@ -4683,7 +4693,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const name = overlayLibrary?.find((e) => e.id === d.entryId)?.names[0] ?? d.entryId;
     overlayWarn(
       `"${name}" on word ${d.word} ("${transcript.words[d.word]?.text ?? "?"}") skipped — ` +
-        `too close to the overlay before it`,
+        `too close to another overlay`,
     );
   }
   let overlayIssues: OverlayIssue[] = [];

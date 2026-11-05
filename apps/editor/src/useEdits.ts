@@ -1504,12 +1504,23 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     }
     case "removeOverlay": {
       const slot = overlaySlot(state.doc);
-      if (slot.added.some((a) => a.id === action.id)) {
+      const added = slot.added.find((a) => a.id === action.id);
+      if (added) {
         // Spliced, along with any edit keyed to it — left behind, that edit
         // would address nothing and surface as a "stale key" on every
         // produce (`applyOverlayOverrides`' dropped list).
         const edits = { ...slot.edits };
         delete edits[action.id];
+        // A Find-matches placement leaves a TOMBSTONE under its match id
+        // (ruling R17): splicing it alone erased the only record that the
+        // user did not want this logo, and the next fresh produce matched
+        // it right back. `overlayRematchGuards` reads the `entry@word` key
+        // as "not this entry"; `applyOverlayOverrides` does not report it
+        // stale. A tray pick ("user") was never a match and needs none.
+        if (added.source === "match") {
+          const key = `${added.entryId}@${added.word}`;
+          edits[key] = { ...edits[key], removed: true };
+        }
         return commit(
           withOverlays(state.doc, { ...slot, added: slot.added.filter((a) => a.id !== action.id), edits }),
         );

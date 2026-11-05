@@ -17,8 +17,10 @@ import {
   type OverlayEntrySnapshot,
   type OverlayPlacement,
   type ProductionSfx,
+  type Word,
 } from "./schema";
 import type { TimeMap } from "./timemap";
+import { resolveOverlayCues } from "./overlay-cues";
 import { resolveSceneProps } from "./scene-registry";
 import { revealItemTexts } from "./reveal-match";
 import type { CaptionLine, CaptionWord } from "./captions";
@@ -893,7 +895,9 @@ export const OverrideDocSchema = z.object({
    * Edits are keyed by the placement's own id, which for a match is the
    * stable `${entryId}@${word}`: a `removed: true` therefore survives a
    * re-produce that re-matches the same first mention. A key matching
-   * nothing is reported as a stale key, never silently dropped.
+   * nothing is reported as a stale key, never silently dropped — unless it
+   * is a removal, which is a tombstone by design (ruling R17,
+   * `applyOverlayOverrides`).
    *
    * Optional with NO default (the `sfx` / `captionsHidden` rule): every
    * overrides.json written before this key parses byte-identically, and a
@@ -3029,8 +3033,65 @@ export function applyOverlayOverrides(
       ...(edit.sound !== undefined ? { sound: edit.sound } : {}),
     });
   }
-  const dropped: AppliedOverlayOverrides["dropped"] = Object.keys(edits)
-    .filter((key) => !used.has(key))
-    .map((key) => ({ key, reason: "stale key" as const }));
+  // A `removed: true` addressing nothing is a TOMBSTONE, not lost work
+  // (ruling R17): the editor writes `edits["<entryId>@<word>"] = {removed}`
+  // when the user deletes a Find-matches placement out of `added`, precisely
+  // so that a later fresh produce does not re-match it — and the key then
+  // addresses nothing by design. Reporting it would print a "re-match dropped
+  // it" ⚠ on every run for an edit that is doing its job; a removal of
+  // something that is not there loses the user nothing either way.
+  const dropped: AppliedOverlayOverrides["dropped"] = Object.entries(edits)
+    .filter(([key, edit]) => !used.has(key) && edit.removed !== true)
+    .map(([key]) => ({ key, reason: "stale key" as const }));
   return { entries, placements, dropped };
+}
+
+/**
+ * What a library re-match must leave alone (ruling R17), computed ONCE for
+ * both callers — a fresh `produce` and the edit server's "Find library
+ * matches" — because two copies is how a re-produce came to stack a second
+ * GDE logo onto the one Find-matches had already put in `added` (final
+ * review I1):
+ *
+ * - `skipEntryIds`: every entry a placement in the plan or the layer ever
+ *   named, before AND after edits — a placed entry, a removed one (its
+ *   placement still sits in plan/added, only the edit hides it), the entry a
+ *   swap replaced (re-adding the old logo on the same word would undo the
+ *   user) — plus the entry of every removal keyed by a match id nothing
+ *   addresses: a removal that outlived a re-produce, or the tombstone the
+ *   editor writes when a Find-matches placement is deleted from `added`.
+ * - `occupiedStarts`: OUTPUT-time starts of the overlays already on the
+ *   timeline (spec §Matching, "Overlap with another overlay"). With a map
+ *   they come from THE resolver, so a placement whose word was cut counts
+ *   where it actually plays (fall-forward and all); without one (an
+ *   unrendered workdir) every word is kept and its own start is the answer.
+ *
+ * `plan` is the matched plan the re-match would ADD to. A fresh produce is
+ * re-deriving its plan, so it passes none — skipping the old plan's entries
+ * would mean nothing ever re-matched.
+ */
+export function overlayRematchGuards(
+  plan: { entries: OverlayEntrySnapshot[]; placements: OverlayPlacement[] } | undefined,
+  layer: OverrideDoc["overlays"],
+  words: readonly Word[],
+  map?: TimeMap,
+): { skipEntryIds: Set<string>; occupiedStarts: number[] } {
+  const applied = applyOverlayOverrides(plan, layer);
+  const skipEntryIds = new Set<string>();
+  for (const p of [...(plan?.placements ?? []), ...(layer?.added ?? [])]) skipEntryIds.add(p.entryId);
+  for (const p of applied.placements) skipEntryIds.add(p.entryId);
+  for (const [key, edit] of Object.entries(layer?.edits ?? {})) {
+    if (edit.removed === true && key.includes("@")) skipEntryIds.add(key.slice(0, key.lastIndexOf("@")));
+  }
+
+  const occupiedStarts: number[] = [];
+  if (map) {
+    for (const c of resolveOverlayCues(applied, words, map, map.outputDuration).cues) occupiedStarts.push(c.atSec);
+  } else {
+    for (const p of applied.placements) {
+      const w = words[p.word];
+      if (w) occupiedStarts.push(w.start);
+    }
+  }
+  return { skipEntryIds, occupiedStarts };
 }

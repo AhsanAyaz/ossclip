@@ -71,6 +71,23 @@ export function normalizeMatchToken(text: string): string {
   return stripEdges(stripEdges(text.trim()).replace(POSSESSIVE, ""));
 }
 
+/**
+ * Can this library name auto-place at all (ruling R18)? A single-token name
+ * of ≤3 characters with no uppercase letter cannot: the exact-case rule
+ * above only protects a name that HAS capitals to be exact about, and an
+ * unindexed `go.png` is named by its lowercase stem — so it popped on
+ * "let's go" (final review I2), the wrong-word pop §Matching exists to
+ * prevent. Whisper writes the acronyms worth a logo in caps; a name that
+ * really is lowercase gets its capitals (or a longer name) in library.json.
+ * Manual placement is unaffected — the user chose the word.
+ */
+export function autoMatchableName(name: string): boolean {
+  const tokens = name.split(/\s+/).map(normalizeMatchToken).filter(Boolean);
+  if (tokens.length !== 1) return tokens.length > 0;
+  const t = tokens[0]!;
+  return t.length > SHORT_NAME_MAX_LETTERS || t !== t.toLowerCase();
+}
+
 interface CompiledName {
   entryIndex: number;
   tokens: string[];
@@ -81,7 +98,9 @@ interface CompiledName {
 
 function compileName(name: string, entryIndex: number): CompiledName | null {
   const tokens = name.split(/\s+/).map(normalizeMatchToken).filter(Boolean);
-  if (tokens.length === 0) return null;
+  // Dropped here, not in `matchLibrary` alone, so `mentionsOf` (the
+  // fall-forward) agrees: it may only land where a fresh match could.
+  if (tokens.length === 0 || !autoMatchableName(name)) return null;
   const exactCase = tokens.length === 1 && tokens[0]!.length <= SHORT_NAME_MAX_LETTERS;
   return {
     entryIndex,

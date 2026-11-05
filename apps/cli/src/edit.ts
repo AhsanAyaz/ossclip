@@ -92,12 +92,11 @@ import {
   LibraryAddError,
   ProductionOverlaysSchema,
   addLibraryEntry,
-  applyOverlayOverrides,
   loadOverlayLibrary,
   mapFromKeptSpans,
   matchLibrary,
+  overlayRematchGuards,
   overlayStagedFile,
-  resolveOverlayCues,
   userLibraryDir,
   type LoadedLibraryEntry,
   type Word,
@@ -3180,21 +3179,6 @@ export async function startEditServer(
           const planParse = ProductionOverlaysSchema.safeParse(production.overlays);
           const plan = planParse.success ? planParse.data : undefined;
 
-          // Already handled = every entry a placement in the plan or the
-          // layer ever named, before AND after edits: a placed entry, a
-          // removed one (its placement still sits in plan/added, only the
-          // edit hides it), and the entry a swap replaced (the user chose
-          // something else for that moment; re-adding the old logo on the
-          // same word would undo them).
-          const handled = new Set<string>();
-          for (const p of [...(plan?.placements ?? []), ...(layer?.added ?? [])]) handled.add(p.entryId);
-          for (const p of applyOverlayOverrides(plan, layer).placements) handled.add(p.entryId);
-          // An edit keyed by a match id the plan no longer has (a removal
-          // that outlived a re-produce) still says "not this entry here".
-          for (const [key, edit] of Object.entries(layer?.edits ?? {})) {
-            if (edit.removed === true && key.includes("@")) handled.add(key.slice(0, key.lastIndexOf("@")));
-          }
-
           // KEPT words in OUTPUT time (rulings R6, R12), through the LAST
           // render's own map — the cut a render would match against, which
           // is what produce does. No usable spans (an unrendered or legacy
@@ -3219,25 +3203,13 @@ export async function startEditServer(
             : words;
           const kept = mapped ? (i: number) => mapped![i] !== null : undefined;
 
-          // Where the overlays ALREADY on the timeline start, on screen (spec
-          // §Matching, "Overlap with another overlay"; Task 6 review): a new
-          // match within one overlay gap of one is dropped, so "Find library
-          // matches" never stacks a logo onto the user's own. With a map the
-          // starts come from THE resolver, so a placement whose word was cut
-          // is counted where it will actually play (fall-forward and all);
-          // without one, every word is kept and its own start is the answer.
-          const applied = applyOverlayOverrides(plan, layer);
-          const occupiedStarts: number[] = [];
-          if (keptMap) {
-            for (const c of resolveOverlayCues(applied, words, keptMap, keptMap.outputDuration).cues) {
-              occupiedStarts.push(c.atSec);
-            }
-          } else {
-            for (const p of applied.placements) {
-              const w = words[p.word];
-              if (w) occupiedStarts.push(w.start);
-            }
-          }
+          // What the re-match must leave alone — entries already placed,
+          // removed or swapped, and where the overlays already on screen
+          // start — from the ONE helper a fresh produce uses too (ruling
+          // R17): two copies is how a re-produce stacked a second logo onto
+          // a Find-matches add. The last render's map, so a cut placement
+          // counts where it actually plays.
+          const { skipEntryIds: handled, occupiedStarts } = overlayRematchGuards(plan, layer, words, keptMap);
 
           const library = overlayLibrary();
           const matched = matchLibrary(timed, library, { kept, skipEntryIds: handled, occupiedStarts });

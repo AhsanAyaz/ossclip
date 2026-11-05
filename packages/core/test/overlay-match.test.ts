@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchLibrary, mentionsOf, normalizeMatchToken } from "../src/overlay-match";
+import { autoMatchableName, matchLibrary, mentionsOf, normalizeMatchToken } from "../src/overlay-match";
 
 /** Word i starts at 2*i seconds — far apart unless a test says otherwise. */
 const say = (texts: string[], gap = 2): { text: string; start: number; end: number }[] =>
@@ -52,6 +52,27 @@ describe("matchLibrary", () => {
     expect(matchLibrary(say(["GDE's"]), gde).placements).toHaveLength(1);
     expect(matchLibrary(say(["GDEs"]), gde).placements).toEqual([]);
     expect(matchLibrary(say(["gde"]), gde).placements).toEqual([]);
+  });
+
+  it("a lowercase ≤3-char single-token name never auto-matches (ruling R18)", () => {
+    // The unindexed `go.png` is named "go" by its stem; exact-case alone let
+    // it pop on "let's go" (final review I2).
+    const go = [{ id: "go", names: ["go"] }];
+    expect(matchLibrary(say(["let's", "go"]), go).placements).toEqual([]);
+    expect(matchLibrary(say(["I", "write", "Go"]), go).placements).toEqual([]);
+    // Nor through the fall-forward — it may only land where a match could.
+    expect(mentionsOf(say(["let's", "go"]), ["go"])).toEqual([]);
+    // Another name on the same entry still matches.
+    expect(matchLibrary(say(["the", "golang", "team"]), [{ id: "go", names: ["go", "golang"] }]).placements).toEqual([
+      { id: "go@1", entryId: "go", word: 1, source: "match" },
+    ]);
+    expect(autoMatchableName("go")).toBe(false);
+    expect(autoMatchableName("c#")).toBe(false);
+    expect(autoMatchableName("Go")).toBe(true);
+    expect(autoMatchableName("C#")).toBe(true);
+    expect(autoMatchableName("gcp")).toBe(false);
+    expect(autoMatchableName("gcpx")).toBe(true);
+    expect(autoMatchableName("go pro")).toBe(true);
   });
 
   it("symbol names never collapse to a bare letter", () => {
@@ -140,6 +161,21 @@ describe("matchLibrary", () => {
     // it, charlie (4s) is not. Bravo's drop must not advance the gap walk,
     // or charlie would wrongly be compared against it.
     const { placements, dropped } = matchLibrary(words, entries, { occupiedStarts: [2.5], minGapSec: 1.5 });
+    expect(placements.map((p) => p.entryId)).toEqual(["alpha", "charlie"]);
+    expect(dropped).toEqual([{ entryId: "bravo", word: 1, reason: "overlap" }]);
+  });
+
+  it("an occupied-start drop does not advance the gap walk (discriminating)", () => {
+    // alpha 0s placed; bravo 2.0s is 0.5s from the overlay already at 1.5s
+    // and drops; charlie 3.2s is 1.7s from that overlay. Had bravo's drop
+    // advanced the walk, charlie (1.2s after bravo) would wrongly drop too.
+    const words = [
+      { text: "alpha", start: 0, end: 0.4 },
+      { text: "bravo", start: 2.0, end: 2.4 },
+      { text: "charlie", start: 3.2, end: 3.6 },
+    ];
+    const entries = ["alpha", "bravo", "charlie"].map((n) => ({ id: n, names: [n] }));
+    const { placements, dropped } = matchLibrary(words, entries, { occupiedStarts: [1.5], minGapSec: 1.5 });
     expect(placements.map((p) => p.entryId)).toEqual(["alpha", "charlie"]);
     expect(dropped).toEqual([{ entryId: "bravo", word: 1, reason: "overlap" }]);
   });

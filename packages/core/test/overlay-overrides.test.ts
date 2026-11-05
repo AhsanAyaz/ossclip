@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { applyOverlayOverrides, OverrideDocSchema } from "../src/overrides";
-import { ProductionSchema, type OverlayEntrySnapshot, type OverlayPlacement } from "../src/schema";
+import { matchLibrary } from "../src/overlay-match";
+import { applyOverlayOverrides, OverrideDocSchema, overlayRematchGuards } from "../src/overrides";
+import { ProductionSchema, type OverlayEntrySnapshot, type OverlayPlacement, type Segment } from "../src/schema";
+import { TimeMap } from "../src/timemap";
 
 /**
  * The user's layer over the matched overlay plan (spec §Placement schema).
@@ -96,8 +98,75 @@ describe("applyOverlayOverrides", () => {
     expect(out.placements).toEqual(plan.placements);
   });
 
+  it("a removal addressing nothing is a tombstone, not a stale key (ruling R17)", () => {
+    const out = applyOverlayOverrides(plan, layer({ edits: { "gde@19": { removed: true }, "x@1": { look: "card" } } }));
+    expect(out.dropped).toEqual([{ key: "x@1", reason: "stale key" }]);
+    expect(out.placements).toEqual(plan.placements);
+  });
+
   it("an added id with @ is refused (that is the matched-id namespace)", () => {
     expect(() => layer({ added: [{ id: "gde@1", entryId: "gde", word: 1, source: "user" }] })).toThrow();
+  });
+});
+
+describe("overlayRematchGuards (ruling R17)", () => {
+  /** Word i starts at 2i source seconds. */
+  const words = ["so", "I", "became", "GDE", "and", "used", "Firebase", "a", "lot"].map((text, i) => ({
+    text,
+    start: i * 2,
+    end: i * 2 + 0.4,
+  }));
+  const library = [
+    { id: "gde", names: ["GDE"] },
+    { id: "fb", names: ["Firebase"] },
+  ];
+  const keepAll = new TimeMap([{ srcIn: 0, srcOut: 30, kind: "keep" } satisfies Segment]);
+  const fresh = (l: ReturnType<typeof layer>) =>
+    matchLibrary(words, library, { ...overlayRematchGuards(undefined, l, words, keepAll), minGapSec: 0 });
+
+  it("a fresh match never re-places an entry Find-matches already put in added", () => {
+    // The I1 bug: Find-matches stored GDE in `added` under an @-free id, so a
+    // fresh produce matched `gde@3` again — two cues and two pops on word 3.
+    const l = layer({ added: [{ id: "gde-3", entryId: "gde", word: 3, source: "match" }], entries: [gde] });
+    const { placements } = fresh(l);
+    expect(placements.map((p) => p.id)).toEqual(["fb@6"]);
+    const applied = applyOverlayOverrides({ entries: [gde, fb], placements }, l);
+    expect(applied.placements.filter((p) => p.entryId === "gde")).toHaveLength(1);
+  });
+
+  it("the editor's tombstone keeps a deleted Find-matches placement from returning", () => {
+    const l = layer({ edits: { "gde@3": { removed: true } } });
+    expect(fresh(l).placements.map((p) => p.id)).toEqual(["fb@6"]);
+    // Without the tombstone the same layer re-matches it — the resurrection.
+    expect(fresh(layer({})).placements.map((p) => p.id)).toEqual(["gde@3", "fb@6"]);
+  });
+
+  it("a fresh produce passes no plan, so the previous run's own matches re-derive", () => {
+    expect(overlayRematchGuards(undefined, undefined, words, keepAll)).toEqual({
+      skipEntryIds: new Set(),
+      occupiedStarts: [],
+    });
+    // A swap edit on a plan id is not "handled" without the plan: the match
+    // must come back for the swap to apply to it.
+    const swap = layer({ edits: { "gde@3": { entryId: "fb" } } });
+    expect(overlayRematchGuards(undefined, swap, words, keepAll).skipEntryIds).toEqual(new Set());
+  });
+
+  it("with a plan: placed, swapped-from and removed entries are all handled", () => {
+    const g = overlayRematchGuards(plan, layer({ edits: { "gde@3": { entryId: "meme" }, "fb@12": { removed: true } } }), words);
+    expect(g.skipEntryIds).toEqual(new Set(["gde", "fb", "meme"]));
+  });
+
+  it("occupiedStarts come from the resolver with a map, from word starts without", () => {
+    const cut = new TimeMap([
+      { srcIn: 0, srcOut: 4, kind: "keep" },
+      { srcIn: 4, srcOut: 8, kind: "remove" },
+      { srcIn: 8, srcOut: 30, kind: "keep" },
+    ] satisfies Segment[]);
+    const l = layer({ added: [{ id: "gde-1", entryId: "gde", word: 6, source: "user" }], entries: [gde] });
+    // Word 6 at source 12s plays at 8s once 4s of source are cut before it.
+    expect(overlayRematchGuards(undefined, l, words, cut).occupiedStarts).toEqual([8]);
+    expect(overlayRematchGuards(undefined, l, words).occupiedStarts).toEqual([12]);
   });
 });
 

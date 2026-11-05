@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod/v4";
 import { CONFIG_DIR } from "./config";
+import { autoMatchableName } from "./overlay-match";
 
 /**
  * The global overlay library — `~/.ossclip/library/` — discovered and grown.
@@ -254,6 +255,14 @@ export function loadOverlayLibrary(dir: string = userLibraryDir()): OverlayLibra
       }
       taken.add(entry.id);
       entries.push({ ...entry, absPath, format });
+      // Kept (it still places by hand), but said out loud (ruling R18): a
+      // name the matcher refuses must not fail silently.
+      for (const n of entry.names.filter((x) => !autoMatchableName(x))) {
+        issues.push({
+          file: entry.file,
+          message: `"${entry.id}": name "${n}" is too short to auto-place in lowercase — give it its capitals or a longer name in ${LIBRARY_INDEX_FILE}`,
+        });
+      }
     }
   }
 
@@ -269,10 +278,19 @@ export function loadOverlayLibrary(dir: string = userLibraryDir()): OverlayLibra
     const stem = basename(name, extname(name));
     const id = slugifyEntryId(stem, taken);
     taken.add(id);
+    const entryName = stemToName(stem) || id;
+    // An unindexed `go.png` would be named "go" — never auto-placed (ruling
+    // R18, `autoMatchableName`), so the user is told how to fix it.
+    if (!autoMatchableName(entryName)) {
+      issues.push({
+        file: name,
+        message: `"${entryName}" is too short to auto-place from a lowercase file name — name it in ${LIBRARY_INDEX_FILE} to auto-place (it can still be placed by hand)`,
+      });
+    }
     entries.push({
       id,
       file: name,
-      names: [stemToName(stem) || id],
+      names: [entryName],
       // An unindexed GIF is assumed animated — the add path's default too.
       kind: format === "gif" ? "gif" : "logo",
       absPath,
