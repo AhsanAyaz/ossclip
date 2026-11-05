@@ -167,11 +167,23 @@ function claimWalk(spoken: Spoken, entries: readonly MatchEntry[]): { p: number;
  * Overlap (spec §Matching): placements whose word STARTS fall within
  * `minGapSec` of the last surviving placement are dropped and reported, the
  * sfx normaliser's posture — the earlier mention keeps the screen.
+ *
+ * `occupiedStarts` are the OUTPUT-time starts of overlays already on the
+ * timeline (the edit server's re-match, Task 6 review): the same overlap
+ * rule against them, so "Find library matches" cannot stack a logo onto one
+ * the user already has. A candidate dropped for it is reported like any
+ * overlap and does NOT advance the gap walk — it never reached the screen,
+ * so it must not push a later new match off it.
  */
 export function matchLibrary(
   words: readonly MatchWord[],
   entries: readonly MatchEntry[],
-  opts: { kept?: (wordIndex: number) => boolean; minGapSec?: number; skipEntryIds?: ReadonlySet<string> } = {},
+  opts: {
+    kept?: (wordIndex: number) => boolean;
+    minGapSec?: number;
+    skipEntryIds?: ReadonlySet<string>;
+    occupiedStarts?: readonly number[];
+  } = {},
 ): { placements: MatchablePlacement[]; dropped: MatchDrop[] } {
   const spoken = prepareSpoken(words, opts.kept);
   const firstAt = new Map<number, number>(); // entryIndex → kept position
@@ -190,7 +202,8 @@ export function matchLibrary(
     const entryId = entries[ei]!.id;
     const word = spoken.index[p]!;
     const start = words[word]!.start;
-    if (start - lastStart < minGap) {
+    const occupied = opts.occupiedStarts?.some((t) => Math.abs(start - t) < minGap) ?? false;
+    if (occupied || start - lastStart < minGap) {
       dropped.push({ entryId, word, reason: "overlap" });
       continue;
     }

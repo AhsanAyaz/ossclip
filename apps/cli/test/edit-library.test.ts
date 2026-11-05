@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startEditServer } from "../src/edit";
@@ -223,6 +223,38 @@ describe("POST /api/library + GET /api/library", () => {
   });
 });
 
+describe("content-type gate (ruling R14)", () => {
+  /** A cross-site page's "simple" POST: text/plain, so no CORS preflight. */
+  const simplePost = (url: string, body: unknown): Promise<Response> =>
+    fetch(url, { method: "POST", headers: { "content-type": "text/plain" }, body: JSON.stringify(body) });
+
+  it("text/plain → 415 on the three POSTs, and nothing is written", async () => {
+    const { url, work, lib } = await boot();
+    await writeLibrary(lib, [{ id: "alpha", names: ["alpha"] }]);
+    const before = readdirSync(lib).sort();
+    const src = join(await mkdtemp(join(tmpdir(), "ossclip-src-")), "logo.png");
+    await writeFile(src, PNG);
+    const add = await simplePost(`${url}/api/library`, { name: "Stolen", source: { path: src } });
+    expect(add.status).toBe(415);
+    expect(typeof (await add.json()).error).toBe("string");
+    expect((await simplePost(`${url}/api/overlays/stage`, { entryId: "alpha" })).status).toBe(415);
+    expect((await simplePost(`${url}/api/overlays/match`, {})).status).toBe(415);
+    expect(readdirSync(lib).sort()).toEqual(before);
+    expect(existsSync(join(work, "library"))).toBe(false);
+  });
+
+  it("application/json with a charset parameter is accepted", async () => {
+    const { url, lib } = await boot();
+    const res = await fetch(`${url}/api/library`, {
+      method: "POST",
+      headers: { "content-type": "Application/JSON; charset=utf-8" },
+      body: JSON.stringify({ name: "Ok", source: { data: PNG.toString("base64"), mimeType: "image/png" } }),
+    });
+    expect(res.status).toBe(201);
+    expect(existsSync(join(lib, "ok.png"))).toBe(true);
+  });
+});
+
 describe("GET /api/library/file", () => {
   it("GET /api/library/file?id=unknown → 404", async () => {
     const { url } = await boot();
@@ -305,6 +337,25 @@ describe("overlay endpoints", () => {
     expect(readFileSync(join(work, "library", "alpha.png"))).toEqual(fresh);
   });
 
+  it("a failed re-copy leaves the existing workdir copy in place", async () => {
+    const { url, work, lib } = await boot();
+    await writeLibrary(lib, [{ id: "alpha", names: ["alpha"] }]);
+    expect((await post(`${url}/api/overlays/stage`, { entryId: "alpha" })).status).toBe(200);
+    // Read-only library/ folder: the temp copy beside the old one cannot be
+    // created, so the swap fails — and must not have deleted the old art first.
+    const dir = join(work, "library");
+    await chmod(dir, 0o555);
+    try {
+      const res = await post(`${url}/api/overlays/stage`, { entryId: "alpha" });
+      expect(res.status).toBe(500);
+      expect(await res.text()).not.toContain(lib);
+    } finally {
+      await chmod(dir, 0o755);
+    }
+    expect(readFileSync(join(dir, "alpha.png"))).toEqual(PNG);
+    expect(readdirSync(dir)).toEqual(["alpha.png"]);
+  });
+
   it("stage of an unknown entry → 404", async () => {
     const { url } = await boot();
     expect((await post(`${url}/api/overlays/stage`, { entryId: "nope" })).status).toBe(404);
@@ -342,15 +393,16 @@ describe("overlay endpoints", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.placements).toEqual([
-      { id: "delta@3", entryId: "delta", word: 3, source: "match" },
-      { id: "echo@4", entryId: "echo", word: 4, source: "match" },
-    ]);
-    expect(body.entries.map((e: { id: string }) => e.id)).toEqual(["delta", "echo"]);
+    // echo's first mention is word 4 — where the user's own charlie already
+    // sits — so it is dropped as an overlap, not stacked onto it. delta (6s)
+    // is 2s from charlie (8s) and survives; the removed bravo occupies nothing.
+    expect(body.placements).toEqual([{ id: "delta@3", entryId: "delta", word: 3, source: "match" }]);
+    expect(body.entries.map((e: { id: string }) => e.id)).toEqual(["delta"]);
     expect(body.skipped).toBe(3);
-    // The new matches' files are staged; the skipped ones are not touched.
+    expect(body.dropped).toEqual([{ entryId: "echo", word: 4, reason: "too close to another overlay" }]);
+    // The new match's file is staged; the skipped and dropped ones are not.
     expect(existsSync(join(work, "library", "delta.png"))).toBe(true);
-    expect(existsSync(join(work, "library", "echo.png"))).toBe(true);
+    expect(existsSync(join(work, "library", "echo.png"))).toBe(false);
     expect(existsSync(join(work, "library", "charlie.png"))).toBe(false);
   });
 
@@ -378,6 +430,57 @@ describe("overlay endpoints", () => {
     const body = await (await post(`${url}/api/overlays/match`, {})).json();
     expect(body.placements).toEqual([{ id: "echo@4", entryId: "echo", word: 4, source: "match" }]);
     expect(body.skipped).toBe(0);
+  });
+
+  it("match spaces new matches against existing overlays on the OUTPUT clock", async () => {
+    const work = await fixtureWorkdir();
+    // The render cut 2.6–5.8s, so "delta" (source 6s) plays at 2.8s — 0.8s
+    // after the user's overlay on "bravo" (source 2s → output 2s), and
+    // "charlie" (source 4s) is gone. On the source clock delta is 4s clear.
+    await writeFile(
+      join(work, "render-props.json"),
+      JSON.stringify({
+        videoFileName: "clip.mp4",
+        sceneCues: [],
+        captionLines: [],
+        spans: [
+          { srcIn: 0, srcOut: 2.6, outIn: 0, outOut: 2.6 },
+          { srcIn: 5.8, srcOut: 10, outIn: 2.6, outOut: 6.8 },
+        ],
+      }),
+    );
+    await writeFile(join(work, "production.json"), JSON.stringify({ transcript: { language: "en", words: WORDS } }));
+    const { url, lib } = await boot({ work });
+    await writeLibrary(lib, [
+      { id: "bravo", names: ["bravo"] },
+      { id: "delta", names: ["delta"] },
+    ]);
+    const body = await (
+      await post(`${url}/api/overlays/match`, {
+        overlays: {
+          added: [{ id: "u1", entryId: "bravo", word: 1, source: "user" }],
+          entries: [snap("bravo", "bravo")],
+        },
+      })
+    ).json();
+    expect(body.placements).toEqual([]);
+    expect(body.dropped).toEqual([{ entryId: "delta", word: 3, reason: "too close to another overlay" }]);
+  });
+
+  it("match reports an entry whose file could not be staged instead of dropping it silently", async () => {
+    const work = await fixtureWorkdir();
+    await writeFile(join(work, "production.json"), JSON.stringify({ transcript: { language: "en", words: WORDS } }));
+    // A FILE where the workdir's library/ folder should be: staging cannot mkdir.
+    await writeFile(join(work, "library"), "in the way");
+    const { url, lib } = await boot({ work });
+    await writeLibrary(lib, [{ id: "delta", names: ["Delta"] }]);
+    const body = await (await post(`${url}/api/overlays/match`, {})).json();
+    expect(body.placements).toEqual([]);
+    expect(body.entries).toEqual([]);
+    expect(body.dropped).toHaveLength(1);
+    expect(body.dropped[0]).toMatchObject({ entryId: "delta", word: 3 });
+    expect(body.dropped[0].reason).toMatch(/could not stage/);
+    expect(body.dropped[0].reason).not.toContain(lib);
   });
 
   it("match without a transcript → 400", async () => {

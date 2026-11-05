@@ -97,6 +97,7 @@ import {
   mapFromKeptSpans,
   matchLibrary,
   overlayStagedFile,
+  resolveOverlayCues,
   userLibraryDir,
   type LoadedLibraryEntry,
   type Word,
@@ -465,6 +466,18 @@ async function readJsonBody(
   } catch {
     return { ok: false, error: "request body is not valid JSON" };
   }
+}
+
+/**
+ * Whether a POST says it is JSON (`application/json`, any parameters). Ruling
+ * R14: a cross-site page can send a "simple" `text/plain` POST to
+ * 127.0.0.1:<port> with no CORS preflight, and without this check the
+ * library-add routes would fetch a LAN URL for it, or copy a local image by
+ * absolute path into the library. `application/json` is not a simple type,
+ * so requiring it forces the preflight this server never answers.
+ */
+function isJsonRequest(req: IncomingMessage): boolean {
+  return (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() === "application/json";
 }
 
 /** A zod failure as one readable sentence for a 400 body. */
@@ -3008,6 +3021,7 @@ export async function startEditServer(
           // The tray's add (spec §Server endpoints): a pasted URL or path, or
           // a dropped file. No workdir guard — it writes the global library,
           // not a project; placing it is the separate `/api/overlays/stage`.
+          if (!isJsonRequest(req)) return send(415, { error: "expected content-type: application/json" });
           // Worded in FILE size: the user dropped a 25 MB file, and "body
           // over 26.7 MB" (its base64) would name a number they never saw.
           const body = await readJsonBody(
@@ -3097,6 +3111,7 @@ export async function startEditServer(
           // workdir (Task 6 ruling): the editor previews `/media/library/…`,
           // and every render restages from this copy.
           if (!workdir) return send(409, { error: "no workdir open" });
+          if (!isJsonRequest(req)) return send(415, { error: "expected content-type: application/json" });
           const body = await readJsonBody(req, 64 * 1024);
           if (!body.ok) return send(400, { error: body.error });
           const parsed = z.object({ entryId: z.string().min(1) }).safeParse(body.value);
@@ -3108,11 +3123,23 @@ export async function startEditServer(
           // A pick RE-COPIES (spec "Snapshot": "New art in the library
           // reaches a project only through a tray swap, which re-copies").
           // `stageOverlayFiles` keeps an existing workdir copy on purpose —
-          // that is the render's rule — so the stale copy goes first. Safe
-          // only because the entry was JUST loaded with its file present:
-          // the library is the source this request copies from.
+          // that is the render's rule — so an existing copy is REPLACED here
+          // first: copied to a same-dir temp, then renamed over it, so a
+          // failed copy leaves every placement already using this entry with
+          // its old art rather than with none (Task 6 review). A missing copy
+          // is `stageOverlayFiles`' ordinary first-use path below.
           const workCopy = join(workdir, ...overlayStagedFile(snapshot).split("/"));
-          if (existsSync(workCopy)) await unlink(workCopy);
+          if (existsSync(workCopy)) {
+            const tmp = `${workCopy}.${process.pid}.${Date.now()}.tmp`;
+            try {
+              await copyFile(entry.absPath, tmp);
+              await rename(tmp, workCopy);
+            } catch (err) {
+              await unlink(tmp).catch(() => {});
+              const message = err instanceof Error ? err.message : String(err);
+              return send(500, { error: scrubLibraryPath(`could not copy "${entry.id}": ${message}`) });
+            }
+          }
           const staged = stageOverlayFiles([snapshot], library, workdir, workdir);
           if (staged.issues.length > 0) return send(400, { error: scrubLibraryPath(staged.issues.join("; ")) });
           return send(200, { entry: snapshot });
@@ -3127,6 +3154,7 @@ export async function startEditServer(
           // `overlays.added` (minting `@`-free ids, ruling R5) and saves
           // through PUT /api/overrides like every other edit.
           if (!workdir) return send(409, { error: "no workdir open" });
+          if (!isJsonRequest(req)) return send(415, { error: "expected content-type: application/json" });
           const body = await readJsonBody(req, 4 * 1024 * 1024);
           if (!body.ok) return send(400, { error: body.error });
           // The page's CURRENT layer, unsaved edits included — the doc's own
@@ -3172,6 +3200,7 @@ export async function startEditServer(
           // is what produce does. No usable spans (an unrendered or legacy
           // workdir) means every word counts as kept, at source time.
           let mapped: ({ start: number; end: number } | null)[] | undefined;
+          let keptMap: ReturnType<typeof mapFromKeptSpans> | undefined;
           try {
             const spans = z
               .array(z.object({ srcIn: z.number(), srcOut: z.number(), outIn: z.number(), outOut: z.number() }))
@@ -3179,17 +3208,39 @@ export async function startEditServer(
             if (spans.success && spans.data.length > 0) {
               const map = mapFromKeptSpans(spans.data);
               mapped = words.map((w) => map.mapWord(w));
+              keptMap = map;
             }
           } catch {
             mapped = undefined;
+            keptMap = undefined;
           }
           const timed = mapped
             ? words.map((w, i) => (mapped![i] ? { ...w, start: mapped![i]!.start, end: mapped![i]!.end } : w))
             : words;
           const kept = mapped ? (i: number) => mapped![i] !== null : undefined;
 
+          // Where the overlays ALREADY on the timeline start, on screen (spec
+          // §Matching, "Overlap with another overlay"; Task 6 review): a new
+          // match within one overlay gap of one is dropped, so "Find library
+          // matches" never stacks a logo onto the user's own. With a map the
+          // starts come from THE resolver, so a placement whose word was cut
+          // is counted where it will actually play (fall-forward and all);
+          // without one, every word is kept and its own start is the answer.
+          const applied = applyOverlayOverrides(plan, layer);
+          const occupiedStarts: number[] = [];
+          if (keptMap) {
+            for (const c of resolveOverlayCues(applied, words, keptMap, keptMap.outputDuration).cues) {
+              occupiedStarts.push(c.atSec);
+            }
+          } else {
+            for (const p of applied.placements) {
+              const w = words[p.word];
+              if (w) occupiedStarts.push(w.start);
+            }
+          }
+
           const library = overlayLibrary();
-          const matched = matchLibrary(timed, library, { kept, skipEntryIds: handled });
+          const matched = matchLibrary(timed, library, { kept, skipEntryIds: handled, occupiedStarts });
           // "skipped M already placed or removed" (spec §Editor): the
           // entries that HAVE a kept mention but were handled. A second,
           // gap-free pass counts them, because the real pass drops handled
@@ -3205,10 +3256,34 @@ export async function startEditServer(
           const stagedIds = new Set(
             entries.filter((e) => staged.staged.has(overlayStagedFile(e))).map((e) => e.id),
           );
+          // Every first mention that found its entry but is NOT being added,
+          // with why — so the editor's "added N" can never quietly be fewer
+          // than the matches it was told about (Task 6 review). `skipped`
+          // stays the spec's "already placed or removed" count on its own.
+          const dropped: { entryId: string; word: number; reason: string }[] = [
+            ...matched.dropped.map((d) => ({
+              entryId: d.entryId,
+              word: d.word,
+              reason: "too close to another overlay",
+            })),
+            ...matched.placements
+              .filter((p) => !stagedIds.has(p.entryId))
+              .map((p) => ({
+                entryId: p.entryId,
+                word: p.word,
+                // `stageOverlayFiles` words its issues by display NAME.
+                reason: scrubLibraryPath(
+                  staged.issues.find((i) =>
+                    i.startsWith(`"${entries.find((e) => e.id === p.entryId)?.name ?? p.entryId}":`),
+                  ) ?? "its file could not be staged",
+                ),
+              })),
+          ];
           return send(200, {
             placements: matched.placements.filter((p) => stagedIds.has(p.entryId)),
             entries: entries.filter((e) => stagedIds.has(e.id)),
             skipped,
+            dropped,
           });
         }
 

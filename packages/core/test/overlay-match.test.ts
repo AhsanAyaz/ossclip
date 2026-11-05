@@ -131,6 +131,18 @@ describe("matchLibrary", () => {
     // A skipped entry still claims its words, so "Google" inside its phrase never pops.
     expect(placements).toEqual([{ id: "google@4", entryId: "google", word: 4, source: "match" }]);
   });
+
+  it("occupiedStarts drops a match near an existing overlay without blocking the next one", () => {
+    // say() spaces words 2s apart: alpha 0s, bravo 2s, charlie 4s.
+    const words = say(["alpha", "bravo", "charlie"]);
+    const entries = ["alpha", "bravo", "charlie"].map((n) => ({ id: n, names: [n] }));
+    // An overlay the user already has at 2.5s: bravo (2s) is within 1.5s of
+    // it, charlie (4s) is not. Bravo's drop must not advance the gap walk,
+    // or charlie would wrongly be compared against it.
+    const { placements, dropped } = matchLibrary(words, entries, { occupiedStarts: [2.5], minGapSec: 1.5 });
+    expect(placements.map((p) => p.entryId)).toEqual(["alpha", "charlie"]);
+    expect(dropped).toEqual([{ entryId: "bravo", word: 1, reason: "overlap" }]);
+  });
 });
 
 describe("mentionsOf", () => {
