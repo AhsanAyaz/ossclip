@@ -91,6 +91,8 @@ describe.skipIf(!hasFfmpeg)("--sfx end to end", () => {
     try {
       const result = await produce(join(dir, "take.mp4"), {
         cleanup: "standard",
+        // Hermetic (ruling R20): never the real ~/.ossclip/library.
+        libraryDir: mkdtempSync(join(tmpdir(), "ossclip-empty-library-")),
         render: false,
         mezzanine: false,
         transcript: join(dir, "transcript.json"),
