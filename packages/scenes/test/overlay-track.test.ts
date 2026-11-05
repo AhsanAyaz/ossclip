@@ -1,12 +1,16 @@
+import type React from "react";
 import { describe, expect, it } from "vitest";
 import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
 import {
   cardBackdropOpacity,
   isGifFile,
   overlayCuesFor,
+  overlayEntranceScale,
   overlayFadeOut,
+  overlayImageStyle,
   overlaySrc,
 } from "../src/overlay-track";
+import { overlayRect } from "../src/overlay-rect";
 import {
   captionAnchorForLine,
   captionBlockTop,
@@ -104,6 +108,57 @@ describe("fades", () => {
     expect(cardBackdropOpacity(0, 30)).toBe(0);
     expect(cardBackdropOpacity(2, 30)).toBeCloseTo(2 / 4.5);
     expect(cardBackdropOpacity(5, 30)).toBe(1);
+  });
+});
+
+/**
+ * Where the entrance scale's pixels actually land, read back from the style
+ * the image element gets: CSS `scale(s)` about `center bottom` of THIS
+ * element keeps its bottom edge and pulls the rest toward it.
+ */
+function visualRect(style: React.CSSProperties): { top: number; bottom: number; left: number; right: number } {
+  const pctOf = (v: unknown) => Number.parseFloat(String(v)) / 100;
+  const s = Number(/scale\(([^)]+)\)/.exec(String(style.transform ?? "scale(1)"))![1]);
+  expect(style.transformOrigin ?? "center bottom").toBe("center bottom");
+  const top = pctOf(style.top);
+  const h = pctOf(style.height);
+  const left = pctOf(style.left);
+  const w = pctOf(style.width);
+  const bottom = top + h;
+  return { top: bottom - s * h, bottom, left: left + (w * (1 - s)) / 2, right: left + w - (w * (1 - s)) / 2 };
+}
+
+describe("overlay entrance never reaches the captions (review round 1)", () => {
+  // The bug: the scale sat on a FULL-FRAME layer with origin center bottom,
+  // i.e. the frame's bottom edge — at 0.9 a box ending at 0.64 drew down to
+  // 0.676, into the caption block.
+  it("scales about the image's own bottom edge, inside its static box, at every progress", () => {
+    for (const captionTop of [0.66, 0.3]) {
+      const box = overlayRect({ frame: PORTRAIT_FRAME, captionTop });
+      for (const p of [0, 0.25, 0.44, 1]) {
+        const style = overlayImageStyle(box, overlayEntranceScale(p));
+        // The transform rides the SAME element that carries the box's position.
+        expect(style.position).toBe("absolute");
+        expect(style.transform).toBe(`scale(${overlayEntranceScale(p)})`);
+        const v = visualRect(style);
+        expect(v.bottom).toBeLessThanOrEqual(box.y + box.h + 1e-9);
+        expect(v.bottom).toBeLessThan(captionTop);
+        expect(v.top).toBeGreaterThanOrEqual(box.y - 1e-9);
+        expect(v.left).toBeGreaterThanOrEqual(box.x - 1e-9);
+        expect(v.right).toBeLessThanOrEqual(box.x + box.w + 1e-9);
+      }
+    }
+  });
+
+  it("starts at pop's 0.9 and settles at 1", () => {
+    expect(overlayEntranceScale(0)).toBeCloseTo(0.9);
+    expect(overlayEntranceScale(1)).toBe(1);
+  });
+
+  it("no scale → no transform (the card's image)", () => {
+    const style = overlayImageStyle({ x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
+    expect(style.transform).toBeUndefined();
+    expect(style.transformOrigin).toBeUndefined();
   });
 });
 

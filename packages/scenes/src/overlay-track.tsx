@@ -75,6 +75,15 @@ export function overlaySrc(file: string, resolve: (f: string) => string = static
   return /^(\/|https?:\/\/)/.test(file) ? file : resolve(file);
 }
 
+/**
+ * The overlay's entrance scale for a spring progress — anim.ts `pop`'s exact
+ * curve (0.9 → 1), as a number so it can be applied about the image's own
+ * bottom edge rather than as a frame-level transform string.
+ */
+export function overlayEntranceScale(progress: number): number {
+  return 0.9 + 0.1 * progress;
+}
+
 /** Spec §Rendering, Animation: "fade out over the last ~0.25s". */
 const FADE_OUT_SEC = 0.25;
 /** The card's black fades in this fast — a cut-like beat, not a dissolve. */
@@ -91,13 +100,28 @@ export function cardBackdropOpacity(localFrame: number, fps: number): number {
   return Math.max(0, Math.min(1, localFrame / (CARD_FADE_IN_SEC * fps)));
 }
 
-const pct = (r: Rect): React.CSSProperties => ({
-  position: "absolute",
-  left: `${r.x * 100}%`,
-  top: `${r.y * 100}%`,
-  width: `${r.w * 100}%`,
-  height: `${r.h * 100}%`,
-});
+/**
+ * The positioned element for an image rect, entrance scale included.
+ *
+ * The scale lives ON this element, origin its own bottom-centre, and that
+ * placement is the point: scaled on a full-frame layer with `center bottom`,
+ * the origin was the FRAME's bottom edge, so a 0.9 scale pulled every point
+ * toward it — a box ending a gap above the captions dropped ~31px into them
+ * during each entrance (task-4 review, round 1). About its own bottom edge, a
+ * scale ≤ 1 can only shrink the image up and inward from where the box ends.
+ * `scale` absent = no transform (the card's image, which pops on its layer
+ * about the frame's centre — the box's own centre too).
+ */
+export function overlayImageStyle(r: Rect, scale?: number): React.CSSProperties {
+  return {
+    position: "absolute",
+    left: `${r.x * 100}%`,
+    top: `${r.y * 100}%`,
+    width: `${r.w * 100}%`,
+    height: `${r.h * 100}%`,
+    ...(scale === undefined ? {} : { transform: `scale(${scale})`, transformOrigin: "center bottom" }),
+  };
+}
 
 /**
  * The image itself, inside its max box. A file that fails to load renders
@@ -110,7 +134,9 @@ const OverlayImage: React.FC<{
   box: Rect;
   align: "bottom" | "center";
   frame: FrameSize;
-}> = ({ cue, box, align, frame }) => {
+  /** The entrance scale, applied about the image's own bottom edge. */
+  scale?: number;
+}> = ({ cue, box, align, frame, scale }) => {
   const [failed, setFailed] = React.useState(false);
   // GIFs only: the canvas centres its own contain-fit, so the bottom edge is
   // placed by hand once the decoder reports the size (containedRect).
@@ -124,7 +150,7 @@ const OverlayImage: React.FC<{
   if (isGifFile(cue.file)) {
     const rect = gifAspect === null ? box : containedRect(box, gifAspect, frame, align);
     return (
-      <div style={pct(rect)}>
+      <div style={overlayImageStyle(rect, scale)}>
         <Gif
           src={src}
           fit="contain"
@@ -138,7 +164,7 @@ const OverlayImage: React.FC<{
     );
   }
   return (
-    <div style={pct(box)}>
+    <div style={overlayImageStyle(box, scale)}>
       <Img
         src={src}
         onError={onError}
@@ -167,8 +193,19 @@ const OverlayLook: React.FC<{
   const p = enterProgress(local, fps);
   const out = overlayFadeOut(local, durationInFrames, fps);
   const entrance = pop(p);
-  const image = { transform: entrance.transform, transformOrigin: "center bottom" };
-  if (cue.look === "card") {
+  // Memoised, and ahead of the card branch to keep the hook order: the box
+  // is constant over the cue's window (overlayBoxForCue), and sampling every
+  // frame of the window on every rendered frame was pure waste.
+  const box = React.useMemo(
+    () =>
+      cue.look === "overlay"
+        ? overlayBoxForCue(cue, fps, { width, height }, captionTopAt, graphicRectAt)
+        : null,
+    // Keyed on the cue's look and timing, not the object: the parsed list is
+    // rebuilt per composition render, and the box depends on nothing else.
+    [cue.look, cue.atSec, cue.endSec, fps, width, height, captionTopAt, graphicRectAt],
+  );
+  if (cue.look === "card" || box === null) {
     return (
       <AbsoluteFill style={{ pointerEvents: "none", opacity: out }}>
         <AbsoluteFill
@@ -180,14 +217,17 @@ const OverlayLook: React.FC<{
       </AbsoluteFill>
     );
   }
-  // Recomputed per frame but deterministic over the cue's whole window, so
-  // the box never moves while it is on screen (overlayBoxForCue).
-  const box = overlayBoxForCue(cue, fps, frame, captionTopAt, graphicRectAt);
   return (
     <AbsoluteFill style={{ pointerEvents: "none", opacity: p * out }}>
-      <AbsoluteFill style={image}>
-        <OverlayImage cue={cue} box={box} align="bottom" frame={frame} />
-      </AbsoluteFill>
+      {/* The scale goes to the image's own element (overlayImageStyle), never
+          to a full-frame layer — see there for the caption overlap that cost. */}
+      <OverlayImage
+        cue={cue}
+        box={box}
+        align="bottom"
+        frame={frame}
+        scale={overlayEntranceScale(p)}
+      />
     </AbsoluteFill>
   );
 };
@@ -210,13 +250,18 @@ export const OverlayTrack: React.FC<{
   const { fps, durationInFrames: total } = useVideoConfig();
   return (
     <>
-      {cues.map((cue) => {
+      {cues.map((cue, i) => {
         // §115: the end frame from the end TIME. A cue past the last frame
         // is dropped, `visibleSfxCues`' rule.
         const { from, durationInFrames } = frameWindow(cue.atSec, cue.endSec, fps);
         if (from >= total) return null;
         return (
-          <Sequence key={cue.id} from={from} durationInFrames={durationInFrames} layout="none">
+          <Sequence
+            // Index too: ids are unique by construction upstream, but a
+            // hand-edited render-props with a duplicate must not make React
+            // drop one of the pair.
+            key={`${cue.id}:${i}`}
+            from={from} durationInFrames={durationInFrames} layout="none">
             <OverlayLook
               cue={cue}
               durationInFrames={durationInFrames}
