@@ -88,6 +88,18 @@ import {
   type GenerateThumbnailImageOptions,
   type ThumbnailConcept,
   type ThumbnailConceptApproved,
+  LIBRARY_MAX_BYTES,
+  LibraryAddError,
+  ProductionOverlaysSchema,
+  addLibraryEntry,
+  applyOverlayOverrides,
+  loadOverlayLibrary,
+  mapFromKeptSpans,
+  matchLibrary,
+  overlayStagedFile,
+  userLibraryDir,
+  type LoadedLibraryEntry,
+  type Word,
 } from "@ossclip/core";
 // Static, unlike the picker's `await import` above its call site: the picker
 // drags in @ossclip/core's process runner and llm-detect, worth deferring off
@@ -132,6 +144,8 @@ import {
 import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
 import { captionRegenProvider } from "./caption-regen-panel";
 import { binOnPath } from "./llm-detect";
+import { fetchLibraryBytes } from "./library-fetch";
+import { snapshotEntry, stageOverlayFiles } from "./overlays";
 import {
   YOUTUBE_PRIVACIES,
   attachDeliveryMedia,
@@ -388,7 +402,28 @@ const MIME: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".png": "image/png",
+  // The overlay library's other formats (overlay-library spec §Server
+  // endpoints, "MIME table"): `/api/library/file` and the workdir's staged
+  // `library/<id>.<ext>` copies over `/media/` are shown through `<img>` in the
+  // tray and the Player, and an `<img>` handed an SVG as octet-stream does not
+  // render it at all — sniffing never applies to SVG.
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
 };
+
+/**
+ * Headers for serving a library image (overlay-library Task 6 ruling). An SVG
+ * is a document that can carry `<script>`: inside `<img>` it never runs, but
+ * the same URL opened directly in a tab would run it on this server's origin
+ * — the origin that can PUT overrides and start renders. `sandbox` makes a
+ * directly-opened SVG an opaque-origin, script-less document; `nosniff` keeps
+ * a browser from second-guessing the type we chose from the sniffed bytes.
+ */
+const IMAGE_SANDBOX_HEADERS = {
+  "content-security-policy": "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+  "x-content-type-options": "nosniff",
+} as const;
 
 /**
  * Correct-by-construction containment check. `file.startsWith(parent)` is a
@@ -405,6 +440,64 @@ function isInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
+
+/**
+ * A JSON request body, or why not. Bounded: past `maxBytes` the rest of the
+ * body is DRAINED, not buffered — answering before the client has finished
+ * sending would reset its connection, and the page would show a network
+ * error instead of the 400's sentence. Malformed JSON is a 400 here, not the
+ * catch-all 500 the older routes' inline `JSON.parse` falls into.
+ */
+async function readJsonBody(
+  req: IncomingMessage,
+  maxBytes: number,
+  tooLarge = `request body is over the ${(maxBytes / (1024 * 1024)).toFixed(1)} MB limit`,
+): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const c of req) {
+    total += (c as Buffer).length;
+    if (total <= maxBytes) chunks.push(c as Buffer);
+  }
+  if (total > maxBytes) return { ok: false, error: tooLarge };
+  try {
+    return { ok: true, value: JSON.parse(Buffer.concat(chunks).toString() || "{}") };
+  } catch {
+    return { ok: false, error: "request body is not valid JSON" };
+  }
+}
+
+/** A zod failure as one readable sentence for a 400 body. */
+const zodMessage = (e: z.ZodError): string =>
+  e.issues.map((i) => (i.path.length > 0 ? `${i.path.join(".")}: ${i.message}` : i.message)).join("; ");
+
+/**
+ * `POST /api/library` (overlay-library spec §Server endpoints). The source is
+ * exactly one of a URL, an absolute local path, or a dropped file's base64 —
+ * and `mimeType` is required for the portrait-upload shape's sake but NEVER
+ * trusted: the bytes are sniffed by `addLibraryEntry`.
+ */
+const LibraryAddBodySchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  aliases: z.array(z.string().trim().min(1).max(80)).max(10).optional(),
+  kind: z.enum(["logo", "image", "gif"]).optional(),
+  source: z.union([
+    z.strictObject({ url: z.string().min(1) }),
+    z.strictObject({ path: z.string().min(1) }),
+    z.strictObject({ data: z.string().min(1), mimeType: z.string() }),
+  ]),
+});
+
+/** URL-add caps (plan Global Constraints, "Defaults"). */
+const LIBRARY_FETCH_TIMEOUT_MS = 15_000;
+const LIBRARY_FETCH_MAX_REDIRECTS = 5;
+/**
+ * The body cap for `POST /api/library`: a 20 MB file is ~26.7 MB of base64,
+ * plus headroom for the name and JSON. The exact 20 MB check is still
+ * `addLibraryEntry`'s, on the decoded bytes; this only stops an unbounded
+ * body from being held in memory first.
+ */
+const LIBRARY_BODY_MAX_BYTES = Math.ceil((LIBRARY_MAX_BYTES * 4) / 3) + 64 * 1024;
 
 /** Parse a `Range: bytes=start-end` header against a known file size, or
  * `undefined` if there's no header, it's malformed, or it's out of bounds. */
@@ -438,6 +531,7 @@ function sendFile(
   file: string,
   contentType: string,
   supportsRange: boolean,
+  extraHeaders: Readonly<Record<string, string>> = {},
 ): void {
   const stat = statSync(file);
   const range = supportsRange ? parseRange(req.headers.range, stat.size) : undefined;
@@ -448,6 +542,7 @@ function sendFile(
     headersSent = true;
     if (range) {
       res.writeHead(206, {
+        ...extraHeaders,
         "content-type": contentType,
         "content-range": `bytes ${range.start}-${range.end}/${stat.size}`,
         "accept-ranges": "bytes",
@@ -455,6 +550,7 @@ function sendFile(
       });
     } else {
       res.writeHead(200, {
+        ...extraHeaders,
         "content-type": contentType,
         ...(supportsRange ? { "accept-ranges": "bytes" } : {}),
         "content-length": String(stat.size),
@@ -559,6 +655,17 @@ export async function startEditServer(
      * tests inject a hand-written library instead of depending on whatever
      * the developer keeps in ~/.ossclip/luts. */
     loadLuts?: typeof loadLutLibrary;
+    /**
+     * The overlay library folder the `/api/library` and `/api/overlays/*`
+     * routes read AND write (overlay-library plan Global Constraints, "Test
+     * isolation"). A dir rather than a loader seam, unlike `loadSfx`, because
+     * `POST /api/library` writes into it: a test must be able to point both
+     * halves at one tmp folder and never touch ~/.ossclip/library.
+     */
+    libraryDir?: string;
+    /** The URL-add download seam (`publishFetch`'s pattern): tests stub the
+     * remote instead of needing a network. */
+    libraryFetch?: typeof fetch;
   } = {},
 ): Promise<EditServer> {
   // MUTABLE since R17 §83: the server can start with no project (the page
@@ -790,6 +897,96 @@ export async function startEditServer(
     (opts.loadSfx ?? loadSfxLibrary)({
       includeBundled: resolveSfxBundledPack((opts.loadCfg ?? loadConfig)().sfxBundledPack).include,
     });
+  /**
+   * The REPAIRED word space production.json's placements are counted in —
+   * `/api/sfx/plan`'s derivation (its comment owns the full argument: why not
+   * transcript.json, why no second clip slice), lifted out so the overlay
+   * routes index the SAME array. An overlay placement is word-indexed exactly
+   * like an sfx one (overlay-library spec §Placement schema), and two
+   * derivations of "which word is 19" would be two chances to disagree.
+   * SOURCE seconds; null when there is no usable transcript, or when a repair
+   * produce applied no longer replays.
+   */
+  const repairedWords = (production: Record<string, unknown>): Word[] | null => {
+    const parsedTranscript = TranscriptSchema.safeParse(production.transcript);
+    let words: Word[] | null = null;
+    if (parsedTranscript.success) {
+      const stored = Array.isArray(production.repairs)
+        ? (production.repairs as Array<Record<string, unknown>>)
+        : [];
+      const applied = stored.filter((r) => r.applied === true);
+      if (applied.length === 0) {
+        words = parsedTranscript.data.words;
+      } else {
+        // The dictionary rides along for the reason produce's own repair
+        // REPLAY passes it (its cached-repairs block): a
+        // dictionary-vouched correction clears the phonetic gate only
+        // when the vouched set is present, and `applyRepairs` re-decides
+        // every proposal it is handed rather than trusting the stored
+        // verdict.
+        // `dictionary` is `unknown` on the config (file-only, validated
+        // at the consumer — config.ts's posture), narrowed here the same
+        // way `retranscribeSettings` (top of this file) narrows it.
+        const rawDict = (opts.loadCfg ?? loadConfig)().dictionary;
+        const dictionary =
+          Array.isArray(rawDict) && rawDict.every((t) => typeof t === "string")
+            ? (rawDict as string[])
+            : undefined;
+        const decided = applyRepairs(
+          parsedTranscript.data,
+          applied.map((r) => ({
+            startWord: Number(r.startWord),
+            endWord: Number(r.endWord),
+            heard: String(r.heard),
+            correction: String(r.correction),
+          })),
+          { dictionary },
+        );
+        // A repair that produce APPLIED but this replay refuses means the
+        // reconstruction is not the array the placements were counted
+        // against — and a refused splice can change the word count, so
+        // every index after it would be off by one with nothing to say
+        // so. Refuse the whole word list rather than serve a plausible
+        // wrong one (§137's never-misapply rule): the lane hides, and no
+        // gesture can write an index into the wrong space.
+        words = decided.applied.every((r) => r.applied)
+          ? decided.transcript.words
+          : null;
+      }
+    }
+    return words;
+  };
+  // ---- Overlay library (overlay-library spec §Server endpoints) -----------
+  // Machine-global like the sfx library, so its routes need no workdir; the
+  // folder is the injectable `libraryDir` (tests never touch ~/.ossclip).
+  const libraryDir = (): string => opts.libraryDir ?? userLibraryDir();
+  /** Read per request, the `sfxLibrary` rule: a file dropped into the folder
+   * while the editor is up shows on the next refresh, not on a restart. */
+  const overlayLibrary = (): LoadedLibraryEntry[] => loadOverlayLibrary(libraryDir()).entries;
+  /**
+   * What the page may know about an entry: METADATA only, the
+   * `/api/sfx/library` rule. Neither `absPath` nor the library's own `file`
+   * name leaves the server — the client addresses an entry by id through
+   * `/api/library/file`, so no value the page holds can ever spell a path.
+   */
+  const libraryEntryMeta = (e: LoadedLibraryEntry) => ({
+    id: e.id,
+    names: e.names,
+    kind: e.kind,
+    ...(e.look !== undefined ? { look: e.look } : {}),
+    // `null` (silent) is a value, so presence is `!== undefined`.
+    ...(e.sound !== undefined ? { sound: e.sound } : {}),
+    format: e.format,
+  });
+  /**
+   * An error message with the library folder's absolute path folded out
+   * (Task 6 ruling: never echo it). `addLibraryEntry`'s own messages are
+   * written to be shown, but an fs error underneath one (`cannot read
+   * library.json: EACCES … /Users/…/library/library.json`) carries the path,
+   * and the 400 body is rendered in a page.
+   */
+  const scrubLibraryPath = (message: string): string =>
+    [resolve(libraryDir()), libraryDir()].reduce((m, dir) => m.split(dir).join("<library>"), message);
   const approvedPackPath = (): string => join(workdir!, YOUTUBE_APPROVED_BASENAME);
   /** The pack the panel shows: the approved file first (the user's
    * decision), else the newest valid `youtube-<key>.json` cache (what the
@@ -2675,52 +2872,7 @@ export async function startEditServer(
           // that guards this payload has to be this one. A `sfx` field that
           // fails it is the same as none: no lane.
           const parsedSfx = ProductionSfxSchema.safeParse(production.sfx);
-          const parsedTranscript = TranscriptSchema.safeParse(production.transcript);
-          let words: Array<{ text: string; start: number; end: number }> | null = null;
-          if (parsedTranscript.success) {
-            const stored = Array.isArray(production.repairs)
-              ? (production.repairs as Array<Record<string, unknown>>)
-              : [];
-            const applied = stored.filter((r) => r.applied === true);
-            if (applied.length === 0) {
-              words = parsedTranscript.data.words;
-            } else {
-              // The dictionary rides along for the reason produce's own repair
-              // REPLAY passes it (its cached-repairs block): a
-              // dictionary-vouched correction clears the phonetic gate only
-              // when the vouched set is present, and `applyRepairs` re-decides
-              // every proposal it is handed rather than trusting the stored
-              // verdict.
-              // `dictionary` is `unknown` on the config (file-only, validated
-              // at the consumer — config.ts's posture), narrowed here the same
-              // way `retranscribeSettings` narrows it a few hundred lines up.
-              const rawDict = (opts.loadCfg ?? loadConfig)().dictionary;
-              const dictionary =
-                Array.isArray(rawDict) && rawDict.every((t) => typeof t === "string")
-                  ? (rawDict as string[])
-                  : undefined;
-              const decided = applyRepairs(
-                parsedTranscript.data,
-                applied.map((r) => ({
-                  startWord: Number(r.startWord),
-                  endWord: Number(r.endWord),
-                  heard: String(r.heard),
-                  correction: String(r.correction),
-                })),
-                { dictionary },
-              );
-              // A repair that produce APPLIED but this replay refuses means the
-              // reconstruction is not the array the placements were counted
-              // against — and a refused splice can change the word count, so
-              // every index after it would be off by one with nothing to say
-              // so. Refuse the whole word list rather than serve a plausible
-              // wrong one (§137's never-misapply rule): the lane hides, and no
-              // gesture can write an index into the wrong space.
-              words = decided.applied.every((r) => r.applied)
-                ? decided.transcript.words
-                : null;
-            }
-          }
+          const words = repairedWords(production);
           return send(200, {
             sfx: parsedSfx.success ? parsedSfx.data : null,
             // METADATA only, like the library route: text and SOURCE seconds,
@@ -2822,12 +2974,254 @@ export async function startEditServer(
           return;
         }
 
+        if (url.pathname === "/api/library" && req.method === "GET") {
+          // The tray's grid. NO workdir guard, `/api/sfx/library`'s rule: the
+          // library is machine-global, so the tray can list it before a
+          // project is open.
+          return send(200, { entries: overlayLibrary().map(libraryEntryMeta) });
+        }
+
+        if (url.pathname === "/api/library/file" && req.method === "GET") {
+          // `/api/sfx/audio`'s path rule: the query carries an ID, never a
+          // path, and the file that answers is whatever the loader resolved
+          // for it — a traversal attempt is an id nothing answers to, a 404.
+          // Existence re-checked for a file deleted since the library loaded.
+          const id = url.searchParams.get("id") ?? "";
+          const entry = overlayLibrary().find((e) => e.id === id);
+          if (entry === undefined || !existsSync(entry.absPath)) {
+            return send(404, { error: `no "${id}" in the library` });
+          }
+          // The type comes from the SNIFFED format, not the extension: a PNG
+          // someone saved as `logo.jpg` must still reach `<img>` as a PNG.
+          sendFile(
+            req,
+            res,
+            entry.absPath,
+            MIME[`.${entry.format}`] ?? "application/octet-stream",
+            false,
+            IMAGE_SANDBOX_HEADERS,
+          );
+          return;
+        }
+
+        if (url.pathname === "/api/library" && req.method === "POST") {
+          // The tray's add (spec §Server endpoints): a pasted URL or path, or
+          // a dropped file. No workdir guard — it writes the global library,
+          // not a project; placing it is the separate `/api/overlays/stage`.
+          // Worded in FILE size: the user dropped a 25 MB file, and "body
+          // over 26.7 MB" (its base64) would name a number they never saw.
+          const body = await readJsonBody(
+            req,
+            LIBRARY_BODY_MAX_BYTES,
+            `file is over the ${(LIBRARY_MAX_BYTES / (1024 * 1024)).toFixed(1)} MB limit`,
+          );
+          if (!body.ok) return send(400, { error: body.error });
+          const parsed = LibraryAddBodySchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { error: zodMessage(parsed.error) });
+          const { name, aliases, kind, source } = parsed.data;
+          const mb = (n: number): string => (n / (1024 * 1024)).toFixed(1);
+          try {
+            let bytes: Uint8Array;
+            if ("url" in source) {
+              bytes = await fetchLibraryBytes(source.url, {
+                fetch: opts.libraryFetch,
+                maxBytes: LIBRARY_MAX_BYTES,
+                timeoutMs: LIBRARY_FETCH_TIMEOUT_MS,
+                maxRedirects: LIBRARY_FETCH_MAX_REDIRECTS,
+              });
+            } else if ("path" in source) {
+              // Absolute only: a relative path would resolve against the
+              // server's cwd, which the user cannot see from the page.
+              if (!isAbsolute(source.path)) {
+                return send(400, { error: "the path must be absolute (e.g. /Users/you/logo.png)" });
+              }
+              let st: ReturnType<typeof statSync>;
+              try {
+                st = statSync(source.path);
+              } catch {
+                return send(400, { error: "no file at that path" });
+              }
+              if (!st.isFile()) return send(400, { error: "that path is not a file" });
+              // Size BEFORE the read (plan review focus 4, "a 25 MB file"):
+              // the cap exists so a mistaken pick of a video is refused
+              // without pulling gigabytes into memory first.
+              if (st.size > LIBRARY_MAX_BYTES) {
+                return send(400, { error: `file is ${mb(st.size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
+              }
+              bytes = await readFile(source.path);
+            } else {
+              // Size after the decode is `addLibraryEntry`'s check; the body
+              // cap above already bounded what was buffered.
+              bytes = Buffer.from(source.data, "base64");
+            }
+            const entry = await addLibraryEntry(
+              bytes,
+              { name, ...(aliases !== undefined ? { aliases } : {}), ...(kind !== undefined ? { kind } : {}) },
+              libraryDir(),
+            );
+            return send(201, { entry: libraryEntryMeta(entry) });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return send(err instanceof LibraryAddError ? 400 : 500, { error: scrubLibraryPath(message) });
+          }
+        }
+
+        if (url.pathname === "/api/overlays/plan" && req.method === "GET") {
+          // The overlay lane's load: production.json's MATCHED plan plus the
+          // word space its indices count — `/api/sfx/plan`'s pairing and its
+          // lenient posture (any missing or corrupt piece is `null`, the lane
+          // degrades, never a 500). The user's layer is NOT folded in here;
+          // the page already holds overrides.json from /api/production.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          let production: Record<string, unknown>;
+          try {
+            production = JSON.parse(await readFile(join(workdir, "production.json"), "utf8")) as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            return send(200, { overlays: null, words: null });
+          }
+          const parsedOverlays = ProductionOverlaysSchema.safeParse(production.overlays);
+          const words = repairedWords(production);
+          return send(200, {
+            overlays: parsedOverlays.success ? parsedOverlays.data : null,
+            words: words === null ? null : words.map((w) => ({ text: w.text, start: w.start, end: w.end })),
+          });
+        }
+
+        if (url.pathname === "/api/overlays/stage" && req.method === "POST") {
+          // A tray pick (add or swap): snapshot the entry and copy its file
+          // into `<workdir>/library/` (spec "Snapshot": tray adds are copied
+          // "by the server", at the moment they are placed). publicDir IS the
+          // workdir (Task 6 ruling): the editor previews `/media/library/…`,
+          // and every render restages from this copy.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const body = await readJsonBody(req, 64 * 1024);
+          if (!body.ok) return send(400, { error: body.error });
+          const parsed = z.object({ entryId: z.string().min(1) }).safeParse(body.value);
+          if (!parsed.success) return send(400, { error: zodMessage(parsed.error) });
+          const library = overlayLibrary();
+          const entry = library.find((e) => e.id === parsed.data.entryId);
+          if (entry === undefined) return send(404, { error: `no "${parsed.data.entryId}" in the library` });
+          const snapshot = snapshotEntry(entry);
+          // A pick RE-COPIES (spec "Snapshot": "New art in the library
+          // reaches a project only through a tray swap, which re-copies").
+          // `stageOverlayFiles` keeps an existing workdir copy on purpose —
+          // that is the render's rule — so the stale copy goes first. Safe
+          // only because the entry was JUST loaded with its file present:
+          // the library is the source this request copies from.
+          const workCopy = join(workdir, ...overlayStagedFile(snapshot).split("/"));
+          if (existsSync(workCopy)) await unlink(workCopy);
+          const staged = stageOverlayFiles([snapshot], library, workdir, workdir);
+          if (staged.issues.length > 0) return send(400, { error: scrubLibraryPath(staged.issues.join("; ")) });
+          return send(200, { entry: snapshot });
+        }
+
+        if (url.pathname === "/api/overlays/match" && req.method === "POST") {
+          // "Find library matches" (spec §Placement schema, "When matching
+          // runs"): the ONLY re-match on an existing project. It adds first
+          // mentions not already placed or removed — the "I just added the
+          // GDE logo, place it where I said GDE" case — and writes nothing
+          // but the staged files: the page stores the placements in
+          // `overlays.added` (minting `@`-free ids, ruling R5) and saves
+          // through PUT /api/overrides like every other edit.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const body = await readJsonBody(req, 4 * 1024 * 1024);
+          if (!body.ok) return send(400, { error: body.error });
+          // The page's CURRENT layer, unsaved edits included — the doc's own
+          // schema, so a stale page cannot smuggle in a shape produce would
+          // refuse.
+          const parsed = z.object({ overlays: OverrideDocSchema.shape.overlays }).safeParse(body.value);
+          if (!parsed.success) return send(400, { error: zodMessage(parsed.error) });
+          const layer = parsed.data.overlays;
+
+          let production: Record<string, unknown> = {};
+          try {
+            production = JSON.parse(await readFile(join(workdir, "production.json"), "utf8")) as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            // Falls through to the no-words 400 below.
+          }
+          const words = repairedWords(production);
+          if (words === null) {
+            return send(400, { error: "this project has no transcript to match against — re-run produce" });
+          }
+          const planParse = ProductionOverlaysSchema.safeParse(production.overlays);
+          const plan = planParse.success ? planParse.data : undefined;
+
+          // Already handled = every entry a placement in the plan or the
+          // layer ever named, before AND after edits: a placed entry, a
+          // removed one (its placement still sits in plan/added, only the
+          // edit hides it), and the entry a swap replaced (the user chose
+          // something else for that moment; re-adding the old logo on the
+          // same word would undo them).
+          const handled = new Set<string>();
+          for (const p of [...(plan?.placements ?? []), ...(layer?.added ?? [])]) handled.add(p.entryId);
+          for (const p of applyOverlayOverrides(plan, layer).placements) handled.add(p.entryId);
+          // An edit keyed by a match id the plan no longer has (a removal
+          // that outlived a re-produce) still says "not this entry here".
+          for (const [key, edit] of Object.entries(layer?.edits ?? {})) {
+            if (edit.removed === true && key.includes("@")) handled.add(key.slice(0, key.lastIndexOf("@")));
+          }
+
+          // KEPT words in OUTPUT time (rulings R6, R12), through the LAST
+          // render's own map — the cut a render would match against, which
+          // is what produce does. No usable spans (an unrendered or legacy
+          // workdir) means every word counts as kept, at source time.
+          let mapped: ({ start: number; end: number } | null)[] | undefined;
+          try {
+            const spans = z
+              .array(z.object({ srcIn: z.number(), srcOut: z.number(), outIn: z.number(), outOut: z.number() }))
+              .safeParse((JSON.parse(await readFile(propsPath(), "utf8")) as { spans?: unknown }).spans);
+            if (spans.success && spans.data.length > 0) {
+              const map = mapFromKeptSpans(spans.data);
+              mapped = words.map((w) => map.mapWord(w));
+            }
+          } catch {
+            mapped = undefined;
+          }
+          const timed = mapped
+            ? words.map((w, i) => (mapped![i] ? { ...w, start: mapped![i]!.start, end: mapped![i]!.end } : w))
+            : words;
+          const kept = mapped ? (i: number) => mapped![i] !== null : undefined;
+
+          const library = overlayLibrary();
+          const matched = matchLibrary(timed, library, { kept, skipEntryIds: handled });
+          // "skipped M already placed or removed" (spec §Editor): the
+          // entries that HAVE a kept mention but were handled. A second,
+          // gap-free pass counts them, because the real pass drops handled
+          // entries before it reports anything.
+          const skipped = matchLibrary(timed, library, { kept, minGapSec: 0 }).placements.filter((p) =>
+            handled.has(p.entryId),
+          ).length;
+          const used = new Set(matched.placements.map((p) => p.entryId));
+          const entries = library.filter((e) => used.has(e.id)).map(snapshotEntry);
+          // Copied only when missing (the render's rule, unlike a tray
+          // pick): a match places an entry, it does not swap its art.
+          const staged = stageOverlayFiles(entries, library, workdir, workdir);
+          const stagedIds = new Set(
+            entries.filter((e) => staged.staged.has(overlayStagedFile(e))).map((e) => e.id),
+          );
+          return send(200, {
+            placements: matched.placements.filter((p) => stagedIds.has(p.entryId)),
+            entries: entries.filter((e) => stagedIds.has(e.id)),
+            skipped,
+          });
+        }
+
         if (url.pathname.startsWith("/media/")) {
           if (!workdir) return send(409, { error: "no workdir open" });
           const file = join(workdir, decodeURIComponent(url.pathname.slice("/media/".length)));
           // Never serve outside the workdir, whatever the path claims.
           if (!isInside(workdir, file) || !existsSync(file)) return send(404, { error: "not found" });
-          sendFile(req, res, file, MIME[extname(file)] ?? "application/octet-stream", true);
+          // A staged library SVG (`library/<id>.svg`) gets the same sandbox
+          // as `/api/library/file` — it is the same document, opened the
+          // same way.
+          const type = MIME[extname(file)] ?? "application/octet-stream";
+          sendFile(req, res, file, type, true, type === "image/svg+xml" ? IMAGE_SANDBOX_HEADERS : {});
           return;
         }
 
