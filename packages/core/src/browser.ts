@@ -166,9 +166,25 @@ export {
   type MatchablePlacement,
   type MatchDrop,
 } from "./overlay-match";
+// The overlay resolver (overlay-library spec §Resolve → render props),
+// browser-safe: overlay-cues.ts's only runtime import is ./overlay-match
+// (above); ./assemble, ./schema and ./timemap are type imports. The editor's
+// lane and preview place overlays with the SAME resolver produce renders
+// with — the `resolveSfxCues` / `sceneStartSeconds` one-implementation rule.
+export {
+  dropSfxNearOverlays,
+  OVERLAY_PUBLIC_SUBDIR,
+  overlayStagedFile,
+  resolveOverlayCues,
+  type OverlayCue,
+  type OverlayIssue,
+} from "./overlay-cues";
 export type {
+  OverlayEntrySnapshot,
+  OverlayPlacement,
   Probe,
   Production,
+  ProductionOverlays,
   // `RemovalReason` rides along with `Segment` (cut review step 2): the
   // editor's reason→colour map is a `Record<RemovalReason, string>` precisely
   // so a NEW reason in the vocabulary fails typecheck in the editor instead

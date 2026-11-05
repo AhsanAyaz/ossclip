@@ -10,7 +10,14 @@ import {
   type SceneComponentId,
   type Theme,
 } from "./scene-schema";
-import { RemovalReasonSchema, type ProductionSfx } from "./schema";
+import {
+  OverlayEntrySnapshotSchema,
+  OverlayPlacementSchema,
+  RemovalReasonSchema,
+  type OverlayEntrySnapshot,
+  type OverlayPlacement,
+  type ProductionSfx,
+} from "./schema";
 import type { TimeMap } from "./timemap";
 import { resolveSceneProps } from "./scene-registry";
 import { revealItemTexts } from "./reveal-match";
@@ -872,6 +879,49 @@ export const OverrideDocSchema = z.object({
       /** Keyed by `sfxPlacementKey` — see `SfxPlacementEditSchema`. */
       edits: z.record(z.string(), SfxPlacementEditSchema).default({}),
       added: z.array(SfxAddedPlacementSchema).default([]),
+    })
+    .optional(),
+  /**
+   * The user's layer over the matched overlay plan (overlay-library spec
+   * §Placement schema): the `sfx` slot's shape — `edits` keyed by placement
+   * id, the user's own placements in `added` — plus `entries`, the snapshots
+   * of library items the TRAY placed (spec "Snapshot": matched entries are
+   * snapshotted into production.json, tray-added ones here, because produce
+   * rewrites production.json every run and a tray pick must outlive that).
+   * Applied by `applyOverlayOverrides`.
+   *
+   * Edits are keyed by the placement's own id, which for a match is the
+   * stable `${entryId}@${word}`: a `removed: true` therefore survives a
+   * re-produce that re-matches the same first mention. A key matching
+   * nothing is reported as a stale key, never silently dropped.
+   *
+   * Optional with NO default (the `sfx` / `captionsHidden` rule): every
+   * overrides.json written before this key parses byte-identically, and a
+   * project that never touched an overlay grows no key.
+   *
+   * Recut-immune by construction for the `sfx` reason — word indices and ids
+   * only, no seconds — so it has no entry in `remapOverridesThroughRecut`.
+   */
+  overlays: z
+    .object({
+      edits: z
+        .record(
+          z.string(),
+          z.object({
+            entryId: z.string().optional(),
+            word: z.number().int().nonnegative().optional(),
+            look: z.enum(["overlay", "card"]).optional(),
+            durationSec: z.number().min(0.5).max(6).optional(),
+            sound: z.string().min(1).nullable().optional(),
+            removed: z.boolean().optional(),
+          }),
+        )
+        .default({}),
+      // No `@` in a user-added id: `@` is the matched-id separator, and an
+      // added id that could spell `gde@3` would let one edit key address two
+      // placements (the `SfxAddedPlacementSchema` reasoning).
+      added: z.array(OverlayPlacementSchema.extend({ id: z.string().regex(/^[A-Za-z0-9_-]+$/) })).default([]),
+      entries: z.array(OverlayEntrySnapshotSchema).default([]),
     })
     .optional(),
 });
@@ -2914,4 +2964,73 @@ export function applySfxOverrides(
       .map((e) => e.p),
     dropped,
   };
+}
+
+export interface AppliedOverlayOverrides {
+  /** Plan snapshots with the layer's merged over them by id. */
+  entries: OverlayEntrySnapshot[];
+  /** Plan placements, edited and minus removals, then the user's own. */
+  placements: OverlayPlacement[];
+  /**
+   * Edit keys that addressed no placement — the re-plan case where the match
+   * the user edited is gone (a different first mention, or the entry left
+   * the library). Reported, the `applySfxOverrides` posture: the user's work
+   * on it is lost and saying so is the point.
+   */
+  dropped: { key: string; reason: "stale key" }[];
+}
+
+/**
+ * The user's overlay layer over the matched plan (`OverrideDocSchema.overlays`).
+ *
+ * Entries: the layer's snapshots WIN over the plan's with the same id —
+ * a tray swap re-snapshots an entry (new art, new ext), and the plan's copy
+ * is whatever produce matched before the swap. Merged in place so the plan's
+ * order holds; new ids append.
+ *
+ * Placements: each plan placement takes the edit keyed by its id; the user's
+ * own `added` placements are appended and take an edit keyed by THEIR id too,
+ * so the editor has one way to patch any overlay whoever placed it. A removed
+ * placement is dropped here — unlike an sfx mute there is no ghost to draw
+ * from it downstream, the editor reads the doc for that. The plan is never
+ * rewritten (the `applySfxOverrides` reason: folding edits in would re-key
+ * them on the next run).
+ *
+ * Pure: an `entryId` naming nothing is the resolver's "unknown entry".
+ */
+export function applyOverlayOverrides(
+  plan: { entries: OverlayEntrySnapshot[]; placements: OverlayPlacement[] } | undefined,
+  layer: OverrideDoc["overlays"],
+): AppliedOverlayOverrides {
+  const entries = [...(plan?.entries ?? [])];
+  for (const e of layer?.entries ?? []) {
+    const at = entries.findIndex((x) => x.id === e.id);
+    if (at === -1) entries.push(e);
+    else entries[at] = e;
+  }
+  const edits = layer?.edits ?? {};
+  const used = new Set<string>();
+  const placements: OverlayPlacement[] = [];
+  for (const p of [...(plan?.placements ?? []), ...(layer?.added ?? [])]) {
+    const edit = edits[p.id];
+    if (edit === undefined) {
+      placements.push(p);
+      continue;
+    }
+    used.add(p.id);
+    if (edit.removed === true) continue;
+    placements.push({
+      ...p,
+      ...(edit.entryId !== undefined ? { entryId: edit.entryId } : {}),
+      ...(edit.word !== undefined ? { word: edit.word } : {}),
+      ...(edit.look !== undefined ? { look: edit.look } : {}),
+      ...(edit.durationSec !== undefined ? { durationSec: edit.durationSec } : {}),
+      // `null` is a value here (silent), so presence is `!== undefined`, never `??`.
+      ...(edit.sound !== undefined ? { sound: edit.sound } : {}),
+    });
+  }
+  const dropped: AppliedOverlayOverrides["dropped"] = Object.keys(edits)
+    .filter((key) => !used.has(key))
+    .map((key) => ({ key, reason: "stale key" as const }));
+  return { entries, placements, dropped };
 }

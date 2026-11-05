@@ -128,6 +128,31 @@ function matchesAt(spoken: Spoken, p: number, name: CompiledName, claimed?: Read
 }
 
 /**
+ * Every claimed mention, in spoken order: at each kept position, names are
+ * tried longest first — token count, then characters — and the winner claims
+ * its words. ONE walk shared by `matchLibrary` and `mentionsOf` (ruling R10):
+ * a fall-forward that claimed differently from the matcher could land on a
+ * word a fresh match never would.
+ */
+function claimWalk(spoken: Spoken, entries: readonly MatchEntry[]): { p: number; entryIndex: number }[] {
+  const names = entries
+    .flatMap((e, ei) => e.names.map((n) => compileName(n, ei)))
+    .filter((n): n is CompiledName => n !== null)
+    // Array.prototype.sort is stable, so equal-length names keep library order.
+    .sort((a, b) => b.tokens.length - a.tokens.length || b.chars - a.chars);
+  const claimed = new Set<number>();
+  const hits: { p: number; entryIndex: number }[] = [];
+  for (let p = 0; p < spoken.index.length; p++) {
+    if (claimed.has(p)) continue;
+    const winner = names.find((n) => matchesAt(spoken, p, n, claimed));
+    if (!winner) continue;
+    for (let k = 0; k < winner.tokens.length; k++) claimed.add(p + k);
+    hits.push({ p, entryIndex: winner.entryIndex });
+  }
+  return hits;
+}
+
+/**
  * First mention per entry (spec §Matching). At each kept position, names are
  * tried longest first — token count, then characters — and the winner claims
  * its words, so "Google" can never pop on the "Google" inside "Google
@@ -148,21 +173,10 @@ export function matchLibrary(
   entries: readonly MatchEntry[],
   opts: { kept?: (wordIndex: number) => boolean; minGapSec?: number; skipEntryIds?: ReadonlySet<string> } = {},
 ): { placements: MatchablePlacement[]; dropped: MatchDrop[] } {
-  const names = entries
-    .flatMap((e, ei) => e.names.map((n) => compileName(n, ei)))
-    .filter((n): n is CompiledName => n !== null)
-    // Array.prototype.sort is stable, so equal-length names keep library order.
-    .sort((a, b) => b.tokens.length - a.tokens.length || b.chars - a.chars);
   const spoken = prepareSpoken(words, opts.kept);
-  const claimed = new Set<number>();
   const firstAt = new Map<number, number>(); // entryIndex → kept position
-
-  for (let p = 0; p < spoken.index.length; p++) {
-    if (claimed.has(p)) continue;
-    const winner = names.find((n) => matchesAt(spoken, p, n, claimed));
-    if (!winner) continue;
-    for (let k = 0; k < winner.tokens.length; k++) claimed.add(p + k);
-    if (!firstAt.has(winner.entryIndex)) firstAt.set(winner.entryIndex, p);
+  for (const { p, entryIndex } of claimWalk(spoken, entries)) {
+    if (!firstAt.has(entryIndex)) firstAt.set(entryIndex, p);
   }
 
   const minGap = opts.minGapSec ?? DEFAULT_MIN_GAP_SEC;
@@ -187,22 +201,28 @@ export function matchLibrary(
 }
 
 /**
- * Every kept word index where any of one entry's names starts, ascending —
- * the resolver's fall-forward when the user cut the matched mention (spec
- * §Matching, review focus 3). Same normalization and short-name rule as
- * `matchLibrary`, so fall-forward can only land where a fresh match could.
- * No cross-entry claiming: the caller asks about one entry in isolation.
+ * Every kept word index where one entry is mentioned, ascending — the
+ * resolver's fall-forward when the user cut the matched mention (spec
+ * §Matching, review focus 3). Same normalization, short-name rule AND
+ * claiming walk as `matchLibrary`, so fall-forward can only land where a
+ * fresh match could.
+ *
+ * `others` are the OTHER entries competing for the same words (ruling R10):
+ * without them, a "Google" placement whose mention was cut would fall forward
+ * onto the "Google" inside a later "Google Developers Expert" — the exact
+ * wrong-word pop longest-name-wins exists to prevent. The asked-about entry
+ * goes first, so on an equal-length tie it keeps the word (library order is
+ * `matchLibrary`'s tie-break, and here the placement already exists).
  */
 export function mentionsOf(
   words: readonly MatchWord[],
   names: readonly string[],
   kept?: (i: number) => boolean,
+  others: readonly { readonly names: readonly string[] }[] = [],
 ): number[] {
-  const compiled = names.map((n) => compileName(n, 0)).filter((n): n is CompiledName => n !== null);
   const spoken = prepareSpoken(words, kept);
-  const out: number[] = [];
-  for (let p = 0; p < spoken.index.length; p++) {
-    if (compiled.some((n) => matchesAt(spoken, p, n))) out.push(spoken.index[p]!);
-  }
-  return out;
+  const entries: MatchEntry[] = [{ id: "", names }, ...others.map((o) => ({ id: "", names: o.names }))];
+  return claimWalk(spoken, entries)
+    .filter((h) => h.entryIndex === 0)
+    .map((h) => spoken.index[h.p]!);
 }

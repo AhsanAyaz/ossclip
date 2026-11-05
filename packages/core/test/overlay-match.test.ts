@@ -140,4 +140,14 @@ describe("mentionsOf", () => {
     expect(mentionsOf(words, names)).toEqual([0, 2, 5]);
     expect(mentionsOf(words, names, (i) => i !== 0)).toEqual([2, 5]);
   });
+
+  it("another entry's longer name claims its words (ruling R10)", () => {
+    const words = say(["Google", "is", "a", "Google", "Developers", "Expert", "at", "Google"]);
+    // In isolation every "Google" is a mention…
+    expect(mentionsOf(words, ["Google"])).toEqual([0, 3, 7]);
+    // …but with the GDE entry competing, the one inside the phrase is not.
+    expect(mentionsOf(words, ["Google"], undefined, [{ names: ["Google Developers Expert"] }])).toEqual([0, 7]);
+    // The phrase entry itself still sees its own mention.
+    expect(mentionsOf(words, ["Google Developers Expert"], undefined, [{ names: ["Google"] }])).toEqual([3]);
+  });
 });

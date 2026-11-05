@@ -136,6 +136,65 @@ export const ProductionSfxSchema = z.object({
 });
 export type ProductionSfx = z.infer<typeof ProductionSfxSchema>;
 
+/**
+ * One library entry as a PROJECT remembers it (overlay-library spec
+ * §Placement schema, "Snapshot"): the metadata a render needs, copied out of
+ * `~/.ossclip/library/library.json` at the moment the entry was placed. The
+ * file itself is snapshotted beside it into `<workdir>/library/<id>.<ext>`,
+ * which is why `ext` is here and the library's own `file` name is not — a
+ * render must never depend on the library folder again (spec anti-goals).
+ *
+ * Restated here rather than derived from `overlay-library.ts`'s entry schema
+ * for the `ProductionSfxSchema` reason: that module is node-only (fs all the
+ * way down), and this one is in the editor's runtime graph.
+ *
+ * `kind` is a LABEL only (ruling R8): whether the renderer animates the file
+ * is decided by `ext`, never by `kind`, so a mislabelled entry cannot turn a
+ * GIF still or feed a PNG to the GIF decoder.
+ */
+export const OverlayEntrySnapshotSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  name: z.string().min(1),
+  names: z.array(z.string().min(1)).min(1),
+  kind: z.enum(["logo", "image", "gif"]),
+  ext: z.enum(["png", "jpg", "webp", "svg", "gif"]),
+  look: z.enum(["overlay", "card"]).optional(),
+  /** An sfx sound id, or `null` for silent. Absent means the `pop` default. */
+  sound: z.string().min(1).nullable().optional(),
+});
+export type OverlayEntrySnapshot = z.infer<typeof OverlayEntrySnapshotSchema>;
+
+/**
+ * One overlay on the timeline, WORD-indexed like an sfx placement so it
+ * survives recuts (spec §Placement schema). The id is stable —
+ * `${entryId}@${word}` for a match — because it is the key the user's
+ * override layer is stored under: a removed match stays removed on
+ * re-produce only because the re-match mints the same id. `@` is allowed
+ * here for exactly that reason; a USER-added id may not contain one
+ * (`OverrideDocSchema.overlays.added`).
+ *
+ * Every per-placement field is optional and absent means "the entry's
+ * default" (look → entry.look ?? "overlay", duration → 1.5s overlay / 2.0s
+ * card, sound → entry.sound ?? "pop"); `resolveOverlayCues` owns the fallbacks.
+ */
+export const OverlayPlacementSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9_@-]+$/),
+  entryId: z.string(),
+  word: z.number().int().nonnegative(),
+  look: z.enum(["overlay", "card"]).optional(),
+  durationSec: z.number().min(0.5).max(6).optional(),
+  sound: z.string().min(1).nullable().optional(),
+  source: z.enum(["match", "user"]),
+});
+export type OverlayPlacement = z.infer<typeof OverlayPlacementSchema>;
+
+/** The matched overlay plan `production.json` stores: snapshots + placements. */
+export const ProductionOverlaysSchema = z.object({
+  entries: z.array(OverlayEntrySnapshotSchema),
+  placements: z.array(OverlayPlacementSchema),
+});
+export type ProductionOverlays = z.infer<typeof ProductionOverlaysSchema>;
+
 /** The single source of truth for a production. Every pipeline stage is a pure function over this. */
 export const ProductionSchema = z.object({
   version: z.literal(1),
@@ -233,6 +292,14 @@ export const ProductionSchema = z.object({
    * TimeMap, `resolveSfxCues`).
    */
   sfx: ProductionSfxSchema.optional(),
+  /**
+   * The matched overlay plan (overlay-library spec §Placement schema), beside
+   * `sfx` and shaped like it: word-indexed placements plus the entry
+   * snapshots they render from. Optional with absent-means-no-overlays, so a
+   * production without a library writes `production.json` byte-identical to
+   * what it always wrote (plan Global Constraints, back-compat).
+   */
+  overlays: ProductionOverlaysSchema.optional(),
   /**
    * WHO planned this production (R16 §78). `usage.json` answers "what did
    * that cost", but it describes one run and a fully-cached re-run makes no
