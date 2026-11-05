@@ -146,6 +146,13 @@ interface InspectorProps {
   /** Opens the tray (Task 8) — here, in swap mode for the selected chip. */
   onOpenOverlayTray?: (req: OverlayTrayRequest) => void;
   /**
+   * "Add an image" → "Add at playhead": App snaps the playhead to a kept
+   * word (the overlay lane's anchors) and opens the tray in add mode —
+   * the library grid Swap uses. Returns false when no word is there.
+   * Absent (no transcript) hides the section.
+   */
+  onAddOverlayAtPlayhead?: () => boolean;
+  /**
    * `/api/sfx/library` — every sound INSTALLED, level-agnostic on purpose:
    * the model's `--sfx-level` gate prices the model's own plan, and an
    * explicit user choice outranks it (Phase 3 doctrine), so the dropdown
@@ -395,6 +402,40 @@ const SfxAddSection: React.FC<{
 };
 
 /**
+ * "Add an image" (overlay-transform): the sound palette's twin, minus the
+ * dropdown — the pick happens in the tray's library grid (the one Swap
+ * opens), where you can SEE the pictures, add a new one by URL or file,
+ * and place it in one go. Not gated on an sfx plan: an overlay needs only
+ * a transcript word to anchor to.
+ */
+const OverlayAddSection: React.FC<{ onAddAtPlayhead: () => boolean }> = ({ onAddAtPlayhead }) => {
+  const [refused, setRefused] = React.useState(false);
+  return (
+    <div style={section} data-testid="overlay-add-section">
+      <span style={label}>Add an image</span>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          data-testid="overlay-add"
+          style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}
+          onClick={() => {
+            blurActive();
+            setRefused(!onAddAtPlayhead());
+          }}
+        >
+          Add at playhead
+        </button>
+      </div>
+      {refused ? (
+        <div data-testid="overlay-add-refused" style={{ fontSize: 12, color: "#FFE14D" }}>
+          No transcript word under the playhead — an image is anchored to a word, so park the
+          playhead over speech and try again.
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+/**
  * One Color slider — the sfx gain slider's shape (readout in the label, one
  * scrub = one undo step via the caller's coalesce key). No double-click
  * reset: no slider in this editor has one, and inventing the gesture for one
@@ -581,6 +622,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   sfxMarker = null,
   overlayMarker = null,
   onOpenOverlayTray,
+  onAddOverlayAtPlayhead,
   sfxLibrary = [],
   sfxEnabled = false,
   lutMenu = EMPTY_LUT_MENU,
@@ -812,6 +854,25 @@ export const Inspector: React.FC<InspectorProps> = ({
             >
               default
             </button>
+          </div>
+          <div style={{ ...row, flexDirection: "row", alignItems: "center", gap: 8 }}>
+            {/* Position is direct manipulation on the stage (overlay-transform);
+                the panel only offers the way back to automatic placement. */}
+            <button
+              data-testid="overlay-reset-position"
+              style={button}
+              disabled={!m.placedByHand}
+              title="Back to the automatic spot above the captions"
+              onClick={() => {
+                blurActive();
+                edits.resetOverlayRect(m.id);
+              }}
+            >
+              Reset position
+            </button>
+            <span style={{ fontSize: 12, color: "#9A9AA3" }}>
+              {m.placedByHand ? "placed by hand" : "drag it on the video to move or resize"}
+            </span>
           </div>
           <div style={{ ...row, flexDirection: "row", alignItems: "center", gap: 8 }}>
             <input
@@ -2082,6 +2143,7 @@ export const Inspector: React.FC<InspectorProps> = ({
         // actually having a plan (the prop's own doc).
         <SfxAddSection edits={edits} library={sfxLibrary} wordAtPlayhead={sfxWordAtPlayhead} />
       ) : null}
+      {onAddOverlayAtPlayhead ? <OverlayAddSection onAddAtPlayhead={onAddOverlayAtPlayhead} /> : null}
       {producer || totals ? (
         <div style={section} data-testid="run-info">
           {/* Provenance and cost (R21 §104) — the same accounting report.txt

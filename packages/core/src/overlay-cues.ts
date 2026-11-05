@@ -12,7 +12,7 @@
  */
 import type { SfxCue } from "./assemble";
 import { mentionsOf } from "./overlay-match";
-import type { OverlayEntrySnapshot, OverlayPlacement, Word } from "./schema";
+import type { OverlayEntrySnapshot, OverlayPlacement, OverlayRect, Word } from "./schema";
 import type { TimeMap } from "./timemap";
 
 /** Where snapshotted library files live inside the render's public dir and the workdir. */
@@ -41,6 +41,8 @@ export interface OverlayCue {
   look: "overlay" | "card";
   atSec: number;
   endSec: number;
+  /** A hand-placed box (overlay-transform); absent = the automatic placement. */
+  rect?: OverlayRect;
 }
 
 export interface OverlayIssue {
@@ -164,6 +166,7 @@ export function resolveOverlayCues(
       atSec,
       // Spec §Resolve: clamped to the composition end.
       endSec: Math.min(atSec + durationSec, outputDurationSec),
+      ...(p.rect ? { rect: p.rect } : {}),
     });
 
     // `null` means silent at either level, so presence is `!== undefined`,

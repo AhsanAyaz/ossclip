@@ -61,6 +61,33 @@ describe("resetOverlayDuration", () => {
   });
 });
 
+describe("overlay rect (overlay-transform)", () => {
+  const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.15 };
+
+  it("a move writes the rect as one undo step; the same rect again is a no-op", () => {
+    const s = editReducer(state(), { type: "patchOverlay", id: "gde@3", patch: { rect } });
+    expect(s.doc.overlays?.edits["gde@3"]).toEqual({ rect });
+    expect(s.past).toHaveLength(1);
+    // A fresh object with equal values: compared by value, not identity.
+    expect(editReducer(s, { type: "patchOverlay", id: "gde@3", patch: { rect: { ...rect } } })).toBe(s);
+  });
+
+  it("resetOverlayRect drops it from a match edit (and the empty slot) and from an added record", () => {
+    let s = editReducer(state({ edits: { "gde@3": { rect } } }), { type: "resetOverlayRect", id: "gde@3" });
+    expect(s.doc.overlays).toBeUndefined();
+    s = editReducer(
+      state({ added: [{ id: "gde-1", entryId: "gde", word: 1, rect, source: "user" }] }),
+      { type: "resetOverlayRect", id: "gde-1" },
+    );
+    expect(s.doc.overlays?.added[0]).toEqual({ id: "gde-1", entryId: "gde", word: 1, source: "user" });
+  });
+
+  it("resetOverlayRect with nothing stored is a no-op", () => {
+    const s0 = state({ edits: { "gde@3": { look: "card" } } });
+    expect(editReducer(s0, { type: "resetOverlayRect", id: "gde@3" })).toBe(s0);
+  });
+});
+
 describe("removeOverlay / restoreOverlay", () => {
   it("negates a match (ghost) and restore deletes the key and the empty slot", () => {
     let s = editReducer(state(), { type: "removeOverlay", id: "gde@3" });

@@ -22,6 +22,8 @@ export interface OverlayCueProps {
   look: "overlay" | "card";
   atSec: number;
   endSec: number;
+  /** A hand-placed box (core `OverlayCue.rect`); absent = automatic placement. */
+  rect?: Rect;
 }
 
 const OverlayCuePropsSchema = z
@@ -33,6 +35,16 @@ const OverlayCuePropsSchema = z
     // zod v4 numbers already refuse NaN and ±Infinity.
     atSec: z.number().nonnegative(),
     endSec: z.number(),
+    // Core's OverlayRectSchema bounds, re-declared (scenes does not import
+    // core at runtime). A mangled rect costs the cue, not the frame.
+    rect: z
+      .object({
+        x: z.number().min(0).max(1),
+        y: z.number().min(0).max(1),
+        w: z.number().min(0.02).max(1),
+        h: z.number().min(0.02).max(1),
+      })
+      .optional(),
   })
   .refine((c) => c.endSec > c.atSec);
 
@@ -112,16 +124,29 @@ export function cardBackdropOpacity(localFrame: number, fps: number): number {
  * `scale` absent = no transform (the card's image, which pops on its layer
  * about the frame's centre — the box's own centre too).
  */
-export function overlayImageStyle(r: Rect, scale?: number): React.CSSProperties {
+export function overlayImageStyle(
+  r: Rect,
+  scale?: number,
+  origin: "center bottom" | "center" = "center bottom",
+): React.CSSProperties {
   return {
     position: "absolute",
     left: `${r.x * 100}%`,
     top: `${r.y * 100}%`,
     width: `${r.w * 100}%`,
     height: `${r.h * 100}%`,
-    ...(scale === undefined ? {} : { transform: `scale(${scale})`, transformOrigin: "center bottom" }),
+    ...(scale === undefined ? {} : { transform: `scale(${scale})`, transformOrigin: origin }),
   };
 }
+
+/**
+ * The element the editor grabs (overlay-transform): tagged with the
+ * placement id and the ONLY hittable node of the track. Everything around
+ * it stays `pointer-events: none` (the Watermark rule), so an overlay
+ * blocks clicks only inside its own picture, only while it is on screen.
+ * Irrelevant to a headless render, which has no pointer.
+ */
+const editTag = (id: string) => ({ "data-edit-overlay": id, style: { pointerEvents: "auto" as const } });
 
 /**
  * The image itself, inside its max box. A file that fails to load renders
@@ -134,40 +159,50 @@ const OverlayImage: React.FC<{
   box: Rect;
   align: "bottom" | "center";
   frame: FrameSize;
-  /** The entrance scale, applied about the image's own bottom edge. */
+  /** The entrance scale, applied about the image's own bottom edge (or its
+   * centre for a hand-placed box, which hugs no caption). */
   scale?: number;
 }> = ({ cue, box, align, frame, scale }) => {
   const [failed, setFailed] = React.useState(false);
-  // GIFs only: the canvas centres its own contain-fit, so the bottom edge is
-  // placed by hand once the decoder reports the size (containedRect).
-  const [gifAspect, setGifAspect] = React.useState<number | null>(null);
+  // The decoded aspect, so the positioned element IS the picture rather than
+  // its max box (containedRect). GIFs need it to place their bottom edge;
+  // stills draw the same pixels either way (object-fit contain), but the
+  // editor's selection box is measured off this element, and a box the
+  // width of the frame around a small square logo is a box nobody can aim.
+  const [aspect, setAspect] = React.useState<number | null>(null);
   if (failed) return null;
+  const origin = align === "bottom" ? "center bottom" : "center";
+  const rect = aspect === null ? box : containedRect(box, aspect, frame, align);
+  const tag = editTag(cue.id);
   const src = overlaySrc(cue.file);
   const onError = () => {
     console.warn(`overlay ${cue.id}: could not load ${cue.file} — skipped`);
     setFailed(true);
   };
   if (isGifFile(cue.file)) {
-    const rect = gifAspect === null ? box : containedRect(box, gifAspect, frame, align);
     return (
-      <div style={overlayImageStyle(rect, scale)}>
+      <div data-edit-overlay={tag["data-edit-overlay"]} style={{ ...overlayImageStyle(rect, scale, origin), ...tag.style }}>
         <Gif
           src={src}
           fit="contain"
           // Loops over the overlay's window (spec §Rendering, GIF).
           loopBehavior="loop"
           style={{ width: "100%", height: "100%" }}
-          onLoad={(info) => setGifAspect(info.width / info.height)}
+          onLoad={(info) => setAspect(info.width / info.height)}
           onError={onError}
         />
       </div>
     );
   }
   return (
-    <div style={overlayImageStyle(box, scale)}>
+    <div data-edit-overlay={tag["data-edit-overlay"]} style={{ ...overlayImageStyle(rect, scale, origin), ...tag.style }}>
       <Img
         src={src}
         onError={onError}
+        onLoad={(e) => {
+          const img = e.currentTarget;
+          if (img.naturalWidth > 0 && img.naturalHeight > 0) setAspect(img.naturalWidth / img.naturalHeight);
+        }}
         style={{
           width: "100%",
           height: "100%",
@@ -199,15 +234,31 @@ const OverlayLook: React.FC<{
   // frame of the window on every rendered frame was pure waste.
   const box = React.useMemo(
     () =>
-      cue.look === "overlay"
+      cue.look === "overlay" && !cue.rect
         ? overlayBoxForCue(cue, fps, { width, height }, captionTopAt, graphicRectAt, captionBottomAt)
         : null,
     // Keyed on the cue's look and timing, not the object: the parsed list is
     // rebuilt per composition render, and the box depends on nothing else.
     // The lookups must be stable for this to hold — ProductionComposition
     // memoises them (final review M3).
-    [cue.look, cue.atSec, cue.endSec, fps, width, height, captionTopAt, captionBottomAt, graphicRectAt],
+    [cue.look, cue.rect, cue.atSec, cue.endSec, fps, width, height, captionTopAt, captionBottomAt, graphicRectAt],
   );
+  // A hand-placed box (overlay-transform) is drawn where the user put it and
+  // dodges nothing: they moved it, so the caption-clearing placement no
+  // longer speaks for them. Centred in its box, popping about its centre.
+  if (cue.look === "overlay" && cue.rect) {
+    return (
+      <AbsoluteFill style={{ pointerEvents: "none", opacity: p * out }}>
+        <OverlayImage
+          cue={cue}
+          box={cue.rect}
+          align="center"
+          frame={frame}
+          scale={overlayEntranceScale(p)}
+        />
+      </AbsoluteFill>
+    );
+  }
   if (cue.look === "card" || box === null) {
     return (
       <AbsoluteFill style={{ pointerEvents: "none", opacity: out }}>
@@ -215,7 +266,9 @@ const OverlayLook: React.FC<{
           style={{ backgroundColor: "black", opacity: cardBackdropOpacity(local, fps) }}
         />
         <AbsoluteFill style={{ opacity: p, transform: entrance.transform }}>
-          <OverlayImage cue={cue} box={cardRect(frame)} align="center" frame={frame} />
+          {/* The card's black stays full-frame; a hand-placed box moves
+              only the picture on it (overlay-transform). */}
+          <OverlayImage cue={cue} box={cue.rect ?? cardRect(frame)} align="center" frame={frame} />
         </AbsoluteFill>
       </AbsoluteFill>
     );
@@ -241,9 +294,11 @@ const OverlayLook: React.FC<{
  * painted above them — which is why its PLACEMENT, not the stacking order,
  * is what keeps it off them.
  *
- * Deliberately invisible to the editor's hit-test, the Watermark/CoverInVideo
- * rule: `pointer-events: none` and no `data-edit-*`; overlays are edited
- * through their lane, not on the canvas (spec non-goal: no drag-to-move).
+ * Invisible to the editor's hit-test EXCEPT the picture itself, which is
+ * tagged `data-edit-overlay` (overlay-transform: the user asked for the
+ * move/resize every other on-canvas thing has, reversing the original spec's
+ * "no drag-to-move" non-goal). The layers around it stay `pointer-events:
+ * none`, the Watermark/CoverInVideo rule.
  */
 export const OverlayTrack: React.FC<{
   cues: OverlayCueProps[];

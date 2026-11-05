@@ -45,6 +45,12 @@ describe("overlayCuesFor", () => {
     expect(overlayCuesFor([good])).toEqual([good]);
   });
 
+  it("keeps a hand-placed rect and drops a cue whose rect is mangled (overlay-transform)", () => {
+    const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.15 };
+    expect(overlayCuesFor([{ ...good, rect }])).toEqual([{ ...good, rect }]);
+    expect(overlayCuesFor([{ ...good, rect: { x: 0.1, y: 0.2, w: 0, h: 0.1 } }])).toEqual([]);
+  });
+
   it("reads an absent key as no track", () => {
     expect(overlayCuesFor(undefined)).toEqual([]);
     expect(overlayCuesFor(null)).toEqual([]);

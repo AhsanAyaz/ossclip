@@ -17,6 +17,7 @@ import {
   type Layout,
   type OverlayEntrySnapshot,
   type OverlayPlacement,
+  type OverlayRect,
   type OverrideDoc,
   type RemovalReason,
   type SceneComponentId,
@@ -345,6 +346,8 @@ export type EditAction =
         look?: "overlay" | "card";
         durationSec?: number;
         sound?: string | null;
+        /** A hand-placed box (overlay-transform), frame fractions. */
+        rect?: OverlayRect;
       };
       coalesce?: boolean;
     }
@@ -353,6 +356,9 @@ export type EditAction =
    * action because `patchOverlay`'s fields are values, and the slider has no
    * position meaning "unset" — the `clearProp` / revealSpeed pattern. */
   | { type: "resetOverlayDuration"; id: string }
+  /** "Reset position": drop the hand-placed box so the automatic,
+   * caption-clearing placement applies again — `resetOverlayDuration`'s shape. */
+  | { type: "resetOverlayRect"; id: string }
   /** Delete: a match is NEGATED (`edits[id].removed`, a restorable lane ghost —
    * produce rewrites the plan every run, so there is nothing to delete
    * there); an added placement is spliced out. */
@@ -510,6 +516,36 @@ export function mintOverlayAddedId(
     const candidate = `${base}-${n}`;
     if (!taken.has(candidate)) return candidate;
   }
+}
+
+/**
+ * Drop one stored overlay field so its default applies again — the shared
+ * body of "default" duration and "Reset position". An added record loses the
+ * key; a match's edit loses it and goes entirely once empty (clearVideo rule).
+ */
+function clearOverlayField(
+  state: EditState,
+  id: string,
+  field: "durationSec" | "rect",
+  commit: (doc: OverrideDoc) => EditState,
+): EditState {
+  const slot = overlaySlot(state.doc);
+  const i = slot.added.findIndex((a) => a.id === id);
+  if (i !== -1) {
+    const prev = slot.added[i]!;
+    if (prev[field] === undefined) return state;
+    const { [field]: _gone, ...rest } = prev;
+    const added = slot.added.slice();
+    added[i] = rest;
+    return commit(withOverlays(state.doc, { ...slot, added }));
+  }
+  const prev = slot.edits[id];
+  if (prev?.[field] === undefined) return state;
+  const { [field]: _gone, ...rest } = prev;
+  const edits = { ...slot.edits };
+  if (Object.keys(rest).length === 0) delete edits[id];
+  else edits[id] = rest;
+  return commit(withOverlays(state.doc, { ...slot, edits }));
 }
 
 export function editReducer(state: EditState, action: EditAction): EditState {
@@ -1464,8 +1500,14 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       const fields = Object.keys(sent) as (keyof typeof sent)[];
       if (fields.length === 0) return state;
       const coalesce = action.coalesce ? `overlay:${action.id}:${[...fields].sort().join(",")}` : undefined;
+      // `rect` is an object, so compared by value — a click on the image
+      // that moves nothing must not push an undo step.
+      const same = (a: unknown, b: unknown): boolean =>
+        a === b ||
+        (typeof a === "object" && a !== null && typeof b === "object" && b !== null &&
+          JSON.stringify(a) === JSON.stringify(b));
       const unchanged = (prev: Partial<Record<keyof typeof sent, unknown>>): boolean =>
-        fields.every((k) => prev[k] === sent[k]);
+        fields.every((k) => same(prev[k], sent[k]));
       const i = slot.added.findIndex((a) => a.id === action.id);
       if (i !== -1) {
         const prev = slot.added[i]!;
@@ -1482,26 +1524,10 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         coalesce,
       );
     }
-    case "resetOverlayDuration": {
-      const slot = overlaySlot(state.doc);
-      const i = slot.added.findIndex((a) => a.id === action.id);
-      if (i !== -1) {
-        const prev = slot.added[i]!;
-        if (prev.durationSec === undefined) return state;
-        const { durationSec: _d, ...rest } = prev;
-        const added = slot.added.slice();
-        added[i] = rest;
-        return commit(withOverlays(state.doc, { ...slot, added }));
-      }
-      const prev = slot.edits[action.id];
-      if (prev?.durationSec === undefined) return state;
-      const { durationSec: _d, ...rest } = prev;
-      const edits = { ...slot.edits };
-      // An edit with nothing left goes entirely (the clearVideo rule).
-      if (Object.keys(rest).length === 0) delete edits[action.id];
-      else edits[action.id] = rest;
-      return commit(withOverlays(state.doc, { ...slot, edits }));
-    }
+    case "resetOverlayDuration":
+      return clearOverlayField(state, action.id, "durationSec", commit);
+    case "resetOverlayRect":
+      return clearOverlayField(state, action.id, "rect", commit);
     case "removeOverlay": {
       const slot = overlaySlot(state.doc);
       const added = slot.added.find((a) => a.id === action.id);
@@ -1795,6 +1821,7 @@ export function useEdits() {
       coalesce?: boolean,
     ) => dispatch({ type: "patchOverlay", id, patch, coalesce }),
     resetOverlayDuration: (id: string) => dispatch({ type: "resetOverlayDuration", id }),
+    resetOverlayRect: (id: string) => dispatch({ type: "resetOverlayRect", id }),
     removeOverlay: (id: string) => dispatch({ type: "removeOverlay", id }),
     restoreOverlay: (id: string) => dispatch({ type: "restoreOverlay", id }),
     addOverlay: (entry: OverlayEntrySnapshot, word: number, source?: "user" | "match") =>

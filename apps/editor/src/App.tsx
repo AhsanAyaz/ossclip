@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { Player, type PlayerRef } from "@remotion/player";
 import { transportReduce, type TransportKey } from "./transport";
 import type { AnyZodObject } from "remotion";
-import { ProductionComposition, type ProductionCompProps } from "@ossclip/renderer/composition";
+import { ProductionComposition, safeAreaFor, type ProductionCompProps } from "@ossclip/renderer/composition";
 import {
   applyCaptionEdits,
   applyCaptionRangeEdits,
@@ -33,6 +33,7 @@ import {
   type TimeMap,
   type CaptionKeyMigration,
   type OverlayEntrySnapshot,
+  type OverlayRect,
   type OverlayPlacement,
   type OverrideDoc,
   type SceneCue,
@@ -56,12 +57,14 @@ import {
 import {
   overlayLaneMarkers,
   overlayPreview,
+  overlaySeekSec,
   type OverlayPlan,
   type OverlayTrayRequest,
 } from "./overlayLane";
 import { OverlayTray } from "./OverlayTray";
 import { matchSummary } from "./overlayTrayModel";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
+import { OverlayImageBox, type OverlayImageBoxHandle, type OverlayRectPreview } from "./OverlayImageBox";
 import { Inspector, type RunInfo } from "./Inspector";
 import { EMPTY_LUT_MENU, liveGradeSpec, type LutMenu } from "./colorPanel";
 import { Timeline } from "./Timeline";
@@ -511,6 +514,10 @@ export const App: React.FC = () => {
   );
   // Same lifecycle for the graphic-box transform (R11 Task 2).
   const [graphicPreview, setGraphicPreview] = useState<GraphicPreview | null>(null);
+  /** A library overlay mid-drag (overlay-transform) — `graphicPreview`'s
+   * lifecycle, applied to the overlay cues the Player draws. */
+  const [overlayRectPreview, setOverlayRectPreview] = useState<OverlayRectPreview | null>(null);
+  const overlayImageBoxRef = useRef<OverlayImageBoxHandle>(null);
   const stageRef = useRef<HTMLDivElement>(null!);
   const playerRef = useRef<PlayerRef>(null);
   // The preview fills the stage area (R15 §55a): its size derives from the
@@ -1686,8 +1693,58 @@ export const App: React.FC = () => {
   const playerProps = useMemo<PlayerProductionProps | null>(() => {
     if (live === null) return null;
     const { overlayCues: _baked, ...rest } = live;
-    return overlayLive.cues.length > 0 ? { ...rest, overlayCues: overlayLive.cues } : rest;
-  }, [live, overlayLive]);
+    if (overlayLive.cues.length === 0) return rest;
+    const p = overlayRectPreview;
+    const overlayCues = p
+      ? overlayLive.cues.map((c) => (c.id === p.id ? { ...c, rect: p.rect } : c))
+      : overlayLive.cues;
+    return { ...rest, overlayCues };
+  }, [live, overlayLive, overlayRectPreview]);
+  /**
+   * A lane click on an object (a sound diamond, an overlay chip) selects it
+   * AND parks the playhead on it (overlay-transform field request): an
+   * overlay selected while the playhead is elsewhere is not on the stage,
+   * so there is nothing to see or drag. Scenes keep select-only — their
+   * block click is the long-standing "select, don't seek" rule (field report
+   * 2026-08-07), and the ruler stays the seek surface for them.
+   */
+  const seekToSec = useCallback(
+    (sec: number) => {
+      const player = playerRef.current;
+      const fps = live?.settings.fps;
+      if (!player || !fps) return;
+      player.seekTo(Math.max(0, Math.round(sec * fps)));
+    },
+    [live?.settings.fps],
+  );
+  const selectSfxAndSeek = useCallback(
+    (key: string | null) => {
+      selectSfx(key);
+      const m = key === null ? undefined : sfxMarkers?.find((x) => x.key === key);
+      if (m) seekToSec(m.atSec);
+    },
+    [selectSfx, sfxMarkers, seekToSec],
+  );
+  const selectOverlayAndSeek = useCallback(
+    (id: string | null) => {
+      selectOverlay(id);
+      const m = id === null ? undefined : overlayMarkers.find((x) => x.id === id);
+      if (m) seekToSec(overlaySeekSec(m));
+    },
+    [selectOverlay, overlayMarkers, seekToSec],
+  );
+  /** A press on a library overlay's picture: select it and grab it. */
+  const onOverlayPress = useCallback(
+    (id: string, x: number, y: number) => {
+      selectOverlay(id);
+      overlayImageBoxRef.current?.beginMove(id, x, y);
+    },
+    [selectOverlay],
+  );
+  const commitOverlayRect = useCallback(
+    (id: string, rect: OverlayRect) => edits.patchOverlay(id, { rect }),
+    [edits],
+  );
   /** "Add logo/image here…" at an OUTPUT second (the lane, or a transcript
    * word mapped onto the player clock): snapped to a kept word through the
    * lane's own anchors, then the tray opens in add mode. No kept word at all
@@ -2765,6 +2822,17 @@ export const App: React.FC = () => {
               hasOldClockPreimage={clock.hasOldClockPreimage}
               toSourceSec={clock.toSourceSec}
               onClockRefused={setClockRefusedNotice}
+              onOverlayPress={onOverlayPress}
+            />
+            <OverlayImageBox
+              ref={overlayImageBoxRef}
+              stageRef={stageRef}
+              playerRef={playerRef}
+              settings={live.settings}
+              safeArea={safeAreaFor(live.settings)}
+              selectedId={overlaySelection}
+              onPreview={setOverlayRectPreview}
+              onCommit={commitOverlayRect}
             />
             {/* The rate, visible and mouse-reachable (PLAN Task 2.4): a rate
                 only reachable by keyboard is a rate users lose track of.
@@ -2890,6 +2958,18 @@ export const App: React.FC = () => {
             sfxMarker={selectedSfx}
             overlayMarker={selectedOverlay}
             onOpenOverlayTray={openOverlayTray}
+            onAddOverlayAtPlayhead={
+              overlayPlan.words === null
+                ? undefined
+                : () => {
+                    // Read at the click, the sfxWordAtPlayhead idiom.
+                    const t = (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps;
+                    const word = nearestSfxWord(overlayWords, t);
+                    if (word === null) return false;
+                    openOverlayTray({ mode: "add", word });
+                    return true;
+                  }
+            }
             sfxLibrary={sfxLibrary}
             sfxEnabled={sfxPlan.sfx !== null}
             lutMenu={lutMenu}
@@ -2947,14 +3027,14 @@ export const App: React.FC = () => {
         sfxMarkers={sfxPlan.sfx === null ? null : sfxMarkers}
         sfxWords={sfxWords}
         sfxSelected={sfxSelection}
-        onSelectSfx={selectSfx}
+        onSelectSfx={selectSfxAndSeek}
         // The overlay lane: drawn whenever there is a word space, plan or
         // not — produce applies the overlay layer unconditionally, so a
         // tray add on a project that matched nothing still renders.
         overlayMarkers={overlayPlan.words === null ? null : overlayMarkers}
         overlayWords={overlayWords}
         overlaySelected={overlaySelection}
-        onSelectOverlay={selectOverlay}
+        onSelectOverlay={selectOverlayAndSeek}
         overlaySounds={overlayLive.sounds}
         onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
         onFindOverlayMatches={overlayPlan.words === null ? undefined : findOverlayMatches}

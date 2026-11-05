@@ -13,6 +13,7 @@ import {
 import {
   OverlayEntrySnapshotSchema,
   OverlayPlacementSchema,
+  OverlayRectSchema,
   RemovalReasonSchema,
   type OverlayEntrySnapshot,
   type OverlayPlacement,
@@ -917,6 +918,7 @@ export const OverrideDocSchema = z.object({
             look: z.enum(["overlay", "card"]).optional(),
             durationSec: z.number().min(0.5).max(6).optional(),
             sound: z.string().min(1).nullable().optional(),
+            rect: OverlayRectSchema.optional(),
             removed: z.boolean().optional(),
           }),
         )
@@ -3031,6 +3033,7 @@ export function applyOverlayOverrides(
       ...(edit.durationSec !== undefined ? { durationSec: edit.durationSec } : {}),
       // `null` is a value here (silent), so presence is `!== undefined`, never `??`.
       ...(edit.sound !== undefined ? { sound: edit.sound } : {}),
+      ...(edit.rect !== undefined ? { rect: edit.rect } : {}),
     });
   }
   // A `removed: true` addressing nothing is a TOMBSTONE, not lost work

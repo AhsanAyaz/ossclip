@@ -177,6 +177,22 @@ export type OverlayEntrySnapshot = z.infer<typeof OverlayEntrySnapshotSchema>;
  * default" (look → entry.look ?? "overlay", duration → 1.5s overlay / 2.0s
  * card, sound → entry.sound ?? "pop"); `resolveOverlayCues` owns the fallbacks.
  */
+/**
+ * A hand-placed overlay box (overlay-transform): frame fractions, the
+ * graphicRect convention. Set only by the editor's move/resize handles; the
+ * renderer then draws the image there, contain-fit, and stops dodging the
+ * captions — a box the user put somewhere is where it goes. Validated here
+ * because it is hand-editable user data (§35); the minimums keep a resize
+ * from collapsing an image into an unclickable speck.
+ */
+export const OverlayRectSchema = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  w: z.number().min(0.02).max(1),
+  h: z.number().min(0.02).max(1),
+});
+export type OverlayRect = z.infer<typeof OverlayRectSchema>;
+
 export const OverlayPlacementSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_@-]+$/),
   entryId: z.string(),
@@ -184,6 +200,7 @@ export const OverlayPlacementSchema = z.object({
   look: z.enum(["overlay", "card"]).optional(),
   durationSec: z.number().min(0.5).max(6).optional(),
   sound: z.string().min(1).nullable().optional(),
+  rect: OverlayRectSchema.optional(),
   source: z.enum(["match", "user"]),
 });
 export type OverlayPlacement = z.infer<typeof OverlayPlacementSchema>;

@@ -151,6 +151,57 @@ test("swap image through the tray: the placement points at the picked entry, sna
   expect(existsSync(join(WORKDIR, "library", "max-plan.png"))).toBe(true);
 });
 
+/** Park the playhead inside a chip's window — the ruler is the seek surface,
+ * on the lane's x scale; 60% in is past the entrance pop. */
+const seekIntoChip = async (page: Page, chipTestId: string) => {
+  const chip = (await page.getByTestId(chipTestId).boundingBox())!;
+  const ruler = (await page.getByTestId("ruler").boundingBox())!;
+  await page.mouse.click(chip.x + chip.width * 0.6, ruler.y + ruler.height / 2);
+};
+
+test("move and resize the picture on the stage, then reset its position (overlay-transform)", async ({ page }) => {
+  await open(page);
+  // Park the playhead elsewhere first: the chip click alone must bring the
+  // picture on screen (a lane click seeks to the object it selects).
+  const ruler = (await page.getByTestId("ruler").boundingBox())!;
+  await page.mouse.click(ruler.x + ruler.width * 0.95, ruler.y + ruler.height / 2);
+  await page.getByTestId(`overlay-chip-${addedId}`).click();
+  await page.getByTestId("overlay-look-overlay").check();
+  const pic = page.locator(`[data-testid="stage"] [data-edit-overlay="${addedId}"]`);
+  await expect(pic).toBeVisible();
+  const before = (await pic.boundingBox())!;
+
+  // One press on the picture selects it AND grabs it.
+  await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(before.x + before.width / 2 - 30, before.y + before.height / 2 - 50, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.getByTestId("overlay-image-box")).toBeVisible();
+  await expect(page.getByTestId("overlay-reset-position")).toBeEnabled();
+  const moved = (await pic.boundingBox())!;
+  expect(moved.x).toBeLessThan(before.x - 20);
+  expect(moved.y).toBeLessThan(before.y - 35);
+  expect(moved.width).toBeCloseTo(before.width, 0);
+
+  // A corner drag grows it with the aspect kept.
+  const se = (await page.getByTestId("overlay-corner-se").boundingBox())!;
+  await page.mouse.move(se.x + se.width / 2, se.y + se.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(se.x + se.width / 2 + 30, se.y + se.height / 2 + 30, { steps: 6 });
+  await page.mouse.up();
+  const grown = (await pic.boundingBox())!;
+  expect(grown.width).toBeGreaterThan(moved.width + 10);
+  expect(grown.width / grown.height).toBeCloseTo(moved.width / moved.height, 1);
+
+  await save(page);
+  const rect = (await overlaysDoc())!.added[0] as { rect?: { x: number; y: number; w: number; h: number } };
+  expect(rect.rect).toBeDefined();
+
+  await page.getByTestId("overlay-reset-position").click();
+  await save(page);
+  expect("rect" in (await overlaysDoc())!.added[0]!).toBe(false);
+});
+
 test("delete: the chip is gone after reload", async ({ page }) => {
   await open(page);
   await page.getByTestId(`overlay-chip-${addedId}`).click();
@@ -176,4 +227,20 @@ test("find matches: places the library's first mention and says so", async ({ pa
   // A second run adds nothing: the entry is already placed.
   await page.getByTestId("overlay-find-matches").click();
   await expect(page.getByTestId("overlay-match-status")).toContainText("added 0, skipped 1");
+});
+
+test("Add an image → Add at playhead opens the image grid and places the pick at the playhead (overlay-transform)", async ({ page }) => {
+  await open(page);
+  await seekIntoChip(page, `overlay-chip-max-plan-${MAX_PLAN_WORD}`);
+  await page.getByTestId("overlay-add").click();
+  await expect(page.getByTestId("overlay-tray")).toBeVisible();
+  await page.getByTestId("overlay-tray-item-clean-edit").click();
+  await expect(page.getByTestId("overlay-tray")).toHaveCount(0);
+  await expect(page.locator('[data-testid^="overlay-chip-clean-edit-"]')).toHaveCount(1);
+  await save(page);
+  const added = (await overlaysDoc())!.added;
+  const placed = added.find((a) => a.entryId === "clean-edit");
+  // The word under the playhead: inside "max plan"'s window, so 7 or a neighbour.
+  expect(placed?.word).toBeGreaterThanOrEqual(MAX_PLAN_WORD);
+  expect(placed?.word).toBeLessThanOrEqual(MAX_PLAN_WORD + 3);
 });
