@@ -78,6 +78,8 @@ describe.skipIf(!hasFfmpeg)("produce() — behavioural harness", () => {
       try {
         const result = await produce(clips, {
           cleanup: "standard",
+          // Hermetic (ruling R20): never the real ~/.ossclip/library.
+          libraryDir: mkdtempSync(join(tmpdir(), "ossclip-empty-library-")),
           render: false,
           mezzanine: false,
           transcript: join(dir, "transcript.json"),
@@ -117,6 +119,8 @@ describe.skipIf(!hasFfmpeg)("produce() — behavioural harness", () => {
       try {
         const result = await produce(clips, {
           cleanup: "standard",
+          // Hermetic (ruling R20): never the real ~/.ossclip/library.
+          libraryDir: mkdtempSync(join(tmpdir(), "ossclip-empty-library-")),
           render: false,
           review: true,
           mezzanine: false,

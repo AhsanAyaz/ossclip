@@ -49,6 +49,46 @@ if (!existsSync(readyMarker)) {
 // unchanged and keeps the two ends (webServer + spec) unambiguously in sync.
 process.env.OSSCLIP_E2E_WORKDIR = WORKDIR;
 
+/**
+ * A temp HOME for the edit server (overlay-library ruling R7), built the same
+ * way and for the same reasons as WORKDIR above: deterministic per root pid,
+ * populated once behind a marker. Everything the server reads or writes under
+ * `~/.ossclip` — the overlay library the tray adds into, `recent-projects.json`,
+ * config.json — lands here, so no spec can ever touch the real one, and the
+ * suite stops depending on whatever the developer's own config says.
+ *
+ * The library is seeded with `e2e/fixtures/library/` (a "max plan" entry the
+ * find-matches spec places). `assets/` holds a PNG OUTSIDE the library for
+ * the tray's paste-a-path add to copy in: a path already inside the library
+ * would prove nothing about the copy.
+ */
+const HOME_DIR = `${WORKDIR}-home`;
+const homeMarker = join(HOME_DIR, ".fixture-ready");
+if (!existsSync(homeMarker)) {
+  rmSync(HOME_DIR, { recursive: true, force: true });
+  mkdirSync(join(HOME_DIR, ".ossclip"), { recursive: true });
+  cpSync(fileURLToPath(new URL("./e2e/fixtures/library", import.meta.url)), join(HOME_DIR, ".ossclip", "library"), {
+    recursive: true,
+  });
+  mkdirSync(join(HOME_DIR, "assets"), { recursive: true });
+  cpSync(fileURLToPath(new URL("./e2e/fixtures/clean-edit.png", import.meta.url)), join(HOME_DIR, "assets", "clean-edit.png"));
+  writeFileSync(homeMarker, "");
+}
+process.env.OSSCLIP_E2E_HOME = HOME_DIR;
+
+/**
+ * Ports, overridable (ruling R15) with the defaults unchanged. The developer's
+ * OWN `ossclip edit` lives on 5174, so a run beside it needs other ports —
+ * `E2E_EDIT_PORT=5274 E2E_VITE_PORT=5273 pnpm e2e`. vite.config.ts reads the
+ * same two variables (its proxy target and its own port), and the specs follow
+ * through `baseURL`. An overridden port is never REUSED: a server already on a
+ * port someone chose on purpose is not one this run started, and reusing it
+ * would proxy every request into somebody else's project.
+ */
+const EDIT_PORT = Number(process.env.E2E_EDIT_PORT ?? 5174);
+const VITE_PORT = Number(process.env.E2E_VITE_PORT ?? 5173);
+const vitePortOverridden = process.env.E2E_VITE_PORT !== undefined || process.env.E2E_EDIT_PORT !== undefined;
+
 export default defineConfig({
   testDir: "./e2e",
   // Retry ON CI ONLY. This suite drives real timing — a video element
@@ -67,7 +107,7 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
@@ -82,9 +122,13 @@ export default defineConfig({
     // (the 2026-08-31 ADK crash) and restores it after — serialized behind
     // everything for the same reason the other rewriters are.
     { name: "sliver-cut", testMatch: /sliver-cut\.spec\.ts/, dependencies: ["recut"] },
+    // Gives the shared production.json a transcript (the overlay lane's word
+    // space, which no other spec draws) and starts from no overrides.json,
+    // restoring both after — a rewriter, so serialized last like the others.
+    { name: "overlays", testMatch: /overlays\.spec\.ts/, dependencies: ["sliver-cut"] },
   ],
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL: `http://127.0.0.1:${VITE_PORT}`,
     // Tall enough that the stage (≈676px) AND the timeline below it are both
     // inside the viewport: several specs drive raw `page.mouse` events at
     // measured coordinates, and raw mouse — unlike locator.click() — never
@@ -110,15 +154,29 @@ export default defineConfig({
       // `pnpm ossclip` is a root-level script (apps/editor has no such
       // script of its own), so this must run from the monorepo root rather
       // than the default cwd (this config file's directory).
-      command: `pnpm ossclip edit ${WORKDIR} --no-open`,
+      //
+      // tsx directly rather than `pnpm ossclip`: pnpm here is corepack's shim,
+      // and under the temp HOME corepack finds no cached pnpm and goes to the
+      // network for one. `--port` is always passed so it is PINNED — an
+      // unpinned edit server steps around a busy port (edit-port.ts), which
+      // would leave Playwright probing a port this run never bound.
+      command: `node_modules/.bin/tsx apps/cli/src/index.ts edit ${WORKDIR} --no-open --port ${EDIT_PORT}`,
       cwd: "../..",
-      port: 5174,
+      port: EDIT_PORT,
+      env: { HOME: HOME_DIR, USERPROFILE: HOME_DIR },
       // Deliberately NOT reused: this server's whole identity is the fresh
       // per-run WORKDIR above. Reusing a server left running from a prior
       // invocation would silently point every request at that OLD run's
       // (possibly already-mutated) directory instead of this one's.
       reuseExistingServer: false,
     },
-    { command: "pnpm --filter @ossclip/editor dev", port: 5173, reuseExistingServer: true },
+    // `E2E_EDIT_PORT` reaches vite.config.ts's proxy through the inherited
+    // environment; a run that overrides either port must not reuse a vite
+    // that may be proxying into a DIFFERENT edit server.
+    {
+      command: "pnpm --filter @ossclip/editor dev",
+      port: VITE_PORT,
+      reuseExistingServer: !vitePortOverridden,
+    },
   ],
 });

@@ -32,6 +32,8 @@ import {
   type LivePreviewClocks,
   type TimeMap,
   type CaptionKeyMigration,
+  type OverlayEntrySnapshot,
+  type OverlayPlacement,
   type OverrideDoc,
   type SceneCue,
   type Segment,
@@ -51,6 +53,14 @@ import {
   type SfxPlan,
   type SfxWordAnchor,
 } from "./sfxLane";
+import {
+  overlayLaneMarkers,
+  overlayPreview,
+  type OverlayPlan,
+  type OverlayTrayRequest,
+} from "./overlayLane";
+import { OverlayTray } from "./OverlayTray";
+import { matchSummary } from "./overlayTrayModel";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { Inspector, type RunInfo } from "./Inspector";
 import { EMPTY_LUT_MENU, liveGradeSpec, type LutMenu } from "./colorPanel";
@@ -336,6 +346,29 @@ export const App: React.FC = () => {
    * namespaces stay exclusive through `selectScene`/`selectSfx` below. */
   const [sfxSelection, setSfxSelection] = useState<string | null>(null);
   /**
+   * The overlay plan and its word space (overlay-library spec §Editor) —
+   * `/api/overlays/plan`, the `sfxPlan` pairing: production.json's matched
+   * placements plus the REPAIRED words they index. The user's layer is
+   * `edits.doc.overlays`; the two meet only in `overlayLaneMarkers` /
+   * `overlayPreview`, through the resolver produce renders with.
+   */
+  const [overlayPlan, setOverlayPlan] = useState<{
+    overlays: OverlayPlan | null;
+    words: { text: string; start: number; end: number }[] | null;
+  }>({ overlays: null, words: null });
+  /** The selected overlay chip's placement id — the third selection
+   * namespace, exclusive with scenes and sfx (`selectOverlay` below). */
+  const [overlaySelection, setOverlaySelection] = useState<string | null>(null);
+  /**
+   * What the overlay tray is open for, or null when closed. The tray itself
+   * is Task 8: every entry point here (the lane and transcript "Add
+   * logo/image here…" menus, the Inspector's "Swap image…") already speaks
+   * `OverlayTrayRequest` through `openOverlayTray`, so the tray plugs in by
+   * rendering from this state and nothing upstream changes.
+   */
+  const [overlayTray, setOverlayTray] = useState<OverlayTrayRequest | null>(null);
+  const openOverlayTray = useCallback((req: OverlayTrayRequest) => setOverlayTray(req), []);
+  /**
    * One range re-decode in flight at a time, client side (Phase A,
    * 2026-08-26). The server single-flights too (409), but a chip that fires
    * a doomed request is a request whose failure the user then reads about
@@ -424,10 +457,22 @@ export const App: React.FC = () => {
   const selectScene = useCallback((sel: Selection | null) => {
     setSelection(sel);
     setSfxSelection(null);
+    setOverlaySelection(null);
   }, []);
   const selectSfx = useCallback((key: string | null) => {
     setSfxSelection(key);
-    if (key !== null) setSelection(null);
+    if (key !== null) {
+      setSelection(null);
+      setOverlaySelection(null);
+    }
+  }, []);
+  // The overlay chip's half of the same rule — three namespaces, one panel.
+  const selectOverlay = useCallback((id: string | null) => {
+    setOverlaySelection(id);
+    if (id !== null) {
+      setSelection(null);
+      setSfxSelection(null);
+    }
   }, []);
   const [playing, setPlaying] = useState(false);
   const [rate, setRate] = useState(1);
@@ -944,6 +989,21 @@ export const App: React.FC = () => {
         setSfxLibrary(r.ok ? (((await r.json()) as { sounds?: SfxLibrarySound[] }).sounds ?? []) : []),
       )
       .catch(() => setSfxLibrary([]));
+    // The overlay plan + its word space — `/api/sfx/plan`'s posture: any
+    // failure is "no plan, no words", which draws no lane rather than chips
+    // on the wrong words.
+    void fetch("/api/overlays/plan")
+      .then(async (r) =>
+        setOverlayPlan(
+          r.ok
+            ? ((await r.json()) as {
+                overlays: OverlayPlan | null;
+                words: { text: string; start: number; end: number }[] | null;
+              })
+            : { overlays: null, words: null },
+        ),
+      )
+      .catch(() => setOverlayPlan({ overlays: null, words: null }));
     // The Color panel's menu — the sfx-library posture: any failure degrades
     // to the empty menu (presets and Off still work with no server help).
     void fetch("/api/luts")
@@ -952,6 +1012,8 @@ export const App: React.FC = () => {
     // A marker key belongs to the project that was open when it was picked
     // (the §137 Task 6 review's Minor 6 rule, applied to this selection).
     setSfxSelection(null);
+    setOverlaySelection(null);
+    setOverlayTray(null);
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
     // progress, no logs, and no way to cancel it from the UI. Since
@@ -1536,20 +1598,24 @@ export const App: React.FC = () => {
   // is placed against the timeline the user is looking at. Malformed spans
   // degrade to no map (the `identityToSource` guard's never-throw rule), which
   // yields no anchors and an empty lane rather than a wall of markers at zero.
+  //
+  // ONE memo for the clock, shared with the overlay lane below: a chip and a
+  // diamond on the same word must sit at the same instant.
+  const rulerMap = useMemo<TimeMap | null>(() => {
+    const map: TimeMap | null = liveRecut?.newMap ?? null;
+    if (map !== null) return map;
+    try {
+      const spans = renderProps?.spans ?? [];
+      return spans.length > 0 ? mapFromKeptSpans(spans) : null;
+    } catch {
+      return null;
+    }
+  }, [liveRecut, renderProps]);
   const sfxWords = useMemo<SfxWordAnchor[]>(() => {
     const words = sfxPlan.words;
     if (words === null || words.length === 0) return [];
-    let map: TimeMap | null = liveRecut?.newMap ?? null;
-    if (map === null) {
-      try {
-        const spans = renderProps?.spans ?? [];
-        map = spans.length > 0 ? mapFromKeptSpans(spans) : null;
-      } catch {
-        map = null;
-      }
-    }
-    return sfxWordAnchors(words, map);
-  }, [sfxPlan, liveRecut, renderProps]);
+    return sfxWordAnchors(words, rulerMap);
+  }, [sfxPlan, rulerMap]);
   /**
    * Scene id → its LIVE start second, for the scene-anchored markers
    * (2026-08-29).
@@ -1580,6 +1646,102 @@ export const App: React.FC = () => {
     () => sfxMarkers.find((m) => m.key === sfxSelection) ?? null,
     [sfxMarkers, sfxSelection],
   );
+  // The overlay lane (overlay-library spec §Editor), on the ruler's clock.
+  // `/api/overlays/plan`'s words are the SAME repaired space as the sfx ones,
+  // fetched separately because the sfx route answers `words: null` for a
+  // production with no sfx plan, and overlays need none.
+  const overlayWords = useMemo<SfxWordAnchor[]>(
+    () => (overlayPlan.words === null ? [] : sfxWordAnchors(overlayPlan.words, rulerMap)),
+    [overlayPlan.words, rulerMap],
+  );
+  const overlayMarkers = useMemo(
+    () =>
+      overlayPlan.words === null
+        ? []
+        : overlayLaneMarkers(overlayPlan.overlays, edits.doc.overlays, overlayPlan.words, rulerMap),
+    [overlayPlan, edits.doc.overlays, rulerMap],
+  );
+  // Resolved off the SAME list the lane draws (`selectedSfx`'s rule): a chip
+  // the resolver dropped, or a delete spliced, resolves to null.
+  const selectedOverlay = useMemo(
+    () => overlayMarkers.find((m) => m.id === overlaySelection) ?? null,
+    [overlayMarkers, overlaySelection],
+  );
+  // The live preview: cues for the Player's OverlayTrack, pops for the lane's
+  // sound preview — rebuilt on every doc change, so a drag, look switch or
+  // delete previews before any render exists.
+  const overlayLive = useMemo(
+    () =>
+      overlayPlan.words === null
+        ? { cues: [], sounds: [] }
+        : overlayPreview(overlayPlan.overlays, edits.doc.overlays, overlayPlan.words, rulerMap, sfxLibrary),
+    [overlayPlan, edits.doc.overlays, rulerMap, sfxLibrary],
+  );
+  // ALWAYS recomposed, never inherited from `live`: render-props' baked
+  // `overlayCues` are the last render's, with `library/…` paths relative to
+  // the render's public dir that 404 under the editor — the `sfxCues: undefined`
+  // reasoning, except here the editor has a working replacement. Absent when
+  // empty so a project with no overlays hands the Player the props it got
+  // before this feature existed.
+  const playerProps = useMemo<PlayerProductionProps | null>(() => {
+    if (live === null) return null;
+    const { overlayCues: _baked, ...rest } = live;
+    return overlayLive.cues.length > 0 ? { ...rest, overlayCues: overlayLive.cues } : rest;
+  }, [live, overlayLive]);
+  /** "Add logo/image here…" at an OUTPUT second (the lane, or a transcript
+   * word mapped onto the player clock): snapped to a kept word through the
+   * lane's own anchors, then the tray opens in add mode. No kept word at all
+   * (nothing to anchor to) opens nothing. */
+  const addOverlayAt = useCallback(
+    (sec: number) => {
+      const word = nearestSfxWord(overlayWords, sec);
+      if (word !== null) openOverlayTray({ mode: "add", word });
+    },
+    [overlayWords, openOverlayTray],
+  );
+  /** A tray pick, staged by the server: placed at the word (add) or swapped
+   * into the placement (swap) — both one reducer commit, so ⌘Z takes it back. */
+  const onOverlayStaged = useCallback(
+    (entry: OverlayEntrySnapshot) => {
+      if (overlayTray === null) return;
+      if (overlayTray.mode === "add") edits.addOverlay(entry, overlayTray.word);
+      else edits.swapOverlay(overlayTray.id, entry);
+      setOverlayTray(null);
+    },
+    [overlayTray, edits],
+  );
+  const closeOverlayTray = useCallback(() => setOverlayTray(null), []);
+  /**
+   * "Find library matches" (spec §Editor): the server matches the library
+   * against THIS page's layer — unsaved edits included, so a just-removed
+   * match is not re-added — and returns placements the reducer stores in one
+   * undo step. Resolves to the sentence the lane header shows; a refusal
+   * resolves too (as the server's own words), because it is a report, not a
+   * crash. JSON content-type or the server answers 415 (ruling R14).
+   */
+  const findOverlayMatches = useCallback(async (): Promise<string> => {
+    try {
+      const res = await fetch("/api/overlays/match", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ overlays: edits.doc.overlays }),
+      });
+      const body = (await res.json().catch(() => null)) as
+        | {
+            error?: string;
+            placements: OverlayPlacement[];
+            entries: OverlayEntrySnapshot[];
+            skipped: number;
+            dropped: { entryId: string; word: number; reason: string }[];
+          }
+        | null;
+      if (!res.ok || body === null) return `could not match: ${body?.error ?? `request failed (${res.status})`}`;
+      edits.addOverlayMatches(body.placements, body.entries);
+      return matchSummary(body);
+    } catch (e) {
+      return `could not match: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }, [edits]);
   // The dismissal is aimed at ONE list, not at the notice forever: a later,
   // DIFFERENT drop raises it again. Held as the dismissed list itself rather
   // than a boolean for exactly that (§137 Task 6 review, Important 4 — a
@@ -2109,6 +2271,9 @@ export const App: React.FC = () => {
           }}
         />
       ) : null}
+      {overlayTray !== null ? (
+        <OverlayTray request={overlayTray} onStaged={onOverlayStaged} onClose={closeOverlayTray} />
+      ) : null}
       {deletePlan ? (
         <DeleteSceneModal
           plan={deletePlan}
@@ -2501,6 +2666,8 @@ export const App: React.FC = () => {
               // the streams are (`liveTranscript`), never re-derived.
               toPlayerSec={liveTranscript ? identitySec : clock.toLive}
               fromPlayerSec={liveTranscript ? identitySec : clock.fromLive}
+              // Overlay adds need a word space to anchor to.
+              onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}
@@ -2560,7 +2727,7 @@ export const App: React.FC = () => {
             <Player<AnyZodObject, PlayerProductionProps>
               ref={playerRef}
               component={ProductionComposition}
-              inputProps={live}
+              inputProps={playerProps ?? live}
               durationInFrames={Math.max(1, Math.round(live.outputDurationSec * live.settings.fps))}
               fps={live.settings.fps}
               compositionWidth={live.settings.width}
@@ -2721,6 +2888,8 @@ export const App: React.FC = () => {
             // visibility signal — a production with no plan gets no palette,
             // because produce would drop what it added (the prop's doc).
             sfxMarker={selectedSfx}
+            overlayMarker={selectedOverlay}
+            onOpenOverlayTray={openOverlayTray}
             sfxLibrary={sfxLibrary}
             sfxEnabled={sfxPlan.sfx !== null}
             lutMenu={lutMenu}
@@ -2779,6 +2948,16 @@ export const App: React.FC = () => {
         sfxWords={sfxWords}
         sfxSelected={sfxSelection}
         onSelectSfx={selectSfx}
+        // The overlay lane: drawn whenever there is a word space, plan or
+        // not — produce applies the overlay layer unconditionally, so a
+        // tray add on a project that matched nothing still renders.
+        overlayMarkers={overlayPlan.words === null ? null : overlayMarkers}
+        overlayWords={overlayWords}
+        overlaySelected={overlaySelection}
+        onSelectOverlay={selectOverlay}
+        overlaySounds={overlayLive.sounds}
+        onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
+        onFindOverlayMatches={overlayPlan.words === null ? undefined : findOverlayMatches}
         toSourceSec={(outSec) => {
           // Output→source through the spans (R20 §97) — the filmstrip frame
           // must be the source second actually playing there, not the raw

@@ -15,6 +15,8 @@ import {
   stampSceneAnchors,
   type ElementTransform,
   type Layout,
+  type OverlayEntrySnapshot,
+  type OverlayPlacement,
   type OverrideDoc,
   type RemovalReason,
   type SceneComponentId,
@@ -325,6 +327,56 @@ export type EditAction =
   /** Delete an ADDED placement: spliced out, not muted — there is no plan
    * entry left behind for a ghost to negate. */
   | { type: "removeSfxAdded"; id: string }
+  /**
+   * Edit ONE overlay (overlay-library spec §Editor, Inspector + lane drag),
+   * whoever placed it. The reducer picks the door by id: an id in
+   * `overlays.added` rewrites that record (every field of it is the user's —
+   * `patchSfxAdded`'s reasoning), anything else is a MATCH and merges into
+   * `overlays.edits[id]`, which `applyOverlayOverrides` keys by placement id.
+   * `sound: null` is a value (silent), never a clear. `coalesce: true` folds
+   * a slider drag into one undo step under a per-id, per-field key.
+   */
+  | {
+      type: "patchOverlay";
+      id: string;
+      patch: {
+        entryId?: string;
+        word?: number;
+        look?: "overlay" | "card";
+        durationSec?: number;
+        sound?: string | null;
+      };
+      coalesce?: boolean;
+    }
+  /** The Inspector's duration "default" button: drop the stored duration so
+   * the look's default (1.5s overlay / 2.0s card) applies again. A separate
+   * action because `patchOverlay`'s fields are values, and the slider has no
+   * position meaning "unset" — the `clearProp` / revealSpeed pattern. */
+  | { type: "resetOverlayDuration"; id: string }
+  /** Delete: a match is NEGATED (`edits[id].removed`, a restorable lane ghost —
+   * produce rewrites the plan every run, so there is nothing to delete
+   * there); an added placement is spliced out. */
+  | { type: "removeOverlay"; id: string }
+  /** Un-negate a match; the entry goes entirely when nothing else is stored
+   * (the `restoreSfx` rule — never `removed: false`). */
+  | { type: "restoreOverlay"; id: string }
+  /** A tray pick placed at a word: id minted once (`mintOverlayAddedId`), the
+   * entry snapshot upserted into `overlays.entries` (spec "Snapshot": a tray
+   * add must outlive the next produce rewriting production.json). */
+  | { type: "addOverlay"; entry: OverlayEntrySnapshot; word: number; source?: "user" | "match" }
+  /** "Find library matches" results, ONE undo step. Stored in `added` under
+   * MINTED `@`-free ids, keeping `source: "match"` so a cut word still falls
+   * forward to the next mention (ruling R5: `entry@word` ids only ever key
+   * `edits`). */
+  | { type: "addOverlayMatches"; placements: OverlayPlacement[]; entries: OverlayEntrySnapshot[] }
+  /** The tray's swap mode: point placement `id` at `entry` AND upsert its
+   * snapshot, in ONE undo step. Not `patchOverlay({entryId})` alone — that
+   * would leave an entry id no snapshot in the layer answers to, and a swap
+   * to an entry production.json never matched would render nothing (spec
+   * "Snapshot": tray-added entries live in `overrides.json.overlays.entries`).
+   * A re-pick of the same entry still upserts, because staging re-copied its
+   * art and the snapshot's `ext` may have changed with it. */
+  | { type: "swapOverlay"; id: string; entry: OverlayEntrySnapshot }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
@@ -396,6 +448,64 @@ export function mintSfxAddedId(
   const taken = new Set(existing.map((e) => e.id));
   if (!taken.has(base)) return base;
   // Starts at 2 so the first collision reads as "the second `ding-4`".
+  for (let n = 2; ; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+type OverlaySlot = NonNullable<OverrideDoc["overlays"]>;
+
+/** The overlays slot as a value, absent until something is stored (`sfxSlot`). */
+const overlaySlot = (doc: OverrideDoc): OverlaySlot => doc.overlays ?? { edits: {}, added: [], entries: [] };
+
+/**
+ * Write the overlays slot back, or REMOVE it when it has nothing left to say
+ * (the `withSfx` rule): `overlays` is optional with no default so a project
+ * that never touched an overlay saves byte-identical overrides.json, and one
+ * whose last overlay edit was undone or restored must not keep an empty slot.
+ */
+const withOverlays = (doc: OverrideDoc, next: OverlaySlot): OverrideDoc => {
+  if (Object.keys(next.edits).length > 0 || next.added.length > 0 || next.entries.length > 0) {
+    return { ...doc, overlays: next };
+  }
+  if (doc.overlays === undefined) return doc;
+  const { overlays: _dropped, ...rest } = doc;
+  return rest;
+};
+
+/** Upsert snapshots by id, replacing in place — a re-pick re-snapshots
+ * (new art, new ext), and `applyOverlayOverrides` reads one entry per id. */
+const upsertEntries = (
+  entries: readonly OverlayEntrySnapshot[],
+  incoming: readonly OverlayEntrySnapshot[],
+): OverlayEntrySnapshot[] => {
+  const out = [...entries];
+  for (const e of incoming) {
+    const at = out.findIndex((x) => x.id === e.id);
+    if (at === -1) out.push(e);
+    else out[at] = e;
+  }
+  return out;
+};
+
+/**
+ * An id for a user-added overlay that no entry in `existing` holds —
+ * `mintSfxAddedId`'s contract for the overlay namespace (that function owns
+ * the argument): minted once, a counter suffix, sanitised to
+ * `/^[A-Za-z0-9_-]+$/` so it can never contain the `@` matched ids are built
+ * with (`OverrideDocSchema.overlays.added`; produce throws on a doc that fails
+ * to parse). Library ids are slugs today; the invariant does not lean on it.
+ */
+export function mintOverlayAddedId(
+  entryId: string,
+  word: number,
+  existing: readonly { id: string }[],
+): string {
+  const slug = entryId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  const base = `${slug === "" ? "overlay" : slug}-${Math.max(0, Math.trunc(word))}`;
+  const taken = new Set(existing.map((e) => e.id));
+  if (!taken.has(base)) return base;
   for (let n = 2; ; n++) {
     const candidate = `${base}-${n}`;
     if (!taken.has(candidate)) return candidate;
@@ -1343,6 +1453,150 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       if (added.length === slot.added.length) return state;
       return commit(withSfx(state.doc, { ...slot, added }));
     }
+    case "patchOverlay": {
+      const slot = overlaySlot(state.doc);
+      // Only the fields the gesture SENT — a spread of the raw patch would
+      // write `durationSec: undefined` keys into overrides.json (the
+      // `cutChunk` src rule). `null` survives: it is a value (silent).
+      const sent = Object.fromEntries(
+        Object.entries(action.patch).filter(([, v]) => v !== undefined),
+      ) as Extract<EditAction, { type: "patchOverlay" }>["patch"];
+      const fields = Object.keys(sent) as (keyof typeof sent)[];
+      if (fields.length === 0) return state;
+      const coalesce = action.coalesce ? `overlay:${action.id}:${[...fields].sort().join(",")}` : undefined;
+      const unchanged = (prev: Partial<Record<keyof typeof sent, unknown>>): boolean =>
+        fields.every((k) => prev[k] === sent[k]);
+      const i = slot.added.findIndex((a) => a.id === action.id);
+      if (i !== -1) {
+        const prev = slot.added[i]!;
+        // The no-op guard (`patchSfxAdded`): a drag landing where it started.
+        if (unchanged(prev)) return state;
+        const added = slot.added.slice();
+        added[i] = { ...prev, ...sent };
+        return commit(withOverlays(state.doc, { ...slot, added }), coalesce);
+      }
+      const prev = slot.edits[action.id];
+      if (prev !== undefined && unchanged(prev)) return state;
+      return commit(
+        withOverlays(state.doc, { ...slot, edits: { ...slot.edits, [action.id]: { ...prev, ...sent } } }),
+        coalesce,
+      );
+    }
+    case "resetOverlayDuration": {
+      const slot = overlaySlot(state.doc);
+      const i = slot.added.findIndex((a) => a.id === action.id);
+      if (i !== -1) {
+        const prev = slot.added[i]!;
+        if (prev.durationSec === undefined) return state;
+        const { durationSec: _d, ...rest } = prev;
+        const added = slot.added.slice();
+        added[i] = rest;
+        return commit(withOverlays(state.doc, { ...slot, added }));
+      }
+      const prev = slot.edits[action.id];
+      if (prev?.durationSec === undefined) return state;
+      const { durationSec: _d, ...rest } = prev;
+      const edits = { ...slot.edits };
+      // An edit with nothing left goes entirely (the clearVideo rule).
+      if (Object.keys(rest).length === 0) delete edits[action.id];
+      else edits[action.id] = rest;
+      return commit(withOverlays(state.doc, { ...slot, edits }));
+    }
+    case "removeOverlay": {
+      const slot = overlaySlot(state.doc);
+      const added = slot.added.find((a) => a.id === action.id);
+      if (added) {
+        // Spliced, along with any edit keyed to it — left behind, that edit
+        // would address nothing and surface as a "stale key" on every
+        // produce (`applyOverlayOverrides`' dropped list).
+        const edits = { ...slot.edits };
+        delete edits[action.id];
+        // A Find-matches placement leaves a TOMBSTONE under its match id
+        // (ruling R17): splicing it alone erased the only record that the
+        // user did not want this logo, and the next fresh produce matched
+        // it right back. `overlayRematchGuards` reads the `entry@word` key
+        // as "not this entry"; `applyOverlayOverrides` does not report it
+        // stale. A tray pick ("user") was never a match and needs none.
+        if (added.source === "match") {
+          const key = `${added.entryId}@${added.word}`;
+          edits[key] = { ...edits[key], removed: true };
+        }
+        return commit(
+          withOverlays(state.doc, { ...slot, added: slot.added.filter((a) => a.id !== action.id), edits }),
+        );
+      }
+      const prev = slot.edits[action.id];
+      if (prev?.removed === true) return state;
+      // MERGED onto what is stored (`muteSfx`): a restore brings back the
+      // look/duration the user had, not the plan's bare version.
+      return commit(
+        withOverlays(state.doc, { ...slot, edits: { ...slot.edits, [action.id]: { ...prev, removed: true } } }),
+      );
+    }
+    case "restoreOverlay": {
+      const slot = overlaySlot(state.doc);
+      const prev = slot.edits[action.id];
+      if (prev?.removed !== true) return state;
+      const { removed: _r, ...rest } = prev;
+      const edits = { ...slot.edits };
+      if (Object.keys(rest).length === 0) delete edits[action.id];
+      else edits[action.id] = rest;
+      return commit(withOverlays(state.doc, { ...slot, edits }));
+    }
+    case "addOverlay": {
+      const slot = overlaySlot(state.doc);
+      return commit(
+        withOverlays(state.doc, {
+          ...slot,
+          added: [
+            ...slot.added,
+            {
+              id: mintOverlayAddedId(action.entry.id, action.word, slot.added),
+              entryId: action.entry.id,
+              word: action.word,
+              source: action.source ?? "user",
+            },
+          ],
+          entries: upsertEntries(slot.entries, [action.entry]),
+        }),
+      );
+    }
+    case "addOverlayMatches": {
+      if (action.placements.length === 0) return state;
+      const slot = overlaySlot(state.doc);
+      const added = [...slot.added];
+      for (const p of action.placements) {
+        // Re-minted against the GROWING list so two results for one entry
+        // and word cannot collide with each other either.
+        added.push({ ...p, id: mintOverlayAddedId(p.entryId, p.word, added) });
+      }
+      return commit(withOverlays(state.doc, { ...slot, added, entries: upsertEntries(slot.entries, action.entries) }));
+    }
+    case "swapOverlay": {
+      const slot = overlaySlot(state.doc);
+      const entries = upsertEntries(slot.entries, [action.entry]);
+      // Snapshots are flat JSON records, so a serialised compare is exact.
+      const sameEntries = JSON.stringify(entries) === JSON.stringify(slot.entries);
+      // The `patchOverlay` door by id: an added record is rewritten, anything
+      // else is a match whose edit carries the swap.
+      const i = slot.added.findIndex((a) => a.id === action.id);
+      if (i !== -1) {
+        const prev = slot.added[i]!;
+        if (prev.entryId === action.entry.id && sameEntries) return state;
+        const added = slot.added.slice();
+        added[i] = { ...prev, entryId: action.entry.id };
+        return commit(withOverlays(state.doc, { ...slot, added, entries }));
+      }
+      const prev = slot.edits[action.id];
+      if (prev?.entryId === action.entry.id && sameEntries) return state;
+      return commit(
+        withOverlays(state.doc, {
+          ...slot,
+          edits: { ...slot.edits, [action.id]: { ...prev, entryId: action.entry.id } },
+          entries,
+        }),
+      );
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -1535,6 +1789,19 @@ export function useEdits() {
       coalesce?: string,
     ) => dispatch({ type: "patchSfxAdded", id, patch, coalesce }),
     removeSfxAdded: (id: string) => dispatch({ type: "removeSfxAdded", id }),
+    patchOverlay: (
+      id: string,
+      patch: Extract<EditAction, { type: "patchOverlay" }>["patch"],
+      coalesce?: boolean,
+    ) => dispatch({ type: "patchOverlay", id, patch, coalesce }),
+    resetOverlayDuration: (id: string) => dispatch({ type: "resetOverlayDuration", id }),
+    removeOverlay: (id: string) => dispatch({ type: "removeOverlay", id }),
+    restoreOverlay: (id: string) => dispatch({ type: "restoreOverlay", id }),
+    addOverlay: (entry: OverlayEntrySnapshot, word: number, source?: "user" | "match") =>
+      dispatch({ type: "addOverlay", entry, word, source }),
+    addOverlayMatches: (placements: OverlayPlacement[], entries: OverlayEntrySnapshot[]) =>
+      dispatch({ type: "addOverlayMatches", placements, entries }),
+    swapOverlay: (id: string, entry: OverlayEntrySnapshot) => dispatch({ type: "swapOverlay", id, entry }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

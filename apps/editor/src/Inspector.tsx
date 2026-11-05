@@ -21,6 +21,12 @@ import {
   type LutMenu,
 } from "./colorPanel";
 import { sfxAudioUrl, type SfxLibrarySound, type SfxMarker } from "./sfxLane";
+import {
+  overlayDefaultDurationSec,
+  overlayMediaUrl,
+  type OverlayMarker,
+  type OverlayTrayRequest,
+} from "./overlayLane";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
 /** What planned this video and what it cost (R21 §104) — `/api/usage`'s
@@ -131,6 +137,14 @@ interface InspectorProps {
    * is selected.
    */
   sfxMarker?: SfxMarker | null;
+  /**
+   * The overlay chip the lane has selected (`overlayLaneMarkers`). Same
+   * whole-panel, mutually-exclusive contract as `sfxMarker` — App keeps the
+   * three selection namespaces exclusive.
+   */
+  overlayMarker?: OverlayMarker | null;
+  /** Opens the tray (Task 8) — here, in swap mode for the selected chip. */
+  onOpenOverlayTray?: (req: OverlayTrayRequest) => void;
   /**
    * `/api/sfx/library` — every sound INSTALLED, level-agnostic on purpose:
    * the model's `--sfx-level` gate prices the model's own plan, and an
@@ -565,6 +579,8 @@ export const Inspector: React.FC<InspectorProps> = ({
   toSourceSec = null,
   onClockRefused = (): void => {},
   sfxMarker = null,
+  overlayMarker = null,
+  onOpenOverlayTray,
   sfxLibrary = [],
   sfxEnabled = false,
   lutMenu = EMPTY_LUT_MENU,
@@ -702,6 +718,155 @@ export const Inspector: React.FC<InspectorProps> = ({
           )}
         </div>
         <SfxAddSection edits={edits} library={sfxLibrary} wordAtPlayhead={sfxWordAtPlayhead} />
+      </div>
+    );
+  }
+
+  if (overlayMarker) {
+    // The selected overlay (overlay-library spec §Editor, Inspector). Every
+    // control writes through `patchOverlay`, which picks the door (an added
+    // record or a match's edit) itself — so this panel never branches on who
+    // placed the chip except for delete vs restore.
+    const m = overlayMarker;
+    const fallback = overlayDefaultDurationSec(m.look);
+    return (
+      <div>
+        <div style={section}>
+          <span style={label}>Overlay</span>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>
+            {m.name}
+            {m.removed ? <span style={{ color: "#9A9AA3", fontWeight: 400 }}> (removed)</span> : null}
+            {m.added ? <span style={{ color: "#9A9AA3", fontWeight: 400 }}> (added)</span> : null}
+          </div>
+          <div style={{ fontSize: 12, color: "#9A9AA3" }}>
+            {/* The WORD, as with sfx: that is what the doc stores and why the
+                overlay survives a re-cut. */}
+            anchored to word {m.word} · drag the chip to retime
+          </div>
+        </div>
+        <div style={section}>
+          <div style={row}>
+            <span style={label}>Image</span>
+            {/* A button, not a picker: choosing and staging a file is the
+                tray's job (spec §Editor, "image (opens the tray to swap)"). */}
+            <button
+              data-testid="overlay-image"
+              style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33", display: "flex", gap: 8, alignItems: "center" }}
+              disabled={!onOpenOverlayTray}
+              onClick={() => {
+                blurActive();
+                onOpenOverlayTray?.({ mode: "swap", id: m.id });
+              }}
+            >
+              <img src={overlayMediaUrl(m.file)} alt="" style={{ height: 28, maxWidth: 56, objectFit: "contain" }} />
+              Swap image…
+            </button>
+          </div>
+          <div style={row}>
+            <span style={label}>Look</span>
+            <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
+              {(["overlay", "card"] as const).map((look) => (
+                <label key={look} style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <input
+                    type="radio"
+                    name={`overlay-look-${m.id}`}
+                    data-testid={`overlay-look-${look}`}
+                    checked={m.look === look}
+                    onChange={() => edits.patchOverlay(m.id, { look })}
+                  />
+                  {look}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div style={row}>
+            <span style={label}>
+              duration{"  "}
+              <span style={{ color: "#EDEDF2" }}>
+                {m.durationSec !== undefined
+                  ? `${m.durationSec.toFixed(1)}s`
+                  : `default (${fallback.toFixed(1)}s)`}
+              </span>
+            </span>
+            {/* The revealSpeed pattern: unset SHOWS the look's default but
+                never writes it — an unset duration follows a later look
+                change (1.5s overlay ↔ 2.0s card), a stored one does not. One
+                drag is one undo step (coalesced). */}
+            <input
+              type="range"
+              data-testid="overlay-duration"
+              min={0.5}
+              max={6}
+              step={0.1}
+              value={m.durationSec ?? fallback}
+              onChange={(e) => edits.patchOverlay(m.id, { durationSec: Number(e.target.value) }, true)}
+            />
+            <button
+              data-testid="overlay-duration-default"
+              style={button}
+              disabled={m.durationSec === undefined}
+              onClick={() => {
+                blurActive();
+                edits.resetOverlayDuration(m.id);
+              }}
+            >
+              default
+            </button>
+          </div>
+          <div style={{ ...row, flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              data-testid="overlay-sound"
+              checked={m.sound !== null}
+              // On returns to the ENTRY's sound, not a hard-coded pop
+              // (`defaultSound`); off is an explicit `null` (silent).
+              onChange={(e) => edits.patchOverlay(m.id, { sound: e.target.checked ? m.defaultSound : null })}
+            />
+            <span style={label}>sound{m.sound !== null ? ` (${m.sound})` : ""}</span>
+          </div>
+        </div>
+        <div style={section}>
+          {/* Keyed branches: the two buttons differ in style longhands over
+              the `button` shorthand, and a reused DOM node would trip React's
+              shorthand/longhand warning on every delete ↔ restore. */}
+          {m.removed ? (
+            <React.Fragment key="restore">
+              <button
+                data-testid="overlay-restore"
+                style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}
+                onClick={() => {
+                  blurActive();
+                  edits.restoreOverlay(m.id);
+                }}
+              >
+                Restore this overlay
+              </button>
+              <div style={{ fontSize: 12, color: "#9A9AA3", marginTop: 8 }}>
+                Removed: it stays matched and out of the render.
+              </div>
+            </React.Fragment>
+          ) : (
+            <React.Fragment key="delete">
+              <button
+                data-testid="overlay-delete"
+                style={button}
+                onClick={() => {
+                  blurActive();
+                  edits.removeOverlay(m.id);
+                }}
+              >
+                Delete this overlay
+              </button>
+              {m.added ? null : (
+                // A match is NEGATED, not deleted: produce re-matches every
+                // run, and only the stored `removed` keeps it gone.
+                <div style={{ fontSize: 12, color: "#9A9AA3", marginTop: 8 }}>
+                  It stays in the lane as a ghost you can restore.
+                </div>
+              )}
+            </React.Fragment>
+          )}
+        </div>
       </div>
     );
   }

@@ -153,9 +153,38 @@ export {
   SYNC_MIN_SHARE,
   syncDecision,
 } from "./reveal-match";
+// The library matcher (overlay-library spec §Matching), browser-safe:
+// overlay-match.ts has NO imports — it re-declares the `{id, names}` entry
+// shape rather than importing ./overlay-library, which is node-only. The
+// resolver's fall-forward and the edit server's "Find library matches" use
+// the SAME `mentionsOf` / `matchLibrary`, so a fall-forward can only land
+// where a fresh match could.
+export {
+  matchLibrary,
+  mentionsOf,
+  normalizeMatchToken,
+  type MatchablePlacement,
+  type MatchDrop,
+} from "./overlay-match";
+// The overlay resolver (overlay-library spec §Resolve → render props),
+// browser-safe: overlay-cues.ts's only runtime import is ./overlay-match
+// (above); ./assemble, ./schema and ./timemap are type imports. The editor's
+// lane and preview place overlays with the SAME resolver produce renders
+// with — the `resolveSfxCues` / `sceneStartSeconds` one-implementation rule.
+export {
+  dropSfxNearOverlays,
+  OVERLAY_PUBLIC_SUBDIR,
+  overlayStagedFile,
+  resolveOverlayCues,
+  type OverlayCue,
+  type OverlayIssue,
+} from "./overlay-cues";
 export type {
+  OverlayEntrySnapshot,
+  OverlayPlacement,
   Probe,
   Production,
+  ProductionOverlays,
   // `RemovalReason` rides along with `Segment` (cut review step 2): the
   // editor's reason→colour map is a `Record<RemovalReason, string>` precisely
   // so a NEW reason in the vocabulary fails typecheck in the editor instead

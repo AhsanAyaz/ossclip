@@ -304,6 +304,18 @@ describe("formatSfxAccounting", () => {
     ).toBe("sfx: 5 of 7 planned placed (level normal, 2 dropped: 1 cut word, 1 over budget)");
   });
 
+  it("counts a drop near an overlay pop as a real casualty, named 'overlay'", () => {
+    // Overlay-library spec §Resolve "Spacing against planned sfx": dropped
+    // with reason `overlay`. Without the reason in the breakdown vocabulary
+    // this mixed case printed "2 dropped: 1 too close" (task-5 review).
+    expect(
+      formatSfxAccounting(3, 5, "normal", [
+        { placement: 4, reason: "overlay", issue: "x" },
+        { placement: 1, reason: "too close", issue: "y" },
+      ]),
+    ).toBe("sfx: 3 of 5 planned placed (level normal, 2 dropped: 1 too close, 1 overlay)");
+  });
+
   it("says nothing about drops when everything was placed", () => {
     expect(formatSfxAccounting(3, 3, "meme", [])).toBe("sfx: 3 of 3 planned placed (level meme)");
   });

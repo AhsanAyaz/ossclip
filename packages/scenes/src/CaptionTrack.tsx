@@ -58,7 +58,18 @@ export interface CaptionTrackProps {
    * crowded caption still beats a missing one (FINDINGS §26).
    */
   sourceTextRegions?: OccupiedRegion[];
+  /**
+   * Output-time windows in which NO caption line renders — a full-screen
+   * overlay card's (overlay-library spec §Rendering, card look). The card is
+   * the one look allowed to hide the captions, and hiding beats drawing them
+   * on top of a black card that exists to be the whole frame. Optional and
+   * absent-means-none, so every existing caller renders unchanged.
+   */
+  hideDuring?: { start: number; end: number }[];
 }
+
+/** The anchor a caption block centres on when no cue says otherwise. */
+export const DEFAULT_CAPTION_ANCHOR = 0.76;
 
 /**
  * A caption word may sit slightly outside the cue that carries the ask — the
@@ -161,6 +172,196 @@ export function captionLineHeightFor(direction: "rtl" | "ltr"): number {
 }
 
 /**
+ * Where one caption line's block centres, and the size multiplier it renders
+ * at — the anchor chain CaptionTrack runs per line, pulled out so the overlay
+ * track places itself against the caption's ACTUAL position rather than a
+ * second, drifting copy of the chain (overlay-library spec §Rendering: plain
+ * `captionAnchorAt` ignores hand moves and would cover captions).
+ *
+ * The chain, resolved from the cue the line STARTS under:
+ * - a hand-set per-scene anchor (R15 §56) wins outright — like every other
+ *   hand edit, the user's placement is a decision, not an input to the
+ *   avoidance search;
+ * - otherwise ONE rect-aware path for every line (R11 Task 2b). The old
+ *   split — `captionAnchorAvoiding` only when the source had burned-in text,
+ *   the pure layout anchor otherwise — meant a hand-moved graphic box
+ *   silently sat on top of the captions on a clean source, the common case.
+ *   With no regions and no moved rect this resolves to exactly the layout
+ *   anchor the old branch returned;
+ * - with neither cues nor regions, the caller's `verticalAnchor`.
+ *
+ * `scale` is the per-scene size multiplier (R16 §64), resolved per line like
+ * the anchor.
+ */
+export function captionAnchorForLine(
+  cues: readonly SceneCue[],
+  sourceTextRegions: readonly OccupiedRegion[],
+  line: { start: number; end: number },
+  frame: FrameSize,
+  verticalAnchor: number,
+): { anchor: number; scale: number } {
+  const active = cues.length > 0 ? activeCueAt(cues, line.start) : null;
+  const anchor =
+    active?.captionY !== undefined
+      ? active.captionY
+      : cues.length > 0 || sourceTextRegions.length > 0
+        ? captionAnchorAvoiding(
+            active?.layout ?? "full-bleed",
+            regionsDuring(sourceTextRegions, line.start, line.end),
+            active?.graphicRect,
+            frame,
+          )
+        : verticalAnchor;
+  return { anchor, scale: active?.captionScale ?? 1 };
+}
+
+/**
+ * Whether an ABSOLUTE frame falls inside any hide window. In frames, not
+ * seconds, and through `frameWindow`'s own rounding: the card that asked for
+ * the window is a `<Sequence>` built from the same `frameWindow`, so a
+ * seconds comparison could leave one frame with the caption drawn over the
+ * card's first (or after its last) frame — §115's off-by-one, here as a
+ * caption flash.
+ */
+export function hiddenAtFrame(
+  absFrame: number,
+  windows: readonly { start: number; end: number }[],
+  fps: number,
+): boolean {
+  return windows.some((w) => {
+    const { from, durationInFrames } = frameWindow(w.start, w.end, fps);
+    return absFrame >= from && absFrame < from + durationInFrames;
+  });
+}
+
+/**
+ * Average advance of a caption glyph, in ems — an ESTIMATE, deliberately on
+ * the wide side. The render has no text measurement this side of the DOM
+ * (and a measured layout would need a second render pass per frame), so the
+ * row count is estimated. The only consumer is the overlay's "sit above the
+ * caption block" rule, where over-counting rows just lifts the overlay a
+ * little higher and under-counting would put it ON the captions — so the
+ * error is pushed to the harmless side: Inter at weight 900 averages well
+ * under this for mixed case.
+ */
+const CAPTION_CHAR_EM = 0.66;
+/** The word gap LineView lays out with (`gap: "0.28em"`). */
+const CAPTION_WORD_GAP_EM = 0.28;
+
+/**
+ * How many rows a caption line wraps to inside the safe-area padding, by a
+ * greedy fill like `flex-wrap`'s. Always ≥ 1 — an empty line still owns its
+ * line box.
+ */
+export function estimateCaptionRows(
+  words: readonly string[],
+  fontSizePx: number,
+  availableWidthPx: number,
+): number {
+  let rows = 1;
+  let used = 0;
+  for (const word of words) {
+    const w = word.length * CAPTION_CHAR_EM * fontSizePx;
+    const next = used === 0 ? w : used + CAPTION_WORD_GAP_EM * fontSizePx + w;
+    if (used > 0 && next > availableWidthPx) {
+      rows += 1;
+      used = w;
+    } else {
+      used = next;
+    }
+  }
+  return rows;
+}
+
+export interface CaptionGeometryOpts {
+  cues?: readonly SceneCue[];
+  sourceTextRegions?: readonly OccupiedRegion[];
+  frame: FrameSize;
+  verticalAnchor?: number;
+  fontSizePx?: number;
+}
+
+/**
+ * One line's caption block as `{top, bottom}` fractions of frame height:
+ * `anchor ∓ rows × lineHeight / 2`. The block is centred on its anchor
+ * (`translateY(-50%)`), and the line height is the one LineView renders with
+ * — `captionLineHeightFor(direction)` × the resolved, scene-scaled font — so
+ * this cannot disagree with the caption's own box except through the row
+ * estimate above (which errs tall, so both edges err outward — the harmless
+ * side for an overlay dodging either one).
+ */
+function captionBlockExtent(line: CaptionLine, opts: CaptionGeometryOpts): { top: number; bottom: number } {
+  const { frame } = opts;
+  const { anchor, scale } = captionAnchorForLine(
+    opts.cues ?? [],
+    opts.sourceTextRegions ?? [],
+    line,
+    frame,
+    opts.verticalAnchor ?? DEFAULT_CAPTION_ANCHOR,
+  );
+  const fontPx = resolveCaptionFontSize(opts.fontSizePx, frame) * scale;
+  const texts = line.words.map((w) => w.text);
+  const direction = lineDirection(texts.join(" "));
+  const safe = safeAreaFor(frame);
+  const rows = estimateCaptionRows(texts, fontPx, frame.width * (1 - safe.left - safe.right));
+  const half = (rows * ((fontPx * captionLineHeightFor(direction)) / frame.height)) / 2;
+  return { top: anchor - half, bottom: anchor + half };
+}
+
+/** The TOP of one line's caption block, as a fraction of frame height (`captionBlockExtent`). */
+export function captionBlockTop(line: CaptionLine, opts: CaptionGeometryOpts): number {
+  return captionBlockExtent(line, opts).top;
+}
+
+/**
+ * The BOTTOM of one line's caption block — the mirror of `captionBlockTop`,
+ * for the overlay's band below a caption hand-moved high (ruling R19).
+ */
+export function captionBlockBottom(line: CaptionLine, opts: CaptionGeometryOpts): number {
+  return captionBlockExtent(line, opts).bottom;
+}
+
+/**
+ * `tSec → the highest caption top on screen`, or null when no line is. The
+ * highest, because two lines can share a frame at a cue boundary (§115) and
+ * the overlay must clear both.
+ */
+export function captionTopAtFor(
+  lines: readonly CaptionLine[],
+  opts: CaptionGeometryOpts,
+): (tSec: number) => number | null {
+  return (tSec) => {
+    let top: number | null = null;
+    for (const line of lines) {
+      if (tSec < line.start || tSec >= line.end) continue;
+      const t = captionBlockTop(line, opts);
+      top = top === null ? t : Math.min(top, t);
+    }
+    return top;
+  };
+}
+
+/**
+ * `tSec → the LOWEST caption bottom on screen`, or null when no line is —
+ * `captionTopAtFor`'s mirror (ruling R19): an overlay placed below the
+ * captions must clear every line sharing the frame.
+ */
+export function captionBottomAtFor(
+  lines: readonly CaptionLine[],
+  opts: CaptionGeometryOpts,
+): (tSec: number) => number | null {
+  return (tSec) => {
+    let bottom: number | null = null;
+    for (const line of lines) {
+      if (tSec < line.start || tSec >= line.end) continue;
+      const b = captionBlockBottom(line, opts);
+      bottom = bottom === null ? b : Math.max(bottom, b);
+    }
+    return bottom;
+  };
+}
+
+/**
  * Registers the bundled Nastaliq face for this render. FontFace + delayRender
  * rather than a <style> @font-face: the render seeks and screenshots, so a
  * lazily-fetched stylesheet font can miss the first captioned frames — the
@@ -211,6 +412,9 @@ const LineView: React.FC<{
   textColor: string;
   ctaKeyword?: string;
   ctaWindow?: { startSec: number; endSec: number };
+  /** The line's Sequence start, so a hide window can be tested in absolute frames. */
+  fromFrame: number;
+  hideDuring?: { start: number; end: number }[];
 }> = ({
   line,
   wordOffset,
@@ -221,9 +425,15 @@ const LineView: React.FC<{
   textColor,
   ctaKeyword,
   ctaWindow,
+  fromFrame,
+  hideDuring,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
+  // A card owns the frame (overlay-library spec §Rendering, card look).
+  // Checked after the hooks, so a line entering a window mid-sequence keeps
+  // React's hook order.
+  if (hideDuring && hiddenAtFrame(fromFrame + frame, hideDuring, fps)) return null;
   const safeArea = safeAreaFor({ width, height });
   // The parent <Sequence> starts at line.start, so local frame 0 === line.start.
   const t = line.start + frame / fps;
@@ -330,13 +540,14 @@ const LineView: React.FC<{
 export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   lines,
   cues = [],
-  verticalAnchor = 0.76,
+  verticalAnchor = DEFAULT_CAPTION_ANCHOR,
   fontSizePx,
   activeColor = "#FFE14D",
   theme,
   ctaKeyword,
   ctaWindow,
   sourceTextRegions = [],
+  hideDuring,
 }) => {
   const { fps, width, height } = useVideoConfig();
   const frame = { width, height };
@@ -359,27 +570,16 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
           the file can't disagree. */}
       {captionsNeedNastaliq(lines) ? <NastaliqFontLoader /> : null}
       {lines.map((line, i) => {
-        const active = cues.length > 0 ? activeCueAt(cues, line.start) : null;
-        // ONE rect-aware path for every line (R11 Task 2b). The old split —
-        // `captionAnchorAvoiding` only when the source had burned-in text,
-        // the pure layout anchor otherwise — meant a hand-moved graphic box
-        // silently sat on top of the captions on a clean source, the common
-        // case. With no regions and no moved rect this resolves to exactly
-        // the layout anchor the old branch returned.
-        // A hand-set per-scene anchor (R15 §56) wins over the automatic
-        // chain outright — like every other hand edit, the user's placement
-        // is a decision, not an input to the avoidance search.
-        const anchor =
-          active?.captionY !== undefined
-            ? active.captionY
-            : cues.length > 0 || sourceTextRegions.length > 0
-              ? captionAnchorAvoiding(
-                  active?.layout ?? "full-bleed",
-                  regionsDuring(sourceTextRegions, line.start, line.end),
-                  active?.graphicRect,
-                  frame,
-                )
-              : verticalAnchor;
+        // The whole anchor chain — hand-set captionY, the rect-aware
+        // avoidance path, the plain anchor — lives in captionAnchorForLine,
+        // shared with the overlay track so the two can never disagree.
+        const { anchor, scale } = captionAnchorForLine(
+          cues,
+          sourceTextRegions,
+          line,
+          frame,
+          verticalAnchor,
+        );
         // End frame from the end TIME, never from a rounded duration — see
         // frameWindow. Two lines either side of a cue boundary resolve to
         // different anchors, so a one-frame overlap there renders as two
@@ -393,12 +593,14 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
               verticalAnchor={anchor}
               // Per-scene size multiplier (R16 §64) — resolved per line like
               // the anchor, from the cue the line starts under.
-              fontSizePx={resolvedFont * (active?.captionScale ?? 1)}
+              fontSizePx={resolvedFont * scale}
               activeColor={activeColor}
               fontFamily={fontFamily}
               textColor={textColor}
               ctaKeyword={ctaKeyword}
               ctaWindow={ctaWindow}
+              fromFrame={from}
+              hideDuring={hideDuring && hideDuring.length > 0 ? hideDuring : undefined}
             />
           </Sequence>
         );

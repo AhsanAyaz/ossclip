@@ -105,6 +105,9 @@ export const SFX_MIN_SPACING_SEC = 1.5;
  *  - "missing file": the library still knows the sound, but its file is gone
  *    (a user pack deleted between planning and a re-render) — distinct from
  *    "unknown sound", which is an id the library no longer has at all.
+ *  - "overlay": a library overlay's pop lands within 0.5s, and the pop wins
+ *    so the two never stack into mush (overlay-library spec §Resolve,
+ *    "Spacing against planned sfx"). Emitted by produce after both resolve.
  *
  * "scene gone" is the ODD ONE OUT and the name is kept honest below: it is an
  * ISSUE, never a drop. A placement whose `sceneId` names no scene keeps its
@@ -123,6 +126,7 @@ export const SfxDropReasonSchema = z.enum([
   "cut word",
   "missing file",
   "scene gone",
+  "overlay",
 ]);
 export type SfxDropReason = z.infer<typeof SfxDropReasonSchema>;
 
@@ -141,6 +145,8 @@ const DROP_REASONS: SfxDropReason[] = [
   "too close",
   "over budget",
   "invalid",
+  // A real casualty — the planned effect does not play — so it counts.
+  "overlay",
 ];
 
 export const SfxValidationIssueSchema = z.object({

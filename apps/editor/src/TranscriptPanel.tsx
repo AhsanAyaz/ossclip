@@ -13,6 +13,7 @@ import type { useEdits } from "./useEdits";
 import { deleteWordsPlanFor, type DeleteWordsPlan } from "./deleteWords";
 import { findOccurrences } from "./transcriptSelection";
 import { peaksForWindow } from "./waveform";
+import { ContextMenu } from "./ContextMenu";
 
 /** The timing widget's waveform strip, in CSS px — also the canvas bitmap
  * size, so the handle-drag px→seconds conversion needs no rect measure.
@@ -490,6 +491,15 @@ export const TranscriptPanel: React.FC<{
    * edge (`previewClockMappers.fromLive`), which the hit test below treats
    * like any other between-words instant: the highlight simply holds. */
   fromPlayerSec?: (sec: number) => number;
+  /**
+   * "Add logo/image here…" on a word's right-click (overlay-library spec
+   * §Editor), with that word's start on the PLAYER's clock (`toPlayerSec`).
+   * A second, not an index: these are caption-line words, a different index
+   * space from the repaired transcript a placement stores, so App resolves
+   * the second to a kept word through the same anchors the lane snaps to.
+   * Absent = no menu (every harness predating it).
+   */
+  onAddOverlayAt?: (playerSec: number) => void;
 }> = ({
   baseLines,
   liveLines,
@@ -502,8 +512,11 @@ export const TranscriptPanel: React.FC<{
   workdir,
   toPlayerSec = (sec: number): number => sec,
   fromPlayerSec = (sec: number): number => sec,
+  onAddOverlayAt,
 }) => {
   const [query, setQuery] = useState("");
+  /** The word right-click menu: where it opened and the word's player-clock start. */
+  const [wordMenu, setWordMenu] = useState<{ x: number; y: number; sec: number } | null>(null);
   /**
    * The open retype box. `srcStart` and `base` are CAPTURED when it opens,
    * mirroring `Overlay`'s `captionEdit` (§137): the anchor is validated once,
@@ -1854,6 +1867,14 @@ export const TranscriptPanel: React.FC<{
 
   return (
     <div data-testid="transcript-panel" ref={rootRef} style={{ ...panel, width }}>
+      {wordMenu !== null && onAddOverlayAt ? (
+        <ContextMenu
+          x={wordMenu.x}
+          y={wordMenu.y}
+          onClose={() => setWordMenu(null)}
+          items={[{ label: "Add logo/image here…", onPick: () => onAddOverlayAt(wordMenu.sec) }]}
+        />
+      ) : null}
       <div style={header}>
         <span style={title}>Transcript</span>
         {/* ONE hint line (2026-08-18): the old four-line scope paragraph is
@@ -2112,6 +2133,22 @@ export const TranscriptPanel: React.FC<{
                     setSel({ anchor: w.index, focus: w.index });
                   }}
                   onDoubleClick={() => openRetype(w)}
+                  {...(onAddOverlayAt
+                    ? {
+                        onContextMenu: (e: React.MouseEvent) => {
+                          e.preventDefault();
+                          // Stopped, the seam chip's rule (Timeline): the
+                          // menu's own window "contextmenu" closer registers
+                          // while THIS event is still bubbling (React flushes
+                          // a discrete event's effects synchronously), so an
+                          // unstopped right-click opened and closed the menu
+                          // in one gesture — invisible to jsdom, caught by
+                          // the overlays e2e.
+                          e.stopPropagation();
+                          setWordMenu({ x: e.clientX, y: e.clientY, sec: toPlayerSec(w.start) });
+                        },
+                      }
+                    : {})}
                   title={
                     // The suffix COMPOSES with whatever the base title says —
                     // timing is orthogonal to text edits and hides, so it must

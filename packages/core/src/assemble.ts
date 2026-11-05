@@ -358,6 +358,12 @@ export function sceneStartSeconds(
  * is still emitted, on the word anchor — and is named in the same list so the
  * console and report.txt say why the effect moved (`SfxDropReasonSchema` owns
  * the distinction, and `DROP_REASONS` keeps it out of the casualty count).
+ *
+ * `cuePlacements[k]` is the plan index `cues[k]` came from, kept parallel
+ * through the time sort. A later pass that drops a resolved CUE (produce's
+ * spacing against overlay pops, `dropSfxNearOverlays`) needs it to report the
+ * drop against a placement like every other drop here — a cue alone cannot
+ * say which entry of the plan it was.
  */
 export function resolveSfxCues(
   placements: readonly SfxPlacement[],
@@ -368,11 +374,11 @@ export function resolveSfxCues(
     exists?: (absPath: string) => boolean;
     sceneStarts?: ReadonlyMap<string, number>;
   } = {},
-): { cues: SfxCue[]; dropped: SfxValidationIssue[] } {
+): { cues: SfxCue[]; cuePlacements: number[]; dropped: SfxValidationIssue[] } {
   const exists = opts.exists ?? (() => true);
   const sceneStarts = opts.sceneStarts ?? new Map<string, number>();
   const byId = new Map(sounds.map((s) => [s.id, s]));
-  const cues: SfxCue[] = [];
+  const cues: { cue: SfxCue; placement: number }[] = [];
   const dropped: SfxValidationIssue[] = [];
 
   for (let i = 0; i < placements.length; i++) {
@@ -444,23 +450,26 @@ export function resolveSfxCues(
       atSec = mapped.start;
     }
     cues.push({
-      soundFile: sfxStagedFile(sound),
-      atSec,
-      // ONE multiplication, here — the renderer receives a number and does no
-      // mixing arithmetic of its own, so what the editor shows as a gain and
-      // what the render plays can never disagree.
-      gain: sound.gain * (p.gain ?? 1),
-      // Optional all the way down: a pack that declares no length gets the
-      // renderer's fallback bound, which is why an OLD render-props.json
-      // (every one written before 2026-09-18) needs no re-produce to stop
-      // taking the preview down.
-      ...(sound.durationSec === undefined ? {} : { durationSec: sound.durationSec }),
+      placement: i,
+      cue: {
+        soundFile: sfxStagedFile(sound),
+        atSec,
+        // ONE multiplication, here — the renderer receives a number and does no
+        // mixing arithmetic of its own, so what the editor shows as a gain and
+        // what the render plays can never disagree.
+        gain: sound.gain * (p.gain ?? 1),
+        // Optional all the way down: a pack that declares no length gets the
+        // renderer's fallback bound, which is why an OLD render-props.json
+        // (every one written before 2026-09-18) needs no re-produce to stop
+        // taking the preview down.
+        ...(sound.durationSec === undefined ? {} : { durationSec: sound.durationSec }),
+      },
     });
   }
 
   // Sorted by time: the plan is already word-sorted, but a cut can only ever
   // preserve order, and a track the renderer walks in time order is one a
   // human reading render-props.json can check against the video.
-  cues.sort((a, b) => a.atSec - b.atSec);
-  return { cues, dropped };
+  cues.sort((a, b) => a.cue.atSec - b.cue.atSec);
+  return { cues: cues.map((c) => c.cue), cuePlacements: cues.map((c) => c.placement), dropped };
 }

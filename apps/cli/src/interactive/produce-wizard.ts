@@ -10,7 +10,7 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Forty-four flags (plus the positional input path)
+ * The produce wizard. Forty-five flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
  * five flags (--out, --cleanup, --aspect, --produce, --intent) — twelve
  * behind one "anything else?" multiselect (--sfx being the twelfth, with
@@ -45,6 +45,12 @@ import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } 
  * command.json so the editor's Render replays the same window without an LLM
  * call. A human picking it from a menu is a corrupted replay, not a
  * preference.
+ *
+ * --library-dir (2026-11-05, hidden) is not offered either: it is a
+ * test-isolation seam pointing a fresh run at a temp overlay library
+ * (overlay-library ruling R4). A real library lives in ~/.ossclip/library and
+ * is matched on every fresh run with no prompt at all (spec §CLI: "Has no new
+ * prompts"), so the wizard already gets overlays without asking.
  */
 
 const EXTRAS = [

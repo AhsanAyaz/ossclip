@@ -17,6 +17,7 @@ import {
 } from "./timing";
 import type { useEdits } from "./useEdits";
 import { nearestSfxWord, sfxAudioUrl, type SfxMarker, type SfxWordAnchor } from "./sfxLane";
+import { overlayMediaUrl, type OverlayMarker } from "./overlayLane";
 import {
   previewVolume,
   sfxPreloadIds,
@@ -149,6 +150,36 @@ interface TimelineProps {
    * one-selection-at-a-time rule App owns. */
   sfxSelected?: string | null;
   onSelectSfx?: (key: string | null) => void;
+  /**
+   * The overlay lane (overlay-library spec §Editor): plan + overrides through
+   * THE resolver (`overlayLaneMarkers`), so a chip sits where the render puts
+   * the picture. NULL means no lane — App passes null only when there is no
+   * word space to anchor a chip to. Unlike sfx there is no "has a plan" gate:
+   * produce applies the overlay layer unconditionally, so a tray add on a
+   * project that matched nothing still renders.
+   */
+  overlayMarkers?: readonly OverlayMarker[] | null;
+  /** Snap targets for a chip drag — the sfx word-anchor list, same word space. */
+  overlayWords?: readonly SfxWordAnchor[];
+  /** The selected chip's placement id — the third selection namespace. */
+  overlaySelected?: string | null;
+  onSelectOverlay?: (id: string | null) => void;
+  /**
+   * The overlay pops as preview markers (`overlayPreview`). They join the sfx
+   * lane's list in ONE `useSfxPreview` — the editor's only sound preview (the
+   * Player's SfxTrack is off, App.tsx) — so the "♪ sfx" toggle governs both.
+   */
+  overlaySounds?: readonly SfxPlaybackMarker[];
+  /** "Add logo/image here…" on the lane's right-click, at that OUTPUT second
+   * (App resolves it to a word and opens the tray in add mode). */
+  onAddOverlayAt?: (sec: number) => void;
+  /**
+   * "Find library matches" (spec §Editor, "a button in the overlay lane
+   * header"): App does the round-trip and the dispatch, and resolves to the
+   * sentence to show — "added N, skipped M …" or the server's refusal. The
+   * Timeline only owns the button, its busy state and that one line.
+   */
+  onFindOverlayMatches?: () => Promise<string>;
 }
 
 interface DragState {
@@ -429,6 +460,13 @@ export const Timeline: React.FC<TimelineProps> = ({
   sfxWords = [],
   sfxSelected = null,
   onSelectSfx,
+  overlayMarkers = null,
+  overlayWords = [],
+  overlaySelected = null,
+  onSelectOverlay,
+  overlaySounds = NO_SOUNDS,
+  onAddOverlayAt,
+  onFindOverlayMatches,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -463,6 +501,18 @@ export const Timeline: React.FC<TimelineProps> = ({
   // render — React warns, and the warning is right).
   const sfxDragRef = useRef(sfxDrag);
   sfxDragRef.current = sfxDrag;
+  // The overlay chip's press and drag — the sfx diamond's pair, restated for
+  // the other namespace (threshold-gated select, word-snapped drag, ref-read
+  // commit; the comments above own the why).
+  const overlayPressRef = useRef<{ marker: OverlayMarker; startX: number; moved: boolean } | null>(null);
+  const [overlayDrag, setOverlayDrag] = useState<{ id: string; word: number; atSec: number } | null>(null);
+  const overlayDragRef = useRef(overlayDrag);
+  overlayDragRef.current = overlayDrag;
+  /** The overlay lane's right-click menu: where it opened, and the output second under it. */
+  const [overlayMenu, setOverlayMenu] = useState<{ x: number; y: number; sec: number } | null>(null);
+  /** "Find library matches": in flight, and the last report it gave. */
+  const [overlayMatching, setOverlayMatching] = useState(false);
+  const [overlayMatchStatus, setOverlayMatchStatus] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<{
     sceneId: string;
     startSec: number;
@@ -500,7 +550,15 @@ export const Timeline: React.FC<TimelineProps> = ({
   // monitoring choice like a soloed track, not an edit, and nothing it does
   // reaches the doc or the render.
   const [sfxPreview, setSfxPreview] = useState(true);
-  useSfxPreview(playerRef, fps, sfxMarkers, sfxPreview);
+  // The overlay pops ride the SAME preview (spec §Resolve: "there's no new
+  // audio path"), merged in time order because `sfxToFire` returns its input
+  // order within a tick. Null stays null only when there is nothing to hear
+  // from either lane, so the hook's "no lane" gate still means what it did.
+  const previewMarkers = React.useMemo<readonly SfxPlaybackMarker[] | null>(() => {
+    if (sfxMarkers === null && overlaySounds.length === 0) return null;
+    return [...(sfxMarkers ?? []), ...overlaySounds].sort((a, b) => a.atSec - b.atSec);
+  }, [sfxMarkers, overlaySounds]);
+  useSfxPreview(playerRef, fps, previewMarkers, sfxPreview);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const zoomAnchorRef = useRef<{ prevZoom: number; anchorX: number } | null>(null);
 
@@ -675,6 +733,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         scrubbingRef.current ||
         blockPressRef.current?.moved === true ||
         sfxPressRef.current?.moved === true ||
+        overlayPressRef.current?.moved === true ||
         dragRef.current !== null;
       if (gestureLive) pageAtEdge(e.clientX);
       // The SFX marker drag, BEFORE the scrub/block branches: a press that
@@ -698,6 +757,22 @@ export const Timeline: React.FC<TimelineProps> = ({
         const atSec = sfxWords.find((w) => w.word === word)?.atSec;
         if (atSec === undefined) return;
         setSfxDrag({ key: sfxPress.marker.key, word, atSec });
+        return;
+      }
+      // The overlay chip drag — the sfx branch above, word-snapped through the
+      // same `nearestSfxWord`: a placement stores a word INDEX (recut-immune,
+      // `OverrideDocSchema.overlays`), never a second.
+      const overlayPress = overlayPressRef.current;
+      if (overlayPress) {
+        if (!overlayPress.moved && Math.abs(e.clientX - overlayPress.startX) < MOVE_THRESHOLD_PX) return;
+        overlayPress.moved = true;
+        const r = trackRef.current?.getBoundingClientRect();
+        if (!r || durationSec <= 0) return;
+        const word = nearestSfxWord(overlayWords, timeAtX(e.clientX, r.left, r.width, durationSec));
+        if (word === null) return;
+        const atSec = overlayWords.find((w) => w.word === word)?.atSec;
+        if (atSec === undefined) return;
+        setOverlayDrag({ id: overlayPress.marker.id, word, atSec });
         return;
       }
       // A track scrub follows the pointer continuously (Task 3) — like any
@@ -845,6 +920,20 @@ export const Timeline: React.FC<TimelineProps> = ({
         }
         return;
       }
+      const overlayPress = overlayPressRef.current;
+      if (overlayPress) {
+        overlayPressRef.current = null;
+        const drag = overlayDragRef.current;
+        setOverlayDrag(null);
+        // One door for both namespaces: `patchOverlay` rewrites an added
+        // record or merges a match's edit. Compared against the STORED word,
+        // so a chip that fell forward and is dropped on its own stored word
+        // writes nothing.
+        if (overlayPress.moved && drag && drag.id === overlayPress.marker.id && drag.word !== overlayPress.marker.word) {
+          edits.patchOverlay(overlayPress.marker.id, { word: drag.word });
+        }
+        return;
+      }
       const press = blockPressRef.current;
       if (press) {
         blockPressRef.current = null;
@@ -903,7 +992,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec, sfxWords]);
+  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec, sfxWords, overlayWords]);
 
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 
@@ -919,6 +1008,14 @@ export const Timeline: React.FC<TimelineProps> = ({
       // grab) instead of repeating the same call in each of their handlers.
       onMouseDownCapture={blurTypingElement}
     >
+      {overlayMenu !== null ? (
+        <ContextMenu
+          x={overlayMenu.x}
+          y={overlayMenu.y}
+          onClose={() => setOverlayMenu(null)}
+          items={[{ label: "Add logo/image here…", onPick: () => onAddOverlayAt?.(overlayMenu.sec) }]}
+        />
+      ) : null}
       {chipMenu !== null
         ? (() => {
             const labels = chipMenuLabels(chipMenu.seam);
@@ -954,39 +1051,68 @@ export const Timeline: React.FC<TimelineProps> = ({
           })()
         : null}
       <div style={zoomBar}>
-        {sfxMarkers === null ? null : (
-          // "SFX in preview" — the lane's own chrome, so it lives with the
-          // lane: no plan, no lane, no toggle (the `sfxMarkers === null` rule
-          // the row itself follows). Pushed to the LEFT of the zoom controls
-          // by its own margin, over the diamonds it governs, rather than
-          // joining the view controls it has nothing to do with.
-          <button
-            data-testid="sfx-preview-toggle"
-            style={{
-              ...zoomButton,
-              marginRight: "auto",
-              width: "auto",
-              padding: "0 6px",
-              // Off reads as OFF at a glance: the lane's colour when live, the
-              // zoom controls' muted grey when it is not.
-              color: sfxPreview ? SFX_COLOR : "#9A9AA3",
-              borderColor: sfxPreview ? SFX_COLOR : "#2A2A33",
-            }}
-            aria-pressed={sfxPreview}
-            onClick={() => setSfxPreview((v) => !v)}
-            title={
-              sfxPreview
-                ? "Sound effects play with the preview — click to mute them"
-                : "Sound effects are muted in the preview — click to hear them"
-            }
-          >
-            {/* A glyph, not an emoji — the strip's own vocabulary (`▾ logs`,
-                `▸ Hear it`), and the word says which state it is IN, not
-                which one the click would reach: this button is a monitor
-                state, and the timeline has room to say so. */}
-            {sfxPreview ? "♪ sfx on" : "♪ sfx off"}
-          </button>
-        )}
+        {/* The lanes' own chrome, grouped on the LEFT by one auto margin, over
+            the rows they govern — away from the view controls on the right. */}
+        <div style={laneControls}>
+          {overlayMarkers === null || !onFindOverlayMatches ? null : (
+            // The overlay lane header's one action (spec §Editor). Lives with
+            // the lane: no word space, no lane, no button.
+            <>
+              <button
+                data-testid="overlay-find-matches"
+                style={{ ...zoomButton, width: "auto", padding: "0 6px", color: OVERLAY_COLOR, borderColor: OVERLAY_COLOR }}
+                disabled={overlayMatching}
+                title="Place the first spoken mention of every library entry not already placed or removed"
+                onClick={() => {
+                  setOverlayMatching(true);
+                  void onFindOverlayMatches()
+                    .then(setOverlayMatchStatus)
+                    .finally(() => setOverlayMatching(false));
+                }}
+              >
+                {overlayMatching ? "matching…" : "Find library matches"}
+              </button>
+              {overlayMatchStatus === null ? null : (
+                <span data-testid="overlay-match-status" role="status" style={laneStatus}>
+                  {overlayMatchStatus}
+                </span>
+              )}
+            </>
+          )}
+          {sfxMarkers === null ? null : (
+            // "SFX in preview" — the lane's own chrome, so it lives with the
+            // lane: no plan, no lane, no toggle (the `sfxMarkers === null` rule
+            // the row itself follows). Pushed to the LEFT of the zoom controls
+            // by the lane-controls group's margin, over the diamonds it
+            // governs, rather than joining the view controls it has nothing
+            // to do with.
+            <button
+              data-testid="sfx-preview-toggle"
+              style={{
+                ...zoomButton,
+                width: "auto",
+                padding: "0 6px",
+                // Off reads as OFF at a glance: the lane's colour when live, the
+                // zoom controls' muted grey when it is not.
+                color: sfxPreview ? SFX_COLOR : "#9A9AA3",
+                borderColor: sfxPreview ? SFX_COLOR : "#2A2A33",
+              }}
+              aria-pressed={sfxPreview}
+              onClick={() => setSfxPreview((v) => !v)}
+              title={
+                sfxPreview
+                  ? "Sound effects play with the preview — click to mute them"
+                  : "Sound effects are muted in the preview — click to hear them"
+              }
+            >
+              {/* A glyph, not an emoji — the strip's own vocabulary (`▾ logs`,
+                  `▸ Hear it`), and the word says which state it is IN, not
+                  which one the click would reach: this button is a monitor
+                  state, and the timeline has room to say so. */}
+              {sfxPreview ? "♪ sfx on" : "♪ sfx off"}
+            </button>
+          )}
+        </div>
         {/* Zoom controls (R14 §53), always visible so the feature is
             discoverable — buttons anchor about the viewport centre,
             ctrl/cmd+wheel about the cursor. */}
@@ -1200,6 +1326,76 @@ export const Timeline: React.FC<TimelineProps> = ({
                         opacity: m.muted ? 0.45 : 1,
                         ...(m.kind === "added" ? { borderStyle: "dashed" } : {}),
                       }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {overlayMarkers === null ? null : (
+            // The overlay lane (overlay-library spec §Editor), under the sfx
+            // lane: one chip per placement spanning its on-screen window, the
+            // image itself as the thumbnail. A removed match stays as a
+            // dimmed ghost so the Inspector can restore it (the sfx mute).
+            <div
+              data-testid="overlay-lane"
+              style={overlayLane}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                // Stopped, as the seam chip's is: the menu's window-level
+                // "contextmenu" closer is registered before this event
+                // finishes bubbling, and would close it on the spot.
+                e.stopPropagation();
+                const r = trackRef.current?.getBoundingClientRect();
+                if (!r || durationSec <= 0 || !onAddOverlayAt) return;
+                setOverlayMenu({ x: e.clientX, y: e.clientY, sec: timeAtX(e.clientX, r.left, r.width, durationSec) });
+              }}
+            >
+              {overlayMarkers.map((m) => {
+                const dragging = overlayDrag?.id === m.id;
+                const atSec = dragging ? overlayDrag.atSec : m.atSec;
+                // A drag moves the whole chip; its length is the cue's own.
+                const lenSec = m.endSec - m.atSec;
+                const leftPct = durationSec > 0 ? Math.min(100, Math.max(0, (atSec / durationSec) * 100)) : 0;
+                const widthPct = durationSec > 0 ? Math.min(100 - leftPct, (lenSec / durationSec) * 100) : 0;
+                const selected = overlaySelected === m.id;
+                return (
+                  <div
+                    key={m.id}
+                    data-testid={`overlay-chip-${m.id}`}
+                    {...(m.removed ? { "data-removed": "true" } : {})}
+                    {...(selected ? { "data-selected": "true" } : {})}
+                    title={
+                      `${m.name} · ${m.look} · word ${dragging ? overlayDrag.word : m.word}` +
+                      (m.removed ? " · removed (restore it in the panel)" : "") +
+                      (m.added ? " · added by you" : "") +
+                      " — drag to another word"
+                    }
+                    onMouseDown={(e) => {
+                      // The sfx diamond's idiom: act on mousedown, keep the
+                      // press off the surfaces underneath; right-button
+                      // presses fall through to the lane's context menu.
+                      if (e.button === 2) return;
+                      e.stopPropagation();
+                      e.preventDefault();
+                      onSelectOverlay?.(m.id);
+                      overlayPressRef.current = { marker: m, startX: e.clientX, moved: false };
+                    }}
+                    style={{
+                      ...overlayChip,
+                      left: `${leftPct}%`,
+                      width: `${widthPct}%`,
+                      borderColor: selected ? "#5b8cff" : OVERLAY_COLOR,
+                      opacity: m.removed ? 0.4 : 1,
+                      borderStyle: m.removed || m.added ? "dashed" : "solid",
+                      zIndex: selected || dragging ? 3 : 2,
+                    }}
+                  >
+                    <img
+                      src={overlayMediaUrl(m.file)}
+                      alt=""
+                      draggable={false}
+                      style={overlayThumb}
                     />
                   </div>
                 );
@@ -1608,6 +1804,21 @@ const zoomBar: React.CSSProperties = {
   marginBottom: 4,
 };
 
+/** The lane controls' group: one auto margin pushes the zoom controls right. */
+const laneControls: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  marginRight: "auto",
+};
+
+/** The find-matches report: readable, unlike the zoom hint's whisper grey. */
+const laneStatus: React.CSSProperties = {
+  fontSize: 10,
+  color: "#9A9AA3",
+  userSelect: "none",
+};
+
 const zoomButton: React.CSSProperties = {
   width: 22,
   height: 18,
@@ -1815,6 +2026,48 @@ const markerChip: React.CSSProperties = {
  * playhead's yellow, the cut's red, or the kept band's violet: an effect is
  * neither a time, a removal, nor a revival. */
 const SFX_COLOR = "#4ECDC4";
+
+/** Stable default for `overlaySounds`, so the merged preview list memo does
+ * not re-run on every render of a Timeline mounted without one. */
+const NO_SOUNDS: readonly SfxPlaybackMarker[] = [];
+
+/** The overlay lane's accent — distinct from the sfx teal so the two rows read apart. */
+const OVERLAY_COLOR = "#F5A623";
+
+/** The overlay row: tall enough for a legible thumbnail, inside the zoom-width
+ * content so chips scroll and zoom with the track (the sfx lane's shape). */
+const overlayLane: React.CSSProperties = {
+  position: "relative",
+  height: 22,
+  marginBottom: 2,
+};
+
+/** One chip: spans the overlay's on-screen window, at least a thumbnail wide. */
+const overlayChip: React.CSSProperties = {
+  position: "absolute",
+  top: 1,
+  bottom: 1,
+  minWidth: 20,
+  boxSizing: "border-box",
+  // Longhands, never the `border` shorthand: the chip toggles borderStyle
+  // (dashed for ghosts and adds) per render, and React warns — rightly — when
+  // a longhand is removed under a set shorthand.
+  borderWidth: 1,
+  borderStyle: "solid",
+  borderRadius: 4,
+  background: "rgba(245, 166, 35, 0.15)",
+  overflow: "hidden",
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+};
+
+const overlayThumb: React.CSSProperties = {
+  height: "100%",
+  maxWidth: 40,
+  objectFit: "contain",
+  pointerEvents: "none",
+};
 
 /** The SFX row (Phase 4), above the ruler and inside the zoom-width content so
  * the diamonds scroll and zoom with the track — the removal lane's shape at

@@ -61,6 +61,19 @@ describe("sfxStagedFile", () => {
 });
 
 describe("resolveSfxCues", () => {
+  it("cuePlacements names each cue's plan index, through the time sort and the drops", () => {
+    // Plan order 6, 99 (dropped: outside transcript), 2 — sorted by time the
+    // cues are word 2 then word 6, so their plan indices are [2, 0].
+    const { cues, cuePlacements } = resolveSfxCues(
+      [place("ding", 6), place("ding", 99), place("boom", 2)],
+      transcript,
+      identity,
+      sounds,
+    );
+    expect(cues.map((c) => c.soundFile)).toEqual(["sfx/boom.mp3", "sfx/ding.mp3"]);
+    expect(cuePlacements).toEqual([2, 0]);
+  });
+
   it("maps a word anchor to the word's OUTPUT start", () => {
     const { cues, dropped } = resolveSfxCues([place("ding", 4)], transcript, identity, sounds);
     expect(dropped).toEqual([]);
