@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { OverlayEntrySnapshot } from "@ossclip/core/browser";
 import type { OverlayTrayRequest } from "./overlayLane";
 import {
@@ -67,6 +67,20 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  /**
+   * False once the tray is gone (final review T8): a stage still in flight
+   * when the user closes the tray must not land. Its `onStaged` closed over
+   * the request the tray was opened for, so it would place the overlay at a
+   * word (or swap a placement) the user already walked away from. Set in the
+   * effect, not just the initialiser, so a StrictMode remount re-arms it.
+   */
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,6 +133,7 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
     const res = await postJson("/api/overlays/stage", { entryId });
     if (!res.ok) throw new Error(await errorOf(res));
     const body = (await res.json()) as { entry: OverlayEntrySnapshot };
+    if (!mounted.current) return;
     onStaged(body.entry);
   };
 

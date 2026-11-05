@@ -102,6 +102,27 @@ describe("OverlayTray", () => {
     expect(onStaged).toHaveBeenCalledWith(snap("gde"));
   });
 
+  it("a stage still in flight when the tray closes does not place the overlay (T8)", async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((r) => (answer = r));
+    stubServer({ "GET /api/library": () => ({ status: 200, json: { entries: LIB } }) });
+    const stubbed = global.fetch;
+    // The stage route answers only when the test says so — after the close.
+    global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url !== "/api/overlays/stage") return stubbed(url, init);
+      await answered;
+      return { ok: true, status: 200, json: async () => ({ entry: snap("gde") }) } as Response;
+    }) as unknown as typeof fetch;
+    const { onStaged } = await mount({ mode: "add", word: 3 });
+    await click("overlay-tray-item-gde");
+    act(() => root.render(null));
+    await act(async () => {
+      answer();
+      await answered;
+    });
+    expect(onStaged).not.toHaveBeenCalled();
+  });
+
   it("a pasted path pre-fills name and kind, adds to the library, then stages the new entry", async () => {
     const calls = stubServer({
       "GET /api/library": () => ({ status: 200, json: { entries: [] } }),
