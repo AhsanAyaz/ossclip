@@ -1,6 +1,8 @@
 import {
   applyOverlayOverrides,
   resolveOverlayCues,
+  visibleSuggestions,
+  type LogoSuggestion,
   type OverlayCue,
   type OverlayEntrySnapshot,
   type OverlayPlacement,
@@ -37,6 +39,8 @@ import type { SfxPlaybackMarker } from "./sfxPlayback";
 export interface OverlayPlan {
   entries: OverlayEntrySnapshot[];
   placements: OverlayPlacement[];
+  /** The logo finder's flags (logo-finder spec §Stored shape); absent before it ran. */
+  suggestions?: LogoSuggestion[];
 }
 
 /** One chip in the lane. */
@@ -77,7 +81,18 @@ export interface OverlayMarker {
  * points (the "Add logo/image here…" menus, the Inspector's image button)
  * both speak this, so the tray has one contract.
  */
-export type OverlayTrayRequest = { mode: "add"; word: number } | { mode: "swap"; id: string };
+export type OverlayTrayRequest =
+  | {
+      mode: "add";
+      word: number;
+      /** Pre-fills the new item's name — a suggestion chip's "Paste my own"
+       * (logo-finder spec §Editor), so the pasted logo is saved under it. */
+      name?: string;
+      /** The suggestion this add answers: carried to `addOverlay`, so a
+       * pasted logo hides its chip exactly like "Use this" does. */
+      fromSuggestion?: string;
+    }
+  | { mode: "swap"; id: string };
 
 /**
  * The look's default duration — plan Global Constraints: overlay 1.5s, card
@@ -246,3 +261,68 @@ export function overlaySeekSec(m: { atSec: number; endSec: number }): number {
   return m.atSec + Math.min(0.4, Math.max(0, m.endSec - m.atSec) / 2);
 }
 
+
+/**
+ * One logo suggestion chip (logo-finder spec §Editor): a name the library
+ * lacks, drawn dashed with a "?" at its word. NOT a placement — it never
+ * reaches the player props, so an unpicked chip renders nothing and the
+ * preview still matches the render.
+ */
+export interface SuggestionChip {
+  /** The suggestion id (a name slug) — what a pick's `fromSuggestion` and a skip store. */
+  id: string;
+  name: string;
+  /** Output seconds through the ruler's clock, AFTER any fall-forward. */
+  atSec: number;
+  /** The word the chip sits on NOW, which is where "Use this" places the logo. */
+  word: number;
+  /** How many `logo-candidates/file?n=` thumbnails exist (0–4). */
+  candidateCount: number;
+  /** Why there are none ("kimi.ai timed out"), shown in their place. */
+  note?: string;
+}
+
+/**
+ * The lane's suggestion chips. Which chips exist, and on which word, is
+ * core's `visibleSuggestions` — skip, live pick and cut-word fall-forward are
+ * its rules, not a second copy here. This only maps the word onto the ruler's
+ * clock the way the resolver does for a placement (`mapWord(...).start`), so
+ * a chip sits where its pick would land.
+ *
+ * No plan argument (controller ruling R2): neither visibility nor the clock
+ * reads the matched plan. No map is no lane content, `overlayLaneMarkers`'
+ * rule; "kept" is the resolver's own test (`resolveOverlayCues`), guarded for
+ * a word index beyond the transcript, which then draws nothing.
+ */
+export function suggestionChips(
+  suggestions: readonly LogoSuggestion[],
+  layer: OverrideDoc["overlays"],
+  words: readonly Word[],
+  map: TimeMap | null,
+): SuggestionChip[] {
+  if (map === null) return [];
+  const kept = (i: number): boolean => words[i] !== undefined && map.mapWord(words[i]) !== null;
+  return visibleSuggestions(suggestions, layer, words, kept).flatMap((s) => {
+    const at = map.mapWord(words[s.atWord]!);
+    if (at === null) return [];
+    return [
+      {
+        id: s.id,
+        name: s.name,
+        atSec: at.start,
+        word: s.atWord,
+        candidateCount: s.candidates.length,
+        ...(s.note !== undefined ? { note: s.note } : {}),
+      },
+    ];
+  });
+}
+
+/**
+ * Where the browser fetches a suggestion's candidate thumbnail: by id and
+ * index, never by path (logo-finder spec §Editor, the `/api/library/file`
+ * rule) — the server resolves the file from production.json.
+ */
+export function logoCandidateUrl(suggestion: string, n: number): string {
+  return `/api/logo-candidates/file?suggestion=${encodeURIComponent(suggestion)}&n=${n}`;
+}

@@ -2,18 +2,22 @@ import { describe, expect, it } from "vitest";
 import {
   mapFromKeptSpans,
   OverrideDocSchema,
+  type LogoSuggestion,
   type OverlayEntrySnapshot,
   type OverlayPlacement,
   type Word,
 } from "@ossclip/core/browser";
 import {
+  logoCandidateUrl,
   overlayDefaultDurationSec,
   overlayLaneMarkers,
   overlayMediaUrl,
   overlayPreview,
   overlaySeekSec,
+  suggestionChips,
   type OverlayPlan,
 } from "../src/overlayLane";
+import { editReducer, initialEditState } from "../src/useEdits";
 
 /**
  * The overlay lane's data layer (overlay-library spec §Editor). The claim
@@ -193,3 +197,82 @@ describe("overlaySeekSec (overlay-transform: a chip click seeks into the window)
   });
 });
 
+
+/**
+ * Suggestion chips (logo-finder spec §Editor): `visibleSuggestions` decides
+ * which exist and at which word; the lane maps that word through the SAME
+ * ruler clock overlay chips use, so a chip sits where a pick would land.
+ */
+describe("suggestionChips", () => {
+  const FIREBASE: LogoSuggestion = {
+    id: "firebase",
+    name: "Firebase",
+    word: 2,
+    domain: "firebase.google.com",
+    candidates: [
+      { file: "logo-candidates/firebase/0.png", source: "header" },
+      { file: "logo-candidates/firebase/1.svg", source: "icon" },
+    ],
+  };
+  const KIMI: LogoSuggestion = { id: "kimi", name: "Kimi", word: 5, candidates: [], note: "kimi.ai timed out" };
+  const SAYS: Word[] = WORDS.map((w, i) => (i === 2 || i === 4 ? { ...w, text: "Firebase" } : w));
+
+  it("draws every unhandled suggestion at its word's output start, with its candidate count and note", () => {
+    const chips = suggestionChips([FIREBASE, KIMI], undefined, SAYS, identityMap());
+    expect(chips).toEqual([
+      { id: "firebase", name: "Firebase", atSec: 2, word: 2, candidateCount: 2 },
+      { id: "kimi", name: "Kimi", atSec: 5, word: 5, candidateCount: 0, note: "kimi.ai timed out" },
+    ]);
+  });
+
+  it("hides a skipped suggestion and a picked one, but not one whose pick was removed", () => {
+    const picked = layer({
+      added: [{ id: "firebase-2", entryId: "firebase", word: 2, source: "user", fromSuggestion: "firebase" }],
+      skippedSuggestions: ["kimi"],
+    });
+    expect(suggestionChips([FIREBASE, KIMI], picked, SAYS, identityMap())).toEqual([]);
+    const tombstoned = layer({
+      added: [{ id: "firebase-2", entryId: "firebase", word: 2, source: "user", fromSuggestion: "firebase" }],
+      edits: { "firebase-2": { removed: true } },
+    });
+    expect(suggestionChips([FIREBASE], tombstoned, SAYS, identityMap()).map((c) => c.id)).toEqual(["firebase"]);
+  });
+
+  it("a cut word falls forward to the next kept mention, on the output clock", () => {
+    // Word 2 cut; the next "Firebase" is word 4, which sits at 4s - 1s = 3s.
+    expect(suggestionChips([FIREBASE], undefined, SAYS, cutWord2())).toEqual([
+      { id: "firebase", name: "Firebase", atSec: 3, word: 4, candidateCount: 2 },
+    ]);
+  });
+
+  it("skipSuggestion hides the chip and undo restores it (one reducer step each way)", () => {
+    const s0 = initialEditState();
+    const skipped = editReducer(s0, { type: "skipSuggestion", id: "firebase" });
+    expect(suggestionChips([FIREBASE], skipped.doc.overlays, SAYS, identityMap())).toEqual([]);
+    const undone = editReducer(skipped, { type: "undo" });
+    expect(suggestionChips([FIREBASE], undone.doc.overlays, SAYS, identityMap()).map((c) => c.id)).toEqual(["firebase"]);
+  });
+
+  it("a pick through addOverlay({fromSuggestion}) hides the chip, even under an edited name", () => {
+    const gemini: OverlayEntrySnapshot = { id: "gemini", name: "Gemini", names: ["Gemini"], kind: "logo", ext: "png" };
+    const s = editReducer(initialEditState(), {
+      type: "addOverlay",
+      entry: gemini,
+      word: 2,
+      source: "user",
+      fromSuggestion: "firebase",
+    });
+    expect(suggestionChips([FIREBASE], s.doc.overlays, SAYS, identityMap())).toEqual([]);
+  });
+
+  it("a word beyond the transcript, or no clock at all, draws nothing", () => {
+    expect(suggestionChips([{ ...KIMI, word: 99 }], undefined, SAYS, identityMap())).toEqual([]);
+    expect(suggestionChips([FIREBASE], undefined, SAYS, null)).toEqual([]);
+  });
+});
+
+describe("logoCandidateUrl", () => {
+  it("names the candidate by suggestion id and index, never by path", () => {
+    expect(logoCandidateUrl("google-gemini", 3)).toBe("/api/logo-candidates/file?suggestion=google-gemini&n=3");
+  });
+});

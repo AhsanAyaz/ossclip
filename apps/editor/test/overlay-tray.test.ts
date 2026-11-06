@@ -162,6 +162,13 @@ describe("OverlayTray", () => {
     expect(find<HTMLInputElement>("overlay-tray-name")!.value).toBe("Firebase");
   });
 
+  it("a suggestion's Paste my own arrives with its name, which a paste does not overwrite (logo-finder spec §Editor)", async () => {
+    stubServer({ "GET /api/library": () => ({ status: 200, json: { entries: [] } }) });
+    await mount({ mode: "add", word: 4, name: "Google Gemini", fromSuggestion: "google-gemini" });
+    await type("overlay-tray-paste", "https://x.com/a/gemini-logo.png");
+    expect(find<HTMLInputElement>("overlay-tray-name")!.value).toBe("Google Gemini");
+  });
+
   it("shows the server's refusal inline and stages nothing", async () => {
     const calls = stubServer({
       "GET /api/library": () => ({ status: 200, json: { entries: [] } }),

@@ -44,11 +44,14 @@ export interface OverlayTrayProps {
 /** A new item's source in `POST /api/library`'s shape: pasted, or dropped. */
 type NewSource = PasteSource | { data: string; mimeType: string };
 
-const postJson = (url: string, body: unknown): Promise<Response> =>
+// Exported for the logo suggestion popover, whose "Use this" is this tray's
+// add path with a candidate source: one copy of the R14 JSON rule and of the
+// verbatim-error rule.
+export const postJson = (url: string, body: unknown): Promise<Response> =>
   fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 /** The server's `{error}` sentence, or a fallback naming the status. */
-const errorOf = async (res: Response): Promise<string> => {
+export const errorOf = async (res: Response): Promise<string> => {
   const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
   return typeof body?.error === "string" ? body.error : `request failed (${res.status})`;
 };
@@ -59,9 +62,13 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
   const [paste, setPaste] = useState("");
   /** A dropped file, held until Add (it has no paste text to re-derive from). */
   const [dropped, setDropped] = useState<{ data: string; mimeType: string; fileName: string } | null>(null);
-  const [name, setName] = useState("");
+  /** A suggestion's "Paste my own" arrives with its name (logo-finder spec
+   * §Editor): pre-filled, and counted as typed so the paste's file-name
+   * guess does not overwrite it. */
+  const presetName = request.mode === "add" ? request.name : undefined;
+  const [name, setName] = useState(presetName ?? "");
   /** Once the user types a name, a later paste no longer overwrites it. */
-  const [nameTouched, setNameTouched] = useState(false);
+  const [nameTouched, setNameTouched] = useState(presetName !== undefined);
   const [aliases, setAliases] = useState("");
   const [kind, setKind] = useState<"logo" | "image" | "gif">("logo");
   const [busy, setBusy] = useState(false);

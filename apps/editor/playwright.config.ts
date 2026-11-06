@@ -107,7 +107,7 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
@@ -126,6 +126,10 @@ export default defineConfig({
     // space, which no other spec draws) and starts from no overrides.json,
     // restoring both after — a rewriter, so serialized last like the others.
     { name: "overlays", testMatch: /overlays\.spec\.ts/, dependencies: ["sliver-cut"] },
+    // Gives production.json a transcript AND logo suggestions, writes
+    // candidate files into the workdir and adds to the temp-HOME library —
+    // a rewriter like `overlays`, so serialized behind it.
+    { name: "logo-finder", testMatch: /logo-finder\.spec\.ts/, dependencies: ["overlays"] },
   ],
   use: {
     baseURL: `http://127.0.0.1:${VITE_PORT}`,

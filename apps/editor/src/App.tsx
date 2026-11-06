@@ -60,10 +60,12 @@ import {
   overlayPreview,
   overlaySeekSec,
   overlaySoundKey,
+  suggestionChips,
   type OverlayPlan,
   type OverlayTrayRequest,
 } from "./overlayLane";
 import { OverlayTray } from "./OverlayTray";
+import { LogoSuggestionPopover } from "./LogoSuggestionPopover";
 import { matchSummary } from "./overlayTrayModel";
 import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from "./Overlay";
 import { OverlayImageBox, type OverlayImageBoxHandle, type OverlayRectPreview } from "./OverlayImageBox";
@@ -373,6 +375,9 @@ export const App: React.FC = () => {
    */
   const [overlayTray, setOverlayTray] = useState<OverlayTrayRequest | null>(null);
   const openOverlayTray = useCallback((req: OverlayTrayRequest) => setOverlayTray(req), []);
+  /** The open logo suggestion popover: which chip, and the chip's on-screen
+   * box it opens beside (logo-finder spec §Editor). */
+  const [logoPopover, setLogoPopover] = useState<{ id: string; left: number; top: number } | null>(null);
   /**
    * One range re-decode in flight at a time, client side (Phase A,
    * 2026-08-26). The server single-flights too (409), but a chip that fires
@@ -1023,6 +1028,7 @@ export const App: React.FC = () => {
     setSfxSelection(null);
     setOverlaySelection(null);
     setOverlayTray(null);
+    setLogoPopover(null);
     // Resume a render already in flight (R16 §60): a refresh used to
     // orphan the panel — the child kept rendering server-side with no
     // progress, no logs, and no way to cancel it from the UI. Since
@@ -1670,6 +1676,27 @@ export const App: React.FC = () => {
         : overlayLaneMarkers(overlayPlan.overlays, edits.doc.overlays, overlayPlan.words, rulerMap),
     [overlayPlan, edits.doc.overlays, rulerMap],
   );
+  // The logo finder's chips (logo-finder spec §Editor), on the same clock.
+  // Lane-only by construction: nothing below feeds them into `playerProps`,
+  // so an unpicked suggestion renders nothing and preview matches render.
+  const logoChips = useMemo(
+    () =>
+      overlayPlan.words === null
+        ? []
+        : suggestionChips(overlayPlan.overlays?.suggestions ?? [], edits.doc.overlays, overlayPlan.words, rulerMap),
+    [overlayPlan, edits.doc.overlays, rulerMap],
+  );
+  // Off the drawn list (`selectedOverlay`'s rule): a chip no longer drawn has no popover.
+  const openLogoChip = useMemo(
+    () => (logoPopover === null ? null : (logoChips.find((c) => c.id === logoPopover.id) ?? null)),
+    [logoChips, logoPopover],
+  );
+  // A chip that vanished some other way (a cut with no later mention) drops
+  // the popover state too, so an undo that brings the chip back does not
+  // spring its popover open again unasked.
+  useEffect(() => {
+    if (logoPopover !== null && openLogoChip === null) setLogoPopover(null);
+  }, [logoPopover, openLogoChip]);
   // Resolved off the SAME list the lane draws (`selectedSfx`'s rule): a chip
   // the resolver dropped, or a delete spliced, resolves to null.
   const selectedOverlay = useMemo(
@@ -1786,13 +1813,20 @@ export const App: React.FC = () => {
   const onOverlayStaged = useCallback(
     (entry: OverlayEntrySnapshot) => {
       if (overlayTray === null) return;
-      if (overlayTray.mode === "add") edits.addOverlay(entry, overlayTray.word);
+      // `fromSuggestion` rides along from a chip's "Paste my own", so the
+      // pasted logo hides its chip as a "Use this" pick does (plan ruling).
+      if (overlayTray.mode === "add") edits.addOverlay(entry, overlayTray.word, "user", overlayTray.fromSuggestion);
       else edits.swapOverlay(overlayTray.id, entry);
       setOverlayTray(null);
     },
     [overlayTray, edits],
   );
   const closeOverlayTray = useCallback(() => setOverlayTray(null), []);
+  const openLogoSuggestion = useCallback(
+    (id: string, anchor: { left: number; top: number }) => setLogoPopover({ id, ...anchor }),
+    [],
+  );
+  const closeLogoPopover = useCallback(() => setLogoPopover(null), []);
   /**
    * "Find library matches" (spec §Editor): the server matches the library
    * against THIS page's layer — unsaved edits included, so a just-removed
@@ -2355,6 +2389,29 @@ export const App: React.FC = () => {
       ) : null}
       {overlayTray !== null ? (
         <OverlayTray request={overlayTray} onStaged={onOverlayStaged} onClose={closeOverlayTray} />
+      ) : null}
+      {logoPopover !== null && openLogoChip !== null ? (
+        <LogoSuggestionPopover
+          // Keyed by chip, so opening another starts from ITS name and first candidate.
+          key={openLogoChip.id}
+          chip={openLogoChip}
+          anchor={logoPopover}
+          // Each answer closes the popover explicitly: the chip-lookup close
+          // alone would re-open it on the ⌘Z that brings the chip back.
+          onPicked={(entry) => {
+            edits.addOverlay(entry, openLogoChip.word, "user", openLogoChip.id);
+            setLogoPopover(null);
+          }}
+          onSkip={() => {
+            edits.skipSuggestion(openLogoChip.id);
+            setLogoPopover(null);
+          }}
+          onPasteOwn={(name) => {
+            setLogoPopover(null);
+            openOverlayTray({ mode: "add", word: openLogoChip.word, name, fromSuggestion: openLogoChip.id });
+          }}
+          onClose={closeLogoPopover}
+        />
       ) : null}
       {deletePlan ? (
         <DeleteSceneModal
@@ -3064,6 +3121,8 @@ export const App: React.FC = () => {
         overlaySounds={overlaySoundsLive}
         onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
         onFindOverlayMatches={overlayPlan.words === null ? undefined : findOverlayMatches}
+        suggestionChips={logoChips}
+        onOpenSuggestion={openLogoSuggestion}
         toSourceSec={(outSec) => {
           // Output→source through the spans (R20 §97) — the filmstrip frame
           // must be the source second actually playing there, not the raw

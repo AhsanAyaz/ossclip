@@ -230,3 +230,57 @@ describe("swapOverlay (the tray's swap mode)", () => {
     expect(editReducer(s, { type: "undo" }).doc.overlays).toBeUndefined();
   });
 });
+
+/**
+ * Logo suggestions (logo-finder spec §Editor, "What hides a chip"): a pick
+ * carries `fromSuggestion`, a skip lands in `skippedSuggestions`, and both
+ * are one undo step through `withOverlays` — so a slot holding ONLY skips
+ * survives a save, and an emptied skip list takes the slot with it.
+ */
+describe("logo suggestions (logo-finder spec §Editor)", () => {
+  it("addOverlay with fromSuggestion stores the field on the added record", () => {
+    const s = editReducer(state(), { type: "addOverlay", entry: GDE, word: 3, source: "user", fromSuggestion: "gde" });
+    expect(s.doc.overlays?.added).toEqual([{ id: "gde-3", entryId: "gde", word: 3, source: "user", fromSuggestion: "gde" }]);
+    // The stored doc is one OverrideDocSchema accepts (save round-trips it).
+    expect(OverrideDocSchema.parse(s.doc).overlays?.added[0]?.fromSuggestion).toBe("gde");
+  });
+
+  it("addOverlay without fromSuggestion grows no key (old projects save unchanged)", () => {
+    const s = editReducer(state(), { type: "addOverlay", entry: GDE, word: 3 });
+    expect("fromSuggestion" in s.doc.overlays!.added[0]!).toBe(false);
+  });
+
+  it("skipSuggestion keeps a skip-only slot alive, and undo removes it again", () => {
+    const s0 = state();
+    const s = editReducer(s0, { type: "skipSuggestion", id: "firebase" });
+    expect(s.doc.overlays).toEqual({ edits: {}, added: [], entries: [], skippedSuggestions: ["firebase"] });
+    expect(s.past).toHaveLength(1);
+    const undone = editReducer(s, { type: "undo" });
+    expect("overlays" in undone.doc).toBe(false);
+  });
+
+  it("skipping an already-skipped id is a no-op (no undo step)", () => {
+    const s0 = state({ skippedSuggestions: ["firebase"] });
+    expect(editReducer(s0, { type: "skipSuggestion", id: "firebase" })).toBe(s0);
+  });
+
+  it("an emptied skippedSuggestions drops the key, and the slot with it when nothing else is stored", () => {
+    const s = editReducer(state({ skippedSuggestions: ["firebase"] }), { type: "unskipSuggestion", id: "firebase" });
+    expect(s.doc.overlays).toBeUndefined();
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("an emptied skippedSuggestions is removed, never saved as [], when the slot stays", () => {
+    const s = editReducer(
+      state({ skippedSuggestions: ["firebase"], added: [{ id: "gde-1", entryId: "gde", word: 1, source: "user" }], entries: [GDE] }),
+      { type: "unskipSuggestion", id: "firebase" },
+    );
+    expect(s.doc.overlays).toBeDefined();
+    expect("skippedSuggestions" in s.doc.overlays!).toBe(false);
+  });
+
+  it("unskipping an id that is not skipped is a no-op", () => {
+    const s0 = state({ skippedSuggestions: ["firebase"] });
+    expect(editReducer(s0, { type: "unskipSuggestion", id: "claude" })).toBe(s0);
+  });
+});

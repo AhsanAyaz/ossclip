@@ -17,7 +17,7 @@ import {
 } from "./timing";
 import type { useEdits } from "./useEdits";
 import { nearestSfxWord, sfxAudioUrl, type SfxMarker, type SfxWordAnchor } from "./sfxLane";
-import { overlayMediaUrl, type OverlayMarker } from "./overlayLane";
+import { overlayMediaUrl, type OverlayMarker, type SuggestionChip } from "./overlayLane";
 import {
   previewVolume,
   sfxPreloadIds,
@@ -180,6 +180,14 @@ interface TimelineProps {
    * Timeline only owns the button, its busy state and that one line.
    */
   onFindOverlayMatches?: () => Promise<string>;
+  /**
+   * Logo suggestion chips (logo-finder spec §Editor): names the library
+   * lacks, drawn dashed with a "?" in the overlay lane. Lane-only — they are
+   * not placements and never reach the Player.
+   */
+  suggestionChips?: readonly SuggestionChip[];
+  /** A chip was clicked: App opens its popover beside `anchor` (viewport px). */
+  onOpenSuggestion?: (id: string, anchor: { left: number; top: number }) => void;
 }
 
 interface DragState {
@@ -467,6 +475,8 @@ export const Timeline: React.FC<TimelineProps> = ({
   overlaySounds = NO_SOUNDS,
   onAddOverlayAt,
   onFindOverlayMatches,
+  suggestionChips = NO_SUGGESTIONS,
+  onOpenSuggestion,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -1400,6 +1410,37 @@ export const Timeline: React.FC<TimelineProps> = ({
                   </div>
                 );
               })}
+              {suggestionChips.map((c) => {
+                const leftPct = durationSec > 0 ? Math.min(100, Math.max(0, (c.atSec / durationSec) * 100)) : 0;
+                return (
+                  // A suggestion, not a placement (logo-finder spec §Editor):
+                  // no thumbnail, no drag, no selection — a click asks the
+                  // question in a popover. Dashed AND label-only so it reads
+                  // apart from an added overlay chip (dashed, with art).
+                  <div
+                    key={`suggestion:${c.id}`}
+                    data-testid={`logo-suggestion-${c.id}`}
+                    role="button"
+                    title={`${c.name}? — not in your library. Click to pick a logo, skip, or paste your own`}
+                    onMouseDown={(e) => {
+                      // Kept off the surfaces underneath (the overlay chip's
+                      // idiom); right-button presses fall through to the
+                      // lane's context menu.
+                      if (e.button === 2) return;
+                      e.stopPropagation();
+                      e.preventDefault();
+                    }}
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      onOpenSuggestion?.(c.id, { left: r.left, top: r.top });
+                    }}
+                    style={{ ...suggestionChip, left: `${leftPct}%` }}
+                  >
+                    <span style={suggestionLabel}>{c.name}</span>
+                    <span style={{ fontWeight: 700 }}>?</span>
+                  </div>
+                );
+              })}
             </div>
           )}
           <div
@@ -2061,6 +2102,37 @@ const overlayChip: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
 };
+
+/** Stable default for `suggestionChips` (the `NO_SOUNDS` reason). */
+const NO_SUGGESTIONS: readonly SuggestionChip[] = [];
+
+/** A logo suggestion: the overlay chip's frame, dashed, see-through and
+ * labelled — it has no art yet, which is the question it asks. */
+const suggestionChip: React.CSSProperties = {
+  position: "absolute",
+  top: 1,
+  bottom: 1,
+  maxWidth: 120,
+  boxSizing: "border-box",
+  borderWidth: 1,
+  borderStyle: "dashed",
+  borderColor: OVERLAY_COLOR,
+  borderRadius: 4,
+  background: "transparent",
+  color: OVERLAY_COLOR,
+  fontSize: 10,
+  lineHeight: 1,
+  padding: "0 4px",
+  gap: 2,
+  overflow: "hidden",
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  whiteSpace: "nowrap",
+  zIndex: 1,
+};
+
+const suggestionLabel: React.CSSProperties = { overflow: "hidden", textOverflow: "ellipsis" };
 
 const overlayThumb: React.CSSProperties = {
   height: "100%",

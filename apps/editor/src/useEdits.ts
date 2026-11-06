@@ -369,7 +369,21 @@ export type EditAction =
   /** A tray pick placed at a word: id minted once (`mintOverlayAddedId`), the
    * entry snapshot upserted into `overlays.entries` (spec "Snapshot": a tray
    * add must outlive the next produce rewriting production.json). */
-  | { type: "addOverlay"; entry: OverlayEntrySnapshot; word: number; source?: "user" | "match" }
+  | {
+      type: "addOverlay";
+      entry: OverlayEntrySnapshot;
+      word: number;
+      source?: "user" | "match";
+      /** The logo suggestion this pick answers (logo-finder spec §Editor):
+       * stored on the record, it is what hides the suggestion's chip, and an
+       * undo of the add brings the chip back for free. */
+      fromSuggestion?: string;
+    }
+  /** Skip a logo suggestion for this video (logo-finder spec §Editor,
+   * "Skip"): its id joins `overlays.skippedSuggestions`. One undo step. */
+  | { type: "skipSuggestion"; id: string }
+  /** The inverse: an emptied list is REMOVED, never kept as `[]` (`withOverlays`). */
+  | { type: "unskipSuggestion"; id: string }
   /** "Find library matches" results, ONE undo step. Stored in `added` under
    * MINTED `@`-free ids, keeping `source: "match"` so a cut word still falls
    * forward to the next mention (ruling R5: `entry@word` ids only ever key
@@ -471,8 +485,23 @@ const overlaySlot = (doc: OverrideDoc): OverlaySlot => doc.overlays ?? { edits: 
  * that never touched an overlay saves byte-identical overrides.json, and one
  * whose last overlay edit was undone or restored must not keep an empty slot.
  */
-const withOverlays = (doc: OverrideDoc, next: OverlaySlot): OverrideDoc => {
-  if (Object.keys(next.edits).length > 0 || next.added.length > 0 || next.entries.length > 0) {
+const withOverlays = (doc: OverrideDoc, slot: OverlaySlot): OverrideDoc => {
+  // `skippedSuggestions` is optional with no default (logo-finder spec
+  // §Stored shape): an emptied list goes, so an unskip back to nothing saves
+  // the file it started from rather than `"skippedSuggestions": []`.
+  let next = slot;
+  if (next.skippedSuggestions?.length === 0) {
+    const { skippedSuggestions: _empty, ...rest } = next;
+    next = rest;
+  }
+  // Skips count as content (Task 1 review): a slot holding ONLY skips would
+  // otherwise be dropped here and the skip silently lost on save.
+  if (
+    Object.keys(next.edits).length > 0 ||
+    next.added.length > 0 ||
+    next.entries.length > 0 ||
+    (next.skippedSuggestions?.length ?? 0) > 0
+  ) {
     return { ...doc, overlays: next };
   }
   if (doc.overlays === undefined) return doc;
@@ -1581,11 +1610,25 @@ export function editReducer(state: EditState, action: EditAction): EditState {
               entryId: action.entry.id,
               word: action.word,
               source: action.source ?? "user",
+              // Absent unless given, so every non-finder add saves unchanged.
+              ...(action.fromSuggestion !== undefined ? { fromSuggestion: action.fromSuggestion } : {}),
             },
           ],
           entries: upsertEntries(slot.entries, [action.entry]),
         }),
       );
+    }
+    case "skipSuggestion": {
+      const slot = overlaySlot(state.doc);
+      const skipped = slot.skippedSuggestions ?? [];
+      if (skipped.includes(action.id)) return state;
+      return commit(withOverlays(state.doc, { ...slot, skippedSuggestions: [...skipped, action.id] }));
+    }
+    case "unskipSuggestion": {
+      const slot = overlaySlot(state.doc);
+      const skipped = slot.skippedSuggestions ?? [];
+      if (!skipped.includes(action.id)) return state;
+      return commit(withOverlays(state.doc, { ...slot, skippedSuggestions: skipped.filter((id) => id !== action.id) }));
     }
     case "addOverlayMatches": {
       if (action.placements.length === 0) return state;
@@ -1824,8 +1867,10 @@ export function useEdits() {
     resetOverlayRect: (id: string) => dispatch({ type: "resetOverlayRect", id }),
     removeOverlay: (id: string) => dispatch({ type: "removeOverlay", id }),
     restoreOverlay: (id: string) => dispatch({ type: "restoreOverlay", id }),
-    addOverlay: (entry: OverlayEntrySnapshot, word: number, source?: "user" | "match") =>
-      dispatch({ type: "addOverlay", entry, word, source }),
+    addOverlay: (entry: OverlayEntrySnapshot, word: number, source?: "user" | "match", fromSuggestion?: string) =>
+      dispatch({ type: "addOverlay", entry, word, source, fromSuggestion }),
+    skipSuggestion: (id: string) => dispatch({ type: "skipSuggestion", id }),
+    unskipSuggestion: (id: string) => dispatch({ type: "unskipSuggestion", id }),
     addOverlayMatches: (placements: OverlayPlacement[], entries: OverlayEntrySnapshot[]) =>
       dispatch({ type: "addOverlayMatches", placements, entries }),
     swapOverlay: (id: string, entry: OverlayEntrySnapshot) => dispatch({ type: "swapOverlay", id, entry }),
