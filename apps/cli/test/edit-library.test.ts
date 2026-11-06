@@ -490,3 +490,154 @@ describe("overlay endpoints", () => {
     expect(typeof (await res.json()).error).toBe("string");
   });
 });
+
+/**
+ * Logo candidates (logo-finder Task 6): produce writes the files under
+ * `<workdir>/logo-candidates/<id>/`, and the page names one by
+ * `(suggestion, n)` only, never by path.
+ */
+async function candidateWorkdir(): Promise<string> {
+  const work = await fixtureWorkdir();
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(join(work, "logo-candidates", "firebase"), { recursive: true });
+  await writeFile(join(work, "logo-candidates", "firebase", "0.svg"), SVG);
+  await writeFile(join(work, "logo-candidates", "firebase", "1.png"), PNG);
+  const overlays = {
+    entries: [],
+    placements: [],
+    suggestions: [
+      {
+        id: "firebase",
+        name: "Firebase",
+        word: 2,
+        domain: "firebase.google.com",
+        candidates: [
+          { file: "logo-candidates/firebase/0.svg", source: "header" },
+          { file: "logo-candidates/firebase/1.png", source: "icon", width: 64, height: 64 },
+        ],
+      },
+      // Filed under ANOTHER suggestion's directory: a hand edit the server refuses.
+      { id: "stray", name: "Stray", word: 3, candidates: [{ file: "logo-candidates/firebase/1.png", source: "og" }] },
+    ],
+  };
+  await writeFile(join(work, "production.json"), JSON.stringify({ transcript: { language: "en", words: WORDS }, overlays }));
+  return work;
+}
+
+describe("logo candidates", () => {
+  it("GET /api/overlays/plan carries the suggestions", async () => {
+    const work = await candidateWorkdir();
+    const { url } = await boot({ work });
+    const body = await (await fetch(`${url}/api/overlays/plan`)).json();
+    expect(body.overlays.suggestions.map((s: { id: string }) => s.id)).toEqual(["firebase", "stray"]);
+    expect(body.overlays.suggestions[0].candidates[1]).toEqual({
+      file: "logo-candidates/firebase/1.png",
+      source: "icon",
+      width: 64,
+      height: 64,
+    });
+  });
+
+  it("GET /api/logo-candidates/file serves the bytes with the sandbox headers", async () => {
+    const { url } = await boot({ work: await candidateWorkdir() });
+    const svg = await fetch(`${url}/api/logo-candidates/file?suggestion=firebase&n=0`);
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+    expect(svg.headers.get("content-security-policy")).toMatch(/sandbox/);
+    expect(svg.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(Buffer.from(await svg.arrayBuffer())).toEqual(SVG);
+    const png = await fetch(`${url}/api/logo-candidates/file?suggestion=firebase&n=1`);
+    expect(png.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await png.arrayBuffer())).toEqual(PNG);
+  });
+
+  it("GET /api/logo-candidates/file refuses traversal, unknowns and cross-suggestion files with 404", async () => {
+    const { url } = await boot({ work: await candidateWorkdir() });
+    for (const q of [
+      "suggestion=..%2Fx&n=0",
+      "suggestion=../x&n=0",
+      "suggestion=nope&n=0",
+      "suggestion=firebase&n=2",
+      "suggestion=firebase&n=-1",
+      "suggestion=firebase&n=0.5",
+      "suggestion=firebase",
+      "suggestion=stray&n=0",
+    ]) {
+      const res = await fetch(`${url}/api/logo-candidates/file?${q}`);
+      expect(res.status, q).toBe(404);
+      expect(await res.json(), q).toEqual({ error: "no such logo candidate" });
+    }
+  });
+
+  it("GET /api/logo-candidates/file on a workdir without production.json → 404", async () => {
+    const { url } = await boot();
+    expect((await fetch(`${url}/api/logo-candidates/file?suggestion=firebase&n=0`)).status).toBe(404);
+  });
+
+  it("no workdir open: the file route is 409, a candidate add is 400", async () => {
+    const lib = await mkdtemp(join(tmpdir(), "ossclip-lib-"));
+    const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}), libraryDir: lib });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/logo-candidates/file?suggestion=firebase&n=0`)).status).toBe(409);
+    const res = await post(`${server.url}/api/library`, { name: "X", source: { candidate: { suggestion: "firebase", n: 0 } } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "no such logo candidate" });
+  });
+
+  it("POST /api/library with a candidate source adds it under the given name", async () => {
+    const { url, lib } = await boot({ work: await candidateWorkdir() });
+    const res = await post(`${url}/api/library`, { name: "Firebase", source: { candidate: { suggestion: "firebase", n: 1 } } });
+    expect(res.status).toBe(201);
+    expect((await res.json()).entry).toEqual({ id: "firebase", names: ["Firebase"], kind: "logo", format: "png" });
+    expect(readFileSync(join(lib, "firebase.png"))).toEqual(PNG);
+  });
+
+  it("the same candidate twice gives one entry (content-hash reuse, 200)", async () => {
+    const { url, lib } = await boot({ work: await candidateWorkdir() });
+    const body = { name: "Firebase", source: { candidate: { suggestion: "firebase", n: 0 } } };
+    const first = await post(`${url}/api/library`, body);
+    expect(first.status).toBe(201);
+    const second = await post(`${url}/api/library`, { ...body, name: "Firebase again" });
+    expect(second.status).toBe(200);
+    expect((await second.json()).entry).toEqual((await first.json()).entry);
+    expect((await (await fetch(`${url}/api/library`)).json()).entries).toHaveLength(1);
+    expect(readdirSync(lib).sort()).toEqual(["firebase.svg", "library.json"]);
+  });
+
+  it("content-hash reuse applies to every source kind", async () => {
+    const { url, lib } = await boot();
+    await writeLibrary(lib, [{ id: "alpha", names: ["alpha"] }]);
+    const before = readFileSync(join(lib, "library.json"), "utf8");
+    const src = join(await mkdtemp(join(tmpdir(), "ossclip-src-")), "same.png");
+    await writeFile(src, PNG);
+    for (const source of [{ path: src }, { data: PNG.toString("base64"), mimeType: "image/png" }]) {
+      const res = await post(`${url}/api/library`, { name: "Duplicate", source });
+      expect(res.status).toBe(200);
+      expect((await res.json()).entry).toEqual({ id: "alpha", names: ["alpha"], kind: "logo", format: "png" });
+    }
+    expect(readFileSync(join(lib, "library.json"), "utf8")).toBe(before);
+    expect(readdirSync(lib).sort()).toEqual(["alpha.png", "library.json"]);
+    // Different bytes are still a fresh add.
+    const other = await post(`${url}/api/library`, { name: "Party", source: { data: GIF.toString("base64"), mimeType: "image/gif" } });
+    expect(other.status).toBe(201);
+  });
+
+  it("POST /api/library with an unknown or cross-suggestion candidate → 400", async () => {
+    const { url, lib } = await boot({ work: await candidateWorkdir() });
+    for (const candidate of [
+      { suggestion: "nope", n: 0 },
+      { suggestion: "../x", n: 0 },
+      { suggestion: "firebase", n: 3 },
+      { suggestion: "stray", n: 0 },
+    ]) {
+      const res = await post(`${url}/api/library`, { name: "X", source: { candidate } });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "no such logo candidate" });
+    }
+    // n outside 0–3 and a client-sent path are refused by the schema.
+    for (const candidate of [{ suggestion: "firebase", n: 4 }, { suggestion: "firebase", n: 0, file: "/etc/passwd" }]) {
+      expect((await post(`${url}/api/library`, { name: "X", source: { candidate } })).status).toBe(400);
+    }
+    expect(readdirSync(lib)).toEqual([]);
+  });
+});

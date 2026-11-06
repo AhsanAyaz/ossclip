@@ -146,6 +146,7 @@ import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
 import { captionRegenProvider } from "./caption-regen-panel";
 import { binOnPath } from "./llm-detect";
 import { fetchLibraryBytes } from "./library-fetch";
+import { NO_SUCH_LOGO_CANDIDATE, logoCandidatePath } from "./logo-candidate-file";
 import { snapshotEntry, stageOverlayFiles } from "./overlays";
 import {
   YOUTUBE_PRIVACIES,
@@ -486,9 +487,12 @@ const zodMessage = (e: z.ZodError): string =>
 
 /**
  * `POST /api/library` (overlay-library spec §Server endpoints). The source is
- * exactly one of a URL, an absolute local path, or a dropped file's base64 —
- * and `mimeType` is required for the portrait-upload shape's sake but NEVER
- * trusted: the bytes are sniffed by `addLibraryEntry`.
+ * exactly one of a URL, an absolute local path, a dropped file's base64, or
+ * a logo candidate — and `mimeType` is required for the portrait-upload
+ * shape's sake but NEVER trusted: the bytes are sniffed by `addLibraryEntry`.
+ * A candidate is named by `(suggestion, n)` and never by path (logo-finder
+ * Task 6 ruling): the server resolves the file from production.json, and
+ * `strictObject` refuses a `file` the page tries to send along.
  */
 const LibraryAddBodySchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -498,8 +502,13 @@ const LibraryAddBodySchema = z.object({
     z.strictObject({ url: z.string().min(1) }),
     z.strictObject({ path: z.string().min(1) }),
     z.strictObject({ data: z.string().min(1), mimeType: z.string() }),
+    // At most 4 candidates per name (logo-finder plan Global Constraints).
+    z.strictObject({ candidate: z.strictObject({ suggestion: z.string(), n: z.number().int().min(0).max(3) }) }),
   ]),
 });
+
+/** `GET /api/logo-candidates/file`'s `n`: one digit 0–3, matched, never coerced. */
+const CandidateIndexSchema = z.string().regex(/^[0-3]$/);
 
 /** URL-add caps (plan Global Constraints, "Defaults"). */
 const LIBRARY_FETCH_TIMEOUT_MS = 15_000;
@@ -1000,6 +1009,45 @@ export async function startEditServer(
    */
   const scrubLibraryPath = (message: string): string =>
     [resolve(libraryDir()), libraryDir()].reduce((m, dir) => m.split(dir).join("<library>"), message);
+  /**
+   * The open workdir's file for a logo candidate, or null (logo-finder Task 6
+   * ruling): production.json is read per request, `overlayLibrary`'s rule, so
+   * a re-run produce's fresh candidates show without a restart. Unreadable,
+   * corrupt or suggestion-less all mean "no such logo candidate"; a file
+   * deleted since produce does too.
+   */
+  const logoCandidateFile = async (suggestion: string, n: number): Promise<string | null> => {
+    if (!workdir) return null;
+    let overlays: unknown;
+    try {
+      overlays = (JSON.parse(await readFile(join(workdir, "production.json"), "utf8")) as { overlays?: unknown })
+        ?.overlays;
+    } catch {
+      return null;
+    }
+    const file = logoCandidatePath(overlays, workdir, suggestion, n);
+    return file !== null && existsSync(file) ? file : null;
+  };
+  /**
+   * The library entry whose file holds exactly `bytes`, if any (logo-finder
+   * Task 6 ruling, "content-hash reuse"): picking the same logo twice, from
+   * any source, gives one entry rather than `firebase` and `firebase-2`.
+   * Lazy and cheap: called only once the incoming bytes are known, a size
+   * mismatch skips the read, and the first match stops the scan. An entry
+   * whose file cannot be read is simply not a match.
+   */
+  const libraryEntryWithBytes = async (bytes: Uint8Array): Promise<LoadedLibraryEntry | undefined> => {
+    const digest = createHash("sha1").update(bytes).digest("hex");
+    for (const entry of overlayLibrary()) {
+      try {
+        if (statSync(entry.absPath).size !== bytes.byteLength) continue;
+        if (createHash("sha1").update(await readFile(entry.absPath)).digest("hex") === digest) return entry;
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  };
   const approvedPackPath = (): string => join(workdir!, YOUTUBE_APPROVED_BASENAME);
   /** The pack the panel shows: the approved file first (the user's
    * decision), else the newest valid `youtube-<key>.json` cache (what the
@@ -3023,6 +3071,32 @@ export async function startEditServer(
           return;
         }
 
+        if (url.pathname === "/api/logo-candidates/file" && req.method === "GET") {
+          // A logo finder chip's preview (logo-finder Task 6): `/api/library/file`'s
+          // rule, the query names a candidate by `(suggestion, n)` and never a
+          // path, and the file that answers is whatever production.json binds
+          // to that suggestion — a traversal attempt is an id nothing answers to.
+          if (!workdir) return send(409, { error: "no workdir open" });
+          const n = CandidateIndexSchema.safeParse(url.searchParams.get("n") ?? "");
+          const file = n.success
+            ? await logoCandidateFile(url.searchParams.get("suggestion") ?? "", Number(n.data))
+            : null;
+          if (file === null) return send(404, { error: NO_SUCH_LOGO_CANDIDATE });
+          // The extension is the sniffed format: produce names the file after
+          // it, and `LogoCandidateSchema` admits only the five image types.
+          // Sandboxed like a library image, since a candidate SVG came off a
+          // site an LLM named.
+          sendFile(
+            req,
+            res,
+            file,
+            MIME[extname(file).toLowerCase()] ?? "application/octet-stream",
+            false,
+            IMAGE_SANDBOX_HEADERS,
+          );
+          return;
+        }
+
         if (url.pathname === "/api/library" && req.method === "POST") {
           // The tray's add (spec §Server endpoints): a pasted URL or path, or
           // a dropped file. No workdir guard — it writes the global library,
@@ -3069,11 +3143,28 @@ export async function startEditServer(
                 return send(400, { error: `file is ${mb(st.size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
               }
               bytes = await readFile(source.path);
+            } else if ("candidate" in source) {
+              // Resolved server-side from production.json, never from the
+              // body (logo-finder Task 6 ruling). Size before the read, the
+              // path branch's rule: produce caps a candidate at 5 MB, but
+              // the file on disk is whatever is there now.
+              const file = await logoCandidateFile(source.candidate.suggestion, source.candidate.n);
+              if (file === null) return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
+              const size = statSync(file).size;
+              if (size > LIBRARY_MAX_BYTES) {
+                return send(400, { error: `file is ${mb(size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
+              }
+              bytes = await readFile(file);
             } else {
               // Size after the decode is `addLibraryEntry`'s check; the body
               // cap above already bounded what was buffered.
               bytes = Buffer.from(source.data, "base64");
             }
+            // Same bytes already in the library → that entry, unwritten, as
+            // 200 not 201 (logo-finder Task 6 ruling). Every source kind: a
+            // pasted URL of a logo the finder already offered is the same logo.
+            const existing = await libraryEntryWithBytes(bytes);
+            if (existing !== undefined) return send(200, { entry: libraryEntryMeta(existing) });
             const entry = await addLibraryEntry(
               bytes,
               { name, ...(aliases !== undefined ? { aliases } : {}), ...(kind !== undefined ? { kind } : {}) },
