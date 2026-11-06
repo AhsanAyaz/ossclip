@@ -1434,6 +1434,19 @@ export const Timeline: React.FC<TimelineProps> = ({
                       const r = e.currentTarget.getBoundingClientRect();
                       onOpenSuggestion?.(c.id, { left: r.left, top: r.top });
                     }}
+                    // Final review Minor 5: role="button" alone left keyboard
+                    // users unable to reach or open the chip. Focusable, and
+                    // Enter/Space open it exactly as a click does. Kept from
+                    // bubbling so Space does not also reach Overlay.tsx's
+                    // window-level Space-toggles-playback handler.
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const r = e.currentTarget.getBoundingClientRect();
+                      onOpenSuggestion?.(c.id, { left: r.left, top: r.top });
+                    }}
                     style={{ ...suggestionChip, left: `${leftPct}%` }}
                   >
                     <span style={suggestionLabel}>{c.name}</span>

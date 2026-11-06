@@ -141,7 +141,12 @@ test("Use this: the chip becomes an overlay, undo brings it back, and the pick s
 test("Skip hides a suggestion with no candidates, and the skip survives a reload", async ({ page }) => {
   await open(page);
   const chip = page.getByTestId("logo-suggestion-claude");
-  await chip.click();
+  // Opened from the keyboard (final review Minor 5): the chip is a
+  // role="button", so it must take focus and answer Enter like a click.
+  await chip.focus();
+  await expect(chip).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("logo-suggestion-popover")).toBeVisible();
   await expect(page.getByTestId("logo-suggestion-note")).toHaveText("claude.ai timed out");
   await expect(page.getByTestId("logo-candidate-0")).toHaveCount(0);
   await page.getByTestId("logo-skip").click();
