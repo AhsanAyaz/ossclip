@@ -21,17 +21,17 @@ function parseHttpUrl(raw: string, base?: URL): URL {
   try {
     u = base ? new URL(raw, base) : new URL(raw);
   } catch {
-    throw new LibraryAddError(`"${raw}" is not a valid URL`);
+    throw new LibraryAddError(`"${raw}" is not a valid URL`, { kind: "invalid" });
   }
   // `file:` would read the server's own disk through the URL box and `data:`
   // would skip the size cap's streaming path; only the web is a URL here.
-  if (!isHttp(u)) throw new LibraryAddError(`only http(s) URLs can be added (got ${u.protocol})`);
+  if (!isHttp(u)) throw new LibraryAddError(`only http(s) URLs can be added (got ${u.protocol})`, { kind: "invalid" });
   return u;
 }
 
 const mb = (n: number): string => (n / (1024 * 1024)).toFixed(1);
 const overCap = (maxBytes: number): LibraryAddError =>
-  new LibraryAddError(`the download is over the limit of ${mb(maxBytes)} MB`);
+  new LibraryAddError(`the download is over the limit of ${mb(maxBytes)} MB`, { kind: "over-cap" });
 
 /**
  * GET `url` and return its body, enforcing every cap the spec names:
@@ -48,11 +48,29 @@ const overCap = (maxBytes: number): LibraryAddError =>
  *   cannot hang the request handler.
  *
  * Every failure is a `LibraryAddError` whose message the server returns as
- * its 400 body.
+ * its 400 body, and whose `kind` (plus `status`) says why without the
+ * message, for the logo finder's fixed notes (ruling R15).
+ *
+ * Two options exist for the logo finder only; the tray uses neither:
+ *
+ * - `overflow: "truncate"` (ruling R16) stops reading at `maxBytes` and
+ *   returns what was read, instead of failing. A homepage's logo is in its
+ *   `<head>` and header, so a 3 MB page is still worth its first 2 MB. The
+ *   content-length pre-check is skipped too, for the same reason.
+ * - `onFinalUrl` (ruling R14) is called with the URL that returned the body,
+ *   after every redirect, so a page's relative URLs resolve against where it
+ *   actually lives, not where the request started.
  */
 export async function fetchLibraryBytes(
   url: string,
-  o: { fetch?: typeof fetch; maxBytes: number; timeoutMs: number; maxRedirects: number },
+  o: {
+    fetch?: typeof fetch;
+    maxBytes: number;
+    timeoutMs: number;
+    maxRedirects: number;
+    overflow?: "error" | "truncate";
+    onFinalUrl?: (u: URL) => void;
+  },
 ): Promise<Uint8Array> {
   const doFetch = o.fetch ?? fetch;
   let current = parseHttpUrl(url);
@@ -61,7 +79,9 @@ export async function fetchLibraryBytes(
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
-      reject(new LibraryAddError(`the download timed out after ${Math.round(o.timeoutMs / 1000)}s`));
+      reject(
+        new LibraryAddError(`the download timed out after ${Math.round(o.timeoutMs / 1000)}s`, { kind: "timeout" }),
+      );
     }, o.timeoutMs);
   });
 
@@ -71,22 +91,33 @@ export async function fetchLibraryBytes(
       try {
         res = await doFetch(current, { redirect: "manual", signal: controller.signal });
       } catch (e) {
-        if (controller.signal.aborted) throw new LibraryAddError("the download was aborted");
-        throw new LibraryAddError(`could not download ${current.host}: ${e instanceof Error ? e.message : String(e)}`);
+        // Only the timeout aborts while a request is live.
+        if (controller.signal.aborted) throw new LibraryAddError("the download was aborted", { kind: "timeout" });
+        throw new LibraryAddError(`could not download ${current.host}: ${e instanceof Error ? e.message : String(e)}`, {
+          kind: "unreachable",
+        });
       }
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");
         await res.body?.cancel();
-        if (location === null) throw new LibraryAddError(`${current.host} answered ${res.status} with no Location`);
-        if (hop >= o.maxRedirects) throw new LibraryAddError(`too many redirects (more than ${o.maxRedirects})`);
+        if (location === null) {
+          throw new LibraryAddError(`${current.host} answered ${res.status} with no Location`, {
+            kind: "status",
+            status: res.status,
+          });
+        }
+        if (hop >= o.maxRedirects) {
+          throw new LibraryAddError(`too many redirects (more than ${o.maxRedirects})`, { kind: "unreachable" });
+        }
         current = parseHttpUrl(location, current);
         continue;
       }
       if (!res.ok) {
         await res.body?.cancel();
-        throw new LibraryAddError(`${current.host} answered ${res.status}`);
+        throw new LibraryAddError(`${current.host} answered ${res.status}`, { kind: "status", status: res.status });
       }
-      return readCapped(res, o.maxBytes);
+      o.onFinalUrl?.(current);
+      return readCapped(res, o.maxBytes, o.overflow ?? "error");
     }
   };
 
@@ -99,9 +130,9 @@ export async function fetchLibraryBytes(
   }
 }
 
-async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
+async function readCapped(res: Response, maxBytes: number, overflow: "error" | "truncate"): Promise<Uint8Array> {
   const declared = Number(res.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) {
+  if (overflow === "error" && Number.isFinite(declared) && declared > maxBytes) {
     await res.body?.cancel();
     throw overCap(maxBytes);
   }
@@ -112,11 +143,14 @@ async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> 
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
+    if (total + value.byteLength > maxBytes) {
       await reader.cancel();
-      throw overCap(maxBytes);
+      if (overflow === "error") throw overCap(maxBytes);
+      chunks.push(value.subarray(0, maxBytes - total));
+      total = maxBytes;
+      break;
     }
+    total += value.byteLength;
     chunks.push(value);
   }
   const out = new Uint8Array(total);

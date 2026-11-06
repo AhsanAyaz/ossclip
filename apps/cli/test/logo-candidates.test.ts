@@ -65,6 +65,17 @@ describe("extractLogoCandidates", () => {
     expect(extractLogoCandidates(html, "https://x.com/", "X")).toEqual([{ url: "https://x.com/l.png", source: "header" }]);
   });
 
+  it("ignores an <img> inside a comment in the header", () => {
+    const html = `<header><!-- <img class=logo src="/old.png"> --><img class="logo" src="/new.png"></header>`;
+    expect(extractLogoCandidates(html, "https://x.com/", "X")).toEqual([{ url: "https://x.com/new.png", source: "header" }]);
+  });
+
+  it("an unclosed attribute quote costs the rest of the page, not the run", () => {
+    // The quote after `class=` never closes, so the scanner reads it to the end.
+    const html = `<header><img class="logo" src="/a.png"><img class="logo src=/b.png></header><link rel=icon href=/i.png>`;
+    expect(extractLogoCandidates(html, "https://x.com/", "X")).toEqual([{ url: "https://x.com/a.png", source: "header" }]);
+  });
+
   it("is empty for junk input", () => {
     expect(extractLogoCandidates("", "https://x.com/", "X")).toEqual([]);
     expect(extractLogoCandidates("<<<>>><header", "https://x.com/", "X")).toEqual([]);

@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  LibraryAddError,
   LogoSuggestionSchema,
   imageSize,
   sniffImageFormat,
@@ -114,13 +115,28 @@ export async function findLogoCandidates(
   const commit = (i: number, visit: Visit): void => {
     const f = flags[i]!;
     const dir = dirOf(f.id);
-    rmSync(dir, { recursive: true, force: true });
     const candidates: LogoCandidate[] = [];
-    if (visit.kept.length > 0) mkdirSync(dir, { recursive: true });
-    visit.kept.forEach((k, n) => {
-      writeFileSync(join(dir, `${n}.${k.format}`), k.bytes);
-      candidates.push({ file: `${LOGO_CANDIDATES_DIR}/${f.id}/${n}.${k.format}`, ...k.candidate });
-    });
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      if (visit.kept.length > 0) mkdirSync(dir, { recursive: true });
+      visit.kept.forEach((k, n) => {
+        writeFileSync(join(dir, `${n}.${k.format}`), k.bytes);
+        candidates.push({ file: `${LOGO_CANDIDATES_DIR}/${f.id}/${n}.${k.format}`, ...k.candidate });
+      });
+    } catch {
+      // A full disk or an unwritable workdir costs this name's logos, not
+      // the produce run: the finder is best-effort and must never reject.
+      // A half-written dir is removed so no unlisted file survives.
+      removeQuietly(dir);
+      results[i] = {
+        ...base(f),
+        candidates: [],
+        // With nothing to write, only the stale-dir removal failed: the
+        // visit's own note ("no logo found") is still the true one.
+        note: visit.kept.length === 0 && visit.note !== undefined ? visit.note : "could not save the logos",
+      };
+      return;
+    }
     results[i] = {
       ...base(f),
       candidates,
@@ -134,8 +150,8 @@ export async function findLogoCandidates(
     else queue.push(i);
   });
 
-  const get = (url: string, maxBytes: number): Promise<Uint8Array> =>
-    fetchLibraryBytes(url, { fetch: o.fetch, maxBytes, timeoutMs: perRequestMs, maxRedirects: MAX_REDIRECTS });
+  const get: Get = (url, maxBytes, extra) =>
+    fetchLibraryBytes(url, { fetch: o.fetch, maxBytes, timeoutMs: perRequestMs, maxRedirects: MAX_REDIRECTS, ...extra });
   const checkBudget = (): void => {
     if (expired()) throw new Abandoned();
   };
@@ -176,10 +192,25 @@ export async function findLogoCandidates(
     const done = results[i];
     if (done !== undefined) return done;
     // Abandoned: no files, including a stale dir from an older run.
-    rmSync(dirOf(f.id), { recursive: true, force: true });
+    removeQuietly(dirOf(f.id));
     return { ...base(f), note: "site timed out" };
   });
 }
+
+/** `rmSync` that never throws: it runs on paths where a failure must not reject the step. */
+function removeQuietly(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Nothing more to do; the suggestion lists no files for this dir.
+  }
+}
+
+type Get = (
+  url: string,
+  maxBytes: number,
+  extra?: { overflow?: "error" | "truncate"; onFinalUrl?: (u: URL) => void },
+) => Promise<Uint8Array>;
 
 /**
  * One site: the homepage, its manifest, then candidates in rank order until
@@ -189,14 +220,26 @@ export async function findLogoCandidates(
  */
 async function visitSite(
   f: LogoFlag & { domain: string },
-  io: { get: (url: string, maxBytes: number) => Promise<Uint8Array>; checkBudget: () => void },
+  io: { get: Get; checkBudget: () => void },
 ): Promise<Visit> {
   // https only, no http fallback (controller ruling): an official site that
   // serves no TLS in 2026 is not one whose logo is worth guessing at.
-  const pageUrl = `https://${f.domain}/`;
+  const homeUrl = `https://${f.domain}/`;
+  // Relative URLs resolve against where the page ended up after redirects
+  // (ruling R14): `https://a.test/` → `https://www.a.test/en/` makes
+  // `logo.png` mean `https://www.a.test/en/logo.png`.
+  let pageUrl = homeUrl;
   let html: string;
   try {
-    html = new TextDecoder("utf-8").decode(await io.get(pageUrl, PAGE_MAX_BYTES));
+    const bytes = await io.get(homeUrl, PAGE_MAX_BYTES, {
+      // Ruling R16: a long page is cut, not refused. The logo is in the head
+      // and header, near the top.
+      overflow: "truncate",
+      onFinalUrl: (u) => {
+        pageUrl = u.href;
+      },
+    });
+    html = new TextDecoder("utf-8").decode(bytes);
   } catch (e) {
     io.checkBudget();
     return { note: homepageNote(f.domain, e), kept: [] };
@@ -207,8 +250,16 @@ async function visitSite(
   const manifest = manifestUrl(html, pageUrl);
   if (manifest !== undefined) {
     try {
-      const json: unknown = JSON.parse(new TextDecoder("utf-8").decode(await io.get(manifest, PAGE_MAX_BYTES)));
-      urls = withManifestIcons(urls, manifestIcons(json, manifest));
+      // Icon `src`s are relative to the manifest, so the same R14 rule applies
+      // to wherever the manifest itself ended up.
+      let manifestAt = manifest;
+      const bytes = await io.get(manifest, PAGE_MAX_BYTES, {
+        onFinalUrl: (u) => {
+          manifestAt = u.href;
+        },
+      });
+      const json: unknown = JSON.parse(new TextDecoder("utf-8").decode(bytes));
+      urls = withManifestIcons(urls, manifestIcons(json, manifestAt));
     } catch {
       // A missing or broken manifest costs the manifest's icons, nothing more.
     }
@@ -247,14 +298,19 @@ async function visitSite(
 }
 
 /**
- * The note for a homepage that did not answer with a page. A status names
- * the domain the flag gave, not the host a redirect reached, because the
- * domain is what the author sees on the chip.
+ * The note for a homepage that did not answer with a page: one of a fixed
+ * set, never the raw error text (ruling R15), because the note is stored in
+ * production.json and shown on the chip, and a remote or OS error string is
+ * neither stable nor the author's business. It reads the error's typed
+ * `kind`, never its wording, which the tray owns.
+ *
+ * The domain is the one the flag gave, not the host a redirect reached,
+ * because it is what the author sees on the chip.
  */
-function homepageNote(domain: string, e: unknown): string {
-  const message = e instanceof Error ? e.message : String(e);
-  if (/timed out|aborted/i.test(message)) return "site timed out";
-  const status = /\banswered (\d{3})\b/.exec(message);
-  if (status) return `${domain} answered ${status[1]}`;
-  return message;
+export function homepageNote(domain: string, e: unknown): string {
+  if (e instanceof LibraryAddError) {
+    if (e.kind === "timeout") return "site timed out";
+    if (e.kind === "status" && e.status !== undefined) return `${domain} answered ${e.status}`;
+  }
+  return `could not reach ${domain}`;
 }

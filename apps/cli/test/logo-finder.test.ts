@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LogoSuggestionSchema, type LogoFlag } from "@ossclip/core";
-import { findLogoCandidates } from "../src/logo-finder";
+import { LibraryAddError, LogoSuggestionSchema, type LogoFlag } from "@ossclip/core";
+import { findLogoCandidates, homepageNote } from "../src/logo-finder";
 
 const tmpWork = (): string => mkdtempSync(join(tmpdir(), "ossclip-logo-finder-"));
 
@@ -286,5 +286,85 @@ describe("findLogoCandidates", () => {
     const out = await findLogoCandidates(flags, { work, concurrency: 2, fetch: fakeFetch(routes) });
     expect(peak).toBe(2);
     expect(out.map((s) => s.id)).toEqual(["a", "b", "c", "d", "e", "f"]);
+  });
+
+  it("a homepage that cannot be reached is `could not reach <domain>`, never the raw error (ruling R15)", async () => {
+    const refused = (async () => {
+      throw new Error("refused: firebase.google.com resolves to a private address");
+    }) as typeof fetch;
+    const loop = fakeFetch({ [HOME]: async () => new Response(null, { status: 302, headers: { location: HOME } }) });
+    for (const fetch of [refused, loop]) {
+      const [s] = await findLogoCandidates([FIREBASE], { work: tmpWork(), fetch });
+      expect(s!.note).toBe("could not reach firebase.google.com");
+    }
+  });
+
+  it("an unwritable workdir is `could not save the logos` for that name, and the step still resolves", async () => {
+    const work = tmpWork();
+    // `logo-candidates` is a FILE, so every mkdir under it fails.
+    writeFileSync(join(work, "logo-candidates"), "not a dir");
+    const html = `<link rel="icon" sizes="99x99" href="/x.png">`;
+    const out = await findLogoCandidates([FIREBASE, flag("claude", "Claude", "claude.ai"), flag("kimi", "Kimi")], {
+      work,
+      fetch: fakeFetch({
+        [HOME]: html,
+        [at("/x.png")]: png(99, 99, 1),
+        "https://claude.ai/": html,
+        "https://claude.ai/x.png": png(99, 99, 2),
+      }),
+    });
+    expect(out.map((s) => [s.id, s.candidates.length, s.note])).toEqual([
+      ["firebase", 0, "could not save the logos"],
+      ["claude", 0, "could not save the logos"],
+      ["kimi", 0, "no official site"],
+    ]);
+    for (const s of out) LogoSuggestionSchema.parse(s);
+  });
+
+  it("reads the first 2 MB of a longer homepage instead of refusing it (ruling R16)", async () => {
+    const work = tmpWork();
+    const html = `<header><img class="logo" src="/logo.png"></header>` + "<p>filler</p>".repeat(250_000);
+    expect(html.length).toBeGreaterThan(2 * 1024 * 1024);
+    const [s] = await findLogoCandidates([FIREBASE], {
+      work,
+      fetch: fakeFetch({ [HOME]: html, [at("/logo.png")]: png(200, 200) }),
+    });
+    expect(s!.candidates.map((c) => c.source)).toEqual(["header"]);
+  });
+
+  it("resolves relative URLs against the homepage's final URL after redirects (ruling R14)", async () => {
+    const work = tmpWork();
+    const asked: string[] = [];
+    const [s] = await findLogoCandidates([flag("a", "A", "a.test")], {
+      work,
+      fetch: fakeFetch(
+        {
+          "https://a.test/": async () =>
+            new Response(null, { status: 301, headers: { location: "https://www.a.test/en/" } }),
+          "https://www.a.test/en/": `<nav><img class="logo" src="logo.png"></nav>`,
+          "https://www.a.test/en/logo.png": png(100, 100),
+        },
+        (u) => asked.push(u),
+      ),
+    });
+    expect(asked).toContain("https://www.a.test/en/logo.png");
+    expect(s).toMatchObject({ domain: "a.test", candidates: [{ source: "header" }] });
+  });
+});
+
+describe("homepageNote (ruling R15)", () => {
+  it.each([
+    [new LibraryAddError("x answered 500", { kind: "status", status: 500 }), "a.test answered 500"],
+    [new LibraryAddError("x answered 302 with no Location", { kind: "status", status: 302 }), "a.test answered 302"],
+    [new LibraryAddError("the download timed out after 8s", { kind: "timeout" }), "site timed out"],
+    [new LibraryAddError("could not download x: ENOTFOUND", { kind: "unreachable" }), "could not reach a.test"],
+    [new LibraryAddError("too many redirects (more than 3)", { kind: "unreachable" }), "could not reach a.test"],
+    [new LibraryAddError("only http(s) URLs can be added", { kind: "invalid" }), "could not reach a.test"],
+    [new LibraryAddError("the download is over the limit", { kind: "over-cap" }), "could not reach a.test"],
+    [new LibraryAddError("timed out, says the message, but no kind"), "could not reach a.test"],
+    [new Error("answered 500"), "could not reach a.test"],
+    ["a string", "could not reach a.test"],
+  ] as const)("%s → %s", (e, note) => {
+    expect(homepageNote("a.test", e)).toBe(note);
   });
 });

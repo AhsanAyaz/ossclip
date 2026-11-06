@@ -421,9 +421,27 @@ const IndexShellSchema = z.looseObject({ entries: z.array(z.unknown()) });
 
 /** A user-facing add failure; `message` is written to be shown as-is. */
 export class LibraryAddError extends Error {
-  constructor(message: string) {
+  /**
+   * Why a DOWNLOAD failed, for callers that must not show the raw message.
+   * The logo finder maps it to a fixed set of chip notes (ruling R15), so
+   * the remote's wording never reaches production.json. Matching on the
+   * message instead would break the moment a tray-facing string is
+   * reworded. Absent for library-side refusals (sniff, size, slug).
+   */
+  readonly kind?: "status" | "timeout" | "unreachable" | "over-cap" | "invalid";
+  /** The HTTP status, when `kind` is "status". */
+  readonly status?: number;
+
+  constructor(
+    message: string,
+    detail?: { kind: "status" | "timeout" | "unreachable" | "over-cap" | "invalid"; status?: number },
+  ) {
     super(message);
     this.name = "LibraryAddError";
+    if (detail !== undefined) {
+      this.kind = detail.kind;
+      if (detail.status !== undefined) this.status = detail.status;
+    }
   }
 }
 
