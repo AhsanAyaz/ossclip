@@ -179,7 +179,15 @@ export {
   type OverlayCue,
   type OverlayIssue,
 } from "./overlay-cues";
+// Logo-finder chip visibility (logo-finder spec §Stored shape), browser-safe:
+// logo-suggestions.ts's only runtime import is ./overlay-match (above), the
+// rest are type imports. The editor's lane decides which chips to draw with
+// the SAME function the tests pin, so a skip or pick hides the chip the way
+// the spec says and not by a second rule in the editor.
+export { suggestionIdFor, visibleSuggestions, type VisibleSuggestion } from "./logo-suggestions";
 export type {
+  LogoCandidate,
+  LogoSuggestion,
   OverlayEntrySnapshot,
   OverlayPlacement,
   OverlayRect,

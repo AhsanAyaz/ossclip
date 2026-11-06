@@ -25,6 +25,7 @@ export * from "./lut-library";
 export * from "./overlay-library";
 export * from "./overlay-match";
 export * from "./overlay-cues";
+export * from "./logo-suggestions";
 export * from "./dictionary";
 export * from "./zoom";
 export * from "./grounding";

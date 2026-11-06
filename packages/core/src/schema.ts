@@ -202,13 +202,65 @@ export const OverlayPlacementSchema = z.object({
   sound: z.string().min(1).nullable().optional(),
   rect: OverlayRectSchema.optional(),
   source: z.enum(["match", "user"]),
+  /**
+   * The logo suggestion this placement was picked from (logo-finder spec
+   * §Stored shape). What hides the suggestion's chip is this id, NOT a name
+   * check, so a pick saved under an edited name ("Gemini" for "Google
+   * Gemini") still hides it (`visibleSuggestions`). Optional and absent on
+   * every placement that predates the finder, so old files parse unchanged.
+   */
+  fromSuggestion: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).optional(),
 });
 export type OverlayPlacement = z.infer<typeof OverlayPlacementSchema>;
+
+/**
+ * One fetched logo candidate for a suggestion (logo-finder spec §Step 2).
+ * `file` is WORKDIR-relative and pinned by the regex to
+ * `logo-candidates/<suggestionId>/<n>.<ext>`: production.json is hand-editable,
+ * and the candidate file is served and copied into the library by id, so a
+ * `../` or absolute path here must fail to parse rather than reach the fs.
+ * One digit for `n` because there are at most 4 candidates per name.
+ */
+export const LogoCandidateSchema = z.object({
+  file: z.string().regex(/^logo-candidates\/[a-z0-9-]+\/[0-9]\.(png|jpg|webp|svg|gif)$/),
+  source: z.enum(["header", "icon", "manifest", "og"]),
+  width: z.number().optional(),
+  height: z.number().optional(),
+});
+export type LogoCandidate = z.infer<typeof LogoCandidateSchema>;
+
+/**
+ * A spoken name the overlay library lacks, flagged by the LLM during produce
+ * (logo-finder spec §Stored shape). The editor draws it as a dashed chip; it
+ * is never a placement, so it never reaches the player props.
+ *
+ * `id` is the slug of the NAME (`suggestionIdFor`), not of the word, so a
+ * skip keyed by it survives a recut that moves the first kept mention.
+ */
+export const LogoSuggestionSchema = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  name: z.string().min(1).max(80),
+  /** Transcript word index of the first kept mention — never seconds. */
+  word: z.number().int().nonnegative(),
+  /** Absent when the LLM gave none or it was invalid. */
+  domain: z.string().optional(),
+  // At most 4 candidates per name (logo-finder plan Global Constraints).
+  candidates: z.array(LogoCandidateSchema).max(4),
+  /** Why there are no candidates ("site timed out", "no logo found"). */
+  note: z.string().optional(),
+});
+export type LogoSuggestion = z.infer<typeof LogoSuggestionSchema>;
 
 /** The matched overlay plan `production.json` stores: snapshots + placements. */
 export const ProductionOverlaysSchema = z.object({
   entries: z.array(OverlayEntrySnapshotSchema),
   placements: z.array(OverlayPlacementSchema),
+  /**
+   * The logo finder's flags (logo-finder spec §Stored shape). Optional with
+   * no default so every production.json written before the finder parses
+   * unchanged; at most 8 per video (plan Global Constraints).
+   */
+  suggestions: z.array(LogoSuggestionSchema).max(8).optional(),
 });
 export type ProductionOverlays = z.infer<typeof ProductionOverlaysSchema>;
 

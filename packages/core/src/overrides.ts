@@ -928,6 +928,14 @@ export const OverrideDocSchema = z.object({
       // placements (the `SfxAddedPlacementSchema` reasoning).
       added: z.array(OverlayPlacementSchema.extend({ id: z.string().regex(/^[A-Za-z0-9_-]+$/) })).default([]),
       entries: z.array(OverlayEntrySnapshotSchema).default([]),
+      // Suggestion ids the author skipped for this video (logo-finder spec
+      // §Stored shape). Ids are name slugs, so a skip survives a recut.
+      // `.optional()`, NOT `.default([])` like its siblings: a default would
+      // materialize `skippedSuggestions: []` on parse, and the editor saves
+      // the parsed slot back whole (`withOverlays`), so every project that
+      // already has an overlays slot would grow the key on its next save
+      // without the author ever touching a suggestion. Absent means [].
+      skippedSuggestions: z.array(z.string()).optional(),
     })
     .optional(),
 });
