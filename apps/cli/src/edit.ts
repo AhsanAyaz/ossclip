@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { checkEditRequest } from "./edit-origin";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1052,6 +1053,12 @@ export async function startEditServer(
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
     };
+
+    // Before every route, the page itself included (edit-origin.ts): another
+    // website must not reach this server, by DNS rebinding or a cross-site
+    // request.
+    const verdict = checkEditRequest({ host: req.headers.host, origin: req.headers.origin });
+    if (!verdict.ok) return send(403, { error: verdict.reason });
 
     void (async () => {
       try {

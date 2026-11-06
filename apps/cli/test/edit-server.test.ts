@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -116,6 +117,30 @@ describe("edit server", () => {
     close = server.close;
     const body = EditHealthSchema.parse(await (await fetch(`${server.url}/api/health`)).json());
     expect(body.workdir).toBeNull();
+  });
+
+  it("refuses another site: a rebinding Host or a cross-site Origin gets 403 on every route", async () => {
+    // edit-origin.ts. A raw node:http request, because fetch() will not let a
+    // test set Host, and Host is exactly what a DNS-rebinding page controls.
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const { port } = new URL(server.url);
+    const status = (path: string, headers: Record<string, string>): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const r = httpRequest({ host: "127.0.0.1", port: Number(port), path, headers }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        r.on("error", reject);
+        r.end();
+      });
+    expect(await status("/api/production", { host: `evil.example:${port}` })).toBe(403);
+    expect(await status("/", { host: `evil.example:${port}` })).toBe(403);
+    expect(await status("/api/production", { host: `127.0.0.1:${port}`, origin: "https://evil.example" })).toBe(403);
+    // The editor itself, and the second `ossclip edit` probing health, still get in.
+    expect(await status("/api/production", { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` })).toBe(200);
+    expect(await status("/api/health", { host: `localhost:${port}` })).toBe(200);
   });
 
   it("saves overrides to disk", async () => {
