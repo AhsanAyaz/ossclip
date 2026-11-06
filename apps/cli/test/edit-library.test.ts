@@ -622,6 +622,40 @@ describe("logo candidates", () => {
     expect(other.status).toBe(201);
   });
 
+  /**
+   * Final review Minor 2: the candidate passed `existsSync`, then stat or
+   * read threw (deleted mid-request, made unreadable), and the fs error fell
+   * through as a 500 carrying `<workdir>/logo-candidates/...`. Stand-ins
+   * that need no timing race: a directory where the file was (exists, is
+   * not a file), and a file with no read permission (stat passes, read throws).
+   */
+  it("a candidate that is no longer a readable file → 400 no such logo candidate, no workdir path", async () => {
+    const work = await candidateWorkdir();
+    const { url, lib } = await boot({ work });
+    const { mkdir, rm } = await import("node:fs/promises");
+    const png = join(work, "logo-candidates", "firebase", "1.png");
+    await rm(png);
+    await mkdir(png);
+    const svg = join(work, "logo-candidates", "firebase", "0.svg");
+    await chmod(svg, 0o000);
+    try {
+      for (const n of [0, 1]) {
+        const res = await post(`${url}/api/library`, { name: "X", source: { candidate: { suggestion: "firebase", n } } });
+        const text = await res.text();
+        expect(res.status, `n=${n}`).toBe(400);
+        expect(JSON.parse(text), `n=${n}`).toEqual({ error: "no such logo candidate" });
+        expect(text).not.toContain(work);
+      }
+      // The preview route's matching guard: a directory is not a candidate.
+      const res = await fetch(`${url}/api/logo-candidates/file?suggestion=firebase&n=1`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "no such logo candidate" });
+    } finally {
+      await chmod(svg, 0o644);
+    }
+    expect(readdirSync(lib)).toEqual([]);
+  });
+
   it("POST /api/library with an unknown or cross-suggestion candidate → 400", async () => {
     const { url, lib } = await boot({ work: await candidateWorkdir() });
     for (const candidate of [

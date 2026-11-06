@@ -1028,6 +1028,14 @@ export async function startEditServer(
     const file = logoCandidatePath(overlays, workdir, suggestion, n);
     return file !== null && existsSync(file) ? file : null;
   };
+  /** Whether a candidate path is still a regular file (final review Minor 2): a stat that throws means no. */
+  const isCandidateFile = (file: string): boolean => {
+    try {
+      return statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
   /**
    * The library entry whose file holds exactly `bytes`, if any (logo-finder
    * Task 6 ruling, "content-hash reuse"): picking the same logo twice, from
@@ -3082,6 +3090,10 @@ export async function startEditServer(
             ? await logoCandidateFile(url.searchParams.get("suggestion") ?? "", Number(n.data))
             : null;
           if (file === null) return send(404, { error: NO_SUCH_LOGO_CANDIDATE });
+          // Final review Minor 2: `existsSync` is true for a directory, and a
+          // file can vanish after it. Either is "no such logo candidate",
+          // not a 200 whose body then dies or a 500 naming the workdir.
+          if (!isCandidateFile(file)) return send(404, { error: NO_SUCH_LOGO_CANDIDATE });
           // The extension is the sniffed format: produce names the file after
           // it, and `LogoCandidateSchema` admits only the five image types.
           // Sandboxed like a library image, since a candidate SVG came off a
@@ -3150,11 +3162,27 @@ export async function startEditServer(
               // the file on disk is whatever is there now.
               const file = await logoCandidateFile(source.candidate.suggestion, source.candidate.n);
               if (file === null) return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
-              const size = statSync(file).size;
-              if (size > LIBRARY_MAX_BYTES) {
-                return send(400, { error: `file is ${mb(size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
+              // Final review Minor 2: the file passed `existsSync` but can be
+              // gone, a directory or unreadable by the stat or the read. That
+              // fs error is not a LibraryAddError, so the catch below would
+              // answer 500 with `<workdir>/logo-candidates/...` in it, a path
+              // `scrubLibraryPath` does not fold. To the page it is simply a
+              // candidate that is no longer there.
+              let st: ReturnType<typeof statSync>;
+              try {
+                st = statSync(file);
+              } catch {
+                return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
               }
-              bytes = await readFile(file);
+              if (!st.isFile()) return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
+              if (st.size > LIBRARY_MAX_BYTES) {
+                return send(400, { error: `file is ${mb(st.size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
+              }
+              try {
+                bytes = await readFile(file);
+              } catch {
+                return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
+              }
             } else {
               // Size after the decode is `addLibraryEntry`'s check; the body
               // cap above already bounded what was buffered.
