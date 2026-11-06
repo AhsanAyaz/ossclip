@@ -120,6 +120,98 @@ function isSvgRoot(bytes: Uint8Array): boolean {
   return /^<svg[\s>/]/.test(text);
 }
 
+/**
+ * The pixel size a raster image declares in its header, or null when the
+ * header is missing, truncated or declares a zero side. The logo finder
+ * keeps a raster candidate only when its short side is at least 64 px
+ * (logo-finder spec §Step 2), because a 32 px favicon blown up to overlay
+ * size is a blur, not a logo. Always null for SVG: it has no pixel size, and
+ * the spec exempts it from the floor.
+ *
+ * Only headers are read, never pixels, so a file that lies about its size
+ * passes; the bytes still have to sniff as an image first.
+ */
+export function imageSize(bytes: Uint8Array): { width: number; height: number } | null {
+  const be16 = (at: number): number => (bytes[at]! << 8) | bytes[at + 1]!;
+  const le16 = (at: number): number => bytes[at]! | (bytes[at + 1]! << 8);
+  const le24 = (at: number): number => bytes[at]! | (bytes[at + 1]! << 8) | (bytes[at + 2]! << 16);
+  const has = (n: number): boolean => bytes.length >= n;
+  const size = (width: number, height: number): { width: number; height: number } | null =>
+    width > 0 && height > 0 ? { width, height } : null;
+
+  switch (sniffImageFormat(bytes)) {
+    case "png":
+      // The IHDR chunk is required to come first: width and height are its
+      // first two big-endian u32s, at 16 and 20.
+      if (!has(24) || !startsWith(bytes, ascii("IHDR"), 12)) return null;
+      return size(
+        ((bytes[16]! << 24) >>> 0) + (bytes[17]! << 16) + (bytes[18]! << 8) + bytes[19]!,
+        ((bytes[20]! << 24) >>> 0) + (bytes[21]! << 16) + (bytes[22]! << 8) + bytes[23]!,
+      );
+    case "gif":
+      // The logical screen descriptor follows the 6-byte signature.
+      return has(10) ? size(le16(6), le16(8)) : null;
+    case "jpg":
+      return jpegSize(bytes, be16);
+    case "webp": {
+      if (!has(16)) return null;
+      const chunk = String.fromCharCode(bytes[12]!, bytes[13]!, bytes[14]!, bytes[15]!);
+      if (chunk === "VP8 ") {
+        // Lossy: a 3-byte frame tag, the 9d 01 2a start code, then 14-bit
+        // sides (the top 2 bits are a scale hint, not size).
+        if (!has(30) || !startsWith(bytes, [0x9d, 0x01, 0x2a], 23)) return null;
+        return size(le16(26) & 0x3fff, le16(28) & 0x3fff);
+      }
+      if (chunk === "VP8L") {
+        // Lossless: a 0x2f signature, then (side - 1) packed as two 14-bit fields.
+        if (!has(25) || bytes[20] !== 0x2f) return null;
+        const bits = (bytes[21]! | (bytes[22]! << 8) | (bytes[23]! << 16) | (bytes[24]! << 24)) >>> 0;
+        return size((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+      }
+      if (chunk === "VP8X") return has(30) ? size(le24(24) + 1, le24(27) + 1) : null;
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * A JPEG's size lives in its frame header (SOFn), which can sit after any
+ * number of APPn/DQT/DHT segments, so the segments are walked by length
+ * rather than read at a fixed offset. 0xC4 (DHT), 0xC8 (JPG) and 0xCC (DAC)
+ * share the SOF range but are not frame headers.
+ */
+function jpegSize(bytes: Uint8Array, be16: (at: number) => number): { width: number; height: number } | null {
+  let at = 2;
+  while (at + 3 < bytes.length) {
+    if (bytes[at] !== 0xff) return null;
+    const marker = bytes[at + 1]!;
+    // Fill bytes: any number of 0xFF may pad before a marker.
+    if (marker === 0xff) {
+      at++;
+      continue;
+    }
+    // Standalone markers (TEM, RSTn) carry no length.
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      at += 2;
+      continue;
+    }
+    // SOS starts entropy-coded data: a frame header must have come first.
+    if (marker === 0xd9 || marker === 0xda) return null;
+    const length = be16(at + 2);
+    if (length < 2) return null;
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      if (at + 9 > bytes.length) return null;
+      const height = be16(at + 5);
+      const width = be16(at + 7);
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+    at += 2 + length;
+  }
+  return null;
+}
+
 /** Up to `SNIFF_BYTES` from the head of a file; throws like any fs read. */
 function readHead(path: string): Uint8Array {
   const fd = openSync(path, "r");

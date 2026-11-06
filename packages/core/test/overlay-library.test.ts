@@ -7,6 +7,7 @@ import {
   LIBRARY_MAX_BYTES,
   LibraryAddError,
   addLibraryEntry,
+  imageSize,
   loadOverlayLibrary,
   slugifyEntryId,
   sniffImageFormat,
@@ -215,6 +216,96 @@ describe("sniffImageFormat", () => {
     ["empty", new Uint8Array()],
   ] as const)("rejects %s", (_label, bytes) => {
     expect(sniffImageFormat(bytes)).toBeNull();
+  });
+});
+
+describe("imageSize", () => {
+  const ascii = (s: string): Buffer => Buffer.from(s, "latin1");
+  const be32 = (n: number): Buffer => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32BE(n);
+    return b;
+  };
+  const le16 = (n: number): Buffer => {
+    const b = Buffer.alloc(2);
+    b.writeUInt16LE(n);
+    return b;
+  };
+  const le24 = (n: number): Buffer => Buffer.from([n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff]);
+  /** Signature + an IHDR chunk: all `imageSize` reads of a PNG. */
+  const png = (w: number, h: number): Buffer =>
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      be32(13),
+      ascii("IHDR"),
+      be32(w),
+      be32(h),
+      Buffer.from([8, 6, 0, 0, 0]),
+      be32(0),
+    ]);
+  const gif = (w: number, h: number): Buffer => Buffer.concat([ascii("GIF89a"), le16(w), le16(h), Buffer.alloc(4)]);
+  /** SOI, an APP0 segment to skip, then a baseline SOF0. */
+  const jpg = (w: number, h: number, sof = 0xc0): Buffer =>
+    Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      Buffer.from([0xff, 0xe0, 0x00, 0x10]),
+      ascii("JFIF\0"),
+      Buffer.alloc(9),
+      // A DHT (0xc4) is in the SOF range's neighbourhood but is not a frame.
+      Buffer.from([0xff, 0xc4, 0x00, 0x04, 0x00, 0x00]),
+      Buffer.from([0xff, sof, 0x00, 0x11, 0x08, (h >> 8) & 0xff, h & 0xff, (w >> 8) & 0xff, w & 0xff, 0x03]),
+      Buffer.alloc(9),
+    ]);
+  const riff = (chunk: Buffer): Buffer =>
+    Buffer.concat([ascii("RIFF"), Buffer.from([0, 0, 0, 0]), ascii("WEBP"), chunk]);
+  const vp8 = (w: number, h: number): Buffer =>
+    riff(
+      Buffer.concat([
+        ascii("VP8 "),
+        be32(0),
+        Buffer.from([0x50, 0x01, 0x00, 0x9d, 0x01, 0x2a]),
+        le16(w),
+        le16(h),
+      ]),
+    );
+  const vp8l = (w: number, h: number): Buffer => {
+    const bits = (w - 1) | ((h - 1) << 14);
+    return riff(
+      Buffer.concat([
+        ascii("VP8L"),
+        be32(0),
+        Buffer.from([0x2f, bits & 0xff, (bits >>> 8) & 0xff, (bits >>> 16) & 0xff, (bits >>> 24) & 0xff]),
+      ]),
+    );
+  };
+  const vp8x = (w: number, h: number): Buffer =>
+    riff(Buffer.concat([ascii("VP8X"), be32(0), Buffer.alloc(4), le24(w - 1), le24(h - 1)]));
+
+  it.each([
+    ["png", png(300, 120), 300, 120],
+    ["gif", gif(64, 80), 64, 80],
+    ["baseline jpg", jpg(640, 480), 640, 480],
+    ["progressive jpg", jpg(200, 100, 0xc2), 200, 100],
+    ["lossy webp (VP8)", vp8(512, 256), 512, 256],
+    ["lossless webp (VP8L)", vp8l(1000, 3), 1000, 3],
+    ["extended webp (VP8X)", vp8x(70000, 64), 70000, 64],
+  ] as const)("reads a %s header", (_label, bytes, width, height) => {
+    expect(imageSize(bytes)).toEqual({ width, height });
+  });
+
+  it("reads the real 1×1 PNG", () => {
+    expect(imageSize(PNG_1X1)).toEqual({ width: 1, height: 1 });
+  });
+
+  it.each([
+    ["svg", Buffer.from('<svg width="512" height="512"/>')],
+    ["a truncated png", png(300, 120).subarray(0, 20)],
+    ["a jpg with no frame header", JPEG_BYTES],
+    ["a zero-width gif", gif(0, 10)],
+    ["html", Buffer.from("<html></html>")],
+    ["empty", new Uint8Array()],
+  ] as const)("is null for %s", (_label, bytes) => {
+    expect(imageSize(bytes)).toBeNull();
   });
 });
 
