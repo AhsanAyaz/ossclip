@@ -38,9 +38,40 @@ describe("validateLogoFlags", () => {
     expect(r.flags[0]).toMatchObject({ id: "google-gemini", word: 6 });
   });
 
+  it("a mention must run through the name's last token (R10)", () => {
+    const rails = ["we", "use", "Ruby", "on", "Rails", "and", "on", "Monday"].map((text) => ({ text }));
+    const r = validateLogoFlags(
+      { names: [{ name: "Ruby on Rails", word: 2 }, { name: "Ruby on Rails", word: 6 }] },
+      rails,
+      all,
+      none,
+    );
+    expect(r.flags.map((f) => f.word)).toEqual([2]);
+    expect(r.dropped).toEqual([{ name: "Ruby on Rails", reason: "wrong-word" }]);
+  });
+
+  it("a mid-name start that stops short is the wrong word (R10)", () => {
+    const ws = ["the", "studio", "lights"].map((text) => ({ text }));
+    const r = validateLogoFlags({ names: [{ name: "Visual Studio Code", word: 1 }] }, ws, all, none);
+    expect(r.dropped).toEqual([{ name: "Visual Studio Code", reason: "wrong-word" }]);
+  });
+
+  it("the last token alone passes, even at the end of the transcript (R10, accepted)", () => {
+    // Accepted on purpose: the model chose this name at this word, and a
+    // speaker's short form ("Code" for Visual Studio Code) is legitimate.
+    const ws = ["I", "live", "in", "Code"].map((text) => ({ text }));
+    const r = validateLogoFlags({ names: [{ name: "Visual Studio Code", word: 3 }] }, ws, all, none);
+    expect(r.flags.map((f) => f.word)).toEqual([3]);
+  });
+
   it("an index past the transcript is the wrong word, not a crash", () => {
     const r = validateLogoFlags({ names: [{ name: "Firebase", word: 99 }] }, words, all, none);
     expect(r.dropped).toEqual([{ name: "Firebase", reason: "wrong-word" }]);
+  });
+
+  it("reports the trimmed name in dropped", () => {
+    const r = validateLogoFlags({ names: [{ name: "  Gemini ", word: 1 }] }, words, all, none);
+    expect(r.dropped).toEqual([{ name: "Gemini", reason: "wrong-word" }]);
   });
 
   it("drops a flag on a cut word", () => {
@@ -131,6 +162,11 @@ describe("normalizeDomain", () => {
     expect(normalizeDomain("10.0.0.1")).toBeUndefined();
     expect(normalizeDomain("[::1]")).toBeUndefined();
     expect(normalizeDomain("localhost")).toBeUndefined();
+    expect(normalizeDomain("foo.localhost")).toBeUndefined();
+    // Hex IPv4 spellings the WHATWG parser reads as 127.0.0.1 (fix round 1).
+    expect(normalizeDomain("0x7f.0x1")).toBeUndefined();
+    expect(normalizeDomain("0x7f.0x0.0x0.0x1")).toBeUndefined();
+    expect(normalizeDomain("127.0.0.0x1")).toBeUndefined();
     expect(normalizeDomain("user@claude.ai")).toBeUndefined();
     expect(normalizeDomain("bad_host.com")).toBeUndefined();
     expect(normalizeDomain("")).toBeUndefined();
@@ -176,6 +212,11 @@ describe("generateLogoFlags", () => {
   it("the mock provider answers with no names", async () => {
     const r = await generateLogoFlags(new MockProvider(), words, all, [], none);
     expect(r).toEqual({ raw: { names: [] }, flags: [], dropped: [] });
+  });
+
+  it("LogoFlagsSchema refuses a name past 80 characters (R11)", () => {
+    expect(LogoFlagsSchema.safeParse({ names: [{ name: "x".repeat(80), word: 0 }] }).success).toBe(true);
+    expect(LogoFlagsSchema.safeParse({ names: [{ name: "x".repeat(81), word: 0 }] }).success).toBe(false);
   });
 
   it("LogoFlagsSchema refuses a negative word", () => {

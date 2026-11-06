@@ -24,7 +24,9 @@ export const LogoFlagsSchema = z.object({
   names: z
     .array(
       z.object({
-        name: z.string(),
+        // R11: the same 1-80 bound as `LogoSuggestionSchema.name`, so an
+        // over-long name fails here rather than reach production.json.
+        name: z.string().max(80),
         word: z.number().int().nonnegative(),
         domain: z.string().optional(),
       }),
@@ -78,11 +80,19 @@ function nameTokens(name: string): string[] {
 /**
  * The words a flag's mention covers, as an inclusive [first, last] range, or
  * null when `word` is not a right word (logo-finder spec §Step 1,
- * Validation): it must be kept, and its token must be one of the name's
- * tokens. A name may start mid-way ("Gemini" in "Google Gemini"), so the
- * walk resumes from that token and extends over the following kept words
- * while they continue the name. Cut and punctuation-only words are skipped,
- * as overlay-match's `prepareSpoken` does.
+ * Validation; ruling R10). `word` must be kept, and the spoken words from it
+ * must continue the name to its LAST token: for some k with
+ * `tokens[k] === spoken[word]`, the following kept words consume
+ * `tokens[k..end]` contiguously. A mention may therefore start mid-name (a
+ * lone "Gemini" for "Google Gemini"), but it may not stop short: "on" alone
+ * is not "Ruby on Rails". Every matching k is tried, since a name can repeat
+ * a token. Cut and punctuation-only words are skipped, as overlay-match's
+ * `prepareSpoken` does.
+ *
+ * Accepted (R10): the last token alone passes, so a lone "Code" passes for
+ * "Visual Studio Code". The LLM chose the name at this word, and the
+ * alternative (requiring the first token) would refuse every legitimate
+ * short form a speaker uses.
  */
 function mentionSpan(
   tokens: readonly string[],
@@ -92,19 +102,24 @@ function mentionSpan(
 ): [number, number] | null {
   if (word >= words.length || !kept(word)) return null;
   const at = normalizeMatchToken(words[word]!.text).toLowerCase();
-  const k = at === "" ? -1 : tokens.indexOf(at);
-  if (k < 0) return null;
-  let last = word;
-  let next = k + 1;
-  for (let i = word + 1; i < words.length && next < tokens.length; i++) {
+  if (at === "") return null;
+  // The kept, non-punctuation words after `word`, as far as the longest
+  // possible walk (tokens.length - 1) could need.
+  const after: { i: number; t: string }[] = [];
+  for (let i = word + 1; i < words.length && after.length < tokens.length - 1; i++) {
     if (!kept(i)) continue;
     const t = normalizeMatchToken(words[i]!.text).toLowerCase();
-    if (!t) continue;
-    if (t !== tokens[next]) break;
-    last = i;
-    next++;
+    if (t) after.push({ i, t });
   }
-  return [word, last];
+  for (let k = 0; k < tokens.length; k++) {
+    if (tokens[k] !== at) continue;
+    const rest = tokens.length - 1 - k;
+    if (rest > after.length) continue;
+    if (after.slice(0, rest).every((w, n) => w.t === tokens[k + 1 + n])) {
+      return [word, rest === 0 ? word : after[rest - 1]!.i];
+    }
+  }
+  return null;
 }
 
 /**
@@ -113,7 +128,12 @@ function mentionSpan(
  * and a path are forgiven, since the model writes them often and the host
  * is unambiguous. Anything that would make step 2 fetch somewhere other
  * than a public named site is refused instead: a port, userinfo, an IP
- * literal, or a dotless name like `localhost`.
+ * literal, or `localhost` and its subdomains.
+ *
+ * The URL round-trip is the IP guard that matters (fix round 1): the WHATWG
+ * parser that step 2's fetch uses reads `0x7f.0x1` and `127.0.0.0x1` as
+ * `127.0.0.1`. A host the parser rewrites is therefore not the host we
+ * checked, and it is refused.
  */
 export function normalizeDomain(raw: string): string | undefined {
   let host = raw.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "");
@@ -122,9 +142,17 @@ export function normalizeDomain(raw: string): string | undefined {
   const labels = host.split(".");
   if (labels.length < 2) return undefined;
   if (!labels.every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l))) return undefined;
-  // An all-digit last label is an IPv4 literal (or a mangled one); no real
-  // TLD is numeric.
-  if (/^\d+$/.test(labels[labels.length - 1]!)) return undefined;
+  // A numeric or hex last label is an IP literal in some spelling; no real
+  // TLD looks like either.
+  if (/^(0x[0-9a-f]*|\d+)$/i.test(labels[labels.length - 1]!)) return undefined;
+  if (host === "localhost" || host.endsWith(".localhost")) return undefined;
+  let parsed: string;
+  try {
+    parsed = new URL(`https://${host}`).hostname;
+  } catch {
+    return undefined;
+  }
+  if (parsed !== host || /^\d+(\.\d+){3}$/.test(parsed) || parsed.startsWith("[")) return undefined;
   return host;
 }
 
@@ -155,14 +183,14 @@ export function validateLogoFlags(
     const tokens = nameTokens(name);
     const span = mentionSpan(tokens, words, f.word, kept);
     if (!span) {
-      dropped.push({ name: f.name, reason: "wrong-word" });
+      dropped.push({ name, reason: "wrong-word" });
       continue;
     }
     const key = tokens.join(" ");
     let spanCovered = false;
     for (let i = span[0]; i <= span[1]; i++) if (covered.words.has(i)) spanCovered = true;
     if (spanCovered || coveredNames.has(key)) {
-      dropped.push({ name: f.name, reason: "in-library" });
+      dropped.push({ name, reason: "in-library" });
       continue;
     }
     const domain = f.domain === undefined ? undefined : normalizeDomain(f.domain);
