@@ -24,9 +24,11 @@ export const LogoFlagsSchema = z.object({
   names: z
     .array(
       z.object({
-        // R11: the same 1-80 bound as `LogoSuggestionSchema.name`, so an
-        // over-long name fails here rather than reach production.json.
-        name: z.string().max(80),
+        // Unbounded on purpose (final review Minor 1): a `.max(80)` here made
+        // ONE over-long name fail the whole parse and cost every other flag.
+        // R11's bound (`LogoSuggestionSchema.name`) bounds what is STORED, so
+        // `validateLogoFlags` enforces it per flag as a "too-long" drop.
+        name: z.string(),
         word: z.number().int().nonnegative(),
         domain: z.string().optional(),
       }),
@@ -39,7 +41,7 @@ export type LogoFlag = { id: string; name: string; word: number; domain?: string
 
 export type LogoFlagDrop = {
   name: string;
-  reason: "wrong-word" | "in-library" | "duplicate" | "over-cap";
+  reason: "too-long" | "wrong-word" | "in-library" | "duplicate" | "over-cap";
 };
 
 /**
@@ -51,6 +53,9 @@ export const LOGO_FINDER_PROMPT_VERSION = 1;
 
 /** logo-finder spec §Step 1, "Cap": at most 8 flags per video, earliest kept. */
 const MAX_FLAGS = 8;
+
+/** R11: the same bound as `LogoSuggestionSchema.name`, checked on the trimmed name. */
+const MAX_NAME_LENGTH = 80;
 
 /**
  * What this run's live overlay placements already put on screen (controller
@@ -159,6 +164,8 @@ export function normalizeDomain(raw: string): string | undefined {
 /**
  * The deterministic gate on the model's answer (logo-finder spec §Step 1,
  * Validation). In order:
+ * - too long (R11, final review Minor 1): the trimmed name is past 80
+ *   characters, so it could not be stored. Dropped alone, not the answer;
  * - wrong word: not a kept index whose word belongs to the name;
  * - in library (R9): the mention's span holds a covered word, or the name
  *   equals a covered entry's name or alias;
@@ -180,6 +187,10 @@ export function validateLogoFlags(
   const passed: (LogoFlag & { key: string })[] = [];
   for (const f of raw.names) {
     const name = f.name.trim();
+    if (name.length > MAX_NAME_LENGTH) {
+      dropped.push({ name, reason: "too-long" });
+      continue;
+    }
     const tokens = nameTokens(name);
     const span = mentionSpan(tokens, words, f.word, kept);
     if (!span) {

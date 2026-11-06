@@ -146,6 +146,31 @@ describe("validateLogoFlags", () => {
     ]);
   });
 
+  it("drops an over-long name as too-long and keeps the rest of the answer (final review Minor 1)", () => {
+    const long = `Firebase ${"x".repeat(80)}`;
+    const r = validateLogoFlags(
+      {
+        names: [
+          { name: long, word: 4 },
+          { name: "Google Gemini", word: 6 },
+        ],
+      },
+      words,
+      all,
+      none,
+    );
+    expect(r.flags.map((f) => f.name)).toEqual(["Google Gemini"]);
+    expect(r.dropped).toEqual([{ name: long, reason: "too-long" }]);
+  });
+
+  it("the 80-character bound applies to the trimmed name", () => {
+    const name = `  Firebase${"e".repeat(72)}  `;
+    const ws = [{ text: name.trim() }];
+    const r = validateLogoFlags({ names: [{ name, word: 0 }] }, ws, all, none);
+    expect(r.flags.map((f) => f.name)).toEqual([name.trim()]);
+    expect(r.dropped).toEqual([]);
+  });
+
   it("a bad domain keeps the flag without one", () => {
     const r = validateLogoFlags({ names: [{ name: "Firebase", word: 4, domain: "localhost" }] }, words, all, none);
     expect(r.flags[0]!.domain).toBeUndefined();
@@ -214,9 +239,8 @@ describe("generateLogoFlags", () => {
     expect(r).toEqual({ raw: { names: [] }, flags: [], dropped: [] });
   });
 
-  it("LogoFlagsSchema refuses a name past 80 characters (R11)", () => {
-    expect(LogoFlagsSchema.safeParse({ names: [{ name: "x".repeat(80), word: 0 }] }).success).toBe(true);
-    expect(LogoFlagsSchema.safeParse({ names: [{ name: "x".repeat(81), word: 0 }] }).success).toBe(false);
+  it("LogoFlagsSchema accepts a name past 80 characters; the validator drops it (final review Minor 1)", () => {
+    expect(LogoFlagsSchema.safeParse({ names: [{ name: "x".repeat(81), word: 0 }] }).success).toBe(true);
   });
 
   it("LogoFlagsSchema refuses a negative word", () => {
