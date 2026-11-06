@@ -28,7 +28,11 @@ export class MockProvider implements LlmProvider {
             req.schema.parse({ repairs: [] })
           : req.schemaName === "sfx_plan"
             ? this.sfxPlan(req.user, req.schema)
-            : this.sceneProps(req.user, req.schema, req.schemaName);
+            : req.schemaName === "logo_flags"
+              ? // No names: the offline path must exercise the finder call
+                // without inventing brands (and network fetches) for them.
+                req.schema.parse({ names: [] })
+              : this.sceneProps(req.user, req.schema, req.schemaName);
     // Estimated, and costing exactly nothing — but recorded, because the
     // offline path is first-class and "how big are the prompts this pipeline
     // sends" is worth answering without spending anything to find out.
