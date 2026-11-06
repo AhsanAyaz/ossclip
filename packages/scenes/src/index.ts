@@ -18,6 +18,7 @@ export * from "./watermark-layout";
 export * from "./cover-in-video";
 export * from "./sfx-track";
 export * from "./overlay-rect";
+export * from "./overlay-room";
 export * from "./punch-plan";
 export * from "./color-grade";
 export * from "./caption-visibility";

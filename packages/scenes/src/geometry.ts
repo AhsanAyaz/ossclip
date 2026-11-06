@@ -6,3 +6,4 @@
 export * from "./stage";
 export * from "./source-fit";
 export * from "./fit";
+export { OVERLAY_WIDTH_FRAC } from "./overlay-rect";

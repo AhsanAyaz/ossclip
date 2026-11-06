@@ -1,4 +1,5 @@
 import type { OverlayRect } from "@ossclip/core/browser";
+import { OVERLAY_WIDTH_FRAC, safeAreaFor } from "@ossclip/scenes/geometry";
 
 /**
  * Move/resize geometry for a library overlay's on-canvas box
@@ -117,4 +118,16 @@ export function resizeOverlayRect(
     w,
     h,
   };
+}
+
+/**
+ * Where "Place by hand" starts an overlay that has no room beside the captions
+ * (final review I3): the automatic box's size, centred, at the top of the safe
+ * area. That spot is a starting point for the user to drag from. It is not a
+ * guess at a free spot, because the automatic placement already found none.
+ */
+export function handPlacedStartRect(frame: { width: number; height: number }): OverlayRect {
+  const w = OVERLAY_WIDTH_FRAC;
+  const h = Math.min(1, (w * frame.width) / frame.height);
+  return { x: (1 - w) / 2, y: safeAreaFor(frame).top, w, h };
 }

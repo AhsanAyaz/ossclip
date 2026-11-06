@@ -171,7 +171,8 @@ describe("resolveOverlayCues", () => {
       { soundFile: pop },
     );
     expect(out.cues.map((c) => c.id)).toEqual(["gde@3", "quiet@6", "gde@9", "u1"]);
-    expect(out.soundCues).toEqual([{ soundFile: "sfx/pop.mp3", atSec: 6, gain: 0.9, durationSec: 0.3 }]);
+    // The pop names its overlay, so a logo with no room can take its pop with it (I3).
+    expect(out.soundCues).toEqual([{ soundFile: "sfx/pop.mp3", atSec: 6, gain: 0.9, durationSec: 0.3, overlayId: "gde@3" }]);
     expect(out.issues.map((i) => [i.placement, i.reason])).toEqual([["u1", "unknown sound"]]);
   });
 

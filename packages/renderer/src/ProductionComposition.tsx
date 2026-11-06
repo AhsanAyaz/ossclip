@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, captionBottomAtFor, captionTopAtFor, colorGradePropsFor, coverInVideoPropsFor, graphicRectAtFor, overlayCuesFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
+import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, colorGradePropsFor, coverInVideoPropsFor, overlayCuesFor, overlayGeometryFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionLine,
@@ -211,18 +211,17 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   // depend only on the props below, which are stable across a render's
   // frames.
   const captionsVisible = showCaptions(captionsHidden);
-  const overlayGeometry = React.useMemo(() => {
-    const opts = {
-      cues: sceneCues,
-      sourceTextRegions: sourceTextRegions ?? [],
-      frame: { width: settings.width, height: settings.height },
-    };
-    return {
-      captionTopAt: captionsVisible ? captionTopAtFor(captionLines, opts) : () => null,
-      captionBottomAt: captionsVisible ? captionBottomAtFor(captionLines, opts) : () => null,
-      graphicRectAt: graphicRectAtFor(sceneCues, opts.frame),
-    };
-  }, [captionsVisible, captionLines, sceneCues, sourceTextRegions, settings.width, settings.height]);
+  const overlayGeometry = React.useMemo(
+    () =>
+      overlayGeometryFor({
+        captionLines,
+        sceneCues,
+        sourceTextRegions: sourceTextRegions ?? [],
+        captionsHidden,
+        frame: { width: settings.width, height: settings.height },
+      }),
+    [captionsHidden, captionLines, sceneCues, sourceTextRegions, settings.width, settings.height],
+  );
   if (!videoFileName) {
     return (
       <AbsoluteFill

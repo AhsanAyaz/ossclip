@@ -221,9 +221,18 @@ export function overlayPreview(
     cues: resolved.cues.map((c) => ({ ...c, file: overlayMediaUrl(c.file) })),
     sounds: resolved.soundCues.flatMap((c, i) => {
       const soundId = idOfUrl.get(c.soundFile);
-      return soundId === undefined ? [] : [{ key: `overlay:${i}`, atSec: c.atSec, soundId, gain: c.gain, muted: false }];
+      return soundId === undefined ? [] : [{ key: overlaySoundKey(c.overlayId ?? String(i)), atSec: c.atSec, soundId, gain: c.gain, muted: false }];
     }),
   };
+}
+
+/**
+ * The preview pool's key for an overlay's pop. Keyed on the overlay's id, not
+ * its position in the list, so App can silence the pop of a logo that has no
+ * room to show (final review I3) without guessing which sound was whose.
+ */
+export function overlaySoundKey(overlayId: string): string {
+  return `overlay:${overlayId}`;
 }
 
 /**

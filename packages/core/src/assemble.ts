@@ -276,6 +276,13 @@ export interface SfxCue {
    * editor Player's shared audio tags (scenes' `SFX_FALLBACK_DURATION_SEC`).
    */
   durationSec?: number;
+  /**
+   * The overlay this sound is the pop of (`resolveOverlayCues`); absent on a
+   * planned effect. The link is what lets an overlay with no room to show be
+   * dropped TOGETHER with its pop (final review I3) instead of leaving a pop
+   * over nothing.
+   */
+  overlayId?: string;
 }
 
 /** Where staged sounds live inside the render's public dir. */

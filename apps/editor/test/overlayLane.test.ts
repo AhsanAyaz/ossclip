@@ -142,7 +142,8 @@ describe("overlayPreview", () => {
       identityMap(),
       SOUNDS,
     );
-    expect(out.sounds).toEqual([{ key: "overlay:0", atSec: 2, soundId: "pop", gain: 0.8, muted: false }]);
+    // Keyed on the overlay id, so App can silence the pop of a logo with no room (I3).
+    expect(out.sounds).toEqual([{ key: "overlay:gde@2", atSec: 2, soundId: "pop", gain: 0.8, muted: false }]);
   });
 
   it("plays silent (no marker) when the sound is not installed", () => {

@@ -20,7 +20,7 @@ import {
  */
 
 /** The overlay box's width: "about a third of the frame" (spec). */
-const OVERLAY_WIDTH_FRAC = 1 / 3;
+export const OVERLAY_WIDTH_FRAC = 1 / 3;
 /**
  * The "small gap" between the overlay and whatever it sits against — the
  * caption block's top, or a graphic's edge — as a fraction of frame height.

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { OverlayRectSchema } from "@ossclip/core";
+import { safeAreaFor } from "@ossclip/scenes/geometry";
 import {
   canvasBoxFor,
+  handPlacedStartRect,
   clampOverlayRect,
   fracToPage,
   moveOverlayRect,
@@ -66,5 +69,17 @@ describe("overlay box geometry (overlay-transform)", () => {
 
   it("clamp pulls an oversized or off-frame box back in", () => {
     close(clampOverlayRect({ x: -0.1, y: 0.95, w: 1.2, h: 0.1 }), { x: 0, y: 0.9, w: 1, h: 0.1 });
+  });
+});
+
+describe("handPlacedStartRect", () => {
+  it("is the automatic box's size, centred at the top of the safe area, and passes the rect schema", () => {
+    const frame = { width: 1080, height: 1920 };
+    const r = handPlacedStartRect(frame);
+    expect(r.w).toBeCloseTo(1 / 3);
+    expect(r.h * frame.height).toBeCloseTo(r.w * frame.width); // square in pixels
+    expect(r.x + r.w / 2).toBeCloseTo(0.5);
+    expect(r.y).toBe(safeAreaFor(frame).top);
+    expect(OverlayRectSchema.safeParse(r).success).toBe(true);
   });
 });

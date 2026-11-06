@@ -27,6 +27,7 @@ import {
   type OverlayMarker,
   type OverlayTrayRequest,
 } from "./overlayLane";
+import { handPlacedStartRect } from "./overlayBox";
 import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
 /** What planned this video and what it cost (R21 §104) — `/api/usage`'s
@@ -143,6 +144,12 @@ interface InspectorProps {
    * three selection namespaces exclusive.
    */
   overlayMarker?: OverlayMarker | null;
+  /**
+   * The selected overlay has no room beside the captions, so the render drops
+   * it and its pop (final review I3). The panel says so and offers to place it
+   * by hand, since a hand-placed box dodges nothing.
+   */
+  overlayNoRoom?: boolean;
   /** Opens the tray (Task 8) — here, in swap mode for the selected chip. */
   onOpenOverlayTray?: (req: OverlayTrayRequest) => void;
   /**
@@ -621,6 +628,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   onClockRefused = (): void => {},
   sfxMarker = null,
   overlayMarker = null,
+  overlayNoRoom = false,
   onOpenOverlayTray,
   onAddOverlayAtPlayhead,
   sfxLibrary = [],
@@ -874,6 +882,23 @@ export const Inspector: React.FC<InspectorProps> = ({
               {m.placedByHand ? "placed by hand" : "drag it on the video to move or resize"}
             </span>
           </div>
+          {overlayNoRoom && !m.placedByHand && (
+            <div data-testid="overlay-no-room" style={{ ...row, flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, color: "#E8B04B" }}>
+                ⚠ No room beside the captions here, so it won't render (and won't pop).
+              </span>
+              <button
+                data-testid="overlay-place-by-hand"
+                style={button}
+                onClick={() => {
+                  blurActive();
+                  edits.patchOverlay(m.id, { rect: handPlacedStartRect(frame) });
+                }}
+              >
+                Place by hand
+              </button>
+            </div>
+          )}
           <div style={{ ...row, flexDirection: "row", alignItems: "center", gap: 8 }}>
             <input
               type="checkbox"

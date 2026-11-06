@@ -288,6 +288,7 @@ import {
 import { remoteWhisperHost, resolveWhisperBackend } from "./whisper-backend";
 import { makeCancelSignal, renderCover, renderProduction } from "@ossclip/renderer";
 import type { RenderPhase } from "@ossclip/renderer";
+import { overlayGeometryFor, overlaysWithoutRoom } from "@ossclip/scenes";
 import {
   DEFAULT_FACE,
   coverTextRect,
@@ -295,6 +296,9 @@ import {
   regionsDuring,
   routeAroundSourceText,
 } from "@ossclip/scenes/geometry";
+
+/** The frame rate every production renders at; the overlay room check samples at it too. */
+const RENDER_FPS = 30;
 
 /**
  * What a finished run tells its caller. The workdir is what the post-produce
@@ -4615,6 +4619,49 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     for (const d of resolved.dropped) console.log(`  ⚠ sfx: ${d.issue}`);
   }
 
+  // The caption lines are built BEFORE the overlays (final review I3): an
+  // overlay with no room beside them is dropped with its pop, and that ⚠
+  // has to reach report.txt, which is written below.
+  const baseCaptionLines = buildCaptionLines(transcript, map, {
+    // GRAPHIC cues only: a plain take is presentationally a gap, and letting
+    // the fill's derived boundaries re-split caption lines would change
+    // caption output for zero visual reason (PLAN Task A4.4).
+    breakpoints: graphicCues.flatMap((c) => [c.startSec, c.endSec]),
+    // Orientation-dependent packing (captionPackingFor has the budget math):
+    // portrait gets the core defaults verbatim, landscape doubles them.
+    ...captionPackingFor(landscape),
+  });
+  // §137 (Task 6 review, Critical 1): the caption half of a run — migrate the
+  // doc's keys, apply what applies, and account for the rest — is one pure
+  // pass in `caption-report.ts`, and this is its I/O.
+  //
+  // MIGRATION RUNS HERE, not only in the editor. The editor's is in memory and
+  // `edits.load` leaves the doc CLEAN, so `onRender` (which saves only when
+  // dirty) sends a user who opened an old project, saw every retype come back
+  // on screen, and clicked Render straight into this function with the
+  // untouched legacy doc — and `applyCaptionEdits` matched nothing, so the
+  // render shipped without a single retype after showing a state strictly more
+  // convincing than the truth. None of the reasoning that keeps this call out
+  // of `edit.ts` applies: `buildCaptionLines` just stamped a real `srcStart`
+  // on every word above (`captions.ts:128`), so there is nothing to backfill
+  // and no repair rule to duplicate.
+  //
+  // THE MIGRATED DOC IS WRITTEN BACK — the decision, stated: through the one
+  // sanctioned `overrides.json` write further down, with its `.bak` and atomic
+  // rename, never a second write here. A legacy key's resolvability DECAYS (it
+  // is found by the word it names, so the next re-plan that rewrites that word
+  // loses it for good), and this is the only durable repair in the product —
+  // the editor's evaporates, as Critical 1 showed. The edits it could NOT
+  // place stay in the doc regardless (`captionEditsToKeep`): they are printed
+  // by name below, and a run that cannot anchor one today is not permission to
+  // delete it — the next run, against a different cut, may place it (final
+  // review, Critical 1).
+  const captionWork = reconcileCaptionEdits(overrideDoc, baseCaptionLines, map);
+  overrideDoc = captionWork.doc;
+  const captionLines = captionWork.lines;
+  const captionKeysReanchored = captionWork.reanchored;
+  for (const line of captionWork.log) console.log(line);
+
   // ---- Overlays: library matches → placements → cues (overlay-library spec) -
   // HERE, with the FINAL map and after the sfx resolve, for three reasons:
   // matching runs on the KEPT words (spec §Matching) and the user's own cuts
@@ -4730,10 +4777,34 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       exists: (rel) => stage.staged.has(rel),
       soundFile: overlaySoundFile,
     });
-    overlayCues = resolved.cues;
-    overlaySoundCues = resolved.soundCues;
     overlayIssues = resolved.issues;
     for (const i of overlayIssues) overlayWarn(i.issue);
+    // No room beside the captions (final review I3): the logo would render as
+    // a sliver or not at all while its pop still played. Measured with the
+    // SAME geometry the composition places it with, so this cannot drop one
+    // the render would have shown.
+    const noRoom = overlaysWithoutRoom(
+      resolved.cues,
+      overlayGeometryFor({
+        captionLines,
+        sceneCues,
+        sourceTextRegions: textRegions,
+        captionsHidden: resolveCaptionsHidden(opts.captions, overrideDoc.captionsHidden),
+        frame,
+      }),
+      frame,
+      RENDER_FPS,
+    );
+    for (const c of resolved.cues) {
+      if (!noRoom.has(c.id)) continue;
+      const name = appliedOverlays.entries.find((e) => c.file === overlayStagedFile(e))?.name ?? c.id;
+      overlayWarn(
+        `"${name}" at ${c.atSec.toFixed(2)}s dropped with its pop — no room beside the captions ` +
+          `(move it by hand in the editor, or move the caption)`,
+      );
+    }
+    overlayCues = resolved.cues.filter((c) => !noRoom.has(c.id));
+    overlaySoundCues = resolved.soundCues.filter((c) => c.overlayId === undefined || !noRoom.has(c.overlayId));
     // Spacing against planned sfx (spec §Resolve): the pop wins, and each
     // casualty is an ordinary sfx drop with reason "overlay", so the
     // accounting line names it like any other (`formatSfxAccounting`).
@@ -4814,7 +4885,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // what the file on disk actually is, and it is read downstream by the
     // mezzanine's scale decision, the NLE exports and the editor — all of
     // which would otherwise describe a 1080p file that isn't there.
-    render: { width: output.width, height: output.height, fps: 30 },
+    render: { width: output.width, height: output.height, fps: RENDER_FPS },
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
@@ -4944,45 +5015,6 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   console.log(report);
   console.log("");
 
-  const baseCaptionLines = buildCaptionLines(transcript, map, {
-    // GRAPHIC cues only: a plain take is presentationally a gap, and letting
-    // the fill's derived boundaries re-split caption lines would change
-    // caption output for zero visual reason (PLAN Task A4.4).
-    breakpoints: graphicCues.flatMap((c) => [c.startSec, c.endSec]),
-    // Orientation-dependent packing (captionPackingFor has the budget math):
-    // portrait gets the core defaults verbatim, landscape doubles them.
-    ...captionPackingFor(landscape),
-  });
-  // §137 (Task 6 review, Critical 1): the caption half of a run — migrate the
-  // doc's keys, apply what applies, and account for the rest — is one pure
-  // pass in `caption-report.ts`, and this is its I/O.
-  //
-  // MIGRATION RUNS HERE, not only in the editor. The editor's is in memory and
-  // `edits.load` leaves the doc CLEAN, so `onRender` (which saves only when
-  // dirty) sends a user who opened an old project, saw every retype come back
-  // on screen, and clicked Render straight into this function with the
-  // untouched legacy doc — and `applyCaptionEdits` matched nothing, so the
-  // render shipped without a single retype after showing a state strictly more
-  // convincing than the truth. None of the reasoning that keeps this call out
-  // of `edit.ts` applies: `buildCaptionLines` just stamped a real `srcStart`
-  // on every word above (`captions.ts:128`), so there is nothing to backfill
-  // and no repair rule to duplicate.
-  //
-  // THE MIGRATED DOC IS WRITTEN BACK — the decision, stated: through the one
-  // sanctioned `overrides.json` write further down, with its `.bak` and atomic
-  // rename, never a second write here. A legacy key's resolvability DECAYS (it
-  // is found by the word it names, so the next re-plan that rewrites that word
-  // loses it for good), and this is the only durable repair in the product —
-  // the editor's evaporates, as Critical 1 showed. The edits it could NOT
-  // place stay in the doc regardless (`captionEditsToKeep`): they are printed
-  // by name below, and a run that cannot anchor one today is not permission to
-  // delete it — the next run, against a different cut, may place it (final
-  // review, Critical 1).
-  const captionWork = reconcileCaptionEdits(overrideDoc, baseCaptionLines, map);
-  overrideDoc = captionWork.doc;
-  const captionLines = captionWork.lines;
-  const captionKeysReanchored = captionWork.reanchored;
-  for (const line of captionWork.log) console.log(line);
 
   // Const re-binding of the accepted plan so its narrowing survives into the
   // `framingTimeline` map closure below — `framingPlan` is a `let`, and TS

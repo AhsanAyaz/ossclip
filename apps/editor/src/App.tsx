@@ -3,6 +3,7 @@ import { Player, type PlayerRef } from "@remotion/player";
 import { transportReduce, type TransportKey } from "./transport";
 import type { AnyZodObject } from "remotion";
 import { ProductionComposition, safeAreaFor, type ProductionCompProps } from "@ossclip/renderer/composition";
+import { overlayGeometryFor, overlaysWithoutRoom } from "@ossclip/scenes";
 import {
   applyCaptionEdits,
   applyCaptionRangeEdits,
@@ -58,6 +59,7 @@ import {
   overlayLaneMarkers,
   overlayPreview,
   overlaySeekSec,
+  overlaySoundKey,
   type OverlayPlan,
   type OverlayTrayRequest,
 } from "./overlayLane";
@@ -1690,16 +1692,39 @@ export const App: React.FC = () => {
   // reasoning, except here the editor has a working replacement. Absent when
   // empty so a project with no overlays hands the Player the props it got
   // before this feature existed.
+  const overlayCuesLive = useMemo(() => {
+    const p = overlayRectPreview;
+    return p ? overlayLive.cues.map((c) => (c.id === p.id ? { ...c, rect: p.rect } : c)) : overlayLive.cues;
+  }, [overlayLive, overlayRectPreview]);
+  // The overlays produce will drop for want of room beside the captions
+  // (final review I3), measured with the composition's own geometry, so the
+  // preview hides the same logos and silences the same pops the render will.
+  const overlayNoRoom = useMemo(() => {
+    if (live === null || overlayCuesLive.length === 0) return new Set<string>();
+    const frame = { width: live.settings.width, height: live.settings.height };
+    const geometry = overlayGeometryFor({
+      captionLines: live.captionLines,
+      sceneCues: live.sceneCues,
+      sourceTextRegions: live.sourceTextRegions ?? [],
+      captionsHidden: live.captionsHidden,
+      frame,
+    });
+    return overlaysWithoutRoom(overlayCuesLive, geometry, frame, live.settings.fps);
+  }, [live, overlayCuesLive]);
+  const overlaySoundsLive = useMemo(
+    () =>
+      overlayNoRoom.size === 0
+        ? overlayLive.sounds
+        : overlayLive.sounds.filter((s) => ![...overlayNoRoom].some((id) => s.key === overlaySoundKey(id))),
+    [overlayLive, overlayNoRoom],
+  );
   const playerProps = useMemo<PlayerProductionProps | null>(() => {
     if (live === null) return null;
     const { overlayCues: _baked, ...rest } = live;
-    if (overlayLive.cues.length === 0) return rest;
-    const p = overlayRectPreview;
-    const overlayCues = p
-      ? overlayLive.cues.map((c) => (c.id === p.id ? { ...c, rect: p.rect } : c))
-      : overlayLive.cues;
+    const overlayCues = overlayCuesLive.filter((c) => !overlayNoRoom.has(c.id));
+    if (overlayCues.length === 0) return rest;
     return { ...rest, overlayCues };
-  }, [live, overlayLive, overlayRectPreview]);
+  }, [live, overlayCuesLive, overlayNoRoom]);
   /**
    * A lane click on an object (a sound diamond, an overlay chip) selects it
    * AND parks the playhead on it (overlay-transform field request): an
@@ -2957,6 +2982,7 @@ export const App: React.FC = () => {
             // because produce would drop what it added (the prop's doc).
             sfxMarker={selectedSfx}
             overlayMarker={selectedOverlay}
+            overlayNoRoom={selectedOverlay !== null && overlayNoRoom.has(selectedOverlay.id)}
             onOpenOverlayTray={openOverlayTray}
             onAddOverlayAtPlayhead={
               overlayPlan.words === null
@@ -3035,7 +3061,7 @@ export const App: React.FC = () => {
         overlayWords={overlayWords}
         overlaySelected={overlaySelection}
         onSelectOverlay={selectOverlayAndSeek}
-        overlaySounds={overlayLive.sounds}
+        overlaySounds={overlaySoundsLive}
         onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
         onFindOverlayMatches={overlayPlan.words === null ? undefined : findOverlayMatches}
         toSourceSec={(outSec) => {

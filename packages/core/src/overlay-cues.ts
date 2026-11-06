@@ -185,6 +185,7 @@ export function resolveOverlayCues(
     soundCues.push({
       soundFile: sound.soundFile,
       atSec,
+      overlayId: p.id,
       gain: sound.gain,
       ...(sound.durationSec === undefined ? {} : { durationSec: sound.durationSec }),
     });
