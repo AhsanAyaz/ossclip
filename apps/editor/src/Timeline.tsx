@@ -1436,12 +1436,13 @@ export const Timeline: React.FC<TimelineProps> = ({
                     }}
                     // Final review Minor 5: role="button" alone left keyboard
                     // users unable to reach or open the chip. Focusable, and
-                    // Enter/Space open it exactly as a click does. Kept from
-                    // bubbling so Space does not also reach Overlay.tsx's
-                    // window-level Space-toggles-playback handler.
+                    // Enter opens it exactly as a click does. Enter only, not
+                    // Space: a focused non-text control yields Space to
+                    // playback (R16 §70, Overlay.tsx), and the chip must not
+                    // be the one control that swallows it.
                     tabIndex={0}
                     onKeyDown={(e) => {
-                      if (e.key !== "Enter" && e.key !== " ") return;
+                      if (e.key !== "Enter") return;
                       e.preventDefault();
                       e.stopPropagation();
                       const r = e.currentTarget.getBoundingClientRect();
