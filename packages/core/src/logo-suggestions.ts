@@ -1,7 +1,8 @@
 /**
  * Logo suggestions (logo-finder spec §Stored shape): the stable id a flagged
- * name is stored under, and which suggestion chips the editor's overlay lane
- * should draw.
+ * name is stored under, which suggestion chips the editor's overlay lane
+ * should draw, and the mention walk both those chips and produce's
+ * validator use.
  *
  * Pure and browser-safe on purpose: the editor computes chip visibility in
  * the browser, so the only runtime import is ./overlay-match (which has no
@@ -47,9 +48,9 @@ export function suggestionIdFor(name: string): string {
  * optional with no default): nothing is skipped or picked.
  *
  * When the suggestion's word was cut, the chip falls FORWARD to the next
- * kept contiguous mention of the name, the resolver's fall-forward posture
- * (`resolveOverlayCues`); with no later mention it hides rather than sit on
- * a word the viewer never hears.
+ * kept mention of the name (`mentionSpan`, suffix-anchored per R10), the
+ * resolver's fall-forward posture (`resolveOverlayCues`); with no later
+ * mention it hides rather than sit on a word the viewer never hears.
  */
 export function visibleSuggestions(
   suggestions: readonly LogoSuggestion[],
@@ -72,14 +73,74 @@ export function visibleSuggestions(
   return out;
 }
 
+/** The matcher's tokenizer, lowercased: the spec compares names case-insensitively. */
+export function nameTokens(name: string): string[] {
+  return name
+    .split(/\s+/)
+    .map(normalizeMatchToken)
+    .filter(Boolean)
+    .map((t) => t.toLowerCase());
+}
+
 /**
- * The first kept contiguous mention of `name` strictly after `after`, using
- * the matcher's tokenizer (`normalizeMatchToken`) so edge punctuation and a
- * possessive are forgiven the same way a library match forgives them.
- * Punctuation-only words drop out of the kept sequence, as in
- * overlay-match's `prepareSpoken`. Compared case-insensitively: the LLM
- * already chose this name at this spot, so the short-name exact-case rule
- * that guards AUTO-matching does not apply here.
+ * The words a flag's mention covers, as an inclusive [first, last] range, or
+ * null when `word` is not a right word (logo-finder spec §Step 1,
+ * Validation; ruling R10). `word` must be kept, and the spoken words from it
+ * must continue the name to its LAST token: for some k with
+ * `tokens[k] === spoken[word]`, the following kept words consume
+ * `tokens[k..end]` contiguously. A mention may therefore start mid-name (a
+ * lone "Gemini" for "Google Gemini"), but it may not stop short: "on" alone
+ * is not "Ruby on Rails". Every matching k is tried, since a name can repeat
+ * a token. Cut and punctuation-only words are skipped, as overlay-match's
+ * `prepareSpoken` does.
+ *
+ * Accepted (R10): the last token alone passes, so a lone "Code" passes for
+ * "Visual Studio Code". The LLM chose the name at this word, and the
+ * alternative (requiring the first token) would refuse every legitimate
+ * short form a speaker uses.
+ *
+ * Lives here, not in producer/logo-finder.ts, so the chip's fall-forward
+ * (`nextKeptMention`, browser-side) and produce's validator share ONE walk
+ * (final review Minor 3): this module must stay browser-safe, and the
+ * finder imports node:crypto.
+ */
+export function mentionSpan(
+  tokens: readonly string[],
+  words: readonly SuggestionWord[],
+  word: number,
+  kept: (i: number) => boolean,
+): [number, number] | null {
+  if (word >= words.length || !kept(word)) return null;
+  const at = normalizeMatchToken(words[word]!.text).toLowerCase();
+  if (at === "") return null;
+  // The kept, non-punctuation words after `word`, as far as the longest
+  // possible walk (tokens.length - 1) could need.
+  const after: { i: number; t: string }[] = [];
+  for (let i = word + 1; i < words.length && after.length < tokens.length - 1; i++) {
+    if (!kept(i)) continue;
+    const t = normalizeMatchToken(words[i]!.text).toLowerCase();
+    if (t) after.push({ i, t });
+  }
+  for (let k = 0; k < tokens.length; k++) {
+    if (tokens[k] !== at) continue;
+    const rest = tokens.length - 1 - k;
+    if (rest > after.length) continue;
+    if (after.slice(0, rest).every((w, n) => w.t === tokens[k + 1 + n])) {
+      return [word, rest === 0 ? word : after[rest - 1]!.i];
+    }
+  }
+  return null;
+}
+
+/**
+ * The first word strictly after `after` where a kept mention of `name`
+ * starts, by `mentionSpan`: the same rule `validateLogoFlags` used to accept
+ * the flag. Final review Minor 3: this used to demand the full name's tokens
+ * in a row, so a flag R10 let sit on a suffix ("Gemini" for "Google Gemini")
+ * hid its chip once cut, even with later lone "Gemini" mentions kept.
+ * Compared case-insensitively: the LLM already chose this name at this spot,
+ * so the short-name exact-case rule that guards AUTO-matching does not apply
+ * here.
  */
 function nextKeptMention(
   words: readonly SuggestionWord[],
@@ -87,19 +148,10 @@ function nextKeptMention(
   after: number,
   kept: (i: number) => boolean,
 ): number | null {
-  const tokens = name.split(/\s+/).map(normalizeMatchToken).filter(Boolean).map((t) => t.toLowerCase());
+  const tokens = nameTokens(name);
   if (tokens.length === 0) return null;
-  const index: number[] = [];
-  const spoken: string[] = [];
   for (let i = after + 1; i < words.length; i++) {
-    if (!kept(i)) continue;
-    const token = normalizeMatchToken(words[i]!.text).toLowerCase();
-    if (!token) continue;
-    index.push(i);
-    spoken.push(token);
-  }
-  for (let p = 0; p + tokens.length <= spoken.length; p++) {
-    if (tokens.every((t, k) => spoken[p + k] === t)) return index[p]!;
+    if (mentionSpan(tokens, words, i, kept) !== null) return i;
   }
   return null;
 }

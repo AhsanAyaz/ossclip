@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod/v4";
-import { suggestionIdFor } from "../logo-suggestions";
-import { normalizeMatchToken } from "../overlay-match";
+import { mentionSpan, nameTokens, suggestionIdFor } from "../logo-suggestions";
 import type { LlmProvider } from "./provider";
 
 /**
@@ -72,60 +71,6 @@ const MAX_NAME_LENGTH = 80;
 export type LogoFlagCover = { words: ReadonlySet<number>; names: readonly string[] };
 
 type FinderWord = { readonly text: string };
-
-/** The matcher's tokenizer, lowercased: the spec compares names case-insensitively. */
-function nameTokens(name: string): string[] {
-  return name
-    .split(/\s+/)
-    .map(normalizeMatchToken)
-    .filter(Boolean)
-    .map((t) => t.toLowerCase());
-}
-
-/**
- * The words a flag's mention covers, as an inclusive [first, last] range, or
- * null when `word` is not a right word (logo-finder spec §Step 1,
- * Validation; ruling R10). `word` must be kept, and the spoken words from it
- * must continue the name to its LAST token: for some k with
- * `tokens[k] === spoken[word]`, the following kept words consume
- * `tokens[k..end]` contiguously. A mention may therefore start mid-name (a
- * lone "Gemini" for "Google Gemini"), but it may not stop short: "on" alone
- * is not "Ruby on Rails". Every matching k is tried, since a name can repeat
- * a token. Cut and punctuation-only words are skipped, as overlay-match's
- * `prepareSpoken` does.
- *
- * Accepted (R10): the last token alone passes, so a lone "Code" passes for
- * "Visual Studio Code". The LLM chose the name at this word, and the
- * alternative (requiring the first token) would refuse every legitimate
- * short form a speaker uses.
- */
-function mentionSpan(
-  tokens: readonly string[],
-  words: readonly FinderWord[],
-  word: number,
-  kept: (i: number) => boolean,
-): [number, number] | null {
-  if (word >= words.length || !kept(word)) return null;
-  const at = normalizeMatchToken(words[word]!.text).toLowerCase();
-  if (at === "") return null;
-  // The kept, non-punctuation words after `word`, as far as the longest
-  // possible walk (tokens.length - 1) could need.
-  const after: { i: number; t: string }[] = [];
-  for (let i = word + 1; i < words.length && after.length < tokens.length - 1; i++) {
-    if (!kept(i)) continue;
-    const t = normalizeMatchToken(words[i]!.text).toLowerCase();
-    if (t) after.push({ i, t });
-  }
-  for (let k = 0; k < tokens.length; k++) {
-    if (tokens[k] !== at) continue;
-    const rest = tokens.length - 1 - k;
-    if (rest > after.length) continue;
-    if (after.slice(0, rest).every((w, n) => w.t === tokens[k + 1 + n])) {
-      return [word, rest === 0 ? word : after[rest - 1]!.i];
-    }
-  }
-  return null;
-}
 
 /**
  * The official site's bare host, or undefined (logo-finder spec §Step 1,

@@ -52,12 +52,31 @@ describe("visibleSuggestions", () => {
 
   it("fall-forward matches a multi-word name contiguously over kept words, forgiving edge punctuation", () => {
     const w = say(["Google", "Gemini", "and", "Google", "is", "Gemini", "then", "google", "gemini's,"]);
-    const out = visibleSuggestions([sug("google-gemini", 0, "Google Gemini")], undefined, w, (i) => i !== 0);
-    // 3–5 is broken by "is"; 7–8 is the next contiguous mention.
-    expect(out.map((s) => s.atWord)).toEqual([7]);
+    const gemini = [sug("google-gemini", 0, "Google Gemini")];
+    // The whole first mention cut. "Google is" stops short of the name's last
+    // token, so 3 is not a mention; the lone "Gemini" at 5 is (R10).
+    expect(visibleSuggestions(gemini, undefined, w, (i) => i > 1).map((s) => s.atWord)).toEqual([5]);
     // A cut word between two kept tokens makes them contiguous in the kept sequence.
-    const out2 = visibleSuggestions([sug("google-gemini", 0, "Google Gemini")], undefined, w, (i) => i !== 0 && i !== 4);
-    expect(out2.map((s) => s.atWord)).toEqual([3]);
+    expect(visibleSuggestions(gemini, undefined, w, (i) => i > 1 && i !== 4).map((s) => s.atWord)).toEqual([3]);
+    // Edge punctuation and a possessive are forgiven: "google gemini's,".
+    expect(visibleSuggestions(gemini, undefined, w, (i) => i > 6).map((s) => s.atWord)).toEqual([7]);
+  });
+
+  it("fall-forward accepts a suffix-anchored mention, as validateLogoFlags does (R10, final review Minor 3)", () => {
+    // The flag sat on "Google"; that word is cut, and later the speaker says
+    // a lone "Gemini". Before, fall-forward wanted "Google Gemini" in a row
+    // and hid the chip.
+    const w = say(["Google", "Gemini", "is", "fast", "and", "Gemini", "is", "cheap"]);
+    const gemini = [sug("google-gemini", 0, "Google Gemini")];
+    expect(visibleSuggestions(gemini, undefined, w, (i) => i !== 0 && i !== 1).map((s) => s.atWord)).toEqual([5]);
+    // "Code" for "Visual Studio Code", and "Studio Code" from mid-name.
+    const v = say(["Visual", "Studio", "Code", "then", "Code", "and", "Studio", "Code"]);
+    const vsc = [sug("visual-studio-code", 0, "Visual Studio Code")];
+    expect(visibleSuggestions(vsc, undefined, v, (i) => i > 2).map((s) => s.atWord)).toEqual([4]);
+    expect(visibleSuggestions(vsc, undefined, v, (i) => i > 4).map((s) => s.atWord)).toEqual([6]);
+    // A mid-name word that stops short is still not a mention: "Visual" alone.
+    const short = say(["Visual", "Studio", "Code", "and", "Visual", "again"]);
+    expect(visibleSuggestions(vsc, undefined, short, (i) => i > 2)).toEqual([]);
   });
 });
 
