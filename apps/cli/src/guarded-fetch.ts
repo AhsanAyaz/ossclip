@@ -35,27 +35,85 @@ export type LookupFn = (
   callback: (err: NodeJS.ErrnoException | null, addresses: { address: string; family?: number }[]) => void,
 ) => void;
 
-// logo-finder spec §Step 2's list, verbatim. `BlockList` also matches the
-// IPv4-mapped IPv6 spelling (`::ffff:127.0.0.1`, `::ffff:7f00:1`) of every
-// IPv4 rule, which is the same host by another name.
-const blocked = new BlockList();
-blocked.addSubnet("127.0.0.0", 8, "ipv4"); // loopback
-blocked.addSubnet("10.0.0.0", 8, "ipv4"); // RFC 1918
-blocked.addSubnet("172.16.0.0", 12, "ipv4");
-blocked.addSubnet("192.168.0.0", 16, "ipv4");
-blocked.addSubnet("169.254.0.0", 16, "ipv4"); // link-local, incl. cloud metadata
-blocked.addSubnet("0.0.0.0", 8, "ipv4"); // "this network"; 0.0.0.0 reaches localhost on Linux/macOS
-blocked.addSubnet("100.64.0.0", 10, "ipv4"); // CGNAT, also Tailscale's range
-blocked.addAddress("::", "ipv6");
-blocked.addAddress("::1", "ipv6");
-blocked.addSubnet("fc00::", 7, "ipv6"); // unique local
-blocked.addSubnet("fe80::", 10, "ipv6"); // link-local
+// logo-finder spec §Step 2's list, plus ruling R12's additions (multicast,
+// reserved, benchmarking, IETF protocol assignments). An IPv6 spelling that
+// embeds an IPv4 is unwrapped and checked against this list below, so it is
+// the one place an IPv4 range is named.
+const blocked4 = new BlockList();
+blocked4.addSubnet("127.0.0.0", 8, "ipv4"); // loopback
+blocked4.addSubnet("10.0.0.0", 8, "ipv4"); // RFC 1918
+blocked4.addSubnet("172.16.0.0", 12, "ipv4");
+blocked4.addSubnet("192.168.0.0", 16, "ipv4");
+blocked4.addSubnet("169.254.0.0", 16, "ipv4"); // link-local, incl. cloud metadata
+blocked4.addSubnet("0.0.0.0", 8, "ipv4"); // "this network"; 0.0.0.0 reaches localhost on Linux/macOS
+blocked4.addSubnet("100.64.0.0", 10, "ipv4"); // CGNAT, also Tailscale's range
+blocked4.addSubnet("224.0.0.0", 4, "ipv4"); // multicast (R12)
+blocked4.addSubnet("240.0.0.0", 4, "ipv4"); // reserved, incl. 255.255.255.255 broadcast (R12)
+blocked4.addSubnet("198.18.0.0", 15, "ipv4"); // benchmarking (R12)
+blocked4.addSubnet("192.0.0.0", 24, "ipv4"); // IETF protocol assignments (R12)
+
+const blocked6 = new BlockList();
+blocked6.addSubnet("fc00::", 7, "ipv6"); // unique local
+blocked6.addSubnet("fe80::", 10, "ipv6"); // link-local
+blocked6.addSubnet("ff00::", 8, "ipv6"); // multicast (R12)
+
+/** The eight 16-bit groups of a valid IPv6 address (zone id already stripped). */
+function hextets(ip: string): number[] {
+  let s = ip;
+  const tail: number[] = [];
+  // A trailing dotted quad (`::ffff:127.0.0.1`) is the last two groups.
+  const quad = /^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(s);
+  if (quad) {
+    const [a, b, c, d] = quad.slice(2).map(Number) as [number, number, number, number];
+    tail.push((a << 8) | b, (c << 8) | d);
+    s = quad[1]!.endsWith("::") ? quad[1]! : quad[1]!.slice(0, -1);
+  }
+  const groups = (part: string): number[] => (part === "" ? [] : part.split(":").map((g) => parseInt(g, 16)));
+  const [head, rest] = s.split("::") as [string, string | undefined];
+  const left = groups(head);
+  const right = [...(rest === undefined ? [] : groups(rest)), ...tail];
+  if (rest === undefined) return [...left, ...right];
+  return [...left, ...new Array<number>(8 - left.length - right.length).fill(0), ...right];
+}
+
+const v4of = (hi: number, lo: number): string => `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+const zero = (h: number[], from: number, to: number): boolean => h.slice(from, to).every((g) => g === 0);
+
+/**
+ * The IPv4 an IPv6 address stands for, when it is one of the spellings that
+ * reach an IPv4 host (R12): IPv4-compatible `::/96`, IPv4-mapped
+ * `::ffff:0:0/96`, SIIT-translated `::ffff:0:0:0/96`, 6to4 `2002::/16`
+ * (bits 16–48). Without this, `::ffff:7f00:1` or `2002:7f00:1::` would be a
+ * second name for 127.0.0.1 that no IPv4 rule sees.
+ */
+function embeddedV4(h: number[]): string | undefined {
+  if (zero(h, 0, 6)) return v4of(h[6]!, h[7]!);
+  if (zero(h, 0, 5) && h[5] === 0xffff) return v4of(h[6]!, h[7]!);
+  if (zero(h, 0, 4) && h[4] === 0xffff && h[5] === 0) return v4of(h[6]!, h[7]!);
+  if (h[0] === 0x2002) return v4of(h[1]!, h[2]!);
+  return undefined;
+}
+
+/**
+ * NAT64 `64:ff9b::/96` and the local-use `64:ff9b:1::/48` are refused
+ * whatever IPv4 they embed (R12). On a NAT64 network such an address is a
+ * hop through the gateway, a box on the local network, so even a public
+ * embedded IPv4 is reached by way of local infrastructure.
+ */
+const isNat64 = (h: number[]): boolean =>
+  h[0] === 0x64 && h[1] === 0xff9b && (h[2] === 1 || zero(h, 2, 6));
 
 /** True only for a well-formed IP outside every blocked range. */
 export function isPublicAddress(ip: string): boolean {
   const v = isIP(ip);
   if (v === 0) return false;
-  return !blocked.check(ip, v === 4 ? "ipv4" : "ipv6");
+  if (v === 4) return !blocked4.check(ip, "ipv4");
+  const h = hextets(ip.replace(/%.*$/, ""));
+  if (isNat64(h)) return false;
+  const v4 = embeddedV4(h);
+  // `::` and `::1` land here as IPv4-compatible 0.0.0.0 and 0.0.0.1, both in 0/8.
+  if (v4 !== undefined) return !blocked4.check(v4, "ipv4");
+  return !blocked6.check(ip.replace(/%.*$/, ""), "ipv6");
 }
 
 const refusal = (host: string, how: string): Error => new Error(`refused: ${host} ${how} a private address`);
@@ -101,8 +159,9 @@ function toHeaders(res: IncomingMessage): Headers {
   return h;
 }
 
-// `new Response(body, {status})` throws for these when given any body.
-const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+// `new Response(body, {status})` throws for these when given any body. 1xx
+// is not here: it is refused with every status outside 200-599.
+const NULL_BODY = new Set([204, 205, 304]);
 
 export function createGuardedFetch(o: GuardOptions = {}): typeof fetch {
   const isAllowed = o.isAllowed ?? ((ip: string) => isPublicAddress(ip));
@@ -150,15 +209,25 @@ export function createGuardedFetch(o: GuardOptions = {}): typeof fetch {
           agent: false,
         },
         (res) => {
-          const status = res.statusCode ?? 0;
-          const responseHeaders = toHeaders(res);
-          if (NULL_BODY.has(status)) {
-            res.resume();
-            resolve(new Response(null, { status, statusText: res.statusMessage, headers: responseHeaders }));
-            return;
+          // A throw in this callback is outside the promise: it would crash
+          // the process and leave the caller waiting forever.
+          try {
+            const status = res.statusCode ?? 0;
+            // Node's parser accepts any three digits; `Response` throws a
+            // RangeError outside 200-599.
+            if (status < 200 || status > 599) throw new Error(`${url.host} answered an invalid status ${status}`);
+            const responseHeaders = toHeaders(res);
+            const init = { status, statusText: res.statusMessage, headers: responseHeaders };
+            if (NULL_BODY.has(status)) {
+              res.resume();
+              resolve(new Response(null, init));
+              return;
+            }
+            resolve(new Response(Readable.toWeb(res) as unknown as ReadableStream<Uint8Array>, init));
+          } catch (err) {
+            res.destroy();
+            reject(err);
           }
-          const body = Readable.toWeb(res) as unknown as ReadableStream<Uint8Array>;
-          resolve(new Response(body, { status, statusText: res.statusMessage, headers: responseHeaders }));
         },
       );
       req.on("error", reject);

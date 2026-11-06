@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createNetServer, type AddressInfo, type Server as NetServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { LibraryAddError } from "@ossclip/core";
 import { createGuardedFetch, isPublicAddress, type LookupFn } from "../src/guarded-fetch";
@@ -34,12 +34,54 @@ describe("isPublicAddress", () => {
     "::ffff:169.254.169.254",
     "::ffff:0.0.0.0",
     "::ffff:100.64.0.1",
+    // R12: multicast, reserved/broadcast, benchmarking, IETF assignments.
+    "224.0.0.1",
+    "239.255.255.250",
+    "ff02::1",
+    "ff0e::1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "198.18.0.1",
+    "198.19.255.255",
+    "192.0.0.1",
+    "::ffff:255.255.255.255",
+    // R12: IPv6 spellings that embed a private IPv4.
+    "::127.0.0.1", // IPv4-compatible ::/96
+    "::7f00:1",
+    "::a00:5",
+    "::ffff:0:127.0.0.1", // SIIT-translated ::ffff:0:0:0/96
+    "::ffff:0:a00:5",
+    "2002:7f00:1::", // 6to4 of 127.0.0.1
+    "2002:a00:5::1", // 6to4 of 10.0.0.5
+    "2002:a9fe:a9fe::", // 6to4 of 169.254.169.254
+    // R12: NAT64 is refused whatever it embeds, public included.
+    "64:ff9b::7f00:1",
+    "64:ff9b::127.0.0.1",
+    "64:ff9b::808:808",
+    "64:ff9b:1::1",
+    "64:ff9b:1:ffff::8.8.8.8",
+    "fe80::1%lo0",
   ];
   for (const ip of privateRows) {
     it(`${ip} is not public`, () => expect(isPublicAddress(ip)).toBe(false));
   }
 
-  const publicRows = ["8.8.8.8", "2606:4700::1", "172.32.0.1", "100.128.0.1", "::ffff:8.8.8.8"];
+  const publicRows = [
+    "8.8.8.8",
+    "2606:4700::1",
+    "172.32.0.1",
+    "100.128.0.1",
+    "198.20.0.1",
+    "192.0.1.1",
+    "223.255.255.255",
+    "::ffff:8.8.8.8",
+    "::8.8.8.8",
+    "::ffff:0:8.8.8.8",
+    "2002:808:808::1", // 6to4 of 8.8.8.8
+    "64:ff9c::1", // just outside NAT64
+    "64:ff9b:2::1", // outside both NAT64 prefixes
+    "2001:4860:4860::8888",
+  ];
   for (const ip of publicRows) {
     it(`${ip} is public`, () => expect(isPublicAddress(ip)).toBe(true));
   }
@@ -52,9 +94,12 @@ describe("isPublicAddress", () => {
 
 describe("createGuardedFetch", () => {
   let server: Server | undefined;
+  let raw: NetServer | undefined;
   afterEach(async () => {
     await new Promise<void>((r) => (server ? server.close(() => r()) : r()));
+    await new Promise<void>((r) => (raw ? raw.close(() => r()) : r()));
     server = undefined;
+    raw = undefined;
   });
 
   const listen = async (handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<number> => {
@@ -103,6 +148,9 @@ describe("createGuardedFetch", () => {
     const f = createGuardedFetch();
     await expect(f(`http://127.0.0.1:${port}/`, { redirect: "manual" })).rejects.toThrow(/private address/);
     await expect(f(`http://[::1]:${port}/`, { redirect: "manual" })).rejects.toThrow(/private address/);
+    // `URL` normalizes these to 127.0.0.1 and ::ffff:7f00:1; both must still be caught.
+    await expect(f(`http://2130706433:${port}/`, { redirect: "manual" })).rejects.toThrow(/private address/);
+    await expect(f(`http://[::ffff:7f00:1]:${port}/`, { redirect: "manual" })).rejects.toThrow(/private address/);
     expect(hits).toBe(0);
   });
 
@@ -205,7 +253,7 @@ describe("createGuardedFetch", () => {
     const f = createGuardedFetch({ lookup: lookupTo([{ address: "127.0.0.1" }]), isAllowed: allowAll });
     await expect(
       f(`http://ok.test:${port}/`, { redirect: "manual", signal: AbortSignal.abort() }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/abort/i);
     expect(hits).toBe(0);
   });
 
@@ -219,8 +267,21 @@ describe("createGuardedFetch", () => {
       ac.abort();
     });
     const f = createGuardedFetch({ lookup: lookupTo([{ address: "127.0.0.1" }]), isAllowed: allowAll });
-    await expect(f(`http://ok.test:${port}/`, { redirect: "manual", signal: ac.signal })).rejects.toThrow();
+    await expect(f(`http://ok.test:${port}/`, { redirect: "manual", signal: ac.signal })).rejects.toThrow(/abort/i);
     await serverSawClose;
+  });
+
+  it("a status outside 200-599 rejects instead of crashing the process", async () => {
+    // `node:http` would refuse to write status 600, so the answer is raw bytes.
+    raw = createNetServer((sock) => {
+      sock.once("data", () => sock.end("HTTP/1.1 600 X\r\ncontent-length: 0\r\n\r\n"));
+    });
+    await new Promise<void>((r) => raw!.listen(0, "127.0.0.1", r));
+    const port = (raw.address() as AddressInfo).port;
+    const f = createGuardedFetch({ lookup: lookupTo([{ address: "127.0.0.1" }]), isAllowed: allowAll });
+    await expect(f(`http://ok.test:${port}/`, { redirect: "manual" })).rejects.toThrow(
+      `ok.test:${port} answered an invalid status 600`,
+    );
   });
 
   it("timeoutMs destroys a request that never answers", async () => {
