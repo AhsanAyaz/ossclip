@@ -198,6 +198,14 @@ import {
   // doc-comment has the reason.
   resolveSfxBundledPack,
   generateSfxPlan,
+  generateLogoFlags,
+  validateLogoFlags,
+  logoFlagsCacheKey,
+  LOGO_FINDER_PROMPT_VERSION,
+  LogoFlagsSchema,
+  type LogoFlag,
+  type LogoFlags,
+  type LogoSuggestion,
   resolveSfxCues,
   // Scene id → final start second, the scene-anchored placements' clock
   // (2026-08-29). Built from `sceneCues`, never from the raw plan.
@@ -284,7 +292,11 @@ import {
   snapshotEntry,
   stageOverlayFiles,
   stageSfxSounds,
+  formatLogoFinderLine,
+  reusableSuggestion,
 } from "./overlays";
+import { createGuardedFetch } from "./guarded-fetch";
+import { findLogoCandidates } from "./logo-finder";
 import { remoteWhisperHost, resolveWhisperBackend } from "./whisper-backend";
 import { makeCancelSignal, renderCover, renderProduction } from "@ossclip/renderer";
 import type { RenderPhase } from "@ossclip/renderer";
@@ -890,6 +902,15 @@ export interface ProduceOptions {
    * `expandHome`d by program.ts.
    */
   libraryDir?: string;
+  /**
+   * TEST SEAM, no flag reaches it: the logo finder's fetch (logo-finder spec
+   * §Step 2). Production always uses `createGuardedFetch()`, which refuses
+   * private addresses at connect time; tests inject a fake so no test
+   * touches the network (plan Global Constraints).
+   */
+  logoFetch?: typeof fetch;
+  /** TEST SEAM, no flag reaches it: the finder's 30 s fetch budget, so a test can expire it. */
+  logoFinderBudgetMs?: number;
   /**
    * Whether `--sort` was TYPED, as opposed to commander filling in its
    * `"name"` default. `sort` alone can't tell those apart, and `--sort` does
@@ -4826,6 +4847,117 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log(`▸ ${overlayLine}`);
   }
 
+  // ---- Logo finder: names the library lacks → suggestions (logo-finder spec)
+  // HERE, after `applyOverlayOverrides`, because `covered` is what THIS run
+  // actually places (ruling R9): the live placements, matched and user-added,
+  // with removed ones already gone. Runs only where an LLM is in play and the
+  // plan is being made (spec §When the finder runs); a replay or a plain
+  // re-run carries the prior suggestions forward, so it never touches the
+  // network and never wipes chips the author has not handled yet.
+  const priorSuggestions = priorOverlayPlan(work)?.suggestions;
+  let logoSuggestions: LogoSuggestion[] | undefined = priorSuggestions;
+  let logoFinderLine: string;
+  if (provider && opts.produce === true && !opts.scenes) {
+    // Where the LLM failed is the one thing the skip line has to say apart
+    // from everything else, so the call is marked rather than guessed from
+    // the error's text.
+    let inLlmCall = false;
+    try {
+      const words = transcript.words;
+      const keptWord = words.map((w) => map.mapWord(w) !== null);
+      const kept = (i: number): boolean => keptWord[i] === true;
+      // `covered.words`: each live placement's OWN word, not where a cut one
+      // fell forward to — `resolveOverlayCues` does not expose the landing
+      // index. A fallen-forward match lands on a later mention of one of its
+      // entry's names, which `covered.names` already covers.
+      const usedEntryIds = new Set(appliedOverlays.placements.map((p) => p.entryId));
+      const covered = {
+        words: new Set(appliedOverlays.placements.map((p) => p.word)),
+        names: appliedOverlays.entries.filter((e) => usedEntryIds.has(e.id)).flatMap((e) => e.names),
+      };
+      // Sorted, so the cache key does not move with the library's file order.
+      const libraryNames = loadLibrary()
+        .flatMap((e) => e.names)
+        .sort();
+      // The key's words are the prompt's `<index>: <word>` lines (Task 2
+      // review): a recut that keeps the same texts at shifted indices is a
+      // different question, and reusing its answer would point at stale words.
+      const flagsKey = logoFlagsCacheKey({
+        promptVersion: LOGO_FINDER_PROMPT_VERSION,
+        words: words.flatMap((w, i) => (kept(i) ? [`${i}: ${w.text}`] : [])),
+        libraryNames,
+      });
+      const flagsCache = join(work, `logo-flags-${flagsKey}.json`);
+      // The RAW answer is cached, never the validated flags (R9): `covered`
+      // changes without the prompt changing, so validation re-runs on every
+      // read. Parsed, never trusted — a malformed file means ask again.
+      let raw: LogoFlags | undefined;
+      if (existsSync(flagsCache)) {
+        try {
+          const cached = LogoFlagsSchema.safeParse(JSON.parse(await readFile(flagsCache, "utf8")));
+          if (cached.success) raw = cached.data;
+        } catch {
+          // Not JSON: the same as malformed.
+        }
+      }
+      let flags: LogoFlag[];
+      if (raw) {
+        flags = validateLogoFlags(raw, words, kept, covered).flags;
+      } else {
+        inLlmCall = true;
+        const fresh = await phases.time("llm", () =>
+          generateLogoFlags(provider!, words, kept, libraryNames, covered),
+        );
+        inLlmCall = false;
+        await writeFile(flagsCache, JSON.stringify(fresh.raw, null, 2));
+        flags = fresh.flags;
+      }
+      // R4: a name whose logos are already in the workdir is not fetched
+      // again, so a re-plan with nothing changed stays offline.
+      const exists = (rel: string): boolean => existsSync(join(work, ...rel.split("/")));
+      const reused = flags.map((f) => reusableSuggestion(f, priorSuggestions, exists));
+      const toFetch = flags.filter((_, i) => reused[i] === undefined);
+      const fetched =
+        toFetch.length > 0
+          ? await findLogoCandidates(toFetch, {
+              work,
+              fetch: opts.logoFetch ?? createGuardedFetch(),
+              ...(opts.logoFinderBudgetMs !== undefined ? { budgetMs: opts.logoFinderBudgetMs } : {}),
+            })
+          : [];
+      let next = 0;
+      logoSuggestions = reused.map((r) => r ?? fetched[next++]!);
+      logoFinderLine = formatLogoFinderLine({ suggestions: logoSuggestions });
+    } catch (e) {
+      // R17: the finder is best-effort and never fails a produce. The prior
+      // suggestions stay — a failed call is no reason to wipe chips.
+      logoSuggestions = priorSuggestions;
+      const reason = (e instanceof Error ? e.message : String(e)).split("\n", 1)[0]!.trim();
+      logoFinderLine = formatLogoFinderLine({
+        skipped: inLlmCall ? `the LLM call failed: ${reason}` : `the finder failed: ${reason}`,
+      });
+    }
+  } else {
+    // R5: a carry-forward run reports what it carried, computed from it.
+    logoFinderLine =
+      priorSuggestions && priorSuggestions.length > 0
+        ? formatLogoFinderLine({ suggestions: priorSuggestions })
+        : formatLogoFinderLine({ skipped: "no LLM provider" });
+  }
+  console.log(`▸ ${logoFinderLine}`);
+  // Plan presence (plan ruling): `overlays` is written when there are
+  // placements OR suggestions, so a video whose only overlay news is a chip
+  // still keeps it. No suggestions means no key, so a run without them writes
+  // the same production.json as before the finder existed.
+  {
+    const { suggestions: _carried, ...matchedPlan } = overlayPlan ?? { entries: [], placements: [] };
+    if (logoSuggestions && logoSuggestions.length > 0) {
+      overlayPlan = { ...matchedPlan, suggestions: logoSuggestions };
+    } else if (overlayPlan) {
+      overlayPlan = matchedPlan;
+    }
+  }
+
   // The sfx accounting counts PLANNED effects only — an overlay pop is not a
   // placement the plan made, so it joins the cue list after the count.
   if (sfxPlan) {
@@ -4995,6 +5127,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   if (overlayLine) {
     report += `\n${overlayLine}\n` + overlayWarnings.map((w) => `  ⚠ ${w}\n`).join("");
   }
+  // The logo finder's line sits with the overlay accounting it extends, and
+  // is printed on EVERY run, skip included (logo-finder spec §Report): a run
+  // that did not look for logos says so rather than looking like one that
+  // found none.
+  report += `\n${logoFinderLine}\n`;
   if (provider) {
     report += formatUsageReport(provider.usage, cfg.pricing);
     // A cached run has no usage block to print, and used to leave the report

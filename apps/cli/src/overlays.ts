@@ -17,6 +17,8 @@ import {
   sfxStagedFile,
   type LoadedLibraryEntry,
   type LoadedSfxSound,
+  type LogoFlag,
+  type LogoSuggestion,
   type OverlayCue,
   type OverlayEntrySnapshot,
   type OverlayIssue,
@@ -191,4 +193,52 @@ export function formatOverlayAccounting(
   return (
     `overlays: ${cues.length} placed` + (names.length > 0 ? ` (${names.join(", ")})` : "") + `, ${skipped} skipped`
   );
+}
+
+/**
+ * The logo finder's one report line (logo-finder spec §Report), shared by
+ * the console and report.txt, the `formatOverlayAccounting` contract.
+ *
+ * `skipped` is the parenthetical of a skip ("no LLM provider", "the LLM call
+ * failed: <reason>") and wins over everything else. Otherwise the line
+ * counts `suggestions`; none at all is "no new names". The without-part
+ * names each logo-less chip with its note (controller ruling R13, over the
+ * spec's `<domain> <note>`: the note already names the domain where it is
+ * the point, "kimi.ai answered 503", and a name is what the author reads on
+ * the chip). It is dropped when every name has a logo.
+ */
+export function formatLogoFinderLine(result: { skipped?: string; suggestions?: readonly LogoSuggestion[] }): string {
+  if (result.skipped !== undefined) return `logo finder: skipped (${result.skipped})`;
+  const all = result.suggestions ?? [];
+  if (all.length === 0) return "logo finder: no new names";
+  const without = all.filter((s) => s.candidates.length === 0);
+  const head =
+    `logo finder: ${all.length} name${all.length === 1 ? "" : "s"} (${all.map((s) => s.name).join(", ")}) — ` +
+    `${all.length - without.length} with logos`;
+  if (without.length === 0) return head;
+  const why = without.map((s) => (s.note !== undefined ? `${s.name} — ${s.note}` : s.name)).join("; ");
+  return `${head}, ${without.length} without (${why})`;
+}
+
+/**
+ * The prior run's suggestion for `flag`, when it can stand in for a fetch
+ * (controller ruling R4): the same id and domain, at least one candidate,
+ * and every candidate file still in the workdir. That keeps a re-plan with
+ * nothing changed offline. A prior with no candidates (a timeout, a 503) is
+ * never reused: the site may answer this time, so it is asked again.
+ *
+ * The flag's `name` and `word` win over the prior's: a recut can move the
+ * first kept mention, and the files belong to the id, not the word.
+ * `exists` takes a workdir-relative POSIX path, so this stays testable
+ * without a filesystem.
+ */
+export function reusableSuggestion(
+  flag: LogoFlag,
+  prior: readonly LogoSuggestion[] | undefined,
+  exists: (rel: string) => boolean,
+): LogoSuggestion | undefined {
+  const p = prior?.find((s) => s.id === flag.id);
+  if (!p || p.domain !== flag.domain || p.candidates.length === 0) return undefined;
+  if (!p.candidates.every((c) => exists(c.file))) return undefined;
+  return { ...p, name: flag.name, word: flag.word };
 }
