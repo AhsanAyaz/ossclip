@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod/v4";
@@ -419,6 +419,58 @@ export function coverExportNote(dest: CoverDestination): string | null {
     `re-run \`ossclip cover\` with no --out to write it there`
   );
 }
+
+// ---- Produce's side: the planned headline survives a replay ----------------
+
+/**
+ * The headline this run's plan stands for. A run with a beat sheet (fresh or
+ * cached) generates it; a run without one — the editor's Render replays with
+ * `--scenes` — carries the prior `production.json`'s, because a `--review`
+ * project's only render is that replay and it would otherwise have no
+ * headline at all (field report 2026-11-07). Pure; the prior value is read by
+ * `priorCoverHeadline`.
+ */
+export function plannedCoverHeadline(
+  beatSheet: { hook: string; coverText?: string } | undefined,
+  prior: string | undefined,
+): string | undefined {
+  if (beatSheet !== undefined) return coverHeadline(beatSheet.coverText ?? beatSheet.hook);
+  return prior;
+}
+
+/**
+ * The headline the workdir's last plan made, or undefined: `production.json`'s
+ * `coverHeadline`, else — for a project produced before that field existed —
+ * the newest cached `beatsheet-*.json`, so a project already stuck on bare
+ * covers gets its headline back on its next Render instead of needing a
+ * re-plan. Lenient like `priorOverlayPlan`: missing, unreadable or
+ * hand-broken is "no prior headline", never a failed run.
+ */
+export function priorCoverHeadline(work: string): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(work, "production.json"), "utf8")) as { coverHeadline?: unknown };
+    const parsed = z.string().safeParse(raw.coverHeadline);
+    if (parsed.success) return parsed.data;
+  } catch {
+    // fall through to the beat-sheet cache
+  }
+  try {
+    const newest = readdirSync(work)
+      .filter((n) => /^beatsheet-[0-9a-f]+\.json$/.test(n))
+      .map((n) => ({ n, t: statSync(join(work, n)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)[0];
+    if (newest === undefined) return undefined;
+    const sheet = BeatSheetHeadlineSchema.safeParse(JSON.parse(readFileSync(join(work, newest.n), "utf8")));
+    if (!sheet.success) return undefined;
+    const text = coverHeadline(sheet.data.coverText ?? sheet.data.hook);
+    return text === "" ? undefined : text;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The two fields of a cached beat sheet the cover needs — parsed, not cast. */
+const BeatSheetHeadlineSchema = z.object({ hook: z.string(), coverText: z.string().optional() });
 
 // ---- Produce's side: a user-set headline is user-owned ---------------------
 

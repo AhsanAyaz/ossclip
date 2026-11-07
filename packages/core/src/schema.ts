@@ -267,6 +267,14 @@ export type ProductionOverlays = z.infer<typeof ProductionOverlaysSchema>;
 /** The single source of truth for a production. Every pipeline stage is a pure function over this. */
 export const ProductionSchema = z.object({
   version: z.literal(1),
+  /**
+   * The cover headline this project's plan generated (beat sheet coverText,
+   * else hook, through `coverHeadline`). Carried forward by a replay, because
+   * a `--scenes` render has no beat sheet: without it, a `--review` project —
+   * whose only render IS the editor's replay — shipped every cover bare
+   * (field report 2026-11-07). Absent when no plan ever made one.
+   */
+  coverHeadline: z.string().optional(),
   source: z.object({
     path: z.string(),
     probe: ProbeSchema,

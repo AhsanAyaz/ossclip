@@ -46,7 +46,6 @@ import {
   outPathInsideInput,
   COVER_PROVENANCE_BASENAME,
   coverDecision,
-  coverHeadline,
   coverInVideoWindow,
   COVER_IN_VIDEO_CAP_SEC,
   COVER_IN_VIDEO_FLOOR_SEC,
@@ -265,6 +264,8 @@ import {
   buildCoverRender,
   coverBannerText,
   coverTextHold,
+  plannedCoverHeadline,
+  priorCoverHeadline,
   provenanceVideoPath,
 } from "./cover";
 import { artifactPath, ensureParentDir, expandHome, moveFile } from "./paths";
@@ -4972,6 +4973,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // library first, so a planned effect plays the sound it was planned with.
   stageSfxSounds([...sfxSounds, ...(overlaySounds ?? [])], sfxCues, [renderPublicDirPath, work]);
 
+  // Read BEFORE production.json is overwritten below: a replay has no beat
+  // sheet, and this is where its cover headline comes from.
+  const plannedHeadline = plannedCoverHeadline(beatSheet, priorCoverHeadline(work));
   const production: Production = {
     version: 1,
     // `originalInput`, not `input`: for a folder run `input` is by now
@@ -5018,6 +5022,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // mezzanine's scale decision, the NLE exports and the editor — all of
     // which would otherwise describe a 1080p file that isn't there.
     render: { width: output.width, height: output.height, fps: RENDER_FPS },
+    // Absent when no plan ever produced one, so a plain (no-LLM) project's
+    // production.json is byte-identical to a pre-fix one.
+    ...(plannedHeadline !== undefined ? { coverHeadline: plannedHeadline } : {}),
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
@@ -6268,7 +6275,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   {
     // §35's cap applies here too: a cached beat sheet from before the fix, or
     // the hook fallback, must not slip a 13-word paragraph onto a thumbnail.
-    const generatedCoverText = coverHeadline(beatSheet?.coverText ?? beatSheet?.hook ?? "");
+    // `plannedHeadline`, not this run's beat sheet: a `--scenes` replay has
+    // none, and its cover must still carry the plan's headline (field report
+    // 2026-11-07 — every `--review` project's cover shipped bare).
+    const generatedCoverText = plannedHeadline ?? "";
     // A headline someone typed (`ossclip cover --text`, or the editor) is a
     // user-owned file, exactly like overrides.json and the approved thumbnail
     // concept: this run does NOT quietly replace it with a fresh beat sheet's
