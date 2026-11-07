@@ -91,6 +91,9 @@ import {
   type ThumbnailConceptApproved,
   LIBRARY_MAX_BYTES,
   LibraryAddError,
+  imageSize,
+  sniffImageFormat,
+  type ImageFormat,
   ProductionOverlaysSchema,
   addLibraryEntry,
   loadOverlayLibrary,
@@ -506,6 +509,33 @@ const LibraryAddBodySchema = z.object({
     z.strictObject({ candidate: z.strictObject({ suggestion: z.string(), n: z.number().int().min(0).max(3) }) }),
   ]),
 });
+
+/**
+ * `POST /api/library/preview`: a pasted URL or path, or a dropped file —
+ * Add's sources minus the logo candidate, which the popover previews by id.
+ */
+const LibraryPreviewBodySchema = z.object({
+  source: z.union([
+    z.strictObject({ url: z.string().min(1) }),
+    z.strictObject({ path: z.string().min(1) }),
+    z.strictObject({ data: z.string().min(1), mimeType: z.string() }),
+  ]),
+});
+
+/** The MIME a previewed image is handed back as, by its SNIFFED format. */
+const IMAGE_FORMAT_MIME: Record<ImageFormat, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  gif: "image/gif",
+};
+
+/** Whether bytes start like an HTML document (after whitespace and a BOM). */
+export function looksLikeHtml(bytes: Uint8Array): boolean {
+  const head = Buffer.from(bytes.subarray(0, 512)).toString("utf8").replace(/^\uFEFF/, "").trimStart().toLowerCase();
+  return head.startsWith("<!doctype html") || head.startsWith("<html") || head.startsWith("<head") || head.startsWith("<body");
+}
 
 /** `GET /api/logo-candidates/file`'s `n`: one digit 0–3, matched, never coerced. */
 const CandidateIndexSchema = z.string().regex(/^[0-3]$/);
@@ -1055,6 +1085,76 @@ export async function startEditServer(
       }
     }
     return undefined;
+  };
+  /**
+   * A tray source's bytes, shared by `POST /api/library` (Add) and
+   * `POST /api/library/preview` so the preview runs exactly the checks Add
+   * would: the same fetch caps, the same absolute-path and size-before-read
+   * rules, the same candidate lookup. A refusal a person can act on is
+   * `{ok:false}` (a 400); a fetch failure still throws `LibraryAddError`
+   * for the caller's catch.
+   */
+  type SourceBytes = { ok: true; bytes: Uint8Array } | { ok: false; error: string };
+  const librarySourceBytes = async (source: z.infer<typeof LibraryAddBodySchema>["source"]): Promise<SourceBytes> => {
+    const refuse = (error: string): SourceBytes => ({ ok: false, error });
+    const mb = (n: number): string => (n / (1024 * 1024)).toFixed(1);
+    const tooBig = (size: number): SourceBytes =>
+      refuse(`file is ${mb(size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB`);
+    if ("url" in source) {
+      const bytes = await fetchLibraryBytes(source.url, {
+        fetch: opts.libraryFetch,
+        maxBytes: LIBRARY_MAX_BYTES,
+        timeoutMs: LIBRARY_FETCH_TIMEOUT_MS,
+        maxRedirects: LIBRARY_FETCH_MAX_REDIRECTS,
+      });
+      return { ok: true, bytes };
+    }
+    if ("path" in source) {
+      // Absolute only: a relative path would resolve against the server's
+      // cwd, which the user cannot see from the page.
+      if (!isAbsolute(source.path)) return refuse("the path must be absolute (e.g. /Users/you/logo.png)");
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(source.path);
+      } catch {
+        return refuse("no file at that path");
+      }
+      if (!st.isFile()) return refuse("that path is not a file");
+      // Size BEFORE the read (plan review focus 4, "a 25 MB file"): the cap
+      // exists so a mistaken pick of a video is refused without pulling
+      // gigabytes into memory first.
+      if (st.size > LIBRARY_MAX_BYTES) return tooBig(st.size);
+      return { ok: true, bytes: await readFile(source.path) };
+    }
+    if ("candidate" in source) {
+      // Resolved server-side from production.json, never from the body
+      // (logo-finder Task 6 ruling). Size before the read, the path branch's
+      // rule: produce caps a candidate at 5 MB, but the file on disk is
+      // whatever is there now.
+      const file = await logoCandidateFile(source.candidate.suggestion, source.candidate.n);
+      if (file === null) return refuse(NO_SUCH_LOGO_CANDIDATE);
+      // Final review Minor 2: the file passed `existsSync` but can be gone, a
+      // directory or unreadable by the stat or the read. That fs error is not
+      // a LibraryAddError, so the caller's catch would answer 500 with
+      // `<workdir>/logo-candidates/...` in it, a path `scrubLibraryPath` does
+      // not fold. To the page it is simply a candidate that is no longer there.
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(file);
+      } catch {
+        return refuse(NO_SUCH_LOGO_CANDIDATE);
+      }
+      if (!st.isFile()) return refuse(NO_SUCH_LOGO_CANDIDATE);
+      if (st.size > LIBRARY_MAX_BYTES) return tooBig(st.size);
+      try {
+        return { ok: true, bytes: await readFile(file) };
+      } catch {
+        return refuse(NO_SUCH_LOGO_CANDIDATE);
+      }
+    }
+    // Size after the decode is `addLibraryEntry`'s check; the body cap
+    // already bounded what was buffered.
+    return { ok: true, bytes: Buffer.from(source.data, "base64") };
   };
   const approvedPackPath = (): string => join(workdir!, YOUTUBE_APPROVED_BASENAME);
   /** The pack the panel shows: the approved file first (the user's
@@ -3109,6 +3209,58 @@ export async function startEditServer(
           return;
         }
 
+        if (url.pathname === "/api/library/preview" && req.method === "POST") {
+          // The tray's preview before Add: the exact bytes Add would save,
+          // fetched and checked by the same `librarySourceBytes`, handed back
+          // so the page can SHOW them and then save THOSE bytes (as a `data`
+          // source) rather than fetching the URL a second time — a link that
+          // changes between preview and Add cannot swap the image. Writes
+          // nothing. A candidate is not previewable here: the logo popover
+          // already shows its own thumbnails by id.
+          if (!isJsonRequest(req)) return send(415, { error: "expected content-type: application/json" });
+          const body = await readJsonBody(
+            req,
+            LIBRARY_BODY_MAX_BYTES,
+            `file is over the ${(LIBRARY_MAX_BYTES / (1024 * 1024)).toFixed(1)} MB limit`,
+          );
+          if (!body.ok) return send(400, { error: body.error });
+          const parsed = LibraryPreviewBodySchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { error: zodMessage(parsed.error) });
+          try {
+            const resolved = await librarySourceBytes(parsed.data.source);
+            if (!resolved.ok) return send(400, { error: resolved.error });
+            const { bytes } = resolved;
+            if (bytes.byteLength > LIBRARY_MAX_BYTES) {
+              const mb = (n: number): string => (n / (1024 * 1024)).toFixed(1);
+              return send(400, { error: `file is ${mb(bytes.byteLength)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
+            }
+            const format = sniffImageFormat(bytes);
+            if (format === null) {
+              // The commonest wrong paste is a page ABOUT the image (a
+              // Wikimedia "File:" page, a CDN viewer), not the image itself —
+              // name that, so the fix ("open it, copy the image address") is
+              // obvious, instead of the generic format list.
+              return send(400, {
+                error:
+                  "url" in parsed.data.source && looksLikeHtml(bytes)
+                    ? "that URL returned a web page, not an image"
+                    : `file is not a supported image (png, jpg, webp, svg or gif)`,
+              });
+            }
+            const size = imageSize(bytes);
+            return send(200, {
+              format,
+              mimeType: IMAGE_FORMAT_MIME[format],
+              bytes: bytes.byteLength,
+              ...(size !== null ? { width: size.width, height: size.height } : {}),
+              data: Buffer.from(bytes).toString("base64"),
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return send(err instanceof LibraryAddError ? 400 : 500, { error: scrubLibraryPath(message) });
+          }
+        }
+
         if (url.pathname === "/api/library" && req.method === "POST") {
           // The tray's add (spec §Server endpoints): a pasted URL or path, or
           // a dropped file. No workdir guard — it writes the global library,
@@ -3127,67 +3279,9 @@ export async function startEditServer(
           const { name, aliases, kind, source } = parsed.data;
           const mb = (n: number): string => (n / (1024 * 1024)).toFixed(1);
           try {
-            let bytes: Uint8Array;
-            if ("url" in source) {
-              bytes = await fetchLibraryBytes(source.url, {
-                fetch: opts.libraryFetch,
-                maxBytes: LIBRARY_MAX_BYTES,
-                timeoutMs: LIBRARY_FETCH_TIMEOUT_MS,
-                maxRedirects: LIBRARY_FETCH_MAX_REDIRECTS,
-              });
-            } else if ("path" in source) {
-              // Absolute only: a relative path would resolve against the
-              // server's cwd, which the user cannot see from the page.
-              if (!isAbsolute(source.path)) {
-                return send(400, { error: "the path must be absolute (e.g. /Users/you/logo.png)" });
-              }
-              let st: ReturnType<typeof statSync>;
-              try {
-                st = statSync(source.path);
-              } catch {
-                return send(400, { error: "no file at that path" });
-              }
-              if (!st.isFile()) return send(400, { error: "that path is not a file" });
-              // Size BEFORE the read (plan review focus 4, "a 25 MB file"):
-              // the cap exists so a mistaken pick of a video is refused
-              // without pulling gigabytes into memory first.
-              if (st.size > LIBRARY_MAX_BYTES) {
-                return send(400, { error: `file is ${mb(st.size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
-              }
-              bytes = await readFile(source.path);
-            } else if ("candidate" in source) {
-              // Resolved server-side from production.json, never from the
-              // body (logo-finder Task 6 ruling). Size before the read, the
-              // path branch's rule: produce caps a candidate at 5 MB, but
-              // the file on disk is whatever is there now.
-              const file = await logoCandidateFile(source.candidate.suggestion, source.candidate.n);
-              if (file === null) return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
-              // Final review Minor 2: the file passed `existsSync` but can be
-              // gone, a directory or unreadable by the stat or the read. That
-              // fs error is not a LibraryAddError, so the catch below would
-              // answer 500 with `<workdir>/logo-candidates/...` in it, a path
-              // `scrubLibraryPath` does not fold. To the page it is simply a
-              // candidate that is no longer there.
-              let st: ReturnType<typeof statSync>;
-              try {
-                st = statSync(file);
-              } catch {
-                return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
-              }
-              if (!st.isFile()) return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
-              if (st.size > LIBRARY_MAX_BYTES) {
-                return send(400, { error: `file is ${mb(st.size)} MB; the limit is ${mb(LIBRARY_MAX_BYTES)} MB` });
-              }
-              try {
-                bytes = await readFile(file);
-              } catch {
-                return send(400, { error: NO_SUCH_LOGO_CANDIDATE });
-              }
-            } else {
-              // Size after the decode is `addLibraryEntry`'s check; the body
-              // cap above already bounded what was buffered.
-              bytes = Buffer.from(source.data, "base64");
-            }
+            const resolved = await librarySourceBytes(source);
+            if (!resolved.ok) return send(400, { error: resolved.error });
+            const { bytes } = resolved;
             // Same bytes already in the library → that entry, unwritten, as
             // 200 not 201 (logo-finder Task 6 ruling). Every source kind: a
             // pasted URL of a logo the finder already offered is the same logo.

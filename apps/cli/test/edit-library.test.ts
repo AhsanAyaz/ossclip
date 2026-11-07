@@ -675,3 +675,72 @@ describe("logo candidates", () => {
     expect(readdirSync(lib)).toEqual([]);
   });
 });
+
+describe("POST /api/library/preview (tray preview before Add)", () => {
+  /** A server whose URL fetches answer from `answer`, and record what was asked. */
+  async function bootFetching(answer: (url: string) => Response): Promise<{ url: string; lib: string }> {
+    const lib = await mkdtemp(join(tmpdir(), "ossclip-lib-"));
+    const server = await startEditServer(await fixtureWorkdir(), {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({}),
+      libraryDir: lib,
+      libraryFetch: (async (input: RequestInfo | URL) => answer(String(input))) as typeof fetch,
+    });
+    close = server.close;
+    return { url: server.url, lib };
+  }
+
+  it("a URL answers the exact bytes, their format and size, and writes nothing to the library", async () => {
+    const { url, lib } = await bootFetching(() => new Response(PNG));
+    const res = await post(`${url}/api/library/preview`, { source: { url: "https://example.com/logo.png" } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ format: "png", mimeType: "image/png", bytes: PNG.length });
+    expect(Buffer.from(body.data, "base64")).toEqual(PNG);
+    expect(readdirSync(lib)).toEqual([]);
+  });
+
+  it("a URL that answers a web page is refused in words that say so", async () => {
+    const { url } = await bootFetching(() => new Response("<!DOCTYPE html><html><body>File:N8n.png</body></html>"));
+    const res = await post(`${url}/api/library/preview`, { source: { url: "https://commons.wikimedia.org/x" } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("that URL returned a web page, not an image");
+  });
+
+  it("an HTTP error from the URL is refused with the status, not as a 500", async () => {
+    const { url } = await bootFetching(() => new Response("nope", { status: 404 }));
+    const res = await post(`${url}/api/library/preview`, { source: { url: "https://example.com/gone.png" } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("404");
+  });
+
+  it("a path to a file that is not an image is refused", async () => {
+    const { url, work } = await boot();
+    const res = await post(`${url}/api/library/preview`, { source: { path: join(work, "render-props.json") } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("not a supported image");
+  });
+
+  it("a relative path is refused exactly as Add refuses it", async () => {
+    const { url } = await boot();
+    const res = await post(`${url}/api/library/preview`, { source: { path: "logo.png" } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("absolute");
+  });
+
+  it("a dropped file's bytes are sniffed, not its claimed type: an SVG comes back as image/svg+xml", async () => {
+    const { url } = await boot();
+    const res = await post(`${url}/api/library/preview`, {
+      source: { data: SVG.toString("base64"), mimeType: "image/png" },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ format: "svg", mimeType: "image/svg+xml", bytes: SVG.length });
+  });
+
+  it("refuses a candidate source: the logo popover already shows its own thumbnails", async () => {
+    const { url } = await boot();
+    const res = await post(`${url}/api/library/preview`, { source: { candidate: { suggestion: "x", n: 0 } } });
+    expect(res.status).toBe(400);
+  });
+});
