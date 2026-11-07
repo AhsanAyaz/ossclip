@@ -2426,6 +2426,65 @@ describe("GET /api/transcript (captions over revived material)", () => {
     expect(corrupt.transcript).toBeNull();
   });
 
+  // 2026-11-08 field report: the user confirmed "Cloud" → "Claude" at the
+  // CLI, the video said "Claude", and the Transcript panel — rebuilt from
+  // these words on every --review recut — said "Cloud".
+  const TRANSCRIPT = [
+    { text: "using", start: 0, end: 0.3 },
+    { text: "Cloud", start: 0.3, end: 0.7 },
+    { text: "or", start: 0.7, end: 0.9 },
+    { text: "Etan", start: 0.9, end: 1.3 },
+  ];
+  const repairs = (offset: number) => [
+    { startWord: 1 - offset, endWord: 1 - offset, heard: "Cloud", correction: "Claude", applied: true, byUser: true },
+    { startWord: 3 - offset, endWord: 3 - offset, heard: "Etan", correction: "n8n", applied: true, byUser: true },
+    { startWord: 2 - offset, endWord: 2 - offset, heard: "or", correction: "and", applied: false },
+  ];
+
+  it("serves transcript.json with produce's applied repairs laid back on", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: TRANSCRIPT }));
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({ transcript: { language: "en", words: TRANSCRIPT }, repairs: repairs(0) }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/transcript`)).json();
+    // Applied ones only; the unapplied "or" → "and" stays as heard.
+    expect(body.transcript.words.map((w: { text: string }) => w.text)).toEqual(["using", "Claude", "or", "n8n"]);
+    expect(body.transcript.words[1]).toMatchObject({ start: 0.3, end: 0.7 });
+  });
+
+  it("maps a --clip run's sliced repair indices back onto the full transcript", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: TRANSCRIPT }));
+    // production.json holds the slice from word 1 on, its repairs re-indexed.
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({ transcript: { language: "en", words: TRANSCRIPT.slice(1) }, repairs: repairs(1) }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(body.transcript.words.map((w: { text: string }) => w.text)).toEqual(["using", "Claude", "or", "n8n"]);
+  });
+
+  it("serves the raw words when production.json is missing or its repairs are malformed", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: TRANSCRIPT }));
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const none = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(none.transcript.words).toEqual(TRANSCRIPT);
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({ transcript: { language: "en", words: TRANSCRIPT }, repairs: [{ startWord: "1" }] }),
+    );
+    const bad = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(bad.transcript.words).toEqual(TRANSCRIPT);
+  });
+
   it("409 with no workdir open, like every workdir endpoint", async () => {
     const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS });
     close = server.close;
@@ -3625,7 +3684,11 @@ describe("GET /api/sfx/plan", () => {
     await writeProduction(dir, {
       transcript: { language: "en", words: RAW_WORDS },
       repairs: [
-        { startWord: 2, endWord: 3, heard: "code chun", correction: "banana split pie", applied: true },
+        // Heard words that are not in the transcript: the replay can no
+        // longer locate them. (A gate-failing correction is NOT this case any
+        // more — produce applied it, so the replay honours it; see the test
+        // below.)
+        { startWord: 2, endWord: 3, heard: "code chin", correction: "codechurn", applied: true },
       ],
       sfx: { level: "normal", placements: [{ soundId: "ding", word: 3 }] },
     });
@@ -3636,6 +3699,24 @@ describe("GET /api/sfx/plan", () => {
     // The plan still rides back — it parsed. The editor hides the lane on the
     // missing word space, which is the honest half to withhold.
     expect(body.sfx).not.toBeNull();
+  });
+
+  it("replays a repair the gates would refuse — the user confirmed it at the CLI (2026-11-08)", async () => {
+    // "Etan," → "n8n," fails the sound-alike gate on a fresh decision; the
+    // user ticked it, produce applied it, the video has it. Re-gating it here
+    // refused the whole word list and hid the sfx and overlay lanes.
+    const dir = await fixtureWorkdir();
+    await writeProduction(dir, {
+      transcript: { language: "en", words: RAW_WORDS },
+      repairs: [
+        { startWord: 3, endWord: 3, heard: "chun", correction: "n8n", applied: true, byUser: true },
+      ],
+      sfx: { level: "normal", placements: [{ soundId: "ding", word: 3 }] },
+    });
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    expect(body.words.map((w: { text: string }) => w.text)).toEqual(["we", "shipped", "code", "n8n", "today"]);
   });
 
   it("degrades to nulls on a missing or corrupt production.json, never a 500", async () => {

@@ -7,6 +7,7 @@ import {
   buildRepairUserPrompt,
   reconcileCopy,
   repairTranscript,
+  replayStoredRepairs,
 } from "../src/producer/repair";
 import { MockProvider } from "../src/producer/mock";
 import { buildCaptionLines } from "../src/captions";
@@ -561,5 +562,48 @@ describe("applyRepairs — user-confirmed proposals (2026-11-04)", () => {
       isCut: () => true,
     });
     expect(applied[0]!.rejected).toBe("span straddles a cut");
+  });
+});
+
+describe("replayStoredRepairs (the editor's view of what produce rendered)", () => {
+  const words = (...t: string[]) => t.map((text, i) => ({ text, start: i, end: i + 0.9 }));
+  const tr = (...t: string[]) => ({ language: "en", words: words(...t) });
+
+  it("replays a stored repair the rewrite gates would refuse — produce already applied it", () => {
+    // The 2026-11-08 field case: "Etan," → "n8n," was the user's call at the
+    // CLI prompt, and "talk" → "autoplaced" came from on-screen copy. Both
+    // fail a gate on a fresh decision; both are in the video.
+    const out = replayStoredRepairs(tr("use", "Etan,", "to", "talk", "now"), [
+      { startWord: 1, endWord: 1, heard: "Etan,", correction: "n8n,", applied: true },
+      { startWord: 3, endWord: 3, heard: "talk", correction: "autoplaced", applied: true },
+    ]);
+    expect(out.transcript.words.map((w) => w.text)).toEqual(["use", "n8n,", "to", "autoplaced", "now"]);
+    expect(out.applied.every((r) => r.applied)).toBe(true);
+  });
+
+  it("skips repairs stored as not applied", () => {
+    const out = replayStoredRepairs(tr("use", "Cloud", "now"), [
+      { startWord: 1, endWord: 1, heard: "Cloud", correction: "Claude", applied: false },
+    ]);
+    expect(out.transcript.words.map((w) => w.text)).toEqual(["use", "Cloud", "now"]);
+  });
+
+  it("shifts sliced indices back onto the full transcript by `offset`", () => {
+    // A --clip run stores index 1 for what is word 41 of transcript.json.
+    const full = tr(...Array.from({ length: 40 }, (_, i) => `w${i}`), "pad", "Cloud", "code", "end");
+    const out = replayStoredRepairs(
+      full,
+      [{ startWord: 1, endWord: 2, heard: "Cloud code", correction: "Claude Code", applied: true }],
+      { offset: 40 },
+    );
+    expect(out.transcript.words.slice(40).map((w) => w.text)).toEqual(["pad", "Claude", "Code", "end"]);
+  });
+
+  it("still refuses a repair whose heard words are gone (re-transcribed range)", () => {
+    const out = replayStoredRepairs(tr("use", "clawed", "now"), [
+      { startWord: 1, endWord: 1, heard: "Cloud", correction: "Claude", applied: true },
+    ]);
+    expect(out.transcript.words.map((w) => w.text)).toEqual(["use", "clawed", "now"]);
+    expect(out.applied[0]?.applied).toBe(false);
   });
 });

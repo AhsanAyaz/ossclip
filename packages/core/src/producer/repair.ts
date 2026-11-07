@@ -521,3 +521,52 @@ export function reconcileCopy(
 
   return { transcript: { ...transcript, words }, applied };
 }
+
+/** The shape `production.json` stores a repair in — `AppliedRepair` as read
+ * back off disk, where `applied` may be missing on a hand-edited file. */
+export interface StoredRepair {
+  startWord: number;
+  endWord: number;
+  heard: string;
+  correction: string;
+  applied?: boolean;
+}
+
+/**
+ * Rebuild the words produce rendered from the raw transcript plus the repairs
+ * production.json recorded as applied (`ProductionSchema.repairs`' contract).
+ *
+ * Every stored repair is passed as CONFIRMED. The rewrite gates already ruled
+ * when produce ran, and their verdict is not reproducible from the file alone:
+ * a user-confirmed "Etan," → "n8n," fails the sound-alike gate, and a caption
+ * repair matched against on-screen copy ("talk" → "autoplaced") fails the
+ * length gate — both are in the render, so re-gating them here made the editor
+ * disagree with the video (field report 2026-11-08: the transcript panel and
+ * the sfx/overlay lanes all lost them). The structural guards still run, so a
+ * repair whose heard words are no longer where it says (a re-transcribed
+ * range, a different transcript) is still refused.
+ *
+ * `offset` shifts every stored index first: a `--clip` run stores repairs in
+ * the SLICED transcript's index space (clip.ts `sliceRepairs`), and a caller
+ * replaying them onto the full transcript.json has to move them back.
+ */
+export function replayStoredRepairs(
+  transcript: Transcript,
+  stored: readonly StoredRepair[],
+  opts: { dictionary?: readonly string[]; offset?: number } = {},
+): { transcript: Transcript; applied: AppliedRepair[] } {
+  const offset = opts.offset ?? 0;
+  const repairs = stored
+    .filter((r) => r.applied === true)
+    .map((r) => ({
+      startWord: r.startWord + offset,
+      endWord: r.endWord + offset,
+      heard: r.heard,
+      correction: r.correction,
+    }));
+  if (repairs.length === 0) return { transcript, applied: [] };
+  return applyRepairs(transcript, repairs, {
+    ...(opts.dictionary !== undefined ? { dictionary: opts.dictionary } : {}),
+    confirmed: () => true,
+  });
+}

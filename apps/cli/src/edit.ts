@@ -22,7 +22,8 @@ import {
   // The SFX plan route's word-space derivation (Phase 4) — the repaired
   // transcript rebuilt from production.json's own stored pair, which is the
   // index space `production.sfx.placements[].word` counts in.
-  applyRepairs,
+  replayStoredRepairs,
+  type StoredRepair,
   ProductionSfxSchema,
   approvedOverlayText,
   buildThumbnailPrompt,
@@ -487,6 +488,18 @@ function isJsonRequest(req: IncomingMessage): boolean {
 /** A zod failure as one readable sentence for a 400 body. */
 const zodMessage = (e: z.ZodError): string =>
   e.issues.map((i) => (i.path.length > 0 ? `${i.path.join(".")}: ${i.message}` : i.message)).join("; ");
+
+/** production.json's `repairs` as the editor replays them — the fields
+ * `replayStoredRepairs` reads, extra keys (`byUser`, `rejected`) tolerated. */
+const StoredRepairsSchema = z.array(
+  z.object({
+    startWord: z.number().int().nonnegative(),
+    endWord: z.number().int().nonnegative(),
+    heard: z.string(),
+    correction: z.string(),
+    applied: z.boolean().optional(),
+  }),
+);
 
 /**
  * `POST /api/library` (overlay-library spec §Server endpoints). The source is
@@ -959,40 +972,88 @@ export async function startEditServer(
    * SOURCE seconds; null when there is no usable transcript, or when a repair
    * produce applied no longer replays.
    */
+  /** The user's dictionary, for the replay's structural guards. `dictionary`
+   * is `unknown` on the config (file-only, validated at the consumer —
+   * config.ts's posture), narrowed here the same way `retranscribeSettings`
+   * (top of this file) narrows it. */
+  const configDictionary = (): string[] | undefined => {
+    const rawDict = (opts.loadCfg ?? loadConfig)().dictionary;
+    return Array.isArray(rawDict) && rawDict.every((t) => typeof t === "string")
+      ? (rawDict as string[])
+      : undefined;
+  };
+  /** production.json's `repairs`, parsed (CLAUDE.md: never cast a file a user
+   * can hand-edit). Null when present but malformed — a caller then trusts no
+   * reconstruction rather than a guessed one. */
+  const storedRepairs = (production: Record<string, unknown>): StoredRepair[] | null => {
+    if (production.repairs === undefined) return [];
+    const parsed = StoredRepairsSchema.safeParse(production.repairs);
+    return parsed.success ? parsed.data : null;
+  };
+  /**
+   * transcript.json with produce's applied repairs laid back on — what
+   * /api/transcript serves (2026-11-08 field report). transcript.json is RAW:
+   * produce writes it straight off whisper and repairs only in memory, so the
+   * Transcript panel and the live caption track (rebuilt from these words on
+   * every --review recut) showed "Cloud" where the video says "Claude", and a
+   * user's confirmed picks looked lost.
+   *
+   * transcript.json, not production.json's transcript, stays the base: it is
+   * the file /api/retranscribe-range re-stamps, and a re-stamp must show up
+   * here. The stored repairs index production.json's transcript, which a
+   * `--clip` run sliced, so the offset is found by locating that transcript's
+   * first word in this one. Repairs are display-only on this route (caption
+   * keys are source-anchored, §137), so one that no longer locates — its range
+   * was re-transcribed — just shows the raw words; nothing indexes this array.
+   * Any piece missing or unreadable serves the raw words, the old behaviour.
+   */
+  const withStoredRepairs = async (dir: string, raw: unknown): Promise<unknown> => {
+    const base = TranscriptSchema.safeParse(raw);
+    if (!base.success) return raw;
+    let production: Record<string, unknown>;
+    try {
+      production = JSON.parse(await readFile(join(dir, "production.json"), "utf8")) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      return raw;
+    }
+    const stored = storedRepairs(production);
+    if (stored === null || !stored.some((r) => r.applied === true)) return raw;
+    const sliced = TranscriptSchema.safeParse(production.transcript);
+    if (!sliced.success) return raw;
+    const first = sliced.data.words[0];
+    let offset = first
+      ? base.data.words.findIndex((w) => w.start === first.start && w.text === first.text)
+      : 0;
+    // A re-stamp can move the first word's time; with no slice the spaces are
+    // the same length and line up from zero.
+    if (offset === -1 && sliced.data.words.length === base.data.words.length) offset = 0;
+    if (offset === -1) return raw;
+    const dictionary = configDictionary();
+    return replayStoredRepairs(base.data, stored, {
+      offset,
+      ...(dictionary !== undefined ? { dictionary } : {}),
+    }).transcript;
+  };
   const repairedWords = (production: Record<string, unknown>): Word[] | null => {
     const parsedTranscript = TranscriptSchema.safeParse(production.transcript);
     let words: Word[] | null = null;
-    if (parsedTranscript.success) {
-      const stored = Array.isArray(production.repairs)
-        ? (production.repairs as Array<Record<string, unknown>>)
-        : [];
+    const stored = storedRepairs(production);
+    if (parsedTranscript.success && stored !== null) {
       const applied = stored.filter((r) => r.applied === true);
       if (applied.length === 0) {
         words = parsedTranscript.data.words;
       } else {
-        // The dictionary rides along for the reason produce's own repair
-        // REPLAY passes it (its cached-repairs block): a
-        // dictionary-vouched correction clears the phonetic gate only
-        // when the vouched set is present, and `applyRepairs` re-decides
-        // every proposal it is handed rather than trusting the stored
-        // verdict.
-        // `dictionary` is `unknown` on the config (file-only, validated
-        // at the consumer — config.ts's posture), narrowed here the same
-        // way `retranscribeSettings` (top of this file) narrows it.
-        const rawDict = (opts.loadCfg ?? loadConfig)().dictionary;
-        const dictionary =
-          Array.isArray(rawDict) && rawDict.every((t) => typeof t === "string")
-            ? (rawDict as string[])
-            : undefined;
-        const decided = applyRepairs(
+        // Replayed as produce APPLIED them, not re-gated: re-deciding a
+        // user-confirmed "Etan," → "n8n," refused it and hid the whole lane
+        // (2026-11-08) — `replayStoredRepairs` owns the argument.
+        const dictionary = configDictionary();
+        const decided = replayStoredRepairs(
           parsedTranscript.data,
-          applied.map((r) => ({
-            startWord: Number(r.startWord),
-            endWord: Number(r.endWord),
-            heard: String(r.heard),
-            correction: String(r.correction),
-          })),
-          { dictionary },
+          applied,
+          dictionary !== undefined ? { dictionary } : {},
         );
         // A repair that produce APPLIED but this replay refuses means the
         // reconstruction is not the array the placements were counted
@@ -1335,7 +1396,7 @@ export async function startEditServer(
               words?: unknown;
             };
             if (!Array.isArray(raw.words)) return send(200, { transcript: null });
-            return send(200, { transcript: raw });
+            return send(200, { transcript: await withStoredRepairs(workdir, raw) });
           } catch {
             return send(200, { transcript: null });
           }
