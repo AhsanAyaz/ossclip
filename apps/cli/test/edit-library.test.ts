@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startEditServer } from "../src/edit";
@@ -14,6 +14,20 @@ import { startEditServer } from "../src/edit";
 let close: (() => void) | undefined;
 afterEach(() => close?.());
 
+// Every tmp dir this file makes, removed after each test: the suite used to
+// leave them all behind, and the 96MB/21MB size-limit fixtures alone grew
+// $TMPDIR by gigabytes over a few hundred runs (disk audit 2026-11-07).
+const made: string[] = [];
+async function tempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  made.push(dir);
+  return dir;
+}
+afterEach(async () => {
+  await Promise.all(made.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+
+
 const SHARED_RECENTS = join(tmpdir(), "ossclip-test-recents");
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 1, 2, 3]);
@@ -21,7 +35,7 @@ const GIF = Buffer.from("GIF89a\x01\x00\x01\x00\x00\x00\x00;", "latin1");
 const SVG = Buffer.from(`<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`);
 
 async function fixtureWorkdir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "ossclip-edit-lib-"));
+  const dir = await tempDir("ossclip-edit-lib-");
   await writeFile(
     join(dir, "render-props.json"),
     JSON.stringify({ videoFileName: "clip.mp4", sceneCues: [], captionLines: [], spans: [] }),
@@ -32,7 +46,7 @@ async function fixtureWorkdir(): Promise<string> {
 
 async function boot(opts: { work?: string; lib?: string } = {}): Promise<{ url: string; work: string; lib: string }> {
   const work = opts.work ?? (await fixtureWorkdir());
-  const lib = opts.lib ?? (await mkdtemp(join(tmpdir(), "ossclip-lib-")));
+  const lib = opts.lib ?? (await tempDir("ossclip-lib-"));
   const server = await startEditServer(work, {
     port: 0,
     recentDir: SHARED_RECENTS,
@@ -88,7 +102,7 @@ describe("POST /api/library + GET /api/library", () => {
 
   it("POST path to a local png → 201 (copied, never moved)", async () => {
     const { url, lib } = await boot();
-    const src = join(await mkdtemp(join(tmpdir(), "ossclip-src-")), "logo.png");
+    const src = join(await tempDir("ossclip-src-"), "logo.png");
     await writeFile(src, PNG);
     const res = await post(`${url}/api/library`, { name: "Clean Edit", source: { path: src } });
     expect(res.status).toBe(201);
@@ -99,7 +113,7 @@ describe("POST /api/library + GET /api/library", () => {
 
   it("POST path to a text file → 400", async () => {
     const { url, lib } = await boot();
-    const src = join(await mkdtemp(join(tmpdir(), "ossclip-src-")), "notes.png");
+    const src = join(await tempDir("ossclip-src-"), "notes.png");
     await writeFile(src, "just some text, named like an image");
     const res = await post(`${url}/api/library`, { name: "Notes", source: { path: src } });
     expect(res.status).toBe(400);
@@ -144,7 +158,7 @@ describe("POST /api/library + GET /api/library", () => {
 
   it("POST path to a 21MB file → 400 before reading it", async () => {
     const { url } = await boot();
-    const src = join(await mkdtemp(join(tmpdir(), "ossclip-src-")), "huge.png");
+    const src = join(await tempDir("ossclip-src-"), "huge.png");
     await writeFile(src, Buffer.alloc(21 * 1024 * 1024));
     const res = await post(`${url}/api/library`, { name: "Huge", source: { path: src } });
     expect(res.status).toBe(400);
@@ -180,7 +194,7 @@ describe("POST /api/library + GET /api/library", () => {
 
   it("POST url: fetched once into the library through the injected fetch", async () => {
     const work = await fixtureWorkdir();
-    const lib = await mkdtemp(join(tmpdir(), "ossclip-lib-"));
+    const lib = await tempDir("ossclip-lib-");
     const seen: string[] = [];
     const server = await startEditServer(work, {
       port: 0,
@@ -232,7 +246,7 @@ describe("content-type gate (ruling R14)", () => {
     const { url, work, lib } = await boot();
     await writeLibrary(lib, [{ id: "alpha", names: ["alpha"] }]);
     const before = readdirSync(lib).sort();
-    const src = join(await mkdtemp(join(tmpdir(), "ossclip-src-")), "logo.png");
+    const src = join(await tempDir("ossclip-src-"), "logo.png");
     await writeFile(src, PNG);
     const add = await simplePost(`${url}/api/library`, { name: "Stolen", source: { path: src } });
     expect(add.status).toBe(415);
@@ -575,7 +589,7 @@ describe("logo candidates", () => {
   });
 
   it("no workdir open: the file route is 409, a candidate add is 400", async () => {
-    const lib = await mkdtemp(join(tmpdir(), "ossclip-lib-"));
+    const lib = await tempDir("ossclip-lib-");
     const server = await startEditServer(undefined, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}), libraryDir: lib });
     close = server.close;
     expect((await fetch(`${server.url}/api/logo-candidates/file?suggestion=firebase&n=0`)).status).toBe(409);
@@ -608,7 +622,7 @@ describe("logo candidates", () => {
     const { url, lib } = await boot();
     await writeLibrary(lib, [{ id: "alpha", names: ["alpha"] }]);
     const before = readFileSync(join(lib, "library.json"), "utf8");
-    const src = join(await mkdtemp(join(tmpdir(), "ossclip-src-")), "same.png");
+    const src = join(await tempDir("ossclip-src-"), "same.png");
     await writeFile(src, PNG);
     for (const source of [{ path: src }, { data: PNG.toString("base64"), mimeType: "image/png" }]) {
       const res = await post(`${url}/api/library`, { name: "Duplicate", source });
@@ -679,7 +693,7 @@ describe("logo candidates", () => {
 describe("POST /api/library/preview (tray preview before Add)", () => {
   /** A server whose URL fetches answer from `answer`, and record what was asked. */
   async function bootFetching(answer: (url: string) => Response): Promise<{ url: string; lib: string }> {
-    const lib = await mkdtemp(join(tmpdir(), "ossclip-lib-"));
+    const lib = await tempDir("ossclip-lib-");
     const server = await startEditServer(await fixtureWorkdir(), {
       port: 0,
       recentDir: SHARED_RECENTS,

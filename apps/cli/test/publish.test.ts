@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +34,20 @@ import {
   sizeCapUnattainableMessages,
   summarizePosts,
 } from "../src/publish";
+
+// Every tmp dir this file makes, removed after each test: the suite used to
+// leave them all behind, and the 96MB/21MB size-limit fixtures alone grew
+// $TMPDIR by gigabytes over a few hundred runs (disk audit 2026-11-07).
+const made: string[] = [];
+async function tempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  made.push(dir);
+  return dir;
+}
+afterEach(async () => {
+  await Promise.all(made.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+
 
 const NOW = Date.parse("2026-08-26T12:00:00.000Z");
 
@@ -196,7 +210,7 @@ describe("buildPublishPosts", () => {
 
 describe("loadPublishPack", () => {
   it("prefers the approved file over a provider-keyed cache", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "ossclip-pub-"));
+    const dir = await tempDir("ossclip-pub-");
     await writeFile(
       join(dir, "youtube-abcd1234.json"),
       JSON.stringify({ ...pack, titles: ["cached title", "x", "y"] }),
@@ -210,14 +224,14 @@ describe("loadPublishPack", () => {
   });
 
   it("falls back to the cache when nothing was approved, null when nothing exists", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "ossclip-pub-"));
+    const dir = await tempDir("ossclip-pub-");
     expect(await loadPublishPack(dir)).toBeNull();
     await writeFile(join(dir, "youtube-abcd1234.json"), JSON.stringify(pack));
     expect((await loadPublishPack(dir))?.titles[0]).toBe("The title");
   });
 
   it("skips a corrupt candidate instead of dying on it", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "ossclip-pub-"));
+    const dir = await tempDir("ossclip-pub-");
     await writeFile(join(dir, "youtube-pack-approved.json"), "{not json");
     await writeFile(join(dir, "youtube-abcd1234.json"), JSON.stringify(pack));
     expect((await loadPublishPack(dir))?.titles[0]).toBe("The title");
@@ -301,7 +315,7 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
 
   /** A workdir with the recorded out, the final mp4 and a pack on disk. */
   async function workdirWithRender(): Promise<{ dir: string; out: string }> {
-    const dir = await mkdtemp(join(tmpdir(), "ossclip-pub-run-"));
+    const dir = await tempDir("ossclip-pub-run-");
     const out = join(dir, "final.mp4");
     await writeFile(out, "rendered");
     await writeFile(join(dir, "youtube-aaaaaaaa.json"), JSON.stringify(pack));
