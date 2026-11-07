@@ -9,7 +9,9 @@ import {
   libraryFileUrl,
   nameFromSource,
   parseAliases,
+  previewCaption,
   type LibraryEntryMeta,
+  type LibraryPreview,
   type PasteSource,
 } from "./overlayTrayModel";
 
@@ -39,7 +41,22 @@ export interface OverlayTrayProps {
   /** A staged entry, ready for the doc: App adds it at the word or swaps it in. */
   onStaged: (entry: OverlayEntrySnapshot) => void;
   onClose: () => void;
+  /** How long a paste must sit still before it is previewed. Tests pass 0. */
+  previewDelayMs?: number;
 }
+
+/**
+ * The new item's preview (tray preview, 2026-11-07): a pasted link is not
+ * proof of an image — a Wikimedia "File:" page, a 404, a 16×16 favicon all
+ * looked fine in the box and failed (or saved junk) only at Add. So every
+ * source is fetched and sniffed by `POST /api/library/preview` first, shown,
+ * and Add saves THOSE bytes.
+ */
+type PreviewState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ok"; preview: LibraryPreview }
+  | { status: "error"; error: string };
 
 /** A new item's source in `POST /api/library`'s shape: pasted, or dropped. */
 type NewSource = PasteSource | { data: string; mimeType: string };
@@ -56,12 +73,17 @@ export const errorOf = async (res: Response): Promise<string> => {
   return typeof body?.error === "string" ? body.error : `request failed (${res.status})`;
 };
 
-export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onClose }) => {
+export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onClose, previewDelayMs = 400 }) => {
   const [library, setLibrary] = useState<LibraryEntryMeta[] | null>(null);
   const [query, setQuery] = useState("");
   const [paste, setPaste] = useState("");
   /** A dropped file, held until Add (it has no paste text to re-derive from). */
-  const [dropped, setDropped] = useState<{ data: string; mimeType: string; fileName: string } | null>(null);
+  const [dropped, setDropped] = useState<{ data: string; mimeType: string; fileName: string; seq: number } | null>(
+    null,
+  );
+  /** Each drop's number: the preview's key for a drop, so a 20 MB base64
+   * string is never stringified and compared on every render. */
+  const dropSeq = useRef(0);
   /** A suggestion's "Paste my own" arrives with its name (logo-finder spec
    * §Editor): pre-filled, and counted as typed so the paste's file-name
    * guess does not overwrite it. */
@@ -74,6 +96,7 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [preview, setPreview] = useState<PreviewState>({ status: "idle" });
   /**
    * False once the tray is gone (final review T8): a stage still in flight
    * when the user closes the tray must not land. Its `onStaged` closed over
@@ -122,11 +145,57 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
   }, [onClose]);
 
   const pasted = useMemo(() => classifyPaste(paste), [paste]);
-  const source: NewSource | null = dropped
+  /** What the user gave: shows the form and is what gets previewed. */
+  const given: NewSource | null = dropped
     ? { data: dropped.data, mimeType: dropped.mimeType }
     : pasted.ok
       ? pasted.source
       : null;
+  /** What Add saves: only ever the previewed bytes, never the raw paste. */
+  const source: NewSource | null =
+    preview.status === "ok" ? { data: preview.preview.data, mimeType: preview.preview.mimeType } : null;
+  // Keyed on the paste's text or the drop's number, not the object: `given`
+  // is rebuilt every render, and an identity key would refetch on each
+  // keystroke in Name. The effect reads the source itself from the ref.
+  const givenKey =
+    dropped !== null ? `drop:${dropped.seq}` : pasted.ok ? `paste:${JSON.stringify(pasted.source)}` : null;
+  const givenRef = useRef(given);
+  givenRef.current = given;
+
+  useEffect(() => {
+    if (givenKey === null) {
+      setPreview({ status: "idle" });
+      return;
+    }
+    setPreview({ status: "loading" });
+    // `cancelled` drops a late answer to an EARLIER paste: typing a URL
+    // character by character must end on the last one's image, whatever
+    // order the round-trips land in.
+    let cancelled = false;
+    const timer = setTimeout(
+      () => {
+        void postJson("/api/library/preview", { source: givenRef.current })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(await errorOf(res));
+            return (await res.json()) as LibraryPreview;
+          })
+          .then((p) => {
+            if (!cancelled) setPreview({ status: "ok", preview: p });
+          })
+          .catch((e: unknown) => {
+            if (!cancelled) setPreview({ status: "error", error: e instanceof Error ? e.message : String(e) });
+          });
+      },
+      // A drop is one deliberate act; a paste box may still be mid-typing.
+      dropped !== null ? 0 : previewDelayMs,
+    );
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // `dropped` only picks the delay; which drop it is, is in `givenKey`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [givenKey, previewDelayMs]);
   const shown = useMemo(() => filterLibrary(library ?? [], query), [library, query]);
 
   /** Fill the new-item form from a source's file name — the spec's pre-fill
@@ -200,7 +269,8 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
       const data = url.slice(url.indexOf(",") + 1);
       setError(null);
       setPaste("");
-      setDropped({ data, mimeType: file.type, fileName: file.name });
+      dropSeq.current += 1;
+      setDropped({ data, mimeType: file.type, fileName: file.name, seq: dropSeq.current });
       prefill({ name: file.name, mimeType: file.type });
     };
     reader.readAsDataURL(file);
@@ -309,7 +379,38 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
           </div>
         </div>
 
-        {source !== null ? (
+        {given !== null ? (
+          <div data-testid="overlay-tray-preview" style={previewBox}>
+            {preview.status === "ok" ? (
+              <>
+                {/* Checkerboard behind it: a white logo on transparency is
+                    still visible, and transparency itself is. */}
+                <div style={checker}>
+                  <img
+                    data-testid="overlay-tray-preview-img"
+                    src={`data:${preview.preview.mimeType};base64,${preview.preview.data}`}
+                    alt="preview"
+                    draggable={false}
+                    style={previewImg}
+                  />
+                </div>
+                <div data-testid="overlay-tray-preview-caption" style={previewCaptionStyle}>
+                  {previewCaption(preview.preview)}
+                </div>
+              </>
+            ) : preview.status === "error" ? (
+              <div data-testid="overlay-tray-preview-error" role="alert" style={{ ...errorStyle, marginTop: 0 }}>
+                {preview.error}
+              </div>
+            ) : (
+              <div data-testid="overlay-tray-preview-loading" style={muted}>
+                Checking the image…
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {given !== null ? (
           <div data-testid="overlay-tray-new" style={newForm}>
             <label style={fieldLabel}>
               Name
@@ -354,7 +455,12 @@ export const OverlayTray: React.FC<OverlayTrayProps> = ({ request, onStaged, onC
                 <option value="gif">gif</option>
               </select>
             </label>
-            <button data-testid="overlay-tray-add" style={confirmBtn} disabled={busy} onClick={addNew}>
+            <button
+              data-testid="overlay-tray-add"
+              style={{ ...confirmBtn, ...(source === null ? { opacity: 0.4, cursor: "not-allowed" } : {}) }}
+              disabled={busy || source === null}
+              onClick={addNew}
+            >
               {busy ? "Adding…" : request.mode === "add" ? "Add" : "Add and swap"}
             </button>
           </div>
@@ -506,4 +612,28 @@ const errorStyle: React.CSSProperties = {
   border: "1px solid rgba(255,107,107,0.3)",
   borderRadius: 6,
   padding: "8px 10px",
+};
+
+const previewBox: React.CSSProperties = { marginTop: 14, display: "flex", flexDirection: "column", gap: 6 };
+
+const checker: React.CSSProperties = {
+  height: 140,
+  borderRadius: 6,
+  border: "1px solid #2C2C38",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  backgroundColor: "#2A2A34",
+  backgroundImage:
+    "linear-gradient(45deg, #3A3A46 25%, transparent 25%), linear-gradient(-45deg, #3A3A46 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #3A3A46 75%), linear-gradient(-45deg, transparent 75%, #3A3A46 75%)",
+  backgroundSize: "16px 16px",
+  backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0",
+};
+
+const previewImg: React.CSSProperties = { maxWidth: "90%", maxHeight: 124, objectFit: "contain" };
+
+const previewCaptionStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "#8B8B9E",
+  fontFamily: "ui-monospace, 'SF Mono', Consolas, monospace",
 };

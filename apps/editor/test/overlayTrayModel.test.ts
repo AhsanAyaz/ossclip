@@ -7,6 +7,7 @@ import {
   matchSummary,
   nameFromSource,
   parseAliases,
+  previewCaption,
   type LibraryEntryMeta,
 } from "../src/overlayTrayModel";
 
@@ -107,5 +108,19 @@ describe("matchSummary", () => {
     expect(
       matchSummary({ placements: [], skipped: 0, dropped: [{ entryId: "gde", reason: "too close to another overlay" }] }),
     ).toBe("added 0, skipped 0 already placed or removed, 1 not added (gde: too close to another overlay)");
+  });
+});
+
+describe("previewCaption", () => {
+  it("names the sniffed format, the pixel size and the file size", () => {
+    expect(previewCaption({ format: "png", width: 512, height: 256, bytes: 34_816 })).toBe("PNG · 512×256 · 34 KB");
+  });
+  it("leaves out a size the server could not read (an SVG without width/height)", () => {
+    expect(previewCaption({ format: "svg", bytes: 900 })).toBe("SVG · 900 B");
+  });
+  it("shows megabytes to one decimal", () => {
+    expect(previewCaption({ format: "gif", width: 480, height: 270, bytes: 3.5 * 1024 * 1024 })).toBe(
+      "GIF · 480×270 · 3.5 MB",
+    );
   });
 });

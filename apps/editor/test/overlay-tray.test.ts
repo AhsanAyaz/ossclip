@@ -61,7 +61,7 @@ describe("OverlayTray", () => {
     container.querySelector<T>(`[data-testid="${testid}"]`);
   const mount = async (request: OverlayTrayRequest, onStaged = vi.fn(), onClose = vi.fn()) => {
     await act(async () => {
-      root.render(React.createElement(OverlayTray, { request, onStaged, onClose }));
+      root.render(React.createElement(OverlayTray, { request, onStaged, onClose, previewDelayMs: 0 }));
     });
     return { onStaged, onClose };
   };
@@ -70,6 +70,15 @@ describe("OverlayTray", () => {
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value);
       el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  /** Let the (0 ms) preview debounce fire and its stubbed round-trip land. */
+  const settle = async () => {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
     });
   };
   const click = async (testid: string) => {
@@ -126,6 +135,10 @@ describe("OverlayTray", () => {
   it("a pasted path pre-fills name and kind, adds to the library, then stages the new entry", async () => {
     const calls = stubServer({
       "GET /api/library": () => ({ status: 200, json: { entries: [] } }),
+      "POST /api/library/preview": () => ({
+        status: 200,
+        json: { format: "gif", mimeType: "image/gif", bytes: 2048, width: 480, height: 270, data: "R0lG" },
+      }),
       "POST /api/library": () => ({
         status: 201,
         json: { entry: { id: "clean-edit", names: ["Clean Edit"], kind: "gif", format: "gif" } },
@@ -135,6 +148,13 @@ describe("OverlayTray", () => {
     const { onStaged } = await mount({ mode: "add", word: 7 });
     expect(find("overlay-tray-new")).toBeNull();
     await type("overlay-tray-paste", "/Users/me/clean-edit.gif");
+    await settle();
+    expect(calls.find((c) => c.url === "/api/library/preview")!.body).toEqual({
+      source: { path: "/Users/me/clean-edit.gif" },
+    });
+    // The image shown is the server's bytes, with what it sniffed.
+    expect(find<HTMLImageElement>("overlay-tray-preview-img")!.getAttribute("src")).toBe("data:image/gif;base64,R0lG");
+    expect(find("overlay-tray-preview-caption")!.textContent).toBe("GIF · 480×270 · 2 KB");
     expect(find<HTMLInputElement>("overlay-tray-name")!.value).toBe("clean edit");
     expect(find<HTMLSelectElement>("overlay-tray-kind")!.value).toBe("gif");
     await type("overlay-tray-name", "Clean Edit");
@@ -146,7 +166,8 @@ describe("OverlayTray", () => {
       name: "Clean Edit",
       aliases: ["CE"],
       kind: "gif",
-      source: { path: "/Users/me/clean-edit.gif" },
+      // The PREVIEWED bytes, not the path again: what was shown is what is saved.
+      source: { data: "R0lG", mimeType: "image/gif" },
     });
     expect(calls.find((c) => c.url === "/api/overlays/stage")!.body).toEqual({ entryId: "clean-edit" });
     expect(onStaged).toHaveBeenCalledWith(snap("clean-edit"));
@@ -172,14 +193,90 @@ describe("OverlayTray", () => {
   it("shows the server's refusal inline and stages nothing", async () => {
     const calls = stubServer({
       "GET /api/library": () => ({ status: 200, json: { entries: [] } }),
-      "POST /api/library": () => ({ status: 400, json: { error: "no file at that path" } }),
+      "POST /api/library/preview": () => ({
+        status: 200,
+        json: { format: "png", mimeType: "image/png", bytes: 10, data: "iVBO" },
+      }),
+      "POST /api/library": () => ({ status: 400, json: { error: "file is 25.0 MB; the limit is 20.0 MB" } }),
     });
     const { onStaged } = await mount({ mode: "add", word: 0 });
-    await type("overlay-tray-paste", "/nope.png");
+    await type("overlay-tray-paste", "/big.png");
+    await settle();
     await click("overlay-tray-add");
-    expect(find("overlay-tray-error")!.textContent).toBe("no file at that path");
+    expect(find("overlay-tray-error")!.textContent).toBe("file is 25.0 MB; the limit is 20.0 MB");
     expect(calls.some((c) => c.url === "/api/overlays/stage")).toBe(false);
     expect(onStaged).not.toHaveBeenCalled();
+  });
+
+  it("a preview the server refuses shows its reason under the box, and Add stays disabled", async () => {
+    const calls = stubServer({
+      "GET /api/library": () => ({ status: 200, json: { entries: [] } }),
+      "POST /api/library/preview": () => ({ status: 400, json: { error: "that URL returned a web page, not an image" } }),
+    });
+    await mount({ mode: "add", word: 0 });
+    await type("overlay-tray-paste", "https://commons.wikimedia.org/wiki/File:N8n.png");
+    await settle();
+    expect(find("overlay-tray-preview-error")!.textContent).toBe("that URL returned a web page, not an image");
+    expect(find("overlay-tray-preview-img")).toBeNull();
+    expect(find<HTMLButtonElement>("overlay-tray-add")!.disabled).toBe(true);
+    await click("overlay-tray-add");
+    expect(calls.some((c) => c.url === "/api/library" && c.method === "POST")).toBe(false);
+  });
+
+  it("only the LAST paste's preview is shown when an earlier one answers late", async () => {
+    let releaseFirst!: () => void;
+    const first = new Promise<void>((r) => (releaseFirst = r));
+    global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+      if (url === "/api/library") return { ok: true, status: 200, json: async () => ({ entries: [] }) } as Response;
+      if (url === "/api/library/preview" && body.source.url.endsWith("a.png")) {
+        await first;
+        return { ok: true, status: 200, json: async () => ({ format: "png", mimeType: "image/png", bytes: 1, data: "OLD" }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ format: "png", mimeType: "image/png", bytes: 1, data: "NEW" }) } as Response;
+    }) as unknown as typeof fetch;
+    await mount({ mode: "add", word: 0 });
+    await type("overlay-tray-paste", "https://x.com/a.png");
+    await settle();
+    await type("overlay-tray-paste", "https://x.com/b.png");
+    await settle();
+    releaseFirst();
+    await settle();
+    expect(find<HTMLImageElement>("overlay-tray-preview-img")!.getAttribute("src")).toBe("data:image/png;base64,NEW");
+  });
+
+  it("a dropped file is previewed at once, and Add saves the server-sniffed bytes and type", async () => {
+    const calls = stubServer({
+      "GET /api/library": () => ({ status: 200, json: { entries: [] } }),
+      "POST /api/library/preview": () => ({
+        status: 200,
+        json: { format: "svg", mimeType: "image/svg+xml", bytes: 3, data: "PHN2" },
+      }),
+      "POST /api/library": () => ({
+        status: 201,
+        json: { entry: { id: "n8n", names: ["n8n"], kind: "logo", format: "svg" } },
+      }),
+      "POST /api/overlays/stage": () => ({ status: 200, json: { entry: snap("n8n") } }),
+    });
+    await mount({ mode: "add", word: 0 });
+    const file = new File(["<svg/>"], "n8n.svg", { type: "image/png" });
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { files: [file] } });
+    await act(async () => {
+      find("overlay-tray-drop")!.dispatchEvent(drop);
+    });
+    // FileReader, then the 0 ms timer, then the stubbed round-trip.
+    await vi.waitFor(async () => {
+      await settle();
+      expect(find("overlay-tray-preview-img")).not.toBeNull();
+    });
+    const sent = calls.find((c) => c.url === "/api/library/preview")!.body as { source: { mimeType: string } };
+    expect(sent.source.mimeType).toBe("image/png");
+    await click("overlay-tray-add");
+    expect((calls.find((c) => c.url === "/api/library" && c.method === "POST")!.body as { source: unknown }).source).toEqual({
+      data: "PHN2",
+      mimeType: "image/svg+xml",
+    });
   });
 
   it("refuses a relative path before any round-trip, and shows no form for it", async () => {

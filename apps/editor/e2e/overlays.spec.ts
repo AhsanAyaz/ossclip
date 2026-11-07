@@ -97,6 +97,9 @@ test("add from tray via local path: chip at the word, persists, library has the 
   await expect(page.getByTestId("overlay-tray-item-max-plan")).toBeVisible();
 
   await page.getByTestId("overlay-tray-paste").fill(join(HOME, "assets", "clean-edit.png"));
+  // The real server's preview: the file's own bytes, shown before Add.
+  await expect(page.getByTestId("overlay-tray-preview-img")).toBeVisible();
+  await expect(page.getByTestId("overlay-tray-preview-caption")).toContainText("PNG");
   // Name pre-filled from the file name (spec §Editor), then overwritten.
   await expect(page.getByTestId("overlay-tray-name")).toHaveValue("clean edit");
   await page.getByTestId("overlay-tray-name").fill("Clean Edit");

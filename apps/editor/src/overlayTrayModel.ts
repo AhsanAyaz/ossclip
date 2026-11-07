@@ -145,3 +145,28 @@ export function matchSummary(res: {
   const why = res.dropped.map((d) => `${d.entryId}: ${d.reason}`).join("; ");
   return `${base}, ${res.dropped.length} not added (${why})`;
 }
+
+/** `POST /api/library/preview`'s answer: the exact bytes Add will save, with
+ * the format and size the SERVER sniffed (never the paste's extension). */
+export interface LibraryPreview {
+  format: LibraryEntryMeta["format"];
+  mimeType: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  /** base64 of the bytes — shown as a data: URL, then sent back as Add's source. */
+  data: string;
+}
+
+/** The line under the preview: what was actually fetched, so a 16×16 favicon
+ * or a 4 MB banner is visible as such before it lands in the library. */
+export function previewCaption(p: Pick<LibraryPreview, "format" | "bytes" | "width" | "height">): string {
+  const size =
+    p.bytes < 1024
+      ? `${p.bytes} B`
+      : p.bytes < 1024 * 1024
+        ? `${Math.round(p.bytes / 1024)} KB`
+        : `${(p.bytes / (1024 * 1024)).toFixed(1)} MB`;
+  const dims = p.width !== undefined && p.height !== undefined ? `${p.width}×${p.height} · ` : "";
+  return `${p.format.toUpperCase()} · ${dims}${size}`;
+}
