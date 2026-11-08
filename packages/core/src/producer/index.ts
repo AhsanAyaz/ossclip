@@ -1,4 +1,4 @@
-import type { Transcript } from "../schema";
+import type { Segment, Transcript } from "../schema";
 import type { Scene, SceneComponentId } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
@@ -249,7 +249,12 @@ export async function produceScenes(
      * moments/scenes are re-anchored to the sliced transcript, and the caller
      * slices the rest of its pipeline state to `clip.window`.
      */
-    clip?: { targetSec: number };
+    clip?: {
+      targetSec: number;
+      /** The take's cutlist, so the window's length is its CUT runtime
+       * (`resolveClipWindow`). Omitted = source seconds, as before. */
+      cutlist?: readonly Segment[];
+    };
     /** Output frame shape (R21 §101) — landscape gets layout-variety
      * guidance in the beat prompt. Omitted = portrait, no extra text. */
     aspect?: "9:16" | "16:9";
@@ -287,7 +292,12 @@ export async function produceScenes(
   let cut = args.cut;
   let clip: ProduceScenesResult["clip"];
   if (args.clip) {
-    const resolved = resolveClipWindow(args.transcript, highlight, args.clip.targetSec);
+    const resolved = resolveClipWindow(
+      args.transcript,
+      highlight,
+      args.clip.targetSec,
+      args.clip.cutlist,
+    );
     transcript = sliceTranscript(args.transcript, resolved.window);
     // Into the slice's index space, the same shift `sliceMoments` applies.
     if (cut) {

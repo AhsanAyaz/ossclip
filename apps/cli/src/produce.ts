@@ -3541,7 +3541,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             speaker: opts.speaker ?? cfg.speaker,
             forceComponent: opts.forceComponent,
             framing: framingCtx,
-            clip: { targetSec: clipTargetSec! },
+            clip: { targetSec: clipTargetSec!, cutlist },
             aspect: landscape ? "16:9" : "9:16",
             cut: selectCut,
           }),
@@ -3820,7 +3820,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         } else if (!sfxPlan) {
           console.log(`▸ placing sound effects (level ${sfxLevel})…`);
           const result = await phases.time("llm", () =>
-            generateSfxPlan(provider!, transcript, fullSheet!, library.sounds, sfxLevel),
+            // The automatic cut's map — the one the plan (and its cache
+            // key, via `beatKey`) was made against.
+            generateSfxPlan(provider!, transcript, fullSheet!, library.sounds, sfxLevel, map),
           );
           sfxPlan = { level: sfxLevel, placements: result.plan.placements };
           sfxPlanned = result.planned;
@@ -5692,7 +5694,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const cover = coverDecision(opts.cover !== false, coverText);
     if (cover !== "none") {
       const detector = await createFaceDetector();
-      const pick = await pickCoverFrame(tools, input, sourceProbe.duration, {
+      // OUTPUT duration + the final map: the cover comes from what the video
+      // shows, never a cut blooper or footage outside a --clip window.
+      const pick = await pickCoverFrame(tools, input, map.outputDuration, {
+        toSource: (t) => map.toSource(t),
         cacheDir: work,
         cropVf,
         // On a screen-subject take the face weight is zeroed (2026-08-16: a

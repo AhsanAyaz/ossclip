@@ -1,5 +1,5 @@
 import { z } from "zod/v4";
-import type { Transcript } from "../schema";
+import type { Transcript, Word } from "../schema";
 import { SFX_MEME_TAG, type LoadedSfxSound } from "../sfx-pack";
 import { cappedText, type BeatSheet } from "./beats";
 // The scene-id formula, imported rather than restated: the ids this prompt
@@ -185,6 +185,20 @@ export function sfxSceneIds(sheet: BeatSheet): string[] {
   return sheet.moments.flatMap((m, i) => (m.sceneKind === "none" ? [] : [momentSceneId(i)]));
 }
 
+/**
+ * The cut timeline the placement is judged against — `TimeMap` satisfies it.
+ * Optional everywhere for callers without one (tests, a cutless take): the
+ * source clock then stands in, as it always did. With it (2026-11-08 audit):
+ * the budget is sized for the CUT runtime, cut words are marked and never
+ * anchored, and spacing is measured on the output clock — two effects 4s
+ * apart in the source used to land 0.5s apart once a retake between them
+ * was cut.
+ */
+export interface SfxTimeline {
+  mapWord(w: Word): { start: number; end: number } | null;
+  outputDuration: number;
+}
+
 /** Runtime in seconds, measured like beats.ts: first word start → last word end. */
 function transcriptRuntime(transcript: Transcript): number {
   const words = transcript.words;
@@ -201,8 +215,9 @@ function transcriptRuntime(transcript: Transcript): number {
 export function sfxBudget(
   transcript: Transcript,
   level: SfxLevel,
+  timeline?: SfxTimeline,
 ): { max: number; runtimeSec: number } {
-  const runtimeSec = transcriptRuntime(transcript);
+  const runtimeSec = timeline ? timeline.outputDuration : transcriptRuntime(transcript);
   // The epsilon is beats.ts's float posture: a runtime that is 60s to the
   // eye can be 59.999999s in the stamps, and the boundary case is exactly
   // the one a user counts.
@@ -250,14 +265,21 @@ export function buildSfxUserPrompt(
   sheet: BeatSheet,
   sounds: readonly LoadedSfxSound[],
   level: SfxLevel,
+  timeline?: SfxTimeline,
 ): string {
   const eligible = eligibleSfxSounds(sounds, level);
   // The scene-registry menu shape (beats.ts:201-203): the library is a list of
   // items with a whenToUse line, which is the format the producer prompt has
   // already been tuned against.
   const menu = eligible.map((s) => `- ${s.id}: ${s.whenToUse}`).join("\n");
-  const words = transcript.words.map((w, i) => `[${i}]${w.text}`).join(" ");
-  const { max, runtimeSec } = sfxBudget(transcript, level);
+  // Cut words marked the beat sheet's way (beats.ts CUT_WORDS_RULE): indices
+  // unchanged, and an uncut take's prompt byte-identical.
+  const cutAt = (i: number): boolean => timeline !== undefined && timeline.mapWord(transcript.words[i]!) === null;
+  const anyCut = transcript.words.some((_, i) => cutAt(i));
+  const words = transcript.words
+    .map((w, i) => (cutAt(i) ? `[${i}]⟦${w.text}⟧` : `[${i}]${w.text}`))
+    .join(" ");
+  const { max, runtimeSec } = sfxBudget(transcript, level, timeline);
   const moments = sheet.moments
     .map(
       (m, i) =>
@@ -278,6 +300,10 @@ export function buildSfxUserPrompt(
     // content it constrains.
     `Graphics plan (hook: "${sheet.hook}") — a graphic ENTERS at its first word, ` +
     `and [scene-N] is the id to put in "sceneId" when a sound marks that entrance:\n${moments}\n\n` +
+    (anyCut
+      ? "Words wrapped in ⟦ ⟧ were CUT from the video — never anchor an effect on one; " +
+        "it would never play.\n\n"
+      : "") +
     `Word-indexed transcript (word indices refer to THIS list):\n${words}`
   );
 }
@@ -304,6 +330,7 @@ export function normalizeSfxPlan(
   sounds: readonly LoadedSfxSound[],
   level: SfxLevel,
   sheet: BeatSheet,
+  timeline?: SfxTimeline,
 ): { plan: SfxPlan; issues: SfxValidationIssue[] } {
   const issues: SfxValidationIssue[] = [];
   const byId = new Map(sounds.map((s) => [s.id, s]));
@@ -341,6 +368,12 @@ export function normalizeSfxPlan(
       drop(i, "outside transcript", `word ${p.word} beyond transcript (${Math.max(0, maxIndex)})`);
       continue;
     }
+    // A cut anchor never plays (`resolveSfxCues` drops it at render); dropped
+    // HERE so it cannot take a budget slot or crowd out a neighbour's spacing.
+    if (timeline && timeline.mapWord(transcript.words[p.word]!) === null) {
+      drop(i, "cut word", `"${p.soundId}" anchors on word ${p.word}, which the cut removes`);
+      continue;
+    }
     // The scene link, checked LAST because it is the only thing here that is
     // not a drop: a `sceneId` naming no graphic moment is STRIPPED and the
     // placement kept on its word. The word anchor is required precisely so a
@@ -366,7 +399,11 @@ export function normalizeSfxPlan(
   // order, so the spacing pass drops the LATER-written one deterministically.
   kept.sort((a, b) => a.placement.word - b.placement.word || a.index - b.index);
 
-  const at = (p: SfxPlacement): number => transcript.words[p.word]!.start;
+  // Output clock when there is one: spacing is about what the viewer hears.
+  const at = (p: SfxPlacement): number => {
+    const w = transcript.words[p.word]!;
+    return timeline ? (timeline.mapWord(w)?.start ?? w.start) : w.start;
+  };
   const spaced: typeof kept = [];
   for (const entry of kept) {
     const prev = spaced[spaced.length - 1];
@@ -386,7 +423,7 @@ export function normalizeSfxPlan(
   // Keep the EARLIEST N. Not "the best N": nothing here can rank placements,
   // and dropping from the front would strip the hook — the one moment the
   // whole grammar says must land.
-  const { max } = sfxBudget(transcript, level);
+  const { max } = sfxBudget(transcript, level, timeline);
   for (const over of spaced.slice(max)) {
     drop(
       over.index,
@@ -451,10 +488,11 @@ export async function generateSfxPlan(
   sheet: BeatSheet,
   sounds: readonly LoadedSfxSound[],
   level: SfxLevel,
+  timeline?: SfxTimeline,
 ): Promise<{ plan: SfxPlan; issues: SfxValidationIssue[]; planned: number }> {
   const raw = await provider.complete({
     system: SFX_SYSTEM,
-    user: buildSfxUserPrompt(transcript, sheet, sounds, level),
+    user: buildSfxUserPrompt(transcript, sheet, sounds, level, timeline),
     schema: SfxPlanSchema,
     schemaName: "sfx_plan",
     // Mechanical, not editorial (the §37 tiering rule): the editorial
@@ -465,7 +503,7 @@ export async function generateSfxPlan(
     tier: "mechanical",
   });
   return {
-    ...normalizeSfxPlan(raw, transcript, sounds, level, sheet),
+    ...normalizeSfxPlan(raw, transcript, sounds, level, sheet, timeline),
     planned: raw.placements.length,
   };
 }

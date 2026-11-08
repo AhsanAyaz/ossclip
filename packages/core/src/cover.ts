@@ -153,6 +153,34 @@ export interface PickCoverOptions {
    * 2026-08-16 stranger's-face incident. Default "face".
    */
   subject?: "face" | "screen";
+  /**
+   * Maps an OUTPUT instant to the source (`TimeMap.toSource`). When given,
+   * `durationSec` is the OUTPUT duration and samples are spread over the
+   * opening of what the viewer sees (2026-11-08 audit): sampling the raw
+   * source picked frames from cut bloopers and dead air, and on a `--clip`
+   * from the first minutes of a 20-minute take the clip never shows. The
+   * returned `timeSec` is always SOURCE time — the frame is extracted from
+   * the source.
+   */
+  toSource?: (tOut: number) => number;
+}
+
+/**
+ * Where the cover sampler looks: `samples` instants evenly across the first
+ * `searchFraction` of `durationSec`, each with its source time. Pure, so the
+ * output-time mapping is testable without ffmpeg.
+ */
+export function coverSampleTimes(
+  durationSec: number,
+  opts: Pick<PickCoverOptions, "samples" | "searchFraction" | "toSource"> = {},
+): { window: number; times: { outSec: number; srcSec: number }[] } {
+  const samples = opts.samples ?? 12;
+  const window = Math.max(1, durationSec * (opts.searchFraction ?? 0.2));
+  const times = Array.from({ length: samples }, (_, i) => {
+    const outSec = (window * (i + 0.5)) / samples;
+    return { outSec, srcSec: opts.toSource ? opts.toSource(outSec) : outSec };
+  });
+  return { window, times };
 }
 
 /**
@@ -219,9 +247,7 @@ export async function pickCoverFrame(
   durationSec: number,
   opts: PickCoverOptions = {},
 ): Promise<CoverCandidate | null> {
-  const samples = opts.samples ?? 12;
-  const searchFraction = opts.searchFraction ?? 0.2;
-  const window = Math.max(1, durationSec * searchFraction);
+  const { window, times } = coverSampleTimes(durationSec, opts);
   const candidates: CoverCandidate[] = [];
   const raw: Array<{
     timeSec: number;
@@ -230,9 +256,13 @@ export async function pickCoverFrame(
     face?: CoverFace;
   }> = [];
 
-  for (let i = 0; i < samples; i++) {
-    const t = (window * (i + 0.5)) / samples;
-    const measured = await measureCoverFrame(tools, videoPath, t, {
+  // Earliness is scored on the OUTPUT clock — "early in what the viewer
+  // sees" — while the frame is measured at its source instant.
+  const outAt = new Map<number, number>();
+  for (let i = 0; i < times.length; i++) {
+    const { outSec, srcSec } = times[i]!;
+    outAt.set(srcSec, outSec);
+    const measured = await measureCoverFrame(tools, videoPath, srcSec, {
       cacheDir: opts.cacheDir,
       cropVf: opts.cropVf,
       detectFace: opts.detectFace,
@@ -246,7 +276,13 @@ export async function pickCoverFrame(
   for (const r of raw) {
     candidates.push({
       ...r,
-      score: scoreCandidate({ ...r, durationSec: window, maxSharpness, subject: opts.subject }),
+      score: scoreCandidate({
+        ...r,
+        timeSec: outAt.get(r.timeSec) ?? r.timeSec,
+        durationSec: window,
+        maxSharpness,
+        subject: opts.subject,
+      }),
     });
   }
   candidates.sort((a, b) => b.score - a.score);

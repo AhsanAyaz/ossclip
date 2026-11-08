@@ -3071,6 +3071,58 @@ describe("publish caption regenerate (2026-08-29)", () => {
     release();
     expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
   });
+
+  it("grounds the rewrite in what the viewer hears — repaired words, cut retake left out", async () => {
+    const dir = await regenWorkdir();
+    // 2026-11-08 audit: the cut retake "rotate the keys" (words 2-4) and the
+    // raw ASR "Jason" must not reach the model — produce's repaired words,
+    // minus what the last render cut, are what the viewer hears.
+    const raw = "use Jason rotate the keys rotate keys weekly".split(" ");
+    const stamp = (text: string, i: number) => ({ text, start: i * 0.5, end: i * 0.5 + 0.4 });
+    await writeFile(
+      join(dir, "transcript.json"),
+      JSON.stringify({ language: "en", words: raw.map(stamp) }),
+    );
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        transcript: { language: "en", words: raw.map(stamp) },
+        captionWords: raw.map((t, i) => stamp(t === "Jason" ? "JSON" : t, i)),
+      }),
+    );
+    const props = JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")) as Record<string, unknown>;
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({
+        ...props,
+        spans: [
+          { srcIn: 0, srcOut: 1.0, outIn: 0, outOut: 1.0 },
+          { srcIn: 2.5, srcOut: 4.0, outIn: 1.0, outOut: 2.5 },
+        ],
+      }),
+    );
+    const users: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      makeLlmProvider: (() => ({
+        name: "gemini",
+        usage: [],
+        async complete(req: { user: string; schema: { parse(v: unknown): unknown } }) {
+          users.push(req.user);
+          return req.schema.parse({ caption: "use JSON" });
+        },
+      })) as never,
+    });
+    close = server.close;
+    const res = await post(server.url, { network: "linkedin", instruction: "shorter", currentCaption: "x" });
+    expect(res.status).toBe(200);
+    expect(users[0]).toContain("use JSON rotate keys weekly");
+    expect(users[0]).not.toContain("Jason");
+    expect(users[0]).not.toContain("the keys");
+  });
 });
 
 describe("on-demand youtube pack generate (2026-08-29)", () => {
@@ -3279,6 +3331,59 @@ describe("on-demand youtube pack generate (2026-08-29)", () => {
     expect(second.status).toBe(409);
     release();
     expect(((await (await first).json()) as { ok: boolean }).ok).toBe(true);
+  });
+
+  it("grounds the pack in what the viewer hears — repaired words, cut retake left out", async () => {
+    const dir = await noPackWorkdir();
+    // 2026-11-08 audit: the cut retake "rotate the keys" (words 2-4) and the
+    // raw ASR "Jason" must not reach the model — produce's repaired words,
+    // minus what the last render cut, are what the viewer hears.
+    const raw = "use Jason rotate the keys rotate keys weekly".split(" ");
+    const stamp = (text: string, i: number) => ({ text, start: i * 0.5, end: i * 0.5 + 0.4 });
+    await writeFile(
+      join(dir, "transcript.json"),
+      JSON.stringify({ language: "en", words: raw.map(stamp) }),
+    );
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        transcript: { language: "en", words: raw.map(stamp) },
+        captionWords: raw.map((t, i) => stamp(t === "Jason" ? "JSON" : t, i)),
+      }),
+    );
+    const props = JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")) as Record<string, unknown>;
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({
+        ...props,
+        spans: [
+          { srcIn: 0, srcOut: 1.0, outIn: 0, outOut: 1.0 },
+          { srcIn: 2.5, srcOut: 4.0, outIn: 1.0, outOut: 2.5 },
+        ],
+      }),
+    );
+    const users: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      probeVideo: async () => ({ duration: 60, width: 1080, height: 1920, fps: 30, hasAudio: true }),
+      makeLlmProvider: (() => ({
+        name: "gemini",
+        usage: [],
+        async complete(req: { user: string; schema: { parse(v: unknown): unknown } }) {
+          users.push(req.user);
+          return req.schema.parse(answeredPack);
+        },
+      })) as never,
+    });
+    close = server.close;
+    const res = await generate(server.url);
+    expect(res.status).toBe(200);
+    expect(users[0]).toContain("use JSON rotate keys weekly");
+    expect(users[0]).not.toContain("Jason");
+    expect(users[0]).not.toContain("the keys");
   });
 });
 

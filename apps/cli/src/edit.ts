@@ -1098,6 +1098,56 @@ export async function startEditServer(
     }
     return words;
   };
+  /**
+   * The words the viewer HEARS, for the editor's LLM text calls (pack
+   * generate, caption rewrite). Those read raw `transcript.json` — the whisper
+   * cache of the WHOLE source: unrepaired, every retake and blooper, and on a
+   * `--clip` project the entire take, so a 60s clip's titles described topics
+   * from 20 minutes it never shows (2026-11-08 audit). Now: produce's repaired
+   * words (`repairedWords`), minus what the last render's map cut. Spans
+   * missing (never rendered) → every repaired word; production unusable →
+   * the raw read, as before, rather than refusing a working legacy workdir.
+   */
+  const heardWords = async (dir: string): Promise<{ text: string; end?: number }[]> => {
+    let production: Record<string, unknown> | null = null;
+    try {
+      production = JSON.parse(await readFile(join(dir, "production.json"), "utf8")) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      production = null;
+    }
+    const repaired = production !== null ? repairedWords(production) : null;
+    if (repaired !== null && repaired.length > 0) {
+      try {
+        const spans = z
+          .array(z.object({ srcIn: z.number(), srcOut: z.number(), outIn: z.number(), outOut: z.number() }))
+          .safeParse(
+            (JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")) as { spans?: unknown })
+              .spans,
+          );
+        if (spans.success && spans.data.length > 0) {
+          const map = mapFromKeptSpans(spans.data);
+          return repaired.filter((w) => map.mapWord(w) !== null);
+        }
+      } catch {
+        // unreadable props — the repaired words uncut, below
+      }
+      return repaired;
+    }
+    try {
+      const raw = JSON.parse(await readFile(join(dir, "transcript.json"), "utf8")) as { words?: unknown };
+      if (!Array.isArray(raw.words)) return [];
+      return raw.words.flatMap((w) => {
+        const o = w as { text?: unknown; end?: unknown } | null;
+        if (typeof o?.text !== "string") return [];
+        return [typeof o.end === "number" && Number.isFinite(o.end) ? { text: o.text, end: o.end } : { text: o.text }];
+      });
+    } catch {
+      return [];
+    }
+  };
   // ---- Overlay library (overlay-library spec §Server endpoints) -----------
   // Machine-global like the sfx library, so its routes need no workdir; the
   // folder is the injectable `libraryDir` (tests never touch ~/.ossclip).
@@ -2283,26 +2333,11 @@ export async function startEditServer(
           // produce's stamped transcript needs the cut map, which only a
           // produce run holds — the prompt tolerates plain text, the model
           // just gets no measured chapters worth trusting.
-          let words: Array<{ text: string }> = [];
+          // What the viewer hears (`heardWords`), not the whole-source cache.
+          const words = await heardWords(workdir);
           let lastWordEnd: number | null = null;
-          try {
-            const raw = JSON.parse(await readFile(join(workdir, "transcript.json"), "utf8")) as {
-              words?: unknown;
-            };
-            if (Array.isArray(raw.words)) {
-              words = raw.words.filter(
-                (w): w is { text: string } =>
-                  typeof (w as { text?: unknown } | null)?.text === "string",
-              );
-              for (const w of raw.words) {
-                const end = (w as { end?: unknown } | null)?.end;
-                if (typeof end === "number" && Number.isFinite(end)) {
-                  lastWordEnd = Math.max(lastWordEnd ?? 0, end);
-                }
-              }
-            }
-          } catch {
-            // absent/corrupt → the 412 below
+          for (const w of words) {
+            if (w.end !== undefined) lastWordEnd = Math.max(lastWordEnd ?? 0, w.end);
           }
           if (words.length === 0) {
             return send(412, {
@@ -2792,24 +2827,10 @@ export async function startEditServer(
           // 412 when it yields nothing: a rewrite with no transcript would be
           // a rewrite with no factual evidence, which is the exact failure
           // this endpoint exists to repair.
-          let transcript: { language: string; words: Array<{ text: string }> } | null = null;
-          try {
-            const raw = JSON.parse(await readFile(join(workdir, "transcript.json"), "utf8")) as {
-              language?: unknown;
-              words?: unknown;
-            };
-            if (Array.isArray(raw.words)) {
-              transcript = {
-                language: typeof raw.language === "string" ? raw.language : "en",
-                words: raw.words.filter(
-                  (w): w is { text: string } =>
-                    typeof (w as { text?: unknown } | null)?.text === "string",
-                ),
-              };
-            }
-          } catch {
-            // absent/corrupt → the 412 below
-          }
+          // What the viewer hears (`heardWords`): a rewrite grounded in a
+          // retake that was cut would put words in the post the video never says.
+          const heard = await heardWords(workdir);
+          const transcript = heard.length > 0 ? { words: heard } : null;
           if (transcript === null || transcript.words.length === 0) {
             return send(412, {
               error:

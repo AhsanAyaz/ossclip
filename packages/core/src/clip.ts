@@ -39,8 +39,26 @@ export const isSentenceEnd = (t: Transcript, i: number): boolean =>
 export const isSentenceStart = (t: Transcript, i: number): boolean =>
   i === 0 || isSentenceEnd(t, i - 1);
 
-const durSec = (t: Transcript, start: number, end: number): number =>
-  t.words[end]!.end - t.words[start]!.start;
+/**
+ * Seconds of `[a, b]` (source time) that survive `cutlist` — what a window
+ * actually runs for once cut. Without it `--clip 60` measured the window in
+ * SOURCE seconds and a window carrying a retake and a few long pauses
+ * rendered at ~40s (2026-11-08 audit). No cutlist = the raw span.
+ */
+export function keptSecondsBetween(
+  cutlist: readonly Segment[] | undefined,
+  a: number,
+  b: number,
+): number {
+  const raw = Math.max(0, b - a);
+  if (!cutlist) return raw;
+  let removed = 0;
+  for (const s of cutlist) {
+    if (s.kind !== "remove") continue;
+    removed += Math.max(0, Math.min(b, s.srcOut) - Math.max(a, s.srcIn));
+  }
+  return Math.max(0, raw - removed);
+}
 
 export interface ResolvedClip {
   window: ClipWindow;
@@ -60,8 +78,17 @@ export function resolveClipWindow(
   transcript: Transcript,
   highlight: ClipHighlight | undefined,
   targetSec: number,
+  /**
+   * The take's cutlist (source time). When given, every window LENGTH — the
+   * over-long cap, the trim target, the under-half refusal — is measured in
+   * kept seconds, the clip's real runtime. Snap distances stay source time:
+   * they ask "how far did the boundary move", not "how long is the clip".
+   */
+  cutlist?: readonly Segment[],
 ): ResolvedClip {
   const words = transcript.words;
+  const durSec = (t: Transcript, start: number, end: number): number =>
+    keptSecondsBetween(cutlist, t.words[start]!.start, t.words[end]!.end);
   if (words.length === 0) throw new Error("--clip: transcript has no words to select from");
   if (!highlight) {
     throw new Error(
