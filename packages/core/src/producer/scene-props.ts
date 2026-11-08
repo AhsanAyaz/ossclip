@@ -76,9 +76,18 @@ GROUNDING — hard rules:
 - Every label, noun and claim must be supported by the transcript slice. NEVER introduce an entity, metric name or brand the slice does not contain — a number gets the noun the speaker attached to it, not a plausible-sounding one. If the slice offers no supporting noun, use the number alone or fall back to the suggested copy verbatim.
 - The transcript is automatic speech recognition output and may contain mishearings. An unfamiliar proper noun is more likely a mistranscription of a common phrase than a real company or product — prefer the common-sense reading ("code churn", not "CodeChun") and never promote a suspected mishearing into a name or label.`;
 
-function buildPropsPrompt(moment: Moment, transcript: Transcript): string {
+function buildPropsPrompt(
+  moment: Moment,
+  transcript: Transcript,
+  cut?: ReadonlySet<number>,
+): string {
+  // Cut words are LEFT OUT of the slice (2026-11-08): this call writes the
+  // graphic's actual copy, and a moment spanning a cut retake handed the
+  // model both takes — the viewer hears one. No indices here, so dropping
+  // them costs nothing the beat sheet's ⟦ ⟧ marking had to preserve.
   const slice = transcript.words
     .slice(moment.startWord, moment.endWord + 1)
+    .filter((_, k) => !cut?.has(moment.startWord + k))
     .map((w) => w.text)
     .join(" ");
   return (
@@ -107,6 +116,7 @@ async function generateScenePropsBatch(
   moments: readonly Moment[],
   indices: readonly number[],
   transcript: Transcript,
+  cut?: ReadonlySet<number>,
 ): Promise<Map<number, Record<string, unknown>>> {
   const out = new Map<number, Record<string, unknown>>();
   if (indices.length < 2) return out; // nothing to amortise
@@ -120,7 +130,7 @@ async function generateScenePropsBatch(
     const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId);
     return (
       `--- moment ${i} ---\n` +
-      `${buildPropsPrompt(moment, transcript)}\n` +
+      `${buildPropsPrompt(moment, transcript, cut)}\n` +
       `Props schema: ${JSON.stringify(z.toJSONSchema(llmSchema))}`
     );
   });
@@ -169,8 +179,18 @@ export async function generateScenes(
   provider: LlmProvider,
   moments: readonly Moment[],
   transcript: Transcript,
-  opts: { framing?: FramingContext } = {},
+  opts: {
+    framing?: FramingContext;
+    /** Word indices the cutlist removes (`cutWordIndices`), in `transcript`'s space. */
+    cut?: ReadonlySet<number>;
+  } = {},
 ): Promise<{ scenes: Scene[]; failures: ScenePropsFailure[] }> {
+  // The cue matcher sees cut words as blank: a retake says the same words
+  // twice, and an entrance matched on the take that was cut fires early, on
+  // speech the viewer never hears. Same indices, so cues stay addressable.
+  const cueWords = opts.cut && opts.cut.size > 0
+    ? transcript.words.map((w, i) => (opts.cut!.has(i) ? { text: "" } : w))
+    : transcript.words;
   const scenes: Scene[] = [];
   const failures: ScenePropsFailure[] = [];
   /**
@@ -210,7 +230,13 @@ export async function generateScenes(
   };
 
   const graphicIndices = moments.flatMap((m, i) => (m.sceneKind === "none" ? [] : [i]));
-  const batched = await generateScenePropsBatch(provider, moments, graphicIndices, transcript);
+  const batched = await generateScenePropsBatch(
+    provider,
+    moments,
+    graphicIndices,
+    transcript,
+    opts.cut,
+  );
 
   for (let i = 0; i < moments.length; i++) {
     const moment = moments[i]!;
@@ -225,7 +251,7 @@ export async function generateScenes(
 
     let props: Record<string, unknown> | null = batched.get(i) ?? null;
     let lastError = "";
-    const basePrompt = buildPropsPrompt(moment, transcript);
+    const basePrompt = buildPropsPrompt(moment, transcript, opts.cut);
     for (let attempt = 0; attempt < 2 && props === null; attempt++) {
       const user =
         attempt === 0
@@ -259,7 +285,7 @@ export async function generateScenes(
         rationale: `fallback after ${component} props failed: ${lastError.slice(0, 120)}`,
         // Matched against the TitleCard it actually renders, not the
         // component that failed — the fallback is still a new-plan scene.
-        cue: planCue("TitleCard", fallbackProps, moment, transcript.words),
+        cue: planCue("TitleCard", fallbackProps, moment, cueWords),
       });
       continue;
     }
@@ -272,7 +298,7 @@ export async function generateScenes(
       props,
       overrides: {},
       rationale: moment.rationale ?? moment.purpose,
-      cue: planCue(component, props, moment, transcript.words),
+      cue: planCue(component, props, moment, cueWords),
     });
   }
 

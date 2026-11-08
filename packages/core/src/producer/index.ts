@@ -253,6 +253,12 @@ export async function produceScenes(
     /** Output frame shape (R21 §101) — landscape gets layout-variety
      * guidance in the beat prompt. Omitted = portrait, no extra text. */
     aspect?: "9:16" | "16:9";
+    /**
+     * Word indices (into `transcript`) the cutlist removes — `cutWordIndices`.
+     * Every call that writes on-screen copy is told, so a cut retake never
+     * comes back as a graphic (2026-11-08). Omitted = nothing marked.
+     */
+    cut?: ReadonlySet<number>;
   },
 ): Promise<ProduceScenesResult> {
   const framingBrief = args.framing
@@ -267,6 +273,7 @@ export async function produceScenes(
     framingBrief || undefined,
     args.clip,
     args.aspect,
+    args.cut,
   );
 
   // ---- Clip window (R19 §93) ----------------------------------------------
@@ -277,10 +284,16 @@ export async function produceScenes(
   // deserves a 60s window's graphics schedule.
   let transcript = args.transcript;
   let workingSheet = sheet;
+  let cut = args.cut;
   let clip: ProduceScenesResult["clip"];
   if (args.clip) {
     const resolved = resolveClipWindow(args.transcript, highlight, args.clip.targetSec);
     transcript = sliceTranscript(args.transcript, resolved.window);
+    // Into the slice's index space, the same shift `sliceMoments` applies.
+    if (cut) {
+      const { startWord, endWord } = resolved.window;
+      cut = new Set([...cut].filter((i) => i >= startWord && i <= endWord).map((i) => i - startWord));
+    }
     const anchored = sliceMoments(sheet.moments, resolved.window);
     if (anchored.length === 0) {
       issues.push({
@@ -294,6 +307,7 @@ export async function produceScenes(
       // The ask the prompt stated — NOT re-derived from the slice, which
       // would compare the model against a number it was never given (§118b).
       asked,
+      cut,
     );
     workingSheet = renorm.sheet;
     issues.push(...renorm.issues);
@@ -319,6 +333,7 @@ export async function produceScenes(
   }
   const { scenes, failures } = await generateScenes(provider, moments, transcript, {
     framing: args.framing,
+    cut,
   });
   const delivered = moments.filter((m) => m.sceneKind !== "none").length;
   return {

@@ -211,6 +211,21 @@ export function buildClipAddendum(targetSec: number): string {
   );
 }
 
+/**
+ * The cut-words rule, in the USER prompt beside the transcript it explains —
+ * the tuned system prompt stays byte-identical (see `producerSystem`).
+ */
+export const CUT_WORDS_RULE =
+  `Words wrapped in ⟦ ⟧ were CUT from the video (retakes, flubs, fillers, dead air) — ` +
+  `the viewer never hears them. Never quote, paraphrase or plan on-screen copy from cut ` +
+  `words; write every graphic from the unmarked words only. Indices still count them.\n\n`;
+
+/** The transcript as the viewer hears it — for counts, never for indices. */
+function keptTranscript(transcript: Transcript, cut?: ReadonlySet<number>): Transcript {
+  if (!cut || cut.size === 0) return transcript;
+  return { ...transcript, words: transcript.words.filter((_, i) => !cut.has(i)) };
+}
+
 export function buildBeatsUserPrompt(
   transcript: Transcript,
   duration: number,
@@ -218,9 +233,16 @@ export function buildBeatsUserPrompt(
   framingBrief?: string,
   clip?: { targetSec: number },
   aspect?: "9:16" | "16:9",
+  cut?: ReadonlySet<number>,
 ): string {
+  // Cut words stay IN the listing, indices unchanged (moments anchor on
+  // them, and a moment may legitimately span a tightened retake), but are
+  // marked so the model never writes copy from speech the viewer never hears
+  // (2026-11-08: a cut "Rotate" retake came back as a graphic's headline).
+  // An uncut take produces the byte-identical prompt it always did.
+  const hasCut = cut !== undefined && cut.size > 0;
   const words = transcript.words
-    .map((w, i) => `[${i}]${w.text}`)
+    .map((w, i) => (hasCut && cut.has(i) ? `[${i}]⟦${w.text}⟧` : `[${i}]${w.text}`))
     .join(" ");
   const menu = Object.entries(SCENE_REGISTRY)
     .map(([id, meta]) => `- ${id}: ${meta.whenToUse}`)
@@ -228,7 +250,7 @@ export function buildBeatsUserPrompt(
   // §118: state the graphic COUNT explicitly. Everything else in this prompt
   // describes what a good graphic is; nothing said how many to plan, and the
   // coverage budget downstream only ever removes.
-  const enumerated = countEnumeratedBeats(transcript);
+  const enumerated = countEnumeratedBeats(keptTranscript(transcript, cut));
   const target = graphicsTarget(clip?.targetSec ?? duration, enumerated);
   const targetLine =
     `Graphic moments to plan: ${target}` +
@@ -255,6 +277,7 @@ export function buildBeatsUserPrompt(
     // The framing brief sits ABOVE the transcript so the constraint is read
     // before the content it constrains (Task A).
     (framingBrief ? `${framingBrief}\n\n` : "") +
+    (hasCut ? CUT_WORDS_RULE : "") +
     `Word-indexed transcript (word indices refer to THIS list):\n${words}` +
     (clip ? buildClipAddendum(clip.targetSec) : "")
   );
@@ -408,6 +431,8 @@ export function normalizeBeatSheet(
   sheet: BeatSheet,
   transcript: Transcript,
   askedGraphics?: number | null,
+  /** Word indices the cutlist removes: a moment made only of them is dropped. */
+  cut?: ReadonlySet<number>,
 ): { sheet: BeatSheet; issues: BeatsValidationIssue[] } {
   const wordCount = transcript.words.length;
   const issues: BeatsValidationIssue[] = [];
@@ -445,6 +470,22 @@ export function normalizeBeatSheet(
         issue: `cueWord ${m.cueWord} outside [${m.startWord}, ${m.endWord}]; dropped`,
       });
       delete m.cueWord;
+    }
+    if (cut && cut.size > 0) {
+      // A moment wholly inside cut speech has no output time to show a
+      // graphic in and no heard words to ground its copy — whatever it says
+      // came from the take the user threw away (2026-11-08).
+      let allCut = true;
+      for (let w = m.startWord; w <= m.endWord && allCut; w++) allCut = cut.has(w);
+      if (allCut) {
+        issues.push({ moment: i, issue: "spans only cut words; dropped" });
+        continue;
+      }
+      // An entrance on a cut word would fire on speech that is not there.
+      if (m.cueWord !== undefined && cut.has(m.cueWord)) {
+        issues.push({ moment: i, issue: `cueWord ${m.cueWord} is a cut word; dropped` });
+        delete m.cueWord;
+      }
     }
     moments.push(m);
   }
@@ -576,6 +617,8 @@ export async function generateBeatSheet(
   framingBrief?: string,
   clip?: { targetSec: number },
   aspect?: "9:16" | "16:9",
+  /** Word indices the cutlist removes — see `buildBeatsUserPrompt`. */
+  cut?: ReadonlySet<number>,
 ): Promise<{
   sheet: BeatSheet;
   issues: BeatsValidationIssue[];
@@ -585,12 +628,12 @@ export async function generateBeatSheet(
 }> {
   const user =
     (speaker ? `The speaker: ${speaker}\n\n` : "") +
-    buildBeatsUserPrompt(transcript, duration, intent, framingBrief, clip, aspect);
+    buildBeatsUserPrompt(transcript, duration, intent, framingBrief, clip, aspect, cut);
   // The same number `buildBeatsUserPrompt` states — computed from the same
   // inputs by the same pure functions, so the check and the ask agree.
   const asked = graphicsTarget(
     clip?.targetSec ?? duration,
-    countEnumeratedBeats(transcript),
+    countEnumeratedBeats(keptTranscript(transcript, cut)),
   );
   if (clip) {
     // Same editorial call, extended schema (R19 §93d) — the highlight and the
@@ -604,7 +647,7 @@ export async function generateBeatSheet(
       schemaName: "clip_beat_sheet",
     });
     // `null`: the post-slice renormalization owns the shortfall check.
-    return { ...normalizeBeatSheet(raw, transcript, null), asked, highlight: raw.highlight };
+    return { ...normalizeBeatSheet(raw, transcript, null, cut), asked, highlight: raw.highlight };
   }
   const raw = await provider.complete({
     system: producerSystem(aspect),
@@ -612,5 +655,5 @@ export async function generateBeatSheet(
     schema: BeatSheetSchema,
     schemaName: "beat_sheet",
   });
-  return { ...normalizeBeatSheet(raw, transcript, asked), asked };
+  return { ...normalizeBeatSheet(raw, transcript, asked, cut), asked };
 }

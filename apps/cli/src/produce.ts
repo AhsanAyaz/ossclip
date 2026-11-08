@@ -32,6 +32,7 @@ import {
   buildCaptionLines,
   captionPackingFor,
   buildCutlist,
+  cutWordIndices,
   canonicalizeDictionaryCasing,
   captionsNeedNastaliq,
   NASTALIQ_FONT_NAME,
@@ -454,6 +455,8 @@ export function beatSheetCacheKey(parts: {
   /** The repaired transcript's TEXT — see the call site on why not the count. */
   words: readonly string[];
   aspect: "9:16" | "16:9";
+  /** `cutWordIndices` of the planned transcript, ascending. */
+  cutWords?: readonly number[];
 }): string {
   return createHash("sha1")
     .update(
@@ -480,6 +483,11 @@ export function beatSheetCacheKey(parts: {
         // never touched the knob. §78 only demands that a DIFFERENT effort
         // miss; an unset one must keep hitting what it always hit.
         ...(parts.llmEffort !== undefined ? [parts.llmEffort] : []),
+        // The cut words the prompt marked (2026-11-08) — same END-and-only-
+        // when-set rule: a take the cutlist leaves whole keeps its old key,
+        // while a different retake/cleanup cut must re-plan, or the copy
+        // written from the old cut comes back from cache.
+        ...(parts.cutWords !== undefined && parts.cutWords.length > 0 ? [parts.cutWords] : []),
       ]),
     )
     .digest("hex")
@@ -611,6 +619,8 @@ export function clipWindowCacheKey(parts: {
   /** The repaired transcript's TEXT — the window is word-indexed into it. */
   words: readonly string[];
   aspect: "9:16" | "16:9";
+  /** `cutWordIndices` of the full transcript the selection saw, ascending. */
+  cutWords?: readonly number[];
 }): string {
   return createHash("sha1")
     .update(
@@ -626,6 +636,11 @@ export function clipWindowCacheKey(parts: {
         // Appended at the END, only when SET — beatSheetCacheKey's rule: an
         // unset effort must keep every existing key byte-identical.
         ...(parts.llmEffort !== undefined ? [parts.llmEffort] : []),
+        // The cut words the prompt marked (2026-11-08) — same END-and-only-
+        // when-set rule: a take the cutlist leaves whole keeps its old key,
+        // while a different retake/cleanup cut must re-plan, or the copy
+        // written from the old cut comes back from cache.
+        ...(parts.cutWords !== undefined && parts.cutWords.length > 0 ? [parts.cutWords] : []),
       ]),
     )
     .digest("hex")
@@ -3491,6 +3506,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (clipTargetSec !== undefined) {
       // Parts split from the key so the WRITE below can re-key on the
       // provider that actually answered (§143) without restating them.
+      // The selection call plans the beats too, so it gets the same cut
+      // marking — computed on the FULL take, the space it is word-indexed in.
+      const selectCut = cutWordIndices(transcript.words, cutlist);
       const windowKeyParts = {
         promptVersion: PRODUCER_PROMPT_VERSION,
         llmModel: opts.llmModel,
@@ -3500,6 +3518,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         framing: framingCtx,
         words: transcript.words.map((w) => w.text),
         aspect: landscape ? ("16:9" as const) : ("9:16" as const),
+        cutWords: [...selectCut],
       };
       const windowKey = clipWindowCacheKey({ ...windowKeyParts, providerName });
       const clipWindowCache = join(work, `clipwindow-${windowKey}.json`);
@@ -3524,6 +3543,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             framing: framingCtx,
             clip: { targetSec: clipTargetSec! },
             aspect: landscape ? "16:9" : "9:16",
+            cut: selectCut,
           }),
         );
         clipWindow = clipFresh.clip!.window;
@@ -3554,6 +3574,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
     // Parts split from the key for the same §143 reason as the clip window:
     // the writes below re-key on the provider that actually answered.
+    // AFTER any clip slice: `transcript` and `cutlist` are the window's now.
+    // The automatic cutlist only — cleanup vetoes and editor cuts land later
+    // (below) and are post-plan edits; keying on them would re-plan, and drop
+    // scene edits, every time the user trims a word in the editor.
+    const planCut = cutWordIndices(transcript.words, cutlist);
     const beatKeyParts = {
       promptVersion: PRODUCER_PROMPT_VERSION,
       llmModel: opts.llmModel,
@@ -3566,6 +3591,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       clipWindow,
       words: transcript.words.map((w) => w.text),
       aspect: landscape ? ("16:9" as const) : ("9:16" as const),
+      cutWords: [...planCut],
     };
     // Two keys, tried in order: the provider asked for, then the one this run
     // would fall back to anyway (§150). Without the second, a workdir whose
@@ -3700,6 +3726,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             forceComponent: opts.forceComponent,
             framing: framingCtx,
             aspect: landscape ? "16:9" : "9:16",
+            cut: planCut,
           }),
         )
         .finally(() => clearTimeout(slowNotice));

@@ -475,3 +475,26 @@ export function applyCleanupChoices(
   }
   return out;
 }
+
+/**
+ * Indices of the words the viewer never hears: those whose midpoint falls
+ * inside a `remove` segment (2026-11-08 — a retake the cutlist removed still
+ * reached the graphics planner verbatim, so a cut "Rotate" take came back as
+ * on-screen copy). Midpoint, not overlap: the cutlist trims dead air right up
+ * to a kept word's edge, and an overlap test would mark kept words cut on
+ * every tightened pause. Pure, so every LLM call that writes copy from the
+ * transcript can be told the same thing.
+ */
+export function cutWordIndices(
+  words: readonly { start: number; end: number }[],
+  cutlist: readonly Segment[],
+): Set<number> {
+  const removes = cutlist.filter((s) => s.kind === "remove");
+  const out = new Set<number>();
+  if (removes.length === 0) return out;
+  for (let i = 0; i < words.length; i++) {
+    const mid = (words[i]!.start + words[i]!.end) / 2;
+    if (removes.some((s) => mid >= s.srcIn && mid < s.srcOut)) out.add(i);
+  }
+  return out;
+}

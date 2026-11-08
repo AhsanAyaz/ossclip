@@ -316,3 +316,32 @@ describe("existingProducerStamp", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+/**
+ * 2026-11-08: the planner is told which words are cut, so a different cut
+ * must re-plan — else copy written against the old cut (a retake that is now
+ * removed) comes back from cache. An uncut take keeps its pre-fix key.
+ */
+describe("cut words in the plan keys", () => {
+  const beat = {
+    promptVersion: PRODUCER_PROMPT_VERSION,
+    providerName: "gemini" as const,
+    cleanup: "standard" as const,
+    words: ["one", "two", "three"],
+    aspect: "9:16" as const,
+  };
+  const clip = { ...beat, clipTargetSec: 60 };
+
+  it("a different cut set misses", () => {
+    expect(beatSheetCacheKey({ ...beat, cutWords: [0, 1] })).not.toBe(
+      beatSheetCacheKey({ ...beat, cutWords: [1] }),
+    );
+    expect(beatSheetCacheKey({ ...beat, cutWords: [0] })).not.toBe(beatSheetCacheKey(beat));
+    expect(clipWindowCacheKey({ ...clip, cutWords: [0] })).not.toBe(clipWindowCacheKey(clip));
+  });
+
+  it("an empty cut set keeps the old key", () => {
+    expect(beatSheetCacheKey({ ...beat, cutWords: [] })).toBe(beatSheetCacheKey(beat));
+    expect(clipWindowCacheKey({ ...clip, cutWords: [] })).toBe(clipWindowCacheKey(clip));
+  });
+});
