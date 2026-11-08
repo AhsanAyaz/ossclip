@@ -80,6 +80,7 @@ import {
   SegmentSchema,
   spliceTranscript,
   TranscriptSchema,
+  WordSchema,
   ungroundedTokens,
   whisperPromptFor,
   wordsInSpan,
@@ -1019,8 +1020,6 @@ export async function startEditServer(
     } catch {
       return raw;
     }
-    const stored = storedRepairs(production);
-    if (stored === null || !stored.some((r) => r.applied === true)) return raw;
     const sliced = TranscriptSchema.safeParse(production.transcript);
     if (!sliced.success) return raw;
     const first = sliced.data.words[0];
@@ -1031,6 +1030,32 @@ export async function startEditServer(
     // the same length and line up from zero.
     if (offset === -1 && sliced.data.words.length === base.data.words.length) offset = 0;
     if (offset === -1) return raw;
+    // The render's own word list, when produce recorded one AND transcript.json
+    // still holds exactly the raw words it was built from. A re-transcribed
+    // range (new stamps) fails that check and falls through to the replay,
+    // which keeps the new stamps — the replay's casing gap is the price.
+    const caption = z.array(WordSchema).safeParse(production.captionWords);
+    if (caption.success) {
+      const span = base.data.words.slice(offset, offset + sliced.data.words.length);
+      const unchanged =
+        span.length === sliced.data.words.length &&
+        span.every((w, i) => {
+          const p = sliced.data.words[i]!;
+          return w.text === p.text && w.start === p.start && w.end === p.end;
+        });
+      if (unchanged) {
+        return {
+          ...base.data,
+          words: [
+            ...base.data.words.slice(0, offset),
+            ...caption.data,
+            ...base.data.words.slice(offset + sliced.data.words.length),
+          ],
+        };
+      }
+    }
+    const stored = storedRepairs(production);
+    if (stored === null || !stored.some((r) => r.applied === true)) return raw;
     const dictionary = configDictionary();
     return replayStoredRepairs(base.data, stored, {
       offset,
@@ -1038,6 +1063,10 @@ export async function startEditServer(
     }).transcript;
   };
   const repairedWords = (production: Record<string, unknown>): Word[] | null => {
+    // Recorded by produce since 2026-11-08: the placements' own word space,
+    // verbatim — no replay to disagree with the render.
+    const recorded = z.array(WordSchema).safeParse(production.captionWords);
+    if (recorded.success) return recorded.data;
     const parsedTranscript = TranscriptSchema.safeParse(production.transcript);
     let words: Word[] | null = null;
     const stored = storedRepairs(production);

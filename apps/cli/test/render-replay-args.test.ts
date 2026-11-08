@@ -83,3 +83,13 @@ describe("renderReplayArgs", () => {
     expect(renderReplayArgs(base, {})).toEqual(base);
   });
 });
+
+describe("renderReplayArgs: a --clip project (2026-11-08 audit)", () => {
+  it("keeps --clip and its --clip-window pin, so the replay slices the same window", () => {
+    const recorded = ["produce", "in.mp4", "--produce", "--clip", "60", "--clip-window", "12:340", "--llm", "mock"];
+    expect(renderReplayArgs(recorded, { scenesPath: "/wd/scenes-reviewed.json" })).toEqual([
+      "produce", "in.mp4", "--clip", "60", "--clip-window", "12:340", "--llm", "mock",
+      "--scenes", "/wd/scenes-reviewed.json",
+    ]);
+  });
+});

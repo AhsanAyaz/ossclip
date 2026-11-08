@@ -23,6 +23,7 @@ import {
   analyze,
   applyOverrides,
   applyRepairs,
+  captionWordsDiffer,
   saveConfigPatch,
   isParkedOverrideKey,
   parkedOverrideBaseKey,
@@ -2443,7 +2444,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // §93b: the window is an editorial judgement, and there is deliberately no
   // heuristic fallback — an automatically-guessed 60 seconds reads as a bug,
   // not a limitation. Refused up front, before any work is spent.
-  if (opts.clip !== undefined) {
+  // A PINNED window (`--clip-window`, recorded by the run that chose it) is
+  // the exception to both refusals: the editor's Render replays a --clip
+  // project as `--scenes <reviewed> --clip N --clip-window …` with no
+  // --produce, and the producer's call was already made (2026-11-08 audit).
+  if (opts.clip !== undefined && opts.clipWindow === undefined) {
     if (opts.scenes) {
       throw new Error(
         "--clip cannot be combined with hand-authored --scenes — the window is the producer's call.",
@@ -2458,6 +2463,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   }
   if (opts.clipWindow !== undefined && opts.clip === undefined) {
     throw new Error("--clip-window is recorded by --clip runs for replay — pass --clip too.");
+  }
+  // Only the two plan branches slice; with neither, the pin would be ignored
+  // and the WHOLE take rendered under a --clip command.
+  if (opts.clipWindow !== undefined && !opts.produce && !opts.scenes) {
+    throw new Error("--clip-window replays a --clip run's plan — pass --produce or --scenes too.");
   }
 
   // Resolved HERE, not at the render section (2026-08-16 field incident): a
@@ -3081,7 +3091,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   let rawTranscript = transcript;
   let repairs: AppliedRepair[] = [];
-  if (provider && opts.repair !== false) {
+  // Not gated on `provider` (2026-11-08 audit): the editor's Render replays
+  // without --produce, so a --no-youtube project has no provider on that run
+  // — and the gate skipped the whole block, rendering raw ASR and dropping
+  // every repair the user confirmed. A cached repair set and the user's
+  // decisions need no LLM call; only the fresh pass below does.
+  if (opts.repair !== false) {
     // Parameterized on the provider so the WRITE below can re-key on who
     // actually answered (§143) — the same read/write split as the beat-sheet
     // caches, and load-bearing beyond attribution: repairs REWRITE the words,
@@ -3116,7 +3131,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         )
         .digest("hex")
         .slice(0, 8);
-    const repairCache = join(work, `repairs-${repairKeyFor(providerName)}.json`);
+    // Primary then fallback, the beat cache's §150 rule: the WRITE below keys
+    // on the provider that answered, so after a fallback the cache lives under
+    // the fallback's name, and a read keyed on the primary alone re-asked the
+    // LLM — new proposals the user's repair-decisions.json no longer matched.
+    const repairCacheCandidates = [providerName, ...(llmFallbackName ? [llmFallbackName] : [])].map(
+      (p) => join(work, `repairs-${repairKeyFor(p)}.json`),
+    );
+    const repairCache =
+      repairCacheCandidates.find((p) => existsSync(p)) ?? repairCacheCandidates[0]!;
+    // The SAME inputs a fresh decision gets (2026-11-08 audit): the cached
+    // path passed only the dictionary, so a speaker-vouched "SM" → "Ahsan"
+    // applied fresh and was refused from cache, and a repair straddling a cut
+    // went the other way — every later run disagreed with the first.
+    const isCut = (startSec: number, endSec: number): boolean =>
+      cutlist.some((c) => c.kind === "remove" && c.srcIn < endSec && c.srcOut > startSec);
+    const speaker = opts.speaker ?? cfg.speaker;
     if (existsSync(repairCache)) {
       const cached = JSON.parse(await readFile(repairCache, "utf8")) as AppliedRepair[];
       // Re-DECIDE from the cached PROPOSALS; never replay the stored verdicts
@@ -3136,7 +3166,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           heard,
           correction,
         })),
-        { dictionary },
+        { dictionary, speaker, isCut },
       );
       repairs = decided.applied;
       transcript = decided.transcript;
@@ -3149,7 +3179,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         `▸ repairs cached (${now} applied of ${cached.length} proposed` +
           `${now === before ? "" : `, re-decided from ${before}`})`,
       );
-    } else {
+    } else if (provider) {
       const repairAnim = isInteractive()
         ? new StageAnimator(
             "PHONETIC REPAIR",
@@ -3159,15 +3189,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         : null;
       const result = await phases.time("llm", () =>
         repairTranscript(provider!, rawTranscript, {
-          speaker: opts.speaker ?? cfg.speaker,
+          speaker,
           // Vouched terms (F4): named in the prompt AND exempt, when a
           // correction is built entirely of them, from the phonetic gate.
           dictionary,
           // A repair may not merge words across a cut.
-          isCut: (startSec, endSec) =>
-            cutlist.some(
-              (s) => s.kind === "remove" && s.srcIn < endSec && s.srcOut > startSec,
-            ),
+          isCut,
         }),
       );
       if (repairAnim) repairAnim.stop();
@@ -3230,9 +3257,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       const decided = decidedProposals(repairs, repairDecisions.decisions);
       const reapplied = applyRepairs(rawTranscript, decided.proposals, {
         dictionary,
+        speaker,
         confirmed: decided.confirmed,
-        isCut: (startSec, endSec) =>
-          cutlist.some((c) => c.kind === "remove" && c.srcIn < endSec && c.srcOut > startSec),
+        isCut,
       });
       transcript = reapplied.transcript;
       repairs = [
@@ -3363,12 +3390,72 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   /** The resolved `--clip` window (R19 §93) — set only on a clip run; feeds
    * `production.json`, the report, and the command.json pin below. */
   let clipWindow: ClipWindow | null = null;
+  /**
+   * Slice the pipeline state to a resolved `--clip` window. Its own closure so
+   * BOTH plan sources run it: a fresh `--produce` plan, and the editor's
+   * Render, which replays with `--scenes` and the recorded `--clip-window`
+   * pin (2026-11-08 audit: every --clip project failed to render from the
+   * editor, refused as "--clip cannot be combined with --scenes").
+   */
+  const applyClipWindow = (clipWindow: ClipWindow): void => {
+    // Slice the pipeline state to the window (§93.1), then let everything
+    // downstream — captions, scenes, zoom, the editor — run unchanged on
+    // the slice. The raw transcript slices by TIME (repairs may change word
+    // counts, so raw and repaired index spaces need not line up); repairs
+    // shift with it so production.json stays a reproducible pair.
+    console.log(
+      `▸ clip: ${formatClipTime(clipWindow.startSec)}–${formatClipTime(clipWindow.endSec)} ` +
+        `of ${formatClipTime(sourceProbe.duration)} — ${clipWindow.reason}`,
+    );
+    const rawSlice = sliceRawTranscript(rawTranscript, clipWindow);
+    repairs = sliceRepairs(repairs, rawSlice.offset, rawSlice.transcript.words.length);
+    rawTranscript = rawSlice.transcript;
+    transcript = sliceTranscript(transcript, clipWindow);
+    analysis = analyze(rawTranscript, silences, sourceProbe.duration, levels);
+    // Re-detect on the SLICE: word indices moved, so the spans found against
+    // the full take no longer address the same words.
+    // Full-source `silences` on a sliced transcript is correct on purpose:
+    // sliceRawTranscript keeps SOURCE seconds on every word stamp, so the
+    // bleed extension compares like with like.
+    bloops = opts.blooperMarker
+      ? findBloopSpans(rawTranscript, opts.blooperMarker, silences)
+      : [];
+    retakeGroups = retakesEnabled
+      ? findRetakeGroups(rawTranscript, analysis, { transparentMarker: opts.blooperMarker })
+      : [];
+    retakes = retakeCutsFor(retakeGroups);
+    cutlist = boundCutlistToWindow(
+      buildCutlist({
+        transcript: rawTranscript,
+        analysis,
+        duration: sourceProbe.duration,
+        level: opts.cleanup,
+        bloops,
+        retakes,
+      }),
+      clipWindow,
+      sourceProbe.duration,
+    );
+    map = new TimeMap(cutlist);
+  };
   if (opts.scenes) {
     // expandHome before resolve — same 2026-08-16 rule as --out (paths.ts).
     scenes = z.array(SceneSchema).parse(
       JSON.parse(await readFile(resolve(expandHome(opts.scenes)), "utf8")),
     );
     console.log(`▸ scenes injected from ${opts.scenes} (${scenes.length})`);
+    // The editor's Render of a --clip project: the window was chosen by the
+    // run being replayed and rides in as the command.json pin, so nothing
+    // editorial is left to decide — slice exactly as that run did, or the
+    // reviewed scenes (anchored in the slice) land on the whole take.
+    if (clipTargetSec !== undefined && opts.clipWindow !== undefined) {
+      clipWindow = parseClipWindowPin(transcript, opts.clipWindow);
+      console.log(
+        `▸ clip window pinned by the recorded command: words ` +
+          `${clipWindow.startWord}–${clipWindow.endWord}`,
+      );
+      applyClipWindow(clipWindow);
+    }
   } else if (provider && opts.produce === true) {
     // `opts.produce`, not bare `provider` (2026-08-16): --youtube now brings
     // a provider for its metadata/repair, and the bare-provider gate silently
@@ -3462,45 +3549,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         );
       }
 
-      // Slice the pipeline state to the window (§93.1), then let everything
-      // downstream — captions, scenes, zoom, the editor — run unchanged on
-      // the slice. The raw transcript slices by TIME (repairs may change word
-      // counts, so raw and repaired index spaces need not line up); repairs
-      // shift with it so production.json stays a reproducible pair.
-      console.log(
-        `▸ clip: ${formatClipTime(clipWindow.startSec)}–${formatClipTime(clipWindow.endSec)} ` +
-          `of ${formatClipTime(sourceProbe.duration)} — ${clipWindow.reason}`,
-      );
-      const rawSlice = sliceRawTranscript(rawTranscript, clipWindow);
-      repairs = sliceRepairs(repairs, rawSlice.offset, rawSlice.transcript.words.length);
-      rawTranscript = rawSlice.transcript;
-      transcript = sliceTranscript(transcript, clipWindow);
-      analysis = analyze(rawTranscript, silences, sourceProbe.duration, levels);
-      // Re-detect on the SLICE: word indices moved, so the spans found against
-      // the full take no longer address the same words.
-      // Full-source `silences` on a sliced transcript is correct on purpose:
-      // sliceRawTranscript keeps SOURCE seconds on every word stamp, so the
-      // bleed extension compares like with like.
-      bloops = opts.blooperMarker
-        ? findBloopSpans(rawTranscript, opts.blooperMarker, silences)
-        : [];
-      retakeGroups = retakesEnabled
-        ? findRetakeGroups(rawTranscript, analysis, { transparentMarker: opts.blooperMarker })
-        : [];
-      retakes = retakeCutsFor(retakeGroups);
-      cutlist = boundCutlistToWindow(
-        buildCutlist({
-          transcript: rawTranscript,
-          analysis,
-          duration: sourceProbe.duration,
-          level: opts.cleanup,
-          bloops,
-          retakes,
-        }),
-        clipWindow,
-        sourceProbe.duration,
-      );
-      map = new TimeMap(cutlist);
+      applyClipWindow(clipWindow);
     }
 
     // Parts split from the key for the same §143 reason as the clip window:
@@ -4993,6 +5042,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // stays derivable (`applyRepairs`) rather than being a second truth.
     transcript: rawTranscript,
     repairs: repairs.length > 0 ? repairs : undefined,
+    // The caption words verbatim (ProductionSchema.captionWords): the editor
+    // serves THESE, so its caption edits are keyed on what renders.
+    ...(captionWordsDiffer(rawTranscript.words, transcript.words)
+      ? { captionWords: transcript.words }
+      : {}),
     analysis,
     // The APPLIED truth vs the PROPOSAL — see ProductionSchema for why both
     // are recorded: `cutlist` keeps the report/exporters honest about what

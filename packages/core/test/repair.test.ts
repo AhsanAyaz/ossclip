@@ -8,6 +8,7 @@ import {
   reconcileCopy,
   repairTranscript,
   replayStoredRepairs,
+  captionWordsDiffer,
 } from "../src/producer/repair";
 import { MockProvider } from "../src/producer/mock";
 import { buildCaptionLines } from "../src/captions";
@@ -605,5 +606,14 @@ describe("replayStoredRepairs (the editor's view of what produce rendered)", () 
     ]);
     expect(out.transcript.words.map((w) => w.text)).toEqual(["use", "clawed", "now"]);
     expect(out.applied[0]?.applied).toBe(false);
+  });
+});
+
+describe("captionWordsDiffer", () => {
+  it("is false only for the same texts in the same order", () => {
+    const w = (...t: string[]) => t.map((text) => ({ text }));
+    expect(captionWordsDiffer(w("a", "b"), w("a", "b"))).toBe(false);
+    expect(captionWordsDiffer(w("a", "b"), w("a", "B"))).toBe(true);
+    expect(captionWordsDiffer(w("a", "b"), w("ab"))).toBe(true);
   });
 });

@@ -319,6 +319,18 @@ export const ProductionSchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * The exact words the captions were built from — `transcript` after the
+   * repairs, the on-screen-copy reconcile and dictionary casing, in the same
+   * (clip-sliced) index space `sfx`/`overlays` placements count. SOURCE
+   * seconds. The `repairs` diff alone could not say this (2026-11-08 audit):
+   * a replay re-decides gates the user overrode, the copy repairs index the
+   * repaired space, and casing is recorded nowhere — so the editor showed and
+   * keyed caption edits on words the render never had, and those edits were
+   * dropped as stale. Absent when no word changed (byte-identical to a
+   * pre-field production.json), and on projects written before it.
+   */
+  captionWords: z.array(WordSchema).optional(),
   analysis: AnalysisSchema.optional(),
   /**
    * What this run ACTUALLY cut — post cleanup-choices, post user cuts. Every

@@ -2470,6 +2470,65 @@ describe("GET /api/transcript (captions over revived material)", () => {
     expect(body.transcript.words.map((w: { text: string }) => w.text)).toEqual(["using", "Claude", "or", "n8n"]);
   });
 
+  it("serves production.json's captionWords — the render's own words, casing included", async () => {
+    // Casing ("json" → "JSON") is recorded nowhere in `repairs`; a caption
+    // edit keyed on "json" was dropped as stale against the render's "JSON".
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: TRANSCRIPT }));
+    const caption = [
+      { text: "using", start: 0, end: 0.3 },
+      { text: "Claude", start: 0.3, end: 0.7 },
+      { text: "OR", start: 0.7, end: 0.9 },
+      { text: "n8n", start: 0.9, end: 1.3 },
+    ];
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({ transcript: { language: "en", words: TRANSCRIPT }, repairs: repairs(0), captionWords: caption }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(body.transcript.words).toEqual(caption);
+  });
+
+  it("splices a --clip run's captionWords into the full transcript at the window", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: TRANSCRIPT }));
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        transcript: { language: "en", words: TRANSCRIPT.slice(2) },
+        captionWords: [
+          { text: "OR", start: 0.7, end: 0.9 },
+          { text: "n8n", start: 0.9, end: 1.3 },
+        ],
+      }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(body.transcript.words.map((w: { text: string }) => w.text)).toEqual(["using", "Cloud", "OR", "n8n"]);
+  });
+
+  it("after a re-transcribe moved the stamps, falls back to replaying repairs onto the NEW stamps", async () => {
+    const dir = await fixtureWorkdir();
+    const restamped = TRANSCRIPT.map((w) => ({ ...w, start: w.start + 0.05 }));
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: restamped }));
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        transcript: { language: "en", words: TRANSCRIPT },
+        repairs: repairs(0),
+        captionWords: [{ text: "stale", start: 0, end: 0.3 }],
+      }),
+    );
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/transcript`)).json();
+    expect(body.transcript.words.map((w: { text: string }) => w.text)).toEqual(["using", "Claude", "or", "n8n"]);
+    expect(body.transcript.words[1].start).toBeCloseTo(0.35);
+  });
+
   it("serves the raw words when production.json is missing or its repairs are malformed", async () => {
     const dir = await fixtureWorkdir();
     await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: TRANSCRIPT }));
@@ -3717,6 +3776,27 @@ describe("GET /api/sfx/plan", () => {
     close = server.close;
     const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
     expect(body.words.map((w: { text: string }) => w.text)).toEqual(["we", "shipped", "code", "n8n", "today"]);
+  });
+
+  it("prefers production.json's recorded captionWords over any replay", async () => {
+    const dir = await fixtureWorkdir();
+    const caption = [
+      { text: "we", start: 0, end: 0.3 },
+      { text: "SHIPPED", start: 0.3, end: 0.7 },
+      { text: "codechurn", start: 0.7, end: 1.4 },
+      { text: "today", start: 1.4, end: 1.8 },
+    ];
+    await writeProduction(dir, {
+      transcript: { language: "en", words: RAW_WORDS },
+      // Would not even replay — the recorded list is the authority.
+      repairs: [{ startWord: 2, endWord: 3, heard: "nope", correction: "codechurn", applied: true }],
+      captionWords: caption,
+      sfx: { level: "normal", placements: [{ soundId: "ding", word: 3 }] },
+    });
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS, loadCfg: () => ({}) });
+    close = server.close;
+    const body = await (await fetch(`${server.url}/api/sfx/plan`)).json();
+    expect(body.words).toEqual(caption);
   });
 
   it("degrades to nulls on a missing or corrupt production.json, never a 500", async () => {

@@ -570,3 +570,15 @@ export function replayStoredRepairs(
     confirmed: () => true,
   });
 }
+
+/** Whether the caption words differ from the raw ones in count or text —
+ * produce writes `captionWords` only then, so a project with nothing repaired
+ * keeps a byte-identical production.json. Times are not compared: every
+ * word edit before the caption build keeps or re-derives them from the raw
+ * stamps, so a text-equal list is the raw list. */
+export function captionWordsDiffer(
+  raw: readonly { text: string }[],
+  caption: readonly { text: string }[],
+): boolean {
+  return raw.length !== caption.length || raw.some((w, i) => w.text !== caption[i]!.text);
+}
