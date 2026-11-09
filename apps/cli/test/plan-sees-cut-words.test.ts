@@ -12,7 +12,19 @@ import { produce } from "../src/produce";
  * speech — the cut "Rotate" retake came back as a graphic's copy. A filler
  * standard cleanup removes is the cheapest cut word to construct offline.
  */
-describe("produce: the graphics planner is told which words are cut", () => {
+// The unit job has no ffmpeg (ci.yml) — the analyze/no-zoom/produce-timing
+// posture: a produce-driving test skips there instead of failing the gate.
+const hasFfmpeg = (() => {
+  try {
+    execFileSync("ffmpeg", ["-version"], { stdio: "ignore" });
+    execFileSync("ffprobe", ["-version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasFfmpeg)("produce: the graphics planner is told which words are cut", () => {
   let dir: string;
   let libraryDir: string;
   beforeAll(() => {

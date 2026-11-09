@@ -12,7 +12,19 @@ import { produce } from "../src/produce";
  * provider at all. That replay used to skip the repair block outright, so
  * the video rendered raw ASR — the user's confirmed picks gone.
  */
-describe("produce: the editor's Render replay keeps what the CLI run decided", () => {
+// The unit job has no ffmpeg (ci.yml) — the analyze/no-zoom/produce-timing
+// posture: a produce-driving test skips there instead of failing the gate.
+const hasFfmpeg = (() => {
+  try {
+    execFileSync("ffmpeg", ["-version"], { stdio: "ignore" });
+    execFileSync("ffprobe", ["-version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasFfmpeg)("produce: the editor's Render replay keeps what the CLI run decided", () => {
   let dir: string;
   let libraryDir: string;
   beforeAll(() => {

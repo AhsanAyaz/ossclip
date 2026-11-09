@@ -76,7 +76,19 @@ describe("coverTextHold with a carried headline (the stuck project)", () => {
   });
 });
 
-describe("produce: the headline survives a --review stop and a --scenes replay", () => {
+// The unit job has no ffmpeg (ci.yml) — the analyze/no-zoom/produce-timing
+// posture: a produce-driving test skips there instead of failing the gate.
+const hasFfmpeg = (() => {
+  try {
+    execFileSync("ffmpeg", ["-version"], { stdio: "ignore" });
+    execFileSync("ffprobe", ["-version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasFfmpeg)("produce: the headline survives a --review stop and a --scenes replay", () => {
   let dir: string;
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "ossclip-cover-carry-"));
