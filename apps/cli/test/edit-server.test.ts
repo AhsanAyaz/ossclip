@@ -3385,6 +3385,52 @@ describe("on-demand youtube pack generate (2026-08-29)", () => {
     expect(users[0]).not.toContain("Jason");
     expect(users[0]).not.toContain("the keys");
   });
+
+  it("a cut saved since the last render already counts — the next render's clock, not the last", async () => {
+    const dir = await noPackWorkdir();
+    // 2026-11-09 audit, finding 7: the render kept everything, then the user
+    // cut the retake in the editor and saved without rendering. The pack must
+    // see the cut the preview already plays.
+    const raw = "use JSON rotate the keys rotate keys weekly".split(" ");
+    const stamp = (text: string, i: number) => ({ text, start: i * 0.5, end: i * 0.5 + 0.4 });
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({
+        transcript: { language: "en", words: raw.map(stamp) },
+        captionWords: raw.map(stamp),
+      }),
+    );
+    const props = JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")) as Record<string, unknown>;
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({ ...props, spans: [{ srcIn: 0, srcOut: 4.0, outIn: 0, outOut: 4.0 }] }),
+    );
+    await writeFile(
+      join(dir, "overrides.json"),
+      JSON.stringify({ cuts: [{ startSec: 1.0, endSec: 2.5, src: { startSec: 1.0, endSec: 2.5 } }] }),
+    );
+    const users: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: noCfg,
+      publishEnv: {},
+      probeVideo: async () => ({ duration: 60, width: 1080, height: 1920, fps: 30, hasAudio: true }),
+      makeLlmProvider: (() => ({
+        name: "gemini",
+        usage: [],
+        async complete(req: { user: string; schema: { parse(v: unknown): unknown } }) {
+          users.push(req.user);
+          return req.schema.parse(answeredPack);
+        },
+      })) as never,
+    });
+    close = server.close;
+    const res = await generate(server.url);
+    expect(res.status).toBe(200);
+    expect(users[0]).toContain("use JSON rotate keys weekly");
+    expect(users[0]).not.toContain("the keys");
+  });
 });
 
 /**

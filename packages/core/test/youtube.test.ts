@@ -174,7 +174,20 @@ describe("stampedTranscript", () => {
       word("kept.", 10.5, 11.5),
     ];
     // First surviving word starts at source 10.5 → output 2.5 → "0:02".
-    expect(stampedTranscript(partial, map)).toBe("[0:02] Um kept.");
+    // ...and the cut "Um" is not quoted: the line is what the viewer hears.
+    expect(stampedTranscript(partial, map)).toBe("[0:02] kept.");
+  });
+
+  it("drops cut words from the middle of a surviving sentence", () => {
+    const retake = [
+      word("rotate", 0, 0.5),
+      word("the", 0.5, 1),
+      word("keys", 2.5, 3), // cut — inside the removed 2..10
+      word("rotate", 10, 10.5),
+      word("keys", 10.5, 11),
+      word("weekly.", 11, 12),
+    ];
+    expect(stampedTranscript(retake, map)).toBe("[0:00] rotate the rotate keys weekly.");
   });
 
   it("a trailing sentence without closing punctuation still stamps", () => {

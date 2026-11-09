@@ -186,16 +186,20 @@ export function stampedTranscript(
     // The stamp is the first SURVIVING word's output time, not the first
     // word's: a sentence whose opening filler was cut starts, on the
     // viewer's clock, at the first word they hear.
+    // Only the SURVIVING words go on the line, too: a sentence with a cut
+    // retake inside it ("rotate the keys — rotate keys weekly") used to be
+    // quoted whole, so the description could repeat words the viewer never
+    // hears (2026-11-09 audit, finding 5).
     let stampSec: number | null = null;
+    const heard: string[] = [];
     for (const w of sentence) {
       const mapped = map.mapWord(w);
-      if (mapped) {
-        stampSec = mapped.start;
-        break;
-      }
+      if (!mapped) continue;
+      if (stampSec === null) stampSec = mapped.start;
+      heard.push(w.text);
     }
     if (stampSec === null) continue; // the whole sentence was cut
-    const line = `[${chapterStamp(stampSec)}] ${sentence.map((w) => w.text).join(" ")}`;
+    const line = `[${chapterStamp(stampSec)}] ${heard.join(" ")}`;
     const cost = lines.length === 0 ? line.length : line.length + 1;
     if (used + cost > budget) {
       truncated = true;

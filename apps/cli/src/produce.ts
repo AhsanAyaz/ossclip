@@ -6343,6 +6343,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // command.json record pins the same answers on both exits.
   const geminiKey = process.env.GEMINI_API_KEY;
   const approvedConceptPath = join(work, THUMBNAIL_APPROVED_BASENAME);
+  // The thumbnail concept reads only the words that survive the final cut
+  // (vetoes and user cuts included — `map` is the post-cut clock here): fed
+  // the whole take, it could build its overlay text from a retake the video
+  // never shows (2026-11-09 audit, finding 6). The words are also the concept
+  // cache's key, so a changed cut asks again instead of serving the old idea.
+  const heardTexts = transcript.words.filter((w) => map.mapWord(w) !== null).map((w) => w.text);
   // The gate reuses thumbnailDecision (plus the mime check) so the prompt
   // never asks about a thumbnail the post-render step would skip anyway.
   const thumbnailWouldGenerate =
@@ -6377,7 +6383,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           hook: beatSheet?.hook,
           audience,
           brief: thumbnailBrief,
-          transcriptWords: transcript.words.map((w) => w.text),
+          transcriptWords: heardTexts,
         }),
       );
       const initial = existsSync(conceptCache)
@@ -6394,7 +6400,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
                 audience,
                 brief: thumbnailBrief,
                 note,
-                transcriptText: transcript.words.map((w) => w.text).join(" "),
+                transcriptText: heardTexts.join(" "),
               }),
             );
             // The §35 word cap, thumbnailStep's exact treatment — approved
@@ -6699,7 +6705,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       audience,
       brief: thumbnailBrief,
       titleAngle: packTitle,
-      transcriptWords: transcript.words.map((w) => w.text),
+      transcriptWords: heardTexts,
       time: (fn) => phases.time("llm", fn),
     });
     thumbnailPath = thumbnail?.path;

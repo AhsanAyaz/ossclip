@@ -100,6 +100,9 @@ import {
   addLibraryEntry,
   loadOverlayLibrary,
   mapFromKeptSpans,
+  livePreviewMap,
+  TimeMap,
+  type KeptSpan,
   matchLibrary,
   overlayRematchGuards,
   overlayStagedFile,
@@ -1108,6 +1111,56 @@ export async function startEditServer(
    * missing (never rendered) → every repaired word; production unusable →
    * the raw read, as before, rather than refusing a working legacy workdir.
    */
+  /**
+   * The clock the viewer will hear on the NEXT render: the last render's
+   * spans, re-cut by the cleanup vetoes and user cuts saved in overrides.json
+   * since — `livePreviewMap`, the exact clock the editor's live preview plays,
+   * so a text call and the player can never disagree about what is cut. Before
+   * this, the pack, caption rewrite and Find-matches all read the LAST
+   * render's map, so a retake cut a minute ago still fed the model (2026-11-09
+   * audit, finding 7). Null when nothing ever rendered (no spans): no cut is
+   * known, and the callers treat every word as heard, as before. An
+   * unreadable overrides.json or proposal degrades to the render's own map —
+   * never a refusal, the lenient posture of every editor read.
+   */
+  const heardMap = async (dir: string): Promise<TimeMap | null> => {
+    let spans: KeptSpan[] = [];
+    try {
+      const parsed = z
+        .array(z.object({ srcIn: z.number(), srcOut: z.number(), outIn: z.number(), outOut: z.number() }))
+        .safeParse(
+          (JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")) as { spans?: unknown }).spans,
+        );
+      if (parsed.success) spans = parsed.data;
+    } catch {
+      return null;
+    }
+    if (spans.length === 0) return null;
+    let proposal: Segment[] = [];
+    try {
+      const production = JSON.parse(await readFile(join(dir, "production.json"), "utf8")) as {
+        cutlistProposed?: unknown;
+      };
+      if (Array.isArray(production.cutlistProposed)) {
+        const parsed = z.array(SegmentSchema).safeParse(production.cutlistProposed);
+        if (parsed.success) proposal = parsed.data;
+      }
+    } catch {
+      // no proposal — livePreviewMap re-cuts the spans themselves
+    }
+    try {
+      const doc = OverrideDocSchema.safeParse(
+        JSON.parse(await readFile(join(dir, "overrides.json"), "utf8")),
+      );
+      if (doc.success) {
+        const live = livePreviewMap(proposal, doc.data.cleanup, doc.data.cuts, spans);
+        if (live) return live.newMap;
+      }
+    } catch {
+      // no overrides — the render's own map
+    }
+    return mapFromKeptSpans(spans);
+  };
   const heardWords = async (dir: string): Promise<{ text: string; end?: number }[]> => {
     let production: Record<string, unknown> | null = null;
     try {
@@ -1120,21 +1173,8 @@ export async function startEditServer(
     }
     const repaired = production !== null ? repairedWords(production) : null;
     if (repaired !== null && repaired.length > 0) {
-      try {
-        const spans = z
-          .array(z.object({ srcIn: z.number(), srcOut: z.number(), outIn: z.number(), outOut: z.number() }))
-          .safeParse(
-            (JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")) as { spans?: unknown })
-              .spans,
-          );
-        if (spans.success && spans.data.length > 0) {
-          const map = mapFromKeptSpans(spans.data);
-          return repaired.filter((w) => map.mapWord(w) !== null);
-        }
-      } catch {
-        // unreadable props — the repaired words uncut, below
-      }
-      return repaired;
+      const map = await heardMap(dir);
+      return map ? repaired.filter((w) => map.mapWord(w) !== null) : repaired;
     }
     try {
       const raw = JSON.parse(await readFile(join(dir, "transcript.json"), "utf8")) as { words?: unknown };
@@ -3514,21 +3554,11 @@ export async function startEditServer(
           // render's own map — the cut a render would match against, which
           // is what produce does. No usable spans (an unrendered or legacy
           // workdir) means every word counts as kept, at source time.
-          let mapped: ({ start: number; end: number } | null)[] | undefined;
-          let keptMap: ReturnType<typeof mapFromKeptSpans> | undefined;
-          try {
-            const spans = z
-              .array(z.object({ srcIn: z.number(), srcOut: z.number(), outIn: z.number(), outOut: z.number() }))
-              .safeParse((JSON.parse(await readFile(propsPath(), "utf8")) as { spans?: unknown }).spans);
-            if (spans.success && spans.data.length > 0) {
-              const map = mapFromKeptSpans(spans.data);
-              mapped = words.map((w) => map.mapWord(w));
-              keptMap = map;
-            }
-          } catch {
-            mapped = undefined;
-            keptMap = undefined;
-          }
+          // `heardMap` re-cuts that map by the vetoes and cuts saved since
+          // (finding 7): a mention inside a retake cut a minute ago is not a
+          // first mention the viewer will hear.
+          const keptMap = (await heardMap(workdir)) ?? undefined;
+          const mapped = keptMap ? words.map((w) => keptMap.mapWord(w)) : undefined;
           const timed = mapped
             ? words.map((w, i) => (mapped![i] ? { ...w, start: mapped![i]!.start, end: mapped![i]!.end } : w))
             : words;
