@@ -1,9 +1,11 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, colorGradePropsFor, coverInVideoPropsFor, overlayCuesFor, overlayGeometryFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
+import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, captionThemeFor, colorGradePropsFor, coverInVideoPropsFor, overlayCuesFor, overlayGeometryFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
 import {
   defaultTheme,
+  type CaptionChoreography,
   type CaptionLine,
+  type CaptionThemeId,
   type ContentRectSegment,
   type FaceCrop,
   type FramingSegment,
@@ -164,6 +166,12 @@ export interface ProductionCompProps {
    * when a card exists. Gated through `overlayCuesFor` (parse, never coerce).
    */
   overlayCues?: OverlayCueProps[];
+  /** Visual caption theme preset (--caption-theme). Absent or "default" = historical styling. */
+  captionTheme?: CaptionThemeId;
+  /** Pre-override CLI/config caption theme, for editor reset fallback. */
+  baseCaptionTheme?: CaptionThemeId;
+  /** Source-anchored AI caption choreography (--choreograph-captions), for editor live rebuilds. */
+  captionChoreography?: CaptionChoreography;
 }
 
 export const defaultProductionProps: ProductionCompProps = {
@@ -203,6 +211,7 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   sfxCues,
   colorGrade,
   overlayCues,
+  captionTheme,
 }) => {
   // The overlay's caption/graphic lookups, MEMOISED (final review M3) and
   // ahead of the early return to keep the hook order: OverlayLook memoises
@@ -211,6 +220,8 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   // depend only on the props below, which are stable across a render's
   // frames.
   const captionsVisible = showCaptions(captionsHidden);
+  const resolvedCaptionTheme = captionThemeFor(captionTheme);
+  const watermarkOn = showWatermark(watermark);
   const overlayGeometry = React.useMemo(
     () =>
       overlayGeometryFor({
@@ -219,8 +230,21 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
         sourceTextRegions: sourceTextRegions ?? [],
         captionsHidden,
         frame: { width: settings.width, height: settings.height },
+        ...(resolvedCaptionTheme !== "default" ? { captionTheme: resolvedCaptionTheme } : {}),
+        ...(face !== undefined ? { face } : {}),
+        ...(watermarkOn ? { watermark: true } : {}),
       }),
-    [captionsHidden, captionLines, sceneCues, sourceTextRegions, settings.width, settings.height],
+    [
+      captionsHidden,
+      captionLines,
+      face,
+      resolvedCaptionTheme,
+      sceneCues,
+      sourceTextRegions,
+      settings.width,
+      settings.height,
+      watermarkOn,
+    ],
   );
   if (!videoFileName) {
     return (
@@ -330,6 +354,9 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
           ctaWindow={ctaWindow}
           sourceTextRegions={sourceTextRegions}
           {...(cardWindows.length > 0 ? { hideDuring: cardWindows } : {})}
+          {...(resolvedCaptionTheme !== "default" ? { captionTheme: resolvedCaptionTheme } : {})}
+          {...(face !== undefined ? { face } : {})}
+          {...(watermarkOn ? { watermark: true } : {})}
         />
       ) : null}
       {/* After the captions so an overlay paints above them — its placement,

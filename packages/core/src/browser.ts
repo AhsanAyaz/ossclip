@@ -61,12 +61,22 @@ export {
   // same builder + packing matrix produce renders with (cut-review rework
   // follow-up) — a second packer is how preview and render would drift.
   buildCaptionLines,
+  CAPTION_THEME_IDS,
+  CaptionChoreographyPhraseSchema,
+  CaptionChoreographySchema,
+  CaptionChoreographyWordSchema,
+  captionKeyFor,
   captionPackingFor,
+  CaptionPhraseRoleSchema,
   captionsNeedNastaliq,
+  CaptionThemeIdSchema,
   lineDirection,
   NASTALIQ_FONT_NAME,
   NASTALIQ_FONT_REL,
+  type CaptionChoreography,
   type CaptionLine,
+  type CaptionPhraseRole,
+  type CaptionThemeId,
   type CaptionWord,
 } from "./captions";
 // `mapFromKeptSpans` is a VALUE export and browser-safe (timemap.ts imports

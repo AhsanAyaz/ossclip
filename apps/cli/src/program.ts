@@ -4,12 +4,15 @@ import { dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { z } from "zod/v4";
 import {
+  CAPTION_THEME_IDS,
+  CaptionThemeIdSchema,
   CleanupLevelSchema,
   COVER_MAX_WORDS,
   RESOLUTION_CHOICES,
   ResolutionChoiceSchema,
   SceneComponentIdSchema,
   SfxLevelSchema,
+  type CaptionThemeId,
 } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
@@ -66,6 +69,21 @@ export function concurrencyFlag(v: string): number {
     );
   }
   return n;
+}
+
+/**
+ * `--caption-theme <preset>` → one of the curated caption theme IDs.
+ * Parse, never coerce: a typo'd `--caption-theme neon` fails loudly naming
+ * the valid presets rather than silently rendering default captions.
+ */
+export function captionThemeFlag(v: string): CaptionThemeId {
+  const parsed = CaptionThemeIdSchema.safeParse(v.trim());
+  if (!parsed.success) {
+    throw new InvalidArgumentError(
+      `--caption-theme wants one of ${CAPTION_THEME_IDS.join(", ")}, got "${v}"`,
+    );
+  }
+  return parsed.data;
 }
 
 /**
@@ -548,6 +566,19 @@ export function buildProgram(): Command {
       "--no-captions",
       "no burned-in captions. The CTA keyword styling rides the caption track, so it goes too",
     )
+    .option(
+      "--caption-theme <preset>",
+      "visual caption preset: default | founder | punch | boxed | minimal (config key: \"captionTheme\")",
+      captionThemeFlag,
+    )
+    .option(
+      "--choreograph-captions",
+      "use the fast LLM to group captions into semantic phrases and emphasize key words (config key: \"choreographCaptions\")",
+    )
+    .option(
+      "--no-choreograph-captions",
+      "disable AI caption choreography, even when the config turns it on",
+    )
     // A tri-state like --watermark/--captions above, but on TWO commander
     // keys instead of one: the positive is spelled --add-jump-cuts (bare
     // "--jump-cuts" would read as adding CUTS, not the concealing zooms), so
@@ -788,6 +819,8 @@ export function buildProgram(): Command {
           // undefined = "not typed" here too — the default (ON) is applied at
           // the pin site, not coerced in transit.
           captions: opts.captions,
+          captionTheme: opts.captionTheme,
+          choreographCaptions: opts.choreographCaptions,
           // The reunited tri-state (jumpCutsFlag above): undefined = "not
           // typed" = auto, the face-only default.
           jumpCuts,

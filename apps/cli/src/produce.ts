@@ -245,6 +245,14 @@ import {
   type SceneComponentId,
   type Segment,
   type Transcript,
+  CAPTION_CHOREOGRAPHY_PROMPT_VERSION,
+  CAPTION_THEME_IDS,
+  CaptionChoreographySchema,
+  CaptionThemeIdSchema,
+  generateCaptionChoreography,
+  type CaptionChoreography,
+  type CaptionThemeId,
+  type ChoreographyInputWord,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { binOnPath, detectionLine, fallbackLine } from "./llm-detect";
@@ -569,6 +577,52 @@ export function priorSfxPlan(work: string): { level: SfxLevel; placements: SfxPl
   }
 }
 
+/**
+ * The `captionChoreography` plan the workdir's LAST run wrote, or undefined.
+ *
+ * Mirrors `priorSfxPlan`: a `--scenes` replay (the editor's Render) carries
+ * the reviewed choreography forward from `production.json` instead of making
+ * an LLM call.
+ */
+export function priorCaptionChoreography(work: string): CaptionChoreography | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(work, "production.json"), "utf8")) as {
+      captionChoreography?: unknown;
+    };
+    if (raw.captionChoreography === undefined) return undefined;
+    const parsed = CaptionChoreographySchema.safeParse(raw.captionChoreography);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The caption-choreography cache key (`caption-choreography-<hash>.json`).
+ * Keyed on the prompt version, aspect ratio, provider, fastModel, and the
+ * surviving words (`text` and `srcStart` in ms) on the base cutlist.
+ */
+export function captionChoreographyCacheKey(parts: {
+  version: number;
+  aspect: "9:16" | "16:9";
+  providerName: string;
+  fastModel?: string;
+  words: ReadonlyArray<{ text: string; srcStartMs: number }>;
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify([
+        parts.version,
+        parts.aspect,
+        parts.providerName,
+        parts.fastModel ?? "",
+        parts.words.map((w) => [w.text, w.srcStartMs]),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
+}
+
 export function beatCacheKeyCandidates(
   parts: Omit<Parameters<typeof beatSheetCacheKey>[0], "providerName">,
   providerName: string,
@@ -881,6 +935,15 @@ export interface ProduceOptions {
    */
   captions?: boolean;
   /**
+   * `--caption-theme <preset>`: visual caption preset (`default | founder | punch | boxed | minimal`).
+   */
+  captionTheme?: CaptionThemeId;
+  /**
+   * `--choreograph-captions` / `--no-choreograph-captions` tri-state: true/false
+   * when TYPED, undefined when not so the config's `choreographCaptions` key can supply the default.
+   */
+  choreographCaptions?: boolean;
+  /**
    * `--add-jump-cuts` / `--no-jump-cuts` tri-state: true/false when TYPED,
    * undefined when not ("auto", the default — punch, face-only). Resolved by
    * `resolveJumpCuts`; scope is the cut punch-in ONLY, narrower than `zoom`,
@@ -1085,6 +1148,68 @@ export function sfxFlag(
  */
 export function resolveSfx(flag: boolean | undefined, configValue: unknown): boolean {
   return flag ?? configValue === true;
+}
+
+/**
+ * The effective `--choreograph-captions` switch: a typed flag wins (`--no-choreograph-captions`
+ * beats config-on), and only then does the config's `choreographCaptions` supply the default
+ * (`=== true`, never truthy).
+ */
+export function resolveChoreographCaptions(
+  flag: boolean | undefined,
+  configValue: unknown,
+): boolean {
+  return flag ?? configValue === true;
+}
+
+/**
+ * The effective caption theme across all three surfaces:
+ * `override > flag > config > "default"`.
+ * Also returns `baseTheme` (the pre-override resolution from `flag > config > "default"`)
+ * so `render-props.json` and `command.json` can preserve the CLI/config baseline.
+ */
+export function resolveProductionCaptionTheme(p: {
+  override?: CaptionThemeId;
+  flag?: CaptionThemeId;
+  config?: unknown;
+}): {
+  theme: CaptionThemeId;
+  baseTheme: CaptionThemeId;
+  source?: "override" | "flag" | "config";
+  warning?: string;
+} {
+  let baseTheme: CaptionThemeId = "default";
+  let baseSource: "flag" | "config" | undefined;
+  let warning: string | undefined;
+
+  if (p.flag !== undefined) {
+    baseTheme = p.flag;
+    baseSource = "flag";
+  } else if (p.config !== undefined) {
+    const parsed = CaptionThemeIdSchema.safeParse(p.config);
+    if (parsed.success) {
+      baseTheme = parsed.data;
+      baseSource = "config";
+    } else {
+      warning = `⚠ config captionTheme ignored — expected one of ${CAPTION_THEME_IDS.join(", ")}, using default`;
+    }
+  }
+
+  if (p.override !== undefined) {
+    return {
+      theme: p.override,
+      baseTheme,
+      source: "override",
+      ...(warning ? { warning } : {}),
+    };
+  }
+
+  return {
+    theme: baseTheme,
+    baseTheme,
+    ...(baseSource ? { source: baseSource } : {}),
+    ...(warning ? { warning } : {}),
+  };
 }
 
 /**
@@ -3079,13 +3204,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       ? fallbackProviderName(providerName, process.env, binOnPath)
       : undefined;
   let provider: LlmProvider | null = null;
+  const choreographCaptionsOn = resolveChoreographCaptions(
+    opts.choreographCaptions,
+    cfg.choreographCaptions,
+  );
   // --youtube brings its own provider (field gap, 2026-08-16): the user's
   // real command was `--youtube --llm antigravity` WITHOUT --produce, and the
   // pack skipped with "needs an LLM provider" — a flag that exists to call an
   // LLM must count as opting into one. This also turns transcript repair on
   // for such runs, which is the dictionary's caption-side fix ("Jason" →
   // "JSON") — biasing whisper alone does not correct what ASR already heard.
-  const needsLlm = opts.produce === true || resolveYoutube(opts.youtube, cfg.youtube);
+  const needsRepairAndEditorialLlm =
+    opts.produce === true || resolveYoutube(opts.youtube, cfg.youtube);
+  const needsLlm =
+    needsRepairAndEditorialLlm || (choreographCaptionsOn && !opts.scenes);
   if (needsLlm) {
     // Only when auto-detected: a typed --llm needs no explanation. The line
     // itself lives in llm-detect.ts so a drift test covers every provider —
@@ -3194,7 +3326,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         `▸ repairs cached (${now} applied of ${cached.length} proposed` +
           `${now === before ? "" : `, re-decided from ${before}`})`,
       );
-    } else if (provider) {
+    } else if (provider && needsRepairAndEditorialLlm) {
       const repairAnim = isInteractive()
         ? new StageAnimator(
             "PHONETIC REPAIR",
@@ -3891,6 +4023,87 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           `▸ sfx carried forward from the reviewed plan ` +
             `(${prior.placements.length} placement(s), level ${prior.level})`,
         );
+      }
+    }
+  }
+
+  // ---- AI Caption Choreography (`--choreograph-captions`) -------------------
+  // Placed BEFORE `if (provider)` (`usage.json` write) so fast-tier choreography
+  // calls are included in the run's cost report and `production.json.producer`.
+  let captionChoreography: CaptionChoreography | undefined;
+  if (opts.scenes) {
+    captionChoreography = priorCaptionChoreography(work);
+    if (captionChoreography) {
+      console.log(
+        `▸ caption choreography carried forward (${captionChoreography.phrases.length} phrases)`,
+      );
+    }
+  } else if (choreographCaptionsOn && provider) {
+    const choreoWords: ChoreographyInputWord[] = transcript.words.flatMap((w) => {
+      const m = map.mapWord(w);
+      return m ? [{ text: w.text, start: m.start, end: m.end, srcStart: w.start }] : [];
+    });
+    if (choreoWords.length > 0) {
+      const choreoKeyParts = {
+        version: CAPTION_CHOREOGRAPHY_PROMPT_VERSION,
+        aspect: landscape ? ("16:9" as const) : ("9:16" as const),
+        fastModel: opts.llmFastModel ?? cfg.fastModel,
+        words: choreoWords.map((w) => ({
+          text: w.text,
+          srcStartMs: Math.round(w.srcStart * 1000),
+        })),
+      };
+      const choreoCacheCandidates = [
+        providerName,
+        ...(llmFallbackName ? [llmFallbackName] : []),
+      ].map((p) =>
+        join(
+          work,
+          `caption-choreography-${captionChoreographyCacheKey({ ...choreoKeyParts, providerName: p })}.json`,
+        ),
+      );
+      const choreoCacheHit = choreoCacheCandidates.find((p) => existsSync(p));
+      if (choreoCacheHit) {
+        try {
+          const parsed = CaptionChoreographySchema.safeParse(
+            JSON.parse(await readFile(choreoCacheHit, "utf8")),
+          );
+          if (parsed.success) {
+            captionChoreography = parsed.data;
+            console.log(
+              `▸ caption choreography cached (${captionChoreography.phrases.length} phrases, ` +
+                `${Object.keys(captionChoreography.words).length} emphasized words)`,
+            );
+          }
+        } catch {
+          // Malformed cache file falls through to regenerate.
+        }
+      }
+      if (!captionChoreography) {
+        try {
+          console.log(`▸ choreographing captions (${providerName})…`);
+          captionChoreography = await phases.time("llm", () =>
+            generateCaptionChoreography(provider!, {
+              words: choreoWords,
+              aspect: landscape ? "16:9" : "9:16",
+            }),
+          );
+          const actual = actualProvider(provider.usage, "caption_choreography", providerName);
+          const outCache = join(
+            work,
+            `caption-choreography-${captionChoreographyCacheKey({ ...choreoKeyParts, providerName: actual })}.json`,
+          );
+          await writeFile(outCache, JSON.stringify(captionChoreography, null, 2));
+          console.log(
+            `▸ caption choreography: ${captionChoreography.phrases.length} phrases, ` +
+              `${Object.keys(captionChoreography.words).length} emphasized words`,
+          );
+        } catch (err) {
+          console.log(
+            `  ⚠ caption choreography unavailable: ${err instanceof Error ? err.message : String(err)} — ` +
+              `falling back to standard caption packing`,
+          );
+        }
       }
     }
   }
@@ -4719,6 +4932,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     for (const d of resolved.dropped) console.log(`  ⚠ sfx: ${d.issue}`);
   }
 
+  const captionThemeRes = resolveProductionCaptionTheme({
+    override: overrideDoc.captionTheme,
+    flag: opts.captionTheme,
+    config: cfg.captionTheme,
+  });
+  if (captionThemeRes.warning) console.log(captionThemeRes.warning);
+  if (captionThemeRes.theme !== "default") {
+    console.log(
+      `▸ caption theme: ${captionThemeRes.theme}` +
+        `${captionThemeRes.source === "config" ? " (from config; --caption-theme overrides)" : ""}` +
+        `${captionThemeRes.source === "override" ? " (from overrides.json)" : ""}`,
+    );
+  }
+  const watermark = resolveWatermark(opts.watermark, cfg.watermark);
+
   // The caption lines are built BEFORE the overlays (final review I3): an
   // overlay with no room beside them is dropped with its pop, and that ⚠
   // has to reach report.txt, which is written below.
@@ -4730,6 +4958,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // Orientation-dependent packing (captionPackingFor has the budget math):
     // portrait gets the core defaults verbatim, landscape doubles them.
     ...captionPackingFor(landscape),
+    ...(captionChoreography ? { choreography: captionChoreography } : {}),
   });
   // §137 (Task 6 review, Critical 1): the caption half of a run — migrate the
   // doc's keys, apply what applies, and account for the rest — is one pure
@@ -4891,6 +5120,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         sourceTextRegions: textRegions,
         captionsHidden: resolveCaptionsHidden(opts.captions, overrideDoc.captionsHidden),
         frame,
+        ...(captionThemeRes.theme !== "default" ? { captionTheme: captionThemeRes.theme } : {}),
+        face: faceBox
+          ? {
+              centerYFrac: faceBox.centerYFrac,
+              centerXFrac: faceBox.centerXFrac,
+              sizeFrac: faceBox.sizeFrac,
+              sourceAspect: content.height > 0 ? content.width / content.height : undefined,
+              subject: faceSubject(faceBox),
+            }
+          : null,
+        ...(watermark ? { watermark: true } : {}),
       }),
       frame,
       RENDER_FPS,
@@ -5108,6 +5348,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // Absent when no plan ever produced one, so a plain (no-LLM) project's
     // production.json is byte-identical to a pre-fix one.
     ...(plannedHeadline !== undefined ? { coverHeadline: plannedHeadline } : {}),
+    ...(captionThemeRes.theme !== "default" ? { captionTheme: captionThemeRes.theme } : {}),
+    ...(captionChoreography ? { captionChoreography } : {}),
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
@@ -5649,10 +5891,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
-  // Resolved HERE, next to the props it feeds, and announced when on — the
-  // one ▸ line is how a config-sourced credit stays visible per run instead
+  // Announced here, next to the props it feeds (resolved above before overlayGeometryFor) —
+  // the one ▸ line is how a config-sourced credit stays visible per run instead
   // of surprising the author on upload.
-  const watermark = resolveWatermark(opts.watermark, cfg.watermark);
   if (watermark) {
     console.log(
       `▸ watermark: "made with ossclip" in the top-left safe area` +
@@ -6092,6 +6333,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // the renderer plays already carry it, and a spec on top would grade
     // twice.
     ...(colorGradeSpec ? { colorGrade: colorGradeSpec } : {}),
+    ...(captionThemeRes.theme !== "default" ? { captionTheme: captionThemeRes.theme } : {}),
+    ...(captionThemeRes.baseTheme !== "default"
+      ? { baseCaptionTheme: captionThemeRes.baseTheme }
+      : {}),
+    ...(captionChoreography ? { captionChoreography } : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 
@@ -6273,6 +6519,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // reviewed sound design and a silent video.
     sfx: sfxOn,
     sfxLevel,
+    captionTheme: captionThemeRes.baseTheme,
+    choreographCaptions: choreographCaptionsOn,
   });
   // produce is the ONLY command that may write command.json — edit.ts's §129
   // heal prepends the "produce" literal to any record that doesn't start

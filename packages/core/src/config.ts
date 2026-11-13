@@ -232,6 +232,18 @@ export interface OssclipConfig {
    */
   resolution?: string;
   /**
+   * Default caption theme preset (`default`, `founder`, `punch`, `boxed`,
+   * `minimal`). Validated at the consumer (`resolveProductionCaptionTheme` in
+   * produce.ts), never coerced.
+   */
+  captionTheme?: string;
+  /**
+   * Run AI caption choreography (`--choreograph-captions`) on every produce
+   * run when true. `--choreograph-captions` / `--no-choreograph-captions` win
+   * over this per run (`resolveChoreographCaptions` in produce.ts).
+   */
+  choreographCaptions?: boolean;
+  /**
    * USD per million tokens, keyed by model id or family substring — overrides
    * the built-in assumptions in `producer/usage.ts` so a run's cost line
    * reflects the account's actual rates instead of ours.
@@ -401,5 +413,7 @@ export function resolveConfig(
     whisperUrl: env.OSSCLIP_WHISPER_URL ?? fileCfg.whisperUrl,
     whisperRemoteModel: env.OSSCLIP_WHISPER_REMOTE_MODEL ?? fileCfg.whisperRemoteModel,
     resolution: fileCfg.resolution,
+    captionTheme: fileCfg.captionTheme,
+    choreographCaptions: fileCfg.choreographCaptions,
   };
 }

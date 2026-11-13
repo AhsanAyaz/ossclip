@@ -1,10 +1,12 @@
 import React from "react";
 import {
+  CAPTION_THEME_IDS,
   cutRangeToOldClock,
   LayoutSchema,
   scalarPropControls,
   SceneComponentIdSchema,
   splitRootId,
+  type CaptionThemeId,
   type SceneCue,
   type Theme,
 } from "@ossclip/core/browser";
@@ -97,6 +99,8 @@ interface InspectorProps {
    * on such a workdir.
    */
   captionsHiddenByFlag?: boolean;
+  /** The project's baseline caption theme before `overrides.json` is applied (`renderProps.baseCaptionTheme ?? renderProps.captionTheme`). */
+  baseCaptionTheme?: CaptionThemeId;
   /**
    * "Delete this chunk"'s WRITE boundary (cut review step 4 follow-up): the
    * cue's window speaks the player's LIVE clock (App retimes every cue under
@@ -622,6 +626,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   onVideoPreview,
   runInfo,
   captionsHiddenByFlag,
+  baseCaptionTheme,
   fromLive = (sec: number): number => sec,
   hasOldClockPreimage = (): boolean => true,
   toSourceSec = null,
@@ -2075,6 +2080,25 @@ export const Inspector: React.FC<InspectorProps> = ({
           />
           Show captions
         </label>
+        <div style={row}>
+          <span style={label}>theme</span>
+          <select
+            data-testid="caption-theme-select"
+            style={textInput}
+            value={edits.doc.captionTheme ?? baseCaptionTheme ?? "default"}
+            onChange={(e) => {
+              const next = e.target.value as CaptionThemeId;
+              const base = baseCaptionTheme ?? "default";
+              edits.setCaptionTheme(next === base ? undefined : next);
+            }}
+          >
+            {CAPTION_THEME_IDS.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </div>
         {edits.doc.captionsHidden === true ? (
           <div style={{ fontSize: 12, color: "#9A9AA3" }}>
             Hidden everywhere — the CTA keyword styling rides the caption track, so it is hidden

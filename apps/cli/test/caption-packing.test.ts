@@ -10,11 +10,21 @@ import { captionPackingFor } from "../src/produce";
  * existed.
  */
 describe("captionPackingFor", () => {
-  it("portrait restates the core defaults exactly — 3 words, 1.2s", () => {
-    expect(captionPackingFor(false)).toEqual({ maxWordsPerLine: 3, maxLineDuration: 1.2 });
+  it("portrait restates the core defaults — 3 words (5 choreographed), 1.2s (2.2s choreographed)", () => {
+    expect(captionPackingFor(false)).toEqual({
+      maxWordsPerLine: 3,
+      maxLineDuration: 1.2,
+      maxChoreographedWords: 5,
+      maxChoreographedDuration: 2.2,
+    });
   });
 
-  it("landscape doubles both — 6 words, 2.4s", () => {
-    expect(captionPackingFor(true)).toEqual({ maxWordsPerLine: 6, maxLineDuration: 2.4 });
+  it("landscape doubles standard and raises choreographed ceilings — 6 words (8 choreographed), 2.4s (3.2s choreographed)", () => {
+    expect(captionPackingFor(true)).toEqual({
+      maxWordsPerLine: 6,
+      maxLineDuration: 2.4,
+      maxChoreographedWords: 8,
+      maxChoreographedDuration: 3.2,
+    });
   });
 });

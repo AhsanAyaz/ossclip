@@ -65,6 +65,8 @@ const EXTRAS = [
   { value: "blooperMarker", label: "Cut flubbed takes on a spoken word", hint: "--blooper-marker" },
   { value: "sourceIsEdited", label: "Source already has burned-in text", hint: "--source-is-edited" },
   { value: "captionsOff", label: "Turn the burned-in captions off", hint: "--no-captions" },
+  { value: "captionTheme", label: "Pick a caption theme (founder, punch, boxed, minimal)", hint: "--caption-theme" },
+  { value: "choreographCaptions", label: "Choreograph captions into semantic phrases with AI", hint: "--choreograph-captions" },
   { value: "jumpCutsOff", label: "No punch-in zooms at cuts", hint: "--no-jump-cuts" },
   // Watermark/youtube polarity: OFF is the default and the entry only ever
   // turns it ON — `--no-sfx` does not exist (program.ts declares `--sfx`
@@ -377,6 +379,22 @@ export async function produceWizard(
   // The entry is the OFF switch (captions default ON — see EXTRAS), so a
   // tick maps to `captions: false` and produceArgv emits `--no-captions`.
   if (chosen.includes("captionsOff")) extras.captions = false;
+  if (chosen.includes("captionTheme")) {
+    extras.captionTheme = unwrap(
+      await select({
+        message: "Caption theme",
+        initialValue: "founder",
+        options: [
+          { value: "default", label: "default", hint: "classic OSSClip captions" },
+          { value: "founder", label: "founder", hint: "clean SaaS founder / Ali Abdaal aesthetic" },
+          { value: "punch", label: "punch", hint: "high-contrast Hormozi / Submagic pill highlight" },
+          { value: "boxed", label: "boxed", hint: "semi-opaque backdrop card behind the phrase" },
+          { value: "minimal", label: "minimal", hint: "editorial sentence case with subtle highlight" },
+        ],
+      }),
+    ) as ProduceExtras["captionTheme"];
+  }
+  if (chosen.includes("choreographCaptions")) extras.choreographCaptions = true;
   // Same OFF-switch shape (the punch defaults ON, face-only): a tick maps
   // to `jumpCuts: false` and produceArgv emits `--no-jump-cuts`.
   if (chosen.includes("jumpCutsOff")) extras.jumpCuts = false;

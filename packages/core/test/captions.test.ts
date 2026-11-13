@@ -2,13 +2,23 @@ import { describe, expect, it } from "vitest";
 import {
   backfillSrcStart,
   buildCaptionLines,
+  CAPTION_THEME_IDS,
+  captionKeyFor,
+  captionPackingFor,
   captionsNeedNastaliq,
+  CaptionThemeIdSchema,
   enforceLineDwell,
   lineDirection,
   MAX_CAPTION_WORD_LEAD_SEC,
   MIN_CAPTION_LINE_DWELL_SEC,
+  type CaptionChoreography,
   type CaptionLine,
 } from "../src/captions";
+import {
+  applyCaptionEdits,
+  applyCaptionRangeEdits,
+  applyCaptionWordHides,
+} from "../src/overrides";
 import { TimeMap, type KeptSpan } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
 
@@ -489,5 +499,212 @@ describe("captionsNeedNastaliq — the ONE font-staging predicate (2026-08-17)",
     expect(captionsNeedNastaliq([line("Fulfillment", "کیا", "ہے")])).toBe(
       lineDirection("Fulfillment کیا ہے") === "rtl",
     );
+  });
+});
+
+describe("CaptionThemeIdSchema & AI CaptionChoreography in buildCaptionLines", () => {
+  const identity = (duration: number): TimeMap =>
+    new TimeMap([{ srcIn: 0, srcOut: duration, kind: "keep" } satisfies Segment]);
+
+  it("exposes the 5 deterministic caption theme presets", () => {
+    expect(CAPTION_THEME_IDS).toEqual(["default", "founder", "punch", "boxed", "minimal"]);
+    for (const id of CAPTION_THEME_IDS) {
+      expect(CaptionThemeIdSchema.safeParse(id).success).toBe(true);
+    }
+    expect(CaptionThemeIdSchema.safeParse("unknown-theme").success).toBe(false);
+  });
+
+  it("captionPackingFor includes choreographed safety ceilings alongside standard limits", () => {
+    expect(captionPackingFor(false)).toEqual({
+      maxWordsPerLine: 3,
+      maxLineDuration: 1.2,
+      maxChoreographedWords: 5,
+      maxChoreographedDuration: 2.2,
+    });
+    expect(captionPackingFor(true)).toEqual({
+      maxWordsPerLine: 6,
+      maxLineDuration: 2.4,
+      maxChoreographedWords: 8,
+      maxChoreographedDuration: 3.2,
+    });
+  });
+
+  it("packs semantic phrases up to 5 words in portrait when choreography is supplied, attaching emphasisScale and role", () => {
+    const transcript: Transcript = {
+      language: "en",
+      words: [
+        { text: "We", start: 0.0, end: 0.25 },
+        { text: "shipped", start: 0.25, end: 0.55 },
+        { text: "this", start: 0.55, end: 0.80 },
+        { text: "in", start: 0.80, end: 1.00 },
+        { text: "48h", start: 1.00, end: 1.40 },
+        { text: "Now", start: 1.50, end: 1.80 },
+        { text: "watch", start: 1.80, end: 2.20 },
+      ],
+    };
+    const choreography: CaptionChoreography = {
+      phrases: [
+        { startSrcSec: 0.0, endSrcSec: 1.00, role: "hook" },
+        { startSrcSec: 1.50, endSrcSec: 1.80, role: "impact" },
+      ],
+      words: {
+        [captionKeyFor(1.0)]: { emphasisScale: 1.35 },
+        [captionKeyFor(1.8)]: { emphasisScale: 1.25 },
+      },
+    };
+
+    const lines = buildCaptionLines(transcript, identity(3), {
+      ...captionPackingFor(false),
+      choreography,
+    });
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.words.map((w) => w.text)).toEqual(["We", "shipped", "this", "in", "48h"]);
+    expect(lines[0]!.role).toBe("hook");
+    expect(lines[0]!.words[4]!.emphasisScale).toBe(1.35);
+    expect(lines[0]!.words[0]!.emphasisScale).toBeUndefined();
+
+    expect(lines[1]!.words.map((w) => w.text)).toEqual(["Now", "watch"]);
+    expect(lines[1]!.role).toBe("impact");
+    expect(lines[1]!.words[1]!.emphasisScale).toBe(1.25);
+  });
+
+  it("packs revived gap words outside choreographed phrases with standard unchoreographed limits and without merging into the next phrase", () => {
+    const transcript: Transcript = {
+      language: "en",
+      words: [
+        { text: "Hook", start: 0.0, end: 0.3 },
+        { text: "one", start: 0.3, end: 0.6 },
+        // Revived gap words at 1.0..2.2 (4 words that were originally cut)
+        { text: "revived", start: 0.8, end: 1.0 },
+        { text: "gap", start: 1.0, end: 1.2 },
+        { text: "words", start: 1.2, end: 1.4 },
+        { text: "extra", start: 1.4, end: 1.6 },
+        // Second choreographed phrase starting at 2.0
+        { text: "Final", start: 1.8, end: 2.1 },
+        { text: "impact", start: 2.1, end: 2.5 },
+      ],
+    };
+    const choreography: CaptionChoreography = {
+      phrases: [
+        { startSrcSec: 0.0, endSrcSec: 0.3, role: "hook" },
+        { startSrcSec: 1.8, endSrcSec: 2.1, role: "impact" },
+      ],
+      words: {},
+    };
+
+    const lines = buildCaptionLines(transcript, identity(4), {
+      ...captionPackingFor(false),
+      choreography,
+    });
+
+    // Phrase 0: ["Hook", "one"] (role: "hook")
+    // Revived gap: 4 words -> split at standard portrait maxWordsPerLine=3 into ["revived", "gap", "words"] and ["extra"] (role: undefined)
+    // Phrase 1: ["Final", "impact"] (role: "impact")
+    expect(lines.map((l) => l.words.map((w) => w.text))).toEqual([
+      ["Hook", "one"],
+      ["revived", "gap", "words"],
+      ["extra"],
+      ["Final", "impact"],
+    ]);
+    expect(lines.map((l) => l.role)).toEqual(["hook", undefined, undefined, "impact"]);
+  });
+
+  it("splits a choreographed phrase at a scene breakpoint or safety ceiling, keeping 'hook' only on the first sub-line when not split by a graphic breakpoint and dropping 'impact' when split", () => {
+    const transcript: Transcript = {
+      language: "en",
+      words: [
+        { text: "One", start: 0.0, end: 0.2 },
+        { text: "two", start: 0.25, end: 0.45 },
+        { text: "three", start: 0.6, end: 0.8 },
+        { text: "four", start: 0.85, end: 1.05 },
+        { text: "five", start: 1.1, end: 1.3 },
+        { text: "six", start: 1.35, end: 1.55 },
+      ],
+    };
+    const hookChoreo: CaptionChoreography = {
+      phrases: [{ startSrcSec: 0.0, endSrcSec: 1.35, role: "hook" }],
+      words: {},
+    };
+    // Safety ceiling splits 6-word hook phrase into 5 + 1; first sub-line keeps 'hook', second drops it
+    const splitHook = buildCaptionLines(transcript, identity(2), {
+      ...captionPackingFor(false),
+      choreography: hookChoreo,
+    });
+    expect(splitHook.map((l) => l.words.length)).toEqual([5, 1]);
+    expect(splitHook[0]!.role).toBe("hook");
+    expect(splitHook[1]!.role).toBeUndefined();
+
+    const impactChoreo: CaptionChoreography = {
+      phrases: [{ startSrcSec: 0.0, endSrcSec: 0.85, role: "impact" }],
+      words: {},
+    };
+    const splitImpact = buildCaptionLines(transcript, identity(2), {
+      ...captionPackingFor(false),
+      breakpoints: [0.5],
+      choreography: impactChoreo,
+    });
+    expect(splitImpact[0]!.role).toBeUndefined();
+    expect(splitImpact[1]!.role).toBeUndefined();
+  });
+
+  it("preserves emphasisScale and line.role across applyCaptionEdits, applyCaptionRangeEdits, and applyCaptionWordHides", () => {
+    const baseLines: CaptionLine[] = [
+      {
+        start: 0.0,
+        end: 1.2,
+        role: "hook",
+        words: [
+          { text: "We", start: 0.0, end: 0.3, srcStart: 1.0 },
+          { text: "uh", start: 0.3, end: 0.5, srcStart: 1.3 },
+          { text: "shipped", start: 0.5, end: 0.9, srcStart: 1.5, emphasisScale: 1.35 },
+          { text: "fast", start: 0.9, end: 1.2, srcStart: 1.9, emphasisScale: 1.2 },
+        ],
+      },
+    ];
+
+    // 1. Word retype preserves emphasisScale and line.role
+    const retyped = applyCaptionEdits(baseLines, {
+      [captionKeyFor(1.5)]: { text: "SHIPPED", was: "shipped" },
+    }).lines;
+    expect(retyped[0]!.role).toBe("hook");
+    expect(retyped[0]!.words[2]!.text).toBe("SHIPPED");
+    expect(retyped[0]!.words[2]!.emphasisScale).toBe(1.35);
+
+    // 2. Word hide preserves line.role and remaining words' emphasisScale
+    const afterHide = applyCaptionWordHides(retyped, {
+      [captionKeyFor(1.3)]: { was: "uh" },
+    }).lines;
+    expect(afterHide[0]!.role).toBe("hook");
+    expect(afterHide[0]!.words.map((w) => w.text)).toEqual(["We", "SHIPPED", "fast"]);
+    expect(afterHide[0]!.words[1]!.emphasisScale).toBe(1.35);
+
+    // 3. Equal-count range edit preserves emphasisScale and line.role
+    const afterEqualRange = applyCaptionRangeEdits(afterHide, [
+      {
+        fromKey: captionKeyFor(1.5),
+        toKey: captionKeyFor(1.9),
+        text: "LAUNCHED NOW",
+        was: "SHIPPED fast",
+      },
+    ]).lines;
+    expect(afterEqualRange[0]!.role).toBe("hook");
+    expect(afterEqualRange[0]!.words[1]!.text).toBe("LAUNCHED");
+    expect(afterEqualRange[0]!.words[1]!.emphasisScale).toBe(1.35);
+    expect(afterEqualRange[0]!.words[2]!.text).toBe("NOW");
+    expect(afterEqualRange[0]!.words[2]!.emphasisScale).toBe(1.2);
+
+    // 4. Count-changing range edit preserves line.role while minting unscaled replacement words
+    const afterMergedRange = applyCaptionRangeEdits(afterHide, [
+      {
+        fromKey: captionKeyFor(1.5),
+        toKey: captionKeyFor(1.9),
+        text: "LAUNCHED",
+        was: "SHIPPED fast",
+      },
+    ]).lines;
+    expect(afterMergedRange[0]!.role).toBe("hook");
+    expect(afterMergedRange[0]!.words.map((w) => w.text)).toEqual(["We", "LAUNCHED"]);
+    expect(afterMergedRange[0]!.words[1]!.emphasisScale).toBeUndefined();
   });
 });

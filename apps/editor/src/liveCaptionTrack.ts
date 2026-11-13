@@ -8,6 +8,7 @@ import {
   captionPackingFor,
   mapFromKeptSpans,
   type AppliedCaptionEdits,
+  type CaptionChoreography,
   type CaptionLine,
   type KeptSpan,
   type OverrideDoc,
@@ -122,11 +123,15 @@ export function rebuildCaptionTrack(
      * (`captionPackingFor`) — the render's own matrix, asked here so the
      * caller keeps the render-settings lookup. */
     landscape: boolean;
+    /** Optional validated caption choreography from `render-props.json` so live
+     * editor re-cuts preserve semantic phrase boundaries, roles, and word emphasis. */
+    choreography?: CaptionChoreography;
   },
 ): LiveCaptionTrack {
   const baseLines = buildCaptionLines(transcript, map, {
     breakpoints: opts.breakpoints,
     ...captionPackingFor(opts.landscape),
+    ...(opts.choreography ? { choreography: opts.choreography } : {}),
   });
   const edited = applyCaptionEdits(baseLines, sourceKeyedCaptionEdits(doc.captions)).lines;
   const liveLines = applyCaptionRangeEdits(edited, doc.captionRangeEdits).lines;

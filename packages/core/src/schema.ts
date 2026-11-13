@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { CaptionChoreographySchema, CaptionThemeIdSchema } from "./captions";
 
 /** A single transcribed word, in SOURCE time (seconds). */
 export const WordSchema = z.object({
@@ -408,6 +409,8 @@ export const ProductionSchema = z.object({
     })
     .optional(),
   theme: ThemeSchema.optional(),
+  captionTheme: CaptionThemeIdSchema.optional(),
+  captionChoreography: CaptionChoreographySchema.optional(),
   render: RenderSettingsSchema,
 });
 export type Production = z.infer<typeof ProductionSchema>;

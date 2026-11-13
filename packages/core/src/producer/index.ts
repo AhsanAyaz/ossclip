@@ -30,6 +30,7 @@ export * from "./youtube";
 export * from "./sfx";
 export * from "./logo-finder";
 export * from "./caption-regen";
+export * from "./caption-choreography";
 export * from "./scene-props";
 export * from "./repair";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";

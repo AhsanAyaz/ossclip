@@ -802,12 +802,14 @@ function GlobalHarness({
   selection = null,
   cue = null,
   captionsHiddenByFlag,
+  baseCaptionTheme,
   initialDoc,
   onDocChange,
 }: {
   selection?: { sceneId: string; elementId: string | null } | null;
   cue?: SceneCue | null;
   captionsHiddenByFlag?: boolean;
+  baseCaptionTheme?: "default" | "founder" | "punch" | "boxed" | "minimal";
   initialDoc?: Partial<OverrideDoc>;
   onDocChange?: (doc: OverrideDoc) => void;
 }) {
@@ -831,6 +833,7 @@ function GlobalHarness({
     resolvedTheme: defaultTheme,
     onVideoPreview: vi.fn(),
     captionsHiddenByFlag,
+    baseCaptionTheme,
   });
 }
 
@@ -939,6 +942,66 @@ describe("Inspector — the global Captions toggle (no-selection view)", () => {
       root.render(React.createElement(GlobalHarness, {}));
     });
     expect(container.querySelector('[data-testid="captions-flag-note"]')).toBeNull();
+  });
+
+  it("renders caption-theme-select with all 5 presets and writes/deletes doc.captionTheme cleanly", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(GlobalHarness, {
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const select = container.querySelector<HTMLSelectElement>('[data-testid="caption-theme-select"]')!;
+    expect(select).not.toBeNull();
+    expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      "default",
+      "founder",
+      "punch",
+      "boxed",
+      "minimal",
+    ]);
+    expect(select.value).toBe("default");
+    expect(doc && "captionTheme" in doc).toBe(false);
+
+    await act(async () => setControl(select, "punch"));
+    expect(doc?.captionTheme).toBe("punch");
+    expect(select.value).toBe("punch");
+
+    // Returning to the base theme ("default") deletes the override key rather than keeping dead weight
+    await act(async () => setControl(select, "default"));
+    expect(doc && "captionTheme" in doc).toBe(false);
+    expect(select.value).toBe("default");
+  });
+
+  it("allows overriding a non-default baseCaptionTheme back to 'default' and clearing when matching baseCaptionTheme", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(GlobalHarness, {
+          baseCaptionTheme: "founder",
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const select = container.querySelector<HTMLSelectElement>('[data-testid="caption-theme-select"]')!;
+    expect(select.value).toBe("founder");
+    expect(doc && "captionTheme" in doc).toBe(false);
+
+    // Selecting "default" when baseCaptionTheme is "founder" must store "default" explicitly
+    await act(async () => setControl(select, "default"));
+    expect(doc?.captionTheme).toBe("default");
+    expect(select.value).toBe("default");
+
+    // Selecting "founder" (matching baseCaptionTheme) clears the override key
+    await act(async () => setControl(select, "founder"));
+    expect(doc && "captionTheme" in doc).toBe(false);
+    expect(select.value).toBe("founder");
   });
 });
 

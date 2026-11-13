@@ -1523,6 +1523,33 @@ describe("setCaptionsHidden (the global Captions toggle)", () => {
   });
 });
 
+describe("setCaptionTheme (the global Captions theme select)", () => {
+  it("stores a preset id and DELETES the key on undefined", () => {
+    let s = editReducer(initialEditState(), { type: "setCaptionTheme", value: "founder" });
+    expect(s.doc.captionTheme).toBe("founder");
+    expect(s.dirty).toBe(true);
+    expect(s.past).toHaveLength(1);
+    s = editReducer(s, { type: "setCaptionTheme", value: undefined });
+    expect("captionTheme" in s.doc).toBe(false);
+  });
+
+  it("no-op guards: re-committing the current state mints no undo step", () => {
+    const fresh = initialEditState();
+    expect(editReducer(fresh, { type: "setCaptionTheme", value: undefined })).toBe(fresh);
+    const themed = editReducer(fresh, { type: "setCaptionTheme", value: "punch" });
+    expect(editReducer(themed, { type: "setCaptionTheme", value: "punch" })).toBe(themed);
+  });
+
+  it("undo/redo walk the theme change and schema round-trips cleanly", () => {
+    let s = editReducer(initialEditState(), { type: "setCaptionTheme", value: "boxed" });
+    expect(OverrideDocSchema.safeParse(s.doc).success).toBe(true);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.captionTheme).toBeUndefined();
+    s = editReducer(s, { type: "redo" });
+    expect(s.doc.captionTheme).toBe("boxed");
+  });
+});
+
 describe("setColorGrade (the global Color section)", () => {
   it("stores an object, an explicit false, and DELETES the key on undefined — three states, not two", () => {
     let s = editReducer(initialEditState(), {

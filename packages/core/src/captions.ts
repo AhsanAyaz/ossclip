@@ -1,5 +1,56 @@
+import { z } from "zod/v4";
 import type { Transcript, Word } from "./schema";
 import { mapFromKeptSpans, type KeptSpan, type TimeMap } from "./timemap";
+
+export const CAPTION_THEME_IDS = [
+  "default",
+  "founder",
+  "punch",
+  "boxed",
+  "minimal",
+] as const;
+
+export const CaptionThemeIdSchema = z.enum(CAPTION_THEME_IDS);
+export type CaptionThemeId = z.infer<typeof CaptionThemeIdSchema>;
+
+export const CaptionPhraseRoleSchema = z.enum(["hook", "body", "impact"]);
+export type CaptionPhraseRole = z.infer<typeof CaptionPhraseRoleSchema>;
+
+export const CaptionChoreographyWordSchema = z.object({
+  /** Emphasis font-size multiplier, clamped to [1.0, 1.4]. Omit when 1.0. */
+  emphasisScale: z.number().min(1).max(1.4).optional(),
+});
+
+export const CaptionChoreographyPhraseSchema = z.object({
+  /** Source timestamp (srcStart) of the first word in this semantic phrase. */
+  startSrcSec: z.number().finite().nonnegative(),
+  /** Source timestamp (srcStart) of the last word in this semantic phrase. */
+  endSrcSec: z.number().finite().nonnegative(),
+  /** Semantic staging role; defaults to "body". */
+  role: CaptionPhraseRoleSchema.optional(),
+});
+
+export const CaptionChoreographySchema = z.object({
+  phrases: z.array(CaptionChoreographyPhraseSchema),
+  /** Keyed by captionKeyFor(w.srcStart) ("w<ms>"), matching OverrideDoc.captions. */
+  words: z.record(z.string(), CaptionChoreographyWordSchema).default({}),
+});
+export type CaptionChoreography = z.infer<typeof CaptionChoreographySchema>;
+
+/**
+ * Canonical source-timestamp key for a caption word ("w<ms>").
+ * Defined in captions.ts and re-exported by overrides.ts so both modules
+ * share one implementation without a circular dependency.
+ */
+export function captionKeyFor(srcStart: number): string {
+  if (!Number.isFinite(srcStart)) {
+    throw new Error(
+      `captionKeyFor: caption words need a finite srcStart (§137), got ${String(srcStart)} — ` +
+        `run backfillSrcStart on lines read from a pre-§137 render-props.json`,
+    );
+  }
+  return `w${Math.round(srcStart * 1000)}`;
+}
 
 /**
  * Caption *timing* lives in OUTPUT time: `start`/`end` are what the renderer
@@ -15,15 +66,19 @@ export interface CaptionWord {
    * The word's start in SOURCE seconds (§137). `start`/`end` above are OUTPUT
    * times and a re-cut moves them; this does not, which is what lets a caption
    * edit survive one. The field the edit layer keys on — see
-   * `captionKeyFor` in overrides.ts.
+   * `captionKeyFor` above.
    */
   srcStart: number;
+  /** Per-word font-size multiplier from AI choreography (1.0..1.4). */
+  emphasisScale?: number;
 }
 
 export interface CaptionLine {
   words: CaptionWord[];
   start: number;
   end: number;
+  /** Semantic role from AI choreography; absent on unchoreographed lines. */
+  role?: CaptionPhraseRole;
 }
 
 /**
@@ -132,6 +187,12 @@ export interface CaptionOptions {
    * their hold never extends past one.
    */
   breakpoints?: number[];
+  /** Optional source-anchored AI choreography (phrase boundaries + word emphasis). */
+  choreography?: CaptionChoreography;
+  /** Safety word ceiling per choreographed phrase (defaults to 5 portrait, 8 landscape). */
+  maxChoreographedWords?: number;
+  /** Safety duration ceiling per choreographed phrase in seconds (defaults to 2.2s portrait, 3.2s landscape). */
+  maxChoreographedDuration?: number;
 }
 
 /**
@@ -235,10 +296,35 @@ export function enforceLineDwell(
 export function captionPackingFor(landscape: boolean): {
   maxWordsPerLine: number;
   maxLineDuration: number;
+  maxChoreographedWords: number;
+  maxChoreographedDuration: number;
 } {
   return landscape
-    ? { maxWordsPerLine: 6, maxLineDuration: 2.4 }
-    : { maxWordsPerLine: 3, maxLineDuration: 1.2 };
+    ? {
+        maxWordsPerLine: 6,
+        maxLineDuration: 2.4,
+        maxChoreographedWords: 8,
+        maxChoreographedDuration: 3.2,
+      }
+    : {
+        maxWordsPerLine: 3,
+        maxLineDuration: 1.2,
+        maxChoreographedWords: 5,
+        maxChoreographedDuration: 2.2,
+      };
+}
+
+function phraseIndexForWord(
+  srcStart: number,
+  phrases: readonly { startSrcSec: number; endSrcSec: number }[],
+): number {
+  for (let i = 0; i < phrases.length; i++) {
+    const p = phrases[i]!;
+    if (srcStart >= p.startSrcSec - 1e-6 && srcStart <= p.endSrcSec + 1e-6) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 export function buildCaptionLines(
@@ -251,6 +337,9 @@ export function buildCaptionLines(
   const maxGap = opts.maxGap ?? 0.6;
   const hold = opts.hold ?? 0.35;
   const breakpoints = [...(opts.breakpoints ?? [])].sort((a, b) => a - b);
+  const choreography = opts.choreography;
+  const maxChoreoWords = opts.maxChoreographedWords ?? (maxWords >= 6 ? 8 : 5);
+  const maxChoreoDur = opts.maxChoreographedDuration ?? (maxWords >= 6 ? 3.2 : 2.2);
 
   const mapped: CaptionWord[] = [];
   for (const w of transcript.words) {
@@ -262,38 +351,146 @@ export function buildCaptionLines(
     // naturally breaks the line and nothing renders during the dead span.
     if (m) {
       const start = Math.max(m.start, m.end - MAX_CAPTION_WORD_LEAD_SEC);
-      mapped.push({ text: w.text, start, end: m.end, srcStart: w.start });
+      const scale = choreography?.words[captionKeyFor(w.start)]?.emphasisScale;
+      mapped.push({
+        text: w.text,
+        start,
+        end: m.end,
+        srcStart: w.start,
+        ...(scale !== undefined && scale > 1 ? { emphasisScale: scale } : {}),
+      });
     }
   }
 
-  const lines: CaptionLine[] = [];
+  if (!choreography) {
+    const lines: CaptionLine[] = [];
+    let current: CaptionWord[] = [];
+    const flush = () => {
+      if (current.length === 0) return;
+      lines.push({
+        words: current,
+        start: current[0]!.start,
+        end: current[current.length - 1]!.end,
+      });
+      current = [];
+    };
+
+    for (const w of mapped) {
+      const lineStart = current[0]?.start ?? w.start;
+      const prevEnd = current[current.length - 1]?.end;
+      const crossesBoundary =
+        current.length > 0 && breakpoints.some((b) => b > lineStart + 1e-6 && b <= w.start + 1e-6);
+      if (
+        current.length >= maxWords ||
+        w.end - lineStart > maxDur ||
+        (prevEnd !== undefined && w.start - prevEnd > maxGap) ||
+        crossesBoundary
+      ) {
+        flush();
+      }
+      current.push(w);
+    }
+    flush();
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      const next = lines[i + 1];
+      const lastWordEnd = line.words[line.words.length - 1]!.end;
+      const boundary = breakpoints.find((b) => b > line.start + 1e-6);
+      let end = line.end + hold;
+      if (next) end = Math.min(end, next.start);
+      if (boundary !== undefined) end = Math.min(end, boundary);
+      // A single word physically spanning a boundary stays readable to its end.
+      line.end = Math.min(Math.max(end, lastWordEnd), map.outputDuration);
+    }
+    return enforceLineDwell(lines, { breakpoints, maxEnd: map.outputDuration });
+  }
+
+  // Choreographed packing path
+  interface PendingLine {
+    words: CaptionWord[];
+    start: number;
+    end: number;
+    phraseIdx: number;
+    splitByBreakpoint: boolean;
+  }
+
+  const pending: PendingLine[] = [];
   let current: CaptionWord[] = [];
-  const flush = () => {
+  let currentPhraseIdx = -1;
+  let currentSplitByBreakpoint = false;
+
+  const flushChoreo = (splitByBreakpoint: boolean) => {
     if (current.length === 0) return;
-    lines.push({
+    pending.push({
       words: current,
       start: current[0]!.start,
       end: current[current.length - 1]!.end,
+      phraseIdx: currentPhraseIdx,
+      splitByBreakpoint: currentSplitByBreakpoint || splitByBreakpoint,
     });
     current = [];
+    currentSplitByBreakpoint = splitByBreakpoint;
   };
 
   for (const w of mapped) {
+    const nextPhraseIdx = phraseIndexForWord(w.srcStart, choreography.phrases);
     const lineStart = current[0]?.start ?? w.start;
     const prevEnd = current[current.length - 1]?.end;
     const crossesBoundary =
       current.length > 0 && breakpoints.some((b) => b > lineStart + 1e-6 && b <= w.start + 1e-6);
+    const phraseChanged = current.length > 0 && currentPhraseIdx !== nextPhraseIdx;
+    const activeWordLimit = currentPhraseIdx >= 0 ? maxChoreoWords : maxWords;
+    const activeDurLimit = currentPhraseIdx >= 0 ? maxChoreoDur : maxDur;
+
     if (
-      current.length >= maxWords ||
-      w.end - lineStart > maxDur ||
+      phraseChanged ||
+      current.length >= activeWordLimit ||
+      w.end - lineStart > activeDurLimit ||
       (prevEnd !== undefined && w.start - prevEnd > maxGap) ||
       crossesBoundary
     ) {
-      flush();
+      flushChoreo(crossesBoundary && !phraseChanged);
+      if (phraseChanged) {
+        currentSplitByBreakpoint = false;
+      }
+    }
+    if (current.length === 0) {
+      currentPhraseIdx = nextPhraseIdx;
     }
     current.push(w);
   }
-  flush();
+  flushChoreo(false);
+
+  // Count how many sub-lines each phrase produced and whether any sub-line was split by a breakpoint
+  const phraseLineCounts = new Map<number, number>();
+  const phraseBreakpointSplit = new Set<number>();
+  for (const p of pending) {
+    if (p.phraseIdx >= 0) {
+      phraseLineCounts.set(p.phraseIdx, (phraseLineCounts.get(p.phraseIdx) ?? 0) + 1);
+      if (p.splitByBreakpoint) phraseBreakpointSplit.add(p.phraseIdx);
+    }
+  }
+
+  const seenHookPhrase = new Set<number>();
+  const lines: CaptionLine[] = pending.map((p) => {
+    let role: CaptionPhraseRole | undefined;
+    if (p.phraseIdx >= 0 && !phraseBreakpointSplit.has(p.phraseIdx)) {
+      const phraseRole = choreography.phrases[p.phraseIdx]?.role;
+      if (phraseRole === "hook" && !seenHookPhrase.has(p.phraseIdx)) {
+        seenHookPhrase.add(p.phraseIdx);
+        role = "hook";
+      } else if (phraseRole === "impact" && (phraseLineCounts.get(p.phraseIdx) ?? 0) === 1) {
+        role = "impact";
+      }
+    }
+    return {
+      words: p.words,
+      start: p.start,
+      end: p.end,
+      ...(role ? { role } : {}),
+    };
+  });
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -303,12 +500,7 @@ export function buildCaptionLines(
     let end = line.end + hold;
     if (next) end = Math.min(end, next.start);
     if (boundary !== undefined) end = Math.min(end, boundary);
-    // A single word physically spanning a boundary stays readable to its end.
     line.end = Math.min(Math.max(end, lastWordEnd), map.outputDuration);
   }
-  // LAST, on the finished windows: `hold` has already had its say, so the
-  // dwell floor caps at an absolute `start + MIN_CAPTION_LINE_DWELL_SEC`
-  // rather than adding to what the hold produced — a line already long
-  // enough is returned untouched instead of held twice.
   return enforceLineDwell(lines, { breakpoints, maxEnd: map.outputDuration });
 }

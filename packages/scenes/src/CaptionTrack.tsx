@@ -15,13 +15,25 @@ import {
   NASTALIQ_FONT_NAME,
   NASTALIQ_FONT_REL,
   type CaptionLine,
+  type CaptionPhraseRole,
+  type CaptionThemeId,
+  type FaceCrop,
   type SceneCue,
   type Theme,
 } from "@ossclip/core/browser";
-import { safeAreaFor, activeCueAt, captionFontSizeFor, type FrameSize } from "./stage";
+import {
+  activeCueAt,
+  captionFontSizeFor,
+  DEFAULT_FACE,
+  freeBands,
+  headBand,
+  safeAreaFor,
+  type FrameSize,
+} from "./stage";
 import { frameWindow } from "./frames";
 import { captionAnchorAvoiding, regionsDuring, type OccupiedRegion } from "./source-fit";
 import { CAPTION_POP_SEC, easeOutQuad } from "./motion";
+import { captionThemeFor, resolveCaptionThemeSpec } from "./caption-themes";
 
 export interface CaptionTrackProps {
   lines: CaptionLine[];
@@ -66,6 +78,12 @@ export interface CaptionTrackProps {
    * absent-means-none, so every existing caller renders unchanged.
    */
   hideDuring?: { start: number; end: number }[];
+  /** Visual caption theme preset (--caption-theme). Absent or "default" = historical styling. */
+  captionTheme?: CaptionThemeId;
+  /** Measured speaker face box, for hook/impact safe-zone placement. */
+  face?: FaceCrop | null;
+  /** Whether the top-right watermark is rendered, so hook captions clear its top band. */
+  watermark?: boolean;
 }
 
 /** The anchor a caption block centres on when no cue says otherwise. */
@@ -193,25 +211,97 @@ export function captionLineHeightFor(direction: "rtl" | "ltr"): number {
  * `scale` is the per-scene size multiplier (R16 §64), resolved per line like
  * the anchor.
  */
+/** Minimum vertical band height (in frame fractions) required to place a hook/impact caption. */
+const MIN_HOOK_BAND_H = 0.14;
+
+/**
+ * Resolve a safe-zone anchor for a choreographed `"hook"` or `"impact"` line
+ * using the measured speaker `FaceCrop`, `headBand`, and `freeBands`.
+ * Returns `null` whenever choreography cannot safely place the line (no face,
+ * screen subject, graphic cue, or no free band >= 0.14), falling through to
+ * standard `captionAnchorAvoiding`.
+ */
+export function resolveChoreographedAnchor(
+  line: { start: number; end: number; role?: CaptionPhraseRole },
+  activeCue: SceneCue | null,
+  face: FaceCrop | null | undefined,
+  sourceTextRegions: readonly OccupiedRegion[],
+  frame: FrameSize,
+  watermark?: boolean,
+): number | null {
+  if (line.role !== "hook" && line.role !== "impact") return null;
+  if (!face || face.subject === "screen") return null;
+  if (activeCue !== null && !(activeCue.kind === "plain" && activeCue.layout === "full-bleed")) {
+    return null;
+  }
+
+  const safe = safeAreaFor(frame);
+  const head = headBand({
+    centerYFrac: face.centerYFrac,
+    sizeFrac: face.sizeFrac ?? DEFAULT_FACE.sizeFrac,
+  });
+
+  const activeRegions = regionsDuring(sourceTextRegions, line.start, line.end);
+  const blocked: Array<{ y: number; h: number }> = [
+    { y: head.start, h: Math.max(0, head.end - head.start) },
+    ...activeRegions.map((r) => ({ y: r.y, h: r.h })),
+  ];
+  if (watermark === true) {
+    blocked.push({ y: safe.top, h: 0.06 });
+  }
+
+  const bands = freeBands({ start: safe.top, end: 1 - safe.bottom }, blocked);
+  const clampAnchor = (a: number): number =>
+    Math.min(1 - safe.bottom - 0.06, Math.max(safe.top + 0.06, a));
+
+  if (line.role === "hook") {
+    const upper = bands.find(
+      (b) => b.end <= head.start + 1e-4 && b.end - b.start >= MIN_HOOK_BAND_H,
+    );
+    if (upper) return clampAnchor((upper.start + upper.end) / 2);
+  }
+
+  const lower = bands.find(
+    (b) => b.start >= head.end - 1e-4 && b.end - b.start >= MIN_HOOK_BAND_H,
+  );
+  if (lower) return clampAnchor((lower.start + lower.end) / 2);
+
+  return null;
+}
+
 export function captionAnchorForLine(
   cues: readonly SceneCue[],
   sourceTextRegions: readonly OccupiedRegion[],
-  line: { start: number; end: number },
+  line: { start: number; end: number; role?: CaptionPhraseRole },
   frame: FrameSize,
   verticalAnchor: number,
+  face?: FaceCrop | null,
+  watermark?: boolean,
 ): { anchor: number; scale: number } {
   const active = cues.length > 0 ? activeCueAt(cues, line.start) : null;
+  if (active?.captionY !== undefined) {
+    return { anchor: active.captionY, scale: active.captionScale ?? 1 };
+  }
+  const choreoAnchor = resolveChoreographedAnchor(
+    line,
+    active,
+    face,
+    sourceTextRegions,
+    frame,
+    watermark,
+  );
+  if (choreoAnchor !== null) {
+    return { anchor: choreoAnchor, scale: active?.captionScale ?? 1 };
+  }
   const anchor =
-    active?.captionY !== undefined
-      ? active.captionY
-      : cues.length > 0 || sourceTextRegions.length > 0
-        ? captionAnchorAvoiding(
-            active?.layout ?? "full-bleed",
-            regionsDuring(sourceTextRegions, line.start, line.end),
-            active?.graphicRect,
-            frame,
-          )
-        : verticalAnchor;
+    cues.length > 0 || sourceTextRegions.length > 0
+      ? captionAnchorAvoiding(
+          active?.layout ?? "full-bleed",
+          regionsDuring(sourceTextRegions, line.start, line.end),
+          active?.graphicRect,
+          frame,
+        )
+      : verticalAnchor;
   return { anchor, scale: active?.captionScale ?? 1 };
 }
 
@@ -257,11 +347,16 @@ export function estimateCaptionRows(
   words: readonly string[],
   fontSizePx: number,
   availableWidthPx: number,
+  wordScales?: readonly number[],
+  uppercase?: boolean,
 ): number {
   let rows = 1;
   let used = 0;
-  for (const word of words) {
-    const w = word.length * CAPTION_CHAR_EM * fontSizePx;
+  const caseMult = uppercase ? 1.12 : 1;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    const scale = wordScales?.[i] ?? 1;
+    const w = word.length * CAPTION_CHAR_EM * fontSizePx * scale * caseMult;
     const next = used === 0 ? w : used + CAPTION_WORD_GAP_EM * fontSizePx + w;
     if (used > 0 && next > availableWidthPx) {
       rows += 1;
@@ -279,6 +374,9 @@ export interface CaptionGeometryOpts {
   frame: FrameSize;
   verticalAnchor?: number;
   fontSizePx?: number;
+  captionTheme?: CaptionThemeId;
+  face?: FaceCrop | null;
+  watermark?: boolean;
 }
 
 /**
@@ -298,13 +396,26 @@ function captionBlockExtent(line: CaptionLine, opts: CaptionGeometryOpts): { top
     line,
     frame,
     opts.verticalAnchor ?? DEFAULT_CAPTION_ANCHOR,
+    opts.face,
+    opts.watermark,
   );
-  const fontPx = resolveCaptionFontSize(opts.fontSizePx, frame) * scale;
+  const baseFontPx = resolveCaptionFontSize(opts.fontSizePx, frame) * scale;
   const texts = line.words.map((w) => w.text);
   const direction = lineDirection(texts.join(" "));
+  const themeSpec = resolveCaptionThemeSpec(opts.captionTheme, undefined, direction, baseFontPx);
+  const fontPx = baseFontPx * themeSpec.fontScale;
+  const wordScales = line.words.map((w) => w.emphasisScale ?? 1);
+  const maxWordScale = wordScales.reduce((m, s) => Math.max(m, s), 1);
   const safe = safeAreaFor(frame);
-  const rows = estimateCaptionRows(texts, fontPx, frame.width * (1 - safe.left - safe.right));
-  const half = (rows * ((fontPx * captionLineHeightFor(direction)) / frame.height)) / 2;
+  const rows = estimateCaptionRows(
+    texts,
+    fontPx,
+    frame.width * (1 - safe.left - safe.right),
+    wordScales,
+    themeSpec.textTransform === "uppercase",
+  );
+  const half =
+    (rows * ((fontPx * maxWordScale * captionLineHeightFor(direction)) / frame.height)) / 2;
   return { top: anchor - half, bottom: anchor + half };
 }
 
@@ -415,6 +526,9 @@ const LineView: React.FC<{
   /** The line's Sequence start, so a hide window can be tested in absolute frames. */
   fromFrame: number;
   hideDuring?: { start: number; end: number }[];
+  /** Visual caption theme preset (--caption-theme). Absent or "default" = historical styling. */
+  captionTheme?: CaptionThemeId;
+  theme?: Theme;
 }> = ({
   line,
   wordOffset,
@@ -427,6 +541,8 @@ const LineView: React.FC<{
   ctaWindow,
   fromFrame,
   hideDuring,
+  captionTheme,
+  theme,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -445,84 +561,177 @@ const LineView: React.FC<{
   // Mixed runs INSIDE a word (Latin, digits) are the browser's bidi to
   // resolve against this direction — never hand-reordered here.
   const direction = lineDirection(line.words.map((w) => w.text).join(" "));
+  const resolvedThemeId = captionThemeFor(captionTheme);
+  const hasEmphasis = line.words.some((w) => (w.emphasisScale ?? 1) > 1);
+
+  // Byte-identical fast path for the default theme without word emphasis so
+  // every pre-existing DOM snapshot and pixel test stays unchanged.
+  if (resolvedThemeId === "default" && !hasEmphasis) {
+    return (
+      <AbsoluteFill style={{ pointerEvents: "none" }}>
+        <div
+          style={{
+            position: "absolute",
+            top: `${verticalAnchor * 100}%`,
+            left: 0,
+            right: 0,
+            transform: "translateY(-50%)",
+            direction,
+            display: "flex",
+            justifyContent: "center",
+            gap: "0.28em",
+            flexWrap: "wrap",
+            // Keep caption text clear of the platform's right-hand action rail.
+            paddingLeft: `${safeArea.left * 100}%`,
+            paddingRight: `${safeArea.right * 100}%`,
+            // Direction-keyed (bundled Nastaliq, 2026-08-17): RTL lines lead
+            // with the bundled face and get its deeper line box; LTR lines are
+            // byte-identical to before — see the two helpers for the metrics.
+            fontFamily: captionFontFamilyFor(direction, fontFamily),
+            fontWeight: 900,
+            fontSize: fontSizePx,
+            lineHeight: captionLineHeightFor(direction),
+            textAlign: "center",
+            color: textColor,
+            WebkitTextStroke: `${captionStrokePx(fontSizePx)}px rgba(0,0,0,0.85)`,
+            paintOrder: "stroke fill",
+            // Shadow blur rides the font for the same reason as the stroke
+            // (portrait byte-identical: 64 → 24).
+            textShadow: `0 4px ${(fontSizePx * 24) / 64}px rgba(0,0,0,0.55)`,
+          }}
+        >
+          {line.words.map((w, i) => {
+            const held = Math.max(w.end, w.start + 0.12);
+            const inWindow = t >= w.start && t <= held;
+            const p = inWindow ? Math.min(1, (t - w.start) / CAPTION_POP_SEC) : 0;
+            const pop = easeOutQuad(p);
+            return (
+              <span
+                key={i}
+                data-caption-word={wordOffset + i}
+                data-caption-text={w.text}
+                data-caption-src={captionAnchorOf(w) === null ? undefined : w.srcStart}
+                style={{
+                  display: "inline-block",
+                  pointerEvents: "auto",
+                  transform: pop > 0 ? `scale(${1 + 0.08 * pop})` : "scale(1)",
+                  color: inWindow ? activeColor : textColor,
+                }}
+              >
+                {ctaDisplay(w.text, inCtaWindow(w.start, ctaWindow) ? ctaKeyword : undefined)}
+              </span>
+            );
+          })}
+        </div>
+      </AbsoluteFill>
+    );
+  }
+
+  const themeSpec = resolveCaptionThemeSpec(
+    resolvedThemeId,
+    theme ?? { accent: activeColor },
+    direction,
+    fontSizePx,
+  );
+  const scaledFontPx = fontSizePx * themeSpec.fontScale;
+  const isBoxed = Boolean(themeSpec.lineBoxStyle);
+
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       <div
         style={{
           position: "absolute",
           top: `${verticalAnchor * 100}%`,
-          left: 0,
-          right: 0,
+          left: isBoxed ? `${safeArea.left * 100}%` : 0,
+          right: isBoxed ? `${safeArea.right * 100}%` : 0,
+          width: isBoxed ? "fit-content" : undefined,
+          maxWidth: isBoxed ? `${(1 - safeArea.left - safeArea.right) * 100}%` : undefined,
+          margin: isBoxed ? "0 auto" : undefined,
           transform: "translateY(-50%)",
           direction,
           display: "flex",
           justifyContent: "center",
+          alignItems: "baseline",
           gap: "0.28em",
           flexWrap: "wrap",
-          // Keep caption text clear of the platform's right-hand action rail.
-          paddingLeft: `${safeArea.left * 100}%`,
-          paddingRight: `${safeArea.right * 100}%`,
-          // Direction-keyed (bundled Nastaliq, 2026-08-17): RTL lines lead
-          // with the bundled face and get its deeper line box; LTR lines are
-          // byte-identical to before — see the two helpers for the metrics.
+          paddingLeft: isBoxed ? undefined : `${safeArea.left * 100}%`,
+          paddingRight: isBoxed ? undefined : `${safeArea.right * 100}%`,
+          ...(themeSpec.lineBoxStyle ?? {}),
           fontFamily: captionFontFamilyFor(direction, fontFamily),
-          fontWeight: 900,
-          fontSize: fontSizePx,
+          fontWeight: themeSpec.fontWeight,
+          fontSize: scaledFontPx,
           lineHeight: captionLineHeightFor(direction),
+          textTransform: themeSpec.textTransform,
+          letterSpacing: themeSpec.letterSpacing,
           textAlign: "center",
           color: textColor,
-          WebkitTextStroke: `${captionStrokePx(fontSizePx)}px rgba(0,0,0,0.85)`,
+          WebkitTextStroke:
+            themeSpec.strokePx > 0 ? `${themeSpec.strokePx}px rgba(0,0,0,0.85)` : "0px transparent",
           paintOrder: "stroke fill",
-          // Shadow blur rides the font for the same reason as the stroke
-          // (portrait byte-identical: 64 → 24).
-          textShadow: `0 4px ${(fontSizePx * 24) / 64}px rgba(0,0,0,0.55)`,
+          textShadow: themeSpec.shadowStyle,
         }}
       >
         {line.words.map((w, i) => {
           const held = Math.max(w.end, w.start + 0.12);
           const inWindow = t >= w.start && t <= held;
-          // Ramp from the word's OWN start, then hold — frame-driven, because
-          // the CSS transition this replaces only ever animated in the
-          // editor's real-time <Player>; the render seeks and screenshots,
-          // so no wall-clock time passes and the scale snapped (spec
-          // 2026-08-04). Same ease as the layer's entrance and exit.
           const p = inWindow ? Math.min(1, (t - w.start) / CAPTION_POP_SEC) : 0;
           const pop = easeOutQuad(p);
+          const wordEmph = w.emphasisScale ?? 1;
+          const unspoken = themeSpec.revealMode === "word-build" && t < w.start;
+
+          const pillSpec = themeSpec.activeWordPill;
+          const showPill =
+            inWindow &&
+            pillSpec !== undefined &&
+            (!pillSpec.emphasisOnly || wordEmph >= 1.15);
+
+          const scaleVal = unspoken ? 0.92 : 1 + themeSpec.popScaleAmp * pop;
+          const rotatePart =
+            showPill && pillSpec.rotateDeg !== 0 ? ` rotate(${pillSpec.rotateDeg}deg)` : "";
+          const transform = unspoken
+            ? "translateY(6px) scale(0.92)"
+            : `${scaleVal !== 1 ? `scale(${scaleVal})` : "scale(1)"}${rotatePart}`;
+
+          const opacity = unspoken
+            ? 0
+            : inWindow
+              ? 1
+              : themeSpec.inactiveOpacity;
+
           return (
             <span
               key={i}
-              // The editor double-click retypes a word in place; the RAW text
-              // rides along because the rendered text may be CTA-decorated,
-              // and the retype's stale-guard must compare against the truth.
               data-caption-word={wordOffset + i}
               data-caption-text={w.text}
-              // The word's SOURCE start, which is what the edit is keyed on
-              // (§137). These attributes are the whole contract between this
-              // file and the editor's Overlay — it hit-tests the Player's DOM
-              // and holds no caption lines of its own — so the anchor has to
-              // travel the same channel as the text. OMITTED when the word has
-              // no usable anchor (`captionAnchorOf` is core's single definition
-              // of that, so this cannot drift from the apply side): a pre-§137
-              // render-props.json has no `srcStart` at all, and the editor
-              // treats the missing attribute as "this word cannot be retyped".
-              // Never `NaN` — a shared garbage anchor is the failure §137
-              // exists to remove.
               data-caption-src={captionAnchorOf(w) === null ? undefined : w.srcStart}
               style={{
                 display: "inline-block",
-                // Words are individually hit-testable for the editor (the
-                // parent layer stays pointer-events: none); harmless in the
-                // render, where nothing dispatches events.
                 pointerEvents: "auto",
-                transform: pop > 0 ? `scale(${1 + 0.08 * pop})` : "scale(1)",
-                // Colour stays keyed to the window, not the ramp: colour has
-                // no in-between worth animating, and lerping it would fight
-                // the stroke.
-                color: inWindow ? activeColor : textColor,
+                ...(wordEmph > 1
+                  ? {
+                      fontSize: Math.round(scaledFontPx * wordEmph),
+                      lineHeight: direction === "rtl" ? 1.6 : 1.05,
+                    }
+                  : {}),
+                transform,
+                opacity,
+                color: showPill
+                  ? pillSpec.color
+                  : inWindow
+                    ? activeColor
+                    : textColor,
+                ...(showPill
+                  ? {
+                      backgroundColor: pillSpec.backgroundColor,
+                      borderRadius: pillSpec.borderRadius,
+                      padding: pillSpec.padding,
+                      ...(pillSpec.clearStroke
+                        ? { WebkitTextStroke: "0px transparent", textShadow: "none" }
+                        : {}),
+                    }
+                  : {}),
               }}
             >
-              {/* Per WORD, not per line: a line straddling the cue boundary
-                  styles only the word actually inside the ask. */}
               {ctaDisplay(w.text, inCtaWindow(w.start, ctaWindow) ? ctaKeyword : undefined)}
             </span>
           );
@@ -548,6 +757,9 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
   ctaWindow,
   sourceTextRegions = [],
   hideDuring,
+  captionTheme,
+  face,
+  watermark,
 }) => {
   const { fps, width, height } = useVideoConfig();
   const frame = { width, height };
@@ -579,6 +791,8 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
           line,
           frame,
           verticalAnchor,
+          face,
+          watermark,
         );
         // End frame from the end TIME, never from a rounded duration — see
         // frameWindow. Two lines either side of a cue boundary resolve to
@@ -601,6 +815,8 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({
               ctaWindow={ctaWindow}
               fromFrame={from}
               hideDuring={hideDuring && hideDuring.length > 0 ? hideDuring : undefined}
+              captionTheme={captionTheme}
+              theme={theme}
             />
           </Sequence>
         );

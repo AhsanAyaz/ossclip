@@ -325,8 +325,29 @@ describe("wizard argv survives the real commander parse", () => {
       expect(entry?.hint).toMatch(/--youtube/);
       expect(entry?.hint).toMatch(/approve the thumbnail concept before render/);
     }
-    expect(extrasFor(true)).toHaveLength(12);
-    expect(extrasFor(false)).toHaveLength(10); // graphicsClip + sfx filtered out
+    expect(extrasFor(true)).toHaveLength(14);
+    expect(extrasFor(false)).toHaveLength(12); // graphicsClip + sfx filtered out
+  });
+
+  it("lists captionTheme and choreographCaptions in the extras menu and round-trips both flags", async () => {
+    for (const graphics of [false, true]) {
+      const themeEntry = extrasFor(graphics).find((e) => e.value === "captionTheme");
+      expect(themeEntry?.hint).toBe("--caption-theme");
+      const choreoEntry = extrasFor(graphics).find((e) => e.value === "choreographCaptions");
+      expect(choreoEntry?.hint).toBe("--choreograph-captions");
+    }
+    const opts = await parse(
+      produceArgv(
+        answers({
+          extras: {
+            captionTheme: "punch",
+            choreographCaptions: true,
+          },
+        }),
+      ),
+    );
+    expect(opts.captionTheme).toBe("punch");
+    expect(opts.choreographCaptions).toBe(true);
   });
 
   // Sound effects (2026-08-29) follow the clip extra's gate: they are placed

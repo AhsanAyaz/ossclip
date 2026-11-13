@@ -32,7 +32,9 @@ export class MockProvider implements LlmProvider {
               ? // No names: the offline path must exercise the finder call
                 // without inventing brands (and network fetches) for them.
                 req.schema.parse({ names: [] })
-              : this.sceneProps(req.user, req.schema, req.schemaName);
+              : req.schemaName === "caption_choreography"
+                ? this.captionChoreography(req.user, req.schema)
+                : this.sceneProps(req.user, req.schema, req.schemaName);
     // Estimated, and costing exactly nothing — but recorded, because the
     // offline path is first-class and "how big are the prompts this pipeline
     // sends" is worth answering without spending anything to find out.
@@ -112,6 +114,26 @@ export class MockProvider implements LlmProvider {
       });
     }
     return schema.parse({ placements });
+  }
+
+  private captionChoreography<T>(user: string, schema: z.ZodType<T>): T {
+    const indices = [...user.matchAll(/\[(\d+)\|/g)].map((m) => Number.parseInt(m[1]!, 10));
+    const n = indices.length;
+    if (n === 0) {
+      return schema.parse({ phrases: [], emphasis: [] });
+    }
+    const phrases: Array<{ startWord: number; endWord: number; role?: "hook" | "body" | "impact" }> = [];
+    const chunkSize = 4;
+    for (let start = 0; start < n; start += chunkSize) {
+      const end = Math.min(n - 1, start + chunkSize - 1);
+      phrases.push({
+        startWord: start,
+        endWord: end,
+        role: start === 0 ? "hook" : "body",
+      });
+    }
+    const emphasis = [{ word: Math.min(n - 1, 2), scale: 1.25 }];
+    return schema.parse({ phrases, emphasis });
   }
 
   private sceneProps<T>(_user: string, schema: z.ZodType<T>, schemaName: string): T {

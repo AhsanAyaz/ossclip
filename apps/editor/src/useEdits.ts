@@ -13,6 +13,7 @@ import {
   restoreElement,
   setElementTransform,
   stampSceneAnchors,
+  type CaptionThemeId,
   type ElementTransform,
   type Layout,
   type OverlayEntrySnapshot,
@@ -117,6 +118,12 @@ export type EditAction =
    * the hideScene/restoreScene semantics (write `true` / DELETE the key,
    * no-op guard) either way. */
   | { type: "setCaptionsHidden"; hidden: boolean }
+  /** The doc-global Caption Theme select (`OverrideDocSchema.captionTheme`).
+   * `undefined` DELETES the key so returning to the project's base theme leaves
+   * no dead override in `overrides.json`, while any `CaptionThemeId` (including
+   * `"default"` when overriding a non-default `--caption-theme` back to default)
+   * writes that preset id. */
+  | { type: "setCaptionTheme"; value: CaptionThemeId | undefined }
   /** The doc-global Color source/sliders — ONE action for all three states
    * the key can hold (`OverrideDocSchema.colorGrade`): `undefined` DELETES
    * the key (inherit produce's flag/config layers — the `setCaptionsHidden`
@@ -809,6 +816,14 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // every overrides.json saved after one toggle round-trip.
       const { captionsHidden: _dropped, ...rest } = state.doc;
       return commit(rest);
+    }
+    case "setCaptionTheme": {
+      if (action.value === state.doc.captionTheme) return state;
+      if (action.value === undefined) {
+        const { captionTheme: _dropped, ...rest } = state.doc;
+        return commit(rest);
+      }
+      return commit({ ...state.doc, captionTheme: action.value });
     }
     case "setColorGrade": {
       if (action.value === undefined) {
@@ -1782,6 +1797,8 @@ export function useEdits() {
     addSplit: (split: { at?: number; src?: number }) =>
       dispatch({ type: "addSplit", at: split.at, src: split.src }),
     setCaptionsHidden: (hidden: boolean) => dispatch({ type: "setCaptionsHidden", hidden }),
+    setCaptionTheme: (value: CaptionThemeId | undefined) =>
+      dispatch({ type: "setCaptionTheme", value }),
     setColorGrade: (value: OverrideDoc["colorGrade"], coalesce?: string) =>
       dispatch({ type: "setColorGrade", value, coalesce }),
     hideScene: (sceneId: string) => dispatch({ type: "hideScene", sceneId }),
