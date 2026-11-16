@@ -14,7 +14,8 @@ import {
   type BeatSheet,
   type BeatsValidationIssue,
 } from "./beats";
-import { generateScenes, type ScenePropsFailure } from "./scene-props";
+import { generateScenes, momentSceneId, type ScenePropsFailure } from "./scene-props";
+import { planScriptMoments, type ScriptPlanInput } from "./script-plan";
 import { buildFramingBrief, repairMomentLayouts, type FramingContext } from "../framing";
 import {
   resolveClipWindow,
@@ -32,6 +33,7 @@ export * from "./logo-finder";
 export * from "./caption-regen";
 export * from "./caption-choreography";
 export * from "./scene-props";
+export * from "./script-plan";
 export * from "./repair";
 export * from "./llm-sessions";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
@@ -268,8 +270,21 @@ export async function produceScenes(
      * comes back as a graphic (2026-11-08). Omitted = nothing marked.
      */
     cut?: ReadonlySet<number>;
+    /**
+     * `--script` (explainer spec §1.3): the moments come from the script's
+     * aligned cues instead of the beat-sheet call, which is not made at all.
+     * Everything after the moments — forceComponent, layout repair, the
+     * props call — is the path every run takes.
+     */
+    script?: ScriptPlanInput;
   },
 ): Promise<ProduceScenesResult> {
+  if (args.script) {
+    // Exclusive: `--clip` picks its own window by asking the beat-sheet call
+    // for one, and a script has already decided where every scene goes.
+    if (args.clip) throw new Error("--clip and --script cannot be combined: a script plans the whole take");
+    return produceScriptScenes(provider, { ...args, script: args.script });
+  }
   const framingBrief = args.framing
     ? buildFramingBrief(args.framing, args.transcript)
     : undefined;
@@ -357,5 +372,74 @@ export async function produceScenes(
     scenes,
     failures,
     clip,
+  };
+}
+
+/**
+ * The script-mode half of `produceScenes` (explainer spec §1.3): moments from
+ * the aligned cues, then the same downstream steps in the same order.
+ */
+async function produceScriptScenes(
+  provider: LlmProvider,
+  args: Omit<Parameters<typeof produceScenes>[1], "script" | "clip"> & { script: ScriptPlanInput },
+): Promise<ProduceScenesResult> {
+  const { transcript, cut } = args;
+  const planned = await planScriptMoments(provider, args.script, transcript);
+  const issues: BeatsValidationIssue[] = [...planned.issues];
+  const normalized = normalizeBeatSheet(
+    // The hook is what the cover banner falls back to; a script has no
+    // separate hook judgement, so its first cue's copy stands in.
+    { hook: planned.moments[0]?.onScreenCopy ?? "", moments: planned.moments },
+    transcript,
+    // No shortfall line: its "~1 per 9s" target means nothing here, and
+    // every cue that is not placed is reported per cue instead (Task 8).
+    null,
+    cut,
+    "script",
+  );
+  issues.push(...normalized.issues);
+
+  // Same order as the beat-sheet path, for the same reasons (see there).
+  let moments = args.forceComponent
+    ? normalized.sheet.moments.map((m) =>
+        m.sceneKind === "none" ? m : { ...m, sceneKind: args.forceComponent!, layout: undefined },
+      )
+    : normalized.sheet.moments;
+  if (args.framing) {
+    const repaired = repairMomentLayouts(moments, transcript, args.framing);
+    moments = repaired.moments;
+    issues.push(...repaired.issues);
+  }
+  const { scenes, failures } = await generateScenes(provider, moments, transcript, {
+    framing: args.framing,
+    cut,
+  });
+
+  // A clip scene follows its moment through normalization. Scene ids are
+  // indices into the RETURNED moments (`momentSceneId`; the sfx prompt
+  // relies on it), so a clip's id and anchor are re-read from where its
+  // moment landed. The moment is found by `endWord`: normalization drops
+  // moments and moves a `startWord` forward but never reorders or changes an
+  // `endWord` inside the transcript, and aligned cues have strictly
+  // increasing `endWord`s (cues cannot cross, §1.2), so the match is exact. A
+  // clip whose moment was dropped has no words left to anchor to and goes too.
+  const clipScenes = planned.clipScenes.flatMap((scene) => {
+    const k = moments.findIndex((m) => m.endWord === scene.anchor.endWord);
+    if (k === -1) return [];
+    const m = moments[k]!;
+    return [{ ...scene, id: momentSceneId(k), anchor: { startWord: m.startWord, endWord: m.endWord } }];
+  });
+
+  return {
+    beatSheet: { ...normalized.sheet, moments },
+    beatIssues: issues,
+    graphics: {
+      // Every placed cue was asked for something on screen; a clip counts
+      // as delivered, a footage cue left as talking head does not.
+      asked: args.script.aligned.length,
+      delivered: moments.filter((m) => m.sceneKind !== "none").length + clipScenes.length,
+    },
+    scenes: [...scenes, ...clipScenes],
+    failures,
   };
 }

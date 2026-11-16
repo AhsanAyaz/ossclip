@@ -441,6 +441,14 @@ export function normalizeBeatSheet(
   askedGraphics?: number | null,
   /** Word indices the cutlist removes: a moment made only of them is dropped. */
   cut?: ReadonlySet<number>,
+  /**
+   * "script" (explainer spec §1.3): the moments are the author's cues, so
+   * only the structural repairs run — bounds, overlap, cut-only removal. The
+   * coverage budget, the §29 short-take floor and the same-kind demotion are
+   * short-form taste; applied to a script they would delete cues the author
+   * wrote (four bug cards nearly in a row, 60% coverage, in the EGM video).
+   */
+  mode: "auto" | "script" = "auto",
 ): { sheet: BeatSheet; issues: BeatsValidationIssue[] } {
   const wordCount = transcript.words.length;
   const issues: BeatsValidationIssue[] = [];
@@ -531,7 +539,8 @@ export function normalizeBeatSheet(
   // owes the user instead is to SAY so — see the shortfall issue below.
   const minGraphics = runtime < SHORT_TAKE_SEC ? SHORT_TAKE_MIN_GRAPHICS : 0;
 
-  for (;;) {
+  // Both scheduling loops below are the "auto" mode's alone — see `mode`.
+  while (mode === "auto") {
     const graphics = surviving();
     const shown = graphics.reduce((acc, i) => acc + estShow(i), 0);
     if (shown <= budget + 1e-6) break;
@@ -572,7 +581,7 @@ export function normalizeBeatSheet(
   // Variety pass independent of budget (§9): adjacent survivors must differ in
   // kind — demote the later of a same-kind pair (the earlier if the later is
   // the payoff; never the hook).
-  for (;;) {
+  while (mode === "auto") {
     const graphics = surviving();
     if (graphics.length <= minGraphics) break; // §29 floor outranks variety too
     const pair = graphics.findIndex(

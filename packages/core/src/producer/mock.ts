@@ -34,7 +34,9 @@ export class MockProvider implements LlmProvider {
                 req.schema.parse({ names: [] })
               : req.schemaName === "caption_choreography"
                 ? this.captionChoreography(req.user, req.schema)
-                : this.sceneProps(req.user, req.schema, req.schemaName);
+                : req.schemaName === "script_plan"
+                  ? this.scriptPlan(req.user, req.schema)
+                  : this.sceneProps(req.user, req.schema, req.schemaName);
     // Estimated, and costing exactly nothing — but recorded, because the
     // offline path is first-class and "how big are the prompts this pipeline
     // sends" is worth answering without spending anything to find out.
@@ -114,6 +116,22 @@ export class MockProvider implements LlmProvider {
       });
     }
     return schema.parse({ placements });
+  }
+
+  /**
+   * A script-mode plan (`--script`): every cue the prompt lists becomes a
+   * TitleCard of its own cue text. Read off the prompt's `id:`/`cue:` lines,
+   * the way `beatSheet` reads `[n]` indices, so the offline path plans exactly
+   * the cues the real call is shown — and never answers "none", so a fixture
+   * run places every cue it aligned.
+   */
+  private scriptPlan<T>(user: string, schema: z.ZodType<T>): T {
+    const cues = [...user.matchAll(/^id: (.+)\ncue: (.*)$/gm)].map((m) => ({
+      id: m[1]!,
+      sceneKind: "TitleCard",
+      onScreenCopy: m[2]!.slice(0, 60),
+    }));
+    return schema.parse({ cues });
   }
 
   private captionChoreography<T>(user: string, schema: z.ZodType<T>): T {
