@@ -21,6 +21,7 @@ import {
   clampGraphicRect,
   contentTransformFor,
   FULL_BLEED_GRAPHIC_SLOT,
+  FULL_FRAME_SLOT,
   LANDSCAPE_FRAME,
   LANDSCAPE_SAFE_AREA,
   PORTRAIT_FRAME,
@@ -264,6 +265,50 @@ describe("graphicSlotFor (R13 — layout never vetoes the component)", () => {
       if (layout === "full-bleed") continue;
       expect(graphicSlotFor({ layout })).toEqual(layoutSlots(layout).graphic);
     }
+  });
+});
+
+describe("graphicSlotFor: fullFrame components (explainer plan, Task 8)", () => {
+  // A clip is authored at frame size with its own margins; in the full-bleed
+  // band it played at 0.77 x 0.36 of the frame.
+  const frames = [PORTRAIT_FRAME, LANDSCAPE_FRAME];
+
+  it("a ClipScene cue fills the whole frame in both aspects, for every layout", () => {
+    expect(FULL_FRAME_SLOT).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+    for (const frame of frames) {
+      for (const layout of LayoutSchema.options) {
+        expect(graphicSlotFor({ layout, component: "ClipScene" }, frame), layout).toEqual(
+          FULL_FRAME_SLOT,
+        );
+      }
+    }
+  });
+
+  it("ignores a routed or hand-set rect and skips the safe-area clamp", () => {
+    for (const frame of frames) {
+      expect(
+        graphicSlotFor(
+          { layout: "full-bleed", component: "ClipScene", graphicRect: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 } },
+          frame,
+        ),
+      ).toEqual(FULL_FRAME_SLOT);
+    }
+  });
+
+  it("a TitleCard in full-bleed keeps the slot it had before the flag", () => {
+    for (const frame of frames) {
+      expect(graphicSlotFor({ layout: "full-bleed", component: "TitleCard" }, frame)).toEqual(
+        graphicSlotFor({ layout: "full-bleed" }, frame),
+      );
+    }
+    expect(graphicSlotFor({ layout: "full-bleed", component: "TitleCard" })).toEqual(
+      FULL_BLEED_GRAPHIC_SLOT,
+    );
+  });
+
+  it("only ClipScene sets the flag, so no other component's geometry moves", () => {
+    const flagged = SceneComponentIdSchema.options.filter((id) => SCENE_REGISTRY[id].fullFrame);
+    expect(flagged).toEqual(["ClipScene"]);
   });
 });
 

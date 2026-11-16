@@ -184,10 +184,11 @@ describe("SceneLayer — ClipScene (explainer plan Task 7)", () => {
     expect(video.dataset.transparent).toBe("true");
     expect(Number(video.dataset.volume)).toBeCloseTo(0.2239, 4);
     expect(video.style.objectFit).toBe("contain");
-    // The whole slot (full-bleed's fallback band, 0.77 × 0.36 of 1080×1920):
-    // the over-video inset exists for the scrim's edge, so no scrim, no inset.
-    expect(Number.parseFloat(video.style.width)).toBeCloseTo(0.77 * 1080, 1);
-    expect(Number.parseFloat(video.style.height)).toBeCloseTo(0.36 * 1920, 1);
+    // The whole frame (`fullFrame`, plan Task 8), not full-bleed's 0.77 × 0.36
+    // fallback band: the clip was authored at frame size. The over-video
+    // inset exists for the scrim's edge, so no scrim, no inset.
+    expect(Number.parseFloat(video.style.width)).toBeCloseTo(1080, 1);
+    expect(Number.parseFloat(video.style.height)).toBeCloseTo(1920, 1);
   });
 
   it("draws no scrim over the speaker, though full-bleed is an over-video layout", () => {

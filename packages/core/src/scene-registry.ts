@@ -187,8 +187,15 @@ export const ClipSceneProps = z.object({
   src: z.string().min(1),
   /** The clip's own length: the scene lasts this long, not its word span. */
   durationSec: z.number().positive(),
-  /** The clip's audio plays under the voice at this level; nothing is ducked (spec 1.4). */
-  gainDb: z.number().default(-13),
+  /**
+   * The clip's audio plays under the voice at this level; nothing is ducked
+   * (spec 1.4). Bounded at 0 dB because a browser's media `volume` throws
+   * above 1 (10^(dB/20) > 1 for any positive gain), which would take the
+   * editor's Player down with it; −40 dB is already inaudible under a voice.
+   * The bounds are also what gives the Inspector a slider (§153's derived
+   * controls skip an unbounded number).
+   */
+  gainDb: z.number().min(-40).max(0).default(-13),
   muted: z.boolean().default(false),
 });
 
@@ -230,6 +237,15 @@ export interface SceneComponentMeta {
    * from the RESOLVED props, so an edited duration is the one honoured.
    */
   fixedDurationSec?: (props: Record<string, unknown>) => number | undefined;
+  /**
+   * true = the graphic's slot is the whole frame, whatever the layout or a
+   * routed/hand-set `graphicRect` says (`graphicSlotFor`). A clip was authored
+   * at frame size with its own margins, so the full-bleed band (0.77 × 0.36)
+   * shrank it to a postage stamp and a safe-area clamp would crop margins the
+   * author already left. Default false; only ClipScene sets it, so every other
+   * component's geometry is unchanged (G6).
+   */
+  fullFrame?: boolean;
 }
 
 export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
@@ -316,8 +332,10 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     // Empty: there is no honest default clip (see ClipSceneProps).
     defaultProps: {},
     // Full frame over the speaker, no scrim (spec 1.4). Phase 1 gets the
-    // whole frame through the per-cue `graphicRect`, not new 16:9 geometry
-    // (plan, "Deviation from the spec").
+    // whole frame from `fullFrame`, a per-component flag, not from new 16:9
+    // layout geometry (plan, "Deviation from the spec"): full-bleed keeps the
+    // speaker full frame underneath, and the flag widens only this
+    // component's slot.
     defaultLayout: "full-bleed",
     altLayouts: [],
     // Never shown to a model (plannerSelectable: false); present only
@@ -325,6 +343,7 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     whenToUse: "A transparent video clip placed by a script's `clip:` cue; never planned.",
     plannerSelectable: false,
     scrim: false,
+    fullFrame: true,
     fixedDurationSec: (props) =>
       typeof props.durationSec === "number" ? props.durationSec : undefined,
   },

@@ -5,6 +5,7 @@ import {
   resolveSceneProps,
 } from "../src/scene-registry";
 import { PlannerComponentIdSchema, SceneComponentIdSchema } from "../src/scene-schema";
+import { scalarPropControls } from "../src/scene-props-controls";
 
 describe("scene registry", () => {
   it("covers every component id", () => {
@@ -103,6 +104,32 @@ describe("scene registry", () => {
       expect(resolveSceneProps("ClipScene", { durationSec: 4.6 })).toBeNull();
       expect(resolveSceneProps("ClipScene", { src: "", durationSec: 4.6 })).toBeNull();
       expect(resolveSceneProps("ClipScene", { src: "clips/a.webm", durationSec: 0 })).toBeNull();
+    });
+
+    it("bounds gain to -40..0 dB: a media volume above 1 throws in the browser", () => {
+      const base = { src: "clips/a.webm", durationSec: 4.6 };
+      expect(resolveSceneProps("ClipScene", { ...base, gainDb: 0 })).toMatchObject({ gainDb: 0 });
+      expect(resolveSceneProps("ClipScene", { ...base, gainDb: -40 })).toMatchObject({ gainDb: -40 });
+      expect(resolveSceneProps("ClipScene", { ...base, gainDb: 6 })).toBeNull();
+      expect(resolveSceneProps("ClipScene", { ...base, gainDb: -41 })).toBeNull();
+    });
+
+    it("the bounded gain gets an Inspector slider (§153)", () => {
+      expect(scalarPropControls("ClipScene")).toContainEqual({
+        key: "gainDb",
+        kind: "number",
+        min: -40,
+        max: 0,
+        step: 0.01,
+        fallback: -13,
+      });
+    });
+
+    it("is the one full-frame component", () => {
+      expect(SCENE_REGISTRY.ClipScene.fullFrame).toBe(true);
+      for (const id of plannerComponentIds()) {
+        expect(SCENE_REGISTRY[id].fullFrame, id).toBeUndefined();
+      }
     });
 
     it("lasts the clip's length; other components follow their words", () => {

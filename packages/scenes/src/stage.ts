@@ -1,4 +1,11 @@
-import { ZOOM_MAX_SCALE, type FaceCrop, type Layout, type SceneCue } from "@ossclip/core/browser";
+import {
+  SCENE_REGISTRY,
+  ZOOM_MAX_SCALE,
+  type FaceCrop,
+  type Layout,
+  type SceneComponentId,
+  type SceneCue,
+} from "@ossclip/core/browser";
 
 /** Fractions of the 1080×1920 frame. */
 export interface Rect {
@@ -634,18 +641,29 @@ export function layoutSlots(
  */
 export const FULL_BLEED_GRAPHIC_SLOT: Rect = { x: 0.07, y: 0.24, w: 0.77, h: 0.36 };
 
+/** The whole frame, for a `fullFrame` component (ClipScene). */
+export const FULL_FRAME_SLOT: Rect = { x: 0, y: 0, w: 1, h: 1 };
+
 /**
- * The slot a cue's graphic actually renders in — never null. Precedence: the
- * cue's own rect (routed by source-text avoidance or hand-set in the editor,
- * clamped so a hand-edited overrides.json can't push a graphic under the
- * platform chrome), then the layout's slot, then the full-bleed fallback.
- * One resolver for the renderer and the Inspector, so the box the panel
- * edits is byte-for-byte the box the stage draws.
+ * The slot a cue's graphic actually renders in — never null. Precedence: a
+ * `fullFrame` component (ClipScene) takes the whole frame; then the cue's own
+ * rect (routed by source-text avoidance or hand-set in the editor, clamped so
+ * a hand-edited overrides.json can't push a graphic under the platform
+ * chrome), then the layout's slot, then the full-bleed fallback. One resolver
+ * for the renderer and the Inspector, so the box the panel edits is
+ * byte-for-byte the box the stage draws.
+ *
+ * `fullFrame` wins over `graphicRect` and skips the safe-area clamp on
+ * purpose: a clip was authored at frame size with its own margins, so any
+ * smaller box shrinks it (in the full-bleed band it played at 0.77 × 0.36 of
+ * the frame) and a clamp would add margins on top of the author's. Every
+ * other component leaves the flag unset and resolves exactly as before (G6).
  */
 export function graphicSlotFor(
-  cue: { layout: Layout; graphicRect?: Rect | null },
+  cue: { layout: Layout; graphicRect?: Rect | null; component?: SceneComponentId | null },
   frame: FrameSize = PORTRAIT_FRAME,
 ): Rect {
+  if (cue.component && SCENE_REGISTRY[cue.component]?.fullFrame) return FULL_FRAME_SLOT;
   if (cue.graphicRect) return clampGraphicRect(cue.graphicRect, frame);
   return layoutSlots(cue.layout, DEFAULT_FACE, [], frame).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
 }
