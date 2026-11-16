@@ -1,7 +1,7 @@
 # Explainer videos: script cues, clip scenes and pattern scenes
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Draft v2, revised after EGM review, awaiting approval
+*   **Status:** Approved (2026-11-16)
 *   **Date:** 2026-11-16
 *   **Reference:** the author's [Video Playbook](https://claude.ai/artifact/4a5Rjazb3oc17gn3U2XzG5) (style, patterns, script format) and the finished video `EGM_V2.mov`
 
@@ -239,7 +239,7 @@ From the EGM script and raw footage, with all 24 shots as `clip:` cues:
 
 ### Phase 2 acceptance
 
-*   The 21 non-mascot shots of the EGM script, written as plain cues (no `clip:`), are all placed and use the intended component in at least 18 cases.
+*   The 20 shots that have a pattern component (all but the 3 mascot shots and the meme dialogue), written as plain cues (no `clip:`), are all placed and use the intended component in at least 17 cases.
 *   Reference stills of each component in both aspects are committed under `packages/scenes/test/__stills__/` and reviewed by the author against the matching frames of `EGM_V2.mov`.
 *   Runs without `--script` or `--look` produce the same plan and the same pixels on the existing fixture.
 
@@ -294,7 +294,9 @@ From the EGM script and raw footage, with all 24 shots as `clip:` cues:
 9.  In script mode the LLM sound plan does not run.
 10. Clips are transcoded to VP9-alpha WebM on import.
 
-## Open questions for the author
+## Answers from the author (2026-11-16)
 
-1.  **Script format.** Is the playbook's script doc (🎬 / 🗣️ / ✂️), exported from Claude Docs as markdown, the input you want?
-2.  **The EGM script.** Where is the script doc for the EGM video? The playbook describes it but does not contain it. Phase 1 and 2 acceptance need it, along with the raw footage.
+1.  **Script format.** Confirmed: the playbook's script doc, as markdown.
+2.  **The EGM script.** Saved as `packages/core/test/fixtures/egm-script.md`. Two things it shows about real scripts:
+    *   Spoken lines and cues carry inline bold and code (`🗣️ **One.** When you cut…`, `🗣️ I typed \`/egm:egm-brainstorm\`.`). The parser strips the markup; alignment uses the plain text.
+    *   The recording departs from the script (lines were added and dropped), and a cue with no `🗣️` line after it exists ("Flash on screen: 4,494 tests passing"). Both are the skip-and-report cases in 1.1 and 1.2.
