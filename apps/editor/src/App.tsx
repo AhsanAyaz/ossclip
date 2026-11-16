@@ -72,6 +72,7 @@ import { OverlayImageBox, type OverlayImageBoxHandle, type OverlayRectPreview } 
 import { Inspector, type RunInfo } from "./Inspector";
 import { EMPTY_LUT_MENU, liveGradeSpec, type LutMenu } from "./colorPanel";
 import { withMediaClipSrc } from "./clipMedia";
+import { useBundledFonts } from "./bundledFonts";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
@@ -1765,6 +1766,10 @@ export const App: React.FC = () => {
     if (overlayCues.length === 0) return rest;
     return { ...rest, overlayCues };
   }, [live, overlayCuesLive, overlayNoRoom]);
+  // The explainer look's faces for the Player, from the workdir over
+  // `/media/` (bundledFonts.ts has why the composition's own load cannot
+  // reach them here). Off the LIVE theme, so it follows what the stage draws.
+  useBundledFonts(live?.theme ?? {});
   /**
    * A lane click on an object (a sound diamond, an overlay chip) selects it
    * AND parks the playhead on it (overlay-transform field request): an

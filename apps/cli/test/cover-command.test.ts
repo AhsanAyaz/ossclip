@@ -1,7 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { COVER_PROVENANCE_BASENAME, CoverProvenanceSchema, defaultTheme } from "@ossclip/core";
+import {
+  BUNDLED_FONTS,
+  COVER_PROVENANCE_BASENAME,
+  CoverProvenanceSchema,
+  defaultTheme,
+} from "@ossclip/core";
 import type { CoverProvenance } from "@ossclip/core";
 import type { CoverCompProps } from "@ossclip/renderer";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -700,6 +705,32 @@ describe("regenerateCover", () => {
     expect(written.frame).toEqual(before.frame);
     expect(readProvenance()).toEqual({ ...before, text: "A brand new headline", textSource: "user" });
     expect(lines.join("\n")).toContain("no frame extraction");
+  });
+
+  it("an explainer-look theme has its bundled fonts in the public dir before the render", async () => {
+    // The banner is set in `theme.fontDisplay`, so the cover's BundledFonts
+    // fetches the Inter faces from publicDir. A workdir whose fonts/ was
+    // removed (or never staged) would otherwise draw the fallback stack.
+    writeWorkdir({ theme: { ...defaultTheme, fonts: "bundled" } });
+    writeProvenance();
+    let presentAtRender: boolean[] = [];
+    await regenerateCover(
+      dir,
+      { text: "A brand new headline" },
+      seams({
+        renderCover: async (_props, opts) => {
+          presentAtRender = BUNDLED_FONTS.map((f) => existsSync(join(opts.publicDir, f.rel)));
+        },
+      }),
+    );
+    expect(presentAtRender).toEqual(BUNDLED_FONTS.map(() => true));
+  });
+
+  it("without the look, the cover stages no fonts", async () => {
+    writeWorkdir();
+    writeProvenance();
+    await regenerateCover(dir, { text: "A brand new headline" }, seams());
+    expect(existsSync(join(dir, "fonts"))).toBe(false);
   });
 
   it("reports the trimmed headline rather than silently shipping it", async () => {

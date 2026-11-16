@@ -38,6 +38,7 @@ import {
   NASTALIQ_FONT_NAME,
   NASTALIQ_FONT_REL,
   nastaliqFontFile,
+  stageBundledFonts,
   buildZoomPlan,
   checkGrounding,
   rejectCtaKeyword,
@@ -6441,6 +6442,17 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
     console.log(
       `▸ captions: RTL lines detected — bundled ${NASTALIQ_FONT_NAME} staged as ${NASTALIQ_FONT_REL}`,
     );
+  }
+
+  // The explainer look's bundled faces (§161), for the Nastaliq reason above:
+  // a Linux render box has neither Inter nor DejaVu Sans Mono under those
+  // names. Keyed on the RENDERED theme through `fontsToLoad`, the predicate
+  // the composition's BundledFonts loads by, so a run without the look copies
+  // nothing. Into both dirs for the same two mounts; the workdir copy is also
+  // the cover's public dir (`buildCoverRender` below).
+  const stagedFonts = stageBundledFonts(theme, [renderPublicDirPath, work]);
+  if (stagedFonts.length > 0) {
+    console.log(`▸ look: bundled fonts staged as ${stagedFonts.join(", ")}`);
   }
 
   const ctaCue = [...graphicCues]

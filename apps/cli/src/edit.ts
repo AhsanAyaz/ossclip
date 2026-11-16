@@ -429,6 +429,10 @@ const MIME: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
+  // The explainer look's bundled faces (§161): produce stages them into the
+  // workdir and the editor's preview registers them from `/media/fonts/…`.
+  // Typed for the `.jpg` reason — a font load must not hinge on sniffing.
+  ".woff2": "font/woff2",
 };
 
 /**

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { BUNDLED_FONTS } from "../src/bundled-fonts";
+import { bundledFontFiles } from "../src/fonts";
 
 /**
  * The published tarball must carry every file the code reads at RUNTIME
@@ -73,6 +75,22 @@ describe("published package contents (R22 §111)", () => {
     // generic scan can't see.
     expect(existsSync(join(PKG_ROOT, "assets/fonts/NotoNastaliqUrdu-Bold.ttf"))).toBe(true);
     expect(existsSync(join(PKG_ROOT, "assets/fonts/OFL.txt"))).toBe(true);
+    expect(filesField()).toContain("assets");
+  });
+
+  it("the explainer look's bundled fonts, WITH both licence texts beside them", () => {
+    // `bundledFontFiles()` is what produce copies; each entry must be a file
+    // inside the packed `assets`, one per BUNDLED_FONTS face the render
+    // registers. The licences are loaded by nothing, so — the Nastaliq case
+    // above — only an explicit check keeps them in the tarball.
+    const files = bundledFontFiles();
+    expect(files.map((f) => f.rel)).toEqual(BUNDLED_FONTS.map((f) => f.rel));
+    for (const f of files) {
+      expect(existsSync(f.abs), `${f.rel} missing from the package`).toBe(true);
+      expect(f.abs.startsWith(join(PKG_ROOT, "assets/"))).toBe(true);
+    }
+    expect(existsSync(join(PKG_ROOT, "assets/fonts/Inter-OFL.txt"))).toBe(true);
+    expect(existsSync(join(PKG_ROOT, "assets/fonts/DejaVu-LICENSE.txt"))).toBe(true);
     expect(filesField()).toContain("assets");
   });
 });

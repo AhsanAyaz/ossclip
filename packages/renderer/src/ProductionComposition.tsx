@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, staticFile } from "remotion";
-import { CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, captionThemeFor, colorGradePropsFor, coverInVideoPropsFor, overlayCuesFor, overlayGeometryFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
+import { BundledFonts, CaptionTrack, CoverInVideo, EdlVideo, OverlayTrack, SceneLayer, SfxTrack, VideoStage, Watermark, captionThemeFor, colorGradePropsFor, coverInVideoPropsFor, overlayCuesFor, overlayGeometryFor, punchPropsFor, sfxCuesFor, showCaptions, showWatermark, type ColorGradeProps, type CoverInVideoProps, type OverlayCueProps, type PunchPlan, type SfxCueProps } from "@ossclip/scenes";
 import {
   defaultTheme,
   type CaptionChoreography,
@@ -298,6 +298,12 @@ export const ProductionComposition: React.FC<ProductionCompProps> = ({
   );
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
+      {/* Draws nothing; holds the render until the explainer look's faces
+          load or fail (§161). Without the look it is not even a delayRender,
+          so every other render's DOM and timing are unchanged. Mounted here,
+          not in SceneLayer, because the captions draw with
+          `theme.fontDisplay` too. */}
+      <BundledFonts theme={theme} />
       <VideoStage
         cues={sceneCues}
         theme={theme}

@@ -79,6 +79,12 @@ export {
   type CaptionThemeId,
   type CaptionWord,
 } from "./captions";
+// The explainer look's bundled faces (§161), for the same reason the
+// Nastaliq trio rides here: the render's BundledFonts loader and the
+// editor's preview need the list at runtime, and `fontsToLoad` is the ONE
+// predicate they and produce's staging share. bundled-fonts.ts imports a
+// type only; the node half (`bundledFontFiles`) stays in fonts.ts.
+export { BUNDLED_FONTS, fontsToLoad, type BundledFont } from "./bundled-fonts";
 // `mapFromKeptSpans` is a VALUE export and browser-safe (timemap.ts imports
 // types only). The editor's load-path repair needs the MAP, not the raw span
 // array, to decide whether a repair is possible at all — see

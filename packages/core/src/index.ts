@@ -20,6 +20,7 @@ export * from "./blooper";
 export * from "./retake";
 export * from "./captions";
 export * from "./fonts";
+export * from "./bundled-fonts";
 export * from "./sfx-pack";
 export * from "./color-grade";
 export * from "./lut-library";
