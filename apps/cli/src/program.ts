@@ -10,7 +10,7 @@ import {
   COVER_MAX_WORDS,
   RESOLUTION_CHOICES,
   ResolutionChoiceSchema,
-  SceneComponentIdSchema,
+  PlannerComponentIdSchema,
   SfxLevelSchema,
   type CaptionThemeId,
 } from "@ossclip/core";
@@ -689,8 +689,10 @@ export function buildProgram(): Command {
       const llmEffort = opts.llmEffort
         ? z.enum(["low", "medium", "high"]).parse(opts.llmEffort)
         : undefined;
+      // The planner subset (G6): forcing a component sends it through the
+      // props call, and ClipScene's props are a clip import, never an LLM's.
       const forceComponent = opts.forceComponent
-        ? SceneComponentIdSchema.parse(opts.forceComponent)
+        ? PlannerComponentIdSchema.parse(opts.forceComponent)
         : undefined;
       // Parsed, not coerced: a typo'd `--source-fit containn` silently falling
       // back to cover is exactly the crop the flag exists to prevent.

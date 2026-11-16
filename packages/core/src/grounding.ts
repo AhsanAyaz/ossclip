@@ -40,6 +40,8 @@ const CHECKED_FIELDS: Record<string, string[]> = {
   StrikethroughReveal: ["lines"],
   FlowDiagram: ["nodes"],
   ScreenshotFrame: ["label"],
+  // A clip carries no copy at all — its props are a file and a length.
+  ClipScene: [],
 };
 
 /**

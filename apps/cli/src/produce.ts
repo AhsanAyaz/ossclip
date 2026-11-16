@@ -242,11 +242,11 @@ import {
   type LoadedLibraryEntry,
   type OverlayCue,
   type OverlayIssue,
+  type PlannerComponentId,
   type ProductionOverlays,
   type ProviderName,
   type ResolutionChoice,
   type Scene,
-  type SceneComponentId,
   type Segment,
   type Transcript,
   CAPTION_CHOREOGRAPHY_PROMPT_VERSION,
@@ -459,7 +459,7 @@ export function beatSheetCacheKey(parts: {
   llmEffort?: LlmEffort;
   intent?: string;
   cleanup: CleanupLevel;
-  forceComponent?: SceneComponentId;
+  forceComponent?: PlannerComponentId;
   /** Framing constraints steer layout choice, so a re-measure must replan. */
   framing?: FramingContext;
   clipTargetSec?: number;
@@ -797,7 +797,7 @@ export interface ProduceOptions {
    */
   dictionary?: string[];
   /** Debug: force every graphic moment to this component. */
-  forceComponent?: SceneComponentId;
+  forceComponent?: PlannerComponentId;
   /** Write a cover image beside the video (default on). */
   cover?: boolean;
   /** Explicit cover output path, overriding <out>.cover.jpg. */

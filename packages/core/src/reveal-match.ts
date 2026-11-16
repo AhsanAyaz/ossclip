@@ -258,6 +258,11 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
     case "BulletList":
       texts = arr(props.items).map(str);
       break;
+    case "ClipScene":
+      // No text to locate: a clip enters on its cue's first matched word,
+      // which is already the scene's start (spec 1.4).
+      texts = [];
+      break;
   }
   return texts.filter((t) => t.length > 0);
 }

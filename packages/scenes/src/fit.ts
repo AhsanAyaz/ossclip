@@ -29,6 +29,9 @@ const SELF_FITTING = new Set<SceneComponentId>([
   "StrikethroughReveal",
   "ChatMock",
   "BulletList",
+  // PLACEHOLDER for explainer plan Task 7: a clip fills its slot as-is, so
+  // the stage's scale has nothing to solve (fitScale returns 1).
+  "ClipScene",
 ]);
 
 /**
@@ -178,6 +181,10 @@ export function estimateHeightPx(
       const font = bulletMetrics(items, widthPx, heightPx, Boolean(str(props.title)), str(props.title));
       return bulletStackHeightPx(items.length, font, Boolean(str(props.title)));
     }
+    case "ClipScene":
+      // PLACEHOLDER for explainer plan Task 7: no text to lay out. It is
+      // self-fitting above, so this estimate never sizes it.
+      return 0;
   }
 }
 

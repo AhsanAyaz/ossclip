@@ -15,6 +15,7 @@ import {
   StrikethroughRevealProps,
   TerminalMockProps,
   llmPropsSchema,
+  plannerComponentIds,
 } from "../src/scene-registry";
 import { scalarPropControls } from "../src/scene-props-controls";
 
@@ -99,8 +100,11 @@ describe("llmPropsSchema", () => {
 
   it("shows the LLM byte-for-byte the schema it saw before reveal props existed", () => {
     // Spec, "The LLM does not set": the prop-writing prompt is untouched.
-    expect(Object.keys(PRE_REVEAL_LLM_SCHEMAS).sort()).toEqual(Object.keys(SCENE_REGISTRY).sort());
-    for (const id of Object.keys(SCENE_REGISTRY) as SceneComponentId[]) {
+    // Every component an LLM can be shown — the planner ids, not the whole
+    // registry: ClipScene's props come from the clip import and no prompt
+    // ever carries its schema (explainer G6).
+    expect(Object.keys(PRE_REVEAL_LLM_SCHEMAS).sort()).toEqual([...plannerComponentIds()].sort());
+    for (const id of plannerComponentIds()) {
       expect(JSON.stringify(z.toJSONSchema(llmPropsSchema(id))), id).toBe(
         PRE_REVEAL_LLM_SCHEMAS[id],
       );

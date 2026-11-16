@@ -1,5 +1,5 @@
 import { z } from "zod/v4";
-import { type Layout, type SceneComponentId } from "./scene-schema";
+import { type Layout, type PlannerComponentId, type SceneComponentId } from "./scene-schema";
 
 /**
  * The scene library's contract, React-free so both the producer brain and the
@@ -174,6 +174,24 @@ export const ScreenshotFrameProps = z.object({
   kenBurns: z.boolean().default(true),
 });
 
+/**
+ * A transparent video clip made elsewhere, placed by a script's `clip:` cue
+ * (explainer spec 1.4). Never written by an LLM: `src` and `durationSec` come
+ * from the clip import (a VP9-alpha WebM in the render's public dir, and its
+ * probed length), so there is no default for either — a clip scene without
+ * them has nothing to play and is dropped as invalid rather than rendered as
+ * a missing file.
+ */
+export const ClipSceneProps = z.object({
+  /** Path inside the render public dir, as `staticFile()` takes it. */
+  src: z.string().min(1),
+  /** The clip's own length: the scene lasts this long, not its word span. */
+  durationSec: z.number().positive(),
+  /** The clip's audio plays under the voice at this level; nothing is ducked (spec 1.4). */
+  gainDb: z.number().default(-13),
+  muted: z.boolean().default(false),
+});
+
 export interface SceneComponentMeta {
   propsSchema: z.ZodTypeAny;
   defaultProps: Record<string, unknown>;
@@ -194,6 +212,24 @@ export interface SceneComponentMeta {
   altLayouts: Layout[];
   /** One-liner the producer prompt uses to pick components. */
   whenToUse: string;
+  /**
+   * false = never offered to an LLM (ClipScene). Default true. Every planner
+   * menu reads `plannerComponentIds()`, never the registry's keys, so a
+   * component added for one mode cannot change another mode's prompt (G6).
+   */
+  plannerSelectable?: boolean;
+  /**
+   * false = no frosted scrim behind it over live video. Default true. A
+   * transparent clip is designed to sit on the speaker; a scrim would frost
+   * the very footage it is drawn over (spec 1.4/1.5).
+   */
+  scrim?: boolean;
+  /**
+   * When set, the scene lasts this long instead of its word span — a clip
+   * plays for its own length, whatever the words under it (spec 1.4). Read
+   * from the RESOLVED props, so an edited duration is the one honoured.
+   */
+  fixedDurationSec?: (props: Record<string, unknown>) => number | undefined;
 }
 
 export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
@@ -273,7 +309,37 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
       "('what you need is X, Y, Z'). One bullet per item, optional kicker title. " +
       "Use this for lists instead of bending TitleCard or StrikethroughReveal around them.",
   },
+  // Last on purpose: registry order is menu order, and a planner menu that
+  // ever did include this entry would at least not reorder the nine.
+  ClipScene: {
+    propsSchema: ClipSceneProps,
+    // Empty: there is no honest default clip (see ClipSceneProps).
+    defaultProps: {},
+    // Full frame over the speaker, no scrim (spec 1.4). Phase 1 gets the
+    // whole frame through the per-cue `graphicRect`, not new 16:9 geometry
+    // (plan, "Deviation from the spec").
+    defaultLayout: "full-bleed",
+    altLayouts: [],
+    // Never shown to a model (plannerSelectable: false); present only
+    // because the field is required.
+    whenToUse: "A transparent video clip placed by a script's `clip:` cue; never planned.",
+    plannerSelectable: false,
+    scrim: false,
+    fixedDurationSec: (props) =>
+      typeof props.durationSec === "number" ? props.durationSec : undefined,
+  },
 };
+
+/**
+ * The components a planner may offer, in registry order — the source of every
+ * LLM-facing component menu (G6). Equal to `PlannerComponentIdSchema.options`
+ * by test; the cast is sound for exactly that reason.
+ */
+export function plannerComponentIds(): PlannerComponentId[] {
+  return (Object.keys(SCENE_REGISTRY) as SceneComponentId[]).filter(
+    (id) => SCENE_REGISTRY[id].plannerSelectable !== false,
+  ) as PlannerComponentId[];
+}
 
 /**
  * The copy of a component's props schema the prop-writing LLM call is shown

@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { SCENE_REGISTRY, resolveSceneProps } from "../src/scene-registry";
-import { SceneComponentIdSchema } from "../src/scene-schema";
+import {
+  SCENE_REGISTRY,
+  plannerComponentIds,
+  resolveSceneProps,
+} from "../src/scene-registry";
+import { PlannerComponentIdSchema, SceneComponentIdSchema } from "../src/scene-schema";
 
 describe("scene registry", () => {
-  it("covers every component id, with defaults that self-validate", () => {
+  it("covers every component id", () => {
     for (const id of SceneComponentIdSchema.options) {
+      expect(SCENE_REGISTRY[id], id).toBeDefined();
+    }
+  });
+
+  it("every planner component's defaults self-validate", () => {
+    // The defaults exist so partial LLM output still renders; ClipScene is
+    // never LLM-filled and has no honest default source, so it is not held to
+    // this (its props come from the clip import, or the scene is dropped).
+    for (const id of plannerComponentIds()) {
       const meta = SCENE_REGISTRY[id];
-      expect(meta, id).toBeDefined();
       const parsed = meta.propsSchema.safeParse(meta.defaultProps);
       expect(parsed.success, `${id} defaultProps must validate`).toBe(true);
     }
@@ -51,5 +63,54 @@ describe("scene registry", () => {
       { title: "USER TITLE" },
     );
     expect(props).toMatchObject({ title: "USER TITLE", emphasis: "42%" });
+  });
+
+  describe("ClipScene (explainer phase 1, spec 1.4)", () => {
+    it("is registered but never selectable by a planner, full frame with no scrim", () => {
+      const meta = SCENE_REGISTRY.ClipScene;
+      expect(meta.plannerSelectable).toBe(false);
+      expect(meta.scrim).toBe(false);
+      expect(meta.defaultLayout).toBe("full-bleed");
+      expect(meta.altLayouts).toEqual([]);
+    });
+
+    it("plannerComponentIds is today's nine, in registry order (G6)", () => {
+      expect(plannerComponentIds()).toEqual([
+        "TitleCard",
+        "StatCard",
+        "RuleCard",
+        "StrikethroughReveal",
+        "FlowDiagram",
+        "TerminalMock",
+        "ChatMock",
+        "ScreenshotFrame",
+        "BulletList",
+      ]);
+      // The menu and the schema enum are two lists of one thing; they agree.
+      expect(plannerComponentIds()).toEqual(PlannerComponentIdSchema.options);
+    });
+
+    it("resolves gain and mute defaults", () => {
+      expect(resolveSceneProps("ClipScene", { src: "clips/a.webm", durationSec: 4.6 })).toEqual({
+        src: "clips/a.webm",
+        durationSec: 4.6,
+        gainDb: -13,
+        muted: false,
+      });
+    });
+
+    it("rejects a clip with no source or no length", () => {
+      expect(resolveSceneProps("ClipScene", { durationSec: 4.6 })).toBeNull();
+      expect(resolveSceneProps("ClipScene", { src: "", durationSec: 4.6 })).toBeNull();
+      expect(resolveSceneProps("ClipScene", { src: "clips/a.webm", durationSec: 0 })).toBeNull();
+    });
+
+    it("lasts the clip's length; other components follow their words", () => {
+      const props = resolveSceneProps("ClipScene", { src: "clips/a.webm", durationSec: 4.6 })!;
+      expect(SCENE_REGISTRY.ClipScene.fixedDurationSec!(props)).toBe(4.6);
+      for (const id of plannerComponentIds()) {
+        expect(SCENE_REGISTRY[id].fixedDurationSec, id).toBeUndefined();
+      }
+    });
   });
 });

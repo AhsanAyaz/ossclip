@@ -1,5 +1,5 @@
 import type { Segment, Transcript } from "../schema";
-import type { Scene, SceneComponentId } from "../scene-schema";
+import type { PlannerComponentId, Scene } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
 import { AntigravityProvider, type LlmEffort } from "./antigravity";
@@ -236,9 +236,11 @@ export async function produceScenes(
      * Debug: render every graphic moment with this component instead of the
      * one the producer picked. Exists because a component the producer never
      * chooses is a component never tested on real copy — FlowDiagram went
-     * three rounds unexercised (FINDINGS §20).
+     * three rounds unexercised (FINDINGS §20). A PLANNER id: the forced
+     * component goes through the props call, which would otherwise show an
+     * LLM the schema of a component no planner may offer (ClipScene, G6).
      */
-    forceComponent?: SceneComponentId;
+    forceComponent?: PlannerComponentId;
     /**
      * Camera-framing constraints (PLAN Tasks A+B), present when the source
      * went through normalization. Feeds the beat-sheet prompt (the brief) AND

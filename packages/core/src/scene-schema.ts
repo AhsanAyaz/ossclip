@@ -20,7 +20,16 @@ export const LayoutSchema = z.enum([
 ]);
 export type Layout = z.infer<typeof LayoutSchema>;
 
-export const SceneComponentIdSchema = z.enum([
+/**
+ * The components an LLM may choose — the beat sheet's `sceneKind` enum. A
+ * frozen subset of `SceneComponentIdSchema`, not the whole of it (explainer
+ * spec G6): the beat-sheet JSON schema is built from THIS enum, so a
+ * component added to the scene library for one feature (ClipScene, which
+ * only a script's `clip:` cue can place) would otherwise reach every run's
+ * planner and change what it is asked. Order is today's, and part of the
+ * prompt.
+ */
+export const PlannerComponentIdSchema = z.enum([
   "TitleCard",
   "StatCard",
   "RuleCard",
@@ -30,6 +39,18 @@ export const SceneComponentIdSchema = z.enum([
   "ChatMock",
   "ScreenshotFrame",
   "BulletList",
+]);
+export type PlannerComponentId = z.infer<typeof PlannerComponentIdSchema>;
+
+/**
+ * Every component a scene may render: the planner's menu plus the ones no
+ * planner may pick. Stored in production.json and overrides, so a project
+ * that uses a new id cannot be opened by an older ossclip (spec,
+ * Compatibility) — already true whenever a component is added.
+ */
+export const SceneComponentIdSchema = z.enum([
+  ...PlannerComponentIdSchema.options,
+  "ClipScene",
 ]);
 export type SceneComponentId = z.infer<typeof SceneComponentIdSchema>;
 

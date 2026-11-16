@@ -1,7 +1,7 @@
 import { z } from "zod/v4";
 import type { Transcript } from "../schema";
-import { LayoutSchema, SceneComponentIdSchema } from "../scene-schema";
-import { SCENE_REGISTRY } from "../scene-registry";
+import { LayoutSchema, PlannerComponentIdSchema } from "../scene-schema";
+import { SCENE_REGISTRY, plannerComponentIds } from "../scene-registry";
 import { MAX_SCENE_SEC } from "../assemble";
 import { COVER_MAX_WORDS, coverHeadline } from "../cover";
 import type { LlmProvider } from "./provider";
@@ -48,8 +48,14 @@ export const MomentSchema = z.object({
   purpose: cappedText(100),
   /** Short on-screen copy for this beat — the fallback TitleCard title. */
   onScreenCopy: cappedText(60),
-  /** "none" = plain talking head with captions; otherwise a library component. */
-  sceneKind: z.union([SceneComponentIdSchema, z.literal("none")]),
+  /**
+   * "none" = plain talking head with captions; otherwise a library component.
+   * The PLANNER subset, never the full id enum (G6): this enum is part of the
+   * beat-sheet JSON schema every run sends, and a non-planner component
+   * (ClipScene) appearing in it would change the ask for runs that never
+   * touch the feature.
+   */
+  sceneKind: z.union([PlannerComponentIdSchema, z.literal("none")]),
   /**
    * Stage layout for this scene (PLAN Task B). Optional so an older cached
    * beat sheet still parses; omitted means the component's registry default.
@@ -244,8 +250,10 @@ export function buildBeatsUserPrompt(
   const words = transcript.words
     .map((w, i) => (hasCut && cut.has(i) ? `[${i}]⟦${w.text}⟧` : `[${i}]${w.text}`))
     .join(" ");
-  const menu = Object.entries(SCENE_REGISTRY)
-    .map(([id, meta]) => `- ${id}: ${meta.whenToUse}`)
+  // `plannerComponentIds()`, not the registry's keys (G6): the registry also
+  // holds components no planner may offer, and the menu is prompt text.
+  const menu = plannerComponentIds()
+    .map((id) => `- ${id}: ${SCENE_REGISTRY[id].whenToUse}`)
     .join("\n");
   // §118: state the graphic COUNT explicitly. Everything else in this prompt
   // describes what a good graphic is; nothing said how many to plan, and the

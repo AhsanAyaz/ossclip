@@ -14,14 +14,16 @@ import {
   revealMetrics,
   revealRows,
 } from "../src/fit";
-import { layoutSlots } from "../src/stage";
+import { FULL_BLEED_GRAPHIC_SLOT, layoutSlots } from "../src/stage";
 
 const FRAME_W = 1080;
 const FRAME_H = 1920;
 
 function slotOf(component: SceneComponentId) {
   const layout = SCENE_REGISTRY[component].defaultLayout;
-  const g = layoutSlots(layout).graphic!;
+  // full-bleed (ClipScene's default) has no slot of its own; graphics there
+  // use the R13 fallback band, exactly as `graphicSlotFor` places them.
+  const g = layoutSlots(layout).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
   return { widthPx: g.w * FRAME_W, heightPx: g.h * FRAME_H };
 }
 
@@ -58,6 +60,8 @@ const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   ChatMock: { messages: [{ from: "user", text: "can it cut my ums?" }] },
   ScreenshotFrame: { label: "REVIEW" },
   BulletList: { items: ["AI HARNESS", "CONTEXT ENGINEERING"] },
+  // No copy to be sparse or dense with: a clip's props are a file and a length.
+  ClipScene: { src: "clips/a.webm", durationSec: 4.6 },
 };
 
 /** Schema maxima — the cases that silently overflowed the safe area. */
@@ -100,6 +104,7 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
     title: "TWENTY EIGHT CHARACTERS OKAY",
     items: Array.from({ length: 5 }, () => "THIRTY SIX CHARACTERS OF BULLET COPY"),
   },
+  ClipScene: { src: "clips/a.webm", durationSec: 15 },
 };
 
 describe("fill contract (FINDINGS §23)", () => {
