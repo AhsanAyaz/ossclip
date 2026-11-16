@@ -258,7 +258,7 @@ Decisions:
 
 **Interfaces:**
 - Consumes: `SCENE_REGISTRY[component].fixedDurationSec` (Task 3).
-- Produces: the assembler's existing result gains `shortened: { id: string; fromSec: number; toSec: number }[]`.
+- Produces: the assembler's existing result gains `shortened: { id: string; fromSec: number; toSec: number }[]`, where `fromSec` and `toSec` are lengths (wanted, got), not end times.
 
 Decisions: for a cue whose component has `fixedDurationSec`, `endSec = startSec + duration` after the start has been pushed past the previous cue, before the 15 s and output-duration clamps; the minimum-length extension does not apply to it. Any cue (clip or not) whose length is reduced by the 15 s clamp is listed in `shortened`. Exclusivity stays: a following cue still starts after this one ends.
 
@@ -311,16 +311,22 @@ Decisions: `clipTranscodeArgs` = `-y -i <src> -c:v libvpx-vp9 -pix_fmt yuva420p 
 
 **Files:**
 - Create: `packages/scenes/src/components/ClipScene.tsx`
-- Modify: `packages/scenes/src/SceneLayer.tsx` (`COMPONENTS` map; scrim), `packages/scenes/src/fit.ts` (metrics entry), `packages/core/src/browser.ts` if the registry flags are not already reachable from `@ossclip/core/browser`
+- Modify: `packages/scenes/src/SceneLayer.tsx` (scrim), `packages/scenes/src/fit.ts`, `apps/editor/src/Inspector.tsx`, `packages/core/src/overrides.ts`, `packages/core/src/retime-preview.ts`, `packages/core/src/browser.ts` if the registry flags are not already reachable from `@ossclip/core/browser`
 - Test: `packages/scenes/test/clip-scene.test.ts`, `packages/scenes/test/fit.test.ts`
 
 **Interfaces:**
 - Consumes: `ClipSceneProps` and `SCENE_REGISTRY[id].scrim` (Task 3).
 - Produces: `ClipScene` React component with the standard scene component props; `export function clipVolume(gainDb: number, muted: boolean): number` (pure: `muted ? 0 : 10 ** (gainDb / 20)`).
 
+Already in place from Task 3 (replace, do not recreate): a placeholder `ClipScene.tsx` that renders null, the `COMPONENTS` map entry, and a self-fitting entry in `fit.ts`.
+
+Editor decisions (found while building Task 3):
+- The Inspector's component dropdown (`apps/editor/src/Inspector.tsx`, the swap control) lists `plannerComponentIds()` only. When the selected scene is a `ClipScene`, the swap control is not shown: a clip cannot become a card or the reverse, since neither has the other's props. Fix the "can never return null" comment at `resolveSwappedProps` (`packages/core/src/overrides.ts`) and make that function refuse a swap to or from a non-planner component by returning the scene unchanged.
+- The live preview's cue re-timing (`packages/core/src/retime-preview.ts`) must keep a clip at its own `durationSec` after a recut or veto in the editor, the same rule the assembler applies. Add a test.
+
 Decisions: render `<OffthreadVideo src={staticFile(props.src)} transparent volume={clipVolume(...)} />` filling its slot with `objectFit: "contain"`; in the editor's Player, Remotion's `OffthreadVideo` falls back to a `<video>` element, which plays VP9 alpha. The scrim is drawn only when the layout is over video **and** the component's `scrim !== false`. `ClipScene` has no editable text elements. Its fit metrics report "no scaling": it always fills the slot.
 
-- [ ] **Step 1: Write the failing tests:** `clipVolume(-13, false)` ≈ `0.2239` (4 dp); `clipVolume(0, true)` is `0`; the fit metrics for `ClipScene` return scale 1 for any slot; a pure helper `drawsScrim(layout, component)` is true for `("full-bleed","TitleCard")` and false for `("full-bleed","ClipScene")` and `("graphic-only","TitleCard")`.
+- [ ] **Step 1: Write the failing tests:** `clipVolume(-13, false)` ≈ `0.2239` (4 dp); `clipVolume(0, true)` is `0`; the fit metrics for `ClipScene` return scale 1 for any slot; `resolveSwappedProps` leaves a `ClipScene` unchanged when asked to swap it, and leaves a `TitleCard` unchanged when asked to become `ClipScene`; the editor's swap options equal `plannerComponentIds()`; re-timing keeps a 4.6 s clip at 4.6 s; a pure helper `drawsScrim(layout, component)` is true for `("full-bleed","TitleCard")` and false for `("full-bleed","ClipScene")` and `("graphic-only","TitleCard")`.
 - [ ] **Step 2: Run.** Expected: FAIL.
 - [ ] **Step 3: Implement**, extracting `drawsScrim` from the inline `overVideo` check in `SceneLayer.tsx`.
 - [ ] **Step 4: Run scenes tests, typecheck, and `pnpm build`** (the editor bundle must still build with the new component). Expected: PASS.
