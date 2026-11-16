@@ -115,10 +115,12 @@ A markdown file in the playbook's script format. Example:
 Rules:
 
 *   `🗣️` starts a spoken line. `🎬` starts an on-screen cue. `✂️` lines, headings and everything else are ignored.
-*   A cue covers the spoken lines after it, up to the next `🎬`, the next heading or a blank-line-separated `🗣️` with no cue (the last line above stays talking head).
+*   A cue covers the spoken lines after it, up to the next `🎬` or the next heading. Blank lines and `✂️` notes do not end it (so in the example, the last line belongs to the clip cue). A spoken line before any cue in its section belongs to no cue.
 *   A cue with no spoken lines is reported and skipped.
 
 The example yields two scenes: one over "Here's how … pile of code", one clip starting at "And the AI".
+
+**Footage cues.** Real scripts describe footage in plain words ("Screen recording: …", "B-roll of …", "Back to your face"). In script mode the planner may answer "no graphic" for such a cue; it stays talking head and is reported.
 
 **Hints.** A cue may begin with one of:
 

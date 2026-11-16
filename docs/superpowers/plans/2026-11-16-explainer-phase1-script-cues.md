@@ -104,7 +104,7 @@ it("ignores ✂️ lines and plain prose", () => {
 });
 ```
 
-- [ ] **Step 2: Run** `npx vitest run packages/core/test/script-cues.test.ts`. Expected: FAIL, module not found. (If the EGM count differs from 25, count the `🎬` lines in the fixture and fix the test number, not the parser.)
+- [ ] **Step 2: Run** `npx vitest run packages/core/test/script-cues.test.ts`. Expected: FAIL, module not found. 
 - [ ] **Step 3: Implement `parseScript` and `stripInlineMarkup`** in `packages/core/src/script/cues.ts`; export from `packages/core/src/index.ts`. Use `node:crypto` `createHash("sha1")` for the id.
 - [ ] **Step 4: Run the test.** Expected: PASS.
 - [ ] **Step 5: Commit** `feat: parse on-screen cues from a video script`
@@ -226,7 +226,7 @@ Decisions:
 - `moments[i]` corresponds to `aligned[i]`; `startWord`/`endWord` come from the alignment and the LLM cannot change them.
 - A `clip` cue yields a moment with `sceneKind: "none"` plus a `Scene` in `clipScenes`: `id: momentSceneId(i)`, `component: "ClipScene"`, `layout: "full-bleed"`, `anchor` = the cue's span, `props: { src, durationSec }`, `rationale: "script clip"`. A clip cue with no entry in `clips` is a `ScriptPlanError`.
 - A `component` hint must be in `plannerComponentIds()`, else `ScriptPlanError` listing the valid names; its moment skips the component choice but still gets `onScreenCopy` from the LLM.
-- One call, `schemaName: "script_plan"`, schema `{ cues: [{ id, sceneKind (planner id), layout?, onScreenCopy (≤60) }] }`, covering every non-clip cue. The user prompt lists per cue: id, cue text, spoken text; then the component menu (`whenToUse` lines). The system prompt states: the cue text is the instruction; on-screen copy may only use words and numbers from the cue text or the spoken text.
+- One call, `schemaName: "script_plan"`, schema `{ cues: [{ id, sceneKind (planner id or "none"), layout?, onScreenCopy (≤60) }] }`, covering every non-clip cue. `"none"` is for a cue that describes footage, not a graphic ("Screen recording: …", "B-roll of …", "Back to your face", "GitHub page for …", "Browser: …"): real scripts write these without the `screen:` hint. The system prompt says so. Such a cue stays talking head and is recorded as an issue `footage cue` so Task 8 can report it. A `[Component]` hint is never overridden to `"none"`. The user prompt lists per cue: id, cue text, spoken text; then the component menu (`whenToUse` lines). The system prompt states: the cue text is the instruction; on-screen copy may only use words and numbers from the cue text or the spoken text.
 - One retry on a thrown call. After that, or for any cue id the reply omits, the moment is `sceneKind: "TitleCard"` with `onScreenCopy` = the cue text cut to 60 characters at a word boundary, and an issue is recorded.
 - `purpose` = the cue text (capped to 100).
 - In `produceScenes`, when `args.script` is set: skip `generateBeatSheet`; call `planScriptMoments`; run `normalizeBeatSheet(…, mode "script")`, which keeps bounds checks, cut-only removal and overlap repair and skips the coverage budget, the short-take floor and same-kind demotion; then the existing `forceComponent` and `repairMomentLayouts` steps; then `generateScenes` for the moments; then append `clipScenes` whose moment survived normalization. `beatSheet.hook` = the first moment's `onScreenCopy`. `graphics.asked` = number of aligned cues. `args.clip` (the `--clip` highlight) together with `args.script` throws: the two modes are exclusive.
@@ -239,6 +239,7 @@ Decisions:
   - 41 aligned cues throw `ScriptPlanError` containing `41`;
   - a provider that throws twice yields TitleCard moments and one issue per cue;
   - a reply missing one cue id falls back for that cue only;
+  - a reply with `sceneKind: "none"` for a cue yields a `"none"` moment and a `footage cue` issue naming the cue id, and a hinted cue ignores a `"none"` reply;
   - `normalizeBeatSheet` in `"script"` mode keeps three adjacent same-kind moments and keeps coverage at 80%; in `"auto"` mode the same sheet is demoted as today;
   - `produceScenes` with `script` and the `MockProvider` returns scenes for every cue including the clip, and never requests `beat_sheet`;
   - `produceScenes` with both `script` and `clip` rejects.
@@ -344,7 +345,7 @@ export type CueOutcome =
   | { cueId: string; line: number; text: string; status: "placed"; component: string; startSec: number }
   | { cueId: string; line: number; text: string; status: "skipped"; reason: string; score?: number }
   | { cueId: string; line: number; text: string; status: "shortened"; component: string; startSec: number; fromSec: number; toSec: number }
-  | { cueId: string; line: number; text: string; status: "reported"; reason: "screen recording" };
+  | { cueId: string; line: number; text: string; status: "reported"; reason: "screen recording" | "footage cue" };
 export function cueOutcomes(parts: {…cues, aligned, skipped, scenes, cues-with-times, shortened}): CueOutcome[]; // pure
 export function formatCueReport(outcomes: readonly CueOutcome[]): string; // pure, one line per cue + a summary line
 export function scriptPlanCacheKey(parts: { promptVersion: string; scriptText: string; keptWords: string; clipNames: string[] }): string;
