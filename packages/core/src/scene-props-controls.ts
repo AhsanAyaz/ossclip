@@ -49,6 +49,15 @@ export type PropControl =
       fallback: number;
       /** As for enums: unset is a state of its own, not `fallback`. */
       optional?: true;
+      /**
+       * Unset is NONE of the values, not a default standing in for one: an
+       * absent CardRow `highlight` highlights no card, an absent BugCard
+       * `mockWrong` marks nothing (§161). Set only for an optional prop with
+       * neither a schema default nor a `NUMBER_FALLBACKS` entry, so the
+       * Inspector says "not set" rather than "default (0)" — which would
+       * read as card 0 chosen. `fallback` is then only where the slider rests.
+       */
+      unsetIsNone?: true;
     };
 
 type JsonSchemaProp = {
@@ -58,6 +67,15 @@ type JsonSchemaProp = {
   minimum?: number;
   maximum?: number;
 };
+
+/**
+ * A bounded number or integer prop's slider step. `z.number().int()` writes
+ * JSON Schema type "integer" — a slider stepping 0.01 there would write
+ * 1.37 into a prop the schema rejects at the next parse (§161: CardRow's
+ * `highlight`, BugCard's `number` and `mockWrong` had no control at all
+ * while the derivation read type "number" only).
+ */
+const sliderStep = (type: string): number => (type === "integer" ? 1 : 0.01);
 
 /**
  * The unset value a numeric control displays. Only `revealSpeed` is numeric
@@ -86,27 +104,27 @@ export function scalarPropControls(component: SceneComponentId): PropControl[] {
       controls.push({ key, kind: "enum", options: prop.enum as string[], ...optional });
       continue;
     }
-    // A bounded number gets a slider. Unbounded ones are skipped: a slider
-    // needs ends, and inventing them would let the UI write values the
-    // schema never promised to accept.
+    // A bounded number or integer gets a slider. Unbounded ones are
+    // skipped: a slider needs ends, and inventing them would let the UI
+    // write values the schema never promised to accept.
     if (
-      prop.type === "number" &&
+      (prop.type === "number" || prop.type === "integer") &&
       typeof prop.minimum === "number" &&
       typeof prop.maximum === "number"
     ) {
-      const fallback =
-        typeof prop.default === "number" ? prop.default : (NUMBER_FALLBACKS[key] ?? prop.minimum);
+      const known = typeof prop.default === "number" ? prop.default : NUMBER_FALLBACKS[key];
       controls.push({
         key,
         kind: "number",
         min: prop.minimum,
         max: prop.maximum,
-        // Fine enough that the slider can rest exactly on a two-decimal
-        // fallback (0.66): at 0.05 from a 0.1 minimum the browser snapped an
-        // unset slider to 0.65 while the readout said 0.66.
-        step: 0.01,
-        fallback,
+        // 0.01 for a number: fine enough that the slider can rest exactly on
+        // a two-decimal fallback (0.66) — at 0.05 from a 0.1 minimum the
+        // browser snapped an unset slider to 0.65 while the readout said 0.66.
+        step: sliderStep(prop.type),
+        fallback: known ?? prop.minimum,
         ...optional,
+        ...(known === undefined && !required.has(key) ? { unsetIsNone: true as const } : {}),
       });
       continue;
     }

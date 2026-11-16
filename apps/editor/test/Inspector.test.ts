@@ -1236,6 +1236,95 @@ describe("Inspector — reveal controls: unset is its own state (reveal-timing T
 });
 
 /**
+ * §161: an optional integer prop's slider. CardRow's `highlight` unset means
+ * NO card highlighted, so the control must say "not set" while unset (the
+ * slider resting at 0 would otherwise read as card 0) and must be able to
+ * get back there — the optional-number "default" button, labelled "clear".
+ */
+function HighlightHarness({ onDocChange }: { onDocChange: (doc: OverrideDoc) => void }) {
+  const edits = useEdits();
+  const base: SceneCue = {
+    id: "scene-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    props: { cards: [{ text: "Draft" }, { text: "Review" }, { text: "Ship" }] },
+    startSec: 0,
+    endSec: 6,
+  };
+  const cue = React.useMemo(() => applyOverrides([base], edits.doc).cues[0]!, [edits.doc]);
+  React.useEffect(() => {
+    onDocChange(edits.doc);
+  });
+  return React.createElement(Inspector, {
+    selection: { sceneId: "scene-1", elementId: null },
+    cue,
+    frame: { width: 1920, height: 1080 },
+    allSceneIds: ["scene-1"],
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+  });
+}
+
+describe("Inspector — an optional integer slider can return to unset (§161)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let doc: OverrideDoc;
+
+  beforeEach(async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(HighlightHarness, { onDocChange: (d) => (doc = d) }));
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`);
+  const props = () => doc.scenes["scene-1"]?.props ?? {};
+
+  it("unset reads 'not set' with the slider at its minimum, a whole-number step, and writes nothing", () => {
+    const slider = q<HTMLInputElement>("prop-highlight")!;
+    expect(slider.min).toBe("0");
+    expect(slider.max).toBe("3");
+    expect(slider.step).toBe("1");
+    expect(slider.value).toBe("0");
+    expect(q("prop-highlight-unset")!.textContent).toBe("not set");
+    const clear = q<HTMLButtonElement>("prop-highlight-default")!;
+    expect(clear.textContent).toBe("clear");
+    expect(clear.disabled).toBe(true);
+    expect("highlight" in props()).toBe(false);
+  });
+
+  it("writes an integer, shows it whole, and clear deletes the key", async () => {
+    await act(async () => setControl(q<HTMLInputElement>("prop-highlight")!, "2"));
+    expect(props().highlight).toBe(2);
+    expect(q("prop-highlight-unset")).toBeNull();
+    expect(q("prop-highlight")!.parentElement!.textContent).toContain("highlight  2");
+    const clear = q<HTMLButtonElement>("prop-highlight-default")!;
+    expect(clear.disabled).toBe(false);
+    await act(async () => clear.click());
+    expect("highlight" in props()).toBe(false);
+    expect(q("prop-highlight-unset")!.textContent).toBe("not set");
+  });
+
+  it("revealSpeed beside it keeps its 'default (0.66)' readout and its 'default' button", () => {
+    const speedRow = q("prop-revealSpeed")!.parentElement!;
+    expect(speedRow.textContent).toContain("default (0.66)");
+    expect(q("prop-revealSpeed-default")!.textContent).toBe("default");
+  });
+});
+
+/**
  * The swap control (explainer plan Task 7, "Editor decisions"). A clip
  * cannot become a card or the reverse: neither has the other's props, and
  * ClipScene has no default clip to fall back to.

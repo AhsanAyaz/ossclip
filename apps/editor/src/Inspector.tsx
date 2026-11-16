@@ -1392,16 +1392,26 @@ export const Inspector: React.FC<InspectorProps> = ({
                   typeof cue.props?.[control.key] === "number"
                     ? (cue.props[control.key] as number)
                     : undefined;
+                // An integer prop (step 1: CardRow's highlight, BugCard's
+                // number) reads as the whole number it is, not "2.00".
+                const integer = control.kind === "number" && control.step === 1;
+                const shown = (n: number) => (integer ? String(n) : n.toFixed(2));
                 return control.kind === "number" ? (
                   <div style={row} key={control.key}>
                     <span style={label}>
                       {control.key}
                       {"  "}
-                      <span style={{ color: "#EDEDF2" }}>
-                        {setNumber !== undefined
-                          ? setNumber.toFixed(2)
-                          : `default (${control.fallback.toFixed(2)})`}
-                      </span>
+                      {setNumber === undefined && control.unsetIsNone ? (
+                        // Unset is no value at all (no card highlighted,
+                        // nothing marked), so it is not dressed as a
+                        // default: the slider resting at its minimum would
+                        // otherwise read as that minimum chosen (§161).
+                        <span data-testid={`prop-${control.key}-unset`}>not set</span>
+                      ) : (
+                        <span style={{ color: "#EDEDF2" }}>
+                          {setNumber !== undefined ? shown(setNumber) : `default (${shown(control.fallback)})`}
+                        </span>
+                      )}
                     </span>
                     {/* Unset shows the renderer's own default (`fallback`) but
                         never writes it: an unset revealSpeed and an explicit
@@ -1427,7 +1437,8 @@ export const Inspector: React.FC<InspectorProps> = ({
                     {control.optional ? (
                       // The slider has no position meaning "unset", so the way
                       // back to unset is a button — the enum's "default"
-                      // option, for a control that cannot hold one.
+                      // option, for a control that cannot hold one. Labelled
+                      // "clear" where unset is no value, not a default.
                       <button
                         data-testid={`prop-${control.key}-default`}
                         style={button}
@@ -1437,7 +1448,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                           edits.clearProp(selection.sceneId, control.key);
                         }}
                       >
-                        default
+                        {control.unsetIsNone ? "clear" : "default"}
                       </button>
                     ) : null}
                   </div>

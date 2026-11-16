@@ -61,7 +61,7 @@ describe("scalarPropControls", () => {
     expect(controls.map((c) => c.key)).toEqual(["action"]);
   });
 
-  it("BugCard's mock and its fault are dropdowns; its integers get no control (§161)", () => {
+  it("BugCard's mock and its fault are dropdowns; its integers are step-1 sliders (§161)", () => {
     const controls = scalarPropControls("BugCard");
     expect(controls.find((c) => c.key === "mock")).toEqual({
       key: "mock",
@@ -74,10 +74,75 @@ describe("scalarPropControls", () => {
       options: ["struck", "clipped"],
     });
     // `number` and `mockWrong` are z.number().int(), which JSON Schema writes
-    // as type "integer"; the slider derivation reads only type "number", so
-    // neither gets one — as CardRow's `highlight` gets none. Pinned here so a
-    // change to that rule is a decision, not a surprise.
-    expect(controls.map((c) => c.key)).toEqual(["mock", "mockFault"]);
+    // as type "integer". Until §161 the slider derivation read type "number"
+    // only, so neither had a control; now each is a slider stepping by 1.
+    // `number` is required, so it has no unset state and no clear button.
+    expect(controls.find((c) => c.key === "number")).toEqual({
+      key: "number",
+      kind: "number",
+      min: 1,
+      max: 9,
+      step: 1,
+      fallback: 1,
+    });
+    // `mockWrong` unset marks nothing — not entry 0 — so the control says
+    // so, and the slider merely rests at the minimum.
+    expect(controls.find((c) => c.key === "mockWrong")).toEqual({
+      key: "mockWrong",
+      kind: "number",
+      min: 0,
+      max: 3,
+      step: 1,
+      fallback: 0,
+      optional: true,
+      unsetIsNone: true,
+    });
+    expect(controls.map((c) => c.key)).toEqual(["number", "mock", "mockWrong", "mockFault"]);
+  });
+
+  it("CardRow's highlight is a step-1 slider whose unset is no card, not card 0 (§161)", () => {
+    expect(scalarPropControls("CardRow")[0]).toEqual({
+      key: "highlight",
+      kind: "number",
+      min: 0,
+      max: 3,
+      step: 1,
+      fallback: 0,
+      optional: true,
+      unsetIsNone: true,
+    });
+  });
+
+  it("the integer sliders change no existing control: the nine, CtaCard and ClipScene are as they were", () => {
+    // Pinned whole, not by key: the integer rule must add controls only
+    // where an integer prop was, and touch no field of any other control.
+    const revealCtl = [
+      { key: "reveal", kind: "enum", options: ["auto", "synced", "paced"], optional: true },
+      { key: "pacing", kind: "enum", options: ["even", "accelerate", "decelerate", "ease-in-out"], optional: true },
+      { key: "revealSpeed", kind: "number", min: 0.1, max: 1, step: 0.01, fallback: 0.66, optional: true },
+      { key: "entrance", kind: "enum", options: ["pop", "fade", "rise", "bounce"], optional: true },
+    ];
+    const expected = {
+      TitleCard: [],
+      StatCard: [{ key: "inverted", kind: "boolean", fallback: false }],
+      RuleCard: [],
+      StrikethroughReveal: revealCtl,
+      FlowDiagram: [{ key: "emphasizeLast", kind: "boolean", fallback: true }, ...revealCtl],
+      TerminalMock: revealCtl,
+      ChatMock: revealCtl,
+      ScreenshotFrame: [{ key: "kenBurns", kind: "boolean", fallback: true }],
+      BulletList: [],
+      CtaCard: [{ key: "action", kind: "enum", options: ["comment", "subscribe", "link"] }],
+      ClipScene: [
+        { key: "gainDb", kind: "number", min: -40, max: 0, step: 0.01, fallback: -13 },
+        { key: "muted", kind: "boolean", fallback: false },
+      ],
+    } as const;
+    for (const [id, controls] of Object.entries(expected)) {
+      expect(scalarPropControls(id as keyof typeof expected), id).toEqual(controls);
+    }
+    // And the existing optional number keeps its "default", not "not set".
+    expect(scalarPropControls("CardRow").find((c) => c.key === "revealSpeed")).not.toHaveProperty("unsetIsNone");
   });
 
   it("every registry component resolves without throwing", () => {
