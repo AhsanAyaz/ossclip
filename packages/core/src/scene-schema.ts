@@ -51,7 +51,7 @@ export type PlannerComponentId = z.infer<typeof PlannerComponentIdSchema>;
  * is its own (`SCRIPT_PLAN_PROMPT_VERSION`). Later pattern scenes append to
  * this list; order is menu order after the nine.
  */
-export const ScriptOnlyComponentIdSchema = z.enum(["CardRow", "CtaCard"]);
+export const ScriptOnlyComponentIdSchema = z.enum(["CardRow", "CtaCard", "BugCard"]);
 export type ScriptOnlyComponentId = z.infer<typeof ScriptOnlyComponentIdSchema>;
 
 /**

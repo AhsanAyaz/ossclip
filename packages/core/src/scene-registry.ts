@@ -269,6 +269,34 @@ export const CtaCardProps = z.object({
   channel: z.string().max(24).optional(),
 });
 
+/**
+ * One numbered problem, shown failing (§161, plan Task 6): a red number
+ * badge, a two-line headline and its consequence, and a mock of the bug — a
+ * caption with a word struck through or run off the edge, or code lines with
+ * the wrong one in red — closed by a sticker. Script-only. No reveal props:
+ * it builds on a timeline of its own (`bugTimeline`), not one item per beat.
+ *
+ * Flat on purpose (plan Task 6): the mock's kind and fault are top-level
+ * enums so the Inspector derives a dropdown for each from this schema, and
+ * `mockLines` is a plain string array the editor retypes as `mock-N`
+ * elements. In 9:16 the mock is not drawn (`bugMockVisible`); the caps are
+ * what the text panel holds there at the 34 px floor (`bugCardMetrics`).
+ */
+export const BugCardProps = z.object({
+  number: z.number().int().min(1).max(9),
+  headline: z.string().min(1).max(40),
+  /** The consequence, under the headline in `danger`. */
+  sub: z.string().max(40).optional(),
+  mock: z.enum(["none", "caption", "lines"]).default("none"),
+  /** Caption words (`caption`) or code lines (`lines`), in order. */
+  mockLines: z.array(z.string().max(32)).max(4).default([]),
+  /** The entry of `mockLines` that is wrong; absent or out of range marks none. */
+  mockWrong: z.number().int().min(0).max(3).optional(),
+  /** How a wrong caption word fails: struck through, or cut off at the panel's edge. */
+  mockFault: z.enum(["struck", "clipped"]).default("struck"),
+  sticker: z.string().max(14).optional(),
+});
+
 export interface SceneComponentMeta {
   propsSchema: z.ZodTypeAny;
   defaultProps: Record<string, unknown>;
@@ -430,6 +458,18 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     whenToUse:
       "The line asks the viewer to do something: comment a word, subscribe or follow, or open a link. " +
       "Put the asked-for word in keyword.",
+    scriptOnly: true,
+    scrim: false,
+    fullFrame: true,
+  },
+  BugCard: {
+    propsSchema: BugCardProps,
+    defaultProps: { number: 1, headline: "The problem" },
+    defaultLayout: "full-bleed",
+    altLayouts: [],
+    whenToUse:
+      "The line names one specific problem or bug, often numbered. headline says it in a few words; " +
+      "sub is the consequence. Use mock 'caption' or 'lines' only with words the speaker says.",
     scriptOnly: true,
     scrim: false,
     fullFrame: true,

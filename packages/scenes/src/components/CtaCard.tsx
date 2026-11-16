@@ -21,7 +21,7 @@ import {
   type CtaCardMetrics,
 } from "../fit";
 import { bump, caretOn, popScale, typedChars } from "../motion";
-import type { RevealTiming } from "../reveal";
+import { PATTERN_DEFAULT_SCENE_SEC, patternSceneSec, type RevealTiming } from "../reveal";
 import { editStyle, type ElementEdits } from "../editable";
 import { Card } from "../primitives/Card";
 import { Icon } from "../primitives/Icon";
@@ -31,7 +31,7 @@ type Props = z.infer<typeof CtaCardProps>;
 type Action = Props["action"];
 
 /** A scene of unknown length is timed as this long (no `timing` prop: the stills, a bare mount). */
-export const CTA_DEFAULT_SCENE_SEC = 6;
+export const CTA_DEFAULT_SCENE_SEC = PATTERN_DEFAULT_SCENE_SEC;
 /** The playbook's pop length (motion.ts `popScale` default). */
 const POP_SEC = 0.35;
 /** Typing starts once the card has popped and sat a beat. */
@@ -75,10 +75,8 @@ export function ctaTimeline(
   }
 }
 
-/** The cue's length in seconds, or `CTA_DEFAULT_SCENE_SEC` when it is not known. */
-export function ctaSceneSec(fps: number, timing?: RevealTiming): number {
-  return timing !== undefined && timing.durationInFrames > 0 ? timing.durationInFrames / fps : CTA_DEFAULT_SCENE_SEC;
-}
+/** The cue's length in seconds, or `CTA_DEFAULT_SCENE_SEC` when it is not known (`patternSceneSec`, shared with BugCard). */
+export const ctaSceneSec = patternSceneSec;
 
 /** What one frame shows. */
 export interface CtaFrameState {

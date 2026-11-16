@@ -50,6 +50,12 @@ const CHECKED_FIELDS: Record<string, string[]> = {
   // CtaCard's `action` is an enum at the top level, so it is named out too;
   // `channel` is a proper noun the speaker need not say.
   CtaCard: ["text", "keyword"],
+  // BugCard's `mock` and `mockFault` are top-level enums, named out for the
+  // same reason. `mockLines` is left out although it is plain strings: the
+  // entry at `mockWrong` is wrong on purpose (a misheard caption word, the
+  // broken line of code), so checking it against what was said would flag
+  // the very bug the card is showing (plan Task 6).
+  BugCard: ["headline", "sub", "sticker"],
 };
 
 /**

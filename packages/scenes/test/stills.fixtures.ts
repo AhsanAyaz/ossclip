@@ -84,7 +84,7 @@ export const STILL_FIXTURES: StillFixture[] = [
       action: "comment",
       text: "COMMENT THE WORD BELOW TO GET MY PROMPT!",
       keyword: "COMMENTPROMPTNOW",
-      channel: "THE PRAGMATIC ENGINEER!!",
+      channel: "THE MIDNIGHT COMPILER!!!",
     },
     atSec: [1.8, 5.4],
   },
@@ -101,7 +101,7 @@ export const STILL_FIXTURES: StillFixture[] = [
       action: "subscribe",
       text: "SUBSCRIBE FOR ONE NEW AGENT TRICK WEEKLY",
       keyword: "COMMENTPROMPTNOW",
-      channel: "THE PRAGMATIC ENGINEER!!",
+      channel: "THE MIDNIGHT COMPILER!!!",
     },
     atSec: [1.8, 5.4],
   },
@@ -118,8 +118,70 @@ export const STILL_FIXTURES: StillFixture[] = [
       action: "link",
       text: "GET THE FULL TEMPLATE FREE AT THIS LINK:",
       keyword: "ossclip.dev/tmpl",
-      channel: "THE PRAGMATIC ENGINEER!!",
+      channel: "THE MIDNIGHT COMPILER!!!",
     },
     atSec: [1.8, 5.4],
+  },
+  // BugCard (plan Task 6), at 1.6 s and 5.4 s. The harness runs a scene to
+  // max(atSec) + 2 s (7.4 s), so the build is: badge 0.25 s, headline 0.55,
+  // sub 0.95, mock 1.35 (mid-pop at 1.6), fault 1.95, sticker at two thirds
+  // of 7.4 s (4.93 s, bumped by 5.23) — at 5.4 s everything has settled.
+  // 9:16 draws no mock. The caption fixtures have four entries, the schema's
+  // most (`mockLines` max 4, `mockWrong` max 3).
+  {
+    component: "BugCard",
+    name: "none-sparse",
+    props: { number: 1, headline: "Captions drift" },
+    atSec: [1.6, 5.4],
+  },
+  {
+    component: "BugCard",
+    name: "caption-clipped-dense",
+    // Every text cap: headline 40, sub 40, sticker 14; the last caption
+    // word runs off the panel's edge.
+    props: {
+      number: 3,
+      headline: "WHISPER DROPS THE LAST WORD OF EVERY CUT",
+      sub: "and the one it drops is the one you need",
+      mock: "caption",
+      mockLines: ["Claude", "wrote", "the", "migration"],
+      mockWrong: 3,
+      mockFault: "clipped",
+      sticker: "WATCH THE EDGE",
+    },
+    atSec: [1.6, 5.4],
+  },
+  {
+    component: "BugCard",
+    name: "caption-struck",
+    props: {
+      number: 2,
+      headline: "Captions mishear names",
+      sub: "and viewers notice",
+      mock: "caption",
+      mockLines: ["Ask", "Cloud", "to", "refactor"],
+      mockWrong: 1,
+    },
+    atSec: [1.6, 5.4],
+  },
+  {
+    component: "BugCard",
+    name: "lines-dense",
+    // Four lines at the 32-character cap, the third one wrong.
+    props: {
+      number: 4,
+      headline: "Retries hide the real failure",
+      sub: "and the log says nothing",
+      mock: "lines",
+      mockLines: [
+        "const plan = await agent.plan();",
+        "for (const step of plan.steps) {",
+        "  await run(step, { retry: 0 });",
+        "} // no retry, no log, no trace!",
+      ],
+      mockWrong: 2,
+      sticker: "NO RETRY LOOP!",
+    },
+    atSec: [1.6, 5.4],
   },
 ];

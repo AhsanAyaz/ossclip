@@ -24,7 +24,7 @@ import type { SceneComponentId } from "@ossclip/core";
  * array indices resolved through the backing prop (`lines`, `windows`, …),
  * which `elementTextOf` handles separately.
  */
-const DYNAMIC = /^(line|node|message|item|window|card)-(\d+|N|\$)/;
+const DYNAMIC = /^(line|node|message|item|window|card|mock)-(\d+|N|\$)/;
 /** Backing arrays the dynamic ids index into — the prop that must exist. */
 const BACKING: Record<string, string> = {
   line: "lines",
@@ -33,6 +33,7 @@ const BACKING: Record<string, string> = {
   item: "items",
   window: "windows",
   card: "cards",
+  mock: "mockLines",
 };
 
 const componentSource = (id: string): string =>

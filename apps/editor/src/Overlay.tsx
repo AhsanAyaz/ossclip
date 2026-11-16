@@ -218,11 +218,13 @@ const moveEdgeBase: React.CSSProperties = {
  * added here but not there (CardRow's `card-N`, §161) would route the panel's
  * retype to a top-level prop nothing reads.
  */
-export const DYNAMIC_ID = /^(line|node|message|window|item|card)-(\d+)$/;
+export const DYNAMIC_ID = /^(line|node|message|window|item|card|mock)-(\d+)$/;
 
 /** CardRowProps' caps, mirrored for the commit-time truncation below. */
 const CARD_TEXT_MAX = 18;
 const CARD_SUB_MAX = 24;
+/** BugCardProps' `mockLines` cap, mirrored likewise. */
+const MOCK_LINE_MAX = 32;
 
 /**
  * Map a `line-N`/`node-N`/`message-N` id back to the array field it actually
@@ -241,7 +243,7 @@ export function buildArrayPatch(
 ): Record<string, unknown> | null {
   const m = DYNAMIC_ID.exec(elementId);
   if (!m) return null;
-  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card";
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card" | "mock";
   const idx = Number(m[2]);
   // ChatMock's CTA mode (props.keyword set) renders exactly ONE synthetic
   // bubble showing the keyword and ignores `props.messages` entirely
@@ -272,7 +274,9 @@ export function buildArrayPatch(
             ? "windows"
             : kind === "card"
               ? "cards"
-              : "messages";
+              : kind === "mock"
+                ? "mockLines"
+                : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const next = arr.slice();
@@ -281,6 +285,11 @@ export function buildArrayPatch(
     // FlowDiagram's `nodes` and BulletList's `items` are plain string[] —
     // the whole entry IS the text.
     next[idx] = text;
+  } else if (kind === "mock") {
+    // BugCard's `mockLines` (§161) is a plain string[] too — a caption word
+    // or a code line per entry — truncated to the schema's 32 at commit,
+    // for the window arm's reason below.
+    next[idx] = text.slice(0, MOCK_LINE_MAX);
   } else if (kind === "window") {
     // A TerminalMock window's text is its `lines` array, and those lines
     // carry no per-line edit ids (only the window div is tagged), so the
@@ -344,7 +353,7 @@ export function elementTextOf(
     const v = props[elementId];
     return typeof v === "string" ? v : null;
   }
-  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card";
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card" | "mock";
   const idx = Number(m[2]);
   if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
     return props.keyword;
@@ -360,11 +369,13 @@ export function elementTextOf(
             ? "windows"
             : kind === "card"
               ? "cards"
-              : "messages";
+              : kind === "mock"
+                ? "mockLines"
+                : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const item = arr[idx];
-  if (kind === "node" || kind === "item") return typeof item === "string" ? item : null;
+  if (kind === "node" || kind === "item" || kind === "mock") return typeof item === "string" ? item : null;
   if (kind === "window") {
     const lines = (item as Record<string, unknown> | null)?.lines;
     return Array.isArray(lines) && lines.every((l) => typeof l === "string")

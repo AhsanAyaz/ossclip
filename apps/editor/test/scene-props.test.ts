@@ -61,9 +61,29 @@ describe("scalarPropControls", () => {
     expect(controls.map((c) => c.key)).toEqual(["action"]);
   });
 
+  it("BugCard's mock and its fault are dropdowns; its integers get no control (§161)", () => {
+    const controls = scalarPropControls("BugCard");
+    expect(controls.find((c) => c.key === "mock")).toEqual({
+      key: "mock",
+      kind: "enum",
+      options: ["none", "caption", "lines"],
+    });
+    expect(controls.find((c) => c.key === "mockFault")).toEqual({
+      key: "mockFault",
+      kind: "enum",
+      options: ["struck", "clipped"],
+    });
+    // `number` and `mockWrong` are z.number().int(), which JSON Schema writes
+    // as type "integer"; the slider derivation reads only type "number", so
+    // neither gets one — as CardRow's `highlight` gets none. Pinned here so a
+    // change to that rule is a decision, not a surprise.
+    expect(controls.map((c) => c.key)).toEqual(["mock", "mockFault"]);
+  });
+
   it("every registry component resolves without throwing", () => {
     for (const id of ["TitleCard", "StatCard", "RuleCard", "StrikethroughReveal",
-      "FlowDiagram", "TerminalMock", "ChatMock", "ScreenshotFrame", "BulletList", "CardRow", "CtaCard"] as const) {
+      "FlowDiagram", "TerminalMock", "ChatMock", "ScreenshotFrame", "BulletList", "CardRow", "CtaCard",
+      "BugCard"] as const) {
       expect(() => scalarPropControls(id)).not.toThrow();
     }
   });

@@ -220,3 +220,23 @@ describe("CtaCard (§161, plan Task 5)", () => {
     expect(entryTexts("CtaCard", { action: "link", text: "Grab it" })).toEqual(["Grab it"]);
   });
 });
+
+describe("BugCard (§161, plan Task 6)", () => {
+  it("has no reveal items: it builds on its own timeline", () => {
+    expect(revealItemTexts("BugCard", { number: 1, headline: "Captions drift", mockLines: ["a", "b"] })).toBeNull();
+  });
+
+  it("enters on its headline or its sub; the sticker and the mock's words are not texts to match", () => {
+    expect(
+      entryTexts("BugCard", {
+        number: 2,
+        headline: "Captions drift",
+        sub: "out of sync",
+        mock: "caption",
+        mockLines: ["the", "raw", "tkae"],
+        sticker: "FIXED",
+      }),
+    ).toEqual(["Captions drift", "out of sync"]);
+    expect(entryTexts("BugCard", { number: 1, headline: "Only this", sub: "" })).toEqual(["Only this"]);
+  });
+});

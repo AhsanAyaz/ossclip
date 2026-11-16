@@ -3,8 +3,11 @@ import type { Theme } from "@ossclip/core/browser";
 import { ICON_PATHS } from "./icon-paths";
 import { SHADOW } from "./shadow";
 
-/** The cross is a Pill mark only, not a card icon, so it is not in ICON_NAMES. */
-const CROSS_PATHS = ["M6 6l12 12", "M18 6L6 18"] as const;
+/**
+ * The cross is a mark, not a card icon, so it is not in ICON_NAMES. Exported
+ * for BugCard's wrong line, which carries the same mark outside a pill.
+ */
+export const CROSS_PATHS = ["M6 6l12 12", "M18 6L6 18"] as const;
 
 /**
  * A dark rounded label with a 3 px coloured border (§161) — the playbook's

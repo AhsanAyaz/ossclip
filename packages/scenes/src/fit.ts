@@ -38,6 +38,7 @@ const SELF_FITTING = new Set<SceneComponentId>([
   // would only move the margin it was solved for.
   "CardRow",
   "CtaCard",
+  "BugCard",
 ]);
 
 /**
@@ -212,6 +213,22 @@ export function estimateHeightPx(
         channel: str(props.channel),
       };
       return ctaCardMetrics(input, widthPx, heightPx).blockHeightPx;
+    }
+    case "BugCard": {
+      // Self-fitting as well, answered from the card's own model. Props here
+      // passed BugCardProps; anything else estimates as its schema default.
+      const mock = str(props.mock);
+      const input: BugCardInput = {
+        number: typeof props.number === "number" ? props.number : 1,
+        headline: str(props.headline),
+        sub: str(props.sub),
+        mock: mock === "caption" || mock === "lines" ? mock : "none",
+        mockLines: arr(props.mockLines).map(str),
+        mockWrong: typeof props.mockWrong === "number" ? props.mockWrong : undefined,
+        mockFault: str(props.mockFault) === "clipped" ? "clipped" : "struck",
+        sticker: str(props.sticker),
+      };
+      return bugCardMetrics(input, widthPx, heightPx).blockHeightPx;
     }
   }
 }
@@ -1160,5 +1177,529 @@ export function ctaCardMetrics(p: CtaCardInput, widthPx: number, heightPx: numbe
     caretWidthPx: q.caretWidthPx,
     blockWidthPx: cardWidthPx,
     blockHeightPx: head.cardH,
+  };
+}
+
+// ---- BugCard (§161, plan Task 6) -------------------------------------------
+
+/** The frame's shape, as BugCard reads it: the mock is drawn only in a landscape frame. */
+export type BugAspect = "16:9" | "9:16";
+
+/** BugCardProps' shape after parsing, as the metric reads it (no zod in this module). */
+export interface BugCardInput {
+  number: number;
+  headline: string;
+  sub?: string;
+  mock: "none" | "caption" | "lines";
+  mockLines: readonly string[];
+  mockWrong?: number;
+  mockFault: "struck" | "clipped";
+  sticker?: string;
+}
+
+/** Landscape or portrait, by the frame — `ctaCardMetrics`' row/column test. */
+export function bugAspect(widthPx: number, heightPx: number): BugAspect {
+  const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
+  return widthPx >= finiteH ? "16:9" : "9:16";
+}
+
+/**
+ * Whether the mock panel is drawn (plan Task 6): not for `mock: "none"`, not
+ * for a mock with nothing to show, and never in 9:16, where a second panel
+ * beside the text would leave each too narrow to read and one under it would
+ * push the text panel off its centre. "Nothing to show" is every entry blank,
+ * not only an empty list: a panel of blank caption words is an empty box.
+ */
+export function bugMockVisible(
+  p: Pick<BugCardInput, "mock" | "mockLines">,
+  aspect: BugAspect,
+): boolean {
+  if (aspect === "9:16" || p.mock === "none") return false;
+  return p.mockLines.some((l) => l.trim().length > 0);
+}
+
+/**
+ * The entry `mockWrong` marks, or null when it marks nothing: absent, past
+ * the end of `mockLines` (the schema caps both at four, not at each other),
+ * or a blank entry, which has no word to strike and no code to turn red.
+ */
+export function bugWrongIndex(p: Pick<BugCardInput, "mockLines" | "mockWrong">): number | null {
+  const i = p.mockWrong;
+  if (i === undefined || !Number.isInteger(i) || i < 0 || i >= p.mockLines.length) return null;
+  return (p.mockLines[i] ?? "").trim().length > 0 ? i : null;
+}
+
+/**
+ * The most a panel (and the badge inside it) is drawn at: `popScale`'s
+ * overshoot, a hair over 1.10, rounded up as `CTA_PEAK_SCALE` is. The two
+ * panels pop 1.1 s apart (`bugTimeline`), so the gap between them only ever
+ * holds one panel's growth at a time.
+ */
+export const BUG_PEAK_SCALE = 1.11;
+/** The sticker lands with a `bump`, which peaks at 1.15 (motion.ts). */
+export const BUG_STICKER_PEAK_SCALE = 1.15;
+/** Between the text panel and the mock in 16:9. */
+export const BUG_PANEL_GAP_PX = 64;
+/**
+ * A lone text panel (no mock, or 9:16) is as wide as its headline at the
+ * largest size, between these: CtaCard's rule, for its reason.
+ */
+const BUG_SINGLE_MAX_W = 1240;
+const BUG_SINGLE_MIN_W = 640;
+/** Type: 34 px is the playbook floor for display text, 26 px for mono. */
+const BUG_TEXT_MIN_PX = 34;
+const BUG_MONO_MIN_PX = 26;
+const BUG_HEAD_MAX_PX = 72;
+const BUG_SUB_MAX_PX = 48;
+/** The consequence never outgrows the headline it qualifies (CtaCard's row rule). */
+const BUG_SUB_TO_HEAD = 0.75;
+/** "Two-line headline" (the playbook); the sub-line is held to two as well. */
+const BUG_MAX_LINES = 2;
+/** Exported so the component sets the line heights this model charges. */
+export const BUG_HEAD_LH = 1.08;
+export const BUG_SUB_LH = 1.15;
+export const BUG_SUB_GAP_PX = 16;
+/** Badge to headline. */
+export const BUG_BADGE_GAP_PX = 28;
+/**
+ * The badge is a little taller than a headline line, so it reads as the
+ * marker of the line it sits beside; never under 64 px, where its numeral
+ * (0.58 of the disc, `NumberBadge`) would drop under the 34 px floor.
+ */
+const BUG_BADGE_MIN_PX = 64;
+const BUG_BADGE_TO_HEAD = 1.3;
+/**
+ * Caption mock: big display words in one row, two when they need it. One
+ * row is worth some size — a caption is one line on screen, and the first
+ * struck still wrapped "Ask Cloud to / refactor" at 64 px with the row a
+ * word short — so one row is tried down to 40 px before two rows are
+ * allowed from 64 again. A clipped caption must also fit its row whole
+ * before the fault (`runFits`): the second clipped still, at 56 px, had
+ * "migration" cut by a letter before it ever slid, so the fault had no
+ * intact caption to break.
+ */
+const BUG_CAP_MAX_PX = 64;
+const BUG_CAP_ONE_ROW_MIN_PX = 40;
+const BUG_CAP_MAX_ROWS = 2;
+export const BUG_CAP_LH = 1.15;
+export const BUG_CAP_ROW_GAP_PX = 12;
+export const BUG_CAP_WORD_GAP_EM = 0.3;
+/**
+ * The caption outline, as a share of the type: 0.14 em is ~9 px at 64 px,
+ * the playbook's "10 to 12 px outline" scaled down to a mock's caption.
+ */
+export const BUG_CAP_STROKE_EM = 0.14;
+/** The strike line's thickness. */
+export const BUG_STRIKE_EM = 0.12;
+/** How much of a clipped word is still in view once it has slid: half, so it reads as a word cut off. */
+export const BUG_CLIP_VISIBLE = 0.5;
+/** Lines mock: mono, one line per entry. */
+const BUG_LINE_MAX_PX = 40;
+export const BUG_LINE_LH = 1.35;
+export const BUG_LINE_GAP_PX = 10;
+/** The cross before the wrong line, in ems of the line, and its gap to the text. */
+export const BUG_MARK_EM = 0.9;
+export const BUG_MARK_GAP_PX = 16;
+/**
+ * The sticker: one size in both aspects, so its box — which the panels'
+ * height budget reserves below them — is known before any type is solved.
+ * 40 px clears the 34 px floor with the tilt's soft edges to spare.
+ */
+export const BUG_STICKER_PX = 40;
+export const BUG_STICKER_TILT_DEG = -4;
+/**
+ * The sticker straddles the anchor panel's bottom edge near its right
+ * corner: its top this far above the edge, its right end this far past the
+ * panel's side. 16 px keeps the tilted sticker, at its bump peak, inside
+ * the panel's 41 px of padding and border — off the mock's content, so it
+ * never covers the fault it is commenting on (asserted in fit.test.ts).
+ */
+const BUG_STICKER_TUCK_PX = 16;
+const BUG_STICKER_OVERHANG_PX = 24;
+/** The `Sticker` primitive's box, mirrored: padding 0.25 / 0.55 em, a 5 px rim, line height 1.1. */
+const STICKER_BORDER_PX = 5;
+
+export interface BugRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface BugCardMetrics {
+  aspect: BugAspect;
+  /** Text panel left and mock right (16:9 with a mock), or the text panel alone, centred. */
+  mode: "split" | "single";
+  marginPx: number;
+  /** Rest boxes in frame pixels; each panel pops about its own centre. */
+  textPanel: BugRect;
+  badgePx: number;
+  /** Pushes the badge down when a headline line is taller than it… */
+  badgeOffsetPx: number;
+  /** …or the headline down when the badge is taller, so the two share a centre line. */
+  headOffsetPx: number;
+  headPx: number;
+  headLines: number;
+  headWordsFit: boolean;
+  /** 0 when there is no sub. */
+  subPx: number;
+  subLines: number;
+  subWordsFit: boolean;
+  /** Null when the mock is not drawn (`bugMockVisible`). */
+  mockPanel: BugRect | null;
+  /** `mockWrong` as drawn (`bugWrongIndex`); null when nothing is marked. */
+  wrongIndex: number | null;
+  /** Caption mock; 0 / empty otherwise. */
+  capPx: number;
+  capStrokePx: number;
+  capWordGapPx: number;
+  /** Entry indices per row, blanks left out; rows are drawn as laid out here, never re-wrapped. */
+  capRows: number[][];
+  /** Per entry: it fits a row, so it is drawn unbroken. */
+  capUnitFits: boolean[];
+  /**
+   * The clipped fault's row: the wrong word and those after it, sliding
+   * right until half the wrong word is past the panel's edge. Drawn as a
+   * row this wide whose free space a spacer before the wrong word grows
+   * into (`flexGrow` = the slide's progress), so the word's END position is
+   * set from the panel's edge, which is exact, and not from the words before
+   * it, which this model can only over-measure: the first clipped still,
+   * which slid by a modelled offset, left "migratio" of "migration" in view.
+   * 0 when there is no clipped fault.
+   */
+  clipRowWidthPx: number;
+  /** The row `clipRowWidthPx` applies to; -1 when there is none. */
+  clipRow: number;
+  /** Lines mock; 0 / empty otherwise. */
+  linePx: number;
+  /** Per line: it fits the panel unwrapped. */
+  lineFits: boolean[];
+  markPx: number;
+  /** Space before every line for the cross, so the lines stay aligned; 0 when nothing is marked. */
+  gutterPx: number;
+  /** Content height inside each panel (centred in it), for the sticker's clearance check. */
+  textContentPx: number;
+  mockContentPx: number;
+  /** The sticker's centre and unrotated box; null without a sticker. */
+  sticker: { cx: number; cy: number; w: number; h: number; sizePx: number } | null;
+  blockWidthPx: number;
+  blockHeightPx: number;
+}
+
+/** Caption entries laid out in rows of whole words (the `wrapLines` rule, one entry per unit). */
+function bugCaptionLayout(
+  units: readonly string[],
+  capPx: number,
+  innerW: number,
+  clipEdgePx: number,
+  wrong: number | null,
+  clipped: boolean,
+): {
+  rows: number[][];
+  visualRows: number;
+  unitFits: boolean[];
+  allFit: boolean;
+  /** The clipped row, wrong word and all, fits inside the panel before it slides. */
+  runFits: boolean;
+  clipRowWidthPx: number;
+  clipRow: number;
+} {
+  // Rounded as the component rounds it (`capWordGapPx`), so a row's sum is the drawn one.
+  const gap = Math.round(BUG_CAP_WORD_GAP_EM * capPx);
+  const width = (u: string) => ctaDisplayWidthEm(u) * capPx;
+  const unitFits = units.map((u) => width(u) <= innerW);
+  const rows: number[][] = [];
+  let cur: number[] = [];
+  let used = 0;
+  let allFit = true;
+  let clipRow = -1;
+  let runPx = 0;
+  const runOff = clipped && wrong !== null;
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i] ?? "";
+    if (u.trim().length === 0) continue;
+    const w = width(u);
+    if (runOff && i >= wrong) {
+      // The clipped fault: from the wrong word on, the caption stays on one
+      // row and runs past the panel's edge, the way a caption that is too
+      // long for the frame does. The wrong word starts a new row only when
+      // the one it would join has no room left to show half of it.
+      if (i === wrong && cur.length > 0 && clipEdgePx - (used + gap) < BUG_CLIP_VISIBLE * w) {
+        rows.push(cur);
+        cur = [];
+        used = 0;
+      }
+      if (i === wrong) {
+        clipRow = rows.length;
+        // Settled, the wrong word's left edge is `BUG_CLIP_VISIBLE` of it
+        // short of the edge, and the words after it follow at their gaps.
+        runPx = clipEdgePx + (1 - BUG_CLIP_VISIBLE) * w;
+      } else {
+        runPx += gap + w;
+      }
+      used = cur.length > 0 ? used + gap + w : w;
+      cur.push(i);
+      continue;
+    }
+    if (!unitFits[i]) {
+      // Wider than a row even alone: it takes rows of its own and breaks
+      // inside them (`wrapLines` counts them), rather than leaving the panel.
+      allFit = false;
+      if (cur.length > 0) rows.push(cur);
+      rows.push([i]);
+      cur = [];
+      used = 0;
+      continue;
+    }
+    if (cur.length === 0) {
+      cur = [i];
+      used = w;
+    } else if (used + gap + w <= innerW) {
+      cur.push(i);
+      used += gap + w;
+    } else {
+      rows.push(cur);
+      cur = [i];
+      used = w;
+    }
+  }
+  if (cur.length > 0) rows.push(cur);
+  const clipRowUnits = clipRow >= 0 ? (rows[clipRow] ?? []) : [];
+  const runFits =
+    clipRowUnits.reduce((a, i, j) => a + (j > 0 ? gap : 0) + width(units[i] ?? ""), 0) <= innerW;
+  let visualRows = 0;
+  for (const row of rows) {
+    const only = row.length === 1 ? row[0]! : -1;
+    visualRows +=
+      only >= 0 && !unitFits[only] && !(runOff && only >= wrong!)
+        ? wrapLines(units[only] ?? "", capPx, innerW, ctaDisplayWidthEm).lines
+        : 1;
+  }
+  return { rows, visualRows, unitFits, allFit, runFits, clipRowWidthPx: Math.ceil(runPx), clipRow };
+}
+
+/**
+ * BugCard's layout, solved against the whole frame (it is `fullFrame`), ONE
+ * model for the component and `estimateHeightPx` (the `cardRowMetrics`
+ * rule), with the same reserves: the 100 px margin at the short edge, the
+ * pop's overshoot around each panel, and the sticker's bump.
+ *
+ * 16:9 with a mock: two panels of one width side by side, as tall as the
+ * taller one, so they read as a pair. Otherwise the text panel alone,
+ * centred, as wide as its headline at 72 px between 640 px and the room.
+ * The headline's size comes down from 72 until it takes two lines with no
+ * word broken and the panel fits the height left after the sticker; the
+ * sub-line's from 48 (never above 0.75 of the headline) until it takes two.
+ * The caption's from 64 until its words fill at most two rows; the code
+ * lines' from 40 until each fits unwrapped. Below the floors nothing
+ * shrinks further: a line wraps, a word too long for its row breaks.
+ *
+ * The sticker straddles the bottom edge of the mock (or of the text panel
+ * when there is no mock) near its right corner, pulled in where its peak
+ * would reach the margin. Widths use `ctaDisplayWidthEm`, which charges M
+ * and W their real width: a caption word is one unbroken unit, the case
+ * where CardRow's flat 0.74 under-measured (CtaCard's comment-dense still).
+ */
+export function bugCardMetrics(p: BugCardInput, widthPx: number, heightPx: number): BugCardMetrics {
+  const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
+  const aspect = bugAspect(widthPx, finiteH);
+  const showMock = bugMockVisible(p, aspect);
+  const mode: BugCardMetrics["mode"] = showMock ? "split" : "single";
+  const wrongIndex = showMock ? bugWrongIndex(p) : null;
+  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const reserve = BUG_PEAK_SCALE - 1;
+  const availW = widthPx - 2 * marginPx;
+  const availH = finiteH - 2 * marginPx;
+  const chromeX = 2 * (CARD_BORDER_PX + CARD_PAD_X_PX);
+  const chromeY = 2 * (CARD_BORDER_PX + CARD_PAD_Y_PX);
+  const sub = p.sub ? p.sub : null;
+
+  // The sticker's box first: the panels' height budget reserves what of it
+  // hangs below them.
+  const stickerText = p.sticker ? p.sticker.toUpperCase() : null;
+  const sPx = BUG_STICKER_PX;
+  const sW = stickerText
+    ? Math.ceil(ctaDisplayWidthEm(stickerText) * sPx + 2 * Math.round(sPx * 0.55) + 2 * STICKER_BORDER_PX)
+    : 0;
+  const sH = stickerText ? Math.ceil(sPx * 1.1 + 2 * Math.round(sPx * 0.25) + 2 * STICKER_BORDER_PX) : 0;
+  const tilt = (Math.abs(BUG_STICKER_TILT_DEG) * Math.PI) / 180;
+  // The tilted box's bounds at the bump's peak, about its centre.
+  const sPeakW = (sW * Math.cos(tilt) + sH * Math.sin(tilt)) * BUG_STICKER_PEAK_SCALE;
+  const sPeakH = (sW * Math.sin(tilt) + sH * Math.cos(tilt)) * BUG_STICKER_PEAK_SCALE;
+  const stickerHang = stickerText ? -BUG_STICKER_TUCK_PX + sH / 2 + sPeakH / 2 : 0;
+  const maxPanelH = (availH - Math.max(0, stickerHang)) / (1 + reserve);
+
+  // Panel width.
+  let panelW: number;
+  if (mode === "split") {
+    // Outer edges carry half the pop's growth each; the gap holds one panel's.
+    panelW = Math.floor((availW - BUG_PANEL_GAP_PX) / (2 + reserve));
+  } else {
+    const maxW = Math.floor(Math.min(BUG_SINGLE_MAX_W, availW / (1 + reserve)));
+    const badgeBig = Math.max(BUG_BADGE_MIN_PX, Math.round(BUG_HEAD_MAX_PX * BUG_BADGE_TO_HEAD));
+    const headNatural = ctaDisplayWidthEm(p.headline) * BUG_HEAD_MAX_PX;
+    const subNatural = sub ? ctaDisplayWidthEm(sub) * BUG_SUB_MAX_PX : 0;
+    const natural = Math.ceil(Math.max(headNatural, subNatural)) + badgeBig + BUG_BADGE_GAP_PX + chromeX;
+    panelW = Math.min(maxW, Math.max(Math.min(BUG_SINGLE_MIN_W, maxW), natural));
+  }
+  const innerW = panelW - chromeX;
+
+  // The text panel.
+  const textAt = (headPx: number) => {
+    const badgePx = Math.max(BUG_BADGE_MIN_PX, Math.round(headPx * BUG_BADGE_TO_HEAD));
+    const colW = innerW - badgePx - BUG_BADGE_GAP_PX;
+    const head = wrapLines(p.headline, headPx, colW, ctaDisplayWidthEm);
+    let subPx = 0;
+    let subWrap = { lines: 0, wordsFit: true };
+    if (sub) {
+      subPx = Math.max(BUG_TEXT_MIN_PX, Math.min(BUG_SUB_MAX_PX, Math.round(headPx * BUG_SUB_TO_HEAD)));
+      subWrap = wrapLines(sub, subPx, colW, ctaDisplayWidthEm);
+      while (subPx > BUG_TEXT_MIN_PX && !(subWrap.wordsFit && subWrap.lines <= BUG_MAX_LINES)) {
+        subPx -= 1;
+        subWrap = wrapLines(sub, subPx, colW, ctaDisplayWidthEm);
+      }
+    }
+    const lineH = headPx * BUG_HEAD_LH;
+    const badgeOffsetPx = Math.max(0, Math.round((lineH - badgePx) / 2));
+    const headOffsetPx = Math.max(0, Math.round((badgePx - lineH) / 2));
+    const colH =
+      headOffsetPx +
+      Math.max(1, head.lines) * lineH +
+      (subWrap.lines > 0 ? BUG_SUB_GAP_PX + subWrap.lines * subPx * BUG_SUB_LH : 0);
+    const contentPx = Math.ceil(Math.max(badgeOffsetPx + badgePx, colH));
+    const h = chromeY + contentPx;
+    const fits = head.wordsFit && head.lines <= BUG_MAX_LINES && h <= maxPanelH;
+    return { badgePx, badgeOffsetPx, headOffsetPx, head, subPx, subWrap, contentPx, h, fits };
+  };
+  let headPx = BUG_HEAD_MAX_PX;
+  let text = textAt(headPx);
+  while (!text.fits && headPx > BUG_TEXT_MIN_PX) {
+    headPx -= 1;
+    text = textAt(headPx);
+  }
+
+  // The mock panel.
+  let capPx = 0;
+  let cap: ReturnType<typeof bugCaptionLayout> = {
+    rows: [],
+    visualRows: 0,
+    unitFits: [],
+    allFit: true,
+    runFits: true,
+    clipRowWidthPx: 0,
+    clipRow: -1,
+  };
+  let linePx = 0;
+  let lineFits: boolean[] = [];
+  let markPx = 0;
+  let gutterPx = 0;
+  let mockContentPx = 0;
+  if (showMock && p.mock === "caption") {
+    const clipEdgePx = innerW + CARD_PAD_X_PX;
+    const capAt = (px: number, maxRows: number) => {
+      const lay = bugCaptionLayout(p.mockLines, px, innerW, clipEdgePx, wrongIndex, p.mockFault === "clipped");
+      const contentPx = Math.ceil(
+        lay.visualRows * px * BUG_CAP_LH + Math.max(0, lay.visualRows - 1) * BUG_CAP_ROW_GAP_PX,
+      );
+      const fits = lay.allFit && lay.runFits && lay.visualRows <= maxRows && chromeY + contentPx <= maxPanelH;
+      return { lay, contentPx, fits };
+    };
+    capPx = BUG_CAP_MAX_PX;
+    let solved = capAt(capPx, 1);
+    while (!solved.fits && capPx > BUG_CAP_ONE_ROW_MIN_PX) {
+      capPx -= 1;
+      solved = capAt(capPx, 1);
+    }
+    if (!solved.fits) {
+      capPx = BUG_CAP_MAX_PX;
+      solved = capAt(capPx, BUG_CAP_MAX_ROWS);
+      while (!solved.fits && capPx > BUG_TEXT_MIN_PX) {
+        capPx -= 1;
+        solved = capAt(capPx, BUG_CAP_MAX_ROWS);
+      }
+    }
+    cap = solved.lay;
+    mockContentPx = solved.contentPx;
+  } else if (showMock && p.mock === "lines") {
+    const linesAt = (px: number) => {
+      const mark = Math.round(px * BUG_MARK_EM);
+      const gutter = wrongIndex !== null ? mark + BUG_MARK_GAP_PX : 0;
+      const textW = innerW - gutter;
+      const rows = p.mockLines.map((l) => Math.max(1, Math.ceil((monoWidthEm(l) * px) / textW)));
+      const n = rows.length;
+      const contentPx = Math.ceil(
+        rows.reduce((a, r) => a + r, 0) * px * BUG_LINE_LH + Math.max(0, n - 1) * BUG_LINE_GAP_PX,
+      );
+      const fits = rows.every((r) => r === 1) && chromeY + contentPx <= maxPanelH;
+      return { mark, gutter, rows, contentPx, fits };
+    };
+    linePx = BUG_LINE_MAX_PX;
+    let solved = linesAt(linePx);
+    while (!solved.fits && linePx > BUG_MONO_MIN_PX) {
+      linePx -= 1;
+      solved = linesAt(linePx);
+    }
+    lineFits = solved.rows.map((r) => r === 1);
+    markPx = solved.mark;
+    gutterPx = solved.gutter;
+    mockContentPx = solved.contentPx;
+  }
+
+  const panelH = Math.ceil(Math.max(text.h, showMock ? chromeY + mockContentPx : 0));
+  const blockWidthPx = mode === "split" ? 2 * panelW + BUG_PANEL_GAP_PX : panelW;
+  const x0 = Math.round((widthPx - blockWidthPx) / 2);
+  // Centre the union of the panels at their pop peak and the sticker at its bump peak.
+  const growY = (reserve / 2) * panelH;
+  const below = Math.max(growY, stickerHang);
+  const y = Math.round((finiteH - (growY + panelH + below)) / 2 + growY);
+  const textPanel: BugRect = { x: x0, y, w: panelW, h: panelH };
+  const mockPanel: BugRect | null = showMock
+    ? { x: x0 + panelW + BUG_PANEL_GAP_PX, y, w: panelW, h: panelH }
+    : null;
+
+  let sticker: BugCardMetrics["sticker"] = null;
+  if (stickerText) {
+    const anchor = mockPanel ?? textPanel;
+    const desired = anchor.x + anchor.w + BUG_STICKER_OVERHANG_PX - sW / 2;
+    const cx = Math.max(
+      marginPx + sPeakW / 2,
+      Math.min(widthPx - marginPx - sPeakW / 2, desired),
+    );
+    const cy = anchor.y + anchor.h - BUG_STICKER_TUCK_PX + sH / 2;
+    sticker = { cx: Math.floor(cx), cy: Math.round(cy), w: sW, h: sH, sizePx: sPx };
+  }
+
+  return {
+    aspect,
+    mode,
+    marginPx,
+    textPanel,
+    badgePx: text.badgePx,
+    badgeOffsetPx: text.badgeOffsetPx,
+    headOffsetPx: text.headOffsetPx,
+    headPx,
+    headLines: text.head.lines,
+    headWordsFit: text.head.wordsFit,
+    subPx: text.subPx,
+    subLines: text.subWrap.lines,
+    subWordsFit: text.subWrap.wordsFit,
+    mockPanel,
+    wrongIndex,
+    capPx,
+    capStrokePx: capPx > 0 ? Math.round(capPx * BUG_CAP_STROKE_EM) : 0,
+    capWordGapPx: capPx > 0 ? Math.round(capPx * BUG_CAP_WORD_GAP_EM) : 0,
+    capRows: cap.rows,
+    capUnitFits: cap.unitFits,
+    clipRowWidthPx: cap.clipRowWidthPx,
+    clipRow: cap.clipRow,
+    linePx,
+    lineFits,
+    markPx,
+    gutterPx,
+    textContentPx: text.contentPx,
+    mockContentPx,
+    sticker,
+    blockWidthPx,
+    blockHeightPx: panelH,
   };
 }

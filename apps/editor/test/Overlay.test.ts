@@ -107,6 +107,27 @@ describe("CardRow cards — the card-N id family (§161, plan Task 4)", () => {
   });
 });
 
+describe("BugCard mock entries — the mock-N id family (§161, plan Task 6)", () => {
+  const props = { number: 1, headline: "Captions drift", mock: "caption", mockLines: ["the", "raw", "tkae"] };
+
+  it("is one of the dynamic ids; the top-level `mock` enum is not", () => {
+    expect(DYNAMIC_ID.test("mock-0")).toBe(true);
+    expect(DYNAMIC_ID.test("mock")).toBe(false);
+  });
+
+  it("reads and writes one entry of mockLines, leaving the rest alone", () => {
+    expect(elementTextOf("mock-2", props)).toBe("tkae");
+    expect(elementTextOf("mock-3", props)).toBeNull();
+    expect(buildArrayPatch("mock-2", props, "take")).toEqual({ mockLines: ["the", "raw", "take"] });
+    expect(buildArrayPatch("mock-3", props, "x")).toBeNull();
+  });
+
+  it("truncates to the schema's 32 characters", () => {
+    const patch = buildArrayPatch("mock-0", props, "m".repeat(40))!;
+    expect((patch.mockLines as string[])[0]).toBe("m".repeat(32));
+  });
+});
+
 describe("elementTextOf — the panel's read direction (R12 §49)", () => {
   it("reads top-level string props directly, and refuses non-strings", () => {
     expect(elementTextOf("title", { title: "SHIP IT" })).toBe("SHIP IT");

@@ -267,6 +267,13 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
       // is left out — a channel name is said, if at all, as an aside.
       texts = fields("text", "keyword");
       break;
+    case "BugCard":
+      // One card on its own timeline, no reveal items (plan Task 6): it
+      // enters on the headline or its consequence, whichever is spoken
+      // first. The sticker is a closing aside, and the mock's words are the
+      // failure shown, so neither marks where the card starts.
+      texts = fields("headline", "sub");
+      break;
     case "StatCard":
       texts = fields("label", "value");
       break;

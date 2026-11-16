@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import {
+  BugCardProps,
   CardRowProps,
   CtaCardProps,
   SCENE_REGISTRY,
@@ -157,7 +158,12 @@ describe("scene registry", () => {
   describe("script-only components (§161, plan Task 4)", () => {
     it("the planner list is still the nine; the script list appends the cards", () => {
       expect(plannerComponentIds()).toEqual(PlannerComponentIdSchema.options);
-      expect(scriptComponentIds()).toEqual([...PlannerComponentIdSchema.options, "CardRow", "CtaCard"]);
+      expect(scriptComponentIds()).toEqual([
+        ...PlannerComponentIdSchema.options,
+        "CardRow",
+        "CtaCard",
+        "BugCard",
+      ]);
       // The id lists and the registry agree, as the planner pair does.
       expect(scriptComponentIds()).toEqual(ScriptComponentIdSchema.options);
       expect(SceneComponentIdSchema.options).toEqual([...ScriptComponentIdSchema.options, "ClipScene"]);
@@ -226,6 +232,50 @@ describe("scene registry", () => {
       );
       expect(
         CtaCardProps.safeParse({ action: "link", text: "x".repeat(40), keyword: "k".repeat(16) }).success,
+      ).toBe(true);
+    });
+
+    it("BugCard is a full-frame card with no scrim, fillable and swappable (plan Task 6)", () => {
+      const meta = SCENE_REGISTRY.BugCard;
+      expect(meta.scriptOnly).toBe(true);
+      expect(meta.scrim).toBe(false);
+      expect(meta.fullFrame).toBe(true);
+      expect(meta.plannerSelectable).toBeUndefined();
+      expect(meta.defaultLayout).toBe("full-bleed");
+      expect(meta.altLayouts).toEqual([]);
+      expect(meta.defaultProps).toEqual({ number: 1, headline: "The problem" });
+      expect(BugCardProps.safeParse(meta.defaultProps).success).toBe(true);
+      expect(PlannerComponentIdSchema.safeParse("BugCard").success).toBe(false);
+      expect(JSON.stringify(z.toJSONSchema(BeatSheetSchema))).not.toContain("BugCard");
+    });
+
+    it("BugCardProps: number 1-9, headline 1-40, sub 40, up to four 32-char mock entries, sticker 14", () => {
+      expect(BugCardProps.safeParse({ number: 0, headline: "A" }).success).toBe(false);
+      expect(BugCardProps.safeParse({ number: 1.5, headline: "A" }).success).toBe(false);
+      expect(BugCardProps.safeParse({ number: 1, headline: "" }).success).toBe(false);
+      expect(BugCardProps.safeParse({ number: 1, headline: "x".repeat(41) }).success).toBe(false);
+      expect(BugCardProps.safeParse({ number: 1, headline: "A", sub: "s".repeat(41) }).success).toBe(false);
+      expect(BugCardProps.safeParse({ number: 1, headline: "A", mockLines: ["a", "b", "c", "d", "e"] }).success).toBe(
+        false,
+      );
+      expect(BugCardProps.safeParse({ number: 1, headline: "A", mockFault: "hidden" }).success).toBe(false);
+      expect(BugCardProps.safeParse({ number: 1, headline: "A", sticker: "k".repeat(15) }).success).toBe(false);
+      expect(BugCardProps.parse({ number: 3, headline: "A" })).toMatchObject({
+        mock: "none",
+        mockLines: [],
+        mockFault: "struck",
+      });
+      expect(
+        BugCardProps.safeParse({
+          number: 9,
+          headline: "x".repeat(40),
+          sub: "s".repeat(40),
+          mock: "lines",
+          mockLines: Array.from({ length: 4 }, () => "l".repeat(32)),
+          mockWrong: 3,
+          mockFault: "clipped",
+          sticker: "k".repeat(14),
+        }).success,
       ).toBe(true);
     });
 

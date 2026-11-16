@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { SCENE_REGISTRY, SceneComponentIdSchema, type SceneComponentId } from "@ossclip/core";
 import {
+  BUG_PANEL_GAP_PX,
+  BUG_PEAK_SCALE,
+  BUG_STICKER_PEAK_SCALE,
+  BUG_STICKER_TILT_DEG,
   CARD_PEAK_SCALE,
   CTA_BUTTON_PEAK_SCALE,
   CTA_PEAK_SCALE,
@@ -8,6 +12,8 @@ import {
   MAX_SCALE,
   PATTERN_MARGIN_PX,
   bulletMetrics,
+  bugCardMetrics,
+  bugMockVisible,
   cardRowMetrics,
   ctaCardMetrics,
   ctaContent,
@@ -85,6 +91,28 @@ const CTA_DENSE = {
   channel: "THE PRAGMATIC ENGINEER!!",
 } as const;
 
+/**
+ * BugCard at every cap: headline and sub at 40, four mock entries at 32 (the
+ * most `mockLines` holds), the last one wrong, and a 14-character sticker —
+ * in capitals, the widest the model charges. `lines` is the DENSE entry; the
+ * suite below runs both caption faults at the same caps.
+ */
+const BUG_DENSE = {
+  number: 9,
+  headline: "WHISPER DROPS THE LAST WORD OF EVERY CUT",
+  sub: "AND THE ONE IT DROPS IS THE ONE YOU NEED",
+  mock: "lines",
+  mockLines: [
+    "CONST PLAN = AWAIT AGENT.PLAN();",
+    "FOR (CONST STEP OF PLAN.STEPS) {",
+    "  AWAIT RUN(STEP, { RETRY: 0 });",
+    "} // NO RETRY, NO LOG, NO TRACE!",
+  ],
+  mockWrong: 3,
+  mockFault: "struck",
+  sticker: "WATCH THE EDGE",
+} as const;
+
 /** Sparse content — the §23 complaint: a thin strip in a sea of black. */
 const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   TitleCard: { title: "SHIP IT" },
@@ -98,6 +126,7 @@ const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   BulletList: { items: ["AI HARNESS", "CONTEXT ENGINEERING"] },
   CardRow: { cards: [{ text: "Draft" }, { text: "Review" }] },
   CtaCard: { action: "subscribe", text: "Subscribe" },
+  BugCard: { number: 1, headline: "Captions drift", mock: "none", mockLines: [], mockFault: "struck" },
   // No copy to be sparse or dense with: a clip's props are a file and a length.
   ClipScene: { src: "clips/a.webm", durationSec: 4.6 },
 };
@@ -144,6 +173,7 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
   },
   CardRow: { cards: CARD_ROW_DENSE, highlight: 2 },
   CtaCard: CTA_DENSE,
+  BugCard: BUG_DENSE,
   ClipScene: { src: "clips/a.webm", durationSec: 15 },
 };
 
@@ -782,5 +812,193 @@ describe("ctaContent (§161, plan Task 5)", () => {
       fieldId: "keyword",
       channel: null,
     });
+  });
+});
+
+describe("BugCard metrics (§161, plan Task 6 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  type Input = Parameters<typeof bugCardMetrics>[0];
+  const base: Input = { number: 1, headline: "Captions drift", mock: "none", mockLines: [], mockFault: "struck" };
+  const CAPTION_WORDS = ["Claude", "wrote", "the", "migration"];
+  const ALL: [string, Input][] = [
+    ["sparse, no mock", base],
+    ["sparse caption, struck", { ...base, mock: "caption", mockLines: ["Ask", "Cloud", "to", "refactor"], mockWrong: 1 }],
+    [
+      "caption, clipped",
+      { ...base, mock: "caption", mockLines: CAPTION_WORDS, mockWrong: 3, mockFault: "clipped", sticker: "WATCH THE EDGE" },
+    ],
+    ["dense lines", { ...BUG_DENSE, mockLines: [...BUG_DENSE.mockLines] }],
+    ["dense caption, struck", { ...BUG_DENSE, mock: "caption", mockLines: [...BUG_DENSE.mockLines] }],
+    [
+      "dense caption, clipped",
+      { ...BUG_DENSE, mock: "caption", mockLines: [...BUG_DENSE.mockLines], mockFault: "clipped" },
+    ],
+    [
+      "dense caption, clipped mid-row",
+      { ...BUG_DENSE, mock: "caption", mockLines: [...BUG_DENSE.mockLines], mockFault: "clipped", mockWrong: 1 },
+    ],
+    ["dense, no mock", { ...BUG_DENSE, mock: "none" }],
+    ["dense, no sticker", { ...BUG_DENSE, sticker: undefined }],
+  ];
+  const tilt = (Math.abs(BUG_STICKER_TILT_DEG) * Math.PI) / 180;
+  const stickerPeak = (s: { w: number; h: number }) => ({
+    w: (s.w * Math.cos(tilt) + s.h * Math.sin(tilt)) * BUG_STICKER_PEAK_SCALE,
+    h: (s.w * Math.sin(tilt) + s.h * Math.cos(tilt)) * BUG_STICKER_PEAK_SCALE,
+  });
+
+  it("BUG_PEAK_SCALE covers popScale's overshoot; the sticker's peak is bump's", () => {
+    let peak = 0;
+    for (let t = 0; t <= 0.35; t += 0.0005) peak = Math.max(peak, popScale(t));
+    expect(peak).toBeLessThanOrEqual(BUG_PEAK_SCALE);
+    expect(bump(0.15)).toBeCloseTo(BUG_STICKER_PEAK_SCALE, 10);
+  });
+
+  it("keeps 100 px clear on every side on EVERY frame: each panel at its pop peak, the sticker at its bump", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        expect(m.marginPx).toBe(PATTERN_MARGIN_PX);
+        for (const r of [m.textPanel, m.mockPanel]) {
+          if (r === null) continue;
+          const gx = ((BUG_PEAK_SCALE - 1) / 2) * r.w;
+          const gy = ((BUG_PEAK_SCALE - 1) / 2) * r.h;
+          expect(r.x - gx, `${f.name} ${label}: left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(r.x + r.w + gx, `${f.name} ${label}: right`).toBeLessThanOrEqual(f.w - PATTERN_MARGIN_PX);
+          expect(r.y - gy, `${f.name} ${label}: top`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(r.y + r.h + gy, `${f.name} ${label}: bottom`).toBeLessThanOrEqual(f.h - PATTERN_MARGIN_PX);
+        }
+        if (m.sticker !== null) {
+          const s = stickerPeak(m.sticker);
+          expect(m.sticker.cx - s.w / 2, `${f.name} ${label}: sticker left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(m.sticker.cx + s.w / 2, `${f.name} ${label}: sticker right`).toBeLessThanOrEqual(
+            f.w - PATTERN_MARGIN_PX,
+          );
+          expect(m.sticker.cy + s.h / 2, `${f.name} ${label}: sticker bottom`).toBeLessThanOrEqual(
+            f.h - PATTERN_MARGIN_PX,
+          );
+        }
+      }
+    }
+  });
+
+  it("the panels never touch, even with one at its pop peak", () => {
+    for (const [label, p] of ALL) {
+      const m = bugCardMetrics(p, 1920, 1080);
+      if (m.mockPanel === null) continue;
+      const gap = m.mockPanel.x - (m.textPanel.x + m.textPanel.w);
+      expect(gap).toBe(BUG_PANEL_GAP_PX);
+      expect(gap - ((BUG_PEAK_SCALE - 1) / 2) * m.mockPanel.w, label).toBeGreaterThan(0);
+    }
+  });
+
+  it("the sticker overlaps its panel's bottom edge but never its content, so the fault stays in view", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        if (m.sticker === null) continue;
+        const anchor = m.mockPanel ?? m.textPanel;
+        const content = m.mockPanel !== null ? m.mockContentPx : m.textContentPx;
+        const contentBottom = anchor.y + (anchor.h + content) / 2;
+        const s = stickerPeak(m.sticker);
+        expect(m.sticker.cy - s.h / 2, `${f.name} ${label}`).toBeGreaterThanOrEqual(contentBottom);
+        expect(m.sticker.cy - m.sticker.h / 2, `${f.name} ${label}: overlaps the edge`).toBeLessThan(
+          anchor.y + anchor.h,
+        );
+        // Over the right half of the panel: its lower right corner.
+        expect(m.sticker.cx, `${f.name} ${label}`).toBeGreaterThan(anchor.x + anchor.w / 2);
+      }
+    }
+  });
+
+  it("never sets type under the floors (34 px, 26 px mono), and schema-max copy keeps whole words", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        expect(m.headPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        if (p.sub) expect(m.subPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        // NumberBadge sets its numeral at 0.58 of the disc.
+        expect(Math.round(m.badgePx * 0.58), `${f.name} ${label}: badge`).toBeGreaterThanOrEqual(34);
+        if (m.sticker !== null) expect(m.sticker.sizePx).toBeGreaterThanOrEqual(34);
+        if (m.capPx > 0) expect(m.capPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        if (m.linePx > 0) expect(m.linePx, `${f.name} ${label}`).toBeGreaterThanOrEqual(26);
+        expect(m.headWordsFit, `${f.name} ${label}: headline`).toBe(true);
+        expect(m.subWordsFit, `${f.name} ${label}: sub`).toBe(true);
+        expect(m.headLines, `${f.name} ${label}`).toBeLessThanOrEqual(2);
+        expect(m.subLines, `${f.name} ${label}`).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it("draws the mock in 16:9 only, beside the text panel at one height", () => {
+    const wide = bugCardMetrics(ALL[3]![1], 1920, 1080);
+    expect(wide.mode).toBe("split");
+    expect(wide.mockPanel!.h).toBe(wide.textPanel.h);
+    expect(wide.mockPanel!.x).toBeGreaterThan(wide.textPanel.x);
+    const tall = bugCardMetrics(ALL[3]![1], 1080, 1920);
+    expect(tall.mode).toBe("single");
+    expect(tall.mockPanel).toBeNull();
+    // Centred.
+    expect(tall.textPanel.x + tall.textPanel.w / 2).toBeCloseTo(540, 0);
+  });
+
+  it("schema-max code lines fit unwrapped, with the cross's gutter only when a line is marked", () => {
+    const m = bugCardMetrics(ALL[3]![1], 1920, 1080);
+    expect(m.lineFits).toEqual([true, true, true, true]);
+    expect(m.gutterPx).toBeGreaterThan(0);
+    expect(bugCardMetrics({ ...ALL[3]![1], mockWrong: undefined }, 1920, 1080).gutterPx).toBe(0);
+  });
+
+  it("a short caption stays on one row; schema-max entries take two at most above the floor", () => {
+    const sparse = bugCardMetrics(ALL[1]![1], 1920, 1080);
+    expect(sparse.capRows).toEqual([[0, 1, 2, 3]]);
+    // Above the one-row floor (40), and as big as one row allows.
+    expect(sparse.capPx).toBeGreaterThan(40);
+    expect(bugCardMetrics({ ...ALL[1]![1], mockLines: ["Ask", "Cloud"] }, 1920, 1080).capPx).toBe(64);
+    const dense = bugCardMetrics(ALL[4]![1], 1920, 1080);
+    expect(dense.capRows.length <= 2 || dense.capPx === 34, `${dense.capRows.length} rows at ${dense.capPx}`).toBe(
+      true,
+    );
+    expect(dense.capRows.flat()).toEqual([0, 1, 2, 3]);
+  });
+
+  it("a clipped caption fits whole before the fault, and its row is wider than the panel by half the word", () => {
+    const m = bugCardMetrics(ALL[2]![1], 1920, 1080);
+    expect(m.clipRow).toBe(0);
+    expect(m.capRows).toEqual([[0, 1, 2, 3]]);
+    const innerW = m.mockPanel!.w - 2 * (5 + 40);
+    // The row runs past the inner edge and the padding: the clip edge.
+    expect(m.clipRowWidthPx).toBeGreaterThan(innerW + 40);
+    // Struck captions have no such row.
+    expect(bugCardMetrics(ALL[1]![1], 1920, 1080).clipRow).toBe(-1);
+  });
+
+  it("marks nothing for an absent, out-of-range or blank mockWrong", () => {
+    const p = ALL[1]![1];
+    expect(bugCardMetrics({ ...p, mockWrong: undefined }, 1920, 1080).wrongIndex).toBeNull();
+    expect(bugCardMetrics({ ...p, mockLines: ["a", "b"], mockWrong: 3 }, 1920, 1080).wrongIndex).toBeNull();
+    expect(bugCardMetrics({ ...p, mockLines: ["a", " "], mockWrong: 1 }, 1920, 1080).wrongIndex).toBeNull();
+    expect(bugCardMetrics(p, 1920, 1080).wrongIndex).toBe(1);
+    // Not drawn, so nothing is marked either.
+    expect(bugCardMetrics(p, 1080, 1920).wrongIndex).toBeNull();
+  });
+
+  it("bugMockVisible agrees with the metric's mode", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        expect(m.mockPanel !== null, `${f.name} ${label}`).toBe(
+          bugMockVisible(p, f.w >= f.h ? "16:9" : "9:16"),
+        );
+      }
+    }
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("BugCard")).toBe(true);
+    expect(fitScale("BugCard", DENSE.BugCard, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+    expect(Number.isFinite(estimateHeightPx("BugCard", DENSE.BugCard, 1080))).toBe(true);
   });
 });

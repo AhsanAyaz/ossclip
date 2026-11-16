@@ -17,6 +17,7 @@ import { BulletList } from "./components/BulletList";
 import { ClipScene } from "./components/ClipScene";
 import { CardRow } from "./components/CardRow";
 import { CtaCard } from "./components/CtaCard";
+import { BugCard } from "./components/BugCard";
 import { compensateEdits, type ElementEdits } from "./editable";
 import { easeOutQuad, entranceExitSec } from "./motion";
 import type { RevealTiming } from "./reveal";
@@ -44,6 +45,7 @@ const COMPONENTS: Record<
   BulletList,
   CardRow,
   CtaCard,
+  BugCard,
   ClipScene,
 };
 
