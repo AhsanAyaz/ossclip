@@ -166,6 +166,10 @@ export function estimateHeightPx(
       }
       h += 22 * Math.max(0, windows.length - 1);
       if (str(props.fanOut)) h += 22 + 40 * 1.2;
+      // The badge's upper half rides above the last window, in a margin the
+      // component reserves for it (§161) — only when one is drawn, so every
+      // badge-less terminal keeps the model it always had.
+      if (str(props.badge)) h += TERMINAL_BADGE_RISE_PX;
       return h;
     }
     case "ChatMock": {
@@ -301,7 +305,13 @@ export function estimateMinWidthPx(
         }
       }
       // root padding 60 + window border 4 + body padding 44
-      return longest > 0 ? 108 + longest * 27 * CHAR_W_MONO : 0;
+      const lines = longest > 0 ? 108 + longest * 27 * CHAR_W_MONO : 0;
+      // A badge sits on the last window's title bar, right of its title, so
+      // that bar must hold both (§161) — absent, the floor is the lines'.
+      const badge = str(props.badge);
+      if (!badge) return lines;
+      const last = arr(props.windows).at(-1) as Record<string, unknown> | undefined;
+      return Math.max(lines, terminalBadgeRowMinWidthPx(str(last?.title).length, badge));
     }
     case "StatCard": {
       // The card is a row: label | gap | value. The value is `nowrap`, and the
@@ -2090,4 +2100,37 @@ export function phoneDemoMetrics(p: PhoneDemoInput, widthPx: number, heightPx: n
     blockWidthPx: right - left,
     blockHeightPx: bottom - top,
   };
+}
+
+// ---- TerminalMock badge (§161, plan Task 8) --------------------------------
+
+/** The badge is a `Pill` at the playbook's 34 px pill floor (Global Constraints). */
+export const TERMINAL_BADGE_PX = 34;
+/**
+ * How far the badge rises above the last window: half its height, since it
+ * is centred on the window's top edge to overlap the corner. The component
+ * reserves exactly this as the window's top margin, so the badge never sits
+ * on the window above (or above the graphic's own box) and the model's
+ * height is the drawn one.
+ */
+export const TERMINAL_BADGE_RISE_PX = Math.ceil(pillBoxPx("", false, TERMINAL_BADGE_PX).h / 2);
+/**
+ * How far the badge pokes out past the window's right edge — into the
+ * root's 30 px side padding, never past it, so it stays inside the box the
+ * stage scales and the slot clips.
+ */
+export const TERMINAL_BADGE_OUT_PX = 24;
+
+/**
+ * The narrowest TerminalMock whose last title bar holds its title and the
+ * badge with `TERMINAL_BADGE_OUT_PX` of air between them. Mirrors the
+ * Window title bar: border 2 + padding 20 + three 16 px dots and two 10 px
+ * gaps + the 10 px gap and 10 px margin before a 24 px mono title; then the
+ * badge (`pillBoxPx`, unmarked). Root padding 60 is counted once: the
+ * badge's overhang past the window's right edge equals the air before it,
+ * so the two cancel.
+ */
+function terminalBadgeRowMinWidthPx(titleChars: number, badge: string): number {
+  const titleBar = 2 + 20 + 3 * 16 + 2 * 10 + 10 + 10 + titleChars * 24 * CHAR_W_MONO;
+  return 60 + titleBar + pillBoxPx(badge, false, TERMINAL_BADGE_PX).w;
 }

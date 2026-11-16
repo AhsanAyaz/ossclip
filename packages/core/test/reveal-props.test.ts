@@ -12,6 +12,7 @@ import {
   REVEAL_PROP_KEYS,
   REVEAL_SPEED_DEFAULT,
   SCENE_REGISTRY,
+  SCRIPT_ONLY_PROP_KEYS,
   StrikethroughRevealProps,
   TerminalMockProps,
   llmPropsSchema,
@@ -114,6 +115,31 @@ describe("llmPropsSchema", () => {
   it("is the registry schema verbatim for components without reveal props", () => {
     expect(llmPropsSchema("StatCard")).toBe(SCENE_REGISTRY.StatCard.propsSchema);
   });
+
+  // Plan Task 8 (§161): a script-only prop of a frozen component is offered
+  // to a script run's props call and to nothing else (G6).
+  it("shows TerminalMock's badge only in script mode", () => {
+    expect(JSON.stringify(z.toJSONSchema(llmPropsSchema("TerminalMock")))).not.toContain("badge");
+    expect(JSON.stringify(z.toJSONSchema(llmPropsSchema("TerminalMock", "auto")))).not.toContain(
+      "badge",
+    );
+    const script = JSON.stringify(z.toJSONSchema(llmPropsSchema("TerminalMock", "script")));
+    expect(script).toContain("badge");
+    // Script mode still hides the reveal props — they are never the model's.
+    for (const k of REVEAL_PROP_KEYS) expect(script).not.toContain(`"${k}"`);
+  });
+
+  it("is still the registry schema itself in script mode when nothing is hidden", () => {
+    expect(llmPropsSchema("StatCard", "script")).toBe(SCENE_REGISTRY.StatCard.propsSchema);
+  });
+
+  it("names only real keys of real object schemas as script-only", () => {
+    for (const [id, keys] of Object.entries(SCRIPT_ONLY_PROP_KEYS)) {
+      const schema = SCENE_REGISTRY[id as SceneComponentId].propsSchema;
+      expect(schema, id).toBeInstanceOf(z.ZodObject);
+      for (const k of keys!) expect(k in (schema as z.ZodObject).shape, `${id}.${k}`).toBe(true);
+    }
+  });
 });
 
 describe("scalarPropControls — reveal controls", () => {
@@ -192,5 +218,35 @@ describe("generateScenes never lets the LLM set a reveal prop", () => {
     const { scenes } = await generateScenes(provider, [moment("FlowDiagram")], transcript);
     expect(scenes[0]!.component).toBe("FlowDiagram");
     for (const k of REVEAL_PROP_KEYS) expect(k in scenes[0]!.props).toBe(false);
+  });
+
+  // Plan Task 8: the run's mode decides whether a script-only prop survives.
+  const terminal = { windows: [{ title: "t", lines: ["$ run"] }], badge: "+12 lines" };
+
+  it("drops a TerminalMock badge outside script mode, batch and per-moment", async () => {
+    const batch = replying(() => ({
+      scenes: [0, 1].map((index) => ({ index, props: terminal })),
+    }));
+    const two = await generateScenes(batch, [moment("TerminalMock"), moment("TerminalMock")], transcript);
+    expect(two.scenes.map((s) => "badge" in s.props)).toEqual([false, false]);
+    const one = await generateScenes(replying(() => terminal), [moment("TerminalMock")], transcript);
+    expect("badge" in one.scenes[0]!.props).toBe(false);
+  });
+
+  it("keeps it in script mode, batch and per-moment, and still strips reveal keys", async () => {
+    const batch = replying(() => ({
+      scenes: [0, 1].map((index) => ({ index, props: { ...terminal, ...invented } })),
+    }));
+    const two = await generateScenes(batch, [moment("TerminalMock"), moment("TerminalMock")], transcript, {
+      mode: "script",
+    });
+    for (const scene of two.scenes) {
+      expect(scene.props.badge).toBe("+12 lines");
+      for (const k of REVEAL_PROP_KEYS) expect(k in scene.props).toBe(false);
+    }
+    const one = await generateScenes(replying(() => terminal), [moment("TerminalMock")], transcript, {
+      mode: "script",
+    });
+    expect(one.scenes[0]!.props.badge).toBe("+12 lines");
   });
 });

@@ -18,8 +18,11 @@
  * config (`OSSCLIP_BROWSER` or config.json), else Remotion's downloaded
  * headless shell — what `ossclip produce` and the cover render use.
  *
- * Run: pnpm stills            (every fixture)
- *      pnpm stills StatCard   (that component's fixtures only)
+ * Run: pnpm stills                          (every fixture)
+ *      pnpm stills StatCard                 (that component's fixtures only)
+ *      pnpm stills StatCard --theme default (the default theme, into
+ *                                            __stills__/default/ — plan Task
+ *                                            8's byte-identical classic check)
  */
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +30,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ThemeSchema, loadConfig, lookTheme, stageBundledFonts } from "../packages/core/src/index";
+import { parseStillsArgs, stillsOutDir } from "../packages/renderer/src/stills-args";
 import {
   bundleRenderEntry,
   renderSceneStill,
@@ -36,19 +40,22 @@ import {
 import { STILL_FIXTURES } from "../packages/scenes/test/stills.fixtures";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const OUT_DIR = join(ROOT, "packages", "scenes", "test", "__stills__");
-/** The explainer look's own `bg`: the slate the playbook's shots sit on. */
-const THEME = ThemeSchema.parse({ ...lookTheme("explainer") });
-const BACKGROUND = THEME.bg;
+const STILLS_ROOT = join(ROOT, "packages", "scenes", "test", "__stills__");
 
 async function main(): Promise<void> {
-  const fixtures = selectStillFixtures(STILL_FIXTURES, process.argv[2]);
+  const args = parseStillsArgs(process.argv.slice(2));
+  const outDir = stillsOutDir(STILLS_ROOT, args.look);
+  // The look's own `bg` behind the scene: for the explainer look, the slate
+  // the playbook's shots sit on; for the default look, the default theme's.
+  const theme = ThemeSchema.parse({ ...lookTheme(args.look) });
+  const background = theme.bg;
+  const fixtures = selectStillFixtures(STILL_FIXTURES, args.component);
   // Before the bundle, so a fixture over a copy cap fails in a second.
-  const jobs = stillJobs(fixtures, THEME, BACKGROUND);
+  const jobs = stillJobs(fixtures, theme, background);
   const publicDir = mkdtempSync(join(tmpdir(), "ossclip-stills-"));
   try {
-    stageBundledFonts(THEME, [publicDir]);
-    mkdirSync(OUT_DIR, { recursive: true });
+    stageBundledFonts(theme, [publicDir]);
+    mkdirSync(outDir, { recursive: true });
     const { browserExecutable } = loadConfig();
 
     let t0 = Date.now();
@@ -58,7 +65,7 @@ async function main(): Promise<void> {
 
     for (const job of jobs) {
       t0 = Date.now();
-      const outPath = join(OUT_DIR, job.fileName);
+      const outPath = join(outDir, job.fileName);
       await renderSceneStill(job.props, {
         publicDir,
         serveUrl,
@@ -68,7 +75,7 @@ async function main(): Promise<void> {
       });
       console.log(`✓ ${job.fileName} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     }
-    console.log(`${jobs.length} still(s) → ${OUT_DIR}`);
+    console.log(`${jobs.length} still(s) → ${outDir}`);
   } finally {
     rmSync(publicDir, { recursive: true, force: true });
   }

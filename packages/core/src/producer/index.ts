@@ -438,6 +438,9 @@ async function produceScriptScenes(
   const { scenes, failures } = await generateScenes(provider, moments, transcript, {
     framing: args.framing,
     cut,
+    // The one downstream difference: a script's props call is also offered
+    // the script-only props of the frozen components (§161, plan Task 8).
+    mode: "script",
   });
 
   // A clip scene follows its moment through normalization. Scene ids are

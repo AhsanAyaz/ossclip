@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { z } from "zod/v4";
+import { toJSONSchema, type z } from "zod/v4";
 import type { LlmProvider } from "../src/producer/provider";
 import { MockProvider } from "../src/producer/mock";
 import { BeatSheetSchema, normalizeBeatSheet } from "../src/producer/beats";
@@ -371,6 +371,43 @@ describe("produceScenes with a script", () => {
     // Full frame over the speaker: the registry's own layout.
     expect(result.scenes[0]!.layout).toBe("full-bleed");
     expect(result.beatSheet.moments[0]!.sceneKind).toBe("CardRow");
+  });
+
+  it("offers a script's props call the script-only props, and a run without one does not", async () => {
+    // Plan Task 8 (G6): `badge` is in the TerminalMock schema the provider is
+    // handed only when the run came from a script.
+    const recording = () => {
+      const mock = new MockProvider();
+      const schemas: Record<string, string> = {};
+      const provider: LlmProvider = {
+        name: "rec",
+        usage: mock.usage,
+        async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; schemaName: string }): Promise<T> {
+          schemas[req.schemaName] = JSON.stringify(toJSONSchema(req.schema));
+          return mock.complete(req);
+        },
+      };
+      return { provider, schemas };
+    };
+    const termScript = parseScript("🎬 [TerminalMock] the command\n🗣️ alpha beta gamma");
+    const { aligned: termAligned } = alignCues(termScript, TRANSCRIPT);
+    const scripted = recording();
+    const result = await produceScenes(scripted.provider, {
+      transcript: TRANSCRIPT,
+      outputDuration: 3.6,
+      script: { aligned: termAligned, clips: [] },
+    });
+    expect(result.scenes.map((s) => s.component)).toEqual(["TerminalMock"]);
+    expect(scripted.schemas["TerminalMock_props"]).toContain("badge");
+
+    const auto = recording();
+    await produceScenes(auto.provider, {
+      transcript: TRANSCRIPT,
+      outputDuration: 3.6,
+      forceComponent: "TerminalMock",
+    });
+    expect(auto.schemas["TerminalMock_props"]).toBeDefined();
+    expect(auto.schemas["TerminalMock_props"]).not.toContain("badge");
   });
 
   it("rejects --clip together with --script", async () => {

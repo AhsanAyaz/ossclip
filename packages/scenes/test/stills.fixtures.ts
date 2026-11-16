@@ -236,4 +236,63 @@ export const STILL_FIXTURES: StillFixture[] = [
     },
     atSec: [1.2, 4.5],
   },
+  // StatCard's count-up (plan Task 8). The card's entrance spring settles at
+  // 0.5 s and, in the explainer look, a value `parseCount` accepts counts up
+  // over the next 1.0 s: 1.0 s is half way through the count, 2.0 s is
+  // settled. 0.2 s is mid-entrance, for the classic byte-identical check
+  // (`pnpm stills StatCard --theme default`, before and after the change).
+  {
+    component: "StatCard",
+    name: "count",
+    props: { label: "Lines removed", value: "4,494", caption: "In one refactor" },
+    atSec: [0.2, 1.0, 2.0],
+  },
+  {
+    component: "StatCard",
+    name: "percent",
+    props: { label: "Faster builds", value: "+242%" },
+    atSec: [1.0, 2.0],
+  },
+  // TerminalMock (plan Task 8): two windows and a fan-out, each window with a
+  // typed line — the second after a line that is present from its entrance.
+  // Classic: the legacy stagger (windows at 0 and 6 frames, tail at 16), so
+  // 0.2 s and 0.6 s catch the second window and the tail mid-entrance.
+  // Explainer: window 1 types 0.5-1.25 s, window 2 may not enter before that
+  // typing ends, so 1.5 s has window 2 arriving, 2.0 s has it typing
+  // (1.77-2.3 s) and 4.0 s is settled.
+  {
+    component: "TerminalMock",
+    name: "two-windows",
+    props: {
+      windows: [
+        { title: "agent-01", lines: ["$ ossclip produce talk.mp4", "▸ transcribing…", "✓ done"] },
+        { title: "agent-02", lines: ["# then, to review", "$ ossclip edit talk", "▸ opening the editor…"] },
+      ],
+      fanOut: "OUTPUT ×2",
+    },
+    atSec: [0.2, 0.6, 1.5, 2.0, 4.0],
+  },
+  // The playbook's command shot: one window, the command typed 0.5-1.69 s
+  // (38 characters at 32 cps), the output 0.12 s apart from there, the badge
+  // popping with the tail at 1.93 s. 1.1 s is mid-command; 1.75 s is just
+  // after (caret held, first output line in); 3.0 s is settled.
+  {
+    component: "TerminalMock",
+    name: "typed",
+    props: {
+      windows: [
+        {
+          title: "ossclip",
+          lines: [
+            "$ ossclip produce talk.mp4 --script s.md",
+            "▸ transcribing…",
+            "▸ planning 12 scenes",
+            "✓ done in 41s",
+          ],
+        },
+      ],
+      badge: "+1,568 lines",
+    },
+    atSec: [1.1, 1.75, 3.0],
+  },
 ];

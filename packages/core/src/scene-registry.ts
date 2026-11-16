@@ -146,6 +146,14 @@ export const TerminalMockProps = z.object({
     .max(5),
   /** Fan-out label under the windows ("OUTPUT ×1"). */
   fanOut: z.string().max(20).optional(),
+  /**
+   * A counter tag on the last window's top-right corner ("+1,568 lines"),
+   * the playbook's diff-stat badge (§161, plan Task 8). Optional with no
+   * default, so a scene without one parses to exactly the props it always
+   * had. Script-only for the LLM (`SCRIPT_ONLY_PROP_KEYS`): showing it in a
+   * run without `--script` would change that run's props prompt (G6).
+   */
+  badge: z.string().max(16).optional(),
   ...RevealPropsShape,
 });
 
@@ -576,6 +584,19 @@ export function scriptComponentIds(): ScriptComponentId[] {
 }
 
 /**
+ * Props of the frozen planner components that only a script run's props
+ * call is shown (§161, plan Task 8). The explainer look grew copy slots on
+ * components every run uses; offering them outside script mode would change
+ * the schema text in every props prompt — the byte-identical prompt G6
+ * freezes (`llm-props-schemas.pre-reveal.json`). Only the LLM's view is
+ * narrowed: the registry schema keeps them, so a scene that has one parses
+ * and renders it in any run.
+ */
+export const SCRIPT_ONLY_PROP_KEYS: Partial<Record<SceneComponentId, readonly string[]>> = {
+  TerminalMock: ["badge"],
+};
+
+/**
  * The copy of a component's props schema the prop-writing LLM call is shown
  * (reveal-timing spec, "The LLM does not set"). Reveal props are an author's
  * call, not copy: the model has no idea how the take sounds, and offering it
@@ -583,12 +604,24 @@ export function scriptComponentIds(): ScriptComponentId[] {
  * text in every prop-call prompt. Omitting them keeps that prompt
  * byte-identical to before the props existed.
  *
- * Components without reveal props get their registry schema back untouched.
+ * `mode` is the run's: `"auto"` (no `--script`, the default) also omits the
+ * component's `SCRIPT_ONLY_PROP_KEYS`, so that prompt stays frozen too (G6);
+ * `"script"` offers them.
+ *
+ * A component with nothing to omit gets its registry schema back untouched —
+ * the same object, so "unchanged" is identity, not just equal output.
  */
-export function llmPropsSchema(component: SceneComponentId): z.ZodType {
+export function llmPropsSchema(
+  component: SceneComponentId,
+  mode: "auto" | "script" = "auto",
+): z.ZodType {
   const schema = SCENE_REGISTRY[component].propsSchema;
   if (!(schema instanceof z.ZodObject)) return schema as z.ZodType;
-  const present = REVEAL_PROP_KEYS.filter((k) => k in schema.shape);
+  const hidden = [
+    ...REVEAL_PROP_KEYS,
+    ...(mode === "auto" ? (SCRIPT_ONLY_PROP_KEYS[component] ?? []) : []),
+  ];
+  const present = hidden.filter((k) => k in schema.shape);
   if (present.length === 0) return schema as z.ZodType;
   const mask = Object.fromEntries(present.map((k) => [k, true as const]));
   return (schema as z.ZodObject).omit(mask) as z.ZodType;

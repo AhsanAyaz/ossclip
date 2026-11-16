@@ -31,6 +31,9 @@ import type { LlmProvider } from "./provider";
  * script-only cards (§161, plan Tasks 4-8 — one bump for the lot, since none
  * of them ships alone). An "s1" plan was asked without them, so it must not
  * be served to a script that now hints `[CardRow]` (plan Review Focus 4).
+ * Task 8's script-only props (`SCRIPT_ONLY_PROP_KEYS`: a TerminalMock
+ * `badge`) ride the same bump: the props call that offers them is cached
+ * inside the same `scriptplan-*` file, never in the beat-sheet cache.
  */
 export const SCRIPT_PLAN_PROMPT_VERSION = "s2";
 

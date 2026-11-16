@@ -13,6 +13,7 @@ import {
   PATTERN_MARGIN_PX,
   PHONE_BOB_PX,
   PHONE_PEAK_SCALE,
+  TERMINAL_BADGE_RISE_PX,
   bulletMetrics,
   bugCardMetrics,
   bugMockVisible,
@@ -187,6 +188,8 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
       lines: Array.from({ length: 6 }, () => "a forty character terminal line here okay"),
     })),
     fanOut: "OUTPUT ×5",
+    // The script-only counter badge at its 16-character cap (plan Task 8).
+    badge: "+1,568,000 LINES",
   },
   ChatMock: {
     messages: Array.from({ length: 4 }, () => ({
@@ -1174,5 +1177,45 @@ describe("PhoneDemo metrics (§161, plan Task 7 / Review Focus 3)", () => {
     expect(isSelfFitting("PhoneDemo")).toBe(true);
     expect(fitScale("PhoneDemo", DENSE.PhoneDemo, { widthPx: 1920, heightPx: 1080 })).toBe(1);
     expect(Number.isFinite(estimateHeightPx("PhoneDemo", DENSE.PhoneDemo, 1080))).toBe(true);
+  });
+});
+
+describe("TerminalMock badge (§161, plan Task 8)", () => {
+  const terminal = {
+    windows: [
+      { title: "agent-01", lines: ["$ ossclip produce talk.mp4"] },
+      { title: "agent-02", lines: ["$ ls"] },
+    ],
+  };
+
+  it("changes nothing for a terminal without one, or with an empty one", () => {
+    for (const badge of [undefined, ""]) {
+      const props = badge === undefined ? terminal : { ...terminal, badge };
+      expect(estimateHeightPx("TerminalMock", props, 900)).toBe(
+        estimateHeightPx("TerminalMock", terminal, 900),
+      );
+      expect(estimateMinWidthPx("TerminalMock", props)).toBe(
+        estimateMinWidthPx("TerminalMock", terminal),
+      );
+    }
+  });
+
+  it("adds exactly the badge's rise to the height, the margin the component reserves", () => {
+    expect(TERMINAL_BADGE_RISE_PX).toBe(Math.ceil(pillBoxPx("", false, 34).h / 2));
+    expect(estimateHeightPx("TerminalMock", { ...terminal, badge: "+1,568 lines" }, 900)).toBe(
+      estimateHeightPx("TerminalMock", terminal, 900) + TERMINAL_BADGE_RISE_PX,
+    );
+  });
+
+  it("widens the floor to hold the last title and the badge side by side", () => {
+    const badge = "+1,568,000 LINES";
+    const longTitle = {
+      windows: [{ title: "a-twenty-four-char-title", lines: ["$ ls"] }],
+      badge,
+    };
+    const floor = estimateMinWidthPx("TerminalMock", longTitle);
+    expect(floor).toBeGreaterThan(estimateMinWidthPx("TerminalMock", { ...longTitle, badge: undefined }));
+    // At least the root padding, the 24-character title and the badge.
+    expect(floor).toBeGreaterThan(60 + 24 * 24 * 0.6 + pillBoxPx(badge, false, 34).w);
   });
 });

@@ -44,3 +44,9 @@ apps/cli/.claude/
 
 # Verification run artifacts — regenerated per run, see .claude/skills/verify-ossclip
 docs/verification/
+
+# `pnpm stills --theme <look>` output (explainer plan Task 8): a per-machine
+# baseline for a before/after `cmp`, not a reference. Font rasterisation
+# differs between machines (plan decision 6), so a committed copy would fail
+# anyone else's comparison. The explainer stills in __stills__/ itself stay.
+packages/scenes/test/__stills__/*/
