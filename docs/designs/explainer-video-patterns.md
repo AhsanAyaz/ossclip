@@ -1,7 +1,7 @@
 # Explainer videos: script cues, clip scenes and pattern scenes
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Approved (2026-11-16)
+*   **Status:** Approved (2026-11-16). Amended the same day after the phase 1 test: the clip kit (new phase 3) was approved by the author
 *   **Date:** 2026-11-16
 *   **Reference:** the author's Video Playbook (a private document) (style, patterns, script format) and the finished video `EGM_V2.mov`
 
@@ -13,13 +13,16 @@ ossclip can cut a talking-head recording and add captions, a few template graphi
 
 That video was made by hand. Claude wrote one Python script per shot (24 shots in about 3 hours), each rendered to a transparent ProRes clip with its own sound. The author then placed the clips in DaVinci Resolve.
 
-This design moves that work into `ossclip produce`, in three phases that each ship on their own:
+This design moves that work into `ossclip produce`, in four phases that each ship on their own:
 
-1.  **Script cues and clip scenes.** `--script <file>` reads the script the author writes before recording. Each on-screen cue becomes a scene timed to the words as spoken. A cue can name a transparent clip made elsewhere. After this phase ossclip assembles the EGM video from the 24 existing clips with no manual edit.
+1.  **Script cues and clip scenes.** `--script <file>` reads the script the author writes before recording. Each on-screen cue becomes a scene timed to the words as spoken. A cue can name a transparent clip made elsewhere. (Built; see FINDINGS §158 to §160.)
 2.  **Pattern scenes and the explainer look.** Scene components for the repeatable shot patterns, in the playbook's style, so most cues need no hand-made clip.
-3.  **Scene-owned sound.** Each scene emits sound from the same timings that drive its animation.
+3.  **Clip kit.** `ossclip kit` writes each scene as its own transparent clip, plus a timeline file that opens in DaVinci Resolve with the cut footage on one track and the clips on the track above.
+4.  **Scene-owned sound.** Each scene emits sound from the same timings that drive its animation.
 
 Generating one-off scenes as code is a separate, later design.
+
+**What the phase 1 test changed (2026-11-16).** The author watched the phase 1 render of the EGM recording. Several retakes survived the cut, some clips sat at the wrong moment or place, and some shots needed a held frame to match the speech. The author expects to fix that kind of thing in Resolve and does not want ossclip to chase a frame-perfect final video for long explainers. So the target for this kind of video is now a **rough cut plus a graphics kit**: ossclip plans and draws the scenes, the author picks which to keep in the editor, and Resolve does the finishing. The full render stays, as the preview and for videos that need no finishing.
 
 ## Terms
 
@@ -64,6 +67,7 @@ ossclip's nine components are `TitleCard`, `StatCard`, `RuleCard`, `Strikethroug
 *   **G4.** Pattern components cover the repeatable shots, in the playbook's look.
 *   **G5.** Scenes emit their own sound when `--sfx` is on.
 *   **G6.** A run without `--script` produces the same output as today. The planner prompt, its menu and the sound menu do not change for those runs.
+*   **G7.** A produced project can be handed to DaVinci Resolve: one transparent clip per kept scene, and a timeline that places the cut footage and those clips.
 
 ## Non-goals
 
@@ -84,7 +88,9 @@ ossclip's nine components are `TitleCard`, `StatCard`, `RuleCard`, `Strikethroug
 
 **A. Extend the scene registry and drive moments from the script (chosen).** Script cues become moments; everything downstream is the existing path. One timeline, and scenes stay editable.
 
-**B. Render every scene to its own transparent clip, then composite.** This copies the hand-made workflow. It doubles render time and scenes stop being editable or retimable after a recut. Rejected as the main path, kept for clips made elsewhere.
+**B. Render every scene to its own transparent clip, then composite.** This copies the hand-made workflow. It doubles render time and scenes stop being editable or retimable after a recut. Rejected as the main path, kept for clips made elsewhere. The clip kit (phase 3) uses per-scene clips as an **export** only: scenes stay editable in ossclip until the author exports, and the compositing happens in Resolve.
+
+**A separate tool for the kit.** Considered and rejected. The kit needs the transcript, the cut, script alignment, the scene components, the look and the editor's keep-or-hide choice. All of those live in ossclip, and `ossclip analyze` already exports timelines for other editors.
 
 **C. Generate every scene as code first.** Needed eventually for mascot scenes. 21 of 24 shots do not need it, and it adds a compile-and-check loop before anything ships. Deferred.
 
@@ -247,7 +253,60 @@ From the EGM script and raw footage, with all 24 shots as `clip:` cues:
 
 --------------------------------------------------------------------------------
 
-## Phase 3: scene-owned sound
+## Phase 3: clip kit
+
+### 3.1 What the author gets
+
+`ossclip kit <input>` works on a project that `produce` has already planned (and that the author may have edited). It writes a folder beside the source video:
+
+```
+<video-name>-kit/
+  timeline.fcpxml        the Resolve timeline
+  clips/
+    03-card-row.mov      one transparent clip per kept scene
+    04-terminal.mov
+  kit-report.json        what was exported, skipped and why
+```
+
+In Resolve, the author imports the timeline file. Track 1 holds the source footage, cut. Track 2 holds each scene clip at the time ossclip planned for it. From there the author moves, trims, holds or deletes clips with Resolve's own tools.
+
+### 3.2 Scene clips
+
+*   **Which scenes.** Every scene that is not hidden in the editor. Hiding a scene in the editor is how the author leaves it out.
+*   **Format.** ProRes 4444 with alpha, at the output frame size and rate. This is the format of the hand-made clips, and Resolve reads it directly. Rendering uses PNG frames, because the JPEG frames of the normal render have no alpha.
+*   **Content.** The scene alone on a transparent background, in the place its layout gives it, with its entry and exit animation. The clip is as long as the scene is on the timeline.
+*   **No footage inside a clip.** Two things today depend on the footage and change in a kit clip:
+    *   The scrim blurs the footage behind a graphic. In a kit clip it is a plain dark panel at the same place.
+    *   The split and bubble layouts move the speaker. A kit clip cannot do that, so such a scene is exported as its graphic only, and the report says the speaker was not reframed.
+*   **Imported clips.** A scene that came from a `clip:` cue is not rendered again. The timeline points at the author's original file.
+*   **Reuse.** A clip is re-rendered only when its scene, the look or the frame size changed since the last export. The key is a hash of those inputs, stored in the report.
+*   **Sound.** Until phase 4, a kit clip is silent. After phase 4 the scene's sounds are mixed into the clip's audio, as in the hand-made clips.
+
+### 3.3 The timeline file
+
+*   **Track 1.** One clip per kept span of the cut, each pointing at the original source file with its in and out points. The media is not re-encoded, and dragging a clip edge in Resolve brings back removed material. A folder of takes gives several source files on the same track.
+*   **Track 2.** One item per scene clip, at the scene's start on the cut timeline.
+*   **Not carried over:** captions, zoom and punch-ins, the speaker framing, audio loudness processing, and background music. Those are finishing work and stay with Resolve. The existing `premiere-project` export, which carries the camera moves, is unchanged.
+*   **Format.** FCPXML 1.10, which `ossclip analyze` already writes for markers; the frame-rate and time helpers in `export-fcpxml.ts` are reused. Resolve drops FCPXML markers (FINDINGS §142), so it is not yet known that it keeps a second video track with transparent clips. **A spike settles this before the plan is written:** a hand-made timeline with two cut spans and one transparent clip, imported by the author into their Resolve. If FCPXML fails, the fallback is the xmeml format that `export-premiere-project.ts` writes, which Resolve also imports.
+*   **Paths.** Under WSL, a `/mnt/c/...` path is written as `file:///C:/...`, because Resolve runs on the Windows side. This is a pure function with its own tests. The kit folder defaults to the source video's folder so that Resolve can reach it; `--out <dir>` overrides.
+*   **Variable frame rate.** Phone and screen recordings often have a variable frame rate, and editors place such media a few frames off. The exporter quantises to the probed rate, as the marker export does, and the report warns when the source is variable.
+
+### 3.4 Command
+
+*   `ossclip kit <input>` finds the project the same way `ossclip edit` does. With no planned project it stops and names the `produce` command to run first.
+*   `--out <dir>`, `--clips-only` (no timeline file) and `--force` (ignore the reuse check).
+*   The exporter is a pure function (project in, XML string out), like the other exporters. Rendering the clips is the only slow step; clips render one at a time and print progress.
+
+### Phase 3 acceptance
+
+*   The spike timeline opens in the author's Resolve with both tracks and the clip's transparency.
+*   From the EGM project, `ossclip kit` writes one clip per kept scene. Each clip's alpha is checked by a machine (a corner pixel is transparent, a pixel inside the graphic is not).
+*   The author imports the timeline and confirms: the cut matches the editor's cut, and each clip starts within one frame of its planned time.
+*   A second `ossclip kit` run after editing one scene re-renders one clip.
+
+--------------------------------------------------------------------------------
+
+## Phase 4: scene-owned sound
 
 *   **Gate.** Scene sounds play only when `--sfx` is on. (`--sfx` is opt-in today; there is no `--no-sfx`.) `--sfx-level` keeps its meaning, the density of LLM-placed sounds, and does not affect scene sounds.
 *   **Source.** Each component may define a pure function in core: props and timing in, events `{atSec, soundId, gain?}` out. Events are derived at assembly every time, never stored, so they follow prop edits and recuts.
@@ -258,7 +317,7 @@ From the EGM script and raw footage, with all 24 shots as `clip:` cues:
 *   **The author's pop.** A user sound pack in `~/.ossclip/sfx` already overrides `pop`.
 *   **Editor.** The editor preview does not play sound effects today. That does not change here.
 
-### Phase 3 acceptance
+### Phase 4 acceptance
 
 *   Unit tests give the event list for each component.
 *   In a rendered EGM cut, each pop lands within one frame of its card.
@@ -295,6 +354,14 @@ From the EGM script and raw footage, with all 24 shots as `clip:` cues:
 8.  Typing sound is one loop per scene.
 9.  In script mode the LLM sound plan does not run.
 10. Clips are transcoded to VP9-alpha WebM on import.
+
+For the clip kit (phase 3):
+
+11. The kit is a separate command, `ossclip kit`, run after `produce` and any editing. There is no editor button yet.
+12. Kit clips keep their exit animation. To hold a graphic longer, the author freezes a frame in Resolve.
+13. Captions, camera moves and audio processing are not in the kit timeline.
+14. The kit comes before scene sound, so the first kit clips are silent.
+15. Phase 2 no longer aims at a perfect final render of the EGM video. Its acceptance (right component per cue, stills reviewed) is unchanged.
 
 ## Answers from the author (2026-11-16)
 
