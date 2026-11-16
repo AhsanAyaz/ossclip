@@ -159,8 +159,16 @@ import {
   resolveTheme,
   run,
   runWhisper,
+  alignRestamp,
+  compressArgs,
+  compressionLine,
+  type CompressionSegment,
+  parseSilences,
+  remapWords,
+  silenceDetectArgs,
   sliceWavArgs,
   stitchTakeTranscripts,
+  takeCompressionPlans,
   takeWindows,
   type TakeWindow,
   whisperPromptFor,
@@ -2651,6 +2659,105 @@ async function preflight(bin: string, hint: string): Promise<void> {
   }
 }
 
+/**
+ * Per take, the compressed decode plan (FINDINGS §159), or null to decode
+ * that take exactly as today. Silence is detected once over audio.wav and
+ * split per take; a single file is one take.
+ */
+export async function planSilenceCompression(p: {
+  ffmpegPath: string;
+  audioPath: string;
+  takes: readonly TakeWindow[];
+}): Promise<Array<CompressionSegment[] | null>> {
+  const { stderr } = await run(p.ffmpegPath, silenceDetectArgs(p.audioPath), {
+    allowNonZero: true,
+  });
+  return takeCompressionPlans(
+    parseSilences(stderr, p.takes[p.takes.length - 1]!.endSec),
+    p.takes,
+  );
+}
+
+/**
+ * Decode audio.wav take by take (take-transcripts.ts, 2026-11-13 "AI And
+ * Coding": a seam resets whisper). A take with a plan (speech-windows.ts,
+ * FINDINGS §159) is decoded TWICE and joined:
+ *
+ *  - the TEXT comes from today's decode of the take, today's arguments, so a
+ *    new transcript reads exactly as it always would have;
+ *  - the TIMES come from a decode of the same take with its long silences
+ *    removed, mapped back to the take's clock — with no silence to smear
+ *    into, whisper's stamps land on the speech.
+ *
+ * Neither pass alone is enough. The whole-take pass put 31% of a 13-minute
+ * recording's words inside silence; the silence-removed pass fixed that
+ * (0.4%) but, with the pauses gone, wrote 488 words in stretches with no
+ * capital or punctuation, which the blooper walk-back, retake split and
+ * sentence snap all read. `alignRestamp` (restamp.ts) is the join: count-
+ * and text-preserving, so word indices are the whole-take decode's.
+ *
+ * A take without a plan, and a single file without one, decode exactly as
+ * before. `tag` keeps each pass's sidecar files apart; restamp reports land
+ * in `reports` for the caller to print once no spinner owns the TTY.
+ * Exported so the §159 measurement runs this exact path, not a copy of it.
+ */
+export async function decodeTakes(
+  p: {
+    ffmpegPath: string;
+    audioPath: string;
+    work: string;
+    /** The folder's take windows; null for a single file (one take, unsliced). */
+    takes: readonly TakeWindow[] | null;
+    plans: ReadonlyArray<CompressionSegment[] | null>;
+    reports?: string[];
+  },
+  decode: (wav: string, tag: string) => Promise<Transcript>,
+): Promise<Transcript> {
+  const decodeTwoPass = async (
+    src: string,
+    plan: CompressionSegment[],
+    base: string,
+    tag: string,
+  ): Promise<Transcript> => {
+    const text = await decode(src, tag);
+    const wav = join(p.work, `${base}-speech.wav`);
+    const { args, script } = compressArgs(src, wav, plan);
+    if (script) await writeFile(script.path, script.text);
+    try {
+      await run(p.ffmpegPath, args);
+      const timed = await decode(wav, `${tag}-speech`);
+      const joined = alignRestamp(text.words, remapWords(timed.words, plan), 0);
+      p.reports?.push(...joined.reports);
+      return { ...text, words: joined.words };
+    } finally {
+      await rm(wav, { force: true });
+      if (script) await rm(script.path, { force: true });
+    }
+  };
+  if (p.takes === null) {
+    const plan = p.plans[0] ?? null;
+    return plan === null
+      ? decode(p.audioPath, "")
+      : decodeTwoPass(p.audioPath, plan, "audio", "");
+  }
+  const parts: Array<{ window: TakeWindow; transcript: Transcript }> = [];
+  for (const [i, window] of p.takes.entries()) {
+    const wav = join(p.work, `audio-clip-${i + 1}.wav`);
+    await run(p.ffmpegPath, sliceWavArgs(p.audioPath, wav, window));
+    try {
+      const plan = p.plans[i] ?? null;
+      const transcript =
+        plan === null
+          ? await decode(wav, `-clip-${i + 1}`)
+          : await decodeTwoPass(wav, plan, `audio-clip-${i + 1}`, `-clip-${i + 1}`);
+      parts.push({ window, transcript });
+    } finally {
+      await rm(wav, { force: true });
+    }
+  }
+  return stitchTakeTranscripts(parts);
+}
+
 export async function produce(inputArg: string, opts: ProduceOptions): Promise<ProduceResult> {
   // First line on purpose: totalMs is the same wall clock program.ts wraps
   // around this call for duration_ms, so `other` in the printed breakdown is
@@ -3135,32 +3242,44 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           `re-transcribing with ${fmt(requestedKey)}`,
       );
     }
-    // Per-take decode for folder input (take-transcripts.ts, 2026-11-13
-    // "AI And Coding"): each take is sliced out of audio.wav and decoded on
-    // its own, so a seam resets whisper instead of letting one take's words
-    // drift into the next. A single file — or a one-take folder — decodes
-    // whole, exactly as before. `tag` keeps each take's sidecar files apart.
-    // Cached transcripts decoded whole are knowingly still reused (the
-    // `-mc 0` posture in whisperArgs): re-decoding under a user's edits would
-    // move every word their overrides are anchored to.
-    const decodeByTake = async (
+    // Silence-removed timing pass (FINDINGS §159; decodeTakes). Only a
+    // transcription that actually RUNS gets it: this branch is never reached
+    // on a cache hit, and the transcript key deliberately has no field for
+    // it, so every transcript.json decoded before §159 is still reused (the
+    // `-mc 0` posture in whisperArgs). Re-decoding under a user's edits would
+    // move every word their overrides are anchored to; delete a workdir's
+    // transcript.json to re-time it.
+    const takes =
+      folderClipDurations !== null && folderClipDurations.length >= 2
+        ? takeWindows(folderClipDurations)
+        : null;
+    const planTakes = takes ?? [{ startSec: 0, endSec: sourceProbe.duration }];
+    const plans = await planSilenceCompression({
+      ffmpegPath: tools.ffmpegPath,
+      audioPath,
+      takes: planTakes,
+    });
+    if (plans.some((pl) => pl !== null)) {
+      // Here, before either branch starts its spinner: a line printed while
+      // a StageAnimator owns the TTY is overwritten by its next frame.
+      const speechSec = planTakes.reduce((sum, take, i) => {
+        const pl = plans[i];
+        return (
+          sum +
+          (pl ? pl.reduce((s, g) => s + (g.srcEnd - g.srcStart), 0) : take.endSec - take.startSec)
+        );
+      }, 0);
+      console.log(compressionLine(speechSec, planTakes[planTakes.length - 1]!.endSec));
+    }
+    // Printed after the transcribe phase, once no spinner owns the TTY.
+    const restampReports: string[] = [];
+    const decodeByTake = (
       decode: (wav: string, tag: string) => Promise<Transcript>,
-    ): Promise<Transcript> => {
-      if (folderClipDurations === null || folderClipDurations.length < 2) {
-        return decode(audioPath, "");
-      }
-      const parts: Array<{ window: TakeWindow; transcript: Transcript }> = [];
-      for (const [i, window] of takeWindows(folderClipDurations).entries()) {
-        const wav = join(work, `audio-clip-${i + 1}.wav`);
-        await run(tools.ffmpegPath, sliceWavArgs(audioPath, wav, window));
-        try {
-          parts.push({ window, transcript: await decode(wav, `-clip-${i + 1}`) });
-        } finally {
-          await rm(wav, { force: true });
-        }
-      }
-      return stitchTakeTranscripts(parts);
-    };
+    ): Promise<Transcript> =>
+      decodeTakes(
+        { ffmpegPath: tools.ffmpegPath, audioPath, work, takes, plans, reports: restampReports },
+        decode,
+      );
     if (backend.kind === "remote") {
       // No whisper binary and no model file on this branch — the whole point
       // of remote is that neither is installed (2026-09-01 field report).
@@ -3258,6 +3377,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       if (whisperAnim) whisperAnim.stop();
     }
     console.log(`▸ transcribed ${transcript.words.length} words`);
+    for (const r of restampReports) console.log(`  ▸ ${r}`);
     await writeFile(transcriptKeyPath, JSON.stringify(requestedKey, null, 2));
   }
   await writeFile(transcriptCache, JSON.stringify(transcript, null, 2));
