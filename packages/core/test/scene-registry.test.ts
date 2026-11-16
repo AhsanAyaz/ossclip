@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import {
   CardRowProps,
+  CtaCardProps,
   SCENE_REGISTRY,
   plannerComponentIds,
   llmPropsSchema,
@@ -156,7 +157,7 @@ describe("scene registry", () => {
   describe("script-only components (§161, plan Task 4)", () => {
     it("the planner list is still the nine; the script list appends the cards", () => {
       expect(plannerComponentIds()).toEqual(PlannerComponentIdSchema.options);
-      expect(scriptComponentIds()).toEqual([...PlannerComponentIdSchema.options, "CardRow"]);
+      expect(scriptComponentIds()).toEqual([...PlannerComponentIdSchema.options, "CardRow", "CtaCard"]);
       // The id lists and the registry agree, as the planner pair does.
       expect(scriptComponentIds()).toEqual(ScriptComponentIdSchema.options);
       expect(SceneComponentIdSchema.options).toEqual([...ScriptComponentIdSchema.options, "ClipScene"]);
@@ -200,6 +201,32 @@ describe("scene registry", () => {
         false,
       );
       expect(CardRowProps.safeParse({ cards: [{ text: "A" }, { text: "B" }], highlight: 4 }).success).toBe(false);
+    });
+
+    it("CtaCard is a full-frame card with no scrim, fillable and swappable (plan Task 5)", () => {
+      const meta = SCENE_REGISTRY.CtaCard;
+      expect(meta.scriptOnly).toBe(true);
+      expect(meta.scrim).toBe(false);
+      expect(meta.fullFrame).toBe(true);
+      expect(meta.plannerSelectable).toBeUndefined();
+      expect(meta.defaultLayout).toBe("full-bleed");
+      expect(meta.altLayouts).toEqual([]);
+      expect(meta.defaultProps).toEqual({ action: "subscribe", text: "Subscribe for more" });
+      expect(PlannerComponentIdSchema.safeParse("CtaCard").success).toBe(false);
+      expect(JSON.stringify(z.toJSONSchema(BeatSheetSchema))).not.toContain("CtaCard");
+    });
+
+    it("CtaCardProps: three actions, text 1-40, keyword up to 16, channel up to 24", () => {
+      expect(CtaCardProps.safeParse({ action: "share", text: "Share it" }).success).toBe(false);
+      expect(CtaCardProps.safeParse({ action: "comment", text: "x".repeat(41) }).success).toBe(false);
+      expect(CtaCardProps.safeParse({ action: "comment", text: "" }).success).toBe(false);
+      expect(CtaCardProps.safeParse({ action: "comment", text: "A", keyword: "k".repeat(17) }).success).toBe(false);
+      expect(CtaCardProps.safeParse({ action: "subscribe", text: "A", channel: "c".repeat(25) }).success).toBe(
+        false,
+      );
+      expect(
+        CtaCardProps.safeParse({ action: "link", text: "x".repeat(40), keyword: "k".repeat(16) }).success,
+      ).toBe(true);
     });
 
     it("the reveal props stay out of what the LLM is shown", () => {

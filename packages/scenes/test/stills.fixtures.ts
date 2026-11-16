@@ -63,4 +63,63 @@ export const STILL_FIXTURES: StillFixture[] = [
     },
     atSec: [1.8, 3.5],
   },
+  // CtaCard (plan Task 5): one sparse and one dense fixture per action, at
+  // 30% and 90% of a 6 s scene. The harness runs a scene to max(atSec) + 2 s
+  // (7.4 s), not 6 s, which moves only the Subscribe press (60%: 4.44 s
+  // rather than 3.6 s) — both still before 5.4 s and after 1.8 s, so each
+  // still shows the state a 6 s cue would. At 1.8 s a comment is fully
+  // typed (16 characters by 1.0 s, 40 by 1.75 s) with its caret in the
+  // blink's on half; at 5.4 s Subscribe reads "Subscribed". Dense is every
+  // cap at once: text 40, keyword 16, channel 24, in capitals.
+  {
+    component: "CtaCard",
+    name: "comment-sparse",
+    props: { action: "comment", text: "Want the prompt?", keyword: "PROMPT" },
+    atSec: [1.8, 5.4],
+  },
+  {
+    component: "CtaCard",
+    name: "comment-dense",
+    props: {
+      action: "comment",
+      text: "COMMENT THE WORD BELOW TO GET MY PROMPT!",
+      keyword: "COMMENTPROMPTNOW",
+      channel: "THE PRAGMATIC ENGINEER!!",
+    },
+    atSec: [1.8, 5.4],
+  },
+  {
+    component: "CtaCard",
+    name: "subscribe-sparse",
+    props: { action: "subscribe", text: "Subscribe for more" },
+    atSec: [1.8, 5.4],
+  },
+  {
+    component: "CtaCard",
+    name: "subscribe-dense",
+    props: {
+      action: "subscribe",
+      text: "SUBSCRIBE FOR ONE NEW AGENT TRICK WEEKLY",
+      keyword: "COMMENTPROMPTNOW",
+      channel: "THE PRAGMATIC ENGINEER!!",
+    },
+    atSec: [1.8, 5.4],
+  },
+  {
+    component: "CtaCard",
+    name: "link-sparse",
+    props: { action: "link", text: "Grab the template", keyword: "ossclip.dev" },
+    atSec: [1.8, 5.4],
+  },
+  {
+    component: "CtaCard",
+    name: "link-dense",
+    props: {
+      action: "link",
+      text: "GET THE FULL TEMPLATE FREE AT THIS LINK:",
+      keyword: "ossclip.dev/tmpl",
+      channel: "THE PRAGMATIC ENGINEER!!",
+    },
+    atSec: [1.8, 5.4],
+  },
 ];

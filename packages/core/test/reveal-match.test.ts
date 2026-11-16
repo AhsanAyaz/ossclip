@@ -207,3 +207,16 @@ describe("CardRow (§161, plan Task 4)", () => {
     ).toEqual(["Draft", "one", "Review"]);
   });
 });
+
+describe("CtaCard (§161, plan Task 5)", () => {
+  it("has no reveal items: it is one card", () => {
+    expect(revealItemTexts("CtaCard", { action: "comment", text: "Want it?", keyword: "PROMPT" })).toBeNull();
+  });
+
+  it("enters on its headline or its keyword; the channel and the action are not texts to match", () => {
+    expect(
+      entryTexts("CtaCard", { action: "subscribe", text: "Subscribe for more", keyword: "AGENT", channel: "Ch" }),
+    ).toEqual(["Subscribe for more", "AGENT"]);
+    expect(entryTexts("CtaCard", { action: "link", text: "Grab it" })).toEqual(["Grab it"]);
+  });
+});

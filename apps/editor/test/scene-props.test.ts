@@ -51,9 +51,19 @@ describe("scalarPropControls", () => {
     expect(keys).toEqual(expect.arrayContaining(["reveal", "pacing", "revealSpeed", "entrance"]));
   });
 
+  it("CtaCard's action is a dropdown of its three; its copy is edited through its ids (§161)", () => {
+    const controls = scalarPropControls("CtaCard");
+    expect(controls.find((c) => c.key === "action")).toMatchObject({
+      kind: "enum",
+      options: ["comment", "subscribe", "link"],
+    });
+    // No reveal items, so no reveal controls; the strings are not scalars here.
+    expect(controls.map((c) => c.key)).toEqual(["action"]);
+  });
+
   it("every registry component resolves without throwing", () => {
     for (const id of ["TitleCard", "StatCard", "RuleCard", "StrikethroughReveal",
-      "FlowDiagram", "TerminalMock", "ChatMock", "ScreenshotFrame", "BulletList", "CardRow"] as const) {
+      "FlowDiagram", "TerminalMock", "ChatMock", "ScreenshotFrame", "BulletList", "CardRow", "CtaCard"] as const) {
       expect(() => scalarPropControls(id)).not.toThrow();
     }
   });

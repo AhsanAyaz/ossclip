@@ -1261,7 +1261,7 @@ describe("Inspector — the component swap offers every card, script-only ones i
     // Plan decision 5: the script-only cards are offered in every project,
     // though the beat sheet never sees them.
     expect(componentSwapOptions("TitleCard")).toEqual(scriptComponentIds());
-    expect(componentSwapOptions("TitleCard")).toEqual([...plannerComponentIds(), "CardRow"]);
+    expect(componentSwapOptions("TitleCard")).toEqual([...plannerComponentIds(), "CardRow", "CtaCard"]);
     expect(componentSwapOptions("CardRow")).toEqual(scriptComponentIds());
     expect(componentSwapOptions("TitleCard")).not.toContain("ClipScene");
     expect(componentSwapOptions("ClipScene")).toBeNull();

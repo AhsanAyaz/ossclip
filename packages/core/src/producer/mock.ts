@@ -181,6 +181,7 @@ export class MockProvider implements LlmProvider {
         ],
         highlight: 2,
       },
+      CtaCard_props: { action: "comment", text: "Want the prompt?", keyword: "PROMPT" },
     };
     const props = canned[schemaName];
     if (!props) throw new Error(`mock provider: unknown schema ${schemaName}`);

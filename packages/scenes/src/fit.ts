@@ -37,6 +37,7 @@ const SELF_FITTING = new Set<SceneComponentId>([
   // margin against the whole frame (`cardRowMetrics`), so a stage scale
   // would only move the margin it was solved for.
   "CardRow",
+  "CtaCard",
 ]);
 
 /**
@@ -198,6 +199,19 @@ export function estimateHeightPx(
         return { text: str(card.text), sub: str(card.sub), icon: str(card.icon) };
       });
       return cardRowMetrics(cards, widthPx, heightPx).blockHeightPx;
+    }
+    case "CtaCard": {
+      // Self-fitting too; answered from the card's own model, as CardRow is.
+      // Props here passed CtaCardProps, so `action` is one of the three; an
+      // estimate for anything else is the registry default's ("subscribe").
+      const action = str(props.action);
+      const input: CtaCardInput = {
+        action: action === "comment" || action === "link" ? action : "subscribe",
+        text: str(props.text),
+        keyword: str(props.keyword),
+        channel: str(props.channel),
+      };
+      return ctaCardMetrics(input, widthPx, heightPx).blockHeightPx;
     }
   }
 }
@@ -807,5 +821,344 @@ export function cardRowMetrics(
     subWordsFit: wordsFit("sub", solved.subPx, monoWidthEm),
     blockWidthPx: mode === "row" ? n * cardWidthPx + gapPx * (n - 1) : cardWidthPx,
     blockHeightPx: mode === "row" ? cardHeightPx : n * cardHeightPx + gapPx * (n - 1),
+  };
+}
+
+// ---- CtaCard (§161, plan Task 5) -------------------------------------------
+
+/**
+ * `displayWidthEm` with M and W charged at their real width. CardRow's 0.74
+ * for every capital is an average, and the first comment-dense still showed
+ * where an average fails: "COMMENTPROMPTNOW" (three Ms, a W) set ~4% wider
+ * than modelled, filled its 9:16 box exactly, and pushed the caret onto a
+ * line of its own. A one-word field has no spaces to absorb the error, so
+ * the CtaCard model charges Inter ExtraBold's wide letters what they take.
+ */
+function ctaDisplayWidthEm(text: string): number {
+  let extra = 0;
+  for (const ch of text) if (/[MWmw]/.test(ch)) extra += 0.3;
+  return displayWidthEm(text) + extra;
+}
+
+/** CtaCardProps' shape, as the metric reads it (no zod in this module). */
+export interface CtaCardInput {
+  action: "comment" | "subscribe" | "link";
+  text: string;
+  keyword?: string;
+  channel?: string;
+}
+
+/**
+ * What the card shows, decided once for the component and the metric. The
+ * button words are fixed UI, not planner copy: they are the platform's
+ * labels the viewer is asked to press, so they never pass through an LLM.
+ */
+export const SEND_LABEL = "Send";
+export const SUBSCRIBE_LABEL = "Subscribe";
+export const SUBSCRIBED_LABEL = "Subscribed";
+
+export interface CtaContent {
+  /** Above the action row; null when the row itself carries `text`. */
+  headline: string | null;
+  /** The comment typed, or the URL in the bar; null when there is none. */
+  field: string | null;
+  /** The prop `field` came from, so the editor retypes the right one. */
+  fieldId: "text" | "keyword" | null;
+  /** Beside the Subscribe button; null shows the button alone. */
+  channel: string | null;
+}
+
+/**
+ * The plan's "keyword (or text when there is no keyword) is typed": a
+ * comment with no keyword types the headline itself, so the headline is
+ * not drawn twice. An empty string is no value (`keyword` and `channel`
+ * have no `min`), and a field the action does not use is ignored rather
+ * than drawn — a `channel` on a comment card has nowhere honest to sit.
+ */
+export function ctaContent(p: CtaCardInput): CtaContent {
+  const keyword = p.keyword ? p.keyword : null;
+  switch (p.action) {
+    case "comment":
+      return keyword
+        ? { headline: p.text, field: keyword, fieldId: "keyword", channel: null }
+        : { headline: null, field: p.text, fieldId: "text", channel: null };
+    case "subscribe":
+      return { headline: p.text, field: null, fieldId: null, channel: p.channel ? p.channel : null };
+    case "link":
+      return { headline: p.text, field: keyword, fieldId: keyword ? "keyword" : null, channel: null };
+  }
+}
+
+/**
+ * The most the WHOLE card is ever drawn at: `popScale`'s overshoot, which
+ * easeOutBack puts a hair over 1.10 (1.100004; motion.ts, asserted in
+ * fit.test.ts), rounded up so the bound holds rather than nearly holds.
+ * The button `bump`s (1.15) happen inside the card's 40 px padding once the
+ * card has settled, so they grow no box the margin has to hold.
+ */
+export const CTA_PEAK_SCALE = 1.11;
+/** The `bump` peak, for the in-card check that a pressed button stays inside the padding. */
+export const CTA_BUTTON_PEAK_SCALE = 1.15;
+/**
+ * The card's width bounds. Sized to its content between them, so a short
+ * headline over one button is a card, not a 1240 px slab with a word in it
+ * (CardRow's cap, for its reason); the floor keeps a comment box looking
+ * like a field even around a five-letter word.
+ */
+const CTA_MAX_W = 1240;
+const CTA_MIN_W = 760;
+/** Type: 34 px is the playbook floor for display text, 26 px for mono. */
+const CTA_TEXT_MIN_PX = 34;
+const CTA_MONO_MIN_PX = 26;
+const CTA_HEAD_MAX_PX = 72;
+const CTA_ACTION_MAX_PX = 56;
+const CTA_HEAD_MAX_LINES = 2;
+/** Exported so the component sets the line heights this model charges. */
+export const CTA_HEAD_LH = 1.1;
+export const CTA_ACTION_LH = 1.2;
+export const CTA_BUTTON_LH = 1.1;
+/** The action row's largest size, as a share of the headline's. */
+const CTA_ROW_TO_HEAD = 0.8;
+/** Headline to action row, and between a row's parts. */
+export const CTA_ROW_GAP_PX = 36;
+export const CTA_ITEM_GAP_PX = 24;
+/**
+ * The comment box and the URL bar share one chrome: padding inside a 3 px
+ * `cardBorder` rim. The bar had no rim in the first link still, and
+ * `terminalBg` on `cardBg` (#0F1320 on #14161C) all but vanished.
+ */
+export const CTA_BOX_PAD_X_PX = 28;
+export const CTA_BOX_PAD_Y_PX = 18;
+export const CTA_BOX_BORDER_PX = 3;
+/** The block caret beside the typed text: its width and its gap, in ems. */
+export const CTA_CARET_EM = 0.55;
+export const CTA_CARET_GAP_PX = 4;
+
+export interface CtaCardMetrics {
+  /**
+   * `subscribe` only: the channel beside the button in a landscape frame,
+   * above it in a portrait one, where a 24-character name beside the
+   * button would wrap to three lines.
+   */
+  mode: "row" | "column";
+  marginPx: number;
+  cardWidthPx: number;
+  cardHeightPx: number;
+  headPx: number;
+  /** Lines the headline wraps to; 0 when there is no headline. */
+  headLines: number;
+  headWordsFit: boolean;
+  /** The typed comment, the channel, or (mono) the URL. */
+  actionPx: number;
+  /** Lines the field or channel wraps to — the comment box's held height. */
+  actionLines: number;
+  actionWordsFit: boolean;
+  labelPx: number;
+  buttonPadXPx: number;
+  buttonPadYPx: number;
+  /**
+   * Fixed for the scene: the Subscribe button is as wide as "Subscribed"
+   * plus its tick, so the press changes the label, not the row.
+   */
+  buttonWidthPx: number;
+  buttonHeightPx: number;
+  /** The tick in front of "Subscribed", and its gap to the label. */
+  tickPx: number;
+  tickGapPx: number;
+  /** The channel's round avatar, and the icon inside it. */
+  avatarPx: number;
+  /** The avatar's icon, or the URL bar's. */
+  iconPx: number;
+  caretWidthPx: number;
+  blockWidthPx: number;
+  blockHeightPx: number;
+}
+
+/**
+ * CtaCard's layout, solved against the whole frame (it is `fullFrame`, so
+ * `widthPx`×`heightPx` IS the frame). ONE model for the component and
+ * `estimateHeightPx`, the `cardRowMetrics` rule, and the same reserves: the
+ * 100 px margin at the short edge, plus the pop's overshoot around a
+ * centred card.
+ *
+ * The card is as wide as its content set on one line at the largest sizes,
+ * between `CTA_MIN_W` and the frame's room. When that is the frame's room,
+ * the action row's size comes down from 56 until it fits (the comment on
+ * one line when it is a keyword, two when it is the headline; the channel
+ * on two; the URL on one, in mono down to 26), then the headline's from 72
+ * until it takes two lines with no word broken and the card fits the
+ * height. Below the floors nothing shrinks further: a 40-character comment
+ * in a 9:16 box takes a third line at 34 px (the box is held at the height
+ * the metric reports), and a word too long for its box breaks
+ * (`overflowWrap: anywhere`) rather than leaving it.
+ */
+export function ctaCardMetrics(p: CtaCardInput, widthPx: number, heightPx: number): CtaCardMetrics {
+  const content = ctaContent(p);
+  // `estimateHeightPx` may be called with no height budget (Infinity):
+  // solve it as a portrait box twice as tall as it is wide, as cardRowMetrics does.
+  const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
+  const mode: CtaCardMetrics["mode"] = widthPx >= finiteH ? "row" : "column";
+  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const reserve = CTA_PEAK_SCALE - 1;
+  const availW = widthPx - 2 * marginPx;
+  const availH = finiteH - 2 * marginPx;
+  const maxW = Math.floor(Math.min(CTA_MAX_W, availW / (1 + reserve)));
+  const maxCardH = availH / (1 + reserve);
+  const chromeX = 2 * (CARD_BORDER_PX + CARD_PAD_X_PX);
+  const chromeY = 2 * (CARD_BORDER_PX + CARD_PAD_Y_PX);
+  const isLink = p.action === "link";
+  const minActionPx = isLink ? CTA_MONO_MIN_PX : CTA_TEXT_MIN_PX;
+
+  // Everything below that depends on the action size, in one place.
+  const parts = (actionPx: number) => {
+    const labelPx = Math.max(CTA_TEXT_MIN_PX, Math.round(actionPx * 0.75));
+    const buttonPadXPx = Math.round(labelPx * 0.75);
+    const buttonPadYPx = Math.round(labelPx * 0.4);
+    const tickPx = labelPx;
+    const tickGapPx = Math.round(labelPx * 0.4);
+    const buttonWidthPx = Math.ceil(
+      2 * buttonPadXPx +
+        (p.action === "comment"
+          ? labelPx * ctaDisplayWidthEm(SEND_LABEL)
+          : Math.max(
+              labelPx * ctaDisplayWidthEm(SUBSCRIBE_LABEL),
+              tickPx + tickGapPx + labelPx * ctaDisplayWidthEm(SUBSCRIBED_LABEL),
+            )),
+    );
+    const buttonHeightPx = Math.ceil(labelPx * CTA_BUTTON_LH + 2 * buttonPadYPx);
+    const avatarPx = Math.round(actionPx * 1.6);
+    const iconPx = isLink ? actionPx : Math.round(avatarPx * 0.6);
+    const caretWidthPx = Math.round(actionPx * CTA_CARET_EM);
+    // Chrome around the text in the row, so `fieldW(innerW)` is the text's own line.
+    const around =
+      p.action === "comment"
+        ? 2 * (CTA_BOX_PAD_X_PX + CTA_BOX_BORDER_PX) +
+          caretWidthPx +
+          CTA_CARET_GAP_PX +
+          CTA_ITEM_GAP_PX +
+          buttonWidthPx
+        : p.action === "subscribe"
+          ? avatarPx + CTA_ITEM_GAP_PX + (mode === "row" ? CTA_ITEM_GAP_PX + buttonWidthPx : 0)
+          : 2 * (CTA_BOX_PAD_X_PX + CTA_BOX_BORDER_PX) + iconPx + CTA_ITEM_GAP_PX;
+    return {
+      labelPx,
+      buttonPadXPx,
+      buttonPadYPx,
+      tickPx,
+      tickGapPx,
+      buttonWidthPx,
+      buttonHeightPx,
+      avatarPx,
+      iconPx,
+      caretWidthPx,
+      around,
+    };
+  };
+
+  const rowText = p.action === "subscribe" ? content.channel : content.field;
+  const widthEm = isLink ? monoWidthEm : ctaDisplayWidthEm;
+  // The comment box holds the headline-length text on two lines; a keyword,
+  // a URL, is one line; a channel name may take two beside its avatar.
+  const rowMaxLines = p.action === "comment" ? (content.fieldId === "keyword" ? 1 : 2) : isLink ? 1 : 2;
+
+  // Natural width: the content on one line at the largest sizes.
+  const big = parts(CTA_ACTION_MAX_PX);
+  const rowNatural =
+    p.action === "subscribe" && rowText === null
+      ? big.buttonWidthPx
+      : p.action === "subscribe" && mode === "column"
+        ? Math.max(big.buttonWidthPx, big.around + widthEm(rowText ?? "") * CTA_ACTION_MAX_PX)
+        : rowText === null
+          ? 0
+          : big.around + widthEm(rowText) * CTA_ACTION_MAX_PX;
+  const headNatural = content.headline ? ctaDisplayWidthEm(content.headline) * CTA_HEAD_MAX_PX : 0;
+  const cardWidthPx = Math.min(
+    maxW,
+    Math.max(Math.min(CTA_MIN_W, maxW), Math.ceil(Math.max(rowNatural, headNatural)) + chromeX),
+  );
+  const innerW = cardWidthPx - chromeX;
+
+  const rowAt = (actionPx: number) => {
+    const q = parts(actionPx);
+    const wrap =
+      rowText === null
+        ? { lines: 0, wordsFit: true }
+        : wrapLines(rowText, actionPx, innerW - q.around, widthEm);
+    const textH = wrap.lines * actionPx * CTA_ACTION_LH;
+    let rowH: number;
+    if (p.action === "comment") {
+      rowH = Math.max(textH + 2 * (CTA_BOX_PAD_Y_PX + CTA_BOX_BORDER_PX), q.buttonHeightPx);
+    } else if (p.action === "subscribe") {
+      const channelH = rowText === null ? 0 : Math.max(q.avatarPx, textH);
+      rowH =
+        rowText === null
+          ? q.buttonHeightPx
+          : mode === "row"
+            ? Math.max(channelH, q.buttonHeightPx)
+            : channelH + CTA_ITEM_GAP_PX + q.buttonHeightPx;
+    } else {
+      rowH = rowText === null ? 0 : Math.max(textH, q.iconPx) + 2 * (CTA_BOX_PAD_Y_PX + CTA_BOX_BORDER_PX);
+    }
+    const fits = wrap.wordsFit && wrap.lines <= rowMaxLines;
+    return { q, wrap, rowH, fits };
+  };
+  let actionPx = CTA_ACTION_MAX_PX;
+  let row = rowAt(actionPx);
+  while (!row.fits && actionPx > minActionPx) {
+    actionPx -= 1;
+    row = rowAt(actionPx);
+  }
+
+  const headAt = (headPx: number) => {
+    const wrap = content.headline
+      ? wrapLines(content.headline, headPx, innerW, ctaDisplayWidthEm)
+      : { lines: 0, wordsFit: true };
+    const headH = wrap.lines * headPx * CTA_HEAD_LH;
+    const gap = wrap.lines > 0 && row.rowH > 0 ? CTA_ROW_GAP_PX : 0;
+    const cardH = Math.ceil(chromeY + headH + gap + row.rowH);
+    const fits = wrap.wordsFit && wrap.lines <= CTA_HEAD_MAX_LINES && cardH <= maxCardH;
+    return { wrap, cardH, fits };
+  };
+  let headPx = CTA_HEAD_MAX_PX;
+  let head = headAt(headPx);
+  while (!head.fits && headPx > CTA_TEXT_MIN_PX) {
+    headPx -= 1;
+    head = headAt(headPx);
+  }
+  // The row never outgrows its headline (CardRow's sub-line rule): solved
+  // alone, a 9:16 channel name came out at 56 px under a 46 px headline
+  // and read as the card's subject. Brought down after the fact, so the
+  // headline keeps the size it solved for; a smaller row only frees height.
+  const rowCap = Math.max(minActionPx, Math.round(headPx * CTA_ROW_TO_HEAD));
+  if (content.headline !== null && actionPx > rowCap) {
+    actionPx = rowCap;
+    row = rowAt(actionPx);
+    head = headAt(headPx);
+  }
+
+  const q = row.q;
+  return {
+    mode,
+    marginPx,
+    cardWidthPx,
+    cardHeightPx: head.cardH,
+    headPx,
+    headLines: head.wrap.lines,
+    headWordsFit: head.wrap.wordsFit,
+    actionPx,
+    actionLines: row.wrap.lines,
+    actionWordsFit: row.wrap.wordsFit,
+    labelPx: q.labelPx,
+    buttonPadXPx: q.buttonPadXPx,
+    buttonPadYPx: q.buttonPadYPx,
+    buttonWidthPx: q.buttonWidthPx,
+    buttonHeightPx: q.buttonHeightPx,
+    tickPx: q.tickPx,
+    tickGapPx: q.tickGapPx,
+    avatarPx: q.avatarPx,
+    iconPx: q.iconPx,
+    caretWidthPx: q.caretWidthPx,
+    blockWidthPx: cardWidthPx,
+    blockHeightPx: head.cardH,
   };
 }

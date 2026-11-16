@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import { SCENE_REGISTRY, SceneComponentIdSchema, type SceneComponentId } from "@ossclip/core";
 import {
   CARD_PEAK_SCALE,
+  CTA_BUTTON_PEAK_SCALE,
+  CTA_PEAK_SCALE,
   FILL_TARGET,
   MAX_SCALE,
   PATTERN_MARGIN_PX,
   bulletMetrics,
   cardRowMetrics,
+  ctaCardMetrics,
+  ctaContent,
   bulletStackHeightPx,
   chatBubbles,
   chatMetrics,
@@ -18,6 +22,7 @@ import {
   revealRows,
 } from "../src/fit";
 import { FULL_BLEED_GRAPHIC_SLOT, layoutSlots } from "../src/stage";
+import { bump, popScale } from "../src/motion";
 
 const FRAME_W = 1080;
 const FRAME_H = 1920;
@@ -67,6 +72,19 @@ const CARD_ROW_DENSE = [
   { text: "Ship it on Monday!", sub: "npm publish --tag latest", icon: "terminal" },
 ];
 
+/**
+ * CtaCard at every cap: a 40-character headline, a 16-character keyword and
+ * a 24-character channel, in capitals (the widest the model charges). The
+ * comment action is the DENSE entry because its row is the busiest — a box,
+ * a caret and a button on one line — and the suite below runs all three.
+ */
+const CTA_DENSE = {
+  action: "comment",
+  text: "WATCH THE WHOLE SERIES ON AGENTS TODAY!!",
+  keyword: "COMMENTPROMPTNOW",
+  channel: "THE PRAGMATIC ENGINEER!!",
+} as const;
+
 /** Sparse content — the §23 complaint: a thin strip in a sea of black. */
 const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   TitleCard: { title: "SHIP IT" },
@@ -79,6 +97,7 @@ const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   ScreenshotFrame: { label: "REVIEW" },
   BulletList: { items: ["AI HARNESS", "CONTEXT ENGINEERING"] },
   CardRow: { cards: [{ text: "Draft" }, { text: "Review" }] },
+  CtaCard: { action: "subscribe", text: "Subscribe" },
   // No copy to be sparse or dense with: a clip's props are a file and a length.
   ClipScene: { src: "clips/a.webm", durationSec: 4.6 },
 };
@@ -124,6 +143,7 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
     items: Array.from({ length: 5 }, () => "THIRTY SIX CHARACTERS OF BULLET COPY"),
   },
   CardRow: { cards: CARD_ROW_DENSE, highlight: 2 },
+  CtaCard: CTA_DENSE,
   ClipScene: { src: "clips/a.webm", durationSec: 15 },
 };
 
@@ -591,5 +611,176 @@ describe("CardRow metrics (§161, plan Task 4 / Review Focus 3)", () => {
 
   it("an unbounded height still answers a finite estimate", () => {
     expect(Number.isFinite(estimateHeightPx("CardRow", DENSE.CardRow, 1080))).toBe(true);
+  });
+});
+
+describe("CtaCard metrics (§161, plan Task 5 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  type Input = Parameters<typeof ctaCardMetrics>[0];
+  const SPARSE_CTA: Input[] = [
+    { action: "comment", text: "Want it?", keyword: "PROMPT" },
+    { action: "subscribe", text: "Subscribe for more" },
+    { action: "link", text: "Grab the template", keyword: "ossclip.dev" },
+  ];
+  const DENSE_CTA: Input[] = (["comment", "subscribe", "link"] as const).map((action) => ({
+    ...CTA_DENSE,
+    action,
+    keyword: action === "link" ? "ossclip.dev/tmpl" : CTA_DENSE.keyword,
+  }));
+  // A comment with no keyword types its 40-character headline into the box.
+  const BOX_HEADLINE: Input = { action: "comment", text: CTA_DENSE.text };
+  const ALL: [string, Input][] = [
+    ...SPARSE_CTA.map((p) => [`sparse ${p.action}`, p] as [string, Input]),
+    ...DENSE_CTA.map((p) => [`dense ${p.action}`, p] as [string, Input]),
+    ["dense comment, no keyword", BOX_HEADLINE],
+    ["subscribe, no channel", { ...DENSE_CTA[1]!, channel: undefined }],
+    ["link, no keyword", { action: "link", text: CTA_DENSE.text }],
+  ];
+
+  it("CTA_PEAK_SCALE covers popScale's overshoot, and the button peak is bump's", () => {
+    let peak = 0;
+    for (let t = 0; t <= 0.35; t += 0.0005) peak = Math.max(peak, popScale(t));
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(CTA_PEAK_SCALE);
+    expect(bump(0.15)).toBeCloseTo(CTA_BUTTON_PEAK_SCALE, 10);
+  });
+
+  it("keeps 100 px clear on every side on EVERY frame — the card at its pop peak included", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        expect(m.marginPx, f.name).toBe(PATTERN_MARGIN_PX);
+        // Centred, scaled about its centre: the box grows (peak - 1) / 2 of its size per side.
+        const side = (f.w - m.blockWidthPx * CTA_PEAK_SCALE) / 2;
+        const top = (f.h - m.blockHeightPx * CTA_PEAK_SCALE) / 2;
+        expect(side, `${f.name} ${label}: side margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(top, `${f.name} ${label}: top margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+      }
+    }
+  });
+
+  it("a pressed button stays inside the card's 40 px padding", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        const growX = ((CTA_BUTTON_PEAK_SCALE - 1) / 2) * m.buttonWidthPx;
+        const growY = ((CTA_BUTTON_PEAK_SCALE - 1) / 2) * m.buttonHeightPx;
+        expect(growX, `${f.name} ${label}`).toBeLessThan(40);
+        expect(growY, `${f.name} ${label}`).toBeLessThan(36);
+      }
+    }
+  });
+
+  it("never sets type under the floors (34 px, 26 px mono), and schema-max copy keeps whole words", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        expect(m.headPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.labelPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.actionPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(p.action === "link" ? 26 : 34);
+        expect(m.headWordsFit, `${f.name} ${label}: headline`).toBe(true);
+        expect(m.actionWordsFit, `${f.name} ${label}: row`).toBe(true);
+        expect(m.headLines, `${f.name} ${label}`).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it("a keyword or a URL takes one line; a comment that is the headline, or a channel, two at most", () => {
+    for (const f of FRAMES) {
+      for (const p of DENSE_CTA) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        if (p.action === "subscribe") expect(m.actionLines, `${f.name} channel`).toBeLessThanOrEqual(2);
+        else expect(m.actionLines, `${f.name} ${p.action}`).toBe(1);
+      }
+    }
+    // The headline typed into the box: two lines in 16:9; in 9:16 the floor
+    // binds first and it takes a third, which the box is held tall enough for.
+    expect(ctaCardMetrics(BOX_HEADLINE, 1920, 1080).actionLines).toBeLessThanOrEqual(2);
+    const portrait = ctaCardMetrics(BOX_HEADLINE, 1080, 1920);
+    expect(portrait.actionPx).toBe(34);
+    expect(portrait.actionLines).toBeLessThanOrEqual(3);
+  });
+
+  it("sizes the card to its content: a sparse card is narrower than a dense one, and less copy reads bigger", () => {
+    expect(ctaCardMetrics(SPARSE_CTA[1]!, 1920, 1080).cardWidthPx).toBeLessThan(
+      ctaCardMetrics(DENSE_CTA[1]!, 1920, 1080).cardWidthPx,
+    );
+    // In 16:9 both headlines fit two lines at the 72 px cap; 9:16 is where
+    // the 40 characters have to come down.
+    expect(ctaCardMetrics(SPARSE_CTA[1]!, 1080, 1920).headPx).toBeGreaterThan(
+      ctaCardMetrics(DENSE_CTA[1]!, 1080, 1920).headPx,
+    );
+  });
+
+  it("the action row never outgrows its headline", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        if (m.headLines === 0) continue;
+        const floor = p.action === "link" ? 26 : 34;
+        expect(m.actionPx, `${f.name} ${label}`).toBeLessThanOrEqual(Math.max(floor, Math.round(m.headPx * 0.8)));
+      }
+    }
+  });
+
+  it("the Subscribe button is as wide as its Subscribed state, so the press does not move the row", () => {
+    const m = ctaCardMetrics(SPARSE_CTA[1]!, 1920, 1080);
+    // "Subscribed" plus a tick is the wider of the two labels.
+    expect(m.buttonWidthPx).toBeGreaterThan(m.labelPx * 6 + m.tickPx);
+  });
+
+  it("the channel sits beside the button in 16:9 and above it in 9:16", () => {
+    expect(ctaCardMetrics(DENSE_CTA[1]!, 1920, 1080).mode).toBe("row");
+    expect(ctaCardMetrics(DENSE_CTA[1]!, 1080, 1920).mode).toBe("column");
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("CtaCard")).toBe(true);
+    expect(fitScale("CtaCard", DENSE.CtaCard, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+    expect(Number.isFinite(estimateHeightPx("CtaCard", DENSE.CtaCard, 1080))).toBe(true);
+  });
+});
+
+describe("ctaContent (§161, plan Task 5)", () => {
+  it("a comment types its keyword under the headline, or the headline itself when there is none", () => {
+    expect(ctaContent({ action: "comment", text: "Want it?", keyword: "PROMPT" })).toEqual({
+      headline: "Want it?",
+      field: "PROMPT",
+      fieldId: "keyword",
+      channel: null,
+    });
+    expect(ctaContent({ action: "comment", text: "Comment AGENT", keyword: "" })).toEqual({
+      headline: null,
+      field: "Comment AGENT",
+      fieldId: "text",
+      channel: null,
+    });
+  });
+
+  it("subscribe shows the channel only when it has one, and never a keyword", () => {
+    expect(ctaContent({ action: "subscribe", text: "Sub", keyword: "X", channel: "Ch" })).toEqual({
+      headline: "Sub",
+      field: null,
+      fieldId: null,
+      channel: "Ch",
+    });
+    expect(ctaContent({ action: "subscribe", text: "Sub", channel: "" }).channel).toBeNull();
+  });
+
+  it("a link with no keyword is the headline alone; a channel on any other action is not drawn", () => {
+    expect(ctaContent({ action: "link", text: "Link below" })).toEqual({
+      headline: "Link below",
+      field: null,
+      fieldId: null,
+      channel: null,
+    });
+    expect(ctaContent({ action: "link", text: "L", keyword: "a.dev", channel: "Ch" })).toMatchObject({
+      field: "a.dev",
+      fieldId: "keyword",
+      channel: null,
+    });
   });
 });

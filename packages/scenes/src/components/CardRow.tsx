@@ -22,9 +22,10 @@ type Props = z.infer<typeof CardRowProps>;
  * every word fits a line (`titleWordsFit`/`subWordsFit`): line breaks then
  * fall only at spaces, as `cardRowMetrics` counts them. Without this the
  * browser breaks after a hyphen, and a sub-line read "npm publish --" /
- * "tag latest" in the first dense still.
+ * "tag latest" in the first dense still. Exported for CtaCard, whose
+ * metric makes the same promise.
  */
-const Words: React.FC<{ text: string; whole: boolean }> = ({ text, whole }) =>
+export const Words: React.FC<{ text: string; whole: boolean }> = ({ text, whole }) =>
   whole ? (
     <>
       {text.split(" ").map((word, i) => (

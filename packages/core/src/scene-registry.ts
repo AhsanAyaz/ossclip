@@ -250,6 +250,25 @@ export const CardRowProps = z.object({
   ...RevealPropsShape,
 });
 
+/**
+ * The call to action, performed on screen (§161, plan Task 5): a comment
+ * typed into a box, a Subscribe button pressed, a link in a URL bar.
+ * Script-only. No reveal props: it is one card with no items to land on
+ * words, and its motion is a timeline of its own (`ctaTimeline`). No `logo`
+ * (plan decision 2): a file-path prop needs ScreenshotFrame's staging and
+ * safety checks, so the card shows `channel` beside a plain icon. The caps
+ * are what one card holds in 9:16 at the 34 px floor (`ctaCardMetrics`).
+ */
+export const CtaCardProps = z.object({
+  action: z.enum(["comment", "subscribe", "link"]),
+  /** The headline; for a comment with no `keyword`, the comment itself. */
+  text: z.string().min(1).max(40),
+  /** The asked-for word: the comment typed, or the link shown. */
+  keyword: z.string().max(16).optional(),
+  /** Beside the Subscribe button; absent, the row is the button alone. */
+  channel: z.string().max(24).optional(),
+});
+
 export interface SceneComponentMeta {
   propsSchema: z.ZodTypeAny;
   defaultProps: Record<string, unknown>;
@@ -399,6 +418,18 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     whenToUse:
       "The line lists two to four parallel things (steps, tools, options). One card per item, " +
       "in spoken order; set highlight to the chosen one.",
+    scriptOnly: true,
+    scrim: false,
+    fullFrame: true,
+  },
+  CtaCard: {
+    propsSchema: CtaCardProps,
+    defaultProps: { action: "subscribe", text: "Subscribe for more" },
+    defaultLayout: "full-bleed",
+    altLayouts: [],
+    whenToUse:
+      "The line asks the viewer to do something: comment a word, subscribe or follow, or open a link. " +
+      "Put the asked-for word in keyword.",
     scriptOnly: true,
     scrim: false,
     fullFrame: true,

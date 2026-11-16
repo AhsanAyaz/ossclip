@@ -261,6 +261,12 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
     case "ScreenshotFrame":
       texts = fields("label");
       break;
+    case "CtaCard":
+      // One card, no reveal items: it enters on the headline or the
+      // asked-for word, whichever is spoken first (plan Task 5). `channel`
+      // is left out — a channel name is said, if at all, as an aside.
+      texts = fields("text", "keyword");
+      break;
     case "StatCard":
       texts = fields("label", "value");
       break;
