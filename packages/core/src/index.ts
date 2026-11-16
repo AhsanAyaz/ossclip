@@ -52,4 +52,5 @@ export * from "./export-xmeml-util";
 export * from "./config";
 export * from "./resolution";
 export * from "./script/cues";
+export * from "./script/align";
 export { run } from "./exec";
