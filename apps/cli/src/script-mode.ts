@@ -18,15 +18,21 @@ import {
   PlannerComponentIdSchema,
   ProductionScriptSchema,
   SceneSchema,
+  TimeMap,
+  applyCleanupChoices,
+  applyUserCuts,
+  cutWordIndices,
   plannerComponentIds,
   type AlignedCue,
   type FramingContext,
   type LlmEffort,
   type Moment,
+  type OverrideDoc,
   type PlannerComponentId,
   type ProductionScript,
   type Scene,
   type ScriptCue,
+  type Segment,
   type SkippedCue,
 } from "@ossclip/core";
 import { ClipImportError, resolveClipPath } from "./clip-import";
@@ -212,6 +218,37 @@ export function mergeClipRecords(
 /** The clip import's output shape (`clipOutputName`): the only `src` produce copies around. */
 export function isProjectClipSrc(src: string): boolean {
   return /^clips\/[0-9a-f]{12}\.webm$/.test(src);
+}
+
+/**
+ * The words a script run aligns against and plans with: those the EFFECTIVE
+ * cut removes — the automatic cutlist after the user's cleanup vetoes and the
+ * editor's cuts from `overrides.json`, i.e. the cut that will be rendered
+ * (FINDINGS §158, 2026-11-16). The explainer workflow is cut and review
+ * first, then add the graphics, so a script line has to land on the take the
+ * author KEPT. Aligned against the automatic cut instead, the first real
+ * project (39 user cuts, 3 vetoes) placed 11 of 22 cues: lines whose words
+ * only the user's edits kept scored under the floor, and lines matched on
+ * words the user then cut were dropped at assembly.
+ *
+ * No second implementation of cut application: the same two calls, in the
+ * same order, as produce's own "cleanup vetoes reshape the PROPOSAL" block —
+ * vetoes first, then the user's cuts subtract from the result, so a cut drawn
+ * over a vetoed pause still cuts. `priorMap` is that block's too (the prior
+ * render-props.json), because a src-less cut is in the frame the user drew it
+ * in. Only the cutlist is used here; the doc write-back and the reports stay
+ * with that block, which runs later on the same inputs.
+ */
+export function scriptPlanCut(parts: {
+  words: readonly { start: number; end: number }[];
+  /** The automatic cutlist, as produce built it. */
+  cutlist: readonly Segment[];
+  doc: OverrideDoc;
+  priorMap: TimeMap | null;
+}): Set<number> {
+  const vetoed = applyCleanupChoices(parts.cutlist, parts.doc.cleanup);
+  const { cutlist } = applyUserCuts(parts.doc, vetoed, new TimeMap(vetoed), parts.priorMap);
+  return cutWordIndices(parts.words, cutlist);
 }
 
 /**

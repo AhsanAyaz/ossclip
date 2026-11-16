@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { parseScript, type AlignedCue, type Moment, type Scene, type SkippedCue } from "@ossclip/core";
+import {
+  OverrideDocSchema,
+  TimeMap,
+  cutWordIndices,
+  parseScript,
+  type AlignedCue,
+  type Moment,
+  type Scene,
+  type Segment,
+  type SkippedCue,
+} from "@ossclip/core";
 import {
   STORED_SCRIPT_BASENAME,
   ScriptPlanCacheSchema,
@@ -15,6 +25,7 @@ import {
   scriptCueProblems,
   scriptPlanCacheKey,
   scriptPlanCacheKeyCandidates,
+  scriptPlanCut,
   scriptSourcePath,
   storedScriptFrom,
   type CueOutcome,
@@ -350,5 +361,55 @@ describe("replanScriptArgs", () => {
     expect(
       replanScriptArgs(["produce", "in.mp4", "--scenes", "/w/scenes-reviewed.json", "--aspect", "16:9"], "/w/script.md"),
     ).toEqual(["produce", "in.mp4", "--aspect", "16:9", "--script", "/w/script.md"]);
+  });
+});
+
+describe("scriptPlanCut (the cut a script aligns against, §158 2026-11-16)", () => {
+  // Six one-second words; the automatic cut removes the third (a filler).
+  const words = [0, 1, 2, 3, 4, 5].map((t) => ({ start: t + 0.1, end: t + 0.9 }));
+  const auto: Segment[] = [
+    { srcIn: 0, srcOut: 2, kind: "keep" },
+    { srcIn: 2, srcOut: 3, kind: "remove", reason: "filler", confidence: 1 },
+    { srcIn: 3, srcOut: 6, kind: "keep" },
+  ];
+  const doc = (raw: unknown) => OverrideDocSchema.parse(raw);
+  const cut = (raw: unknown, priorMap: TimeMap | null = null) =>
+    [...scriptPlanCut({ words, cutlist: auto, doc: doc(raw), priorMap })].sort((a, b) => a - b);
+
+  it("with no overrides it is the automatic cut, exactly", () => {
+    expect(cut({})).toEqual([...cutWordIndices(words, auto)]);
+    expect(cut({})).toEqual([2]);
+  });
+
+  it("a user cut removes the words under it", () => {
+    expect(cut({ cuts: [{ startSec: 3, endSec: 4, src: { startSec: 4, endSec: 5 } }] })).toEqual([2, 4]);
+  });
+
+  it("a dismissed proposal revives the words the automatic cut removed", () => {
+    expect(cut({ cleanup: { dismissed: [{ srcIn: 2.2, srcOut: 2.8 }] } })).toEqual([]);
+  });
+
+  it("cleanup vetoes are honoured, one span or a whole reason", () => {
+    expect(cut({ cleanup: { kept: [{ srcIn: 2.2, srcOut: 2.8 }] } })).toEqual([]);
+    expect(cut({ cleanup: { reasons: { filler: false } } })).toEqual([]);
+  });
+
+  it("a user cut over a vetoed span still cuts (vetoes first, then cuts — produce's order)", () => {
+    expect(
+      cut({
+        cleanup: { kept: [{ srcIn: 2, srcOut: 3 }] },
+        cuts: [{ startSec: 2, endSec: 3, src: { startSec: 2, endSec: 3 } }],
+      }),
+    ).toEqual([2]);
+  });
+
+  it("a src-less cut is read in the frame the user drew it in, the prior render's", () => {
+    // The prior render had dropped the first second, so its output 0–1 is
+    // source 1–2: word 1, not word 0.
+    const prior = new TimeMap([
+      { srcIn: 0, srcOut: 1, kind: "remove", reason: "user", confidence: 1 },
+      { srcIn: 1, srcOut: 6, kind: "keep" },
+    ]);
+    expect(cut({ cuts: [{ startSec: 0, endSec: 1 }] }, prior)).toEqual([1, 2]);
   });
 });

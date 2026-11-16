@@ -67,6 +67,7 @@ import {
   dropHiddenCues,
   splitThenDropHidden,
   emptyOverrideDoc,
+  type OverrideDoc,
   extractAudio,
   encodeUploadAudio,
   REMOTE_UPLOAD_MAX_BYTES,
@@ -285,6 +286,7 @@ import {
   scriptCueProblems,
   scriptPlanCacheKey,
   scriptPlanCacheKeyCandidates,
+  scriptPlanCut,
   scriptSourcePath,
   storedScriptFrom,
   type CueOutcome,
@@ -650,6 +652,39 @@ export function priorScript(work: string): ProductionScript | undefined {
     return undefined;
   }
   return storedScriptFrom(text);
+}
+
+/**
+ * The workdir's `overrides.json`, parsed — or the empty doc when there is
+ * none. Hand-editable user data, so an invalid file is refused rather than
+ * silently reset. One reader for both callers: the cut application (the
+ * user's edit layer, below the plan) and script mode, which aligns against
+ * that same cut BEFORE planning (§158, 2026-11-16).
+ */
+async function readOverrideDoc(overridesPath: string): Promise<OverrideDoc> {
+  if (!existsSync(overridesPath)) return emptyOverrideDoc();
+  const parsed = OverrideDocSchema.safeParse(JSON.parse(await readFile(overridesPath, "utf8")));
+  if (!parsed.success) {
+    // Hand-editable user data: refuse rather than silently resetting it.
+    throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
+  }
+  return parsed.data;
+}
+
+/**
+ * The frame the user last looked at — the previous run's `render-props.json`
+ * spans — or null when there is no readable one. `applyUserCuts`' `priorMap`;
+ * the call site in produce carries the full why.
+ */
+async function readPriorMap(renderPropsPath: string): Promise<TimeMap | null> {
+  if (!existsSync(renderPropsPath)) return null;
+  try {
+    const prev = JSON.parse(await readFile(renderPropsPath, "utf8")) as { spans?: KeptSpan[] };
+    if (prev.spans) return mapFromKeptSpans(prev.spans);
+  } catch {
+    // Unreadable/corrupt — treated the same as no prior run.
+  }
+  return null;
 }
 
 /**
@@ -3860,7 +3895,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // AFTER any clip slice: `transcript` and `cutlist` are the window's now.
     // The automatic cutlist only — cleanup vetoes and editor cuts land later
     // (below) and are post-plan edits; keying on them would re-plan, and drop
-    // scene edits, every time the user trims a word in the editor.
+    // scene edits, every time the user trims a word in the editor. Script
+    // mode does not use it: it aligns on the cut as edited (§158, below).
     const planCut = cutWordIndices(transcript.words, cutlist);
     const beatKeyParts = {
       promptVersion: PRODUCER_PROMPT_VERSION,
@@ -3898,10 +3934,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // above is never read or written by a script run (G6) — the keys are
       // computed above for every run, but only the branches below open them.
       //
-      // Aligned against the automatic cutlist's kept words (`planCut`), the
-      // same marking the beat-sheet call gets: a line said in a blooper that
-      // was cut can then only match the take that survived (§1.2).
-      scriptAlignment = alignCues(scriptRun.cues, transcript, planCut);
+      // Aligned against the EFFECTIVE cut — the automatic cutlist after the
+      // user's cleanup vetoes and editor cuts, the cut that will render — not
+      // `planCut` (§158, 2026-11-16): a line said in a blooper that was cut can
+      // only match the take that survived (§1.2), and in the cut-and-review-
+      // first workflow "survived" is the author's call. Against `planCut` the
+      // first real project placed 11 of 22 cues. The same files the edit
+      // layer reads below, read early here only; nothing writes either one
+      // in between, so the two see the same cut.
+      const scriptCut = scriptPlanCut({
+        words: transcript.words,
+        cutlist,
+        doc: await readOverrideDoc(join(work, "overrides.json")),
+        priorMap: await readPriorMap(join(work, "render-props.json")),
+      });
+      scriptAlignment = alignCues(scriptRun.cues, transcript, scriptCut);
       const { aligned } = scriptAlignment;
       // Clips are imported only for cues that aligned — a skipped cue would
       // pay a transcode for nothing — and into the WORKDIR: the editor's
@@ -3930,7 +3977,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       const scriptKeyParts = {
         promptVersion: SCRIPT_PLAN_PROMPT_VERSION,
         scriptText: scriptRun.text,
-        keptWords: keptWordsKey(transcript.words, planCut),
+        // The effective cut, on purpose: unlike the beat-sheet key (which
+        // keys on `planCut` so scene edits survive a trim), a script plan
+        // re-runs when the user changes the cut — landing on the words
+        // actually kept matters more here than keeping edits across a
+        // re-cut (§158).
+        keptWords: keptWordsKey(transcript.words, scriptCut),
         clipNames: clips.map((c) => c.src),
         llmModel: opts.llmModel,
         llmEffort,
@@ -3972,7 +4024,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             forceComponent: opts.forceComponent,
             framing: framingCtx,
             aspect: landscape ? "16:9" : "9:16",
-            cut: planCut,
+            cut: scriptCut,
             script: { aligned, clips },
           }),
         );
@@ -4527,17 +4579,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // must see the POST-cut timeline, so the file has to be read and the cut
   // applied before any of that runs.
   const overridesPath = join(work, "overrides.json");
-  let overrideDoc = emptyOverrideDoc();
-  if (existsSync(overridesPath)) {
-    const parsed = OverrideDocSchema.safeParse(
-      JSON.parse(await readFile(overridesPath, "utf8")),
-    );
-    if (!parsed.success) {
-      // Hand-editable user data: refuse rather than silently resetting it.
-      throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
-    }
-    overrideDoc = parsed.data;
-  }
+  let overrideDoc = await readOverrideDoc(overridesPath);
   // ---- Cleanup choices: the user's veto over the AUTOMATIC cutlist (cut
   // review step 3) ------------------------------------------------------
   // Applied here — the same load `cuts` rides, before `applyUserCuts` — and
@@ -4584,16 +4626,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // through as-is rather than defaulting to `map` — `applyUserCuts` needs to
   // tell "no prior frame to compare against" apart from "available and
   // happens to equal `map`" (finding 3's re-anchor gate depends on it).
-  const priorRenderProps = join(work, "render-props.json");
-  let priorMap: TimeMap | null = null;
-  if (existsSync(priorRenderProps)) {
-    try {
-      const prev = JSON.parse(await readFile(priorRenderProps, "utf8")) as { spans?: KeptSpan[] };
-      if (prev.spans) priorMap = mapFromKeptSpans(prev.spans);
-    } catch {
-      // Unreadable/corrupt — treated the same as no prior run.
-    }
-  }
+  const priorMap = await readPriorMap(join(work, "render-props.json"));
   const cutResult = applyUserCuts(overrideDoc, cutlist, map, priorMap);
   cutlist = cutResult.cutlist;
   map = cutResult.map;

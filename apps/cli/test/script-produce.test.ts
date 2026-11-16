@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockProvider, alignCues, parseScript } from "@ossclip/core";
@@ -161,6 +170,83 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     expect(args.filter((a) => a === "--script")).toHaveLength(1);
     expect(args[args.indexOf("--script") + 1]).toBe(scriptPath);
   }, 120_000);
+
+  it("aligns against the cut as edited: a revived word places, a user-cut line skips at alignment (§158)", async () => {
+    // The cut-and-review-first workflow (§158, 2026-11-16): the first real
+    // project placed 11 of 22 cues because alignment saw the AUTOMATIC cut.
+    // Here the author keeps the "um" the automatic cut removes (a veto) and
+    // cuts the whole "Today … cool" line by hand, then adds the graphics.
+    const root = join(dir, "wd-edited");
+    const scriptPath = join(dir, "script", "edited.script.md");
+    writeFileSync(
+      scriptPath,
+      [
+        "🎬 Title card: welcome back",
+        "🗣️ Hello everyone, welcome back.",
+        "",
+        "🎬 [StatCard] One filler: um",
+        "🗣️ um",
+        "",
+        "🎬 clip: clips/fixture-clip.webm",
+        "🗣️ Today I want to show you something cool.",
+        "",
+        "🎬 [StatCard] One number: the clean edit",
+        "🗣️ This raw take becomes a clean edit automatically.",
+        "",
+      ].join("\n"),
+    );
+    // A cue's `line` is its 🎬 line, 1-based — the line directly above its
+    // 🗣️, whose 0-based index is therefore the same number.
+    const cueLine = (spoken: string) => readFileSync(scriptPath, "utf8").split("\n").indexOf(`🗣️ ${spoken}`);
+    const umLine = cueLine("um");
+    const clipLine = cueLine("Today I want to show you something cool.");
+    const umIndex = 4; // fixture.transcript.json: "um" at 4.64–4.97s
+    const todayIndex = 5;
+
+    // Before any edit: the automatic cut removes "um", so its cue is the one
+    // that cannot place, and the clip line places.
+    await run(root, scriptPath);
+    const work = workdirOf(root);
+    const before = JSON.parse(readFileSync(join(work, "script-report.json"), "utf8")).outcomes as {
+      line: number;
+      status: string;
+      reason?: string;
+    }[];
+    expect(before.find((o) => o.line === umLine)!.status).toBe("skipped");
+    expect(before.find((o) => o.line === clipLine)!.status).toBe("placed");
+
+    // The editor's edits: keep the "um", cut 5.2–9.0s ("Today … cool").
+    writeFileSync(
+      join(work, "overrides.json"),
+      JSON.stringify({
+        cleanup: { kept: [{ srcIn: 4.7, srcOut: 4.9 }] },
+        cuts: [{ startSec: 4, endSec: 7.8, src: { startSec: 5.2, endSec: 9.0 } }],
+      }),
+    );
+    vi.mocked(alignCues).mockClear();
+    await run(root, scriptPath);
+
+    const { aligned, skipped } = vi.mocked(alignCues).mock.results[0]!.value as ReturnType<typeof alignCues>;
+    // The revived word is a candidate: the "um" cue sits on it.
+    const um = aligned.find((a) => a.cue.line === umLine);
+    expect(um).toMatchObject({ startWord: umIndex, endWord: umIndex, score: 1 });
+    // The cut line never reaches the planner: skipped at ALIGNMENT, not
+    // aligned and then dropped by the assembler for its cut anchor words.
+    expect(aligned.some((a) => a.cue.line === clipLine || a.startWord === todayIndex)).toBe(false);
+    expect(skipped.find((s) => s.cue.line === clipLine)).toMatchObject({ reason: "below-floor" });
+
+    const after = JSON.parse(readFileSync(join(work, "script-report.json"), "utf8")).outcomes as {
+      line: number;
+      status: string;
+      reason?: string;
+    }[];
+    const clipOutcome = after.find((o) => o.line === clipLine)!;
+    expect(clipOutcome.status).toBe("skipped");
+    expect(clipOutcome.reason).toMatch(/below the 0\.6 match floor/);
+    expect(after.some((o) => o.reason?.startsWith("dropped:"))).toBe(false);
+    // The edit changed the kept words, so the plan re-ran under a new key.
+    expect(readdirSync(work).filter((f) => f.startsWith("scriptplan-"))).toHaveLength(2);
+  }, 240_000);
 
   it("G6: without --script, no script code runs and nothing script-shaped is written", async () => {
     const root = join(dir, "wd-plain");
