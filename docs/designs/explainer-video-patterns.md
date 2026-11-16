@@ -3,7 +3,7 @@
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
 *   **Status:** Approved (2026-11-16)
 *   **Date:** 2026-11-16
-*   **Reference:** the author's [Video Playbook](https://claude.ai/artifact/4a5Rjazb3oc17gn3U2XzG5) (style, patterns, script format) and the finished video `EGM_V2.mov`
+*   **Reference:** the author's Video Playbook (a private document) (style, patterns, script format) and the finished video `EGM_V2.mov`
 
 --------------------------------------------------------------------------------
 

@@ -302,7 +302,7 @@ Decisions: `clipTranscodeArgs` = `-y -i <src> -c:v libvpx-vp9 -pix_fmt yuva420p 
 - [ ] **Step 2: Run.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: One real check** (not a unit test): transcode `/mnt/c/Users/ahsanayaz/Videos/EGM/egm_steps_alpha_sfx.mov` with the built args into the scratch directory and confirm `ffprobe -show_entries stream=codec_name,pix_fmt` reports `vp9`, and `ffprobe -show_entries stream_tags=alpha_mode` reports `1`. Record the encode time in the commit body. Skip with a note if the file is absent.
+- [ ] **Step 5: One real check** (not a unit test): transcode `<clips-dir>/egm_steps_alpha_sfx.mov` with the built args into the scratch directory and confirm `ffprobe -show_entries stream=codec_name,pix_fmt` reports `vp9`, and `ffprobe -show_entries stream_tags=alpha_mode` reports `1`. Record the encode time in the commit body. Skip with a note if the file is absent.
 - [ ] **Step 6: Commit** `feat: import transparent clips as VP9 alpha`
 
 ---
@@ -392,7 +392,7 @@ Carried over from Tasks 4 and 6:
 
 ### Task 9: Acceptance on the EGM video (main session, not delegated)
 
-- [ ] Write `EGM/egm-script-clips.md` beside the clips in `/mnt/c/Users/ahsanayaz/Videos/EGM/`: the fixture script with each cue rewritten as `🎬 clip: <file>_alpha_sfx.mov` for the shot it corresponds to (mapping from the playbook's shot table), and spoken lines updated to what was recorded where the recording departed from the script.
+- [ ] Write `EGM/egm-script-clips.md` beside the clips in `<clips-dir>/`: the fixture script with each cue rewritten as `🎬 clip: <file>_alpha_sfx.mov` for the shot it corresponds to (mapping from the playbook's shot table), and spoken lines updated to what was recorded where the recording departed from the script.
 - [ ] Run `ossclip produce "<raw footage>" --script … --aspect 16:9 --no-captions --no-watermark --review` and read the cue report.
 - [ ] Check the acceptance bars from the spec: at least 22 of 24 cues placed; each scene starts within 0.5 s of its line; clips show with transparency in the editor preview and in a render; the same footage without `--script` yields the same plan as before this branch.
 - [ ] Record measured alignment scores in `§158`. If the 0.6 floor wrongly skips or wrongly places a cue, stop and report to the author rather than tuning silently.
