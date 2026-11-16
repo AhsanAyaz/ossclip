@@ -33,7 +33,15 @@ export const DELIVERY_VIDEO_BITRATE_KBPS = 10000;
 export const DELIVERY_MAX_BITRATE_KBPS = 12000;
 
 /** What encodeDelivery's `-b:a` always is — fitBitrateKbps must budget for it. */
-export const DELIVERY_AUDIO_BITRATE_KBPS = 192;
+export const DELIVERY_AUDIO_BITRATE_KBPS = 128;
+
+/**
+ * The delivery audio rate. Threads' video spec (the strictest consumer):
+ * "AAC, 48khz sample rate maximum ... Audio bitrate: 128 kbps" — a 96 kHz
+ * file was refused with no error text while six networks took it
+ * (2026-11-13), so delivery always writes 48 kHz at 128 kbps.
+ */
+export const DELIVERY_AUDIO_SAMPLE_RATE = 48000;
 
 /**
  * Below ~1 Mbps, 1080p h264 is visibly broken — a size cap that forces the
@@ -75,6 +83,9 @@ export interface DeliverySource {
   duration: number;
   /** From stat — with duration this measures the real bitrate, no probe schema change needed. */
   sizeBytes: number;
+  /** The master's audio rate. Over DELIVERY_AUDIO_SAMPLE_RATE forces an
+   * encode even when the picture is in spec — Threads refuses such a file. */
+  audioSampleRate?: number;
 }
 
 export interface DeliveryPlan {
@@ -90,7 +101,10 @@ export interface DeliveryPlan {
  * change misses the old cache instead of silently serving it.
  */
 export function deliveryFileName(width: number, height: number, videoBitrateKbps: number): string {
-  return `delivery-${width}x${height}@${videoBitrateKbps}k.mp4`;
+  // `-a48`: the 48 kHz / 128 kbps / no-edit-list encode (2026-11-13). The
+  // suffix makes every pre-fix delivery file a cache MISS — those carry 96 kHz
+  // audio Threads refuses, and the cache is keyed on this name alone.
+  return `delivery-${width}x${height}@${videoBitrateKbps}k-a48.mp4`;
 }
 
 /**
@@ -142,7 +156,8 @@ export function deliveryEncodePlan(
   );
   const measuredKbps = (src.sizeBytes * 8) / src.duration / 1000;
   const fitsCap = opts.sizeCapBytes === undefined || src.sizeBytes <= opts.sizeCapBytes;
-  if (k === 1 && measuredKbps <= DELIVERY_MAX_BITRATE_KBPS && fitsCap) return null;
+  const audioOk = (src.audioSampleRate ?? 0) <= DELIVERY_AUDIO_SAMPLE_RATE;
+  if (k === 1 && measuredKbps <= DELIVERY_MAX_BITRATE_KBPS && fitsCap && audioOk) return null;
   // At k === 1 keep the exact source dims — even-rounding a size that is not
   // being rescaled would manufacture a 1px no-op rescale (mezzanineScale
   // learned the same lesson).
@@ -165,6 +180,39 @@ export function deliveryEncodePlan(
 }
 
 /**
+ * The delivery encode's ffmpeg args, pure so the platform-spec values are
+ * pinned by a test (the openCommand/openInBrowser split). Every audio and
+ * container choice is Threads' published video spec, the strictest of the
+ * networks: 48 kHz, 128 kbps, "no edit lists, moov atom at the front".
+ * `-use_editlist 0` with `negative_cts_offsets` drops the edit lists without
+ * shifting audio against video — B-frame reordering moves into signed
+ * composition offsets instead (checked 2026-11-13: both streams start at 0).
+ */
+export function deliveryEncodeArgs(
+  src: { path: string; width: number; height: number },
+  dest: string,
+  plan: DeliveryPlan,
+): string[] {
+  const scaling = plan.width !== src.width || plan.height !== src.height;
+  return [
+    "-y", "-i", src.path,
+    // Machine-readable progress on stdout, and -nostats so the human
+    // frame-counter doesn't spam stderr alongside it.
+    "-progress", "pipe:1", "-nostats",
+    ...(scaling ? ["-vf", `scale=${plan.width}:${plan.height}`] : []),
+    "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
+    "-b:v", `${plan.videoBitrateKbps}k`,
+    "-maxrate", `${DELIVERY_MAX_BITRATE_KBPS}k`, "-bufsize", "20000k",
+    // The audio rate fitBitrateKbps budgets for — one constant, no drift.
+    "-c:a", "aac", "-b:a", `${DELIVERY_AUDIO_BITRATE_KBPS}k`,
+    "-ar", String(DELIVERY_AUDIO_SAMPLE_RATE),
+    "-use_editlist", "0",
+    "-movflags", "+faststart+negative_cts_offsets",
+    dest,
+  ];
+}
+
+/**
  * Run the delivery encode. `+faststart` is load-bearing: it moves the moov
  * atom up front, which is what makes platforms' progressive/ranged fetches
  * work (LinkedIn's 206 consumer was the victim of a tail-moov master).
@@ -176,7 +224,6 @@ export async function encodeDelivery(
   plan: DeliveryPlan,
   opts: { onProgress?: (p: FfmpegProgress) => void } = {},
 ): Promise<void> {
-  const scaling = plan.width !== src.width || plan.height !== src.height;
   // ffmpeg's -progress stream vs. chunk boundaries: a data event can split a
   // line mid-value ("out_time_us=12" + "345\n" parses as the wrong number),
   // so only complete lines reach the parser and the tail carries over. The
@@ -204,20 +251,7 @@ export async function encodeDelivery(
   // reuse that corpse forever.
   const partial = `${dest}.partial.mp4`;
   try {
-    await run(tools.ffmpegPath, [
-      "-y", "-i", src.path,
-      // Machine-readable progress on stdout, and -nostats so the human
-      // frame-counter doesn't spam stderr alongside it.
-      "-progress", "pipe:1", "-nostats",
-      ...(scaling ? ["-vf", `scale=${plan.width}:${plan.height}`] : []),
-      "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
-      "-b:v", `${plan.videoBitrateKbps}k`,
-      "-maxrate", `${DELIVERY_MAX_BITRATE_KBPS}k`, "-bufsize", "20000k",
-      // The audio rate fitBitrateKbps budgets for — one constant, no drift.
-      "-c:a", "aac", "-b:a", `${DELIVERY_AUDIO_BITRATE_KBPS}k`,
-      "-movflags", "+faststart",
-      partial,
-    ], { onStdout });
+    await run(tools.ffmpegPath, deliveryEncodeArgs(src, partial, plan), { onStdout });
     await rename(partial, dest);
   } catch (err) {
     await rm(partial, { force: true });
@@ -269,6 +303,9 @@ export async function ensureDeliveryFile(
       fps: masterProbe.fps,
       duration: masterProbe.duration,
       sizeBytes: masterStat.size,
+      ...(masterProbe.audioSampleRate !== undefined
+        ? { audioSampleRate: masterProbe.audioSampleRate }
+        : {}),
     },
     { sizeCapBytes: opts.sizeCapBytes },
   );

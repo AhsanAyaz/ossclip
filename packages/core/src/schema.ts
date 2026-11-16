@@ -88,6 +88,9 @@ export const ProbeSchema = z.object({
    * predate it and must still parse.
    */
   rotation: z.number().int().optional(),
+  /** The first audio stream's sample rate in Hz. Optional: older
+   * production.json files predate it, and a silent source has none. */
+  audioSampleRate: z.number().int().positive().optional(),
 });
 export type Probe = z.infer<typeof ProbeSchema>;
 

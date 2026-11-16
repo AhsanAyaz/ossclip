@@ -44,6 +44,7 @@ export async function probe(tools: IngestTools, path: string): Promise<Probe> {
       r_frame_rate?: string;
       side_data_list?: Array<{ rotation?: number }>;
       tags?: { rotate?: string };
+      sample_rate?: string;
     }>;
     format?: { duration?: string };
   };
@@ -73,6 +74,11 @@ export async function probe(tools: IngestTools, path: string): Promise<Probe> {
     fps: den ? (num ?? 30) / den : 30,
     hasAudio: Boolean(audio),
     ...(rotation !== 0 ? { rotation } : {}),
+    // Optional, like rotation: only the delivery plan reads it (a >48 kHz
+    // master must be re-encoded for Threads).
+    ...(audio?.sample_rate !== undefined && Number(audio.sample_rate) > 0
+      ? { audioSampleRate: Number(audio.sample_rate) }
+      : {}),
   };
 }
 
@@ -306,13 +312,25 @@ export async function makeMezzanine(
   ]);
 }
 
-/** EBU R128 loudness normalization post-pass; video stream is copied untouched. */
-export async function loudnorm(tools: IngestTools, src: string, out: string): Promise<void> {
-  await run(tools.ffmpegPath, [
+/**
+ * The loudness pass's ffmpeg args. `-ar 48000` is load-bearing: the loudnorm
+ * filter resamples to 192 kHz internally and, left alone, the AAC encoder
+ * writes the highest rate it supports — every final render shipped 96 kHz
+ * audio, which Threads (48 kHz max in its video spec) refused without an
+ * error message (2026-11-13).
+ */
+export function loudnormArgs(src: string, out: string): string[] {
+  return [
     "-y", "-i", src,
     "-c:v", "copy",
     "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+    "-ar", "48000",
     "-c:a", "aac", "-b:a", "192k",
     out,
-  ]);
+  ];
+}
+
+/** EBU R128 loudness normalization post-pass; video stream is copied untouched. */
+export async function loudnorm(tools: IngestTools, src: string, out: string): Promise<void> {
+  await run(tools.ffmpegPath, loudnormArgs(src, out));
 }

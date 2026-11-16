@@ -406,16 +406,16 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
     expect(mediaById["c"]).toBeUndefined();
     // The confirm summary named BOTH files before the "yes".
     const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
-    expect(output).toContain("▸ upload: delivery-1920x1080@10000k.mp4 (delivery encode, cached in workdir)");
+    expect(output).toContain("▸ upload: delivery-1920x1080@10000k-a48.mp4 (delivery encode, cached in workdir)");
     expect(output).toContain(
-      "▸ upload (instagram): delivery-1920x1080@2113k.mp4 (delivery encode, cached in workdir)",
+      "▸ upload (instagram): delivery-1920x1080@2177k-a48.mp4 (delivery encode, cached in workdir)",
     );
   });
 
   it("an unattainable size cap drops the channel loudly before the confirm; the rest publish", async () => {
     const { dir } = await workdirWithRender();
     // 800s is under instagram's 900s duration cap, but its 95MB size cap
-    // fits only ~730 kbps — below the 1000 kbps quality floor.
+    // fits only ~794 kbps (after 128k audio) — below the 1000 kbps quality floor.
     const { published, ensureCalls, deps } = fakes({
       targets: [targets[0]!, targets[1]!],
       probe: { ...masterProbe, duration: 800 },
@@ -424,7 +424,7 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
     await runPublish(dir, { all: true, yes: true }, deps);
     const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(output).toContain(
-      "▸ instagram needs ≤95MB but a 13:20 video fits only ~730 kbps — " +
+      "▸ instagram needs ≤95MB but a 13:20 video fits only ~794 kbps — " +
         "skipping codewithahsan; publish it manually or shorten the cut",
     );
     expect(published[0]!.posts.map((p) => p.target.provider)).toEqual(["linkedin"]);
