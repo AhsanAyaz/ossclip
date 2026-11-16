@@ -77,6 +77,15 @@ describe("resolveTheme over a configured base (§161)", () => {
     ).toEqual({ accent: "#123456" });
   });
 
+  it("a filled theme saved while the terminal pair had a default still parses", () => {
+    // Only this unshipped branch ever wrote these: the terminal pair is
+    // optional now, `defaultTheme.terminalBg` is undefined, and the heal's
+    // equality test must not trip over it.
+    const filled = { ...defaultTheme, accent: "#123456", terminalBg: "#15151B", terminalBar: "#15151B" };
+    expect(() => OverrideDocSchema.parse({ theme: filled })).not.toThrow();
+    expect(OverrideDocSchema.parse({ theme: filled }).theme.accent).toBe("#123456");
+  });
+
   it("a hand-written theme with only a few keys is not touched, even where it equals a default", () => {
     const few: Partial<Theme> = { accent: defaultTheme.accent, bg: "#111111", radiusPx: 4 };
     expect(stripFilledThemeDefaults(few)).toEqual(few);

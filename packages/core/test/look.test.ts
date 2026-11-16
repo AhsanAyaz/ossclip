@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { LookSchema, lookTheme } from "../src/look";
 import { emptyOverrideDoc, resolveTheme } from "../src/overrides";
-import { ThemeOverrideSchema, ThemeSchema, type Theme } from "../src/scene-schema";
+import {
+  ThemeOverrideSchema,
+  ThemeSchema,
+  defaultTheme,
+  terminalColors,
+  type Theme,
+} from "../src/scene-schema";
 
 /**
  * The explainer look (design §2.2): a theme preset, not a new theme system.
@@ -13,8 +19,17 @@ describe("theme roles", () => {
     expect(ThemeSchema.parse({})).toMatchObject({
       bg: "#0B0B0E", accent: "#FFE14D", cardBg: "#15151B",
       accent2: "#FFE14D", highlight: "#FFE14D", info: "#9A9AA3", ink: "#0B0B0E",
-      terminalBg: "#15151B", terminalBar: "#15151B", fonts: "system", motion: "classic",
+      fonts: "system", motion: "classic",
     });
+  });
+
+  // The terminal pair has no default (§161): unset means "follow cardBg",
+  // which a fixed "#15151B" default could not say for a user whose config
+  // theme sets only cardBg.
+  it("leaves the terminal colours unset rather than defaulting them", () => {
+    const parsed = ThemeSchema.parse({});
+    expect(Object.hasOwn(parsed, "terminalBg")).toBe(false);
+    expect(Object.hasOwn(parsed, "terminalBar")).toBe(false);
   });
 
   // Review Focus 1: render-props written before this change carry a theme
@@ -33,13 +48,34 @@ describe("theme roles", () => {
     expect(theme).toEqual({
       ...saved,
       accent2: "#FFE14D", highlight: "#FFE14D", info: "#9A9AA3", ink: "#0B0B0E",
-      terminalBg: "#15151B", terminalBar: "#15151B", fonts: "system", motion: "classic",
+      fonts: "system", motion: "classic",
     });
   });
 
   it("rejects an unknown fonts or motion value instead of falling back", () => {
     expect(() => ThemeSchema.parse({ fonts: "google" })).toThrow();
     expect(() => ThemeSchema.parse({ motion: "bouncy" })).toThrow();
+  });
+});
+
+describe("terminalColors", () => {
+  it("with neither set, the window and its bar follow a custom cardBg", () => {
+    const theme = ThemeSchema.parse({ cardBg: "#223344" });
+    expect(terminalColors(theme)).toEqual({ bg: "#223344", bar: "#223344" });
+  });
+
+  it("the default theme draws the card colour it always did", () => {
+    expect(terminalColors(defaultTheme)).toEqual({ bg: "#15151B", bar: "#15151B" });
+  });
+
+  it("with only terminalBg set, the bar follows it", () => {
+    const theme = ThemeSchema.parse({ cardBg: "#223344", terminalBg: "#010203" });
+    expect(terminalColors(theme)).toEqual({ bg: "#010203", bar: "#010203" });
+  });
+
+  it("the explainer look gives its own window and bar", () => {
+    const theme = ThemeSchema.parse({ ...defaultTheme, ...lookTheme("explainer") });
+    expect(terminalColors(theme)).toEqual({ bg: "#0F1320", bar: "#1A2034" });
   });
 });
 

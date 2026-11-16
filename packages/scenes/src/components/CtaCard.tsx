@@ -1,7 +1,7 @@
 import React from "react";
 import { useCurrentFrame, useVideoConfig } from "remotion";
 import { z } from "zod/v4";
-import { CtaCardProps, type Theme } from "@ossclip/core/browser";
+import { CtaCardProps, terminalColors, type Theme } from "@ossclip/core/browser";
 import { enterProgress, entranceStyle } from "../anim";
 import {
   CTA_ACTION_LH,
@@ -358,7 +358,7 @@ export const CtaCard: React.FC<{
           padding: `${CTA_BOX_PAD_Y_PX}px ${CTA_BOX_PAD_X_PX}px`,
           border: `${CTA_BOX_BORDER_PX}px solid ${theme.cardBorder}`,
           borderRadius: 999,
-          background: theme.terminalBg,
+          background: terminalColors(theme).bg,
         }}
       >
         <Icon name="search" sizePx={m.iconPx} color={theme.info} />

@@ -333,9 +333,10 @@ export const ThemeSchema = z.object({
   fontMono: z.string().default("'SF Mono', 'Cascadia Code', Consolas, monospace"),
   // The explainer look's extra roles (design §2.2). Each default is the
   // colour that role is drawn with today — `accent2`/`highlight` the accent,
-  // `info` the muted grey, `ink` the background, the terminal pair the card —
-  // so a theme without them (every render-props written before they existed,
-  // and every run without `--look`) renders the same pixels (plan G6).
+  // `info` the muted grey, `ink` the background — so a theme without them
+  // (every render-props written before they existed, and every run without
+  // `--look`) renders the same pixels (plan G6). The terminal pair is the
+  // exception, below.
   /** Second accent: the playbook's blue beside its orange `accent`. */
   accent2: z.string().default("#FFE14D"),
   /** The playbook's yellow, its own role because the explainer `accent` is
@@ -345,8 +346,15 @@ export const ThemeSchema = z.object({
   info: z.string().default("#9A9AA3"),
   /** The playbook's near-black ink, distinct from the slate `bg`. */
   ink: z.string().default("#0B0B0E"),
-  terminalBg: z.string().default("#15151B"),
-  terminalBar: z.string().default("#15151B"),
+  /**
+   * The terminal window and its title bar. Optional with NO default (§161):
+   * the window has always been drawn in `cardBg`, and a fixed "#15151B"
+   * default painted a user's config `cardBg` over with the factory colour
+   * on every run without `--look`. Unset means "follow `cardBg`"; read them
+   * through `terminalColors`, never directly.
+   */
+  terminalBg: z.string().optional(),
+  terminalBar: z.string().optional(),
   /**
    * Gates loading the bundled font files. "system" (the default) loads
    * nothing, so every other run keeps today's font resolution; only the
@@ -363,6 +371,17 @@ export const ThemeSchema = z.object({
 });
 export type Theme = z.infer<typeof ThemeSchema>;
 export const defaultTheme: Theme = ThemeSchema.parse({});
+
+/**
+ * The colours a terminal-style surface is drawn in. `terminalBg` falls back
+ * to `cardBg` and `terminalBar` to the window's colour, so a theme that sets
+ * neither draws the window in its card colour, as before the roles existed
+ * (§161), and one that sets only `terminalBg` gets a bar that matches it.
+ */
+export function terminalColors(theme: Theme): { bg: string; bar: string } {
+  const bg = theme.terminalBg ?? theme.cardBg;
+  return { bg, bar: theme.terminalBar ?? bg };
+}
 
 type ThemeShape = typeof ThemeSchema.shape;
 /** Each field of `ThemeSchema` with its `.default(...)` wrapper peeled off. */

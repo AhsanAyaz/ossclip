@@ -1,7 +1,7 @@
 import React from "react";
 import { useCurrentFrame, useVideoConfig } from "remotion";
 import { z } from "zod/v4";
-import { BugCardProps, type Theme } from "@ossclip/core/browser";
+import { BugCardProps, terminalColors, type Theme } from "@ossclip/core/browser";
 import { enterProgress, entranceStyle } from "../anim";
 import {
   BUG_BADGE_GAP_PX,
@@ -484,7 +484,7 @@ export const BugCard: React.FC<{
           widthPx={m.mockPanel.w}
           style={{
             ...box(m.mockPanel),
-            background: theme.terminalBg,
+            background: terminalColors(theme).bg,
             // The clipped fault's edge: a word slid past it is cut here.
             overflow: "hidden",
             display: "flex",

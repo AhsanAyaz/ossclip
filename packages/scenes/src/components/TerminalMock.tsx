@@ -1,7 +1,7 @@
 import React from "react";
 import { useCurrentFrame, useVideoConfig } from "remotion";
 import { z } from "zod/v4";
-import { TerminalMockProps, type Theme } from "@ossclip/core/browser";
+import { TerminalMockProps, terminalColors, type Theme } from "@ossclip/core/browser";
 import { enterFrames, entranceStyle, rise, useEnter } from "../anim";
 import {
   componentRevealFrames,
@@ -318,6 +318,7 @@ const Window: React.FC<{
   explainer?: { plan: TerminalWindowPlan; cps: number; t: number };
 }> = ({ title, lines, entrance, delay, theme, editId, edits, explainer }) => {
   const p = useEnter(delay);
+  const term = terminalColors(theme);
   return (
     <div
       data-edit-id={editId}
@@ -325,9 +326,10 @@ const Window: React.FC<{
         // Unset is `pop`, the window's style since day one (spec §4).
         ...entranceStyle(entrance, p),
         // Terminal roles, not `cardBg` (§161): the explainer look's windows
-        // are darker than its cards. Both default to the card colour, so
-        // the default theme draws the window it always did.
-        background: theme.terminalBg,
+        // are darker than its cards. Unset, both follow `cardBg`, so a theme
+        // without them (a user's config `cardBg` included) draws the window
+        // it always did.
+        background: term.bg,
         border: `2px solid ${theme.cardBorder}`,
         borderRadius: theme.radiusPx / 2,
         overflow: "hidden",
@@ -349,7 +351,7 @@ const Window: React.FC<{
           // rounded border: the default theme's terminal came out up to 5
           // levels off along its corners (plan Task 8's `cmp` of default-
           // theme stills, before and after) — not the same frames.
-          background: theme.terminalBar === theme.terminalBg ? undefined : theme.terminalBar,
+          background: term.bar === term.bg ? undefined : term.bar,
         }}
       >
         {["#FF5F57", "#FEBC2E", "#28C840"].map((c) => (
