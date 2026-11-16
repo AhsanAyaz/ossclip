@@ -158,6 +158,10 @@ import {
   resolveTheme,
   run,
   runWhisper,
+  sliceWavArgs,
+  stitchTakeTranscripts,
+  takeWindows,
+  type TakeWindow,
   whisperPromptFor,
   scanSourceText,
   ThemeSchema,
@@ -2787,6 +2791,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     }
   }
 
+  // The takes' durations in concat order, so transcription can decode each
+  // take in its own window (take-transcripts.ts). Null for a single file.
+  let folderClipDurations: number[] | null = null;
   if (isFolder && folderListing) {
     const sort = opts.sort ?? "name";
     const result = await phases.time("ffmpeg", () =>
@@ -2823,6 +2830,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     result.clips.forEach((c, i) => {
       console.log(`  ${i + 1}. ${c.name} (${c.durationSec.toFixed(2)}s)`);
     });
+    folderClipDurations = result.clips.map((c) => c.durationSec);
     input = result.path;
   }
 
@@ -2984,27 +2992,38 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           `re-transcribing with ${fmt(requestedKey)}`,
       );
     }
+    // Per-take decode for folder input (take-transcripts.ts, 2026-11-13
+    // "AI And Coding"): each take is sliced out of audio.wav and decoded on
+    // its own, so a seam resets whisper instead of letting one take's words
+    // drift into the next. A single file — or a one-take folder — decodes
+    // whole, exactly as before. `tag` keeps each take's sidecar files apart.
+    // Cached transcripts decoded whole are knowingly still reused (the
+    // `-mc 0` posture in whisperArgs): re-decoding under a user's edits would
+    // move every word their overrides are anchored to.
+    const decodeByTake = async (
+      decode: (wav: string, tag: string) => Promise<Transcript>,
+    ): Promise<Transcript> => {
+      if (folderClipDurations === null || folderClipDurations.length < 2) {
+        return decode(audioPath, "");
+      }
+      const parts: Array<{ window: TakeWindow; transcript: Transcript }> = [];
+      for (const [i, window] of takeWindows(folderClipDurations).entries()) {
+        const wav = join(work, `audio-clip-${i + 1}.wav`);
+        await run(tools.ffmpegPath, sliceWavArgs(audioPath, wav, window));
+        try {
+          parts.push({ window, transcript: await decode(wav, `-clip-${i + 1}`) });
+        } finally {
+          await rm(wav, { force: true });
+        }
+      }
+      return stitchTakeTranscripts(parts);
+    };
     if (backend.kind === "remote") {
       // No whisper binary and no model file on this branch — the whole point
       // of remote is that neither is installed (2026-09-01 field report).
       // ffmpeg still is: the upload sidecar is an encode.
       const host = remoteWhisperHost(backend.baseUrl);
-      const uploadPath = join(work, "audio-upload.ogg");
       transcript = await phases.time("transcribe", async () => {
-        await encodeUploadAudio(tools, audioPath, uploadPath);
-        const bytes = statSync(uploadPath).size;
-        if (bytes > REMOTE_UPLOAD_MAX_BYTES) {
-          // Named here rather than paid for as somebody else's 413 after the
-          // whole upload: chunking is out of scope for v1, so the error has
-          // to carry both escape hatches itself.
-          throw new Error(
-            `the compressed audio is ${(bytes / 1_000_000).toFixed(1)} MB, over the ` +
-              `${(REMOTE_UPLOAD_MAX_BYTES / 1_000_000).toFixed(0)} MB single-file limit for remote ` +
-              `transcription (about 100 minutes of speech at this bitrate).\n` +
-              `Transcribe locally with --whisper-backend local, split the take, or point ` +
-              `OSSCLIP_WHISPER_URL at a server with a larger cap (Groq's dev tier allows 100 MB).`,
-          );
-        }
         const anim = isInteractive()
           ? new StageAnimator(
               "REMOTE ASR",
@@ -3014,15 +3033,32 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           : null;
         if (!anim) console.log(`▸ transcribing remotely (${host}, ${backend.model})…`);
         try {
-          return await createOpenAiCompatibleProvider({
-            baseUrl: backend.baseUrl,
-            model: backend.model,
-            ...(backend.apiKey !== undefined ? { apiKey: backend.apiKey } : {}),
-          }).transcribe(uploadPath, {
-            // From the KEY, like the local branch: whatever re-keys the cache
-            // is what actually decoded, so the two can never disagree.
-            language: requestedKey.language,
-            prompt: whisperPromptFor(dictionary),
+          return await decodeByTake(async (wav, tag) => {
+            const uploadPath = join(work, `audio-upload${tag}.ogg`);
+            await encodeUploadAudio(tools, wav, uploadPath);
+            const bytes = statSync(uploadPath).size;
+            if (bytes > REMOTE_UPLOAD_MAX_BYTES) {
+              // Named here rather than paid for as somebody else's 413 after the
+              // whole upload: chunking is out of scope for v1, so the error has
+              // to carry both escape hatches itself.
+              throw new Error(
+                `the compressed audio is ${(bytes / 1_000_000).toFixed(1)} MB, over the ` +
+                  `${(REMOTE_UPLOAD_MAX_BYTES / 1_000_000).toFixed(0)} MB single-file limit for remote ` +
+                  `transcription (about 100 minutes of speech at this bitrate).\n` +
+                  `Transcribe locally with --whisper-backend local, split the take, or point ` +
+                  `OSSCLIP_WHISPER_URL at a server with a larger cap (Groq's dev tier allows 100 MB).`,
+              );
+            }
+            return createOpenAiCompatibleProvider({
+              baseUrl: backend.baseUrl,
+              model: backend.model,
+              ...(backend.apiKey !== undefined ? { apiKey: backend.apiKey } : {}),
+            }).transcribe(uploadPath, {
+              // From the KEY, like the local branch: whatever re-keys the cache
+              // is what actually decoded, so the two can never disagree.
+              language: requestedKey.language,
+              prompt: whisperPromptFor(dictionary),
+            });
           });
         } finally {
           // In a finally, unlike the local branch's trailing stop(): an HTTP
@@ -3058,11 +3094,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         : null;
       if (!whisperAnim) console.log(`▸ transcribing (${basename(modelPath)})…`);
       transcript = await phases.time("transcribe", () =>
-        runWhisper(
+        decodeByTake((wav, tag) => runWhisper(
           {
             whisperPath: cfg.whisperPath,
             modelPath,
-            outBase: join(work, "whisper"),
+            outBase: join(work, `whisper${tag}`),
             // The RESOLVED language, not the raw flag — a config/model-implied
             // code must reach the spawn exactly as it reached the cache key.
             language: requestedKey.language,
@@ -3073,8 +3109,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             ...(requestedKey.translate === true ? { translate: true } : {}),
             prompt: whisperPromptFor(dictionary),
           },
-          audioPath,
-        ),
+          wav,
+        )),
       );
       if (whisperAnim) whisperAnim.stop();
     }
