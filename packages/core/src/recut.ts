@@ -1,5 +1,5 @@
-import { isSrcTiming, SPLIT_MIN_PIECE_SEC, type OverrideDoc } from "./overrides";
-import type { Segment } from "./schema";
+import { captionKeyFor, isSrcTiming, SPLIT_MIN_PIECE_SEC, type OverrideDoc } from "./overrides";
+import type { Segment, Word } from "./schema";
 import { mapsClose, TimeMap } from "./timemap";
 
 /**
@@ -474,8 +474,28 @@ export interface PrunedHides {
  * — a seam instant has a kept-side preimage, `timemap.ts`), so its hide is
  * still doing work and must survive.
  */
-export function pruneHidesInsideCuts(doc: OverrideDoc, cutlist: readonly Segment[]): PrunedHides {
+export function pruneHidesInsideCuts(
+  doc: OverrideDoc,
+  cutlist: readonly Segment[],
+  /**
+   * The transcript words, when the caller has them (produce does). A hide
+   * whose key names one of these words is then retired only if `mapWord`
+   * really DROPS that word — the exact test `buildCaptionLines` applies.
+   * Without it, a word STARTING inside a cut but ending past its edge
+   * ("more," 2026-11-13, "AI And Coding") lost its hide here while the
+   * caption builder still emitted it clamped onto the seam, so a word the
+   * user had hidden came back with no audio under it. Absent: the instant
+   * rule below, unchanged.
+   */
+  words?: readonly Word[],
+): PrunedHides {
   const pruned: string[] = [];
+  const byKey = new Map<string, Word>();
+  for (const w of words ?? []) {
+    const k = captionKeyFor(w.start);
+    if (!byKey.has(k)) byKey.set(k, w);
+  }
+  const map = byKey.size > 0 ? new TimeMap(cutlist) : null;
   const kept: OverrideDoc["captionWordsHidden"] = {};
   for (const [key, entry] of Object.entries(doc.captionWordsHidden)) {
     // SOURCE-KEYED ONLY, parsed and not coerced. `captionWordsHidden` is an
@@ -493,9 +513,11 @@ export function pruneHidesInsideCuts(doc: OverrideDoc, cutlist: readonly Segment
     // `captionKeyFor`'s quantization inverted (`w${Math.round(sec * 1000)}`,
     // overrides.ts): the key IS the word's source instant, ms-quantized.
     const srcSec = parseInt(key.slice(1), 10) / 1000;
-    const removed = cutlist.some(
-      (seg) => seg.kind === "remove" && srcSec >= seg.srcIn && srcSec < seg.srcOut,
-    );
+    const word = byKey.get(key);
+    const removed =
+      word !== undefined && map !== null
+        ? map.mapWord(word) === null
+        : cutlist.some((seg) => seg.kind === "remove" && srcSec >= seg.srcIn && srcSec < seg.srcOut);
     if (removed) pruned.push(key);
     else kept[key] = entry;
   }

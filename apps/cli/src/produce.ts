@@ -4404,7 +4404,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // never surface as "the cut removed it" drop lines on this or any later
   // run. The doc write itself goes through the one sanctioned overrides.json
   // write further down, gated alongside `cutResult.changed`.
-  const hidePrune = pruneHidesInsideCuts(overrideDoc, cutlist);
+  // `transcript.words` — the list `buildCaptionLines` maps below — so a
+  // hide is retired only when that builder would really drop its word.
+  const hidePrune = pruneHidesInsideCuts(overrideDoc, cutlist, transcript.words);
   overrideDoc = hidePrune.doc;
   const hidesPruned = hidePrune.pruned.length > 0;
   if (hidesPruned) {
