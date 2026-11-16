@@ -68,9 +68,9 @@ import { readFileSync } from "node:fs";
 import { parseScript, stripInlineMarkup } from "../src/script/cues";
 const egm = readFileSync(new URL("./fixtures/egm-script.md", import.meta.url), "utf8");
 
-it("parses the EGM script: 25 cues, in order", () => {
+it("parses the EGM script: 20 cues, in order", () => {
   const cues = parseScript(egm);
-  expect(cues).toHaveLength(25);
+  expect(cues).toHaveLength(20);
   expect(cues[0]!.cueText).toMatch(/^Cold open on the final captions/);
   expect(cues[0]!.spoken).toEqual(["These captions were choreographed by AI.", "But that's not the cool part."]);
 });
@@ -359,7 +359,7 @@ Decisions:
 - `production.json` stores `script.text` and `script.sourcePath`. Replay argv includes `--script <sourcePath>`. The editor's Re-plan passes the **stored text** (written to `<workdir>/script.md` and pointed to with `--script`), so it works when the original file is gone; clip paths resolve against `dirname(sourcePath)`, and a missing clip file whose WebM already exists in the project is reused.
 - `§158` in `docs/PHASE1-FINDINGS.md` records: why the planner's `sceneKind` is a frozen subset, the 0.6 floor and what it was measured on (Task 9 fills in the numbers), `-auto-alt-ref 0`, and the deferral of the 16:9 geometry.
 
-- [ ] **Step 1: Write the failing tests:** `cueOutcomes` produces one outcome per parsed cue in script order, covering each status; `formatCueReport` prints `placed 22 of 25 · skipped 2 · reported 1` style summary and one line per cue with its script line number; `scriptPlanCacheKey` changes when the script text, kept words or prompt version change; replay argv round-trips `--script`; `ProductionSchema` parses with and without `script`.
+- [ ] **Step 1: Write the failing tests:** `cueOutcomes` produces one outcome per parsed cue in script order, covering each status; `formatCueReport` prints `placed 17 of 20 · skipped 2 · reported 1` style summary and one line per cue with its script line number; `scriptPlanCacheKey` changes when the script text, kept words or prompt version change; replay argv round-trips `--script`; `ProductionSchema` parses with and without `script`.
 - [ ] **Step 2: Run.** Expected: FAIL.
 - [ ] **Step 3: Implement** the pure pieces, then the wiring.
 - [ ] **Step 4: Prove it end to end without an LLM.** Using the `verify-ossclip` skill's fixture flow (`pnpm fixture`, mock provider), add a fixture script whose spoken lines are the fixture's known words, run `produce --script` with the mock provider, and assert in a test under `apps/cli/test/` that `production.json` has one scene per cue and `script-report.json` lists them as placed. Follow the pattern of the existing produce-driving tests, including their skip when ffmpeg is absent.
