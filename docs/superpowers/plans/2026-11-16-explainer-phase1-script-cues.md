@@ -359,6 +359,16 @@ export function scriptPlanCacheKey(parts: { promptVersion: string; scriptText: s
 ```
 
 Decisions:
+Carried over from Tasks 4 and 6:
+- The core type is `ResolvedScriptClip` (not `ResolvedClip`, which already names the `--clip` window).
+- `importClip` takes `ffmpegPath`/`ffprobePath` in its deps: pass `cfg.ffmpegPath` and the matching ffprobe.
+- **WebM sources.** ffmpeg's built-in VP9 decoder drops alpha, so re-encoding a VP9-alpha `.webm` yields an opaque file. `importClip` must probe the source's video codec: `vp9` or `vp8` in a WebM container is **copied** into `clips/` unchanged; anything else is transcoded. Add a test with fake deps for both branches, and fix it in `apps/cli/src/clip-import.ts` as part of this task.
+- **Encode speed.** A 4.6 s clip took 27 s. Add `-deadline good -cpu-used 4` to `clipTranscodeArgs`, re-measure on `egm_steps_alpha_sfx.mov`, and confirm with libvpx decoding that the alpha plane still varies. Print one progress line per clip (`▸ importing clip 3 of 24: <name>`), and a `reusing` line when the WebM exists.
+- **Whole-script checks, before transcription.** Run on the parsed cues, not only the aligned ones: more than 40 cues, an unknown `[Name]` hint, and a missing or out-of-folder `clip:` file each fail the run immediately, naming the cue's line number.
+- **Report lines.** In script mode, do not print `formatGraphicsAccounting`'s "target is ~1 per 9s" line; the cue report replaces it. `footage cue <id>` issues become `reported` outcomes, not `⚠` warnings.
+- **Grounding.** In script mode the grounding check's allowed text is the transcript plus every cue's text, so copy taken from a cue ("+1,568 lines") does not warn.
+- **Wizard.** `--script` is flags-only; add it to the wizard's flags-only list if the wizard keeps one.
+
 - `--script <file>`: validated with zod as a non-empty string; the file is read once; an unreadable file fails before any transcription with `script file not found: <path>`. `--script` with `--clip` or `--scenes` is an error naming both flags.
 - Order inside `produce`: parse the script → after the cutlist exists, `alignCues(cues, transcript, cutWordIndices)` → import each aligned clip cue with `importClip` into the render's public dir (the directory the existing `ScreenshotFrame` side-image copy targets) → `produceScenes(…, script: { aligned, clips })`.
 - The plan is cached in the workdir like the beat sheet, keyed by `scriptPlanCacheKey`.
