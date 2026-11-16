@@ -340,3 +340,33 @@ export const ThemeSchema = z.object({
 });
 export type Theme = z.infer<typeof ThemeSchema>;
 export const defaultTheme: Theme = ThemeSchema.parse({});
+
+type ThemeShape = typeof ThemeSchema.shape;
+/** Each field of `ThemeSchema` with its `.default(...)` wrapper peeled off. */
+type UndefaultedThemeShape = {
+  [K in keyof ThemeShape]: ThemeShape[K] extends z.ZodDefault<infer Inner> ? Inner : ThemeShape[K];
+};
+
+/**
+ * A theme LAYER: the keys someone actually set, each validated exactly as
+ * `ThemeSchema` validates it, and nothing filled in (§161). Not
+ * `ThemeSchema.partial()`: zod 4's `.partial()` keeps every field's
+ * `.default(...)`, so that parsed `{}` into the whole factory palette, and
+ * every layer built on it (overrides.json's `theme`, the config theme)
+ * silently overwrote whatever sat beneath it with the defaults.
+ *
+ * Derived from `ThemeSchema.shape` rather than hand-listed so a role added
+ * there later is a valid override key the moment it exists. Unknown keys are
+ * stripped (plain `z.object`), the same as the `.partial()` it replaces; a
+ * caller that wants them refused adds `.strict()`.
+ */
+export const ThemeOverrideSchema = z
+  .object(
+    Object.fromEntries(
+      Object.entries(ThemeSchema.shape).map(([key, field]) => [
+        key,
+        field instanceof z.ZodDefault ? field.unwrap() : field,
+      ]),
+    ) as UndefaultedThemeShape,
+  )
+  .partial();

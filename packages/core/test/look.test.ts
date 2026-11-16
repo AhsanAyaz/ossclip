@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LookSchema, lookTheme } from "../src/look";
 import { emptyOverrideDoc, resolveTheme } from "../src/overrides";
-import { ThemeSchema, type Theme } from "../src/scene-schema";
+import { ThemeOverrideSchema, ThemeSchema, type Theme } from "../src/scene-schema";
 
 /**
  * The explainer look (design §2.2): a theme preset, not a new theme system.
@@ -59,7 +59,7 @@ describe("lookTheme", () => {
   it("the default look changes nothing", () => expect(lookTheme("default")).toEqual({}));
 
   it("every explainer value is one the theme schema accepts", () => {
-    expect(() => ThemeSchema.partial().strict().parse(lookTheme("explainer"))).not.toThrow();
+    expect(() => ThemeOverrideSchema.strict().parse(lookTheme("explainer"))).not.toThrow();
   });
 
   it("hands out a copy, so a caller's edit cannot restyle the next run", () => {

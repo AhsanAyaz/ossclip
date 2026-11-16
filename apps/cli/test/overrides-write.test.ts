@@ -89,17 +89,19 @@ describe("writeOverrideDoc — which write may spend the `.bak` (§137)", () => 
   });
 
   it("writes a file produce can read back, with the user's own keys verbatim", async () => {
-    // NOT a whole-document equality: `OverrideDocSchema` is not idempotent
-    // under parse → stringify → parse. `theme` is `ThemeSchema.partial()
-    // .default({})`, so an ABSENT theme comes back `{}` while a PRESENT `{}`
-    // fills every default — meaning any sanctioned write bakes the current
-    // palette into the user's file. Pre-existing (the cut path has always done
-    // it) and out of scope here, but noted so the next person meets it in a
-    // comment rather than in a diff of someone's overrides.json.
+    // A write used to bake the whole factory palette into the file: `theme`
+    // was `ThemeSchema.partial().default({})`, and zod 4's `.partial()` fills
+    // every default, so a PRESENT `{}` came back full — and that palette then
+    // replaced the configured theme on every later run (§161). The theme
+    // layer now carries only the keys the user set, so an empty one stays
+    // empty on disk.
     const { path } = workdir();
     const written = doc({ w2368: { text: "zsh", was: "status" } });
     await writeOverrideDoc(path, written, { refreshBackup: false });
-    const back = OverrideDocSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    expect(raw.theme).toEqual({});
+    const back = OverrideDocSchema.parse(raw);
+    expect(back.theme).toEqual({});
     expect(back.captions).toEqual(written.captions);
     expect(back.splits).toEqual(written.splits);
   });

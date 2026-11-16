@@ -4,7 +4,9 @@ import {
   LayoutSchema,
   SceneAnchorSchema,
   SceneComponentIdSchema,
+  ThemeOverrideSchema,
   ThemeSchema,
+  defaultTheme,
   type SceneAnchor,
   type SceneCue,
   type SceneComponentId,
@@ -557,9 +559,67 @@ export const SfxAddedPlacementSchema = z.object({
 });
 export type SfxAddedPlacement = z.infer<typeof SfxAddedPlacementSchema>;
 
+/**
+ * The eleven tokens `ThemeSchema` had before the explainer roles. Every
+ * overrides.json saved before §161 carries ALL of them, because the old
+ * `ThemeSchema.partial()` filled each default in on parse and every save
+ * wrote the parsed doc back.
+ */
+const ORIGINAL_THEME_KEYS = [
+  "bg",
+  "fg",
+  "accent",
+  "muted",
+  "success",
+  "cardBg",
+  "cardBorder",
+  "danger",
+  "radiusPx",
+  "fontDisplay",
+  "fontMono",
+] as const satisfies readonly (keyof Theme)[];
+
+/**
+ * Heals a legacy default-filled overrides `theme` back to the keys the user
+ * set (§161). Those files hold the factory palette for every key, and laid
+ * over a configured base (the config theme, `--look explainer`) they replace
+ * it with the defaults on every run, so the fix to the schema alone would
+ * not reach a project that already has an overrides.json.
+ *
+ * The signature is "all eleven original keys present": the editor's theme
+ * panel only ever patches a handful, so a theme carrying every one of them
+ * was filled, not written. On a match, every key whose value equals the
+ * factory default is dropped (it was filled, or it is a no-op over a default
+ * base); a key that differs is the user's edit and stays. Below the
+ * signature the theme is returned untouched, defaults and all, because a
+ * hand-written `accent: "#FFE14D"` over an explainer base is a real choice.
+ *
+ * The one case this gets wrong: a user who set all eleven keys by hand, some
+ * to exactly the factory value, under a non-default base. Those keys now fall
+ * through to the base. Accepted because it needs every key written by hand
+ * (no tool writes that shape on purpose) and some of them chosen to equal the
+ * factory value precisely, while the alternative, leaving filled files alone,
+ * breaks the configured theme for every project saved before §161.
+ */
+export function stripFilledThemeDefaults(theme: Partial<Theme>): Partial<Theme> {
+  if (!ORIGINAL_THEME_KEYS.every((key) => Object.hasOwn(theme, key))) return theme;
+  return Object.fromEntries(
+    Object.entries(theme).filter(
+      ([key, value]) => value !== defaultTheme[key as keyof Theme],
+    ),
+  ) as Partial<Theme>;
+}
+
 export const OverrideDocSchema = z.object({
-  /** Global style tokens — the look is a system, so these are not per-element. */
-  theme: ThemeSchema.partial().default({}),
+  /**
+   * Global style tokens — the look is a system, so these are not per-element.
+   * Only the keys the user set (`ThemeOverrideSchema`, no defaults), so
+   * `resolveTheme` lays them over the configured base instead of replacing it
+   * (§161). The heal runs here, in the schema, because every reader of
+   * overrides.json (produce, the edit server, and through it the editor)
+   * parses with this schema, so none of them can see a filled legacy theme.
+   */
+  theme: ThemeOverrideSchema.transform(stripFilledThemeDefaults).default({}),
   /**
    * Optional per-project caption theme preset (`default`, `founder`, `punch`,
    * `boxed`, `minimal`). Wins over `--caption-theme` and `~/.ossclip/config.json`.

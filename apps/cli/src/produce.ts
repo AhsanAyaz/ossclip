@@ -173,6 +173,7 @@ import {
   type TakeWindow,
   whisperPromptFor,
   scanSourceText,
+  ThemeOverrideSchema,
   ThemeSchema,
   type Theme,
   LOOK_IDS,
@@ -1719,7 +1720,7 @@ export function resolveWhisperLanguage(
  * onto `baseTheme`, so a reset there must fall back to the user's global
  * colors and the run's look, not to factory defaults.
  *
- * All-or-nothing: `ThemeSchema.partial().safeParse` — one malformed key (a
+ * All-or-nothing: `ThemeOverrideSchema.strict().safeParse` — one malformed key (a
  * numeric `accent`, an unknown-shaped value) voids the WHOLE config theme
  * with a warning naming the issue, because half-applying a palette the
  * schema rejected would render colors the user never chose. Only the config
@@ -1737,7 +1738,7 @@ export function configuredBaseTheme(
   const lookBase: Theme =
     look === "default" ? defaultTheme : ThemeSchema.parse({ ...defaultTheme, ...lookTheme(look) });
   if (cfgTheme === undefined) return { theme: lookBase };
-  const parsed = ThemeSchema.partial().strict().safeParse(cfgTheme);
+  const parsed = ThemeOverrideSchema.strict().safeParse(cfgTheme);
   if (!parsed.success) {
     return {
       theme: lookBase,
@@ -1747,18 +1748,12 @@ export function configuredBaseTheme(
           .join("; ")}`,
     };
   }
-  // Only the keys the user WROTE: zod 4's `.partial()` still fills every
-  // field's default, so `parsed.data` for `{accent}` carries the factory
-  // `accent2`, `fonts`, `motion`… and spreading it whole would put the
-  // defaults back over the look (harmless before looks existed, when the
-  // layer underneath WAS the defaults). The values are still the parsed ones.
-  const written = cfgTheme as Record<string, unknown>;
-  const userTokens = Object.fromEntries(
-    Object.entries(parsed.data).filter(([key]) => Object.hasOwn(written, key)),
-  );
-  // Re-parse the merge so zod's defaults fill anything the partial left out —
-  // the same construction defaultTheme itself uses.
-  return { theme: ThemeSchema.parse({ ...lookBase, ...userTokens }) };
+  // `parsed.data` is only the keys the user WROTE: `ThemeOverrideSchema`
+  // carries no defaults (§161), so spreading it whole cannot put the factory
+  // `accent2`, `fonts`, `motion`… back over the look, which `.partial()`
+  // did. Re-parse the merge so zod's defaults fill anything left out — the
+  // same construction defaultTheme itself uses.
+  return { theme: ThemeSchema.parse({ ...lookBase, ...parsed.data }) };
 }
 
 /**
