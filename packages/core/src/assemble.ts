@@ -1,7 +1,7 @@
 import type { Transcript } from "./schema";
 import type { Scene, SceneCue } from "./scene-schema";
 import { revealItemTexts } from "./reveal-match";
-import { resolveSceneProps } from "./scene-registry";
+import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
 import type { LoadedSfxSound } from "./sfx-pack";
 import type { SfxPlacement, SfxValidationIssue } from "./producer/sfx";
 import type { TimeMap } from "./timemap";
@@ -62,6 +62,13 @@ export function minSceneSec(outputDurationSec: number): number {
 export interface AssembleResult {
   cues: SceneCue[];
   dropped: Array<{ id: string; reason: string }>;
+  /**
+   * Cues the 15s ceiling cut short (explainer spec 1.3/1.4): a script cue or
+   * a clip that ends early must be reported, not silently trimmed. Lengths
+   * in seconds — what the cue wanted from its (de-overlapped) start, and
+   * what it got. A cue shortened and then dropped is listed in `dropped`.
+   */
+  shortened: Array<{ id: string; fromSec: number; toSec: number }>;
 }
 
 /**
@@ -77,7 +84,13 @@ export function assembleScenes(
   map: TimeMap,
 ): AssembleResult {
   const dropped: AssembleResult["dropped"] = [];
+  const shortened: AssembleResult["shortened"] = [];
   const resolved: SceneCue[] = [];
+  // A clip's own length, keyed by cue like `planned` below. Applied in the
+  // exclusivity loop, AFTER the start is pushed past the previous cue, so the
+  // clip plays in full from wherever it lands and the NEXT cue is pushed past
+  // its real end (explainer plan, Review Focus 4: nothing overlaps).
+  const fixedSec = new Map<SceneCue, number>();
   // The plan-time cue answers for each cued scene, applied AFTER the legacy
   // pipeline below (keyed by cue object — the loops mutate cues in place).
   const planned = new Map<SceneCue, PlannedCue>();
@@ -112,6 +125,8 @@ export function assembleScenes(
       endSec: Math.max(...mapped.map((m) => m.end)),
     };
     resolved.push(cue);
+    const fixed = SCENE_REGISTRY[scene.component].fixedDurationSec?.(props);
+    if (fixed !== undefined) fixedSec.set(cue, fixed);
     // `scene.cue` is the gate (spec decision 1, "new plans only"): a scene
     // planned before reveal timing never enters the post-pass, so its cue is
     // byte-identical to the pre-cue assembler's.
@@ -129,13 +144,28 @@ export function assembleScenes(
     if (prev && cue.startSec < prev.endSec + SCENE_GAP_SEC) {
       cue.startSec = prev.endSec + SCENE_GAP_SEC;
     }
-    if (cue.endSec - cue.startSec < minScene) {
+    const fixed = fixedSec.get(cue);
+    if (fixed !== undefined) {
+      // A clip lasts its own length, not its words' (spec 1.4: "if the clip
+      // is shorter than the cue's span, the talking head simply resumes"),
+      // and is never stretched to the floor — there are no frames past its
+      // end to show. The ceiling and the output end below still apply.
+      cue.endSec = cue.startSec + fixed;
+    } else if (cue.endSec - cue.startSec < minScene) {
       cue.endSec = cue.startSec + minScene;
     }
+    const wantedSec = cue.endSec - cue.startSec;
     cue.endSec = Math.min(cue.endSec, cue.startSec + MAX_SCENE_SEC, map.outputDuration);
     if (cue.endSec - cue.startSec < DROP_BELOW_SEC) {
       dropped.push({ id: cue.id, reason: "too short after clamping" });
       continue;
+    }
+    // Only the 15s ceiling makes a cue "shortened": one under it that the
+    // video's end cuts was never going to fit, and is not a script problem.
+    // The epsilon is beats.ts's float posture — a span that is 15s to the
+    // eye can be 15.0000001s in the stamps.
+    if (wantedSec > MAX_SCENE_SEC + 1e-6) {
+      shortened.push({ id: cue.id, fromSec: wantedSec, toSec: cue.endSec - cue.startSec });
     }
     cues.push(cue);
   }
@@ -180,7 +210,7 @@ export function assembleScenes(
     if (plan.reveal) cue.reveal = plan.reveal;
   }
 
-  return { cues, dropped };
+  return { cues, dropped, shortened };
 }
 
 /** A cued scene's plan-time answers, resolved into output time. */

@@ -170,6 +170,9 @@ describe("assembleScenes — legacy plans (no scene.cue) are byte-identical (rev
         { id: "scene-2", anchor: { startWord: 8, endWord: 19 }, layout: "graphic-only", component: "ChatMock", props: { messages: [{ from: "user", text: "hi" }, { from: "agent", text: "yo" }] }, startSec: 3.95, endSec: 8.9 },
       ],
       dropped: [],
+      // Added with the explainer's `shortened` report (plan Task 5): the
+      // cues above are the pre-existing literal, untouched.
+      shortened: [],
     });
   });
 });
@@ -422,5 +425,78 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
     const cued = one(card);
     expect(cued.startSec).toBeCloseTo(6.7, 9);
     expect(cued.reveal).toBeUndefined();
+  });
+});
+
+describe("assembleScenes — fixed clip duration and the shortened report (explainer spec 1.4)", () => {
+  /** 100 words, 0.5s apart: a 50s take, so the floor is the plain 1.2s. */
+  const long: Transcript = {
+    language: "en",
+    words: Array.from({ length: 100 }, (_, i) => ({
+      text: `w${i}`,
+      start: i * 0.5,
+      end: i * 0.5 + 0.4,
+    })),
+  };
+  const longMap = new TimeMap([{ srcIn: 0, srcOut: 50, kind: "keep" } satisfies Segment]);
+  const clip = (id: string, startWord: number, endWord: number, durationSec: number): Scene => ({
+    id,
+    anchor: { startWord, endWord },
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec },
+    overrides: {},
+  });
+
+  it("a 4.6s clip anchored to a 9s word span ends 4.6s after its start", () => {
+    // Words 4..21 run 2.0 → 10.9s.
+    const { cues, shortened } = assembleScenes([clip("c", 4, 21, 4.6)], long, longMap);
+    expect(cues[0]!.startSec).toBeCloseTo(2.0, 5);
+    expect(cues[0]!.endSec).toBeCloseTo(6.6, 5);
+    expect(shortened).toEqual([]);
+  });
+
+  it("a 20s clip is cut at 15s and reported", () => {
+    const { cues, shortened } = assembleScenes([clip("c", 4, 21, 20)], long, longMap);
+    expect(cues[0]!.endSec).toBeCloseTo(17.0, 5);
+    expect(shortened).toEqual([{ id: "c", fromSec: 20, toSec: 15 }]);
+  });
+
+  it("the scene after a clip starts 0.05s after the clip ends, even over its own first word", () => {
+    // The clip starts at 0 and runs 6s; the TitleCard's first word is at 4.0s.
+    const { cues } = assembleScenes(
+      [clip("c", 0, 3, 6), scene("t", 8, 20)],
+      long,
+      longMap,
+    );
+    expect(cues.map((c) => c.id)).toEqual(["c", "t"]);
+    expect(cues[0]!.endSec).toBeCloseTo(6.0, 5);
+    expect(cues[1]!.startSec).toBeCloseTo(6.05, 5);
+  });
+
+  it("the minimum-length extension does not stretch a clip past its own length", () => {
+    const { cues } = assembleScenes([clip("c", 4, 21, 1.0)], long, longMap);
+    expect(cues[0]!.endSec - cues[0]!.startSec).toBeCloseTo(1.0, 5);
+  });
+
+  it("a 22s word span on a TitleCard is cut at 15s and reported", () => {
+    // Words 0..44 run 0 → 22.4s.
+    const { cues, shortened } = assembleScenes([scene("t", 0, 44)], long, longMap);
+    expect(cues[0]!.endSec).toBeCloseTo(15, 5);
+    expect(shortened).toHaveLength(1);
+    expect(shortened[0]!.id).toBe("t");
+    expect(shortened[0]!.fromSec).toBeCloseTo(22.4, 5);
+    expect(shortened[0]!.toSec).toBeCloseTo(15, 5);
+  });
+
+  it("ordinary plans report nothing shortened", () => {
+    expect(
+      assembleScenes(
+        [scene("one", 0, 1), scene("two", 1, 2), scene("three", 8, 9)],
+        transcript,
+        identity,
+      ).shortened,
+    ).toEqual([]);
+    expect(assembleScenes([scene("a", 2, 5)], transcript, identity).shortened).toEqual([]);
   });
 });
