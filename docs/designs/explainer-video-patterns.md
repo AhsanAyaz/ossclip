@@ -287,7 +287,8 @@ In Resolve, the author imports the timeline file. Track 1 holds the source foota
 *   **Track 1.** One clip per kept span of the cut, each pointing at the original source file with its in and out points. The media is not re-encoded, and dragging a clip edge in Resolve brings back removed material. A folder of takes gives several source files on the same track.
 *   **Track 2.** One item per scene clip, at the scene's start on the cut timeline.
 *   **Not carried over:** captions, zoom and punch-ins, the speaker framing, audio loudness processing, and background music. Those are finishing work and stay with Resolve. The existing `premiere-project` export, which carries the camera moves, is unchanged.
-*   **Format.** FCPXML 1.10, which `ossclip analyze` already writes for markers; the frame-rate and time helpers in `export-fcpxml.ts` are reused. Resolve drops FCPXML markers (FINDINGS §142), so it is not yet known that it keeps a second video track with transparent clips. **A spike settles this before the plan is written:** a hand-made timeline with two cut spans and one transparent clip, imported by the author into their Resolve. If FCPXML fails, the fallback is the xmeml format that `export-premiere-project.ts` writes, which Resolve also imports.
+*   **Format.** FCPXML 1.10, which `ossclip analyze` already writes for markers; the frame-rate and time helpers in `export-fcpxml.ts` are reused. Resolve drops FCPXML markers (FINDINGS §142), so a spike checked that it keeps clips. **Spike result (2026-11-16, DaVinci Resolve 21 on Windows):** a hand-made FCPXML 1.10 timeline imported and the author reported it fine. It had three cut spans of a 60 fps source on the main track, and a 30 fps ProRes 4444 clip placed twice on lane 1, both attached to the first span, the second one running across two cut points. The same timeline as xmeml (the format `export-premiere-project.ts` writes) imported with "2 of 2 clips were not yet found", so its `file:///C:/...` path form does not link in Resolve. xmeml is therefore not a fallback as written, and the kit uses FCPXML only.
+*   **Attachment.** The exporter attaches each scene clip to the span it starts in, with its offset in that span's source time. The spike used this form, but both of its clips started in the first span. A clip attached to a later span is first checked by the acceptance import below.
 *   **Paths.** Under WSL, a `/mnt/c/...` path is written as `file:///C:/...`, because Resolve runs on the Windows side. This is a pure function with its own tests. The kit folder defaults to the source video's folder so that Resolve can reach it; `--out <dir>` overrides.
 *   **Variable frame rate.** Phone and screen recordings often have a variable frame rate, and editors place such media a few frames off. The exporter quantises to the probed rate, as the marker export does, and the report warns when the source is variable.
 
@@ -299,7 +300,7 @@ In Resolve, the author imports the timeline file. Track 1 holds the source foota
 
 ### Phase 3 acceptance
 
-*   The spike timeline opens in the author's Resolve with both tracks and the clip's transparency.
+*   The spike timeline opens in the author's Resolve with both tracks and the clip's transparency. (Done, see 3.3.)
 *   From the EGM project, `ossclip kit` writes one clip per kept scene. Each clip's alpha is checked by a machine (a corner pixel is transparent, a pixel inside the graphic is not).
 *   The author imports the timeline and confirms: the cut matches the editor's cut, and each clip starts within one frame of its planned time.
 *   A second `ossclip kit` run after editing one scene re-renders one clip.
