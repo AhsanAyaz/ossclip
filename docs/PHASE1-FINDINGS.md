@@ -1733,3 +1733,22 @@ An "unpunctuated stretch" is 25 or more consecutive words with no capital and no
 **Existing projects do not change.** The second pass runs only when a transcription actually runs. A cached `transcript.json` is reused exactly as before, and the transcript key gained no field (`transcript-cache-key.test.ts` pins its fields), because editor edits are keyed to word indices and a silent re-transcription would detach them. Delete a workdir's `transcript.json` to re-time it.
 
 **Costs and open edges.** Wall time on this recording went from 168.1 s to 273.7 s (the whole pass plus a 374 s speech pass). The remote backend now uploads twice per compressible take, and the punctuation loss was measured on whisper.cpp only. Found along the way and not changed here: under `-mc 0` (2026-08-18), whisper-cli v1.9.1 ignores `--prompt` entirely on this audio, which suggests the `--dictionary` vocabulary bias (F4) has had no effect on local decodes since then.
+
+## 160. Acceptance of script cues on the EGM recording (2026-11-16)
+
+The recording is 798 s of one-take footage with bloopers; the script placed 22 hand-made clips (6 ProRes 4444 with alpha, 16 opaque previews) as `clip:` cues.
+
+| Run | Transcript and cut | Cues placed |
+|---|---|---|
+| 1 | cached whole-file transcript, automatic cut | 11 of 22 |
+| 2 | same transcript, cut as edited by hand (39 cuts) | 11 of 22 |
+| 3 | fresh transcript after §159, automatic cut, script lines as planned | 19 of 22 |
+| 4 | same, with three script lines corrected to what was said | 22 of 22 |
+
+What this showed:
+
+*   **Word timing was the blocker, not the matcher.** Runs 1 and 2 failed because 31% of the words sat inside silence (§159), so "kept words" by timestamp were not the words heard. After §159 the automatic cut read as whole sentences with no manual edits, and 19 cues matched at the 0.6 floor untouched.
+*   **The floor held.** The three misses in run 3 were real mismatches between script and speech: a paraphrase at 0.58, a line whose first half the cut removed, and a slash command whisper heard differently. None was a cue placed on the wrong words, which is the failure the floor exists to prevent.
+*   **Render.** 258.9 s at 1920×1080 rendered in 22 minutes. Clips fill the frame; the alpha clips show the speaker through them; opaque previews read as full cards.
+
+Left open: clips inherit the scene exit's fade-and-slide, which shows as a downward drift on the last frames of a clip that already animates its own exit.
