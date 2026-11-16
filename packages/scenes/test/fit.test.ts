@@ -88,7 +88,7 @@ const CTA_DENSE = {
   action: "comment",
   text: "WATCH THE WHOLE SERIES ON AGENTS TODAY!!",
   keyword: "COMMENTPROMPTNOW",
-  channel: "THE PRAGMATIC ENGINEER!!",
+  channel: "THE MIDNIGHT COMPILER!!!",
 } as const;
 
 /**
