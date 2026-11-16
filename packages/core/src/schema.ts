@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { CaptionChoreographySchema, CaptionThemeIdSchema } from "./captions";
 
 /** A single transcribed word, in SOURCE time (seconds). */
 export const WordSchema = z.object({
@@ -87,6 +88,9 @@ export const ProbeSchema = z.object({
    * predate it and must still parse.
    */
   rotation: z.number().int().optional(),
+  /** The first audio stream's sample rate in Hz. Optional: older
+   * production.json files predate it, and a silent source has none. */
+  audioSampleRate: z.number().int().positive().optional(),
 });
 export type Probe = z.infer<typeof ProbeSchema>;
 
@@ -408,6 +412,8 @@ export const ProductionSchema = z.object({
     })
     .optional(),
   theme: ThemeSchema.optional(),
+  captionTheme: CaptionThemeIdSchema.optional(),
+  captionChoreography: CaptionChoreographySchema.optional(),
   render: RenderSettingsSchema,
 });
 export type Production = z.infer<typeof ProductionSchema>;

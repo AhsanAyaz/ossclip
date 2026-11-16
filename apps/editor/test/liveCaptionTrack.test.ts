@@ -218,4 +218,18 @@ describe("rebuildCaptionTrack over revived material", () => {
     const after = track.lines.find((l) => l.words[0]!.text === "during")!;
     expect(after.start).toBeCloseTo(before.start - 0.5, 6);
   });
+
+  it("threads choreography through to buildCaptionLines so phrase roles and word emphasis survive live rebuilds", () => {
+    const track = rebuildCaptionTrack(transcript, clocks().newMap, doc, {
+      breakpoints: [],
+      landscape: false,
+      choreography: {
+        phrases: [{ startSrcSec: 6, endSrcSec: 6.3, role: "impact" }],
+        words: { [captionKeyFor(6)]: { emphasisScale: 1.18 } },
+      },
+    });
+    const duringLine = track.lines.find((l) => l.words[0]!.text === "during")!;
+    expect(duringLine.role).toBe("impact");
+    expect(duringLine.words[0]!.emphasisScale).toBe(1.18);
+  });
 });

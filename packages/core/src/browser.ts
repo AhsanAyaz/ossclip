@@ -61,12 +61,22 @@ export {
   // same builder + packing matrix produce renders with (cut-review rework
   // follow-up) — a second packer is how preview and render would drift.
   buildCaptionLines,
+  CAPTION_THEME_IDS,
+  CaptionChoreographyPhraseSchema,
+  CaptionChoreographySchema,
+  CaptionChoreographyWordSchema,
+  captionKeyFor,
   captionPackingFor,
+  CaptionPhraseRoleSchema,
   captionsNeedNastaliq,
+  CaptionThemeIdSchema,
   lineDirection,
   NASTALIQ_FONT_NAME,
   NASTALIQ_FONT_REL,
+  type CaptionChoreography,
   type CaptionLine,
+  type CaptionPhraseRole,
+  type CaptionThemeId,
   type CaptionWord,
 } from "./captions";
 // `mapFromKeptSpans` is a VALUE export and browser-safe (timemap.ts imports
@@ -207,3 +217,10 @@ export type {
   Transcript,
   Word,
 } from "./schema";
+
+// Caption caps and the per-platform length rule (2026-11-13): the publish
+// panel's counter must use the SAME count publish enforces — its old
+// hardcoded copy had no Threads entry and Threads counts emoji by UTF-8
+// bytes, so a "496 / 1500" caption was refused after the upload. Browser-safe:
+// publish/captions.ts imports only a type.
+export { CAPTION_CAPS, captionCap, captionLength } from "./publish/captions";

@@ -10,10 +10,13 @@ import {
   formatMinSec,
   overCapNote,
   panelCaptionCap,
+  panelCaptionLength,
   publishBusyLabel,
   regenNotesSummary,
   scheduleIso,
   toLocalInputValue,
+  publishFollowUpNote,
+  tiktokCaptionToPaste,
   youtubePrivacyNote,
   type PublishInfo,
 } from "../src/PublishPanel";
@@ -935,5 +938,44 @@ describe("PublishPanel", () => {
       send!.click();
     });
     expect((bodies[0] as Record<string, unknown>).force).toBe(true);
+  });
+});
+
+describe("publishFollowUpNote", () => {
+  it("tells the user a TikTok post is waiting in their TikTok inbox", () => {
+    expect(publishFollowUpNote(["linkedin", "tiktok"])).toContain("inbox");
+  });
+  it("says nothing when no TikTok channel went out", () => {
+    expect(publishFollowUpNote(["linkedin", "youtube"])).toBeNull();
+  });
+});
+
+describe("panel caption count (2026-11-13: Threads refused a '496 / 1500' caption)", () => {
+  it("uses core's caps, Threads included", () => {
+    expect(panelCaptionCap("threads")).toBe(500);
+  });
+  it("counts Threads emoji and symbols by UTF-8 bytes, like publish does", () => {
+    expect(panelCaptionLength("threads", "👇 →")).toBe(4 + 1 + 3);
+    expect(panelCaptionLength("instagram", "👇 →")).toBe(4);
+  });
+});
+
+describe("tiktokCaptionToPaste (inbox drafts take no caption, 2026-11-13)", () => {
+  const targets = [
+    { id: "li", provider: "linkedin" },
+    { id: "tt", provider: "tiktok" },
+  ];
+  const integrations = [
+    { id: "li", caption: "linkedin post" },
+    { id: "tt", caption: "pack tiktok caption" },
+  ];
+  it("prefers the text the user had in the box", () => {
+    expect(tiktokCaptionToPaste(targets, { tt: "edited" }, integrations)).toBe("edited");
+  });
+  it("falls back to the pack's caption", () => {
+    expect(tiktokCaptionToPaste(targets, {}, integrations)).toBe("pack tiktok caption");
+  });
+  it("is null when TikTok was not picked", () => {
+    expect(tiktokCaptionToPaste([targets[0]!], {}, integrations)).toBeNull();
   });
 });

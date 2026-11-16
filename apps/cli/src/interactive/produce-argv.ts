@@ -1,4 +1,4 @@
-import type { ProviderName, SfxLevel } from "@ossclip/core";
+import type { CaptionThemeId, ProviderName, SfxLevel } from "@ossclip/core";
 
 /**
  * Wizard answers → the argv a user could have typed.
@@ -64,6 +64,11 @@ export interface ProduceExtras {
    * not be silently unofferable here (the pre-§132 union had already
    * drifted: it never listed "antigravity"). */
   llm?: ProviderName;
+  /** Caption visual theme preset (`default | founder | punch | boxed | minimal`).
+   * `"default"` is the CLI's default, so `produceArgv` elides it. */
+  captionTheme?: CaptionThemeId;
+  /** Opt-in AI caption phrase choreography (`--choreograph-captions`). */
+  choreographCaptions?: boolean;
 }
 
 export interface ProduceAnswers {
@@ -143,6 +148,10 @@ export function produceArgv(a: ProduceAnswers): string[] {
   if (e.audience) argv.push("--audience", e.audience);
   if (e.portrait) argv.push("--portrait", e.portrait);
   if (e.thumbnailBrief) argv.push("--thumbnail-brief", e.thumbnailBrief);
+  if (e.captionTheme && e.captionTheme !== "default") {
+    argv.push("--caption-theme", e.captionTheme);
+  }
+  if (e.choreographCaptions === true) argv.push("--choreograph-captions");
   if (e.llm) argv.push("--llm", e.llm);
 
   return argv;

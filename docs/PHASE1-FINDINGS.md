@@ -1658,3 +1658,28 @@ Two smaller fixes are what made the bug diagnosable at all, and they earn their 
 - **A Preview button exposes the CLI's one-off `--out` machinery** — `cover-preview.jpg`, path derived server-side, never from the body — so trying a frame no longer destroys the previous cover. Before it, every diagnostic attempt overwrote the evidence, so "wrong frame" and "nothing happened" were indistinguishable from the UI.
 
 Preview inherits a semantic worth stating rather than hiding: like `ossclip cover --out`, it leaves the canonical JPEG untouched but DOES update provenance to describe the previewed frame — which is what lets a follow-up blank-field Apply adopt it cheaply. That is the CLI's shipped behaviour, not a new one, and the panel now discloses it the same way the CLI does: the one-off note rides back with the response instead of staying in a terminal the user never saw.
+
+## 157. A one-shot planner call is not a conversation, but the subscription CLIs saved it as one
+
+**Symptom (2026-11-14).** Users who produce with `--llm claude-cli` or `--llm antigravity` found their own history buried. Every planner call (beat sheet, scene props, SFX plan, caption choreography, repairs) was saved as a full session: in `claude --resume` under `~/.claude/projects/<cwd-slug>/`, and in agy's conversation list. One produce run makes about a dozen calls. One machine had 13 ossclip Claude sessions and 106 agy conversations (about 378 MB, most of them ossclip's). ossclip never reads a session back. Each call is a single JSON request, so nothing in them is worth keeping.
+
+**Claude: a supported flag.** `claude -p --no-session-persistence` writes nothing to disk ("only works with --print"). `buildClaudeArgs` adds it. An older CLI rejects it with `error: unknown option '--no-session-persistence'` (the shape measured on an unknown flag). The provider then drops the flag, reruns that attempt without spending one of its two, and remembers the bin for the rest of the process.
+
+**agy: no flag, no delete command.** agy 1.1.x has neither. Its binary has an internal `DeleteConversation` RPC, but no CLI or ACP method exposes it. The envelope does carry `conversation_id`, so ossclip deletes the conversation itself. The layout, measured on 2026-11-14 under `~/.gemini/antigravity-cli/`:
+
+- `conversations/<id>.db`, `brain/<id>/`, `annotations/<id>.pbtxt`, `presence/<id>.lock`, `implicit/<id>.pb`
+- rows keyed by `conversation_id` in `conversation_summaries.db`: tables `conversation_summaries`, `conversations_fts` (plain FTS5, so a DELETE cleans its shadow tables) and `conversation_parents`
+- entries keyed by conversation id in `jetbox_summaries_proto.pb`
+- lines with `conversationId` in `history.jsonl`
+
+This is private, undocumented storage, so the delete is **all-or-nothing around the index**. The rows go first, in one `BEGIN IMMEDIATE` transaction with a busy timeout. The files are removed only after that commits. If the index cannot be edited, nothing is removed: `node:sqlite` missing (Node before 22.13), the DB locked by a running agy, or a table renamed by an update. An index row that points at deleted files is a broken entry in the user's own list, which is worse than clutter. The id must be a UUID before it becomes a path. A failed delete never fails the call.
+
+`node:sqlite` loads through `process.getBuiltinModule`, not `import()`, because vite-node rewrites `node:sqlite` to a bare `sqlite` it cannot resolve.
+
+**Backlog.** `ossclip sessions` lists what older versions left behind, and `--delete` removes it after a confirmation. A Claude session matches only when it is print mode (`"entrypoint":"sdk-cli"`) **and** a user message carries `OSSCLIP_PROMPT_MARKER`, the phrase both providers build their prompt from. A false positive deletes a real chat, and a false negative only leaves clutter, so the match is narrow.
+
+The agy backlog is not cleaned. agy keeps no record that identifies an older ossclip call. Print-mode prompts never reach `history.jsonl`, the conversation `.db` files do not hold the prompt as plain text, and the summary preview is only the prompt's first words. Matching on a title or preview could catch a person's own conversation.
+
+**The summary file (2026-11-16, found on the first live run).** Deleting only the DB rows was not enough. agy keeps a second copy of the list in `jetbox_summaries_proto.pb`, a protobuf `map<string, Summary>` at field 1, and the next `agy` start re-inserted every deleted row from it, pointing at files that were gone. The delete now parses that file first (any unexpected wire shape means a skip), removes the entries by exact key, and rewrites it with temp file + rename. Verified live: after the fix, two later agy runs re-added nothing.
+
+`OSSCLIP_KEEP_LLM_SESSIONS=1` keeps the sessions for debugging.

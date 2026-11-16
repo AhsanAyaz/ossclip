@@ -1,4 +1,4 @@
-import type { CaptionLine, SceneCue } from "@ossclip/core/browser";
+import type { CaptionLine, CaptionThemeId, FaceCrop, SceneCue } from "@ossclip/core/browser";
 import { showCaptions } from "./caption-visibility";
 import { captionBottomAtFor, captionTopAtFor } from "./CaptionTrack";
 import { graphicRectAtFor, overlayBoxForCue, overlayFits } from "./overlay-rect";
@@ -24,8 +24,18 @@ export function overlayGeometryFor(args: {
   sourceTextRegions?: readonly OccupiedRegion[];
   captionsHidden?: unknown;
   frame: FrameSize;
+  captionTheme?: CaptionThemeId;
+  face?: FaceCrop | null;
+  watermark?: boolean;
 }): OverlayGeometry {
-  const opts = { cues: args.sceneCues, sourceTextRegions: args.sourceTextRegions ?? [], frame: args.frame };
+  const opts = {
+    cues: args.sceneCues,
+    sourceTextRegions: args.sourceTextRegions ?? [],
+    frame: args.frame,
+    captionTheme: args.captionTheme,
+    face: args.face,
+    watermark: args.watermark,
+  };
   const visible = showCaptions(args.captionsHidden);
   return {
     captionTopAt: visible ? captionTopAtFor(args.captionLines, opts) : () => null,

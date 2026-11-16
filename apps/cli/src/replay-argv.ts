@@ -22,7 +22,7 @@
 import type { JumpCutsMode } from "./produce";
 // Type-only for the same reason: the level's own zod enum lives in core's
 // producer half, and this module must stay a pure argv builder.
-import type { SfxLevel } from "@ossclip/core";
+import type { CaptionThemeId, SfxLevel } from "@ossclip/core";
 
 let stashed: string[] | null = null;
 
@@ -78,6 +78,10 @@ export function recordedProduceArgs(pins: {
   sfx?: boolean;
   /** The RESOLVED `--sfx-level`, pinned alongside an ON `sfx`. */
   sfxLevel?: SfxLevel;
+  /** The RESOLVED base `--caption-theme` (flag or config, pre-override). */
+  captionTheme?: CaptionThemeId;
+  /** The RESOLVED `--choreograph-captions` switch (flag or config). */
+  choreographCaptions?: boolean;
 }): string[] {
   // --review and --no-render are stripped at record (cut-review step 1):
   // command.json exists for exactly one consumer — the editor's Render
@@ -230,6 +234,22 @@ export function recordedProduceArgs(pins: {
     if (pins.sfxLevel !== undefined && !args.includes("--sfx-level")) {
       args.push("--sfx-level", pins.sfxLevel);
     }
+  }
+  if (
+    pins.captionTheme !== undefined &&
+    pins.captionTheme !== "default" &&
+    !args.includes("--caption-theme")
+  ) {
+    args.push("--caption-theme", pins.captionTheme);
+  }
+  if (
+    pins.choreographCaptions !== undefined &&
+    !args.includes("--choreograph-captions") &&
+    !args.includes("--no-choreograph-captions")
+  ) {
+    args.push(
+      pins.choreographCaptions ? "--choreograph-captions" : "--no-choreograph-captions",
+    );
   }
   return args;
 }

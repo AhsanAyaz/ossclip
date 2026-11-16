@@ -247,4 +247,19 @@ describe("produceArgv", () => {
     ]);
     expect(produceArgv(answers())).toEqual(["produce", "./take.mp4"]);
   });
+
+  it("emits --caption-theme only for non-default presets, and --choreograph-captions only when true", () => {
+    expect(produceArgv(answers({ extras: { captionTheme: "founder" } }))).toEqual([
+      "produce", "./take.mp4", "--caption-theme", "founder",
+    ]);
+    expect(produceArgv(answers({ extras: { captionTheme: "default" } }))).toEqual([
+      "produce", "./take.mp4",
+    ]);
+    expect(produceArgv(answers({ extras: { choreographCaptions: true } }))).toEqual([
+      "produce", "./take.mp4", "--choreograph-captions",
+    ]);
+    expect(produceArgv(answers({ extras: { choreographCaptions: false } }))).toEqual([
+      "produce", "./take.mp4",
+    ]);
+  });
 });

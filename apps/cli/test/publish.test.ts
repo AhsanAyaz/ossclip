@@ -19,6 +19,7 @@ import {
   atFlag,
   attachDeliveryMedia,
   buildPublishPosts,
+  captionOverCapErrors,
   deliveryFlag,
   describeUpload,
   durationCapMessages,
@@ -27,9 +28,12 @@ import {
   loadPublishPack,
   masterOverCapWarning,
   platformsFlag,
+  postizUploadCapBytes,
+  publishFollowUpNote,
   publishConfigured,
   runPublish,
   selectTargets,
+  needsDefaultDelivery,
   sizeCapGroups,
   sizeCapUnattainableMessages,
   summarizePosts,
@@ -275,6 +279,30 @@ describe("size-cap grouping and messages", () => {
     expect(same[1]!.videoPath).toBeUndefined();
   });
 
+  // 2026-11-13: Cloudflare (100MB) in front of Postiz refused a 174MB render
+  // for every channel. `postizMaxUploadMb` caps them all.
+  it("an upload cap puts every channel in a group, at the smaller ceiling", () => {
+    const groups = sizeCapGroups([li, insta], 90_000_000);
+    expect([...groups.keys()]).toEqual([90_000_000]);
+    expect(groups.get(90_000_000)!.map((t) => t.id)).toEqual(["a", "b"]);
+    // Instagram's own 95MB still wins under a looser upload cap.
+    const loose = sizeCapGroups([li, insta], 150_000_000);
+    expect(loose.get(150_000_000)!.map((t) => t.id)).toEqual(["a"]);
+    expect(loose.get(95_000_000)!.map((t) => t.id)).toEqual(["b"]);
+  });
+
+  it("attachDeliveryMedia routes an otherwise uncapped post to the upload-capped file", () => {
+    const posts = buildPublishPosts(pack, [li]);
+    const out = attachDeliveryMedia(posts, "/w/d.mp4", new Map([[90_000_000, "/w/small.mp4"]]), 90_000_000);
+    expect(out[0]!.videoPath).toBe("/w/small.mp4");
+  });
+
+  it("the default delivery encode is needed only while some channel is uncapped", () => {
+    expect(needsDefaultDelivery([li, insta])).toBe(true);
+    expect(needsDefaultDelivery([insta])).toBe(false);
+    expect(needsDefaultDelivery([li, insta], 90_000_000)).toBe(false);
+  });
+
   it("the master-mode warning names both sizes and that the choice was explicit", () => {
     expect(masterOverCapWarning([insta], 95_000_000, 409_000_000)).toBe(
       "▸ WARNING: the master is 409MB, over the 95MB instagram cap — " +
@@ -406,16 +434,16 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
     expect(mediaById["c"]).toBeUndefined();
     // The confirm summary named BOTH files before the "yes".
     const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
-    expect(output).toContain("▸ upload: delivery-1920x1080@10000k.mp4 (delivery encode, cached in workdir)");
+    expect(output).toContain("▸ upload: delivery-1920x1080@10000k-a48.mp4 (delivery encode, cached in workdir)");
     expect(output).toContain(
-      "▸ upload (instagram): delivery-1920x1080@2113k.mp4 (delivery encode, cached in workdir)",
+      "▸ upload (instagram): delivery-1920x1080@2177k-a48.mp4 (delivery encode, cached in workdir)",
     );
   });
 
   it("an unattainable size cap drops the channel loudly before the confirm; the rest publish", async () => {
     const { dir } = await workdirWithRender();
     // 800s is under instagram's 900s duration cap, but its 95MB size cap
-    // fits only ~730 kbps — below the 1000 kbps quality floor.
+    // fits only ~794 kbps (after 128k audio) — below the 1000 kbps quality floor.
     const { published, ensureCalls, deps } = fakes({
       targets: [targets[0]!, targets[1]!],
       probe: { ...masterProbe, duration: 800 },
@@ -424,7 +452,7 @@ describe("runPublish delivery flow (via the deps seam — no ffmpeg, no Postiz)"
     await runPublish(dir, { all: true, yes: true }, deps);
     const output = log.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(output).toContain(
-      "▸ instagram needs ≤95MB but a 13:20 video fits only ~730 kbps — " +
+      "▸ instagram needs ≤95MB but a 13:20 video fits only ~794 kbps — " +
         "skipping codewithahsan; publish it manually or shorten the cut",
     );
     expect(published[0]!.posts.map((p) => p.target.provider)).toEqual(["linkedin"]);
@@ -569,5 +597,41 @@ describe("publish argv (the real program)", () => {
 describe("PUBLISH_RECEIPT_BASENAME", () => {
   it("is pinned — the double-post guard and the editor both read this literal", () => {
     expect(PUBLISH_RECEIPT_BASENAME).toBe("publish-receipt.json");
+  });
+});
+
+describe("postizUploadCapBytes", () => {
+  it("is null when unset", () => {
+    expect(postizUploadCapBytes(undefined)).toEqual({ capBytes: null, warning: null });
+  });
+
+  it("reads megabytes as decimal bytes, the PLATFORM_SIZE_CAP_BYTES unit", () => {
+    expect(postizUploadCapBytes(95)).toEqual({ capBytes: 95_000_000, warning: null });
+  });
+
+  it("parses, never coerces: a string or a non-positive number warns and caps nothing", () => {
+    for (const bad of ["95", 0, -5, Number.NaN]) {
+      const r = postizUploadCapBytes(bad);
+      expect(r.capBytes).toBeNull();
+      expect(r.warning).toContain("postizMaxUploadMb");
+    }
+  });
+});
+
+describe("publishFollowUpNote", () => {
+  it("names the TikTok inbox draft only when TikTok was picked", () => {
+    expect(publishFollowUpNote(["tiktok"])).toContain("inbox");
+    expect(publishFollowUpNote(["linkedin"])).toBeNull();
+  });
+});
+
+describe("captionOverCapErrors", () => {
+  const th: PublishTarget = { id: "t", provider: "threads", name: "code.with.ahsan" };
+  it("refuses a Threads caption that fits by .length but not by Threads' byte count", () => {
+    const over = "→→ " + "a".repeat(495); // .length 498, Threads count 3+3+1+495 = 502
+    expect(captionOverCapErrors([{ target: th, caption: over }])).toEqual([
+      "threads (code.with.ahsan): caption is 502 / 500 (Threads counts each emoji and symbol by its UTF-8 bytes) — shorten it",
+    ]);
+    expect(captionOverCapErrors([{ target: th, caption: "👇 short" }])).toEqual([]);
   });
 });

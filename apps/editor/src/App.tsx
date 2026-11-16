@@ -1379,6 +1379,8 @@ export const App: React.FC = () => {
       return out;
     };
     const previewed = withStagePreviews(cues);
+    const effectiveCaptionTheme =
+      edits.doc.captionTheme ?? renderProps.baseCaptionTheme ?? renderProps.captionTheme;
     const base: PlayerProductionProps = {
       ...renderProps,
       sceneCues: previewed,
@@ -1390,6 +1392,7 @@ export const App: React.FC = () => {
       // what produce will render.
       captionLines: appliedCaptionWindows.lines,
       theme: resolveTheme(baseTheme, edits.doc),
+      captionTheme: effectiveCaptionTheme,
       // Recomposed, never inherited from the spread above: the baked
       // `captionsHidden` has the LAST-saved doc merged in (add-only — an
       // un-toggle would have nothing to take it back), so the CURRENT doc
@@ -1537,6 +1540,7 @@ export const App: React.FC = () => {
             .flatMap((c) => [c.startSec, c.endSec]),
           landscape:
             (renderProps.settings?.width ?? 1080) > (renderProps.settings?.height ?? 1920),
+          choreography: renderProps.captionChoreography,
         });
         captionLines = transcript.lines;
       }
@@ -1735,6 +1739,9 @@ export const App: React.FC = () => {
       sourceTextRegions: live.sourceTextRegions ?? [],
       captionsHidden: live.captionsHidden,
       frame,
+      captionTheme: live.captionTheme,
+      face: live.face,
+      watermark: live.watermark === true,
     });
     return overlaysWithoutRoom(overlayCuesLive, geometry, frame, live.settings.fps);
   }, [live, overlayCuesLive]);
@@ -3025,6 +3032,7 @@ export const App: React.FC = () => {
             onVideoPreview={setVideoPreview}
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
+            baseCaptionTheme={renderProps?.baseCaptionTheme ?? renderProps?.captionTheme}
             // "Delete this chunk"'s write boundary (step 4 follow-up): the
             // cue window is on the live clock, the entry's own seconds on the
             // old one, and `src` (cut-review rework) on SOURCE time — the

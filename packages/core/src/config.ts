@@ -200,6 +200,16 @@ export interface OssclipConfig {
    */
   postizUrl?: string;
   /**
+   * The largest upload the route to Postiz accepts, in megabytes (decimal).
+   * Set when a reverse proxy sits in front of the instance — Cloudflare's
+   * free plan refuses bodies over 100MB, so 95 is the value for it
+   * (2026-11-13: a 174MB render bounced for every channel). Every channel
+   * then gets a delivery encode under this size. Unset means uncapped.
+   * File-only like `postizUrl`; validated at the consumer
+   * (`postizUploadCapBytes` in the CLI), never coerced.
+   */
+  postizMaxUploadMb?: number;
+  /**
    * Base URL of an OpenAI-compatible transcription server, ending in `/v1`
    * (Groq: "https://api.groq.com/openai/v1"; a self-hosted speaches:
    * "http://localhost:8000/v1"). Set, transcription runs REMOTELY instead of
@@ -231,6 +241,18 @@ export interface OssclipConfig {
    * warning and the 1080 default rather than a coerced render size.
    */
   resolution?: string;
+  /**
+   * Default caption theme preset (`default`, `founder`, `punch`, `boxed`,
+   * `minimal`). Validated at the consumer (`resolveProductionCaptionTheme` in
+   * produce.ts), never coerced.
+   */
+  captionTheme?: string;
+  /**
+   * Run AI caption choreography (`--choreograph-captions`) on every produce
+   * run when true. `--choreograph-captions` / `--no-choreograph-captions` win
+   * over this per run (`resolveChoreographCaptions` in produce.ts).
+   */
+  choreographCaptions?: boolean;
   /**
    * USD per million tokens, keyed by model id or family substring — overrides
    * the built-in assumptions in `producer/usage.ts` so a run's cost line
@@ -391,6 +413,9 @@ export function resolveConfig(
     // deliberately lives in the environment (publish.ts's
     // `publishConfigured`), so this is only the instance URL.
     postizUrl: fileCfg.postizUrl,
+    // Copied for the same reason as postizUrl (the 2026-08-27 lesson: a key
+    // on the TYPE but missing here reads as unset forever).
+    postizMaxUploadMb: fileCfg.postizMaxUploadMb,
     // Env spellings ON PURPOSE, unlike postizUrl: the Groq quickstart is
     // "export two vars and run", and a user trying a free tier for the first
     // time should not have to hand-edit config.json to do it. Env beats file
@@ -401,5 +426,7 @@ export function resolveConfig(
     whisperUrl: env.OSSCLIP_WHISPER_URL ?? fileCfg.whisperUrl,
     whisperRemoteModel: env.OSSCLIP_WHISPER_REMOTE_MODEL ?? fileCfg.whisperRemoteModel,
     resolution: fileCfg.resolution,
+    captionTheme: fileCfg.captionTheme,
+    choreographCaptions: fileCfg.choreographCaptions,
   };
 }

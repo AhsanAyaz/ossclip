@@ -29,6 +29,23 @@ export const PLATFORM_SIZE_CAP_BYTES: Record<string, number> = {
   instagram: 95_000_000,
 };
 
+/**
+ * The byte ceiling one channel's upload must fit: its platform's own cap
+ * (above) and the ceiling on the UPLOAD PATH itself, whichever is smaller.
+ *
+ * The upload-path cap is the user's `postizMaxUploadMb` (2026-11-13): a
+ * 174MB render bounced off the Cloudflare proxy in front of the author's
+ * Postiz — 100MB on the free plan — for every channel at once, LinkedIn and
+ * YouTube included. That ceiling belongs to the route to Postiz, not to any
+ * platform, so it applies to all of them. Null/absent means no upload cap,
+ * the absence-means-uncapped posture above.
+ */
+export function sizeCapBytesFor(provider: string, uploadCapBytes: number | null = null): number | undefined {
+  const platform = PLATFORM_SIZE_CAP_BYTES[provider];
+  if (uploadCapBytes === null) return platform;
+  return platform === undefined ? uploadCapBytes : Math.min(platform, uploadCapBytes);
+}
+
 export interface DurationViolation {
   target: PublishTarget;
   capSec: number;

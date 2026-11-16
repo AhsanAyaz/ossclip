@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 import {
+  buildClaudeArgs,
   ClaudeCliProvider,
+  isUnsupportedNoPersistFlag,
   claudeCliErrorText,
   classifyClaudeCliFailure,
   claudeCliFailureMessage,
@@ -268,5 +270,74 @@ describe("claude CLI expired env token", () => {
     expect(withToken).toContain("OAuth access token has expired");
     expect(withToken).toContain("CLAUDE_CODE_OAUTH_TOKEN is set");
     expect(claudeCliFailureMessage(facts)).toContain("logged in?");
+  });
+});
+
+describe("claude-cli session persistence (§157)", () => {
+  it("buildClaudeArgs asks for no saved session unless persist is set", () => {
+    expect(buildClaudeArgs({ persist: false })).toContain("--no-session-persistence");
+    expect(buildClaudeArgs({ persist: true })).not.toContain("--no-session-persistence");
+    expect(buildClaudeArgs({ persist: false, model: "opus" }).slice(-2)).toEqual([
+      "--model",
+      "opus",
+    ]);
+  });
+
+  it("isUnsupportedNoPersistFlag matches the CLI's own error, not our echoed argv", () => {
+    expect(
+      isUnsupportedNoPersistFlag(
+        "claude -p --output-format json --max-turns 1 --no-session-persistence failed (exit 1):\n" +
+          "error: unknown option '--no-session-persistence'",
+      ),
+    ).toBe(true);
+    expect(
+      isUnsupportedNoPersistFlag(
+        "claude -p --output-format json --max-turns 1 --no-session-persistence failed (exit 1):\nboom",
+      ),
+    ).toBe(false);
+  });
+
+  it("passes the flag to the CLI", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-claude-argv-"));
+    const argvFile = join(dir, "argv");
+    const bin = join(dir, "claude");
+    writeFileSync(
+      bin,
+      [
+        "#!/usr/bin/env bash",
+        "cat > /dev/null",
+        `printf '%s\\n' "$@" > "${argvFile}"`,
+        `echo '${envelope('{"title": "OK"}')}'`,
+      ].join("\n"),
+    );
+    chmodSync(bin, 0o755);
+    await new ClaudeCliProvider(undefined, bin).complete({ system: "s", user: "u", schema, schemaName: "t" });
+    expect(readFileSync(argvFile, "utf8").split("\n")).toContain("--no-session-persistence");
+  });
+
+  it("an old CLI that rejects the flag runs once more without it, and is remembered", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ossclip-claude-old-"));
+    const calls = join(dir, "calls");
+    const bin = join(dir, "claude");
+    writeFileSync(
+      bin,
+      [
+        "#!/usr/bin/env bash",
+        "cat > /dev/null",
+        `echo "$*" >> "${calls}"`,
+        'for a in "$@"; do if [ "$a" = "--no-session-persistence" ]; then',
+        "  echo \"error: unknown option '--no-session-persistence'\" >&2; exit 1; fi; done",
+        `echo '${envelope('{"title": "OLD"}')}'`,
+      ].join("\n"),
+    );
+    chmodSync(bin, 0o755);
+    const provider = new ClaudeCliProvider(undefined, bin);
+    const req = { system: "s", user: "u", schema, schemaName: "t" };
+    expect(await provider.complete(req)).toEqual({ title: "OLD" });
+    expect(await provider.complete(req)).toEqual({ title: "OLD" });
+    const lines = readFileSync(calls, "utf8").trim().split("\n");
+    // One rejected spawn, then two calls without the flag — not one per call.
+    expect(lines.filter((l) => l.includes("--no-session-persistence"))).toHaveLength(1);
+    expect(lines).toHaveLength(3);
   });
 });

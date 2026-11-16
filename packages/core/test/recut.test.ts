@@ -813,6 +813,35 @@ describe("pruneHidesInsideCuts (§59b revisited — the cut supersedes the hide)
     expect(keys).toEqual([]);
     expect(pruned.captionWordsHidden).toEqual({ wat: { was: "??" } });
   });
+
+  // Field case 2026-11-13 ("AI And Coding"): "more," starts 0.24s inside a
+  // user cut and ends 0.115s past it. `mapWord` keeps a word whose start,
+  // mid OR end lands in kept material, so the caption builder emitted it,
+  // clamped onto the seam — while the start-instant test here retired its
+  // hide as "cut". The word came back on screen with no audio under it.
+  it("keeps a hide whose word straddles the cut edge and still renders", () => {
+    const doc = OverrideDocSchema.parse({
+      captionWordsHidden: { w19800: { was: "more," } },
+    });
+    const words = [{ text: "more,", start: 19.8, end: 20.3 }];
+    const { pruned: keys, doc: out } = pruneHidesInsideCuts(doc, cutlist, words);
+    expect(keys).toEqual([]);
+    expect(out.captionWordsHidden).toEqual({ w19800: { was: "more," } });
+  });
+
+  it("still retires a hide whose word the cut drops entirely", () => {
+    const doc = OverrideDocSchema.parse({ captionWordsHidden: { w15000: { was: "gone" } } });
+    const words = [{ text: "gone", start: 15, end: 15.4 }];
+    expect(pruneHidesInsideCuts(doc, cutlist, words).pruned).toEqual(["w15000"]);
+  });
+
+  it("retires a hide whose word reaches the kept side by less than the clamp keeps", () => {
+    // start and mid inside the cut, end exactly on srcOut: mapWord's clamped
+    // window is zero-length, so the word is dropped and the hide is dead.
+    const doc = OverrideDocSchema.parse({ captionWordsHidden: { w19500: { was: "edge" } } });
+    const words = [{ text: "edge", start: 19.5, end: 20 }];
+    expect(pruneHidesInsideCuts(doc, cutlist, words).pruned).toEqual(["w19500"]);
+  });
 });
 
 describe("src-anchored splits pass through the recut remap untouched (cut-review rework)", () => {

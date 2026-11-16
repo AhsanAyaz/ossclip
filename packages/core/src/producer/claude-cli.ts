@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { run } from "../exec";
 import { attemptFactsLine } from "./failure";
+import { keepLlmSessions, OSSCLIP_PROMPT_MARKER } from "./llm-sessions";
 import type { LlmProvider } from "./provider";
 import { estimateTokens, type LlmUsage } from "./usage";
 
@@ -36,8 +37,11 @@ export class ClaudeCliProvider implements LlmProvider {
     const base =
       `${req.system}\n\n${req.user}\n\n` +
       `Respond with ONLY a JSON object valid against this JSON Schema ("${req.schemaName}"). ` +
-      `No markdown fences, no commentary, no tool use — just the JSON:\n${schemaText}`;
+      `${OSSCLIP_PROMPT_MARKER} — just the JSON:\n${schemaText}`;
 
+    // Unsaved unless asked otherwise, or unless this CLI predates the flag
+    // (FINDINGS §157).
+    let persist = keepLlmSessions(process.env) || noPersistUnsupported.has(this.bin);
     let lastError = "";
     /** Wall time of every failed attempt — see `claudeCliFailureMessage`. */
     const attemptMs: number[] = [];
@@ -46,8 +50,7 @@ export class ClaudeCliProvider implements LlmProvider {
         attempt === 0
           ? base
           : `${base}\n\nYour previous reply failed validation:\n${lastError}\nReturn ONLY the corrected JSON.`;
-      const args = ["-p", "--output-format", "json", "--max-turns", "1"];
-      if (this.model) args.push("--model", this.model);
+      const args = buildClaudeArgs({ model: this.model, persist });
       const started = Date.now();
       let stdout = "";
       try {
@@ -55,6 +58,18 @@ export class ClaudeCliProvider implements LlmProvider {
       } catch (err) {
         attemptMs.push(Date.now() - started);
         lastError = claudeCliErrorText(err instanceof Error ? err.message : String(err));
+        // A CLI too old for --no-session-persistence fails before the model
+        // is ever called. Drop the flag and run this attempt again, without
+        // spending one of the two: the clutter it prevents is not worth
+        // failing a produce run over.
+        if (!persist && isUnsupportedNoPersistFlag(lastError)) {
+          noPersistUnsupported.add(this.bin);
+          persist = true;
+          attemptMs.pop();
+          lastError = "";
+          attempt--;
+          continue;
+        }
         // A signed-out CLI fails identically on retry, and the second spawn
         // only doubles the wait before the user learns to run /login.
         if (classifyClaudeCliFailure(lastError) === "auth") break;
@@ -96,6 +111,45 @@ export class ClaudeCliProvider implements LlmProvider {
       }),
     );
   }
+}
+
+const NO_PERSIST_FLAG = "--no-session-persistence";
+
+/**
+ * Bins already seen rejecting `--no-session-persistence`, so a run on an old
+ * CLI pays the failed spawn once per process, not once per call.
+ */
+const noPersistUnsupported = new Set<string>();
+
+/**
+ * The argv for one `claude -p` call. Pure so the flag set is testable without
+ * spawning anything (same split as `buildAgyArgs`).
+ *
+ * `--no-session-persistence` keeps the call out of the user's own
+ * `claude --resume` list: without it every planner call was saved as a session
+ * under ~/.claude/projects, a dozen per produce run (FINDINGS §157). It is
+ * print-mode only, which this always is.
+ */
+export function buildClaudeArgs(opts: { model?: string; persist: boolean }): string[] {
+  return [
+    "-p",
+    "--output-format",
+    "json",
+    "--max-turns",
+    "1",
+    ...(opts.persist ? [] : [NO_PERSIST_FLAG]),
+    ...(opts.model ? ["--model", opts.model] : []),
+  ];
+}
+
+/**
+ * Whether a failure is an older Claude Code rejecting the flag. Measured on
+ * an unknown flag (2026-11-14): exit 1, `error: unknown option '--bogus-flag'`
+ * on stderr. Anchored on the quoted flag name so our own echoed argv, which
+ * also contains it, cannot match.
+ */
+export function isUnsupportedNoPersistFlag(message: string): boolean {
+  return /unknown option '--no-session-persistence'/.test(message);
 }
 
 /**

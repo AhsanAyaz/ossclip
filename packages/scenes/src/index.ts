@@ -4,9 +4,11 @@ export {
   captionAnchorForLine,
   captionBottomAtFor,
   captionTopAtFor,
+  resolveChoreographedAnchor,
   type CaptionGeometryOpts,
   type CaptionTrackProps,
 } from "./CaptionTrack";
+export * from "./caption-themes";
 export { VideoStage } from "./VideoStage";
 export { SceneLayer } from "./SceneLayer";
 export { Watermark } from "./Watermark";

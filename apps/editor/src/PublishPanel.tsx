@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { CAPTION_CAPS, captionCap, captionLength } from "@ossclip/core/browser";
 import { groupByNetwork } from "./publishGroups";
 
 /**
@@ -49,22 +50,22 @@ export interface PublishInfo {
 }
 
 /**
- * Platform caption caps, hardcoded to match core's CAPTION_CAPS — the
- * YoutubePanel schema-bounds posture: importing core would drag node
- * built-ins into the Vite bundle, and the server re-caps regardless, so
- * drift costs a stale counter, never an over-long post.
+ * Platform caption caps — core's own table and count, imported (browser-safe)
+ * rather than restated: the hardcoded copy this replaced had drifted (no
+ * Threads entry, so Threads showed /1500 against a 500 limit) and counted
+ * with plain `.length` where Threads counts emoji by UTF-8 bytes
+ * (2026-11-13, a 400 after the upload). The server checks the same rule on
+ * POST before anything encodes or uploads.
  */
-export const PANEL_CAPTION_CAPS: Record<string, number> = {
-  x: 280,
-  linkedin: 1500,
-  instagram: 2200,
-  tiktok: 2200,
-  facebook: 2200,
-  youtube: 5000,
-};
+export const PANEL_CAPTION_CAPS: Readonly<Record<string, number>> = CAPTION_CAPS;
 
 export function panelCaptionCap(provider: string): number {
-  return PANEL_CAPTION_CAPS[provider] ?? 1500;
+  return captionCap(provider);
+}
+
+/** The count the panel shows and colours against the cap — publish's own. */
+export function panelCaptionLength(provider: string, text: string): number {
+  return captionLength(provider, text);
 }
 
 /**
@@ -89,6 +90,37 @@ export function youtubePrivacyNote(privacy: PanelYoutubePrivacy): string | null 
   return privacy === "public"
     ? "Public goes live immediately and straight to subscribers' feeds."
     : null;
+}
+
+/**
+ * What still needs a human after a publish, or null. TikTok posts go out as
+ * an INBOX DRAFT (postiz.ts: a self-hosted Postiz's unaudited TikTok app can
+ * only direct-post privately), so "Published" alone would leave the user
+ * waiting for a post that is sitting in their TikTok inbox. Mirrors the CLI's
+ * `publishFollowUpNote` (publish.ts) — restated, not imported, for the
+ * PANEL_CAPTION_CAPS reason (the CLI module drags node built-ins).
+ */
+export function publishFollowUpNote(providers: readonly string[]): string | null {
+  return providers.includes("tiktok")
+    ? "TikTok: the video is a draft in your TikTok app's inbox, with no caption — TikTok's inbox uploads don't accept one. Open TikTok, paste the caption below, pick its privacy and post it within 24 hours, or it is discarded."
+    : null;
+}
+
+/**
+ * The caption to paste into the TikTok draft: what this publish would have
+ * sent (the box's text, else the pack's), or null when TikTok was not picked.
+ * TikTok's inbox video endpoint takes no caption field at all (2026-11-13:
+ * the draft arrived blank apart from the app-name hashtag), so the panel
+ * hands it over for a paste instead.
+ */
+export function tiktokCaptionToPaste(
+  targets: ReadonlyArray<{ id: string; provider: string }>,
+  captions: Readonly<Record<string, string>>,
+  integrations: ReadonlyArray<{ id: string; caption: string }>,
+): string | null {
+  const tt = targets.find((t) => t.provider === "tiktok");
+  if (tt === undefined) return null;
+  return captions[tt.id] ?? integrations.find((i) => i.id === tt.id)?.caption ?? null;
 }
 
 /** The plain sentences the panel's blocked states show instead of controls. */
@@ -228,6 +260,7 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
   const [progress, setProgress] = useState<PublishProgressInfo | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sent, setSent] = useState<PublishReceiptInfo | null>(null);
+  const [tiktokCopied, setTiktokCopied] = useState(false);
   // Caption regenerate (2026-08-29, handoff item 4): a per-network
   // instruction box + button beside the caption. The server calls the run's
   // own LLM; the result lands in the caption STATE only — nothing auto-sends,
@@ -539,6 +572,38 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
               : `Scheduled for ${sent.when.iso} on ${sent.targets.length} account(s).`}
             {sent.postIds.length > 0 ? ` Posts: ${sent.postIds.join(", ")}.` : ""} Track it in
             your Postiz launches view.
+            {publishFollowUpNote(sent.targets.map((t) => t.provider)) !== null ? (
+              <div data-testid="publish-followup" style={{ marginTop: 6 }}>
+                {publishFollowUpNote(sent.targets.map((t) => t.provider))}
+              </div>
+            ) : null}
+            {(() => {
+              const paste = tiktokCaptionToPaste(sent.targets, captions, info.integrations ?? []);
+              if (paste === null || paste.length === 0) return null;
+              return (
+                <div style={{ marginTop: 6 }}>
+                  <textarea
+                    data-testid="publish-tiktok-caption"
+                    readOnly
+                    value={paste}
+                    style={{ ...captionArea, minHeight: 60 }}
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                  <button
+                    type="button"
+                    data-testid="publish-tiktok-copy"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(paste).then(
+                        () => setTiktokCopied(true),
+                        () => setTiktokCopied(false),
+                      );
+                    }}
+                  >
+                    {tiktokCopied ? "Copied" : "Copy TikTok caption"}
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         ) : (
           <>
@@ -610,6 +675,7 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                 const on = pickedInGroup.length > 0;
                 const cap = panelCaptionCap(group.channels[0]!.provider);
                 const text = captions[ids[0]!] ?? group.caption;
+                const textLength = panelCaptionLength(group.channels[0]!.provider, text);
                 return (
                   <div key={group.network} style={accountBox}>
                     <div style={accountRow}>
@@ -673,10 +739,10 @@ export const PublishPanel: React.FC<PublishPanelProps> = ({ onClose }) => {
                           data-testid={`publish-count-${group.network}`}
                           style={{
                             ...counterText,
-                            ...(text.length > cap ? { color: "#FF5C5C" } : {}),
+                            ...(textLength > cap ? { color: "#FF5C5C" } : {}),
                           }}
                         >
-                          {text.length} / {cap}
+                          {textLength} / {cap}
                           {pickedInGroup.length > 1
                             ? ` · posts to ${pickedInGroup.length} channels`
                             : ""}

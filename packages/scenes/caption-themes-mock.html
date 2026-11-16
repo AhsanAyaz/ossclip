@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ossclip — AI Choreographed Captions & Caption Themes Mock (Stage 1)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800;900&family=Noto+Nastaliq+Urdu:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-app: #090a0f;
+      --bg-panel: #12141d;
+      --bg-panel-elevated: #191c28;
+      --border: #262a3b;
+      --text-primary: #f3f4f8;
+      --text-secondary: #9ca3b8;
+      --accent: #ffd54a;
+      --danger: #f43f5e;
+      --success: #10b981;
+      --info: #38bdf8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg-app);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 14px 24px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-badge {
+      background: rgba(255, 213, 74, 0.14);
+      color: var(--accent);
+      border: 1px solid rgba(255, 213, 74, 0.35);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 999px;
+    }
+
+    .brand h1 {
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .header-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 360px 1fr 340px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    @media (max-width: 1280px) {
+      .workspace {
+        grid-template-columns: 320px 1fr;
+      }
+      .inspector-panel {
+        grid-column: 1 / -1;
+        border-left: none;
+        border-top: 1px solid var(--border);
+      }
+    }
+
+    .controls-panel,
+    .inspector-panel {
+      background: var(--bg-panel);
+      padding: 18px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .controls-panel {
+      border-right: 1px solid var(--border);
+    }
+
+    .inspector-panel {
+      border-left: 1px solid var(--border);
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .control-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-secondary);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .control-label span.code {
+      font-family: 'JetBrains Mono', monospace;
+      text-transform: none;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .segmented,
+    .preset-grid {
+      display: grid;
+      gap: 6px;
+    }
+
+    .segmented.cols-2 {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .segmented.cols-3 {
+      grid-template-columns: 1fr 1fr 1fr;
+    }
+
+    .preset-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    button.btn {
+      background: var(--bg-panel-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.14s ease;
+      text-align: left;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    button.btn.center {
+      text-align: center;
+      align-items: center;
+      justify-content: center;
+    }
+
+    button.btn:hover {
+      border-color: #3e4561;
+      background: #202433;
+    }
+
+    button.btn.active {
+      background: rgba(255, 213, 74, 0.14);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button.btn .sub {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    button.btn.active .sub {
+      color: #fde68a;
+    }
+
+    .swatch-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .swatch-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .swatch-btn.active {
+      border-color: #fff;
+      box-shadow: 0 0 0 2px var(--bg-panel), 0 0 12px rgba(255, 255, 255, 0.35);
+    }
+
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .slider-row input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .checkbox-row input {
+      accent-color: var(--accent);
+      width: 15px;
+      height: 15px;
+      cursor: pointer;
+    }
+
+    /* Stage Canvas Area */
+    .stage-area {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px;
+      background:
+        radial-gradient(circle at 50% 20%, rgba(56, 189, 248, 0.06), transparent 60%),
+        repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 24px),
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 24px);
+      overflow: auto;
+      gap: 16px;
+    }
+
+    .stages-wrapper {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      width: 100%;
+    }
+
+    .stage-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .stage-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 0 4px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .stage-card-header .tag {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+    }
+
+    /* Simulated Remotion Composition Viewport */
+    .viewport {
+      position: relative;
+      overflow: hidden;
+      border-radius: 16px;
+      border: 2px solid #2b3044;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+      background: #141824;
+      user-select: none;
+    }
+
+    /* Simulated Talking-Head Video Backdrop */
+    .video-backdrop {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 50% 35%, #2b354f 0%, #151a28 55%, #0c0e17 100%);
+    }
+
+    /* Subtle room environment shapes for contrast testing */
+    .video-backdrop::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, transparent 40%),
+        radial-gradient(ellipse at 80% 20%, rgba(255, 180, 90, 0.08), transparent 50%);
+    }
+
+    /* Simulated Speaker Silhouette (positioned dynamically from faceY & faceSize) */
+    .speaker-head {
+      position: absolute;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      border-radius: 50% 50% 46% 46%;
+      background: linear-gradient(180deg, #eab696 0%, #c68b68 100%);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+    }
+
+    .speaker-hair {
+      position: absolute;
+      top: -8%;
+      left: -4%;
+      right: -4%;
+      height: 42%;
+      background: #1c1917;
+      border-radius: 50% 50% 20% 20%;
+    }
+
+    .speaker-shoulders {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+      border-radius: 44% 44% 0 0;
+      box-shadow: 0 -4px 20px rgba(0,0,0,0.4);
+      pointer-events: none;
+    }
+
+    /* Safe-Zone Diagnostic Overlays */
+    .overlay-guides {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .guide-safe-area {
+      position: absolute;
+      border: 1.5px dashed rgba(56, 189, 248, 0.55);
+      border-radius: 6px;
+    }
+
+    .guide-safe-label {
+      position: absolute;
+      top: 4px;
+      left: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      color: var(--info);
+      background: rgba(9, 10, 15, 0.8);
+      padding: 2px 5px;
+      border-radius: 3px;
+    }
+
+    .guide-face-box {
+      position: absolute;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      border: 1.5px solid #f43f5e;
+      background: rgba(244, 63, 94, 0.08);
+      border-radius: 4px;
+    }
+
+    .guide-face-label {
+      position: absolute;
+      top: -16px;
+      left: 0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      color: #fda4af;
+      background: rgba(9, 10, 15, 0.85);
+      padding: 1px 4px;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+
+    .guide-head-band {
+      position: absolute;
+      left: 0;
+      right: 0;
+      background: rgba(244, 63, 94, 0.14);
+      border-top: 1px dotted rgba(244, 63, 94, 0.7);
+      border-bottom: 1px dotted rgba(244, 63, 94, 0.7);
+    }
+
+    .guide-head-band-label {
+      position: absolute;
+      right: 8px;
+      top: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      color: #fda4af;
+      background: rgba(9, 10, 15, 0.82);
+      padding: 2px 5px;
+      border-radius: 3px;
+    }
+
+    .guide-free-band {
+      position: absolute;
+      left: 0;
+      right: 0;
+      background: rgba(16, 185, 129, 0.11);
+      border-top: 1px dashed rgba(16, 185, 129, 0.6);
+      border-bottom: 1px dashed rgba(16, 185, 129, 0.6);
+    }
+
+    .guide-anchor-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: var(--accent);
+      z-index: 6;
+    }
+
+    .guide-anchor-tag {
+      position: absolute;
+      left: 8px;
+      transform: translateY(-50%);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      font-weight: 600;
+      color: #090a0f;
+      background: var(--accent);
+      padding: 1px 5px;
+      border-radius: 3px;
+      z-index: 7;
+    }
+
+    .guide-watermark {
+      position: absolute;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px dashed rgba(255, 255, 255, 0.4);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      color: rgba(255, 255, 255, 0.75);
+    }
+
+    /* Timeline Scrubber Bar */
+    .timeline-bar {
+      width: 100%;
+      max-width: 920px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .timeline-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .play-btn {
+      background: var(--accent);
+      color: #090a0f;
+      border: none;
+      border-radius: 8px;
+      padding: 7px 14px;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      min-width: 76px;
+    }
+
+    .time-readout {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+      min-width: 155px;
+    }
+
+    .phrase-pills {
+      display: flex;
+      gap: 4px;
+      width: 100%;
+    }
+
+    .phrase-segment {
+      height: 22px;
+      border-radius: 4px;
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 8px;
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-secondary);
+      cursor: pointer;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .phrase-segment.active {
+      border-color: var(--accent);
+      background: rgba(255, 213, 74, 0.14);
+      color: var(--text-primary);
+    }
+
+    .phrase-segment .role-badge {
+      font-size: 9px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .role-badge.hook {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+
+    .role-badge.body {
+      background: rgba(148, 163, 184, 0.2);
+      color: #cbd5e1;
+    }
+
+    .role-badge.impact {
+      background: rgba(244, 63, 94, 0.2);
+      color: #fb7185;
+    }
+
+    /* Inspector Code Block */
+    .spec-box {
+      background: #0b0d14;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      line-height: 1.55;
+      color: #cbd5e1;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .metric-card {
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .metric-card .k {
+      font-size: 10px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+    }
+
+    .metric-card .v {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="brand-badge">STAGE 1 VISUAL GATE</span>
+      <h1>AI Choreographed Captions &amp; Caption Themes Mock</h1>
+    </div>
+    <div class="header-meta">
+      30fps Frame-Driven Engine · easeOutQuad(0.12s) · FaceBox headBand + freeBands
+    </div>
+  </header>
+
+  <div class="workspace">
+    <!-- Left Column: Interactive Controls -->
+    <aside class="controls-panel">
+      <div class="control-group">
+        <div class="control-label">
+          <span>1. Caption Theme Preset</span>
+          <span class="code" id="active-preset-code">--caption-theme founder</span>
+        </div>
+        <div class="preset-grid" id="preset-buttons">
+          <button class="btn" data-preset="default">
+            <span>default</span>
+            <span class="sub">900 · 10px stroke · full-line</span>
+          </button>
+          <button class="btn active" data-preset="founder">
+            <span>founder (HeyClicky)</span>
+            <span class="sub">800 · accent pill · full-line</span>
+          </button>
+          <button class="btn" data-preset="punch">
+            <span>punch</span>
+            <span class="sub">900 CAPS · word-build · badge</span>
+          </button>
+          <button class="btn" data-preset="boxed">
+            <span>boxed</span>
+            <span class="sub">800 · dark line pill · 0 stroke</span>
+          </button>
+          <button class="btn" data-preset="minimal">
+            <span>minimal</span>
+            <span class="sub">700 · word-build · soft shadow</span>
+          </button>
+          <button class="btn" data-preset="all">
+            <span>Compare All 5</span>
+            <span class="sub">Side-by-side grid view</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>2. Aspect Ratio &amp; Stage</span>
+          <span class="code" id="aspect-code">9:16 (64px base)</span>
+        </div>
+        <div class="segmented cols-2" id="aspect-buttons">
+          <button class="btn center active" data-aspect="portrait">9:16 Portrait</button>
+          <button class="btn center" data-aspect="landscape">16:9 Landscape</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>3. Sample Clip / Script</span>
+          <span class="code" id="sample-code">3-Phrase Launch Story</span>
+        </div>
+        <div class="segmented" id="sample-buttons">
+          <button class="btn active" data-sample="story">
+            <span>Full 3-Phrase Launch Story (Hook → Body → CTA)</span>
+            <span class="sub">Shows hook safe-zone jump (t &lt; 4s) then stable 0.76 anchor</span>
+          </button>
+          <button class="btn" data-sample="hook">
+            <span>Opening Hook Only ("We shipped HeyClicky in 48 HOURS")</span>
+            <span class="sub">role: "hook" · 1.35x emphasis on "48 HOURS"</span>
+          </button>
+          <button class="btn" data-sample="cta">
+            <span>CTA Keyword Moment ("Comment &quot;AGENTS&quot; below")</span>
+            <span class="sub">role: "impact" · ctaDisplay quote-and-caps</span>
+          </button>
+          <button class="btn" data-sample="urdu">
+            <span>Urdu Nastaliq RTL ("2026 میں Fulfillment کے نئے اصول")</span>
+            <span class="sub">direction: "rtl" · lineHeight 1.9 · RTL pill guard</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>4. Word-Build Reveal Mode</span>
+          <span class="code" id="build-mode-code">slot-reserved</span>
+        </div>
+        <div class="segmented cols-2" id="build-mode-buttons">
+          <button class="btn active" data-build="slot-reserved">
+            <span>slot-reserved</span>
+            <span class="sub">Fixed flex slots (opacity 0→1)</span>
+          </button>
+          <button class="btn" data-build="dynamic-reflow">
+            <span>dynamic-reflow</span>
+            <span class="sub">Re-centers as words mount</span>
+          </button>
+        </div>
+        <label class="checkbox-row">
+          <span>Force <code>word-build</code> on all presets</span>
+          <input type="checkbox" id="force-word-build" />
+        </label>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>5. AI Choreography &amp; FaceBox Safe Zone</span>
+          <span class="code" id="choreo-code">--choreograph-captions</span>
+        </div>
+        <label class="checkbox-row">
+          <span>Enable AI Choreography (emphasis + safe-zone hook)</span>
+          <input type="checkbox" id="toggle-choreo" checked />
+        </label>
+        <label class="checkbox-row">
+          <span>Show Safe-Zone &amp; FaceBox Diagnostic Overlay</span>
+          <input type="checkbox" id="toggle-guides" checked />
+        </label>
+        <label class="checkbox-row">
+          <span>Simulate Top-Left Watermark (blocks top 6% band)</span>
+          <input type="checkbox" id="toggle-watermark" />
+        </label>
+        <div class="slider-row">
+          <span style="font-size:11px; color:var(--text-secondary); width:92px;">Face Y (<code id="face-y-val">0.42</code>)</span>
+          <input type="range" id="face-y-slider" min="0.18" max="0.68" step="0.01" value="0.42" />
+        </div>
+        <div class="slider-row">
+          <span style="font-size:11px; color:var(--text-secondary); width:92px;">Face H (<code id="face-s-val">0.20</code>)</span>
+          <input type="range" id="face-s-slider" min="0.12" max="0.32" step="0.01" value="0.20" />
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>6. Theme Accent Color (<code>theme.accent</code>)</span>
+          <span class="code" id="accent-hex">#FFD54A</span>
+        </div>
+        <div class="swatch-row" id="swatch-buttons">
+          <button class="swatch-btn active" data-accent="#FFD54A" style="background:#FFD54A" title="Default Gold (#FFD54A)"></button>
+          <button class="swatch-btn" data-accent="#22C55E" style="background:#22C55E" title="Founder Emerald (#22C55E)"></button>
+          <button class="swatch-btn" data-accent="#38BDF8" style="background:#38BDF8" title="Cyber Cyan (#38BDF8)"></button>
+          <button class="swatch-btn" data-accent="#FF5757" style="background:#FF5757" title="Punch Coral (#FF5757)"></button>
+          <button class="swatch-btn" data-accent="#A855F7" style="background:#A855F7" title="Electric Violet (#A855F7)"></button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Center Column: Stage Viewports & Timeline -->
+    <main class="stage-area">
+      <div class="stages-wrapper" id="stages-container"></div>
+
+      <div class="timeline-bar">
+        <div class="phrase-pills" id="phrase-pills"></div>
+        <div class="timeline-controls">
+          <button class="play-btn" id="play-pause-btn">Pause</button>
+          <input type="range" id="timeline-scrubber" min="0" max="150" step="1" value="0" style="flex:1; accent-color:var(--accent); cursor:pointer;" />
+          <div class="time-readout" id="time-readout">t = 0.00s (f 0/150)</div>
+          <button class="btn center" id="speed-btn" style="padding:6px 10px; min-width:56px;">1.0x</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right Column: Live Geometry & Theme Spec Inspector -->
+    <aside class="inspector-panel">
+      <div class="control-group">
+        <div class="control-label">
+          <span>Live Anchor &amp; Safe-Zone Solver</span>
+        </div>
+        <div class="metric-grid">
+          <div class="metric-card">
+            <div class="k">Line Role</div>
+            <div class="v" id="insp-role">"hook"</div>
+          </div>
+          <div class="metric-card">
+            <div class="k">Resolved Anchor Y</div>
+            <div class="v" id="insp-anchor">0.20 (Upper Free Band)</div>
+          </div>
+          <div class="metric-card">
+            <div class="k">headBand(face)</div>
+            <div class="v" id="insp-headband">[0.25 .. 0.55]</div>
+          </div>
+          <div class="metric-card">
+            <div class="k">Estimated Block H</div>
+            <div class="v" id="insp-extent">0.11 (1 row)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>Resolved <code>CaptionThemeSpec</code></span>
+        </div>
+        <div class="spec-box" id="spec-json"></div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">
+          <span>Active Line <code>CaptionLine</code> Payload</span>
+        </div>
+        <div class="spec-box" id="line-json"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    // =========================================================================
+    // 1. Exact Constants & Helpers from @ossclip/scenes & @ossclip/core
+    // =========================================================================
+    const FPS = 30;
+    const CAPTION_POP_SEC = 0.12;
+    const DEFAULT_CAPTION_ANCHOR = 0.76;
+    const HEAD_TOP_MARGIN = 0.85;
+    const CHIN_BOTTOM_MARGIN = 0.65;
+    const MIN_HOOK_BAND_H = 0.14;
+    const NASTALIQ_FONT_NAME = "Noto Nastaliq Urdu";
+    const BASE_FONT_STACK = "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif";
+
+    function easeOutQuad(t) {
+      const c = Math.max(0, Math.min(1, t));
+      return 1 - (1 - c) * (1 - c);
+    }
+
+    function safeAreaFor(aspect) {
+      if (aspect === "landscape") {
+        return { top: 0.08, bottom: 0.10, left: 0.06, right: 0.06 };
+      }
+      return { top: 0.10, bottom: 0.18, left: 0.06, right: 0.16 };
+    }
+
+    function headBand(face) {
+      return {
+        start: Math.max(0, face.centerYFrac - HEAD_TOP_MARGIN * face.sizeFrac),
+        end: Math.min(1, face.centerYFrac + CHIN_BOTTOM_MARGIN * face.sizeFrac),
+      };
+    }
+
+    function freeBands(within, blocked) {
+      const clipped = blocked
+        .map((b) => ({
+          start: Math.max(within.start, b.start),
+          end: Math.min(within.end, b.end),
+        }))
+        .filter((b) => b.end > b.start)
+        .sort((a, b) => a.start - b.start);
+
+      const out = [];
+      let cursor = within.start;
+      for (const b of clipped) {
+        if (b.start > cursor) out.push({ start: cursor, end: b.start });
+        cursor = Math.max(cursor, b.end);
+      }
+      if (cursor < within.end) out.push({ start: cursor, end: within.end });
+      return out;
+    }
+
+    function lineDirection(text) {
+      for (const ch of text) {
+        const code = ch.codePointAt(0);
+        if (
+          (code >= 0x0590 && code <= 0x08ff) ||
+          (code >= 0xfb1d && code <= 0xfdff) ||
+          (code >= 0xfe70 && code <= 0xfeff)
+        ) {
+          return "rtl";
+        }
+        if (
+          (code >= 0x0041 && code <= 0x005a) ||
+          (code >= 0x0061 && code <= 0x007a)
+        ) {
+          return "ltr";
+        }
+      }
+      return "ltr";
+    }
+
+    function ctaDisplay(text, keyword) {
+      if (!keyword) return text;
+      const core = text.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "");
+      if (core.toLowerCase() !== keyword.toLowerCase()) return text;
+      return text.replace(core, `"${core.toUpperCase()}"`);
+    }
+
+    /**
+     * WCAG relative luminance contrast picker for flat (unstroked) pills.
+     * Returns "#0A0A0C" on bright accents (gold, cyan, emerald) and "#FFFFFF"
+     * on deeper accents (coral, purple, crimson, navy).
+     */
+    function pillTextColorFor(hex) {
+      const clean = String(hex || "").replace(/^#/, "").trim();
+      let r = 255, g = 213, b = 74;
+      if (clean.length === 3) {
+        r = parseInt(clean[0] + clean[0], 16);
+        g = parseInt(clean[1] + clean[1], 16);
+        b = parseInt(clean[2] + clean[2], 16);
+      } else if (clean.length >= 6) {
+        r = parseInt(clean.slice(0, 2), 16);
+        g = parseInt(clean.slice(2, 4), 16);
+        b = parseInt(clean.slice(4, 6), 16);
+      }
+      if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return "#0A0A0C";
+      const toLinear = (c) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+      };
+      const lum = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+      return lum > 0.36 ? "#0A0A0C" : "#FFFFFF";
+    }
+
+    // =========================================================================
+    // 2. Caption Theme Preset Resolver (resolveCaptionThemeSpec)
+    // =========================================================================
+    function resolveCaptionThemeSpec(presetId, accentColor, direction, fontSizePx, forceWordBuild) {
+      const isRtl = direction === "rtl";
+      const strokeFor = (ratio) => (ratio === 0 ? 0 : (fontSizePx * ratio) / 64);
+
+      const specs = {
+        default: {
+          id: "default",
+          revealMode: "full-line",
+          fontScale: 1.0,
+          fontWeight: 900,
+          textTransform: "none",
+          letterSpacing: "normal",
+          strokePx: strokeFor(10),
+          strokeColor: "rgba(0,0,0,0.85)",
+          shadowStyle: `0 4px ${(fontSizePx * 24) / 64}px rgba(0,0,0,0.85), 0 1px 0 rgba(0,0,0,0.95)`,
+          lineBoxStyle: null,
+          activeWordPill: null,
+          activeTextColor: accentColor,
+          inactiveTextColor: "#FFFFFF",
+          inactiveOpacity: 1.0,
+          popScaleAmp: 0.08,
+        },
+        founder: {
+          id: "founder",
+          revealMode: "full-line",
+          fontScale: 0.92,
+          fontWeight: 800,
+          textTransform: "none",
+          letterSpacing: isRtl ? "normal" : "-0.02em",
+          strokePx: strokeFor(2),
+          strokeColor: "rgba(0,0,0,0.80)",
+          shadowStyle: `0 3px ${(fontSizePx * 14) / 64}px rgba(0,0,0,0.65)`,
+          lineBoxStyle: null,
+          activeWordPill: {
+            backgroundColor: accentColor,
+            color: pillTextColorFor(accentColor),
+            borderRadius: "0.22em",
+            padding: isRtl ? "0.14em 0.28em" : "0.04em 0.22em",
+            rotateDeg: 0,
+            onlyEmphasized: false,
+            clearStroke: true,
+          },
+          activeTextColor: pillTextColorFor(accentColor),
+          inactiveTextColor: "#FFFFFF",
+          inactiveOpacity: 0.85,
+          popScaleAmp: 0.05,
+        },
+        punch: {
+          id: "punch",
+          revealMode: "word-build",
+          fontScale: 1.08,
+          fontWeight: 900,
+          textTransform: isRtl ? "none" : "uppercase",
+          letterSpacing: isRtl ? "normal" : "0.01em",
+          strokePx: strokeFor(12),
+          strokeColor: "rgba(0,0,0,0.92)",
+          shadowStyle: `0 ${Math.max(2, Math.round((fontSizePx * 6) / 64))}px 0 rgba(0,0,0,0.9)`,
+          lineBoxStyle: null,
+          activeWordPill: {
+            backgroundColor: accentColor,
+            color: "#FFFFFF",
+            borderRadius: "0.18em",
+            padding: isRtl ? "0.14em 0.28em" : "0.04em 0.20em",
+            rotateDeg: isRtl ? 0 : -1.5,
+            onlyEmphasized: true,
+            clearStroke: false,
+          },
+          activeTextColor: accentColor,
+          inactiveTextColor: "#FFFFFF",
+          inactiveOpacity: 1.0,
+          popScaleAmp: 0.14,
+        },
+        boxed: {
+          id: "boxed",
+          revealMode: "full-line",
+          fontScale: 0.95,
+          fontWeight: 800,
+          textTransform: "none",
+          letterSpacing: isRtl ? "normal" : "-0.01em",
+          strokePx: 0,
+          strokeColor: "transparent",
+          shadowStyle: "none",
+          lineBoxStyle: {
+            backgroundColor: "rgba(10, 10, 12, 0.86)",
+            borderRadius: "0.28em",
+            padding: isRtl ? "0.28em 0.55em" : "0.16em 0.45em",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.45)",
+          },
+          activeWordPill: null,
+          activeTextColor: accentColor,
+          inactiveTextColor: "#FFFFFF",
+          inactiveOpacity: 0.92,
+          popScaleAmp: 0.04,
+        },
+        minimal: {
+          id: "minimal",
+          revealMode: "word-build",
+          fontScale: 0.84,
+          fontWeight: 700,
+          textTransform: "none",
+          letterSpacing: isRtl ? "normal" : "0.01em",
+          strokePx: 0,
+          strokeColor: "transparent",
+          shadowStyle: `0 2px ${(fontSizePx * 8) / 64}px rgba(0,0,0,0.7), 0 0 ${(fontSizePx * 2) / 64}px rgba(0,0,0,0.85)`,
+          lineBoxStyle: null,
+          activeWordPill: null,
+          activeTextColor: accentColor,
+          inactiveTextColor: "#FFFFFF",
+          inactiveOpacity: 0.60,
+          popScaleAmp: 0.04,
+        },
+      };
+
+      const resolved = { ...(specs[presetId] || specs.default) };
+      if (forceWordBuild) {
+        resolved.revealMode = "word-build";
+      }
+      return resolved;
+    }
+
+    // =========================================================================
+    // 3. Choreographed Safe-Zone Anchor Solver (resolveChoreographedAnchor)
+    // =========================================================================
+    function resolveChoreographedAnchor(line, face, aspect, watermark, choreoEnabled) {
+      const safe = safeAreaFor(aspect);
+      const head = headBand(face);
+      const blocked = [{ start: head.start, end: head.end }];
+      if (watermark) {
+        blocked.push({ start: safe.top, end: safe.top + 0.06 });
+      }
+      const bands = freeBands({ start: safe.top, end: 1 - safe.bottom }, blocked);
+
+      if (!choreoEnabled || !line.role || line.role === "body") {
+        return {
+          anchor: DEFAULT_CAPTION_ANCHOR,
+          reason: "body (DEFAULT_CAPTION_ANCHOR)",
+          head,
+          bands,
+        };
+      }
+
+      if (line.role === "hook" || line.role === "impact") {
+        const upperBands = bands.filter(
+          (b) => b.end <= head.start + 1e-4 && b.end - b.start >= MIN_HOOK_BAND_H
+        );
+        if (upperBands.length > 0) {
+          const best = upperBands.reduce((a, b) =>
+            b.end - b.start > a.end - a.start ? b : a
+          );
+          const center = Math.max(
+            safe.top + 0.06,
+            Math.min(1 - safe.bottom - 0.06, (best.start + best.end) / 2)
+          );
+          return {
+            anchor: Number(center.toFixed(3)),
+            reason: `${line.role} → upper freeBand [${best.start.toFixed(2)}..${best.end.toFixed(2)}]`,
+            head,
+            bands,
+          };
+        }
+
+        const lowerBands = bands.filter(
+          (b) => b.start >= head.end - 1e-4 && b.end - b.start >= MIN_HOOK_BAND_H
+        );
+        if (lowerBands.length > 0) {
+          const best = lowerBands.reduce((a, b) =>
+            b.end - b.start > a.end - a.start ? b : a
+          );
+          const center = Math.max(
+            safe.top + 0.06,
+            Math.min(1 - safe.bottom - 0.06, (best.start + best.end) / 2)
+          );
+          return {
+            anchor: Number(center.toFixed(3)),
+            reason: `${line.role} → lower freeBand [${best.start.toFixed(2)}..${best.end.toFixed(2)}]`,
+            head,
+            bands,
+          };
+        }
+      }
+
+      return {
+        anchor: DEFAULT_CAPTION_ANCHOR,
+        reason: "fallback (no band >= 0.14)",
+        head,
+        bands,
+      };
+    }
+
+    // =========================================================================
+    // 4. Sample Choreographed Phrase Datasets
+    // =========================================================================
+    const SAMPLES = {
+      story: {
+        durationSec: 5.0,
+        ctaKeyword: "agents",
+        ctaWindow: { startSec: 3.4, endSec: 5.0 },
+        lines: [
+          {
+            start: 0.0,
+            end: 1.85,
+            role: "hook",
+            words: [
+              { text: "We", start: 0.0, end: 0.28, srcStart: 1.0 },
+              { text: "shipped", start: 0.28, end: 0.62, srcStart: 1.28 },
+              { text: "HeyClicky", start: 0.62, end: 1.05, srcStart: 1.62, emphasisScale: 1.18 },
+              { text: "in", start: 1.05, end: 1.22, srcStart: 2.05 },
+              { text: "48", start: 1.22, end: 1.50, srcStart: 2.22, emphasisScale: 1.35 },
+              { text: "HOURS", start: 1.50, end: 1.85, srcStart: 2.50, emphasisScale: 1.35 },
+            ],
+          },
+          {
+            start: 1.85,
+            end: 3.45,
+            role: "body",
+            words: [
+              { text: "and", start: 1.85, end: 2.05, srcStart: 3.0 },
+              { text: "crossed", start: 2.05, end: 2.38, srcStart: 3.2 },
+              { text: "10,000", start: 2.38, end: 2.82, srcStart: 3.53, emphasisScale: 1.28 },
+              { text: "builders", start: 2.82, end: 3.18, srcStart: 3.97 },
+              { text: "today", start: 3.18, end: 3.45, srcStart: 4.33 },
+            ],
+          },
+          {
+            start: 3.45,
+            end: 5.0,
+            role: "impact",
+            words: [
+              { text: "Comment", start: 3.45, end: 3.90, srcStart: 5.0 },
+              { text: "agents", start: 3.90, end: 4.45, srcStart: 5.45, emphasisScale: 1.35 },
+              { text: "below", start: 4.45, end: 5.0, srcStart: 6.0 },
+            ],
+          },
+        ],
+      },
+      hook: {
+        durationSec: 2.1,
+        ctaKeyword: undefined,
+        ctaWindow: undefined,
+        lines: [
+          {
+            start: 0.0,
+            end: 2.1,
+            role: "hook",
+            words: [
+              { text: "We", start: 0.0, end: 0.30, srcStart: 1.0 },
+              { text: "shipped", start: 0.30, end: 0.68, srcStart: 1.3 },
+              { text: "HeyClicky", start: 0.68, end: 1.15, srcStart: 1.68, emphasisScale: 1.18 },
+              { text: "in", start: 1.15, end: 1.35, srcStart: 2.15 },
+              { text: "48", start: 1.35, end: 1.68, srcStart: 2.35, emphasisScale: 1.35 },
+              { text: "HOURS", start: 1.68, end: 2.1, srcStart: 2.68, emphasisScale: 1.35 },
+            ],
+          },
+        ],
+      },
+      cta: {
+        durationSec: 1.8,
+        ctaKeyword: "agents",
+        ctaWindow: { startSec: 0.0, endSec: 1.8 },
+        lines: [
+          {
+            start: 0.0,
+            end: 1.8,
+            role: "impact",
+            words: [
+              { text: "Comment", start: 0.0, end: 0.50, srcStart: 10.0 },
+              { text: "agents.", start: 0.50, end: 1.20, srcStart: 10.5, emphasisScale: 1.35 },
+              { text: "below", start: 1.20, end: 1.80, srcStart: 11.2 },
+            ],
+          },
+        ],
+      },
+      urdu: {
+        durationSec: 2.4,
+        ctaKeyword: undefined,
+        ctaWindow: undefined,
+        lines: [
+          {
+            start: 0.0,
+            end: 2.4,
+            role: "hook",
+            words: [
+              { text: "2026", start: 0.0, end: 0.45, srcStart: 1.0, emphasisScale: 1.25 },
+              { text: "میں", start: 0.45, end: 0.80, srcStart: 1.45 },
+              { text: "Fulfillment", start: 0.80, end: 1.40, srcStart: 1.80, emphasisScale: 1.30 },
+              { text: "کے", start: 1.40, end: 1.70, srcStart: 2.40 },
+              { text: "نئے", start: 1.70, end: 2.00, srcStart: 2.70 },
+              { text: "اصول", start: 2.00, end: 2.40, srcStart: 3.00, emphasisScale: 1.25 },
+            ],
+          },
+        ],
+      },
+    };
+
+    // =========================================================================
+    // 5. Interactive Application State
+    // =========================================================================
+    const state = {
+      preset: "founder", // "default" | "founder" | "punch" | "boxed" | "minimal" | "all"
+      aspect: "portrait", // "portrait" | "landscape"
+      sampleKey: "story", // "story" | "hook" | "cta" | "urdu"
+      buildStrategy: "slot-reserved", // "slot-reserved" | "dynamic-reflow"
+      forceWordBuild: false,
+      choreoEnabled: true,
+      showGuides: true,
+      watermark: false,
+      face: { centerYFrac: 0.42, sizeFrac: 0.20 },
+      accentColor: "#FFD54A",
+      playing: true,
+      speed: 1.0,
+      frame: 0,
+    };
+
+    const ALL_PRESETS = ["default", "founder", "punch", "boxed", "minimal"];
+
+    function currentSample() {
+      return SAMPLES[state.sampleKey];
+    }
+
+    function totalFrames() {
+      return Math.round(currentSample().durationSec * FPS);
+    }
+
+    // =========================================================================
+    // 6. DOM Stage Construction & Frame Renderer
+    // =========================================================================
+    const stagesContainer = document.getElementById("stages-container");
+    const phrasePillsEl = document.getElementById("phrase-pills");
+    const scrubberEl = document.getElementById("timeline-scrubber");
+    const timeReadoutEl = document.getElementById("time-readout");
+
+    function getStageDimensions() {
+      const isCompareAll = state.preset === "all";
+      if (state.aspect === "landscape") {
+        const w = isCompareAll ? 360 : 640;
+        const h = Math.round((w * 9) / 16);
+        const scale = w / 1920;
+        return { w, h, baseFontPx: 44 * scale, rawBasePx: 44 };
+      } else {
+        const w = isCompareAll ? 225 : 340;
+        const h = Math.round((w * 16) / 9);
+        const scale = w / 1080;
+        return { w, h, baseFontPx: 64 * scale, rawBasePx: 64 };
+      }
+    }
+
+    function rebuildPhraseBar() {
+      const sample = currentSample();
+      scrubberEl.max = String(totalFrames());
+      phrasePillsEl.innerHTML = "";
+      sample.lines.forEach((line, idx) => {
+        const frac = (line.end - line.start) / sample.durationSec;
+        const seg = document.createElement("div");
+        seg.className = "phrase-segment";
+        seg.style.flex = String(frac);
+        seg.dataset.lineIdx = String(idx);
+        const textPreview = line.words.map((w) => w.text).join(" ");
+        const role = state.choreoEnabled && line.role ? line.role : "body";
+        seg.innerHTML = `
+          <span style="overflow:hidden;text-overflow:ellipsis;">${textPreview}</span>
+          <span class="role-badge ${role}">${role}</span>
+        `;
+        seg.addEventListener("click", () => {
+          state.frame = Math.round(line.start * FPS) + 2;
+          renderFrame();
+        });
+        phrasePillsEl.appendChild(seg);
+      });
+    }
+
+    function renderFrame() {
+      const sample = currentSample();
+      const maxF = totalFrames();
+      if (state.frame > maxF) state.frame = 0;
+      const t = state.frame / FPS;
+
+      scrubberEl.value = String(state.frame);
+      timeReadoutEl.textContent = `t = ${t.toFixed(2)}s (f ${state.frame}/${maxF})`;
+
+      // Find active CaptionLine at time t
+      const activeLineIdx = sample.lines.findIndex(
+        (l, idx) => t >= l.start && (t < l.end || idx === sample.lines.length - 1)
+      );
+      const activeLine = sample.lines[Math.max(0, activeLineIdx)];
+
+      // Highlight active phrase pill
+      Array.from(phrasePillsEl.children).forEach((el, idx) => {
+        el.classList.toggle("active", idx === activeLineIdx);
+      });
+
+      const presetsToRender = state.preset === "all" ? ALL_PRESETS : [state.preset];
+      const dims = getStageDimensions();
+      const safe = safeAreaFor(state.aspect);
+      const anchorResult = resolveChoreographedAnchor(
+        activeLine,
+        state.face,
+        state.aspect,
+        state.watermark,
+        state.choreoEnabled
+      );
+
+      stagesContainer.innerHTML = "";
+
+      let inspectedSpec = null;
+
+      for (const presetId of presetsToRender) {
+        const direction = lineDirection(activeLine.words.map((w) => w.text).join(" "));
+        const spec = resolveCaptionThemeSpec(
+          presetId,
+          state.accentColor,
+          direction,
+          dims.baseFontPx,
+          state.forceWordBuild
+        );
+        if (!inspectedSpec) {
+          inspectedSpec = resolveCaptionThemeSpec(
+            presetId,
+            state.accentColor,
+            direction,
+            dims.rawBasePx,
+            state.forceWordBuild
+          );
+        }
+
+        const card = document.createElement("div");
+        card.className = "stage-card";
+
+        const header = document.createElement("div");
+        header.className = "stage-card-header";
+        header.innerHTML = `
+          <span>--caption-theme ${presetId}</span>
+          <span class="tag">${spec.revealMode}</span>
+        `;
+        card.appendChild(header);
+
+        const viewport = document.createElement("div");
+        viewport.className = "viewport";
+        viewport.style.width = `${dims.w}px`;
+        viewport.style.height = `${dims.h}px`;
+
+        // 1. Simulated Video Backdrop + Talking Head Silhouette
+        const backdrop = document.createElement("div");
+        backdrop.className = "video-backdrop";
+
+        const headH = state.face.sizeFrac * dims.h;
+        const headW = headH * 0.78;
+        const shouldersTop = (state.face.centerYFrac + state.face.sizeFrac * 0.58) * dims.h;
+        backdrop.innerHTML = `
+          <div class="speaker-shoulders" style="top:${shouldersTop}px; width:${headW * 2.35}px; height:${dims.h - shouldersTop}px;"></div>
+          <div class="speaker-head" style="top:${state.face.centerYFrac * 100}%; width:${headW}px; height:${headH}px;">
+            <div class="speaker-hair"></div>
+          </div>
+        `;
+        viewport.appendChild(backdrop);
+
+        // 2. Diagnostic Safe-Zone & FaceBox Overlays
+        if (state.showGuides) {
+          const guides = document.createElement("div");
+          guides.className = "overlay-guides";
+
+          // Free bands
+          for (const b of anchorResult.bands) {
+            if (b.end - b.start >= MIN_HOOK_BAND_H) {
+              const fb = document.createElement("div");
+              fb.className = "guide-free-band";
+              fb.style.top = `${b.start * 100}%`;
+              fb.style.height = `${(b.end - b.start) * 100}%`;
+              guides.appendChild(fb);
+            }
+          }
+
+          // Head band
+          const hb = document.createElement("div");
+          hb.className = "guide-head-band";
+          hb.style.top = `${anchorResult.head.start * 100}%`;
+          hb.style.height = `${(anchorResult.head.end - anchorResult.head.start) * 100}%`;
+          hb.innerHTML = `<span class="guide-head-band-label">headBand [${anchorResult.head.start.toFixed(2)}..${anchorResult.head.end.toFixed(2)}]</span>`;
+          guides.appendChild(hb);
+
+          // FaceBox
+          const fbBox = document.createElement("div");
+          fbBox.className = "guide-face-box";
+          fbBox.style.top = `${state.face.centerYFrac * 100}%`;
+          fbBox.style.width = `${headW}px`;
+          fbBox.style.height = `${headH}px`;
+          fbBox.innerHTML = `<span class="guide-face-label">FaceBox (y=${state.face.centerYFrac.toFixed(2)})</span>`;
+          guides.appendChild(fbBox);
+
+          // SAFE_AREA
+          const sa = document.createElement("div");
+          sa.className = "guide-safe-area";
+          sa.style.top = `${safe.top * 100}%`;
+          sa.style.bottom = `${safe.bottom * 100}%`;
+          sa.style.left = `${safe.left * 100}%`;
+          sa.style.right = `${safe.right * 100}%`;
+          sa.innerHTML = `<span class="guide-safe-label">SAFE_AREA</span>`;
+          guides.appendChild(sa);
+
+          // Watermark
+          if (state.watermark) {
+            const wm = document.createElement("div");
+            wm.className = "guide-watermark";
+            wm.style.top = `${safe.top * 100 + 1}%`;
+            wm.style.left = `${safe.left * 100 + 1}%`;
+            wm.textContent = "WATERMARK";
+            guides.appendChild(wm);
+          }
+
+          // Active Anchor Y Line
+          const al = document.createElement("div");
+          al.className = "guide-anchor-line";
+          al.style.top = `${anchorResult.anchor * 100}%`;
+          guides.appendChild(al);
+
+          const atag = document.createElement("div");
+          atag.className = "guide-anchor-tag";
+          atag.style.top = `${anchorResult.anchor * 100}%`;
+          atag.textContent = `y=${anchorResult.anchor.toFixed(2)} (${state.choreoEnabled && activeLine.role ? activeLine.role : "body"})`;
+          guides.appendChild(atag);
+
+          viewport.appendChild(guides);
+        }
+
+        // 3. CaptionTrack -> LineView DOM
+        const outerWrapper = document.createElement("div");
+        outerWrapper.style.position = "absolute";
+        outerWrapper.style.top = `${anchorResult.anchor * 100}%`;
+        outerWrapper.style.left = "0";
+        outerWrapper.style.right = "0";
+        outerWrapper.style.transform = "translateY(-50%)";
+        outerWrapper.style.paddingLeft = `${safe.left * 100}%`;
+        outerWrapper.style.paddingRight = `${safe.right * 100}%`;
+        outerWrapper.style.zIndex = "10";
+        outerWrapper.style.pointerEvents = "none";
+
+        const lineRow = document.createElement("div");
+        const scaledFontPx = dims.baseFontPx * spec.fontScale;
+        lineRow.style.direction = direction;
+        lineRow.style.display = "flex";
+        lineRow.style.justifyContent = "center";
+        lineRow.style.alignItems = "baseline";
+        lineRow.style.gap = "0.28em";
+        lineRow.style.flexWrap = "wrap";
+        lineRow.style.fontFamily =
+          direction === "rtl"
+            ? `'${NASTALIQ_FONT_NAME}', ${BASE_FONT_STACK}`
+            : BASE_FONT_STACK;
+        lineRow.style.fontWeight = String(spec.fontWeight);
+        lineRow.style.fontSize = `${scaledFontPx}px`;
+        lineRow.style.lineHeight = direction === "rtl" ? "1.9" : "1.15";
+        lineRow.style.textAlign = "center";
+        lineRow.style.textTransform = spec.textTransform;
+        lineRow.style.letterSpacing = spec.letterSpacing;
+        lineRow.style.color = spec.inactiveTextColor;
+        if (spec.strokePx > 0) {
+          lineRow.style.webkitTextStroke = `${spec.strokePx}px ${spec.strokeColor}`;
+          lineRow.style.paintOrder = "stroke fill";
+        }
+        lineRow.style.textShadow = spec.shadowStyle;
+
+        // Inner fit-content box for `boxed` preset
+        if (spec.lineBoxStyle) {
+          lineRow.style.width = "fit-content";
+          lineRow.style.maxWidth = "100%";
+          lineRow.style.margin = "0 auto";
+          lineRow.style.backgroundColor = spec.lineBoxStyle.backgroundColor;
+          lineRow.style.borderRadius = spec.lineBoxStyle.borderRadius;
+          lineRow.style.padding = spec.lineBoxStyle.padding;
+          lineRow.style.boxShadow = spec.lineBoxStyle.boxShadow;
+        }
+
+        // Render words
+        activeLine.words.forEach((w, idx) => {
+          const held = Math.max(w.end, w.start + 0.12);
+          const inWindow = t >= w.start && t <= held;
+          const isSpokenOrCurrent = t >= w.start;
+
+          // If word-build + dynamic-reflow, skip mounting unspoken words
+          if (
+            spec.revealMode === "word-build" &&
+            state.buildStrategy === "dynamic-reflow" &&
+            !isSpokenOrCurrent
+          ) {
+            return;
+          }
+
+          const p = inWindow ? Math.min(1, (t - w.start) / CAPTION_POP_SEC) : 0;
+          const pop = easeOutQuad(p);
+
+          const span = document.createElement("span");
+          span.dataset.captionWord = String(idx);
+          span.dataset.captionText = w.text;
+          span.dataset.captionSrc = String(w.srcStart);
+          span.style.display = "inline-block";
+
+          // Spatial emphasis sizing (fontSize, not transform scale!)
+          const empScale = state.choreoEnabled && w.emphasisScale ? w.emphasisScale : 1;
+          if (empScale > 1) {
+            span.style.fontSize = `${Math.round(scaledFontPx * empScale)}px`;
+            span.style.lineHeight = direction === "rtl" ? "1.9" : "1.05";
+          }
+
+          // Active word pill (`founder` or emphasized `punch` badge)
+          const showPill =
+            inWindow &&
+            spec.activeWordPill &&
+            (!spec.activeWordPill.onlyEmphasized || empScale >= 1.15);
+
+          if (showPill) {
+            span.style.backgroundColor = spec.activeWordPill.backgroundColor;
+            span.style.color = spec.activeWordPill.color;
+            span.style.borderRadius = spec.activeWordPill.borderRadius;
+            span.style.padding = spec.activeWordPill.padding;
+            if (spec.activeWordPill.clearStroke) {
+              span.style.webkitTextStroke = "0px transparent";
+              span.style.textShadow = "none";
+            }
+          } else {
+            span.style.color = inWindow ? spec.activeTextColor : spec.inactiveTextColor;
+          }
+
+          // Progressive `word-build` vs `full-line` opacity & transform
+          const rot =
+            showPill && spec.activeWordPill.rotateDeg
+              ? ` rotate(${spec.activeWordPill.rotateDeg}deg)`
+              : "";
+
+          if (spec.revealMode === "word-build") {
+            if (!isSpokenOrCurrent) {
+              // slot-reserved unspoken word: reserves flex width, invisible
+              span.style.opacity = "0";
+              span.style.transform = "translateY(6px) scale(0.92)";
+            } else if (inWindow) {
+              const buildProgress = Math.min(1, (t - w.start) / CAPTION_POP_SEC);
+              const buildEase = easeOutQuad(buildProgress);
+              const yPx = (1 - buildEase) * 6;
+              span.style.opacity = String(0.25 + 0.75 * buildEase);
+              span.style.transform = `translateY(${yPx.toFixed(1)}px) scale(${(
+                1 +
+                spec.popScaleAmp * pop
+              ).toFixed(3)})${rot}`;
+            } else {
+              span.style.opacity = String(spec.inactiveOpacity);
+              span.style.transform = `scale(1)${rot}`;
+            }
+          } else {
+            // full-line reveal
+            span.style.opacity = inWindow ? "1" : String(spec.inactiveOpacity);
+            span.style.transform =
+              pop > 0
+                ? `scale(${(1 + spec.popScaleAmp * pop).toFixed(3)})${rot}`
+                : `scale(1)${rot}`;
+          }
+
+          const inCta =
+            sample.ctaWindow &&
+            w.start >= sample.ctaWindow.startSec - 0.4 &&
+            w.start <= sample.ctaWindow.endSec + 0.4;
+          span.textContent = ctaDisplay(w.text, inCta ? sample.ctaKeyword : undefined);
+
+          lineRow.appendChild(span);
+        });
+
+        outerWrapper.appendChild(lineRow);
+        viewport.appendChild(outerWrapper);
+        card.appendChild(viewport);
+        stagesContainer.appendChild(card);
+      }
+
+      // Update Right-Column Inspector Readout
+      const maxEmp = state.choreoEnabled
+        ? Math.max(1, ...activeLine.words.map((w) => w.emphasisScale || 1))
+        : 1;
+      const estBlockH = (
+        ((dims.rawBasePx * (inspectedSpec ? inspectedSpec.fontScale : 1) * maxEmp * 1.15) + 16) /
+        (state.aspect === "landscape" ? 1080 : 1920)
+      ).toFixed(3);
+
+      document.getElementById("insp-role").textContent =
+        state.choreoEnabled && activeLine.role ? `"${activeLine.role}"` : '"body"';
+      document.getElementById("insp-anchor").textContent = `${anchorResult.anchor} (${anchorResult.reason})`;
+      document.getElementById("insp-headband").textContent = `[${anchorResult.head.start.toFixed(2)} .. ${anchorResult.head.end.toFixed(2)}]`;
+      document.getElementById("insp-extent").textContent = `${estBlockH} (maxEmp ${maxEmp.toFixed(2)}x)`;
+
+      document.getElementById("spec-json").textContent = JSON.stringify(inspectedSpec, null, 2);
+      document.getElementById("line-json").textContent = JSON.stringify(
+        {
+          start: activeLine.start,
+          end: activeLine.end,
+          role: state.choreoEnabled ? activeLine.role : undefined,
+          words: activeLine.words.map((w) => ({
+            text: w.text,
+            start: w.start,
+            end: w.end,
+            srcStart: w.srcStart,
+            ...(state.choreoEnabled && w.emphasisScale ? { emphasisScale: w.emphasisScale } : {}),
+          })),
+        },
+        null,
+        2
+      );
+    }
+
+    // =========================================================================
+    // 7. Wire Interactive Controls & 30fps Playback Loop
+    // =========================================================================
+    document.querySelectorAll("#preset-buttons .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#preset-buttons .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.preset = btn.dataset.preset;
+        document.getElementById("active-preset-code").textContent =
+          state.preset === "all" ? "Compare All 5" : `--caption-theme ${state.preset}`;
+        renderFrame();
+      });
+    });
+
+    document.querySelectorAll("#aspect-buttons .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#aspect-buttons .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.aspect = btn.dataset.aspect;
+        document.getElementById("aspect-code").textContent =
+          state.aspect === "landscape" ? "16:9 (44px base)" : "9:16 (64px base)";
+        renderFrame();
+      });
+    });
+
+    document.querySelectorAll("#sample-buttons .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#sample-buttons .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.sampleKey = btn.dataset.sample;
+        state.frame = 0;
+        document.getElementById("sample-code").textContent = btn.querySelector("span").textContent.split("(")[0].trim();
+        rebuildPhraseBar();
+        renderFrame();
+      });
+    });
+
+    document.querySelectorAll("#build-mode-buttons .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#build-mode-buttons .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.buildStrategy = btn.dataset.build;
+        document.getElementById("build-mode-code").textContent = state.buildStrategy;
+        renderFrame();
+      });
+    });
+
+    document.getElementById("force-word-build").addEventListener("change", (e) => {
+      state.forceWordBuild = e.target.checked;
+      renderFrame();
+    });
+
+    document.getElementById("toggle-choreo").addEventListener("change", (e) => {
+      state.choreoEnabled = e.target.checked;
+      document.getElementById("choreo-code").textContent = state.choreoEnabled
+        ? "--choreograph-captions"
+        : "--no-choreograph-captions";
+      rebuildPhraseBar();
+      renderFrame();
+    });
+
+    document.getElementById("toggle-guides").addEventListener("change", (e) => {
+      state.showGuides = e.target.checked;
+      renderFrame();
+    });
+
+    document.getElementById("toggle-watermark").addEventListener("change", (e) => {
+      state.watermark = e.target.checked;
+      renderFrame();
+    });
+
+    document.getElementById("face-y-slider").addEventListener("input", (e) => {
+      state.face.centerYFrac = parseFloat(e.target.value);
+      document.getElementById("face-y-val").textContent = state.face.centerYFrac.toFixed(2);
+      renderFrame();
+    });
+
+    document.getElementById("face-s-slider").addEventListener("input", (e) => {
+      state.face.sizeFrac = parseFloat(e.target.value);
+      document.getElementById("face-s-val").textContent = state.face.sizeFrac.toFixed(2);
+      renderFrame();
+    });
+
+    document.querySelectorAll("#swatch-buttons .swatch-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#swatch-buttons .swatch-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        state.accentColor = btn.dataset.accent;
+        document.getElementById("accent-hex").textContent = state.accentColor;
+        renderFrame();
+      });
+    });
+
+    const playPauseBtn = document.getElementById("play-pause-btn");
+    playPauseBtn.addEventListener("click", () => {
+      state.playing = !state.playing;
+      playPauseBtn.textContent = state.playing ? "Pause" : "Play";
+    });
+
+    scrubberEl.addEventListener("input", (e) => {
+      state.playing = false;
+      playPauseBtn.textContent = "Play";
+      state.frame = parseInt(e.target.value, 10);
+      renderFrame();
+    });
+
+    const speedBtn = document.getElementById("speed-btn");
+    speedBtn.addEventListener("click", () => {
+      state.speed = state.speed === 1.0 ? 0.5 : state.speed === 0.5 ? 0.25 : 1.0;
+      speedBtn.textContent = `${state.speed}x`;
+    });
+
+    // 30fps tick loop
+    let lastTick = performance.now();
+    function loop(now) {
+      const intervalMs = 1000 / (FPS * state.speed);
+      if (state.playing && now - lastTick >= intervalMs) {
+        lastTick = now;
+        state.frame = (state.frame + 1) % (totalFrames() + 1);
+        renderFrame();
+      }
+      requestAnimationFrame(loop);
+    }
+
+    rebuildPhraseBar();
+    renderFrame();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

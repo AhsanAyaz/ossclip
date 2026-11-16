@@ -24,7 +24,15 @@ import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
 import { resolveSceneProps } from "./scene-registry";
 import { revealItemTexts } from "./reveal-match";
-import type { CaptionLine, CaptionWord } from "./captions";
+import {
+  captionKeyFor,
+  CaptionThemeIdSchema,
+  type CaptionLine,
+  type CaptionThemeId,
+  type CaptionWord,
+} from "./captions";
+
+export { captionKeyFor, type CaptionThemeId };
 
 /**
  * The user's edit layer (SPEC: direct manipulation).
@@ -552,6 +560,11 @@ export type SfxAddedPlacement = z.infer<typeof SfxAddedPlacementSchema>;
 export const OverrideDocSchema = z.object({
   /** Global style tokens — the look is a system, so these are not per-element. */
   theme: ThemeSchema.partial().default({}),
+  /**
+   * Optional per-project caption theme preset (`default`, `founder`, `punch`,
+   * `boxed`, `minimal`). Wins over `--caption-theme` and `~/.ossclip/config.json`.
+   */
+  captionTheme: CaptionThemeIdSchema.optional(),
   /**
    * Doc-global color grade — the `ColorGradeSchema` shape, or `false` for
    * "explicitly no grade on this project". Doc-global like `theme`: a grade
@@ -1536,15 +1549,8 @@ export function remapSceneOverrides(
  * missing anchor has no honest fallback. `backfillSrcStart` (Task 6's load
  * path) is what keeps legacy files from reaching this.
  */
-export function captionKeyFor(srcStart: number): string {
-  if (!Number.isFinite(srcStart)) {
-    throw new Error(
-      `captionKeyFor: caption words need a finite srcStart (§137), got ${String(srcStart)} — ` +
-        `run backfillSrcStart on lines read from a pre-§137 render-props.json`,
-    );
-  }
-  return `w${Math.round(srcStart * 1000)}`;
-}
+// captionKeyFor is imported and re-exported from ./captions above so
+// captions.ts and overrides.ts share the single definition without a cycle.
 
 /** A pre-§137 key: a bare non-negative integer, i.e. a caption-word position. */
 export function isLegacyCaptionKey(key: string): boolean {
@@ -2280,7 +2286,7 @@ export function applyCaptionWordHides(
       lastKept === lastOriginal
         ? line.end
         : Math.max(lastKept.end, lastKept.end + (line.end - lastOriginal.end));
-    out.push({ words: kept, start, end });
+    out.push({ ...line, words: kept, start, end });
   }
 
   // An anchor no word carries any more — a later cut removed the word the

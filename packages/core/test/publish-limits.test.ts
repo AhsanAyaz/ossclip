@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { PLATFORM_DURATION_CAPS_SEC, PLATFORM_SIZE_CAP_BYTES, checkDurationCaps } from "../src/publish/limits";
+import {
+  PLATFORM_DURATION_CAPS_SEC,
+  PLATFORM_SIZE_CAP_BYTES,
+  checkDurationCaps,
+  sizeCapBytesFor,
+} from "../src/publish/limits";
 import type { PublishTarget } from "../src/publish/provider";
 
 /**
@@ -48,5 +53,25 @@ describe("PLATFORM_SIZE_CAP_BYTES", () => {
     expect(PLATFORM_SIZE_CAP_BYTES.instagram).toBe(95_000_000);
     expect(PLATFORM_SIZE_CAP_BYTES.linkedin).toBeUndefined();
     expect(PLATFORM_SIZE_CAP_BYTES.youtube).toBeUndefined();
+  });
+});
+
+// 2026-11-13: a 174MB render bounced off the Cloudflare proxy in front of the
+// author's Postiz (100MB on the free plan) for EVERY channel — the ceiling is
+// on the upload path, not the platform, so it applies to all of them.
+describe("sizeCapBytesFor", () => {
+  it("is the platform cap alone when no upload cap is configured", () => {
+    expect(sizeCapBytesFor("instagram")).toBe(95_000_000);
+    expect(sizeCapBytesFor("linkedin")).toBeUndefined();
+    expect(sizeCapBytesFor("linkedin", null)).toBeUndefined();
+  });
+
+  it("caps an otherwise uncapped platform at the upload ceiling", () => {
+    expect(sizeCapBytesFor("youtube", 90_000_000)).toBe(90_000_000);
+  });
+
+  it("takes the smaller of the two when both exist", () => {
+    expect(sizeCapBytesFor("instagram", 200_000_000)).toBe(95_000_000);
+    expect(sizeCapBytesFor("instagram", 50_000_000)).toBe(50_000_000);
   });
 });

@@ -3,6 +3,7 @@ import {
   DELIVERY_MAX_BITRATE_KBPS,
   DELIVERY_MIN_VIDEO_BITRATE_KBPS,
   DELIVERY_VIDEO_BITRATE_KBPS,
+  deliveryEncodeArgs,
   deliveryEncodePlan,
   deliveryFileName,
   fitBitrateKbps,
@@ -29,7 +30,7 @@ describe("deliveryEncodePlan", () => {
       width: 1920,
       height: 1080,
       videoBitrateKbps: DELIVERY_VIDEO_BITRATE_KBPS,
-      fileName: "delivery-1920x1080@10000k.mp4",
+      fileName: "delivery-1920x1080@10000k-a48.mp4",
     });
   });
 
@@ -81,9 +82,10 @@ describe("deliveryEncodePlan", () => {
 describe("fitBitrateKbps", () => {
   it("the field case: 95MB over 321s fits ~2.1 Mbps of video", () => {
     // 95MB → 760 Mbit; /1.03 mux overhead /321s ≈ 2299 kbps total, minus the
-    // 192k audio → 2106. The real 2 Mbps encode of this take landed at 88MB
-    // and Instagram published it (2026-08-29) — this pins that shape.
-    expect(fitBitrateKbps(95_000_000, 321)).toBe(2106);
+    // 128k audio → 2170 (2106 before delivery audio dropped from 192k to
+    // Threads' 128k, 2026-11-13). The real 2 Mbps encode of this take landed
+    // at 88MB and Instagram published it (2026-08-29) — this pins that shape.
+    expect(fitBitrateKbps(95_000_000, 321)).toBe(2170);
   });
 
   it("budgets for the caller's audio rate — silence buys the video its kbps back", () => {
@@ -111,9 +113,9 @@ describe("deliveryEncodePlan with a size cap", () => {
     expect(deliveryEncodePlan(master, { sizeCapBytes: CAP })).toEqual({
       width: 1920,
       height: 1080,
-      videoBitrateKbps: 2106,
+      videoBitrateKbps: 2170,
       // Distinct filename — the capped variant caches BESIDE the 10000k one.
-      fileName: "delivery-1920x1080@2106k.mp4",
+      fileName: "delivery-1920x1080@2170k-a48.mp4",
     });
   });
 
@@ -128,10 +130,10 @@ describe("deliveryEncodePlan with a size cap", () => {
   });
 
   it("a video too long to fit above the quality floor is UNATTAINABLE, not encoded as mush", () => {
-    // 3600s under 95MB fits only ~13 kbps of video — refusing the channel
-    // beats publishing it.
+    // 3600s under 95MB fits only ~76 kbps of video (after 128k audio) —
+    // refusing the channel beats publishing it.
     const long: DeliverySource = { width: 1920, height: 1080, fps: 30, duration: 3600, sizeBytes: 4_500_000_000 };
-    expect(deliveryEncodePlan(long, { sizeCapBytes: CAP })).toEqual({ unattainable: true, fittedKbps: 12 });
+    expect(deliveryEncodePlan(long, { sizeCapBytes: CAP })).toEqual({ unattainable: true, fittedKbps: 76 });
   });
 
   it("an undefined cap is the uncapped path — same behavior as no opts at all", () => {
@@ -141,7 +143,37 @@ describe("deliveryEncodePlan with a size cap", () => {
 
 describe("deliveryFileName", () => {
   it("embeds every encode parameter — the name IS the cache key, so a rule change misses the old cache", () => {
-    expect(deliveryFileName(1920, 1080, 10000)).toBe("delivery-1920x1080@10000k.mp4");
-    expect(deliveryFileName(1080, 1920, 8000)).toBe("delivery-1080x1920@8000k.mp4");
+    expect(deliveryFileName(1920, 1080, 10000)).toBe("delivery-1920x1080@10000k-a48.mp4");
+    expect(deliveryFileName(1080, 1920, 8000)).toBe("delivery-1080x1920@8000k-a48.mp4");
+  });
+});
+
+// 2026-11-13: Threads published nothing (state ERROR, no error text) while
+// six other networks took the same file. The file broke Threads' published
+// spec: AAC at 96 kHz (max 48 kHz), ~200 kbps (spec 128), edit lists present
+// ("no edit lists").
+describe("delivery audio and container meet Threads' spec", () => {
+  it("a master with >48 kHz audio is re-encoded even when its picture is in spec", () => {
+    const plan = deliveryEncodePlan({ ...src(1080, 1920, 4000), audioSampleRate: 96000 });
+    expect(plan).not.toBeNull();
+    expect(plan).toMatchObject({ width: 1080, height: 1920 });
+  });
+
+  it("a 48 kHz master in spec still skips the encode", () => {
+    expect(deliveryEncodePlan({ ...src(1080, 1920, 4000), audioSampleRate: 48000 })).toBeNull();
+  });
+
+  it("the encode forces 48 kHz, 128 kbps, no edit lists, moov first", () => {
+    const args = deliveryEncodeArgs(
+      { path: "/w/master.mp4", width: 1080, height: 1920 },
+      "/w/out.mp4",
+      { width: 1080, height: 1920, videoBitrateKbps: 3859, fileName: "x" },
+    );
+    const after = (flag: string) => args[args.indexOf(flag) + 1];
+    expect(after("-ar")).toBe("48000");
+    expect(after("-b:a")).toBe("128k");
+    expect(after("-use_editlist")).toBe("0");
+    expect(after("-movflags")).toBe("+faststart+negative_cts_offsets");
+    expect(args.at(-1)).toBe("/w/out.mp4");
   });
 });
