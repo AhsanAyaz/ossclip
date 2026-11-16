@@ -2276,6 +2276,91 @@ describe("publish endpoints (2026-08-26)", () => {
     expect(mediaByIntegration["i"]).toBe("/up/delivery-cap.mp4");
   });
 
+  // 2026-11-13: a 174MB render bounced off the Cloudflare proxy (100MB) in
+  // front of the author's Postiz for every channel. `postizMaxUploadMb` caps
+  // them all — one capped encode, no wasted default encode, and every post
+  // carries the small file.
+  it("POST with postizMaxUploadMb encodes once under the cap and uploads only that file", async () => {
+    const { dir } = await publishWorkdir();
+    const ensureCaps: Array<number | undefined> = [];
+    const uploaded: string[] = [];
+    const postBodies: string[] = [];
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({ ...cfg(), postizMaxUploadMb: 95 }),
+      publishEnv: env,
+      publishFetch: async (u, init) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [
+            { id: "a", name: "Ahsan", identifier: "linkedin" },
+            { id: "y", name: "CodeWithAhsan", identifier: "youtube" },
+          ]);
+        if (String(u).endsWith("/upload")) {
+          const file = (init as { body?: FormData }).body?.get("file") as File;
+          uploaded.push(file.name);
+          return jsonRes(200, { id: "m-1", path: `/up/${file.name}` });
+        }
+        postBodies.push(String((init as { body?: unknown })?.body ?? ""));
+        return jsonRes(200, [{ id: "post-1" }]);
+      },
+      probeVideo,
+      ensureDelivery: async (_t, _w, _master, o = {}) => {
+        ensureCaps.push(o.sizeCapBytes);
+        const p = join(dir, "delivery-cap.mp4");
+        await writeFile(p, "small");
+        return { path: p, encoded: true, probe: fakeProbe };
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["a", "y"] }),
+    });
+    expect(res.status).toBe(200);
+    expect(ensureCaps).toEqual([95_000_000]);
+    expect(uploaded).toEqual(["delivery-cap.mp4"]);
+    const payload = JSON.parse(postBodies[0]!) as {
+      posts: Array<{ value: Array<{ image: Array<{ path: string }> }> }>;
+    };
+    expect(payload.posts.map((p) => p.value[0]!.image[0]!.path)).toEqual([
+      "/up/delivery-cap.mp4",
+      "/up/delivery-cap.mp4",
+    ]);
+  });
+
+  it("POST refuses an over-long Threads caption before any encode or upload (2026-11-13)", async () => {
+    const { dir } = await publishWorkdir();
+    let encodes = 0;
+    let uploads = 0;
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: cfg,
+      publishEnv: env,
+      publishFetch: async (u) => {
+        if (String(u).endsWith("/integrations"))
+          return jsonRes(200, [{ id: "t", name: "code.with.ahsan", identifier: "threads" }]);
+        if (String(u).endsWith("/upload")) uploads++;
+        return jsonRes(200, { id: "m-1", path: "/up/f.mp4" });
+      },
+      probeVideo,
+      ensureDelivery: async (_t, _w, master) => {
+        encodes++;
+        return { path: master, encoded: false, probe: fakeProbe };
+      },
+    });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/publish`, {
+      method: "POST",
+      body: JSON.stringify({ integrationIds: ["t"], captions: { t: "→→ " + "a".repeat(495) } }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("502 / 500");
+    expect(encodes).toBe(0);
+    expect(uploads).toBe(0);
+  });
+
   it("POST drops a size-unattainable channel with a reason, before any encode buys it", async () => {
     const { dir } = await publishWorkdir();
     const ensureCaps: Array<number | undefined> = [];

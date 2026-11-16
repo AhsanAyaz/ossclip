@@ -217,3 +217,10 @@ export type {
   Transcript,
   Word,
 } from "./schema";
+
+// Caption caps and the per-platform length rule (2026-11-13): the publish
+// panel's counter must use the SAME count publish enforces — its old
+// hardcoded copy had no Threads entry and Threads counts emoji by UTF-8
+// bytes, so a "496 / 1500" caption was refused after the upload. Browser-safe:
+// publish/captions.ts imports only a type.
+export { CAPTION_CAPS, captionCap, captionLength } from "./publish/captions";

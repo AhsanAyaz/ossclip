@@ -36,15 +36,60 @@ export function captionCap(provider: string): number {
 }
 
 /**
+ * Code points Threads counts by their UTF-8 bytes: anything that is not a
+ * letter, digit, punctuation, separator or combining mark — emoji and symbols
+ * such as → — plus the emoji variation selector. Meta's Threads docs: "emojis
+ * are counted as the number of UTF-8 bytes". Their boundary of "emoji" is not
+ * spelled out, so symbols are counted the same way: an over-count trims a word
+ * early, an under-count is a 400 AFTER the upload (2026-11-13: a 496-char
+ * caption with a 👇 and three → was refused as "post is too long"). Letters of
+ * any script stay 1, or a non-Latin caption would lose half its allowance.
+ */
+const THREADS_BYTE_COUNTED = /[^\p{L}\p{N}\p{P}\p{Z}\p{M}\s]|\uFE0F/u;
+
+function utf8Bytes(codePoint: number): number {
+  return codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+}
+
+/**
+ * How a platform counts a caption against its cap. Threads is the one that
+ * differs (above); everything else is the plain `.length` this module has
+ * always measured with. Browser-safe — the editor panel's counter uses this
+ * exact function, so the number the user watches is the one publish checks.
+ */
+export function captionLength(provider: string, text: string): number {
+  if (provider !== "threads") return text.length;
+  let n = 0;
+  for (const ch of text) n += THREADS_BYTE_COUNTED.test(ch) ? utf8Bytes(ch.codePointAt(0)!) : 1;
+  return n;
+}
+
+/**
  * Word-boundary truncation to `max`: never slice mid-word, drop the partial
  * word instead. A caption a few words shorter beats one ending "communi".
+ * `measure` is the platform's count (`captionLength`); words keep dropping
+ * until the text fits it.
  */
-export function truncateAtWordBoundary(text: string, max: number): string {
+export function truncateAtWordBoundary(
+  text: string,
+  max: number,
+  measure: (s: string) => number = (s) => s.length,
+): string {
   const trimmed = text.trim();
-  if (trimmed.length <= max) return trimmed;
+  if (measure(trimmed) <= max) return trimmed;
   const slice = trimmed.slice(0, max);
   const lastSpace = slice.lastIndexOf(" ");
-  return (lastSpace > 0 ? slice.slice(0, lastSpace) : slice).trimEnd();
+  let out = (lastSpace > 0 ? slice.slice(0, lastSpace) : slice).trimEnd();
+  while (out.length > 0 && measure(out) > max) {
+    const i = out.lastIndexOf(" ");
+    out = (i > 0 ? out.slice(0, i) : [...out].slice(0, -1).join("")).trimEnd();
+  }
+  return out;
+}
+
+/** `truncateAtWordBoundary` against one platform's own cap and count. */
+function fitCaption(text: string, provider: string): string {
+  return truncateAtWordBoundary(text, captionCap(provider), (s) => captionLength(provider, s));
 }
 
 /**
@@ -57,7 +102,7 @@ export function deriveCaption(pack: YoutubePack, provider: string): string {
   const title = pack.titles[0] ?? "";
   const hashtags = pack.hashtags.map((h) => (h.startsWith("#") ? h : `#${h}`)).join(" ");
   const joined = hashtags.length > 0 ? `${title}\n\n${hashtags}` : title;
-  return truncateAtWordBoundary(joined, captionCap(provider));
+  return fitCaption(joined, provider);
 }
 
 /**
@@ -96,7 +141,7 @@ export function captionForProvider(pack: YoutubePack, provider: string): string 
               ? captions?.facebook
               : undefined;
   if (authored !== undefined && authored.trim().length > 0) {
-    return truncateAtWordBoundary(authored, captionCap(provider));
+    return fitCaption(authored, provider);
   }
   return deriveCaption(pack, provider);
 }

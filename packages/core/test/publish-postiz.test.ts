@@ -130,6 +130,30 @@ describe("buildPostsPayload", () => {
     expect(payload.posts[0]!.settings).toEqual({ __type: "instagram", post_type: "post" });
   });
 
+  // 2026-11-13: a real publish 400'd with "posts.0.settings.privacy_level must
+  // be one of ... duet must be a boolean ... stitch must be a boolean" after
+  // the upload was paid for. Postiz's TikTok DTO requires eight fields.
+  it("a TikTok post is sent to the creator's inbox (UPLOAD) with every required field", () => {
+    const tt: PublishTarget = { id: "int-9", provider: "tiktok", name: "codewithahsan" };
+    const payload = buildPostsPayload({
+      posts: [{ target: tt, caption: "c" }],
+      when: { kind: "now" },
+      dateIso: "2026-08-26T10:00:00.000Z",
+      media,
+    }) as { posts: Array<{ settings: Record<string, unknown> }> };
+    expect(payload.posts[0]!.settings).toEqual({
+      __type: "tiktok",
+      content_posting_method: "UPLOAD",
+      privacy_level: "SELF_ONLY",
+      duet: false,
+      stitch: false,
+      comment: false,
+      autoAddMusic: "no",
+      brand_content_toggle: false,
+      brand_organic_toggle: false,
+    });
+  });
+
   it("a NON-youtube post carries no privacy key — the settings stay per-provider", () => {
     const payload = buildPostsPayload({
       posts: [{ target: li, caption: "c" }],

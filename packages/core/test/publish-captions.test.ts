@@ -4,6 +4,7 @@ import {
   DEFAULT_CAPTION_CAP,
   captionCap,
   captionForProvider,
+  captionLength,
   deriveCaption,
   truncateAtWordBoundary,
 } from "../src/publish/captions";
@@ -149,5 +150,41 @@ describe("captionForProvider", () => {
     };
     expect(captionForProvider(over, "x").length).toBeLessThanOrEqual(280);
     expect(captionForProvider(pack, "x").length).toBeLessThanOrEqual(280);
+  });
+});
+
+// 2026-11-13: Threads refused a 496-character caption ("post is too long").
+// Meta counts an emoji as its UTF-8 byte length; the caption carried a 👇
+// and three → arrows, so plain .length said it fit when Threads said no.
+describe("captionLength", () => {
+  it("is plain length everywhere but Threads", () => {
+    expect(captionLength("instagram", "a👇")).toBe(3);
+    expect(captionLength("linkedin", "→ x")).toBe(3);
+  });
+
+  it("counts Threads symbols and emoji by UTF-8 bytes, letters and punctuation as one", () => {
+    expect(captionLength("threads", "abc")).toBe(3);
+    expect(captionLength("threads", "👇")).toBe(4);
+    expect(captionLength("threads", "→")).toBe(3);
+    // A non-Latin script is letters, not symbols — never byte-counted, or
+    // an Urdu caption would be trimmed to half its real allowance.
+    expect(captionLength("threads", "اردو")).toBe(4);
+    expect(captionLength("threads", "café, ok!")).toBe(9);
+  });
+});
+
+describe("Threads trimming uses Threads' own count", () => {
+  it("trims the field caption until it fits Threads' count, at a word boundary", () => {
+    const field =
+      "I barely write code anymore. 👇\n\n" +
+      "→ guardrails\n→ MCP tools\n→ rules for tests\n\n" +
+      "word ".repeat(84).trim();
+    expect(field.length).toBeLessThanOrEqual(500);
+    expect(captionLength("threads", field)).toBeGreaterThan(500);
+    const pack: YoutubePack = { ...basePack, platformCaptions: { instagram: field } };
+    const out = captionForProvider(pack, "threads");
+    expect(captionLength("threads", out)).toBeLessThanOrEqual(500);
+    expect(out.endsWith("word")).toBe(true);
+    expect(field.startsWith(out)).toBe(true);
   });
 });

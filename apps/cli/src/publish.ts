@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { InvalidArgumentError } from "commander";
 import { z } from "zod/v4";
 import {
-  PLATFORM_SIZE_CAP_BYTES,
+  sizeCapBytesFor,
   YOUTUBE_APPROVED_BASENAME,
   YoutubePackSchema,
   buildPostsPayload,
+  captionCap,
   captionForProvider,
+  captionLength,
   checkDurationCaps,
   createPostizProvider,
   deliveryEncodePlan,
@@ -278,16 +280,92 @@ export function durationCapMessages(violations: DurationViolation[], durationSec
  * channel, so two capped accounts on the same platform share one file.
  * Uncapped targets don't appear; they ride the default delivery encode.
  */
-export function sizeCapGroups(targets: PublishTarget[]): Map<number, PublishTarget[]> {
+export function sizeCapGroups(
+  targets: PublishTarget[],
+  /** The `postizMaxUploadMb` ceiling in bytes (`postizUploadCapBytes`). */
+  uploadCapBytes: number | null = null,
+): Map<number, PublishTarget[]> {
   const groups = new Map<number, PublishTarget[]>();
   for (const t of targets) {
-    const capBytes = PLATFORM_SIZE_CAP_BYTES[t.provider];
+    const capBytes = sizeCapBytesFor(t.provider, uploadCapBytes);
     if (capBytes === undefined) continue;
     const group = groups.get(capBytes);
     if (group !== undefined) group.push(t);
     else groups.set(capBytes, [t]);
   }
   return groups;
+}
+
+/**
+ * One line per post whose caption is over its platform's cap, by the
+ * PLATFORM'S count (`captionLength` — Threads counts emoji as UTF-8 bytes).
+ * Checked before any encode or upload: Postiz only refuses an over-long post
+ * at `/posts`, AFTER the whole video has uploaded (2026-11-13, Threads). Pack
+ * captions are trimmed to fit already; this guards text typed or
+ * regenerated in the editor panel, which is sent as-is.
+ */
+export function captionOverCapErrors(posts: readonly PublishPost[]): string[] {
+  return posts.flatMap((p) => {
+    const n = captionLength(p.target.provider, p.caption);
+    const cap = captionCap(p.target.provider);
+    return n > cap
+      ? [
+          `${p.target.provider} (${p.target.name}): caption is ${n} / ${cap}` +
+            (p.target.provider === "threads" ? " (Threads counts each emoji and symbol by its UTF-8 bytes)" : "") +
+            " — shorten it",
+        ]
+      : [];
+  });
+}
+
+/**
+ * What still needs a human after a publish, or null: TikTok posts go out as
+ * an inbox DRAFT (postiz.ts explains why), so the user has to finish them in
+ * the TikTok app. The editor panel restates this (PublishPanel.tsx).
+ */
+export function publishFollowUpNote(providers: readonly string[]): string | null {
+  return providers.includes("tiktok")
+    ? "▸ TikTok: the video is a draft in your TikTok app's inbox, with no caption — TikTok's " +
+        "inbox uploads don't accept one. Open TikTok, paste the caption below, pick its privacy " +
+        "and post it within 24 hours, or it is discarded"
+    : null;
+}
+
+/**
+ * Whether any channel rides the UNCAPPED default delivery file. With an
+ * upload cap every channel is capped, and the default encode would be 1-3
+ * minutes of x264 nobody uploads (the provider uploads each distinct
+ * per-post file only).
+ */
+export function needsDefaultDelivery(
+  targets: PublishTarget[],
+  uploadCapBytes: number | null = null,
+): boolean {
+  return targets.some((t) => sizeCapBytesFor(t.provider, uploadCapBytes) === undefined);
+}
+
+const UploadCapMbSchema = z.number().finite().positive();
+
+/**
+ * `postizMaxUploadMb` from config.json, parsed — never coerced (CLAUDE.md):
+ * a quoted `"95"` or a `0` is one warning and NO cap, not a silently
+ * different number. Megabytes are decimal, the unit PLATFORM_SIZE_CAP_BYTES
+ * is written in. Set it a little under the proxy's limit (95 for
+ * Cloudflare's 100MB): the delivery encode targets the cap with a small
+ * mux-overhead margin, not a guarantee.
+ */
+export function postizUploadCapBytes(raw: unknown): { capBytes: number | null; warning: string | null } {
+  if (raw === undefined) return { capBytes: null, warning: null };
+  const parsed = UploadCapMbSchema.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      capBytes: null,
+      warning:
+        `▸ ignoring "postizMaxUploadMb" in ~/.ossclip/config.json: expected a positive number ` +
+        `of megabytes (e.g. 95), got ${JSON.stringify(raw)} — uploads are not capped`,
+    };
+  }
+  return { capBytes: Math.round(parsed.data * 1_000_000), warning: null };
 }
 
 /**
@@ -343,9 +421,10 @@ export function attachDeliveryMedia(
   posts: PublishPost[],
   defaultPath: string,
   cappedPaths: ReadonlyMap<number, string>,
+  uploadCapBytes: number | null = null,
 ): PublishPost[] {
   return posts.map((p) => {
-    const capBytes = PLATFORM_SIZE_CAP_BYTES[p.target.provider];
+    const capBytes = sizeCapBytesFor(p.target.provider, uploadCapBytes);
     const path = capBytes !== undefined ? cappedPaths.get(capBytes) : undefined;
     return path !== undefined && path !== defaultPath ? { ...p, videoPath: path } : p;
   });
@@ -556,7 +635,12 @@ export async function runPublish(
   // the video cannot fit above the quality floor drops the channel HERE,
   // before the confirm and before a wasted encode, with the duration caps'
   // drop-and-continue semantics.
-  let capGroups = sizeCapGroups(picked);
+  // The ceiling on the route to Postiz itself (a proxy's body limit) — it
+  // caps every channel, so it folds into the per-platform grouping below.
+  const uploadCap = postizUploadCapBytes(config.postizMaxUploadMb);
+  if (uploadCap.warning !== null) console.log(uploadCap.warning);
+  const uploadCapBytes = uploadCap.capBytes;
+  let capGroups = sizeCapGroups(picked, uploadCapBytes);
   const cappedPlans = new Map<number, DeliveryPlan | null>();
   if (deliveryMode === "auto") {
     for (const [capBytes, group] of capGroups) {
@@ -583,14 +667,17 @@ export async function runPublish(
           "(shorten the cut, or publish it manually)",
       );
     }
-    capGroups = sizeCapGroups(picked);
+    capGroups = sizeCapGroups(picked, uploadCapBytes);
   }
   const plan = deliveryMode === "master" ? null : deliveryEncodePlan(src);
+  const defaultNeeded = needsDefaultDelivery(picked, uploadCapBytes);
 
   const when: PublishWhen = flags.at ? { kind: "at", iso: flags.at } : { kind: "now" };
   const posts = buildPublishPosts(pack, picked, { youtubePrivacy: flags.youtubePrivacy });
+  const longCaptions = captionOverCapErrors(posts);
+  if (longCaptions.length > 0) throw new Error(longCaptions.join("\n"));
   console.log(summarizePosts(posts, when));
-  console.log(`▸ upload: ${describeUpload(deliveryMode, plan)}`);
+  if (defaultNeeded) console.log(`▸ upload: ${describeUpload(deliveryMode, plan)}`);
   for (const [capBytes, group] of capGroups) {
     const label = [...new Set(group.map((t) => t.provider))].join(", ");
     console.log(
@@ -666,10 +753,14 @@ export async function runPublish(
       if (progressShown) process.stdout.write("\n");
       return ensured;
     };
-    const ensured = await runEnsure();
-    uploadPath = ensured.path;
-    if (!ensured.encoded && ensured.path !== out) {
-      console.log(`▸ delivery file already cached — reusing ${ensured.path}`);
+    // Skipped when every channel is capped (an upload cap caps them all):
+    // nobody would upload it, and it costs a full encode.
+    if (defaultNeeded) {
+      const ensured = await runEnsure();
+      uploadPath = ensured.path;
+      if (!ensured.encoded && ensured.path !== out) {
+        console.log(`▸ delivery file already cached — reusing ${ensured.path}`);
+      }
     }
     // Size-capped variants next, sequentially — two ffmpegs racing for cores
     // would slow BOTH encodes down, and the unattainable groups were already
@@ -678,10 +769,12 @@ export async function runPublish(
       cappedPaths.set(capBytes, (await runEnsure(capBytes)).path);
     }
   }
-  console.log(`▸ uploading ${uploadPath} to Postiz...`);
+  const finalPosts = attachDeliveryMedia(posts, uploadPath, cappedPaths, uploadCapBytes);
+  const uploading = [...new Set(finalPosts.map((p) => p.videoPath ?? uploadPath))];
+  console.log(`▸ uploading ${uploading.join(", ")} to Postiz...`);
   const result = await provider.publish({
     videoPath: uploadPath,
-    posts: attachDeliveryMedia(posts, uploadPath, cappedPaths),
+    posts: finalPosts,
     when,
   });
   await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);
@@ -691,6 +784,13 @@ export async function runPublish(
       ? `✓ published to ${picked.length} account(s)`
       : `✓ scheduled for ${when.iso} on ${picked.length} account(s)`,
   );
+  const followUp = publishFollowUpNote(picked.map((t) => t.provider));
+  if (followUp !== null) console.log(followUp);
+  // The caption itself, ready to paste — the inbox draft arrives blank.
+  const tiktokPost = finalPosts.find((p) => p.target.provider === "tiktok");
+  if (tiktokPost !== undefined && tiktokPost.caption.length > 0) {
+    console.log(`\n${tiktokPost.caption}\n`);
+  }
   if (result.postIds.length > 0) console.log(`  posts: ${result.postIds.join(", ")}`);
   console.log(`  track it: ${where}/launches`);
 }

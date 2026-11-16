@@ -147,6 +147,30 @@ export function buildPostsPayload(
           // finished short, and a story expires in 24 hours, which nobody
           // publishing a produced video is asking for.
           ...(p.target.provider === "instagram" ? { post_type: "post" } : {}),
+          // TikTok: the third platform whose settings Postiz requires (a 400
+          // AFTER the upload, 2026-11-13). `UPLOAD` sends the video to the
+          // creator's TikTok inbox as a draft they finish in the app, instead
+          // of posting it. That is the mode that works for a self-hosted
+          // Postiz: its TikTok app is the creator's own UNAUDITED API client,
+          // and TikTok lets an unaudited client direct-post only as SELF_ONLY,
+          // and only from an account that is itself private (TikTok's content
+          // sharing guidelines). The draft also gives the creator the manual
+          // privacy choice those guidelines demand. TikTok ignores every
+          // other field in UPLOAD mode, but Postiz's DTO still requires
+          // them, so they carry the guidelines' defaults: private, and every
+          // interaction OFF ("none should be checked by default").
+          ...(p.target.provider === "tiktok"
+            ? {
+                content_posting_method: "UPLOAD",
+                privacy_level: "SELF_ONLY",
+                duet: false,
+                stitch: false,
+                comment: false,
+                autoAddMusic: "no",
+                brand_content_toggle: false,
+                brand_organic_toggle: false,
+              }
+            : {}),
         },
       };
     }),
@@ -201,7 +225,9 @@ export class PostizHttpError extends Error {
             // proxy and the way through, since tuning Postiz would do nothing.
             " — the upload was refused as too large. A reverse proxy in front of Postiz is the" +
             " usual cause (Cloudflare's free plan caps proxied uploads at 100MB); point" +
-            " postizUrl at the instance directly (its LAN/VPN address) or raise the proxy's limit"
+            " postizUrl at the instance directly (its LAN/VPN address), raise the proxy's limit," +
+            ' or set "postizMaxUploadMb": 95 in ~/.ossclip/config.json so every upload is' +
+            " encoded under it"
           : status === 429
             ? " — Postiz rate limit (90 posts/hour per self-hosted instance)"
             : "";

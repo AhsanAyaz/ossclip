@@ -40,7 +40,7 @@ import {
   deliveryEncodePlan,
   ensureDeliveryFile,
   PLATFORM_DURATION_CAPS_SEC,
-  PLATFORM_SIZE_CAP_BYTES,
+  sizeCapBytesFor,
   probe,
   alignRestamp,
   emptyOverrideDoc,
@@ -153,14 +153,17 @@ import {
 import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
 import { captionRegenProvider } from "./caption-regen-panel";
 import { binOnPath } from "./llm-detect";
-import { warmFileCache, warmTargetFor } from "./warm-cache";
 import { fetchLibraryBytes } from "./library-fetch";
 import { NO_SUCH_LOGO_CANDIDATE, logoCandidatePath } from "./logo-candidate-file";
 import { snapshotEntry, stageOverlayFiles } from "./overlays";
+import { warmFileCache, warmTargetFor } from "./warm-cache";
 import {
   YOUTUBE_PRIVACIES,
   attachDeliveryMedia,
   buildPublishPosts,
+  captionOverCapErrors,
+  needsDefaultDelivery,
+  postizUploadCapBytes,
   publishConfigured,
   publishReceiptPath,
   readPublishReceipt,
@@ -655,6 +658,8 @@ export async function startEditServer(
       portrait?: unknown;
       thumbnailModel?: unknown;
       postizUrl?: string;
+      /** The proxy upload ceiling — parsed at the consumer (`postizUploadCapBytes`). */
+      postizMaxUploadMb?: unknown;
       /** produce's config fallback for `--audience` — the on-demand pack
        * generation reads it the same way (typeof, never truthiness). */
       audience?: unknown;
@@ -2605,7 +2610,13 @@ export async function startEditServer(
               // The platform's upload byte ceiling, same posture: null means
               // uncapped, a number means this channel gets its own smaller
               // delivery encode (limits.ts: Instagram's ~100MB URL-fetch cap).
-              sizeCapBytes: PLATFORM_SIZE_CAP_BYTES[t.provider] ?? null,
+              // Includes the `postizMaxUploadMb` ceiling — a channel under it
+              // gets its own smaller encode like any capped platform.
+              sizeCapBytes:
+                sizeCapBytesFor(
+                  t.provider,
+                  postizUploadCapBytes((opts.loadCfg ?? loadConfig)().postizMaxUploadMb).capBytes,
+                ) ?? null,
             }));
           } catch (err) {
             return send(200, {
@@ -2730,7 +2741,13 @@ export async function startEditServer(
               duration: masterProbe.duration,
               sizeBytes: masterSizeBytes,
             };
-            let capGroups = sizeCapGroups(picked);
+            // The proxy ceiling on the route to Postiz (`postizMaxUploadMb`)
+            // caps every channel; a malformed value caps nothing and says so
+            // in the server log rather than failing the publish.
+            const uploadCap = postizUploadCapBytes((opts.loadCfg ?? loadConfig)().postizMaxUploadMb);
+            if (uploadCap.warning !== null) console.log(uploadCap.warning);
+            const uploadCapBytes = uploadCap.capBytes;
+            let capGroups = sizeCapGroups(picked, uploadCapBytes);
             if (parsed.data.delivery !== "master") {
               for (const [capBytes, group] of capGroups) {
                 const capped = deliveryEncodePlan(src, { sizeCapBytes: capBytes });
@@ -2756,7 +2773,7 @@ export async function startEditServer(
                   dropped,
                 });
               }
-              capGroups = sizeCapGroups(picked);
+              capGroups = sizeCapGroups(picked, uploadCapBytes);
             }
             // Same options object the CLI's publish path passes — undefined
             // stays undefined so buildPostsPayload's safe private default is
@@ -2769,6 +2786,12 @@ export async function startEditServer(
               ...p,
               caption: parsed.data.captions?.[p.target.id] ?? p.caption,
             }));
+            // BEFORE any encode or upload: Postiz only refuses an over-long
+            // caption at /posts, after the whole video went up (2026-11-13).
+            const longCaptions = captionOverCapErrors(posts);
+            if (longCaptions.length > 0) {
+              return send(400, { error: longCaptions.join("\n") });
+            }
             // Synchronous encodes (~1–3 min each, fetch won't time out) — a
             // job/poll model for the WORK is a noted follow-up, but the
             // PROGRESS is polled: /api/publish/progress reads the state the
@@ -2815,7 +2838,8 @@ export async function startEditServer(
                   },
                 });
               };
-              uploadPath = (await runEnsure()).path;
+              // Skipped when every channel is capped: nobody uploads it.
+              if (needsDefaultDelivery(picked, uploadCapBytes)) uploadPath = (await runEnsure()).path;
               // One encode per DISTINCT cap — the bitrate-bearing filename is
               // the cache key, so a capped plan that lands on the default
               // file's name cache-hits instead of re-encoding.
@@ -2828,7 +2852,7 @@ export async function startEditServer(
             publishProgress = { phase: "uploading", pct: null, etaSec: null, speed: null, file: null };
             const result = await provider.publish({
               videoPath: uploadPath,
-              posts: attachDeliveryMedia(posts, uploadPath, cappedPaths),
+              posts: attachDeliveryMedia(posts, uploadPath, cappedPaths, uploadCapBytes),
               when,
             });
             await writeFile(publishReceiptPath(workdir), `${JSON.stringify(result, null, 2)}\n`);

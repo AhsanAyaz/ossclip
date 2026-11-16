@@ -200,6 +200,16 @@ export interface OssclipConfig {
    */
   postizUrl?: string;
   /**
+   * The largest upload the route to Postiz accepts, in megabytes (decimal).
+   * Set when a reverse proxy sits in front of the instance — Cloudflare's
+   * free plan refuses bodies over 100MB, so 95 is the value for it
+   * (2026-11-13: a 174MB render bounced for every channel). Every channel
+   * then gets a delivery encode under this size. Unset means uncapped.
+   * File-only like `postizUrl`; validated at the consumer
+   * (`postizUploadCapBytes` in the CLI), never coerced.
+   */
+  postizMaxUploadMb?: number;
+  /**
    * Base URL of an OpenAI-compatible transcription server, ending in `/v1`
    * (Groq: "https://api.groq.com/openai/v1"; a self-hosted speaches:
    * "http://localhost:8000/v1"). Set, transcription runs REMOTELY instead of
@@ -403,6 +413,9 @@ export function resolveConfig(
     // deliberately lives in the environment (publish.ts's
     // `publishConfigured`), so this is only the instance URL.
     postizUrl: fileCfg.postizUrl,
+    // Copied for the same reason as postizUrl (the 2026-08-27 lesson: a key
+    // on the TYPE but missing here reads as unset forever).
+    postizMaxUploadMb: fileCfg.postizMaxUploadMb,
     // Env spellings ON PURPOSE, unlike postizUrl: the Groq quickstart is
     // "export two vars and run", and a user trying a free tier for the first
     // time should not have to hand-edit config.json to do it. Env beats file
