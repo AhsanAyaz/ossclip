@@ -359,6 +359,11 @@ export function scriptPlanCacheKey(parts: { promptVersion: string; scriptText: s
 ```
 
 Decisions:
+Carried over from Task 7 (do these first, each with a test):
+- **Full frame.** A clip must fill the whole frame; today it lands in the 0.77 × 0.36 full-bleed band. Add `fullFrame?: boolean` to `SceneComponentMeta` (`ClipScene`: true). `graphicSlotFor` (`packages/scenes/src/stage.ts`) returns `{x:0, y:0, w:1, h:1}` for a `fullFrame` component, with no safe-area clamp and ignoring `graphicRect`: the clip was authored at frame size with its own margins. No other component sets the flag, so their geometry is unchanged. Test: the slot for a `ClipScene` cue is the full frame in both aspects; a `TitleCard` in `full-bleed` gets the same slot as before.
+- **Editor preview.** The edit server serves only `/media/*` from the workdir, so `clips/x.webm` 404s in the Player. Write each imported clip into the workdir (`<workdir>/clips/<hash>.webm`) and, when the render's public dir is a different folder, into that too. Where the editor builds the Player's props (`apps/editor/src/App.tsx`, beside the existing rewrite of `videoFileName`), rewrite a `ClipScene` cue's `src` to `/media/<src>`; `staticFile` leaves a rooted path alone. Extract the rewrite as a pure function and test it.
+- **Gain bounds.** `ClipSceneProps.gainDb` becomes `z.number().min(-40).max(0).default(-13)`: a browser's media volume throws above 1, and a bounded number gives the Inspector a slider.
+
 Carried over from Tasks 4 and 6:
 - The core type is `ResolvedScriptClip` (not `ResolvedClip`, which already names the `--clip` window).
 - `importClip` takes `ffmpegPath`/`ffprobePath` in its deps: pass `cfg.ffmpegPath` and the matching ffprobe.
