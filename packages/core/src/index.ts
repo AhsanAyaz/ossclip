@@ -51,4 +51,5 @@ export * from "./export-premiere-project";
 export * from "./export-xmeml-util";
 export * from "./config";
 export * from "./resolution";
+export * from "./script/cues";
 export { run } from "./exec";
