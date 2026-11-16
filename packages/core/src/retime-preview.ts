@@ -22,10 +22,11 @@
  * bundle, and every function here is testable without a TTY or a filesystem.
  */
 
-import { ENTRY_LEAD_SEC, ITEM_LEAD_SEC, minSceneSec } from "./assemble";
+import { ENTRY_LEAD_SEC, ITEM_LEAD_SEC, MAX_SCENE_SEC, minSceneSec } from "./assemble";
 import type { CaptionLine } from "./captions";
 import { applyCleanupChoices, type CleanupChoices } from "./cutlist";
 import { remapPoint, subtractRangesFromCutlist, type UserCut } from "./recut";
+import { SCENE_REGISTRY } from "./scene-registry";
 import type { SceneCue } from "./scene-schema";
 import type { Segment } from "./schema";
 import { mapFromKeptSpans, mapsClose, TimeMap, type KeptSpan } from "./timemap";
@@ -415,14 +416,29 @@ export function retimeForPreview(
       const legacyStart = fromWord
         ? remapPoint(`scene "${c.id}" start`, c.startSec, oldMap, newMap, [])
         : at(`scene "${c.id}" start`, c.startSec);
-      const endSec = at(`scene "${c.id}" end`, c.endSec);
+      const wordEndSec = at(`scene "${c.id}" end`, c.endSec);
       // Collapsed by a live cut (the doc's own paragraph) — dropped, and
       // said out loud, the `remapPoint` "nothing moves without saying so"
-      // rule applied to a block that stopped existing.
-      if (endSec - legacyStart < EPS) {
+      // rule applied to a block that stopped existing. Judged on the WORDS'
+      // window even for a clip: its anchor words being cut is what drops it
+      // (spec 1.4, "Recut"), exactly as `assembleScenes` drops it.
+      if (wordEndSec - legacyStart < EPS) {
         reports.push(`scene "${c.id}" removed from the live preview by a cut`);
         return [];
       }
+      // A clip lasts its own length, not its words' — `assembleScenes`' rule
+      // (explainer plan Task 5), re-applied on the new clock. Remapping its
+      // end instead stretched a 4.6s clip across a revived pause to 6.6s of
+      // frames the file does not have. Held to the same 15s ceiling and
+      // output end the assembler clamps to.
+      const fixed =
+        c.component !== undefined && c.props !== undefined
+          ? SCENE_REGISTRY[c.component].fixedDurationSec?.(c.props)
+          : undefined;
+      const endSec =
+        fixed === undefined
+          ? wordEndSec
+          : Math.min(legacyStart + fixed, legacyStart + MAX_SCENE_SEC, newMap.outputDuration);
       const entryAtSec =
         fromWord && c.entryAtSec !== undefined
           ? at(`scene "${c.id}" entry word`, c.entryAtSec)

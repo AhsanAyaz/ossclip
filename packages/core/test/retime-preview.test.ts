@@ -667,3 +667,59 @@ describe("retimeForPreview re-times cued scenes from their WORDS, not their lead
     expect("entryAtSec" in fields.sceneCues[0]!).toBe(false);
   });
 });
+
+describe("retimeForPreview keeps a clip at its own length (explainer plan Task 7)", () => {
+  // The revived pause (old output 5 → 2s of source) sits INSIDE the clip's
+  // window. Remapped end to end, the clip would stretch to 6.6s on the new
+  // clock; the assembler's rule (Task 5) is that it lasts `durationSec`.
+  const oldMap = mapFromKeptSpans(oldSpans);
+  const newMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+  const clip = (startSec: number, durationSec: number): SceneCue => ({
+    id: "scene-0",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec, gainDb: -13, muted: false },
+    startSec,
+    endSec: startSec + durationSec,
+  });
+  const props = (cues: SceneCue[]): RetimeablePreviewProps => ({
+    outputDurationSec: 8,
+    captionLines: [],
+    sceneCues: cues,
+  });
+
+  it("a 4.6s clip spanning a revived pause stays 4.6s", () => {
+    const { fields } = retimeForPreview(props([clip(3, 4.6)]), oldMap, newMap);
+    expect(fields.sceneCues[0]!.startSec).toBeCloseTo(3, 9);
+    expect(fields.sceneCues[0]!.endSec).toBeCloseTo(7.6, 9);
+  });
+
+  it("a card on the same window still stretches with its words", () => {
+    // The control: only a component with `fixedDurationSec` is held.
+    const card: SceneCue = { ...clip(3, 4.6), component: "TitleCard", props: { title: "HI" } };
+    const { fields } = retimeForPreview(props([card]), oldMap, newMap);
+    expect(fields.sceneCues[0]!.endSec).toBeCloseTo(9.6, 9);
+  });
+
+  it("is still held to the new clock's end", () => {
+    // Old output 7 → new 9; 4.6s would run to 13.6 on a 10s timeline.
+    const { fields } = retimeForPreview(props([{ ...clip(7, 4.6), endSec: 8 }]), oldMap, newMap);
+    expect(fields.sceneCues[0]!.startSec).toBeCloseTo(9, 9);
+    expect(fields.sceneCues[0]!.endSec).toBeCloseTo(10, 9);
+  });
+
+  it("is still dropped when a cut collapses its words", () => {
+    // Live cut of source 0..5: the clip's old window [1, 4] has nothing left.
+    const cutMap = new TimeMap([
+      { srcIn: 0, srcOut: 5, kind: "remove", reason: "user", confidence: 1 },
+      { srcIn: 5, srcOut: 10, kind: "keep" },
+    ]);
+    const { fields, reports } = retimeForPreview(
+      props([{ ...clip(1, 4.6), endSec: 4 }]),
+      mapFromKeptSpans(new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]).spans),
+      cutMap,
+    );
+    expect(fields.sceneCues).toEqual([]);
+    expect(reports).toContain('scene "scene-0" removed from the live preview by a cut');
+  });
+});

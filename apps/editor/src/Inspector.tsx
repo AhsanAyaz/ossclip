@@ -3,10 +3,13 @@ import {
   CAPTION_THEME_IDS,
   cutRangeToOldClock,
   LayoutSchema,
+  plannerComponentIds,
   scalarPropControls,
-  SceneComponentIdSchema,
+  SCENE_REGISTRY,
   splitRootId,
   type CaptionThemeId,
+  type PlannerComponentId,
+  type SceneComponentId,
   type SceneCue,
   type Theme,
 } from "@ossclip/core/browser";
@@ -610,6 +613,21 @@ const ThemeField: React.FC<{
 );
 
 /**
+ * What the Component dropdown may swap a scene to, or null when it offers no
+ * swap at all (explainer plan Task 7).
+ *
+ * Planner components only, the same list every LLM menu reads: ClipScene is
+ * in the scene-id enum, but a card cannot become a clip (there is no clip
+ * file to play) and a clip cannot become a card (the clip would be thrown
+ * away for default copy). So a clip shows no swap control, and a card's
+ * dropdown never lists the clip. `resolveSwappedProps` refuses the same
+ * swaps for a hand-edited overrides.json.
+ */
+export function componentSwapOptions(component: SceneComponentId): PlannerComponentId[] | null {
+  return SCENE_REGISTRY[component].plannerSelectable === false ? null : plannerComponentIds();
+}
+
+/**
  * Precision editing to complement the drag-and-drop overlay. Dragging is
  * imprecise; typing a value (including `0`, to cleanly undo a nudge) goes
  * straight to `patchElement`/`patchTheme` rather than waiting on a blur.
@@ -1171,6 +1189,7 @@ export const Inspector: React.FC<InspectorProps> = ({
 
   if (selection && cue) {
     const isPlain = cue.kind === "plain";
+    const swapOptions = !isPlain && cue.component ? componentSwapOptions(cue.component) : null;
     // Deleted scenes whose window this cue covers (field report 2026-08-31,
     // second round): a hidden scene is not selectable anywhere any more —
     // App remaps such a selection to the take `fillPlainCues` minted, which
@@ -1323,15 +1342,17 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         ) : null}
         <div style={section}>
-          {!isPlain && cue.component ? (
+          {swapOptions ? (
             <div style={row}>
               <span style={label}>Component</span>
               {/* Swapping the component re-resolves props against the NEW
                   component's defaults (see `applyOverrides`) — the producer's
                   old props were shaped for a different schema and don't carry
                   over, so the swap renders something coherent instead of an
-                  invalid scene. */}
+                  invalid scene. Planner components only, and none at all on
+                  a clip (`componentSwapOptions`). */}
               <select
+                data-testid="component-swap"
                 style={numberInput}
                 value={cue.component}
                 onChange={(e) =>
@@ -1341,7 +1362,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                   )
                 }
               >
-                {SceneComponentIdSchema.options.map((id) => (
+                {swapOptions.map((id) => (
                   <option key={id} value={id}>
                     {id}
                   </option>

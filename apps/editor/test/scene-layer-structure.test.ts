@@ -35,6 +35,15 @@ vi.mock("remotion", () => ({
   interpolate: (_input: number, _inputRange: number[], outputRange: number[]) =>
     outputRange[outputRange.length - 1],
   staticFile: (path: string) => path,
+  // ClipScene's video (explainer plan Task 7). Its props surface as data
+  // attributes so the test can read what the component asked Remotion for.
+  OffthreadVideo: ({ src, transparent, volume, style }: any) =>
+    React.createElement("video", {
+      src,
+      style,
+      "data-transparent": String(transparent),
+      "data-volume": String(volume),
+    }),
 }));
 
 const { SceneLayer } = await import("../../../packages/scenes/src/SceneLayer");
@@ -140,5 +149,52 @@ describe("StrikethroughReveal — hiding a wrapped line hides EVERY fragment (PL
     rows.forEach((row) => {
       expect(row.style.display).toBe("none");
     });
+  });
+});
+
+describe("SceneLayer — ClipScene (explainer plan Task 7)", () => {
+  const clipCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false },
+    startSec: 0,
+    endSec: 4.6,
+  };
+  const render = (cue: SceneCue) => {
+    document.body.innerHTML = renderToStaticMarkup(
+      React.createElement(SceneLayer, { cues: [cue], theme: defaultTheme }),
+    );
+  };
+  /** The Scrim is the one element carrying the frosted backdrop. Read from the
+   * raw attribute: jsdom's CSSStyleDeclaration has no `backdropFilter`. */
+  const scrim = () =>
+    [...document.querySelectorAll<HTMLElement>("div")].find((d) =>
+      (d.getAttribute("style") ?? "").includes("backdrop-filter"),
+    );
+
+  it("plays the clip transparent, at its gain, filling the slot", () => {
+    render(clipCue);
+    const video = document.querySelector<HTMLVideoElement>("video")!;
+    expect(video).not.toBeNull();
+    // The mock's staticFile is the identity: the component handed it the
+    // public-dir-relative path the clip import wrote.
+    expect(video.getAttribute("src")).toBe("clips/a.webm");
+    expect(video.dataset.transparent).toBe("true");
+    expect(Number(video.dataset.volume)).toBeCloseTo(0.2239, 4);
+    expect(video.style.objectFit).toBe("contain");
+    // The whole slot (full-bleed's fallback band, 0.77 × 0.36 of 1080×1920):
+    // the over-video inset exists for the scrim's edge, so no scrim, no inset.
+    expect(Number.parseFloat(video.style.width)).toBeCloseTo(0.77 * 1080, 1);
+    expect(Number.parseFloat(video.style.height)).toBeCloseTo(0.36 * 1920, 1);
+  });
+
+  it("draws no scrim over the speaker, though full-bleed is an over-video layout", () => {
+    render(clipCue);
+    expect(scrim()).toBeUndefined();
+    // The control: the same layout with a card still gets its frost.
+    render({ ...clipCue, component: "TitleCard", props: { title: "SHIP IT" } });
+    expect(scrim()).toBeDefined();
   });
 });

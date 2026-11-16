@@ -22,7 +22,7 @@ import {
 } from "./schema";
 import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
-import { resolveSceneProps } from "./scene-registry";
+import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
 import { revealItemTexts } from "./reveal-match";
 import {
   captionKeyFor,
@@ -970,7 +970,7 @@ export interface AppliedOverrides {
  * silence would make it look like the editor forgot them.
  */
 /**
- * Props for a scene whose COMPONENT the user just swapped.
+ * The component and props for a scene whose COMPONENT the user just swapped.
  *
  * The producer's `cue.props` were written for the OLD component and are not
  * merged in here at all — they were shaped for a different schema (a
@@ -978,26 +978,42 @@ export interface AppliedOverrides {
  * them through would either fail validation or silently satisfy it with
  * garbage. Falling back to the NEW component's `defaultProps` — same base
  * `resolveSceneProps` always starts from — renders something coherent
- * instead. `resolveSceneProps` returning null (an override value that fits
- * no schema at all) still can't drop the scene: the registry's own
- * `defaultProps` are the floor every component is built to satisfy on their
- * own, so that's the guaranteed-valid fallback.
+ * instead.
+ *
+ * REFUSED, the scene's own component and props handed back, when either side
+ * is not a planner component (ClipScene, explainer plan Task 7). A clip has a
+ * file and a length, a card has copy, and neither has the other's props:
+ * swapping a clip out throws the clip away for a default card, and swapping
+ * one in has nothing to play — ClipScene's `defaultProps` are empty because
+ * there is no honest default clip, so the fallback below would come back null
+ * (the old "can never return null" claim stopped being true the day the clip
+ * joined the registry). The editor never offers the swap (the Inspector hides
+ * the control on a clip and lists `plannerComponentIds()` only); this is the
+ * floor for a hand-edited overrides.json.
  */
-function resolveSwappedProps(
-  component: SceneComponentId,
+export function resolveSwappedProps(
+  cue: Pick<SceneCue, "component" | "props">,
+  to: SceneComponentId,
   propsOverride: Record<string, unknown>,
-): Record<string, unknown> {
-  return (
-    resolveSceneProps(component, {}, propsOverride) ??
-    // The override didn't fit the new schema at all — fall back to the
-    // registry's OWN defaults with nothing layered on top, run back through
-    // `resolveSceneProps` (rather than the raw `defaultProps` object) so
-    // zod-defaulted fields (e.g. `emphasizeLast`) are filled in the same way
-    // every other resolved cue's props are. `defaultProps` is guaranteed to
-    // validate on its own — every component in the registry is built on that
-    // invariant — so this can never itself return null.
-    resolveSceneProps(component, {}, {})!
-  );
+): Pick<SceneCue, "component" | "props"> {
+  const planner = (id: SceneComponentId) => SCENE_REGISTRY[id].plannerSelectable !== false;
+  if (!planner(to) || (cue.component !== undefined && !planner(cue.component))) {
+    return { component: cue.component, props: cue.props };
+  }
+  return {
+    component: to,
+    props:
+      resolveSceneProps(to, {}, propsOverride) ??
+      // The override didn't fit the new schema at all — fall back to the
+      // registry's OWN defaults with nothing layered on top, run back through
+      // `resolveSceneProps` (rather than the raw `defaultProps` object) so
+      // zod-defaulted fields (e.g. `emphasizeLast`) are filled in the same
+      // way every other resolved cue's props are. Every PLANNER component's
+      // `defaultProps` validate on their own (the registry is built on that
+      // invariant, and the refusal above keeps every other component out), so
+      // this cannot itself return null.
+      resolveSceneProps(to, {}, {})!,
+  };
 }
 
 /**
@@ -1110,12 +1126,16 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
   const out = cues.map((cue) => {
     const o = effectiveOverride(doc.scenes, cue.id);
     if (!o) return cue;
-    const swapped = o.component !== undefined && o.component !== cue.component;
-    const component = o.component ?? cue.component;
-    const props =
-      o.component !== undefined && swapped
-        ? resolveSwappedProps(o.component, o.props)
-        : { ...cue.props, ...o.props };
+    // A refused swap (a non-planner component on either side) comes back as
+    // the cue's own component: it is then no swap at all, and the entry's
+    // other edits — a clip's `muted`, its framing — still apply below.
+    const swap =
+      o.component !== undefined && o.component !== cue.component
+        ? resolveSwappedProps(cue, o.component, o.props)
+        : undefined;
+    const swapped = swap !== undefined && swap.component !== cue.component;
+    const component = swapped ? swap.component : cue.component;
+    const props = swapped ? swap.props : { ...cue.props, ...o.props };
     // A rect `routeAroundSourceText` baked into the base cue was computed
     // FOR that cue's original layout — under a layout override it would
     // silently keep winning over the new layout's slot, parking the graphic

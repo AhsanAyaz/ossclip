@@ -485,3 +485,20 @@ describe("BulletList fill (§121)", () => {
     expect(long).toBeLessThan(short);
   });
 });
+
+describe("ClipScene fit (explainer plan Task 7)", () => {
+  it("is never scaled: the video fills whatever slot it is given", () => {
+    // `objectFit: contain` inside the slot does the fitting; a stage scale
+    // would only shrink the box the video letterboxes into.
+    expect(isSelfFitting("ClipScene")).toBe(true);
+    const props = { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false };
+    for (const slot of [
+      { widthPx: 1920, heightPx: 1080 },
+      { widthPx: 1080, heightPx: 1920 },
+      { widthPx: 831, heightPx: 691 },
+      { widthPx: 120, heightPx: 80 },
+    ]) {
+      expect(fitScale("ClipScene", props, slot)).toBe(1);
+    }
+  });
+});

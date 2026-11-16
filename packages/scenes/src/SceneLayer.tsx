@@ -4,6 +4,7 @@ import type { SceneCue, Theme } from "@ossclip/core/browser";
 import { graphicSlotFor } from "./stage";
 import { fitScale } from "./fit";
 import { frameWindow } from "./frames";
+import { drawsScrim } from "./scrim";
 import { TitleCard } from "./components/TitleCard";
 import { StatCard } from "./components/StatCard";
 import { RuleCard } from "./components/RuleCard";
@@ -42,16 +43,8 @@ const COMPONENTS: Record<
   ClipScene,
 };
 
-/**
- * Layouts whose graphic slot sits over LIVE video (R20 §94). Everywhere else
- * the graphic lands on the stage background and the theme guarantees its
- * contrast; here the background is whatever pixels the footage happens to
- * show, and a typographic component (TitleCard, StrikethroughReveal) can land
- * white text on a bright wall. The slot gets a frosted scrim: theme-bg tint
- * over a backdrop blur. Slot-shaped rather than a broadcast bottom-gradient
- * so it FOLLOWS the box when the editor drags or resizes it.
- */
-const OVER_VIDEO_LAYOUTS = new Set<SceneCue["layout"]>(["lower-third", "full-bleed"]);
+/** Tint strength of the over-video scrim; which cues get one is
+ * `drawsScrim`'s call (./scrim, R20 §94). */
 const SCRIM_ALPHA = 0.55;
 
 const scrimColor = (themeBg: string): string => {
@@ -172,9 +165,11 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         // Over-video bands keep breathing room (R21 §100): the scrim fills
         // the slot, the CONTENT solves against an inset box, so type never
         // touches the band's edge. Elsewhere padding stays 0 — those slots
-        // sit on the stage background and already carry their own air.
-        const overVideo = OVER_VIDEO_LAYOUTS.has(cue.layout);
-        const pad = overVideo ? Math.min(24, Math.round(slotH * 0.12)) : 0;
+        // sit on the stage background and already carry their own air. The
+        // inset follows the SCRIM, not the layout: it exists for the band's
+        // edge, so a component with no scrim (ClipScene) fills its slot.
+        const scrimmed = drawsScrim(cue.layout, cue.component);
+        const pad = scrimmed ? Math.min(24, Math.round(slotH * 0.12)) : 0;
         const contentW = slotW - pad * 2;
         const contentH = slotH - pad * 2;
         // Fill the slot instead of floating at natural size in it (§23). The
@@ -219,7 +214,7 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
               }}
             >
               <ExitFade durationInFrames={durationInFrames}>
-                {overVideo ? (
+                {scrimmed ? (
                   <Scrim
                     durationInFrames={durationInFrames}
                     themeBg={theme.bg}

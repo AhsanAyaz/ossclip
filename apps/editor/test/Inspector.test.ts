@@ -7,13 +7,14 @@ import {
   defaultTheme,
   scalarPropControls,
   livePreviewMap,
+  plannerComponentIds,
   previewClockMappers,
   type KeptSpan,
   type OverrideDoc,
   type SceneCue,
   type Segment,
 } from "@ossclip/core/browser";
-import { Inspector } from "../src/Inspector";
+import { Inspector, componentSwapOptions } from "../src/Inspector";
 import { useEdits } from "../src/useEdits";
 
 // Same one-time act() opt-in as project-picker.test.ts — this is the
@@ -1166,5 +1167,66 @@ describe("Inspector — reveal controls: unset is its own state (reveal-timing T
     expect(reset.disabled).toBe(false);
     await act(async () => reset.click());
     expect("revealSpeed" in props()).toBe(false);
+  });
+});
+
+/**
+ * The swap control (explainer plan Task 7, "Editor decisions"). A clip
+ * cannot become a card or the reverse: neither has the other's props, and
+ * ClipScene has no default clip to fall back to.
+ */
+describe("Inspector — the component swap offers planner components only", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("componentSwapOptions is plannerComponentIds() for a card, and nothing for a clip", () => {
+    expect(componentSwapOptions("TitleCard")).toEqual(plannerComponentIds());
+    expect(componentSwapOptions("TitleCard")).not.toContain("ClipScene");
+    expect(componentSwapOptions("ClipScene")).toBeNull();
+  });
+
+  it("a card's dropdown lists exactly the planner components", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }),
+      );
+    });
+    const select = container.querySelector<HTMLSelectElement>('[data-testid="component-swap"]')!;
+    expect(select).not.toBeNull();
+    expect([...select.options].map((o) => o.value)).toEqual(plannerComponentIds());
+  });
+
+  it("a clip shows no swap control at all", async () => {
+    const clipCue: SceneCue = {
+      id: "scene-0",
+      kind: "graphic",
+      layout: "full-bleed",
+      component: "ClipScene",
+      props: { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false },
+      startSec: 0,
+      endSec: 4.6,
+    };
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          cue: clipCue,
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="component-swap"]')).toBeNull();
   });
 });

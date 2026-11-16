@@ -17,6 +17,7 @@ import {
   clearElementTransform,
   clearTiming,
   reclampPinnedTiming,
+  resolveSwappedProps,
   resolveTheme,
   restoreElement,
   setElementTransform,
@@ -255,6 +256,63 @@ describe("override document", () => {
     expect(cues[0]!.component).toBe("FlowDiagram");
     // Guaranteed-valid fallback: the registry's own defaults for the new component.
     expect(cues[0]!.props).toEqual({ nodes: ["A", "B"], emphasizeLast: true });
+  });
+});
+
+describe("component swaps refuse non-planner components (explainer plan Task 7)", () => {
+  const clipCue: SceneCue = {
+    id: "scene-0",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false },
+    startSec: 0,
+    endSec: 4.6,
+  };
+  const titleCue: SceneCue = {
+    id: "scene-0",
+    layout: "pip-bubble",
+    component: "TitleCard",
+    props: { title: "SHIP IT" },
+    startSec: 0,
+    endSec: 3,
+  };
+
+  it("leaves a ClipScene unchanged when asked to swap it", () => {
+    expect(resolveSwappedProps(clipCue, "TitleCard", {})).toEqual({
+      component: "ClipScene",
+      props: clipCue.props,
+    });
+  });
+
+  it("leaves a TitleCard unchanged when asked to become a ClipScene", () => {
+    // ClipScene's defaultProps are empty (no honest default clip), so the
+    // old "can never return null" fallback had nothing valid to land on.
+    expect(
+      resolveSwappedProps(titleCue, "ClipScene", { src: "clips/b.webm", durationSec: 2 }),
+    ).toEqual({ component: "TitleCard", props: titleCue.props });
+  });
+
+  it("still swaps between planner components", () => {
+    expect(resolveSwappedProps(titleCue, "FlowDiagram", {})).toEqual({
+      component: "FlowDiagram",
+      props: { nodes: ["A", "B"], emphasizeLast: true },
+    });
+  });
+
+  it("a hand-written swap on a clip keeps the clip and its other edits", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { component: "TitleCard", props: { muted: true } } },
+    });
+    const { cues } = applyOverrides([clipCue], doc);
+    expect(cues[0]!.component).toBe("ClipScene");
+    expect(cues[0]!.props).toEqual({ ...clipCue.props, muted: true });
+  });
+
+  it("a hand-written swap into a clip keeps the card", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { component: "ClipScene" } } });
+    const { cues } = applyOverrides([titleCue], doc);
+    expect(cues[0]!.component).toBe("TitleCard");
+    expect(cues[0]!.props).toEqual(titleCue.props);
   });
 });
 
