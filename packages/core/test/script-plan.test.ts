@@ -373,6 +373,32 @@ describe("produceScenes with a script", () => {
     expect(result.beatSheet.moments[0]!.sceneKind).toBe("CardRow");
   });
 
+  it("the mock answers a hinted cue's component, and TitleCard for an unhinted one", async () => {
+    // Plan Task 9 Step 1. `planScriptMoments` already keeps a hint whatever
+    // the reply says; this is the mock's REPLY, so the offline path shows the
+    // planner obeying the prompt's "(fixed)" line rather than being overruled.
+    const twoScript = parseScript(
+      "🎬 Big claim\n🗣️ alpha beta gamma\n🎬 [PhoneDemo] the captions\n🗣️ delta epsilon zeta",
+    );
+    const { aligned: twoAligned } = alignCues(twoScript, TRANSCRIPT);
+    let reply: unknown;
+    const mock = new MockProvider();
+    const provider: LlmProvider = {
+      name: "spy",
+      usage: mock.usage,
+      async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; schemaName: string }): Promise<T> {
+        const out = await mock.complete(req);
+        if (req.schemaName === "script_plan") reply = out;
+        return out;
+      },
+    };
+    await planScriptMoments(provider, { aligned: twoAligned, clips: [] }, TRANSCRIPT);
+    expect((reply as { cues: Array<{ id: string; sceneKind: string }> }).cues).toEqual([
+      expect.objectContaining({ id: twoScript[0]!.id, sceneKind: "TitleCard" }),
+      expect.objectContaining({ id: twoScript[1]!.id, sceneKind: "PhoneDemo" }),
+    ]);
+  });
+
   it("offers a script's props call the script-only props, and a run without one does not", async () => {
     // Plan Task 8 (G6): `badge` is in the TerminalMock schema the provider is
     // handed only when the run came from a script.

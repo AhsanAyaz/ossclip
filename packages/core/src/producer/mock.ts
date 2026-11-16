@@ -120,15 +120,23 @@ export class MockProvider implements LlmProvider {
 
   /**
    * A script-mode plan (`--script`): every cue the prompt lists becomes a
-   * TitleCard of its own cue text. Read off the prompt's `id:`/`cue:` lines,
-   * the way `beatSheet` reads `[n]` indices, so the offline path plans exactly
-   * the cues the real call is shown — and never answers "none", so a fixture
-   * run places every cue it aligned.
+   * TitleCard of its own cue text, or the component its `component: <Name>
+   * (fixed)` line names. Read off the prompt's `id:`/`cue:` lines, the way
+   * `beatSheet` reads `[n]` indices, so the offline path plans exactly the
+   * cues the real call is shown — and never answers "none", so a fixture run
+   * places every cue it aligned.
+   *
+   * The fixed line is honoured even though `planScriptMoments` keeps a hint
+   * whatever the reply says (§161): a reply that contradicted the prompt
+   * would make the offline fixture prove that override rather than the path
+   * a real planner takes when it follows the hint.
    */
   private scriptPlan<T>(user: string, schema: z.ZodType<T>): T {
-    const cues = [...user.matchAll(/^id: (.+)\ncue: (.*)$/gm)].map((m) => ({
+    const cues = [
+      ...user.matchAll(/^id: (.+)\ncue: (.*)\nspoken: .*(?:\ncomponent: (\S+) \(fixed\))?$/gm),
+    ].map((m) => ({
       id: m[1]!,
-      sceneKind: "TitleCard",
+      sceneKind: m[3] ?? "TitleCard",
       onScreenCopy: m[2]!.slice(0, 60),
     }));
     return schema.parse({ cues });
