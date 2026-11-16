@@ -153,6 +153,7 @@ import {
 import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
 import { captionRegenProvider } from "./caption-regen-panel";
 import { binOnPath } from "./llm-detect";
+import { warmFileCache, warmTargetFor } from "./warm-cache";
 import { fetchLibraryBytes } from "./library-fetch";
 import { NO_SUCH_LOGO_CANDIDATE, logoCandidatePath } from "./logo-candidate-file";
 import { snapshotEntry, stageOverlayFiles } from "./overlays";
@@ -744,6 +745,7 @@ export async function startEditServer(
   const propsPath = (): string => join(workdir!, "render-props.json");
   const overridesPath = (): string => join(workdir!, "overrides.json");
   const commandPath = (): string => join(workdir!, "command.json");
+  let warmAbort: AbortController | null = null;
   const openWorkdir = async (dirArg: string): Promise<void> => {
     const dir = resolve(dirArg);
     if (!isWorkdir(dir)) {
@@ -761,6 +763,18 @@ export async function startEditServer(
     }
     workdir = dir;
     await recordRecentProject(dir, opts.recentDir);
+    // Fire-and-forget page-cache warm-up of the video the Player is about
+    // to seek into (warm-cache.ts has the measurements). A switch to another
+    // project aborts the old sweep — its file is no longer the one playing.
+    warmAbort?.abort();
+    warmAbort = new AbortController();
+    try {
+      const target = warmTargetFor(dir, JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")));
+      if (target !== null) void warmFileCache(target, warmAbort.signal);
+    } catch {
+      // A corrupt render-props is reported by the endpoints that need it;
+      // the warm-up is a courtesy and says nothing.
+    }
   };
   if (workdirArg !== undefined) await openWorkdir(workdirArg);
 
