@@ -35,6 +35,29 @@ const RevealPropsShape = {
 
 export const REVEAL_PROP_KEYS = ["reveal", "pacing", "revealSpeed", "entrance"] as const;
 
+/**
+ * The plain icons a pattern scene may draw (§161). Here rather than beside
+ * the `Icon` primitive in scenes because the props schemas below take it as a
+ * `z.enum` (CardRow's `icon`, plan Task 4) and core cannot import from
+ * scenes; the primitive imports this tuple and keys its drawings by it, so a
+ * name added here without a drawing fails the scenes typecheck. "none" is a
+ * real member, not an absence: the schema defaults to it and the card draws
+ * no icon slot at all.
+ */
+export const ICON_NAMES = [
+  "none",
+  "chat",
+  "doc",
+  "search",
+  "terminal",
+  "code",
+  "check",
+  "bolt",
+  "user",
+  "robot",
+] as const;
+export type IconName = (typeof ICON_NAMES)[number];
+
 export const TitleCardProps = z.object({
   eyebrow: z.string().max(28).optional(),
   title: z

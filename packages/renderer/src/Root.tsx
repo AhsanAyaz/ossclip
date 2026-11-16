@@ -11,6 +11,13 @@ import {
   defaultCoverProps,
   type CoverCompProps,
 } from "./CoverComposition";
+import {
+  SCENE_STILL_ID,
+  SceneStillComposition,
+  defaultSceneStillProps,
+  type SceneStillProps,
+} from "./SceneStillComposition";
+import { STILL_FPS } from "./scene-still";
 
 export const COMPOSITION_ID = "production";
 
@@ -52,6 +59,25 @@ export const RemotionRoot: React.FC = () => {
           fps: p.settings.fps,
           width: p.settings.width,
           height: p.settings.height,
+        };
+      }}
+    />
+    <Composition
+      id={SCENE_STILL_ID}
+      component={SceneStillComposition as unknown as React.FC<Record<string, unknown>>}
+      defaultProps={defaultSceneStillProps as unknown as Record<string, unknown>}
+      width={1080}
+      height={1920}
+      fps={STILL_FPS}
+      durationInFrames={90}
+      // Sized from the props like the other two: one bundle serves every
+      // aspect and every fixture's length, so `pnpm stills` bundles once.
+      calculateMetadata={({ props }) => {
+        const p = props as unknown as SceneStillProps;
+        return {
+          width: p.frame.width,
+          height: p.frame.height,
+          durationInFrames: Math.max(1, Math.round(p.durationSec * STILL_FPS)),
         };
       }}
     />

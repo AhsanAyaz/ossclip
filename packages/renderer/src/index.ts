@@ -4,6 +4,9 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, renderStill, selectComposition } from "@remotion/renderer";
 import { COMPOSITION_ID } from "./Root";
 import { COVER_ID } from "./CoverComposition";
+import { SCENE_STILL_ID } from "./SceneStillComposition";
+import { stillFrame } from "./scene-still";
+import type { SceneStillProps } from "./scene-still";
 import { renderMediaOptions } from "./render-options";
 import type { RenderJobOptions } from "./render-options";
 import type { ProductionCompProps } from "./ProductionComposition";
@@ -11,6 +14,8 @@ import type { CoverCompProps } from "./CoverComposition";
 
 export type { ProductionCompProps } from "./ProductionComposition";
 export type { CoverCompProps } from "./CoverComposition";
+export { SCENE_STILL_ID } from "./SceneStillComposition";
+export * from "./scene-still";
 export type { RenderJobOptions, RenderPhase } from "./render-options";
 export { DEFAULT_OFFTHREAD_VIDEO_CACHE_BYTES, renderMediaOptions } from "./render-options";
 // Re-exported so the CLI can build a cancel signal without depending on
@@ -87,6 +92,54 @@ export async function renderCover(
     inputProps,
     imageFormat: "jpeg",
     jpegQuality: 90,
+    browserExecutable: opts.browserExecutable,
+  });
+}
+
+/**
+ * Bundles the render entry once, serving `publicDir`. Exposed for
+ * `pnpm stills`, which renders dozens of stills from ONE bundle — bundling
+ * per still would cost tens of seconds each, and every still renders from
+ * the same entry anyway (the composition is chosen by id and props).
+ */
+export async function bundleRenderEntry(publicDir: string): Promise<string> {
+  return bundle({ entryPoint: STUDIO_ENTRY, publicDir });
+}
+
+/**
+ * Render one scene still as PNG (plan Task 3) — `renderCover`'s shape with a
+ * frame. `atSec` is seconds into the cue, which starts at 0, so it is also
+ * the frame time. Pass `serveUrl` from `bundleRenderEntry(publicDir)` to
+ * reuse a bundle; without it this bundles `publicDir` itself. PNG rather
+ * than the cover's JPEG: these are looked at for edges and type, and JPEG
+ * ringing around thin strokes is exactly what they are meant to show
+ * clearly.
+ */
+export async function renderSceneStill(
+  props: SceneStillProps,
+  opts: {
+    publicDir: string;
+    outPath: string;
+    atSec: number;
+    serveUrl?: string;
+    browserExecutable?: string;
+  },
+): Promise<void> {
+  const serveUrl = opts.serveUrl ?? (await bundleRenderEntry(opts.publicDir));
+  const inputProps = props as unknown as Record<string, unknown>;
+  const composition = await selectComposition({
+    serveUrl,
+    id: SCENE_STILL_ID,
+    inputProps,
+    browserExecutable: opts.browserExecutable,
+  });
+  await renderStill({
+    composition,
+    serveUrl,
+    output: opts.outPath,
+    inputProps,
+    frame: stillFrame(opts.atSec, composition.fps),
+    imageFormat: "png",
     browserExecutable: opts.browserExecutable,
   });
 }
