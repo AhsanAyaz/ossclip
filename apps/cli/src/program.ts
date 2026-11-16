@@ -37,6 +37,7 @@ import { accountsFlag, atFlag, deliveryFlag, platformsFlag, youtubePrivacyFlag }
 // test that notices is the buildProgram case in telemetry.test.ts.
 import { inputSourceUsed, resetInputSource } from "./interactive/ask-input";
 import { setReplayArgv } from "./replay-argv";
+import { ScriptFlagSchema } from "./script-mode";
 import {
   bootstrapTelemetry,
   durationBucket,
@@ -423,6 +424,19 @@ export function buildProgram(): Command {
     )
     .option("--scenes <path>", "hand-authored scenes JSON (Scene[]) — no LLM in the loop")
     .option(
+      "--script <file>",
+      "plan the graphics from your video script: each 🎬 cue becomes a scene on the words " +
+        "its 🗣️ lines are spoken at; `clip: <file>` cues place a transparent clip. Implies " +
+        "--produce; cannot be combined with --clip or --scenes",
+      (v: string) => {
+        // Parse, never coerce (CLAUDE.md): an empty value must die here
+        // naming the flag, not resolve to the current directory.
+        const parsed = ScriptFlagSchema.safeParse(v);
+        if (!parsed.success) throw new InvalidArgumentError(parsed.error.issues[0]!.message);
+        return parsed.data;
+      },
+    )
+    .option(
       "--no-repair",
       "skip the ASR mishearing repair pass (captions then show the raw transcription)",
     )
@@ -759,7 +773,12 @@ export function buildProgram(): Command {
           sortExplicit,
           aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
           noiseDb: opts.noiseDb,
-          produce: opts.produce,
+          // `--script` implies `--produce` (the `--sfx-level` → `--sfx` shape):
+          // a script IS the request for a plan — typing it is the consent the
+          // `--produce` gate exists for, and the playbook's explainer command
+          // (`--script … --aspect 16:9 --no-captions`) does not repeat it.
+          produce: opts.produce || opts.script !== undefined,
+          script: opts.script,
           intent: opts.intent,
           // `--sfx-level` implies `--sfx` (sfxFlag), resolved HERE so the
           // implication is one pure function rather than a condition produce

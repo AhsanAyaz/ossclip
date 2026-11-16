@@ -10,7 +10,7 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Forty-five flags (plus the positional input path)
+ * The produce wizard. Forty-six flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
  * five flags (--out, --cleanup, --aspect, --produce, --intent) — twelve
  * behind one "anything else?" multiselect (--sfx being the twelfth, with
@@ -45,6 +45,14 @@ import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } 
  * command.json so the editor's Render replays the same window without an LLM
  * call. A human picking it from a menu is a corrupted replay, not a
  * preference.
+ *
+ * --script (2026-11-16, explainer phase 1, FINDINGS §158) stays flags-only.
+ * It names a markdown file written with the playbook's script skill BEFORE
+ * recording, and the explainer flow it belongs to is the playbook's own typed
+ * command (`--script … --aspect 16:9 --no-captions`), not a menu. It also
+ * implies --produce and refuses --clip — a wizard entry would have to undo
+ * the graphics answer and hide the --clip extra, a dependency design nobody
+ * has made. The day the wizard grows a file prompt, this is its first user.
  *
  * --library-dir (2026-11-05, hidden) is not offered either: it is a
  * test-isolation seam pointing a fresh run at a temp overlay library

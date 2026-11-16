@@ -125,10 +125,13 @@ export function ungroundedTokens(
   text: string,
   transcript: { words: ReadonlyArray<{ text: string }> },
   speaker?: string,
+  /** More text that counts as said — see `checkGrounding`'s `alsoAllowed`. */
+  alsoAllowed?: readonly string[],
 ): string[] {
   const spoken = new Set([
     ...transcript.words.flatMap((w) => tokenize(w.text)),
     ...(speaker ? tokenize(speaker) : []),
+    ...(alsoAllowed ?? []).flatMap(tokenize),
   ]);
   const supported = (token: string): boolean =>
     spoken.has(token) ||
@@ -147,6 +150,14 @@ export function checkGrounding(
    * pass, which is the §17 mistake in a new place.
    */
   speaker?: string,
+  /**
+   * Text that is legitimate on screen though nobody said it: on a `--script`
+   * run, every cue's text (explainer spec §1.3, "on-screen copy may come from
+   * the spoken text or the cue text"). A cue that writes "+1,568 lines" is the
+   * author's own copy, and warning about it would teach them to ignore the
+   * check. Omitted everywhere else, so the rule is unchanged without a script.
+   */
+  alsoAllowed?: readonly string[],
 ): GroundingIssue[] {
   const issues: GroundingIssue[] = [];
   for (const scene of scenes) {
@@ -154,7 +165,7 @@ export function checkGrounding(
     const merged = { ...scene.props, ...scene.overrides };
     for (const field of fields) {
       for (const text of stringsOf(merged[field])) {
-        for (const token of ungroundedTokens(text, transcript, speaker)) {
+        for (const token of ungroundedTokens(text, transcript, speaker, alsoAllowed)) {
           issues.push({ sceneId: scene.id, component: scene.component, field, token });
         }
       }

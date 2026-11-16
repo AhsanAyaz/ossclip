@@ -121,6 +121,7 @@ import { loadEnvFiles } from "./env";
 import { EDIT_HEALTH_PATH, editHealthBody } from "./edit-health";
 import { revealInFileManager } from "./open";
 import { REVIEWED_SCENES_BASENAME, renderReplayArgs } from "./render-replay-args";
+import { STORED_SCRIPT_BASENAME, replanScriptArgs, storedScriptFrom } from "./script-mode";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
 // cover` needs the same out-resolution rule this server's thumbnail dest,
 // youtube markdown and reveal endpoint derive from, and two spellings of it
@@ -421,6 +422,10 @@ const MIME: Record<string, string> = {
   // `library/<id>.<ext>` copies over `/media/` are shown through `<img>` in the
   // tray and the Player, and an `<img>` handed an SVG as octet-stream does not
   // render it at all — sniffing never applies to SVG.
+  // A `--script` project's clips (`clips/<hash>.webm`): the Player plays them
+  // through a `<video>` over `/media/`, and a media element handed
+  // octet-stream is the sniffing-dependent preview the `.jpg` note refuses.
+  ".webm": "video/webm",
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
@@ -1944,6 +1949,26 @@ export async function startEditServer(
             }
           }
           args = renderReplayArgs(args, { scenesPath, replan });
+          // Re-plan of a `--script` project plans from the script text the
+          // PROJECT stored, not the file the recorded command names (plan
+          // Review Focus 5): that file may have moved or been deleted since,
+          // and a Render before this one recorded an argv without it at all.
+          // The copy is written into the workdir, where produce recognises it
+          // and still resolves `clip:` paths beside the original
+          // (`scriptSourcePath`).
+          if (replan) {
+            let stored: ReturnType<typeof storedScriptFrom>;
+            try {
+              stored = storedScriptFrom(await readFile(join(workdir!, "production.json"), "utf8"));
+            } catch {
+              stored = undefined; // no production.json: replay what was recorded
+            }
+            if (stored !== undefined) {
+              const copy = join(workdir!, STORED_SCRIPT_BASENAME);
+              await writeFile(copy, stored.text);
+              args = replanScriptArgs(args, copy);
+            }
+          }
           renderLines = [];
           renderExit = null;
           renderStartedAt = Date.now();

@@ -6,6 +6,8 @@ dist/
 fixtures/*.mp4
 fixtures/*.wav
 fixtures/work/
+# The --script fixture's clip (fixtures/fixture.script.md says how to make it).
+fixtures/clips/
 .playwright-mcp/
 apps/editor/test-results/
 apps/editor/playwright-report/

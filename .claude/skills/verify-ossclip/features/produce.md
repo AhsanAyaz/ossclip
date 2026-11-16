@@ -35,6 +35,29 @@ pnpm ossclip produce fixtures/fixture.mp4 \
 **Proves it works:** `out.mp4` exists, `ffprobe` reports a duration matching `outputDurationSec` in
 `render-props.json` (the fixture baseline is 11.58s), and the frame dimensions are 1080x1920.
 
+## Driving `--script` (explainer phase 1, FINDINGS §158)
+
+`fixtures/fixture.script.md` is the fixture's script: three cues whose spoken lines are the fixture's own
+words — an unhinted cue, a `clip:` cue and a `[StatCard]` hint. Make its clip first (the command is in the
+file), then plan it with the offline mock provider:
+
+```sh
+WD=$(mktemp -d)
+mkdir -p fixtures/clips
+ffmpeg -f lavfi -i "color=c=red@0.5:s=320x240:d=1.5:r=30,format=yuva420p" \
+  -c:v libvpx-vp9 -pix_fmt yuva420p -auto-alt-ref 0 -y fixtures/clips/fixture-clip.webm
+pnpm ossclip produce fixtures/fixture.mp4 \
+  --transcript fixtures/fixture.transcript.json \
+  --script fixtures/fixture.script.md --llm mock \
+  --workdir "$WD" --no-render --no-youtube --no-open-editor
+```
+
+**Proves it works:** the report prints `placed 3 of 3 · skipped 0 · reported 0`; `script-report.json` in the
+workdir lists three `placed` outcomes (lines 15, 18, 23); `production.json` has three scenes (`TitleCard`,
+`StatCard`, `ClipScene`) and a `script` record with the text, its `sourcePath` and the imported clip; the clip's
+`clips/<hash>.webm` in the workdir is byte-identical to the source WebM (copied, not re-encoded). No
+`beatsheet-*.json` is written. The same flow runs as a test: `apps/cli/test/script-produce.test.ts`.
+
 ## Gotchas
 
 - Proven 2026-08-30 for the offline path incl. `--color-grade` (both lanes):

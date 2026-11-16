@@ -43,6 +43,14 @@ export function renderReplayArgs(
       i++;
       continue;
     }
+    // `--script` goes too, with its value (explainer plan Task 8): it is a
+    // request to PLAN from the script, the very thing a pinned render must
+    // not do, and produce refuses it beside `--scenes`. The script's text is
+    // not lost — the replay carries production.json's `script` record forward.
+    if (arg === "--script") {
+      i++;
+      continue;
+    }
     out.push(arg);
   }
   out.push("--scenes", opts.scenesPath);

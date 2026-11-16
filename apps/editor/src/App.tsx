@@ -71,6 +71,7 @@ import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from 
 import { OverlayImageBox, type OverlayImageBoxHandle, type OverlayRectPreview } from "./OverlayImageBox";
 import { Inspector, type RunInfo } from "./Inspector";
 import { EMPTY_LUT_MENU, liveGradeSpec, type LutMenu } from "./colorPanel";
+import { withMediaClipSrc } from "./clipMedia";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
@@ -1754,7 +1755,12 @@ export const App: React.FC = () => {
   );
   const playerProps = useMemo<PlayerProductionProps | null>(() => {
     if (live === null) return null;
-    const { overlayCues: _baked, ...rest } = live;
+    const { overlayCues: _baked, ...baked } = live;
+    // Clip cues' `src` re-pointed at `/media/`, the `videoFileName` rewrite's
+    // reason — here, on the Player's props alone, so the Inspector and the
+    // timeline (which read `live`) keep the stored path (`withMediaClipSrc`).
+    const sceneCues = withMediaClipSrc(baked.sceneCues);
+    const rest = sceneCues === baked.sceneCues ? baked : { ...baked, sceneCues };
     const overlayCues = overlayCuesLive.filter((c) => !overlayNoRoom.has(c.id));
     if (overlayCues.length === 0) return rest;
     return { ...rest, overlayCues };

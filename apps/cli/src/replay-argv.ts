@@ -82,6 +82,8 @@ export function recordedProduceArgs(pins: {
   captionTheme?: CaptionThemeId;
   /** The RESOLVED `--choreograph-captions` switch (flag or config). */
   choreographCaptions?: boolean;
+  /** The script's SOURCE path, absolute (`--script`, explainer plan Task 8). */
+  script?: string;
 }): string[] {
   // --review and --no-render are stripped at record (cut-review step 1):
   // command.json exists for exactly one consumer — the editor's Render
@@ -241,6 +243,17 @@ export function recordedProduceArgs(pins: {
     !args.includes("--caption-theme")
   ) {
     args.push("--caption-theme", pins.captionTheme);
+  }
+  // The script pin REPLACES a typed value instead of guarding on `includes`
+  // like the pins above, because the value that must be recorded is not
+  // always the one typed: a relative path is made absolute, and the editor's
+  // Re-plan runs with `--script <workdir>/script.md` (the stored copy) while
+  // the record must keep naming the SOURCE, whose folder the `clip:` paths
+  // resolve against. Value option, so it is removed with its value.
+  if (pins.script !== undefined) {
+    const at = args.indexOf("--script");
+    if (at !== -1) args.splice(at, 2);
+    args.push("--script", pins.script);
   }
   if (
     pins.choreographCaptions !== undefined &&

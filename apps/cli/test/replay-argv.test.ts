@@ -306,6 +306,26 @@ describe("recordedProduceArgs (§129)", () => {
   // The portrait pin: the RESOLVED path (which may have come from the
   // config) — a path only, never a secret; the thumbnail's API key stays in
   // the environment.
+  it("records --script as the source path, replacing a typed or stored-copy value", () => {
+    // A relative typed path becomes the absolute source; the editor's Re-plan
+    // (`--script <workdir>/script.md`) still records the ORIGINAL source.
+    setReplayArgv(["produce", "./a.mp4", "--script", "egm.md", "--no-captions"]);
+    expect(recordedProduceArgs({ script: "/videos/egm.md" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--no-captions",
+      "--script",
+      "/videos/egm.md",
+    ]);
+    setReplayArgv(["produce", "./a.mp4", "--script", "/w/script.md"]);
+    const rec = recordedProduceArgs({ script: "/videos/egm.md" });
+    expect(rec.filter((a) => a === "--script")).toHaveLength(1);
+    expect(rec.slice(-2)).toEqual(["--script", "/videos/egm.md"]);
+    // No script run, no pin: the record is what it always was.
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
+  });
+
   it("pins a config-resolved --portrait, and never doubles a typed one", () => {
     setReplayArgv(["produce", "./a.mp4"]);
     expect(recordedProduceArgs({ portrait: "/me.jpg" })).toEqual([

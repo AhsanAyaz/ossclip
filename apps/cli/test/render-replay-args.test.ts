@@ -59,6 +59,20 @@ describe("renderReplayArgs", () => {
     expect(args).toEqual(["produce", "in.mp4", "--captions", "--scenes", "/w/new.json"]);
   });
 
+  it("drops --script and its value when it pins the reviewed plan", () => {
+    // `--script` implies a fresh plan and produce refuses it beside --scenes;
+    // the script text rides production.json forward instead.
+    const withScript = ["produce", "in.mp4", "--script", "/v/egm.md", "--aspect", "16:9"];
+    expect(renderReplayArgs(withScript, { scenesPath: "/w/s.json" })).toEqual([
+      "produce",
+      "in.mp4",
+      "--aspect",
+      "16:9",
+      "--scenes",
+      "/w/s.json",
+    ]);
+  });
+
   it("carries --sfx and its level through the --produce swap", () => {
     // Only --produce and --scenes are dropped, and this pins that: --sfx-level
     // is a VALUE option, so a filter that treated it as a bare flag would
