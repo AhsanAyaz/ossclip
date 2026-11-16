@@ -113,6 +113,12 @@ describe("scalarPropControls", () => {
     });
   });
 
+  it("PhoneDemo's words and pills are edited through word-N and pill-N; only the reveal controls show (§161)", () => {
+    // `emphasis` and `state` live inside the arrays, so no control reaches
+    // them: a known gap (plan Task 7, recorded for §161).
+    expect(scalarPropControls("PhoneDemo").map((c) => c.key)).toEqual(["reveal", "pacing", "revealSpeed", "entrance"]);
+  });
+
   it("the integer sliders change no existing control: the nine, CtaCard and ClipScene are as they were", () => {
     // Pinned whole, not by key: the integer rule must add controls only
     // where an integer prop was, and touch no field of any other control.
@@ -148,7 +154,7 @@ describe("scalarPropControls", () => {
   it("every registry component resolves without throwing", () => {
     for (const id of ["TitleCard", "StatCard", "RuleCard", "StrikethroughReveal",
       "FlowDiagram", "TerminalMock", "ChatMock", "ScreenshotFrame", "BulletList", "CardRow", "CtaCard",
-      "BugCard"] as const) {
+      "BugCard", "PhoneDemo"] as const) {
       expect(() => scalarPropControls(id)).not.toThrow();
     }
   });

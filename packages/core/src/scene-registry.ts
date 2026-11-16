@@ -297,6 +297,44 @@ export const BugCardProps = z.object({
   sticker: z.string().max(14).optional(),
 });
 
+/**
+ * "This is how captions sit on a phone" (§161, plan Task 7): a stand-in
+ * vertical video with caption words in its lower third and checklist pills
+ * building beside it (16:9) or under it (9:16). Script-only. Each pill is
+ * one reveal item, so it lands on its spoken words; the caption is on the
+ * phone from its entrance.
+ *
+ * The caps are a real caption chunk, not a sentence (plan author,
+ * 2026-11-16): the first caps (eight words of 14) could only be drawn one
+ * word a line at the 34 px floor in a phone ~430 px wide, eight lines up
+ * the panel. Six words of 12 is a chunk a caption actually shows. Pill
+ * caps are what one 16:9 column beside the phone holds at the floor
+ * (`phoneDemoMetrics`).
+ */
+export const PhoneDemoProps = z.object({
+  caption: z
+    .array(
+      z.object({
+        text: z.string().min(1).max(12),
+        /** An emphasised word sits in ink on a tilted yellow or orange box. */
+        emphasis: z.enum(["none", "yellow", "orange"]).default("none"),
+      }),
+    )
+    .min(1)
+    .max(6),
+  pills: z
+    .array(
+      z.object({
+        text: z.string().min(1).max(22),
+        /** ok: success border and a tick; bad: danger border and a cross; plain: accent2, no mark. */
+        state: z.enum(["ok", "bad", "plain"]).default("ok"),
+      }),
+    )
+    .max(4)
+    .default([]),
+  ...RevealPropsShape,
+});
+
 export interface SceneComponentMeta {
   propsSchema: z.ZodTypeAny;
   defaultProps: Record<string, unknown>;
@@ -470,6 +508,18 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     whenToUse:
       "The line names one specific problem or bug, often numbered. headline says it in a few words; " +
       "sub is the consequence. Use mock 'caption' or 'lines' only with words the speaker says.",
+    scriptOnly: true,
+    scrim: false,
+    fullFrame: true,
+  },
+  PhoneDemo: {
+    propsSchema: PhoneDemoProps,
+    defaultProps: { caption: [{ text: "YOUR" }, { text: "CAPTIONS", emphasis: "yellow" }] },
+    defaultLayout: "full-bleed",
+    altLayouts: [],
+    whenToUse:
+      "The line explains how captions or a vertical video look or behave. caption holds the words shown " +
+      "on the phone; pills are short checklist labels, one per point the speaker makes.",
     scriptOnly: true,
     scrim: false,
     fullFrame: true,

@@ -4,6 +4,7 @@ import {
   BugCardProps,
   CardRowProps,
   CtaCardProps,
+  PhoneDemoProps,
   SCENE_REGISTRY,
   plannerComponentIds,
   llmPropsSchema,
@@ -163,6 +164,7 @@ describe("scene registry", () => {
         "CardRow",
         "CtaCard",
         "BugCard",
+        "PhoneDemo",
       ]);
       // The id lists and the registry agree, as the planner pair does.
       expect(scriptComponentIds()).toEqual(ScriptComponentIdSchema.options);
@@ -275,6 +277,49 @@ describe("scene registry", () => {
           mockWrong: 3,
           mockFault: "clipped",
           sticker: "k".repeat(14),
+        }).success,
+      ).toBe(true);
+    });
+
+    it("PhoneDemo is a full-frame card with no scrim, fillable and swappable (plan Task 7)", () => {
+      const meta = SCENE_REGISTRY.PhoneDemo;
+      expect(meta.scriptOnly).toBe(true);
+      expect(meta.scrim).toBe(false);
+      expect(meta.fullFrame).toBe(true);
+      expect(meta.plannerSelectable).toBeUndefined();
+      expect(meta.defaultLayout).toBe("full-bleed");
+      expect(meta.altLayouts).toEqual([]);
+      expect(meta.defaultProps).toEqual({ caption: [{ text: "YOUR" }, { text: "CAPTIONS", emphasis: "yellow" }] });
+      expect(PhoneDemoProps.safeParse(meta.defaultProps).success).toBe(true);
+      expect(PlannerComponentIdSchema.safeParse("PhoneDemo").success).toBe(false);
+      expect(JSON.stringify(z.toJSONSchema(BeatSheetSchema))).not.toContain("PhoneDemo");
+    });
+
+    it("PhoneDemoProps: one to six caption words of 12, up to four pills of 22, enums defaulted", () => {
+      expect(PhoneDemoProps.safeParse({ caption: [] }).success).toBe(false);
+      expect(PhoneDemoProps.safeParse({ caption: Array.from({ length: 7 }, () => ({ text: "w" })) }).success).toBe(
+        false,
+      );
+      expect(PhoneDemoProps.safeParse({ caption: [{ text: "x".repeat(13) }] }).success).toBe(false);
+      expect(PhoneDemoProps.safeParse({ caption: [{ text: "" }] }).success).toBe(false);
+      expect(PhoneDemoProps.safeParse({ caption: [{ text: "A", emphasis: "pink" }] }).success).toBe(false);
+      const five = Array.from({ length: 5 }, () => ({ text: "p" }));
+      expect(PhoneDemoProps.safeParse({ caption: [{ text: "A" }], pills: five }).success).toBe(false);
+      expect(PhoneDemoProps.safeParse({ caption: [{ text: "A" }], pills: [{ text: "p".repeat(23) }] }).success).toBe(
+        false,
+      );
+      expect(PhoneDemoProps.safeParse({ caption: [{ text: "A" }], pills: [{ text: "p", state: "maybe" }] }).success).toBe(
+        false,
+      );
+      expect(PhoneDemoProps.parse({ caption: [{ text: "A" }], pills: [{ text: "p" }] })).toMatchObject({
+        caption: [{ text: "A", emphasis: "none" }],
+        pills: [{ text: "p", state: "ok" }],
+      });
+      expect(PhoneDemoProps.parse({ caption: [{ text: "A" }] }).pills).toEqual([]);
+      expect(
+        PhoneDemoProps.safeParse({
+          caption: Array.from({ length: 6 }, () => ({ text: "x".repeat(12), emphasis: "orange" })),
+          pills: Array.from({ length: 4 }, () => ({ text: "p".repeat(22), state: "plain" })),
         }).success,
       ).toBe(true);
     });

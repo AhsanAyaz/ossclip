@@ -39,6 +39,7 @@ const SELF_FITTING = new Set<SceneComponentId>([
   "CardRow",
   "CtaCard",
   "BugCard",
+  "PhoneDemo",
 ]);
 
 /**
@@ -229,6 +230,20 @@ export function estimateHeightPx(
         sticker: str(props.sticker),
       };
       return bugCardMetrics(input, widthPx, heightPx).blockHeightPx;
+    }
+    case "PhoneDemo": {
+      // Self-fitting as well, answered from the scene's own model.
+      const input: PhoneDemoInput = {
+        caption: arr(props.caption).map((c) => {
+          const w = (c ?? {}) as Record<string, unknown>;
+          return { text: str(w.text), emphasis: str(w.emphasis) };
+        }),
+        pills: arr(props.pills).map((c) => {
+          const pill = (c ?? {}) as Record<string, unknown>;
+          return { text: str(pill.text), state: str(pill.state) };
+        }),
+      };
+      return phoneDemoMetrics(input, widthPx, heightPx).blockHeightPx;
     }
   }
 }
@@ -1701,5 +1716,378 @@ export function bugCardMetrics(p: BugCardInput, widthPx: number, heightPx: numbe
     sticker,
     blockWidthPx,
     blockHeightPx: panelH,
+  };
+}
+
+// ---- PhoneDemo (§161, plan Task 7) -----------------------------------------
+
+/** PhoneDemoProps' shape after parsing, as the metric reads it (no zod in this module). */
+export interface PhoneDemoInput {
+  caption: readonly { text: string; emphasis?: "none" | "yellow" | "orange" | string }[];
+  pills: readonly { text: string; state?: "ok" | "bad" | "plain" | string }[];
+}
+
+/**
+ * The `PhoneFrame` primitive's box and silhouette, exported so the
+ * primitive draws what this model measures: a 6 px rim, and a head of
+ * radius 19 at y 70 in a 90×160 viewBox scaled to meet the inner panel and
+ * set on its bottom edge.
+ */
+export const PHONE_BORDER_PX = 6;
+export const PHONE_SILHOUETTE = { viewW: 90, viewH: 160, headCx: 45, headCy: 70, headR: 19 } as const;
+
+/** The phone and every pill are drawn at most at `popScale`'s overshoot (CTA_PEAK_SCALE's reason). */
+export const PHONE_PEAK_SCALE = 1.11;
+/** The idle bob once the phone has settled: motion.ts `bobPx`'s default amplitude. */
+export const PHONE_BOB_PX = 7;
+/**
+ * The phone's share of the frame height (plan Task 7): 80% in 16:9 — but
+ * no more than the margin holds at the pop's peak, which at 1080 px is
+ * 880 / 1.11 ≈ 792 px, 73% (plan author, 2026-11-16: the margin wins) —
+ * and 50% in 9:16.
+ */
+const PHONE_SHARE_LANDSCAPE = 0.8;
+const PHONE_SHARE_PORTRAIT = 0.5;
+/** Between the phone and the pill column in 16:9, and above the column in 9:16. */
+export const PHONE_GROUP_GAP_PX = 80;
+export const PHONE_STACK_GAP_PX = 40;
+/** Between pills. */
+export const PHONE_PILL_GAP_PX = 24;
+/** Pill type: from 48 down to the playbook's 34 px floor. */
+const PHONE_PILL_MAX_PX = 48;
+const PHONE_TEXT_MIN_PX = 34;
+/** The `Pill` primitive's box, mirrored: a 3 px border, padding 0.36 / 0.75 em, a mark of 1 em and a 0.4 em gap. */
+const PILL_BORDER_PX = 3;
+const PILL_LH = 1.1;
+
+/**
+ * The caption inside the phone. Its type is solved against the panel, from
+ * 15% of the panel's inner width down to 34 px; its side padding is 7% of
+ * that width, and 2% where that is what lets the words fit three lines.
+ * It sits on the panel's lower edge, 7% of the inner height up.
+ */
+const PHONE_CAP_MAX_SHARE = 0.15;
+const PHONE_CAP_PAD_SHARE = 0.07;
+const PHONE_CAP_PAD_REDUCED_SHARE = 0.02;
+const PHONE_CAP_BOTTOM_SHARE = 0.07;
+/** How low an overflowing caption may sit to clear the face: 2% of the inner height. */
+const PHONE_CAP_BOTTOM_MIN_SHARE = 0.02;
+/** "Aim for at most three lines" (plan author, 2026-11-16). */
+const PHONE_CAP_MAX_LINES = 3;
+export const PHONE_CAP_LH = 1.15;
+export const PHONE_CAP_WORD_GAP_EM = 0.3;
+/** The outline, BugCard's caption look (`BUG_CAP_STROKE_EM`). */
+export const PHONE_CAP_STROKE_EM = 0.14;
+/** The emphasis box: padding around the word, its corner, and its tilt. */
+export const PHONE_EMPH_PAD_X_EM = 0.2;
+export const PHONE_EMPH_PAD_Y_EM = 0.06;
+export const PHONE_EMPH_RADIUS_EM = 0.16;
+export const PHONE_EMPH_TILT_DEG = -3;
+
+export interface PhoneRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface PhoneDemoMetrics {
+  aspect: BugAspect;
+  marginPx: number;
+  /** The phone's rest box in frame pixels; `w` is `PhoneFrame`'s own `round(h × 9 / 16)`. */
+  phone: PhoneRect;
+  /** The panel inside the rim, which the caption and the silhouette are laid out in. */
+  innerW: number;
+  innerH: number;
+  /** Where the silhouette's head ends, from the top of the inner panel. */
+  faceBottomPx: number;
+  capPx: number;
+  capStrokePx: number;
+  capWordGapPx: number;
+  /** Above each caption row (0 for the first): what keeps a tilted box off its neighbour. */
+  capRowGapsPx: number[];
+  capPadXPx: number;
+  capBottomPx: number;
+  emphPadXPx: number;
+  emphPadYPx: number;
+  /** Caption entry indices per row, drawn as laid out here and never re-wrapped. */
+  capRows: number[][];
+  /**
+   * "lower-third": at most three rows inside the panel's lower third.
+   * "overflow": the words cannot do that at 34 px with the padding reduced,
+   * so they take the rows they need, still whole, still on the lower edge.
+   */
+  capMode: "lower-third" | "overflow";
+  /** Every caption word fits a row unbroken (always true within the schema's caps). */
+  capWordsFit: boolean;
+  /** The caption block's height and its top edge, from the top of the inner panel. */
+  capBlockPx: number;
+  capTopPx: number;
+  pillPx: number;
+  /** One per pill, the `Pill` primitive's box at `pillPx`. */
+  pillWidths: number[];
+  pillHeightPx: number;
+  pillGapPx: number;
+  /** The pill column's rest box; null without pills. */
+  pillColumn: PhoneRect | null;
+  /** Pills sit on the column's left edge and pop from it (16:9), or are centred and pop about their centre (9:16). */
+  pillAlign: "left" | "center";
+  blockWidthPx: number;
+  blockHeightPx: number;
+}
+
+/** The `Pill` primitive's box for `text` at `sizePx`. */
+export function pillBoxPx(text: string, marked: boolean, sizePx: number): { w: number; h: number } {
+  const markW = marked ? sizePx + Math.round(sizePx * 0.4) : 0;
+  return {
+    w: Math.ceil(2 * PILL_BORDER_PX + 2 * Math.round(sizePx * 0.75) + markW + ctaDisplayWidthEm(text) * sizePx),
+    h: Math.ceil(2 * PILL_BORDER_PX + 2 * Math.round(sizePx * 0.36) + sizePx * PILL_LH),
+  };
+}
+
+/** A `plain` pill carries no mark; `ok` and `bad` do (an unknown state reads as the default, `ok`). */
+const pillMarked = (state: string | undefined): boolean => state !== "plain";
+
+/** Where the silhouette's head ends inside a panel `innerW`×`innerH` (`PhoneFrame`'s meet-and-bottom fit). */
+export function phoneFaceBottomPx(innerW: number, innerH: number): number {
+  const s = PHONE_SILHOUETTE;
+  const k = Math.min(innerW / s.viewW, innerH / s.viewH);
+  return innerH - s.viewH * k + (s.headCy + s.headR) * k;
+}
+
+/** Caption entries in rows of whole words at `px`, the `bugCaptionLayout` rule. */
+function phoneCaptionLayout(
+  units: readonly { text: string; emphasis?: string }[],
+  px: number,
+  lineW: number,
+): { rows: number[][]; allFit: boolean; rowGaps: number[]; blockPx: number } {
+  const gap = Math.round(PHONE_CAP_WORD_GAP_EM * px);
+  const stroke = Math.round(PHONE_CAP_STROKE_EM * px);
+  const padX = Math.round(PHONE_EMPH_PAD_X_EM * px);
+  const padY = Math.round(PHONE_EMPH_PAD_Y_EM * px);
+  const rowH = px * PHONE_CAP_LH + 2 * padY;
+  const tilt = (Math.abs(PHONE_EMPH_TILT_DEG) * Math.PI) / 180;
+  const emph = (u: { emphasis?: string }) => u.emphasis === "yellow" || u.emphasis === "orange";
+  // A boxed word has its padding and the tilt's sideways reach; a plain one
+  // its outline, half of which lies outside the glyphs.
+  const width = (u: { text: string; emphasis?: string }) =>
+    ctaDisplayWidthEm(u.text) * px + (emph(u) ? 2 * padX + rowH * Math.sin(tilt) : stroke);
+  const rows: number[][] = [];
+  let cur: number[] = [];
+  let used = 0;
+  let allFit = true;
+  units.forEach((u, i) => {
+    const w = width(u);
+    if (w > lineW) allFit = false;
+    if (cur.length === 0) {
+      cur = [i];
+      used = w;
+    } else if (used + gap + w <= lineW) {
+      cur.push(i);
+      used += gap + w;
+    } else {
+      rows.push(cur);
+      cur = [i];
+      used = w;
+    }
+  });
+  if (cur.length > 0) rows.push(cur);
+  // A box tilted 3° rises at one end and drops at the other by half its
+  // width × sin 3°, so the gap above a row holds the reach of the widest
+  // box on each side of it. Per pair, not one gap for the block: a single
+  // gap sized by the widest box spread 85 px of air through the six-row
+  // dense caption and pushed its top over the silhouette's face.
+  const reach = rows.map((row) =>
+    row.reduce((a, i) => (emph(units[i]!) ? Math.max(a, (width(units[i]!) / 2) * Math.sin(tilt)) : a), 0),
+  );
+  const rowGaps = rows.map((_, r) => (r === 0 ? 0 : Math.ceil(reach[r - 1]! + reach[r]!)));
+  const blockPx = Math.ceil(rows.length * rowH + rowGaps.reduce((a, g) => a + g, 0));
+  return { rows, allFit, rowGaps, blockPx };
+}
+
+/**
+ * PhoneDemo's layout, solved against the whole frame (it is `fullFrame`):
+ * ONE model for the component and `estimateHeightPx`, with the pattern
+ * scenes' reserves — the 100 px margin, the pop's overshoot about every
+ * box, and the phone's bob once it has settled.
+ *
+ * 16:9: the phone, then the pill column, one group centred in the frame
+ * with an 80 px gap; pills left-aligned and centred on the phone's height,
+ * popping from their left edge so none grows back towards the phone. With
+ * no pills the phone is centred alone. 9:16: the phone at the top inside
+ * the margin, and the column centred in the band between it and the
+ * bottom margin; with no pills, the phone is centred.
+ *
+ * Caption (plan author's rule, 2026-11-16): the largest size, from 15% of
+ * the panel width down to 34 px, at which the words take at most three
+ * rows inside the panel's lower third; failing that, the same with the
+ * side padding reduced; failing that, the rows the words need — the
+ * largest size whose block still clears the silhouette's face, else 34 px,
+ * set as low as 2% from the edge where that clears it — never a broken
+ * word, always on the panel's lower edge. Widths use
+ * `ctaDisplayWidthEm`: a caption word is one unbroken unit, the case
+ * CardRow's flat average under-measured.
+ */
+export function phoneDemoMetrics(p: PhoneDemoInput, widthPx: number, heightPx: number): PhoneDemoMetrics {
+  const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
+  const aspect = bugAspect(widthPx, finiteH);
+  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const reserve = PHONE_PEAK_SCALE - 1;
+  const availW = widthPx - 2 * marginPx;
+  const availH = finiteH - 2 * marginPx;
+  const hasPills = p.pills.length > 0;
+
+  // The phone's height: its share, held to what the margin allows with the
+  // pop's peak (and, once settled, the bob) about its centre.
+  const share = aspect === "16:9" ? PHONE_SHARE_LANDSCAPE : PHONE_SHARE_PORTRAIT;
+  const phoneH = Math.floor(
+    Math.min(
+      share * finiteH,
+      availH / (1 + reserve),
+      availH - 2 * PHONE_BOB_PX,
+      // Its width at the peak, too (a frame narrower than 9:16 of it).
+      (availW / (1 + reserve)) * (16 / 9),
+    ),
+  );
+  const phoneW = Math.round((phoneH * 9) / 16);
+  const growPhoneX = (reserve / 2) * phoneW;
+  const growPhoneY = Math.max((reserve / 2) * phoneH, PHONE_BOB_PX);
+
+  // Pills: one size for the set, the largest that fits.
+  const pillsAt = (px: number) => {
+    const boxes = p.pills.map((pill) => pillBoxPx(pill.text, pillMarked(pill.state), px));
+    const colW = boxes.reduce((a, b) => Math.max(a, b.w), 0);
+    const pillH = boxes[0]?.h ?? 0;
+    const n = boxes.length;
+    const colH = n * pillH + Math.max(0, n - 1) * PHONE_PILL_GAP_PX;
+    return { widths: boxes.map((b) => b.w), colW, pillH, colH };
+  };
+  const bandTop = marginPx + growPhoneY + phoneH + growPhoneY + PHONE_STACK_GAP_PX;
+  const pillFits = (q: ReturnType<typeof pillsAt>): boolean => {
+    if (!hasPills) return true;
+    const growPillY = (reserve / 2) * q.pillH;
+    if (aspect === "16:9") {
+      // Centred group; the phone grows left by half its overshoot, a pill
+      // (popping from its left edge) right by all of its own.
+      const groupW = phoneW + PHONE_GROUP_GAP_PX + q.colW;
+      const side = (availW - groupW) / 2;
+      return side >= growPhoneX && side >= reserve * q.colW && q.colH + 2 * growPillY <= phoneH;
+    }
+    return q.colW * (1 + reserve) <= availW && q.colH + 2 * growPillY <= finiteH - marginPx - bandTop;
+  };
+  let pillPx = PHONE_PILL_MAX_PX;
+  let pills = pillsAt(pillPx);
+  while (!pillFits(pills) && pillPx > PHONE_TEXT_MIN_PX) {
+    pillPx -= 1;
+    pills = pillsAt(pillPx);
+  }
+
+  // Placement.
+  let phone: PhoneRect;
+  let pillColumn: PhoneRect | null = null;
+  if (aspect === "16:9") {
+    const groupW = hasPills ? phoneW + PHONE_GROUP_GAP_PX + pills.colW : phoneW;
+    const x0 = Math.round((widthPx - groupW) / 2);
+    const y = Math.round((finiteH - phoneH) / 2);
+    phone = { x: x0, y, w: phoneW, h: phoneH };
+    if (hasPills) {
+      pillColumn = {
+        x: x0 + phoneW + PHONE_GROUP_GAP_PX,
+        y: Math.round(y + (phoneH - pills.colH) / 2),
+        w: pills.colW,
+        h: pills.colH,
+      };
+    }
+  } else {
+    const x = Math.round((widthPx - phoneW) / 2);
+    if (hasPills) {
+      phone = { x, y: Math.ceil(marginPx + growPhoneY), w: phoneW, h: phoneH };
+      const bandBottom = finiteH - marginPx;
+      pillColumn = {
+        x: Math.round((widthPx - pills.colW) / 2),
+        y: Math.round(bandTop + (bandBottom - bandTop - pills.colH) / 2),
+        w: pills.colW,
+        h: pills.colH,
+      };
+    } else {
+      phone = { x, y: Math.round((finiteH - phoneH) / 2), w: phoneW, h: phoneH };
+    }
+  }
+
+  // The caption, inside the rim.
+  const innerW = phoneW - 2 * PHONE_BORDER_PX;
+  const innerH = phoneH - 2 * PHONE_BORDER_PX;
+  const faceBottomPx = phoneFaceBottomPx(innerW, innerH);
+  const capBottomBasePx = Math.round(innerH * PHONE_CAP_BOTTOM_SHARE);
+  const capFloorPx = Math.round(innerH * PHONE_CAP_BOTTOM_MIN_SHARE);
+  const capMax = Math.max(PHONE_TEXT_MIN_PX, Math.round(innerW * PHONE_CAP_MAX_SHARE));
+  const lowerThird = innerH / 3 - capBottomBasePx;
+  type Solved = { px: number; pad: number; lay: ReturnType<typeof phoneCaptionLayout> };
+  let solved: Solved | null = null;
+  let capMode: PhoneDemoMetrics["capMode"] = "lower-third";
+  const reducedPad = Math.round(innerW * PHONE_CAP_PAD_REDUCED_SHARE);
+  for (const pad of [Math.round(innerW * PHONE_CAP_PAD_SHARE), reducedPad]) {
+    for (let px = capMax; px >= PHONE_TEXT_MIN_PX && solved === null; px--) {
+      const lay = phoneCaptionLayout(p.caption, px, innerW - 2 * pad);
+      if (lay.allFit && lay.rows.length <= PHONE_CAP_MAX_LINES && lay.blockPx <= lowerThird) {
+        solved = { px, pad, lay };
+      }
+    }
+    if (solved !== null) break;
+  }
+  if (solved === null) {
+    capMode = "overflow";
+    const lineW = innerW - 2 * reducedPad;
+    // Measured with the lowest inset the block may sit at (below).
+    const belowFace = innerH - capFloorPx - faceBottomPx;
+    for (let px = capMax; px >= PHONE_TEXT_MIN_PX && solved === null; px--) {
+      const lay = phoneCaptionLayout(p.caption, px, lineW);
+      if (lay.allFit && lay.blockPx <= belowFace) solved = { px, pad: reducedPad, lay };
+    }
+    if (solved === null) {
+      solved = { px: PHONE_TEXT_MIN_PX, pad: reducedPad, lay: phoneCaptionLayout(p.caption, PHONE_TEXT_MIN_PX, lineW) };
+    }
+  }
+  const capPx = solved.px;
+  // An overflowing block sits lower, down to `capFloorPx` from the edge,
+  // where that is what keeps it off the face: the six-row dense caption at
+  // 34 px reached ~8 px over the chin in 16:9 at the usual 7% inset.
+  const capBottomPx =
+    capMode === "overflow"
+      ? Math.max(capFloorPx, Math.min(capBottomBasePx, Math.floor(innerH - faceBottomPx - solved.lay.blockPx)))
+      : capBottomBasePx;
+
+  const left = Math.min(phone.x, pillColumn?.x ?? Infinity);
+  const right = Math.max(phone.x + phone.w, pillColumn ? pillColumn.x + pillColumn.w : -Infinity);
+  const top = Math.min(phone.y, pillColumn?.y ?? Infinity);
+  const bottom = Math.max(phone.y + phone.h, pillColumn ? pillColumn.y + pillColumn.h : -Infinity);
+  return {
+    aspect,
+    marginPx,
+    phone,
+    innerW,
+    innerH,
+    faceBottomPx,
+    capPx,
+    capStrokePx: Math.round(capPx * PHONE_CAP_STROKE_EM),
+    capWordGapPx: Math.round(capPx * PHONE_CAP_WORD_GAP_EM),
+    capRowGapsPx: solved.lay.rowGaps,
+    capPadXPx: solved.pad,
+    capBottomPx,
+    emphPadXPx: Math.round(capPx * PHONE_EMPH_PAD_X_EM),
+    emphPadYPx: Math.round(capPx * PHONE_EMPH_PAD_Y_EM),
+    capRows: solved.lay.rows,
+    capMode,
+    capWordsFit: solved.lay.allFit,
+    capBlockPx: solved.lay.blockPx,
+    capTopPx: innerH - capBottomPx - solved.lay.blockPx,
+    pillPx,
+    pillWidths: pills.widths,
+    pillHeightPx: pills.pillH,
+    pillGapPx: PHONE_PILL_GAP_PX,
+    pillColumn,
+    pillAlign: aspect === "16:9" ? "left" : "center",
+    blockWidthPx: right - left,
+    blockHeightPx: bottom - top,
   };
 }

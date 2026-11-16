@@ -181,6 +181,13 @@ export class MockProvider implements LlmProvider {
         ],
         highlight: 2,
       },
+      PhoneDemo_props: {
+        caption: [{ text: "CAPTIONS" }, { text: "THAT" }, { text: "POP", emphasis: "yellow" }],
+        pills: [
+          { text: "Big and bold", state: "ok" },
+          { text: "Tiny grey text", state: "bad" },
+        ],
+      },
       CtaCard_props: { action: "comment", text: "Want the prompt?", keyword: "PROMPT" },
       BugCard_props: {
         number: 1,

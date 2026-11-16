@@ -228,6 +228,11 @@ export function revealItemTexts(
         const sub = str(card.sub);
         return sub ? [str(card.text), sub] : [str(card.text)];
       });
+    case "PhoneDemo":
+      // One item per pill — the pill is what pops in (plan Task 7), in
+      // CardRow's alternatives shape with the one text a pill shows. The
+      // caption is not an item: it is on the phone from the entrance.
+      return arr(props.pills).map((p) => [textOf(p)]);
     default:
       return null;
   }
@@ -266,6 +271,17 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
       // asked-for word, whichever is spoken first (plan Task 5). `channel`
       // is left out — a channel name is said, if at all, as an aside.
       texts = fields("text", "keyword");
+      break;
+    case "PhoneDemo":
+      // The caption is one phrase on screen, so its words are located as
+      // the phrase they are, joined; then each pill's text (plan Task 7).
+      // The scene enters on whichever is spoken first.
+      texts = [
+        arr(props.caption).map(textOf).filter((t) => t.length > 0).join(" "),
+        ...(revealItemTexts(component, props) ?? []).flatMap((item) =>
+          typeof item === "string" ? [item] : [...item],
+        ),
+      ];
       break;
     case "BugCard":
       // One card on its own timeline, no reveal items (plan Task 6): it

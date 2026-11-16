@@ -1,5 +1,6 @@
 import React from "react";
 import type { Theme } from "@ossclip/core/browser";
+import { PHONE_BORDER_PX, PHONE_SILHOUETTE } from "../fit";
 import { SHADOW } from "./shadow";
 
 /**
@@ -27,7 +28,9 @@ export const PhoneFrame: React.FC<{
         flexShrink: 0,
         overflow: "hidden",
         borderRadius: Math.round(heightPx * 0.06),
-        border: `6px solid ${theme.cardBorder}`,
+        // The rim and the silhouette's numbers are fit.ts's, so PhoneDemo's
+        // caption is laid out against the panel and face drawn here.
+        border: `${PHONE_BORDER_PX}px solid ${theme.cardBorder}`,
         background: `linear-gradient(180deg, ${theme.muted} 0%, ${theme.cardBg} 100%)`,
         boxShadow: SHADOW,
         ...style,
@@ -37,12 +40,17 @@ export const PhoneFrame: React.FC<{
           partial opacity so it reads as a person without competing with the
           caption drawn over it. viewBox is the panel's own 9:16. */}
       <svg
-        viewBox="0 0 90 160"
+        viewBox={`0 0 ${PHONE_SILHOUETTE.viewW} ${PHONE_SILHOUETTE.viewH}`}
         preserveAspectRatio="xMidYMax meet"
         aria-hidden
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0.55 }}
       >
-        <circle cx={45} cy={70} r={19} fill={theme.ink} />
+        <circle
+          cx={PHONE_SILHOUETTE.headCx}
+          cy={PHONE_SILHOUETTE.headCy}
+          r={PHONE_SILHOUETTE.headR}
+          fill={theme.ink}
+        />
         <path d="M8 160c0-30 16-52 37-52s37 22 37 52z" fill={theme.ink} />
       </svg>
       <div style={{ position: "absolute", inset: 0 }}>{children}</div>

@@ -128,6 +128,36 @@ describe("BugCard mock entries — the mock-N id family (§161, plan Task 6)", (
   });
 });
 
+describe("PhoneDemo words and pills — the word-N and pill-N id families (§161, plan Task 7)", () => {
+  const props = {
+    caption: [{ text: "YOUR", emphasis: "none" }, { text: "CAPTIONS", emphasis: "yellow" }],
+    pills: [{ text: "Big and bold", state: "ok" }],
+  };
+
+  it("are dynamic ids", () => {
+    expect(DYNAMIC_ID.test("word-0")).toBe(true);
+    expect(DYNAMIC_ID.test("pill-3")).toBe(true);
+  });
+
+  it("read and write one entry's text, leaving its enum and the rest alone", () => {
+    expect(elementTextOf("word-1", props)).toBe("CAPTIONS");
+    expect(elementTextOf("pill-0", props)).toBe("Big and bold");
+    expect(elementTextOf("word-2", props)).toBeNull();
+    expect(buildArrayPatch("word-1", props, "SUBTITLES")).toEqual({
+      caption: [{ text: "YOUR", emphasis: "none" }, { text: "SUBTITLES", emphasis: "yellow" }],
+    });
+    expect(buildArrayPatch("pill-0", props, "Huge")).toEqual({ pills: [{ text: "Huge", state: "ok" }] });
+    expect(buildArrayPatch("pill-1", props, "x")).toBeNull();
+  });
+
+  it("truncate to the schema's caps: 12 for a word, 22 for a pill", () => {
+    const word = buildArrayPatch("word-0", props, "w".repeat(20))!;
+    expect((word.caption as { text: string }[])[0]!.text).toBe("w".repeat(12));
+    const pill = buildArrayPatch("pill-0", props, "p".repeat(30))!;
+    expect((pill.pills as { text: string }[])[0]!.text).toBe("p".repeat(22));
+  });
+});
+
 describe("elementTextOf — the panel's read direction (R12 §49)", () => {
   it("reads top-level string props directly, and refuses non-strings", () => {
     expect(elementTextOf("title", { title: "SHIP IT" })).toBe("SHIP IT");

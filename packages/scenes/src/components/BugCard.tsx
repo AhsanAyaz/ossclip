@@ -22,6 +22,7 @@ import { bump, easeInOut, popScale } from "../motion";
 import { PATTERN_DEFAULT_SCENE_SEC, patternSceneSec, type RevealTiming } from "../reveal";
 import { editStyle, type ElementEdits } from "../editable";
 import { Card } from "../primitives/Card";
+import { Editable } from "../primitives/Editable";
 import { NumberBadge } from "../primitives/NumberBadge";
 import { CROSS_PATHS } from "../primitives/Pill";
 import { Sticker } from "../primitives/Sticker";
@@ -173,24 +174,6 @@ export function strikeProgress(wordLengths: readonly number[], p: number): numbe
     return at <= 0 ? 0 : at >= 1 ? 1 : at;
   });
 }
-
-/**
- * An element the editor can select: the id and the edit nudge on this box,
- * the motion on what it wraps, so the two transforms never overwrite each
- * other. Takes `editId` as a prop on purpose: the edit-id audit
- * (edit-ids-resolve.test.ts) reads a dynamic id from the call site's
- * ``editId={`mock-${i}`}``.
- */
-const Editable: React.FC<{
-  editId: string;
-  edits?: ElementEdits;
-  style?: React.CSSProperties;
-  children?: React.ReactNode;
-}> = ({ editId, edits, style, children }) => (
-  <div data-edit-id={editId} style={{ ...style, ...editStyle(edits, editId) }}>
-    {children}
-  </div>
-);
 
 /** The strike line across a box, drawn left to right to `p` (0..1). */
 const StrikeBar: React.FC<{ p: number; px: number; color: string }> = ({ p, px, color }) => {

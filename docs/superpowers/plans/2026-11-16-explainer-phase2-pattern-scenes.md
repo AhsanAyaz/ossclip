@@ -355,9 +355,9 @@ Element ids: `headline`, `sub`, `sticker`, `mock-N`. `CHECKED_FIELDS` and `COPY_
 ```ts
 export const PhoneDemoProps = z.object({
   caption: z.array(z.object({
-    text: z.string().min(1).max(14),
+    text: z.string().min(1).max(12),
     emphasis: z.enum(["none", "yellow", "orange"]).default("none"),
-  })).min(1).max(8),
+  })).min(1).max(6),
   pills: z.array(z.object({
     text: z.string().min(1).max(22),
     state: z.enum(["ok", "bad", "plain"]).default("ok"),
@@ -375,7 +375,7 @@ Element ids: `word-N` (patches `.text`), `pill-N` (patches `.text`). No control 
 - [ ] **Step 1: Failing tests:** schema (zero caption words rejected, five pills rejected), `revealItemTexts("PhoneDemo", …)` returns the pill texts in order, `entryTexts`, the id lists.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Stills:** sparse (two words, no pills) and dense (eight words at 14 characters, four pills at 22 characters); both aspects; mid-build and settled.
+- [ ] **Step 4: Stills:** sparse (two words, no pills), typical (five words, three pills) and dense (six words at 12 characters, two emphasised, four pills at 22 characters); both aspects; mid-build (1.2 s) and settled (4.5 s). The caps were 8 × 14 until the first attempt showed no two such words share a row at 34 px in a ~430 px phone (author's decision, 2026-11-16).
 - [ ] **Step 5:** `pnpm test && pnpm typecheck`; commit `feat: PhoneDemo scene`.
 
 ---

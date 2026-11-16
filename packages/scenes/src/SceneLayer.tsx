@@ -18,6 +18,7 @@ import { ClipScene } from "./components/ClipScene";
 import { CardRow } from "./components/CardRow";
 import { CtaCard } from "./components/CtaCard";
 import { BugCard } from "./components/BugCard";
+import { PhoneDemo } from "./components/PhoneDemo";
 import { compensateEdits, type ElementEdits } from "./editable";
 import { easeOutQuad, entranceExitSec } from "./motion";
 import type { RevealTiming } from "./reveal";
@@ -46,6 +47,7 @@ const COMPONENTS: Record<
   CardRow,
   CtaCard,
   BugCard,
+  PhoneDemo,
   ClipScene,
 };
 

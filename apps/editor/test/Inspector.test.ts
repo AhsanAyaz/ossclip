@@ -1355,6 +1355,7 @@ describe("Inspector — the component swap offers every card, script-only ones i
       "CardRow",
       "CtaCard",
       "BugCard",
+      "PhoneDemo",
     ]);
     expect(componentSwapOptions("CardRow")).toEqual(scriptComponentIds());
     expect(componentSwapOptions("TitleCard")).not.toContain("ClipScene");

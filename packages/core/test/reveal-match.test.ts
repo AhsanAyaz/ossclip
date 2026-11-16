@@ -240,3 +240,25 @@ describe("BugCard (§161, plan Task 6)", () => {
     expect(entryTexts("BugCard", { number: 1, headline: "Only this", sub: "" })).toEqual(["Only this"]);
   });
 });
+
+describe("PhoneDemo (§161, plan Task 7)", () => {
+  const props = {
+    caption: [{ text: "Captions" }, { text: "that", emphasis: "none" }, { text: "pop", emphasis: "yellow" }],
+    pills: [
+      { text: "Big and bold", state: "ok" },
+      { text: "Tiny grey text", state: "bad" },
+    ],
+  };
+
+  it("one reveal item per pill, in order; the caption is not an item", () => {
+    expect(revealItemTexts("PhoneDemo", props)).toEqual([["Big and bold"], ["Tiny grey text"]]);
+    expect(revealItemTexts("PhoneDemo", { caption: props.caption })).toEqual([]);
+    // A malformed pill keeps its place as "" rather than shifting the rest.
+    expect(revealItemTexts("PhoneDemo", { caption: [], pills: [7, { text: "B" }] })).toEqual([[""], ["B"]]);
+  });
+
+  it("enters on the caption, joined as the phrase it is, or on any pill; enum values are never texts", () => {
+    expect(entryTexts("PhoneDemo", props)).toEqual(["Captions that pop", "Big and bold", "Tiny grey text"]);
+    expect(entryTexts("PhoneDemo", { caption: [{ text: "Solo" }] })).toEqual(["Solo"]);
+  });
+});

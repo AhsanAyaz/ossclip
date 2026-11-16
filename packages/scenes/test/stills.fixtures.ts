@@ -184,4 +184,56 @@ export const STILL_FIXTURES: StillFixture[] = [
     },
     atSec: [1.6, 5.4],
   },
+  // PhoneDemo (plan Task 7), at 1.2 s and 4.5 s. No word timings in a
+  // still, so the phone pops at 0.25 s (settled 0.6), the emphasis boxes pop
+  // at 0.75, and the pills build from 0.75 s every 0.7 s: at 1.2 s one pill
+  // is in and the second not yet; at 4.5 s everything has settled and the
+  // phone is mid-bob. Dense is every cap: six 12-character words (two
+  // emphasised) and four 22-character pills, in capitals.
+  {
+    component: "PhoneDemo",
+    name: "sparse",
+    props: { caption: [{ text: "YOUR" }, { text: "CAPTIONS", emphasis: "yellow" }] },
+    atSec: [1.2, 4.5],
+  },
+  {
+    component: "PhoneDemo",
+    name: "typical",
+    props: {
+      caption: [
+        { text: "Captions" },
+        { text: "that" },
+        { text: "actually", emphasis: "orange" },
+        { text: "read" },
+        { text: "well" },
+      ],
+      pills: [
+        { text: "Big and bold", state: "ok" },
+        { text: "Tiny grey text", state: "bad" },
+        { text: "Two lines at most", state: "plain" },
+      ],
+    },
+    atSec: [1.2, 4.5],
+  },
+  {
+    component: "PhoneDemo",
+    name: "dense",
+    props: {
+      caption: [
+        { text: "AUTOGENERATE" },
+        { text: "TRANSCRIBING", emphasis: "yellow" },
+        { text: "UNBELIEVABLE" },
+        { text: "INSTRUCTIONS" },
+        { text: "PROGRAMMATIC", emphasis: "orange" },
+        { text: "CONFIGURABLE" },
+      ],
+      pills: [
+        { text: "WORKS ON EVERY PHONE!!", state: "ok" },
+        { text: "NEVER COVERS THE FACE!", state: "ok" },
+        { text: "NO TINY GREY WORDS NOW", state: "bad" },
+        { text: "MAX TWO WORDS PER LINE", state: "plain" },
+      ],
+    },
+    atSec: [1.2, 4.5],
+  },
 ];

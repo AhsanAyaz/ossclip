@@ -47,6 +47,8 @@ const CHECKED_FIELDS: Record<string, string[]> = {
   // an enum value inside them — a CardRow card's `icon: "robot"` — as copy.
   // So a component whose copy all lives inside objects (CardRow's `cards`)
   // has no entry at all, and its copy goes unchecked rather than mis-checked.
+  // PhoneDemo is the same case (plan Task 7): its caption words and pill
+  // labels live inside objects beside the `emphasis` and `state` enums.
   // CtaCard's `action` is an enum at the top level, so it is named out too;
   // `channel` is a proper noun the speaker need not say.
   CtaCard: ["text", "keyword"],

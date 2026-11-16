@@ -308,14 +308,15 @@ describe("graphicSlotFor: fullFrame components (explainer plan, Task 8)", () => 
 
   it("only ClipScene and the script-only cards set the flag, so no planner component's geometry moves", () => {
     const flagged = SceneComponentIdSchema.options.filter((id) => SCENE_REGISTRY[id].fullFrame);
-    expect(flagged).toEqual(["CardRow", "CtaCard", "BugCard", "ClipScene"]);
+    expect(flagged).toEqual(["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"]);
   });
 
-  it("a CardRow, a CtaCard or a BugCard gets the whole frame in every layout and aspect (plan decision 1)", () => {
+  it("a CardRow, a CtaCard, a BugCard or a PhoneDemo gets the whole frame in every layout and aspect (plan decision 1)", () => {
     for (const frame of frames) {
       expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow" }, frame)).toEqual(FULL_FRAME_SLOT);
       expect(graphicSlotFor({ layout: "full-bleed", component: "CtaCard" }, frame)).toEqual(FULL_FRAME_SLOT);
       expect(graphicSlotFor({ layout: "full-bleed", component: "BugCard" }, frame)).toEqual(FULL_FRAME_SLOT);
+      expect(graphicSlotFor({ layout: "full-bleed", component: "PhoneDemo" }, frame)).toEqual(FULL_FRAME_SLOT);
     }
   });
 });

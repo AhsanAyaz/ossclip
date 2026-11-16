@@ -11,6 +11,8 @@ import {
   FILL_TARGET,
   MAX_SCALE,
   PATTERN_MARGIN_PX,
+  PHONE_BOB_PX,
+  PHONE_PEAK_SCALE,
   bulletMetrics,
   bugCardMetrics,
   bugMockVisible,
@@ -24,6 +26,8 @@ import {
   estimateMinWidthPx,
   fitScale,
   isSelfFitting,
+  phoneDemoMetrics,
+  pillBoxPx,
   revealMetrics,
   revealRows,
 } from "../src/fit";
@@ -113,6 +117,29 @@ const BUG_DENSE = {
   sticker: "WATCH THE EDGE",
 } as const;
 
+/**
+ * PhoneDemo at every cap (plan author, 2026-11-16): six 12-character caption
+ * words, two emphasised, and four 22-character pills, in capitals. No word
+ * pair fits a row at 34 px in either phone, so this is the caption that
+ * overflows three rows.
+ */
+const PHONE_DENSE = {
+  caption: [
+    { text: "AUTOGENERATE", emphasis: "none" },
+    { text: "TRANSCRIBING", emphasis: "yellow" },
+    { text: "UNBELIEVABLE", emphasis: "none" },
+    { text: "INSTRUCTIONS", emphasis: "none" },
+    { text: "PROGRAMMATIC", emphasis: "orange" },
+    { text: "CONFIGURABLE", emphasis: "none" },
+  ],
+  pills: [
+    { text: "WORKS ON EVERY PHONE!!", state: "ok" },
+    { text: "NEVER COVERS THE FACE!", state: "ok" },
+    { text: "NO TINY GREY WORDS NOW", state: "bad" },
+    { text: "MAX TWO WORDS PER LINE", state: "plain" },
+  ],
+};
+
 /** Sparse content — the §23 complaint: a thin strip in a sea of black. */
 const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   TitleCard: { title: "SHIP IT" },
@@ -127,6 +154,7 @@ const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   CardRow: { cards: [{ text: "Draft" }, { text: "Review" }] },
   CtaCard: { action: "subscribe", text: "Subscribe" },
   BugCard: { number: 1, headline: "Captions drift", mock: "none", mockLines: [], mockFault: "struck" },
+  PhoneDemo: { caption: [{ text: "YOUR" }, { text: "CAPTIONS", emphasis: "yellow" }], pills: [] },
   // No copy to be sparse or dense with: a clip's props are a file and a length.
   ClipScene: { src: "clips/a.webm", durationSec: 4.6 },
 };
@@ -174,6 +202,7 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
   CardRow: { cards: CARD_ROW_DENSE, highlight: 2 },
   CtaCard: CTA_DENSE,
   BugCard: BUG_DENSE,
+  PhoneDemo: PHONE_DENSE,
   ClipScene: { src: "clips/a.webm", durationSec: 15 },
 };
 
@@ -1000,5 +1029,150 @@ describe("BugCard metrics (§161, plan Task 6 / Review Focus 3)", () => {
     expect(isSelfFitting("BugCard")).toBe(true);
     expect(fitScale("BugCard", DENSE.BugCard, { widthPx: 1920, heightPx: 1080 })).toBe(1);
     expect(Number.isFinite(estimateHeightPx("BugCard", DENSE.BugCard, 1080))).toBe(true);
+  });
+});
+
+describe("PhoneDemo metrics (§161, plan Task 7 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  type Input = Parameters<typeof phoneDemoMetrics>[0];
+  const TYPICAL: Input = {
+    caption: [
+      { text: "Captions" },
+      { text: "that" },
+      { text: "actually", emphasis: "orange" },
+      { text: "read" },
+      { text: "well" },
+    ],
+    pills: [
+      { text: "Big and bold", state: "ok" },
+      { text: "Tiny grey text", state: "bad" },
+      { text: "Two lines at most", state: "plain" },
+    ],
+  };
+  const ALL: [string, Input][] = [
+    ["sparse", SPARSE.PhoneDemo as unknown as Input],
+    ["typical", TYPICAL],
+    ["dense", PHONE_DENSE],
+    ["dense, no pills", { ...PHONE_DENSE, pills: [] }],
+    ["one word, one pill", { caption: [{ text: "HI" }], pills: [{ text: "OK", state: "plain" }] }],
+  ];
+
+  it("PHONE_PEAK_SCALE covers popScale's overshoot", () => {
+    let peak = 0;
+    for (let t = 0; t <= 0.35; t += 0.0005) peak = Math.max(peak, popScale(t));
+    expect(peak).toBeLessThanOrEqual(PHONE_PEAK_SCALE);
+  });
+
+  it("keeps 100 px clear on every frame: phone at its pop peak or bob, pills at theirs", () => {
+    const g = PHONE_PEAK_SCALE - 1;
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = phoneDemoMetrics(p, f.w, f.h);
+        const ph = m.phone;
+        const gy = Math.max((g / 2) * ph.h, PHONE_BOB_PX);
+        expect(ph.x - (g / 2) * ph.w, `${f.name} ${label}: phone left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(ph.x + ph.w + (g / 2) * ph.w, `${f.name} ${label}: phone right`).toBeLessThanOrEqual(
+          f.w - PATTERN_MARGIN_PX,
+        );
+        expect(ph.y - gy, `${f.name} ${label}: phone top`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(ph.y + ph.h + gy, `${f.name} ${label}: phone bottom`).toBeLessThanOrEqual(f.h - PATTERN_MARGIN_PX);
+        const col = m.pillColumn;
+        if (col === null) continue;
+        m.pillWidths.forEach((w, i) => {
+          // 16:9 pills sit on the column's left edge and pop from it; 9:16 ones are centred.
+          const left = m.pillAlign === "left" ? col.x : col.x + (col.w - w) / 2 - (g / 2) * w;
+          const right = m.pillAlign === "left" ? col.x + w * PHONE_PEAK_SCALE : col.x + (col.w + w) / 2 + (g / 2) * w;
+          expect(left, `${f.name} ${label}: pill ${i} left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(right, `${f.name} ${label}: pill ${i} right`).toBeLessThanOrEqual(f.w - PATTERN_MARGIN_PX);
+        });
+        expect(col.y - (g / 2) * m.pillHeightPx).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(col.y + col.h + (g / 2) * m.pillHeightPx).toBeLessThanOrEqual(f.h - PATTERN_MARGIN_PX);
+      }
+    }
+  });
+
+  it("the phone is 80% of a 16:9 frame where the margin allows it, never more; 50% of a 9:16 one", () => {
+    const wide = phoneDemoMetrics(PHONE_DENSE, 1920, 1080);
+    // 880 px free, the pop's 1.11 peak inside it: 792, not 864.
+    expect(wide.phone.h).toBe(Math.floor(880 / PHONE_PEAK_SCALE));
+    expect(wide.phone.h).toBeLessThan(0.8 * 1080);
+    expect(wide.phone.w).toBe(Math.round((wide.phone.h * 9) / 16));
+    expect(phoneDemoMetrics(PHONE_DENSE, 1080, 1920).phone.h).toBe(960);
+  });
+
+  it("16:9: phone and pills are one centred group with a clear gap, the pills centred on the phone", () => {
+    const m = phoneDemoMetrics(TYPICAL, 1920, 1080);
+    const col = m.pillColumn!;
+    expect(col.x - (m.phone.x + m.phone.w)).toBeGreaterThanOrEqual(80);
+    expect((m.phone.x + col.x + col.w) / 2).toBeCloseTo(960, -1);
+    expect(col.y + col.h / 2).toBeCloseTo(m.phone.y + m.phone.h / 2, -1);
+    // Pills never overlap the phone, even when the first pops with it.
+    expect(col.x).toBeGreaterThan(m.phone.x + m.phone.w + ((PHONE_PEAK_SCALE - 1) / 2) * m.phone.w);
+    // Alone, the phone is centred.
+    const alone = phoneDemoMetrics(SPARSE.PhoneDemo as unknown as Input, 1920, 1080);
+    expect(alone.pillColumn).toBeNull();
+    expect(alone.phone.x + alone.phone.w / 2).toBeCloseTo(960, 0);
+  });
+
+  it("9:16: phone at the top inside the margin, pills centred below it, never touching", () => {
+    const m = phoneDemoMetrics(TYPICAL, 1080, 1920);
+    const col = m.pillColumn!;
+    expect(m.phone.y).toBeLessThan(200);
+    expect(col.y).toBeGreaterThan(m.phone.y + m.phone.h * (1 + (PHONE_PEAK_SCALE - 1) / 2));
+    expect(col.x + col.w / 2).toBeCloseTo(540, 0);
+  });
+
+  it("type floors: pills 34 px or more; caption 34 px or more, every word whole", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = phoneDemoMetrics(p, f.w, f.h);
+        expect(m.pillPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.capPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.capWordsFit, `${f.name} ${label}`).toBe(true);
+        expect(m.capRows.flat(), `${f.name} ${label}`).toEqual(p.caption.map((_, i) => i));
+      }
+    }
+  });
+
+  it("caption: at most three rows in the lower third when the words allow it", () => {
+    for (const f of FRAMES) {
+      for (const p of [SPARSE.PhoneDemo as unknown as Input, TYPICAL]) {
+        const m = phoneDemoMetrics(p, f.w, f.h);
+        expect(m.capMode).toBe("lower-third");
+        expect(m.capRows.length).toBeLessThanOrEqual(3);
+        expect(m.capTopPx).toBeGreaterThanOrEqual((m.innerH * 2) / 3 - 1);
+      }
+    }
+    // The sparse caption reads big: far above the floor.
+    expect(phoneDemoMetrics(SPARSE.PhoneDemo as unknown as Input, 1920, 1080).capPx).toBeGreaterThan(50);
+  });
+
+  it("the dense caption overflows to a row a word, 34 px or more, inside the panel and below the face", () => {
+    for (const f of FRAMES) {
+      const m = phoneDemoMetrics(PHONE_DENSE, f.w, f.h);
+      expect(m.capMode, f.name).toBe("overflow");
+      // The largest size that still clears the face, never under the floor.
+      expect(m.capPx, f.name).toBeGreaterThanOrEqual(34);
+      expect(m.capRows, f.name).toEqual([[0], [1], [2], [3], [4], [5]]);
+      // Padding reduced first (2% of the panel rather than 7%).
+      expect(m.capPadXPx, f.name).toBeLessThan(Math.round(m.innerW * 0.07));
+      expect(m.capTopPx, `${f.name}: under the chin`).toBeGreaterThanOrEqual(m.faceBottomPx);
+      expect(m.capTopPx + m.capBlockPx + m.capBottomPx).toBe(m.innerH);
+      expect(m.capBottomPx, f.name).toBeGreaterThan(0);
+    }
+  });
+
+  it("a plain pill has no mark, so it is narrower than a marked one", () => {
+    expect(pillBoxPx("SAME", false, 34).w).toBeLessThan(pillBoxPx("SAME", true, 34).w);
+    expect(pillBoxPx("SAME", true, 34).h).toBe(pillBoxPx("SAME", false, 34).h);
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("PhoneDemo")).toBe(true);
+    expect(fitScale("PhoneDemo", DENSE.PhoneDemo, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+    expect(Number.isFinite(estimateHeightPx("PhoneDemo", DENSE.PhoneDemo, 1080))).toBe(true);
   });
 });
