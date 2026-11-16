@@ -7,7 +7,7 @@ import {
   shakePx,
   strikeProgress,
 } from "../src/components/BugCard";
-import { bugMockVisible, bugWrongIndex } from "../src/fit";
+import { bugCardMetrics, bugMockVisible, bugStickerText, bugWrongIndex } from "../src/fit";
 import { PATTERN_DEFAULT_SCENE_SEC, patternSceneSec } from "../src/reveal";
 import { ctaSceneSec } from "../src/components/CtaCard";
 import { drawsScrim } from "../src/scrim";
@@ -41,6 +41,70 @@ describe("bugWrongIndex", () => {
     expect(bugWrongIndex({ mockLines: ["a", "b"] })).toBeNull();
     expect(bugWrongIndex({ mockLines: ["a", "b"], mockWrong: 2 })).toBeNull();
     expect(bugWrongIndex({ mockLines: ["a", ""], mockWrong: 1 })).toBeNull();
+  });
+});
+
+describe("bugStickerText", () => {
+  it("is the sticker, or null when there is none", () => {
+    expect(bugStickerText({ sticker: "WATCH THE EDGE", sub: "and viewers notice" })).toBe("WATCH THE EDGE");
+    expect(bugStickerText({ sticker: "NO RETRY LOOP!" })).toBe("NO RETRY LOOP!");
+    expect(bugStickerText({ sub: "x" })).toBeNull();
+    expect(bugStickerText({ sticker: "" })).toBeNull();
+  });
+
+  it("drops a sticker that repeats the sub, ignoring case and surrounding punctuation", () => {
+    // The acceptance run's planner wrote the consequence twice (§161).
+    expect(bugStickerText({ sub: "wipes captions", sticker: "WIPES CAPTIONS" })).toBeNull();
+    expect(bugStickerText({ sub: "Wipes captions.", sticker: "“wipes captions!”" })).toBeNull();
+    expect(bugStickerText({ sub: "  wipes captions ", sticker: "wipes captions" })).toBeNull();
+    // Only the whole of it: a sticker that shares words is its own beat.
+    expect(bugStickerText({ sub: "wipes captions", sticker: "WIPED" })).toBe("WIPED");
+    expect(bugStickerText({ sub: "wipes the captions", sticker: "wipes captions" })).toBe("wipes captions");
+  });
+
+  it("a dropped sticker reserves no room in the layout", () => {
+    const p = {
+      number: 1,
+      headline: "Cut word",
+      sub: "wipes captions",
+      mock: "none" as const,
+      mockLines: [],
+      mockFault: "struck" as const,
+    };
+    const none = bugCardMetrics(p, 1920, 1080);
+    expect(bugCardMetrics({ ...p, sticker: "Wipes captions!" }, 1920, 1080)).toEqual(none);
+    expect(none.sticker).toBeNull();
+  });
+});
+
+describe("a lines mock with mockFault 'clipped'", () => {
+  // The acceptance run's planner wrote `mock: "lines"` with
+  // `mockFault: "clipped"` (§161). Clipping is a caption fault; a code
+  // line has no edge to run off, so it must play as a marked line.
+  const lines = {
+    number: 1,
+    headline: "Captions jump",
+    mock: "lines" as const,
+    mockLines: ["word by word", "jump left"],
+    mockWrong: 1,
+  };
+
+  it("lays out exactly as struck: the wrong line marked, no clipped row", () => {
+    const clipped = bugCardMetrics({ ...lines, mockFault: "clipped" }, 1920, 1080);
+    expect(clipped).toEqual(bugCardMetrics({ ...lines, mockFault: "struck" }, 1920, 1080));
+    expect(clipped.wrongIndex).toBe(1);
+    expect(clipped.gutterPx).toBeGreaterThan(0);
+    expect(clipped.clipRow).toBe(-1);
+  });
+
+  it("plays its fault: the line turns red and shakes", () => {
+    const m = bugCardMetrics({ ...lines, mockFault: "clipped" }, 1920, 1080);
+    const tl = bugTimeline({ sub: false, mock: m.mockPanel !== null, fault: m.wrongIndex !== null, sticker: false }, 6);
+    expect(tl.faultSec).not.toBeNull();
+    // A quarter of the shake's 0.1 s period in: the swing's first peak.
+    const s = bugFrameState(tl.faultSec! + 0.025, tl, true);
+    expect(s.faultOn).toBe(true);
+    expect(s.shakePx).toBeGreaterThan(0);
   });
 });
 

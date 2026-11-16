@@ -17,7 +17,10 @@ import {
   ScriptComponentIdSchema,
   ScriptOnlyComponentIdSchema,
 } from "../src/scene-schema";
-import { BeatSheetSchema } from "../src/producer/beats";
+import { BeatSheetSchema, type ScriptMoment } from "../src/producer/beats";
+import type { LlmProvider } from "../src/producer/provider";
+import { generateScenes } from "../src/producer/scene-props";
+import type { Transcript } from "../src/schema";
 import { ScriptPlanSchema } from "../src/producer/script-plan";
 import { scalarPropControls } from "../src/scene-props-controls";
 
@@ -328,6 +331,67 @@ describe("scene registry", () => {
       const text = JSON.stringify(z.toJSONSchema(llmPropsSchema("CardRow")));
       for (const k of ["reveal", "pacing", "revealSpeed", "entrance"]) expect(text).not.toContain(`"${k}"`);
       expect(text).toContain("cards");
+    });
+
+    // The acceptance run (§161): the planner picked the right card every time
+    // and wrote weak props — no `mockWrong`, a "channel" placeholder. The
+    // field notes are `.describe()`s, which reach the model only because the
+    // props prompt embeds `z.toJSONSchema` of the LLM-facing copy.
+    const MOCK_WRONG_NOTE =
+      "Index of the entry in mockLines that shows the fault. Always set it when mock is not 'none'.";
+
+    it("the script-mode BugCard schema the LLM is shown carries the mockWrong note", () => {
+      const json = z.toJSONSchema(llmPropsSchema("BugCard", "script")) as {
+        properties: Record<string, { description?: string }>;
+      };
+      expect(json.properties.mockWrong!.description).toBe(MOCK_WRONG_NOTE);
+      expect(JSON.stringify(json)).toContain(MOCK_WRONG_NOTE);
+    });
+
+    it("the note reaches the props prompt itself (batch path)", async () => {
+      const transcript: Transcript = {
+        language: "en",
+        words: Array.from({ length: 8 }, (_, i) => ({ text: `w${i}`, start: i * 0.5, end: i * 0.5 + 0.4 })),
+      };
+      const moment = (startWord: number): ScriptMoment => ({
+        startWord,
+        endWord: startWord + 2,
+        purpose: "p",
+        onScreenCopy: "COPY",
+        sceneKind: "BugCard",
+      });
+      const prompts: string[] = [];
+      const provider: LlmProvider = {
+        name: "fake",
+        usage: [],
+        async complete<T>(req: { user: string; schema: z.ZodType<T> }): Promise<T> {
+          prompts.push(req.user);
+          return req.schema.parse({
+            scenes: [0, 1].map((index) => ({ index, props: { number: 1, headline: "X" } })),
+          });
+        },
+      };
+      await generateScenes(provider, [moment(0), moment(4)], transcript, { mode: "script" });
+      expect(prompts[0]).toContain(JSON.stringify(MOCK_WRONG_NOTE));
+    });
+
+    it("the field notes leave the Inspector's derived controls as they were", () => {
+      expect(scalarPropControls("BugCard")).toEqual([
+        { key: "number", kind: "number", min: 1, max: 9, step: 1, fallback: 1 },
+        { key: "mock", kind: "enum", options: ["none", "caption", "lines"] },
+        { key: "mockWrong", kind: "number", min: 0, max: 3, step: 1, fallback: 0, optional: true, unsetIsNone: true },
+        { key: "mockFault", kind: "enum", options: ["struck", "clipped"] },
+      ]);
+      expect(scalarPropControls("CardRow").map((c) => c.key)).toEqual([
+        "highlight",
+        "reveal",
+        "pacing",
+        "revealSpeed",
+        "entrance",
+      ]);
+      expect(scalarPropControls("CtaCard")).toEqual([
+        { key: "action", kind: "enum", options: ["comment", "subscribe", "link"] },
+      ]);
     });
   });
 });

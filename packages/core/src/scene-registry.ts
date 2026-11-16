@@ -235,6 +235,18 @@ export const ClipSceneProps = z.object({
   muted: z.boolean().default(false),
 });
 
+/*
+ * Field notes on the four script-only cards (§161). The acceptance run on
+ * real footage picked the right card for every plain cue and wrote weak
+ * props: a `channel` of "channel", a `BugCard` with no `mockWrong`, a
+ * `highlight: 0` the speaker never made. A `.describe()` reaches the model
+ * because the props prompt embeds `z.toJSONSchema` of the LLM-facing copy
+ * (`llmPropsSchema`). Only these four carry new notes: their schemas are
+ * shown in script runs alone, while a note on one of the nine planner
+ * components would change the frozen props prompt every run sees (G6,
+ * `llm-props-schemas.pre-reveal.json`).
+ */
+
 /**
  * Two to four parallel things as a row of cards (§161, plan Task 4): steps,
  * tools, options, one card each in spoken order. Script-only. Each card is
@@ -246,15 +258,32 @@ export const CardRowProps = z.object({
   cards: z
     .array(
       z.object({
-        text: z.string().min(1).max(18),
-        sub: z.string().max(24).optional(),
-        icon: z.enum(ICON_NAMES).default("none"),
+        text: z
+          .string()
+          .min(1)
+          .max(18)
+          .describe("The item's name in one to three words, as the speaker says it."),
+        sub: z
+          .string()
+          .max(24)
+          .optional()
+          .describe("A short technical tag such as a command or file name. Omit when the speaker gives none."),
+        icon: z
+          .enum(ICON_NAMES)
+          .default("none")
+          .describe("A plain icon that fits the item; 'none' when nothing fits."),
       }),
     )
     .min(2)
     .max(4),
   /** The chosen card: drawn in `accent` and bumped once the row has landed. */
-  highlight: z.number().int().min(0).max(3).optional(),
+  highlight: z
+    .number()
+    .int()
+    .min(0)
+    .max(3)
+    .optional()
+    .describe("Index of the one card the speaker singles out. Omit when no card is singled out."),
   ...RevealPropsShape,
 });
 
@@ -270,11 +299,22 @@ export const CardRowProps = z.object({
 export const CtaCardProps = z.object({
   action: z.enum(["comment", "subscribe", "link"]),
   /** The headline; for a comment with no `keyword`, the comment itself. */
-  text: z.string().min(1).max(40),
+  text: z.string().min(1).max(40).describe("The ask, in the speaker's words."),
   /** The asked-for word: the comment typed, or the link shown. */
-  keyword: z.string().max(16).optional(),
+  keyword: z
+    .string()
+    .max(16)
+    .optional()
+    .describe(
+      "For 'comment': the exact word the viewer is asked to comment. For 'link': the link text. " +
+        "Omit for 'subscribe'.",
+    ),
   /** Beside the Subscribe button; absent, the row is the button alone. */
-  channel: z.string().max(24).optional(),
+  channel: z
+    .string()
+    .max(24)
+    .optional()
+    .describe("The channel's name, only when the speaker says it. Omit otherwise; never write a placeholder."),
 });
 
 /**
@@ -291,18 +331,57 @@ export const CtaCardProps = z.object({
  * what the text panel holds there at the 34 px floor (`bugCardMetrics`).
  */
 export const BugCardProps = z.object({
-  number: z.number().int().min(1).max(9),
-  headline: z.string().min(1).max(40),
+  number: z
+    .number()
+    .int()
+    .min(1)
+    .max(9)
+    .describe("The number the speaker gives this problem; 1 when they give none."),
+  headline: z.string().min(1).max(40).describe("The problem in a few words."),
   /** The consequence, under the headline in `danger`. */
-  sub: z.string().max(40).optional(),
-  mock: z.enum(["none", "caption", "lines"]).default("none"),
+  sub: z
+    .string()
+    .max(40)
+    .optional()
+    .describe("The consequence, in the speaker's words. Do not repeat it in sticker."),
+  mock: z
+    .enum(["none", "caption", "lines"])
+    .default("none")
+    .describe(
+      "'caption' shows one caption with a faulty word; 'lines' shows up to four lines of text or code " +
+        "with one faulty line; 'none' when neither fits.",
+    ),
   /** Caption words (`caption`) or code lines (`lines`), in order. */
-  mockLines: z.array(z.string().max(32)).max(4).default([]),
+  mockLines: z
+    .array(z.string().max(32))
+    .max(4)
+    .default([])
+    .describe(
+      "For 'caption': the words of one short caption, one word per entry, in order. " +
+        "For 'lines': the lines. Leave empty when mock is 'none'.",
+    ),
   /** The entry of `mockLines` that is wrong; absent or out of range marks none. */
-  mockWrong: z.number().int().min(0).max(3).optional(),
-  /** How a wrong caption word fails: struck through, or cut off at the panel's edge. */
-  mockFault: z.enum(["struck", "clipped"]).default("struck"),
-  sticker: z.string().max(14).optional(),
+  mockWrong: z
+    .number()
+    .int()
+    .min(0)
+    .max(3)
+    .optional()
+    .describe("Index of the entry in mockLines that shows the fault. Always set it when mock is not 'none'."),
+  /**
+   * How a wrong caption word fails: struck through, or cut off at the
+   * panel's edge. A `lines` mock never reads it (BugCard's `LinesMock`).
+   */
+  mockFault: z
+    .enum(["struck", "clipped"])
+    .default("struck")
+    .describe("'struck' crosses the faulty entry out; 'clipped' cuts it off at the edge and applies to 'caption' only."),
+  /** Not drawn when it repeats `sub` (scenes' `bugStickerText`). */
+  sticker: z
+    .string()
+    .max(14)
+    .optional()
+    .describe("One or two words that close the beat, such as a verdict the speaker says. Omit when there is none."),
 });
 
 /**
@@ -325,21 +404,31 @@ export const PhoneDemoProps = z.object({
       z.object({
         text: z.string().min(1).max(12),
         /** An emphasised word sits in ink on a tilted yellow or orange box. */
-        emphasis: z.enum(["none", "yellow", "orange"]).default("none"),
+        emphasis: z
+          .enum(["none", "yellow", "orange"])
+          .default("none")
+          .describe("Mark at most two words; 'none' for the rest."),
       }),
     )
     .min(1)
-    .max(6),
+    .max(6)
+    .describe("The caption shown on the phone: two to six words from the spoken line, one word per entry, in order."),
   pills: z
     .array(
       z.object({
         text: z.string().min(1).max(22),
         /** ok: success border and a tick; bad: danger border and a cross; plain: accent2, no mark. */
-        state: z.enum(["ok", "bad", "plain"]).default("ok"),
+        state: z
+          .enum(["ok", "bad", "plain"])
+          .default("ok")
+          .describe(
+            "'bad' for something described as wrong, 'ok' for something described as right, 'plain' otherwise.",
+          ),
       }),
     )
     .max(4)
-    .default([]),
+    .default([])
+    .describe("One short label per point the speaker makes, in spoken order."),
   ...RevealPropsShape,
 });
 

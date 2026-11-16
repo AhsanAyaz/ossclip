@@ -16,6 +16,7 @@ import {
   BUG_SUB_GAP_PX,
   BUG_SUB_LH,
   bugCardMetrics,
+  bugStickerText,
   type BugCardMetrics,
 } from "../fit";
 import { bump, easeInOut, popScale } from "../motion";
@@ -311,7 +312,12 @@ const CaptionMock: React.FC<{
   );
 };
 
-/** The lines mock: mono, one entry a line, the wrong one turning red with a cross and a shake. */
+/**
+ * The lines mock: mono, one entry a line, the wrong one turning red with a
+ * cross and a shake. It never reads `mockFault`: clipping is a caption's
+ * fault, so `lines` with `clipped` (the acceptance run's planner wrote it,
+ * §161) plays as a marked line, the same as `struck`.
+ */
 const LinesMock: React.FC<{
   lines: readonly string[];
   m: BugCardMetrics;
@@ -405,7 +411,8 @@ export const BugCard: React.FC<{
   const explainer = theme.motion === "explainer";
   const t = frame / fps;
   const sub = props.sub ? props.sub : null;
-  const sticker = props.sticker ? props.sticker : null;
+  // Not a sticker that repeats the sub: the metric reserves no box for one.
+  const sticker = bugStickerText(props);
   const tl = bugTimeline(
     { sub: sub !== null, mock: m.mockPanel !== null, fault: m.wrongIndex !== null, sticker: sticker !== null },
     patternSceneSec(fps, timing),

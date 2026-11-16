@@ -1254,6 +1254,22 @@ export function bugWrongIndex(p: Pick<BugCardInput, "mockLines" | "mockWrong">):
   return (p.mockLines[i] ?? "").trim().length > 0 ? i : null;
 }
 
+/** Case and surrounding whitespace and punctuation off, so "Wipes captions." and "WIPES CAPTIONS!" compare equal. */
+const stickerKey = (s: string): string => s.toLowerCase().replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "");
+
+/**
+ * The sticker as drawn, or null for none: an empty one, or one that repeats
+ * `sub`, ignoring case and surrounding punctuation. The acceptance run's
+ * planner (§161) wrote the consequence into both, and a sticker that says
+ * the line under the headline again is not a beat. One function for the
+ * metric and the component, so a dropped sticker reserves no room either.
+ */
+export function bugStickerText(p: Pick<BugCardInput, "sub" | "sticker">): string | null {
+  if (!p.sticker) return null;
+  if (p.sub && stickerKey(p.sticker) === stickerKey(p.sub)) return null;
+  return p.sticker;
+}
+
 /**
  * The most a panel (and the badge inside it) is drawn at: `popScale`'s
  * overshoot, a hair over 1.10, rounded up as `CTA_PEAK_SCALE` is. The two
@@ -1541,7 +1557,8 @@ export function bugCardMetrics(p: BugCardInput, widthPx: number, heightPx: numbe
 
   // The sticker's box first: the panels' height budget reserves what of it
   // hangs below them.
-  const stickerText = p.sticker ? p.sticker.toUpperCase() : null;
+  const drawn = bugStickerText(p);
+  const stickerText = drawn !== null ? drawn.toUpperCase() : null;
   const sPx = BUG_STICKER_PX;
   const sW = stickerText
     ? Math.ceil(ctaDisplayWidthEm(stickerText) * sPx + 2 * Math.round(sPx * 0.55) + 2 * STICKER_BORDER_PX)
