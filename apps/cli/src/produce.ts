@@ -175,6 +175,10 @@ import {
   scanSourceText,
   ThemeSchema,
   type Theme,
+  LOOK_IDS,
+  LookSchema,
+  lookTheme,
+  type Look,
   appendUsageRun,
   OverrideDocSchema,
   CLIP_SNAP_TOLERANCE,
@@ -1043,6 +1047,12 @@ export interface ProduceOptions {
    */
   captionTheme?: CaptionThemeId;
   /**
+   * `--look <name>` (design §2.2): a theme preset under the config's
+   * `theme`. Undefined when not typed, so the config's `look` can supply it
+   * (`resolveLook`).
+   */
+  look?: Look;
+  /**
    * `--choreograph-captions` / `--no-choreograph-captions` tri-state: true/false
    * when TYPED, undefined when not so the config's `choreographCaptions` key can supply the default.
    */
@@ -1701,35 +1711,76 @@ export function resolveWhisperLanguage(
 }
 
 /**
- * The BASE theme a run starts from: the config's `theme` merged over
- * `defaultTheme` (F6, 2026-08-16). Precedence overall is overrides.json >
- * config theme > defaultTheme — this helper builds the bottom two layers,
- * and it must feed BOTH `resolveTheme`'s base and props.baseTheme: the
- * editor re-applies overrides onto `baseTheme`, so a reset there must fall
- * back to the user's global colors, not to factory defaults.
+ * The BASE theme a run starts from: the config's `theme` merged over the
+ * look over `defaultTheme` (F6, 2026-08-16; the look layer, design §2.2).
+ * Precedence overall is overrides.json > config theme > look > defaultTheme
+ * — this helper builds the bottom three layers, and it must feed BOTH
+ * `resolveTheme`'s base and props.baseTheme: the editor re-applies overrides
+ * onto `baseTheme`, so a reset there must fall back to the user's global
+ * colors and the run's look, not to factory defaults.
  *
  * All-or-nothing: `ThemeSchema.partial().safeParse` — one malformed key (a
  * numeric `accent`, an unknown-shaped value) voids the WHOLE config theme
  * with a warning naming the issue, because half-applying a palette the
- * schema rejected would render colors the user never chose. The warning is
- * RETURNED, not printed — pure, so the precedence matrix is testable without
- * a config file or a captured console.
+ * schema rejected would render colors the user never chose. Only the config
+ * layer is voided: the look was asked for on its own and is already a parsed
+ * `Look`, so dropping it too would render a video nobody chose either. The
+ * warning is RETURNED, not printed — pure, so the precedence matrix is
+ * testable without a config file or a captured console.
  */
-export function configuredBaseTheme(cfgTheme: unknown): { theme: Theme; warning?: string } {
-  if (cfgTheme === undefined) return { theme: defaultTheme };
+export function configuredBaseTheme(
+  cfgTheme: unknown,
+  look: Look = "default",
+): { theme: Theme; warning?: string } {
+  // The default look is an empty layer, so this IS defaultTheme for a run
+  // without a look — the same object every pre-look run started from.
+  const lookBase: Theme =
+    look === "default" ? defaultTheme : ThemeSchema.parse({ ...defaultTheme, ...lookTheme(look) });
+  if (cfgTheme === undefined) return { theme: lookBase };
   const parsed = ThemeSchema.partial().strict().safeParse(cfgTheme);
   if (!parsed.success) {
     return {
-      theme: defaultTheme,
+      theme: lookBase,
       warning:
         `⚠ config theme ignored — ${parsed.error.issues
           .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
           .join("; ")}`,
     };
   }
+  // Only the keys the user WROTE: zod 4's `.partial()` still fills every
+  // field's default, so `parsed.data` for `{accent}` carries the factory
+  // `accent2`, `fonts`, `motion`… and spreading it whole would put the
+  // defaults back over the look (harmless before looks existed, when the
+  // layer underneath WAS the defaults). The values are still the parsed ones.
+  const written = cfgTheme as Record<string, unknown>;
+  const userTokens = Object.fromEntries(
+    Object.entries(parsed.data).filter(([key]) => Object.hasOwn(written, key)),
+  );
   // Re-parse the merge so zod's defaults fill anything the partial left out —
   // the same construction defaultTheme itself uses.
-  return { theme: ThemeSchema.parse({ ...defaultTheme, ...parsed.data }) };
+  return { theme: ThemeSchema.parse({ ...lookBase, ...userTokens }) };
+}
+
+/**
+ * The run's look: a typed `--look` beats the config's `look`, and neither
+ * means "default". Unlike the config `theme` (one warning, then the
+ * defaults), a bad config look THROWS naming the key (plan Task 1): a look is
+ * one deliberate choice, not a palette of independent tokens, and quietly
+ * rendering the default look would spend a whole render on the video the
+ * user configured away from. The config is only read when the flag is
+ * absent, so a broken file key never blocks an explicit `--look`.
+ */
+export function resolveLook(flag: Look | undefined, config: unknown): Look {
+  if (flag !== undefined) return flag;
+  if (config === undefined) return "default";
+  const parsed = LookSchema.safeParse(config);
+  if (!parsed.success) {
+    throw new Error(
+      `config look must be one of ${LOOK_IDS.join(", ")}, got ${JSON.stringify(config)} ` +
+        `— fix "look" in ~/.ossclip/config.json or pass --look`,
+    );
+  }
+  return parsed.data;
 }
 
 /**
@@ -2938,10 +2989,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   );
   if (llmEffortWarning) console.log(llmEffortWarning);
 
-  // The run's base theme (F6): config theme over defaultTheme, resolved once
-  // and used for BOTH resolveTheme's base and props.baseTheme below — the
-  // editor's reset must land on the user's global colors, not the factory's.
-  const { theme: configBaseTheme, warning: themeWarning } = configuredBaseTheme(cfg.theme);
+  // The run's base theme (F6): config theme over the look over defaultTheme,
+  // resolved once and used for BOTH resolveTheme's base and props.baseTheme
+  // below — the editor's reset must land on the user's global colors and the
+  // run's look, not the factory's.
+  const look = resolveLook(opts.look, cfg.look);
+  if (look !== "default") {
+    console.log(`▸ look: ${look}${opts.look === undefined ? " (from config; --look overrides)" : ""}`);
+  }
+  const { theme: configBaseTheme, warning: themeWarning } = configuredBaseTheme(cfg.theme, look);
   if (themeWarning) console.log(themeWarning);
 
   // Folder input (folder-input-brief.md, 2026-08-05 field request). The
@@ -7041,6 +7097,9 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
     sfx: sfxOn,
     sfxLevel,
     captionTheme: captionThemeRes.baseTheme,
+    // RESOLVED (flag or config): a look from config must replay as the same
+    // look after that config is edited — --caption-theme's pin, same reason.
+    look,
     choreographCaptions: choreographCaptionsOn,
     // The SOURCE script, even on a Re-plan from the workdir copy: its folder
     // is where `clip:` paths resolve (recordedProduceArgs has the why).

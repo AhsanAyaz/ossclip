@@ -54,6 +54,12 @@ import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } 
  * the graphics answer and hide the --clip extra, a dependency design nobody
  * has made. The day the wizard grows a file prompt, this is its first user.
  *
+ * --look (2026-11-16, explainer phase 2, design §2.2) stays flags-only, the
+ * --color-grade shape: a channel's look is a durable preference, set once as
+ * `look` in ~/.ossclip/config.json, and the run it exists for is the
+ * --script explainer flow above, itself flags-only. A menu entry would offer
+ * a preset whose only preview is a full render.
+ *
  * --library-dir (2026-11-05, hidden) is not offered either: it is a
  * test-isolation seam pointing a fresh run at a temp overlay library
  * (overlay-library ruling R4). A real library lives in ~/.ossclip/library and

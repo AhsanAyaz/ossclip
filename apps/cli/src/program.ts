@@ -8,11 +8,14 @@ import {
   CaptionThemeIdSchema,
   CleanupLevelSchema,
   COVER_MAX_WORDS,
+  LOOK_IDS,
+  LookSchema,
   RESOLUTION_CHOICES,
   ResolutionChoiceSchema,
   PlannerComponentIdSchema,
   SfxLevelSchema,
   type CaptionThemeId,
+  type Look,
 } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
@@ -83,6 +86,19 @@ export function captionThemeFlag(v: string): CaptionThemeId {
     throw new InvalidArgumentError(
       `--caption-theme wants one of ${CAPTION_THEME_IDS.join(", ")}, got "${v}"`,
     );
+  }
+  return parsed.data;
+}
+
+/**
+ * `--look <name>` → a theme preset (design §2.2). `captionThemeFlag`'s
+ * shape: a typo'd `--look explainr` fails naming the looks instead of
+ * rendering the default look the user was trying to leave.
+ */
+export function lookFlag(v: string): Look {
+  const parsed = LookSchema.safeParse(v.trim());
+  if (!parsed.success) {
+    throw new InvalidArgumentError(`--look wants one of ${LOOK_IDS.join(", ")}, got "${v}"`);
   }
   return parsed.data;
 }
@@ -585,6 +601,14 @@ export function buildProgram(): Command {
       "visual caption preset: default | founder | punch | boxed | minimal (config key: \"captionTheme\")",
       captionThemeFlag,
     )
+    // No commander default: untyped stays undefined so the config's `look`
+    // can supply it (resolveLook in produce.ts).
+    .option(
+      "--look <name>",
+      "colours, fonts and motion preset: default | explainer (config key: \"look\"; " +
+        "the config's \"theme\" still wins key by key)",
+      lookFlag,
+    )
     .option(
       "--choreograph-captions",
       "use the fast LLM to group captions into semantic phrases and emphasize key words (config key: \"choreographCaptions\")",
@@ -841,6 +865,8 @@ export function buildProgram(): Command {
           // the pin site, not coerced in transit.
           captions: opts.captions,
           captionTheme: opts.captionTheme,
+          // Parsed by lookFlag; undefined = "not typed" so the config decides.
+          look: opts.look,
           choreographCaptions: opts.choreographCaptions,
           // The reunited tri-state (jumpCutsFlag above): undefined = "not
           // typed" = auto, the face-only default.

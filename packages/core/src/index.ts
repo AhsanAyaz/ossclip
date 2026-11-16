@@ -1,5 +1,6 @@
 export * from "./schema";
 export * from "./scene-schema";
+export * from "./look";
 export * from "./overrides";
 export * from "./scene-registry";
 export * from "./assemble";

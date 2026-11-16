@@ -308,6 +308,35 @@ export const ThemeSchema = z.object({
     .string()
     .default("'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif"),
   fontMono: z.string().default("'SF Mono', 'Cascadia Code', Consolas, monospace"),
+  // The explainer look's extra roles (design §2.2). Each default is the
+  // colour that role is drawn with today — `accent2`/`highlight` the accent,
+  // `info` the muted grey, `ink` the background, the terminal pair the card —
+  // so a theme without them (every render-props written before they existed,
+  // and every run without `--look`) renders the same pixels (plan G6).
+  /** Second accent: the playbook's blue beside its orange `accent`. */
+  accent2: z.string().default("#FFE14D"),
+  /** The playbook's yellow, its own role because the explainer `accent` is
+   * orange and a yellow mark must not turn orange with it. */
+  highlight: z.string().default("#FFE14D"),
+  /** The playbook's cyan, distinct from the `muted` grey. */
+  info: z.string().default("#9A9AA3"),
+  /** The playbook's near-black ink, distinct from the slate `bg`. */
+  ink: z.string().default("#0B0B0E"),
+  terminalBg: z.string().default("#15151B"),
+  terminalBar: z.string().default("#15151B"),
+  /**
+   * Gates loading the bundled font files. "system" (the default) loads
+   * nothing, so every other run keeps today's font resolution; only the
+   * explainer look turns it to "bundled". An enum, not a boolean, so a
+   * hand-edited typo fails the parse instead of reading as off.
+   */
+  fonts: z.enum(["system", "bundled"]).default("system"),
+  /**
+   * Gates the explainer motion (typed terminal lines, count-up numbers). On
+   * the theme rather than a component prop because a new prop on an
+   * existing component changes the frozen planner schema (plan G6, decision 4).
+   */
+  motion: z.enum(["classic", "explainer"]).default("classic"),
 });
 export type Theme = z.infer<typeof ThemeSchema>;
 export const defaultTheme: Theme = ThemeSchema.parse({});

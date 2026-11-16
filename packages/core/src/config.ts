@@ -129,6 +129,15 @@ export interface OssclipConfig {
    */
   theme?: Partial<Theme>;
   /**
+   * `--look`'s default for this machine (`default` or `explainer`, design
+   * §2.2) — a preset layered UNDER `theme` above, so `theme` restyles a look
+   * rather than replacing it. A string here, validated at the consumer
+   * (`resolveLook` in produce.ts), where a bad value is an error naming the
+   * key: a look silently falling back to the default renders a different
+   * video than the one configured.
+   */
+  look?: string;
+  /**
    * Color grade applied to every produce run — the `ColorGradeSchema` shape
    * (`{"preset": "talking-head"}` or `{"lut": "kodak.cube"}`, plus optional
    * intensity/exposure/temperature/saturation/contrast tweaks), for a channel
@@ -382,6 +391,10 @@ export function resolveConfig(
     // warning naming the problem and the safe default, never a coercion.
     dictionary: fileCfg.dictionary,
     theme: fileCfg.theme,
+    // File-only beside the theme it sits under; validated by `resolveLook` in
+    // produce.ts. Copied here or it reads as unset forever (the postizUrl
+    // lesson below).
+    look: fileCfg.look,
     // File-only, the `theme` posture, and NO env spelling (a grade is a
     // structured object no env var can carry honestly): validated at the
     // consumer (`resolveProductionColorGrade` in produce.ts via

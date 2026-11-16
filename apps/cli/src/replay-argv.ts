@@ -22,7 +22,7 @@
 import type { JumpCutsMode } from "./produce";
 // Type-only for the same reason: the level's own zod enum lives in core's
 // producer half, and this module must stay a pure argv builder.
-import type { CaptionThemeId, SfxLevel } from "@ossclip/core";
+import type { CaptionThemeId, Look, SfxLevel } from "@ossclip/core";
 
 let stashed: string[] | null = null;
 
@@ -80,6 +80,8 @@ export function recordedProduceArgs(pins: {
   sfxLevel?: SfxLevel;
   /** The RESOLVED base `--caption-theme` (flag or config, pre-override). */
   captionTheme?: CaptionThemeId;
+  /** The RESOLVED `--look` (flag or config), design §2.2. */
+  look?: Look;
   /** The RESOLVED `--choreograph-captions` switch (flag or config). */
   choreographCaptions?: boolean;
   /** The script's SOURCE path, absolute (`--script`, explainer plan Task 8). */
@@ -243,6 +245,14 @@ export function recordedProduceArgs(pins: {
     !args.includes("--caption-theme")
   ) {
     args.push("--caption-theme", pins.captionTheme);
+  }
+  // The look, --caption-theme's pin exactly: `look` is a config key, so a
+  // config-supplied explainer look left unpinned would replay in the default
+  // look after a config edit. "default" stays unpinned like the caption
+  // theme's — the accepted cost is an old default-look record GAINING a look
+  // replayed under a later config-on.
+  if (pins.look !== undefined && pins.look !== "default" && !args.includes("--look")) {
+    args.push("--look", pins.look);
   }
   // The script pin REPLACES a typed value instead of guarding on `includes`
   // like the pins above, because the value that must be recorded is not
