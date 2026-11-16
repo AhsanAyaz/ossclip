@@ -3,12 +3,12 @@ import {
   CAPTION_THEME_IDS,
   cutRangeToOldClock,
   LayoutSchema,
-  plannerComponentIds,
+  scriptComponentIds,
   scalarPropControls,
   SCENE_REGISTRY,
   splitRootId,
   type CaptionThemeId,
-  type PlannerComponentId,
+  type ScriptComponentId,
   type SceneComponentId,
   type SceneCue,
   type Theme,
@@ -33,7 +33,7 @@ import {
   type OverlayTrayRequest,
 } from "./overlayLane";
 import { handPlacedStartRect } from "./overlayBox";
-import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
+import { DYNAMIC_ID, buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
 /** What planned this video and what it cost (R21 §104) — `/api/usage`'s
  * shape, read straight off the workdir's own artefacts. */
@@ -616,15 +616,18 @@ const ThemeField: React.FC<{
  * What the Component dropdown may swap a scene to, or null when it offers no
  * swap at all (explainer plan Task 7).
  *
- * Planner components only, the same list every LLM menu reads: ClipScene is
- * in the scene-id enum, but a card cannot become a clip (there is no clip
- * file to play) and a clip cannot become a card (the clip would be thrown
- * away for default copy). So a clip shows no swap control, and a card's
- * dropdown never lists the clip. `resolveSwappedProps` refuses the same
- * swaps for a hand-edited overrides.json.
+ * Every card, the script planner's list (`scriptComponentIds()`): the nine
+ * plus the script-only pattern scenes, offered in EVERY project, script or
+ * not (§161, plan decision 5) — the beat sheet never sees them, but an
+ * author may still pick one. ClipScene is in the scene-id enum, but a card
+ * cannot become a clip (there is no clip file to play) and a clip cannot
+ * become a card (the clip would be thrown away for default copy). So a clip
+ * shows no swap control, and a card's dropdown never lists the clip.
+ * `resolveSwappedProps` refuses the same swaps for a hand-edited
+ * overrides.json.
  */
-export function componentSwapOptions(component: SceneComponentId): PlannerComponentId[] | null {
-  return SCENE_REGISTRY[component].plannerSelectable === false ? null : plannerComponentIds();
+export function componentSwapOptions(component: SceneComponentId): ScriptComponentId[] | null {
+  return SCENE_REGISTRY[component].plannerSelectable === false ? null : scriptComponentIds();
 }
 
 /**
@@ -992,7 +995,8 @@ export const Inspector: React.FC<InspectorProps> = ({
     // own, so the single-line input left TerminalMock the one component
     // whose text could not be edited at all (field report 2026-08-07).
     const text = cue.props ? elementTextOf(elementId, cue.props) : null;
-    const multiline = /^window-\d+$/.test(elementId);
+    // A CardRow card (`card-N`, §161) edits as two lines too: text, then sub.
+    const multiline = /^(window|card)-\d+$/.test(elementId);
     return (
       <div>
         <div style={section}>
@@ -1057,7 +1061,9 @@ export const Inspector: React.FC<InspectorProps> = ({
                   // Top-level string props patch directly; array-backed ids
                   // need buildArrayPatch to rewrite the right entry — a bare
                   // { [elementId]: text } there writes a key nothing reads.
-                  const patch = /^(line|node|message|window|item)-\d+$/.test(elementId)
+                  // The Overlay's one regex, not a copy of it: a kind added
+                  // there is routed here with no second edit (§161).
+                  const patch = DYNAMIC_ID.test(elementId)
                     ? buildArrayPatch(elementId, props, value)
                     : { [elementId]: value };
                   if (patch) {

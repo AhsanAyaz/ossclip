@@ -8,6 +8,7 @@ import {
   scalarPropControls,
   livePreviewMap,
   plannerComponentIds,
+  scriptComponentIds,
   previewClockMappers,
   type KeptSpan,
   type OverrideDoc,
@@ -230,6 +231,70 @@ describe("Inspector — TerminalMock window-N text edits via a textarea (field r
     const field = container.querySelector<HTMLInputElement>('[data-testid="element-text"]')!;
     expect(field.tagName).toBe("INPUT");
     expect(field.value).toBe("SHIP IT");
+  });
+});
+
+/**
+ * CardRow (§161, plan Task 4): a card is two texts in one box, edited as two
+ * lines of one textarea — and through the Overlay's single DYNAMIC_ID, which
+ * the Inspector imports rather than restates (a copy without `card` would
+ * have written the retype to a `card-0` prop nothing reads).
+ */
+describe("Inspector — CardRow card-N edits as two lines", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  const cardCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    props: { cards: [{ text: "Draft", sub: "one", icon: "doc" }, { text: "Review", icon: "none" }] },
+    startSec: 0,
+    endSec: 30,
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("shows text and sub in a TEXTAREA and commits both through buildArrayPatch", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: "card-0" },
+          cue: cardCue,
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const field = container.querySelector<HTMLTextAreaElement>('[data-testid="element-text"]')!;
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field.value).toBe("Draft\none");
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    await act(async () => {
+      setValue.call(field, "Write\ntests first");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(doc?.scenes["scene-0"]?.props?.cards).toEqual([
+      { text: "Write", sub: "tests first", icon: "doc" },
+      { text: "Review", icon: "none" },
+    ]);
   });
 });
 
@@ -1175,7 +1240,7 @@ describe("Inspector — reveal controls: unset is its own state (reveal-timing T
  * cannot become a card or the reverse: neither has the other's props, and
  * ClipScene has no default clip to fall back to.
  */
-describe("Inspector — the component swap offers planner components only", () => {
+describe("Inspector — the component swap offers every card, script-only ones included", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
@@ -1192,13 +1257,17 @@ describe("Inspector — the component swap offers planner components only", () =
     container.remove();
   });
 
-  it("componentSwapOptions is plannerComponentIds() for a card, and nothing for a clip", () => {
-    expect(componentSwapOptions("TitleCard")).toEqual(plannerComponentIds());
+  it("componentSwapOptions is scriptComponentIds() for a card, and nothing for a clip", () => {
+    // Plan decision 5: the script-only cards are offered in every project,
+    // though the beat sheet never sees them.
+    expect(componentSwapOptions("TitleCard")).toEqual(scriptComponentIds());
+    expect(componentSwapOptions("TitleCard")).toEqual([...plannerComponentIds(), "CardRow"]);
+    expect(componentSwapOptions("CardRow")).toEqual(scriptComponentIds());
     expect(componentSwapOptions("TitleCard")).not.toContain("ClipScene");
     expect(componentSwapOptions("ClipScene")).toBeNull();
   });
 
-  it("a card's dropdown lists exactly the planner components", async () => {
+  it("a card's dropdown lists exactly the script components", async () => {
     await act(async () => {
       root.render(
         React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }),
@@ -1206,7 +1275,7 @@ describe("Inspector — the component swap offers planner components only", () =
     });
     const select = container.querySelector<HTMLSelectElement>('[data-testid="component-swap"]')!;
     expect(select).not.toBeNull();
-    expect([...select.options].map((o) => o.value)).toEqual(plannerComponentIds());
+    expect([...select.options].map((o) => o.value)).toEqual(scriptComponentIds());
   });
 
   it("a clip shows no swap control at all", async () => {

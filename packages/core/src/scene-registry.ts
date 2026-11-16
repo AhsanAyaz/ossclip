@@ -1,5 +1,10 @@
 import { z } from "zod/v4";
-import { type Layout, type PlannerComponentId, type SceneComponentId } from "./scene-schema";
+import {
+  type Layout,
+  type PlannerComponentId,
+  type SceneComponentId,
+  type ScriptComponentId,
+} from "./scene-schema";
 
 /**
  * The scene library's contract, React-free so both the producer brain and the
@@ -222,6 +227,29 @@ export const ClipSceneProps = z.object({
   muted: z.boolean().default(false),
 });
 
+/**
+ * Two to four parallel things as a row of cards (§161, plan Task 4): steps,
+ * tools, options, one card each in spoken order. Script-only. Each card is
+ * one reveal item, so it lands on its own spoken words. The caps (18 and 24)
+ * are what four cards in one 16:9 row can hold at the 34 px floor without a
+ * third line; the layout is solved in scenes' `cardRowMetrics`.
+ */
+export const CardRowProps = z.object({
+  cards: z
+    .array(
+      z.object({
+        text: z.string().min(1).max(18),
+        sub: z.string().max(24).optional(),
+        icon: z.enum(ICON_NAMES).default("none"),
+      }),
+    )
+    .min(2)
+    .max(4),
+  /** The chosen card: drawn in `accent` and bumped once the row has landed. */
+  highlight: z.number().int().min(0).max(3).optional(),
+  ...RevealPropsShape,
+});
+
 export interface SceneComponentMeta {
   propsSchema: z.ZodTypeAny;
   defaultProps: Record<string, unknown>;
@@ -249,6 +277,15 @@ export interface SceneComponentMeta {
    */
   plannerSelectable?: boolean;
   /**
+   * true = offered only by a SCRIPT's planner (`scriptComponentIds()`), never
+   * by the beat sheet (`plannerComponentIds()`), whose menu and enum are
+   * frozen for runs without `--script` (G6). Not `plannerSelectable: false`,
+   * which means "never written by an LLM" and also hides the editor's swap:
+   * a script-only component IS a card an LLM fills, and the editor offers it
+   * in the swap for every project (plan decision 5).
+   */
+  scriptOnly?: boolean;
+  /**
    * false = no frosted scrim behind it over live video. Default true. A
    * transparent clip is designed to sit on the speaker; a scrim would frost
    * the very footage it is drawn over (spec 1.4/1.5).
@@ -265,8 +302,10 @@ export interface SceneComponentMeta {
    * routed/hand-set `graphicRect` says (`graphicSlotFor`). A clip was authored
    * at frame size with its own margins, so the full-bleed band (0.77 × 0.36)
    * shrank it to a postage stamp and a safe-area clamp would crop margins the
-   * author already left. Default false; only ClipScene sets it, so every other
-   * component's geometry is unchanged (G6).
+   * author already left. Default false; only ClipScene and the script-only
+   * pattern scenes set it (they lay themselves out inside the frame with
+   * their own 100 px margin, plan decision 1), so every planner component's
+   * geometry is unchanged (G6).
    */
   fullFrame?: boolean;
 }
@@ -348,6 +387,22 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
       "('what you need is X, Y, Z'). One bullet per item, optional kicker title. " +
       "Use this for lists instead of bending TitleCard or StrikethroughReveal around them.",
   },
+  // Script-only pattern scenes (§161): after the nine, so the script menu
+  // keeps the nine in today's order and appends; before ClipScene, which no
+  // menu lists. Full frame over the speaker with no scrim, like the
+  // hand-made transparent clips they replace (plan decision 1).
+  CardRow: {
+    propsSchema: CardRowProps,
+    defaultProps: { cards: [{ text: "ONE" }, { text: "TWO" }, { text: "THREE" }] },
+    defaultLayout: "full-bleed",
+    altLayouts: [],
+    whenToUse:
+      "The line lists two to four parallel things (steps, tools, options). One card per item, " +
+      "in spoken order; set highlight to the chosen one.",
+    scriptOnly: true,
+    scrim: false,
+    fullFrame: true,
+  },
   // Last on purpose: registry order is menu order, and a planner menu that
   // ever did include this entry would at least not reorder the nine.
   ClipScene: {
@@ -373,14 +428,30 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
 };
 
 /**
- * The components a planner may offer, in registry order — the source of every
- * LLM-facing component menu (G6). Equal to `PlannerComponentIdSchema.options`
- * by test; the cast is sound for exactly that reason.
+ * The components the beat-sheet planner may offer, in registry order — the
+ * source of every LLM-facing component menu outside script mode (G6). Equal
+ * to `PlannerComponentIdSchema.options` by test; the cast is sound for
+ * exactly that reason. Script-only entries are filtered here, not only
+ * absent from the enum: the beat-sheet menu is built from this list, and a
+ * card leaking into it would change every run's prompt.
  */
 export function plannerComponentIds(): PlannerComponentId[] {
   return (Object.keys(SCENE_REGISTRY) as SceneComponentId[]).filter(
-    (id) => SCENE_REGISTRY[id].plannerSelectable !== false,
+    (id) => SCENE_REGISTRY[id].plannerSelectable !== false && !SCENE_REGISTRY[id].scriptOnly,
   ) as PlannerComponentId[];
+}
+
+/**
+ * What a script's planner may offer, in registry order: the nine, then the
+ * script-only cards. Equal to `ScriptComponentIdSchema.options` by test, the
+ * same sound-cast argument as `plannerComponentIds`. Also the editor's swap
+ * list (plan decision 5): every card is swappable to every other, in any
+ * project; only ClipScene stays out.
+ */
+export function scriptComponentIds(): ScriptComponentId[] {
+  return (Object.keys(SCENE_REGISTRY) as SceneComponentId[]).filter(
+    (id) => SCENE_REGISTRY[id].plannerSelectable !== false,
+  ) as ScriptComponentId[];
 }
 
 /**

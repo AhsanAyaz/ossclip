@@ -213,8 +213,16 @@ const moveEdgeBase: React.CSSProperties = {
  * `ScreenshotFrame`, where `data-edit-id` names an actual top-level prop —
  * writes into one of these ids as a prop key nothing ever reads, silently
  * losing the retype.
+ *
+ * Exported as the ONE copy: the Inspector used to restate it, and a kind
+ * added here but not there (CardRow's `card-N`, §161) would route the panel's
+ * retype to a top-level prop nothing reads.
  */
-const DYNAMIC_ID = /^(line|node|message|window|item)-(\d+)$/;
+export const DYNAMIC_ID = /^(line|node|message|window|item|card)-(\d+)$/;
+
+/** CardRowProps' caps, mirrored for the commit-time truncation below. */
+const CARD_TEXT_MAX = 18;
+const CARD_SUB_MAX = 24;
 
 /**
  * Map a `line-N`/`node-N`/`message-N` id back to the array field it actually
@@ -233,7 +241,7 @@ export function buildArrayPatch(
 ): Record<string, unknown> | null {
   const m = DYNAMIC_ID.exec(elementId);
   if (!m) return null;
-  const kind = m[1] as "line" | "node" | "message" | "item" | "window";
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card";
   const idx = Number(m[2]);
   // ChatMock's CTA mode (props.keyword set) renders exactly ONE synthetic
   // bubble showing the keyword and ignores `props.messages` entirely
@@ -262,7 +270,9 @@ export function buildArrayPatch(
           ? "items"
           : kind === "window"
             ? "windows"
-            : "messages";
+            : kind === "card"
+              ? "cards"
+              : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const next = arr.slice();
@@ -289,6 +299,26 @@ export function buildArrayPatch(
       .slice(0, 6)
       .map((l) => l.slice(0, 40));
     next[idx] = { ...(item as Record<string, unknown>), lines };
+  } else if (kind === "card") {
+    // A CardRow card is two texts in one box (§161): the first line is its
+    // `text`, the second its `sub`. No second line removes `sub`; an EMPTY
+    // second line keeps `sub: ""`, which the card draws as no sub-line at
+    // all (CardRow and `cardRowMetrics` both test `sub` for truthiness). The
+    // "" is there for the typing, not the render: this textarea is
+    // controlled by `elementTextOf`, so dropping the key on Enter would echo
+    // back one line and swallow the newline — a card without a sub could
+    // never be given one. Truncated to the schema's caps at commit, for the
+    // window arm's reason above; extra lines are dropped; `icon` is never
+    // touched.
+    if (typeof item !== "object" || item === null) return null;
+    const [first = "", ...more] = text.split("\n");
+    const rest = { ...(item as Record<string, unknown>) };
+    delete rest.sub;
+    next[idx] = {
+      ...rest,
+      text: first.slice(0, CARD_TEXT_MAX),
+      ...(more.length > 0 ? { sub: more[0]!.slice(0, CARD_SUB_MAX) } : {}),
+    };
   } else {
     if (typeof item !== "object" || item === null) return null;
     next[idx] = { ...(item as Record<string, unknown>), text };
@@ -314,7 +344,7 @@ export function elementTextOf(
     const v = props[elementId];
     return typeof v === "string" ? v : null;
   }
-  const kind = m[1] as "line" | "node" | "message" | "item" | "window";
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card";
   const idx = Number(m[2]);
   if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
     return props.keyword;
@@ -328,7 +358,9 @@ export function elementTextOf(
           ? "items"
           : kind === "window"
             ? "windows"
-            : "messages";
+            : kind === "card"
+              ? "cards"
+              : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const item = arr[idx];
@@ -340,6 +372,14 @@ export function elementTextOf(
       : null;
   }
   const text = (item as Record<string, unknown> | null)?.text;
+  if (kind === "card") {
+    // `buildArrayPatch`'s card arm, read direction: text, then sub on line
+    // two — an empty `sub` still gets its line, so a newline just typed
+    // survives the round trip.
+    const sub = (item as Record<string, unknown> | null)?.sub;
+    if (typeof text !== "string") return null;
+    return typeof sub === "string" ? `${text}\n${sub}` : text;
+  }
   return typeof text === "string" ? text : null;
 }
 

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SCENE_REGISTRY, SceneComponentIdSchema, type SceneComponentId } from "@ossclip/core";
 import {
+  CARD_PEAK_SCALE,
   FILL_TARGET,
   MAX_SCALE,
+  PATTERN_MARGIN_PX,
   bulletMetrics,
+  cardRowMetrics,
   bulletStackHeightPx,
   chatBubbles,
   chatMetrics,
@@ -20,6 +23,9 @@ const FRAME_W = 1080;
 const FRAME_H = 1920;
 
 function slotOf(component: SceneComponentId) {
+  // A `fullFrame` component is drawn in the whole frame whatever its layout
+  // (`graphicSlotFor`), so that is the box its model must fit.
+  if (SCENE_REGISTRY[component].fullFrame) return { widthPx: FRAME_W, heightPx: FRAME_H };
   const layout = SCENE_REGISTRY[component].defaultLayout;
   // full-bleed (ClipScene's default) has no slot of its own; graphics there
   // use the R13 fallback band, exactly as `graphicSlotFor` places them.
@@ -49,6 +55,18 @@ function fittedHeight(component: SceneComponentId, props: Record<string, unknown
   };
 }
 
+/**
+ * CardRow at every cap (18-character text, 24-character sub, an icon) and
+ * the most cards (4). Capitals and wide letters on purpose: the width model
+ * charges them most, so this is the copy most likely to need a third line.
+ */
+const CARD_ROW_DENSE = [
+  { text: "WRITE THE TESTS OK", sub: "pnpm vitest run --watch!", icon: "check" },
+  { text: "MEASURE EVERY RUN!", sub: "tokens, seconds and cost", icon: "bolt" },
+  { text: "Review the diff ok", sub: "git diff main...HEAD -w!", icon: "code" },
+  { text: "Ship it on Monday!", sub: "npm publish --tag latest", icon: "terminal" },
+];
+
 /** Sparse content — the §23 complaint: a thin strip in a sea of black. */
 const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   TitleCard: { title: "SHIP IT" },
@@ -60,6 +78,7 @@ const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   ChatMock: { messages: [{ from: "user", text: "can it cut my ums?" }] },
   ScreenshotFrame: { label: "REVIEW" },
   BulletList: { items: ["AI HARNESS", "CONTEXT ENGINEERING"] },
+  CardRow: { cards: [{ text: "Draft" }, { text: "Review" }] },
   // No copy to be sparse or dense with: a clip's props are a file and a length.
   ClipScene: { src: "clips/a.webm", durationSec: 4.6 },
 };
@@ -104,6 +123,7 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
     title: "TWENTY EIGHT CHARACTERS OKAY",
     items: Array.from({ length: 5 }, () => "THIRTY SIX CHARACTERS OF BULLET COPY"),
   },
+  CardRow: { cards: CARD_ROW_DENSE, highlight: 2 },
   ClipScene: { src: "clips/a.webm", durationSec: 15 },
 };
 
@@ -500,5 +520,76 @@ describe("ClipScene fit (explainer plan Task 7)", () => {
     ]) {
       expect(fitScale("ClipScene", props, slot)).toBe(1);
     }
+  });
+});
+
+describe("CardRow metrics (§161, plan Task 4 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  const SETS = [
+    ["sparse", SPARSE.CardRow.cards],
+    ["dense", DENSE.CardRow.cards],
+    ["three", CARD_ROW_DENSE.slice(0, 3)],
+  ] as const;
+  type Cards = Parameters<typeof cardRowMetrics>[0];
+
+  it("one row in a landscape frame, one column in a portrait one", () => {
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1920, 1080).mode).toBe("row");
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1080, 1920).mode).toBe("column");
+  });
+
+  it("keeps 100 px clear on every side on EVERY frame — a card at its peak bump included", () => {
+    for (const f of FRAMES) {
+      for (const [label, cards] of SETS) {
+        const m = cardRowMetrics(cards as Cards, f.w, f.h);
+        expect(m.marginPx, f.name).toBe(PATTERN_MARGIN_PX);
+        // The block is centred; an edge card scaled about its centre reaches
+        // (peak - 1) / 2 of its own size past its box.
+        const growW = ((CARD_PEAK_SCALE - 1) / 2) * m.cardWidthPx;
+        const growH = ((CARD_PEAK_SCALE - 1) / 2) * m.cardHeightPx;
+        const side = (f.w - m.blockWidthPx) / 2 - growW;
+        const top = (f.h - m.blockHeightPx) / 2 - growH;
+        expect(side, `${f.name} ${label}: side margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(top, `${f.name} ${label}: top margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+      }
+    }
+  });
+
+  it("a card at its peak never reaches its settled neighbour", () => {
+    for (const f of FRAMES) {
+      for (const [label, cards] of SETS) {
+        const m = cardRowMetrics(cards as Cards, f.w, f.h);
+        const along = m.mode === "row" ? m.cardWidthPx : m.cardHeightPx;
+        expect(((CARD_PEAK_SCALE - 1) / 2) * along, `${f.name} ${label}`).toBeLessThan(m.gapPx);
+      }
+    }
+  });
+
+  it("never sets type under the 34 px floor, at schema-max copy in either aspect", () => {
+    for (const f of FRAMES) {
+      const m = cardRowMetrics(CARD_ROW_DENSE, f.w, f.h);
+      expect(m.titlePx, f.name).toBeGreaterThanOrEqual(34);
+      expect(m.subPx, f.name).toBeGreaterThanOrEqual(34);
+      // Schema-max titles still fit whole words at the solved size.
+      expect(m.titleWordsFit, f.name).toBe(true);
+    }
+  });
+
+  it("less copy reads bigger, and a sub-line never outgrows its title", () => {
+    const sparse = cardRowMetrics(SPARSE.CardRow.cards as Cards, 1920, 1080);
+    const dense = cardRowMetrics(CARD_ROW_DENSE, 1920, 1080);
+    expect(sparse.titlePx).toBeGreaterThan(dense.titlePx);
+    for (const m of [sparse, dense]) expect(m.subPx).toBeLessThanOrEqual(m.titlePx);
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("CardRow")).toBe(true);
+    expect(fitScale("CardRow", DENSE.CardRow, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+  });
+
+  it("an unbounded height still answers a finite estimate", () => {
+    expect(Number.isFinite(estimateHeightPx("CardRow", DENSE.CardRow, 1080))).toBe(true);
   });
 });

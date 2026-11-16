@@ -13,6 +13,8 @@ import {
   normalizeBeatSheet,
   type BeatSheet,
   type BeatsValidationIssue,
+  type Moment,
+  type ScriptMoment,
 } from "./beats";
 import { generateScenes, momentSceneId, type ScenePropsFailure } from "./scene-props";
 import { planScriptMoments, type ScriptPlanInput } from "./script-plan";
@@ -204,8 +206,9 @@ export function fallbackProviderName(
   return undefined;
 }
 
-export interface ProduceScenesResult {
-  beatSheet: BeatSheet;
+export interface ProduceScenesResult<M extends ScriptMoment = Moment> {
+  /** `Moment`s outside script mode; a script run's may name a script-only card. */
+  beatSheet: Omit<BeatSheet, "moments"> & { moments: M[] };
   beatIssues: BeatsValidationIssue[];
   /**
    * The graphics accounting (§118b): how many the prompt asked for and how
@@ -225,60 +228,82 @@ export interface ProduceScenesResult {
   clip?: { window: ClipWindow; transcript: Transcript; notes: string[] };
 }
 
-/** The full producer-brain pipeline: beat sheet → per-moment scene props. */
+/** What `produceScenes` is asked to do — one bag for both modes. */
+export interface ProduceScenesArgs {
+  transcript: Transcript;
+  outputDuration: number;
+  intent?: string;
+  /** Who is on camera — see `--speaker`. */
+  speaker?: string;
+  /**
+   * Debug: render every graphic moment with this component instead of the
+   * one the producer picked. Exists because a component the producer never
+   * chooses is a component never tested on real copy — FlowDiagram went
+   * three rounds unexercised (FINDINGS §20). A PLANNER id: the forced
+   * component goes through the props call, which would otherwise show an
+   * LLM the schema of a component no planner may offer (ClipScene, G6).
+   */
+  forceComponent?: PlannerComponentId;
+  /**
+   * Camera-framing constraints (PLAN Tasks A+B), present when the source
+   * went through normalization. Feeds the beat-sheet prompt (the brief) AND
+   * the repair pass that enforces it — ship both, trust neither alone.
+   */
+  framing?: FramingContext;
+  /**
+   * `--clip` (R19 §93): select ONE ~targetSec window and plan only inside
+   * it. The window request rides the beat-sheet call (§93d); the returned
+   * moments/scenes are re-anchored to the sliced transcript, and the caller
+   * slices the rest of its pipeline state to `clip.window`.
+   */
+  clip?: {
+    targetSec: number;
+    /** The take's cutlist, so the window's length is its CUT runtime
+     * (`resolveClipWindow`). Omitted = source seconds, as before. */
+    cutlist?: readonly Segment[];
+  };
+  /** Output frame shape (R21 §101) — landscape gets layout-variety
+   * guidance in the beat prompt. Omitted = portrait, no extra text. */
+  aspect?: "9:16" | "16:9";
+  /**
+   * Word indices (into `transcript`) the cutlist removes — `cutWordIndices`.
+   * Every call that writes on-screen copy is told, so a cut retake never
+   * comes back as a graphic (2026-11-08). Omitted = nothing marked.
+   */
+  cut?: ReadonlySet<number>;
+  /**
+   * `--script` (explainer spec §1.3): the moments come from the script's
+   * aligned cues instead of the beat-sheet call, which is not made at all.
+   * Everything after the moments — forceComponent, layout repair, the
+   * props call — is the path every run takes.
+   */
+  script?: ScriptPlanInput;
+}
+
+/**
+ * The full producer-brain pipeline: beat sheet → per-moment scene props.
+ *
+ * Overloaded on `script` so the TYPE carries G6: only a script run returns
+ * moments that may name a script-only card (`ScriptMoment`); a run without
+ * one gets `Moment`s, whose `sceneKind` is the frozen planner enum.
+ */
+export function produceScenes(
+  provider: LlmProvider,
+  args: ProduceScenesArgs & { script: ScriptPlanInput },
+): Promise<ProduceScenesResult<ScriptMoment>>;
+export function produceScenes(
+  provider: LlmProvider,
+  args: ProduceScenesArgs & { script?: undefined },
+): Promise<ProduceScenesResult>;
+/** A caller that does not know which mode it is in gets the wider answer. */
+export function produceScenes(
+  provider: LlmProvider,
+  args: ProduceScenesArgs,
+): Promise<ProduceScenesResult<ScriptMoment>>;
 export async function produceScenes(
   provider: LlmProvider,
-  args: {
-    transcript: Transcript;
-    outputDuration: number;
-    intent?: string;
-    /** Who is on camera — see `--speaker`. */
-    speaker?: string;
-    /**
-     * Debug: render every graphic moment with this component instead of the
-     * one the producer picked. Exists because a component the producer never
-     * chooses is a component never tested on real copy — FlowDiagram went
-     * three rounds unexercised (FINDINGS §20). A PLANNER id: the forced
-     * component goes through the props call, which would otherwise show an
-     * LLM the schema of a component no planner may offer (ClipScene, G6).
-     */
-    forceComponent?: PlannerComponentId;
-    /**
-     * Camera-framing constraints (PLAN Tasks A+B), present when the source
-     * went through normalization. Feeds the beat-sheet prompt (the brief) AND
-     * the repair pass that enforces it — ship both, trust neither alone.
-     */
-    framing?: FramingContext;
-    /**
-     * `--clip` (R19 §93): select ONE ~targetSec window and plan only inside
-     * it. The window request rides the beat-sheet call (§93d); the returned
-     * moments/scenes are re-anchored to the sliced transcript, and the caller
-     * slices the rest of its pipeline state to `clip.window`.
-     */
-    clip?: {
-      targetSec: number;
-      /** The take's cutlist, so the window's length is its CUT runtime
-       * (`resolveClipWindow`). Omitted = source seconds, as before. */
-      cutlist?: readonly Segment[];
-    };
-    /** Output frame shape (R21 §101) — landscape gets layout-variety
-     * guidance in the beat prompt. Omitted = portrait, no extra text. */
-    aspect?: "9:16" | "16:9";
-    /**
-     * Word indices (into `transcript`) the cutlist removes — `cutWordIndices`.
-     * Every call that writes on-screen copy is told, so a cut retake never
-     * comes back as a graphic (2026-11-08). Omitted = nothing marked.
-     */
-    cut?: ReadonlySet<number>;
-    /**
-     * `--script` (explainer spec §1.3): the moments come from the script's
-     * aligned cues instead of the beat-sheet call, which is not made at all.
-     * Everything after the moments — forceComponent, layout repair, the
-     * props call — is the path every run takes.
-     */
-    script?: ScriptPlanInput;
-  },
-): Promise<ProduceScenesResult> {
+  args: ProduceScenesArgs,
+): Promise<ProduceScenesResult<ScriptMoment>> {
   if (args.script) {
     // Exclusive: `--clip` picks its own window by asking the beat-sheet call
     // for one, and a script has already decided where every scene goes.
@@ -381,8 +406,8 @@ export async function produceScenes(
  */
 async function produceScriptScenes(
   provider: LlmProvider,
-  args: Omit<Parameters<typeof produceScenes>[1], "script" | "clip"> & { script: ScriptPlanInput },
-): Promise<ProduceScenesResult> {
+  args: Omit<ProduceScenesArgs, "script" | "clip"> & { script: ScriptPlanInput },
+): Promise<ProduceScenesResult<ScriptMoment>> {
   const { transcript, cut } = args;
   const planned = await planScriptMoments(provider, args.script, transcript);
   const issues: BeatsValidationIssue[] = [...planned.issues];

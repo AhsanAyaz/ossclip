@@ -184,3 +184,26 @@ describe("entryTexts", () => {
     expect(entryTexts("BulletList", { title: "NEED", items: ["a", "b"] })).toEqual(["a", "b"]);
   });
 });
+
+describe("CardRow (§161, plan Task 4)", () => {
+  it("one item per card: its text or its sub-line, as alternatives (TerminalMock's shape)", () => {
+    expect(
+      revealItemTexts("CardRow", { cards: [{ text: "Draft", sub: "one" }, { text: "Review" }] }),
+    ).toEqual([["Draft", "one"], ["Review"]]);
+  });
+
+  it("an icon is never a text to match, and a malformed card keeps its position", () => {
+    expect(revealItemTexts("CardRow", { cards: [{ text: "Bot", icon: "robot" }, 7, { text: "C" }] })).toEqual([
+      ["Bot"],
+      [""],
+      ["C"],
+    ]);
+    expect(revealItemTexts("CardRow", {})).toEqual([]);
+  });
+
+  it("entry texts are every card's text and sub-line, empties skipped", () => {
+    expect(
+      entryTexts("CardRow", { cards: [{ text: "Draft", sub: "one" }, { text: "Review", icon: "doc" }] }),
+    ).toEqual(["Draft", "one", "Review"]);
+  });
+});

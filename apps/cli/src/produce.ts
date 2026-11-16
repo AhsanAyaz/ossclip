@@ -193,8 +193,9 @@ import {
   sliceTranscript,
   type Analysis,
   type AppliedRepair,
-  type BeatSheet,
   BeatSheetSchema,
+  type ProduceScenesResult,
+  type ScriptBeatSheet,
   type BeatsValidationIssue,
   type CleanupLevel,
   type ClipWindow,
@@ -3843,8 +3844,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
    * `beatSheet` above, which is deliberately the cover's two fields: this one
    * exists only while a plan is in hand this run, and is undefined on the
    * paths that never had one (`--scenes`, a pre-`--sfx` scenes cache).
+   * `ScriptBeatSheet` because a script run's moments may name a script-only
+   * card (plan Task 4); every `BeatSheet` is one.
    */
-  let fullSheet: BeatSheet | undefined;
+  let fullSheet: ScriptBeatSheet | undefined;
   /** The graphics accounting line for report.txt (§118b), and the beat-sheet
    * issues that explain it. Cached alongside the beat sheet so a cached
    * re-run's report keeps the accounting instead of erasing it (§78). */
@@ -3992,7 +3995,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // replay the SAME window) > the workdir's window cache > ONE extended
     // beat-sheet call (§93d). Pin and cache both yield a window with zero LLM
     // calls; only a first run selects.
-    let clipFresh: Awaited<ReturnType<typeof produceScenes>> | null = null;
+    // The beat-sheet result type by name: `ReturnType` of the overloaded
+    // `produceScenes` is its last (widest, script-capable) overload, and a
+    // `--clip` run never plans from a script.
+    let clipFresh: ProduceScenesResult | null = null;
     if (clipTargetSec !== undefined) {
       // Parts split from the key so the WRITE below can re-key on the
       // provider that actually answered (§143) without restating them.

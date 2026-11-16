@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   OverrideDocSchema,
+  SCRIPT_PLAN_PROMPT_VERSION,
   TimeMap,
   cutWordIndices,
   parseScript,
@@ -56,6 +57,14 @@ describe("scriptCueProblems (before any transcription)", () => {
     expect(p).toMatch(/^script line 3: unknown component \[Nope\]/);
     expect(p).toContain("TitleCard");
     // ClipScene is no planner's name, so it is not offered as a fix.
+    expect(p).not.toContain("ClipScene");
+  });
+
+  it("a [CardRow] hint is valid; [CardRows] lists CardRow among the valid names (§161)", () => {
+    expect(scriptCueProblems(parseScript("🎬 [CardRow] three steps\n🗣️ a"), "/s/script.md")).toEqual([]);
+    const [p] = scriptCueProblems(parseScript("🎬 [CardRows] three steps\n🗣️ a"), "/s/script.md");
+    expect(p).toMatch(/^script line 1: unknown component \[CardRows\]/);
+    expect(p).toMatch(/valid names: .*CardRow/);
     expect(p).not.toContain("ClipScene");
   });
 
@@ -204,6 +213,14 @@ describe("scriptPlanCacheKey", () => {
     expect(keptWordsKey(words, new Set([0]))).not.toBe(keptWordsKey(words, new Set([1])));
   });
 
+  it("the prompt version is \"s2\": a plan cached before the script-only cards is never reused (Review Focus 4)", () => {
+    // An "s1" plan was asked without CardRow on the menu; a script that now
+    // hints [CardRow] must re-plan, which only a new key guarantees.
+    expect(SCRIPT_PLAN_PROMPT_VERSION).toBe("s2");
+    const current = scriptPlanCacheKey({ ...parts, promptVersion: SCRIPT_PLAN_PROMPT_VERSION });
+    expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s1" }));
+  });
+
   it("reads try the primary, then the fallback provider (§150)", () => {
     const { providerName: _p, ...rest } = parts;
     expect(scriptPlanCacheKeyCandidates(rest, "antigravity", "claude-cli")).toEqual([
@@ -224,6 +241,21 @@ describe("ScriptPlanCacheSchema", () => {
       sceneKind: "TitleCard",
     }));
     expect(() => ScriptPlanCacheSchema.parse({ hook: "h", moments, scenes: [], issues: [], failures: 0 })).not.toThrow();
+  });
+
+  it("reads back a plan holding a CardRow — with the beat-sheet enum it would re-plan every run", () => {
+    const moments = [{ startWord: 0, endWord: 2, purpose: "p", onScreenCopy: "c", sceneKind: "CardRow" }];
+    const scenes = [
+      {
+        id: "scene-0",
+        anchor: { startWord: 0, endWord: 2 },
+        layout: "full-bleed",
+        component: "CardRow",
+        props: { cards: [{ text: "A" }, { text: "B" }] },
+      },
+    ];
+    const parsed = ScriptPlanCacheSchema.safeParse({ hook: "h", moments, scenes, issues: [], failures: 0 });
+    expect(parsed.success).toBe(true);
   });
 });
 

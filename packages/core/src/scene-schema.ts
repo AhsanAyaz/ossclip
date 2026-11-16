@@ -43,13 +43,36 @@ export const PlannerComponentIdSchema = z.enum([
 export type PlannerComponentId = z.infer<typeof PlannerComponentIdSchema>;
 
 /**
- * Every component a scene may render: the planner's menu plus the ones no
- * planner may pick. Stored in production.json and overrides, so a project
- * that uses a new id cannot be opened by an older ossclip (spec,
+ * The pattern scenes only a SCRIPT's planner may offer (§161, plan Task 4).
+ * A second list beside the frozen one, never an addition to it: the beat
+ * sheet's `sceneKind` enum is `PlannerComponentIdSchema`, so a card added
+ * there would change the ask of every run without `--script` (G6). Here it
+ * reaches only `ScriptPlanSchema` and the script menu, whose prompt version
+ * is its own (`SCRIPT_PLAN_PROMPT_VERSION`). Later pattern scenes append to
+ * this list; order is menu order after the nine.
+ */
+export const ScriptOnlyComponentIdSchema = z.enum(["CardRow"]);
+export type ScriptOnlyComponentId = z.infer<typeof ScriptOnlyComponentIdSchema>;
+
+/**
+ * What a script cue may be shown as: the nine, then the script-only cards.
+ * The script planner's `sceneKind` and the `[Name]` hint check both parse
+ * with this, so a hint can name a card the beat sheet never offers.
+ */
+export const ScriptComponentIdSchema = z.enum([
+  ...PlannerComponentIdSchema.options,
+  ...ScriptOnlyComponentIdSchema.options,
+]);
+export type ScriptComponentId = z.infer<typeof ScriptComponentIdSchema>;
+
+/**
+ * Every component a scene may render: the script planner's menu plus the
+ * ones no planner may pick. Stored in production.json and overrides, so a
+ * project that uses a new id cannot be opened by an older ossclip (spec,
  * Compatibility) — already true whenever a component is added.
  */
 export const SceneComponentIdSchema = z.enum([
-  ...PlannerComponentIdSchema.options,
+  ...ScriptComponentIdSchema.options,
   "ClipScene",
 ]);
 export type SceneComponentId = z.infer<typeof SceneComponentIdSchema>;

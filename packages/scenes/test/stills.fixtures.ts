@@ -36,4 +36,31 @@ export const STILL_FIXTURES: StillFixture[] = [
     props: { label: "Stars in 11 days", value: "+1,214", caption: "From 1 launch post" },
     atSec: [1.5],
   },
+  // CardRow (plan Task 4). No word timings in a still, so the cards build at
+  // `beatStarts`: 0.25, 0.95, 1.65, 2.35 s, each popping for 0.35 s. Sparse
+  // at 0.4 s catches the first card mid-pop; dense at 1.8 s has two cards
+  // settled, the third mid-overshoot and the fourth not yet in. Settled is
+  // after the last pop AND the highlight's bump (last start + 0.35 + 0.3).
+  {
+    component: "CardRow",
+    name: "sparse",
+    props: { cards: [{ text: "Draft" }, { text: "Review" }] },
+    atSec: [0.4, 1.5],
+  },
+  {
+    component: "CardRow",
+    name: "dense",
+    // Every cap: 18-character titles, 24-character sub-lines, four cards,
+    // an icon on each, and the highlight on the third.
+    props: {
+      cards: [
+        { text: "WRITE THE TESTS OK", sub: "pnpm vitest run --watch!", icon: "check" },
+        { text: "MEASURE EVERY RUN!", sub: "tokens, seconds and cost", icon: "bolt" },
+        { text: "Review the diff ok", sub: "git diff main...HEAD -w!", icon: "code" },
+        { text: "Ship it on Monday!", sub: "npm publish --tag latest", icon: "terminal" },
+      ],
+      highlight: 2,
+    },
+    atSec: [1.8, 3.5],
+  },
 ];

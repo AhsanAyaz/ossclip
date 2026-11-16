@@ -1041,14 +1041,16 @@ export interface AppliedOverrides {
  * instead.
  *
  * REFUSED, the scene's own component and props handed back, when either side
- * is not a planner component (ClipScene, explainer plan Task 7). A clip has a
+ * is LLM-unfillable (`plannerSelectable: false` — ClipScene, explainer plan
+ * Task 7). The script-only cards are fillable and swap freely (§161, plan
+ * decision 5). A clip has a
  * file and a length, a card has copy, and neither has the other's props:
  * swapping a clip out throws the clip away for a default card, and swapping
  * one in has nothing to play — ClipScene's `defaultProps` are empty because
  * there is no honest default clip, so the fallback below would come back null
  * (the old "can never return null" claim stopped being true the day the clip
  * joined the registry). The editor never offers the swap (the Inspector hides
- * the control on a clip and lists `plannerComponentIds()` only); this is the
+ * the control on a clip and lists `scriptComponentIds()` only); this is the
  * floor for a hand-edited overrides.json.
  */
 export function resolveSwappedProps(
@@ -1068,10 +1070,11 @@ export function resolveSwappedProps(
       // registry's OWN defaults with nothing layered on top, run back through
       // `resolveSceneProps` (rather than the raw `defaultProps` object) so
       // zod-defaulted fields (e.g. `emphasizeLast`) are filled in the same
-      // way every other resolved cue's props are. Every PLANNER component's
-      // `defaultProps` validate on their own (the registry is built on that
-      // invariant, and the refusal above keeps every other component out), so
-      // this cannot itself return null.
+      // way every other resolved cue's props are. Every swappable component's
+      // `defaultProps` validate on their own — the planner nine and the
+      // script-only cards, which the swap offers too (plan decision 5); the
+      // registry is built on that invariant, by test, and the refusal above
+      // keeps ClipScene out — so this cannot itself return null.
       resolveSceneProps(to, {}, {})!,
   };
 }

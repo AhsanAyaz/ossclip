@@ -14,10 +14,10 @@
  */
 import { z } from "zod/v4";
 import type { Transcript } from "../schema";
-import { LayoutSchema, PlannerComponentIdSchema, type Scene } from "../scene-schema";
-import { SCENE_REGISTRY, plannerComponentIds } from "../scene-registry";
+import { LayoutSchema, ScriptComponentIdSchema, type Scene } from "../scene-schema";
+import { SCENE_REGISTRY, scriptComponentIds } from "../scene-registry";
 import type { AlignedCue } from "../script/align";
-import { cappedText, type BeatsValidationIssue, type Moment } from "./beats";
+import { cappedText, type BeatsValidationIssue, type ScriptMoment } from "./beats";
 import { momentSceneId } from "./scene-props";
 import type { LlmProvider } from "./provider";
 
@@ -26,8 +26,13 @@ import type { LlmProvider } from "./provider";
  * schema below changes what is asked. Its own version, not
  * `PRODUCER_PROMPT_VERSION`: bumping that would re-plan every non-script take
  * for a change that cannot affect them (spec, Compatibility).
+ *
+ * "s2": the menu, the `sceneKind` enum and the hint check grew the
+ * script-only cards (§161, plan Tasks 4-8 — one bump for the lot, since none
+ * of them ships alone). An "s1" plan was asked without them, so it must not
+ * be served to a script that now hints `[CardRow]` (plan Review Focus 4).
  */
-export const SCRIPT_PLAN_PROMPT_VERSION = "s1";
+export const SCRIPT_PLAN_PROMPT_VERSION = "s2";
 
 /**
  * Most cues one script may carry (§1.3). A ceiling on the one call that plans
@@ -55,7 +60,7 @@ export interface ScriptPlanInput {
 
 /**
  * A script that cannot be planned as written — too many cues, a `[Name]` hint
- * that is no planner component, a clip cue with no clip. Thrown before any LLM
+ * that is no script component, a clip cue with no clip. Thrown before any LLM
  * call, with a message written to be shown as-is: each of these is the
  * author's to fix in the script, and degrading would place something they did
  * not ask for.
@@ -72,9 +77,11 @@ export const ScriptPlanSchema = z.object({
   cues: z.array(
     z.object({
       id: z.string(),
-      // The planner subset, never the full id enum: no LLM may place a
-      // ClipScene (G6 doctrine, scene-schema.ts).
-      sceneKind: z.union([PlannerComponentIdSchema, z.literal("none")]),
+      // The script menu (the nine plus the script-only cards), never the
+      // full id enum: no LLM may place a ClipScene (G6 doctrine,
+      // scene-schema.ts). This schema is script mode's alone, so widening it
+      // changes no other run's ask.
+      sceneKind: z.union([ScriptComponentIdSchema, z.literal("none")]),
       layout: LayoutSchema.optional(),
       // Capped, never rejected (§123/§151, `cappedText`).
       onScreenCopy: cappedText(60),
@@ -110,9 +117,10 @@ function buildScriptPlanUserPrompt(cues: ReadonlyArray<{ aligned: AlignedCue; fi
     `spoken: ${aligned.cue.spoken.join(" ")}` +
     (fixed ? `\ncomponent: ${fixed} (fixed)` : ""),
   );
-  // `plannerComponentIds()`, never the registry's keys: ClipScene is placed
-  // by `clip:` cues only and must not be offered (G6).
-  const menu = plannerComponentIds()
+  // `scriptComponentIds()`, never the registry's keys: ClipScene is placed
+  // by `clip:` cues only and must not be offered (G6). The script-only cards
+  // are offered HERE and nowhere else (plan Task 4).
+  const menu = scriptComponentIds()
     .map((id) => `- ${id}: ${SCENE_REGISTRY[id].whenToUse}`)
     .join("\n");
   return (
@@ -147,7 +155,7 @@ export async function planScriptMoments(
   provider: LlmProvider,
   input: ScriptPlanInput,
   transcript: Transcript,
-): Promise<{ moments: Moment[]; clipScenes: Scene[]; issues: BeatsValidationIssue[] }> {
+): Promise<{ moments: ScriptMoment[]; clipScenes: Scene[]; issues: BeatsValidationIssue[] }> {
   const { aligned } = input;
   if (aligned.length > MAX_SCRIPT_CUES) {
     throw new ScriptPlanError(
@@ -156,13 +164,16 @@ export async function planScriptMoments(
   }
 
   // Every script error is found before the call, so a typo costs no tokens.
-  const valid = plannerComponentIds();
+  // The same list the menu offers, so a hint can name exactly what the
+  // planner could have chosen — and the CLI's pre-transcription check
+  // (`scriptCueProblems`) parses with the same schema.
+  const valid = scriptComponentIds();
   const clipsByCue = new Map(input.clips.map((c) => [c.cueId, c]));
-  const fixedKinds = new Map<number, Moment["sceneKind"]>();
+  const fixedKinds = new Map<number, ScriptMoment["sceneKind"]>();
   for (let i = 0; i < aligned.length; i++) {
     const { cue } = aligned[i]!;
     if (cue.hint.kind === "component") {
-      const parsed = PlannerComponentIdSchema.safeParse(cue.hint.component);
+      const parsed = ScriptComponentIdSchema.safeParse(cue.hint.component);
       if (!parsed.success) {
         throw new ScriptPlanError(
           `unknown component [${cue.hint.component}] in the cue at script line ${cue.line}; valid names: ${valid.join(", ")}`,
@@ -203,7 +214,7 @@ export async function planScriptMoments(
   const byId = new Map<string, ScriptPlanReply["cues"][number]>();
   for (const entry of reply?.cues ?? []) if (!byId.has(entry.id)) byId.set(entry.id, entry);
 
-  const moments: Moment[] = [];
+  const moments: ScriptMoment[] = [];
   const clipScenes: Scene[] = [];
   for (let i = 0; i < aligned.length; i++) {
     const a = aligned[i]!;

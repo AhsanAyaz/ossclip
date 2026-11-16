@@ -15,6 +15,7 @@ import { ChatMock } from "./components/ChatMock";
 import { ScreenshotFrame } from "./components/ScreenshotFrame";
 import { BulletList } from "./components/BulletList";
 import { ClipScene } from "./components/ClipScene";
+import { CardRow } from "./components/CardRow";
 import { compensateEdits, type ElementEdits } from "./editable";
 import { easeOutQuad, entranceExitSec } from "./motion";
 import type { RevealTiming } from "./reveal";
@@ -40,6 +41,7 @@ const COMPONENTS: Record<
   ChatMock,
   ScreenshotFrame,
   BulletList,
+  CardRow,
   ClipScene,
 };
 

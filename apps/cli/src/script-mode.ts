@@ -14,24 +14,24 @@ import { z } from "zod/v4";
 import {
   ALIGN_FLOOR,
   MAX_SCRIPT_CUES,
-  MomentSchema,
-  PlannerComponentIdSchema,
   ProductionScriptSchema,
   SceneSchema,
+  ScriptComponentIdSchema,
+  ScriptMomentSchema,
   TimeMap,
   applyCleanupChoices,
   applyUserCuts,
   cutWordIndices,
-  plannerComponentIds,
+  scriptComponentIds,
   type AlignedCue,
   type FramingContext,
   type LlmEffort,
-  type Moment,
   type OverrideDoc,
   type PlannerComponentId,
   type ProductionScript,
   type Scene,
   type ScriptCue,
+  type ScriptMoment,
   type Segment,
   type SkippedCue,
 } from "@ossclip/core";
@@ -114,9 +114,12 @@ export function scriptCueProblems(cues: readonly ScriptCue[], scriptPath: string
       `the script has ${cues.length} cues; at most ${MAX_SCRIPT_CUES} are supported — split the video or merge cues`,
     );
   }
-  const valid = plannerComponentIds().join(", ");
+  // The script menu, the same schema `planScriptMoments` parses a hint with:
+  // a `[CardRow]` is valid here and only here (plan Task 4), and a typo is
+  // told the script-only names too.
+  const valid = scriptComponentIds().join(", ");
   for (const cue of cues) {
-    if (cue.hint.kind === "component" && !PlannerComponentIdSchema.safeParse(cue.hint.component).success) {
+    if (cue.hint.kind === "component" && !ScriptComponentIdSchema.safeParse(cue.hint.component).success) {
       problems.push(`script line ${cue.line}: unknown component [${cue.hint.component}]; valid names: ${valid}`);
     }
     if (cue.hint.kind === "clip") {
@@ -322,11 +325,13 @@ export function scriptPlanCacheKeyCandidates(
  * footage cues off them, and `--sfx` plans against them), the hook for the
  * cover, and the issues for the report. Parsed on read, never trusted: a
  * malformed file is a re-plan, not a crash. Moments are not capped at the
- * beat sheet's 24 — a script may carry 40 cues.
+ * beat sheet's 24 — a script may carry 40 cues. `ScriptMomentSchema`, not
+ * `MomentSchema`: a plan holding a CardRow would fail the planner enum and
+ * re-plan on every run.
  */
 export const ScriptPlanCacheSchema = z.object({
   hook: z.string(),
-  moments: z.array(MomentSchema),
+  moments: z.array(ScriptMomentSchema),
   scenes: z.array(SceneSchema),
   issues: z.array(z.object({ moment: z.number().int(), issue: z.string() })),
   /** Scenes whose props call fell back to a TitleCard — the "planned" line's count. */
@@ -375,7 +380,7 @@ export function cueOutcomes(parts: {
   aligned: readonly AlignedCue[];
   skipped: readonly SkippedCue[];
   /** The plan's final moments (after normalization). */
-  moments: readonly Moment[];
+  moments: readonly ScriptMoment[];
   /** The planned scenes, clip scenes included. */
   scenes: readonly Scene[];
   /** The assembled cues — output-timed. */

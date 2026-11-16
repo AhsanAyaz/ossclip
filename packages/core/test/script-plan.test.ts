@@ -145,6 +145,39 @@ describe("planScriptMoments", () => {
     await expect(bad).rejects.toBeInstanceOf(ScriptPlanError);
   });
 
+  it("a [CardRow] hint is a script component; [CardRows] lists CardRow among the valid names", async () => {
+    const provider = new StubProvider(() => ({
+      cues: [{ id: "cue-0-test", sceneKind: "TitleCard", onScreenCopy: "steps" }],
+    }));
+    const { moments } = await planScriptMoments(
+      provider,
+      { aligned: [at(cue(0, "three steps", { kind: "component", component: "CardRow" }))], clips: [] },
+      TRANSCRIPT,
+    );
+    expect(moments[0]!.sceneKind).toBe("CardRow");
+
+    const bad = planScriptMoments(
+      new StubProvider(() => ({ cues: [] })),
+      { aligned: [at(cue(0, "x", { kind: "component", component: "CardRows" }))], clips: [] },
+      TRANSCRIPT,
+    );
+    await expect(bad).rejects.toBeInstanceOf(ScriptPlanError);
+    await expect(bad).rejects.toThrow(/valid names: .*CardRow/);
+  });
+
+  it("a reply of sceneKind \"CardRow\" plans a CardRow moment (script-only, §161)", async () => {
+    const provider = new StubProvider(() => ({
+      cues: [{ id: "cue-0-test", sceneKind: "CardRow", onScreenCopy: "DRAFT REVIEW SHIP" }],
+    }));
+    const { moments, issues } = await planScriptMoments(
+      provider,
+      { aligned: [at(cue(0, "the three steps"))], clips: [] },
+      TRANSCRIPT,
+    );
+    expect(moments.map((m) => m.sceneKind)).toEqual(["CardRow"]);
+    expect(issues).toEqual([]);
+  });
+
   it(`more than ${MAX_SCRIPT_CUES} aligned cues is an error stating the count`, async () => {
     const aligned = Array.from({ length: 41 }, (_, i) => ({ ...at(cue(i, `c${i}`)), startWord: 0, endWord: 0 }));
     const provider = new StubProvider(() => ({ cues: [] }));
@@ -223,6 +256,15 @@ describe("planScriptMoments", () => {
     expect(user).toContain("- BulletList:");
     expect(user).not.toContain("ClipScene");
     expect(system).toMatch(/footage/i);
+  });
+
+  it("the script menu offers the script-only cards after the nine (§161, plan Task 4)", async () => {
+    const provider = new StubProvider(() => ({ cues: [] }));
+    await planScriptMoments(provider, { aligned: [at(cue(0, "A big claim"))], clips: [] }, TRANSCRIPT);
+    const { user } = provider.calls[0]!;
+    expect(user).toContain("- CardRow:");
+    expect(user).not.toContain("ClipScene");
+    expect(user.indexOf("- CardRow:")).toBeGreaterThan(user.indexOf("- BulletList:"));
   });
 });
 
@@ -312,6 +354,23 @@ describe("produceScenes with a script", () => {
     expect(byId["scene-2"]!.component).toBe("StatCard");
     expect(result.beatSheet.hook).toBe(result.beatSheet.moments[0]!.onScreenCopy);
     expect(result.graphics).toEqual({ asked: 3, delivered: 3 });
+  });
+
+  it("a CardRow cue becomes a CardRow scene with the props call's copy", async () => {
+    const cardScript = parseScript("🎬 [CardRow] the three steps\n🗣️ alpha beta gamma");
+    const { aligned: cardAligned } = alignCues(cardScript, TRANSCRIPT);
+    const { provider, seen } = spy();
+    const result = await produceScenes(provider, {
+      transcript: TRANSCRIPT,
+      outputDuration: 3.6,
+      script: { aligned: cardAligned, clips: [] },
+    });
+    expect(seen).toContain("CardRow_props");
+    expect(result.scenes.map((s) => s.component)).toEqual(["CardRow"]);
+    expect(result.failures).toEqual([]);
+    // Full frame over the speaker: the registry's own layout.
+    expect(result.scenes[0]!.layout).toBe("full-bleed");
+    expect(result.beatSheet.moments[0]!.sceneKind).toBe("CardRow");
   });
 
   it("rejects --clip together with --script", async () => {

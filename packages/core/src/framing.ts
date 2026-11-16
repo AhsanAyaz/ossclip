@@ -1,7 +1,7 @@
 import type { Transcript } from "./schema";
 import { SCENE_REGISTRY } from "./scene-registry";
 import type { Layout } from "./scene-schema";
-import type { Moment } from "./producer/beats";
+import type { Moment, ScriptMoment } from "./producer/beats";
 import { headFracInSlot } from "./normalize";
 
 /**
@@ -195,11 +195,13 @@ export interface LayoutRepair {
  * candidate is taken and the issue says so, because a scene that trims a
  * little is still better than silently rendering the worst option.
  */
-export function repairMomentLayouts(
-  moments: readonly Moment[],
+export function repairMomentLayouts<M extends ScriptMoment = Moment>(
+  // Generic for `normalizeBeatSheet`'s reason: a script's moments keep their
+  // script-only kinds, a beat sheet's stay `Moment`s (plan Task 4).
+  moments: readonly M[],
   transcript: Transcript,
   ctx: FramingContext,
-): { moments: Moment[]; issues: LayoutRepair[] } {
+): { moments: M[]; issues: LayoutRepair[] } {
   const issues: LayoutRepair[] = [];
   const out = moments.map((m, idx) => {
     if (m.sceneKind === "none") return m;

@@ -218,6 +218,16 @@ export function revealItemTexts(
       });
     case "StrikethroughReveal":
       return arr(props.lines).map(textOf);
+    case "CardRow":
+      // One item per card — the card is what pops in — matching on its
+      // title OR its sub-line, as alternatives (TerminalMock's shape). An
+      // absent sub is left out rather than kept as "": an empty alternative
+      // never matches, but it is also not a text the card shows.
+      return arr(props.cards).map((c) => {
+        const card = c && typeof c === "object" ? (c as Record<string, unknown>) : {};
+        const sub = str(card.sub);
+        return sub ? [str(card.text), sub] : [str(card.text)];
+      });
     default:
       return null;
   }
@@ -237,8 +247,10 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
     case "TerminalMock":
     case "StrikethroughReveal":
     case "ChatMock":
-      // A TerminalMock window's alternatives are each an entry text; ChatMock's
-      // keyword arrives through revealItemTexts' single-bubble case.
+    case "CardRow":
+      // A TerminalMock window's (or a CardRow card's) alternatives are each an
+      // entry text; ChatMock's keyword arrives through revealItemTexts'
+      // single-bubble case.
       texts = (revealItemTexts(component, props) ?? []).flatMap((item) =>
         typeof item === "string" ? [item] : [...item],
       );

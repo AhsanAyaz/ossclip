@@ -3,7 +3,7 @@ import type { Transcript } from "../schema";
 import type { Layout, Scene, SceneComponentId } from "../scene-schema";
 import { SCENE_REGISTRY, llmPropsSchema } from "../scene-registry";
 import type { LlmProvider } from "./provider";
-import type { Moment } from "./beats";
+import type { Moment, ScriptMoment } from "./beats";
 import { entryTexts, locateSpoken, revealItemTexts } from "../reveal-match";
 import {
   layoutFeasible,
@@ -77,7 +77,7 @@ GROUNDING — hard rules:
 - The transcript is automatic speech recognition output and may contain mishearings. An unfamiliar proper noun is more likely a mistranscription of a common phrase than a real company or product — prefer the common-sense reading ("code churn", not "CodeChun") and never promote a suspected mishearing into a name or label.`;
 
 function buildPropsPrompt(
-  moment: Moment,
+  moment: Moment | ScriptMoment,
   transcript: Transcript,
   cut?: ReadonlySet<number>,
 ): string {
@@ -113,7 +113,7 @@ function buildPropsPrompt(
  */
 async function generateScenePropsBatch(
   provider: LlmProvider,
-  moments: readonly Moment[],
+  moments: readonly (Moment | ScriptMoment)[],
   indices: readonly number[],
   transcript: Transcript,
   cut?: ReadonlySet<number>,
@@ -177,7 +177,10 @@ async function generateScenePropsBatch(
  */
 export async function generateScenes(
   provider: LlmProvider,
-  moments: readonly Moment[],
+  // A script's moments may name a script-only card (plan Task 4); the props
+  // call is the same for every component — `${component}_props` and its
+  // LLM-facing schema — so nothing below branches on the mode.
+  moments: readonly (Moment | ScriptMoment)[],
   transcript: Transcript,
   opts: {
     framing?: FramingContext;
@@ -207,7 +210,7 @@ export async function generateScenes(
    *      `repairMomentLayouts` would reach).
    */
   const seen = new Map<SceneComponentId, number>();
-  const layoutFor = (component: SceneComponentId, moment: Moment): Layout => {
+  const layoutFor = (component: SceneComponentId, moment: Moment | ScriptMoment): Layout => {
     const meta = SCENE_REGISTRY[component];
     const n = seen.get(component) ?? 0;
     seen.set(component, n + 1);

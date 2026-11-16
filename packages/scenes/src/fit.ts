@@ -33,6 +33,10 @@ const SELF_FITTING = new Set<SceneComponentId>([
   // letterboxes itself with `objectFit: contain`, so a stage scale has
   // nothing to solve and could only shrink the box it plays in.
   "ClipScene",
+  // Full-frame pattern scenes (§161): each solves its own type and its 100 px
+  // margin against the whole frame (`cardRowMetrics`), so a stage scale
+  // would only move the margin it was solved for.
+  "CardRow",
 ]);
 
 /**
@@ -186,6 +190,15 @@ export function estimateHeightPx(
       // No text to lay out, and self-fitting above, so this estimate never
       // sizes it; 0 keeps the switch exhaustive without inventing a height.
       return 0;
+    case "CardRow": {
+      // Self-fitting, so this never sizes it either; the row's own model is
+      // answered rather than `heightPx` (which defaults to Infinity here).
+      const cards = arr(props.cards).map((c) => {
+        const card = (c ?? {}) as Record<string, unknown>;
+        return { text: str(card.text), sub: str(card.sub), icon: str(card.icon) };
+      });
+      return cardRowMetrics(cards, widthPx, heightPx).blockHeightPx;
+    }
   }
 }
 
@@ -564,4 +577,235 @@ export function fitScale(
     else hi = mid;
   }
   return lo;
+}
+
+// ---- CardRow (§161, plan Task 4) -------------------------------------------
+
+/**
+ * Clear space on every side of a full-frame pattern scene, at the 1080 px
+ * short edge every composition has (resolution.ts keeps it 1080 and scales
+ * the render instead). Scaled by the short edge, so the margin is the same
+ * share of the frame in 16:9 and 9:16 — 100 px in both (plan Global
+ * Constraints: "keep 100 px clear on all sides").
+ */
+export const PATTERN_MARGIN_PX = 100;
+/** Between cards, both aspects (plan Task 4, "40 px gap"). */
+const CARD_GAP_PX = 40;
+/** The `Card` primitive's box, mirrored: 5 px border, padding 36 / 40. */
+const CARD_BORDER_PX = 5;
+const CARD_PAD_Y_PX = 36;
+const CARD_PAD_X_PX = 40;
+/**
+ * The largest a card is ever drawn: the highlight's `bump` peaks at 1.15
+ * (motion.ts), above `popScale`'s ~1.10 overshoot. The layout reserves it,
+ * so the margin holds on EVERY frame, not only once the row has settled —
+ * an edge card mid-bump would otherwise reach 70 px from the frame.
+ */
+export const CARD_PEAK_SCALE = 1.15;
+/**
+ * Widest a card gets in a row or a column. A two-card row at the full width
+ * would be two 840 px slabs around a word each; capped, a sparse row sits
+ * centred with the slate around it, as the playbook's shots do.
+ */
+const CARD_MAX_W_ROW = 520;
+const CARD_MAX_W_COLUMN = 760;
+/** Title and sub-line type: the floor is the playbook's 34 px minimum. */
+const CARD_TEXT_MIN_PX = 34;
+const CARD_TITLE_MAX_PX = 64;
+const CARD_SUB_MAX_PX = 40;
+/** Exported so the component sets the line heights this model charges. */
+export const CARD_TITLE_LH = 1.1;
+export const CARD_SUB_LH = 1.3;
+const CARD_ICON_GAP_PX = 18;
+const CARD_SUB_GAP_PX = 12;
+/** A card's title and sub-line each wrap to at most this many lines. */
+const CARD_MAX_LINES = 2;
+
+/**
+ * Advance width of a run of Inter at weight 900, in ems, per character
+ * class. Conservative like the rest of this file (air rather than overflow):
+ * capitals and figures at 0.74, lower case at 0.62, the rest narrower.
+ */
+function displayWidthEm(text: string): number {
+  let w = 0;
+  for (const ch of text) {
+    if (ch === " ") w += 0.28;
+    else if (/[A-Z0-9]/.test(ch)) w += 0.74;
+    else if (/[a-z]/.test(ch)) w += 0.62;
+    else w += 0.45;
+  }
+  return w;
+}
+/** DejaVu Sans Mono's advance is 1233/2048 em; rounded up. */
+const monoWidthEm = (text: string): number => [...text].length * 0.61;
+
+/**
+ * Lines `text` wraps to in `widthPx` at `fontPx`, greedy on spaces, and
+ * whether every word fit on a line of its own. A word wider than the line
+ * is broken by the card's `overflowWrap: anywhere` (counted as the lines it
+ * takes), but a solve that needs that is rejected while a smaller font
+ * would avoid it.
+ */
+function wrapLines(
+  text: string,
+  fontPx: number,
+  widthPx: number,
+  widthEm: (s: string) => number,
+): { lines: number; wordsFit: boolean } {
+  const words = text.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0) return { lines: 0, wordsFit: true };
+  const space = widthEm(" ") * fontPx;
+  let lines = 1;
+  let used = 0;
+  let wordsFit = true;
+  for (const word of words) {
+    const w = widthEm(word) * fontPx;
+    if (w > widthPx) {
+      wordsFit = false;
+      // The broken word starts its own line(s) and leaves the last one partly full.
+      lines += (used > 0 ? 1 : 0) + Math.ceil(w / widthPx) - 1;
+      used = w % widthPx;
+      continue;
+    }
+    if (used === 0) used = w;
+    else if (used + space + w <= widthPx) used += space + w;
+    else {
+      lines++;
+      used = w;
+    }
+  }
+  return { lines, wordsFit };
+}
+
+export interface CardRowMetrics {
+  /** One row in a landscape frame, one column in a portrait one. */
+  mode: "row" | "column";
+  marginPx: number;
+  gapPx: number;
+  cardWidthPx: number;
+  /** Every card's min height — the tallest card's, so the set reads as one. */
+  cardHeightPx: number;
+  titlePx: number;
+  subPx: number;
+  /** 0 when no card has an icon. */
+  iconPx: number;
+  iconGapPx: number;
+  subGapPx: number;
+  /**
+   * Every word of every title (sub-line) fits a line at the solved size. The
+   * component then keeps each word whole — a browser otherwise breaks after
+   * a hyphen ("--" / "tag"), which this model does not count and a reader
+   * does not expect. False only below the floor, where breaking is the
+   * lesser evil (`overflowWrap: anywhere`).
+   */
+  titleWordsFit: boolean;
+  subWordsFit: boolean;
+  /** The settled row or column, gaps included, before any scale. */
+  blockWidthPx: number;
+  blockHeightPx: number;
+}
+
+/**
+ * CardRow's layout, solved against the whole frame it is drawn in (it is
+ * `fullFrame`, so `widthPx`×`heightPx` IS the frame). ONE model for the
+ * component and `estimateHeightPx`, the `chatMetrics` rule.
+ *
+ * Every card gets the same width and the same type, so the set reads as
+ * parallel things. The sub-line size is the largest from 40 down to the
+ * 34 px floor at which every sub-line fits two lines with no word broken;
+ * the title size is the largest from 64 down to 34 at which every title
+ * does the same and the tallest card fits the height left after the margin
+ * and the peak-scale reserve. Below the floor nothing shrinks further: a
+ * sub-line takes a third line, and a word too long for the card breaks
+ * rather than leaving it.
+ */
+export function cardRowMetrics(
+  cards: readonly { text: string; sub?: string; icon?: string }[],
+  widthPx: number,
+  heightPx: number,
+): CardRowMetrics {
+  const n = Math.max(1, cards.length);
+  // `estimateHeightPx` may be called with no height budget (Infinity): solve
+  // it as a portrait box twice as tall as it is wide, a column with room to
+  // spare, so every number below stays finite.
+  const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
+  const mode: CardRowMetrics["mode"] = widthPx >= finiteH ? "row" : "column";
+  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const gapPx = CARD_GAP_PX;
+  const reserve = CARD_PEAK_SCALE - 1;
+  const availW = widthPx - 2 * marginPx;
+  const availH = finiteH - 2 * marginPx;
+  // An edge card at peak scale reaches (reserve / 2) × its size past its box
+  // on the outer side, so the run of cards is solved with one `reserve` of a
+  // card's size added to it.
+  const cardWidthPx = Math.floor(
+    mode === "row"
+      ? Math.min(CARD_MAX_W_ROW, (availW - gapPx * (n - 1)) / (n + reserve))
+      : Math.min(CARD_MAX_W_COLUMN, availW / (1 + reserve)),
+  );
+  const maxCardH =
+    mode === "row" ? availH / (1 + reserve) : (availH - gapPx * (n - 1)) / (n + reserve);
+  const innerW = cardWidthPx - 2 * CARD_BORDER_PX - 2 * CARD_PAD_X_PX;
+  const hasIcon = cards.some((c) => c.icon !== undefined && c.icon !== "" && c.icon !== "none");
+
+  // The sub-line is solved on its own, then held under the title: a
+  // 24-character mono line can need three lines at the floor in a four-card
+  // row, and coupling the two would drag every title to the floor with it
+  // when only the sub-line could not do better.
+  const subFits = (subPx: number): boolean =>
+    cards.every((c) => {
+      if (!c.sub) return true;
+      const sub = wrapLines(c.sub, subPx, innerW, monoWidthEm);
+      return sub.wordsFit && sub.lines <= CARD_MAX_LINES;
+    });
+  let subBest = CARD_SUB_MAX_PX;
+  while (subBest > CARD_TEXT_MIN_PX && !subFits(subBest)) subBest -= 1;
+
+  const solve = (titlePx: number) => {
+    const subPx = Math.max(CARD_TEXT_MIN_PX, Math.min(subBest, Math.round(titlePx * 0.62)));
+    // The icons are 24-unit line drawings with a 2-unit stroke, so they read
+    // light; drawn at ~1.25× the title they balance it (stills, plan Task 4).
+    const iconPx = hasIcon ? Math.max(56, Math.min(80, Math.round(titlePx * 1.25))) : 0;
+    let fits = true;
+    let tallest = 0;
+    for (const card of cards) {
+      const title = wrapLines(card.text, titlePx, innerW, displayWidthEm);
+      const sub = card.sub ? wrapLines(card.sub, subPx, innerW, monoWidthEm) : null;
+      if (!title.wordsFit || title.lines > CARD_MAX_LINES) fits = false;
+      const iconH = card.icon && card.icon !== "none" ? iconPx + CARD_ICON_GAP_PX : 0;
+      const h =
+        2 * (CARD_BORDER_PX + CARD_PAD_Y_PX) +
+        iconH +
+        Math.max(1, title.lines) * titlePx * CARD_TITLE_LH +
+        (sub && sub.lines > 0 ? CARD_SUB_GAP_PX + sub.lines * subPx * CARD_SUB_LH : 0);
+      tallest = Math.max(tallest, h);
+    }
+    return { subPx, iconPx, tallest: Math.ceil(tallest), fits: fits && tallest <= maxCardH };
+  };
+
+  let titlePx = CARD_TITLE_MAX_PX;
+  let solved = solve(titlePx);
+  while (!solved.fits && titlePx > CARD_TEXT_MIN_PX) {
+    titlePx -= 1;
+    solved = solve(titlePx);
+  }
+  const cardHeightPx = solved.tallest;
+  const wordsFit = (field: "text" | "sub", px: number, widthEm: (s: string) => number) =>
+    cards.every((c) => wrapLines(c[field] ?? "", px, innerW, widthEm).wordsFit);
+  return {
+    mode,
+    marginPx,
+    gapPx,
+    cardWidthPx,
+    cardHeightPx,
+    titlePx,
+    subPx: solved.subPx,
+    iconPx: solved.iconPx,
+    iconGapPx: CARD_ICON_GAP_PX,
+    subGapPx: CARD_SUB_GAP_PX,
+    titleWordsFit: wordsFit("text", titlePx, displayWidthEm),
+    subWordsFit: wordsFit("sub", solved.subPx, monoWidthEm),
+    blockWidthPx: mode === "row" ? n * cardWidthPx + gapPx * (n - 1) : cardWidthPx,
+    blockHeightPx: mode === "row" ? cardHeightPx : n * cardHeightPx + gapPx * (n - 1),
+  };
 }

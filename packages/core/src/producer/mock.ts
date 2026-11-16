@@ -170,6 +170,17 @@ export class MockProvider implements LlmProvider {
       },
       ChatMock_props: { messages: [{ from: "user", text: "can it cut my ums?" }, { from: "agent", text: "already did." }] },
       ScreenshotFrame_props: { label: "REVIEW STATUS: TODAY", kenBurns: true },
+      // Script-only (§161): reached only through a script cue's props call,
+      // since no beat sheet can name CardRow (its sceneKind is the planner
+      // enum) and `--force-component` parses planner ids only.
+      CardRow_props: {
+        cards: [
+          { text: "Transcribe", sub: "words + timings", icon: "doc" },
+          { text: "Cut", sub: "fillers removed", icon: "bolt" },
+          { text: "Produce", sub: "scenes planned", icon: "robot" },
+        ],
+        highlight: 2,
+      },
     };
     const props = canned[schemaName];
     if (!props) throw new Error(`mock provider: unknown schema ${schemaName}`);

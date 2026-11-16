@@ -44,9 +44,16 @@ describe("scalarPropControls", () => {
     expect(keys).not.toContain("fanOut");
   });
 
+  it("CardRow's cards are edited through their card-N ids, not a control here (§161)", () => {
+    const keys = scalarPropControls("CardRow").map((c) => c.key);
+    expect(keys).not.toContain("cards");
+    // It reveals one card per beat, so it gets the reveal controls.
+    expect(keys).toEqual(expect.arrayContaining(["reveal", "pacing", "revealSpeed", "entrance"]));
+  });
+
   it("every registry component resolves without throwing", () => {
     for (const id of ["TitleCard", "StatCard", "RuleCard", "StrikethroughReveal",
-      "FlowDiagram", "TerminalMock", "ChatMock", "ScreenshotFrame", "BulletList"] as const) {
+      "FlowDiagram", "TerminalMock", "ChatMock", "ScreenshotFrame", "BulletList", "CardRow"] as const) {
       expect(() => scalarPropControls(id)).not.toThrow();
     }
   });

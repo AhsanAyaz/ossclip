@@ -11,7 +11,7 @@ import {
   type SceneCue,
   type Segment,
 } from "@ossclip/core/browser";
-import { Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
+import { DYNAMIC_ID, Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
 import { onSaveEffect } from "../src/save";
 
@@ -59,6 +59,51 @@ describe("BulletList items — the item-N id family (R16 §67)", () => {
   it("reads an item back for the panel's text field", () => {
     expect(elementTextOf("item-2", { items: ["A", "B", "C"] })).toBe("C");
     expect(elementTextOf("item-0", {})).toBeNull();
+  });
+});
+
+describe("CardRow cards — the card-N id family (§161, plan Task 4)", () => {
+  const props = {
+    cards: [
+      { text: "Draft", sub: "one", icon: "doc" },
+      { text: "Review", icon: "none" },
+    ],
+  };
+
+  it("is one of the dynamic ids — the single regex the Inspector imports", () => {
+    expect(DYNAMIC_ID.test("card-0")).toBe(true);
+    expect(DYNAMIC_ID.test("cards-0")).toBe(false);
+  });
+
+  it("reads text, then sub on a second line", () => {
+    expect(elementTextOf("card-0", props)).toBe("Draft\none");
+    expect(elementTextOf("card-1", props)).toBe("Review");
+    expect(elementTextOf("card-2", props)).toBeNull();
+  });
+
+  it("writes the first line to text and the second to sub, leaving the icon alone", () => {
+    expect(buildArrayPatch("card-1", props, "Ship\nnpm publish")).toEqual({
+      cards: [props.cards[0], { text: "Ship", sub: "npm publish", icon: "none" }],
+    });
+  });
+
+  it("no second line removes sub; an empty one keeps a newline the textarea can type into", () => {
+    expect(buildArrayPatch("card-0", props, "Draft")).toEqual({
+      cards: [{ text: "Draft", icon: "doc" }, props.cards[1]],
+    });
+    const typing = buildArrayPatch("card-1", props, "Review\n")!;
+    expect(typing).toEqual({ cards: [props.cards[0], { text: "Review", icon: "none", sub: "" }] });
+    // The round trip keeps the newline the author just typed.
+    expect(elementTextOf("card-1", typing)).toBe("Review\n");
+  });
+
+  it("truncates to the schema's 18 and 24 characters and drops extra lines", () => {
+    const patch = buildArrayPatch("card-0", props, `${"t".repeat(30)}\n${"s".repeat(30)}\nthird`)!;
+    expect((patch.cards as Array<Record<string, unknown>>)[0]).toEqual({
+      text: "t".repeat(18),
+      sub: "s".repeat(24),
+      icon: "doc",
+    });
   });
 });
 

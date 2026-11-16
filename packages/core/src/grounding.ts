@@ -42,6 +42,11 @@ const CHECKED_FIELDS: Record<string, string[]> = {
   ScreenshotFrame: ["label"],
   // A clip carries no copy at all — its props are a file and a length.
   ClipScene: [],
+  // A pattern scene lists only its top-level PLAIN-STRING fields (§161,
+  // plan Task 4 checklist 5): `stringsOf` walks into objects and would read
+  // an enum value inside them — a CardRow card's `icon: "robot"` — as copy.
+  // So a component whose copy all lives inside objects (CardRow's `cards`)
+  // has no entry at all, and its copy goes unchecked rather than mis-checked.
 };
 
 /**

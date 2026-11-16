@@ -1,12 +1,20 @@
 import { z } from "zod/v4";
 import type { Transcript, Word } from "../schema";
 import { SFX_MEME_TAG, type LoadedSfxSound } from "../sfx-pack";
-import { cappedText, type BeatSheet } from "./beats";
+import { cappedText, type ScriptBeatSheet } from "./beats";
 // The scene-id formula, imported rather than restated: the ids this prompt
 // offers must be the ones `generateScenes` actually mints (see
 // `momentSceneId`).
 import { momentSceneId } from "./scene-props";
 import type { LlmProvider } from "./provider";
+
+/**
+ * The graphics plan the placement call reads: a beat sheet, or a script run's
+ * sheet whose moments may name a script-only card (plan Task 4). Only `hook`
+ * and the moments' spans and kinds are read, and a kind is printed as-is, so
+ * the wider type changes nothing for a beat sheet (every `BeatSheet` is one).
+ */
+type SfxSheet = ScriptBeatSheet;
 
 /**
  * Call 3 — sound-effect placement (SFX plan, Approach A): a SEPARATE call
@@ -181,7 +189,7 @@ export function eligibleSfxSounds(
  * `normalizeSfxPlan` (which ENFORCES them) — `sfxBudget`'s rule: two copies
  * is how the model gets shown a menu the deterministic pass then rejects.
  */
-export function sfxSceneIds(sheet: BeatSheet): string[] {
+export function sfxSceneIds(sheet: SfxSheet): string[] {
   return sheet.moments.flatMap((m, i) => (m.sceneKind === "none" ? [] : [momentSceneId(i)]));
 }
 
@@ -262,7 +270,7 @@ Rules:
  */
 export function buildSfxUserPrompt(
   transcript: Transcript,
-  sheet: BeatSheet,
+  sheet: SfxSheet,
   sounds: readonly LoadedSfxSound[],
   level: SfxLevel,
   timeline?: SfxTimeline,
@@ -329,7 +337,7 @@ export function normalizeSfxPlan(
   transcript: Transcript,
   sounds: readonly LoadedSfxSound[],
   level: SfxLevel,
-  sheet: BeatSheet,
+  sheet: SfxSheet,
   timeline?: SfxTimeline,
 ): { plan: SfxPlan; issues: SfxValidationIssue[] } {
   const issues: SfxValidationIssue[] = [];
@@ -485,7 +493,7 @@ export function formatSfxAccounting(
 export async function generateSfxPlan(
   provider: LlmProvider,
   transcript: Transcript,
-  sheet: BeatSheet,
+  sheet: SfxSheet,
   sounds: readonly LoadedSfxSound[],
   level: SfxLevel,
   timeline?: SfxTimeline,
