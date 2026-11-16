@@ -6,6 +6,7 @@ import {
   TERMINAL_TYPE_CPS,
   isTypedLine,
   terminalDelays,
+  typedLineIndex,
   terminalLineState,
   terminalTimeline,
   typedLineText,
@@ -50,6 +51,25 @@ describe("isTypedLine / typedLineText", () => {
     expect(typedLineText("$ run tests", 9)).toBe("$ run tests");
     expect(typedLineText("> a😀b", 2 / TERMINAL_TYPE_CPS)).toBe("> a😀");
   });
+
+  it("types a line without a prompt mark from its first character", () => {
+    // The acceptance run's window (§161): a slash command, no `$ `.
+    expect(typedLineText("/egm:egm-brainstorm", 0)).toBe("");
+    expect(typedLineText("/egm:egm-brainstorm", -1)).toBe("");
+    expect(typedLineText("/egm:egm-brainstorm", 0.125)).toBe("/egm");
+    expect(typedLineText("/egm:egm-brainstorm", 9)).toBe("/egm:egm-brainstorm");
+    // "$no-space" has no mark, so its "$n" is typed, not printed.
+    expect(typedLineText("$no-space", 1 / TERMINAL_TYPE_CPS)).toBe("$");
+  });
+});
+
+describe("typedLineIndex", () => {
+  it("is the first prompt line, else line 0", () => {
+    expect(typedLineIndex(["# first", "$ ls", "> help"])).toBe(1);
+    expect(typedLineIndex(["/egm:egm-brainstorm", "Initial Critique & Risks"])).toBe(0);
+    expect(typedLineIndex(["▸ a"])).toBe(0);
+    expect(typedLineIndex([])).toBeNull();
+  });
 });
 
 describe("terminalTimeline", () => {
@@ -89,25 +109,34 @@ describe("terminalTimeline", () => {
     const gate = Math.ceil(s.windows[0]!.typeEndSec * FPS);
     expect(s.windows[1]!.enterFrame).toBe(gate);
     expect(s.windows[1]!.typeStartSec).toBeCloseTo((gate + 15) / FPS, 9);
-    // Window 2 has no typed line; it is pushed by window 1's typing.
+    // Window 2 has no prompt line: it types its line 0, once window 1 has typed.
     const gate2 = Math.ceil(s.windows[1]!.typeEndSec * FPS);
     expect(s.windows[2]!.enterFrame).toBe(Math.max(12 + (gate - 6), gate2));
-    expect(s.windows[2]!.typed).toBeNull();
+    expect(s.windows[2]!.typed).toBe(0);
     expect(s.windows[2]!.lineAtSec).toEqual([s.windows[2]!.enterFrame / FPS]);
   });
 
-  it("leaves a terminal with no prompt line on its own delays", () => {
-    const props = parse([{ lines: ["▸ a"] }, { lines: ["▸ b"] }], { fanOut: "OUT" });
+  it("types line 0 of a window with no prompt line, every character of it", () => {
+    // The acceptance run's window (§161): without this rule nothing typed.
+    const props = parse([{ lines: ["/egm:egm-brainstorm", "Initial Critique & Risks", "3 risks found"] }]);
     const s = terminalTimeline(props, FPS);
-    expect(s.windows.map((w) => w.enterFrame)).toEqual(terminalDelays(props, FPS).windows);
-    expect(s.tail).toBe(terminalDelays(props, FPS).tail);
-    expect(s.windows.every((w) => w.typed === null)).toBe(true);
+    const w = s.windows[0]!;
+    expect(w.typed).toBe(0);
+    expect(w.typeStartSec).toBeCloseTo(0.5, 9);
+    // 19 characters at 32 cps: no two-character mark is taken off.
+    expect(w.typeEndSec).toBeCloseTo(0.5 + 19 / 32, 9);
+    expect(w.lineAtSec[0]).toBe(0);
+    expect(w.lineAtSec[1]).toBeCloseTo(w.typeEndSec, 9);
+    expect(w.lineAtSec[2]).toBeCloseTo(w.typeEndSec + TERMINAL_LINE_GAP_SEC, 9);
   });
 
-  it("does not hold a later window for an earlier one that types nothing", () => {
-    const s = terminalTimeline(parse([{ lines: ["▸ a"] }, { lines: ["$ ls"] }]), FPS);
-    expect(s.windows[1]!.enterFrame).toBe(6);
-    expect(s.windows[1]!.typeStartSec).toBeCloseTo(21 / FPS, 9);
+  it("types every window exactly once, so no window is left static", () => {
+    const props = parse([{ lines: ["▸ a"] }, { lines: ["▸ b", "$ ls"] }], { fanOut: "OUT" });
+    const s = terminalTimeline(props, FPS);
+    expect(s.windows.map((w) => w.typed)).toEqual([0, 1]);
+    // Window 2 waits for window 1's three keystrokes.
+    expect(s.windows[1]!.enterFrame).toBe(Math.ceil((0.5 + 3 / 32) * FPS));
+    expect(s.tail).toBeGreaterThan(terminalDelays(props, FPS).tail);
   });
 
   it("is untouched by a cue long enough for it", () => {
@@ -144,6 +173,20 @@ describe("terminalTimeline", () => {
       // Whole by the limit: the command is never left half-typed at the cut.
       expect(terminalLineState(w, line, w.typed!, latest / FPS, s.cps).text).toBe(line);
     }
+  });
+});
+
+describe("terminalLineState: a line without a prompt mark", () => {
+  const line = "/egm:egm-brainstorm";
+  const s = terminalTimeline(parse([{ lines: [line, "Initial Critique & Risks"] }]), FPS);
+  const w = s.windows[0]!;
+  const at = (t: number) => terminalLineState(w, line, 0, t, s.cps);
+
+  it("is empty but laid out from the entrance, then types from its first character", () => {
+    expect(at(0.1)).toEqual({ text: "", shown: true, caret: false });
+    expect(at(w.typeStartSec)).toEqual({ text: "", shown: true, caret: true });
+    expect(at(w.typeStartSec + 4 / 32).text).toBe("/egm");
+    expect(at(w.typeEndSec)).toEqual({ text: line, shown: true, caret: true });
   });
 });
 

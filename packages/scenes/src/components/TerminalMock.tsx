@@ -34,23 +34,43 @@ export const TERMINAL_CARET_HOLD_SEC = 0.5;
 const MAX_TYPE_CPS = 2000;
 
 /**
- * A line the explainer look types out: a shell (`$ `) or REPL (`> `)
- * prompt. The two-character mark is the prompt; the rest is the command.
+ * A line with a shell (`$ `) or REPL (`> `) prompt. The two-character
+ * mark is the prompt, printed whole and drawn in `theme.info`; the rest is
+ * the command. The line the explainer look types is `typedLineIndex`'s,
+ * which prefers one of these but does not need one.
  */
 export function isTypedLine(line: string): boolean {
   return line.startsWith("$ ") || line.startsWith("> ");
 }
 
 /**
- * A typed line `tSec` after its typing began: the two-character prompt
- * mark is whole from the start (a prompt is printed, not typed), the
- * command follows `typedChars`. Code points, not UTF-16 units, so a typed
- * emoji is one keystroke (CtaCard's rule).
+ * The line a window types under the explainer look: the first prompt line,
+ * else line 0. Every window types once (§161): the acceptance run's
+ * planner wrote windows like `["/egm:egm-brainstorm", "Initial Critique &
+ * Risks"]` with no `$ `, and a prompt-only rule left every one of them
+ * static. Null only for a window with no lines, which the schema rejects.
+ */
+export function typedLineIndex(lines: readonly string[]): number | null {
+  if (lines.length === 0) return null;
+  const k = lines.findIndex(isTypedLine);
+  return k === -1 ? 0 : k;
+}
+
+/** The prompt mark `typedLineText` prints rather than types: two code points, or none. */
+const markLength = (line: string): number => (isTypedLine(line) ? 2 : 0);
+
+/**
+ * A typed line `tSec` after its typing began: a two-character prompt mark
+ * is whole from the start (a prompt is printed, not typed), the command
+ * follows `typedChars`; a line without a mark types from its first
+ * character. Code points, not UTF-16 units, so a typed emoji is one
+ * keystroke (CtaCard's rule).
  */
 export function typedLineText(line: string, tSec: number, cps = TERMINAL_TYPE_CPS): string {
   const chars = [...line];
-  const mark = chars.slice(0, 2).join("");
-  const rest = chars.slice(2);
+  const n = markLength(line);
+  const mark = chars.slice(0, n).join("");
+  const rest = chars.slice(n);
   return mark + rest.slice(0, typedChars(tSec, rest.length, cps)).join("");
 }
 
@@ -78,12 +98,12 @@ export function terminalDelays(
 export interface TerminalWindowPlan {
   /** Entrance delay in frames, as `terminalDelays` gives it, pushed later if needed. */
   enterFrame: number;
-  /** Index of the line typed out — the first `isTypedLine` — or null for none. */
+  /** Index of the line typed out (`typedLineIndex`); null only for a window with no lines. */
   typed: number | null;
   /** Typing runs [typeStartSec, typeEndSec); both are the entrance time without a typed line. */
   typeStartSec: number;
   typeEndSec: number;
-  /** When each line is shown. The typed line shows its prompt from the entrance. */
+  /** When each line is shown. The typed line shows its prompt (if any) from the entrance. */
   lineAtSec: number[];
 }
 
@@ -115,8 +135,8 @@ function scheduleAt(
     const enterFrame = Math.max(baseFrame + push, Math.ceil(gateSec * fps - 1e-9));
     push = enterFrame - baseFrame;
     const enterSec = enterFrame / fps;
-    const k = w.lines.findIndex(isTypedLine);
-    if (k === -1) {
+    const k = typedLineIndex(w.lines);
+    if (k === null) {
       windows.push({
         enterFrame,
         typed: null,
@@ -129,7 +149,8 @@ function scheduleAt(
     // Typing waits for the window to finish arriving: keystrokes into a
     // window still scaling up are not readable.
     const typeStartSec = (enterFrame + enter) / fps;
-    const typeEndSec = typeStartSec + Math.max(0, [...w.lines[k]!].length - 2) / cps;
+    const line = w.lines[k]!;
+    const typeEndSec = typeStartSec + Math.max(0, [...line].length - markLength(line)) / cps;
     windows.push({
       enterFrame,
       typed: k,
@@ -159,10 +180,10 @@ function scheduleEndSec(s: TerminalTimeline, fps: number): number {
 /**
  * The explainer look's TerminalMock schedule (§161, plan Task 8): each
  * window enters at its `terminalDelays` frame, but never before the
- * previous window's typing has ended; its first prompt line types out once
- * the window has arrived, and the lines after it land `TERMINAL_LINE_GAP_SEC`
- * apart from the last keystroke. Pure, so a still at frame N is the same
- * frame on every run.
+ * previous window's typing has ended; its first prompt line (line 0 when it
+ * has none, `typedLineIndex`) types out once the window has arrived, and
+ * the lines after it land `TERMINAL_LINE_GAP_SEC` apart from the last
+ * keystroke. Pure, so a still at frame N is the same frame on every run.
  *
  * With the cue's length known, everything appears by `latestEntryFrame` —
  * the limit every other entrance keeps. A cue too short for 32 cps is typed

@@ -295,4 +295,21 @@ export const STILL_FIXTURES: StillFixture[] = [
     },
     atSec: [1.1, 1.75, 3.0],
   },
+  // The acceptance run's window (§161): the planner wrote no `$ `, and the
+  // explainer look now types line 0 instead of nothing — from its first
+  // character, uncoloured, 0.5-1.09 s (19 characters at 32 cps). 0.8 s is
+  // mid-command ("/egm:egm-"); 3.0 s is settled. Classic draws it static.
+  {
+    component: "TerminalMock",
+    name: "no-prompt",
+    props: {
+      windows: [
+        {
+          title: "claude",
+          lines: ["/egm:egm-brainstorm", "Initial Critique & Risks", "3 risks found"],
+        },
+      ],
+    },
+    atSec: [0.8, 3.0],
+  },
 ];

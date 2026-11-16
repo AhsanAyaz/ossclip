@@ -1808,4 +1808,6 @@ Left open: clips inherit the scene exit's fade-and-slide, which shows as a downw
 *   Only Inter 800 and 900 ship, so lighter display text is drawn in ExtraBold.
 *   `mockLines` and other stylised copy are not checked against the transcript. `CardRow`'s cards and `PhoneDemo`'s caption words and pills live inside objects, which the grounding check does not read. `CtaCard`'s `channel` is a proper noun the speaker need not say.
 
+**Every explainer terminal window types a line.** In the acceptance run on real footage the script planner chose `TerminalMock` correctly but wrote windows like `{"title":"terminal","lines":["/egm:egm-brainstorm","Initial Critique & Risks"]}`. No line started with `$ ` or `> `, so under the explainer look nothing typed and the window sat still. The typed line is now `typedLineIndex`: the first line with a prompt mark, else line 0. A line with a mark still prints the mark whole in `theme.info` and types the rest; a line without one types from its first character. Classic motion does not call any of this: the default-theme TerminalMock stills were `cmp`-identical before and after, and so were the committed explainer stills, since each of their windows already has a prompt line. The new `no-prompt` still shows the acceptance run's window.
+
 Acceptance on the EGM script: _pending, Task 10_
