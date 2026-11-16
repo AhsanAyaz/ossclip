@@ -1326,6 +1326,18 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("sessions")
+    .description(
+      "find the Claude Code sessions older ossclip versions saved to your history, and remove them",
+    )
+    .option("--delete", "delete them (asks first)")
+    .option("--yes", "with --delete: skip the confirmation prompt")
+    .action(async (opts: { delete?: boolean; yes?: boolean }) => {
+      const { runSessions } = await import("./sessions");
+      await runSessions(opts);
+    });
+
+  program
     .command("telemetry")
     .description("show or change anonymous usage telemetry — on | off | status")
     .argument("[action]", "on | off | status (default: status)")
