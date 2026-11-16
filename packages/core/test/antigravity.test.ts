@@ -575,3 +575,51 @@ describe("agy model aliases", () => {
     expect(p.usage[0]?.model).toBe("gemini-3.8-flash-low");
   });
 });
+
+describe("AntigravityProvider deletes the conversations it creates (§157)", () => {
+  it("forgets every attempt's conversation, failed ones included", async () => {
+    const stub = stubAgy(
+      envelope({ conversation_id: "first", structured_output: { title: "" } }),
+      envelope({ conversation_id: "second", structured_output: { title: "OK" } }),
+    );
+    const forgotten: string[] = [];
+    const provider = new AntigravityProvider(undefined, stub.bin, {
+      forgetConversation: async (id) => void forgotten.push(id),
+    });
+    const out = await provider.complete({ system: "s", user: "u", schema, schemaName: "t" });
+    expect(out).toEqual({ title: "OK" });
+    expect(forgotten).toEqual(["first", "second"]);
+  });
+
+  it("keeps them when OSSCLIP_KEEP_LLM_SESSIONS=1", async () => {
+    const stub = stubAgy(envelope({ structured_output: { title: "OK" } }));
+    const forgotten: string[] = [];
+    const provider = new AntigravityProvider(undefined, stub.bin, {
+      forgetConversation: async (id) => void forgotten.push(id),
+    });
+    const before = process.env.OSSCLIP_KEEP_LLM_SESSIONS;
+    process.env.OSSCLIP_KEEP_LLM_SESSIONS = "1";
+    try {
+      await provider.complete({ system: "s", user: "u", schema, schemaName: "t" });
+    } finally {
+      if (before === undefined) delete process.env.OSSCLIP_KEEP_LLM_SESSIONS;
+      else process.env.OSSCLIP_KEEP_LLM_SESSIONS = before;
+    }
+    expect(forgotten).toEqual([]);
+  });
+
+  it("a failing delete never fails the call", async () => {
+    const stub = stubAgy(envelope({ structured_output: { title: "OK" } }));
+    const provider = new AntigravityProvider(undefined, stub.bin, {
+      forgetConversation: async () => {
+        throw new Error("disk on fire");
+      },
+    });
+    const out = await provider.complete({ system: "s", user: "u", schema, schemaName: "t" });
+    expect(out).toEqual({ title: "OK" });
+  });
+
+  it("parseAgyEnvelope reads conversation_id", () => {
+    expect(parseAgyEnvelope(envelope({})).conversationId).toBe("c1");
+  });
+});

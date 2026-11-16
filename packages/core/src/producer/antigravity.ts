@@ -7,6 +7,12 @@ import { estimateTokens, type LlmUsage } from "./usage";
 // A formatting concern, not a Claude dependency (FINDINGS §132, antigravity
 // provider).
 import { extractJsonObject } from "./claude-cli";
+import {
+  agyStoreDir,
+  deleteAgyConversations,
+  keepLlmSessions,
+  OSSCLIP_PROMPT_MARKER,
+} from "./llm-sessions";
 
 /**
  * Core's `run()` has no timeout of its own, so this flag is the ONLY clock on
@@ -132,6 +138,7 @@ export function buildAgyArgs(
  *     provider).
  */
 export function parseAgyEnvelope(stdout: string): {
+  conversationId?: string;
   status?: string;
   response?: string;
   error?: string;
@@ -160,6 +167,7 @@ export function parseAgyEnvelope(stdout: string): {
       ? input + (output ?? 0) + thinking + cacheRead > total
       : false;
   return {
+    conversationId: str(env.conversation_id),
     status: str(env.status),
     response: str(env.response),
     error: str(env.error),
@@ -425,8 +433,29 @@ export class AntigravityProvider implements LlmProvider {
   constructor(
     private model?: string,
     private bin: string = process.env.OSSCLIP_AGY_BIN ?? "agy",
-    private opts: { effort?: LlmEffort } = {},
+    private opts: {
+      effort?: LlmEffort;
+      /** Removes the conversation agy saved for one call. A seam for tests;
+       * the default deletes it from agy's store (FINDINGS §157). */
+      forgetConversation?: (id: string) => Promise<unknown>;
+    } = {},
   ) {}
+
+  /**
+   * agy saves every `-p` call as a conversation in the user's own list and
+   * has no flag to stop it, so ossclip deletes the one it just made. Never
+   * throws: a leftover conversation is clutter, not a failed produce run.
+   */
+  private async forget(id: string | undefined): Promise<void> {
+    if (!id || keepLlmSessions(process.env)) return;
+    const forget =
+      this.opts.forgetConversation ?? ((cid: string) => deleteAgyConversations(agyStoreDir(), [cid]));
+    try {
+      await forget(id);
+    } catch {
+      // Best effort by contract.
+    }
+  }
 
   async complete<T>(req: {
     system: string;
@@ -440,7 +469,7 @@ export class AntigravityProvider implements LlmProvider {
     const base =
       `${req.system}\n\n${req.user}\n\n` +
       `Respond with ONLY a JSON object valid against this JSON Schema ("${req.schemaName}"). ` +
-      `No markdown fences, no commentary, no tool use — just the JSON:\n${schemaText}`;
+      `${OSSCLIP_PROMPT_MARKER} — just the JSON:\n${schemaText}`;
 
     let lastError = "";
     // Wall time of every attempt that FAILED, in order — the facts the final
@@ -499,6 +528,8 @@ export class AntigravityProvider implements LlmProvider {
       // schema still spent the tokens, and a retry is exactly the cost a user
       // would want to see rather than have quietly absorbed.
       const envelope = parseAgyEnvelope(stdout);
+      // Every attempt that reached agy made a conversation, failed or not.
+      await this.forget(envelope.conversationId);
       // Gated on stdout now that non-zero exits resolve: a call that printed
       // NOTHING never reached the model (exit 2, a usage error) and must not
       // be booked as an estimated ~24k-token call. Anything that did reply —

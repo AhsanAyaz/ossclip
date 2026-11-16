@@ -33,6 +33,7 @@ export * from "./caption-regen";
 export * from "./caption-choreography";
 export * from "./scene-props";
 export * from "./repair";
+export * from "./llm-sessions";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
 // AGY_PRINT_TIMEOUT is public because the CLI SAYS it: a slow agy call looks
 // identical to a working one on screen, so the spinner names the budget it is
