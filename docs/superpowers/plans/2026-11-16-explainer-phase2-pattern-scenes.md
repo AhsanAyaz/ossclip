@@ -50,7 +50,7 @@
 | `packages/core/src/scene-registry.ts` | props schemas, registry entries, `scriptOnly`, `scriptComponentIds()` | 4–8 |
 | `packages/core/assets/fonts/` | Inter 800/900, DejaVu Sans Mono, licences | 2 |
 | `packages/scenes/src/BundledFonts.tsx` (new) | loads the bundled fonts when `theme.fonts === "bundled"` | 2 |
-| `packages/scenes/src/motion.ts` (new) | pure motion helpers | 3 |
+| `packages/scenes/src/motion.ts` | pure motion helpers (file exists; extended) | 3 |
 | `packages/scenes/src/primitives/` (new) | `Pill`, `Card`, `Sticker`, `NumberBadge`, `PhoneFrame`, `Icon`, `shadow` | 3 |
 | `packages/renderer/src/Root.tsx`, `SceneStillComposition.tsx` (new) | one-scene composition for stills | 3 |
 | `scripts/render-scene-stills.ts` (new), `packages/scenes/test/stills.fixtures.ts` (new) | `pnpm stills` | 3 |
@@ -139,7 +139,7 @@ Plus, where `configuredBaseTheme` is tested: precedence is defaults < look < con
 ### Task 3: Motion helpers, shared primitives and the stills harness
 
 **Files:**
-- Create: `packages/scenes/src/motion.ts`, `packages/scenes/test/motion.test.ts`
+- Modify: `packages/scenes/src/motion.ts` (exists: `CAPTION_POP_SEC`, `easeOutQuad`; add to it). Create: `packages/scenes/test/motion.test.ts` (or add to the existing test file for `motion.ts`)
 - Create: `packages/scenes/src/primitives/{Pill,Card,Sticker,NumberBadge,PhoneFrame,Icon}.tsx`, `packages/scenes/src/primitives/shadow.ts`
 - Create: `packages/renderer/src/SceneStillComposition.tsx`; modify `packages/renderer/src/Root.tsx`, `packages/renderer/src/index.ts`
 - Create: `scripts/render-scene-stills.ts`, `packages/scenes/test/stills.fixtures.ts`; modify root `package.json` (`"stills"` script)
