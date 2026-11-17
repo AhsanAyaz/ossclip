@@ -1199,10 +1199,11 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     const swapped = swap !== undefined && swap.component !== cue.component;
     const component = swapped ? swap.component : cue.component;
     const props = swapped ? swap.props : { ...cue.props, ...o.props };
-    // A rect `routeAroundSourceText` baked into the base cue was computed
-    // FOR that cue's original layout — under a layout override it would
-    // silently keep winning over the new layout's slot, parking the graphic
-    // where the OLD layout needed it. Same reason the editor's `patchLayout`
+    // A rect `routeAroundSourceText` baked into the base cue (or the 16:9
+    // script placement planned, §161) was computed FOR that cue's original
+    // layout — under a layout override it would silently keep winning over
+    // the new layout's slot, parking the graphic where the OLD layout
+    // needed it. Same reason the editor's `patchLayout`
     // drops the override rect on a swap. A hand-set `o.graphicRect` is the
     // user's own placement and still wins below.
     const layoutSwapped = o.layout !== undefined && o.layout !== cue.layout;

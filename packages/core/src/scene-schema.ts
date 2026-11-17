@@ -116,6 +116,27 @@ export const SceneSchema = z.object({
       itemWords: z.array(z.number().int().nonnegative().nullable()).optional(),
     })
     .optional(),
+  /**
+   * A PLANNED graphic slot, frame fractions — set only by the 16:9 script
+   * placement (`scriptLandscapePlacement`, §161), which centres a slot
+   * component instead of leaving it in a corner or a half-screen split.
+   * `assembleScenes` copies it to the cue's `graphicRect`, the field
+   * routing and the editor's drag already use, so the editor's own rect
+   * (`SceneOverrideSchema.graphicRect`) wins over it and a layout override
+   * drops it (`applyOverrides`). Stored here, on the plan, so the editor's
+   * Render — a `--scenes` replay, which runs without `--script` — renders
+   * the placement that was reviewed. Absent on every other run's scenes, so
+   * their production.json and cues are unchanged (G6). Bounded like the
+   * override's: it is read back from a file.
+   */
+  graphicRect: z
+    .object({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      w: z.number().min(0).max(1),
+      h: z.number().min(0).max(1),
+    })
+    .optional(),
 });
 export type Scene = z.infer<typeof SceneSchema>;
 

@@ -40,7 +40,11 @@ export const STILL_TAIL_SEC = 2;
  * Restated structurally rather than imported, because scenes cannot depend
  * on renderer and the fixtures live beside the scenes tests. `layout` is
  * optional: absent means the component's registry `defaultLayout`, which is
- * what the planner would place it in.
+ * what the planner would place it in. `graphicRect` is the cue's own slot,
+ * the one a 16:9 script run plans (`SCRIPT_LANDSCAPE_RECT`, §161) — without
+ * it the harness could only show the layouts' own slots. `aspects` narrows
+ * the frames a fixture is drawn in, for a placement that only one aspect
+ * ever gets.
  */
 export interface StillFixture {
   component: SceneComponentId;
@@ -48,7 +52,12 @@ export interface StillFixture {
   props: unknown;
   atSec: number[];
   layout?: Layout;
+  graphicRect?: Rect;
+  aspects?: StillAspect[];
 }
+
+/** A slot in frame fractions — `SceneCue.graphicRect`'s shape. */
+type Rect = NonNullable<SceneCue["graphicRect"]>;
 
 /** The composition's input props: one scene, drawn alone. */
 export interface SceneStillProps {
@@ -56,6 +65,8 @@ export interface SceneStillProps {
   /** Already parsed by the component's registry schema (defaults filled). */
   props: Record<string, unknown>;
   layout: Layout;
+  /** The cue's own slot, when the fixture plans one. */
+  graphicRect?: Rect;
   theme: Theme;
   frame: { width: number; height: number };
   /** Solid colour behind the scene, standing in for the speaker's video. */
@@ -79,6 +90,7 @@ export function stillCue(p: SceneStillProps): SceneCue {
     props: p.props,
     startSec: 0,
     endSec: p.durationSec,
+    ...(p.graphicRect ? { graphicRect: p.graphicRect } : {}),
   };
 }
 
@@ -128,7 +140,8 @@ export interface StillJob {
 }
 
 /**
- * Every still for `fixtures`: each fixture × both aspects × each `atSec`.
+ * Every still for `fixtures`: each fixture × its aspects (both unless it
+ * names them) × each `atSec`.
  * Props go through the component's registry schema here, before any browser
  * starts, so a fixture that breaks a copy cap fails by name instead of as a
  * render of props no planner could produce.
@@ -147,7 +160,7 @@ export function stillJobs(
     }
     if (f.atSec.length === 0) throw new Error(`still fixture ${f.component}/${f.name}: no atSec`);
     const durationSec = Math.max(...f.atSec) + STILL_TAIL_SEC;
-    for (const aspect of Object.keys(STILL_ASPECTS) as StillAspect[]) {
+    for (const aspect of f.aspects ?? (Object.keys(STILL_ASPECTS) as StillAspect[])) {
       for (const atSec of f.atSec) {
         jobs.push({
           atSec,
@@ -156,6 +169,7 @@ export function stillJobs(
             component: f.component,
             props: parsed.data as Record<string, unknown>,
             layout: f.layout ?? meta.defaultLayout,
+            ...(f.graphicRect ? { graphicRect: f.graphicRect } : {}),
             theme,
             frame: { ...STILL_ASPECTS[aspect] },
             background,

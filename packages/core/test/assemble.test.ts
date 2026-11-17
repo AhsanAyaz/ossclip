@@ -29,6 +29,19 @@ const scene = (id: string, startWord: number, endWord: number, extra?: Partial<S
 });
 
 describe("assembleScenes", () => {
+  it("carries a planned graphicRect to the cue; a scene without one makes a cue without the key (§161)", () => {
+    const rect = { x: 0.14, y: 0.16, w: 0.72, h: 0.68 };
+    const { cues } = assembleScenes(
+      [scene("a", 0, 3, { layout: "full-bleed", graphicRect: rect }), scene("b", 5, 8)],
+      transcript,
+      identity,
+    );
+    expect(cues[0]!.graphicRect).toEqual(rect);
+    // Not even `graphicRect: undefined`: a run that plans no rect writes
+    // render-props.json exactly as before.
+    expect("graphicRect" in cues[1]!).toBe(false);
+  });
+
   it("resolves word anchors to output time", () => {
     const { cues } = assembleScenes([scene("a", 2, 5)], transcript, identity);
     expect(cues).toHaveLength(1);

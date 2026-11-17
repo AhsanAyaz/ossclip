@@ -814,6 +814,24 @@ describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
     expect(cues[0]!.graphicRect).toEqual(hand);
   });
 
+  it("a rect the script placement planned (§161) is the default the editor can still move or drop", () => {
+    const planned = {
+      ...cue("scene-0"),
+      layout: "full-bleed" as const,
+      graphicRect: { x: 0.14, y: 0.16, w: 0.72, h: 0.68 },
+    };
+    // No edit: the planned rect renders.
+    expect(applyOverrides([planned], OverrideDocSchema.parse({})).cues[0]!.graphicRect).toEqual(planned.graphicRect);
+    // A drag or resize in the editor wins.
+    const hand = { x: 0.3, y: 0.2, w: 0.4, h: 0.4 };
+    const dragged = OverrideDocSchema.parse({ scenes: { "scene-0": { graphicRect: hand } } });
+    expect(applyOverrides([planned], dragged).cues[0]!.graphicRect).toEqual(hand);
+    // A layout chosen in the editor gets that layout's own slot: the planned
+    // rect was for full-bleed.
+    const relaid = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "split-left" } } });
+    expect("graphicRect" in applyOverrides([planned], relaid).cues[0]!).toBe(false);
+  });
+
   it("rejects an off-frame or sub-minimum rect — hand-editable data is validated", () => {
     expect(
       OverrideDocSchema.safeParse({ scenes: { s: { graphicRect: { x: -0.1, y: 0, w: 0.5, h: 0.3 } } } })

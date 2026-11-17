@@ -9,7 +9,10 @@ import {
   worstFaceFrac,
   type FramingContext,
   landscapeLayout,
+  SCRIPT_LANDSCAPE_RECT,
+  scriptLandscapePlacement,
 } from "../src/framing";
+import type { Scene } from "../src/scene-schema";
 import { headFracInSlot } from "../src/normalize";
 import type { Moment } from "../src/producer/beats";
 import type { Transcript } from "../src/schema";
@@ -226,5 +229,56 @@ describe("landscape layouts (R15)", () => {
     for (const l of LayoutSchema.options) {
       expect(landscapeLayout(landscapeLayout(l))).toBe(landscapeLayout(l));
     }
+  });
+});
+
+describe("scriptLandscapePlacement (§161: slot components centred in a 16:9 script run)", () => {
+  const scene = (component: Scene["component"], layout: Scene["layout"]): Scene => ({
+    id: "scene-0",
+    anchor: { startWord: 0, endWord: 3 },
+    layout,
+    component,
+    props: {},
+    overrides: {},
+  });
+
+  it("puts every slot component full-bleed in SCRIPT_LANDSCAPE_RECT, whatever layout it had", () => {
+    // The layouts the first real 16:9 script run gave them: a small terminal
+    // in a corner, or a black half-screen.
+    for (const [component, layout] of [
+      ["TerminalMock", "blurred-behind"],
+      ["TitleCard", "split-right"],
+      ["TitleCard", "split-left"],
+      ["StatCard", "lower-third"],
+    ] as const) {
+      const placed = scriptLandscapePlacement(scene(component, layout));
+      expect(placed.layout).toBe("full-bleed");
+      expect(placed.graphicRect).toEqual(SCRIPT_LANDSCAPE_RECT);
+      expect(placed.component).toBe(component);
+    }
+  });
+
+  it("leaves a fullFrame component exactly as it was: it lays itself out against the whole frame", () => {
+    for (const component of ["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"] as const) {
+      const s = scene(component, "full-bleed");
+      expect(scriptLandscapePlacement(s)).toBe(s);
+    }
+  });
+
+  it("returns a new scene and never writes to the one handed in", () => {
+    const s = scene("TitleCard", "split-left");
+    const placed = scriptLandscapePlacement(s);
+    expect(placed).not.toBe(s);
+    expect(s.layout).toBe("split-left");
+    expect("graphicRect" in s).toBe(false);
+    // Its own copy: an edit to one plan's rect cannot reach another's.
+    expect(placed.graphicRect).not.toBe(SCRIPT_LANDSCAPE_RECT);
+  });
+
+  it("the rect is centred in the frame", () => {
+    const { x, y, w, h } = SCRIPT_LANDSCAPE_RECT;
+    expect(x + w / 2).toBeCloseTo(0.5, 9);
+    expect(y + h / 2).toBeCloseTo(0.5, 9);
+    expect(SCRIPT_LANDSCAPE_RECT).toEqual({ x: 0.14, y: 0.16, w: 0.72, h: 0.68 });
   });
 });

@@ -1,6 +1,6 @@
 import type { Transcript } from "./schema";
 import { SCENE_REGISTRY } from "./scene-registry";
-import type { Layout } from "./scene-schema";
+import type { Layout, Scene } from "./scene-schema";
 import type { Moment, ScriptMoment } from "./producer/beats";
 import { headFracInSlot } from "./normalize";
 
@@ -276,4 +276,40 @@ export const LANDSCAPE_LAYOUTS: readonly Layout[] = [
 export function landscapeLayout(layout: Layout): Layout {
   if (LANDSCAPE_LAYOUTS.includes(layout)) return layout;
   return layout === "graphic-only" ? "blurred-behind" : "split-left";
+}
+
+/**
+ * Where a slot component sits in a 16:9 script run (§161): centred, 72% × 68%
+ * of the frame. Inside `LANDSCAPE_SAFE_AREA` (5% sides, 6% top, 12% bottom)
+ * with room to spare, so the draw-time clamp (`clampGraphicRect`) leaves it
+ * as planned.
+ */
+export const SCRIPT_LANDSCAPE_RECT: Readonly<{ x: number; y: number; w: number; h: number }> = {
+  x: 0.14,
+  y: 0.16,
+  w: 0.72,
+  h: 0.68,
+};
+
+/**
+ * The 16:9 script placement (§161): a scene whose component is NOT
+ * `fullFrame` goes `full-bleed` with its graphic in `SCRIPT_LANDSCAPE_RECT`.
+ *
+ * Why: in the first real 16:9 script render, `TerminalMock` and `TitleCard`
+ * got `blurred-behind`, `split-right` and `split-left` from the landscape
+ * remap and the variety pass, so the terminal came out small in a corner or
+ * in a black half-screen, while the four script-only cards (`fullFrame`)
+ * drew centred over the speaker. `full-bleed` keeps the speaker whole, and
+ * its scrim (the frosted panel) sits behind the graphic; the rect is the
+ * cue's `graphicRect`, the field the editor's drag writes, so the user can
+ * still move or resize it and their rect wins.
+ *
+ * A `fullFrame` component is returned as is: it lays itself out against the
+ * whole frame, and `graphicSlotFor` ignores any rect for it. Pure, scene in
+ * and scene out; the caller decides that the run is a script and the frame
+ * landscape — portrait and runs without `--script` never call it.
+ */
+export function scriptLandscapePlacement(scene: Scene): Scene {
+  if (SCENE_REGISTRY[scene.component].fullFrame) return scene;
+  return { ...scene, layout: "full-bleed", graphicRect: { ...SCRIPT_LANDSCAPE_RECT } };
 }

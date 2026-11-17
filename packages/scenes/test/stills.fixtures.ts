@@ -1,4 +1,5 @@
 import type { Layout, SceneComponentId } from "@ossclip/core/browser";
+import { SCRIPT_LANDSCAPE_RECT } from "@ossclip/core";
 
 /**
  * What `pnpm stills` renders (plan Task 3; scripts/render-scene-stills.ts).
@@ -23,6 +24,10 @@ export interface StillFixture {
   atSec: number[];
   /** Defaults to the component's registry `defaultLayout`. */
   layout?: Layout;
+  /** The cue's own slot, frame fractions (a 16:9 script run's `SCRIPT_LANDSCAPE_RECT`, §161). */
+  graphicRect?: { x: number; y: number; w: number; h: number };
+  /** The frames to draw; both when absent. */
+  aspects?: ("16x9" | "9x16")[];
 }
 
 export const STILL_FIXTURES: StillFixture[] = [
@@ -311,5 +316,44 @@ export const STILL_FIXTURES: StillFixture[] = [
       ],
     },
     atSec: [0.8, 3.0],
+  },
+  // The 16:9 script placement (§161): a slot component in a script run goes
+  // full-bleed in SCRIPT_LANDSCAPE_RECT, centred, with the frosted scrim
+  // behind it — here a tint on the slate, since a still has no footage.
+  // Landscape only: portrait never gets this placement. Each is settled:
+  // the command types 0.5-1.69 s, the count runs 0.5-1.5 s.
+  {
+    component: "TerminalMock",
+    name: "script-landscape",
+    props: {
+      windows: [
+        {
+          title: "ossclip",
+          lines: ["$ ossclip produce talk.mp4 --script s.md", "▸ planning 12 scenes", "✓ done in 41s"],
+        },
+      ],
+    },
+    atSec: [3.0],
+    layout: "full-bleed",
+    graphicRect: { ...SCRIPT_LANDSCAPE_RECT },
+    aspects: ["16x9"],
+  },
+  {
+    component: "TitleCard",
+    name: "script-landscape",
+    props: { eyebrow: "STEP TWO", emphasis: "goldfish", title: "reviews every plan" },
+    atSec: [2.0],
+    layout: "full-bleed",
+    graphicRect: { ...SCRIPT_LANDSCAPE_RECT },
+    aspects: ["16x9"],
+  },
+  {
+    component: "StatCard",
+    name: "script-landscape",
+    props: { label: "Tests passing", value: "4,494", caption: "Across four packages" },
+    atSec: [2.0],
+    layout: "full-bleed",
+    graphicRect: { ...SCRIPT_LANDSCAPE_RECT },
+    aspects: ["16x9"],
   },
 ];

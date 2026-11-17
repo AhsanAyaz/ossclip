@@ -77,6 +77,7 @@ import {
   fillPlainCues,
   splitCues,
   landscapeLayout,
+  scriptLandscapePlacement,
   formatCutReport,
   formatGraphicsAccounting,
   findBloopSpans,
@@ -4716,6 +4717,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       console.log(`▸ ${remapped.length} scene(s) re-laid out for the 16:9 frame`);
     }
 
+    // The 16:9 script placement (§161): every slot component centred,
+    // full-bleed, in SCRIPT_LANDSCAPE_RECT. After the remap, and INSTEAD of
+    // the variety pass below for these scenes — that pass is what put the
+    // first real script render's terminal in a corner or a half-screen. The
+    // scene keeps the rect (production.json, then the editor's `--scenes`
+    // Render), so the placement that was reviewed is the one rendered.
+    // Portrait and runs without --script never reach this.
+    if (scriptRun) {
+      let centred = 0;
+      for (const [k, sc] of scenes.entries()) {
+        const placed = scriptLandscapePlacement(sc);
+        if (placed === sc) continue;
+        scenes[k] = placed;
+        centred++;
+      }
+      if (centred > 0) console.log(`▸ ${centred} script scene(s) centred in the 16:9 frame`);
+    }
+
     // Layout VARIETY (R21 §101): the first real landscape run put nearly
     // every graphic in a lower third — legal, monotonous, and for stack
     // components actively broken (a BulletList's legibility floor cannot fit
@@ -4741,6 +4760,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // two cards is not one of them. ClipScene is the one `fullFrame`
       // component, so no run without `--script` reaches this line.
       if (SCENE_REGISTRY[sc.component].fullFrame) continue;
+      // A planned slot (the script placement above, or one a `--scenes`
+      // replay carries in from production.json) is a full-bleed decision
+      // with a rect made for it: cycling the layout would keep the centred
+      // rect over a split video. Skipped and not counted, like a clip. Only
+      // the script placement plans a rect, so no run without `--script` (or
+      // a replay of one) has a scene here.
+      if (sc.graphicRect) continue;
       let want = sc.layout;
       if (STACK_COMPONENTS.has(sc.component) && want === "lower-third") want = "split-right";
       if (want === prevLayout) {

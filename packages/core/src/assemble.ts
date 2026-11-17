@@ -123,6 +123,10 @@ export function assembleScenes(
       props,
       startSec: Math.min(...mapped.map((m) => m.start)),
       endSec: Math.max(...mapped.map((m) => m.end)),
+      // A planned slot (the 16:9 script placement, §161) rides onto the
+      // cue's own rect; a scene without one adds no key, so every other
+      // run's cue is field-for-field what it was.
+      ...(scene.graphicRect ? { graphicRect: scene.graphicRect } : {}),
     };
     resolved.push(cue);
     const fixed = SCENE_REGISTRY[scene.component].fixedDurationSec?.(props);

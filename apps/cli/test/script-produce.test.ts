@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockProvider, alignCues, parseScript } from "@ossclip/core";
+import { MockProvider, SCRIPT_LANDSCAPE_RECT, alignCues, parseScript } from "@ossclip/core";
 import { produce } from "../src/produce";
 import { setReplayArgv } from "../src/replay-argv";
 
@@ -94,7 +94,7 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     } as typeof real);
   });
 
-  const run = (workdir: string, script?: string) =>
+  const run = (workdir: string, script?: string, extra: { aspect?: "9:16" | "16:9" } = {}) =>
     produce(join(dir, "take.mp4"), {
       cleanup: "standard",
       libraryDir,
@@ -107,6 +107,7 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
       produce: true,
       provider: "mock",
       ...(script !== undefined ? { script } : {}),
+      ...extra,
     });
 
   const workdirOf = (root: string): string => {
@@ -309,6 +310,67 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     expect(schemaNames).toContain("beat_sheet");
     expect(schemaNames).not.toContain("script_plan");
   }, 120_000);
+
+  it("G6, 16:9: without --script no scene gets a graphicRect and the layouts are as before", async () => {
+    // The centred script placement (§161) and the variety pass's new skip
+    // for planned rects must not reach a run without --script. The layouts
+    // are the ones this exact run produced BEFORE that change was written.
+    const root = join(dir, "wd-plain-16x9");
+    await run(root, undefined, { aspect: "16:9" });
+    const work = existsSync(join(root, "production.json")) ? root : workdirOf(root);
+    const production = JSON.parse(readFileSync(join(work, "production.json"), "utf8"));
+    const scenes = production.scenes as { component: string; layout: string; graphicRect?: unknown }[];
+    expect(scenes.map((s) => [s.component, s.layout])).toEqual([
+      ["TitleCard", "split-left"],
+      ["StatCard", "lower-third"],
+      ["FlowDiagram", "blurred-behind"],
+    ]);
+    expect(scenes.some((s) => "graphicRect" in s)).toBe(false);
+    const props = JSON.parse(readFileSync(join(work, "render-props.json"), "utf8"));
+    const cues = props.sceneCues as { kind?: string; component?: string; layout: string; graphicRect?: unknown }[];
+    expect(cues.filter((c) => c.kind !== "plain").map((c) => [c.component, c.layout])).toEqual([
+      ["TitleCard", "split-left"],
+      ["StatCard", "lower-third"],
+      ["FlowDiagram", "blurred-behind"],
+    ]);
+    expect(cues.some((c) => c.graphicRect !== undefined)).toBe(false);
+  }, 120_000);
+
+  it("16:9 script: slot components sit centred and full-bleed, the clip keeps the frame, an editor rect wins (§161)", async () => {
+    const root = join(dir, "wd-script-16x9");
+    const scriptPath = join(dir, "script", "fixture.script.md");
+    await run(root, scriptPath, { aspect: "16:9" });
+    const work = workdirOf(root);
+    type Placed = { id: string; component?: string; kind?: string; layout: string; graphicRect?: unknown };
+    const placement = (list: Placed[]) =>
+      list.filter((c) => c.kind !== "plain").map((c) => [c.id, c.component, c.layout, c.graphicRect ?? null]);
+    const production = JSON.parse(readFileSync(join(work, "production.json"), "utf8"));
+    // TitleCard and StatCard are consecutive graphics once the clip is passed
+    // over: the variety pass would have cycled the StatCard off full-bleed.
+    expect(placement(production.scenes)).toEqual([
+      ["scene-0", "TitleCard", "full-bleed", SCRIPT_LANDSCAPE_RECT],
+      ["scene-2", "StatCard", "full-bleed", SCRIPT_LANDSCAPE_RECT],
+      ["scene-1", "ClipScene", "full-bleed", null],
+    ]);
+    const readCues = () =>
+      placement(JSON.parse(readFileSync(join(work, "render-props.json"), "utf8")).sceneCues as Placed[]);
+    expect(readCues()).toEqual([
+      ["scene-0", "TitleCard", "full-bleed", SCRIPT_LANDSCAPE_RECT],
+      ["scene-1", "ClipScene", "full-bleed", null],
+      ["scene-2", "StatCard", "full-bleed", SCRIPT_LANDSCAPE_RECT],
+    ]);
+
+    // The planned rect is a default, not a pin: the editor's drag is written
+    // to overrides.json and wins on the next run.
+    const hand = { x: 0.3, y: 0.2, w: 0.4, h: 0.4 };
+    writeFileSync(join(work, "overrides.json"), JSON.stringify({ scenes: { "scene-0": { graphicRect: hand } } }));
+    await run(root, scriptPath, { aspect: "16:9" });
+    expect(readCues()).toEqual([
+      ["scene-0", "TitleCard", "full-bleed", hand],
+      ["scene-1", "ClipScene", "full-bleed", null],
+      ["scene-2", "StatCard", "full-bleed", SCRIPT_LANDSCAPE_RECT],
+    ]);
+  }, 240_000);
 
   it("a missing script file fails before any work, naming the path", async () => {
     await expect(run(join(dir, "wd-missing"), join(dir, "nope.md"))).rejects.toThrow(

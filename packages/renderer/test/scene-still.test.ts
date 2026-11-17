@@ -43,6 +43,22 @@ describe("stillJobs", () => {
     expect(moved!.props.layout).toBe("full-bleed");
   });
 
+  it("carries a fixture's graphicRect onto the still's cue, and none when the fixture has none (§161)", () => {
+    const rect = { x: 0.14, y: 0.16, w: 0.72, h: 0.68 };
+    const [placed] = stillJobs([{ ...stat("p", [1]), layout: "full-bleed", graphicRect: rect }], defaultTheme, "#000");
+    expect(placed!.props.graphicRect).toEqual(rect);
+    expect(stillCue(placed!.props)).toMatchObject({ layout: "full-bleed", graphicRect: rect });
+    expect(SceneCueSchema.safeParse(stillCue(placed!.props)).success).toBe(true);
+    const [plain] = stillJobs([stat("a", [1])], defaultTheme, "#000");
+    expect("graphicRect" in plain!.props).toBe(false);
+    expect("graphicRect" in stillCue(plain!.props)).toBe(false);
+  });
+
+  it("a fixture may name the aspects it is drawn in; absent, it is drawn in both", () => {
+    const jobs = stillJobs([{ ...stat("wide", [1]), aspects: ["16x9"] }], defaultTheme, "#000");
+    expect(jobs.map((j) => j.fileName)).toEqual(["StatCard-wide-16x9-1s.png"]);
+  });
+
   it("refuses props no planner could produce, by fixture name", () => {
     const bad = { ...stat("long", [1]), props: { label: "X", value: "1234567890123" } };
     expect(() => stillJobs([bad], defaultTheme, "#000")).toThrow(/StatCard\/long/);

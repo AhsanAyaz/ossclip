@@ -38,6 +38,7 @@ import {
   LANDSCAPE_LAYOUTS,
   LayoutSchema,
   SCENE_REGISTRY,
+  SCRIPT_LANDSCAPE_RECT,
   SceneComponentIdSchema,
   ZOOM_MAX_SCALE,
 } from "@ossclip/core";
@@ -265,6 +266,28 @@ describe("graphicSlotFor (R13 — layout never vetoes the component)", () => {
       if (layout === "full-bleed") continue;
       expect(graphicSlotFor({ layout })).toEqual(layoutSlots(layout).graphic);
     }
+  });
+});
+
+describe("SCRIPT_LANDSCAPE_RECT: the centred slot of a 16:9 script run (§161)", () => {
+  it("is inside the landscape safe area, so the draw-time clamp leaves it exactly as planned", () => {
+    expect(clampGraphicRect(SCRIPT_LANDSCAPE_RECT, LANDSCAPE_FRAME)).toEqual(SCRIPT_LANDSCAPE_RECT);
+    const { x, y, w, h } = SCRIPT_LANDSCAPE_RECT;
+    expect(x).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.left);
+    expect(1 - (x + w)).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.right);
+    expect(y).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.top);
+    expect(1 - (y + h)).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.bottom);
+  });
+
+  it("is the slot a full-bleed TitleCard, TerminalMock or StatCard draws in; a CardRow still gets the frame", () => {
+    for (const component of ["TitleCard", "TerminalMock", "StatCard"] as const) {
+      expect(
+        graphicSlotFor({ layout: "full-bleed", component, graphicRect: SCRIPT_LANDSCAPE_RECT }, LANDSCAPE_FRAME),
+      ).toEqual(SCRIPT_LANDSCAPE_RECT);
+    }
+    expect(
+      graphicSlotFor({ layout: "full-bleed", component: "CardRow", graphicRect: SCRIPT_LANDSCAPE_RECT }, LANDSCAPE_FRAME),
+    ).toEqual(FULL_FRAME_SLOT);
   });
 });
 
