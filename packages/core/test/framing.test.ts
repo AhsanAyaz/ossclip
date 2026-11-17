@@ -9,6 +9,9 @@ import {
   worstFaceFrac,
   type FramingContext,
   landscapeLayout,
+  landscapeLayoutFor,
+  BACKDROP_LAYOUTS,
+  isBackdropLayout,
   SCRIPT_LANDSCAPE_RECT,
   scriptLandscapePlacement,
 } from "../src/framing";
@@ -228,6 +231,42 @@ describe("landscape layouts (R15)", () => {
   it("is idempotent — remapping an already-landscape plan changes nothing", () => {
     for (const l of LayoutSchema.options) {
       expect(landscapeLayout(landscapeLayout(l))).toBe(landscapeLayout(l));
+    }
+  });
+});
+
+describe("backdrop layouts (scene-backdrop-choice design §1)", () => {
+  it("are the three layouts that are the three backdrops: speaker, solid, bubble", () => {
+    expect(BACKDROP_LAYOUTS).toEqual(["full-bleed", "graphic-only", "pip-bubble"]);
+    for (const l of LayoutSchema.options) {
+      expect(isBackdropLayout(l)).toBe((BACKDROP_LAYOUTS as readonly string[]).includes(l));
+    }
+  });
+
+  it("a script project keeps graphic-only and pip-bubble through the landscape remap", () => {
+    expect(landscapeLayoutFor("graphic-only", { scriptProject: true })).toBe("graphic-only");
+    expect(landscapeLayoutFor("pip-bubble", { scriptProject: true })).toBe("pip-bubble");
+  });
+
+  it("a project with no script is remapped exactly as before", () => {
+    expect(landscapeLayoutFor("graphic-only", { scriptProject: false })).toBe("blurred-behind");
+    expect(landscapeLayoutFor("pip-bubble", { scriptProject: false })).toBe("split-left");
+    for (const l of LayoutSchema.options) {
+      expect(landscapeLayoutFor(l, { scriptProject: false })).toBe(landscapeLayout(l));
+    }
+  });
+
+  it("video-top is not a backdrop: split-left in both; full-bleed is unchanged in both", () => {
+    for (const scriptProject of [true, false]) {
+      expect(landscapeLayoutFor("video-top", { scriptProject })).toBe("split-left");
+      expect(landscapeLayoutFor("full-bleed", { scriptProject })).toBe("full-bleed");
+    }
+  });
+
+  it("a script project remaps every non-backdrop layout as landscapeLayout does", () => {
+    for (const l of LayoutSchema.options) {
+      if (isBackdropLayout(l)) continue;
+      expect(landscapeLayoutFor(l, { scriptProject: true })).toBe(landscapeLayout(l));
     }
   });
 });

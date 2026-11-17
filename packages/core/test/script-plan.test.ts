@@ -442,6 +442,41 @@ describe("produceScenes with a script", () => {
     expect(auto.schemas["TerminalMock_props"]).not.toContain("badge");
   });
 
+  it("the planner's layout is ignored in 16:9 and used in 9:16 (scene-backdrop-choice design §1)", async () => {
+    // The mock never sets `layout`; this provider adds one to its script_plan
+    // reply, as a real planner may. In 16:9 a full-frame card that took it
+    // came out as the speaker blurred under the card (the design's "half-used").
+    const cardScript = parseScript("🎬 [CardRow] the three steps\n🗣️ alpha beta gamma");
+    const { aligned: cardAligned } = alignCues(cardScript, TRANSCRIPT);
+    const withLayout = (): LlmProvider => {
+      const mock = new MockProvider();
+      return {
+        name: "layout",
+        usage: mock.usage,
+        async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; schemaName: string }): Promise<T> {
+          const out = await mock.complete(req);
+          if (req.schemaName !== "script_plan") return out;
+          const reply = out as { cues: Array<Record<string, unknown>> };
+          return req.schema.parse({ cues: reply.cues.map((c) => ({ ...c, layout: "graphic-only" })) });
+        },
+      };
+    };
+    const plan = (aspect?: "9:16" | "16:9") =>
+      produceScenes(withLayout(), {
+        transcript: TRANSCRIPT,
+        outputDuration: 3.6,
+        ...(aspect ? { aspect } : {}),
+        script: { aligned: cardAligned, clips: [] },
+      });
+    const landscape = await plan("16:9");
+    expect(landscape.scenes.map((s) => [s.component, s.layout])).toEqual([["CardRow", "full-bleed"]]);
+    expect(landscape.beatSheet.moments[0]!.layout).toBeUndefined();
+    // 9:16, and a caller that names no aspect (portrait), use it as today.
+    for (const portrait of [await plan("9:16"), await plan()]) {
+      expect(portrait.scenes.map((s) => [s.component, s.layout])).toEqual([["CardRow", "graphic-only"]]);
+    }
+  });
+
   it("rejects --clip together with --script", async () => {
     await expect(
       produceScenes(new MockProvider(), {

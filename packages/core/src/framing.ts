@@ -279,6 +279,40 @@ export function landscapeLayout(layout: Layout): Layout {
 }
 
 /**
+ * The three layouts that ARE the three backdrops of a 16:9 script project
+ * (§163; scene-backdrop-choice design, Terms): the graphic over the speaker
+ * (`full-bleed`), on the look's background with the footage hidden
+ * (`graphic-only`), and on the background with the speaker as a small
+ * picture (`pip-bubble`). No new scene field: the layout the editor already
+ * stores is the choice, so there is no second field that has to agree with it.
+ */
+export const BACKDROP_LAYOUTS = ["full-bleed", "graphic-only", "pip-bubble"] as const;
+
+export function isBackdropLayout(layout: Layout): boolean {
+  return (BACKDROP_LAYOUTS as readonly Layout[]).includes(layout);
+}
+
+/**
+ * `landscapeLayout`, except that a script project keeps its backdrops (§163).
+ *
+ * Why: `landscapeLayout` rewrote `graphic-only` and `pip-bubble` on every
+ * 16:9 run, so a backdrop could only render when the editor set it (its
+ * overrides are applied after both remaps). A planned scene that carried one
+ * — and the editor's Render pins the planned scenes with `--scenes` — came
+ * back blurred or split. The R15 reasoning still holds for runs that never
+ * chose a backdrop, so `scriptProject: false` is exactly `landscapeLayout`,
+ * and `video-top` (not a backdrop) is remapped in both.
+ *
+ * `scriptProject` means the stored script record, not `--script`: the
+ * editor's Render and the kit refresh replay without the flag (design,
+ * Terms; `isScriptProject` in the CLI decides it).
+ */
+export function landscapeLayoutFor(layout: Layout, opts: { scriptProject: boolean }): Layout {
+  if (opts.scriptProject && isBackdropLayout(layout)) return layout;
+  return landscapeLayout(layout);
+}
+
+/**
  * Where a slot component sits in a 16:9 script run (§161): centred, 72% × 68%
  * of the frame. Inside `LANDSCAPE_SAFE_AREA` (5% sides, 6% top, 12% bottom)
  * with room to spare, so the draw-time clamp (`clampGraphicRect`) leaves it

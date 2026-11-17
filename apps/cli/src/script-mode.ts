@@ -63,6 +63,28 @@ export function storedScriptFrom(productionJson: string): ProductionScript | und
   }
 }
 
+/**
+ * Whether this run is a script project (§163; scene-backdrop-choice design,
+ * Terms): keyed on the stored script, not on `--script`. The editor's Render
+ * and the kit's refresh replay with `--script` dropped and `--scenes` pinned
+ * (`renderReplayArgs`), so a rule keyed on the flag would be undone by the
+ * first Render — every backdrop the project kept would be remapped away.
+ *
+ * `scenesPinned` is part of the answer, not just `storedScript`: a run's
+ * record is what it WRITES, and produce writes one only on a `--script` run
+ * or, carried forward, on a `--scenes` replay. A run with neither (a fresh
+ * `--produce` over the same workdir) writes none and plans no script scenes,
+ * so it is not one, whatever the last run left behind (G6). Pure: produce
+ * reads production.json (`priorScript`) and hands the record in.
+ */
+export function isScriptProject(run: {
+  scriptFlag: boolean;
+  scenesPinned: boolean;
+  storedScript: ProductionScript | undefined;
+}): boolean {
+  return run.scriptFlag || (run.scenesPinned && run.storedScript !== undefined);
+}
+
 /** Where the per-cue report lands beside report.txt, as `{ outcomes }`. */
 export const SCRIPT_REPORT_BASENAME = "script-report.json";
 

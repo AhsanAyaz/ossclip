@@ -18,6 +18,7 @@ import {
   formatCueReport,
   isFootageCueIssue,
   isProjectClipSrc,
+  isScriptProject,
   keptWordTimes,
   keptWordsKey,
   loadScriptText,
@@ -111,6 +112,28 @@ describe("storedScriptFrom", () => {
     expect(storedScriptFrom(JSON.stringify({ version: 1 }))).toBeUndefined();
     expect(storedScriptFrom(JSON.stringify({ script: { sourcePath: "/s.md" } }))).toBeUndefined();
     expect(storedScriptFrom("{not json")).toBeUndefined();
+  });
+});
+
+describe("isScriptProject (the stored script, not the flag)", () => {
+  const stored = { text: "🎬 A", sourcePath: "/s.md" };
+
+  it("a --script run is one, with or without a record from an earlier run", () => {
+    expect(isScriptProject({ scriptFlag: true, scenesPinned: false, storedScript: undefined })).toBe(true);
+    expect(isScriptProject({ scriptFlag: true, scenesPinned: false, storedScript: stored })).toBe(true);
+  });
+
+  it("the editor's Render and the kit refresh (--scenes, no --script) are one when the record is stored", () => {
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: true, storedScript: stored })).toBe(true);
+  });
+
+  it("a --scenes replay of a project with no stored script is not", () => {
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: true, storedScript: undefined })).toBe(false);
+  });
+
+  it("a run with neither flag is not, even over a stored record: it writes none, so it leaves no script project", () => {
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: stored })).toBe(false);
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: undefined })).toBe(false);
   });
 });
 

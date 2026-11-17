@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { MockProvider, SCRIPT_LANDSCAPE_RECT, alignCues, parseScript } from "@ossclip/core";
 import { produce } from "../src/produce";
 import { setReplayArgv } from "../src/replay-argv";
+import { REVIEWED_SCENES_BASENAME, renderReplayArgs, reviewedScenesText } from "../src/render-replay-args";
 
 /**
  * `ossclip produce --script` end to end, no LLM (explainer plan Task 8 Step 4,
@@ -375,6 +376,136 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
       ["scene-2", "StatCard", "full-bleed", SCRIPT_LANDSCAPE_RECT],
     ]);
   }, 240_000);
+
+  it("the planner's layout is ignored in a 16:9 script project and used in 9:16 (backdrop design §1)", async () => {
+    // A real planner may set `layout`; the mock never does, so its reply gets
+    // one here. On a full-frame card, `graphic-only` came out of the 16:9
+    // remap as `blurred-behind`: the speaker blurred and dimmed under it.
+    const scriptPath = join(dir, "script", "layout.script.md");
+    writeFileSync(
+      scriptPath,
+      [
+        "🎬 [CardRow] the three steps",
+        "🗣️ Hello everyone, welcome back.",
+        "",
+        "🎬 [StatCard] One number: the clean edit",
+        "🗣️ This raw take becomes a clean edit automatically.",
+        "",
+      ].join("\n"),
+    );
+    const spied = vi.mocked(MockProvider.prototype.complete);
+    const passThrough = spied.getMockImplementation()!;
+    spied.mockImplementation(async function (this: MockProvider, req) {
+      const out = await passThrough.call(this, req);
+      if (req.schemaName !== "script_plan") return out;
+      const reply = out as { cues: Array<{ sceneKind: string }> };
+      return req.schema.parse({
+        cues: reply.cues.map((c) => (c.sceneKind === "CardRow" ? { ...c, layout: "graphic-only" } : c)),
+      });
+    } as typeof passThrough);
+    const layouts = (root: string) => {
+      const work = workdirOf(root);
+      const production = JSON.parse(readFileSync(join(work, "production.json"), "utf8"));
+      return (production.scenes as { component: string; layout: string }[]).map((s) => [s.component, s.layout]);
+    };
+
+    const landscape = join(dir, "wd-planner-layout-16x9");
+    await run(landscape, scriptPath, { aspect: "16:9" });
+    expect(layouts(landscape)).toEqual([
+      ["CardRow", "full-bleed"],
+      ["StatCard", "full-bleed"],
+    ]);
+
+    // 9:16 keeps using it, exactly as before this change.
+    const portrait = join(dir, "wd-planner-layout-9x16");
+    await run(portrait, scriptPath, { aspect: "9:16" });
+    expect(layouts(portrait)).toEqual([
+      ["CardRow", "graphic-only"],
+      ["StatCard", "video-top"],
+    ]);
+  }, 240_000);
+
+  it("a stored backdrop survives the editor's Render, which replays without --script (Review Focus 1)", async () => {
+    // The editor's own layout change lives in overrides.json, which is applied
+    // AFTER both landscape remaps (produce.ts), so it already survived. What
+    // the remap rewrote is a PLANNED scene's layout: the Render pins
+    // production.json's scenes as scenes-reviewed.json, and the first remap
+    // turned `graphic-only` into `blurred-behind` and `pip-bubble` into
+    // `split-left` on the way back in. The replay has no --script; the
+    // project is a script project through its stored record alone.
+    const root = join(dir, "wd-backdrop-replay");
+    const scriptPath = join(dir, "script", "fixture.script.md");
+    setReplayArgv(["produce", "take.mp4", "--script", scriptPath, "--aspect", "16:9"]);
+    await run(root, scriptPath, { aspect: "16:9" });
+    const work = workdirOf(root);
+    const productionPath = join(work, "production.json");
+    const productionText = readFileSync(productionPath, "utf8");
+
+    const reviewed = JSON.parse(reviewedScenesText(productionText)!) as { id: string; layout: string }[];
+    for (const s of reviewed) {
+      if (s.id === "scene-0") s.layout = "graphic-only";
+      if (s.id === "scene-2") s.layout = "pip-bubble";
+    }
+    const scenesPath = join(work, REVIEWED_SCENES_BASENAME);
+    writeFileSync(scenesPath, JSON.stringify(reviewed, null, 2));
+    // The argv the Render spawns: --script gone, the reviewed plan pinned.
+    const recorded = JSON.parse(readFileSync(join(work, "command.json"), "utf8")).args as string[];
+    const replayArgs = renderReplayArgs(recorded, { scenesPath });
+    expect(replayArgs).not.toContain("--script");
+    expect(replayArgs.slice(-2)).toEqual(["--scenes", scenesPath]);
+
+    const replay = async () => {
+      const prior = process.env.OSSCLIP_REPLAY_WORKDIR;
+      process.env.OSSCLIP_REPLAY_WORKDIR = work;
+      try {
+        await produce(join(dir, "take.mp4"), {
+          cleanup: "standard",
+          libraryDir,
+          render: false,
+          mezzanine: false,
+          youtube: false,
+          confirmRepairs: false,
+          transcript: join(dir, "transcript.json"),
+          workdir: root,
+          provider: "mock",
+          aspect: "16:9",
+          scenes: scenesPath,
+        });
+      } finally {
+        if (prior === undefined) delete process.env.OSSCLIP_REPLAY_WORKDIR;
+        else process.env.OSSCLIP_REPLAY_WORKDIR = prior;
+      }
+    };
+    const cueLayouts = () =>
+      (JSON.parse(readFileSync(join(work, "render-props.json"), "utf8")).sceneCues as {
+        id: string;
+        kind?: string;
+        layout: string;
+      }[])
+        .filter((c) => c.kind !== "plain")
+        .map((c) => [c.id, c.layout]);
+
+    await replay();
+    expect(cueLayouts()).toEqual([
+      ["scene-0", "graphic-only"],
+      ["scene-1", "full-bleed"],
+      ["scene-2", "pip-bubble"],
+    ]);
+    // The record rode forward, so the next Render is a script project too.
+    expect(JSON.parse(readFileSync(productionPath, "utf8")).script).toBeDefined();
+
+    // The same replay of a project with NO stored script is remapped as
+    // before (G6): the rule is keyed on the record, not on anything else.
+    const production = JSON.parse(readFileSync(productionPath, "utf8"));
+    delete production.script;
+    writeFileSync(productionPath, JSON.stringify(production, null, 2));
+    await replay();
+    expect(cueLayouts()).toEqual([
+      ["scene-0", "blurred-behind"],
+      ["scene-1", "full-bleed"],
+      ["scene-2", "split-left"],
+    ]);
+  }, 360_000);
 
   it("a missing script file fails before any work, naming the path", async () => {
     await expect(run(join(dir, "wd-missing"), join(dir, "nope.md"))).rejects.toThrow(

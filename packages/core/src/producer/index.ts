@@ -437,6 +437,17 @@ async function produceScriptScenes(
         m.sceneKind === "none" ? m : { ...m, sceneKind: args.forceComponent!, layout: undefined },
       )
     : normalized.sheet.moments;
+  // In 16:9 the planner's `layout` is ignored (§163): planned scenes start
+  // over the speaker, and the backdrop is the author's choice in the editor.
+  // Half-used before: a full-frame card that took `graphic-only` came out of
+  // the landscape remap as the speaker blurred and dimmed under the card, and
+  // now that a script project keeps its backdrops through that remap, the
+  // same reply would hide the speaker outright. Dropped HERE, on the read,
+  // rather than out of the schema or prompt, so no cached plan is invalidated
+  // and 9:16 script runs, which use the field, are untouched.
+  if (args.aspect === "16:9") {
+    moments = moments.map((m) => (m.layout === undefined ? m : { ...m, layout: undefined }));
+  }
   if (args.framing) {
     const repaired = repairMomentLayouts(moments, transcript, args.framing);
     moments = repaired.moments;

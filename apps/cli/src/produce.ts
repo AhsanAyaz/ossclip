@@ -76,7 +76,7 @@ import {
   openaiTranscriptionsUrl,
   fillPlainCues,
   splitCues,
-  landscapeLayout,
+  landscapeLayoutFor,
   scriptLandscapePlacement,
   formatCutReport,
   formatGraphicsAccounting,
@@ -295,6 +295,7 @@ import {
   formatCueReport,
   isFootageCueIssue,
   isProjectClipSrc,
+  isScriptProject,
   keptWordTimes,
   keptWordsKey,
   loadScriptText,
@@ -3065,6 +3066,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
         : `▸ script: ${scriptRun.cues.length} cue(s) from ${scriptSource}`,
     );
   }
+  // A script project keeps its backdrops through the 16:9 remap (§163) —
+  // decided ONCE, here, because the editor's Render and the kit refresh
+  // replay with `--scenes` and no `--script`: the stored record is the only
+  // thing that says so on those runs, and it must be read before this run
+  // overwrites production.json. The same rule `scriptRecord` below writes by.
+  // Truthiness, as every other `opts.scenes` test in this file (the scenes
+  // read and `scriptRecord`): they must agree on what counts as a replay.
+  const scenesPinned = Boolean(opts.scenes);
+  const scriptProject = isScriptProject({
+    scriptFlag: scriptRun !== undefined,
+    scenesPinned,
+    storedScript: scenesPinned ? priorScript(work) : undefined,
+  });
 
   // §131 residue: a folder re-key (clips renamed/added/removed → new content
   // hash) correctly lands in a fresh workdir, but any editor edits saved in
@@ -4707,11 +4721,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // vertical-format answers, and applying them to 16:9 crops the picture into
   // a letterbox for no gain. Remapped here — before assembly — so cues,
   // captions, the framing report and the editor all see one set of layouts.
+  // A script project's backdrops are exempt (§163): on the editor's Render
+  // these scenes are the reviewed plan, and remapping a stored `graphic-only`
+  // or `pip-bubble` here undid it on every replay.
   if (landscape) {
-    const remapped = scenes.filter((sc) => landscapeLayout(sc.layout) !== sc.layout);
+    const relaid = (layout: Scene["layout"]) => landscapeLayoutFor(layout, { scriptProject });
+    const remapped = scenes.filter((sc) => relaid(sc.layout) !== sc.layout);
     for (const sc of remapped) {
-      console.log(`  ▸ ${sc.id}: ${sc.layout} → ${landscapeLayout(sc.layout)} (landscape)`);
-      sc.layout = landscapeLayout(sc.layout);
+      console.log(`  ▸ ${sc.id}: ${sc.layout} → ${relaid(sc.layout)} (landscape)`);
+      sc.layout = relaid(sc.layout);
     }
     if (remapped.length > 0) {
       console.log(`▸ ${remapped.length} scene(s) re-laid out for the 16:9 frame`);
@@ -5115,10 +5133,12 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // the vertical split layouts — so in landscape it can hand back exactly what
   // the remap above removed. Re-assert the constraint on its OUTPUT, and say
   // when that costs a text dodge: the graphic keeps whatever free-band rect
-  // routing gave it, but the frame stays whole (R15).
+  // routing gave it, but the frame stays whole (R15). The same exemption as
+  // the remap above (§163), or a backdrop it kept would be undone here: every
+  // cue, routed or not, passes through this loop.
   if (landscape) {
     for (const c of routed.cues) {
-      const want = landscapeLayout(c.layout);
+      const want = landscapeLayoutFor(c.layout, { scriptProject });
       if (want === c.layout) continue;
       console.log(
         `  ▸ ${c.id}: ${c.layout} → ${want} (landscape; source-text routing had moved it)`,
