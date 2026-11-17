@@ -17,7 +17,7 @@ import type { Transcript } from "../schema";
 import { LayoutSchema, ScriptComponentIdSchema, type Scene } from "../scene-schema";
 import { SCENE_REGISTRY, scriptComponentIds } from "../scene-registry";
 import type { AlignedCue } from "../script/align";
-import { MAX_SCENE_SEC } from "../assemble";
+import { MAX_SCENE_SEC, entryWordTime, onCueStartSec } from "../assemble";
 import { cappedText, type BeatsValidationIssue, type ScriptMoment } from "./beats";
 import { momentSceneId } from "./scene-props";
 import type { LlmProvider } from "./provider";
@@ -41,8 +41,13 @@ import type { LlmProvider } from "./provider";
  * moments' end words, and an "s2" plan holds every scene to its line's last
  * word — served now, it would keep exactly the 1.2-2.3 s scenes the minimum
  * exists to remove.
+ *
+ * "s4": the minimum counts from the scene's entry word, where assembly
+ * starts it, not from its line's first word (EGM run, 2026-11-17). An "s3"
+ * plan's end words were computed the old way, which left a scene entering
+ * late in its line at 2.0 s on screen.
  */
-export const SCRIPT_PLAN_PROMPT_VERSION = "s3";
+export const SCRIPT_PLAN_PROMPT_VERSION = "s4";
 
 /**
  * Most cues one script may carry (§1.3). A ceiling on the one call that plans
@@ -100,6 +105,18 @@ export const SCRIPT_MIN_SCENE_SEC = 4;
  * so a later recut re-resolves it like any anchor (PHASE1 §5) instead of
  * carrying a seconds figure the new cut makes wrong.
  *
+ * `start` is where the scene will really START, not the line's first word.
+ * Assembly moves a cued scene's start to its entry word (`entryWords[i]`,
+ * the plan's `scene.cue.entryWord`) less the entry lead, and the first
+ * version counted from the line instead: on the EGM run a 3.68 s line whose
+ * graphic entered 1.97 s in looked long enough, was not extended, and was on
+ * screen for 2.0 s (2026-11-17). So the start is computed by assembly's own
+ * functions (`entryWordTime`, `onCueStartSec`), on the same times. Their
+ * `end − minScene` limit is left out: it can only move the start EARLIER,
+ * which lengthens the scene, so counting without it never falls short. An
+ * entry word outside the cue's span (a planner never writes one) counts
+ * from the line's first word.
+ *
  * Limits, each the reason a scene may end sooner than the minimum:
  * - never into the next scene: the walk stops at the word before the next
  *   PLACED cue's `startWord` (placed = aligned; a footage cue that will show
@@ -115,6 +132,8 @@ export const SCRIPT_MIN_SCENE_SEC = 4;
 export function scriptSceneEndWords(
   aligned: readonly AlignedCue[],
   wordTimes: readonly WordOutputTime[],
+  /** Per cue, the word its scene enters on (`scene.cue.entryWord`), if any. */
+  entryWords: readonly (number | undefined)[] = [],
 ): number[] {
   // The float posture of beats.ts/assemble.ts: a word that ends at 4 s to
   // the eye can be 4.0000001 s in the stamps.
@@ -127,7 +146,13 @@ export function scriptSceneEndWords(
     const start = wordTimes[a.startWord];
     const end = wordTimes[a.endWord];
     if (!start || !end) return a.endWord;
-    const until = start.start + target;
+    const entryWord = entryWords[i];
+    const entry =
+      entryWord !== undefined && entryWord >= a.startWord && entryWord <= a.endWord
+        ? entryWordTime(entryWord, a.startWord, a.endWord, (w) => wordTimes[w] ?? null)
+        : null;
+    const startSec = entry ? onCueStartSec(start.start, entry.start, Infinity) : start.start;
+    const until = startSec + target;
     if (end.end >= until - EPS) return a.endWord;
     const next = aligned[i + 1];
     const last = Math.min(wordTimes.length, next ? next.startWord : wordTimes.length) - 1;

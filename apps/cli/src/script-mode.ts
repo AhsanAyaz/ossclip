@@ -385,9 +385,11 @@ export type CueOutcome =
       startSec: number;
       /**
        * Set only when the scene was held past its line to reach
-       * `SCRIPT_MIN_SCENE_SEC` (§161): the line's length, then the scene's,
-       * in seconds. Optional so a report without a lengthened cue reads
-       * exactly as before.
+       * `SCRIPT_MIN_SCENE_SEC` (§161) and is on screen longer for it: the
+       * scene's length without the minimum (from its real start to its
+       * line's last word), then with it, in seconds — both from the same
+       * start, so `toSec > fromSec` always. Optional so a report without a
+       * lengthened cue reads exactly as before.
        */
       lengthened?: { fromSec: number; toSec: number };
     }
@@ -418,8 +420,10 @@ export type CueOutcome =
  * cues cannot cross (§1.2) — so each span holds exactly one cue's last word
  * and the match needs no id threading through the planner (the argument
  * `produceScriptScenes` makes for clip scenes). A scene whose end lies past
- * its cue's last word was lengthened, and says so when `wordTimes` (the
- * line's length) and the cue's `endSec` (the scene's) are both known.
+ * its cue's last word was lengthened, and says so when `wordTimes` and the
+ * cue's `endSec` are both known — measured like with like, from the cue's
+ * real start (its entry word less the lead), never from the line's first
+ * word: that put "held 2.3s for a 3.0s line" in the EGM run's report.
  */
 export function cueOutcomes(parts: {
   cues: readonly ScriptCue[];
@@ -485,18 +489,20 @@ export function cueOutcomes(parts: {
         toSec: short.toSec,
       };
     }
-    const first = parts.wordTimes?.[aligned.startWord];
-    const last = parts.wordTimes?.[aligned.endWord];
+    const lineEnd = parts.wordTimes?.[aligned.endWord]?.end;
     const lengthened =
-      scene.anchor.endWord > aligned.endWord && first && last && timed.endSec !== undefined
-        ? { fromSec: last.end - first.start, toSec: timed.endSec - timed.startSec }
+      scene.anchor.endWord > aligned.endWord && lineEnd !== undefined && timed.endSec !== undefined
+        ? { fromSec: lineEnd - timed.startSec, toSec: timed.endSec - timed.startSec }
         : undefined;
+    // A scene not on screen past its line's last word gained nothing, whatever
+    // its anchor says (the next cue's start can trim it): no note.
+    const held = lengthened && lengthened.toSec > lengthened.fromSec + 1e-6 ? lengthened : undefined;
     return {
       ...base,
       status: "placed",
       component: scene.component,
       startSec: timed.startSec,
-      ...(lengthened ? { lengthened } : {}),
+      ...(held ? { lengthened: held } : {}),
     };
   });
 }
@@ -515,10 +521,10 @@ function clip(text: string, max = 60): string {
  *
  * A shortened cue counts as placed (it is on screen) and the summary says how
  * many were cut to the 15 s ceiling, so the counts always add up to the cues.
- * A lengthened one is placed too: its line says how long it is held against
- * its spoken line (`SCRIPT_MIN_SCENE_SEC`, §161), and the summary counts them,
- * so an author reading "held 4.0s for a 1.3s line" knows the scene runs on
- * over the words after it.
+ * A lengthened one is placed too: its line says how long it is held and how
+ * long it would have been without the minimum (`SCRIPT_MIN_SCENE_SEC`, §161),
+ * and the summary counts them, so an author reading "held 4.0s (2.0s without
+ * the minimum)" knows the scene runs on over the words after it.
  */
 export function formatCueReport(outcomes: readonly CueOutcome[]): string {
   const lines = outcomes.map((o) => {
@@ -529,7 +535,7 @@ export function formatCueReport(outcomes: readonly CueOutcome[]): string {
         return (
           `${head}${o.component} at ${o.startSec.toFixed(1)}s` +
           (o.lengthened
-            ? `, held ${o.lengthened.toSec.toFixed(1)}s for a ${o.lengthened.fromSec.toFixed(1)}s line`
+            ? `, held ${o.lengthened.toSec.toFixed(1)}s (${o.lengthened.fromSec.toFixed(1)}s without the minimum)`
             : "") +
           ` — ${what}`
         );

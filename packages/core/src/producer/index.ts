@@ -458,7 +458,13 @@ async function produceScriptScenes(
   // given for clip scenes below. Graphic moments only: a footage cue has no
   // scene to hold, and its moment stays the span the cue report reads.
   if (args.script.wordTimes) {
-    const ends = scriptSceneEndWords(args.script.aligned, args.script.wordTimes);
+    // Each cue's entry word, from the scene planned on it (matched by end
+    // word, as below), so the four seconds count from where the scene will
+    // really start (`scriptSceneEndWords`; EGM run, 2026-11-17).
+    const entryWords = args.script.aligned.map(
+      (a) => scenes.find((s) => s.anchor.endWord === a.endWord)?.cue?.entryWord,
+    );
+    const ends = scriptSceneEndWords(args.script.aligned, args.script.wordTimes, entryWords);
     const lengthened = new Map<number, number>();
     args.script.aligned.forEach((a, i) => {
       if (ends[i] !== a.endWord) lengthened.set(a.endWord, ends[i]!);

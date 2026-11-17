@@ -215,13 +215,15 @@ describe("scriptPlanCacheKey", () => {
     expect(keptWordsKey(words, new Set([0]))).not.toBe(keptWordsKey(words, new Set([1])));
   });
 
-  it("the prompt version is \"s3\": a plan cached before the minimum scene length is never reused", () => {
-    // "s2" plans were cached with every scene's end word on its line's last
-    // word (§161): served now, they would keep the 1.2-2.3 s scenes the
-    // minimum exists to remove. "s1" plans were asked without CardRow on the
-    // menu (Review Focus 4). Only a new key guarantees either re-plans.
-    expect(SCRIPT_PLAN_PROMPT_VERSION).toBe("s3");
+  it("the prompt version is \"s4\": a plan cached before the minimum counted from the entry word is never reused", () => {
+    // "s3" plans counted the four seconds from the line's first word, so a
+    // scene entering late in its line was left at 2.0 s (EGM run,
+    // 2026-11-17). "s2" plans have no minimum at all (§161), and "s1" plans
+    // were asked without CardRow on the menu (Review Focus 4). Only a new
+    // key guarantees each re-plans.
+    expect(SCRIPT_PLAN_PROMPT_VERSION).toBe("s4");
     const current = scriptPlanCacheKey({ ...parts, promptVersion: SCRIPT_PLAN_PROMPT_VERSION });
+    expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s3" }));
     expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s2" }));
     expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s1" }));
   });
@@ -419,7 +421,8 @@ describe("cueOutcomes and formatCueReport: a lengthened scene (§161, SCRIPT_MIN
     moments: [moment(0, 7), moment(8, 9)],
     scenes: [scene("scene-0", 0, 7), scene("scene-1", 8, 9)],
     timed: [
-      { id: "scene-0", startSec: 0.7, endSec: 5 },
+      // Entered on a word 0.6 s into its line: on screen from 1.3 s.
+      { id: "scene-0", startSec: 1.3, endSec: 5 },
       { id: "scene-1", startSec: 5.1, endSec: 6.5 },
     ],
     dropped: [],
@@ -427,18 +430,53 @@ describe("cueOutcomes and formatCueReport: a lengthened scene (§161, SCRIPT_MIN
     wordTimes,
   });
 
-  it("a scene held past its line still matches its cue, and says how long the line was and the scene is", () => {
+  it("a scene held past its line still matches its cue, and says how long it would have been and is", () => {
     expect(outcomes.map((o) => o.status)).toEqual(["placed", "placed"]);
-    expect(outcomes[0]).toMatchObject({ component: "TitleCard", startSec: 0.7, lengthened: { fromSec: 1.5, toSec: 4.3 } });
+    // Like with like (EGM run, 2026-11-17): both lengths from the scene's
+    // real start — to its line's last word (2.5 s) without the minimum, to
+    // its end with it. Never from the line's first word, which put a
+    // "3.0s line" beside a 2.3 s scene.
+    expect(outcomes[0]).toMatchObject({ component: "TitleCard", startSec: 1.3, lengthened: { fromSec: 1.2, toSec: 3.7 } });
     // A scene its line already filled carries no note at all.
     expect("lengthened" in outcomes[1]!).toBe(false);
   });
 
   it("prints the hold on the cue's line and counts it in the summary", () => {
     const lines = formatCueReport(outcomes).split("\n");
-    expect(lines[1]).toMatch(/^ {2}line 1 +placed +TitleCard at 0\.7s, held 4\.3s for a 1\.5s line — "Three steps"$/);
+    expect(lines[1]).toMatch(
+      /^ {2}line 1 +placed +TitleCard at 1\.3s, held 3\.7s \(1\.2s without the minimum\) — "Three steps"$/,
+    );
     expect(lines[2]).toMatch(/placed +TitleCard at 5\.1s — "The next one"$/);
     expect(lines.at(-1)).toBe("placed 2 of 2 (1 lengthened) · skipped 0 · reported 0");
+  });
+
+  it("never reports a toSec below fromSec: a scene that ends no later than its line is not lengthened", () => {
+    const at = (startSec: number, endSec: number) =>
+      cueOutcomes({
+        cues,
+        aligned,
+        skipped: [],
+        moments: [moment(0, 7), moment(8, 9)],
+        scenes: [scene("scene-0", 0, 7), scene("scene-1", 8, 9)],
+        timed: [{ id: "scene-0", startSec, endSec }],
+        dropped: [],
+        shortened: [],
+        wordTimes,
+      })[0]!;
+    // Held past its line by anchor, but on screen only to 2.4 s, before the
+    // line's last word ends (2.5 s) — e.g. the next cue's start trimmed it.
+    expect("lengthened" in at(1.3, 2.4)).toBe(false);
+    expect("lengthened" in at(1.3, 2.5)).toBe(false);
+    // Across starts and ends, every reported pair has toSec > fromSec.
+    for (const startSec of [0.2, 1.0, 1.3, 2.4]) {
+      for (const endSec of [2.0, 2.5, 3.0, 5.0]) {
+        if (endSec <= startSec) continue;
+        const o = at(startSec, endSec);
+        if (o.status === "placed" && o.lengthened) {
+          expect(o.lengthened.toSec, `${startSec}-${endSec}`).toBeGreaterThan(o.lengthened.fromSec);
+        }
+      }
+    }
   });
 
   it("a footage cue's moment is found by its own words, so it still reads as footage", () => {

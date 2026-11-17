@@ -290,11 +290,15 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     }[];
     expect(outcomes.map((o) => o.status)).toEqual(["placed", "placed", "placed"]);
     expect(outcomes[0]!.lengthened).toBeUndefined();
-    expect(outcomes[1]!.lengthened!.fromSec).toBeCloseTo(1.375, 2);
+    // Both from the scene's real start (its entry word less the lead): to
+    // the line's last word without the minimum, to its end with it. The
+    // mock's card enters on "Today", the line's first word, so without the
+    // minimum it would have lasted the whole 1.375 s line.
+    expect(outcomes[1]!.lengthened!.fromSec).toBeCloseTo(1.375, 3);
     expect(outcomes[1]!.lengthened!.toSec).toBeGreaterThan(3);
     expect(outcomes[2]!.lengthened).toBeUndefined();
     const reportTxt = readFileSync(join(work, "report.txt"), "utf8");
-    expect(reportTxt).toMatch(/StatCard at [\d.]+s, held [\d.]+s for a 1\.4s line — "One wish"/);
+    expect(reportTxt).toMatch(/StatCard at [\d.]+s, held [\d.]+s \([\d.]+s without the minimum\) — "One wish"/);
     expect(reportTxt).toContain("placed 3 of 3 (1 lengthened) · skipped 0 · reported 0");
   }, 120_000);
 

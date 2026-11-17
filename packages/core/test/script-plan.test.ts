@@ -523,6 +523,48 @@ describe("scriptSceneEndWords (a script scene lasts at least SCRIPT_MIN_SCENE_SE
   });
 });
 
+describe("scriptSceneEndWords counts the four seconds from the scene's entry word (EGM run, 2026-11-17)", () => {
+  // The EGM case: a 12-word line over 3.68 s whose graphic enters on a word
+  // 1.97 s in, so the scene STARTS at 1.67 s (the entry lead is 0.3 s) and
+  // was on screen 2.0 s. Counted from the line's first word the scene
+  // already looked 3.68 s long and was never extended.
+  // Words 0-4 every 0.3 s, the entry word 5 at 1.97 s, words 6-11 every
+  // 0.25 s from 2.25 s, the last ending at 3.68 s.
+  const line: WordOutputTime[] = Array.from({ length: 12 }, (_, i) =>
+    i < 5
+      ? { start: i * 0.3, end: i * 0.3 + 0.25 }
+      : i === 5
+        ? { start: 1.97, end: 2.2 }
+        : { start: 2.25 + (i - 6) * 0.25, end: i === 11 ? 3.68 : 2.45 + (i - 6) * 0.25 },
+  );
+  // Words after the line, 0.35 s apart: word 12+j ends at 4.05 + 0.35 j.
+  const after: WordOutputTime[] = Array.from({ length: 9 }, (_, j) => ({ start: 3.75 + 0.35 * j, end: 4.05 + 0.35 * j }));
+  const times = [...line, ...after];
+  const lineCue: AlignedCue = { cue: cue(0, "My test case"), startWord: 0, endWord: 11, score: 1 };
+
+  it("from the line's first word (no entry word) the 3.68 s line is not extended", () => {
+    expect(scriptSceneEndWords([lineCue], times)).toEqual([11]);
+  });
+
+  it("from the entry word, the scene runs to the last word ending by entry - lead + 4 s", () => {
+    // Start 1.67 s → until 5.67 s: word 16 ends 5.45 s, word 17 at 5.80 s.
+    expect(scriptSceneEndWords([lineCue], times, [5])).toEqual([16]);
+  });
+
+  it("an entry word outside the cue's span is ignored; a cut entry word enters on the next kept one", () => {
+    expect(scriptSceneEndWords([lineCue], times, [40])).toEqual([11]);
+    // Word 5 cut: the scene enters on the next kept word, 6, at 2.25 s →
+    // start 1.95 s, until 5.95 s: word 17 ends 5.80 s, word 18 at 6.15 s.
+    const cut5 = times.map((t, i) => (i === 5 ? null : t));
+    expect(scriptSceneEndWords([lineCue], cut5, [5])).toEqual([17]);
+  });
+
+  it("never starts the count before the line's first word (the legacy start is the floor)", () => {
+    // An entry on the first word: 0 - 0.3 is floored at 0, as assembly floors it.
+    expect(scriptSceneEndWords([lineCue], times, [0])).toEqual([11]);
+  });
+});
+
 describe("produceScenes with a script and word times: the minimum scene length", () => {
   // "Brainstorm. Draft. Review." is a 2.3 s line; the words after it belong
   // to no cue. "the" ends at 3.8 s and "plan" at 4.2 s, so a 4 s minimum
@@ -599,6 +641,50 @@ describe("produceScenes with a script and word times: the minimum scene length",
     expect(lc!.endSec).toBeCloseTo(3.8);
     // The moment the cache and --sfx read follows its scene.
     expect(long.result.beatSheet.moments[0]).toMatchObject({ startWord: 0, endWord: 6 });
+  });
+
+  it("EGM: a 3.68 s line whose graphic enters 1.97 s in is held to entry - lead + 4 s, not left at 2.0 s", async () => {
+    const egm: Transcript = {
+      language: "en",
+      words: [
+        ..."my test case is a".split(" ").map((text, i) => ({ text, start: i * 0.3, end: i * 0.3 + 0.25 })),
+        { text: "ninety", start: 1.97, end: 2.2 },
+        ..."second clip of my open editor"
+          .split(" ")
+          .map((text, i) => ({ text, start: 2.25 + i * 0.25, end: i === 5 ? 3.68 : 2.45 + i * 0.25 })),
+        ..."and it cuts the bloopers out for me today"
+          .split(" ")
+          .map((text, j) => ({ text, start: 3.75 + 0.35 * j, end: 4.05 + 0.35 * j })),
+      ],
+    };
+    const egmMap = new TimeMap([{ srcIn: 0, srcOut: 8, kind: "keep" }]);
+    const cues = parseScript("🎬 [StatCard] the clip\n🗣️ My test case is a ninety second clip of my open editor");
+    const { aligned } = alignCues(cues, egm);
+    expect(aligned.map((a) => [a.startWord, a.endWord])).toEqual([[0, 11]]);
+    const provider = new StubProvider((n) =>
+      n === 0
+        ? { cues: [{ id: cues[0]!.id, sceneKind: "StatCard", onScreenCopy: "NINETY" }] }
+        : // The value is said on word 5; the label is not said at all.
+          { label: "Zebra crossings", value: "ninety" },
+    );
+    const planOnce = async (times?: readonly WordOutputTime[]) => {
+      const result = await produceScenes(provider, {
+        transcript: egm,
+        outputDuration: egmMap.outputDuration,
+        script: { aligned, clips: [], ...(times ? { wordTimes: times } : {}) },
+      });
+      return { result, cue: assembleScenes(result.scenes, egm, egmMap).cues[0]! };
+    };
+    const before = await planOnce();
+    expect(before.result.scenes[0]!.cue!.entryWord).toBe(5);
+    expect(before.cue.startSec).toBeCloseTo(1.67);
+    expect(before.cue.endSec - before.cue.startSec).toBeCloseTo(2.01);
+
+    const after = await planOnce(egm.words.map((w) => egmMap.mapWord(w)));
+    // Until 1.67 + 4 = 5.67 s: "out" ends 5.45 s, "for" 5.80 s.
+    expect(after.result.scenes[0]!.anchor).toEqual({ startWord: 0, endWord: 16 });
+    expect(after.cue.startSec).toBeCloseTo(1.67);
+    expect(after.cue.endSec).toBeCloseTo(5.45);
   });
 
   it("without word times nothing is lengthened (the minimum needs the output clock)", async () => {

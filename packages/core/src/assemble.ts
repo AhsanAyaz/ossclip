@@ -197,10 +197,7 @@ export function assembleScenes(
     const plan = planned.get(cue);
     if (!plan) continue;
     if (plan.entryAtSec !== null) {
-      const start = Math.max(
-        cue.startSec,
-        Math.min(plan.entryAtSec - ENTRY_LEAD_SEC, cue.endSec - minScene),
-      );
+      const start = onCueStartSec(cue.startSec, plan.entryAtSec, cue.endSec - minScene);
       // The entry word's own second rides along ONLY when it moved the
       // start: the editor's live preview re-times the start from the word,
       // not from `startSec`, whose lead can sit across a seam from the word
@@ -215,6 +212,46 @@ export function assembleScenes(
   }
 
   return { cues, dropped, shortened };
+}
+
+/**
+ * Where a cued scene starts once its entry word is known (reveal-timing spec
+ * §2): `ENTRY_LEAD_SEC` ahead of the word, never before the legacy start
+ * (the first anchor word, after de-overlap), and never later than
+ * `latestStartSec` — the assembler's `end − minScene`, so an entry near the
+ * end still leaves the floor on screen. Exported so the script minimum
+ * (`scriptSceneEndWords`, §161) counts its four seconds from this same
+ * start: counted from the line's first word, a scene entering 1.97 s into a
+ * 3.68 s line was left at 2.0 s on screen (EGM run, 2026-11-17).
+ */
+export function onCueStartSec(legacyStartSec: number, entryAtSec: number, latestStartSec: number): number {
+  return Math.max(legacyStartSec, Math.min(entryAtSec - ENTRY_LEAD_SEC, latestStartSec));
+}
+
+/**
+ * The output time of the word a cued scene enters on, or null (then the
+ * legacy start stands). Exported for the reason `onCueStartSec` is.
+ *
+ * Clamped into the scene's own words: the cue was matched inside the
+ * moment's window (spec §1), and an anchor edited after planning must not
+ * let a stale index start the graphic outside the words it belongs to. If
+ * the entry word was cut (Review Focus 1), the scene enters on the first word
+ * still spoken AFTER it within the scene — the moment the speaker reaches
+ * the entry point in the cut video — never on an earlier one the plan did
+ * not choose. Any transcript word, not only item words: a later item can be
+ * seconds past the cut, leaving the graphic up late over the words that led
+ * into it (final review I-2).
+ */
+export function entryWordTime<T extends { start: number }>(
+  entryWord: number,
+  startWord: number,
+  endWord: number,
+  timeAt: (word: number) => T | null,
+): T | null {
+  const entry = Math.min(Math.max(entryWord, startWord), endWord);
+  let at = timeAt(entry);
+  for (let w = entry + 1; at === null && w <= endWord; w++) at = timeAt(w);
+  return at;
 }
 
 /** A cued scene's plan-time answers, resolved into output time. */
@@ -246,19 +283,7 @@ function plannedCue(
     return w ? map.mapWord(w) : null;
   };
 
-  // Clamped into the scene's own words: the cue was matched inside the
-  // moment's window (spec §1), and an anchor edited after planning must not
-  // let a stale index start the graphic outside the words it belongs to.
-  const entry = Math.min(Math.max(entryWord, startWord), endWord);
-  let entryAt = mapAt(entry);
-  // The entry word was cut (Review Focus 1): enter on the first word still
-  // spoken AFTER it within the scene — the moment the speaker reaches the
-  // entry point in the cut video — never on an earlier one the plan did not
-  // choose, and failing that on the legacy start exactly as today. Any
-  // transcript word, not only item words: a later item can be seconds past
-  // the cut, leaving the graphic up late over the words that led into it
-  // (final review I-2).
-  for (let w = entry + 1; entryAt === null && w <= endWord; w++) entryAt = mapAt(w);
+  const entryAt = entryWordTime(entryWord, startWord, endWord, mapAt);
   const entryAtSec = entryAt === null ? null : entryAt.start;
 
   // Index i of `itemWords` must BE rendered item i. A prop edit since
