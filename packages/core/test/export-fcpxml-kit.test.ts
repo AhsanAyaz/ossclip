@@ -297,7 +297,9 @@ describe("buildFcpxmlKit", () => {
     };
     expect(named(1920, 1080, 30)).toBe("FFVideoFormat1080p30");
     expect(named(1280, 720, 60)).toBe("FFVideoFormat720p60");
-    expect(named(3840, 2160, 24)).toBe("FFVideoFormat2160p24");
+    // FCP's UHD preset is not `FFVideoFormat2160p24` (it names the width
+    // too), and a wrong name is worse than none.
+    expect(named(3840, 2160, 24)).toBeNull();
     expect(named(1080, 1920, 30)).toBeNull();
     expect(named(1080, 1080, 30)).toBeNull();
     expect(named(1440, 1080, 30)).toBeNull();

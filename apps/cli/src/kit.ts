@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { cpus } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -233,6 +233,8 @@ export interface KitSeams {
   exists(path: string): boolean;
   /** Null when the path does not exist. */
   stat(path: string): { mtimeMs: number; isDirectory: boolean } | null;
+  /** The path with every symlink resolved; throws when it cannot be. */
+  realpath(path: string): string;
   /** Recursive. */
   mkdir(path: string): Promise<void>;
   readdir(path: string): Promise<string[]>;
@@ -444,9 +446,23 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
   const wsl = isWslEnv(seams.platform, seams.env, seams.procVersion);
   const urlEnv = { wsl, distro: seams.env.WSL_DISTRO_NAME };
   const warnings: string[] = [];
+  // Symlinks resolved before a path becomes a URL (§162): on the EGM
+  // project the `clip:` files are links in a Linux folder pointing onto
+  // /mnt/c, and the link's own path gives a wsl.localhost URL Resolve may
+  // not open, while its target gives the file:///C:/ one it does. A path
+  // that cannot be resolved keeps the form it had.
+  const real = (path: string): string => {
+    try {
+      return seams.realpath(path);
+    } catch {
+      return path;
+    }
+  };
+  /** kitFileUrl's warnings, kept apart so they print as one line. */
+  const linuxWarnings: { path: string; warning: string }[] = [];
   const urlFor = (path: string): string => {
     const { url, warning } = kitFileUrl(path, urlEnv);
-    if (warning !== undefined) warnings.push(warning);
+    if (warning !== undefined) linuxWarnings.push({ path, warning });
     return url;
   };
   let serveUrl: string | null = null;
@@ -482,8 +498,9 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
         reason = "the script's own path is not recorded, so its clip: paths cannot be resolved";
       } else {
         try {
-          original = resolveClipPath(script.sourcePath, record.path);
-          if (!seams.exists(original)) reason = `the original clip ${original} is not there`;
+          const named = resolveClipPath(script.sourcePath, record.path);
+          if (!seams.exists(named)) reason = `the original clip ${named} is not there`;
+          else original = real(named);
         } catch (err) {
           reason = err instanceof Error ? err.message : String(err);
         }
@@ -571,7 +588,7 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
     }
     if (!flags.clipsOnly) {
       timelineClips.push({
-        url: urlFor(outPath),
+        url: urlFor(real(outPath)),
         name: basename(plan.fileName, extname(plan.fileName)),
         fps,
         width: settings.width,
@@ -610,7 +627,7 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
       warnings.push(`${sourcePath} is not on disk; Resolve will show track 1 offline until you relink it`);
     }
     const sourceMedia: KitTimelineMedia = {
-      url: urlFor(sourcePath),
+      url: urlFor(real(sourcePath)),
       name: basename(sourcePath),
       fps: project.source.probe.fps,
       width: project.source.probe.width,
@@ -630,7 +647,18 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
     await seams.writeFile(join(kitDir, KIT_TIMELINE_BASENAME), xml);
     timeline = KIT_TIMELINE_BASENAME;
   }
+  // Every Linux-side path stays in the report, but a kit made in the Linux
+  // filesystem names one per clip, and a screenful of the same warning hides
+  // the summary under it: printed once, with the count and the first path.
   for (const w of warnings) seams.log(`⚠ ${w}`);
+  if (linuxWarnings.length === 1) seams.log(`⚠ ${linuxWarnings[0]!.warning}`);
+  if (linuxWarnings.length > 1) {
+    seams.log(
+      `⚠ ${linuxWarnings.length} files are inside the Linux filesystem (first: ${linuxWarnings[0]!.path}); ` +
+        "Resolve may ask you to relink them — every path is in kit-report.json",
+    );
+  }
+  warnings.push(...linuxWarnings.map((w) => w.warning));
 
   // Written only once the run is complete: the next run trusts it for
   // reuse, and a report describing clips a cancelled run never made would
@@ -681,6 +709,7 @@ export function liveKitSeams(): KitSeams {
     readFile: (path) => readFile(path, "utf8"),
     writeFile: (path, text) => writeFile(path, text),
     exists: existsSync,
+    realpath: (path) => realpathSync(path),
     stat: (path) => {
       try {
         const s = statSync(path);

@@ -46,8 +46,8 @@ pnpm ossclip kit "$W" --out "$S/kit"
 
 - First run: about 35 s total, about 5 s per clip after a one-off bundle. Prints `▸ [1/6] scene-0-CardRow.mov  1.7s`,
   `25% / 50% / 75%`, `✓ rendered in 5.1s` per clip, then `✓ kit: 6 clips — 6 rendered, 0 reused, 0 skipped`, the
-  folder, and `In Resolve: File → Import → Timeline…, then pick timeline.fcpxml`. Seven `⚠ … is inside the Linux
-  filesystem` lines are expected under WSL with a scratch dir in `/tmp` (six clips and the source).
+  folder, and `In Resolve: File → Import → Timeline…, then pick timeline.fcpxml`. One `⚠ 7 files are inside the Linux filesystem (first: …/clips/scene-0-CardRow.mov); Resolve may ask you to
+  relink them — every path is in kit-report.json` line is expected under WSL with a scratch dir in `/tmp` (six clips and the source).
 - `clips/` holds six files, `scene-0-CardRow`, `scene-1-CtaCard`, `scene-2-BugCard`, `scene-3-PhoneDemo`,
   `scene-4-TerminalMock`, `scene-5-StatCard` (10 to 20 MB each), beside `kit-report.json` and `timeline.fcpxml`.
 - Each clip: `ffprobe -v error -select_streams v:0 -count_frames -show_entries

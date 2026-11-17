@@ -163,13 +163,18 @@ function attr(s: string): string {
   return esc(s).replace(/[^\x00-\x7f]/gu, (c) => `&#${c.codePointAt(0)!};`);
 }
 
-/** The frame sizes whose `FFVideoFormat<height>p<rate>` name is a real preset. */
-const PRESET_SIZES: ReadonlySet<string> = new Set(["1920x1080", "1280x720", "3840x2160"]);
+/**
+ * The frame sizes whose `FFVideoFormat<height>p<rate>` name is a real preset.
+ * Not 3840x2160: FCP names its UHD presets with the width too
+ * (`FFVideoFormat3840x2160p…`, as far as anyone here knows), and a wrong name
+ * is worse than none.
+ */
+const PRESET_SIZES: ReadonlySet<string> = new Set(["1920x1080", "1280x720"]);
 
 /**
  * A `<format>`'s `name`, or null to leave the attribute out (§162). The
  * name is a claim that such a preset exists; `<height>p<rate>` only names
- * one for the standard landscape sizes at an integer rate. A portrait
+ * one for 1080p and 720p at an integer rate. A portrait
  * 1080x1920 output would otherwise be called `FFVideoFormat1920p30`, a
  * preset nobody has, and an NTSC rate has no integer to put in it. Resolve
  * reads `frameDuration`, `width` and `height`, so leaving it out loses

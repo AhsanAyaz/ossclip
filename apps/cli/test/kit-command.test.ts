@@ -36,6 +36,8 @@ interface World {
   replay: { code: number; tail?: string[]; effect?: () => void };
   /** Files `probe` refuses. */
   unreadable: Set<string>;
+  /** Symlink path → its target, for `realpath`. */
+  symlinks: Map<string, string>;
 }
 
 function makeWorld(opts: { wsl?: boolean } = {}): World {
@@ -56,6 +58,7 @@ function makeWorld(opts: { wsl?: boolean } = {}): World {
     logs: [],
     replay: { code: 0 },
     unreadable: new Set(),
+    symlinks: new Map(),
     seams: {
       readFile: async (p) => {
         const f = files.get(p);
@@ -68,6 +71,12 @@ function makeWorld(opts: { wsl?: boolean } = {}): World {
         const f = files.get(p);
         if (f !== undefined) return { mtimeMs: f.mtimeMs, isDirectory: false };
         return dirs.has(p) ? { mtimeMs: 0, isDirectory: true } : null;
+      },
+      realpath: (p) => {
+        const target = world.symlinks.get(p);
+        if (target !== undefined) return target;
+        if (files.has(p) || dirs.has(p)) return p;
+        throw new Error(`ENOENT: ${p}`);
       },
       mkdir: async (p) => addDir(p),
       readdir: async (p) =>
@@ -578,13 +587,69 @@ describe("runKit", () => {
     expect(report(world, "/mnt/c/Users/me/My Videos/kit").warnings).toEqual([]);
   });
 
-  it("under WSL a kit in the Linux filesystem warns per path", async () => {
+  it("under WSL a kit in the Linux filesystem: every path in the report, one printed line", async () => {
     const world = makeWorld({ wsl: true });
     const { work } = project(world);
     await runKit(work, FLAGS, world.seams);
     const r = report(world);
+    // The two rendered clips, the clip: original and the source.
+    const linux = r.warnings.filter((w) => w.includes("inside the Linux filesystem"));
+    expect(linux).toHaveLength(4);
     expect(r.warnings).toContain("/videos/take.mp4 is inside the Linux filesystem; Resolve may ask you to relink it");
-    expect(world.logs).toContain("⚠ /videos/take.mp4 is inside the Linux filesystem; Resolve may ask you to relink it");
+    const printed = world.logs.filter((l) => l.includes("Linux filesystem"));
+    expect(printed).toEqual([
+      "⚠ 4 files are inside the Linux filesystem (first: /kits/take-kit/clips/scene-0-CardRow.mov); " +
+        "Resolve may ask you to relink them — every path is in kit-report.json",
+    ]);
+  });
+
+  it("a single Linux-side path prints its own warning unchanged; none on /mnt/c prints nothing", async () => {
+    const world = makeWorld({ wsl: true });
+    const { work } = project(world, { root: "/mnt/c/v" });
+    await runKit(work, { ...FLAGS, out: "/mnt/c/v/kit" }, world.seams);
+    expect(world.logs.filter((l) => l.includes("Linux filesystem"))).toEqual([]);
+
+    // One rendered clip, written to a Linux-side kit folder: one path to warn about.
+    const other = makeWorld({ wsl: true });
+    const cues = CUES.filter((c) => c.id !== "scene-1");
+    const p = project(other, { root: "/mnt/c/v", cues });
+    await runKit(p.work, { ...FLAGS, out: "/home/me/kit" }, other.seams);
+    expect(other.logs.filter((l) => l.includes("Linux filesystem"))).toEqual([
+      "⚠ /home/me/kit/clips/scene-0-CardRow.mov is inside the Linux filesystem; Resolve may ask you to relink it",
+    ]);
+  });
+
+  it("a clip: original that is a symlink to /mnt/c is linked by its target (no warning)", async () => {
+    const world = makeWorld({ wsl: true });
+    const { work } = project(world, { root: "/mnt/c/Users/x/proj" });
+    // The script's clip lives in a Linux folder as a symlink onto the Windows drive.
+    const production = JSON.parse(world.files.get(join(work, "production.json"))!.text);
+    production.script.sourcePath = "/home/x/scripts/script.md";
+    await world.seams.writeFile(join(work, "production.json"), JSON.stringify(production));
+    await world.seams.writeFile("/home/x/scripts/clips/steps.mov", "LINK");
+    await world.seams.writeFile("/mnt/c/Users/x/EGM/a.mov", "MOV");
+    world.symlinks.set("/home/x/scripts/clips/steps.mov", "/mnt/c/Users/x/EGM/a.mov");
+    await runKit(work, { ...FLAGS, out: "/mnt/c/Users/x/proj/kit" }, world.seams);
+
+    const doc = timeline(world, "/mnt/c/Users/x/proj/kit");
+    const srcs = Array.from(doc.querySelectorAll("media-rep")).map((m) => m.getAttribute("src"));
+    expect(srcs).toContain("file:///C:/Users/x/EGM/a.mov");
+    expect(srcs.some((s) => s!.includes("wsl.localhost"))).toBe(false);
+    const r = report(world, "/mnt/c/Users/x/proj/kit");
+    expect(r.warnings).toEqual([]);
+    expect(r.clips.find((c) => c.sceneId === "scene-2")!.file).toBe("/mnt/c/Users/x/EGM/a.mov");
+  });
+
+  it("a path whose realpath fails keeps its unresolved form", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    world.seams.realpath = () => {
+      throw new Error("EACCES");
+    };
+    await runKit(work, FLAGS, world.seams);
+    const srcs = Array.from(timeline(world).querySelectorAll("media-rep")).map((m) => m.getAttribute("src"));
+    expect(srcs).toContain("file:///videos/take.mp4");
+    expect(srcs).toContain("file:///videos/clips/steps.mov");
   });
 
   it("a stray .mov in clips/ is removed; other files are left alone", async () => {
