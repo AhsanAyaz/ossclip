@@ -318,6 +318,19 @@ In Resolve, the author imports the timeline file. Track 1 holds the source foota
 *   **The author's pop.** A user sound pack in `~/.ossclip/sfx` already overrides `pop`.
 *   **Editor.** The editor preview does not play sound effects today. That does not change here.
 
+### Phase 4: facts found before planning (2026-11-17), design not yet revised
+
+A read of the code before writing the plan found that four statements above do not hold. The phase is paused here until the author has revised it.
+
+*   **"In script mode the LLM sound call does not run."** It runs today: the sound block in `produce.ts` is gated on `--sfx` alone and keys its cache on the script plan. Turning it off also changes the editor's Render and the kit's refresh, which carry a prior sound plan forward and, when there is none, never load the sound library, so scene sounds would have no files on that path.
+*   **"The editor preview does not play sound effects today."** It does, and it is on by default (`useSfxPreview` in the timeline, one audio element per sound id). The Remotion player has no sound track, because five shared audio tags broke it on a project with thirteen cues (field report 2026-09-18, recorded in `packages/scenes/src/sfx-track.ts`). Scene sounds would be missing from the preview unless they join the timeline's marker list.
+*   **"`click`, `error-buzz`, `ding` and `pop` already exist" as generated sounds.** They exist, but as CC0 samples; `synthesize.sh` makes six other sounds, writes WAV, and has no MP3 or loudness step. The pack's declared lengths do not match the files (`click` 0.2 s declared, 0.05 s measured). Adding any sound to the pack changes every project's sound cache key unless scene-only sounds are left out of the key as well as the menu.
+*   **"A pure function in core."** The timing helpers the events must agree with (`cardRowDelays`, `ctaTimeline`, `bugTimeline`, `phoneDemoDelays`, `terminalTimeline`, the stat count) live in the scenes package, in files that import Remotion. Core cannot import scenes. Either the timing halves move to core, or the event functions live in the scenes package and the CLI calls them; the edit server imports neither today.
+
+Also new since the design: the clip kit. A kit clip is rendered muted, its reuse key has no sound inputs, and the timeline marks it as having no audio. Kit clips are not loudness-normalised, and nothing in the code relates an effect's level to the voice.
+
+Open questions for the author: where the event functions live; whether scene sounds play in the editor preview; whether script mode keeps the LLM sound plan as an option; how the new sounds are made and who listens to them before they ship.
+
 ### Phase 4 acceptance
 
 *   Unit tests give the event list for each component.
