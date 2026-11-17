@@ -77,6 +77,7 @@ import {
   fillPlainCues,
   splitCues,
   landscapeLayoutFor,
+  landscapeLayoutAfterRouting,
   scriptLandscapePlacement,
   formatCutReport,
   formatGraphicsAccounting,
@@ -5135,10 +5136,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // when that costs a text dodge: the graphic keeps whatever free-band rect
   // routing gave it, but the frame stays whole (R15). The same exemption as
   // the remap above (§163), or a backdrop it kept would be undone here: every
-  // cue, routed or not, passes through this loop.
+  // cue, routed or not, passes through this loop. But only for a layout the
+  // cue had BEFORE routing: one routing chose to dodge text is remapped as
+  // always, or a text dodge could hide the speaker. Routing keeps ids and
+  // never mutates `assembled` (changed cues are copies), so its layouts are
+  // the pre-routing record.
   if (landscape) {
+    const beforeRouting = new Map(assembled.map((c) => [c.id, c.layout] as const));
     for (const c of routed.cues) {
-      const want = landscapeLayoutFor(c.layout, { scriptProject });
+      const want = landscapeLayoutAfterRouting(c.layout, beforeRouting.get(c.id), {
+        scriptProject,
+      });
       if (want === c.layout) continue;
       console.log(
         `  ▸ ${c.id}: ${c.layout} → ${want} (landscape; source-text routing had moved it)`,

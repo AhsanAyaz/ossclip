@@ -10,6 +10,7 @@ import {
   type FramingContext,
   landscapeLayout,
   landscapeLayoutFor,
+  landscapeLayoutAfterRouting,
   BACKDROP_LAYOUTS,
   isBackdropLayout,
   SCRIPT_LANDSCAPE_RECT,
@@ -268,6 +269,56 @@ describe("backdrop layouts (scene-backdrop-choice design §1)", () => {
       if (isBackdropLayout(l)) continue;
       expect(landscapeLayoutFor(l, { scriptProject: true })).toBe(landscapeLayout(l));
     }
+  });
+});
+
+describe("landscapeLayoutAfterRouting (§163: a layout text routing chose is still remapped)", () => {
+  it("a script project keeps a backdrop the cue already had before routing", () => {
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "graphic-only", { scriptProject: true }),
+    ).toBe("graphic-only");
+    expect(landscapeLayoutAfterRouting("pip-bubble", "pip-bubble", { scriptProject: true })).toBe(
+      "pip-bubble",
+    );
+  });
+
+  it("a backdrop that routing introduced is remapped even in a script project", () => {
+    // full-bleed dodged burned-in text into graphic-only: the author never
+    // chose to hide the speaker, so R15's remap applies as before.
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "full-bleed", { scriptProject: true }),
+    ).toBe("blurred-behind");
+    expect(landscapeLayoutAfterRouting("pip-bubble", "full-bleed", { scriptProject: true })).toBe(
+      "split-left",
+    );
+    // A backdrop routed into a DIFFERENT backdrop is still routing's choice.
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "pip-bubble", { scriptProject: true }),
+    ).toBe("blurred-behind");
+  });
+
+  it("a cue with no pre-routing layout on record counts as routed", () => {
+    expect(landscapeLayoutAfterRouting("graphic-only", undefined, { scriptProject: true })).toBe(
+      "blurred-behind",
+    );
+  });
+
+  it("no script project: remapped in both cases, exactly as landscapeLayout", () => {
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "graphic-only", { scriptProject: false }),
+    ).toBe("blurred-behind");
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "full-bleed", { scriptProject: false }),
+    ).toBe("blurred-behind");
+    for (const l of LayoutSchema.options) {
+      expect(landscapeLayoutAfterRouting(l, l, { scriptProject: false })).toBe(landscapeLayout(l));
+    }
+  });
+
+  it("full-bleed stays full-bleed whatever it was before", () => {
+    expect(landscapeLayoutAfterRouting("full-bleed", "graphic-only", { scriptProject: true })).toBe(
+      "full-bleed",
+    );
   });
 });
 

@@ -313,6 +313,29 @@ export function landscapeLayoutFor(layout: Layout, opts: { scriptProject: boolea
 }
 
 /**
+ * `landscapeLayoutFor` for the remap that runs AFTER source-text routing:
+ * a backdrop is kept only when the cue already had that same layout before
+ * routing (§163).
+ *
+ * Why: routing (`routeAroundSourceText`) may itself switch a scene to one of
+ * its component's `altLayouts` to dodge burned-in text, and those include
+ * `graphic-only` and `pip-bubble`. A layout routing chose is not a backdrop
+ * the author or the plan chose; keeping it would let a text dodge hide the
+ * speaker in a 16:9 script project. So it is remapped as R15 always did.
+ * `beforeRouting` is `undefined` when the cue has no pre-routing record,
+ * which counts as routed — the remap is the safe answer.
+ */
+export function landscapeLayoutAfterRouting(
+  layout: Layout,
+  beforeRouting: Layout | undefined,
+  opts: { scriptProject: boolean },
+): Layout {
+  return landscapeLayoutFor(layout, {
+    scriptProject: opts.scriptProject && beforeRouting === layout,
+  });
+}
+
+/**
  * Where a slot component sits in a 16:9 script run (§161): centred, 72% × 68%
  * of the frame. Inside `LANDSCAPE_SAFE_AREA` (5% sides, 6% top, 12% bottom)
  * with room to spare, so the draw-time clamp (`clampGraphicRect`) leaves it
