@@ -215,14 +215,16 @@ describe("scriptPlanCacheKey", () => {
     expect(keptWordsKey(words, new Set([0]))).not.toBe(keptWordsKey(words, new Set([1])));
   });
 
-  it("the prompt version is \"s4\": a plan cached before the minimum counted from the entry word is never reused", () => {
-    // "s3" plans counted the four seconds from the line's first word, so a
-    // scene entering late in its line was left at 2.0 s (EGM run,
-    // 2026-11-17). "s2" plans have no minimum at all (§161), and "s1" plans
+  it("the prompt version is \"s5\": a plan cached before the minimum waited for the previous scene is never reused", () => {
+    // "s4" plans counted the four seconds from the entry word even when the
+    // scene before still played, leaving a TitleCard after a clip at 2.2 s
+    // (EGM plan-only run, 2026-11-17). "s3" plans counted from the line's
+    // first word, "s2" plans have no minimum at all (§161), and "s1" plans
     // were asked without CardRow on the menu (Review Focus 4). Only a new
     // key guarantees each re-plans.
-    expect(SCRIPT_PLAN_PROMPT_VERSION).toBe("s4");
+    expect(SCRIPT_PLAN_PROMPT_VERSION).toBe("s5");
     const current = scriptPlanCacheKey({ ...parts, promptVersion: SCRIPT_PLAN_PROMPT_VERSION });
+    expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s4" }));
     expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s3" }));
     expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s2" }));
     expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s1" }));

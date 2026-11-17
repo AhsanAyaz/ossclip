@@ -31,8 +31,12 @@ export const MAX_SCENE_SEC = 15;
 /** R20 §95's lower-third ceiling — now the universal one; kept as an alias
  * so published consumers of the old name keep compiling. */
 export const MAX_OVERLAY_SCENE_SEC = MAX_SCENE_SEC;
-/** Breathing room enforced between consecutive scenes. */
-const SCENE_GAP_SEC = 0.05;
+/**
+ * Breathing room enforced between consecutive scenes. Exported so the script
+ * minimum (`scriptSceneEndWords`, §161) pushes a scene past the one before it
+ * by exactly what assembly will.
+ */
+export const SCENE_GAP_SEC = 0.05;
 /**
  * How far ahead of its entry word a graphic comes up (reveal-timing spec §2,
  * "my call"): enough that the card is on screen as the word is heard, not a

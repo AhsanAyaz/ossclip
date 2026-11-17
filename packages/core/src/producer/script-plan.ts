@@ -17,7 +17,7 @@ import type { Transcript } from "../schema";
 import { LayoutSchema, ScriptComponentIdSchema, type Scene } from "../scene-schema";
 import { SCENE_REGISTRY, scriptComponentIds } from "../scene-registry";
 import type { AlignedCue } from "../script/align";
-import { MAX_SCENE_SEC, entryWordTime, onCueStartSec } from "../assemble";
+import { MAX_SCENE_SEC, SCENE_GAP_SEC, entryWordTime, minSceneSec, onCueStartSec } from "../assemble";
 import { cappedText, type BeatsValidationIssue, type ScriptMoment } from "./beats";
 import { momentSceneId } from "./scene-props";
 import type { LlmProvider } from "./provider";
@@ -46,8 +46,12 @@ import type { LlmProvider } from "./provider";
  * starts it, not from its line's first word (EGM run, 2026-11-17). An "s3"
  * plan's end words were computed the old way, which left a scene entering
  * late in its line at 2.0 s on screen.
+ *
+ * "s5": the minimum also counts from where the previous scene ends, since
+ * assembly pushes a scene past it (EGM plan-only run, 2026-11-17). An "s4"
+ * plan left a TitleCard after a still-playing clip at 2.2 s on screen.
  */
-export const SCRIPT_PLAN_PROMPT_VERSION = "s4";
+export const SCRIPT_PLAN_PROMPT_VERSION = "s5";
 
 /**
  * Most cues one script may carry (§1.3). A ceiling on the one call that plans
@@ -117,6 +121,18 @@ export const SCRIPT_MIN_SCENE_SEC = 4;
  * entry word outside the cue's span (a planner never writes one) counts
  * from the line's first word.
  *
+ * The start also waits for the previous scene: assembly pushes a scene to
+ * `previous end + SCENE_GAP_SEC`, and on the EGM plan-only run a TitleCard
+ * whose line was spoken while the 5.2 s clip before it still played started
+ * at 233.11 s, most of its line gone, while the count began at its entry
+ * word (about 231 s) and found nothing to extend: 2.2 s on screen with the
+ * next scene 12 s away. So the cues are walked in order carrying the
+ * previous scene's end the way assembly computes it: a clip's start plus
+ * its length (capped at `MAX_SCENE_SEC`); a graphic's end word's end, but
+ * at least `sceneFloorSec` after its pushed start (assembly's `minScene`
+ * floor); a cue with no scene (footage, or one that planned nothing) puts
+ * nothing on screen and pushes nothing.
+ *
  * Limits, each the reason a scene may end sooner than the minimum:
  * - never into the next scene: the walk stops at the word before the next
  *   PLACED cue's `startWord` (placed = aligned; a footage cue that will show
@@ -132,40 +148,79 @@ export const SCRIPT_MIN_SCENE_SEC = 4;
 export function scriptSceneEndWords(
   aligned: readonly AlignedCue[],
   wordTimes: readonly WordOutputTime[],
-  /** Per cue, the word its scene enters on (`scene.cue.entryWord`), if any. */
-  entryWords: readonly (number | undefined)[] = [],
+  opts: {
+    /**
+     * Per cue, the scene it became. Absent entries default to a clip with no
+     * known length for a `clip:` cue and to a graphic with no entry word
+     * otherwise.
+     */
+    scenes?: readonly (ScriptSceneShape | undefined)[];
+    /** Assembly's `minScene` floor for this take (`minSceneSec`); defaults to the long-take 1.2 s. */
+    sceneFloorSec?: number;
+  } = {},
 ): number[] {
   // The float posture of beats.ts/assemble.ts: a word that ends at 4 s to
   // the eye can be 4.0000001 s in the stamps.
   const EPS = 1e-6;
   const target = Math.min(SCRIPT_MIN_SCENE_SEC, MAX_SCENE_SEC);
+  const floor = opts.sceneFloorSec ?? minSceneSec(Infinity);
+  // Where the previous scene on screen ends, as assembly will end it.
+  let previousEnd = -Infinity;
   return aligned.map((a, i) => {
-    if (a.cue.hint.kind === "clip") return a.endWord;
+    const shape: ScriptSceneShape =
+      opts.scenes?.[i] ?? (a.cue.hint.kind === "clip" ? { kind: "clip" } : { kind: "graphic" });
     // Alignment places cues on kept words only, so both ends have times; a
     // caller whose times disagree gets the line as spoken, not a guess.
     const start = wordTimes[a.startWord];
     const end = wordTimes[a.endWord];
-    if (!start || !end) return a.endWord;
-    const entryWord = entryWords[i];
+    if (shape.kind === "none" || !start || !end) return a.endWord;
+    // Assembly's legacy start: the first word, pushed past the scene before.
+    const legacyStart = Math.max(start.start, previousEnd + SCENE_GAP_SEC);
+    // Assembly's end for a scene on [legacyStart, wordsEnd]: a fixed length
+    // (a clip) from its start, else its words with the floor; then the cap.
+    const endOnScreen = (wordsEnd: number, fixedSec?: number) =>
+      Math.min(
+        fixedSec !== undefined ? legacyStart + fixedSec : Math.max(wordsEnd, legacyStart + floor),
+        legacyStart + MAX_SCENE_SEC,
+      );
+    if (shape.kind === "clip") {
+      // A ClipScene keeps its own length and is never lengthened.
+      previousEnd = endOnScreen(end.end, shape.durationSec);
+      return a.endWord;
+    }
+    const entryWord = shape.entryWord;
     const entry =
       entryWord !== undefined && entryWord >= a.startWord && entryWord <= a.endWord
         ? entryWordTime(entryWord, a.startWord, a.endWord, (w) => wordTimes[w] ?? null)
         : null;
-    const startSec = entry ? onCueStartSec(start.start, entry.start, Infinity) : start.start;
+    const startSec = entry ? onCueStartSec(legacyStart, entry.start, Infinity) : legacyStart;
     const until = startSec + target;
-    if (end.end >= until - EPS) return a.endWord;
-    const next = aligned[i + 1];
-    const last = Math.min(wordTimes.length, next ? next.startWord : wordTimes.length) - 1;
     let endWord = a.endWord;
-    for (let w = a.endWord + 1; w <= last; w++) {
-      const t = wordTimes[w];
-      if (!t) continue;
-      if (t.end > until + EPS) break;
-      endWord = w;
+    if (end.end < until - EPS) {
+      const next = aligned[i + 1];
+      const last = Math.min(wordTimes.length, next ? next.startWord : wordTimes.length) - 1;
+      for (let w = a.endWord + 1; w <= last; w++) {
+        const t = wordTimes[w];
+        if (!t) continue;
+        if (t.end > until + EPS) break;
+        endWord = w;
+      }
     }
+    previousEnd = endOnScreen(wordTimes[endWord]!.end);
     return endWord;
   });
 }
+
+/**
+ * What a script cue became, as far as its time on screen goes
+ * (`scriptSceneEndWords`): a graphic scene (with the word it enters on), a
+ * clip (with its length, `ClipScene`'s `fixedDurationSec`), or nothing on
+ * screen — a footage cue, or one whose scene was not planned.
+ */
+export type ScriptSceneShape =
+  | { kind: "graphic"; entryWord?: number }
+  | { kind: "clip"; durationSec?: number }
+  | { kind: "none" };
 
 /**
  * A script that cannot be planned as written — too many cues, a `[Name]` hint

@@ -17,8 +17,15 @@ import {
   type ScriptMoment,
 } from "./beats";
 import { generateScenes, momentSceneId, type ScenePropsFailure } from "./scene-props";
-import { planScriptMoments, scriptSceneEndWords, type ScriptPlanInput } from "./script-plan";
+import {
+  planScriptMoments,
+  scriptSceneEndWords,
+  type ScriptPlanInput,
+  type ScriptSceneShape,
+} from "./script-plan";
 import { buildFramingBrief, repairMomentLayouts, type FramingContext } from "../framing";
+import { SCENE_REGISTRY } from "../scene-registry";
+import { minSceneSec } from "../assemble";
 import {
   resolveClipWindow,
   sliceMoments,
@@ -458,13 +465,26 @@ async function produceScriptScenes(
   // given for clip scenes below. Graphic moments only: a footage cue has no
   // scene to hold, and its moment stays the span the cue report reads.
   if (args.script.wordTimes) {
-    // Each cue's entry word, from the scene planned on it (matched by end
-    // word, as below), so the four seconds count from where the scene will
-    // really start (`scriptSceneEndWords`; EGM run, 2026-11-17).
-    const entryWords = args.script.aligned.map(
-      (a) => scenes.find((s) => s.anchor.endWord === a.endWord)?.cue?.entryWord,
-    );
-    const ends = scriptSceneEndWords(args.script.aligned, args.script.wordTimes, entryWords);
+    // What each cue became — its scene's entry word, a clip's length, or
+    // nothing on screen — matched by end word as below, so the four seconds
+    // count from where the scene will really start: its entry word, and
+    // past the scene before it (`scriptSceneEndWords`; EGM runs, 2026-11-17).
+    const shapes = args.script.aligned.map((a): ScriptSceneShape => {
+      if (a.cue.hint.kind === "clip") {
+        const clip = planned.clipScenes.find((s) => s.anchor.endWord === a.endWord);
+        if (!clip) return { kind: "none" };
+        const durationSec = SCENE_REGISTRY.ClipScene.fixedDurationSec?.(clip.props);
+        return durationSec === undefined ? { kind: "clip" } : { kind: "clip", durationSec };
+      }
+      const scene = scenes.find((s) => s.anchor.endWord === a.endWord);
+      if (!scene) return { kind: "none" };
+      const entryWord = scene.cue?.entryWord;
+      return entryWord === undefined ? { kind: "graphic" } : { kind: "graphic", entryWord };
+    });
+    const ends = scriptSceneEndWords(args.script.aligned, args.script.wordTimes, {
+      scenes: shapes,
+      sceneFloorSec: minSceneSec(args.outputDuration),
+    });
     const lengthened = new Map<number, number>();
     args.script.aligned.forEach((a, i) => {
       if (ends[i] !== a.endWord) lengthened.set(a.endWord, ends[i]!);

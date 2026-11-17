@@ -16,6 +16,7 @@ import {
 import { parseScript, type ScriptCue, type ScriptCueHint } from "../src/script/cues";
 import { alignCues, type AlignedCue } from "../src/script/align";
 import type { Transcript } from "../src/schema";
+import type { Scene } from "../src/scene-schema";
 import { assembleScenes } from "../src/assemble";
 import { TimeMap } from "../src/timemap";
 
@@ -548,20 +549,146 @@ describe("scriptSceneEndWords counts the four seconds from the scene's entry wor
 
   it("from the entry word, the scene runs to the last word ending by entry - lead + 4 s", () => {
     // Start 1.67 s → until 5.67 s: word 16 ends 5.45 s, word 17 at 5.80 s.
-    expect(scriptSceneEndWords([lineCue], times, [5])).toEqual([16]);
+    expect(scriptSceneEndWords([lineCue], times, { scenes: [{ kind: "graphic", entryWord: 5 }] })).toEqual([16]);
   });
 
   it("an entry word outside the cue's span is ignored; a cut entry word enters on the next kept one", () => {
-    expect(scriptSceneEndWords([lineCue], times, [40])).toEqual([11]);
+    expect(scriptSceneEndWords([lineCue], times, { scenes: [{ kind: "graphic", entryWord: 40 }] })).toEqual([11]);
     // Word 5 cut: the scene enters on the next kept word, 6, at 2.25 s →
     // start 1.95 s, until 5.95 s: word 17 ends 5.80 s, word 18 at 6.15 s.
     const cut5 = times.map((t, i) => (i === 5 ? null : t));
-    expect(scriptSceneEndWords([lineCue], cut5, [5])).toEqual([17]);
+    expect(scriptSceneEndWords([lineCue], cut5, { scenes: [{ kind: "graphic", entryWord: 5 }] })).toEqual([17]);
   });
 
   it("never starts the count before the line's first word (the legacy start is the floor)", () => {
     // An entry on the first word: 0 - 0.3 is floored at 0, as assembly floors it.
-    expect(scriptSceneEndWords([lineCue], times, [0])).toEqual([11]);
+    expect(scriptSceneEndWords([lineCue], times, { scenes: [{ kind: "graphic", entryWord: 0 }] })).toEqual([11]);
+  });
+});
+
+describe("scriptSceneEndWords counts from where the previous scene ends (EGM plan-only run, 2026-11-17)", () => {
+  // Back-to-back half-second words: word i spans [0.5i, 0.5i + 0.4].
+  const words = (n: number): WordOutputTime[] =>
+    Array.from({ length: n }, (_, i) => ({ start: i * 0.5, end: i * 0.5 + 0.4 }));
+  const span = (c: ScriptCue, startWord: number, endWord: number): AlignedCue => ({ cue: c, startWord, endWord, score: 1 });
+  const clipCue = cue(0, "clips/a.mov", { kind: "clip", path: "clips/a.mov" });
+
+  it("a line spoken while the previous 5.2 s clip still plays counts from the clip's end + the gap", () => {
+    // The clip is placed on words 0-1 (from 0 s) and plays to 5.2 s; the
+    // TitleCard's line is words 2-5 (1.0-2.9 s) and enters on word 2. It
+    // really starts at 5.25 s, so it may run to 9.25 s: word 18 ends 9.4 s,
+    // word 17 at 8.9 s.
+    const times = words(30);
+    const aligned = [span(clipCue, 0, 1), span(cue(1, "Title"), 2, 5)];
+    const scenes = [
+      { kind: "clip" as const, durationSec: 5.2 },
+      { kind: "graphic" as const, entryWord: 2 },
+    ];
+    // The old rule, as if nothing played before it: counted from the line's
+    // first word (1.0 s, which floors entry - lead), to 5.0 s — word 9.
+    expect(scriptSceneEndWords(aligned, times, { scenes: [{ kind: "none" }, scenes[1]!] })).toEqual([1, 9]);
+    expect(scriptSceneEndWords(aligned, times, { scenes })).toEqual([1, 17]);
+
+    // What assembly then draws: the TitleCard from 5.25 s to 8.9 s, where
+    // the old count (word 9, ending 4.9 s) left it 5.25-6.45 s (the 1.2 s floor).
+    const map = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const transcript: Transcript = { language: "en", words: times.map((t, i) => ({ text: `w${i}`, ...t! })) };
+    const plan = (titleEnd: number) =>
+      assembleScenes(
+        [
+          {
+            id: "scene-0",
+            anchor: { startWord: 0, endWord: 1 },
+            layout: "full-bleed",
+            component: "ClipScene",
+            props: { src: "clips/0123456789ab.webm", durationSec: 5.2 },
+            overrides: {},
+          },
+          {
+            id: "scene-1",
+            anchor: { startWord: 2, endWord: titleEnd },
+            layout: "full-bleed",
+            component: "TitleCard",
+            props: { title: "Title" },
+            overrides: {},
+            cue: { entryWord: 2 },
+          },
+        ],
+        transcript,
+        map,
+      ).cues[1]!;
+    const before = plan(9);
+    expect(before.startSec).toBeCloseTo(5.25);
+    expect(before.endSec - before.startSec).toBeCloseTo(1.2);
+    const after = plan(17);
+    expect(after.startSec).toBeCloseTo(5.25);
+    expect(after.endSec).toBeCloseTo(8.9);
+  });
+
+  it("a clip pushed by ITS predecessor ends its own length after that pushed start", () => {
+    // A 1.2 s-floored card on word 0 ends 1.2 s; the clip on words 1-2 is
+    // pushed to 1.25 s and plays to 6.45 s; the card after it (words 3-4)
+    // starts 6.5 s and may run to 10.5 s: word 20 ends 10.4 s.
+    const times = words(30);
+    const aligned = [span(cue(0, "A"), 0, 0), span({ ...clipCue, index: 1, id: "cue-1-test" }, 1, 2), span(cue(2, "B"), 3, 4)];
+    const scenes = [
+      { kind: "graphic" as const },
+      { kind: "clip" as const, durationSec: 5.2 },
+      { kind: "graphic" as const },
+    ];
+    expect(scriptSceneEndWords(aligned, times, { scenes, sceneFloorSec: 1.2 })).toEqual([0, 2, 20]);
+  });
+
+  it("a clip longer than the 15 s cap ends at the cap, as assembly cuts it", () => {
+    const times = words(60);
+    const aligned = [span(clipCue, 0, 1), span(cue(1, "Title"), 2, 3)];
+    // Clip from 0 s, capped to 15 s: the card starts 15.05 s → 19.05 s: word 37 ends 18.9 s.
+    expect(
+      scriptSceneEndWords(aligned, times, { scenes: [{ kind: "clip", durationSec: 40 }, { kind: "graphic" }] }),
+    ).toEqual([1, 37]);
+  });
+
+  it("three graphic cues in a row: the first's end (floored by assembly) pushes the second, which still reaches the minimum", () => {
+    // A is one word (0-0.4 s) with B's line on the very next word, so it
+    // cannot grow; assembly floors it to 1.2 s, which pushes B (words 1-2,
+    // from 0.5 s) to 1.25 s. B then runs to 5.25 s: word 9 ends 4.9 s. C
+    // (words 10-11, from 5.0 s) is clear of B and runs to 9.0 s: word 17.
+    const times = words(30);
+    const aligned = [span(cue(0, "A"), 0, 0), span(cue(1, "B"), 1, 2), span(cue(2, "C"), 10, 11)];
+    const graphic = { kind: "graphic" as const };
+    expect(
+      scriptSceneEndWords(aligned, times, { scenes: [graphic, graphic, graphic], sceneFloorSec: 1.2 }),
+    ).toEqual([0, 9, 17]);
+    // Counted from B's own line (0.5 s) it would stop at word 8 and be on
+    // screen 1.25-4.4 s.
+    expect(scriptSceneEndWords(aligned, times, { scenes: [{ kind: "none" }, graphic, graphic] })).toEqual([0, 8, 17]);
+
+    // And assembly agrees: B is on screen 1.25-4.9 s, C 5.0-8.9 s.
+    const map = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const transcript: Transcript = { language: "en", words: times.map((t, i) => ({ text: `w${i}`, ...t! })) };
+    const sc = (id: string, startWord: number, endWord: number): Scene => ({
+      id,
+      anchor: { startWord, endWord },
+      layout: "full-bleed",
+      component: "TitleCard",
+      props: { title: id },
+      overrides: {},
+    });
+    const cues = assembleScenes([sc("a", 0, 0), sc("b", 1, 9), sc("c", 10, 17)], transcript, map).cues;
+    expect(cues.map((c) => [c.startSec, c.endSec].map((x) => Math.round(x * 100) / 100))).toEqual([
+      [0, 1.2],
+      [1.25, 4.9],
+      [5, 8.9],
+    ]);
+  });
+
+  it("a footage cue (no scene) does not constrain the next one", () => {
+    const times = words(30);
+    const aligned = [span(cue(0, "Footage"), 0, 0), span(cue(1, "B"), 1, 2)];
+    // Floored or not, a cue with no scene puts nothing on screen to push B.
+    expect(
+      scriptSceneEndWords(aligned, times, { scenes: [{ kind: "none" }, { kind: "graphic" }], sceneFloorSec: 1.2 }),
+    ).toEqual([0, 8]);
   });
 });
 
@@ -685,6 +812,34 @@ describe("produceScenes with a script and word times: the minimum scene length",
     expect(after.result.scenes[0]!.anchor).toEqual({ startWord: 0, endWord: 16 });
     expect(after.cue.startSec).toBeCloseTo(1.67);
     expect(after.cue.endSec).toBeCloseTo(5.45);
+  });
+
+  it("a card spoken while the clip before it still plays is held from the clip's end (EGM plan-only run)", async () => {
+    const words: Transcript = {
+      language: "en",
+      words: Array.from({ length: 30 }, (_, i) => ({ text: `w${i}`, start: i * 0.5, end: i * 0.5 + 0.4 })),
+    };
+    const clipMap = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+    const cues = parseScript("🎬 clip: clips/a.mov\n🗣️ w0 w1\n🎬 [TitleCard] the card\n🗣️ w2 w3 w4 w5");
+    const { aligned } = alignCues(cues, words);
+    const provider = new StubProvider((n) =>
+      n === 0 ? { cues: [{ id: cues[1]!.id, sceneKind: "TitleCard", onScreenCopy: "CARD" }] } : { title: "Zebra" },
+    );
+    const result = await produceScenes(provider, {
+      transcript: words,
+      outputDuration: clipMap.outputDuration,
+      script: {
+        aligned,
+        clips: [{ cueId: cues[0]!.id, src: "clips/0123456789ab.webm", durationSec: 5.2 }],
+        wordTimes: words.words.map((w) => clipMap.mapWord(w)),
+      },
+    });
+    const card = result.scenes.find((sc) => sc.component === "TitleCard")!;
+    // The clip plays 0-5.2 s, so the card starts 5.25 s and runs to 9.25 s.
+    expect(card.anchor).toEqual({ startWord: 2, endWord: 17 });
+    const cue = assembleScenes(result.scenes, words, clipMap).cues.find((c) => c.component === "TitleCard")!;
+    expect(cue.startSec).toBeCloseTo(5.25);
+    expect(cue.endSec).toBeCloseTo(8.9);
   });
 
   it("without word times nothing is lengthened (the minimum needs the output clock)", async () => {
