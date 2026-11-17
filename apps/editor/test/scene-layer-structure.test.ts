@@ -2,7 +2,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { defaultTheme, type SceneCue } from "@ossclip/core/browser";
+import { SCENE_REGISTRY, defaultTheme, type SceneCue } from "@ossclip/core/browser";
 import { findEditableFrom } from "../src/hitTest";
 
 /**
@@ -197,5 +197,92 @@ describe("SceneLayer — ClipScene (explainer plan Task 7)", () => {
     // The control: the same layout with a card still gets its frost.
     render({ ...clipCue, component: "TitleCard", props: { title: "SHIP IT" } });
     expect(scrim()).toBeDefined();
+  });
+});
+
+describe("SceneLayer — flatPanel, the clip kit's panel (§162, explainer phase 3 Task 2)", () => {
+  const statCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "video-top",
+    component: "StatCard",
+    props: { label: "STARS", value: "4,494", caption: "in a month", inverted: false },
+    startSec: 0,
+    endSec: 4,
+  };
+  const cardRowCue: SceneCue = {
+    id: "scene-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    // Through the registry schema, as every planned cue's props are: the
+    // card defaults (icon among them) are filled there, not in the component.
+    props: SCENE_REGISTRY.CardRow.propsSchema.parse({
+      cards: [{ text: "ONE" }, { text: "TWO" }, { text: "THREE" }],
+    }) as Record<string, unknown>,
+    startSec: 0,
+    endSec: 4,
+  };
+  const render = (cue: SceneCue, flatPanel?: boolean) => {
+    const props =
+      flatPanel === undefined
+        ? { cues: [cue], theme: defaultTheme }
+        : { cues: [cue], theme: defaultTheme, flatPanel };
+    document.body.innerHTML = renderToStaticMarkup(React.createElement(SceneLayer, props));
+  };
+  const styles = () => [...document.querySelectorAll("div")].map((d) => d.getAttribute("style") ?? "");
+  /** The Scrim element, frosted or flat: the one absolutely-filled tint. */
+  const backdrops = () => styles().filter((s) => s.startsWith("position:absolute;inset:0;background:rgba("));
+
+  it("draws a flat panel behind a StatCard in video-top: denser tint, no backdrop-filter", () => {
+    render(statCue, true);
+    const found = backdrops();
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(/background:rgba\(\d+, \d+, \d+, 0\.85\)/);
+    expect(found[0]).not.toContain("backdrop-filter");
+    // Its own compositing layer: without it Chrome painted the panel twice
+    // under the content on a transparent page (§162 check renders).
+    expect(found[0]).toContain("will-change:transform");
+  });
+
+  it("draws nothing behind a CardRow: full-frame scenes sit straight on the speaker", () => {
+    render(cardRowCue, true);
+    expect(backdrops()).toHaveLength(0);
+  });
+
+  it("without the prop, today's output: no backdrop in video-top, the frosted scrim over video", () => {
+    render(statCue);
+    expect(backdrops()).toHaveLength(0);
+    const absent = document.body.innerHTML;
+    render(statCue, false);
+    expect(document.body.innerHTML).toBe(absent);
+
+    const titleCue: SceneCue = { ...cardRowCue, component: "TitleCard", props: { title: "SHIP IT" } };
+    render(titleCue);
+    const [scrim] = backdrops();
+    expect(scrim).toMatch(/background:rgba\(\d+, \d+, \d+, 0\.55\);backdrop-filter:blur\(14px\)/);
+  });
+
+  it("insets the content inside the panel exactly as the scrim insets it", () => {
+    // Same cue, two backdrops: lower-third's frost (no prop) and the kit's
+    // panel. The content width is the slot minus the inset either way.
+    const cue: SceneCue = { ...statCue, layout: "lower-third" };
+    const contentWidth = () =>
+      styles().find((s) => s.includes("transform:scale(") && s.includes("position:relative"));
+    render(cue);
+    const frosted = contentWidth();
+    render(cue, true);
+    expect(contentWidth()).toBe(frosted);
+
+    // And where the panel is new (video-top), the inset arrives with it: the
+    // rendered content width (layout width × fit scale) loses 24px a side.
+    const rendered = () => {
+      const m = /width:([\d.]+)px;transform:scale\(([\d.]+)\)/.exec(contentWidth() ?? "");
+      return Number(m![1]) * Number(m![2]);
+    };
+    render(statCue);
+    const bare = rendered();
+    render(statCue, true);
+    expect(bare - rendered()).toBeCloseTo(48, 6);
   });
 });

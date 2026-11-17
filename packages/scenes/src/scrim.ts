@@ -26,3 +26,34 @@ const OVER_VIDEO_LAYOUTS = new Set<SceneCue["layout"]>(["lower-third", "full-ble
 export function drawsScrim(layout: SceneCue["layout"], component: SceneComponentId): boolean {
   return OVER_VIDEO_LAYOUTS.has(layout) && SCENE_REGISTRY[component].scrim !== false;
 }
+
+/**
+ * What sits behind a cue's slot: the frosted scrim, the kit's flat panel, or
+ * nothing. SceneLayer insets the content for either of the first two.
+ *
+ * `flatPanel` is the clip kit's mode (§162, plan decision 2): a transparent
+ * clip has no footage to frost and none of the solid or blurred backdrops
+ * the `graphic-only` and `blurred-behind` layouts draw, so bare type would
+ * land on whatever the author puts under it in Resolve. Every component that
+ * is not full-frame and keeps its scrim gets a flat panel in EVERY layout
+ * instead. A full-frame component, or one that opts out of the scrim, was
+ * built to sit straight on the speaker (spec 1.4) and gets nothing — in a
+ * kit clip there is no frost either, since there is nothing behind it to
+ * blur. Core's `kit-plan.ts` states the same rule for the report's
+ * "backdrop replaced by a flat panel" note; the two are compared in
+ * scrim.test.ts.
+ *
+ * Without `flatPanel` this is `drawsScrim` exactly, which is what keeps
+ * produce, edit and cover renders unchanged.
+ */
+export type SlotBackdrop = "scrim" | "panel" | "none";
+
+export function slotBackdrop(
+  layout: SceneCue["layout"],
+  component: SceneComponentId,
+  flatPanel: boolean,
+): SlotBackdrop {
+  if (!flatPanel) return drawsScrim(layout, component) ? "scrim" : "none";
+  const meta = SCENE_REGISTRY[component];
+  return meta.fullFrame !== true && meta.scrim !== false ? "panel" : "none";
+}

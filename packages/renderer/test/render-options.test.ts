@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OFFTHREAD_VIDEO_CACHE_BYTES,
+  clipRenderOptions,
   renderMediaOptions,
 } from "../src/render-options";
 
@@ -131,5 +132,64 @@ describe("renderMediaOptions — hardware acceleration is gated to darwin", () =
     expect(o).not.toHaveProperty("crf");
     expect(o).not.toHaveProperty("encodingMaxRate");
     expect(o).not.toHaveProperty("encodingBufferSize");
+  });
+});
+
+/**
+ * The clip kit's transparent render (§162, design 3.2). Every value here is
+ * the alpha path: lose any one and the file still renders, opaque — the
+ * failure only shows once the clip sits on footage in Resolve.
+ */
+describe("clipRenderOptions", () => {
+  const clip = (opts: Parameters<typeof clipRenderOptions>[0]["opts"]) =>
+    clipRenderOptions({ composition, serveUrl: "http://localhost:3000", inputProps: {}, opts });
+
+  it("renders ProRes 4444 with an alpha pixel format, from PNG frames, silent", () => {
+    const o = clip({ outPath: "/kit/a.partial.mov" });
+    expect(o).toMatchObject({
+      codec: "prores",
+      proResProfile: "4444",
+      pixelFormat: "yuva444p10le",
+      imageFormat: "png",
+      muted: true,
+      hardwareAcceleration: "disable",
+      outputLocation: "/kit/a.partial.mov",
+    });
+  });
+
+  it("never asks for JPEG frames, which carry no alpha", () => {
+    const o = clip({ outPath: "/kit/a.mov" });
+    expect(o.imageFormat).not.toBe("jpeg");
+    expect(o).not.toHaveProperty("jpegQuality");
+  });
+
+  it("carries no audio settings: a silent clip until phase 4", () => {
+    const o = clip({ outPath: "/kit/a.mov" });
+    expect(o).not.toHaveProperty("audioCodec");
+    expect(o).not.toHaveProperty("enforceAudioTrack");
+  });
+
+  it("passes concurrency, scale, the cancel signal and progress as renderMediaOptions does", () => {
+    const cancelSignal = () => {};
+    const seen: number[] = [];
+    const o = clip({
+      outPath: "/kit/a.mov",
+      concurrency: 2,
+      scale: 2,
+      cancelSignal,
+      onProgress: (f) => seen.push(f),
+      browserExecutable: "/usr/bin/chrome",
+    });
+    expect(o.concurrency).toBe(2);
+    expect(o.scale).toBe(2);
+    expect(o.cancelSignal).toBe(cancelSignal);
+    expect(o.browserExecutable).toBe("/usr/bin/chrome");
+    o.onProgress?.({ progress: 0.5 } as never);
+    expect(seen).toEqual([0.5]);
+  });
+
+  it("leaves scale out at 1 and unset, so Remotion's default stands", () => {
+    expect(clip({ outPath: "/kit/a.mov" })).not.toHaveProperty("scale");
+    expect(clip({ outPath: "/kit/a.mov", scale: 1 })).not.toHaveProperty("scale");
   });
 });
