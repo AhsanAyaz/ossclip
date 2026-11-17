@@ -1267,6 +1267,67 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("kit")
+    .description(
+      "export a produced project for DaVinci Resolve: one transparent ProRes 4444 clip per " +
+        "visible scene, plus an FCPXML timeline with the cut source on track 1 and the clips above it",
+    )
+    // Optional like `cover`'s: no argument resolves the run under the
+    // CURRENT directory, through the same ladder `edit` uses (§162, design
+    // 3.4: "finds the project the same way `ossclip edit` does").
+    .argument("[workdir]", "a work directory, or the folder you produced in")
+    .option(
+      "--out <dir>",
+      "write the kit here (default: <video name>-kit beside the source video, so Resolve can reach it)",
+    )
+    .option("--clips-only", "write the clips and the report, no timeline file", false)
+    .option("--force", "render every clip again, even the ones the last export can reuse", false)
+    .option(
+      "--no-refresh",
+      "export the project as it was last produced, even when the editor changed it since " +
+        "(by default the kit first re-runs the recorded produce with --no-render)",
+    )
+    .action(async (workdir: string | undefined, opts) => {
+      const { KitCancelledError, KitExitError, liveKitSeams, parseKitFlags, runKit } = await import("./kit");
+      // Parsed before anything touches disk, the `cover` rule.
+      const flags = parseKitFlags(opts);
+      const target = await resolveWorkdirArgument(workdir ?? ".", "kit");
+      try {
+        const result = await runKit(target, flags, liveKitSeams());
+        // Counts and a boolean only (§134): nothing here names a scene, a
+        // file or a folder, and no key may contain `file`/`path`.
+        telemetry.record("kit_completed", {
+          clips: result.clips,
+          rendered: result.rendered,
+          reused: result.reused,
+          skipped: result.skipped,
+          timeline: result.timeline,
+        });
+      } catch (err) {
+        if (err instanceof KitCancelledError) {
+          // A deliberate stop, not a failure (R16 §60's distinction, as in
+          // produce): no kit_failed, and the 130/143 a script can tell apart.
+          // The signal listener already said so (KIT_CANCELLED_MESSAGE).
+          await telemetry.flush();
+          process.exit(err.exitCode);
+        }
+        // Constructor name only, like produce_failed: messages quote paths.
+        telemetry.record("kit_failed", {
+          error_class: err instanceof Error ? err.constructor.name : "NonError",
+        });
+        if (err instanceof KitExitError) {
+          // The refresh replay's own exit code, not a flattened 1.
+          await telemetry.flush();
+          console.error(`\n✗ ${err.message}`);
+          process.exit(err.exitCode);
+        }
+        throw err;
+      } finally {
+        await telemetry.flush();
+      }
+    });
+
+  program
     .command("publish")
     .description(
       "push the finished render to your social accounts through your own self-hosted " +

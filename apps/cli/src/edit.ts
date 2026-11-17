@@ -120,7 +120,12 @@ import { loadEnvFiles } from "./env";
 // is no cycle and nothing interactive rides in here).
 import { EDIT_HEALTH_PATH, editHealthBody } from "./edit-health";
 import { revealInFileManager } from "./open";
-import { REVIEWED_SCENES_BASENAME, renderReplayArgs } from "./render-replay-args";
+import {
+  REVIEWED_SCENES_BASENAME,
+  healRecordedProduceArgs,
+  renderReplayArgs,
+  reviewedScenesText,
+} from "./render-replay-args";
 import { STORED_SCRIPT_BASENAME, replanScriptArgs, storedScriptFrom } from "./script-mode";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
 // cover` needs the same out-resolution rule this server's thumbnail dest,
@@ -1884,17 +1889,9 @@ export async function startEditServer(
           );
           if (!parsed.success) return send(500, { error: `command.json is not valid: ${parsed.error.message}` });
           const cmd = parsed.data;
-          // §129: heal legacy records at replay. Before the fix, wizard and
-          // bare-path runs recorded process.argv — the ORIGINAL invocation,
-          // missing the `produce` literal the re-entered parse actually ran —
-          // so replaying them verbatim dies at commander's front door with
-          // "error: unknown option '--llm'". produce is the ONLY command that
-          // ever writes command.json, so an args array not starting with
-          // "produce" can only be that bug: prepend the literal to
-          // reconstruct the command that ran. A modern record — and a legacy
-          // directly-typed `ossclip produce …` — already starts with it and
-          // is untouched.
-          let args = cmd.args[0] === "produce" ? [...cmd.args] : ["produce", ...cmd.args];
+          // §129: heal legacy records at replay (healRecordedProduceArgs has
+          // the why; shared with `ossclip kit`'s refresh, §162).
+          let args = healRecordedProduceArgs(cmd.args);
           // 2026-08-18 field cascade: mirror produce's own inside-the-input
           // refusal at this boundary, so the failure is a 400 the page can
           // show instead of a spawned child dying in the log tail. The input
@@ -1938,12 +1935,12 @@ export async function startEditServer(
           let scenesPath: string | undefined;
           if (!replan) {
             try {
-              const production = JSON.parse(
+              const reviewed = reviewedScenesText(
                 await readFile(join(workdir!, "production.json"), "utf8"),
-              ) as { scenes?: unknown };
-              if (Array.isArray(production.scenes) && production.scenes.length > 0) {
+              );
+              if (reviewed !== undefined) {
                 scenesPath = join(workdir!, REVIEWED_SCENES_BASENAME);
-                await writeFile(scenesPath, `${JSON.stringify(production.scenes, null, 2)}\n`);
+                await writeFile(scenesPath, reviewed);
               }
             } catch {
               // No production.json, an old one without `scenes`, or an

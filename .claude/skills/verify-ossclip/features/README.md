@@ -11,6 +11,7 @@ passed. Check this index before claiming a change is proven.
 | Cut and caption a take (`transcribe`) | [transcribe.md](transcribe.md) | ~2s, offline | **yes** — baseline in `../SKILL.md` |
 | Render a finished video (`produce`) | [produce.md](produce.md) | slow, ffmpeg render | **yes** (offline path, 2026-08-30) — `docs/verification/2026-08-30-color-grade/` |
 | Export cuts as NLE markers (`analyze`) | [analyze.md](analyze.md) | ~2s, offline | no |
+| Export scene clips and a Resolve timeline (`kit`) | [kit.md](kit.md) | ~35s render, then ~1s reuse | **yes** (fixture, 2026-11-17); Resolve import still the author's check |
 | Edit captions and framing in the browser (`edit`) | [edit.md](edit.md) | needs a browser | no |
 | Provision prerequisites (`setup` / `doctor`) | [setup-doctor.md](setup-doctor.md) | doctor is instant | doctor only |
 
