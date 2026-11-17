@@ -230,3 +230,12 @@ export type {
 // bytes, so a "496 / 1500" caption was refused after the upload. Browser-safe:
 // publish/captions.ts imports only a type.
 export { CAPTION_CAPS, captionCap, captionLength } from "./publish/captions";
+
+// The clip kit (§162). `frameWindow` moved here from scenes so the kit's
+// plan (core) and the render (scenes) share ONE §115 window — scenes
+// re-exports it from its own `./frames`. `rebaseCue` is what the one-scene
+// composition draws. Both browser-safe: frames.ts imports nothing and
+// kit-rebase.ts only frames.ts plus a type; the kit's node half
+// (`kit-plan.ts`, which hashes with node:crypto) stays off this surface.
+export { frameWindow } from "./frames";
+export { rebaseCue } from "./kit-rebase";
