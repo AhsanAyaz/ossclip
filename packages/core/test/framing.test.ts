@@ -13,6 +13,7 @@ import {
   landscapeLayoutAfterRouting,
   BACKDROP_LAYOUTS,
   isBackdropLayout,
+  keepsBoxAcross,
   SCRIPT_LANDSCAPE_RECT,
   scriptLandscapePlacement,
 } from "../src/framing";
@@ -269,6 +270,29 @@ describe("backdrop layouts (scene-backdrop-choice design §1)", () => {
       if (isBackdropLayout(l)) continue;
       expect(landscapeLayoutFor(l, { scriptProject: true })).toBe(landscapeLayout(l));
     }
+  });
+});
+
+describe("keepsBoxAcross (scene-backdrop-choice design §2)", () => {
+  it("is true exactly when both layouts are backdrops, for every pair", () => {
+    for (const from of LayoutSchema.options) {
+      for (const to of LayoutSchema.options) {
+        expect(keepsBoxAcross(from, to)).toBe(isBackdropLayout(from) && isBackdropLayout(to));
+      }
+    }
+  });
+
+  it("keeps the box between the three backdrops, both ways", () => {
+    expect(keepsBoxAcross("full-bleed", "graphic-only")).toBe(true);
+    expect(keepsBoxAcross("full-bleed", "pip-bubble")).toBe(true);
+    expect(keepsBoxAcross("graphic-only", "pip-bubble")).toBe(true);
+    expect(keepsBoxAcross("pip-bubble", "full-bleed")).toBe(true);
+  });
+
+  it("drops it to or from any other layout", () => {
+    expect(keepsBoxAcross("full-bleed", "split-left")).toBe(false);
+    expect(keepsBoxAcross("full-bleed", "lower-third")).toBe(false);
+    expect(keepsBoxAcross("blurred-behind", "graphic-only")).toBe(false);
   });
 });
 

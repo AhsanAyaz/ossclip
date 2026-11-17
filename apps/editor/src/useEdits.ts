@@ -4,6 +4,7 @@ import {
   captionKeyFor,
   captionRangeEditWas,
   isLegacyCaptionKey,
+  keepsBoxAcross,
   clearElementTransform,
   clearGraphicRect,
   clearTiming,
@@ -150,7 +151,10 @@ export type EditAction =
   | { type: "patchGraphicRect"; sceneId: string; rect: GraphicRect; coalesce?: string }
   | { type: "clearGraphicRect"; sceneId: string }
   | { type: "patchComponent"; sceneId: string; component: SceneComponentId }
-  | { type: "patchLayout"; sceneId: string; layout: Layout }
+  /** `from` is the layout the scene shows NOW (the resolved cue's), which
+   * the doc alone cannot say when the layout was never overridden: it decides
+   * whether the box survives (`keepsBoxAcross`, §163). */
+  | { type: "patchLayout"; sceneId: string; layout: Layout; from: Layout }
   /** `srcStart` is the word's SOURCE start in seconds — never its position,
    * and never its OUTPUT start (§137). Callers must have already established
    * that the word HAS an anchor (`captionAnchorOf`); the reducer derives the
@@ -955,8 +959,12 @@ export function editReducer(state: EditState, action: EditAction): EditState {
     case "patchLayout": {
       // A layout swap picks a NEW slot — a stale hand-set rect would
       // silently keep winning over it at render time, so it goes with the
-      // old layout.
-      const { graphicRect: _stale, ...scene } = withScene(state.doc, action.sceneId);
+      // old layout. Except between two backdrops (§163): the box is where
+      // the graphic belongs whatever is behind it — the same predicate
+      // `applyOverrides` keeps a planned box by, so preview and render agree.
+      const current = withScene(state.doc, action.sceneId);
+      const { graphicRect: _stale, ...sansRect } = current;
+      const scene = keepsBoxAcross(action.from, action.layout) ? current : sansRect;
       return commit({
         ...state.doc,
         scenes: { ...state.doc.scenes, [action.sceneId]: { ...scene, layout: action.layout } },
@@ -1816,7 +1824,8 @@ export function useEdits() {
     clearGraphicRect: (sceneId: string) => dispatch({ type: "clearGraphicRect", sceneId }),
     patchComponent: (sceneId: string, component: SceneComponentId) =>
       dispatch({ type: "patchComponent", sceneId, component }),
-    patchLayout: (sceneId: string, layout: Layout) => dispatch({ type: "patchLayout", sceneId, layout }),
+    patchLayout: (sceneId: string, layout: Layout, from: Layout) =>
+      dispatch({ type: "patchLayout", sceneId, layout, from }),
     patchCaption: (srcStart: number, text: string, was: string) =>
       dispatch({ type: "patchCaption", srcStart, text, was }),
     patchCaptionRange: (fromSrcStart: number, toSrcStart: number, text: string, was: string) =>

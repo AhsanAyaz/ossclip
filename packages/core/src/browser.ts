@@ -239,3 +239,12 @@ export { CAPTION_CAPS, captionCap, captionLength } from "./publish/captions";
 // (`kit-plan.ts`, which hashes with node:crypto) stays off this surface.
 export { frameWindow } from "./frames";
 export { rebaseCue } from "./kit-rebase";
+
+// The backdrop layouts (§163). The editor's `patchLayout` keeps or drops a
+// scene's box with the SAME `keepsBoxAcross` `applyOverrides` uses — two
+// rules is how the editor would drop a box the render keeps. framing.ts is
+// in this surface's runtime graph already (./overrides imports it); its own
+// runtime imports are ./scene-registry and ./normalize, whose only runtime
+// import is ./content-rect (above) — the rest are type imports. Only these
+// names are exposed: the planning half of framing is the pipeline's.
+export { BACKDROP_LAYOUTS, isBackdropLayout, keepsBoxAcross } from "./framing";

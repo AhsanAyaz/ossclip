@@ -79,3 +79,18 @@ describe("slotBackdrop", () => {
     }
   });
 });
+
+describe("the solid and bubble backdrops (scene-backdrop-choice design §2)", () => {
+  it("a slot component in graphic-only or pip-bubble draws no frosted panel: the background is plain", () => {
+    // The box is now kept across a backdrop change, so a terminal that was
+    // frosted over the speaker moves onto the background with it; the frost
+    // must go with the footage, not with the box.
+    for (const component of COMPONENTS) {
+      if (SCENE_REGISTRY[component].fullFrame === true) continue;
+      for (const layout of ["graphic-only", "pip-bubble"] as const) {
+        expect(drawsScrim(layout, component), `${component} in ${layout}`).toBe(false);
+        expect(slotBackdrop(layout, component, false)).toBe("none");
+      }
+    }
+  });
+});

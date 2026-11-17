@@ -293,6 +293,25 @@ export function isBackdropLayout(layout: Layout): boolean {
 }
 
 /**
+ * Whether a scene's graphic box survives its layout changing `from` → `to`:
+ * only between two backdrops (§163; scene-backdrop-choice design §2).
+ *
+ * Why: a box is normally geometry for ONE layout's slot, so a layout change
+ * dropped it (R13) — and changing the backdrop then threw away the large
+ * centred `SCRIPT_LANDSCAPE_RECT` a terminal was planned in, leaving it in
+ * the new layout's small slot. The three backdrops differ in what is behind
+ * the graphic, not in where it belongs, so a box placed under one is still
+ * the placement under the others (design G2). Any other layout splits or
+ * bands the frame, its slot is the point of choosing it, and it still drops
+ * the box. Not keyed on the project: the rule is about the two
+ * layouts. One predicate for `applyOverrides` and the editor's
+ * `patchLayout`, or the preview and the render would disagree.
+ */
+export function keepsBoxAcross(from: Layout, to: Layout): boolean {
+  return isBackdropLayout(from) && isBackdropLayout(to);
+}
+
+/**
  * `landscapeLayout`, except that a script project keeps its backdrops (§163).
  *
  * Why: `landscapeLayout` rewrote `graphic-only` and `pip-bubble` on every

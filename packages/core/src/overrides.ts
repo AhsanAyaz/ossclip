@@ -26,6 +26,7 @@ import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
 import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
 import { revealItemTexts } from "./reveal-match";
+import { keepsBoxAcross } from "./framing";
 import {
   captionKeyFor,
   CaptionThemeIdSchema,
@@ -1205,10 +1206,14 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     // the new layout's slot, parking the graphic where the OLD layout
     // needed it. Same reason the editor's `patchLayout`
     // drops the override rect on a swap. A hand-set `o.graphicRect` is the
-    // user's own placement and still wins below.
-    const layoutSwapped = o.layout !== undefined && o.layout !== cue.layout;
+    // user's own placement and still wins below. Except between two
+    // backdrops (§163, `keepsBoxAcross`): there the box is where the graphic
+    // belongs whatever is behind it, and dropping it sent a §161 terminal
+    // from its large centred box to the backdrop's small slot.
+    const rectStale =
+      o.layout !== undefined && o.layout !== cue.layout && !keepsBoxAcross(cue.layout, o.layout);
     const { graphicRect: _staleRouted, ...cueSansRoutedRect } = cue;
-    const base: SceneCue = layoutSwapped ? cueSansRoutedRect : cue;
+    const base: SceneCue = rectStale ? cueSansRoutedRect : cue;
     // A pin is the user's absolute window and wins over the entry word
     // (reveal-timing final review I-3): the preview must not re-derive a
     // pinned start from `entryAtSec`. Same guard as the pin itself below.

@@ -883,6 +883,47 @@ describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
   });
 });
 
+describe("a backdrop change keeps the graphic box (scene-backdrop-choice design §2)", () => {
+  // The §161 placement: a slot component full-bleed in SCRIPT_LANDSCAPE_RECT.
+  const planned: SceneCue = {
+    ...cue("scene-0"),
+    layout: "full-bleed",
+    graphicRect: { x: 0.14, y: 0.16, w: 0.72, h: 0.68 },
+  };
+  const relaid = (layout: SceneCue["layout"], extra: Record<string, unknown> = {}) =>
+    applyOverrides([planned], OverrideDocSchema.parse({ scenes: { "scene-0": { layout, ...extra } } }))
+      .cues[0]!;
+
+  it("full-bleed → graphic-only keeps the planned box", () => {
+    const out = relaid("graphic-only");
+    expect(out.layout).toBe("graphic-only");
+    expect(out.graphicRect).toEqual(planned.graphicRect);
+  });
+
+  it("full-bleed → pip-bubble keeps it, and graphic-only → pip-bubble does too", () => {
+    expect(relaid("pip-bubble").graphicRect).toEqual(planned.graphicRect);
+    const solid = { ...planned, layout: "graphic-only" as const };
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "pip-bubble" } } });
+    expect(applyOverrides([solid], doc).cues[0]!.graphicRect).toEqual(planned.graphicRect);
+  });
+
+  it("full-bleed → split-left drops it, as before: not a backdrop", () => {
+    expect("graphicRect" in relaid("split-left")).toBe(false);
+    expect("graphicRect" in relaid("lower-third")).toBe(false);
+  });
+
+  it("a hand-set rect still wins over the kept planned one", () => {
+    const hand = { x: 0.3, y: 0.2, w: 0.4, h: 0.4 };
+    expect(relaid("graphic-only", { graphicRect: hand }).graphicRect).toEqual(hand);
+  });
+
+  it("is idempotent under the second override pass", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "pip-bubble" } } });
+    const once = applyOverrides([planned], doc).cues;
+    expect(applyOverrides(once, doc).cues[0]).toEqual(once[0]);
+  });
+});
+
 describe("caption position override (R15 §56)", () => {
   it("captionY lands on the cue, like every other scene override", () => {
     const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { captionY: 0.3 } } });

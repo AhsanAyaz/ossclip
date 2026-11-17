@@ -1513,7 +1513,9 @@ export const Inspector: React.FC<InspectorProps> = ({
               style={numberInput}
               data-testid="layout-select"
               value={cue.layout}
-              onChange={(e) => edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"])}
+              onChange={(e) =>
+                edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"], cue.layout)
+              }
             >
               {LayoutSchema.options.map((id) => (
                 <option key={id} value={id}>
