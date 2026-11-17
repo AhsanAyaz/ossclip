@@ -92,6 +92,15 @@ function framesAt(sec: number, fd: FrameDuration): number {
  * spine's offsets are its running sum. A span that rounds to zero frames is
  * dropped; its neighbours already meet.
  *
+ * Every span also stays inside the source file (§162). Its start and its
+ * length round separately, so a last span ending on the file's final
+ * instant can come out one frame past the end — a frame the file does not
+ * have, which an importer may refuse or show as offline. The start is
+ * clamped to the file's last frame and the length to what is left after
+ * it; the spine offsets stay the running sum of what survived, so a
+ * clamped span shortens the timeline by its frame instead of leaving a
+ * gap (a spine is sequential, and its `duration` is that sum).
+ *
  * Clips: attached to the span containing the start frame (the first when
  * it starts before it, the last when it starts at or after the end), at the
  * span's source start plus the distance into the span. Never split: a clip
@@ -103,12 +112,18 @@ export function kitTimelineFrames(input: KitTimelineInput): KitTimelineFrames {
   const boundary = (i: number): number =>
     framesAt(i < kept.length ? kept[i]!.outIn : kept[kept.length - 1]!.outOut, fd);
 
+  // The file's length in SEQUENCE frames, the unit every span start is in.
+  const sourceFrames = framesAt(input.source.durationSec, fd);
   const spans: KitTimelineSpan[] = [];
+  // From the first boundary, then the running sum: identical to boundary(i)
+  // for every span until one is clamped, since a dropped span has no width.
+  let offset = kept.length > 0 ? boundary(0) : 0;
   for (let i = 0; i < kept.length; i++) {
-    const offset = boundary(i);
-    const duration = boundary(i + 1) - offset;
+    const start = Math.max(0, Math.min(framesAt(kept[i]!.srcIn, fd), sourceFrames - 1));
+    const duration = Math.min(boundary(i + 1) - boundary(i), sourceFrames - start);
     if (duration <= 0) continue;
-    spans.push({ offset, start: framesAt(kept[i]!.srcIn, fd), duration });
+    spans.push({ offset, start, duration });
+    offset += duration;
   }
   // A timeline with nothing on track 1 has nothing to attach a clip to and
   // nothing to edit; an empty project in Resolve would only look like a
@@ -148,6 +163,23 @@ function attr(s: string): string {
   return esc(s).replace(/[^\x00-\x7f]/gu, (c) => `&#${c.codePointAt(0)!};`);
 }
 
+/** The frame sizes whose `FFVideoFormat<height>p<rate>` name is a real preset. */
+const PRESET_SIZES: ReadonlySet<string> = new Set(["1920x1080", "1280x720", "3840x2160"]);
+
+/**
+ * A `<format>`'s `name`, or null to leave the attribute out (§162). The
+ * name is a claim that such a preset exists; `<height>p<rate>` only names
+ * one for the standard landscape sizes at an integer rate. A portrait
+ * 1080x1920 output would otherwise be called `FFVideoFormat1920p30`, a
+ * preset nobody has, and an NTSC rate has no integer to put in it. Resolve
+ * reads `frameDuration`, `width` and `height`, so leaving it out loses
+ * nothing; the spike's 1080p60 and 1080p30 keep theirs.
+ */
+function presetName(width: number, height: number, fd: FrameDuration): string | null {
+  if (fd.num !== 1 || !PRESET_SIZES.has(`${width}x${height}`)) return null;
+  return `FFVideoFormat${height}p${fd.den}`;
+}
+
 export function buildFcpxmlKit(input: KitTimelineInput): string {
   const frames = kitTimelineFrames(input);
   const fd = frames.frameDuration;
@@ -184,13 +216,13 @@ export function buildFcpxmlKit(input: KitTimelineInput): string {
   const source = assetFor(input.source);
   const clipAssets = input.clips.map((c) => assetFor(c));
 
-  // Named only for integer rates, FCP's `FFVideoFormat1080p60` form; an NTSC
-  // rate has no such integer, and Resolve reads `frameDuration` anyway.
-  const formatXml = [...formats.values()].map(
-    (f) =>
-      `    <format id="${f.id}"${f.fd.num === 1 ? ` name="FFVideoFormat${f.height}p${f.fd.den}"` : ""} ` +
-      `frameDuration="${f.fd.num}/${f.fd.den}s" width="${f.width}" height="${f.height}"/>`,
-  );
+  const formatXml = [...formats.values()].map((f) => {
+    const name = presetName(f.width, f.height, f.fd);
+    return (
+      `    <format id="${f.id}"${name === null ? "" : ` name="${name}"`} ` +
+      `frameDuration="${f.fd.num}/${f.fd.den}s" width="${f.width}" height="${f.height}"/>`
+    );
+  });
   const assetXml = [...assets.values()].map(({ id, format, media }) => {
     // The asset's length is in its OWN frames (`137/30s` for a 30 fps clip),
     // while everything placed on the timeline is in sequence frames.

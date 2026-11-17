@@ -150,6 +150,79 @@ describe("kitTimelineFrames (the spike's numbers)", () => {
     expect(f.spans[1]!.offset).toBe(360);
   });
 
+  it("a last span ending exactly at the file's end stays inside the file", () => {
+    // Each value rounds on its own, so a span that ends on the file's last
+    // instant can overshoot it by a frame. At 30 fps: the file is 300.4
+    // frames (→ 300); the last span starts at source frame 210.6 (→ 211) and
+    // sits between timeline frames 60.4 (→ 60) and 150.2 (→ 150), so 90
+    // frames long — 211 + 90 = 301, one past the end of a 300-frame file.
+    const fps = 30;
+    const durationSec = 300.4 / fps;
+    const srcIn = 210.6 / fps;
+    const outIn = 60.4 / fps;
+    const input = spike({
+      sequence: { width: 1920, height: 1080, fps },
+      source: { ...spike().source, fps, durationSec },
+      spans: [
+        { srcIn: 1, srcOut: 1 + outIn, outIn: 0, outOut: outIn },
+        { srcIn, srcOut: durationSec, outIn, outOut: outIn + (durationSec - srcIn) },
+      ],
+      clips: [],
+    });
+    const f = kitTimelineFrames(input);
+    expect(f.spans).toEqual([
+      { offset: 0, start: 30, duration: 60 },
+      // Clamped to the file: 300 - 211 = 89 frames, one short of its boundary.
+      { offset: 60, start: 211, duration: 89 },
+    ]);
+    const last = f.spans[f.spans.length - 1]!;
+    expect(last.start + last.duration).toBeLessThanOrEqual(300);
+    // The timeline is a frame shorter than the boundaries, and the sequence
+    // says so: its length is the sum, never the last boundary.
+    expect(f.durationFrames).toBe(60 + 89);
+  });
+
+  it("a shortened span's successors follow it on the spine, with no gap", () => {
+    const fps = 30;
+    const durationSec = 300 / fps;
+    const f = kitTimelineFrames(
+      spike({
+        sequence: { width: 1920, height: 1080, fps },
+        source: { ...spike().source, fps, durationSec },
+        spans: [
+          // Runs past the file's 300 frames (start 270, 60 frames long).
+          { srcIn: 9, srcOut: 11, outIn: 0, outOut: 2 },
+          { srcIn: 1, srcOut: 2, outIn: 2, outOut: 3 },
+        ],
+        clips: [{ ...STEPS, startSec: 2.5, lengthSec: 0.5 }],
+      }),
+    );
+    expect(f.spans).toEqual([
+      { offset: 0, start: 270, duration: 30 },
+      { offset: 30, start: 30, duration: 30 },
+    ]);
+    expect(f.durationFrames).toBe(60);
+    // The clip at 2.5 s (frame 75) is past the shortened timeline's end, so
+    // it rides the last span, measured from where that span now sits.
+    expect(f.clips[0]).toMatchObject({ span: 1, offset: 30 + (75 - 30) });
+  });
+
+  it("a span starting at or past the file's end is clamped to its last frame", () => {
+    const fps = 30;
+    const f = kitTimelineFrames(
+      spike({
+        sequence: { width: 1920, height: 1080, fps },
+        source: { ...spike().source, fps, durationSec: 10 },
+        spans: [
+          { srcIn: 1, srcOut: 2, outIn: 0, outOut: 1 },
+          { srcIn: 10, srcOut: 11, outIn: 1, outOut: 2 },
+        ],
+        clips: [],
+      }),
+    );
+    expect(f.spans[1]).toEqual({ offset: 30, start: 299, duration: 1 });
+  });
+
   it("a timeline with no kept spans is refused, not written empty", () => {
     expect(() => kitTimelineFrames(spike({ spans: [] }))).toThrow(/no kept span/);
   });
@@ -194,7 +267,7 @@ describe("buildFcpxmlKit", () => {
     }
   });
 
-  it("formats: one per distinct rate and size, named for integer rates", () => {
+  it("formats: one per distinct rate and size; the spike's 1080p60 and 1080p30 keep their names", () => {
     const doc = parseXml(buildFcpxmlKit(spike()));
     const formats = Array.from(doc.querySelectorAll("format"));
     expect(formats.map((f) => [f.getAttribute("name"), f.getAttribute("frameDuration")])).toEqual([
@@ -204,6 +277,31 @@ describe("buildFcpxmlKit", () => {
     // The asset takes the first placement's name; the file is one asset.
     const steps = Array.from(doc.querySelectorAll("asset")).find((a) => a.getAttribute("name") === "steps A")!;
     expect(steps.getAttribute("format")).toBe(formats[1]!.getAttribute("id"));
+  });
+
+  it("only the standard sizes at an integer rate carry a preset name", () => {
+    // A name is a claim that FCP has such a preset; Resolve reads only
+    // frameDuration, width and height. A portrait 1080x1920 named
+    // `FFVideoFormat1920p30` would be a preset that does not exist.
+    const named = (width: number, height: number, fps: number): string | null => {
+      const doc = parseXml(
+        buildFcpxmlKit(
+          spike({
+            sequence: { width, height, fps },
+            source: { ...spike().source, width, height, fps },
+            clips: [],
+          }),
+        ),
+      );
+      return doc.querySelector("format")!.getAttribute("name");
+    };
+    expect(named(1920, 1080, 30)).toBe("FFVideoFormat1080p30");
+    expect(named(1280, 720, 60)).toBe("FFVideoFormat720p60");
+    expect(named(3840, 2160, 24)).toBe("FFVideoFormat2160p24");
+    expect(named(1080, 1920, 30)).toBeNull();
+    expect(named(1080, 1080, 30)).toBeNull();
+    expect(named(1440, 1080, 30)).toBeNull();
+    expect(named(1920, 1080, 30000 / 1001)).toBeNull();
   });
 
   it("a source larger than the output gets its own format; the sequence keeps the output's", () => {
