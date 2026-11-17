@@ -34,6 +34,7 @@ import {
   type ScriptMoment,
   type Segment,
   type SkippedCue,
+  type WordOutputTime,
 } from "@ossclip/core";
 import { ClipImportError, resolveClipPath } from "./clip-import";
 
@@ -242,16 +243,42 @@ export function isProjectClipSrc(src: string): boolean {
  * in. Only the cutlist is used here; the doc write-back and the reports stay
  * with that block, which runs later on the same inputs.
  */
-export function scriptPlanCut(parts: {
+export function scriptPlanCut(parts: ScriptPlanCutParts): Set<number> {
+  return cutWordIndices(parts.words, scriptPlanCutlist(parts));
+}
+
+interface ScriptPlanCutParts {
   words: readonly { start: number; end: number }[];
   /** The automatic cutlist, as produce built it. */
   cutlist: readonly Segment[];
   doc: OverrideDoc;
   priorMap: TimeMap | null;
-}): Set<number> {
+}
+
+/**
+ * The effective cutlist `scriptPlanCut` reads its words from — exported
+ * because the minimum scene length (`SCRIPT_MIN_SCENE_SEC`, §161) is screen
+ * time, measured on THIS cutlist's clock: the one the video renders with,
+ * the same one produce's edit-layer block rebuilds after planning.
+ */
+export function scriptPlanCutlist(parts: ScriptPlanCutParts): Segment[] {
   const vetoed = applyCleanupChoices(parts.cutlist, parts.doc.cleanup);
-  const { cutlist } = applyUserCuts(parts.doc, vetoed, new TimeMap(vetoed), parts.priorMap);
-  return cutWordIndices(parts.words, cutlist);
+  return applyUserCuts(parts.doc, vetoed, new TimeMap(vetoed), parts.priorMap).cutlist;
+}
+
+/**
+ * Every word's place on the output clock for the minimum scene length
+ * (`ScriptPlanInput.wordTimes`): `map`'s times for the words the aligner
+ * could use, null for every word in `cut`. The cut SET decides, not
+ * `mapWord` alone: a word whose midpoint is cut can keep a sliver in the
+ * map, and a scene must never end on a word the alignment treats as gone.
+ */
+export function keptWordTimes(
+  words: readonly { start: number; end: number }[],
+  cut: ReadonlySet<number>,
+  map: TimeMap,
+): WordOutputTime[] {
+  return words.map((w, i) => (cut.has(i) ? null : map.mapWord({ text: "", ...w })));
 }
 
 /**
@@ -349,7 +376,21 @@ export function isFootageCueIssue(issue: { issue: string }): boolean {
 }
 
 export type CueOutcome =
-  | { cueId: string; line: number; text: string; status: "placed"; component: string; startSec: number }
+  | {
+      cueId: string;
+      line: number;
+      text: string;
+      status: "placed";
+      component: string;
+      startSec: number;
+      /**
+       * Set only when the scene was held past its line to reach
+       * `SCRIPT_MIN_SCENE_SEC` (§161): the line's length, then the scene's,
+       * in seconds. Optional so a report without a lengthened cue reads
+       * exactly as before.
+       */
+      lengthened?: { fromSec: number; toSec: number };
+    }
   | { cueId: string; line: number; text: string; status: "skipped"; reason: string; score?: number }
   | {
       cueId: string;
@@ -369,11 +410,16 @@ export type CueOutcome =
  * what happened to every `🎬` line the author wrote, so a cue that did not
  * make it is named rather than silently missing from the video.
  *
- * Scenes and moments are matched to their cue by `endWord`. Normalization may
- * move a moment's start forward but never its end, aligned cues have strictly
- * increasing ends (cues cannot cross, §1.2), and a scene's anchor is its
- * moment's span — so the match is exact, and needs no id threading through
- * the planner (the same argument `produceScriptScenes` makes for clip scenes).
+ * Scenes and moments are matched to their cue by the cue's last word: the
+ * one whose span CONTAINS `aligned.endWord`. Normalization may move a
+ * moment's start forward but never its end, and a scene's anchor is its
+ * moment's span. The minimum scene length (§161) then moves a graphic
+ * scene's end LATER, but never to or past the next cue's first word, and
+ * cues cannot cross (§1.2) — so each span holds exactly one cue's last word
+ * and the match needs no id threading through the planner (the argument
+ * `produceScriptScenes` makes for clip scenes). A scene whose end lies past
+ * its cue's last word was lengthened, and says so when `wordTimes` (the
+ * line's length) and the cue's `endSec` (the scene's) are both known.
  */
 export function cueOutcomes(parts: {
   cues: readonly ScriptCue[];
@@ -384,10 +430,12 @@ export function cueOutcomes(parts: {
   /** The planned scenes, clip scenes included. */
   scenes: readonly Scene[];
   /** The assembled cues — output-timed. */
-  timed: readonly { id: string; startSec: number }[];
+  timed: readonly { id: string; startSec: number; endSec?: number }[];
   /** The assembler's drops, with its reasons. */
   dropped: readonly { id: string; reason: string }[];
   shortened: readonly { id: string; fromSec: number; toSec: number }[];
+  /** Each transcript word on the output clock (null = cut), for a lengthened line's own length. */
+  wordTimes?: readonly WordOutputTime[];
 }): CueOutcome[] {
   const skippedById = new Map(parts.skipped.map((s) => [s.cue.id, s]));
   const alignedById = new Map(parts.aligned.map((a) => [a.cue.id, a]));
@@ -414,9 +462,11 @@ export function cueOutcomes(parts: {
     // answer if a caller ever hands in a partial alignment.
     if (!aligned) return { ...base, status: "skipped", reason: "not aligned" };
 
-    const scene = parts.scenes.find((s) => s.anchor.endWord === aligned.endWord);
+    const holds = (span: { startWord: number; endWord: number }) =>
+      span.startWord <= aligned.endWord && aligned.endWord <= span.endWord;
+    const scene = parts.scenes.find((s) => holds(s.anchor));
     if (!scene) {
-      const moment = parts.moments.find((m) => m.endWord === aligned.endWord);
+      const moment = parts.moments.find(holds);
       if (moment && moment.sceneKind === "none") return { ...base, status: "reported", reason: "footage cue" };
       return { ...base, status: "skipped", reason: "dropped in planning" };
     }
@@ -435,7 +485,19 @@ export function cueOutcomes(parts: {
         toSec: short.toSec,
       };
     }
-    return { ...base, status: "placed", component: scene.component, startSec: timed.startSec };
+    const first = parts.wordTimes?.[aligned.startWord];
+    const last = parts.wordTimes?.[aligned.endWord];
+    const lengthened =
+      scene.anchor.endWord > aligned.endWord && first && last && timed.endSec !== undefined
+        ? { fromSec: last.end - first.start, toSec: timed.endSec - timed.startSec }
+        : undefined;
+    return {
+      ...base,
+      status: "placed",
+      component: scene.component,
+      startSec: timed.startSec,
+      ...(lengthened ? { lengthened } : {}),
+    };
   });
 }
 
@@ -453,6 +515,10 @@ function clip(text: string, max = 60): string {
  *
  * A shortened cue counts as placed (it is on screen) and the summary says how
  * many were cut to the 15 s ceiling, so the counts always add up to the cues.
+ * A lengthened one is placed too: its line says how long it is held against
+ * its spoken line (`SCRIPT_MIN_SCENE_SEC`, §161), and the summary counts them,
+ * so an author reading "held 4.0s for a 1.3s line" knows the scene runs on
+ * over the words after it.
  */
 export function formatCueReport(outcomes: readonly CueOutcome[]): string {
   const lines = outcomes.map((o) => {
@@ -460,7 +526,13 @@ export function formatCueReport(outcomes: readonly CueOutcome[]): string {
     const what = `"${clip(o.text)}"`;
     switch (o.status) {
       case "placed":
-        return `${head}${o.component} at ${o.startSec.toFixed(1)}s — ${what}`;
+        return (
+          `${head}${o.component} at ${o.startSec.toFixed(1)}s` +
+          (o.lengthened
+            ? `, held ${o.lengthened.toSec.toFixed(1)}s for a ${o.lengthened.fromSec.toFixed(1)}s line`
+            : "") +
+          ` — ${what}`
+        );
       case "shortened":
         return (
           `${head}${o.component} at ${o.startSec.toFixed(1)}s, ` +
@@ -474,9 +546,14 @@ export function formatCueReport(outcomes: readonly CueOutcome[]): string {
   });
   const count = (s: CueOutcome["status"]) => outcomes.filter((o) => o.status === s).length;
   const shortened = count("shortened");
+  const lengthened = outcomes.filter((o) => o.status === "placed" && o.lengthened).length;
+  const notes = [
+    ...(shortened > 0 ? [`${shortened} shortened`] : []),
+    ...(lengthened > 0 ? [`${lengthened} lengthened`] : []),
+  ];
   const summary =
     `placed ${count("placed") + shortened} of ${outcomes.length}` +
-    (shortened > 0 ? ` (${shortened} shortened)` : "") +
+    (notes.length > 0 ? ` (${notes.join(", ")})` : "") +
     ` · skipped ${count("skipped")} · reported ${count("reported")}`;
   return `script cues:\n${lines.join("\n")}\n${summary}`;
 }

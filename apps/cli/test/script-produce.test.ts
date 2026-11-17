@@ -248,6 +248,55 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     expect(readdirSync(work).filter((f) => f.startsWith("scriptplan-"))).toHaveLength(2);
   }, 240_000);
 
+  it("a short line's scene is held to the minimum over the words after it, and the report says so (§161)", async () => {
+    // "Today I want" is 1.4 s (words 5-7). The words after it ("to show you
+    // something cool", 8-12) belong to no cue, "uh" (13) is cut, and the next
+    // cue starts on "this" (14): held from 5.27 s, the scene may run to word
+    // 12, which ends 3.7 s after the line began.
+    const root = join(dir, "wd-min-length");
+    const scriptPath = join(dir, "script", "short.script.md");
+    writeFileSync(
+      scriptPath,
+      [
+        "🎬 Title card: welcome back",
+        "🗣️ Hello everyone, welcome back.",
+        "",
+        "🎬 [StatCard] One wish",
+        "🗣️ Today I want",
+        "",
+        "🎬 [StatCard] One number: the clean edit",
+        "🗣️ This raw take becomes a clean edit automatically.",
+        "",
+      ].join("\n"),
+    );
+    await run(root, scriptPath);
+    const work = workdirOf(root);
+    const production = JSON.parse(readFileSync(join(work, "production.json"), "utf8"));
+    const anchors = (production.scenes as { anchor: { startWord: number; endWord: number } }[]).map((s) => [
+      s.anchor.startWord,
+      s.anchor.endWord,
+    ]);
+    // The welcome line cannot grow: the only word before the next cue is the
+    // cut "um". The last line is already over four seconds.
+    expect(anchors).toEqual([
+      [0, 3],
+      [5, 12],
+      [14, 21],
+    ]);
+    const outcomes = JSON.parse(readFileSync(join(work, "script-report.json"), "utf8")).outcomes as {
+      status: string;
+      lengthened?: { fromSec: number; toSec: number };
+    }[];
+    expect(outcomes.map((o) => o.status)).toEqual(["placed", "placed", "placed"]);
+    expect(outcomes[0]!.lengthened).toBeUndefined();
+    expect(outcomes[1]!.lengthened!.fromSec).toBeCloseTo(1.375, 2);
+    expect(outcomes[1]!.lengthened!.toSec).toBeGreaterThan(3);
+    expect(outcomes[2]!.lengthened).toBeUndefined();
+    const reportTxt = readFileSync(join(work, "report.txt"), "utf8");
+    expect(reportTxt).toMatch(/StatCard at [\d.]+s, held [\d.]+s for a 1\.4s line — "One wish"/);
+    expect(reportTxt).toContain("placed 3 of 3 (1 lengthened) · skipped 0 · reported 0");
+  }, 120_000);
+
   it("G6: without --script, no script code runs and nothing script-shaped is written", async () => {
     const root = join(dir, "wd-plain");
     await run(root);

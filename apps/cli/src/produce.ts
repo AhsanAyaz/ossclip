@@ -294,6 +294,7 @@ import {
   formatCueReport,
   isFootageCueIssue,
   isProjectClipSrc,
+  keptWordTimes,
   keptWordsKey,
   loadScriptText,
   mergeClipRecords,
@@ -301,7 +302,7 @@ import {
   scriptCueProblems,
   scriptPlanCacheKey,
   scriptPlanCacheKeyCandidates,
-  scriptPlanCut,
+  scriptPlanCutlist,
   scriptSourcePath,
   storedScriptFrom,
   type CueOutcome,
@@ -4120,12 +4121,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // first real project placed 11 of 22 cues. The same files the edit
       // layer reads below, read early here only; nothing writes either one
       // in between, so the two see the same cut.
-      const scriptCut = scriptPlanCut({
+      const scriptCutlist = scriptPlanCutlist({
         words: transcript.words,
         cutlist,
         doc: await readOverrideDoc(join(work, "overrides.json")),
         priorMap: await readPriorMap(join(work, "render-props.json")),
       });
+      const scriptCut = cutWordIndices(transcript.words, scriptCutlist);
       scriptAlignment = alignCues(scriptRun.cues, transcript, scriptCut);
       const { aligned } = scriptAlignment;
       // Clips are imported only for cues that aligned — a skipped cue would
@@ -4203,7 +4205,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
             framing: framingCtx,
             aspect: landscape ? "16:9" : "9:16",
             cut: scriptCut,
-            script: { aligned, clips },
+            // The minimum scene length (§161) is screen time, so it is
+            // measured on the effective cut's clock — the one this video
+            // renders with. Not part of the cache key: the kept words are,
+            // and with the same words kept only a pause the cut trims or
+            // keeps can move these times, which can move a lengthened end
+            // by a word but never into the next scene (it is word-bounded).
+            script: {
+              aligned,
+              clips,
+              wordTimes: keptWordTimes(transcript.words, scriptCut, new TimeMap(scriptCutlist)),
+            },
           }),
         );
         plan = {
@@ -4879,6 +4891,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       timed: assembled,
       dropped,
       shortened,
+      // This run's final clock, the one `assembled` is timed on: a
+      // lengthened cue's line is reported in the seconds the viewer sees.
+      wordTimes: transcript.words.map((w) => map.mapWord(w)),
     });
     await writeFile(
       join(work, SCRIPT_REPORT_BASENAME),

@@ -6,13 +6,18 @@ import { BeatSheetSchema, normalizeBeatSheet } from "../src/producer/beats";
 import { produceScenes } from "../src/producer/index";
 import {
   MAX_SCRIPT_CUES,
+  SCRIPT_MIN_SCENE_SEC,
   ScriptPlanError,
   planScriptMoments,
+  scriptSceneEndWords,
   type ScriptPlanInput,
+  type WordOutputTime,
 } from "../src/producer/script-plan";
 import { parseScript, type ScriptCue, type ScriptCueHint } from "../src/script/cues";
 import { alignCues, type AlignedCue } from "../src/script/align";
 import type { Transcript } from "../src/schema";
+import { assembleScenes } from "../src/assemble";
+import { TimeMap } from "../src/timemap";
 
 /** One word per space-separated token, 0.3 s each — the alignment tests' helper. */
 const t = (text: string): Transcript => ({
@@ -445,5 +450,182 @@ describe("produceScenes with a script", () => {
         clip: { targetSec: 30 },
       }),
     ).rejects.toThrow(/clip/);
+  });
+});
+
+describe("scriptSceneEndWords (a script scene lasts at least SCRIPT_MIN_SCENE_SEC)", () => {
+  // Twelve back-to-back half-second words on the output clock: word i spans
+  // [0.5i, 0.5i + 0.5].
+  const half: WordOutputTime[] = Array.from({ length: 12 }, (_, i) => ({ start: i * 0.5, end: i * 0.5 + 0.5 }));
+  const span = (c: ScriptCue, startWord: number, endWord: number): AlignedCue => ({ cue: c, startWord, endWord, score: 1 });
+
+  it("is four seconds", () => {
+    expect(SCRIPT_MIN_SCENE_SEC).toBe(4);
+  });
+
+  it("moves a short cue's END to the last kept word ending by start + 4 s, never its start", () => {
+    // Words 0-2 are 1.5 s; word 7 ends at exactly 4.0 s, word 8 at 4.5 s.
+    const aligned = [span(cue(0, "A"), 0, 2), span(cue(1, "B"), 10, 11)];
+    expect(scriptSceneEndWords(aligned, half)).toEqual([7, 11]);
+  });
+
+  it("stops at the word before the next placed cue when that comes sooner", () => {
+    // B, from 2.5 s, may run to 6.5 s: the last word (11) ends at 6.0 s.
+    const aligned = [span(cue(0, "A"), 0, 2), span(cue(1, "B"), 5, 6)];
+    expect(scriptSceneEndWords(aligned, half)).toEqual([4, 11]);
+  });
+
+  it("a next cue on the very next word leaves the scene as spoken", () => {
+    const aligned = [span(cue(0, "A"), 0, 2), span(cue(1, "B"), 3, 4)];
+    expect(scriptSceneEndWords(aligned, half)[0]).toBe(2);
+  });
+
+  it("lands only on kept words: a cut word (null) is passed over, never ended on", () => {
+    const times = half.map((t, i) => (i === 7 ? null : t));
+    expect(scriptSceneEndWords([span(cue(0, "A"), 0, 2)], times)).toEqual([6]);
+  });
+
+  it("never past the last kept word", () => {
+    const times = half.slice(0, 5).concat([null, null]);
+    expect(scriptSceneEndWords([span(cue(0, "A"), 0, 2)], times)).toEqual([4]);
+  });
+
+  it("leaves a cue already at least four seconds long alone", () => {
+    expect(scriptSceneEndWords([span(cue(0, "A"), 0, 7)], half)).toEqual([7]);
+    expect(scriptSceneEndWords([span(cue(0, "A"), 0, 9)], half)).toEqual([9]);
+  });
+
+  it("leaves a clip: cue alone — a ClipScene keeps its own length", () => {
+    const clip = cue(0, "clips/a.mov", { kind: "clip", path: "clips/a.mov" });
+    expect(scriptSceneEndWords([span(clip, 0, 1)], half)).toEqual([1]);
+  });
+
+  it("measures on the OUTPUT clock: a pause the cut kept is screen time", () => {
+    // 2 s of kept silence before word 3: only word 3 (ending at 4.0 s) fits.
+    const gap = half.map((t, i) => (t && i >= 3 ? { start: t.start + 2, end: t.end + 2 } : t));
+    expect(scriptSceneEndWords([span(cue(0, "A"), 0, 2)], gap)).toEqual([3]);
+  });
+
+  it("the overlap repair in normalizeBeatSheet(\"script\") finds nothing to repair afterwards", () => {
+    const aligned = [span(cue(0, "A"), 0, 2), span(cue(1, "B"), 5, 6), span(cue(2, "C"), 9, 9)];
+    const ends = scriptSceneEndWords(aligned, half);
+    const moments = aligned.map((a, i) => ({
+      startWord: a.startWord,
+      endWord: ends[i]!,
+      purpose: "p",
+      onScreenCopy: "c",
+      sceneKind: "TitleCard" as const,
+    }));
+    const words12: Transcript = { language: "en", words: half.map((t, i) => ({ text: `w${i}`, ...t! })) };
+    const { sheet, issues } = normalizeBeatSheet({ hook: "h", moments }, words12, null, undefined, "script");
+    expect(issues).toEqual([]);
+    expect(sheet.moments.map((m) => [m.startWord, m.endWord])).toEqual(moments.map((m) => [m.startWord, m.endWord]));
+  });
+});
+
+describe("produceScenes with a script and word times: the minimum scene length", () => {
+  // "Brainstorm. Draft. Review." is a 2.3 s line; the words after it belong
+  // to no cue. "the" ends at 3.8 s and "plan" at 4.2 s, so a 4 s minimum
+  // from the line's start ends on "the".
+  const said: Array<[string, number, number]> = [
+    ["Brainstorm.", 0, 0.6],
+    ["Draft.", 0.9, 1.4],
+    ["Review.", 1.8, 2.3],
+    ["Then", 2.6, 2.9],
+    ["we", 3.0, 3.2],
+    ["write", 3.3, 3.6],
+    ["the", 3.7, 3.8],
+    ["plan", 3.9, 4.2],
+    ["down.", 4.3, 4.7],
+  ];
+  const transcript: Transcript = {
+    language: "en",
+    words: said.map(([text, start, end]) => ({ text, start, end })),
+  };
+  // Nothing cut: output time is source time.
+  const map = new TimeMap([{ srcIn: 0, srcOut: 6, kind: "keep" }]);
+  const wordTimes = transcript.words.map((w) => map.mapWord(w));
+
+  /** Answers the plan with a CardRow and its props with the three spoken steps. */
+  class CardRowProvider implements LlmProvider {
+    readonly name = "cards";
+    readonly usage = [];
+    readonly asked: string[] = [];
+    async complete<T>(req: { system: string; user: string; schema: z.ZodType<T>; schemaName: string }): Promise<T> {
+      this.asked.push(req.user);
+      const id = /id: (\S+)/.exec(req.user)?.[1] ?? "";
+      const out =
+        req.schemaName === "script_plan"
+          ? { cues: [{ id, sceneKind: "CardRow", onScreenCopy: "THREE STEPS" }] }
+          : { cards: [{ text: "Brainstorm" }, { text: "Draft" }, { text: "Review" }] };
+      return req.schema.parse(out);
+    }
+  }
+
+  const plan = async (times?: readonly WordOutputTime[]) => {
+    const cues = parseScript("🎬 [CardRow] three steps\n🗣️ Brainstorm. Draft. Review.");
+    const { aligned } = alignCues(cues, transcript);
+    expect(aligned.map((a) => [a.startWord, a.endWord])).toEqual([[0, 2]]);
+    const provider = new CardRowProvider();
+    const result = await produceScenes(provider, {
+      transcript,
+      outputDuration: map.outputDuration,
+      script: { aligned, clips: [], ...(times ? { wordTimes: times } : {}) },
+    });
+    return { result, provider, assembled: assembleScenes(result.scenes, transcript, map) };
+  };
+
+  it("a three-item CardRow over a 2.3 s line keeps its item times and gains a longer end", async () => {
+    const short = await plan();
+    const long = await plan(wordTimes);
+    const [s] = short.result.scenes;
+    const [l] = long.result.scenes;
+    expect(s!.anchor).toEqual({ startWord: 0, endWord: 2 });
+    expect(l!.anchor).toEqual({ startWord: 0, endWord: 6 });
+    // The plan-time cue is matched on the line's own words, so the entry
+    // word and the items' words are the same plan either way.
+    expect(l!.cue).toEqual(s!.cue);
+    expect(s!.cue!.itemWords).toEqual([0, 1, 2]);
+    // The props call saw the same slice: the copy is the line's, not the
+    // words the scene was held over.
+    expect(long.provider.asked.at(-1)).toBe(short.provider.asked.at(-1));
+
+    const [sc] = short.assembled.cues;
+    const [lc] = long.assembled.cues;
+    expect(lc!.reveal).toEqual(sc!.reveal);
+    expect(lc!.reveal!.itemAtSec).toHaveLength(3);
+    expect(lc!.startSec).toBe(sc!.startSec);
+    expect(sc!.endSec).toBeCloseTo(2.3);
+    expect(lc!.endSec).toBeCloseTo(3.8);
+    // The moment the cache and --sfx read follows its scene.
+    expect(long.result.beatSheet.moments[0]).toMatchObject({ startWord: 0, endWord: 6 });
+  });
+
+  it("without word times nothing is lengthened (the minimum needs the output clock)", async () => {
+    const { result } = await plan();
+    expect(result.beatSheet.moments[0]).toMatchObject({ startWord: 0, endWord: 2 });
+  });
+
+  it("a footage cue and a clip cue keep their spans", async () => {
+    const script =
+      "🎬 Screen recording: the editor\n🗣️ Brainstorm. Draft.\n" +
+      "🎬 clip: clips/a.mov\n🗣️ Review.";
+    const cues = parseScript(script);
+    const { aligned } = alignCues(cues, transcript);
+    expect(aligned.map((a) => [a.startWord, a.endWord])).toEqual([[0, 1], [2, 2]]);
+    const provider = new StubProvider(() => ({
+      cues: [{ id: cues[0]!.id, sceneKind: "none", onScreenCopy: "" }],
+    }));
+    const result = await produceScenes(provider, {
+      transcript,
+      outputDuration: map.outputDuration,
+      script: {
+        aligned,
+        clips: [{ cueId: cues[1]!.id, src: "clips/0123456789ab.webm", durationSec: 1.5 }],
+        wordTimes,
+      },
+    });
+    expect(result.beatSheet.moments.map((m) => [m.startWord, m.endWord])).toEqual([[0, 1], [2, 2]]);
+    expect(result.scenes.map((s) => [s.component, s.anchor.endWord])).toEqual([["ClipScene", 2]]);
   });
 });

@@ -18,6 +18,7 @@ import {
   formatCueReport,
   isFootageCueIssue,
   isProjectClipSrc,
+  keptWordTimes,
   keptWordsKey,
   loadScriptText,
   mergeClipRecords,
@@ -27,6 +28,7 @@ import {
   scriptPlanCacheKey,
   scriptPlanCacheKeyCandidates,
   scriptPlanCut,
+  scriptPlanCutlist,
   scriptSourcePath,
   storedScriptFrom,
   type CueOutcome,
@@ -213,11 +215,14 @@ describe("scriptPlanCacheKey", () => {
     expect(keptWordsKey(words, new Set([0]))).not.toBe(keptWordsKey(words, new Set([1])));
   });
 
-  it("the prompt version is \"s2\": a plan cached before the script-only cards is never reused (Review Focus 4)", () => {
-    // An "s1" plan was asked without CardRow on the menu; a script that now
-    // hints [CardRow] must re-plan, which only a new key guarantees.
-    expect(SCRIPT_PLAN_PROMPT_VERSION).toBe("s2");
+  it("the prompt version is \"s3\": a plan cached before the minimum scene length is never reused", () => {
+    // "s2" plans were cached with every scene's end word on its line's last
+    // word (§161): served now, they would keep the 1.2-2.3 s scenes the
+    // minimum exists to remove. "s1" plans were asked without CardRow on the
+    // menu (Review Focus 4). Only a new key guarantees either re-plans.
+    expect(SCRIPT_PLAN_PROMPT_VERSION).toBe("s3");
     const current = scriptPlanCacheKey({ ...parts, promptVersion: SCRIPT_PLAN_PROMPT_VERSION });
+    expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s2" }));
     expect(current).not.toBe(scriptPlanCacheKey({ ...parts, promptVersion: "s1" }));
   });
 
@@ -382,6 +387,99 @@ describe("cueOutcomes", () => {
   });
 });
 
+describe("cueOutcomes and formatCueReport: a lengthened scene (§161, SCRIPT_MIN_SCENE_SEC)", () => {
+  const cues = parseScript("🎬 Three steps\n🗣️ one two three\n🎬 The next one\n🗣️ eight nine");
+  const [steps, next] = cues as [(typeof cues)[number], (typeof cues)[number]];
+  const aligned: AlignedCue[] = [
+    { cue: steps, startWord: 0, endWord: 2, score: 1 },
+    { cue: next, startWord: 8, endWord: 9, score: 1 },
+  ];
+  const moment = (startWord: number, endWord: number): Moment => ({
+    startWord,
+    endWord,
+    purpose: "p",
+    onScreenCopy: "c",
+    sceneKind: "TitleCard",
+  });
+  const scene = (id: string, startWord: number, endWord: number): Scene => ({
+    id,
+    anchor: { startWord, endWord },
+    layout: "full-bleed",
+    component: "TitleCard",
+    props: {},
+    overrides: {},
+  });
+  // Half-second words from 1.0 s: the line "one two three" is 1.5 s.
+  const wordTimes = Array.from({ length: 10 }, (_, i) => ({ start: 1 + i * 0.5, end: 1.5 + i * 0.5 }));
+  const outcomes = cueOutcomes({
+    cues,
+    aligned,
+    skipped: [],
+    // The first scene was held to word 7, past its line's last word (2).
+    moments: [moment(0, 7), moment(8, 9)],
+    scenes: [scene("scene-0", 0, 7), scene("scene-1", 8, 9)],
+    timed: [
+      { id: "scene-0", startSec: 0.7, endSec: 5 },
+      { id: "scene-1", startSec: 5.1, endSec: 6.5 },
+    ],
+    dropped: [],
+    shortened: [],
+    wordTimes,
+  });
+
+  it("a scene held past its line still matches its cue, and says how long the line was and the scene is", () => {
+    expect(outcomes.map((o) => o.status)).toEqual(["placed", "placed"]);
+    expect(outcomes[0]).toMatchObject({ component: "TitleCard", startSec: 0.7, lengthened: { fromSec: 1.5, toSec: 4.3 } });
+    // A scene its line already filled carries no note at all.
+    expect("lengthened" in outcomes[1]!).toBe(false);
+  });
+
+  it("prints the hold on the cue's line and counts it in the summary", () => {
+    const lines = formatCueReport(outcomes).split("\n");
+    expect(lines[1]).toMatch(/^ {2}line 1 +placed +TitleCard at 0\.7s, held 4\.3s for a 1\.5s line — "Three steps"$/);
+    expect(lines[2]).toMatch(/placed +TitleCard at 5\.1s — "The next one"$/);
+    expect(lines.at(-1)).toBe("placed 2 of 2 (1 lengthened) · skipped 0 · reported 0");
+  });
+
+  it("a footage cue's moment is found by its own words, so it still reads as footage", () => {
+    const out = cueOutcomes({
+      cues,
+      aligned,
+      skipped: [],
+      moments: [moment(0, 2), { ...moment(8, 9), sceneKind: "none" }],
+      scenes: [scene("scene-0", 0, 2)],
+      timed: [{ id: "scene-0", startSec: 0.7, endSec: 2.5 }],
+      dropped: [],
+      shortened: [],
+      wordTimes,
+    });
+    expect(out.map((o) => o.status)).toEqual(["placed", "reported"]);
+  });
+});
+
+describe("keptWordTimes (the output clock the minimum scene length is measured on)", () => {
+  const words = [0, 1, 2, 3].map((t) => ({ start: t + 0.1, end: t + 0.9 }));
+  // Source second 1-2 removed: word 1 is cut, words 2-3 move 1 s earlier.
+  const map = new TimeMap([
+    { srcIn: 0, srcOut: 1, kind: "keep" },
+    { srcIn: 1, srcOut: 2, kind: "remove", reason: "filler", confidence: 1 },
+    { srcIn: 2, srcOut: 4, kind: "keep" },
+  ]);
+
+  it("gives kept words their output times and cut words null", () => {
+    const times = keptWordTimes(words, new Set([1]), map);
+    expect(times[0]).toEqual({ start: 0.1, end: 0.9 });
+    expect(times[1]).toBeNull();
+    expect(times[2]!.start).toBeCloseTo(1.1);
+    expect(times[3]!.end).toBeCloseTo(2.9);
+  });
+
+  it("a word the cut set names is null even if the map still has a sliver of it", () => {
+    // The aligner skips every word in the cut set; a scene must not end on one.
+    expect(keptWordTimes(words, new Set([0]), map)[0]).toBeNull();
+  });
+});
+
 describe("replanScriptArgs", () => {
   it("points --script at the stored copy, replacing the recorded path", () => {
     expect(
@@ -433,6 +531,12 @@ describe("scriptPlanCut (the cut a script aligns against, §158 2026-11-16)", ()
         cuts: [{ startSec: 2, endSec: 3, src: { startSec: 2, endSec: 3 } }],
       }),
     ).toEqual([2]);
+  });
+
+  it("is the cut of `scriptPlanCutlist`, the cutlist whose clock the minimum length is measured on", () => {
+    const raw = { cuts: [{ startSec: 3, endSec: 4, src: { startSec: 4, endSec: 5 } }] };
+    const cutlist = scriptPlanCutlist({ words, cutlist: auto, doc: doc(raw), priorMap: null });
+    expect([...cutWordIndices(words, cutlist)].sort((a, b) => a - b)).toEqual(cut(raw));
   });
 
   it("a src-less cut is read in the frame the user drew it in, the prior render's", () => {

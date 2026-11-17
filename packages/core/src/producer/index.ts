@@ -17,7 +17,7 @@ import {
   type ScriptMoment,
 } from "./beats";
 import { generateScenes, momentSceneId, type ScenePropsFailure } from "./scene-props";
-import { planScriptMoments, type ScriptPlanInput } from "./script-plan";
+import { planScriptMoments, scriptSceneEndWords, type ScriptPlanInput } from "./script-plan";
 import { buildFramingBrief, repairMomentLayouts, type FramingContext } from "../framing";
 import {
   resolveClipWindow,
@@ -435,13 +435,42 @@ async function produceScriptScenes(
     moments = repaired.moments;
     issues.push(...repaired.issues);
   }
-  const { scenes, failures } = await generateScenes(provider, moments, transcript, {
+  const generated = await generateScenes(provider, moments, transcript, {
     framing: args.framing,
     cut,
     // The one downstream difference: a script's props call is also offered
     // the script-only props of the frozen components (§161, plan Task 8).
     mode: "script",
   });
+  const { failures } = generated;
+  let { scenes } = generated;
+
+  // The minimum scene length (§161, `SCRIPT_MIN_SCENE_SEC`), applied AFTER
+  // the props call on purpose: the props slice and `planCue` must see the
+  // line's own words. Held over the words after the line, the props call
+  // would write copy from speech the cue is not about, and `planCue` could
+  // match an item — or move the entry word — onto a later word, when the
+  // anti-goal is that items landing on spoken words keep landing on them.
+  // Only the END moves, so the plan-time `cue` stays inside the anchor and
+  // `plannedCue`'s clamp in assembly keeps every item where it was.
+  //
+  // Moments are matched to their cue by `endWord`, exact for the reason
+  // given for clip scenes below. Graphic moments only: a footage cue has no
+  // scene to hold, and its moment stays the span the cue report reads.
+  if (args.script.wordTimes) {
+    const ends = scriptSceneEndWords(args.script.aligned, args.script.wordTimes);
+    const lengthened = new Map<number, number>();
+    args.script.aligned.forEach((a, i) => {
+      if (ends[i] !== a.endWord) lengthened.set(a.endWord, ends[i]!);
+    });
+    moments = moments.map((m) =>
+      m.sceneKind === "none" ? m : { ...m, endWord: lengthened.get(m.endWord) ?? m.endWord },
+    );
+    scenes = scenes.map((s) => {
+      const endWord = lengthened.get(s.anchor.endWord);
+      return endWord === undefined ? s : { ...s, anchor: { ...s.anchor, endWord } };
+    });
+  }
 
   // A clip scene follows its moment through normalization. Scene ids are
   // indices into the RETURNED moments (`momentSceneId`; the sfx prompt

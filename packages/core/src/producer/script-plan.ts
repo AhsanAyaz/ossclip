@@ -17,6 +17,7 @@ import type { Transcript } from "../schema";
 import { LayoutSchema, ScriptComponentIdSchema, type Scene } from "../scene-schema";
 import { SCENE_REGISTRY, scriptComponentIds } from "../scene-registry";
 import type { AlignedCue } from "../script/align";
+import { MAX_SCENE_SEC } from "../assemble";
 import { cappedText, type BeatsValidationIssue, type ScriptMoment } from "./beats";
 import { momentSceneId } from "./scene-props";
 import type { LlmProvider } from "./provider";
@@ -34,8 +35,14 @@ import type { LlmProvider } from "./provider";
  * Task 8's script-only props (`SCRIPT_ONLY_PROP_KEYS`: a TerminalMock
  * `badge`) ride the same bump: the props call that offers them is cached
  * inside the same `scriptplan-*` file, never in the beat-sheet cache.
+ *
+ * "s3": the minimum scene length (`SCRIPT_MIN_SCENE_SEC`, §161). The prompt
+ * did not change, but the cached plan stores the scenes' anchors and the
+ * moments' end words, and an "s2" plan holds every scene to its line's last
+ * word — served now, it would keep exactly the 1.2-2.3 s scenes the minimum
+ * exists to remove.
  */
-export const SCRIPT_PLAN_PROMPT_VERSION = "s2";
+export const SCRIPT_PLAN_PROMPT_VERSION = "s3";
 
 /**
  * Most cues one script may carry (§1.3). A ceiling on the one call that plans
@@ -59,6 +66,80 @@ export interface ResolvedScriptClip {
 export interface ScriptPlanInput {
   aligned: AlignedCue[];
   clips: ResolvedScriptClip[];
+  /**
+   * Every transcript word's place on the OUTPUT clock, null where the cut
+   * removes it — what `scriptSceneEndWords` measures the minimum scene
+   * length against. Omitted, no scene is lengthened: the minimum is screen
+   * time, and without the cut's clock there is no screen time to measure.
+   */
+  wordTimes?: readonly WordOutputTime[];
+}
+
+/** A word's start and end on the output clock, or null where the cut removes it. */
+export type WordOutputTime = { start: number; end: number } | null;
+
+/**
+ * The shortest a script scene is held (seconds of output). A script scene
+ * used to last exactly as long as its spoken line, and the first real
+ * 4-minute render showed what that costs (§161): "Three steps. Brainstorm.
+ * Draft. Review." and "Design with an elephant. Review with a goldfish."
+ * gave scenes of 1.2 to 2.3 s — a three-card row cut before its third card
+ * landed, a bug card fading at 80% of its life. The hand-made clips those
+ * scenes replace ran 3.5 to 10 s. Four is the floor that lets a card build
+ * and be read; it is a floor, so a longer line keeps its own length.
+ */
+export const SCRIPT_MIN_SCENE_SEC = 4;
+
+/**
+ * Each aligned cue's end word once the minimum scene length is applied,
+ * `ends[i]` for `aligned[i]` (unchanged where no lengthening applies).
+ *
+ * The END moves, never the start: the scene still enters on its line, and
+ * is held over the words after it. It stays WORD-anchored — the new end is
+ * the last kept word that ends at or before `start + SCRIPT_MIN_SCENE_SEC` —
+ * so a later recut re-resolves it like any anchor (PHASE1 §5) instead of
+ * carrying a seconds figure the new cut makes wrong.
+ *
+ * Limits, each the reason a scene may end sooner than the minimum:
+ * - never into the next scene: the walk stops at the word before the next
+ *   PLACED cue's `startWord` (placed = aligned; a footage cue that will show
+ *   no graphic still owns its words, and cues cannot cross, §1.2), so the
+ *   overlap repair in `normalizeBeatSheet(..., "script")` finds nothing;
+ * - never past the last kept word, and only ON kept words — a cut word has
+ *   no screen time to end on;
+ * - never beyond `MAX_SCENE_SEC`, which the 4 s target is far inside.
+ *
+ * `clip:` cues are left alone: a ClipScene lasts its clip's own length
+ * (`fixedDurationSec`), never its words'.
+ */
+export function scriptSceneEndWords(
+  aligned: readonly AlignedCue[],
+  wordTimes: readonly WordOutputTime[],
+): number[] {
+  // The float posture of beats.ts/assemble.ts: a word that ends at 4 s to
+  // the eye can be 4.0000001 s in the stamps.
+  const EPS = 1e-6;
+  const target = Math.min(SCRIPT_MIN_SCENE_SEC, MAX_SCENE_SEC);
+  return aligned.map((a, i) => {
+    if (a.cue.hint.kind === "clip") return a.endWord;
+    // Alignment places cues on kept words only, so both ends have times; a
+    // caller whose times disagree gets the line as spoken, not a guess.
+    const start = wordTimes[a.startWord];
+    const end = wordTimes[a.endWord];
+    if (!start || !end) return a.endWord;
+    const until = start.start + target;
+    if (end.end >= until - EPS) return a.endWord;
+    const next = aligned[i + 1];
+    const last = Math.min(wordTimes.length, next ? next.startWord : wordTimes.length) - 1;
+    let endWord = a.endWord;
+    for (let w = a.endWord + 1; w <= last; w++) {
+      const t = wordTimes[w];
+      if (!t) continue;
+      if (t.end > until + EPS) break;
+      endWord = w;
+    }
+    return endWord;
+  });
 }
 
 /**
