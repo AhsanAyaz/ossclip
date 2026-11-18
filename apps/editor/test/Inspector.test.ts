@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyOverrides,
   defaultTheme,
+  LayoutSchema,
   scalarPropControls,
   livePreviewMap,
   plannerComponentIds,
@@ -1392,5 +1393,224 @@ describe("Inspector — the component swap offers every card, script-only ones i
       );
     });
     expect(container.querySelector('[data-testid="component-swap"]')).toBeNull();
+  });
+});
+
+/**
+ * Backdrop choice, Task 5 (§163, design 5). The layout select speaks the
+ * author's three backdrops only in a 16:9 script project; everywhere else
+ * it is the flat list it always was. The graphic box gains "Below the face"
+ * in 16:9, and a 16:9 pip-bubble scene's fields edit the STORED box, not the
+ * one the picture cuts at draw time.
+ */
+function BackdropHarness({
+  base,
+  frame,
+  scriptProject,
+  face,
+  onDocChange,
+  onPatchLayout,
+}: {
+  base: SceneCue;
+  frame: { width: number; height: number };
+  scriptProject?: boolean;
+  face?: { centerYFrac: number; sizeFrac?: number } | null;
+  onDocChange?: (doc: OverrideDoc) => void;
+  onPatchLayout?: (...args: unknown[]) => void;
+}) {
+  const real = useEdits();
+  const edits = React.useMemo(
+    () =>
+      onPatchLayout
+        ? {
+            ...real,
+            patchLayout: (...args: Parameters<typeof real.patchLayout>) => {
+              onPatchLayout(...args);
+              real.patchLayout(...args);
+            },
+          }
+        : real,
+    [real, onPatchLayout],
+  );
+  const cue = React.useMemo(() => applyOverrides([base], real.doc).cues[0]!, [real.doc, base]);
+  React.useEffect(() => {
+    onDocChange?.(real.doc);
+  });
+  return React.createElement(Inspector, {
+    selection: { sceneId: base.id, elementId: null },
+    cue,
+    frame,
+    allSceneIds: [base.id],
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+    scriptProject,
+    face,
+  });
+}
+
+describe("Inspector — backdrop names and a below-the-face box (§163, Task 5)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  const LS = { width: 1920, height: 1080 };
+  const PT = { width: 1080, height: 1920 };
+  const FACE = { centerYFrac: 0.38, sizeFrac: 0.3 };
+  // Today's flat list, literally: LayoutSchema's order, each under its id.
+  const FLAT = [
+    "full-bleed",
+    "video-top",
+    "pip-bubble",
+    "graphic-only",
+    "blurred-behind",
+    "lower-third",
+    "split-left",
+    "split-right",
+  ];
+  const card: SceneCue = {
+    id: "scene-7",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    props: { cards: [{ text: "Draft" }, { text: "Review" }] },
+    startSec: 0,
+    endSec: 6,
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`);
+  const mount = async (props: Parameters<typeof BackdropHarness>[0]) => {
+    await act(async () => {
+      root.render(React.createElement(BackdropHarness, props));
+    });
+  };
+  const select = () => q<HTMLSelectElement>("layout-select")!;
+  const selectLabel = () => select().parentElement!.querySelector("span")!.textContent;
+
+  it("pins today's flat list as LayoutSchema's own order", () => {
+    expect([...LayoutSchema.options]).toEqual(FLAT);
+  });
+
+  it("a 16:9 script project: 'Behind the graphic', the three backdrops by name, then the other five", async () => {
+    await mount({ base: card, frame: LS, scriptProject: true });
+    expect(selectLabel()).toBe("Behind the graphic");
+    const groups = [...select().querySelectorAll("optgroup")];
+    expect(groups.map((g) => g.label)).toEqual(["Backdrops", "Other layouts"]);
+    expect([...groups[0]!.querySelectorAll("option")].map((o) => [o.value, o.textContent])).toEqual([
+      ["full-bleed", "Over the speaker"],
+      ["graphic-only", "Full background"],
+      ["pip-bubble", "Background with speaker picture"],
+    ]);
+    expect([...groups[1]!.querySelectorAll("option")].map((o) => [o.value, o.textContent])).toEqual([
+      ["video-top", "video-top"],
+      ["blurred-behind", "blurred-behind"],
+      ["lower-third", "lower-third"],
+      ["split-left", "split-left"],
+      ["split-right", "split-right"],
+    ]);
+    expect(select().value).toBe("full-bleed");
+  });
+
+  it("a scene on one of the other layouts shows it selected under 'Other layouts'", async () => {
+    await mount({ base: { ...card, component: "TitleCard", props: { title: "X" }, layout: "lower-third" }, frame: LS, scriptProject: true });
+    const chosen = select().selectedOptions[0]!;
+    expect(chosen.value).toBe("lower-third");
+    expect((chosen.parentElement as HTMLOptGroupElement).label).toBe("Other layouts");
+  });
+
+  it("choosing 'Full background' calls patchLayout(sceneId, 'graphic-only', the current layout)", async () => {
+    const spy = vi.fn();
+    let doc: OverrideDoc | undefined;
+    await mount({ base: card, frame: LS, scriptProject: true, onPatchLayout: spy, onDocChange: (d) => (doc = d) });
+    await act(async () => setControl(select(), "graphic-only"));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith("scene-7", "graphic-only", "full-bleed");
+    expect(doc!.scenes["scene-7"]?.layout).toBe("graphic-only");
+  });
+
+  for (const [name, frame, scriptProject] of [
+    ["a 9:16 script project", PT, true],
+    ["a 16:9 project without a script", LS, false],
+    ["a 16:9 project that never said", LS, undefined],
+  ] as const) {
+    it(`${name}: exactly today's control — 'Layout', no groups, the flat list under its ids`, async () => {
+      await mount({ base: card, frame, scriptProject });
+      expect(selectLabel()).toBe("Layout");
+      expect(select().querySelectorAll("optgroup")).toHaveLength(0);
+      expect([...select().options].map((o) => o.value)).toEqual(FLAT);
+      expect([...select().options].map((o) => o.textContent)).toEqual(FLAT);
+    });
+  }
+
+  it("'Below the face' writes belowFaceBox through patchGraphicRect on a 16:9 full-frame scene", async () => {
+    let doc: OverrideDoc | undefined;
+    await mount({ base: card, frame: LS, face: FACE, onDocChange: (d) => (doc = d) });
+    const btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.textContent).toBe("Below the face");
+    expect(btn.disabled).toBe(false);
+    await act(async () => btn.click());
+    const rect = doc!.scenes["scene-7"]!.graphicRect!;
+    // headBand(0.38, 0.3).end = 0.59 → y 0.62, h 0.34 (stage.test.ts).
+    expect(rect.x).toBeCloseTo(0.04, 9);
+    expect(rect.y).toBeCloseTo(0.62, 9);
+    expect(rect.w).toBeCloseTo(0.92, 9);
+    expect(rect.h).toBeCloseTo(0.34, 9);
+    expect(Number(q<HTMLInputElement>("field-box-y")!.value)).toBeCloseTo(0.62, 3);
+  });
+
+  it("is shown in any 16:9 project, script or not, and on a slot component too", async () => {
+    await mount({ base: { ...card, component: "TitleCard", props: { title: "X" }, layout: "lower-third" }, frame: LS, face: FACE, scriptProject: false });
+    expect(q("graphic-below-face")).not.toBeNull();
+  });
+
+  it("is disabled, saying why, with no measured face and with no room below it", async () => {
+    await mount({ base: card, frame: LS, face: null });
+    let btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe("No face was measured in this video");
+    await mount({ base: card, frame: LS, face: { centerYFrac: 0.6, sizeFrac: 0.3 } });
+    btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe("No room below the face");
+  });
+
+  it("is not offered in a 9:16 frame, nor on a plain take", async () => {
+    await mount({ base: card, frame: PT, face: FACE });
+    expect(q("graphic-below-face")).toBeNull();
+    await mount({ base: { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 4 }, frame: LS, face: FACE });
+    expect(q("graphic-below-face")).toBeNull();
+  });
+
+  it("a 16:9 pip-bubble scene's fields show and edit the STORED box, with a note that it is cut when drawn", async () => {
+    let doc: OverrideDoc | undefined;
+    await mount({ base: { ...card, layout: "pip-bubble" }, frame: LS, onDocChange: (d) => (doc = d) });
+    // No box yet: the whole frame, not the frame cut back from the picture.
+    expect(q<HTMLInputElement>("field-box-x")!.value).toBe("0");
+    expect(q<HTMLInputElement>("field-box-w")!.value).toBe("1");
+    expect(q("graphic-box-cut-note")!.textContent).toBe("Kept clear of the speaker picture when drawn.");
+    await act(async () => setControl(q<HTMLInputElement>("field-box-h")!, "0.5"));
+    // Editing one field stores the uncut box with that field changed.
+    expect(doc!.scenes["scene-7"]!.graphicRect).toEqual({ x: 0, y: 0, w: 1, h: 0.5 });
+  });
+
+  it("no cut note outside a 16:9 pip-bubble", async () => {
+    await mount({ base: { ...card, layout: "pip-bubble" }, frame: PT });
+    expect(q("graphic-box-cut-note")).toBeNull();
+    await mount({ base: { ...card, layout: "graphic-only" }, frame: LS });
+    expect(q("graphic-box-cut-note")).toBeNull();
+    await mount({ base: card, frame: LS });
+    expect(q("graphic-box-cut-note")).toBeNull();
   });
 });

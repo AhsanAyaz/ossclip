@@ -90,6 +90,24 @@ describe("edit server", () => {
     });
   });
 
+  it("says whether the project is a script project, from production.json's stored script (§163)", async () => {
+    // The editor's backdrop names are keyed on the STORED script, not on
+    // --script: a Render replays without the flag and carries the record.
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const get = async () => (await (await fetch(`${server.url}/api/production`)).json()).scriptProject;
+    // No production.json at all.
+    expect(await get()).toBe(false);
+    await writeFile(join(dir, "production.json"), JSON.stringify({ scenes: [] }));
+    expect(await get()).toBe(false);
+    // A record that does not parse is no record (storedScriptFrom's rule).
+    await writeFile(join(dir, "production.json"), JSON.stringify({ script: { text: 7 } }));
+    expect(await get()).toBe(false);
+    await writeFile(join(dir, "production.json"), JSON.stringify({ script: { text: "# Intro\nhello" } }));
+    expect(await get()).toBe(true);
+  });
+
   it("identifies itself and its project on /api/health", async () => {
     // The contract the port-conflict flow attaches on (edit-health.ts): a
     // second `ossclip edit` on this same workdir must be able to recognise

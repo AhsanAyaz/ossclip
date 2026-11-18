@@ -41,6 +41,8 @@ import {
   pictureZoomStateFor,
   pipRectFor,
   pipZoomFor,
+  belowFaceBox,
+  storedGraphicBox,
 } from "../src/stage";
 import { captionAnchorAvoiding } from "../src/source-fit";
 import {
@@ -1360,5 +1362,121 @@ describe("the speaker picture in 16:9 (§163)", () => {
         "translate(3px, 0px) scale(1.05) scale(1.5)",
       );
     });
+  });
+});
+
+describe("storedGraphicBox: the box a scene keeps, before the picture cuts it (§163)", () => {
+  const LS = LANDSCAPE_FRAME;
+  const PT = PORTRAIT_FRAME;
+
+  it("a full-frame component: its own box limited to the frame, or the whole frame", () => {
+    const band = { x: 0.04, y: 0.56, w: 0.92, h: 0.4 };
+    expect(storedGraphicBox({ layout: "full-bleed", component: "CardRow", graphicRect: band }, LS)).toEqual(band);
+    const offRight = { x: 0.5, y: 0.1, w: 0.7, h: 0.3 };
+    expect(storedGraphicBox({ layout: "full-bleed", component: "CardRow", graphicRect: offRight }, LS)).toEqual(
+      clampToFrame(offRight),
+    );
+    expect(storedGraphicBox({ layout: "full-bleed", component: "CardRow" }, LS)).toEqual(FULL_FRAME_SLOT);
+    expect(storedGraphicBox({ layout: "graphic-only", component: "BugCard", graphicRect: null }, LS)).toEqual(
+      FULL_FRAME_SLOT,
+    );
+  });
+
+  it("a slot component: its box in the caption-safe area, else the layout's slot, else the full-bleed band", () => {
+    const box = { x: 0.1, y: 0.2, w: 0.7, h: 0.3 };
+    for (const frame of [LS, PT]) {
+      expect(storedGraphicBox({ layout: "lower-third", component: "TitleCard", graphicRect: box }, frame)).toEqual(
+        clampGraphicRect(box, frame),
+      );
+      expect(storedGraphicBox({ layout: "lower-third", component: "TitleCard" }, frame)).toEqual(
+        layoutSlots("lower-third", DEFAULT_FACE, [], frame).graphic,
+      );
+      expect(storedGraphicBox({ layout: "full-bleed", component: "TitleCard" }, frame)).toEqual(
+        FULL_BLEED_GRAPHIC_SLOT,
+      );
+    }
+  });
+
+  it("a 16:9 pip-bubble scene keeps its UNCUT box; graphicSlotFor is that box cut clear of the picture", () => {
+    const picture = pipRectFor(LS);
+    const cues = [
+      { layout: "pip-bubble" as const, component: "CardRow" as const },
+      { layout: "pip-bubble" as const, component: "TitleCard" as const, graphicRect: SCRIPT_LANDSCAPE_RECT },
+      { layout: "pip-bubble" as const, component: "TitleCard" as const },
+      { layout: "pip-bubble" as const, component: "CardRow" as const, pip: { x: 0.05, y: 0.1 } },
+    ];
+    expect(storedGraphicBox(cues[0]!, LS)).toEqual(FULL_FRAME_SLOT);
+    expect(storedGraphicBox(cues[1]!, LS)).toEqual(SCRIPT_LANDSCAPE_RECT);
+    expect(storedGraphicBox(cues[2]!, LS)).toEqual({ x: 0.06, y: 0.14, w: 0.78, h: 0.42 });
+    expect(storedGraphicBox(cues[3]!, LS)).toEqual(FULL_FRAME_SLOT);
+    // One resolver under both: the drawn slot is the stored box, cut.
+    expect(graphicSlotFor(cues[0]!, LS)).toEqual(clearOfPicture(FULL_FRAME_SLOT, picture));
+    expect(graphicSlotFor(cues[1]!, LS)).toEqual(clearOfPicture(SCRIPT_LANDSCAPE_RECT, picture));
+    expect(graphicSlotFor(cues[1]!, LS)).not.toEqual(storedGraphicBox(cues[1]!, LS));
+  });
+
+  it("equals graphicSlotFor everywhere the picture does not cut", () => {
+    const box = { x: 0.1, y: 0.2, w: 0.7, h: 0.3 };
+    for (const frame of [LS, PT]) {
+      for (const layout of LayoutSchema.options) {
+        if (layout === "pip-bubble" && frame === LS) continue;
+        for (const component of ["CardRow", "TitleCard"] as const) {
+          for (const graphicRect of [undefined, box]) {
+            const c = { layout, component, graphicRect };
+            expect(storedGraphicBox(c, frame), `${layout} ${component}`).toEqual(graphicSlotFor(c, frame));
+          }
+        }
+      }
+    }
+  });
+});
+
+describe("belowFaceBox: the band under the speaker's head (§163, design 3)", () => {
+  const LS = LANDSCAPE_FRAME;
+  const near = (a: { x: number; y: number; w: number; h: number } | null, b: NonNullable<typeof a>) => {
+    expect(a).not.toBeNull();
+    expect(a!.x).toBeCloseTo(b.x, 9);
+    expect(a!.y).toBeCloseTo(b.y, 9);
+    expect(a!.w).toBeCloseTo(b.w, 9);
+    expect(a!.h).toBeCloseTo(b.h, 9);
+  };
+
+  it("a face at centre y 0.38, size 0.3: the head ends at 0.59, so the box is y 0.62 to 0.96 across 0.92", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    // headBand: 0.38 + 0.3 × (0.5 + 0.2) = 0.59, in fractions of SOURCE
+    // height — the frame's own when the full-bleed cover shows the source's
+    // whole height (a 16:9 source, or one that never said its shape).
+    expect(headBand(face).end).toBeCloseTo(0.59, 12);
+    near(belowFaceBox(face, LS), { x: 0.04, y: 0.62, w: 0.92, h: 0.34 });
+    near(belowFaceBox({ ...face, centerXFrac: 0.52, sourceAspect: 16 / 9 }, LS), {
+      x: 0.04, y: 0.62, w: 0.92, h: 0.34,
+    });
+  });
+
+  it("an unsized face takes the default size, the stage's rule everywhere else", () => {
+    // 0.38 + 0.22 × 0.7 = 0.534 → y 0.564.
+    near(belowFaceBox({ centerYFrac: 0.38 }, LS), { x: 0.04, y: 0.564, w: 0.92, h: 0.396 });
+  });
+
+  it("maps the head through the full-bleed crop when the source is narrower than the frame", () => {
+    // A 4:3 source in 16:9 is width-constrained: shown 1440 px tall in a
+    // 1080 px frame and windowed by objectPosYFor, so source fractions are
+    // NOT frame fractions and the band must be moved with the crop.
+    const face = { centerYFrac: 0.3, sizeFrac: 0.15, sourceAspect: 4 / 3 };
+    const shownH = 1920 / (4 / 3);
+    const overflow = shownH - 1080;
+    const top = objectPosYFor({ x: 0, y: 0, w: 1, h: 1 }, face, LS) * overflow;
+    const headEnd = (headBand(face).end * shownH - top) / 1080;
+    expect(headEnd).not.toBeCloseTo(headBand(face).end, 3);
+    near(belowFaceBox(face, LS), { x: 0.04, y: headEnd + 0.03, w: 0.92, h: 0.96 - headEnd - 0.03 });
+  });
+
+  it("is null with no face, and when less than 0.2 of the height is left below the head", () => {
+    expect(belowFaceBox(null, LS)).toBeNull();
+    expect(belowFaceBox(undefined, LS)).toBeNull();
+    // 0.55 + 0.3 × 0.7 = 0.76 → y 0.79, h 0.17.
+    expect(belowFaceBox({ centerYFrac: 0.55, sizeFrac: 0.3 }, LS)).toBeNull();
+    // 0.5 + 0.3 × 0.7 = 0.71 → y 0.74, h 0.22: still room.
+    near(belowFaceBox({ centerYFrac: 0.5, sizeFrac: 0.3 }, LS), { x: 0.04, y: 0.74, w: 0.92, h: 0.22 });
   });
 });

@@ -494,6 +494,48 @@ export function headBand(face: { centerYFrac: number; sizeFrac: number }): Band 
   };
 }
 
+/** The "Below the face" band's edges (§163, design 3): 3% of the height
+ * under the head, 4% of it above the frame's bottom, across 92% of the
+ * width. Under 20% of the height left there is no band worth placing. */
+const BELOW_FACE_GAP_H = 0.03;
+const BELOW_FACE_BOTTOM_H = 0.96;
+const BELOW_FACE_X = 0.04;
+const BELOW_FACE_W = 0.92;
+const BELOW_FACE_MIN_H = 0.2;
+
+/**
+ * The editor's one-click "Below the face" box (§163, design 3): the band
+ * from just under the measured head to near the frame's bottom, or null
+ * when there is no face to go under or no room left beneath it.
+ *
+ * `headBand` speaks fractions of the SOURCE height (`FaceCrop`'s own unit),
+ * not of the frame. Under the full-bleed cover those are the frame's only
+ * when the whole source height is shown — a 16:9 source in 16:9, or a face
+ * that never stated `sourceAspect` (the stage then assumes the frame's
+ * shape). A narrower source is width-constrained and windowed vertically by
+ * `objectPosYFor`, so the head's bottom is carried through that same crop;
+ * without it a 4:3 webcam take would put the box on the speaker's chest or
+ * chin. The crop's text-band nudge (`avoidSlicingText`) and the scene's own
+ * video framing are not modelled: the box is a starting point the author
+ * then drags, and they rarely move a full-frame crop.
+ */
+export function belowFaceBox(
+  face: FaceCrop | null | undefined,
+  frame: FrameSize = PORTRAIT_FRAME,
+): Rect | null {
+  if (!face) return null;
+  const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
+  const headEndSrc = headBand({ centerYFrac: face.centerYFrac, sizeFrac: size }).end;
+  const slotH = frame.height;
+  const shownH = displayedHeight(FULL_FRAME_SLOT, face, frame);
+  const top = objectPosYFor(FULL_FRAME_SLOT, face, frame) * (shownH - slotH);
+  const headEnd = (headEndSrc * shownH - top) / slotH;
+  const y = headEnd + BELOW_FACE_GAP_H;
+  const h = BELOW_FACE_BOTTOM_H - y;
+  if (h < BELOW_FACE_MIN_H) return null;
+  return { x: BELOW_FACE_X, y, w: BELOW_FACE_W, h };
+}
+
 /** Below this a banner band is too short to hold a headline at cover sizes. */
 const MIN_COVER_BAND_H = 0.13;
 
@@ -809,7 +851,7 @@ export function graphicSlotFor(
   },
   frame: FrameSize = PORTRAIT_FRAME,
 ): Rect {
-  const box = resolvedGraphicBox(cue, frame);
+  const box = storedGraphicBox(cue, frame);
   // A landscape speaker picture sits on the plain background with the
   // graphic beside it (§163, design 4), so every box — planned, hand-set or
   // the whole frame — is cut back at draw time to keep clear of the
@@ -823,9 +865,22 @@ export function graphicSlotFor(
   return box;
 }
 
-function resolvedGraphicBox(
+/**
+ * The box a scene KEEPS — its own rect, limited by its component's clamp, or
+ * the uncut default (the whole frame for a full-frame component, the
+ * layout's slot otherwise) — before the speaker picture cuts it at draw
+ * time. `graphicSlotFor` is this then `clearOfPicture`, and nothing else.
+ *
+ * Exported for the Inspector's number fields (§163): they showed the DRAWN
+ * slot, so in a 16:9 pip-bubble scene editing one field stored the cut box
+ * as the author's own, and it stayed cut after the picture moved away. The
+ * fields edit this instead, and the stage keeps cutting it, so the box
+ * follows the picture both ways. One function under both, so the two cannot
+ * drift.
+ */
+export function storedGraphicBox(
   cue: { layout: Layout; graphicRect?: Rect | null; component?: SceneComponentId | null },
-  frame: FrameSize,
+  frame: FrameSize = PORTRAIT_FRAME,
 ): Rect {
   if (cue.component && SCENE_REGISTRY[cue.component]?.fullFrame) {
     return cue.graphicRect ? clampToFrame(cue.graphicRect) : FULL_FRAME_SLOT;

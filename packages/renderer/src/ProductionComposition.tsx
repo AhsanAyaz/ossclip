@@ -30,12 +30,14 @@ import {
  */
 export {
   SAFE_AREA,
+  belowFaceBox,
   clampGraphicRect,
   clampToFrame,
   graphicClampFor,
   graphicSlotFor,
   layoutSlots,
   safeAreaFor,
+  storedGraphicBox,
 } from "@ossclip/scenes";
 
 export interface ProductionCompProps {

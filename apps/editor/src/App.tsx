@@ -508,6 +508,10 @@ export const App: React.FC = () => {
   // Render-from-the-editor (R11 Task 4): whether the server has a recorded
   // invocation to replay, and the in-flight run's state while it does.
   const [canRender, setCanRender] = useState(false);
+  // A stored script in production.json (§163): the Inspector names the three
+  // backdrops only in a 16:9 script project. Server-derived, like canRender,
+  // because the record lives in production.json, which the page never reads.
+  const [scriptProject, setScriptProject] = useState(false);
   // The state shape lives in renderStatus.ts beside `resumeRenderState`,
   // which rebuilds it after a page reload — one definition, not a drifting
   // inline copy (2026-08-18).
@@ -802,10 +806,12 @@ export const App: React.FC = () => {
               renderProps: RawRenderProps;
               overrides?: OverrideDoc;
               canRender?: boolean;
+              scriptProject?: boolean;
             };
             const props = anchored(prod.renderProps);
             setRenderProps(props);
             setCanRender(Boolean(prod.canRender));
+            setScriptProject(prod.scriptProject === true);
             // Finding 2, PLAN 2026-08-04 Task 4c fix wave — see
             // `renderCompleteReload`'s own doc comment (renderStatus.ts) for
             // the full reasoning; this is the thin I/O wrapper around that
@@ -913,6 +919,7 @@ export const App: React.FC = () => {
       renderProps?: RawRenderProps;
       overrides?: OverrideDoc;
       canRender?: boolean;
+      scriptProject?: boolean;
       defaultOutPath?: string;
       workdir?: string;
       noWorkdir?: boolean;
@@ -936,6 +943,7 @@ export const App: React.FC = () => {
     loadedWorkdirRef.current = nextWorkdir;
     setWorkdirPath(nextWorkdir);
     setCanRender(Boolean(body.canRender));
+    setScriptProject(body.scriptProject === true);
     // §137: a doc saved before this change keys caption edits by POSITION,
     // which any cut shifts — every one of them would silently revert on
     // screen. Upgraded here, against the just-anchored lines, because this is
@@ -3043,6 +3051,8 @@ export const App: React.FC = () => {
             onVideoPreview={setVideoPreview}
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
+            scriptProject={scriptProject}
+            face={live.face ?? null}
             baseCaptionTheme={renderProps?.baseCaptionTheme ?? renderProps?.captionTheme}
             // "Delete this chunk"'s write boundary (step 4 follow-up): the
             // cue window is on the live clock, the entry's own seconds on the

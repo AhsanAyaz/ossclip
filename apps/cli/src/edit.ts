@@ -1496,6 +1496,22 @@ export async function startEditServer(
               }
               return undefined;
             })(),
+            // Whether this is a script project (§163): the Inspector names
+            // the three backdrops only there. Keyed on the STORED script, not
+            // on `--script` in command.json — the editor's Render replays
+            // without the flag and carries the record forward, and produce
+            // writes the record only on a script-project run
+            // (`isScriptProject`), so its presence is the answer.
+            scriptProject: await (async () => {
+              try {
+                return (
+                  storedScriptFrom(await readFile(join(workdir!, "production.json"), "utf8")) !==
+                  undefined
+                );
+              } catch {
+                return false; // no production.json: nothing stored
+              }
+            })(),
             // Recents ride along here too, so the top bar's Open picker has
             // a list without a second endpoint.
             recent: await readRecentProjects(opts.recentDir),
