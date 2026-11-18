@@ -8,6 +8,7 @@ import {
   KIT_VERSION,
   KitReportSchema,
   ProbeSchema,
+  SPEAKER_PICTURE_NOTE,
   SceneCueSchema,
   ThemeSchema,
   buildFcpxmlKit,
@@ -26,6 +27,7 @@ import {
   type Theme,
 } from "@ossclip/core";
 import type { SceneClipProps } from "@ossclip/renderer";
+import { placedPictureFor } from "@ossclip/scenes/geometry";
 import { RecordedCommandSchema, type RecordedCommand } from "./cover";
 import { resolveClipPath } from "./clip-import";
 import { expandHome } from "./paths";
@@ -197,6 +199,25 @@ export function kitConcurrency(
 ): { concurrency: number; warning?: string } {
   const r = resolveRenderConcurrency(undefined, configValue, cpuCount);
   return { ...r, concurrency: Math.min(KIT_MAX_CONCURRENCY, r.concurrency) };
+}
+
+/**
+ * A plan's notes as the report writes them: the speaker-picture note gains
+ * the picture's top-left and diameter in output pixels (§163, design 6), so
+ * the author can place the footage on track 1 where the full render drew
+ * the circle. Here and not in core because the rectangle is the scenes
+ * package's (`placedPictureFor`: the frame's picture at the cue's own
+ * `pip.x/y`, the one VideoStage draws), which core cannot import. Rounded
+ * to whole pixels, which is what Resolve's transform fields take. The
+ * diameter is the picture's width; in 16:9 the picture is square.
+ */
+export function kitReportNotes(plan: KitClipPlan, frame: { width: number; height: number }): string[] {
+  return plan.notes.map((note) => {
+    if (note !== SPEAKER_PICTURE_NOTE) return note;
+    const r = placedPictureFor(plan.cue, frame);
+    const px = (v: number): number => Math.round(v);
+    return `${note} (picture at x ${px(r.x * frame.width)}, y ${px(r.y * frame.height)}, ${px(r.w * frame.width)} px)`;
+  });
 }
 
 /**
@@ -477,6 +498,7 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
     const startSec = plan.startFrame / fps;
     const planLengthSec = plan.durationInFrames / fps;
     const head = `▸ [${i + 1}/${plans.length}]`;
+    const notes = kitReportNotes(plan, settings);
     const entry = (
       fields: Pick<KitReportClip, "file" | "lengthSec" | "reuseKey" | "status">,
       notes: string[],
@@ -517,14 +539,14 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
         skipped++;
         const why = reason ?? "the original clip could not be found";
         seams.log(`${head} ${plan.sceneId} (clip:)  ${secs(planLengthSec)}  skipped — ${why}`);
-        entry({ file: null, lengthSec: planLengthSec, reuseKey: null, status: "skipped" }, [...plan.notes, why]);
+        entry({ file: null, lengthSec: planLengthSec, reuseKey: null, status: "skipped" }, [...notes, why]);
         continue;
       }
       // Trimmed to the scene's length, and never past the file's end.
       const lengthSec = Math.min(planLengthSec, media.duration);
       reused++;
       seams.log(`${head} ${basename(original)}  ${secs(lengthSec)}  your clip: file, not rendered`);
-      entry({ file: original, lengthSec, reuseKey: null, status: "reused" }, plan.notes);
+      entry({ file: original, lengthSec, reuseKey: null, status: "reused" }, notes);
       if (!flags.clipsOnly) {
         timelineClips.push({
           url: urlFor(original),
@@ -550,7 +572,7 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
       seams.log(`${head} ${plan.fileName}  ${secs(planLengthSec)}  skipped — ${unrenderable}`);
       entry(
         { file: null, lengthSec: planLengthSec, reuseKey: null, status: "skipped" },
-        [...plan.notes, unrenderable],
+        [...notes, unrenderable],
       );
       continue;
     }
@@ -580,11 +602,11 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
       );
       rendered++;
       seams.log(`  ✓ rendered in ${secs((seams.now().getTime() - startedMs) / 1000)}`);
-      entry({ file: clipRel, lengthSec: planLengthSec, reuseKey: plan.reuseKey, status: "rendered" }, plan.notes);
+      entry({ file: clipRel, lengthSec: planLengthSec, reuseKey: plan.reuseKey, status: "rendered" }, notes);
     } else {
       reused++;
       seams.log(`${head} ${plan.fileName}  ${secs(planLengthSec)}  reused`);
-      entry({ file: clipRel, lengthSec: planLengthSec, reuseKey: plan.reuseKey, status: "reused" }, plan.notes);
+      entry({ file: clipRel, lengthSec: planLengthSec, reuseKey: plan.reuseKey, status: "reused" }, notes);
     }
     if (!flags.clipsOnly) {
       timelineClips.push({

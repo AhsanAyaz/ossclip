@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultTheme, rebaseCue, type SceneCue } from "@ossclip/core/browser";
-import { partialClipPath, sceneClipMetadata, type SceneClipProps } from "../src/scene-clip";
+import { partialClipPath, sceneClipBackground, sceneClipMetadata, type SceneClipProps } from "../src/scene-clip";
 
 const settings = { width: 1920, height: 1080, fps: 30 };
 
@@ -57,5 +57,47 @@ describe("partialClipPath", () => {
 
   it("a name with no extension just gains the suffix", () => {
     expect(partialClipPath("/kit/clip")).toBe("/kit/clip.partial");
+  });
+});
+
+describe("sceneClipBackground (§163, design 6: the solid and bubble backdrops)", () => {
+  const card = (layout: SceneCue["layout"]): SceneClipProps => ({
+    cue: {
+      id: "scene-5",
+      kind: "graphic",
+      layout,
+      component: "CardRow",
+      props: { cards: [{ text: "A" }, { text: "B" }, { text: "C" }] },
+      startSec: 0,
+      endSec: 4,
+    },
+    theme: { ...defaultTheme, bg: "#3A4A5C" },
+    settings,
+  });
+
+  it("is null for every layout but graphic-only and pip-bubble, so their clips draw nothing new", () => {
+    for (const layout of ["full-bleed", "lower-third", "video-top", "split-left", "split-right", "blurred-behind"] as const) {
+      for (const frame of [0, 6, 60, 119]) expect(sceneClipBackground(card(layout), frame), layout).toBeNull();
+    }
+  });
+
+  it("is the theme's background, fading in over the full render's 0.35 s and opaque mid-clip", () => {
+    for (const layout of ["graphic-only", "pip-bubble"] as const) {
+      const p = card(layout);
+      expect(sceneClipBackground(p, 0)).toEqual({ color: "#3A4A5C", opacity: 0 });
+      // 0.2 s = frame 6 at 30 fps: inside the ease.
+      const fading = sceneClipBackground(p, 6)!.opacity;
+      expect(fading).toBeGreaterThan(0);
+      expect(fading).toBeLessThan(1);
+      expect(sceneClipBackground(p, 60)).toEqual({ color: "#3A4A5C", opacity: 1 });
+      // The last frame (t = 119/30) is inside the fade out.
+      expect(sceneClipBackground(p, 119)!.opacity).toBeLessThan(1);
+    }
+  });
+
+  it("reads time as frame ÷ the clip's fps", () => {
+    const p = { ...card("graphic-only"), settings: { ...settings, fps: 60 } };
+    // Frame 12 at 60 fps is 0.2 s, the same instant as frame 6 at 30.
+    expect(sceneClipBackground(p, 12)!.opacity).toBeCloseTo(sceneClipBackground(card("graphic-only"), 6)!.opacity, 12);
   });
 });

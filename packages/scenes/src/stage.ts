@@ -892,9 +892,26 @@ export function graphicSlotFor(
   // picture. Portrait keeps today's slots: its bubble sits under the
   // graphic by design, and 9:16 does not change (G6).
   if (cue.layout === "pip-bubble" && frame.width > frame.height) {
-    return clearOfPicture(box, placedPicture(pipRectFor(frame), cue.pip));
+    return clearOfPicture(box, placedPictureFor(cue, frame));
   }
   return box;
+}
+
+/**
+ * A `pip-bubble` cue's speaker picture where it is drawn: the frame's
+ * picture (`pipRectFor`) at the cue's `pip.x/y`, held on-frame. What the
+ * graphic is cut clear of here, and what the kit's report names in pixels
+ * (§163, design 6): a kit clip carries no footage, so the author places the
+ * picture by hand in Resolve, and a rectangle that differs from the one the
+ * full render drew would put the face somewhere else. Callers ask only for
+ * `pip-bubble` cues; under any other layout `pip` is not consulted
+ * (`cueVideoSlot`).
+ */
+export function placedPictureFor(
+  cue: { pip?: PipPlacement | null },
+  frame: FrameSize = PORTRAIT_FRAME,
+): Rect {
+  return placedPicture(pipRectFor(frame), cue.pip);
 }
 
 /**
@@ -1217,8 +1234,19 @@ export function captionAnchorAt(
     : layoutSlots("full-bleed", DEFAULT_FACE, [], frame).captionAnchor;
 }
 
+/**
+ * The layouts whose stage fades the solid theme background in behind the
+ * graphic. One predicate for the full render's fade (`backdropOpacityAt`)
+ * and the kit clip (§163, design 6), which draws that background itself
+ * because it has no stage, and drops the flat panel there (`slotBackdrop`).
+ * Core's kit-plan.ts restates it for the report's notes and the reuse key.
+ */
+export function drawsSolidBackdrop(layout: Layout): boolean {
+  return layout === "pip-bubble" || layout === "graphic-only";
+}
+
 function backdropTarget(layout: Layout): number {
-  return layout === "pip-bubble" || layout === "graphic-only" ? 1 : 0;
+  return drawsSolidBackdrop(layout) ? 1 : 0;
 }
 
 /** Opacity of the solid stage backdrop (theme.bg) behind the demoted video slot. */

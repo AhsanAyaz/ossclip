@@ -1,7 +1,7 @@
 # Export scene clips and a Resolve timeline
 
-`ossclip kit` takes a produced project and writes a folder for DaVinci Resolve: one transparent ProRes 4444 clip
-per visible scene, plus an FCPXML 1.10 timeline with the cut source on track 1 and the clips on lane 1 above it
+`ossclip kit` takes a produced project and writes a folder for DaVinci Resolve: one ProRes 4444 clip with alpha
+per visible scene (transparent around the graphic, or on the theme background in `graphic-only` and `pip-bubble`), plus an FCPXML 1.10 timeline with the cut source on track 1 and the clips on lane 1 above it
 (explainer phase 3, FINDINGS §162).
 
 ## Sub-features

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { frameWindow } from "../src/frames";
 import {
+  CLIP_BACKGROUND_NOTE,
   KIT_VERSION,
   KitReportSchema,
+  SPEAKER_PICTURE_NOTE,
   kitClipPlans,
   kitFileName,
   needsRender,
@@ -146,23 +148,61 @@ describe("kitClipPlans", () => {
     });
     expect(plans.map((p) => p.notes)).toEqual([
       ["speaker not reframed (split-left)"],
-      ["speaker not reframed (pip-bubble)"],
-      ["backdrop replaced by a flat panel (graphic-only)"],
+      // The clip carries the background, not the picture (§163, design 6).
+      [SPEAKER_PICTURE_NOTE],
+      // The clip carries the background: complete, nothing to note.
+      [],
       ["backdrop replaced by a flat panel (blurred-behind)"],
       [],
       ["speaker not reframed (video-top)"],
     ]);
   });
 
-  it("a full-frame scene gets no flat panel, so its notes do not claim one", () => {
-    // Plan decision 2 / Task 2: only a cue that is not fullFrame (and whose
-    // registry entry keeps the scrim) is drawn on the panel.
+  it("the speaker-picture note is the design's sentence, with no numbers (the CLI adds the rectangle)", () => {
+    expect(SPEAKER_PICTURE_NOTE).toBe(
+      "speaker picture not included: scale and move the footage on track 1 for this stretch",
+    );
+  });
+
+  it("a full-frame scene in graphic-only is complete: the background is in the clip", () => {
     const [plan] = kitClipPlans({
       cues: [cardRow("c1", 0, 3, { layout: "graphic-only" })],
       theme: defaultTheme,
       settings: SETTINGS,
     });
     expect(plan!.notes).toEqual([]);
+  });
+
+  it("a full-frame scene in pip-bubble notes only the missing picture", () => {
+    const [plan] = kitClipPlans({
+      cues: [cardRow("c1", 0, 3, { layout: "pip-bubble" })],
+      theme: defaultTheme,
+      settings: SETTINGS,
+    });
+    expect(plan!.notes).toEqual([SPEAKER_PICTURE_NOTE]);
+  });
+
+  it("a clip: scene stays a source in every backdrop, and notes the background it does not carry", () => {
+    const clip = (layout: SceneCue["layout"]): SceneCue => ({
+      id: "clip-1",
+      layout,
+      component: "ClipScene",
+      props: { src: "clips/abc.webm", durationSec: 3 },
+      startSec: 2,
+      endSec: 5,
+    });
+    const plans = kitClipPlans({
+      cues: [clip("full-bleed"), { ...clip("graphic-only"), startSec: 6, endSec: 9 }, { ...clip("pip-bubble"), startSec: 10, endSec: 13 }],
+      theme: defaultTheme,
+      settings: SETTINGS,
+    });
+    expect(plans.map((p) => p.kind)).toEqual(["source", "source", "source"]);
+    expect(plans.map((p) => p.notes)).toEqual([
+      [],
+      [CLIP_BACKGROUND_NOTE],
+      [CLIP_BACKGROUND_NOTE, SPEAKER_PICTURE_NOTE],
+    ]);
+    expect(CLIP_BACKGROUND_NOTE).toBe("background not included (clip: scenes are referenced, not rendered)");
   });
 
   describe("reuseKey", () => {
@@ -206,6 +246,36 @@ describe("kitClipPlans", () => {
       const after = keys(boxed);
       expect(after[0]).not.toBe(before[0]);
       expect(after[1]).toBe(before[1]);
+    });
+
+    it("includes the layout: full-bleed and graphic-only keys differ for the same cue", () => {
+      const [fb] = keys([cardRow("a", 1, 4)]);
+      const [go] = keys([cardRow("a", 1, 4, { layout: "graphic-only" })]);
+      expect(go).not.toBe(fb);
+    });
+
+    // Literal keys computed by the kit BEFORE clips carried the background
+    // (§163; commit 76dd5c7). KIT_VERSION was not bumped, so a cue whose clip
+    // did not change must keep its key exactly (it is reused, not rendered
+    // again), and a graphic-only or pip-bubble cue, whose clip gained the
+    // background, must not (an old clip without it must not be reused). A
+    // change to `defaultTheme` legitimately moves all three.
+    const OLD = {
+      "full-bleed": "2052f2a3746564b1d5120490e0f4c7f520603dc19faf7de91cf6df21d43315c2",
+      "graphic-only": "c19baf4492995e96334bc8381cdcc3743b162dbf6409239230405d45bf226e75",
+      "pip-bubble": "372d6352b4b00da1040bf7768dd89ea857acfd89ce74988b29c2242213ce9254",
+    } as const;
+
+    it("is unchanged for a full-bleed cue, whose clip is byte-identical", () => {
+      expect(keys([cardRow("a", 1, 4)])).toEqual([OLD["full-bleed"]]);
+    });
+
+    it("moves for graphic-only and pip-bubble, whose clips now carry the background", () => {
+      for (const layout of ["graphic-only", "pip-bubble"] as const) {
+        const [key] = keys([cardRow("a", 1, 4, { layout })]);
+        expect(key, layout).toMatch(/^[0-9a-f]{64}$/);
+        expect(key, layout).not.toBe(OLD[layout]);
+      }
     });
 
     it("changes when the theme or the frame size changes", () => {

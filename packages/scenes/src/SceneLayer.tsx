@@ -175,7 +175,8 @@ const Scrim: React.FC<{
  *
  * `flatPanel` is for the clip kit's one-scene composition only (§162): the
  * scrim becomes a flat panel, drawn for every component that is not
- * full-frame and keeps its scrim, in every layout (`slotBackdrop`). Absent —
+ * full-frame and keeps its scrim, in every layout but the two whose clip
+ * carries the solid background (`slotBackdrop`, §163). Absent —
  * every produce, edit and cover render — nothing changes.
  */
 export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme; flatPanel?: boolean }> = ({

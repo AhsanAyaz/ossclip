@@ -1,7 +1,14 @@
 import { dirname, join } from "node:path";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
-import { KitReportSchema, defaultTheme, type KitReport, type SceneCue } from "@ossclip/core";
+import {
+  KitReportSchema,
+  SPEAKER_PICTURE_NOTE,
+  defaultTheme,
+  kitClipPlans,
+  type KitReport,
+  type SceneCue,
+} from "@ossclip/core";
 import type { SceneClipProps } from "@ossclip/renderer";
 import {
   KIT_MAX_CONCURRENCY,
@@ -9,6 +16,7 @@ import {
   defaultKitDir,
   kitConcurrency,
   kitReplayArgs,
+  kitReportNotes,
   parseKitFlags,
   runKit,
   unrenderableReason,
@@ -280,6 +288,42 @@ describe("kitConcurrency", () => {
   });
 });
 
+describe("kitReportNotes (§163: where the speaker picture was)", () => {
+  const LS = { width: 1920, height: 1080, fps: 30 };
+  const notesOf = (c: Partial<SceneCue>, settings = LS): string[] => {
+    const [plan] = kitClipPlans({
+      cues: [{ id: "s", layout: "pip-bubble", component: "CardRow", props: { cards: [{ text: "A" }] }, startSec: 1, endSec: 5, ...c }],
+      theme: defaultTheme,
+      settings,
+    });
+    return kitReportNotes(plan!, settings);
+  };
+
+  it("adds the picture's top-left and diameter in output pixels to the speaker-picture note", () => {
+    // pipRectFor(1920x1080): x (1920 − 76.8 − 302.4) = 1540.8, y (1080 − 64.8 − 302.4) = 712.8, Ø 302.4.
+    expect(notesOf({})).toEqual([`${SPEAKER_PICTURE_NOTE} (picture at x 1541, y 713, 302 px)`]);
+  });
+
+  it("follows the picture the author moved (cue.pip.x/y)", () => {
+    // 0.04 × 1920 = 76.8, 0.1 × 1080 = 108.
+    expect(notesOf({ pip: { x: 0.04, y: 0.1 } })).toEqual([
+      `${SPEAKER_PICTURE_NOTE} (picture at x 77, y 108, 302 px)`,
+    ]);
+  });
+
+  it("uses the frame's own picture in 9:16", () => {
+    // PIP_RECT: x 0.35 × 1080 = 378, y 0.66 × 1920 = 1267.2, Ø 0.3 × 1080 = 324.
+    expect(notesOf({}, { width: 1080, height: 1920, fps: 30 })).toEqual([
+      `${SPEAKER_PICTURE_NOTE} (picture at x 378, y 1267, 324 px)`,
+    ]);
+  });
+
+  it("leaves every other note as the plan wrote it", () => {
+    expect(notesOf({ layout: "video-top" })).toEqual(["speaker not reframed (video-top)"]);
+    expect(notesOf({ layout: "graphic-only" })).toEqual([]);
+  });
+});
+
 describe("unrenderableReason", () => {
   const plan = (props: Record<string, unknown>) =>
     ({ component: "ScreenshotFrame", cue: { props } }) as unknown as Parameters<typeof unrenderableReason>[0];
@@ -497,6 +541,39 @@ describe("runKit", () => {
     const world = makeWorld();
     await world.seams.mkdir("/empty");
     await expect(runKit("/empty", FLAGS, world.seams)).rejects.toThrow(/ossclip produce/);
+  });
+
+  it("pip-bubble and graphic-only scenes: rendered, with the report's notes; a clip: scene in pip-bubble stays a source", async () => {
+    const world = makeWorld();
+    const cues = [
+      ...CUES.map((c) => (c.id === "scene-2" ? { ...c, layout: "pip-bubble" as const } : c)),
+      cue({ id: "scene-3", layout: "pip-bubble", component: "CardRow", props: { cards: [{ text: "B" }] }, startSec: 8, endSec: 9 }),
+      cue({ id: "scene-4", layout: "graphic-only", component: "CardRow", props: { cards: [{ text: "C" }] }, startSec: 9, endSec: 10 }),
+    ];
+    const { work } = project(world, { cues });
+    await runKit(work, FLAGS, world.seams);
+    expect(world.rendered).toEqual(["scene-0-CardRow.mov", "scene-1-StatCard.mov", "scene-3-CardRow.mov", "scene-4-CardRow.mov"]);
+    const byId = new Map(report(world).clips.map((c) => [c.sceneId, c]));
+    const picture = `${SPEAKER_PICTURE_NOTE} (picture at x 1541, y 713, 302 px)`;
+    expect(byId.get("scene-2")).toMatchObject({ kind: "source", status: "reused", file: "/videos/clips/steps.mov" });
+    expect(byId.get("scene-2")!.notes).toEqual([
+      "background not included (clip: scenes are referenced, not rendered)",
+      picture,
+    ]);
+    expect(byId.get("scene-3")!.notes).toEqual([picture]);
+    expect(byId.get("scene-4")!.notes).toEqual([]);
+  });
+
+  it("a skipped clip: scene in pip-bubble keeps the picture's rectangle in its notes", async () => {
+    const world = makeWorld();
+    const cues = CUES.map((c) => (c.id === "scene-2" ? { ...c, layout: "pip-bubble" as const } : c));
+    const { work } = project(world, { cues, clipOriginal: false });
+    await runKit(work, FLAGS, world.seams);
+    expect(report(world).clips.find((c) => c.sceneId === "scene-2")!.notes).toEqual([
+      "background not included (clip: scenes are referenced, not rendered)",
+      `${SPEAKER_PICTURE_NOTE} (picture at x 1541, y 713, 302 px)`,
+      "the original clip /videos/clips/steps.mov is not there",
+    ]);
   });
 
   it("a clip: scene whose original moved is skipped with a note, and the run succeeds (Review Focus 5)", async () => {

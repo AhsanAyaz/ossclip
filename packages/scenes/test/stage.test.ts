@@ -41,6 +41,7 @@ import {
   pictureZoomStateFor,
   pipRectFor,
   pipZoomFor,
+  placedPictureFor,
   belowFaceBox,
   graphicBoundsFor,
   storedGraphicBox,
@@ -1173,6 +1174,43 @@ describe("the speaker picture in 16:9 (§163)", () => {
       expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0.8 }, side, shownSourceH)).toBe(1);
       expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0.05 }, side, shownSourceH)).toBe(4);
       expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0 }, side, shownSourceH)).toBe(1);
+    });
+  });
+
+  describe("placedPictureFor: where the picture is drawn, for the kit's note (§163)", () => {
+    it("is the frame's picture with no override, in either frame", () => {
+      expect(placedPictureFor({}, LS)).toEqual(picture);
+      expect(placedPictureFor({ pip: null }, PT)).toEqual(PIP_RECT);
+    });
+
+    it("moves to the cue's pip.x/y, held on-frame by the picture's own size", () => {
+      near(placedPictureFor({ pip: { x: 0.04, y: 0.1 } }, LS), { ...picture, x: 0.04, y: 0.1 });
+      near(placedPictureFor({ pip: { x: 1, y: 1 } }, LS), { ...picture, x: 1 - picture.w, y: 1 - picture.h });
+      // A partial override keeps the layout's value for the other axis.
+      near(placedPictureFor({ pip: { y: 0.2 } }, LS), { ...picture, y: 0.2 });
+    });
+
+    it("is the rectangle VideoStage draws mid-cue, moved or not", () => {
+      for (const pip of [undefined, { x: 0.05, y: 0.3 }, { x: 0.99 }]) {
+        const c = { ...cue("pip-bubble", 2, 6), pip };
+        expect(placedPictureFor(c, LS)).toEqual(videoSlotAt([c], 4, DEFAULT_FACE, [], LS).rect);
+      }
+    });
+  });
+
+  describe("the kit clip's background fade (backdropOpacityAt on one rebased cue)", () => {
+    it("is 0 on frame 0, part-way through the 0.35 s ease, opaque mid-clip and fading at the end", () => {
+      for (const layout of ["graphic-only", "pip-bubble"] as const) {
+        const one = [cue(layout, 0, 4)];
+        expect(backdropOpacityAt(one, 0), layout).toBe(0);
+        const at02 = backdropOpacityAt(one, 0.2);
+        expect(at02).toBeGreaterThan(0);
+        expect(at02).toBeLessThan(1);
+        expect(backdropOpacityAt(one, LAYOUT_TRANSITION_SEC)).toBe(1);
+        expect(backdropOpacityAt(one, 2)).toBe(1);
+        expect(backdropOpacityAt(one, 4 - 1 / 30)).toBeLessThan(1);
+      }
+      expect(backdropOpacityAt([cue("full-bleed", 0, 4)], 2)).toBe(0);
     });
   });
 

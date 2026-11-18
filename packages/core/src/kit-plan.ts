@@ -21,7 +21,9 @@ import {
 /**
  * Part of every reuse key: bump it when a kit clip of the SAME inputs would
  * now render differently (the panel, the composition), so every clip made
- * by the older kit re-renders instead of being reused stale.
+ * by the older kit re-renders instead of being reused stale. A change that
+ * reaches only some layouts marks those clips' keys instead and leaves the
+ * rest reusable (`background` in `reuseKeyFor`, §163).
  */
 export const KIT_VERSION = 1;
 
@@ -38,7 +40,7 @@ export interface KitClipPlan {
   durationInFrames: number;
   /** The cue rebased to its own frame 0 (`rebaseCue`); what a "render" plan draws. */
   cue: SceneCue;
-  /** sha256 hex of `{kitVersion, cue (rebased), theme, settings}`. */
+  /** sha256 hex of `{kitVersion, cue (rebased), theme, settings}`, plus `background` in the two background layouts (§163). */
   reuseKey: string;
   /** What the clip cannot carry over, for the report. */
   notes: string[];
@@ -52,18 +54,50 @@ export interface KitSettings {
 
 /**
  * The layouts that move the speaker. A kit clip has no footage to move, so
- * the scene is exported as its graphic only (design 3.2).
+ * the scene is exported as its graphic only (design 3.2). `pip-bubble` is
+ * not here: its clip carries the background and its note names the picture
+ * the author places by hand (`SPEAKER_PICTURE_NOTE`, §163).
  */
-const SPEAKER_LAYOUTS: ReadonlySet<Layout> = new Set(["split-left", "split-right", "video-top", "pip-bubble"]);
-/** The layouts whose full render draws a solid or blurred backdrop under the graphic. */
-const BACKDROP_LAYOUTS: ReadonlySet<Layout> = new Set(["graphic-only", "blurred-behind"]);
+const SPEAKER_LAYOUTS: ReadonlySet<Layout> = new Set(["split-left", "split-right", "video-top"]);
+/**
+ * The layouts whose full render blurs the speaker under the graphic, which
+ * a kit clip replaces with the flat panel. Not core's `BACKDROP_LAYOUTS`
+ * (framing.ts), the author's three backdrops.
+ */
+const PANEL_LAYOUTS: ReadonlySet<Layout> = new Set(["blurred-behind"]);
+/**
+ * The layouts whose kit clip draws the theme's solid background under the
+ * graphic (§163, design 6), as the full render's stage does. Restated from
+ * the scenes package (`drawsSolidBackdrop`, stage.ts), which core cannot
+ * import; scrim.test.ts compares the notes this drives with what the clip
+ * draws.
+ */
+const BACKGROUND_LAYOUTS: ReadonlySet<Layout> = new Set(["graphic-only", "pip-bubble"]);
+
+/**
+ * The note for a `pip-bubble` scene (§163, design 6): a kit clip holds no
+ * footage (NG5), so the round picture is the author's to make on track 1.
+ * Without numbers: core cannot compute the picture's rectangle (it lives in
+ * the scenes package), so `ossclip kit` appends it in pixels when it writes
+ * the report (`kitReportNotes`).
+ */
+export const SPEAKER_PICTURE_NOTE =
+  "speaker picture not included: scale and move the footage on track 1 for this stretch";
+/**
+ * A `clip:` scene is referenced, never rendered (design 3.2), so in the two
+ * background layouts the timeline shows the author's clip with no
+ * background behind its edges; the report says so rather than leaving the
+ * author to find it in Resolve.
+ */
+export const CLIP_BACKGROUND_NOTE = "background not included (clip: scenes are referenced, not rendered)";
 
 /**
  * Whether a kit clip draws this cue on the flat dark panel (plan decision 2,
  * Task 2's `flatPanel`): every component that is not full-frame and keeps
- * its scrim. Restated here only to keep the report's note true — a
- * full-frame scene in `graphic-only` loses its backdrop with nothing in its
- * place, and a note claiming a panel would send the author looking for one.
+ * its scrim, outside the two background layouts. Restated here only to
+ * keep the report's note true — a full-frame scene in `blurred-behind` loses
+ * its backdrop with nothing in its place, and a note claiming a panel would
+ * send the author looking for one.
  */
 function drawsFlatPanel(component: SceneComponentId): boolean {
   const meta = SCENE_REGISTRY[component];
@@ -73,9 +107,13 @@ function drawsFlatPanel(component: SceneComponentId): boolean {
 function notesFor(cue: SceneCue, component: SceneComponentId): string[] {
   const notes: string[] = [];
   if (SPEAKER_LAYOUTS.has(cue.layout)) notes.push(`speaker not reframed (${cue.layout})`);
-  if (BACKDROP_LAYOUTS.has(cue.layout) && drawsFlatPanel(component)) {
+  if (PANEL_LAYOUTS.has(cue.layout) && drawsFlatPanel(component)) {
     notes.push(`backdrop replaced by a flat panel (${cue.layout})`);
   }
+  // A rendered graphic-only clip is complete; a clip: scene in either
+  // background layout is not, since it is never rendered.
+  if (BACKGROUND_LAYOUTS.has(cue.layout) && component === "ClipScene") notes.push(CLIP_BACKGROUND_NOTE);
+  if (cue.layout === "pip-bubble") notes.push(SPEAKER_PICTURE_NOTE);
   return notes;
 }
 
@@ -99,7 +137,13 @@ function stableJson(value: unknown): string {
  * it sits.
  */
 function reuseKeyFor(cue: SceneCue, theme: Theme, settings: KitSettings): string {
-  const material = stableJson({ kitVersion: KIT_VERSION, cue, theme, settings });
+  // `background` marks the clips that gained the solid background (§163)
+  // without bumping KIT_VERSION: their inputs are unchanged but their pixels
+  // are not, so an older clip of the same cue must not be reused. Undefined
+  // everywhere else drops out of the JSON, so every other clip keeps its
+  // key and is reused, as it is byte-identical (kit-plan.test.ts pins one).
+  const background = BACKGROUND_LAYOUTS.has(cue.layout) ? 1 : undefined;
+  const material = stableJson({ kitVersion: KIT_VERSION, cue, theme, settings, background });
   return createHash("sha256").update(material).digest("hex");
 }
 

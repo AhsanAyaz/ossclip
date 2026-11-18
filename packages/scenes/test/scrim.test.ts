@@ -16,7 +16,8 @@ const LAYOUTS = LayoutSchema.options;
  * The clip kit's flat panel (§162, plan decision 2). Off, the backdrop is the
  * scrim rule exactly — every produce/edit/cover render rides on that. On, the
  * frost becomes a flat panel that every non-full-frame, scrim-keeping
- * component gets in every layout.
+ * component gets in every layout but graphic-only and pip-bubble, whose
+ * clips carry the solid background instead (§163).
  */
 describe("slotBackdrop", () => {
   it("without flatPanel is drawsScrim exactly, for every component in every layout", () => {
@@ -53,12 +54,23 @@ describe("slotBackdrop", () => {
     }
   });
 
+  it("gives no component a panel in graphic-only or pip-bubble: the kit clip draws the plain background (§163)", () => {
+    for (const component of COMPONENTS) {
+      for (const layout of ["graphic-only", "pip-bubble"] as const) {
+        expect(slotBackdrop(layout, component, true), `${component} in ${layout}`).toBe("none");
+      }
+    }
+  });
+
   it("agrees with core's kit note: 'backdrop replaced by a flat panel' iff the clip draws one", () => {
     // kit-plan.ts restates the rule only to word the report; a note that
     // claims a panel the clip does not draw sends the author looking for one.
+    // Every layout whose full render draws a backdrop: blurred-behind keeps
+    // the panel, and graphic-only and pip-bubble now carry the background
+    // itself (§163), so neither the panel nor its note.
     for (const component of COMPONENTS) {
       const meta = SCENE_REGISTRY[component];
-      for (const layout of ["graphic-only", "blurred-behind"] as const) {
+      for (const layout of ["graphic-only", "blurred-behind", "pip-bubble"] as const) {
         const cue: SceneCue = {
           id: "s",
           kind: "graphic",
