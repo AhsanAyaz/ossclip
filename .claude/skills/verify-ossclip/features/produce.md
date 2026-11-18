@@ -88,6 +88,46 @@ says.
 With `-o "$WD/out.mp4" --no-cover` in place of `--no-render`, the same run renders (2026-11-16: about 70 s
 total, 57 s of it the Remotion render; 1080x1920, 347 video frames = 11.57 s).
 
+## Driving the backdrops in 16:9 (FINDINGS §163)
+
+The same fixture in 16:9, three scenes set to a backdrop the way the editor saves them, then replayed the way
+the editor's Render replays (`--scenes` pinned, `--script` dropped, `--no-render`). `ossclip kit`'s refresh is
+that replay, so it is the simplest faithful driver; `--clips-only` skips the timeline:
+
+```sh
+S=$(mktemp -d)
+pnpm ossclip produce fixtures/fixture.mp4 \
+  --transcript fixtures/fixture.transcript.json \
+  --script fixtures/fixture.patterns.script.md --llm mock --look explainer --aspect 16:9 \
+  --workdir "$S/wd" --no-render --no-youtube --no-open-editor
+W=$(ls -d "$S"/wd/fixture-*-16x9)
+echo '{"scenes":{"scene-0":{"layout":"graphic-only"},"scene-1":{"layout":"pip-bubble"},"scene-4":{"layout":"graphic-only"}}}' \
+  > "$W/overrides.json"
+pnpm ossclip kit "$W" --clips-only --out "$S/kit"
+```
+
+**Proves it works** (2026-11-18):
+
+- Before the overrides, `render-props.json`'s `sceneCues` are `scene-0` … `scene-5` (`CardRow`, `CtaCard`,
+  `BugCard`, `PhoneDemo`, `TerminalMock`, `StatCard`), all `full-bleed`; the two slot components (`scene-4`,
+  `scene-5`) carry `graphicRect {x:0.14,y:0.16,w:0.72,h:0.68}` (`SCRIPT_LANDSCAPE_RECT`) and the four full-frame
+  cards carry none. `face` is `null` (the fixture's three spans measure as `screen`), so the picture's head zoom
+  and the editor's "Below the face" are not exercised here.
+- The kit prints `▸ the project changed since it was last produced; refreshing…` first. It then renders the six
+  clips too (about 60 s); the checks on them are in [kit.md](kit.md), "backdrops".
+- `command.json` now ends `--scenes <W>/scenes-reviewed.json --no-open-editor` and has no `--script`;
+  `production.json` still carries its `script` record, so the next Render is a script project too.
+- The new `render-props.json`: `scene-0` `graphic-only`, `scene-1` `pip-bubble`, `scene-4` `graphic-only` with
+  its `graphicRect` still `{x:0.14,y:0.16,w:0.72,h:0.68}` (the box is kept between backdrop layouts,
+  `keepsBoxAcross`). Each of the three differs from before in `layout` only; `scene-2`, `scene-3` and `scene-5` are
+  JSON-identical to before; `spans` unchanged (3), output 11.58 s. `baseSceneCues` and `production.json`'s scenes
+  stay `full-bleed`: the backdrop lives in `overrides.json`, as the editor writes it.
+
+An override was already applied after both landscape remaps, so this recipe proves the whole path (editor save →
+Render replay → kit), not the remap exemption alone. The case the exemption exists for, a stored scene of
+`graphic-only` or `pip-bubble` in `scenes-reviewed.json` replayed without `--script`, is pinned by
+`apps/cli/test/script-produce.test.ts` ("a stored backdrop survives the editor's Render").
+
 ## Gotchas
 
 - Proven 2026-08-30 for the offline path incl. `--color-grade` (both lanes):

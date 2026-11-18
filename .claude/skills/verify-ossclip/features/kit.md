@@ -54,7 +54,8 @@ pnpm ossclip kit "$W" --out "$S/kit"
   stream=codec_name,profile,pix_fmt,r_frame_rate,nb_read_frames -of default=nw=1 <clip>` gives `prores`, `4444`,
   `yuva444p12le`, `30/1` and the report's `lengthSec × 30` frames (52, 52, 52, 52, 53, 62); one stream, no audio.
 - Alpha: `ffmpeg -v error -ss 1 -i <clip> -frames:v 1 -vf "format=rgba,crop=1:1:5:5" -f rawvideo - | xxd -p` ends in
-  `00` for every clip; at `crop=1:1:960:540` CardRow, CtaCard and StatCard end in `ff` (BugCard and PhoneDemo have
+  `00` for every clip (all six are `full-bleed` here; a `graphic-only` or `pip-bubble` clip is opaque there, see
+  "Backdrops" below); at `crop=1:1:960:540` CardRow, CtaCard and StatCard end in `ff` (BugCard and PhoneDemo have
   nothing drawn at the exact centre).
 - `timeline.fcpxml` parses (jsdom, `contentType: "text/xml"`); `spine > asset-clip` count equals
   `render-props.json`'s `spans.length` (3); the spine offsets are contiguous and their durations sum to the
@@ -72,6 +73,38 @@ pnpm ossclip kit "$W" --out "$S/kit"
   Render leaves.
 
 The same flows run with fake seams in `apps/cli/test/kit-command.test.ts`.
+
+### Backdrops: background clips and the speaker-picture note (FINDINGS §163)
+
+Start from [produce.md](produce.md), "Driving the backdrops in 16:9": `scene-0` (`CardRow`) and `scene-4`
+(`TerminalMock`) in `graphic-only`, `scene-1` (`CtaCard`) in `pip-bubble`, already refreshed and rendered by its
+`kit --clips-only`. Then the full export:
+
+```sh
+pnpm ossclip kit "$W" --out "$S/kit"
+px() { ffmpeg -v error -ss "$2" -i "$1" -frames:v 1 -vf "format=rgba,crop=1:1:$3:$4" -f rawvideo - | xxd -p; }
+for c in "$S"/kit/clips/*.mov; do
+  echo "$c $(px "$c" 0.87 0 0) $(px "$c" 0.87 1919 0) $(px "$c" 0.87 0 1079) $(px "$c" 0.87 1919 1079) t0 $(px "$c" 0 0 0) 0.2s $(px "$c" 0.2 0 0)"
+done
+```
+
+**Proves it works** (2026-11-18):
+
+- About 3 s: six `… reused` lines (the `--clips-only` run rendered them, and a timeline-only run changes no
+  key), the Linux-filesystem warning, `✓ kit: 6 clips — 0 rendered, 6 reused, 0 skipped`.
+- `kit-report.json`: `scene-1` alone has a note, `speaker picture not included: scale and move the footage on
+  track 1 for this stretch (picture at x 1541, y 713, 302 px)`, the 16:9 picture (`pipRectFor`: 302.4 px, 4% of
+  the width from the right, 6% of the height from the bottom) in output pixels. The other five have none.
+- Corners at 0.87 s (mid-clip; each clip is 1.73 to 2.07 s): all four are `3a4a5cff`, the explainer look's
+  `#3A4A5C` and opaque, in `scene-0`, `scene-1` and `scene-4`; all four are `00000000` in the three `full-bleed`
+  clips. The background fades in over the stage's 0.35 s: `00000000` at frame 0 and `3a4a5c9c` at 0.2 s in the
+  three background clips.
+- In `scene-1` no pixel right of the picture's strip (`crop=436:1080:1484:0`, x ≥ picture.x − 0.03 of the width)
+  differs from `3a4a5cff`: no card and no footage there. A full frame of `scene-0` has no pixel with alpha below
+  `ff`.
+- Every clip is still `prores`, `4444`, `yuva444p12le` (52, 52, 52, 52, 53, 62 frames). `timeline.fcpxml` parses;
+  3 spine clips for 3 spans, 6 lane clips, sequence `347/30s`, and every asset `src` (the source and the six
+  clips) exists.
 
 ## Gotchas
 

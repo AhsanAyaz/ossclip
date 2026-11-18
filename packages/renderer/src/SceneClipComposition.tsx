@@ -34,8 +34,10 @@ export const defaultSceneClipProps: SceneClipProps = {
  * clips are the same file as before.
  * The scene goes through the real `SceneLayer`, as a still does, so its
  * slot, fit scale and entrance and exit are the full render's; `flatPanel`
- * swaps the footage-dependent scrim for a flat panel, the one thing a clip
- * with no footage cannot reproduce.
+ * swaps the footage-dependent scrim for a flat panel, since a clip with no
+ * footage has nothing to frost. Not in `graphic-only` or `pip-bubble`: there
+ * the solid background above is what the full render shows behind the
+ * graphic, and no panel is drawn (`slotBackdrop`, §163).
  *
  * `<BundledFonts>` holds the render until Inter and DejaVu Sans Mono load,
  * as in ProductionComposition, so a clip never bakes in the fallback stack.
