@@ -93,7 +93,7 @@ describe("captionChoreographyCacheKey & priorCaptionChoreography", () => {
       version: 1,
       aspect: "9:16" as const,
       providerName: "gemini",
-      fastModel: "gemini-2.5-flash",
+      fastModel: "gemini-3.5-flash-lite",
       words: [
         { text: "Stop", srcStartMs: 100 },
         { text: "scrolling", srcStartMs: 400 },
