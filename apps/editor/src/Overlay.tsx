@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import { SPLIT_MIN_PIECE_SEC, type SceneCue } from "@ossclip/core/browser";
-import { clampGraphicRect, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
+import { graphicClampFor, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import { guideSnap, THRESHOLD_FRAC, type Guide } from "./guides";
 import { captionSrcFromAttribute } from "./captionAnchors";
@@ -501,6 +501,12 @@ export const Overlay: React.FC<OverlayProps> = ({
     dx: number;
     dy: number;
     start: GraphicRect;
+    /**
+     * The clamp this scene's box takes (§163): the frame for a full-frame
+     * component, the caption-safe area otherwise. Chosen once at the press,
+     * so the preview and the commit cannot disagree mid-gesture.
+     */
+    clamp: (rect: GraphicRect) => GraphicRect;
   } | null>(null);
   const rectRafRef = useRef(0);
   /** The altKey state as of the LAST mousemove of the current rect drag, not
@@ -815,6 +821,10 @@ export const Overlay: React.FC<OverlayProps> = ({
               w: r.width / canvas.w,
               h: r.height / canvas.h,
             },
+            clamp: graphicClampFor(
+              cues.find((c) => c.id === handleSel.sceneId)?.component,
+              settings,
+            ),
           };
           setRectDragging(true);
         }
@@ -959,9 +969,8 @@ export const Overlay: React.FC<OverlayProps> = ({
             // Page px → frame FRACTIONS (the rect's own unit). Like the
             // video pan there is NO compensateEdits division — the slot
             // lives outside the fit-scaled wrapper.
-            const next = clampGraphicRect(
+            const next = drag.clamp(
               applyBoxHandle(drag.start, drag.handle, drag.dx / canvas.w, drag.dy / canvas.h),
-              settings,
             );
             // Overlay guides (spec): snap onto centre lines / safe-area
             // edges, AFTER applyBoxHandle + the clamp, before the preview
@@ -1067,14 +1076,13 @@ export const Overlay: React.FC<OverlayProps> = ({
           const canvas = canvasBox();
           if (canvas) {
             // ONE patch per gesture — one undo step, like every other drag.
-            let final = clampGraphicRect(
+            let final = rectDrag.clamp(
               applyBoxHandle(
                 rectDrag.start,
                 rectDrag.handle,
                 rectDrag.dx / canvas.w,
                 rectDrag.dy / canvas.h,
               ),
-              settings,
             );
             // Same guide snap as the live preview, same Alt escape hatch —
             // the committed rect must match whatever the last preview frame

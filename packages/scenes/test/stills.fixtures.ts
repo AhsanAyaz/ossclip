@@ -30,7 +30,7 @@ export interface StillFixture {
   aspects?: ("16x9" | "9x16")[];
 }
 
-export const STILL_FIXTURES: StillFixture[] = [
+const STILL_FIXTURES_BASE: StillFixture[] = [
   // The harness's own check: an existing component, settled (its entrance
   // springs take 0.5 s and the caption starts 6 frames later). The text
   // carries 1s on purpose — Inter's 1 has a flag and no foot, Arial's has a
@@ -356,4 +356,36 @@ export const STILL_FIXTURES: StillFixture[] = [
     graphicRect: { ...SCRIPT_LANDSCAPE_RECT },
     aspects: ["16x9"],
   },
+];
+
+/**
+ * A full-frame component in a graphic box (§163), 16:9 only, settled: the
+ * box "below the face" (a band across 92% of the width, 40% tall) and the
+ * box that keeps clear of a speaker picture at the bottom right (`bubble`,
+ * 72% × 88%). The same props as the fixture named, so the box is the only
+ * difference from its full-frame still.
+ */
+function inBoxes(component: SceneComponentId, name: string, atSec: number): StillFixture[] {
+  const base = STILL_FIXTURES_BASE.find((f) => f.component === component && f.name === name);
+  if (!base) throw new Error(`stills: no ${component} fixture named ${name}`);
+  const boxes = {
+    band: { x: 0.04, y: 0.56, w: 0.92, h: 0.4 },
+    bubblebox: { x: 0.04, y: 0.06, w: 0.72, h: 0.88 },
+  };
+  return Object.entries(boxes).map(([box, graphicRect]): StillFixture => ({
+    component,
+    name: `${name}-${box}`,
+    props: base.props,
+    atSec: [atSec],
+    graphicRect,
+    aspects: ["16x9"],
+  }));
+}
+
+export const STILL_FIXTURES: StillFixture[] = [
+  ...STILL_FIXTURES_BASE,
+  ...inBoxes("CardRow", "dense", 3.5),
+  ...inBoxes("CtaCard", "subscribe-dense", 5.4),
+  ...inBoxes("BugCard", "lines-dense", 5.4),
+  ...inBoxes("PhoneDemo", "typical", 4.5),
 ];

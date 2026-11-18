@@ -247,6 +247,15 @@ export function routeAroundSourceText(
     const shifted = base
       ? placeInFreeBand(base, active, videoObstacleFor(cue.layout, frame), frame)
       : null;
+    // A full-frame component draws in its graphic box (§163), so a box
+    // written here would shrink it into the donor layout's slot. The render
+    // always drew it on the whole frame (the box was ignored), so it is
+    // passed through as it came, and not reported as moved: it did not move.
+    // The skip decision above is unchanged, so no scene appears or vanishes.
+    if (shifted && meta.fullFrame) {
+      out.push(cue);
+      continue;
+    }
     if (shifted) {
       moved.push({ id: cue.id, y: shifted.y, h: shifted.h });
       out.push({ ...cue, graphicRect: shifted });
@@ -283,7 +292,13 @@ export function routeAroundSourceText(
     }
     if (overlay) {
       overlaid.push({ id: cue.id, from: cue.layout, to: overlay.layout });
-      out.push({ ...cue, layout: overlay.layout, graphicRect: overlay.rect });
+      // No box on a full-frame component (§163, above). Unreachable today —
+      // every one declares no alternates — but the rule must not hang on that.
+      out.push(
+        meta.fullFrame
+          ? { ...cue, layout: overlay.layout }
+          : { ...cue, layout: overlay.layout, graphicRect: overlay.rect },
+      );
       continue;
     }
 

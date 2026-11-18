@@ -200,6 +200,52 @@ describe("SceneLayer — ClipScene (explainer plan Task 7)", () => {
   });
 });
 
+describe("SceneLayer — a full-frame component in a graphic box (§163)", () => {
+  const bugCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "BugCard",
+    props: SCENE_REGISTRY.BugCard.propsSchema.parse({
+      number: 1,
+      headline: "Captions drift",
+      mock: "none",
+    }) as Record<string, unknown>,
+    startSec: 0,
+    endSec: 4,
+    graphicRect: { x: 0.04, y: 0.56, w: 0.92, h: 0.4 },
+  };
+  const sceneBox = () => document.querySelector<HTMLElement>('[data-edit-scene="scene-0"]')!;
+
+  it("wraps the BugCard in an element positioned and sized to the box, and sizes the card to it", () => {
+    document.body.innerHTML = renderToStaticMarkup(
+      React.createElement(SceneLayer, { cues: [bugCue], theme: defaultTheme }),
+    );
+    const box = sceneBox();
+    expect(Number.parseFloat(box.style.left)).toBeCloseTo(4, 6);
+    expect(Number.parseFloat(box.style.top)).toBeCloseTo(56, 6);
+    expect(Number.parseFloat(box.style.width)).toBeCloseTo(92, 6);
+    expect(Number.parseFloat(box.style.height)).toBeCloseTo(40, 6);
+    // Self-fitting at scale 1, no scrim, no inset: the card is handed the
+    // box's own pixels (0.92 × 1080, 0.4 × 1920), not the frame's.
+    const wrapper = box.querySelector<HTMLElement>("div[style*='scale(1)']")!;
+    expect(Number.parseFloat(wrapper.style.width)).toBeCloseTo(0.92 * 1080, 6);
+    const root = wrapper.firstElementChild as HTMLElement;
+    expect(Number.parseFloat(root.style.width)).toBeCloseTo(0.92 * 1080, 6);
+    expect(Number.parseFloat(root.style.height)).toBeCloseTo(0.4 * 1920, 6);
+  });
+
+  it("with no box it still fills the frame", () => {
+    const { graphicRect: _box, ...noBox } = bugCue;
+    document.body.innerHTML = renderToStaticMarkup(
+      React.createElement(SceneLayer, { cues: [noBox], theme: defaultTheme }),
+    );
+    const box = sceneBox();
+    expect(Number.parseFloat(box.style.width)).toBe(100);
+    expect(Number.parseFloat(box.style.height)).toBe(100);
+  });
+});
+
 describe("SceneLayer — flatPanel, the clip kit's panel (§162, explainer phase 3 Task 2)", () => {
   const statCue: SceneCue = {
     id: "scene-0",

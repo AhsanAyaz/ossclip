@@ -386,7 +386,9 @@ const LinesMock: React.FC<{
  *
  * Full frame over the speaker with no scrim (plan decision 1): every box is
  * placed by `bugCardMetrics` in the whole frame, margin and peak scales
- * reserved, and SceneLayer gives it the frame unscaled (`SELF_FITTING`).
+ * reserved, and SceneLayer gives it the frame unscaled (`SELF_FITTING`) — or
+ * its graphic box, with the margin scaled to the box's share of the frame
+ * and the mock drawn when the box is wide (§163).
  * The wrapper only fades it out, so the card owns its entrance: the build in
  * `bugTimeline` under the explainer look, `entranceStyle`'s default under
  * classic.
@@ -407,7 +409,7 @@ export const BugCard: React.FC<{
   const { fps, width, height } = useVideoConfig();
   const w = widthPx ?? width;
   const h = heightPx ?? height;
-  const m = bugCardMetrics(props, w, h);
+  const m = bugCardMetrics(props, w, h, { width, height });
   const explainer = theme.motion === "explainer";
   const t = frame / fps;
   const sub = props.sub ? props.sub : null;

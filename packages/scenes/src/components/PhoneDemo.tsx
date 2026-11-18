@@ -144,7 +144,8 @@ const CaptionWord: React.FC<{
  *
  * Full frame over the speaker with no scrim (plan decision 1): every box is
  * placed by the metric in the whole frame, margin and peak scales reserved,
- * and SceneLayer gives it the frame unscaled (`SELF_FITTING`).
+ * and SceneLayer gives it the frame unscaled (`SELF_FITTING`) — or its
+ * graphic box, with the margin scaled to the box's share of the frame (§163).
  *
  * Edit ids: `word-N` per caption entry and `pill-N` per pill, each on a box
  * whose only transform is the edit nudge (`Editable`); the motion is inside.
@@ -162,7 +163,7 @@ export const PhoneDemo: React.FC<{
   const { fps, width, height } = useVideoConfig();
   const w = widthPx ?? width;
   const h = heightPx ?? height;
-  const m = phoneDemoMetrics(props, w, h);
+  const m = phoneDemoMetrics(props, w, h, { width, height });
   const explainer = theme.motion === "explainer";
   const s = phoneFrameState(frame / fps, explainer);
   const delays = phoneDemoDelays(props, fps, timing);

@@ -381,7 +381,8 @@ export const SCRIPT_LANDSCAPE_RECT: Readonly<{ x: number; y: number; w: number; 
  * still move or resize it and their rect wins.
  *
  * A `fullFrame` component is returned as is: it lays itself out against the
- * whole frame, and `graphicSlotFor` ignores any rect for it. Pure, scene in
+ * whole frame, and a rect here would now shrink it into that box, since
+ * `graphicSlotFor` draws it in one (§163). Pure, scene in
  * and scene out; the caller decides that the run is a script and the frame
  * landscape — portrait and runs without `--script` never call it.
  */

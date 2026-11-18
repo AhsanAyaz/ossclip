@@ -15,6 +15,7 @@ import {
   PHONE_PEAK_SCALE,
   TERMINAL_BADGE_RISE_PX,
   bulletMetrics,
+  bugAspect,
   bugCardMetrics,
   bugMockVisible,
   cardRowMetrics,
@@ -27,6 +28,7 @@ import {
   estimateMinWidthPx,
   fitScale,
   isSelfFitting,
+  patternMarginPx,
   phoneDemoMetrics,
   pillBoxPx,
   revealMetrics,
@@ -39,8 +41,9 @@ const FRAME_W = 1080;
 const FRAME_H = 1920;
 
 function slotOf(component: SceneComponentId) {
-  // A `fullFrame` component is drawn in the whole frame whatever its layout
-  // (`graphicSlotFor`), so that is the box its model must fit.
+  // A `fullFrame` component with no graphic box is drawn in the whole frame
+  // whatever its layout (`graphicSlotFor`), so that is the box its model
+  // must fit; in a box of its own it is the box (§163, tested below).
   if (SCENE_REGISTRY[component].fullFrame) return { widthPx: FRAME_W, heightPx: FRAME_H };
   const layout = SCENE_REGISTRY[component].defaultLayout;
   // full-bleed (ClipScene's default) has no slot of its own; graphics there
@@ -1217,5 +1220,114 @@ describe("TerminalMock badge (§161, plan Task 8)", () => {
     expect(floor).toBeGreaterThan(estimateMinWidthPx("TerminalMock", { ...longTitle, badge: undefined }));
     // At least the root padding, the 24-character title and the badge.
     expect(floor).toBeGreaterThan(60 + 24 * 24 * 0.6 + pillBoxPx(badge, false, 34).w);
+  });
+});
+
+describe("the full-frame components in a graphic box (§163)", () => {
+  const LS = { width: 1920, height: 1080 };
+  const PT = { width: 1080, height: 1920 };
+  // A quarter of the 16:9 frame: half its width and half its height.
+  const BOX = { w: 960, h: 540 };
+
+  it("patternMarginPx: 100 px on the whole frame, the box's share of the frame in a smaller box", () => {
+    expect(patternMarginPx(1920, 1080, LS)).toBe(PATTERN_MARGIN_PX);
+    expect(patternMarginPx(1080, 1920, PT)).toBe(PATTERN_MARGIN_PX);
+    expect(patternMarginPx(960, 540, LS)).toBe(50);
+    expect(patternMarginPx(540, 960, PT)).toBe(50);
+    // The bubble box (0.72 × 0.88 of 16:9): the tighter share, the width's.
+    expect(patternMarginPx(1382, 950, LS)).toBe(72);
+    // The band (0.92 × 0.4): the height's.
+    expect(patternMarginPx(1766, 432, LS)).toBe(40);
+  });
+
+  it("with no frame given the box is the frame: today's margin, so existing callers are unchanged", () => {
+    // 100 px at the short edge of the box (round(100 × 950 / 1080)).
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1382, 950).marginPx).toBe(88);
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1382, 950, LS).marginPx).toBe(72);
+    for (const [w, h] of [
+      [1920, 1080],
+      [1080, 1920],
+    ] as const) {
+      expect(cardRowMetrics(CARD_ROW_DENSE, w, h)).toEqual(
+        cardRowMetrics(CARD_ROW_DENSE, w, h, { width: w, height: h }),
+      );
+      expect(ctaCardMetrics(CTA_DENSE, w, h)).toEqual(ctaCardMetrics(CTA_DENSE, w, h, { width: w, height: h }));
+      const bug = { ...BUG_DENSE, mockLines: [...BUG_DENSE.mockLines] };
+      expect(bugCardMetrics(bug, w, h)).toEqual(bugCardMetrics(bug, w, h, { width: w, height: h }));
+      expect(phoneDemoMetrics(PHONE_DENSE, w, h)).toEqual(
+        phoneDemoMetrics(PHONE_DENSE, w, h, { width: w, height: h }),
+      );
+    }
+  });
+
+  // Typical copy, not the schema maxima: at the 34 px floor nothing shrinks
+  // further (each metric's rule), so four 18-character cards cannot fit a
+  // quarter of the frame and are not meant to. The stills record which boxes
+  // hold the dense copy (§163); no floor on the box is set here.
+  it("CardRow in a 960×540 box of a 1920×1080 frame: a 50 px margin, the row inside it at the peak bump", () => {
+    const three = [
+      { text: "Draft", sub: "one line", icon: "doc" },
+      { text: "Review", sub: "two", icon: "check" },
+      { text: "Ship", icon: "rocket" },
+    ];
+    const m = cardRowMetrics(three, BOX.w, BOX.h, LS);
+    expect(m.marginPx).toBe(50);
+    const side = (BOX.w - m.blockWidthPx) / 2 - ((CARD_PEAK_SCALE - 1) / 2) * m.cardWidthPx;
+    const top = (BOX.h - m.blockHeightPx) / 2 - ((CARD_PEAK_SCALE - 1) / 2) * m.cardHeightPx;
+    expect(side).toBeGreaterThanOrEqual(50);
+    expect(top).toBeGreaterThanOrEqual(50);
+  });
+
+  it("CtaCard in the same box: a 50 px margin, the card inside it at its pop peak", () => {
+    for (const action of ["comment", "subscribe", "link"] as const) {
+      const m = ctaCardMetrics({ ...CTA_DENSE, action }, BOX.w, BOX.h, LS);
+      expect(m.marginPx, action).toBe(50);
+      expect((BOX.w - m.blockWidthPx * CTA_PEAK_SCALE) / 2, action).toBeGreaterThanOrEqual(50);
+      expect((BOX.h - m.blockHeightPx * CTA_PEAK_SCALE) / 2, action).toBeGreaterThanOrEqual(50);
+    }
+  });
+
+  it("BugCard in the same box: a 50 px margin, both panels inside it at their pop peak", () => {
+    const m = bugCardMetrics(
+      { number: 2, headline: "Captions drift", mock: "caption", mockLines: ["Ask", "Cloud", "to", "refactor"], mockWrong: 1, mockFault: "struck" },
+      BOX.w,
+      BOX.h,
+      LS,
+    );
+    expect(m.marginPx).toBe(50);
+    expect(m.mockPanel, "a wide box draws the mock").not.toBeNull();
+    for (const r of [m.textPanel, m.mockPanel]) {
+      if (r === null) continue;
+      const gx = ((BUG_PEAK_SCALE - 1) / 2) * r.w;
+      const gy = ((BUG_PEAK_SCALE - 1) / 2) * r.h;
+      expect(r.x - gx).toBeGreaterThanOrEqual(50);
+      expect(r.x + r.w + gx).toBeLessThanOrEqual(BOX.w - 50);
+      expect(r.y - gy).toBeGreaterThanOrEqual(50);
+      expect(r.y + r.h + gy).toBeLessThanOrEqual(BOX.h - 50);
+    }
+  });
+
+  it("PhoneDemo in the same box: a 50 px margin, the phone inside it at its pop peak or bob", () => {
+    const m = phoneDemoMetrics(
+      { caption: [{ text: "YOUR" }, { text: "CAPTIONS", emphasis: "yellow" }], pills: [{ text: "Big and bold", state: "ok" }, { text: "Two lines", state: "plain" }] },
+      BOX.w,
+      BOX.h,
+      LS,
+    );
+    expect(m.marginPx).toBe(50);
+    const g = PHONE_PEAK_SCALE - 1;
+    const ph = m.phone;
+    const gy = Math.max((g / 2) * ph.h, PHONE_BOB_PX);
+    expect(ph.x - (g / 2) * ph.w).toBeGreaterThanOrEqual(50);
+    expect(ph.y - gy).toBeGreaterThanOrEqual(50);
+    expect(ph.y + ph.h + gy).toBeLessThanOrEqual(BOX.h - 50);
+    const col = m.pillColumn!;
+    m.pillWidths.forEach((w) => expect(col.x + w * PHONE_PEAK_SCALE).toBeLessThanOrEqual(BOX.w - 50));
+  });
+
+  it("bugAspect reads the box's shape: the band and the bubble box are both wide, so the mock is drawn", () => {
+    expect(bugAspect(1766, 432)).toBe("16:9");
+    expect(bugAspect(1382, 950)).toBe("16:9");
+    expect(bugAspect(540, 960)).toBe("9:16");
   });
 });

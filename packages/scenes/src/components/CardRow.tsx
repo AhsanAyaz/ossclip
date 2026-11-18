@@ -82,7 +82,9 @@ export function cardRowBumpFrame(props: Props, delays: readonly number[], fps: n
  * centred row in 16:9, one column in 9:16. Full frame over the speaker with
  * no scrim (plan decision 1), so it lays itself out in the whole frame with
  * the 100 px margin reserved (`cardRowMetrics`), and SceneLayer gives it the
- * frame unscaled (`SELF_FITTING`).
+ * frame unscaled (`SELF_FITTING`). In a graphic box (§163) it is given the
+ * box instead, and the frame's size goes to the metric so the margin is the
+ * box's share of the frame's 100 px.
  *
  * Under `theme.motion === "explainer"` a card pops in (`popScale`) and the
  * highlighted one bumps once the row has landed; under "classic" a card
@@ -106,7 +108,7 @@ export const CardRow: React.FC<{
   const { fps, width, height } = useVideoConfig();
   const w = widthPx ?? width;
   const h = heightPx ?? height;
-  const m = cardRowMetrics(props.cards, w, h);
+  const m = cardRowMetrics(props.cards, w, h, { width, height });
   const delays = cardRowDelays(props, fps, timing);
   const bumpFrame = cardRowBumpFrame(props, delays, fps);
   const explainer = theme.motion === "explainer";

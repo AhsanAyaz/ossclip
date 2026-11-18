@@ -56,6 +56,47 @@ describe("routing around burned-in source text (FINDINGS §26)", () => {
   });
 });
 
+describe("routing writes no box onto a full-frame component (§163, Review Focus 3)", () => {
+  // A full-frame component now draws in its box (`graphicSlotFor`), so a box
+  // routing wrote would shrink it into a layout's slot. Routing was the only
+  // automatic writer of one, and the render always ignored it: the scene
+  // draws on the whole frame as before, and no "moved" is reported for a
+  // graphic that did not move.
+  const FULL_FRAME = ["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"] as const;
+
+  it("returns the cue as it came, in every frame and every layout with a slot", () => {
+    for (const frame of [undefined, LANDSCAPE_FRAME]) {
+      for (const layout of ["graphic-only", "pip-bubble", "blurred-behind", "video-top"] as const) {
+        for (const component of FULL_FRAME) {
+          const input = cue("a", layout, component);
+          const plan = routeAroundSourceText([input], TITLE_BAND, frame);
+          const label = `${component} ${layout} ${frame ? "16:9" : "9:16"}`;
+          expect(plan.moved, label).toEqual([]);
+          for (const c of plan.cues) {
+            expect(c.graphicRect, label).toBeUndefined();
+            expect(c, label).toEqual(input);
+          }
+        }
+      }
+    }
+  });
+
+  it("is not vacuous: the case reached the free-band move that wrote a box before", () => {
+    // graphic-only's slot crosses the title band, and the component has no
+    // alternates, so routing slides the slot (the path that wrote the box).
+    const plan = routeAroundSourceText([cue("a", "graphic-only", "CardRow")], TITLE_BAND);
+    expect(plan.cues).toHaveLength(1);
+    expect(plan.skipped).toEqual([]);
+    // The same scene with a slot component still gets its moved box. TitleCard
+    // has no alternates and its default (pip-bubble) crosses the band too, so
+    // it reaches the same free-band move.
+    const slotted = routeAroundSourceText([cue("a", "graphic-only", "TitleCard")], TITLE_BAND);
+    expect(slotted.moved).toHaveLength(1);
+    expect(slotted.cues[0]!.graphicRect).toBeDefined();
+    expect(overlapFraction(slotted.cues[0]!.graphicRect!, TITLE_BAND)).toBeLessThanOrEqual(0.12);
+  });
+});
+
 describe("captions around burned-in source text (FINDINGS §26)", () => {
   it("keeps the layout's own anchor when it is already clear", () => {
     for (const layout of ["full-bleed", "video-top", "graphic-only"] as const) {

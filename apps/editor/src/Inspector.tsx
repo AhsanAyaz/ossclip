@@ -13,7 +13,7 @@ import {
   type SceneCue,
   type Theme,
 } from "@ossclip/core/browser";
-import { clampGraphicRect, graphicSlotFor, layoutSlots } from "@ossclip/renderer/composition";
+import { graphicClampFor, graphicSlotFor, layoutSlots } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
 import {
   EMPTY_LUT_MENU,
@@ -1744,12 +1744,15 @@ export const Inspector: React.FC<InspectorProps> = ({
           // routed rect the cue carries, the layout's own slot, or the
           // full-bleed fallback band (R13) — the same resolver SceneLayer
           // draws from, so this box is always the one on screen.
+          // A full-frame component's box is held to the frame, not the
+          // caption-safe area (§163) — the stage's own rule, `graphicClampFor`.
           if (isPlain) return null;
           const eff = graphicSlotFor(cue, frame);
+          const clampBox = graphicClampFor(cue.component, frame);
           const boxPatch = (key: "x" | "y" | "w" | "h") => (v: number) =>
             edits.patchGraphicRect(
               selection.sceneId,
-              clampGraphicRect({ ...eff, [key]: v }, frame),
+              clampBox({ ...eff, [key]: v }),
               `box:${selection.sceneId}:${key}`,
             );
           return (

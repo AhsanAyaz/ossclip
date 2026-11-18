@@ -924,3 +924,120 @@ describe("⌘B split under a live cleanup veto — old-clock write, revived-mate
     area.remove();
   });
 });
+
+/**
+ * The graphic box's handle drag on a full-frame component (§163, Review
+ * Focus 4). Mounted for real: the clamp is chosen at mousedown from the
+ * scene's component and applied at mouseup, two listeners apart, and a pure
+ * test of the clamp alone would pass with either call site still on
+ * `clampGraphicRect`. The stage is 960×540 page px at a Player scale of 0.5,
+ * so one page px is 1/960 of the frame's width.
+ */
+describe("dragging a graphic box (§163): a full-frame component is kept inside the frame, not the safe area", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let doc: OverrideDoc | null = null;
+  const START = { x: 0.5, y: 0.5, w: 0.4, h: 0.3 };
+
+  const cueOf = (component: "CardRow" | "TitleCard"): SceneCue => ({
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component,
+    props: component === "CardRow" ? { cards: [{ text: "ONE" }, { text: "TWO" }] } : { title: "X" },
+    startSec: 0,
+    endSec: 4,
+    graphicRect: START,
+  });
+
+  function Harness({ cue }: { cue: SceneCue }) {
+    const edits = useEdits();
+    doc = edits.doc;
+    const stageRef = useRef<HTMLDivElement>(null);
+    const playerRef = useRef({ getScale: () => 0.5 } as unknown as PlayerRef);
+    return React.createElement(
+      "div",
+      { ref: stageRef, "data-testid": "stage" },
+      React.createElement("div", { "data-edit-scene": "scene-0" }),
+      React.createElement(Overlay, {
+        stageRef,
+        selection: { sceneId: "scene-0", elementId: null },
+        onSelect: vi.fn(),
+        edits,
+        onSave: vi.fn(),
+        settings: { width: 1920, height: 1080, fps: 30 },
+        cues: [cue],
+        onToggleHelp: vi.fn(),
+        onRequestDelete: vi.fn(),
+        playerRef,
+        onTransport: vi.fn(),
+        onVideoPreview: vi.fn(),
+        onGraphicPreview: vi.fn(),
+        cue,
+      }),
+    );
+  }
+
+  const rectAt = (left: number, top: number, width: number, height: number) =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) }) as DOMRect;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    doc = null;
+    document.elementFromPoint = () => null;
+    // jsdom lays nothing out: the stage and the scene's box report where a
+    // real Player would put them.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === "stage") return rectAt(0, 0, 960, 540);
+      if (this.dataset.editScene === "scene-0") {
+        return rectAt(START.x * 960, START.y * 540, START.w * 960, START.h * 540);
+      }
+      return rectAt(0, 0, 0, 0);
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  /** Mount, let the selection box measure, then move the box by `dxPx` page px. */
+  async function dragBy(cue: SceneCue, dxPx: number) {
+    await act(async () => {
+      root.render(React.createElement(Harness, { cue }));
+    });
+    // The selection box is measured on an animation frame.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    const handle = container.querySelector<HTMLElement>('[data-testid="box-handle-move"]');
+    expect(handle, "the move handle renders for a scene-level selection").not.toBeNull();
+    act(() => {
+      handle!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 600, clientY: 300 }));
+    });
+    // Alt on the move: no guide snap, so the assertion is the clamp alone.
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 600 + dxPx, clientY: 300, altKey: true }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 600 + dxPx, clientY: 300 }));
+    });
+    return doc!.scenes["scene-0"]?.graphicRect;
+  }
+
+  it("a CardRow box dragged past the right edge stops at the edge at its own size", async () => {
+    // +0.3 of the width: x 0.8, right edge 1.2. Moved back to x 0.6.
+    const rect = await dragBy(cueOf("CardRow"), 288);
+    expect(rect).toEqual({ x: 0.6, y: 0.5, w: 0.4, h: 0.3 });
+  });
+
+  it("the same drag on a TitleCard stops at the caption-safe area (5% from the right in 16:9)", async () => {
+    const rect = await dragBy(cueOf("TitleCard"), 288);
+    expect(rect).toEqual({ x: 0.55, y: 0.5, w: 0.4, h: 0.3 });
+  });
+});

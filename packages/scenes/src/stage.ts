@@ -368,18 +368,49 @@ const GRAPHIC_RECT_MIN_H = 0.05;
  * chrome. Same invariant `stage.test.ts` pins for every layout's own slot.
  */
 export function clampGraphicRect(rect: Rect, frame: FrameSize = PORTRAIT_FRAME): Rect {
-  const SAFE = safeRectFor(frame);
+  return clampInto(rect, safeRectFor(frame));
+}
+
+/**
+ * Clamp a full-frame component's graphic box to the FRAME, not the
+ * caption-safe area (§163, Review Focus 4). These components carry their
+ * own margin inside the box (`patternMarginPx`), so the safe-area clamp
+ * would stack a second margin on the first and pull a box dragged to the
+ * frame's edge back in by 5-16% of the frame. Same minimum size as
+ * `clampGraphicRect` (the schema's); a box hanging off an edge is moved
+ * back in at its size, and shrunk only when it is bigger than the frame.
+ */
+export function clampToFrame(rect: Rect): Rect {
+  return clampInto(rect, FULL_FRAME_SLOT);
+}
+
+function clampInto(rect: Rect, bounds: Rect): Rect {
   // Epsilon-tolerant: SAFE_RECT's bounds are float sums (1 - 0.04 - 0.16 =
   // 0.79999…), and a layout slot that is EXACTLY 0.8 wide must clamp to
   // itself, not to the representation noise.
   const EPS = 1e-9;
   const clamp = (v: number, lo: number, hi: number): number =>
     v < lo - EPS ? lo : v > hi + EPS ? hi : v;
-  const w = clamp(rect.w, GRAPHIC_RECT_MIN_W, SAFE.w);
-  const h = clamp(rect.h, GRAPHIC_RECT_MIN_H, SAFE.h);
-  const x = clamp(rect.x, SAFE.x, SAFE.x + SAFE.w - w);
-  const y = clamp(rect.y, SAFE.y, SAFE.y + SAFE.h - h);
+  const w = clamp(rect.w, GRAPHIC_RECT_MIN_W, bounds.w);
+  const h = clamp(rect.h, GRAPHIC_RECT_MIN_H, bounds.h);
+  const x = clamp(rect.x, bounds.x, bounds.x + bounds.w - w);
+  const y = clamp(rect.y, bounds.y, bounds.y + bounds.h - h);
   return { x, y, w, h };
+}
+
+/**
+ * The clamp a component's graphic box takes — ONE answer for the editor's
+ * drag, its resize and the Inspector's number fields, and the same rule
+ * `graphicSlotFor` draws with, so a box the editor commits is the box the
+ * stage shows (§163). Full-frame components: the frame; everything else:
+ * the caption-safe area, as before.
+ */
+export function graphicClampFor(
+  component: SceneComponentId | null | undefined,
+  frame: FrameSize = PORTRAIT_FRAME,
+): (rect: Rect) => Rect {
+  if (component && SCENE_REGISTRY[component]?.fullFrame) return clampToFrame;
+  return (rect) => clampGraphicRect(rect, frame);
 }
 
 /**
@@ -641,29 +672,36 @@ export function layoutSlots(
  */
 export const FULL_BLEED_GRAPHIC_SLOT: Rect = { x: 0.07, y: 0.24, w: 0.77, h: 0.36 };
 
-/** The whole frame, for a `fullFrame` component (ClipScene). */
+/** The whole frame, for a `fullFrame` component with no box of its own. */
 export const FULL_FRAME_SLOT: Rect = { x: 0, y: 0, w: 1, h: 1 };
 
 /**
  * The slot a cue's graphic actually renders in — never null. Precedence: a
- * `fullFrame` component (ClipScene) takes the whole frame; then the cue's own
- * rect (routed by source-text avoidance or hand-set in the editor, clamped so
- * a hand-edited overrides.json can't push a graphic under the platform
- * chrome), then the layout's slot, then the full-bleed fallback. One resolver
- * for the renderer and the Inspector, so the box the panel edits is
- * byte-for-byte the box the stage draws.
+ * `fullFrame` component (the script-only cards, ClipScene) takes its box,
+ * limited to the frame, or the whole frame when it has none; then the cue's
+ * own rect (routed by source-text avoidance or hand-set in the editor,
+ * clamped so a hand-edited overrides.json can't push a graphic under the
+ * platform chrome), then the layout's slot, then the full-bleed fallback.
+ * One resolver for the renderer and the Inspector, so the box the panel
+ * edits is byte-for-byte the box the stage draws.
  *
- * `fullFrame` wins over `graphicRect` and skips the safe-area clamp on
- * purpose: a clip was authored at frame size with its own margins, so any
- * smaller box shrinks it (in the full-bleed band it played at 0.77 × 0.36 of
- * the frame) and a clamp would add margins on top of the author's. Every
- * other component leaves the flag unset and resolves exactly as before (G6).
+ * `fullFrame` skips the layout's slot and the safe-area clamp on purpose: a
+ * clip was authored at frame size with its own margins, and the cards keep
+ * their own margin inside whatever box they get (`patternMarginPx`), so a
+ * layout slot would shrink them (in the full-bleed band a clip played at
+ * 0.77 × 0.36 of the frame) and a safe-area clamp would add margins on top
+ * of theirs. Their box was ignored until §163, which made every full-frame
+ * graphic movable: it now comes only from the author (routing writes none
+ * onto these cues, `routeAroundSourceText`), so a box never moves a planned
+ * scene. Every other component resolves exactly as before (G6).
  */
 export function graphicSlotFor(
   cue: { layout: Layout; graphicRect?: Rect | null; component?: SceneComponentId | null },
   frame: FrameSize = PORTRAIT_FRAME,
 ): Rect {
-  if (cue.component && SCENE_REGISTRY[cue.component]?.fullFrame) return FULL_FRAME_SLOT;
+  if (cue.component && SCENE_REGISTRY[cue.component]?.fullFrame) {
+    return cue.graphicRect ? clampToFrame(cue.graphicRect) : FULL_FRAME_SLOT;
+  }
   if (cue.graphicRect) return clampGraphicRect(cue.graphicRect, frame);
   return layoutSlots(cue.layout, DEFAULT_FACE, [], frame).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
 }

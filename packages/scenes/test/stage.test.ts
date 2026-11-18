@@ -19,6 +19,8 @@ import {
   captionAnchorAt,
   captionFontSizeFor,
   clampGraphicRect,
+  clampToFrame,
+  graphicClampFor,
   contentTransformFor,
   FULL_BLEED_GRAPHIC_SLOT,
   FULL_FRAME_SLOT,
@@ -279,15 +281,25 @@ describe("SCRIPT_LANDSCAPE_RECT: the centred slot of a 16:9 script run (§161)",
     expect(1 - (y + h)).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.bottom);
   });
 
-  it("is the slot a full-bleed TitleCard, TerminalMock or StatCard draws in; a CardRow still gets the frame", () => {
+  it("is the slot a full-bleed TitleCard, TerminalMock or StatCard draws in", () => {
     for (const component of ["TitleCard", "TerminalMock", "StatCard"] as const) {
       expect(
         graphicSlotFor({ layout: "full-bleed", component, graphicRect: SCRIPT_LANDSCAPE_RECT }, LANDSCAPE_FRAME),
       ).toEqual(SCRIPT_LANDSCAPE_RECT);
     }
+  });
+
+  // Replaced deliberately (§163): this case pinned "a CardRow still gets the
+  // frame" with the box set. A full-frame component now draws in its box;
+  // the placement never gives it one (`scriptLandscapePlacement` returns a
+  // full-frame scene as is), so a planned CardRow still gets the frame.
+  it("a CardRow given the same box by hand draws in it", () => {
     expect(
       graphicSlotFor({ layout: "full-bleed", component: "CardRow", graphicRect: SCRIPT_LANDSCAPE_RECT }, LANDSCAPE_FRAME),
-    ).toEqual(FULL_FRAME_SLOT);
+    ).toEqual(SCRIPT_LANDSCAPE_RECT);
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow" }, LANDSCAPE_FRAME)).toEqual(
+      FULL_FRAME_SLOT,
+    );
   });
 });
 
@@ -307,14 +319,22 @@ describe("graphicSlotFor: fullFrame components (explainer plan, Task 8)", () => 
     }
   });
 
-  it("ignores a routed or hand-set rect and skips the safe-area clamp", () => {
+  // Replaced deliberately (§163): this case was "ignores a routed or
+  // hand-set rect and skips the safe-area clamp". The box is honoured now;
+  // what survives is the second half — no safe-area clamp — and routing no
+  // longer writes a box onto a full-frame cue (source-fit.test.ts).
+  it("draws in a hand-set rect and skips the safe-area clamp", () => {
+    const box = { x: 0.2, y: 0.2, w: 0.3, h: 0.3 };
+    const atEdge = { x: 0, y: 0.01, w: 0.5, h: 0.4 };
     for (const frame of frames) {
       expect(
-        graphicSlotFor(
-          { layout: "full-bleed", component: "ClipScene", graphicRect: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 } },
-          frame,
-        ),
-      ).toEqual(FULL_FRAME_SLOT);
+        graphicSlotFor({ layout: "full-bleed", component: "ClipScene", graphicRect: box }, frame),
+      ).toEqual(box);
+      // Outside every safe area (portrait's 0.04 left, landscape's 0.05 and
+      // 0.06 top), still inside the frame: kept exactly.
+      expect(
+        graphicSlotFor({ layout: "full-bleed", component: "ClipScene", graphicRect: atEdge }, frame),
+      ).toEqual(atEdge);
     }
   });
 
@@ -334,13 +354,90 @@ describe("graphicSlotFor: fullFrame components (explainer plan, Task 8)", () => 
     expect(flagged).toEqual(["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"]);
   });
 
-  it("a CardRow, a CtaCard, a BugCard or a PhoneDemo gets the whole frame in every layout and aspect (plan decision 1)", () => {
+  // Narrowed deliberately (§163): "with no box". With one, see the next block.
+  it("a CardRow, a CtaCard, a BugCard or a PhoneDemo with no box gets the whole frame in every layout and aspect (plan decision 1)", () => {
     for (const frame of frames) {
       expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow" }, frame)).toEqual(FULL_FRAME_SLOT);
       expect(graphicSlotFor({ layout: "full-bleed", component: "CtaCard" }, frame)).toEqual(FULL_FRAME_SLOT);
       expect(graphicSlotFor({ layout: "full-bleed", component: "BugCard" }, frame)).toEqual(FULL_FRAME_SLOT);
       expect(graphicSlotFor({ layout: "full-bleed", component: "PhoneDemo" }, frame)).toEqual(FULL_FRAME_SLOT);
     }
+  });
+});
+
+describe("a full-frame component in a graphic box (§163)", () => {
+  const LS = LANDSCAPE_FRAME;
+
+  it("draws in its box when it has one, on the whole frame when it has none", () => {
+    const band = { x: 0.1, y: 0.5, w: 0.8, h: 0.4 };
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow", graphicRect: band }, LS)).toEqual(band);
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow" }, LS)).toEqual(FULL_FRAME_SLOT);
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow", graphicRect: null }, LS)).toEqual(
+      FULL_FRAME_SLOT,
+    );
+  });
+
+  it("a box hanging off the right edge is moved inside the frame at the same size (Review Focus 4)", () => {
+    const off = { x: 0.7, y: 0.5, w: 0.4, h: 0.3 };
+    const slot = graphicSlotFor({ layout: "graphic-only", component: "CardRow", graphicRect: off }, LS);
+    expect(slot.x).toBeCloseTo(0.6, 9);
+    expect(slot.y).toBe(0.5);
+    expect(slot.w).toBe(0.4);
+    expect(slot.h).toBe(0.3);
+  });
+
+  it("a box the size of the whole safe area is NOT shrunk to it", () => {
+    const big = { x: 0, y: 0, w: 1, h: 0.95 };
+    expect(graphicSlotFor({ layout: "full-bleed", component: "BugCard", graphicRect: big }, LS)).toEqual(big);
+    // The control: a slot component's box is held to the caption-safe area.
+    const safe = safeRectFor(LS);
+    const slotted = graphicSlotFor({ layout: "full-bleed", component: "TitleCard", graphicRect: big }, LS);
+    expect(slotted.w).toBeCloseTo(safe.w, 9);
+    expect(slotted.h).toBeCloseTo(safe.h, 9);
+  });
+});
+
+describe("clampToFrame (§163)", () => {
+  it("keeps a rect inside the frame: moved first, shrunk only when bigger than the frame", () => {
+    expect(clampToFrame({ x: 0.8, y: 0.9, w: 0.4, h: 0.3 })).toEqual({ x: 0.6, y: 0.7, w: 0.4, h: 0.3 });
+    expect(clampToFrame({ x: -0.2, y: -0.1, w: 0.5, h: 0.5 })).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(clampToFrame({ x: -0.5, y: 0.3, w: 3, h: 2 })).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+  });
+
+  it("enforces the schema's minimum size (w 0.08, h 0.05)", () => {
+    expect(clampToFrame({ x: 0.99, y: 0.99, w: 0.01, h: 0.001 })).toEqual({
+      x: 0.92,
+      y: 0.95,
+      w: 0.08,
+      h: 0.05,
+    });
+  });
+
+  it("is the identity on the whole frame and on any rect already inside it", () => {
+    expect(clampToFrame(FULL_FRAME_SLOT)).toEqual(FULL_FRAME_SLOT);
+    const inside = { x: 0.04, y: 0.56, w: 0.92, h: 0.4 };
+    expect(clampToFrame(inside)).toEqual(inside);
+  });
+});
+
+describe("graphicClampFor: the editor's one clamp for a drag, a resize and the Inspector (§163)", () => {
+  const off = { x: 0.7, y: 0.02, w: 0.4, h: 0.3 };
+
+  it("is clampToFrame for every full-frame component", () => {
+    for (const component of ["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"] as const) {
+      for (const frame of [PORTRAIT_FRAME, LANDSCAPE_FRAME]) {
+        expect(graphicClampFor(component, frame)(off), component).toEqual(clampToFrame(off));
+      }
+    }
+  });
+
+  it("is clampGraphicRect, in the given frame, for a slot component and for no component", () => {
+    for (const frame of [PORTRAIT_FRAME, LANDSCAPE_FRAME]) {
+      expect(graphicClampFor("TitleCard", frame)(off)).toEqual(clampGraphicRect(off, frame));
+      expect(graphicClampFor(undefined, frame)(off)).toEqual(clampGraphicRect(off, frame));
+    }
+    // The default frame is portrait, as clampGraphicRect's is.
+    expect(graphicClampFor("StatCard")(off)).toEqual(clampGraphicRect(off));
   });
 });
 

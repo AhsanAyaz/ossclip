@@ -200,7 +200,8 @@ const Button: React.FC<{
  * Full frame over the speaker with no scrim (plan decision 1): it lays
  * itself out in the whole frame with the 100 px margin reserved
  * (`ctaCardMetrics`), and SceneLayer gives it the frame unscaled
- * (`SELF_FITTING`). The wrapper only fades it out, so the card owns its
+ * (`SELF_FITTING`) — or its graphic box, with the margin scaled to the
+ * box's share of the frame (§163). The wrapper only fades it out, so the card owns its
  * entrance: a pop under the explainer look, `entranceStyle`'s default under
  * classic.
  *
@@ -221,7 +222,7 @@ export const CtaCard: React.FC<{
   const { fps, width, height } = useVideoConfig();
   const w = widthPx ?? width;
   const h = heightPx ?? height;
-  const m = ctaCardMetrics(props, w, h);
+  const m = ctaCardMetrics(props, w, h, { width, height });
   const c = ctaContent(props);
   const explainer = theme.motion === "explainer";
   const t = frame / fps;

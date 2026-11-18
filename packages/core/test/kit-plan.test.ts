@@ -199,6 +199,15 @@ describe("kitClipPlans", () => {
       expect(after).toEqual(before);
     });
 
+    it("changes when a full-frame cue gains a graphic box, which it now draws in (§163)", () => {
+      const before = keys(base());
+      const boxed = base();
+      boxed[0] = { ...boxed[0]!, graphicRect: { x: 0.04, y: 0.56, w: 0.92, h: 0.4 } };
+      const after = keys(boxed);
+      expect(after[0]).not.toBe(before[0]);
+      expect(after[1]).toBe(before[1]);
+    });
+
     it("changes when the theme or the frame size changes", () => {
       const before = keys(base());
       expect(keys(base(), { ...defaultTheme, accent: "#FF0000" })[0]).not.toBe(before[0]);

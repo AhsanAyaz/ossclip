@@ -33,9 +33,10 @@ const SELF_FITTING = new Set<SceneComponentId>([
   // letterboxes itself with `objectFit: contain`, so a stage scale has
   // nothing to solve and could only shrink the box it plays in.
   "ClipScene",
-  // Full-frame pattern scenes (§161): each solves its own type and its 100 px
-  // margin against the whole frame (`cardRowMetrics`), so a stage scale
-  // would only move the margin it was solved for.
+  // Full-frame pattern scenes (§161): each solves its own type and its
+  // margin against the box it is drawn in — the whole frame, or its graphic
+  // box (§163) — (`cardRowMetrics`), so a stage scale would only move the
+  // margin it was solved for.
   "CardRow",
   "CtaCard",
   "BugCard",
@@ -645,6 +646,39 @@ export function fitScale(
  * Constraints: "keep 100 px clear on all sides").
  */
 export const PATTERN_MARGIN_PX = 100;
+
+/** The output frame a full-frame component's box sits in, in pixels. */
+export interface PatternFrame {
+  width: number;
+  height: number;
+}
+
+/**
+ * The margin of a full-frame pattern scene drawn in a box `widthPx` ×
+ * `heightPx` of `frame` (§163): the same share of the box that 100 px is
+ * of the frame, by the box's tighter side. On the whole frame it is
+ * today's rule exactly — 100 px at the 1080 px short edge, in 16:9 and
+ * 9:16 alike — and portrait boxes take the same share rule as landscape:
+ * the rule is one ratio, so it has no aspect to special-case. A frame of
+ * another short edge keeps the short-edge scaling it always had.
+ *
+ * Scaled by the frame's share, not the box's short edge: in the bubble box
+ * (0.72 × 0.88 of 16:9) the short edge gave 88 px, more air than the full
+ * frame gives the tighter side's share of it.
+ */
+export function patternMarginPx(widthPx: number, heightPx: number, frame: PatternFrame): number {
+  const frameMargin = (PATTERN_MARGIN_PX * Math.min(frame.width, frame.height)) / 1080;
+  return Math.round(frameMargin * Math.min(widthPx / frame.width, heightPx / frame.height));
+}
+
+/**
+ * The frame the metrics solve the margin against. Absent, the box IS the
+ * frame — what every caller meant before §163 — so `estimateHeightPx` and
+ * the tests that pass only a size keep today's margin. `heightPx` is the
+ * finite height the metric already settled on.
+ */
+const marginFrame = (widthPx: number, heightPx: number, frame?: PatternFrame): PatternFrame =>
+  frame ?? { width: widthPx, height: heightPx };
 /** Between cards, both aspects (plan Task 4, "40 px gap"). */
 const CARD_GAP_PX = 40;
 /** The `Card` primitive's box, mirrored: 5 px border, padding 36 / 40. */
@@ -762,9 +796,11 @@ export interface CardRowMetrics {
 }
 
 /**
- * CardRow's layout, solved against the whole frame it is drawn in (it is
- * `fullFrame`, so `widthPx`×`heightPx` IS the frame). ONE model for the
- * component and `estimateHeightPx`, the `chatMetrics` rule.
+ * CardRow's layout, solved against the box it is drawn in: the whole frame,
+ * or since §163 its graphic box (it is `fullFrame`, so `widthPx`×`heightPx`
+ * is that box, unscaled), with the margin `patternMarginPx` gives the box in
+ * `frame`. ONE model for the component and `estimateHeightPx`, the
+ * `chatMetrics` rule.
  *
  * Every card gets the same width and the same type, so the set reads as
  * parallel things. The sub-line size is the largest from 40 down to the
@@ -779,6 +815,8 @@ export function cardRowMetrics(
   cards: readonly { text: string; sub?: string; icon?: string }[],
   widthPx: number,
   heightPx: number,
+  /** The output frame the box sits in (§163); absent, the box is the frame. */
+  frame?: PatternFrame,
 ): CardRowMetrics {
   const n = Math.max(1, cards.length);
   // `estimateHeightPx` may be called with no height budget (Infinity): solve
@@ -786,7 +824,7 @@ export function cardRowMetrics(
   // spare, so every number below stays finite.
   const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
   const mode: CardRowMetrics["mode"] = widthPx >= finiteH ? "row" : "column";
-  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const marginPx = patternMarginPx(widthPx, finiteH, marginFrame(widthPx, finiteH, frame));
   const gapPx = CARD_GAP_PX;
   const reserve = CARD_PEAK_SCALE - 1;
   const availW = widthPx - 2 * marginPx;
@@ -1017,11 +1055,11 @@ export interface CtaCardMetrics {
 }
 
 /**
- * CtaCard's layout, solved against the whole frame (it is `fullFrame`, so
- * `widthPx`×`heightPx` IS the frame). ONE model for the component and
- * `estimateHeightPx`, the `cardRowMetrics` rule, and the same reserves: the
- * 100 px margin at the short edge, plus the pop's overshoot around a
- * centred card.
+ * CtaCard's layout, solved against the box it is drawn in (the whole frame,
+ * or its graphic box, §163; `cardRowMetrics`' rule). ONE model for the
+ * component and `estimateHeightPx`, and the same reserves: the margin
+ * (100 px on the whole frame, `patternMarginPx`), plus the pop's overshoot
+ * around a centred card.
  *
  * The card is as wide as its content set on one line at the largest sizes,
  * between `CTA_MIN_W` and the frame's room. When that is the frame's room,
@@ -1034,13 +1072,19 @@ export interface CtaCardMetrics {
  * the metric reports), and a word too long for its box breaks
  * (`overflowWrap: anywhere`) rather than leaving it.
  */
-export function ctaCardMetrics(p: CtaCardInput, widthPx: number, heightPx: number): CtaCardMetrics {
+export function ctaCardMetrics(
+  p: CtaCardInput,
+  widthPx: number,
+  heightPx: number,
+  /** The output frame the box sits in (§163); absent, the box is the frame. */
+  frame?: PatternFrame,
+): CtaCardMetrics {
   const content = ctaContent(p);
   // `estimateHeightPx` may be called with no height budget (Infinity):
   // solve it as a portrait box twice as tall as it is wide, as cardRowMetrics does.
   const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
   const mode: CtaCardMetrics["mode"] = widthPx >= finiteH ? "row" : "column";
-  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const marginPx = patternMarginPx(widthPx, finiteH, marginFrame(widthPx, finiteH, frame));
   const reserve = CTA_PEAK_SCALE - 1;
   const availW = widthPx - 2 * marginPx;
   const availH = finiteH - 2 * marginPx;
@@ -1207,7 +1251,7 @@ export function ctaCardMetrics(p: CtaCardInput, widthPx: number, heightPx: numbe
 
 // ---- BugCard (§161, plan Task 6) -------------------------------------------
 
-/** The frame's shape, as BugCard reads it: the mock is drawn only in a landscape frame. */
+/** The box's shape, as BugCard reads it: the mock is drawn only in a landscape box (the whole frame, or its graphic box, §163). */
 export type BugAspect = "16:9" | "9:16";
 
 /** BugCardProps' shape after parsing, as the metric reads it (no zod in this module). */
@@ -1222,7 +1266,7 @@ export interface BugCardInput {
   sticker?: string;
 }
 
-/** Landscape or portrait, by the frame — `ctaCardMetrics`' row/column test. */
+/** Landscape or portrait, by the box it is drawn in — `ctaCardMetrics`' row/column test. */
 export function bugAspect(widthPx: number, heightPx: number): BugAspect {
   const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
   return widthPx >= finiteH ? "16:9" : "9:16";
@@ -1520,10 +1564,13 @@ function bugCaptionLayout(
 }
 
 /**
- * BugCard's layout, solved against the whole frame (it is `fullFrame`), ONE
- * model for the component and `estimateHeightPx` (the `cardRowMetrics`
- * rule), with the same reserves: the 100 px margin at the short edge, the
- * pop's overshoot around each panel, and the sticker's bump.
+ * BugCard's layout, solved against the box it is drawn in (the whole frame,
+ * or its graphic box, §163), ONE model for the component and
+ * `estimateHeightPx` (the `cardRowMetrics` rule), with the same reserves:
+ * the margin (100 px on the whole frame, `patternMarginPx`), the pop's
+ * overshoot around each panel, and the sticker's bump. The mock is drawn
+ * when the BOX is at least as wide as it is tall (`bugAspect`): a wide band
+ * below the face is landscape room, whatever the frame.
  *
  * 16:9 with a mock: two panels of one width side by side, as tall as the
  * taller one, so they read as a pair. Otherwise the text panel alone,
@@ -1541,13 +1588,19 @@ function bugCaptionLayout(
  * and W their real width: a caption word is one unbroken unit, the case
  * where CardRow's flat 0.74 under-measured (CtaCard's comment-dense still).
  */
-export function bugCardMetrics(p: BugCardInput, widthPx: number, heightPx: number): BugCardMetrics {
+export function bugCardMetrics(
+  p: BugCardInput,
+  widthPx: number,
+  heightPx: number,
+  /** The output frame the box sits in (§163); absent, the box is the frame. */
+  frame?: PatternFrame,
+): BugCardMetrics {
   const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
   const aspect = bugAspect(widthPx, finiteH);
   const showMock = bugMockVisible(p, aspect);
   const mode: BugCardMetrics["mode"] = showMock ? "split" : "single";
   const wrongIndex = showMock ? bugWrongIndex(p) : null;
-  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const marginPx = patternMarginPx(widthPx, finiteH, marginFrame(widthPx, finiteH, frame));
   const reserve = BUG_PEAK_SCALE - 1;
   const availW = widthPx - 2 * marginPx;
   const availH = finiteH - 2 * marginPx;
@@ -1933,10 +1986,11 @@ function phoneCaptionLayout(
 }
 
 /**
- * PhoneDemo's layout, solved against the whole frame (it is `fullFrame`):
- * ONE model for the component and `estimateHeightPx`, with the pattern
- * scenes' reserves — the 100 px margin, the pop's overshoot about every
- * box, and the phone's bob once it has settled.
+ * PhoneDemo's layout, solved against the box it is drawn in (the whole
+ * frame, or its graphic box, §163): ONE model for the component and
+ * `estimateHeightPx`, with the pattern scenes' reserves — the margin
+ * (`patternMarginPx`), the pop's overshoot about every box, and the phone's
+ * bob once it has settled. Aspect and the phone's share follow the box.
  *
  * 16:9: the phone, then the pill column, one group centred in the frame
  * with an 80 px gap; pills left-aligned and centred on the phone's height,
@@ -1955,10 +2009,16 @@ function phoneCaptionLayout(
  * `ctaDisplayWidthEm`: a caption word is one unbroken unit, the case
  * CardRow's flat average under-measured.
  */
-export function phoneDemoMetrics(p: PhoneDemoInput, widthPx: number, heightPx: number): PhoneDemoMetrics {
+export function phoneDemoMetrics(
+  p: PhoneDemoInput,
+  widthPx: number,
+  heightPx: number,
+  /** The output frame the box sits in (§163); absent, the box is the frame. */
+  frame?: PatternFrame,
+): PhoneDemoMetrics {
   const finiteH = Number.isFinite(heightPx) ? heightPx : widthPx * 2;
   const aspect = bugAspect(widthPx, finiteH);
-  const marginPx = Math.round((PATTERN_MARGIN_PX * Math.min(widthPx, finiteH)) / 1080);
+  const marginPx = patternMarginPx(widthPx, finiteH, marginFrame(widthPx, finiteH, frame));
   const reserve = PHONE_PEAK_SCALE - 1;
   const availW = widthPx - 2 * marginPx;
   const availH = finiteH - 2 * marginPx;

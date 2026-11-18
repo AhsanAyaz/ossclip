@@ -28,7 +28,15 @@ import {
  * come from the SAME constant the stage lays out against, or the guide
  * drifts from the geometry it claims to show.
  */
-export { SAFE_AREA, clampGraphicRect, graphicSlotFor, layoutSlots, safeAreaFor } from "@ossclip/scenes";
+export {
+  SAFE_AREA,
+  clampGraphicRect,
+  clampToFrame,
+  graphicClampFor,
+  graphicSlotFor,
+  layoutSlots,
+  safeAreaFor,
+} from "@ossclip/scenes";
 
 export interface ProductionCompProps {
   /** File name inside the render's public dir (or an absolute http(s) URL). */
