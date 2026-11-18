@@ -18,6 +18,7 @@ import {
 } from "@ossclip/core/browser";
 import {
   belowFaceBox,
+  graphicBoundsFor,
   graphicClampFor,
   layoutSlots,
   storedGraphicBox,
@@ -1826,7 +1827,11 @@ export const Inspector: React.FC<InspectorProps> = ({
           // "Below the face" (§163, design 3): 16:9 only — in 9:16 the face
           // fills the frame's width and the layouts already own the band
           // under it.
-          const belowFace = landscape ? belowFaceBox(face, frame) : null;
+          // Built inside the bounds the clamp enforces, so the clamp below
+          // cannot move it up onto the head (a slot component's safe rect).
+          const belowFace = landscape
+            ? belowFaceBox(face, frame, graphicBoundsFor(cue.component, frame))
+            : null;
           const boxPatch = (key: "x" | "y" | "w" | "h") => (v: number) =>
             edits.patchGraphicRect(
               selection.sceneId,
@@ -1860,9 +1865,11 @@ export const Inspector: React.FC<InspectorProps> = ({
                   title={
                     !face
                       ? "No face was measured in this video"
-                      : belowFace === null
-                        ? "No room below the face"
-                        : undefined
+                      : face.subject === "screen"
+                        ? "The measured face is a camera inset, not the speaker"
+                        : belowFace === null
+                          ? "No room below the face"
+                          : undefined
                   }
                   onClick={() => {
                     if (belowFace === null) return;

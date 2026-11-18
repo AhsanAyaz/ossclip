@@ -1414,7 +1414,7 @@ function BackdropHarness({
   base: SceneCue;
   frame: { width: number; height: number };
   scriptProject?: boolean;
-  face?: { centerYFrac: number; sizeFrac?: number } | null;
+  face?: { centerYFrac: number; sizeFrac?: number; subject?: "face" | "screen" } | null;
   onDocChange?: (doc: OverrideDoc) => void;
   onPatchLayout?: (...args: unknown[]) => void;
 }) {
@@ -1568,6 +1568,30 @@ describe("Inspector — backdrop names and a below-the-face box (§163, Task 5)"
     expect(rect.w).toBeCloseTo(0.92, 9);
     expect(rect.h).toBeCloseTo(0.34, 9);
     expect(Number(q<HTMLInputElement>("field-box-y")!.value)).toBeCloseTo(0.62, 3);
+  });
+
+  it("on a slot component the box stays inside the caption-safe rect AND under the head", async () => {
+    let doc: OverrideDoc | undefined;
+    await mount({
+      base: { ...card, component: "TitleCard", props: { title: "X" }, layout: "lower-third" },
+      frame: LS,
+      face: FACE,
+      onDocChange: (d) => (doc = d),
+    });
+    await act(async () => q<HTMLButtonElement>("graphic-below-face")!.click());
+    const rect = doc!.scenes["scene-7"]!.graphicRect!;
+    // Landscape safe rect x 0.05..0.95, y 0.06..0.88; head ends at 0.59.
+    expect(rect.x).toBeCloseTo(0.05, 9);
+    expect(rect.y).toBeCloseTo(0.62, 9);
+    expect(rect.w).toBeCloseTo(0.9, 9);
+    expect(rect.h).toBeCloseTo(0.26, 9);
+  });
+
+  it("is disabled for a screen recording's face, saying it is a camera inset", async () => {
+    await mount({ base: card, frame: LS, face: { ...FACE, subject: "screen" } });
+    const btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe("The measured face is a camera inset, not the speaker");
   });
 
   it("is shown in any 16:9 project, script or not, and on a slot component too", async () => {

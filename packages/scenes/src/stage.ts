@@ -405,6 +405,21 @@ function clampInto(rect: Rect, bounds: Rect): Rect {
  * stage shows (§163). Full-frame components: the frame; everything else:
  * the caption-safe area, as before.
  */
+/**
+ * The rectangle `graphicClampFor` holds a component's box inside — the frame
+ * for a full-frame component, the caption-safe rect otherwise. Exported so a
+ * box BUILT for a scene (`belowFaceBox`) can be built inside the same bounds
+ * the clamp enforces, rather than built for the frame and then moved by the
+ * clamp (§163: a slot component's below-the-face band was pushed up onto
+ * the chin that way).
+ */
+export function graphicBoundsFor(
+  component: SceneComponentId | null | undefined,
+  frame: FrameSize = PORTRAIT_FRAME,
+): Rect {
+  return component && SCENE_REGISTRY[component]?.fullFrame ? FULL_FRAME_SLOT : safeRectFor(frame);
+}
+
 export function graphicClampFor(
   component: SceneComponentId | null | undefined,
   frame: FrameSize = PORTRAIT_FRAME,
@@ -502,6 +517,7 @@ const BELOW_FACE_BOTTOM_H = 0.96;
 const BELOW_FACE_X = 0.04;
 const BELOW_FACE_W = 0.92;
 const BELOW_FACE_MIN_H = 0.2;
+const BELOW_FACE_MIN_W = 0.3;
 
 /**
  * The editor's one-click "Below the face" box (§163, design 3): the band
@@ -518,22 +534,38 @@ const BELOW_FACE_MIN_H = 0.2;
  * chin. The crop's text-band nudge (`avoidSlicingText`) and the scene's own
  * video framing are not modelled: the box is a starting point the author
  * then drags, and they rarely move a full-frame crop.
+ *
+ * `bounds` is where the box must stay (`graphicBoundsFor`): the band is
+ * INTERSECTED with it — top floored at its top, bottom and sides brought in
+ * to it — never moved into it. A clamp that moves keeps the band's height
+ * and pushes it UP, and for a slot component (safe rect bottom 0.88 in
+ * 16:9) that put the box 0.08 higher, on the speaker's chin. Built inside
+ * the bounds, the component's clamp then has nothing to do.
+ *
+ * Null for a `"screen"` face, the subject guard `objectPosYFor` uses: the
+ * measured face is a screen recording's camera inset, and a band under it
+ * says nothing about where the speaker is.
  */
 export function belowFaceBox(
   face: FaceCrop | null | undefined,
   frame: FrameSize = PORTRAIT_FRAME,
+  bounds: Rect = { x: 0, y: 0, w: 1, h: 1 },
 ): Rect | null {
-  if (!face) return null;
+  if (!face || face.subject === "screen") return null;
   const size = face.sizeFrac ?? DEFAULT_FACE.sizeFrac;
   const headEndSrc = headBand({ centerYFrac: face.centerYFrac, sizeFrac: size }).end;
   const slotH = frame.height;
   const shownH = displayedHeight(FULL_FRAME_SLOT, face, frame);
   const top = objectPosYFor(FULL_FRAME_SLOT, face, frame) * (shownH - slotH);
   const headEnd = (headEndSrc * shownH - top) / slotH;
-  const y = headEnd + BELOW_FACE_GAP_H;
-  const h = BELOW_FACE_BOTTOM_H - y;
-  if (h < BELOW_FACE_MIN_H) return null;
-  return { x: BELOW_FACE_X, y, w: BELOW_FACE_W, h };
+  const y = Math.max(headEnd + BELOW_FACE_GAP_H, bounds.y);
+  const bottom = Math.min(BELOW_FACE_BOTTOM_H, bounds.y + bounds.h);
+  const x = Math.max(BELOW_FACE_X, bounds.x);
+  const right = Math.min(BELOW_FACE_X + BELOW_FACE_W, bounds.x + bounds.w);
+  const h = bottom - y;
+  const w = right - x;
+  if (h < BELOW_FACE_MIN_H || w < BELOW_FACE_MIN_W) return null;
+  return { x, y, w, h };
 }
 
 /** Below this a banner band is too short to hold a headline at cover sizes. */

@@ -33,6 +33,7 @@ export {
   belowFaceBox,
   clampGraphicRect,
   clampToFrame,
+  graphicBoundsFor,
   graphicClampFor,
   graphicSlotFor,
   layoutSlots,

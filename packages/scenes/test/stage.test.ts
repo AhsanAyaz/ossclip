@@ -42,6 +42,7 @@ import {
   pipRectFor,
   pipZoomFor,
   belowFaceBox,
+  graphicBoundsFor,
   storedGraphicBox,
 } from "../src/stage";
 import { captionAnchorAvoiding } from "../src/source-fit";
@@ -1469,6 +1470,51 @@ describe("belowFaceBox: the band under the speaker's head (§163, design 3)", ()
     const headEnd = (headBand(face).end * shownH - top) / 1080;
     expect(headEnd).not.toBeCloseTo(headBand(face).end, 3);
     near(belowFaceBox(face, LS), { x: 0.04, y: headEnd + 0.03, w: 0.92, h: 0.96 - headEnd - 0.03 });
+  });
+
+  it("graphicBoundsFor: the frame for a full-frame component, the caption-safe rect otherwise", () => {
+    for (const frame of [LS, PORTRAIT_FRAME]) {
+      for (const component of ["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"] as const) {
+        expect(graphicBoundsFor(component, frame), component).toEqual(FULL_FRAME_SLOT);
+      }
+      expect(graphicBoundsFor("TitleCard", frame)).toEqual(safeRectFor(frame));
+      expect(graphicBoundsFor(undefined, frame)).toEqual(safeRectFor(frame));
+    }
+  });
+
+  it("the test face in 1920×1080: a full-frame box and a slot box, each one its clamp leaves alone", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    const full = belowFaceBox(face, LS, graphicBoundsFor("CardRow", LS));
+    near(full, { x: 0.04, y: 0.62, w: 0.92, h: 0.34 });
+    expect(graphicClampFor("CardRow", LS)(full!)).toEqual(full);
+    // The landscape safe rect is x 0.05..0.95, y 0.06..0.88: the top stays
+    // under the head (0.62), the bottom and sides come in to the rect.
+    const slot = belowFaceBox(face, LS, graphicBoundsFor("TitleCard", LS));
+    near(slot, { x: 0.05, y: 0.62, w: 0.9, h: 0.26 });
+    // The clamp is a no-op, so it cannot move the box up onto the chin —
+    // which moving the 0.34-tall full-frame box into this rect did (y 0.54).
+    expect(graphicClampFor("TitleCard", LS)(slot!)).toEqual(slot);
+    expect(slot!.y).toBeGreaterThanOrEqual(headBand(face).end + 0.03 - 1e-12);
+  });
+
+  it("stays inside any bounds: a top below the head is floored at the bounds' top", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    near(belowFaceBox(face, LS, { x: 0.1, y: 0.7, w: 0.6, h: 0.25 }), { x: 0.1, y: 0.7, w: 0.6, h: 0.25 });
+  });
+
+  it("is null when the bounds leave under 0.2 of height or under 0.3 of width", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    // Bottom 0.8: 0.62..0.8 is 0.18 tall.
+    expect(belowFaceBox(face, LS, { x: 0, y: 0, w: 1, h: 0.8 })).toBeNull();
+    // 0.25 wide.
+    expect(belowFaceBox(face, LS, { x: 0.5, y: 0, w: 0.25, h: 1 })).toBeNull();
+    // 0.3 wide is enough.
+    near(belowFaceBox(face, LS, { x: 0.5, y: 0, w: 0.3, h: 1 }), { x: 0.5, y: 0.62, w: 0.3, h: 0.34 });
+  });
+
+  it("is null for a screen recording's face: it is a camera inset, not the speaker", () => {
+    expect(belowFaceBox({ centerYFrac: 0.38, sizeFrac: 0.3, subject: "screen" }, LS)).toBeNull();
+    expect(belowFaceBox({ centerYFrac: 0.38, sizeFrac: 0.3, subject: "face" }, LS)).not.toBeNull();
   });
 
   it("is null with no face, and when less than 0.2 of the height is left below the head", () => {
