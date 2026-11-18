@@ -28,6 +28,10 @@ export interface StillFixture {
   graphicRect?: { x: number; y: number; w: number; h: number };
   /** The frames to draw; both when absent. */
   aspects?: ("16x9" | "9x16")[];
+  /** What is behind the graphic (§163); absent or `speaker` is the flat field. */
+  backdrop?: "speaker" | "solid" | "bubble";
+  /** The stand-in speaker's face, source fractions; the harness default when absent. */
+  face?: { centerXFrac: number; centerYFrac: number; sizeFrac: number };
 }
 
 const STILL_FIXTURES_BASE: StillFixture[] = [
@@ -382,10 +386,61 @@ function inBoxes(component: SceneComponentId, name: string, atSec: number): Stil
   }));
 }
 
+/**
+ * A scene on each backdrop (§163), 16:9 only, settled: `solid` (the look's
+ * background, the footage hidden) and `bubble` (the background with the
+ * round speaker picture at the bottom right, the graphic cut back clear of
+ * it). The harness draws the real VideoStage over a stand-in speaker — a
+ * grey frame with a lighter ellipse at the face (centre 0.52, 0.38, size
+ * 0.3) — so `bubble` shows the picture's crop and head zoom. The same props
+ * and box as the fixture it copies; the layout comes from the backdrop.
+ */
+function onBackdrops(
+  base: Pick<StillFixture, "component" | "name" | "props" | "graphicRect">,
+  atSec: number,
+  backdrops: ("solid" | "bubble")[] = ["solid", "bubble"],
+): StillFixture[] {
+  return backdrops.map((backdrop): StillFixture => ({
+    component: base.component,
+    name: `${base.name}-${backdrop}`,
+    props: base.props,
+    atSec: [atSec],
+    ...(base.graphicRect ? { graphicRect: base.graphicRect } : {}),
+    backdrop,
+    aspects: ["16x9"],
+  }));
+}
+
+function baseFixture(component: SceneComponentId, name: string): StillFixture {
+  const base = STILL_FIXTURES_BASE.find((f) => f.component === component && f.name === name);
+  if (!base) throw new Error(`stills: no ${component} fixture named ${name}`);
+  return base;
+}
+
 export const STILL_FIXTURES: StillFixture[] = [
   ...STILL_FIXTURES_BASE,
   ...inBoxes("CardRow", "dense", 3.5),
   ...inBoxes("CtaCard", "subscribe-dense", 5.4),
   ...inBoxes("BugCard", "lines-dense", 5.4),
   ...inBoxes("PhoneDemo", "typical", 4.5),
+  // Typical content, not the dense fixture: three cards with a sub-line each
+  // build at 0.25, 0.95 and 1.65 s, so 3.0 s is settled.
+  ...onBackdrops(
+    {
+      component: "CardRow",
+      name: "typical",
+      props: {
+        cards: [
+          { text: "Write the plan", sub: "one task per step" },
+          { text: "Run the tests", sub: "before every commit" },
+          { text: "Ship it", sub: "then measure" },
+        ],
+      },
+    },
+    3.0,
+  ),
+  ...onBackdrops(baseFixture("PhoneDemo", "typical"), 4.5),
+  // A slot component in the §161 box, on both backdrops.
+  ...onBackdrops(baseFixture("TerminalMock", "script-landscape"), 3.0),
+  ...onBackdrops(baseFixture("TitleCard", "script-landscape"), 2.0, ["bubble"]),
 ];

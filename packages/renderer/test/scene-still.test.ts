@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { SceneCueSchema, defaultTheme } from "@ossclip/core/browser";
 import {
+  STAND_IN_FACE,
   STILL_ASPECTS,
   STILL_TAIL_SEC,
+  standInGeometry,
+  standInSvg,
   selectStillFixtures,
   stillCue,
   stillFileName,
@@ -63,6 +66,64 @@ describe("stillJobs", () => {
     const bad = { ...stat("long", [1]), props: { label: "X", value: "1234567890123" } };
     expect(() => stillJobs([bad], defaultTheme, "#000")).toThrow(/StatCard\/long/);
     expect(() => stillJobs([stat("none", [])], defaultTheme, "#000")).toThrow(/no atSec/);
+  });
+});
+
+describe("backdrop fixtures: a stand-in speaker under the scene (§163)", () => {
+  it("solid draws graphic-only and bubble draws pip-bubble, each with the default stand-in face", () => {
+    const [solid] = stillJobs([{ ...stat("s", [1]), backdrop: "solid" }], defaultTheme, "#000");
+    expect(solid!.props.layout).toBe("graphic-only");
+    expect(solid!.props.backdrop).toBe("solid");
+    expect(solid!.props.face).toEqual(STAND_IN_FACE);
+    const [bubble] = stillJobs([{ ...stat("b", [1]), backdrop: "bubble" }], defaultTheme, "#000");
+    expect(bubble!.props.layout).toBe("pip-bubble");
+    expect(bubble!.props.backdrop).toBe("bubble");
+    expect(stillCue(bubble!.props)).toMatchObject({ layout: "pip-bubble" });
+    expect(SceneCueSchema.safeParse(stillCue(bubble!.props)).success).toBe(true);
+  });
+
+  it("the default face is centre x 0.52, centre y 0.38, size 0.3 of a 16:9 source", () => {
+    expect(STAND_IN_FACE).toEqual({ centerXFrac: 0.52, centerYFrac: 0.38, sizeFrac: 0.3, sourceAspect: 16 / 9 });
+  });
+
+  it("a fixture's own face position replaces the default", () => {
+    const face = { centerXFrac: 0.3, centerYFrac: 0.45, sizeFrac: 0.2 };
+    const [job] = stillJobs([{ ...stat("f", [1]), backdrop: "bubble", face }], defaultTheme, "#000");
+    expect(job!.props.face).toEqual({ ...face, sourceAspect: 16 / 9 });
+  });
+
+  it("speaker, or no backdrop, adds nothing: the props are exactly today's", () => {
+    for (const f of [stat("a", [1]), { ...stat("a", [1]), backdrop: "speaker" as const }]) {
+      const [job] = stillJobs([f], defaultTheme, "#000");
+      expect("backdrop" in job!.props).toBe(false);
+      expect("face" in job!.props).toBe(false);
+      expect(job!.props.layout).toBe("video-top");
+    }
+  });
+
+  it("refuses a fixture whose layout contradicts its backdrop", () => {
+    expect(() =>
+      stillJobs([{ ...stat("x", [1]), backdrop: "bubble", layout: "full-bleed" }], defaultTheme, "#000"),
+    ).toThrow(/StatCard\/x/);
+    // Agreeing is fine.
+    expect(() =>
+      stillJobs([{ ...stat("y", [1]), backdrop: "solid", layout: "graphic-only" }], defaultTheme, "#000"),
+    ).not.toThrow();
+  });
+
+  it("the stand-in is a 1920x1080 grey frame with a lighter head ellipse at the face", () => {
+    const g = standInGeometry(STAND_IN_FACE);
+    expect(g.width).toBe(1920);
+    expect(g.height).toBe(1080);
+    expect(g.cx).toBeCloseTo(0.52 * 1920, 9);
+    expect(g.cy).toBeCloseTo(0.38 * 1080, 9);
+    // Head-sized: as tall as the face box (0.3 of the height), a little
+    // narrower than tall.
+    expect(2 * g.ry).toBeCloseTo(0.3 * 1080, 9);
+    expect(g.rx).toBeLessThan(g.ry);
+    const svg = standInSvg(STAND_IN_FACE);
+    expect(svg).toContain('viewBox="0 0 1920 1080"');
+    expect(svg).toContain("<ellipse");
   });
 });
 

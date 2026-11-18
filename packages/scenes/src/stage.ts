@@ -529,12 +529,108 @@ const FULL: Rect = { x: 0, y: 0, w: 1, h: 1 };
 
 /** PIP circle: Ø 0.30 of frame width, sitting in the lower third. */
 const PIP_DIAMETER_W = 0.3;
-const PIP_RECT: Rect = {
+/** The portrait bubble. Built for 9:16 only: its height is the width's
+ * fraction times 1080/1920, so in any other frame it is not a circle. */
+export const PIP_RECT: Rect = {
   x: 0.5 - PIP_DIAMETER_W / 2,
   y: 0.66,
   w: PIP_DIAMETER_W,
   h: (PIP_DIAMETER_W * 1080) / 1920,
 };
+
+/** The landscape picture, in fractions of the frame's HEIGHT (diameter) and
+ * its own edges (insets) — the spec's numbers (§163, design 4). */
+const LANDSCAPE_PIP_DIAMETER_H = 0.28;
+const LANDSCAPE_PIP_RIGHT_W = 0.04;
+const LANDSCAPE_PIP_BOTTOM_H = 0.06;
+
+/**
+ * The speaker picture's rectangle for a frame (§163).
+ *
+ * `PIP_RECT` in 1920×1080 is a 576×182 px pill at the bottom centre, and
+ * because it shows the footage's full height the face in it is about 60 px
+ * tall. Landscape gets a circle instead, solved in PIXELS so it is round:
+ * Ø 0.28 × height (302.4 px at 1080p), right edge 4% of the width in from
+ * the frame's right, bottom 6% of the height up from the bottom. A portrait
+ * or square frame gets exactly today's `PIP_RECT`, so 9:16 renders are
+ * byte-identical (G6).
+ */
+export function pipRectFor(frame: FrameSize = PORTRAIT_FRAME): Rect {
+  if (frame.width <= frame.height) return PIP_RECT;
+  const side = LANDSCAPE_PIP_DIAMETER_H * frame.height;
+  return {
+    x: (frame.width - LANDSCAPE_PIP_RIGHT_W * frame.width - side) / frame.width,
+    y: (frame.height - LANDSCAPE_PIP_BOTTOM_H * frame.height - side) / frame.height,
+    w: side / frame.width,
+    h: side / frame.height,
+  };
+}
+
+/** The face's share of the picture's height after the head zoom (§163). */
+const PIP_FACE_FRAC = 0.55;
+/** Past this the zoom is upscaling footage into mush; a tiny face stays tiny. */
+const PIP_ZOOM_MAX = 4;
+
+/**
+ * The extra scale inside the landscape speaker picture that makes the
+ * measured face 55% of the picture's height (§163).
+ *
+ * `sizeFrac` is the face box's height as a fraction of the SOURCE height
+ * (pico's square edge, `FaceBox` in core's face.ts), so the face is
+ * `sizeFrac × sourceHeightPx` tall in the picture, where `sourceHeightPx` is
+ * the source's height as `object-fit: cover` displays it there. A 16:9
+ * source in the square picture is height-constrained, so that is the
+ * picture's own height and the zoom is `0.55 / sizeFrac`.
+ *
+ * 1 with no face or no size: an unmeasured face has no head to zoom to, and
+ * the spec keeps the existing crop. 1 for a `"screen"` face, the same
+ * subject guard as `objectPosYFor`: a screen recording's camera inset must
+ * not be zoomed into. Never below 1 (a zoom-out would show the picture's
+ * edges) and at most 4. The caller applies it only in a landscape
+ * `pip-bubble` (`pictureZoomAt`).
+ */
+export function pipZoomFor(
+  face: FaceCrop | null | undefined,
+  pictureHeightPx: number,
+  sourceHeightPx: number,
+): number {
+  if (!face || face.subject === "screen" || !face.sizeFrac) return 1;
+  const facePx = face.sizeFrac * sourceHeightPx;
+  if (!(facePx > 0)) return 1;
+  return Math.min(PIP_ZOOM_MAX, Math.max(1, (PIP_FACE_FRAC * pictureHeightPx) / facePx));
+}
+
+/** Gap kept between a graphic and the speaker picture's strip (§163). */
+const PICTURE_CLEARANCE_W = 0.03;
+
+/**
+ * Cut a graphic's box back so it stays out of the vertical strip the
+ * speaker picture occupies (§163, design 4): a picture whose centre is in
+ * the right half caps the box's right edge at the picture's left edge minus
+ * 3% of the width; one in the left half floors the box's left edge the
+ * mirror way. A whole strip, not just the circle: a card row reflowing
+ * around a circle is not a layout anyone reads.
+ *
+ * A box left narrower than the schema's minimum width keeps that minimum,
+ * anchored at the cut edge — the graphic stays visible and clear of the
+ * picture rather than vanishing (Review Focus 5). Height and y are never
+ * touched.
+ */
+export function clearOfPicture(box: Rect, picture: Rect): Rect {
+  if (picture.x + picture.w / 2 >= 0.5) {
+    const edge = picture.x - PICTURE_CLEARANCE_W;
+    const right = Math.min(box.x + box.w, edge);
+    if (right === box.x + box.w) return box;
+    const w = right - box.x;
+    return w < GRAPHIC_RECT_MIN_W
+      ? { ...box, x: edge - GRAPHIC_RECT_MIN_W, w: GRAPHIC_RECT_MIN_W }
+      : { ...box, w };
+  }
+  const edge = picture.x + picture.w + PICTURE_CLEARANCE_W;
+  if (box.x >= edge) return box;
+  const w = box.x + box.w - edge;
+  return { ...box, x: edge, w: Math.max(w, GRAPHIC_RECT_MIN_W) };
+}
 
 /**
  * The stage's slot arrangement per layout (PHASE1 §1 table, safe-area'd per
@@ -621,32 +717,41 @@ export function layoutSlots(
         captionAnchor: 0.48,
       };
     }
-    case "pip-bubble":
+    case "pip-bubble": {
+      // The picture's shape follows the frame (§163): a circle at the bottom
+      // right in 16:9, today's bubble in 9:16 (`pipRectFor`).
+      const pip = pipRectFor(frame);
       return {
         video: {
-          rect: PIP_RECT,
+          rect: pip,
           cornerRadius: 1,
           blurPx: 0,
           dim: 0,
           opacity: 1,
-          objectPosY: posY(PIP_RECT), objectPosX: posX(PIP_RECT),
+          objectPosY: posY(pip), objectPosX: posX(pip),
         },
         graphic: { x: 0.06, y: 0.14, w: 0.78, h: 0.42 },
         captionAnchor: landscape ? 0.78 : 0.61,
       };
-    case "graphic-only":
+    }
+    case "graphic-only": {
+      // The hidden footage fades INTO the same picture pip-bubble draws, so a
+      // graphic-only ↔ pip-bubble boundary morphs opacity alone and never
+      // the rect — in both frames (§163).
+      const pip = pipRectFor(frame);
       return {
         video: {
-          rect: PIP_RECT,
+          rect: pip,
           cornerRadius: 1,
           blurPx: 0,
           dim: 0,
           opacity: 0,
-          objectPosY: posY(PIP_RECT), objectPosX: posX(PIP_RECT),
+          objectPosY: posY(pip), objectPosX: posX(pip),
         },
         graphic: { x: 0.04, y: 0.14, w: 0.8, h: 0.54 },
         captionAnchor: landscape ? 0.80 : 0.73,
       };
+    }
     case "blurred-behind":
       return {
         video: { rect: FULL, cornerRadius: 0, blurPx: 22, dim: 0.55, opacity: 1, objectPosY: posY(FULL), objectPosX: posX(FULL) },
@@ -696,14 +801,56 @@ export const FULL_FRAME_SLOT: Rect = { x: 0, y: 0, w: 1, h: 1 };
  * scene. Every other component resolves exactly as before (G6).
  */
 export function graphicSlotFor(
-  cue: { layout: Layout; graphicRect?: Rect | null; component?: SceneComponentId | null },
+  cue: {
+    layout: Layout;
+    graphicRect?: Rect | null;
+    component?: SceneComponentId | null;
+    pip?: PipPlacement | null;
+  },
   frame: FrameSize = PORTRAIT_FRAME,
+): Rect {
+  const box = resolvedGraphicBox(cue, frame);
+  // A landscape speaker picture sits on the plain background with the
+  // graphic beside it (§163, design 4), so every box — planned, hand-set or
+  // the whole frame — is cut back at draw time to keep clear of the
+  // picture's strip, and follows the picture when the author moves it. Cut
+  // AFTER the clamp, so the clamp cannot push the box back over the
+  // picture. Portrait keeps today's slots: its bubble sits under the
+  // graphic by design, and 9:16 does not change (G6).
+  if (cue.layout === "pip-bubble" && frame.width > frame.height) {
+    return clearOfPicture(box, placedPicture(pipRectFor(frame), cue.pip));
+  }
+  return box;
+}
+
+function resolvedGraphicBox(
+  cue: { layout: Layout; graphicRect?: Rect | null; component?: SceneComponentId | null },
+  frame: FrameSize,
 ): Rect {
   if (cue.component && SCENE_REGISTRY[cue.component]?.fullFrame) {
     return cue.graphicRect ? clampToFrame(cue.graphicRect) : FULL_FRAME_SLOT;
   }
   if (cue.graphicRect) return clampGraphicRect(cue.graphicRect, frame);
   return layoutSlots(cue.layout, DEFAULT_FACE, [], frame).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
+}
+
+/** A cue's `pip` override, as the stage reads it (`SceneCue.pip`). */
+type PipPlacement = { x?: number; y?: number; cornerRadius?: number };
+
+/**
+ * The picture where it is actually drawn: the layout's rect moved to the
+ * override's placement, held on-frame against the picture's OWN size. One
+ * helper for `cueVideoSlot` (what VideoStage draws) and `graphicSlotFor`
+ * (what the graphic keeps clear of), so the two can never disagree about
+ * where the picture is (§163).
+ */
+function placedPicture(rect: Rect, pip: PipPlacement | null | undefined): Rect {
+  if (!pip) return rect;
+  return {
+    ...rect,
+    x: Math.min(Math.max(pip.x ?? rect.x, 0), 1 - rect.w),
+    y: Math.min(Math.max(pip.y ?? rect.y, 0), 1 - rect.h),
+  };
 }
 
 /** Seconds the video slot spends morphing between layouts at a cue boundary. */
@@ -774,11 +921,9 @@ function cueVideoSlot(
   const v = layoutSlots(cue.layout, face, bands, frame).video;
   const pip = cue.layout === "pip-bubble" ? cue.pip : undefined;
   if (!pip) return v;
-  const rect = {
-    ...v.rect,
-    x: Math.min(Math.max(pip.x ?? v.rect.x, 0), 1 - v.rect.w),
-    y: Math.min(Math.max(pip.y ?? v.rect.y, 0), 1 - v.rect.h),
-  };
+  // `v.rect` is the frame's own picture (`pipRectFor`), so the clamp holds
+  // the 16:9 circle on-frame by its real size, not the portrait bubble's.
+  const rect = placedPicture(v.rect, pip);
   return { ...v, rect, cornerRadius: pip.cornerRadius ?? v.cornerRadius };
 }
 
@@ -834,15 +979,137 @@ export function contentTransformFor(
   userScale: number,
   userDx: number,
   userDy: number,
+  /**
+   * The landscape picture's head zoom (§163), or null. It is the INNERMOST
+   * term — applied to the footage first, about its own origin — so the idle
+   * zoom and the user's correction still compose on top of the framed head
+   * exactly as they compose on top of an unzoomed picture. Null (every
+   * portrait frame, every other layout) leaves the string byte-identical.
+   */
+  picture: PictureZoom | null = null,
 ): string | undefined {
+  const head =
+    picture && picture.scale !== 1
+      ? picture.dx !== 0 || picture.dy !== 0
+        ? `translate(${picture.dx}px, ${picture.dy}px) scale(${picture.scale}) translate(${-picture.dx}px, ${-picture.dy}px)`
+        : `scale(${picture.scale})`
+      : "";
   return (
     [
       userDx !== 0 || userDy !== 0 ? `translate(${userDx}px, ${userDy}px)` : "",
       zoom * userScale !== 1 ? `scale(${zoom * userScale})` : "",
+      head,
     ]
       .filter(Boolean)
       .join(" ") || undefined
   );
+}
+
+/**
+ * Where VideoStage's content transform is anchored, as fractions of the
+ * video slot — the §15 idle zoom's "toward the face" origin. Exported so the
+ * head zoom, which has to scale about a DIFFERENT point inside the same
+ * transform, can state its own origin relative to this one.
+ */
+export const CONTENT_TRANSFORM_ORIGIN = { x: 0.5, y: 0.4 } as const;
+
+/**
+ * The head zoom's scale and origin. `dx`/`dy` are pixels from
+ * `CONTENT_TRANSFORM_ORIGIN` to the point the zoom scales about, so
+ * `contentTransformFor` can write it as translate·scale·translate inside a
+ * transform whose CSS origin is the idle zoom's.
+ */
+export interface PictureZoom {
+  scale: number;
+  dx: number;
+  dy: number;
+}
+
+/** The head zoom a cue settles at: `pipZoomFor` in a landscape pip-bubble, else 1. */
+function pictureZoomTarget(
+  cue: SceneCue,
+  face: FaceCrop | null | undefined,
+  frame: FrameSize,
+): number {
+  if (cue.layout !== "pip-bubble" || frame.width <= frame.height || !face) return 1;
+  // The picture's size only — `pip.x/y` move it, they do not resize it.
+  const rect = pipRectFor(frame);
+  return pipZoomFor(face, rect.h * frame.height, displayedHeight(rect, face, frame));
+}
+
+/**
+ * The head zoom inside the speaker picture at time t (§163), eased over the
+ * same window and curve as the slot itself (`videoSlotAt`,
+ * `backdropOpacityAt`): the footage shrinks into the picture while the
+ * zoom grows, rather than popping to 1.8× the moment the cue starts.
+ *
+ * Takes the MEASURED face (null when none was measured), not the stage's
+ * `DEFAULT_FACE` fallback — an assumed face is a guess about where a head
+ * might be, and zooming 2.5× into a guess is how a picture of a shoulder
+ * happens. 1 in every portrait frame, so 9:16 is untouched (G6).
+ */
+export function pictureZoomAt(
+  allCues: readonly SceneCue[],
+  tSec: number,
+  face: FaceCrop | null | undefined,
+  frame: FrameSize = PORTRAIT_FRAME,
+): number {
+  if (frame.width <= frame.height || !face) return 1;
+  const cues = morphCues(allCues);
+  const cue = activeCueAt(cues, tSec);
+  if (!cue) return 1;
+  const target = pictureZoomTarget(cue, face, frame);
+  const T = Math.min(LAYOUT_TRANSITION_SEC, (cue.endSec - cue.startSec) / 2);
+  const prev = activeCueAt(cues, cue.startSec - 1e-3);
+  const next = activeCueAt(cues, cue.endSec + 1e-3);
+  const from = prev ? pictureZoomTarget(prev, face, frame) : 1;
+  const to = next ? pictureZoomTarget(next, face, frame) : 1;
+  const sinceStart = tSec - cue.startSec;
+  const untilEnd = cue.endSec - tSec;
+  if (sinceStart < T) return lerp(from, target, easeInOut(sinceStart / T));
+  if (untilEnd < T) return lerp(target, to, easeInOut(1 - untilEnd / T));
+  return target;
+}
+
+/**
+ * Where to scale the footage about so the face lands at the picture's
+ * centre (§163, "centred on the measured face").
+ *
+ * Scaling by s about O moves a point P to O + s·(P − O); solving for the
+ * face to land on the centre C gives O = (s·P − C)/(s − 1). O is then held
+ * inside the slot: scaling up about any point inside a box still covers
+ * that box, so the picture never shows an edge of the footage, and a face
+ * near the source's edge is moved as far toward the centre as the footage
+ * allows (between where it was and C) instead of off it.
+ *
+ * P is found the way the footage is drawn: `object-fit: cover` of the
+ * source's aspect into the CURRENT slot, windowed by its object-position —
+ * so it stays right through the morph, where the slot is mid-way between
+ * the full frame and the picture. A mixed-framing crop box (`activeCropBox`)
+ * is not modelled; see VideoStage. Null at scale 1: no term, today's string.
+ */
+export function pictureZoomStateFor(
+  slot: VideoSlotState,
+  face: FaceCrop,
+  scale: number,
+  frame: FrameSize = PORTRAIT_FRAME,
+): PictureZoom | null {
+  if (!(scale > 1)) return null;
+  const w = slot.rect.w * frame.width;
+  const h = slot.rect.h * frame.height;
+  const aspect = face.sourceAspect ?? frame.width / frame.height;
+  const dispW = Math.max(w, h * aspect);
+  const dispH = Math.max(h, w / aspect);
+  const px = -slot.objectPosX * (dispW - w) + (face.centerXFrac ?? 0.5) * dispW;
+  const py = -slot.objectPosY * (dispH - h) + face.centerYFrac * dispH;
+  const clamp = (v: number, hi: number) => Math.min(Math.max(v, 0), hi);
+  const ox = clamp((scale * px - w / 2) / (scale - 1), w);
+  const oy = clamp((scale * py - h / 2) / (scale - 1), h);
+  return {
+    scale,
+    dx: ox - CONTENT_TRANSFORM_ORIGIN.x * w,
+    dy: oy - CONTENT_TRANSFORM_ORIGIN.y * h,
+  };
 }
 
 /**

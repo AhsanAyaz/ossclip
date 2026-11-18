@@ -12,6 +12,7 @@
 import {
   SCENE_REGISTRY,
   SceneComponentIdSchema,
+  type FaceCrop,
   type Layout,
   type SceneComponentId,
   type SceneCue,
@@ -54,6 +55,69 @@ export interface StillFixture {
   layout?: Layout;
   graphicRect?: Rect;
   aspects?: StillAspect[];
+  /** What is behind the graphic (§163): absent or `speaker` is today's flat field. */
+  backdrop?: StillBackdrop;
+  /** Where the stand-in speaker's face is, source fractions; `STAND_IN_FACE` when absent. */
+  face?: { centerXFrac: number; centerYFrac: number; sizeFrac: number };
+}
+
+/**
+ * The three backdrops (design "Terms"), each an existing layout. `speaker`
+ * stays the harness's flat field: a still has no footage, and a stand-in
+ * under the whole frame would only make every speaker still harder to read.
+ */
+export type StillBackdrop = "speaker" | "solid" | "bubble";
+const BACKDROP_LAYOUT = { solid: "graphic-only", bubble: "pip-bubble" } as const;
+
+/**
+ * The stand-in speaker's face when a fixture names none: an arm's-length
+ * framing a little right of centre, the face box 0.3 of the source height,
+ * in a 16:9 source — the shape of the explainer footage the picture is for.
+ */
+export const STAND_IN_FACE = {
+  centerXFrac: 0.52,
+  centerYFrac: 0.38,
+  sizeFrac: 0.3,
+  sourceAspect: 16 / 9,
+} as const satisfies FaceCrop;
+
+/** The stand-in source's own pixels — a 1080p landscape take. */
+const STAND_IN_SOURCE = { width: 1920, height: 1080 } as const;
+
+/**
+ * The stand-in's shapes in source pixels: a head-sized ellipse centred on
+ * the face, as tall as the face box and three quarters as wide. As tall as
+ * the BOX, not the whole head, so a still answers the one question it is
+ * for — is the face at the size the head zoom promises (55% of the picture)?
+ */
+export function standInGeometry(face: { centerXFrac: number; centerYFrac: number; sizeFrac: number }): {
+  width: number;
+  height: number;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+} {
+  const { width, height } = STAND_IN_SOURCE;
+  const ry = (face.sizeFrac * height) / 2;
+  return { width, height, cx: face.centerXFrac * width, cy: face.centerYFrac * height, rx: ry * 0.75, ry };
+}
+
+/**
+ * The stand-in footage as an SVG document: a flat mid-grey frame with a
+ * lighter ellipse at the face. Drawn as an image of the SOURCE's shape so
+ * VideoStage crops it with the same `object-fit: cover` and object-position
+ * the real video gets — the still then shows the real picture geometry, crop
+ * and head zoom included, with no video file.
+ */
+export function standInSvg(face: { centerXFrac: number; centerYFrac: number; sizeFrac: number }): string {
+  const g = standInGeometry(face);
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${g.width}" height="${g.height}" viewBox="0 0 ${g.width} ${g.height}">` +
+    `<rect width="${g.width}" height="${g.height}" fill="#808080"/>` +
+    `<ellipse cx="${g.cx}" cy="${g.cy}" rx="${g.rx}" ry="${g.ry}" fill="#C8C8C8"/>` +
+    `</svg>`
+  );
 }
 
 /** A slot in frame fractions — `SceneCue.graphicRect`'s shape. */
@@ -73,6 +137,14 @@ export interface SceneStillProps {
   background: string;
   /** The cue's length and the composition's — latest `atSec` + STILL_TAIL_SEC. */
   durationSec: number;
+  /**
+   * `solid` or `bubble`: draw VideoStage with the stand-in footage under the
+   * scene. Absent for every other still, so their props — and pixels — are
+   * exactly what they were.
+   */
+  backdrop?: "solid" | "bubble";
+  /** The stand-in's face, present with `backdrop`; also what VideoStage frames. */
+  face?: FaceCrop & { centerXFrac: number; sizeFrac: number };
 }
 
 /**
@@ -160,6 +232,18 @@ export function stillJobs(
     }
     if (f.atSec.length === 0) throw new Error(`still fixture ${f.component}/${f.name}: no atSec`);
     const durationSec = Math.max(...f.atSec) + STILL_TAIL_SEC;
+    // A backdrop IS a layout; a fixture naming both must agree, or the still
+    // would photograph something other than what its name says.
+    const backdrop = f.backdrop && f.backdrop !== "speaker" ? f.backdrop : undefined;
+    const layout = backdrop ? BACKDROP_LAYOUT[backdrop] : (f.layout ?? meta.defaultLayout);
+    if (backdrop && f.layout && f.layout !== layout) {
+      throw new Error(
+        `still fixture ${f.component}/${f.name}: backdrop "${backdrop}" is layout "${layout}", not "${f.layout}"`,
+      );
+    }
+    const stand = backdrop
+      ? { backdrop, face: { ...(f.face ?? STAND_IN_FACE), sourceAspect: STAND_IN_FACE.sourceAspect } }
+      : {};
     for (const aspect of f.aspects ?? (Object.keys(STILL_ASPECTS) as StillAspect[])) {
       for (const atSec of f.atSec) {
         jobs.push({
@@ -168,12 +252,13 @@ export function stillJobs(
           props: {
             component: f.component,
             props: parsed.data as Record<string, unknown>,
-            layout: f.layout ?? meta.defaultLayout,
+            layout,
             ...(f.graphicRect ? { graphicRect: f.graphicRect } : {}),
             theme,
             frame: { ...STILL_ASPECTS[aspect] },
             background,
             durationSec,
+            ...stand,
           },
         });
       }

@@ -34,6 +34,13 @@ import {
   layoutSlots,
   objectPosYFor,
   videoSlotAt,
+  CONTENT_TRANSFORM_ORIGIN,
+  PIP_RECT,
+  clearOfPicture,
+  pictureZoomAt,
+  pictureZoomStateFor,
+  pipRectFor,
+  pipZoomFor,
 } from "../src/stage";
 import { captionAnchorAvoiding } from "../src/source-fit";
 import {
@@ -308,15 +315,23 @@ describe("graphicSlotFor: fullFrame components (explainer plan, Task 8)", () => 
   // band it played at 0.77 x 0.36 of the frame.
   const frames = [PORTRAIT_FRAME, LANDSCAPE_FRAME];
 
-  it("a ClipScene cue fills the whole frame in both aspects, for every layout", () => {
+  // Narrowed deliberately (§163): this case was "for every layout" in both
+  // aspects. A 16:9 pip-bubble now cuts every box back to keep clear of the
+  // speaker picture, the whole frame included ("the speaker picture in
+  // 16:9" below); every other layout, and every portrait one, still fills
+  // the frame.
+  it("a ClipScene cue fills the whole frame in both aspects, for every layout but a 16:9 pip-bubble", () => {
     expect(FULL_FRAME_SLOT).toEqual({ x: 0, y: 0, w: 1, h: 1 });
     for (const frame of frames) {
       for (const layout of LayoutSchema.options) {
+        if (layout === "pip-bubble" && frame === LANDSCAPE_FRAME) continue;
         expect(graphicSlotFor({ layout, component: "ClipScene" }, frame), layout).toEqual(
           FULL_FRAME_SLOT,
         );
       }
     }
+    const cut = graphicSlotFor({ layout: "pip-bubble", component: "ClipScene" }, LANDSCAPE_FRAME);
+    expect(cut.w).toBeCloseTo(pipRectFor(LANDSCAPE_FRAME).x - 0.03, 9);
   });
 
   // Replaced deliberately (§163): this case was "ignores a routed or
@@ -1066,5 +1081,284 @@ describe("contentTransformFor (user override composes ON TOP of the framing crop
 
   it("a pure translate does not emit a redundant scale(1)", () => {
     expect(contentTransformFor(1, 1, 5, 0)).toBe("translate(5px, 0px)");
+  });
+});
+
+describe("the speaker picture in 16:9 (§163)", () => {
+  const LS = LANDSCAPE_FRAME;
+  const PT = PORTRAIT_FRAME;
+  // Today's portrait bubble, as a literal so a regression cannot hide behind
+  // "the function agrees with itself": Ø 0.30 of the width at y 0.66.
+  const TODAYS_PIP = { x: 0.35, y: 0.66, w: 0.3, h: (0.3 * 1080) / 1920 };
+  const picture = pipRectFor(LS);
+  const near = (a: { x: number; y: number; w: number; h: number }, b: typeof a) => {
+    expect(a.x).toBeCloseTo(b.x, 6);
+    expect(a.y).toBeCloseTo(b.y, 6);
+    expect(a.w).toBeCloseTo(b.w, 6);
+    expect(a.h).toBeCloseTo(b.h, 6);
+  };
+
+  describe("pipRectFor", () => {
+    it("is exactly today's PIP_RECT in a portrait frame, and PIP_RECT keeps today's value", () => {
+      expect(PIP_RECT).toEqual(TODAYS_PIP);
+      expect(pipRectFor(PT)).toEqual(PIP_RECT);
+      // A square frame is not landscape: it keeps the portrait numbers.
+      expect(pipRectFor({ width: 1080, height: 1080 })).toEqual(PIP_RECT);
+    });
+
+    it("is a 302.4 px circle 4% of the width from the right and 6% of the height from the bottom in 1920x1080", () => {
+      near(pipRectFor(LS), {
+        x: (1920 - 76.8 - 302.4) / 1920,
+        y: (1080 - 64.8 - 302.4) / 1080,
+        w: 302.4 / 1920,
+        h: 302.4 / 1080,
+      });
+      // Square in pixels, so corner radius 1 draws a circle.
+      expect(picture.w * LS.width).toBeCloseTo(picture.h * LS.height, 9);
+    });
+  });
+
+  describe("layoutSlots", () => {
+    it("pip-bubble draws the picture as a circle in 16:9, and today's bubble in 9:16", () => {
+      const land = layoutSlots("pip-bubble", DEFAULT_FACE, [], LS).video;
+      expect(land.rect).toEqual(picture);
+      expect(land.cornerRadius).toBe(1);
+      expect(land.opacity).toBe(1);
+      const port = layoutSlots("pip-bubble", DEFAULT_FACE, [], PT).video;
+      expect(port.rect).toEqual(TODAYS_PIP);
+      expect(port.cornerRadius).toBe(1);
+      expect(layoutSlots("pip-bubble")).toEqual(layoutSlots("pip-bubble", DEFAULT_FACE, [], PT));
+    });
+
+    it("graphic-only parks its hidden footage in the same picture: the new one in 16:9, today's in 9:16", () => {
+      const land = layoutSlots("graphic-only", DEFAULT_FACE, [], LS);
+      expect(land.video.rect).toEqual(picture);
+      expect(land.video.opacity).toBe(0);
+      const port = layoutSlots("graphic-only", DEFAULT_FACE, [], PT);
+      expect(port.video.rect).toEqual(TODAYS_PIP);
+      expect(port.video.opacity).toBe(0);
+      expect(port.graphic).toEqual({ x: 0.04, y: 0.14, w: 0.8, h: 0.54 });
+    });
+  });
+
+  describe("pipZoomFor", () => {
+    // sizeFrac is the face box's height (pico's square edge) as a fraction of
+    // the SOURCE height (FaceCropSchema, face.ts FaceBox). A 16:9 source
+    // under `object-fit: cover` in a square picture is height-constrained:
+    // displayed height = max(pictureH, pictureW / (16/9)) = pictureH, so the
+    // picture shows the source's full height and sourceHeightPx = 302.4.
+    // zoom = 0.55 × pictureHeightPx / (sizeFrac × sourceHeightPx)
+    //      = 0.55 × 302.4 / (0.3 × 302.4) = 1.8333…
+    const side = picture.h * LS.height;
+    const shownSourceH = Math.max(side, (picture.w * LS.width) / (16 / 9));
+
+    it("makes the face 55% of the picture's height", () => {
+      expect(shownSourceH).toBeCloseTo(302.4, 9);
+      const face = { centerYFrac: 0.38, sizeFrac: 0.3, sourceAspect: 16 / 9 };
+      expect(pipZoomFor(face, side, shownSourceH)).toBeCloseTo(0.55 / 0.3, 9);
+      expect(pipZoomFor(face, side, shownSourceH)).toBeCloseTo(1.8333, 4);
+    });
+
+    it("is 1 with no face, no size, or a face that is not the frame's subject", () => {
+      expect(pipZoomFor(null, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor(undefined, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor({ centerYFrac: 0.38 }, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor({ centerYFrac: 0.38, sizeFrac: 0.3, subject: "screen" }, side, shownSourceH)).toBe(1);
+    });
+
+    it("never zooms out, and never past 4", () => {
+      expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0.8 }, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0.05 }, side, shownSourceH)).toBe(4);
+      expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0 }, side, shownSourceH)).toBe(1);
+    });
+  });
+
+  describe("clearOfPicture (Review Focus 5)", () => {
+    const leftPicture = { ...picture, x: 0.04 };
+
+    it("a picture on the right cuts the box's right edge to 3% of the width left of the picture", () => {
+      near(clearOfPicture(FULL_FRAME_SLOT, picture), { x: 0, y: 0, w: picture.x - 0.03, h: 1 });
+      const cut = clearOfPicture(SCRIPT_LANDSCAPE_RECT, picture);
+      // 0.86 → picture.x − 0.03 (0.7425); x, y and h untouched.
+      expect(SCRIPT_LANDSCAPE_RECT.x + SCRIPT_LANDSCAPE_RECT.w).toBeCloseTo(0.86, 9);
+      near(cut, { ...SCRIPT_LANDSCAPE_RECT, w: picture.x - 0.03 - SCRIPT_LANDSCAPE_RECT.x });
+    });
+
+    it("a picture moved to the left half cuts the box's LEFT edge instead", () => {
+      const edge = leftPicture.x + leftPicture.w + 0.03;
+      near(clearOfPicture(FULL_FRAME_SLOT, leftPicture), { x: edge, y: 0, w: 1 - edge, h: 1 });
+      near(clearOfPicture(SCRIPT_LANDSCAPE_RECT, leftPicture), {
+        ...SCRIPT_LANDSCAPE_RECT,
+        x: edge,
+        w: 0.86 - edge,
+      });
+    });
+
+    it("a box that would be narrower than 0.08 keeps 0.08, anchored at the cut edge", () => {
+      const right = clearOfPicture({ x: 0.72, y: 0.2, w: 0.2, h: 0.3 }, picture);
+      near(right, { x: picture.x - 0.03 - 0.08, y: 0.2, w: 0.08, h: 0.3 });
+      const edge = leftPicture.x + leftPicture.w + 0.03;
+      const left = clearOfPicture({ x: 0.05, y: 0.2, w: 0.15, h: 0.3 }, leftPicture);
+      near(left, { x: edge, y: 0.2, w: 0.08, h: 0.3 });
+    });
+
+    it("leaves a box already clear of the picture's strip exactly as it was", () => {
+      const clear = { x: 0.05, y: 0.1, w: 0.5, h: 0.8 };
+      expect(clearOfPicture(clear, picture)).toEqual(clear);
+      const clearRight = { x: 0.7, y: 0.1, w: 0.25, h: 0.8 };
+      expect(clearOfPicture(clearRight, leftPicture)).toEqual(clearRight);
+    });
+  });
+
+  describe("graphicSlotFor keeps the graphic clear of the picture", () => {
+    it("is unchanged in a portrait frame, box or no box, picture moved or not", () => {
+      const box = { x: 0.1, y: 0.2, w: 0.7, h: 0.3 };
+      for (const pip of [undefined, { x: 0.02, y: 0.1 }]) {
+        expect(graphicSlotFor({ layout: "pip-bubble", component: "TitleCard", pip }, PT)).toEqual({
+          x: 0.06, y: 0.14, w: 0.78, h: 0.42,
+        });
+        expect(graphicSlotFor({ layout: "pip-bubble", component: "TitleCard", graphicRect: box, pip }, PT)).toEqual(
+          clampGraphicRect(box, PT),
+        );
+        expect(graphicSlotFor({ layout: "pip-bubble", component: "CardRow", pip }, PT)).toEqual(FULL_FRAME_SLOT);
+      }
+      expect(graphicSlotFor({ layout: "pip-bubble" })).toEqual({ x: 0.06, y: 0.14, w: 0.78, h: 0.42 });
+    });
+
+    it("cuts a planned box, a hand-set box and the whole frame back in a 16:9 pip-bubble", () => {
+      const edge = picture.x - 0.03;
+      near(graphicSlotFor({ layout: "pip-bubble", component: "CardRow" }, LS), { x: 0, y: 0, w: edge, h: 1 });
+      near(
+        graphicSlotFor({ layout: "pip-bubble", component: "TitleCard", graphicRect: SCRIPT_LANDSCAPE_RECT }, LS),
+        { ...SCRIPT_LANDSCAPE_RECT, w: edge - SCRIPT_LANDSCAPE_RECT.x },
+      );
+      // The layout's own slot (0.06..0.84) is cut too.
+      near(graphicSlotFor({ layout: "pip-bubble", component: "TitleCard" }, LS), {
+        x: 0.06, y: 0.14, w: edge - 0.06, h: 0.42,
+      });
+    });
+
+    it("follows the picture when the author moves it to the left half", () => {
+      const pip = { x: 0.05, y: 0.1 };
+      const edge = 0.05 + picture.w + 0.03;
+      near(graphicSlotFor({ layout: "pip-bubble", component: "CardRow", pip }, LS), {
+        x: edge, y: 0, w: 1 - edge, h: 1,
+      });
+    });
+
+    it("uses the picture as drawn: a placement off the frame is clamped first", () => {
+      // pip.x 1 draws the picture at 1 − w (cueVideoSlot's clamp), so the cut
+      // edge is that picture's left edge, not 1.
+      const slot = graphicSlotFor({ layout: "pip-bubble", component: "CardRow", pip: { x: 1 } }, LS);
+      near(slot, { x: 0, y: 0, w: 1 - picture.w - 0.03, h: 1 });
+    });
+
+    it("does not cut any other layout, and a stale pip on one is ignored", () => {
+      for (const layout of ["graphic-only", "full-bleed"] as const) {
+        expect(graphicSlotFor({ layout, component: "CardRow", pip: { x: 0.05 } }, LS)).toEqual(FULL_FRAME_SLOT);
+        expect(
+          graphicSlotFor({ layout, component: "TitleCard", graphicRect: SCRIPT_LANDSCAPE_RECT }, LS),
+        ).toEqual(SCRIPT_LANDSCAPE_RECT);
+      }
+    });
+  });
+
+  describe("cueVideoSlot clamps the picture's placement against its real size", () => {
+    it("pip {x: 1, y: 1} in 16:9 puts the circle in the bottom-right corner, whole", () => {
+      const mid = videoSlotAt([{ ...cue("pip-bubble", 2, 6), pip: { x: 1, y: 1 } }], 4, DEFAULT_FACE, [], LS);
+      expect(mid.rect.w).toBe(picture.w);
+      expect(mid.rect.h).toBe(picture.h);
+      expect(mid.rect.x).toBeCloseTo(1 - picture.w, 12);
+      expect(mid.rect.y).toBeCloseTo(1 - picture.h, 12);
+    });
+  });
+
+  describe("the head zoom inside the picture", () => {
+    const face = { centerYFrac: 0.38, centerXFrac: 0.52, sizeFrac: 0.3, sourceAspect: 16 / 9 };
+    const pipCues = [cue("pip-bubble", 2, 6)];
+
+    it("eases in with the picture and settles at pipZoomFor in a 16:9 pip-bubble", () => {
+      const side = picture.h * LS.height;
+      expect(pictureZoomAt(pipCues, 4, face, LS)).toBeCloseTo(pipZoomFor(face, side, side), 9);
+      expect(pictureZoomAt(pipCues, 1, face, LS)).toBe(1);
+      expect(pictureZoomAt(pipCues, 2, face, LS)).toBe(1);
+      const entering = pictureZoomAt(pipCues, 2 + LAYOUT_TRANSITION_SEC / 2, face, LS);
+      expect(entering).toBeGreaterThan(1);
+      expect(entering).toBeLessThan(pipZoomFor(face, side, side));
+      expect(pictureZoomAt(pipCues, 6 - 1e-6, face, LS)).toBeCloseTo(1, 3);
+    });
+
+    it("is 1 with no measured face, in any other layout, and in every portrait frame", () => {
+      expect(pictureZoomAt(pipCues, 4, null, LS)).toBe(1);
+      expect(pictureZoomAt(pipCues, 4, undefined, LS)).toBe(1);
+      expect(pictureZoomAt([cue("graphic-only", 2, 6)], 4, face, LS)).toBe(1);
+      for (let t = 0; t <= 7; t += 0.05) {
+        expect(pictureZoomAt(pipCues, t, face, PT)).toBe(1);
+      }
+    });
+
+    it("centres the face in the picture when the source has room around it", () => {
+      const slot = videoSlotAt(pipCues, 4, face, [], LS);
+      const scale = pictureZoomAt(pipCues, 4, face, LS);
+      const state = pictureZoomStateFor(slot, face, scale, LS)!;
+      expect(state.scale).toBe(scale);
+      const w = slot.rect.w * LS.width;
+      const h = slot.rect.h * LS.height;
+      // Where the face is in the picture before the zoom: the 16:9 source
+      // is height-constrained (dispH = h), and objectPosX centres it.
+      const dispW = h * (16 / 9);
+      const px = -slot.objectPosX * (dispW - w) + face.centerXFrac * dispW;
+      const py = face.centerYFrac * h;
+      // The zoom is about the content origin (50% 40%) + (dx, dy).
+      const ox = CONTENT_TRANSFORM_ORIGIN.x * w + state.dx;
+      const oy = CONTENT_TRANSFORM_ORIGIN.y * h + state.dy;
+      expect(ox + scale * (px - ox)).toBeCloseTo(w / 2, 6);
+      expect(oy + scale * (py - oy)).toBeCloseTo(h / 2, 6);
+    });
+
+    it("never pulls the zoom origin outside the picture, so the footage still covers it, and the face stays in", () => {
+      const high = { ...face, centerYFrac: 0.08, centerXFrac: 0.02 };
+      const slot = videoSlotAt(pipCues, 4, high, [], LS);
+      const scale = pictureZoomAt(pipCues, 4, high, LS);
+      const state = pictureZoomStateFor(slot, high, scale, LS)!;
+      const w = slot.rect.w * LS.width;
+      const h = slot.rect.h * LS.height;
+      const ox = CONTENT_TRANSFORM_ORIGIN.x * w + state.dx;
+      const oy = CONTENT_TRANSFORM_ORIGIN.y * h + state.dy;
+      expect(ox).toBeGreaterThanOrEqual(0);
+      expect(ox).toBeLessThanOrEqual(w);
+      expect(oy).toBeGreaterThanOrEqual(0);
+      expect(oy).toBeLessThanOrEqual(h);
+      const py = high.centerYFrac * h;
+      const landed = oy + scale * (py - oy);
+      expect(landed).toBeGreaterThanOrEqual(py - 1e-9);
+      expect(landed).toBeLessThanOrEqual(h / 2 + 1e-9);
+    });
+
+    it("has no state at scale 1, so the transform is exactly today's", () => {
+      const slot = videoSlotAt(pipCues, 4, face, [], PT);
+      expect(pictureZoomStateFor(slot, face, 1, PT)).toBeNull();
+    });
+
+    it("a portrait pip-bubble cue's content transform equals today's at every moment", () => {
+      // Today: contentTransformFor(zoom, scale, dx, dy) alone. The picture
+      // term must add nothing in 9:16, through the transition and settled.
+      for (let t = 1.9; t <= 6.1; t += 0.05) {
+        const slot = videoSlotAt(pipCues, t, face, [], PT);
+        const state = pictureZoomStateFor(slot, face, pictureZoomAt(pipCues, t, face, PT), PT);
+        for (const [z, s, dx, dy] of [[1, 1, 0, 0], [1.04, 1, 0, 0], [1.02, 1.3, 6, -4]] as const) {
+          expect(contentTransformFor(z, s, dx, dy, state)).toBe(contentTransformFor(z, s, dx, dy));
+        }
+      }
+    });
+
+    it("adds the head zoom after the existing transform, about its own origin", () => {
+      expect(contentTransformFor(1, 1, 0, 0, { scale: 2, dx: 10, dy: -5 })).toBe(
+        "translate(10px, -5px) scale(2) translate(-10px, 5px)",
+      );
+      expect(contentTransformFor(1.05, 1, 3, 0, { scale: 1.5, dx: 0, dy: 0 })).toBe(
+        "translate(3px, 0px) scale(1.05) scale(1.5)",
+      );
+    });
   });
 });

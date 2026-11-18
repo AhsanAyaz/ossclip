@@ -9,7 +9,15 @@ import type {
   ZoomSegment,
 } from "@ossclip/core/browser";
 import { zoomScaleAt } from "@ossclip/core/browser";
-import { activeCueAt, backdropOpacityAt, contentTransformFor, videoSlotAt } from "./stage";
+import {
+  CONTENT_TRANSFORM_ORIGIN,
+  activeCueAt,
+  backdropOpacityAt,
+  contentTransformFor,
+  pictureZoomAt,
+  pictureZoomStateFor,
+  videoSlotAt,
+} from "./stage";
 import {
   activeCropBox,
   sourceFitBox,
@@ -135,10 +143,20 @@ export const VideoStage: React.FC<{
   const userScale = userVideo?.scale ?? 1;
   const userDx = userVideo?.dx ?? 0;
   const userDy = userVideo?.dy ?? 0;
+  // The 16:9 speaker picture's head zoom (§163): the face at 55% of the
+  // circle, centred. Eased with the slot, from the MEASURED face only (an
+  // unmeasured one keeps the existing crop), and 1 in every portrait frame
+  // and every layout but pip-bubble, so those transforms are unchanged.
+  // Off under `contain` for the idle zoom's reason: that mode promises the
+  // whole frame. Not modelled: a mixed-framing crop box (ContentCrop below)
+  // moves the face away from the plain cover the origin is solved against —
+  // the zoom still holds the picture covered, it may just centre less well.
+  const pictureZoom = fitContain || !face ? 1 : pictureZoomAt(cues, t, face, outFrame);
+  const picture = face ? pictureZoomStateFor(slot, face, pictureZoom, outFrame) : null;
   // Built OUTSIDE the crop on purpose: the transform wraps ContentCrop below,
   // so a user correction composes ON TOP of the framing plan instead of being
   // consumed by it (see contentTransformFor's contract).
-  const contentTransform = contentTransformFor(zoom, userScale, userDx, userDy);
+  const contentTransform = contentTransformFor(zoom, userScale, userDx, userDy, picture);
 
   // Value-derived id (see colorGradeFilterId): two stages in one document can
   // only collide when their grades are identical, which makes the collision
@@ -202,7 +220,8 @@ export const VideoStage: React.FC<{
             filter: stageFilterFor(gradeId, slot.blurPx),
             transform: contentTransform,
             // Zoom toward the face, which the crop bias keeps in the upper part.
-            transformOrigin: "50% 40%",
+            // "50% 40%": the head zoom states its own origin relative to this.
+            transformOrigin: `${CONTENT_TRANSFORM_ORIGIN.x * 100}% ${CONTENT_TRANSFORM_ORIGIN.y * 100}%`,
             // Crop bias consumed by EdlVideo's object-position (FINDINGS §11/§13):
             // derived from the measured face so the head lands in the band.
             ["--ossclip-obj-y" as string]: `${slot.objectPosY * 100}%`,
