@@ -17,6 +17,9 @@ per visible scene (transparent around the graphic, or on the theme background in
 - `clip:` scenes point at the author's original file (skipped with a note when it moved)
 - WSL paths: `/mnt/c/...` becomes `file:///C:/...`; a Linux-side path becomes a `wsl.localhost` URL plus a warning
 - `kit-report.json`: per clip the status (`rendered | reused | skipped`), reuse key and notes
+- `captions.srt` on every run (`--clips-only` too, and whatever `--no-captions` or the editor's hide did): one entry
+  per caption line with words and a positive length, `\r\n` endings, UTF-8 with no BOM; the report's `captions`
+  is `{ srt, lines, skipped }`, and with no lines there is no file and `srt` is null (FINDINGS §164)
 
 ## How to get to it (user POV)
 
@@ -25,7 +28,8 @@ ossclip kit <workdir>                        # beside the source: <video name>-k
 ossclip kit <workdir> --out /mnt/c/Users/me/Videos/kit
 ```
 
-Then in Resolve: File → Import → Timeline…, pick `timeline.fcpxml`.
+Then in Resolve: File → Import → Timeline…, pick `timeline.fcpxml`; then File → Import → Subtitle…, pick
+`captions.srt`, and drag it onto the timeline.
 
 ## Driving it with the CLI
 
@@ -73,6 +77,23 @@ pnpm ossclip kit "$W" --out "$S/kit"
   Render leaves.
 
 The same flows run with fake seams in `apps/cli/test/kit-command.test.ts`.
+
+### captions.srt (FINDINGS §164)
+
+The same export writes it; no flag. Check it with `od -c "$S/kit/captions.srt" | head` and the report's `captions`.
+
+**Proves it works** (2026-11-18, the fixture above):
+
+- The run ends with `  Subtitles: File → Import → Subtitle…, pick captions.srt, then drag it onto the timeline`
+  after the `In Resolve:` line, also under `--clips-only`.
+- `captions.srt` is 374 bytes, 7 entries for `render-props.json`'s 7 `captionLines`, and starts
+  `1 \r \n 0 0 : 0 0 : 0 0 , 2 3 4 - - > 0 0 : 0 0 : 0 2 , 0 0 7 \r \n H e l l o   e v e r y o n e   w e l c o m e \r \n \r \n 2`
+  in `od -c`: no BOM, `\r\n` everywhere, ending `a u t o m a t i c a l l y \r \n`. The report has
+  `"captions": {"srt": "captions.srt", "lines": 7, "skipped": 0}`.
+- A second run reuses all six clips and rewrites the same bytes (same sha256). With `"captions"` deleted from
+  `kit-report.json` (a report from before the field), the next run still reuses all six.
+- With `captionLines` set to `[]` in `render-props.json`: `▸ no captions in this project; captions.srt not written`,
+  no `Subtitles:` line, the old file gone, and `"captions": {"srt": null, "lines": 0, "skipped": 0}`.
 
 ### Backdrops: background clips and the speaker-picture note (FINDINGS §163)
 

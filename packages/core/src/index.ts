@@ -50,6 +50,7 @@ export * from "./export-fcpxml";
 export * from "./export-fcpxml-kit";
 export * from "./frames";
 export * from "./kit-plan";
+export * from "./kit-captions";
 export * from "./kit-paths";
 export * from "./kit-rebase";
 export * from "./export-edl";
