@@ -61,7 +61,7 @@ Both are reworded, so the similarity detector (§128) scores them under its bar,
 *   The same function is called at the second place those detectors run (the clip-window re-derivation), on the sliced transcript.
 *   It runs for a `--script` run, and for a `--scenes` replay whose stored script record says the pass ran when its scenes were planned (a new field on the stored record). A project planned before this feature has no such field, so its replays cut as before (G6).
 *   It runs with or without `--blooper-marker`. The rule "no inferred retakes without the marker" exists because those cuts had no evidence from the author; here the script is the evidence. Decision 1.
-*   The module is pure, in core beside `script/align.ts`. It reuses that file's token and in-order-match helpers (exported for it), `isSentenceStart`, and the silence-fraction helper of `retake.ts` (exported).
+*   The module is pure, in core beside `script/align.ts`. It reuses that file's token and in-order-match helpers (exported for it) and `isSentenceStart`.
 
 ### 2. Units
 
@@ -74,7 +74,7 @@ Both are reworded, so the similarity detector (§128) scores them under its bar,
 *   A candidate window starts and ends on a matched word and holds at most 2 words per unit token.
 *   It needs a score of 0.6 or more, 4 or more matched tokens, and 2 or more matched content tokens. The last rule stops a match made of "so", "the", "I", "was".
 *   **Overlaps.** Windows of one unit are taken in this order: most matched tokens per window word, then higher score, then earlier start. A window that overlaps one already taken is dropped. Without the first key, one window spanning two adjacent takes outscores both and hides the retake; the prototype showed this.
-*   An occurrence whose span is 65% or more silence is dropped (`HALLUCINATION_SILENCE_FRAC`, the existing measure): a line whisper repeated over dead air must not become the kept take.
+*   An occurrence is dropped when half or more of its words have their midpoint inside a measured silence: a line whisper repeated over dead air must not become the kept take. (Changed during the build. The first rule was the existing span measure, 65% of the span being silence. On the EGM transcript it dropped both real takes of "The elephant [7 s pause] never forgets.", because a speaker who stops mid-line leaves a span that is mostly silence. See FINDINGS §166.)
 
 ### 4. When two occurrences are takes
 
@@ -124,7 +124,7 @@ A prototype of sections 2 and 3 (without the similarity-group exclusion and the 
 
 ## Verification
 
-*   **Unit tests:** unit splitting; twins in both directions; the overlap order, with two adjacent takes; each limit pinned on both sides (0.6, 4 tokens, 2 content tokens, 0.7, B at least A, 25 words, 65% silence); a different unit between takes, said again and not said again; both 3-word boundary moves; three takes; marker-cut words and similarity-group members are not candidates.
+*   **Unit tests:** unit splitting; twins in both directions; the overlap order, with two adjacent takes; each limit pinned on both sides (0.6, 4 tokens, 2 content tokens, 0.7, B at least A, 25 words, half the words in silence); a different unit between takes, said again and not said again; both 3-word boundary moves; three takes; marker-cut words and similarity-group members are not candidates.
 *   **Recorded-transcript test:** the EGM transcript and analysis as a fixture, with the cue script. Expected cuts: the three above, no other.
 *   **Unchanged output:** no script, same cutlist (existing tests). A script project with no repeated unit, same cutlist. A stored script record without the new field, same cutlist on replay.
 *   **Replay:** a `--scenes` replay of a project planned with the pass builds the same cutlist as its first run.

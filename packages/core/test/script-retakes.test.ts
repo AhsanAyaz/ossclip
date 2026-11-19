@@ -177,14 +177,28 @@ describe("findScriptRetakes", () => {
     expect(findScriptRetakes([cue([ELEPHANT])], t, [], excluded)).toEqual([]);
   });
 
-  it("an occurrence over dead air is dropped", () => {
+  it("an occurrence with half its words inside silence is dropped", () => {
     const t = speak(EGM);
-    // The later take is words 17..20.
-    const start = t.words[17]!.start;
-    const end = t.words[20]!.end;
-    const covering = (frac: number): Span[] => [{ start, end: start + frac * (end - start) }];
-    expect(findScriptRetakes([cue([ELEPHANT])], t, covering(0.7), NONE)).toEqual([]);
-    expect(findScriptRetakes([cue([ELEPHANT])], t, covering(0.6), NONE)).toHaveLength(1);
+    // The later take is words 17..20. A silence over a word's midpoint puts
+    // that word in dead air.
+    const over = (from: number, to: number): Span[] => [
+      { start: t.words[from]!.start, end: t.words[to]!.end },
+    ];
+    expect(findScriptRetakes([cue([ELEPHANT])], t, over(17, 18), NONE)).toEqual([]);
+    expect(findScriptRetakes([cue([ELEPHANT])], t, over(17, 17), NONE)).toHaveLength(1);
+  });
+
+  // The EGM field shape (FINDINGS §166): "The elephant [7 s pause] in this
+  // case never forgets." 75% of the take's SPAN is silence, and a span
+  // measure dropped it; its words are speech.
+  it("a long pause inside a real take does not make it dead air", () => {
+    const t = speak(EGM);
+    // Take one is words 3..9. Stretch a pause between words 4 and 5 by
+    // moving every later word 20 s on.
+    const words = t.words.map((w, i) => (i >= 5 ? { ...w, start: w.start + 20, end: w.end + 20 } : w));
+    const paused = { ...t, words };
+    const pause: Span[] = [{ start: words[4]!.end, end: words[5]!.start }];
+    expect(findScriptRetakes([cue([ELEPHANT])], paused, pause, NONE)).toHaveLength(1);
   });
 
   it("three takes in a row cut the first two", () => {

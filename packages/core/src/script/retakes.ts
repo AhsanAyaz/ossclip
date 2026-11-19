@@ -10,9 +10,7 @@
  * PURE: no I/O, no LLM (G5). Same input, same cut, so a `--scenes` replay
  * cuts what the reviewed run cut (G6). `ScriptCue`, `BloopSpan` and
  * `RetakeGroup` are imported as types only, the align.ts posture (cues.ts
- * uses `node:crypto` for ids). Not browser-safe all the same: the silence
- * measure is retake.ts's own (design §1), and retake.ts imports ./analyze,
- * which imports ./exec. Nothing in the editor needs this module.
+ * uses `node:crypto` for ids).
  *
  * Every limit below was chosen on one recording (design, "How strong the
  * evidence is"). They are pinned on both sides in script-retakes.test.ts.
@@ -20,7 +18,6 @@
 import type { BloopSpan } from "../blooper";
 import { isSentenceStart } from "../clip";
 import { normalizeAlignToken } from "../restamp";
-import { HALLUCINATION_SILENCE_FRAC, silenceFraction } from "../retake";
 import type { RetakeGroup } from "../retake";
 import type { Span, Transcript } from "../schema";
 import { ALIGN_FLOOR, ALIGN_SPAN_FACTOR, extendRow, inOrderMatches, scriptTokens } from "./align";
@@ -32,6 +29,11 @@ import type { ScriptCue } from "./cues";
  * ways in any recording and proves nothing about a take.
  */
 export const SCRIPT_RETAKE_MIN_TOKENS = 4;
+/**
+ * An occurrence is dead air when this share of its words have their midpoint
+ * inside a measured silence (design §3).
+ */
+export const SCRIPT_RETAKE_DEAD_AIR_WORDS = 0.5;
 /** Two units scoring this against each other, either way, are both dropped (design §2). */
 export const SCRIPT_RETAKE_TWIN = 0.6;
 /**
@@ -216,10 +218,19 @@ function occurrencesOf(
       for (let i = s; i <= e; i++) if (content.has(cand[i]!.tok)) seen.add(cand[i]!.tok);
       if (seen.size < SCRIPT_RETAKE_MIN_CONTENT) continue;
       // A line whisper repeated over dead air must not become the kept take
-      // (design §3), measured as retake.ts's hallucination guard measures it.
-      const startSec = transcript.words[cand[s]!.index]!.start;
-      const endSec = transcript.words[cand[e]!.index]!.end;
-      if (silenceFraction(silences, startSec, endSec) >= HALLUCINATION_SILENCE_FRAC) continue;
+      // (design §3). Counted in WORDS, not as a share of the span: the span
+      // measure of retake.ts dropped both real takes of "The elephant [7 s
+      // pause] never forgets." on the EGM recording (§166), because a
+      // speaker who stops mid-line leaves a span that is mostly silence. A
+      // hallucinated line has its words stamped inside the silence; a real
+      // one has them around it.
+      let inSilence = 0;
+      for (let i = s; i <= e; i++) {
+        const w = transcript.words[cand[i]!.index]!;
+        const mid = (w.start + w.end) / 2;
+        if (silences.some((sil) => sil.start <= mid && mid < sil.end)) inSilence++;
+      }
+      if (inSilence / (e - s + 1) >= SCRIPT_RETAKE_DEAD_AIR_WORDS) continue;
       windows.push({ unit: unitIndex, s, e, m, score });
     }
   }
@@ -332,6 +343,6 @@ export function formatScriptRetake(transcript: Transcript, r: ScriptRetake): str
       .join(" ");
   return (
     `kept: "${said(r.kept.startWord, r.kept.endWord)}"\n` +
-    `  cut (said again ${r.wordsBetween} words later; script: "${r.unit}"): "${said(r.cut.startWord, r.cut.endWord)}"`
+    `  cut (said again ${r.wordsBetween} word${r.wordsBetween === 1 ? "" : "s"} later; script: "${r.unit}"): "${said(r.cut.startWord, r.cut.endWord)}"`
   );
 }

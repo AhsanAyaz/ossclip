@@ -245,7 +245,7 @@ function silenceOverlap(silences: readonly Span[], start: number, end: number): 
   return covered;
 }
 
-export function silenceFraction(silences: readonly Span[], start: number, end: number): number {
+function silenceFraction(silences: readonly Span[], start: number, end: number): number {
   const dur = end - start;
   if (dur <= 0) return 0;
   return Math.min(1, silenceOverlap(silences, start, end) / dur);
