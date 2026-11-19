@@ -1931,3 +1931,30 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   **A real word between two cuts is dropped.** `MIN_KEEP_AFTER_RETAKE` folds a keep of 0.35 s or less that follows a retake cut, words or not, because that shape is usually debris (the 2026-08-16 "And"). Here it took "AI." (0.18 s between a 7 s silence and a marked take), "But" and "And you", so the cut reads "choreographed by that's not the cool part" and "know what? They were actually right." Duration cannot tell a real short word from debris.
 
 **Lesson for the recording.** The marker works when it follows the flub directly. A speaker who restarts without it, or who starts a line, stops for several seconds and goes on, leaves work for the finishing editor.
+
+## 166. Script runs cut the earlier take of a script sentence said twice (2026-11-19)
+
+**Why it exists.** §165 left two retakes that no rule could catch: the speaker reworded the line and said no marker. Both lines are in the script. A script run now uses the script as the reference: two stretches that both say one script sentence are two takes of it, and the earlier one is cut. Design: `docs/designs/script-guided-retakes.md`. Code: `packages/core/src/script/retakes.ts`, pure, no LLM.
+
+**The rules, in one place.**
+
+*   A unit is one sentence of a cue's spoken lines with 4 or more tokens. Two units that score 0.6 against each other are both skipped ("One flag for the theme." / "One flag for the AI.").
+*   An occurrence needs a score of 0.6, 4 matched tokens and 2 tokens of 4 or more letters. Words cut by a marker, and words of any similarity group (§128), are not candidates: what that detector declined stays declined.
+*   Two consecutive occurrences are takes when the later one scores 0.7 or more and at least as high as the earlier, at most 25 candidate words lie between them, and no other unit is said once between them.
+*   The cut runs from the earlier take's start to the later take's start, each moved back at most 3 words to a sentence start. Confidence 0.8.
+*   It runs in every `--script` run, with or without `--blooper-marker` (the author's decision: the script is the author's own evidence). The stored script record gains `retakePass: 1`; a `--scenes` replay runs the pass only when the record has it, so a project planned before this feature keeps its cutlist under its pinned scenes.
+
+**Two things the build found.**
+
+*   **A window over two adjacent takes hides them.** Ranked by score, one window from the first "So first…" to the end of the second outscores either take, and the pair becomes a single occurrence. Windows are ranked by matched tokens per window word first.
+*   **Dead air must be counted in words.** The first rule reused §128's measure, the share of the span that is silence, at 65%. On the recorded transcript it dropped both takes of "The elephant [7 s pause] in this case never forgets." and "The [4.7 s pause] elephant never forgets.": a speaker who stops mid-line leaves a span that is mostly silence. An occurrence is now dead air when half or more of its words have their midpoint inside a silence (1 of 7 and 1 of 4 here). This is the same shape §165 records against the similarity detector's guard, which is unchanged.
+
+**Measured.** On the raw EGM transcript (1076 words, 143 silences, kept as `packages/core/test/fixtures/egm-retakes.json`) with the cue script: 24 units, two cuts, "The elephant in this case never forgets. It always has the design and context in its memory." (155.20–168.23 s) and "So first off, I went into the terminal and typed EGM." (366.39–369.17 s), and no other. With the full script: 48 units and the elephant cut only, because that script has no "So first of all" sentence. `script-retakes-egm.test.ts` pins both results.
+
+**Limits.**
+
+*   Every number above was chosen on this one recording. Two kept takes pass the 0.7 bar at 0.75.
+*   Only sentences under a cue are units. A retake of any other line still needs the marker.
+*   The later take is kept. The editor can restore the cut; it cannot swap the takes.
+*   The first `--script` run of an existing project after this change plans again (one LLM call), because the plan cache is keyed on the kept words.
+*   `report.txt` prints the section only when the cutlist honoured the cuts. The older "retakes collapsed" block has no such gate; that is unchanged.
