@@ -298,6 +298,15 @@ export const ProductionScriptSchema = z.object({
       }),
     )
     .optional(),
+  /**
+   * Set when this project's scenes were planned with the script retake pass
+   * running (FINDINGS §166; script-guided-retakes design §1, G6). A `--scenes`
+   * replay repeats the pass only when it is set: a project planned before
+   * the pass has no field, and adding cuts under scenes reviewed without them
+   * would change the cutlist the author approved. A literal, not a boolean,
+   * so a later revision of the pass can be told apart from this one.
+   */
+  retakePass: z.literal(1).optional(),
 });
 export type ProductionScript = z.infer<typeof ProductionScriptSchema>;
 

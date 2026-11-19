@@ -85,6 +85,11 @@ import {
   formatBloopSpan,
   findRetakeGroups,
   formatRetakeGroup,
+  findScriptRetakes,
+  formatScriptRetake,
+  scriptRetakeExcluded,
+  SCRIPT_RETAKE_CONFIDENCE,
+  type ScriptRetake,
   RESTART_PREFIX_CONFIDENCE,
   type RetakeGroup,
   formatUsageLine,
@@ -306,6 +311,8 @@ import {
   scriptPlanCacheKey,
   scriptPlanCacheKeyCandidates,
   scriptPlanCutlist,
+  scriptRetakeCues,
+  scriptRetakesHonoured,
   scriptSourcePath,
   storedScriptFrom,
   type CueOutcome,
@@ -3075,11 +3082,16 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // Truthiness, as every other `opts.scenes` test in this file (the scenes
   // read and `scriptRecord`): they must agree on what counts as a replay.
   const scenesPinned = Boolean(opts.scenes);
+  const storedScript = scenesPinned ? priorScript(work) : undefined;
   const scriptProject = isScriptProject({
     scriptFlag: scriptRun !== undefined,
     scenesPinned,
-    storedScript: scenesPinned ? priorScript(work) : undefined,
+    storedScript,
   });
+  // The script retake pass's cues (§166), from the same read and for the
+  // same reason: a replay learns whether its scenes were planned with the
+  // pass only from the record this run is about to overwrite (design §1, G6).
+  const retakeCues = scriptRetakeCues({ scriptCues: scriptRun?.cues, scenesPinned, storedScript });
 
   // §131 residue: a folder re-key (clips renamed/added/removed → new content
   // hash) correctly lands in a fresh workdir, but any editor edits saved in
@@ -3523,6 +3535,31 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       }
     }
   }
+  // Retakes found with the script (§166): one script sentence said twice in
+  // a row, the earlier take cut — the reworded retakes §128's similarity bar
+  // cannot see and no marker was said over (§165). On the same RAW transcript
+  // and the same `silences` as the two detectors above (design §1), and on
+  // the words neither claimed: what §128 declined to cut stays declined.
+  // Not gated on the marker: the script is the evidence the marker gate asks
+  // for (design Decision 1). Appended AFTER the "▸ retakes" line above, so
+  // that line's take count stays §128's own.
+  let scriptRetakes: ScriptRetake[] = retakeCues
+    ? findScriptRetakes(retakeCues, transcript, silences, scriptRetakeExcluded(bloops, retakeGroups))
+    : [];
+  retakes = [...retakes, ...scriptRetakes.map((r) => ({ ...r.cut, confidence: SCRIPT_RETAKE_CONFIDENCE }))];
+  // Only where the pass ran, so a run without a script prints what it always
+  // printed (G7). `exact` prints nothing new: nothing is cut, and the
+  // "▸ retakes" line above already says why when the marker is on.
+  if (retakeCues && opts.cleanup !== "exact") {
+    console.log(
+      scriptRetakes.length > 0
+        ? `▸ script retakes: ${scriptRetakes.length} take(s) cut`
+        : "▸ script retakes: none found",
+    );
+    for (const r of scriptRetakes) {
+      for (const line of formatScriptRetake(transcript, r).split("\n")) console.log(`  ▸ ${line}`);
+    }
+  }
   let cutlist: Segment[] = buildCutlist({
     transcript,
     analysis,
@@ -3545,7 +3582,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // `exact` also collapses to this exact single-keep shape (buildCutlist's
   // own early return) and is not the valve — "touch nothing" is the ask, not
   // a failure, so it's excluded here rather than misreported as one.
-  const valveFired = opts.cleanup !== "exact" && cutlist.length === 1 && cutlist[0]!.kind === "keep";
+  // `let`: the clip re-derivation rebuilds the cutlist and re-asks, because
+  // report.txt's script-retake block reads it there (§166, design §6).
+  let valveFired = opts.cleanup !== "exact" && cutlist.length === 1 && cutlist[0]!.kind === "keep";
   if (retakes.length > 0 && valveFired) {
     console.log(
       "  ⚠ retake collapse found a retake, but the sanity valve reset the whole cutlist — nothing was cut",
@@ -3948,19 +3987,28 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     retakeGroups = retakesEnabled
       ? findRetakeGroups(rawTranscript, analysis, { transparentMarker: opts.blooperMarker })
       : [];
-    retakes = retakeCutsFor(retakeGroups);
-    cutlist = boundCutlistToWindow(
-      buildCutlist({
-        transcript: rawTranscript,
-        analysis,
-        duration: sourceProbe.duration,
-        level: opts.cleanup,
-        bloops,
-        retakes,
-      }),
-      clipWindow,
-      sourceProbe.duration,
-    );
+    // The script pass (§166) re-runs here for the same reason, on the same
+    // slice and `silences` (design §1). Its cues are the run's, unchanged.
+    scriptRetakes = retakeCues
+      ? findScriptRetakes(retakeCues, rawTranscript, silences, scriptRetakeExcluded(bloops, retakeGroups))
+      : [];
+    retakes = [
+      ...retakeCutsFor(retakeGroups),
+      ...scriptRetakes.map((r) => ({ ...r.cut, confidence: SCRIPT_RETAKE_CONFIDENCE })),
+    ];
+    const built = buildCutlist({
+      transcript: rawTranscript,
+      analysis,
+      duration: sourceProbe.duration,
+      level: opts.cleanup,
+      bloops,
+      retakes,
+    });
+    // Asked of buildCutlist's OWN output, before the window bound: bounding
+    // wraps a valve's single whole-take `keep` in `clip` removals, and the
+    // shape the first site tests for would never match after it.
+    valveFired = opts.cleanup !== "exact" && built.length === 1 && built[0]!.kind === "keep";
+    cutlist = boundCutlistToWindow(built, clipWindow, sourceProbe.duration);
     map = new TimeMap(cutlist);
   };
   if (opts.scenes) {
@@ -5921,7 +5969,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     ? (() => {
         const clipPaths = scriptRun.cues.flatMap((c) => (c.hint.kind === "clip" ? [c.hint.path] : []));
         const clips = mergeClipRecords(scriptPrior?.clips ?? [], scriptClipRecords, clipPaths);
-        return { text: scriptRun.text, sourcePath: scriptSource, ...(clips.length > 0 ? { clips } : {}) };
+        // `retakePass: 1`: this run's scenes were planned on a cut the
+        // script retake pass shaped (§166), so its replays must repeat it
+        // (design §1, G6). A replay below carries the field as stored.
+        return {
+          text: scriptRun.text,
+          sourcePath: scriptSource,
+          ...(clips.length > 0 ? { clips } : {}),
+          retakePass: 1 as const,
+        };
       })()
     : opts.scenes
       ? priorScript(work)
@@ -6016,6 +6072,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     report +=
       "\nretakes collapsed (runs with --blooper-marker — FINDINGS §128):\n" +
       retakeGroups.map((g) => formatRetakeGroup(rawTranscript, g)).join("\n") +
+      "\n";
+  }
+  // §166: the same debt as §128's block above, owed harder — nothing SAID
+  // these were retakes, only the script did, so the user gets both the words
+  // kept and the words cut (G4). Only when the cutlist kept the cuts: with
+  // `--cleanup exact` or a fired sanity valve the video still has them, and
+  // a "found" section would read as a cut that never happened (design §6).
+  // `rawTranscript`: the pass's word indices are into it, sliced or not.
+  if (scriptRetakes.length > 0 && scriptRetakesHonoured(opts.cleanup, valveFired)) {
+    report +=
+      "\nretakes found with the script (FINDINGS §166):\n" +
+      scriptRetakes.map((r) => formatScriptRetake(rawTranscript, r)).join("\n") +
       "\n";
   }
   // PLAN 2026-08-04 Task 4: the removed ranges themselves are already in the
