@@ -1,7 +1,7 @@
 # Cutting retakes with the script
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Draft 2 for the author (2026-11-19). Revised after three reviews (design, scope, code accuracy); the changes are listed at the end
+*   **Status:** Approved by the author (2026-11-19), all three decisions as recommended. Revised after three reviews (design, scope, code accuracy); the changes are listed at the end
 *   **Builds on:** FINDINGS §122 (spoken marker), §128 and §135 (retake collapse), §158 (script cues), §165 (the survivors this design answers)
 
 --------------------------------------------------------------------------------
