@@ -4,6 +4,7 @@ import {
   isStoryboardCommand,
   renderReplayArgs,
   reviewedScenesText,
+  storyboardSyncArgs,
 } from "../src/render-replay-args";
 
 /**
@@ -173,5 +174,59 @@ describe("reviewedScenesText", () => {
     expect(reviewedScenesText(JSON.stringify({ scenes: "x" }))).toBeUndefined();
     expect(reviewedScenesText("null")).toBeUndefined();
     expect(reviewedScenesText("{ not json")).toBeUndefined();
+  });
+});
+
+describe("storyboardSyncArgs (plan B2a Task 4; §169)", () => {
+  it("a storyboard record: --no-render and --open-editor go, --no-open-editor is added, the rest is kept", () => {
+    expect(
+      storyboardSyncArgs(["produce", "in.mp4", "--storyboard", "--assets", "/v/a", "--no-render", "--open-editor", "-o", "out.mp4"], "/v/a"),
+    ).toEqual(["produce", "in.mp4", "--storyboard", "-o", "out.mp4", "--assets", "/v/a", "--no-open-editor"]);
+  });
+
+  it("a Render's record (--scenes, no --storyboard): --scenes goes with its value and --storyboard is added", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--render", "--scenes", "/w/scenes-reviewed.json"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--no-open-editor",
+    ]);
+  });
+
+  it("the storyboard's assets folder replaces a recorded one; with none given a recorded one is kept", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--assets", "/old"], "/new")).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--assets",
+      "/new",
+      "--no-open-editor",
+    ]);
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--storyboard", "--assets", "/old"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--assets",
+      "/old",
+      "--no-open-editor",
+    ]);
+  });
+
+  it("--review goes: it contradicts --no-open-editor, and the run would refuse to start", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--review", "--storyboard"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--no-open-editor",
+    ]);
+  });
+
+  it("flags already in place are not doubled", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--storyboard", "--no-open-editor"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--no-open-editor",
+    ]);
   });
 });

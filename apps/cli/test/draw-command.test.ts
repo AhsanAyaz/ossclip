@@ -372,7 +372,18 @@ describe("runDraw --idea", () => {
       nextVersion: 2,
       notes: [],
     });
-    expect(h.versions).toEqual([{ n: 1, result: "ok", kitVersion: 1, promptVersion: 1, said: expect.stringContaining("goldfish") }]);
+    // Each version records the idea and length it was drawn from (§169).
+    expect(h.versions).toEqual([
+      {
+        n: 1,
+        result: "ok",
+        kitVersion: 1,
+        promptVersion: 1,
+        said: expect.stringContaining("goldfish"),
+        idea: "a goldfish swims in and says hello",
+        durationSec: 4,
+      },
+    ]);
     expect(h.runs).toHaveLength(1);
     expect(h.runs[0]).toMatchObject({ version: 1, provider: "mock", calls: 1 });
     // The record round-trips: what is on disk is what the next load returns.
@@ -489,7 +500,9 @@ describe("runDraw --idea", () => {
     world.typecheckThrows = new Error("drawn-scene type check: the ossclip install is incomplete");
     await expect(runDraw(idea(), world.deps)).rejects.toThrow(/install is incomplete/);
     // On disk: the version, with no result (an interrupted run looks the same).
-    expect(rawRecord().versions).toEqual([{ n: 1, kitVersion: 1, promptVersion: 1 }]);
+    expect(rawRecord().versions).toEqual([
+      { n: 1, kitVersion: 1, promptVersion: 1, idea: "a goldfish swims in and says hello", durationSec: 4 },
+    ]);
     expect(existsSync(versionPaths(work, "probe", 1).code)).toBe(true);
 
     const h = onDisk()!;
@@ -643,6 +656,99 @@ describe("runDraw --note", () => {
     await expect(runDraw(note("again"), world.deps)).rejects.toThrow(/assets in .* no longer exists/);
     expect(world.calls.provider).toBe(0);
     expect(onDisk()!.nextVersion).toBe(3);
+  });
+});
+
+describe("runDraw: Draw again over a draft (§169)", () => {
+  const again = (over: Partial<Extract<DrawArgs["mode"], { kind: "idea" }>> = {}): DrawArgs => {
+    const a = idea(over);
+    return { ...a, mode: { ...(a.mode as Extract<DrawArgs["mode"], { kind: "idea" }>), again: true } };
+  };
+
+  it("draws a first draft of the new idea over a drawn shot: versions, notes and runs kept, the new version the draft", async () => {
+    await runDraw(idea(), world.deps);
+    await runDraw(note("bigger fish"), world.deps);
+    const provider = new ScriptedProvider([{ code: DRAW_EXAMPLE_KIT, said: "a cat" }]);
+    world.provider = () => provider;
+    const result = await runDraw(again({ idea: "a cat walks in", spokenLine: "the cat", durationSec: 6 }), world.deps);
+
+    expect(result).toMatchObject({ ok: true, version: 3 });
+    const h = onDisk()!;
+    expect(h).toMatchObject({ idea: "a cat walks in", spokenLine: "the cat", durationSec: 6, draft: 3, nextVersion: 4 });
+    expect(h.notes).toEqual([{ onVersion: 1, text: "bigger fish" }]);
+    expect(h.runs.map((r) => r.version)).toEqual([1, 2, 3]);
+    // Each version still says what it was drawn from.
+    expect(h.versions.map((v) => [v.n, v.idea, v.durationSec])).toEqual([
+      [1, "a goldfish swims in and says hello", 4],
+      [2, "a goldfish swims in and says hello", 4],
+      [3, "a cat walks in", 6],
+    ]);
+    // A first-draft prompt of the new idea, not a redraw of the old code.
+    expect(provider.requests[0]!.user).toContain("a cat walks in");
+    expect(provider.requests[0]!.user).not.toContain("bigger fish");
+    expect(world.calls.stills[world.calls.stills.length - 1]!.props.durationSec).toBe(6);
+    expect(readFileSync(versionPaths(work, "probe", 1).code, "utf8")).toBe(GOOD);
+  });
+
+  it("stamps versions written before the fields with the idea they were drawn from", async () => {
+    await runDraw(idea(), world.deps);
+    // A record as Phase A wrote it: no idea on the version.
+    const legacy = rawRecord();
+    legacy.versions = legacy.versions.map(({ idea: _i, durationSec: _d, ...v }) => v);
+    writeFileSync(join(shotDir(work, "probe"), SHOT_HISTORY_BASENAME), JSON.stringify(legacy));
+    await runDraw(again({ idea: "a cat walks in" }), world.deps);
+    expect(onDisk()!.versions[0]).toMatchObject({ n: 1, idea: "a goldfish swims in and says hello", durationSec: 4 });
+  });
+
+  it("a failed Draw again leaves the old draft the draft", async () => {
+    await runDraw(idea(), world.deps);
+    world.provider = () => new ScriptedProvider([new Error("x"), new Error("x"), new Error("x")]);
+    const result = await runDraw(again({ idea: "a cat walks in" }), world.deps);
+    expect(result).toMatchObject({ ok: false, version: 2 });
+    expect(onDisk()!).toMatchObject({ draft: 1, idea: "a cat walks in" });
+  });
+
+  it("a note after Draw again sends only the notes on the new idea's versions, and records the draft's idea", async () => {
+    await runDraw(idea(), world.deps);
+    await runDraw(note("bigger fish"), world.deps);
+    await runDraw(again({ idea: "a cat walks in", durationSec: 6 }), world.deps);
+    await runDraw(note("a striped cat"), world.deps);
+    const provider = new ScriptedProvider([{ code: GOOD, said: "slower cat" }]);
+    world.provider = () => provider;
+    await runDraw(note("slower"), world.deps);
+    const user = provider.requests[0]!.user;
+    expect(user).toContain("a striped cat");
+    expect(user).not.toContain("bigger fish");
+    expect(onDisk()!.versions[4]).toMatchObject({ n: 5, idea: "a cat walks in", durationSec: 6 });
+  });
+
+  it("a note on an earlier version made the draft again redraws that version's idea at its length", async () => {
+    await runDraw(idea(), world.deps);
+    await runDraw(again({ idea: "a cat walks in", durationSec: 6 }), world.deps);
+    // The author makes v1 (the goldfish) the draft again.
+    const h = rawRecord();
+    writeFileSync(join(shotDir(work, "probe"), SHOT_HISTORY_BASENAME), JSON.stringify({ ...h, draft: 1 }));
+    const provider = new ScriptedProvider([{ code: GOOD, said: "fish" }]);
+    world.provider = () => provider;
+    await runDraw(note("bluer water"), world.deps);
+    expect(provider.requests[0]!.user).toContain("a goldfish swims in and says hello");
+    expect(world.calls.stills[world.calls.stills.length - 1]!.props.durationSec).toBe(4);
+    expect(onDisk()!.versions[2]).toMatchObject({ n: 3, idea: "a goldfish swims in and says hello", durationSec: 4 });
+  });
+
+  it("a preview renders the draft at its own length", async () => {
+    await runDraw(idea(), world.deps);
+    await runDraw(again({ idea: "a cat walks in", durationSec: 6 }), world.deps);
+    const h = rawRecord();
+    writeFileSync(join(shotDir(work, "probe"), SHOT_HISTORY_BASENAME), JSON.stringify({ ...h, draft: 1 }));
+    let props: DrawnRenderProps | undefined;
+    const renderPreview = world.deps.renderPreview;
+    world.deps.renderPreview = async (a) => {
+      props = a.props;
+      return renderPreview(a);
+    };
+    await runDraw(preview(), world.deps);
+    expect(props!.durationSec).toBe(4);
   });
 });
 

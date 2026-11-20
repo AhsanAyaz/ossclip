@@ -6,6 +6,9 @@
  *
  * Pure, so the rules are tested without a server or a workdir.
  *
+ * B2a (§169) adds the approval: `approve`, which only the server's approve
+ * job applies, and `unapprove` ("Remove from video"), which a request may.
+ *
  * Every edit of an existing shot sets `touched`, because `touched` is what
  * makes a row survive "Plan again" (design §2, `isProtectedShot`): a shot the
  * author dropped, reworded or moved is the author's, and a re-plan that
@@ -14,7 +17,7 @@
  * what the author refused.
  */
 import { z } from "zod/v4";
-import { newShotId, type Storyboard, type StoryboardShot } from "@ossclip/core";
+import { newShotId, type ShotApproval, type Storyboard, type StoryboardShot } from "@ossclip/core";
 
 /**
  * `StoryboardShotSchema`'s bound on `idea` (core storyboard/record.ts),
@@ -28,7 +31,19 @@ export type StoryboardEdit =
   | { op: "restore"; id: string }
   | { op: "idea"; id: string; idea: string }
   | { op: "span"; id: string; startWord: number; endWord: number }
-  | { op: "add"; startWord: number; endWord: number; idea: string };
+  | { op: "add"; startWord: number; endWord: number; idea: string }
+  /**
+   * Server-internal (§169): the approve job writes the approval its render
+   * made. Never accepted from a request body (`StoryboardEditSchema` has no
+   * such op), because an approval names files and a clip key the server
+   * alone has checked; one typed into a request would put any `src` into
+   * the video without a render.
+   */
+  | { op: "approve"; id: string; approval: ShotApproval }
+  | { op: "unapprove"; id: string };
+
+/** The edits a request may ask for: every one but `approve`. */
+export type StoryboardRequestEdit = Exclude<StoryboardEdit, { op: "approve" }>;
 
 /**
  * The request body. Indices are whole numbers of any sign and the idea any
@@ -37,12 +52,13 @@ export type StoryboardEdit =
  * idea was, where a zod issue could only say "too small". An unknown `op`
  * fails here, never falls through to some other edit.
  */
-export const StoryboardEditSchema: z.ZodType<StoryboardEdit> = z.discriminatedUnion("op", [
+export const StoryboardEditSchema: z.ZodType<StoryboardRequestEdit> = z.discriminatedUnion("op", [
   z.object({ op: z.literal("drop"), id: z.string().min(1) }),
   z.object({ op: z.literal("restore"), id: z.string().min(1) }),
   z.object({ op: z.literal("idea"), id: z.string().min(1), idea: z.string() }),
   z.object({ op: z.literal("span"), id: z.string().min(1), startWord: z.number().int(), endWord: z.number().int() }),
   z.object({ op: z.literal("add"), startWord: z.number().int(), endWord: z.number().int(), idea: z.string() }),
+  z.object({ op: z.literal("unapprove"), id: z.string().min(1) }),
 ]);
 
 /**
@@ -149,6 +165,21 @@ export function applyStoryboardEdit(sb: Storyboard, edit: StoryboardEdit, wordCo
       checkOverlap(sb, edit.startWord, edit.endWord, target.id);
       changed = { ...target, startWord: edit.startWord, endWord: edit.endWord, touched: true };
       break;
+    // Approval does not set `touched`: an approved shot is drawn, and its
+    // versions already protect it from "Plan again" (`isProtectedShot`).
+    case "approve":
+      // The job checks this before it renders; checked again here because
+      // the author can drop the shot while its clip renders, and a dropped
+      // shot's approval would come back into the video on a restore.
+      if (!target.kept) throw new StoryboardEditError(`shot ${target.id} was dropped while it was approved; restore it and approve again`);
+      changed = { ...target, approval: edit.approval };
+      break;
+    case "unapprove": {
+      if (target.approval === undefined) throw new StoryboardEditError(`shot ${target.id} is not in the video: it has no approval to remove`);
+      const { approval: _removed, ...rest } = target;
+      changed = rest;
+      break;
+    }
   }
   return { ...sb, shots: sorted(sb.shots.map((s) => (s.id === target.id ? changed : s))) };
 }

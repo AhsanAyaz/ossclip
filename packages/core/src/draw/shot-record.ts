@@ -45,6 +45,16 @@ export const ShotVersionSchema = z.object({
   kitVersion: z.number().int(),
   promptVersion: z.number().int().optional(),
   said: z.string().optional(),
+  /**
+   * The idea and length this version was drawn from (§169). The history
+   * holds one idea, and "Draw again" (design §10) replaces it while the
+   * earlier versions stay, so without these a version drawn from the old
+   * idea would read as drawn from the new one. Optional so every record
+   * written before them still parses; `versionIdea` and `versionDurationSec`
+   * fall back to the history's, which is what such a version was drawn from.
+   */
+  idea: z.string().optional(),
+  durationSec: z.number().positive().optional(),
 });
 export type ShotVersion = z.infer<typeof ShotVersionSchema>;
 
@@ -93,4 +103,46 @@ export function discardUnfinished(h: ShotHistory): ShotHistory {
   const ok = versions.filter((v) => v.result === "ok").map((v) => v.n);
   const draft = h.draft !== null && ok.includes(h.draft) ? h.draft : ok.length > 0 ? Math.max(...ok) : null;
   return { ...h, versions, draft };
+}
+
+/**
+ * The idea version `n` was drawn from: its own, else the history's (§169).
+ * A version with no idea of its own predates the field, and until a "Draw
+ * again" the history's idea is the one every version was drawn from; a
+ * "Draw again" stamps them first (`stampVersionIdeas`), so the fallback is
+ * never the replacing idea. A number with no version also falls back.
+ */
+export function versionIdea(h: Pick<ShotHistory, "idea" | "versions">, n: number): string {
+  return h.versions.find((v) => v.n === n)?.idea ?? h.idea;
+}
+
+/** The length version `n` was drawn at, by `versionIdea`'s rule. */
+export function versionDurationSec(h: Pick<ShotHistory, "durationSec" | "versions">, n: number): number {
+  return h.versions.find((v) => v.n === n)?.durationSec ?? h.durationSec;
+}
+
+/**
+ * Every version given the idea and length it was drawn from, before a "Draw
+ * again" replaces the history's (§169). Without this a version written
+ * before the fields existed would fall back to the NEW idea, and read as
+ * drawn from it.
+ */
+export function stampVersionIdeas(h: ShotHistory): ShotHistory {
+  return {
+    ...h,
+    versions: h.versions.map((v) => ({ ...v, idea: v.idea ?? h.idea, durationSec: v.durationSec ?? h.durationSec })),
+  };
+}
+
+/**
+ * The notes a redraw of the draft sends as already applied (design §6;
+ * §169): those made on a version drawn from the same idea as the draft.
+ * After a "Draw again" the earlier notes are about another drawing, and sent
+ * to the LLM they would steer the new one toward what the author moved
+ * away from. Empty when there is no draft.
+ */
+export function notesForRedraw(h: Pick<ShotHistory, "idea" | "versions" | "notes" | "draft">): ShotHistory["notes"] {
+  if (h.draft === null) return [];
+  const idea = versionIdea(h, h.draft);
+  return h.notes.filter((note) => versionIdea(h, note.onVersion) === idea);
 }

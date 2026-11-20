@@ -41,6 +41,10 @@ import {
   type ProviderName,
   type ShotHistory,
   type Theme,
+  notesForRedraw,
+  stampVersionIdeas,
+  versionDurationSec,
+  versionIdea,
 } from "@ossclip/core";
 import {
   bundleDrawnScene,
@@ -68,7 +72,21 @@ const PROVIDER_NAMES = ["antigravity", "claude", "claude-cli", "gemini", "mock"]
 // ---- The user's flags ------------------------------------------------------
 
 export type DrawMode =
-  | { kind: "idea"; idea: string; spokenLine: string; durationSec: number; assetsDir?: string }
+  | {
+      kind: "idea";
+      idea: string;
+      spokenLine: string;
+      durationSec: number;
+      assetsDir?: string;
+      /**
+       * "Draw again" (design §10; §169): the author changed the idea of a
+       * shot that is already drawn, and asks for a first draft of the new
+       * one. Allowed only with this, so `ossclip draw --idea` on a drawn
+       * shot still refuses and points at `--note`. The versions, notes and
+       * runs stay; a failed draw leaves the old draft the draft.
+       */
+      again?: true;
+    }
   | { kind: "note"; text: string }
   | { kind: "preview" };
 
@@ -381,19 +399,24 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
   // ---- What this run draws from, all checked before the first call ----
   let h: ShotHistory;
   let redraw: { code: string; notes: { text: string }[]; note: { text: string } } | undefined;
+  /** What this version is drawn from, recorded on it (§169). A redraw keeps the draft's. */
+  let drawnFrom: { idea: string; durationSec: number };
   if (args.mode.kind === "idea") {
     // A shot with a draft changes by notes, so its idea, line and length
     // stay what its versions were drawn from. A shot with no draft (every
     // version failed) is drawn again from the idea: the retry design §5
-    // offers after a failure (G8), with no other way to make one.
-    if (existing !== null && existing.draft !== null) {
+    // offers after a failure (G8), with no other way to make one. `again`
+    // is the editor's "Draw again" over a draft (§169), and nothing else.
+    if (existing !== null && existing.draft !== null && args.mode.again !== true) {
       throw new Error(
         `shot ${args.shot} is already drawn (draft v${existing.draft}); change it with --note "<what to change>", ` +
           "or draw a different shot under a new --shot id",
       );
     }
     if (args.mode.assetsDir !== undefined) requireAssetsDir({ id: args.shot, assetsDir: args.mode.assetsDir });
-    const base: ShotHistory = existing ?? {
+    // Stamped before the history's idea is replaced (§169): a version with
+    // no idea of its own reads the history's, which is about to change.
+    const base: ShotHistory = existing !== null ? stampVersionIdeas(existing) : {
       id: args.shot,
       idea: "",
       spokenLine: "",
@@ -414,6 +437,7 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
       assetsDir: args.mode.assetsDir,
     };
     if (h.assetsDir === undefined) delete h.assetsDir;
+    drawnFrom = { idea: h.idea, durationSec: h.durationSec };
   } else {
     if (existing === null) throw new Error(`shot ${args.shot} has not been drawn yet; draw it first with --idea "<text>"`);
     if (existing.draft === null) {
@@ -426,9 +450,15 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
     if (!existsSync(draftCode)) throw new Error(`the draft of shot ${args.shot} is missing its code: ${draftCode}`);
     requireAssetsDir(existing);
     h = existing;
+    // A note changes the draft, so the redraw is of the draft's own idea and
+    // length: after "Draw again" the author may have made an earlier
+    // version, of the earlier idea, the draft again (§169).
+    drawnFrom = { idea: versionIdea(existing, existing.draft), durationSec: versionDurationSec(existing, existing.draft) };
     redraw = {
       code: deps.readTextFile(draftCode),
-      notes: existing.notes.map((n) => ({ text: n.text })),
+      // Only the notes on this idea's versions: notes about the drawing a
+      // "Draw again" replaced would steer this one back toward it.
+      notes: notesForRedraw(existing).map((n) => ({ text: n.text })),
       note: { text: args.mode.text },
     };
   }
@@ -449,11 +479,11 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
     h = {
       ...h,
       nextVersion: n + 1,
-      versions: [...h.versions, { n, kitVersion: DRAW_KIT_VERSION, promptVersion: DRAW_PROMPT_VERSION }],
+      versions: [...h.versions, { n, kitVersion: DRAW_KIT_VERSION, promptVersion: DRAW_PROMPT_VERSION, ...drawnFrom }],
     };
     saveShot(args.workdir, h);
     const paths = versionPaths(args.workdir, args.shot, n);
-    const props = renderProps(h, project, stagedAssetPaths(assets));
+    const props = renderProps(drawnFrom, project, stagedAssetPaths(assets));
     deps.log(`▸ drawing shot ${args.shot} v${n} with ${providerName}${args.llmModel ? ` (${args.llmModel})` : ""}`);
 
     // The attempt lines are printed as they happen, from these two wrappers,
@@ -544,9 +574,9 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
     };
 
     const req: DrawRequest = {
-      idea: h.idea,
+      idea: drawnFrom.idea,
       spokenLine: h.spokenLine,
-      durationSec: h.durationSec,
+      durationSec: drawnFrom.durationSec,
       width: project.width,
       height: project.height,
       kitReference: DRAW_KIT_REFERENCE,
@@ -662,7 +692,10 @@ async function runPreview(
     const serveUrl = await deps.bundle({ scenePath: paths.code, workDir: args.workdir, publicDir });
     try {
       mkdirSync(paths.stillsDir, { recursive: true });
-      await deps.renderPreview({ serveUrl, props: renderProps(h, project, stagedAssetPaths(assets)), outPath: paths.preview });
+      // The draft's own length (§169): after "Draw again" an earlier draft
+      // was drawn for another length than the history now holds.
+      const props = renderProps({ durationSec: versionDurationSec(h, h.draft) }, project, stagedAssetPaths(assets));
+      await deps.renderPreview({ serveUrl, props, outPath: paths.preview });
     } finally {
       deps.removeDir(serveUrl);
     }

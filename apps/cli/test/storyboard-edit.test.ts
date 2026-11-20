@@ -159,3 +159,28 @@ describe("StoryboardEditSchema", () => {
     expect(StoryboardEditSchema.safeParse({ op: "idea", id: "s1" }).success).toBe(false);
   });
 });
+
+describe("approve and unapprove (plan B2a Task 4; §169)", () => {
+  const APPROVAL = { version: 2, durationSec: 5.5, clipKey: "k", clip: "storyboard/s1/approved.mov", src: "clips/a.webm" };
+
+  it("approve stores the approval on the shot and leaves touched as it was; unapprove removes it", () => {
+    const next = applyStoryboardEdit(SB, { op: "approve", id: "s1", approval: APPROVAL }, WORDS);
+    expect(byId(next, "s1")).toMatchObject({ approval: APPROVAL, touched: false });
+    expect(SB.shots[0]!.approval).toBeUndefined();
+    const back = applyStoryboardEdit(next, { op: "unapprove", id: "s1" }, WORDS);
+    expect(byId(back, "s1").approval).toBeUndefined();
+    expect("approval" in byId(back, "s1")).toBe(false);
+  });
+
+  it("approve on a dropped shot, unapprove on a shot with no approval, and an unknown id throw", () => {
+    expect(errorOf(() => applyStoryboardEdit(SB, { op: "approve", id: "s3", approval: APPROVAL }, WORDS)).message).toContain("dropped");
+    expect(errorOf(() => applyStoryboardEdit(SB, { op: "unapprove", id: "s1" }, WORDS)).message).toContain("not in the video");
+    expect(() => applyStoryboardEdit(SB, { op: "unapprove", id: "s9" }, WORDS)).toThrow(StoryboardEditError);
+  });
+
+  it("the request schema takes unapprove and never approve: an approval is the server's to make", () => {
+    expect(StoryboardEditSchema.safeParse({ op: "unapprove", id: "s1" }).success).toBe(true);
+    expect(StoryboardEditSchema.safeParse({ op: "approve", id: "s1", approval: APPROVAL }).success).toBe(false);
+    expect(StoryboardEditSchema.safeParse({ op: "approve", id: "s1" }).success).toBe(false);
+  });
+});

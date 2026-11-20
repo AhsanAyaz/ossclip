@@ -116,3 +116,45 @@ export function reviewedScenesText(productionJson: string): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * The argv of the storyboard sync run (plan B2a Task 4; §169): the run an
+ * approval, a drop, a restore or an unapprove of an approved shot starts so
+ * `produce` (the only writer of production.json) puts the shot's clip scene
+ * in or takes it out. Pure, from the recorded argv as `/api/render` heals it.
+ *
+ * Built from the recorded command but not dependent on it still being a
+ * storyboard command: a Render records its own argv, so after the first
+ * Render `command.json` holds `--scenes …` and no `--storyboard` (found in
+ * Task 3). So:
+ *  - `--scenes <value>` goes: produce refuses it beside `--storyboard`, and
+ *    the pinned plan is the one without this approval.
+ *  - `--render` and `--no-render` go: a storyboard run never renders
+ *    (`storyboardFlag`), and the editor's Render does that afterwards.
+ *  - `--open-editor` and `--review` go and `--no-open-editor` is added: the
+ *    editor is already open, a second one would fight it for the port, and
+ *    `--review` beside `--no-open-editor` is a refusal (`reviewFlag`).
+ *  - `--storyboard` is added when absent.
+ *  - `--assets <assetsDir>` replaces a recorded one when the storyboard has
+ *    a folder; with none given a recorded one stays as it was.
+ */
+export function storyboardSyncArgs(recorded: readonly string[], assetsDir: string | undefined): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < recorded.length; i++) {
+    const arg = recorded[i]!;
+    if (arg === "--scenes") {
+      i++;
+      continue;
+    }
+    if (assetsDir !== undefined && arg === "--assets") {
+      i++;
+      continue;
+    }
+    if (arg === "--render" || arg === "--no-render" || arg === "--open-editor" || arg === "--review") continue;
+    out.push(arg);
+  }
+  if (!out.includes("--storyboard")) out.push("--storyboard");
+  if (assetsDir !== undefined) out.push("--assets", assetsDir);
+  if (!out.includes("--no-open-editor")) out.push("--no-open-editor");
+  return out;
+}

@@ -4308,7 +4308,7 @@ describe("storyboard endpoints (plan Task 4; §168)", () => {
     const url = await start(await storyboardWorkdir({ storyboard: false }));
     const res = await fetch(`${url}/api/storyboard`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ storyboard: null, drawn: {} });
+    expect(await res.json()).toEqual({ storyboard: null, drawn: {}, detail: {}, job: { job: null, last: null } });
   });
 
   it("GET serves the table and the draw state of every shot that has a history", async () => {

@@ -111,6 +111,13 @@ import {
   type Word,
   type Storyboard,
   type WordOutputTime,
+  ShotIdSchema,
+  shotLengthSec,
+  shotSpokenLine,
+  type LlmProvider,
+  type ProviderName,
+  type ShotApproval,
+  versionIdea,
 } from "@ossclip/core";
 // Static, unlike the picker's `await import` above its call site: the picker
 // drags in @ossclip/core's process runner and llm-detect, worth deferring off
@@ -128,13 +135,24 @@ import {
   isStoryboardCommand,
   renderReplayArgs,
   reviewedScenesText,
+  storyboardSyncArgs,
 } from "./render-replay-args";
-import { STORED_SCRIPT_BASENAME, replanScriptArgs, storedScriptFrom } from "./script-mode";
+import { STORED_SCRIPT_BASENAME, replanScriptArgs, storedScriptFrom, storedStoryboardFrom } from "./script-mode";
 // The plan table's rules (§168), kept out of this file so they are tested
 // without a server; the storyboard routes below only gather their inputs.
-import { loadStoryboard, saveStoryboard } from "./storyboard/storyboard-store";
+import { STORYBOARD_FILE, loadStoryboard, saveStoryboard } from "./storyboard/storyboard-store";
 import { StoryboardEditError, StoryboardEditSchema, applyStoryboardEdit } from "./storyboard/storyboard-edit";
 import { drawnShots, liveCut, planAgain, type DrawnShot } from "./storyboard/plan-again";
+// The draw-and-approve jobs (plan B2a Task 4; §169). Types only from the
+// draw and approve modules: their live halves import @ossclip/renderer, which
+// this server loads lazily (the cover.ts rule), so the defaults below
+// `await import` them on first use.
+import { JobBusyError, createJobRunner, type JobContext, type StoryboardJobKind } from "./storyboard/jobs";
+import { shotDetail, type ShotDetail } from "./storyboard/shot-detail";
+import { StoryboardProjectError, liveDrawProject } from "./storyboard/draw-project";
+import { peekShot, loadShot, saveShot } from "./draw/shot-store";
+import type { DrawArgs, DrawDeps, DrawProject, DrawRunResult } from "./draw/draw-command";
+import type { ApproveArgs } from "./storyboard/approve";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
 // cover` needs the same out-resolution rule this server's thumbnail dest,
 // youtube markdown and reveal endpoint derive from, and two spellings of it
@@ -515,6 +533,26 @@ function isJsonRequest(req: IncomingMessage): boolean {
   return (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() === "application/json";
 }
 
+// ---- Storyboard job bodies (plan B2a Task 4; §169) -------------------------
+// A shot id is parsed with `ShotIdSchema` before any path is built from it
+// (Global Constraints: no endpoint takes a path).
+
+/** The 409 every route that must not overlap a storyboard job answers with. */
+const STORYBOARD_JOB_BUSY = "a storyboard job is running";
+
+/** 1 to 40 shots (plan B2a Task 4). An id listed twice is refused, not merged: parsed, never coerced (CLAUDE.md). */
+const StoryboardDrawBodySchema = z.object({
+  ids: z
+    .array(ShotIdSchema)
+    .min(1)
+    .max(40)
+    .refine((ids) => new Set(ids).size === ids.length, { message: "a shot is listed twice" }),
+});
+/** 1 to 1000 characters once trimmed (plan B2a Task 4): every redraw of the idea carries every earlier note, so a note stays short. */
+const StoryboardNoteBodySchema = z.object({ id: ShotIdSchema, text: z.string().trim().min(1).max(1000) });
+const StoryboardShotBodySchema = z.object({ id: ShotIdSchema });
+const StoryboardDraftBodySchema = z.object({ id: ShotIdSchema, version: z.number().int().positive() });
+
 /** A zod failure as one readable sentence for a 400 body. */
 const zodMessage = (e: z.ZodError): string =>
   e.issues.map((i) => (i.path.length > 0 ? `${i.path.join(".")}: ${i.message}` : i.message)).join("; ");
@@ -716,6 +754,28 @@ export async function startEditServer(
     /** The caption-regenerate LLM seam (the `generateThumbnail` pattern for
      * text): tests inject a fake provider factory and never touch a model. */
     makeLlmProvider?: typeof createProvider;
+    /**
+     * The storyboard draw seam (plan B2a Task 4; §169), beside
+     * `makeLlmProvider`: a draw, a redraw and a preview of one shot. The
+     * default is `runDraw` with the live bundler, browser and type check;
+     * a test passes `runDraw` with fakes, so no browser starts. The provider
+     * comes in through `env.createProvider`, which is `makeLlmProvider`
+     * (counted per call for the job's line), so a test's provider is the one
+     * the draw calls.
+     */
+    storyboardDraw?: (
+      args: DrawArgs,
+      env: { createProvider: DrawDeps["createProvider"]; log: (line: string) => void },
+    ) => Promise<DrawRunResult>;
+    /**
+     * The storyboard approve seam, the same split: the default renders the
+     * clip with the live browser (`approveShot`, `liveApproveDeps`) and
+     * cancels that render once `env.shouldStop()` turns true.
+     */
+    storyboardApprove?: (
+      args: ApproveArgs,
+      env: { shouldStop: () => boolean; log: (line: string) => void },
+    ) => Promise<ShotApproval>;
     /**
      * The cover render seam, exactly like `generateThumbnail` above. Without
      * it `regenerateCover` lazily imports @ossclip/renderer and boots a
@@ -1467,6 +1527,237 @@ export async function startEditServer(
     }
   };
 
+  /**
+   * Starts one replay of the recorded command as THE render child: the
+   * editor's Render, and the storyboard sync run (plan B2a Task 4; §169),
+   * which shares it so `GET /api/render/status` reports it and Render
+   * cannot start during it. Synchronous, so a caller's busy checks and this
+   * spawn have no await between them.
+   */
+  const spawnRecordedRun = (cmd: RecordedCommand, args: readonly string[], dir: string): void => {
+    renderLines = [];
+    renderExit = null;
+    renderStartedAt = Date.now();
+    renderCancelled = false;
+    const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...args], {
+      cwd: cmd.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      // Which workdir's command.json this replay came from (2026-08-18
+      // field cascade, part 3): a re-keyed folder input makes produce
+      // derive a DIFFERENT workdir, silently abandoning the overrides
+      // saved here — produce compares against this and prints a loud ⚠
+      // into the log tail (replayWorkdirWarning, produce.ts).
+      env: { ...process.env, OSSCLIP_REPLAY_WORKDIR: dir },
+    });
+    renderChild = child;
+    child.stdout?.on("data", pushLines);
+    child.stderr?.on("data", pushLines);
+    child.on("error", (err) => {
+      renderLines.push(`spawn failed: ${err.message}`);
+      renderExit = 1;
+      renderChild = null;
+    });
+    child.on("exit", (code) => {
+      renderExit = code ?? 1;
+      renderChild = null;
+    });
+  };
+
+  // ---- Storyboard jobs (storyboard design §10; plan B2a Task 4; §169) -----
+  /**
+   * One job at a time (design §10, Global Constraints), held in memory: a
+   * restarted server has none, and what an interrupted draw left is
+   * discarded by the next `loadShot` (jobs.ts; Review Focus 2).
+   */
+  const storyboardJobs = createJobRunner(() => Date.now());
+  const storyboardJobRunning = (): boolean => storyboardJobs.state().job !== null;
+  /** Why a new storyboard job cannot start now, or null. Plan again saves the table it loaded, so the two never overlap. */
+  const storyboardBusy = (): string | null =>
+    storyboardJobRunning()
+      ? STORYBOARD_JOB_BUSY
+      : storyboardPlanBusy
+        ? "Plan again is running: start this once it has finished"
+        : null;
+  /** A gathered input, or the status and sentence the route answers instead. */
+  type Gathered<T> = { ok: true; value: T } | { ok: false; code: number; error: string };
+  const refused = (code: number, error: string): { ok: false; code: number; error: string } => ({ ok: false, code, error });
+  /** The stored table: a broken file is a 500 naming it (the B1 rule), no file a 409. */
+  const storyboardTable = (dir: string): Gathered<Storyboard> => {
+    let sb: Storyboard | null;
+    try {
+      sb = loadStoryboard(dir);
+    } catch (err) {
+      return refused(500, err instanceof Error ? err.message : String(err));
+    }
+    if (sb === null) {
+      return refused(409, "this project has no storyboard.json: plan one with `ossclip produce <video> --storyboard`");
+    }
+    return { ok: true, value: sb };
+  };
+  /** The shot, which must be in the table and kept: a dropped shot is not drawn or approved (design AG3). */
+  const keptShot = (sb: Storyboard, id: string): Gathered<Storyboard["shots"][number]> => {
+    const shot = sb.shots.find((s) => s.id === id);
+    if (shot === undefined) return refused(400, `there is no shot ${id} in the storyboard`);
+    if (!shot.kept) return refused(400, `shot ${id} is dropped: restore it first`);
+    return { ok: true, value: shot };
+  };
+  /** The served words and the live cut, as "Plan again" reads them (§168): a shot's length and line are measured on it. */
+  const storyboardCut = async (
+    dir: string,
+  ): Promise<Gathered<{ words: Word[]; clock: { cut: Set<number>; wordTimes: WordOutputTime[] } }>> => {
+    const words = await servedWords(dir);
+    if (words === null || words.length === 0) {
+      return refused(412, "no transcript in this workdir — re-run `ossclip produce`.");
+    }
+    const clock = await heardCut(dir, words);
+    if (clock === null) {
+      return refused(412, "render-props.json has no kept spans to measure shots on — re-run `ossclip produce`.");
+    }
+    return { ok: true, value: { words, clock } };
+  };
+  /**
+   * The frame and the theme as the editor shows them now, saved overrides
+   * applied (`liveDrawProject`; §169). A missing or broken render-props.json
+   * or overrides.json is a 412 naming the file: the shot cannot be drawn to
+   * match a video whose settings are unknown.
+   */
+  const storyboardProject = async (dir: string): Promise<Gathered<DrawProject>> => {
+    let propsText: string;
+    try {
+      propsText = await readFile(join(dir, "render-props.json"), "utf8");
+    } catch {
+      return refused(412, "no readable render-props.json in this workdir — re-run `ossclip produce`.");
+    }
+    const overridesFile = join(dir, "overrides.json");
+    const overridesText = existsSync(overridesFile) ? await readFile(overridesFile, "utf8") : null;
+    try {
+      return { ok: true, value: liveDrawProject(propsText, overridesText) };
+    } catch (err) {
+      if (err instanceof StoryboardProjectError) return refused(412, err.message);
+      throw err;
+    }
+  };
+  /** The provider "Plan again" would use: the pack generate's resolution, verbatim. */
+  const storyboardProviderName = async (dir: string): Promise<Gathered<ProviderName>> => {
+    if (opts.publishEnv === undefined) loadEnvFiles();
+    const env = opts.publishEnv ?? process.env;
+    let usageLog: unknown = null;
+    try {
+      usageLog = JSON.parse(await readFile(join(dir, "usage.json"), "utf8"));
+    } catch {
+      // no log yet — the resolution falls through to the pin/detection
+    }
+    const cmd = await readRecordedCommand(dir);
+    const resolved = captionRegenProvider({
+      usageLog,
+      commandArgs: cmd?.args ?? null,
+      env,
+      hasBin: (bin) => binOnPath(bin, env),
+    });
+    if (resolved.status === "unavailable") return refused(412, resolved.reason);
+    return { ok: true, value: resolved.provider };
+  };
+  /**
+   * The provider factory a job's draws get: the server's (`makeLlmProvider`),
+   * each call counted on the job's line as it is made (design §10: "shows
+   * the calls used so far"), and every provider kept in `made` so the job's
+   * usage is appended at its end, including the calls of a draw that threw
+   * after paying for them.
+   */
+  const jobProviderFactory =
+    (ctx: JobContext, made: LlmProvider[]): DrawDeps["createProvider"] =>
+    (name, model) => {
+      const p = (opts.makeLlmProvider ?? createProvider)(name, model);
+      made.push(p);
+      return {
+        name: p.name,
+        get usage() {
+          return p.usage;
+        },
+        complete: (req) => {
+          ctx.addCalls(1);
+          return p.complete(req);
+        },
+      };
+    };
+  /** One run entry per job (Global Constraints: each LLM call lands in usage.json), as `/api/storyboard/plan` appends its call. */
+  const appendJobUsage = async (dir: string, made: readonly LlmProvider[]): Promise<void> => {
+    if (made.length === 0) return;
+    const usagePath = join(dir, "usage.json");
+    let usageLog: unknown = null;
+    try {
+      // Read at the job's end, not its start: a job runs for minutes, and
+      // a log read before it would drop whatever else was appended since.
+      usageLog = JSON.parse(await readFile(usagePath, "utf8"));
+    } catch {
+      // no log yet
+    }
+    const pricing = (opts.loadCfg ?? loadConfig)().pricing ?? {};
+    const nextLog = appendUsageRun(
+      usageLog,
+      { at: new Date().toISOString(), records: made.flatMap((p) => [...p.usage]) },
+      pricing,
+    );
+    const usageTmp = `${usagePath}.tmp`;
+    await writeFile(usageTmp, JSON.stringify(nextLog, null, 2));
+    await rename(usageTmp, usagePath);
+  };
+  const storyboardDraw =
+    opts.storyboardDraw ??
+    (async (args: DrawArgs, env: { createProvider: DrawDeps["createProvider"]; log: (line: string) => void }) => {
+      const { runDraw, liveDrawDeps } = await import("./draw/draw-command");
+      return runDraw(args, { ...liveDrawDeps(), createProvider: env.createProvider, log: env.log });
+    });
+  const storyboardApprove =
+    opts.storyboardApprove ??
+    (async (args: ApproveArgs, env: { shouldStop: () => boolean; log: (line: string) => void }) => {
+      const [{ approveShot, liveApproveDeps }, { makeCancelSignal }] = await Promise.all([
+        import("./storyboard/approve"),
+        import("@ossclip/renderer"),
+      ]);
+      // Cancel reaches a clip render already under way: a ProRes render
+      // takes minutes, and the runner only stops between shots.
+      const { cancelSignal, cancel } = makeCancelSignal();
+      const poll = setInterval(() => {
+        if (env.shouldStop()) cancel();
+      }, 500);
+      try {
+        return await approveShot({ ...args, cancelSignal }, { ...liveApproveDeps(), log: env.log });
+      } finally {
+        clearInterval(poll);
+      }
+    });
+  /** Why a draw that returned ok false failed: the version's recorded error, as the shot view shows it. */
+  const drawFailure = (dir: string, id: string, result: DrawRunResult): string => {
+    if (result.stopped) return "stopped before it finished";
+    const v = result.version === null ? undefined : peekShot(dir, id)?.versions.find((x) => x.n === result.version);
+    return typeof v?.result === "object" ? v.result.failed : "the draw failed";
+  };
+  /** The job's start, answered: a 202, or the 409 of a job that won the race. */
+  const startStoryboardJob = (
+    dir: string,
+    kind: StoryboardJobKind,
+    ids: string[],
+    each: (id: string, ctx: JobContext, made: LlmProvider[]) => Promise<{ ok: boolean; error?: string }>,
+  ): { code: number; body: unknown } => {
+    const made: LlmProvider[] = [];
+    let job: Promise<void>;
+    try {
+      job = storyboardJobs.start(
+        kind,
+        ids,
+        (id, ctx) => each(id, ctx, made),
+        () => appendJobUsage(dir, made),
+      );
+    } catch (err) {
+      if (err instanceof JobBusyError) return { code: 409, body: { ok: false, error: STORYBOARD_JOB_BUSY } };
+      throw err;
+    }
+    // The runner records every failure on the job; nothing is left to throw.
+    void job.catch((err: unknown) => console.error(`storyboard job: ${err instanceof Error ? err.message : String(err)}`));
+    return { code: 202, body: { ok: true } };
+  };
+
   const server = createServer((req, res) => {
     const send = (code: number, body: unknown): void => {
       res.writeHead(code, { "content-type": "application/json" });
@@ -1562,6 +1853,19 @@ export async function startEditServer(
                 return false; // no production.json: nothing stored
               }
             })(),
+            // Whether this is a storyboard project (§169): the §163 backdrop
+            // control shows for it as for a script project. `storyboard.json`
+            // OR the record, never the recorded argv: a Render records its
+            // own argv without `--storyboard` (plan B2a Task 4).
+            storyboardProject:
+              existsSync(join(workdir!, STORYBOARD_FILE)) ||
+              (await (async () => {
+                try {
+                  return storedStoryboardFrom(await readFile(join(workdir!, "production.json"), "utf8")) !== undefined;
+                } catch {
+                  return false; // no production.json: nothing stored
+                }
+              })()),
             // Recents ride along here too, so the top bar's Open picker has
             // a list without a second endpoint.
             recent: await readRecentProjects(opts.recentDir),
@@ -1839,6 +2143,10 @@ export async function startEditServer(
           // running child belongs to the CURRENT workdir, and its status
           // reporting against a switched one would lie.
           if (renderChild) return send(409, { error: "a render is running — cancel it first" });
+          // A storyboard job writes into the CURRENT workdir until it ends
+          // (§169); switching under it would leave its results nowhere the
+          // page looks.
+          if (storyboardJobRunning()) return send(409, { error: STORYBOARD_JOB_BUSY });
           const chunks: Buffer[] = [];
           for await (const c of req) chunks.push(c as Buffer);
           const parsed = z
@@ -1926,6 +2234,10 @@ export async function startEditServer(
         if (url.pathname === "/api/render" && req.method === "POST") {
           if (!workdir) return send(409, { error: "no workdir open" });
           if (renderChild) return send(409, { error: "a render is already running" });
+          // Not during a storyboard job (§169; plan B2a Task 4 ruling): an
+          // approve ends in the sync run, which needs the render child, and
+          // a Render that held it would leave the approval out of the video.
+          if (storyboardJobRunning()) return send(409, { error: STORYBOARD_JOB_BUSY });
           if (!existsSync(commandPath())) {
             return send(412, {
               error:
@@ -2043,32 +2355,7 @@ export async function startEditServer(
               args = replanScriptArgs(args, copy);
             }
           }
-          renderLines = [];
-          renderExit = null;
-          renderStartedAt = Date.now();
-          renderCancelled = false;
-          const child = spawn(cmd.execPath, [...cmd.execArgv, cmd.script, ...args], {
-            cwd: cmd.cwd,
-            stdio: ["ignore", "pipe", "pipe"],
-            // Which workdir's command.json this replay came from (2026-08-18
-            // field cascade, part 3): a re-keyed folder input makes produce
-            // derive a DIFFERENT workdir, silently abandoning the overrides
-            // saved here — produce compares against this and prints a loud ⚠
-            // into the log tail (replayWorkdirWarning, produce.ts).
-            env: { ...process.env, OSSCLIP_REPLAY_WORKDIR: workdir! },
-          });
-          renderChild = child;
-          child.stdout?.on("data", pushLines);
-          child.stderr?.on("data", pushLines);
-          child.on("error", (err) => {
-            renderLines.push(`spawn failed: ${err.message}`);
-            renderExit = 1;
-            renderChild = null;
-          });
-          child.on("exit", (code) => {
-            renderExit = code ?? 1;
-            renderChild = null;
-          });
+          spawnRecordedRun(cmd, args, workdir!);
           return send(202, { ok: true });
         }
 
@@ -2666,15 +2953,22 @@ export async function startEditServer(
           if (!workdir) return send(409, { error: "no workdir open" });
           let sb: Storyboard | null;
           let drawn: Record<string, DrawnShot> = {};
+          const detail: Record<string, ShotDetail> = {};
           try {
             sb = loadStoryboard(workdir);
             // A history that does not parse is an error here too, not "not
             // drawn": the table would show a drawn shot as a plain row.
             if (sb !== null) drawn = drawnShots(workdir, sb);
+            // The shot view's data (§169), read through `peekShot` as
+            // `drawn` is: a running draw's version is left alone.
+            for (const s of sb?.shots ?? []) {
+              const d = shotDetail(workdir, s.id);
+              if (d !== null) detail[s.id] = d;
+            }
           } catch (err) {
             return send(500, { error: err instanceof Error ? err.message : String(err) });
           }
-          return send(200, { storyboard: sb, drawn });
+          return send(200, { storyboard: sb, drawn, detail, job: storyboardJobs.state() });
         }
 
         if (url.pathname === "/api/storyboard/edit" && req.method === "POST") {
@@ -2687,6 +2981,9 @@ export async function startEditServer(
           // The count the editor's table indexes; no transcript is 0 words,
           // so a span edit is refused with that count in its message.
           const wordCount = (await servedWords(dir))?.length ?? 0;
+          // Read before the busy check, the one await this edit may need: a
+          // drop, restore or unapprove of an approved shot replays it.
+          const cmd = await readRecordedCommand(dir);
           // From the busy check to the save nothing awaits, so a plan either
           // starts after this edit is on disk or this edit sees it running.
           if (storyboardPlanBusy) {
@@ -2699,14 +2996,42 @@ export async function startEditServer(
             return send(500, { ok: false, error: err instanceof Error ? err.message : String(err) });
           }
           if (sb === null) return send(409, { ok: false, error: "this project has no storyboard.json to edit" });
+          // A drop, restore or unapprove of an APPROVED shot changes what the
+          // video holds, and only produce writes production.json, so it
+          // starts the sync run (plan B2a Task 4; design §8 "The author
+          // drops the shot"). Refused when that run cannot start: saved
+          // without it, a later Render would pin the old scenes and carry
+          // the shot's clip forward.
+          const edit = parsed.data;
+          const replays =
+            (edit.op === "drop" || edit.op === "restore" || edit.op === "unapprove") &&
+            sb.shots.find((s) => s.id === edit.id)?.approval !== undefined;
+          if (replays) {
+            if (storyboardJobRunning()) {
+              return send(409, { ok: false, error: `${STORYBOARD_JOB_BUSY}: change an approved shot once it has finished` });
+            }
+            if (renderChild) {
+              return send(409, { ok: false, error: "a render is running: change an approved shot once it has finished" });
+            }
+            if (cmd === null) {
+              return send(412, {
+                ok: false,
+                error: "no usable command.json in this workdir, so the video cannot be updated — run `ossclip produce` once from the terminal",
+              });
+            }
+          }
           let next: Storyboard;
           try {
-            next = applyStoryboardEdit(sb, parsed.data, wordCount);
+            next = applyStoryboardEdit(sb, edit, wordCount);
           } catch (err) {
             if (err instanceof StoryboardEditError) return send(400, { ok: false, error: err.message });
             throw err;
           }
           saveStoryboard(dir, next);
+          if (replays && cmd !== null) {
+            spawnRecordedRun(cmd, storyboardSyncArgs(healRecordedProduceArgs(cmd.args), next.assetsDir), dir);
+            return send(200, { ok: true, storyboard: next, replay: true });
+          }
           return send(200, { ok: true, storyboard: next });
         }
 
@@ -2717,6 +3042,9 @@ export async function startEditServer(
           // presses can never both pass the check.
           if (!workdir) return send(409, { ok: false, error: "no workdir open" });
           if (storyboardPlanBusy) return send(409, { ok: false, error: "Plan again is already running" });
+          // Not during a draw or an approve (§169): the plan saves the table
+          // it loaded, and a job saves an approval into it.
+          if (storyboardJobRunning()) return send(409, { ok: false, error: STORYBOARD_JOB_BUSY });
           storyboardPlanBusy = true;
           try {
             // Held for the whole call: a project switched from the page
@@ -2804,6 +3132,268 @@ export async function startEditServer(
           } finally {
             storyboardPlanBusy = false;
           }
+        }
+
+        // ---- Storyboard jobs (storyboard design §6-§10; plan B2a Task 4; §169)
+        // Draw, redraw, preview and approve, one job at a time, each started
+        // with a 202 and followed through `GET /api/storyboard/job`. Every
+        // input the server alone can derive (the live cut, the live theme,
+        // the provider) is gathered and checked BEFORE the job starts, so
+        // a missing one is a 412 the panel can show, not a failed shot. A
+        // provider failure is the shot's `ok: false` in the job, never a 500
+        // (Global Constraints). The work is runDraw's and approveShot's.
+        if (url.pathname === "/api/storyboard/job" && req.method === "GET") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          return send(200, storyboardJobs.state());
+        }
+
+        if (url.pathname === "/api/storyboard/cancel" && req.method === "POST") {
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          // Ends the job after the shot it is on; a draw also stops before its
+          // next LLM call (runDraw's `shouldStop`), and an approve's clip
+          // render is cancelled.
+          if (!storyboardJobs.stop()) return send(409, { ok: false, error: "no storyboard job is running" });
+          return send(202, { ok: true });
+        }
+
+        if (url.pathname === "/api/storyboard/draw" && req.method === "POST") {
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          const dir = workdir;
+          const body = await readJsonBody(req, 64 * 1024);
+          if (!body.ok) return send(400, { ok: false, error: body.error });
+          const parsed = StoryboardDrawBodySchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { ok: false, error: zodMessage(parsed.error) });
+          const busy = storyboardBusy();
+          if (busy !== null) return send(409, { ok: false, error: busy });
+          const table = storyboardTable(dir);
+          if (!table.ok) return send(table.code, { ok: false, error: table.error });
+          for (const id of parsed.data.ids) {
+            const shot = keptShot(table.value, id);
+            if (!shot.ok) return send(shot.code, { ok: false, error: shot.error });
+          }
+          const cut = await storyboardCut(dir);
+          if (!cut.ok) return send(cut.code, { ok: false, error: cut.error });
+          const project = await storyboardProject(dir);
+          if (!project.ok) return send(project.code, { ok: false, error: project.error });
+          const llm = await storyboardProviderName(dir);
+          if (!llm.ok) return send(llm.code, { ok: false, error: llm.error });
+          // Checked again: the gathering above awaited, and Plan again may
+          // have started since. From here to the start nothing awaits.
+          const busyNow = storyboardBusy();
+          if (busyNow !== null) return send(409, { ok: false, error: busyNow });
+          const { words, clock } = cut.value;
+          const started = startStoryboardJob(dir, "draw", parsed.data.ids, async (id, ctx, made) => {
+            // The table as it is when this shot's turn comes: the author may
+            // reword or drop a later shot while earlier ones draw.
+            const sb = loadStoryboard(dir);
+            const shot = sb?.shots.find((s) => s.id === id);
+            if (sb === null || shot === undefined || !shot.kept) {
+              return { ok: false, error: `shot ${id} is no longer a kept shot of the storyboard` };
+            }
+            const h = peekShot(dir, id);
+            const drawn = h !== null && h.draft !== null;
+            // A drawn shot is drawn again only when its idea changed since
+            // ("Draw again", design §10): a draft of this idea is the
+            // author's to change with a note, and a second first draft
+            // would pay for a drawing they did not ask for (AG3).
+            if (drawn && versionIdea(h, h.draft!) === shot.idea) {
+              ctx.log(`  ${id} is drawn from this idea already (draft v${h.draft}); skipped`);
+              return { ok: true };
+            }
+            const durationSec = shotLengthSec(shot, clock.wordTimes);
+            if (durationSec === null) return { ok: false, error: "every word of this shot is cut" };
+            const result = await storyboardDraw(
+              {
+                workdir: dir,
+                shot: id,
+                llm: llm.value,
+                mode: {
+                  kind: "idea",
+                  idea: shot.idea,
+                  spokenLine: shotSpokenLine(shot, words, (i) => !clock.cut.has(i)),
+                  durationSec,
+                  ...(sb.assetsDir !== undefined ? { assetsDir: sb.assetsDir } : {}),
+                  ...(drawn ? { again: true as const } : {}),
+                },
+                shouldStop: ctx.shouldStop,
+                project: project.value,
+              },
+              { createProvider: jobProviderFactory(ctx, made), log: ctx.log },
+            );
+            return result.ok ? { ok: true } : { ok: false, error: drawFailure(dir, id, result) };
+          });
+          return send(started.code, started.body);
+        }
+
+        if (url.pathname === "/api/storyboard/note" && req.method === "POST") {
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          const dir = workdir;
+          const body = await readJsonBody(req, 64 * 1024);
+          if (!body.ok) return send(400, { ok: false, error: body.error });
+          const parsed = StoryboardNoteBodySchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { ok: false, error: zodMessage(parsed.error) });
+          const busy = storyboardBusy();
+          if (busy !== null) return send(409, { ok: false, error: busy });
+          const table = storyboardTable(dir);
+          if (!table.ok) return send(table.code, { ok: false, error: table.error });
+          const shot = keptShot(table.value, parsed.data.id);
+          if (!shot.ok) return send(shot.code, { ok: false, error: shot.error });
+          if (peekShot(dir, parsed.data.id)?.draft == null) {
+            return send(409, { ok: false, error: `shot ${parsed.data.id} has no draft for a note to change: draw it first` });
+          }
+          const project = await storyboardProject(dir);
+          if (!project.ok) return send(project.code, { ok: false, error: project.error });
+          const llm = await storyboardProviderName(dir);
+          if (!llm.ok) return send(llm.code, { ok: false, error: llm.error });
+          const busyNow = storyboardBusy();
+          if (busyNow !== null) return send(409, { ok: false, error: busyNow });
+          const { id, text } = parsed.data;
+          // A note redraws the draft only (design §6): the approved clip, if
+          // any, stays in the video until the new draft is approved.
+          const started = startStoryboardJob(dir, "redraw", [id], async (_id, ctx, made) => {
+            const result = await storyboardDraw(
+              { workdir: dir, shot: id, llm: llm.value, mode: { kind: "note", text }, shouldStop: ctx.shouldStop, project: project.value },
+              { createProvider: jobProviderFactory(ctx, made), log: ctx.log },
+            );
+            return result.ok ? { ok: true } : { ok: false, error: drawFailure(dir, id, result) };
+          });
+          return send(started.code, started.body);
+        }
+
+        if (url.pathname === "/api/storyboard/preview" && req.method === "POST") {
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          const dir = workdir;
+          const body = await readJsonBody(req, 64 * 1024);
+          if (!body.ok) return send(400, { ok: false, error: body.error });
+          const parsed = StoryboardShotBodySchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { ok: false, error: zodMessage(parsed.error) });
+          const busy = storyboardBusy();
+          if (busy !== null) return send(409, { ok: false, error: busy });
+          const table = storyboardTable(dir);
+          if (!table.ok) return send(table.code, { ok: false, error: table.error });
+          const shot = keptShot(table.value, parsed.data.id);
+          if (!shot.ok) return send(shot.code, { ok: false, error: shot.error });
+          if (peekShot(dir, parsed.data.id)?.draft == null) {
+            return send(409, { ok: false, error: `shot ${parsed.data.id} has no draft to preview: draw it first` });
+          }
+          const project = await storyboardProject(dir);
+          if (!project.ok) return send(project.code, { ok: false, error: project.error });
+          const busyNow = storyboardBusy();
+          if (busyNow !== null) return send(409, { ok: false, error: busyNow });
+          const { id } = parsed.data;
+          // No LLM call (design §7), so no provider is resolved; the factory
+          // is passed only because the seam's shape has one.
+          const started = startStoryboardJob(dir, "preview", [id], async (_id, ctx, made) => {
+            const result = await storyboardDraw(
+              { workdir: dir, shot: id, mode: { kind: "preview" }, project: project.value },
+              { createProvider: jobProviderFactory(ctx, made), log: ctx.log },
+            );
+            return result.ok ? { ok: true } : { ok: false, error: "the preview did not render" };
+          });
+          return send(started.code, started.body);
+        }
+
+        if (url.pathname === "/api/storyboard/draft" && req.method === "POST") {
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          const dir = workdir;
+          const body = await readJsonBody(req, 64 * 1024);
+          if (!body.ok) return send(400, { ok: false, error: body.error });
+          const parsed = StoryboardDraftBodySchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { ok: false, error: zodMessage(parsed.error) });
+          // A job writes this record (a draw sets its draft), so the two
+          // never overlap; nothing awaits from here to the save.
+          if (storyboardJobRunning()) return send(409, { ok: false, error: STORYBOARD_JOB_BUSY });
+          const table = storyboardTable(dir);
+          if (!table.ok) return send(table.code, { ok: false, error: table.error });
+          const { id, version } = parsed.data;
+          if (!table.value.shots.some((s) => s.id === id)) {
+            return send(400, { ok: false, error: `there is no shot ${id} in the storyboard` });
+          }
+          // `loadShot`, the writer's read: it discards what an interrupted
+          // draw left before this record is written back (design §9).
+          const h = loadShot(dir, id);
+          const v = h?.versions.find((x) => x.n === version);
+          if (h === null || v === undefined || v.result !== "ok") {
+            return send(400, {
+              ok: false,
+              error: `shot ${id} has no version ${version} that passed its checks; only such a version can be the draft (design §6)`,
+            });
+          }
+          saveShot(dir, { ...h, draft: version });
+          return send(200, { ok: true });
+        }
+
+        if (url.pathname === "/api/storyboard/approve" && req.method === "POST") {
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          const dir = workdir;
+          const body = await readJsonBody(req, 64 * 1024);
+          if (!body.ok) return send(400, { ok: false, error: body.error });
+          const parsed = StoryboardShotBodySchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { ok: false, error: zodMessage(parsed.error) });
+          const busy = storyboardBusy();
+          if (busy !== null) return send(409, { ok: false, error: busy });
+          // The approval ends in the sync run, which is the render child.
+          if (renderChild) return send(409, { ok: false, error: "a render is running: approve once it has finished" });
+          const table = storyboardTable(dir);
+          if (!table.ok) return send(table.code, { ok: false, error: table.error });
+          const shot = keptShot(table.value, parsed.data.id);
+          if (!shot.ok) return send(shot.code, { ok: false, error: shot.error });
+          const h = peekShot(dir, parsed.data.id);
+          if (h === null || h.draft === null) {
+            return send(409, { ok: false, error: `shot ${parsed.data.id} has no draft to approve: draw it first` });
+          }
+          const cut = await storyboardCut(dir);
+          if (!cut.ok) return send(cut.code, { ok: false, error: cut.error });
+          // The length the cut gives the shot now (design §8 step 1).
+          const durationSec = shotLengthSec(shot.value, cut.value.clock.wordTimes);
+          if (durationSec === null) {
+            return send(409, { ok: false, error: `every word of shot ${parsed.data.id} is cut: there is no moment to put its clip on` });
+          }
+          const project = await storyboardProject(dir);
+          if (!project.ok) return send(project.code, { ok: false, error: project.error });
+          if ((await readRecordedCommand(dir)) === null) {
+            return send(412, {
+              ok: false,
+              error: "no usable command.json in this workdir, so the video cannot be updated — run `ossclip produce` once from the terminal",
+            });
+          }
+          const busyNow = storyboardBusy();
+          if (busyNow !== null) return send(409, { ok: false, error: busyNow });
+          if (renderChild) return send(409, { ok: false, error: "a render is running: approve once it has finished" });
+          const { id } = parsed.data;
+          const wordCount = cut.value.words.length;
+          const started = startStoryboardJob(dir, "approve", [id], async (_id, ctx) => {
+            // The assets folder the draft was drawn with, not the table's:
+            // the clip must match the stills the author approved from.
+            const approval = await storyboardApprove(
+              {
+                workdir: dir,
+                shotId: id,
+                durationSec,
+                project: project.value,
+                ...(h.assetsDir !== undefined ? { assetsDir: h.assetsDir } : {}),
+              },
+              { shouldStop: ctx.shouldStop, log: ctx.log },
+            );
+            const cmd = await readRecordedCommand(dir);
+            // From the load to the spawn nothing awaits, so an edit saved
+            // during the render is in the table this approval is saved into.
+            const sb = loadStoryboard(dir);
+            if (sb === null) return { ok: false, error: "storyboard.json is gone: the approval was not saved" };
+            const next = applyStoryboardEdit(sb, { op: "approve", id, approval }, wordCount);
+            saveStoryboard(dir, next);
+            ctx.log(`✓ ${id} approved: v${approval.version} at ${approval.durationSec} s`);
+            if (cmd === null || renderChild) {
+              return {
+                ok: false,
+                error: `approved, but the video was not updated: ${cmd === null ? "command.json is gone" : "a render is running"}; press Render`,
+              };
+            }
+            spawnRecordedRun(cmd, storyboardSyncArgs(healRecordedProduceArgs(cmd.args), next.assetsDir), dir);
+            ctx.log("▸ updating the video");
+            return { ok: true };
+          });
+          return send(started.code, started.body);
         }
 
         // ---- Publish (2026-08-26) -----------------------------------------
