@@ -95,7 +95,11 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     } as typeof real);
   });
 
-  const run = (workdir: string, script?: string, extra: { aspect?: "9:16" | "16:9" } = {}) =>
+  const run = (
+    workdir: string,
+    script?: string,
+    extra: { aspect?: "9:16" | "16:9"; transcript?: string } = {},
+  ) =>
     produce(join(dir, "take.mp4"), {
       cleanup: "standard",
       libraryDir,
@@ -506,6 +510,125 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
       ["scene-2", "split-left"],
     ]);
   }, 360_000);
+
+  describe("a script sentence said twice back to back (script retakes, §166)", () => {
+    // The fixture transcript has no punctuation and says nothing twice; this
+    // one says the StatCard line twice, the first take short of its last word
+    // (the EGM shape, design Overview), and stays inside the 18 s take. No
+    // --blooper-marker: the similarity detector never runs (§128's gate), so
+    // a retake cut here can only be the script pass's (design Decision 1).
+    const said = [
+      "Hello everyone, welcome back.",
+      "This raw take becomes a clean edit.",
+      "This raw take becomes a clean edit automatically.",
+      "Thanks for watching.",
+    ]
+      .join(" ")
+      .split(" ");
+    const earlier = { first: 4, last: 10 }; // "This … edit." (the first take)
+    const later = { first: 11, last: 18 }; // "This … automatically."
+    const at = (i: number) => ({ start: 1 + i * 0.5, end: 1 + i * 0.5 + 0.4 });
+    let transcriptPath: string;
+    let scriptPath: string;
+
+    beforeAll(() => {
+      transcriptPath = join(dir, "retake.transcript.json");
+      writeFileSync(
+        transcriptPath,
+        JSON.stringify({ language: "en", words: said.map((text, i) => ({ text, ...at(i) })) }),
+      );
+      scriptPath = join(dir, "script", "retake.script.md");
+      writeFileSync(
+        scriptPath,
+        [
+          "🎬 Title card: welcome back",
+          "🗣️ Hello everyone, welcome back.",
+          "",
+          "🎬 [StatCard] One number: the clean edit",
+          "🗣️ This raw take becomes a clean edit automatically.",
+          "",
+        ].join("\n"),
+      );
+    });
+
+    type Seg = { srcIn: number; srcOut: number; kind: string; reason?: string };
+    const coversEarlierTake = (cutlist: Seg[]) =>
+      cutlist.some(
+        (s) =>
+          s.kind === "remove" &&
+          s.reason === "retake" &&
+          s.srcIn <= at(earlier.first).start + 1e-6 &&
+          s.srcOut >= at(earlier.last).end - 1e-6 &&
+          // Never into the kept take (design section 5).
+          s.srcOut <= at(later.first).start + 1e-6,
+      );
+
+    it("a --script run cuts the earlier take, records the pass, and reports it", async () => {
+      const root = join(dir, "wd-script-retake");
+      await run(root, scriptPath, { transcript: transcriptPath });
+      const work = workdirOf(root);
+      const production = JSON.parse(readFileSync(join(work, "production.json"), "utf8"));
+      expect(coversEarlierTake(production.cutlist)).toBe(true);
+      expect(production.script.retakePass).toBe(1);
+      const reportTxt = readFileSync(join(work, "report.txt"), "utf8");
+      expect(reportTxt).toContain("retakes found with the script (FINDINGS §166):");
+      expect(reportTxt).toContain(
+        'kept: "This raw take becomes a clean edit automatically."\n' +
+          '  cut (said again 0 words later; script: "This raw take becomes a clean edit automatically."): ' +
+          '"This raw take becomes a clean edit."',
+      );
+    }, 120_000);
+
+    it("the editor's Render (--scenes, no --script) builds the same cutlist; a pre-pass record cuts as before (G6)", async () => {
+      const root = join(dir, "wd-script-retake-replay");
+      await run(root, scriptPath, { transcript: transcriptPath });
+      const work = workdirOf(root);
+      const productionPath = join(work, "production.json");
+      const first = JSON.parse(readFileSync(productionPath, "utf8"));
+      expect(coversEarlierTake(first.cutlist)).toBe(true);
+      const scenesPath = join(work, REVIEWED_SCENES_BASENAME);
+      writeFileSync(scenesPath, reviewedScenesText(readFileSync(productionPath, "utf8"))!);
+
+      const replay = async () => {
+        const prior = process.env.OSSCLIP_REPLAY_WORKDIR;
+        process.env.OSSCLIP_REPLAY_WORKDIR = work;
+        try {
+          await produce(join(dir, "take.mp4"), {
+            cleanup: "standard",
+            libraryDir,
+            render: false,
+            mezzanine: false,
+            youtube: false,
+            confirmRepairs: false,
+            transcript: transcriptPath,
+            workdir: root,
+            provider: "mock",
+            scenes: scenesPath,
+          });
+        } finally {
+          if (prior === undefined) delete process.env.OSSCLIP_REPLAY_WORKDIR;
+          else process.env.OSSCLIP_REPLAY_WORKDIR = prior;
+        }
+      };
+
+      await replay();
+      const replayed = JSON.parse(readFileSync(productionPath, "utf8"));
+      expect(replayed.cutlist).toEqual(first.cutlist);
+      // Carried forward, so the NEXT Render repeats the pass too.
+      expect(replayed.script.retakePass).toBe(1);
+
+      // A project planned before the pass has no field: its replays must not
+      // gain cuts under scenes that were reviewed without them (design §1).
+      delete replayed.script.retakePass;
+      writeFileSync(productionPath, JSON.stringify(replayed, null, 2));
+      await replay();
+      const legacy = JSON.parse(readFileSync(productionPath, "utf8"));
+      expect(coversEarlierTake(legacy.cutlist)).toBe(false);
+      expect(legacy.cutlist.some((s: Seg) => s.reason === "retake")).toBe(false);
+      expect("retakePass" in legacy.script).toBe(false);
+      expect(readFileSync(join(work, "report.txt"), "utf8")).not.toContain("retakes found with the script");
+    }, 240_000);
+  });
 
   it("a missing script file fails before any work, naming the path", async () => {
     await expect(run(join(dir, "wd-missing"), join(dir, "nope.md"))).rejects.toThrow(

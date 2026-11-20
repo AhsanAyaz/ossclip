@@ -42,7 +42,7 @@ export interface SkippedCue {
  * transcript compare equal. Tokens that normalise to nothing (`→`, `…`) are
  * dropped on both sides; they were never spoken.
  */
-function scriptTokens(spoken: readonly string[]): string[] {
+export function scriptTokens(spoken: readonly string[]): string[] {
   return spoken
     .join(" ")
     .split(/\s+/)
@@ -58,14 +58,14 @@ function scriptTokens(spoken: readonly string[]): string[] {
  * that skips ahead can spend a common word ("the") on a far-off script token
  * and miss the rest. Spans are at most 2n words, so the n×2n table is tiny.
  */
-function inOrderMatches(script: readonly string[], window: readonly string[]): number {
+export function inOrderMatches(script: readonly string[], window: readonly string[]): number {
   let row = new Array<number>(script.length + 1).fill(0);
   for (const tok of window) row = extendRow(row, script, tok);
   return row[script.length]!;
 }
 
 /** One more window word appended to an LCS row (`row[j]` = LCS of script[0..j) and the window so far). */
-function extendRow(row: readonly number[], script: readonly string[], tok: string): number[] {
+export function extendRow(row: readonly number[], script: readonly string[], tok: string): number[] {
   const next = new Array<number>(script.length + 1).fill(0);
   for (let j = 0; j < script.length; j++) {
     next[j + 1] = script[j] === tok ? row[j]! + 1 : Math.max(row[j + 1]!, next[j]!);

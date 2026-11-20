@@ -38,6 +38,15 @@ describe("ProductionSchema.script", () => {
     expect(ProductionScriptSchema.parse({ text: "🎬 A" })).toEqual({ text: "🎬 A" });
   });
 
+  it("retakePass: 1 says the script retake pass ran (§166); its absence is a project planned before it", () => {
+    expect(ProductionScriptSchema.parse({ text: "🎬 A", retakePass: 1 })).toEqual({ text: "🎬 A", retakePass: 1 });
+    expect("retakePass" in ProductionScriptSchema.parse({ text: "🎬 A" })).toBe(false);
+  });
+
+  it("refuses any other retakePass: a value this build does not know is not a pass it can repeat", () => {
+    expect(() => ProductionScriptSchema.parse({ text: "🎬 A", retakePass: 2 })).toThrow();
+  });
+
   it("refuses a record with no text, or a clip with no length", () => {
     expect(() => ProductionSchema.parse({ ...bareProduction, script: { sourcePath: "/s.md" } })).toThrow();
     expect(() =>

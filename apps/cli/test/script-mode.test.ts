@@ -30,6 +30,8 @@ import {
   scriptPlanCacheKeyCandidates,
   scriptPlanCut,
   scriptPlanCutlist,
+  scriptRetakeCues,
+  scriptRetakesHonoured,
   scriptSourcePath,
   storedScriptFrom,
   type CueOutcome,
@@ -134,6 +136,52 @@ describe("isScriptProject (the stored script, not the flag)", () => {
   it("a run with neither flag is not, even over a stored record: it writes none, so it leaves no script project", () => {
     expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: stored })).toBe(false);
     expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: undefined })).toBe(false);
+  });
+});
+
+describe("scriptRetakeCues (design section 1: which runs cut retakes with the script, §166)", () => {
+  const text = "🎬 A\n🗣️ The elephant never forgets.";
+  const cues = parseScript(text);
+
+  it("a --script run reads its own cues", () => {
+    expect(scriptRetakeCues({ scriptCues: cues, scenesPinned: false, storedScript: undefined })).toBe(cues);
+  });
+
+  it("a --scenes replay of a project planned with the pass parses the stored text", () => {
+    const got = scriptRetakeCues({
+      scriptCues: undefined,
+      scenesPinned: true,
+      storedScript: { text, retakePass: 1 },
+    });
+    expect(got).toEqual(parseScript(text));
+  });
+
+  it("a --scenes replay of a project planned before the pass gets none (G6)", () => {
+    expect(scriptRetakeCues({ scriptCues: undefined, scenesPinned: true, storedScript: { text } })).toBeUndefined();
+  });
+
+  it("a run with no script and no pin gets none", () => {
+    expect(scriptRetakeCues({ scriptCues: undefined, scenesPinned: false, storedScript: undefined })).toBeUndefined();
+  });
+
+  it("an unpinned run gets none even over a record that says the pass ran: it writes no record", () => {
+    expect(
+      scriptRetakeCues({ scriptCues: undefined, scenesPinned: false, storedScript: { text, retakePass: 1 } }),
+    ).toBeUndefined();
+  });
+});
+
+describe("scriptRetakesHonoured (design section 6: no claim the cutlist did not keep)", () => {
+  it("--cleanup exact cuts nothing, so it says nothing", () => {
+    expect(scriptRetakesHonoured("exact", false)).toBe(false);
+  });
+
+  it("the sanity valve reset the cutlist, so nothing was cut", () => {
+    expect(scriptRetakesHonoured("standard", true)).toBe(false);
+  });
+
+  it("otherwise the cuts stand", () => {
+    expect(scriptRetakesHonoured("standard", false)).toBe(true);
   });
 });
 

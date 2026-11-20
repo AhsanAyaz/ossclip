@@ -61,4 +61,5 @@ export * from "./config";
 export * from "./resolution";
 export * from "./script/cues";
 export * from "./script/align";
+export * from "./script/retakes";
 export { run } from "./exec";

@@ -22,6 +22,7 @@ import {
   applyCleanupChoices,
   applyUserCuts,
   cutWordIndices,
+  parseScript,
   scriptComponentIds,
   type AlignedCue,
   type FramingContext,
@@ -83,6 +84,37 @@ export function isScriptProject(run: {
   storedScript: ProductionScript | undefined;
 }): boolean {
   return run.scriptFlag || (run.scenesPinned && run.storedScript !== undefined);
+}
+
+/**
+ * The cues the script retake pass reads (FINDINGS §166), or undefined when it
+ * must not run (script-guided-retakes design §1). A `--script` run reads its
+ * own. A `--scenes` replay has no `--script`, so it reads the stored text —
+ * but only when the record says the pass ran when those scenes were planned
+ * (`retakePass`): a project planned before this feature keeps its cutlist on
+ * every Render (G6), and its reviewed scenes never meet cuts they were not
+ * planned around. `scenesPinned` gates the stored record for
+ * `isScriptProject`'s reason: a run with neither flag writes no record, so
+ * it is not a script project, whatever the last run left behind.
+ */
+export function scriptRetakeCues(run: {
+  scriptCues: readonly ScriptCue[] | undefined;
+  scenesPinned: boolean;
+  storedScript: ProductionScript | undefined;
+}): readonly ScriptCue[] | undefined {
+  if (run.scriptCues) return run.scriptCues;
+  if (run.scenesPinned && run.storedScript?.retakePass === 1) return parseScript(run.storedScript.text);
+  return undefined;
+}
+
+/**
+ * Whether report.txt may say the script retakes were cut (design §6). Not
+ * with `--cleanup exact`, which cuts nothing whatever `retakes` holds — the
+ * gate the "▸ retakes" console line already uses — and not when the sanity
+ * valve reset the cutlist: the cuts were found, but the video keeps them.
+ */
+export function scriptRetakesHonoured(cleanup: string, valveFired: boolean): boolean {
+  return cleanup !== "exact" && !valveFired;
 }
 
 /** Where the per-cue report lands beside report.txt, as `{ outcomes }`. */
