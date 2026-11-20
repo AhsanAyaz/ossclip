@@ -439,6 +439,21 @@ export function blurTypingElement(): void {
 }
 
 /**
+ * Which drag a press on the bare picture arms. In a pip bubble the picture
+ * IS the bubble, so a plain drag moves it (R21 §107); Shift-drag pans the
+ * picture inside it (2026-11-20). §107 gave that pan to ⌥-drag, but ⌥ is the
+ * view-pan gesture (§55b) and the mousedown listener returns on it before
+ * ever reaching this choice, so in pip nothing on the stage could pan the
+ * framing. Shift was free on the stage. Every other layout pans, Shift or not.
+ */
+export function videoPressGesture(
+  layout: SceneCue["layout"] | undefined,
+  shiftKey: boolean,
+): "move-pip" | "pan" {
+  return layout === "pip-bubble" && !shiftKey ? "move-pip" : "pan";
+}
+
+/**
  * A transparent layer above the `<Player>` that turns clicks into a
  * selection, drags into `patchElement` nudges, and a double-click into
  * inline text editing. It never blocks the player's own controls: only the
@@ -855,12 +870,14 @@ export const Overlay: React.FC<OverlayProps> = ({
         const stageBottom = stage.getBoundingClientRect().bottom;
         if (videoSceneId && e.clientY < stageBottom - PLAYER_CONTROLS_STRIP_PX) {
           select({ sceneId: videoSceneId, elementId: null });
-          // The pip bubble (R21 §107): in this layout the picture IS the
-          // bubble, and dragging the thing under the cursor should move IT.
-          // Plain drag repositions the bubble; ⌥-drag keeps the framing pan
-          // (⌥ already means "pan" on this stage — the view hint says so).
+          // The pip bubble (R21 §107): plain drag repositions the bubble,
+          // Shift-drag pans the picture inside it (`videoPressGesture` has
+          // why it is not ⌥). The pan writes the same `video.dx/dy` as
+          // everywhere else; the stage reads them as a crop window held to
+          // the footage (`pipPanFor`), so a stored value past that limit
+          // renders at the limit rather than uncovering the backdrop.
           const pipCue = cues.find((c) => c.id === videoSceneId);
-          if (pipCue?.layout === "pip-bubble" && !e.altKey) {
+          if (pipCue && videoPressGesture(pipCue.layout, e.shiftKey) === "move-pip") {
             const slot = layoutSlots("pip-bubble", undefined, [], settings).video.rect;
             pipDragRef.current = {
               sceneId: videoSceneId,
@@ -934,12 +951,16 @@ export const Overlay: React.FC<OverlayProps> = ({
             ) &&
             e.clientY < stage.getBoundingClientRect().bottom - PLAYER_CONTROLS_STRIP_PX;
           // Over a pip bubble the affordance is MOVE (a plain drag will
-          // reposition it — R21 §107); elsewhere the picture pans, so grab.
+          // reposition it — R21 §107) unless Shift is held, which pans it;
+          // elsewhere the picture pans, so grab.
           const overPip =
             overVideo &&
             (() => {
               const id = findVideoFrom(t);
-              return id !== null && cues.find((c) => c.id === id)?.layout === "pip-bubble";
+              return (
+                id !== null &&
+                videoPressGesture(cues.find((c) => c.id === id)?.layout, e.shiftKey) === "move-pip"
+              );
             })();
           stage.style.cursor = overVideo ? (overPip ? "move" : "grab") : "";
         }

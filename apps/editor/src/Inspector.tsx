@@ -1663,8 +1663,14 @@ export const Inspector: React.FC<InspectorProps> = ({
             />
             auto zoom (the slow push composes on top of your zoom)
           </label>
-          <div style={{ fontSize: 12, color: "#9A9AA3" }}>
-            Pan: drag the picture on the stage.
+          {/* In a pip bubble a plain drag moves the bubble (R21 §107) and the
+              pan is a crop window held to the footage (`pipPanFor`): with a
+              portrait take in a round bubble there is nothing to show
+              sideways until the picture is zoomed in, hence the last line. */}
+          <div data-testid="video-pan-hint" style={{ fontSize: 12, color: "#9A9AA3" }}>
+            {cue.layout === "pip-bubble"
+              ? "Drag moves the bubble. Shift-drag pans the picture inside it. Zoom in to pan sideways."
+              : "Pan: drag the picture on the stage."}
           </div>
           <NumberField
             id="scale"

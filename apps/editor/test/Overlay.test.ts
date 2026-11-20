@@ -11,7 +11,14 @@ import {
   type SceneCue,
   type Segment,
 } from "@ossclip/core/browser";
-import { DYNAMIC_ID, Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
+import {
+  DYNAMIC_ID,
+  Overlay,
+  blurTypingElement,
+  buildArrayPatch,
+  elementTextOf,
+  videoPressGesture,
+} from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
 import { onSaveEffect } from "../src/save";
 
@@ -287,6 +294,21 @@ describe("blurTypingElement — bug 6's fix (PLAN 2026-08-04 Task 2)", () => {
     expect(document.activeElement).toBe(document.body);
     expect(() => blurTypingElement()).not.toThrow();
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe("videoPressGesture — which drag a press on the bare picture arms (2026-11-20, §107)", () => {
+  it("in a pip bubble a plain drag moves the bubble and a Shift-drag pans the picture inside it", () => {
+    expect(videoPressGesture("pip-bubble", false)).toBe("move-pip");
+    expect(videoPressGesture("pip-bubble", true)).toBe("pan");
+  });
+
+  it("every other layout pans, Shift or not, so their gesture is unchanged", () => {
+    for (const layout of ["full-bleed", "blurred-behind", "lower-third", "graphic-only"] as const) {
+      expect(videoPressGesture(layout, false)).toBe("pan");
+      expect(videoPressGesture(layout, true)).toBe("pan");
+    }
+    expect(videoPressGesture(undefined, false)).toBe("pan");
   });
 });
 
