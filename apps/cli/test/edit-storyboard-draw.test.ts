@@ -260,6 +260,22 @@ describe("storyboard draw jobs (plan B2a Task 4; §169)", () => {
     expect((await fetch(`${s.url}${got.detail.s1.versions[0].stills[0]}`)).status).toBe(200);
   });
 
+  it("a draw and a redraw use the model the recorded command pins (--llm-model), and none without it (§169)", async () => {
+    const dir = await storyboardWorkdir();
+    const s = await start(dir, { provider: drawProvider().make });
+    await post(s.url, "/api/storyboard/draw", { ids: ["s1"] });
+    await jobEnd(s.url);
+    expect(s.drawArgs[0]!.llmModel).toBeUndefined();
+
+    await recordCommand(dir, ["produce", "./take.mp4", "--storyboard", "--llm-model", "claude-opus-5-5"]);
+    await post(s.url, "/api/storyboard/note", { id: "s1", text: "Make the arrow thicker." });
+    await jobEnd(s.url);
+    expect(s.drawArgs[1]!.llmModel).toBe("claude-opus-5-5");
+    await post(s.url, "/api/storyboard/draw", { ids: ["s2"] });
+    await jobEnd(s.url);
+    expect(s.drawArgs[2]!.llmModel).toBe("claude-opus-5-5");
+  });
+
   it("while a job runs: a second draw, Plan again, Render and a project switch are 409; cancel sets stopping and no later shot starts", async () => {
     const dir = await storyboardWorkdir();
     await recordCommand(dir, ["produce", "./take.mp4"]);

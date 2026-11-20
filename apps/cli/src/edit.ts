@@ -183,7 +183,7 @@ import {
   type ResolvedPortrait,
 } from "./portrait-override";
 import { lastFlagValue, thumbnailPanelState } from "./thumbnail-panel";
-import { captionRegenProvider } from "./caption-regen-panel";
+import { captionRegenProvider, recordedLlmModel } from "./caption-regen-panel";
 import { binOnPath } from "./llm-detect";
 import { fetchLibraryBytes } from "./library-fetch";
 import { NO_SUCH_LOGO_CANDIDATE, logoCandidatePath } from "./logo-candidate-file";
@@ -1637,8 +1637,12 @@ export async function startEditServer(
       throw err;
     }
   };
-  /** The provider "Plan again" would use: the pack generate's resolution, verbatim. */
-  const storyboardProviderName = async (dir: string): Promise<Gathered<ProviderName>> => {
+  /**
+   * The provider "Plan again" would use: the pack generate's resolution,
+   * verbatim. With it, the model the recorded command pins (`--llm-model`),
+   * so a draw and a redraw use the model the plan did (`recordedLlmModel`).
+   */
+  const storyboardProviderName = async (dir: string): Promise<Gathered<{ name: ProviderName; model?: string }>> => {
     if (opts.publishEnv === undefined) loadEnvFiles();
     const env = opts.publishEnv ?? process.env;
     let usageLog: unknown = null;
@@ -1655,7 +1659,8 @@ export async function startEditServer(
       hasBin: (bin) => binOnPath(bin, env),
     });
     if (resolved.status === "unavailable") return refused(412, resolved.reason);
-    return { ok: true, value: resolved.provider };
+    const model = recordedLlmModel(cmd?.args ?? null);
+    return { ok: true, value: { name: resolved.provider, ...(model !== undefined ? { model } : {}) } };
   };
   /**
    * The provider factory a job's draws get: the server's (`makeLlmProvider`),
@@ -3097,7 +3102,8 @@ export async function startEditServer(
               hasBin: (bin) => binOnPath(bin, env),
             });
             if (resolved.status === "unavailable") return send(412, { ok: false, error: resolved.reason });
-            const provider = (opts.makeLlmProvider ?? createProvider)(resolved.provider);
+            // The recorded `--llm-model`, so a plan and its drawings share a model (§169).
+            const provider = (opts.makeLlmProvider ?? createProvider)(resolved.provider, recordedLlmModel(cmd?.args ?? null));
             let result: Awaited<ReturnType<typeof planAgain>>;
             try {
               result = await planAgain(
@@ -3206,7 +3212,8 @@ export async function startEditServer(
               {
                 workdir: dir,
                 shot: id,
-                llm: llm.value,
+                llm: llm.value.name,
+                ...(llm.value.model !== undefined ? { llmModel: llm.value.model } : {}),
                 mode: {
                   kind: "idea",
                   idea: shot.idea,
@@ -3252,7 +3259,7 @@ export async function startEditServer(
           // any, stays in the video until the new draft is approved.
           const started = startStoryboardJob(dir, "redraw", [id], async (_id, ctx, made) => {
             const result = await storyboardDraw(
-              { workdir: dir, shot: id, llm: llm.value, mode: { kind: "note", text }, shouldStop: ctx.shouldStop, project: project.value },
+              { workdir: dir, shot: id, llm: llm.value.name, ...(llm.value.model !== undefined ? { llmModel: llm.value.model } : {}), mode: { kind: "note", text }, shouldStop: ctx.shouldStop, project: project.value },
               { createProvider: jobProviderFactory(ctx, made), log: ctx.log },
             );
             return result.ok ? { ok: true } : { ok: false, error: drawFailure(dir, id, result) };
