@@ -1975,3 +1975,51 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   The later take is kept. The editor can restore the cut; it cannot swap the takes.
 *   The first `--script` run of an existing project after this change plans again (one LLM call), because the plan cache is keyed on the kept words.
 *   `report.txt` prints the section only when the cutlist honoured the cuts. The older "retakes collapsed" block has no such gate; that is unchanged.
+
+## 167. An LLM draws a shot as React code: Phase A of the storyboard, and its gate (2026-11-20)
+
+**Why it exists.** A script run places clips the author made elsewhere, and pattern components cover the shots that repeat. A shot that fits no pattern (a character acting a line out) was still drawn by hand in a chat. Design: `docs/designs/storyboard-drawn-scenes.md`. Phase A builds one thing: `ossclip draw` (experimental) asks an LLM for one React scene file from a one-sentence idea, checks it, renders three stills and a small preview, and redraws it from a typed note. No planner and no editor panel yet.
+
+**The pieces.**
+
+*   **Static check** (`packages/core/src/draw/static-check.ts`, pure). An allow-list: imports (`react`, `@ossclip/scenes/draw`, eight names from `remotion`), JSX elements (`div`, `span`, SVG drawing elements, kit parts, components declared in the file), and a list of rejected names and URL-like strings. `url(#id)` is allowed, because gradients, clips and masks need it and a fragment cannot load anything.
+*   **Drawing kit** (`@ossclip/scenes/draw`): time, theme, frame size and safe area as hooks; the seconds-based motion helpers; theme-reading wrappers of the shared parts; `Asset` for the author's images. The safe area is `{x, y, width, height}`, not left/top/right/bottom, because `top` is a rejected name.
+*   **Type check** (`apps/cli/src/draw/typecheck.ts`): the one scene file against the kit's source. About 1 s.
+*   **Render** (`packages/renderer/src/drawn/`): one bundle per scene version, stills, a quarter-size preview, a ProRes 4444 clip.
+*   **Draw call** (`packages/core/src/draw/`): prompt, two worked examples, at most two repairs, redraw from notes.
+*   **Files** under `<workdir>/storyboard/<shot>/`: `v<n>.tsx`, stills, preview, `history.json`.
+
+**Facts found while building.**
+
+*   **A scene file outside the repository renders through a bundle** when the bundle's resolve rule points at the renderer's own modules and aliases the kit. So each version gets its own bundle, and one bad scene cannot affect another.
+*   **The editor server trusts every loopback origin, and the render page is one.** Without a guard, drawn code could call the editor's write endpoints. The guard is a content security policy written into the bundle's `index.html`: a scene's `fetch`, `<img>`, `new Image()` and CSS `url()` reached a probe server 4 times without it and 0 times with it. Remotion's browser options offer no switch for this.
+*   **The static check is a filter, not a sandbox.** A name built from string pieces (`[]["con"+"structor"]`) passes it. The policy is the guard; the filter keeps honest code inside the rules and gives the LLM a line number to repair.
+*   **Remotion's own timeout is not a time limit.** With 15 s set, a scene stuck in a loop was given up on after 27.7 s. The still render now opens the browser itself, runs its own timer per step and closes the browser when it fires.
+*   **A preview's background must go into the props the composition is selected with.** Passed only to the render call, the preview came out black.
+*   **The first render of a worked example found a fault no check had:** the goldfish's tail was cut at the edge of its viewBox. The examples were only checked as text until then.
+*   **The browser tests do not run in CI.** They need the headless browser and ffmpeg, so the network block is proven on the author's machine only.
+
+**The gate.** The design said: draw five shots that fit no pattern; the rest is built only if three are usable after at most two notes each. The shots came from the author's next video (a 68-second vertical short), with the plugin's logo as the only asset.
+
+| Shot | Idea (short) | Calls | Draw | Checks | Author's verdict |
+|---|---|---|---|---|---|
+| self-grading | a robot stamps A+ on its own exam | 1 | 257 s | 9 s | usable at first draft |
+| elephant-draft | an elephant writes a plan, three thought bubbles | 1 | 207 s | 17 s | usable at first draft |
+| goldfish-review | three goldfish inspect a document with magnifiers | 1 | 180 s | 10 s | usable at first draft |
+| writer-not-reviewer | elephant "writes", goldfish "reviews", a line between | 1 | 108 s | 13 s | usable at first draft |
+| plugin-open | a box opens and the logo rises out | 1 | 159 s | 8 s | not judged yet |
+
+*   Provider: the Claude command line, its default model for the editorial tier. No other provider was tried, so which providers can return a whole scene is still unknown.
+*   All five passed every check on the first reply: no repair call, no note. **The gate passed at four of four judged**, against a bar of three of five after notes.
+*   Per version: type check 1.0 to 1.3 s, bundle 5 to 6 s, three stills 1.4 to 1.6 s, preview 6 to 12 s. The LLM's writing is 92% to 97% of the time.
+*   Notes and redraw were not needed, so they are tested only with the mock provider.
+
+**Limits.**
+
+*   One video, one subject, one provider, five shots. The subject (an elephant, goldfish, a robot) is easy to draw from simple shapes.
+*   The author judged stills and small previews, not clips in the video.
+*   The LLM drew blind: it never saw its own frames. Two small faults passed for that reason: a dashed line that does not show in a still, and fish that cover part of the document's text.
+*   Drawings sit left of centre in a vertical frame, because the kit's safe area keeps the right side free for platform buttons. The author chose to keep this.
+*   An asset that takes its colours from CSS variables has none as an image file; the logo's colours were filled in by hand.
+*   A changed asset does not reach existing stills: only a draw renders stills, and a draw is an LLM call. Phase B's approval renders without one.
+*   The type check needs React's types at run time. That was run only inside this repository, not from a packed install.
