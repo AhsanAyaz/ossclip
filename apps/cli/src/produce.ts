@@ -5792,7 +5792,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     overlayPlan = priorOverlayPlan(work);
     if (overlayPlan) console.log(`▸ overlays carried forward (${overlayPlan.placements.length})`);
   } else {
-    const library = loadLibrary();
+    // A storyboard run matches nothing (author's call, §168): its drawn shots
+    // are the graphics, and a matched logo popped over one. Overlays the
+    // author adds in the editor still apply below; only the automatic
+    // matching is off.
+    const library = storyboardRun ? [] : loadLibrary();
     if (library.length > 0) {
       const at = transcript.words.map((w) => map.mapWord(w));
       // Output-time starts on the kept words (ruling R12): two names 3s apart

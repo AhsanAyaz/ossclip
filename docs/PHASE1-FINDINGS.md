@@ -2023,3 +2023,40 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   An asset that takes its colours from CSS variables has none as an image file; the logo's colours were filled in by hand.
 *   A changed asset does not reach existing stills: only a draw renders stills, and a draw is an LLM call. Phase B's approval renders without one.
 *   The type check needs React's types at run time. That was run only inside this repository, not from a packed install.
+
+## 168. The storyboard's plan table: Phase B1, and its first real run (2026-11-20)
+
+**What was built.** `ossclip produce <input> --storyboard [--assets <dir>] [--intent <text>]` cuts the video, asks an LLM once for a list of shots, stores the list in `storyboard.json` and stops at the editor. The editor has a Storyboard panel for a project that has that file: drop, restore, reword, move a shot to the transcript selection, add a shot from the selection, and plan again. Nothing is drawn in this phase.
+
+**Facts found while building.**
+
+*   **A shot is anchored to transcript word indices, and the editor selects caption words.** A caption word keeps the source start of the transcript word it was built from, so the panel maps a selection back by matching starts within 1 ms. A selection that holds a word made by a caption rewrite is refused whole, not guessed.
+*   **The transcript clears its selection on any click outside it**, and the Storyboard button is outside it. The app keeps the last selection that was not empty.
+*   **"Plan again" plans on the cut as edited in the editor**, not on the automatic cut. Shots the author reworded, added or drew are kept and block their spans.
+*   **Edits are refused while "Plan again" runs.** The plan saves the table it loaded plus the merge, so an edit saved during the call would be overwritten.
+*   **An eleventh top-bar control made the save status wrap at 1280 px.** The bar grew 14 px while an element was being dragged, the stage shrank, and the element landed short of the pointer. Top-bar buttons and the status no longer wrap; the workdir label shortens instead.
+*   **The e2e browser now runs without an audio device.** After the one spec that plays media, WSLg's PulseAudio server stops answering for a while. The next page's `new AudioContext()` (Remotion makes one at Player mount) then blocked the page thread for 20 s per call, and the next test timed out at "Loading production". Attaching a debugger before the block made it disappear, so it was found with a wrapper around the constructor. This is a fault of the test machine, not of the editor.
+*   **Remotion's still render closes its page without waiting when a scene throws.** Closing the browser at the same moment gave an unhandled "Target closed" error under load. The drawn-still render now waits for the page to close first.
+
+**The first real run.** The author's next video: a 68-second vertical short, 227 words, with the plugin's logo as the only asset.
+
+| Measure | Value |
+|---|---|
+| Provider | the Claude command line |
+| LLM time, transcript repair and plan together | 31 s |
+| Whole run | 46 s |
+| Shots planned | 5 |
+| Video covered by shots | 37 s of 68 s (55%; the limit is 60%) |
+| Shots changed by the limits | 4, each moved 2 to 4 words later because it touched the shot before it |
+| Shots the author kept / reworded / dropped / added | 5 / 0 / 0 / 0 |
+
+*   **The planner put the shots back to back.** The gaps are 0.1 to 0.3 s, so the speaker is hidden from 12.9 s to 51.1 s. The author accepted this plan. Whether it holds for a longer video is not known.
+*   **Four of five shots touched their neighbour** in the planner's reply. The limits repaired it, but the prompt does not yet say that a shot must end before the next one starts.
+*   **A storyboard run no longer matches library overlays.** The author's library matched "Google" and popped a logo over the plan on this run. Overlays added in the editor still apply.
+*   **"Plan again" in the editor uses the machine's default provider.** `ossclip edit` has no flag to choose one, so on the author's machine it is not the provider the first plan used.
+
+**Limits.**
+
+*   One video and one provider. The table was judged by reading it; no shot from it is drawn yet.
+*   "Plan again" has run only with a stand-in provider.
+*   The editor's clock counts a word as kept if its start, middle or end is kept; the server's counts the middle only. A word on a cut edge can differ between the two.

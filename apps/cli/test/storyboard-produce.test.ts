@@ -149,6 +149,35 @@ describe.skipIf(!hasFfmpeg)("produce --storyboard, end to end with the mock prov
     expect(readFileSync(join(work, "report.txt"), "utf8")).toContain("the author's own idea: a bear juggles three clocks");
   }, 120_000);
 
+  it("matches no library overlay, though the library names a spoken word (§168)", async () => {
+    // The author's own report: a "Google" entry popped a logo over a drawn
+    // shot on every storyboard run. The same library on a plain run places it.
+    const lib = mkdtempSync(join(tmpdir(), "ossclip-library-"));
+    // 1x1 transparent PNG.
+    writeFileSync(
+      join(lib, "today.png"),
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==", "base64"),
+    );
+    writeFileSync(
+      join(lib, "library.json"),
+      JSON.stringify({ entries: [{ id: "today", file: "today.png", names: ["today"], kind: "logo" }] }),
+    );
+    try {
+      const plain = join(dir, "wd-overlay-plain");
+      await run(plain, { libraryDir: lib, produce: false });
+      expect(lines.some((l) => l.startsWith("▸ overlays: 1 placed"))).toBe(true);
+
+      lines = [];
+      const root = join(dir, "wd-overlay-storyboard");
+      await run(root, { storyboard: true, libraryDir: lib });
+      expect(lines.some((l) => l.startsWith("▸ overlays:"))).toBe(false);
+      const production = JSON.parse(readFileSync(join(workdirOf(root), "production.json"), "utf8"));
+      expect(production.overlays?.placements ?? []).toEqual([]);
+    } finally {
+      rmSync(lib, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it("stops on a storyboard.json that fails its schema, naming the file, and leaves it unchanged (Review Focus 4)", async () => {
     const root = join(dir, "wd-broken");
     await run(root, { storyboard: true });
