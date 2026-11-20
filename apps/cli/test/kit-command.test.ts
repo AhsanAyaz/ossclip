@@ -179,7 +179,7 @@ function project(world: World, o: ProjectOpts = {}): { work: string; root: strin
   return { work, root, source };
 }
 
-function renderProps(cues: SceneCue[]): unknown {
+function renderProps(cues: SceneCue[], extra: Record<string, unknown> = {}): unknown {
   return {
     sceneCues: cues,
     spans: [
@@ -189,10 +189,18 @@ function renderProps(cues: SceneCue[]): unknown {
     theme: defaultTheme,
     settings: { width: 1920, height: 1080, fps: 30 },
     outputDurationSec: 10,
-    // Everything else render-props carries is ignored.
+    // Everything else render-props carries is ignored, captionLines aside.
     captionLines: [],
+    ...extra,
   };
 }
+
+/** A caption line as produce writes it: full words, output seconds. */
+const captionLine = (texts: string[], start: number, end: number) => ({
+  words: texts.map((text, i) => ({ text, start: start + i * 0.1, end: start + i * 0.1 + 0.1, srcStart: start + 1 })),
+  start,
+  end,
+});
 
 const FLAGS: KitFlags = { out: "/kits/take-kit", clipsOnly: false, force: false, refresh: true };
 
@@ -765,6 +773,143 @@ describe("runKit", () => {
     expect(bundles).toBe(1);
     await runKit(work, FLAGS, world.seams);
     expect(bundles).toBe(1);
+  });
+});
+
+describe("runKit: captions.srt (design kit-captions-layer.md, Part 1)", () => {
+  const SRT = "/kits/take-kit/captions.srt";
+  const TWO = [captionLine(["hello", "there"], 0.5, 2), captionLine(["again"], 61.25, 63.5)];
+  const TWO_SRT =
+    "1\r\n00:00:00,500 --> 00:00:02,000\r\nhello there\r\n\r\n" + "2\r\n00:01:01,250 --> 00:01:03,500\r\nagain\r\n";
+  const HINT = "  Subtitles: File → Import → Subtitle…, pick captions.srt, then drag it onto the timeline";
+  const NONE = "▸ no captions in this project; captions.srt not written";
+
+  const withLines = async (world: World, work: string, extra: Record<string, unknown>): Promise<void> => {
+    await world.seams.writeFile(join(work, "render-props.json"), JSON.stringify(renderProps(CUES, extra)));
+  };
+
+  it("writes the lines beside the timeline, records them, and prints the import line after Resolve's", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: TWO });
+    const result = await runKit(work, FLAGS, world.seams);
+    expect(world.files.get(SRT)!.text).toBe(TWO_SRT);
+    expect(report(world).captions).toEqual({ srt: "captions.srt", lines: 2, skipped: 0 });
+    expect(result.captions).toBe(2);
+    const at = world.logs.indexOf("  In Resolve: File → Import → Timeline…, then pick timeline.fcpxml");
+    expect(at).toBeGreaterThan(-1);
+    expect(world.logs[at + 1]).toBe(HINT);
+    expect(world.logs).not.toContain(NONE);
+  });
+
+  it("carries the author's edited text, which render-props already has applied", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: [captionLine(["Hello,", "EGM!"], 0.5, 2)] });
+    await runKit(work, FLAGS, world.seams);
+    expect(world.files.get(SRT)!.text).toBe("1\r\n00:00:00,500 --> 00:00:02,000\r\nHello, EGM!\r\n");
+  });
+
+  it("skips a wordless, a blank and a zero-length line, numbers the rest without gaps, and counts them", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, {
+      captionLines: [
+        captionLine(["one"], 1, 2),
+        { words: [], start: 2, end: 3 },
+        captionLine([" ", ""], 3, 4),
+        captionLine(["zero"], 4, 4),
+        captionLine(["two"], 5, 6),
+      ],
+    });
+    const result = await runKit(work, FLAGS, world.seams);
+    expect(world.files.get(SRT)!.text).toBe(
+      "1\r\n00:00:01,000 --> 00:00:02,000\r\none\r\n\r\n2\r\n00:00:05,000 --> 00:00:06,000\r\ntwo\r\n",
+    );
+    expect(report(world).captions).toEqual({ srt: "captions.srt", lines: 2, skipped: 3 });
+    expect(result.captions).toBe(2);
+  });
+
+  it("no captionLines key (an older project) or an empty list: no file, a stale one removed, said so", async () => {
+    for (const extra of [{ captionLines: undefined }, { captionLines: [] }]) {
+      const world = makeWorld();
+      const { work } = project(world);
+      await withLines(world, work, extra);
+      // JSON drops an undefined member: the key is really absent from the file.
+      const written = JSON.parse(world.files.get(join(work, "render-props.json"))!.text) as object;
+      expect("captionLines" in written).toBe(extra.captionLines !== undefined);
+      await world.seams.writeFile(SRT, "1\r\n00:00:00,000 --> 00:00:01,000\r\nstale\r\n");
+      const result = await runKit(work, FLAGS, world.seams);
+      expect(world.files.has(SRT)).toBe(false);
+      expect(report(world).captions).toEqual({ srt: null, lines: 0, skipped: 0 });
+      expect(result.captions).toBe(0);
+      expect(world.logs).toContain(NONE);
+      expect(world.logs.some((l) => l.includes("Subtitles:"))).toBe(false);
+    }
+  });
+
+  it("is written under --clips-only too", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: TWO });
+    await runKit(work, { ...FLAGS, clipsOnly: true }, world.seams);
+    expect(world.files.has("/kits/take-kit/timeline.fcpxml")).toBe(false);
+    expect(world.files.get(SRT)!.text).toBe(TWO_SRT);
+    expect(report(world).captions).toEqual({ srt: "captions.srt", lines: 2, skipped: 0 });
+    expect(world.logs).toContain(HINT);
+  });
+
+  it("is written when the render hid captions (the editor's setting or --no-captions): the file is for Resolve", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: TWO, captionsHidden: true, captionsHiddenByFlag: true });
+    await runKit(work, FLAGS, world.seams);
+    expect(world.files.get(SRT)!.text).toBe(TWO_SRT);
+  });
+
+  it("non-ASCII text goes through as is, with no byte-order mark", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: [captionLine(["یہ", "ٹیسٹ", "—", "ہے"], 3600.25, 3601.5)] });
+    await runKit(work, FLAGS, world.seams);
+    const text = world.files.get(SRT)!.text;
+    expect(text).toBe("1\r\n01:00:00,250 --> 01:00:01,500\r\nیہ ٹیسٹ — ہے\r\n");
+    expect(text.charCodeAt(0)).not.toBe(0xfeff);
+  });
+
+  it("a malformed caption line is an error naming the file, not a silently shorter SRT", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: [{ words: [{ text: "x" }], start: 0 }] });
+    await expect(runKit(work, FLAGS, world.seams)).rejects.toThrow(/render-props\.json .* is not valid/);
+  });
+
+  it("a second run with the same captions rewrites the same bytes and renders nothing", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: TWO });
+    await runKit(work, FLAGS, world.seams);
+    world.rendered.length = 0;
+    await runKit(work, FLAGS, world.seams);
+    expect(world.rendered).toEqual([]);
+    expect(world.files.get(SRT)!.text).toBe(TWO_SRT);
+    expect(report(world).captions).toEqual({ srt: "captions.srt", lines: 2, skipped: 0 });
+  });
+
+  it("a report written before captions.srt existed still lets every clip be reused", async () => {
+    const world = makeWorld();
+    const { work } = project(world);
+    await withLines(world, work, { captionLines: TWO });
+    await runKit(work, FLAGS, world.seams);
+    // What the kit wrote before this change: the same report with no `captions`.
+    const old = JSON.parse(world.files.get("/kits/take-kit/kit-report.json")!.text);
+    delete old.captions;
+    await world.seams.writeFile("/kits/take-kit/kit-report.json", JSON.stringify(old));
+    world.rendered.length = 0;
+    const again = await runKit(work, FLAGS, world.seams);
+    expect(world.rendered).toEqual([]);
+    expect(again).toMatchObject({ rendered: 0, reused: 3 });
+    expect(report(world).captions).toEqual({ srt: "captions.srt", lines: 2, skipped: 0 });
   });
 });
 

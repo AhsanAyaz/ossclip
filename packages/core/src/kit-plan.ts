@@ -225,6 +225,16 @@ export interface KitReportClip {
   notes: string[];
 }
 
+/** What the kit wrote of the captions (design kit-captions-layer.md, Part 1). */
+export interface KitReportCaptions {
+  /** The subtitle file's name in the kit folder, or null when there were no lines to write. */
+  srt: string | null;
+  /** Entries in the file. */
+  lines: number;
+  /** Caption lines left out (`kitCaptionsSrt`). */
+  skipped: number;
+}
+
 export interface KitReport {
   version: 1;
   createdAt: string;
@@ -233,6 +243,12 @@ export interface KitReport {
   timeline: string | null;
   clips: KitReportClip[];
   warnings: string[];
+  /**
+   * Optional, and `version` stays 1: a report written before captions.srt
+   * existed must still parse, because one that does not counts as no report
+   * and would re-render every clip of every existing kit once.
+   */
+  captions?: KitReportCaptions;
 }
 
 /**
@@ -260,4 +276,11 @@ export const KitReportSchema: z.ZodType<KitReport> = z.object({
     }),
   ),
   warnings: z.array(z.string()),
+  captions: z
+    .object({
+      srt: z.string().nullable(),
+      lines: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative(),
+    })
+    .optional(),
 });

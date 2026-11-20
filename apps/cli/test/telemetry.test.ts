@@ -449,4 +449,21 @@ describe("input_source (§136)", () => {
     expect(keys).toEqual(expect.arrayContaining(expected));
     expect(() => assertSafeProps(Object.fromEntries(keys.map((k) => [k, 1])))).not.toThrow();
   });
+
+  /**
+   * The same drift guard for `kit_completed`. `captions` is a COUNT of the
+   * lines in captions.srt — caption text is the user's words and never
+   * leaves the machine — and its name must clear the floor, or the whole
+   * event would be dropped silently (the fail-closed catch above).
+   */
+  it("the kit_completed props match the source, and all of them clear the privacy floor", () => {
+    const src = readFileSync(new URL("../src/program.ts", import.meta.url), "utf8");
+    const from = src.indexOf('telemetry.record("kit_completed"');
+    expect(from).toBeGreaterThan(-1);
+    const block = src.slice(from, src.indexOf("});", from));
+    const keys = [...block.matchAll(/^\s+(\w+):/gm)].map((m) => m[1] as string);
+    expect(keys).toEqual(expect.arrayContaining(["clips", "rendered", "reused", "skipped", "timeline", "captions"]));
+    expect(block).toMatch(/^\s+captions: result\.captions,$/m);
+    expect(() => assertSafeProps(Object.fromEntries(keys.map((k) => [k, 1])))).not.toThrow();
+  });
 });

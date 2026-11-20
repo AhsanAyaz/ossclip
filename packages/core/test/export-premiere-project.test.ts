@@ -233,6 +233,28 @@ describe("srtFromCaptionLines", () => {
   it("no lines → empty string, not a lone index", () => {
     expect(srtFromCaptionLines([])).toBe("");
   });
+
+  it("the premiere-project sidecar is byte-identical to before the kit's eol option (LF, one trailing)", () => {
+    expect(build().srt).toBe(
+      "1\n00:00:00,500 --> 00:00:02,000\nhello there\n\n" +
+        "2\n00:01:01,250 --> 00:01:03,500\nagain\n",
+    );
+  });
+
+  it("eol \\r\\n puts Windows line endings everywhere, the blank separator and the trailing one included", () => {
+    const srt = srtFromCaptionLines(
+      [
+        { words: [{ text: "hello" }, { text: "there" }], start: 0.5, end: 2 },
+        { words: [{ text: "again" }], start: 3600, end: 3601.5 },
+      ],
+      { eol: "\r\n" },
+    );
+    expect(srt).toBe(
+      "1\r\n00:00:00,500 --> 00:00:02,000\r\nhello there\r\n\r\n" +
+        "2\r\n01:00:00,000 --> 01:00:01,500\r\nagain\r\n",
+    );
+    expect(srt.replace(/\r\n/g, "")).not.toMatch(/[\r\n]/);
+  });
 });
 
 describe("buildPremiereProject", () => {

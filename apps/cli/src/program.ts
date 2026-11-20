@@ -1295,13 +1295,15 @@ export function buildProgram(): Command {
       try {
         const result = await runKit(target, flags, liveKitSeams());
         // Counts and a boolean only (§134): nothing here names a scene, a
-        // file or a folder, and no key may contain `file`/`path`.
+        // file or a folder, and no key may contain `file`/`path`. `captions`
+        // is how many lines captions.srt holds, never their words.
         telemetry.record("kit_completed", {
           clips: result.clips,
           rendered: result.rendered,
           reused: result.reused,
           skipped: result.skipped,
           timeline: result.timeline,
+          captions: result.captions,
         });
       } catch (err) {
         if (err instanceof KitCancelledError) {
