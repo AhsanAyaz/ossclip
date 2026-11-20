@@ -105,6 +105,13 @@ export const DRAW_ALLOWED_ELEMENTS = [
  * and its relatives, the paths to the window object, and Node's globals.
  * `constructor` because `[].constructor.constructor` is `Function`;
  * `location` and `open` because the policy does not stop navigation.
+ * `setTimeout`/`setInterval` because a string passed to a timer is evaluated
+ * like `eval`, and a scene is a pure function of time that needs no timers;
+ * `createElement` because `createElement("iframe")` goes around the element
+ * rule.
+ * Known gap: a concatenated key on an ordinary value
+ * (`[]["con"+"structor"]`) passes; the check is a filter, and the render
+ * bundle's content security policy is the guard (§167).
  */
 const FORBIDDEN_NAMES: ReadonlySet<string> = new Set([
   "fetch",
@@ -128,14 +135,32 @@ const FORBIDDEN_NAMES: ReadonlySet<string> = new Set([
   "navigator",
   "process",
   "require",
+  "setTimeout",
+  "setInterval",
+  "createElement",
 ]);
 
 /**
  * Substrings that mean a string can name a resource (§167). Matched without
  * regard to case: URL schemes and CSS `url(` are case-insensitive, so
- * `HTTPS:` loads as well as `https:`.
+ * `HTTPS:` loads as well as `https:`. `url(` has its own rule
+ * (`hasNonLocalUrl`).
  */
-const URL_LIKE = ["url(", "http:", "https:", "//", "data:"] as const;
+const URL_LIKE = ["http:", "https:", "//", "data:"] as const;
+
+/**
+ * True when any `url(` in `lower` is not a local fragment reference (§167).
+ * `url(#grad)` — after optional whitespace and an optional quote — cannot
+ * load anything, and it is the only way SVG uses the gradient, clip, mask
+ * and filter elements on the allow-list. Every occurrence is checked, so one
+ * local `url(#a)` does not let a following `url(b)` through.
+ */
+function hasNonLocalUrl(lower: string): boolean {
+  for (let i = lower.indexOf("url("); i >= 0; i = lower.indexOf("url(", i + 4)) {
+    if (!/^\s*['"]?#/.test(lower.slice(i + 4))) return true;
+  }
+  return false;
+}
 
 export type DrawRule =
   | "import"
@@ -303,7 +328,7 @@ export function checkDrawnScene(code: string, kitExports: readonly string[]): Dr
 
   const checkString = (node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral | ts.TemplateLiteralLikeNode): void => {
     const lower = node.text.toLowerCase();
-    const hit = URL_LIKE.find((s) => lower.includes(s));
+    const hit = hasNonLocalUrl(lower) ? "url(" : URL_LIKE.find((s) => lower.includes(s));
     if (hit) {
       issues.push({
         line: at(node),

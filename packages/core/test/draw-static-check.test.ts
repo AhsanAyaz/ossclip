@@ -163,6 +163,9 @@ const FORBIDDEN = [
   "navigator",
   "process",
   "require",
+  "setTimeout",
+  "setInterval",
+  "createElement",
 ];
 
 describe("checkDrawnScene: name", () => {
@@ -205,6 +208,11 @@ describe("checkDrawnScene: name", () => {
     expect(only(checkDrawnScene(code, KIT))).toEqual([{ rule: "name", line: lineOf(code, "class Y") }]);
   });
 
+  it('React.createElement("div") is rejected: it goes around the element rule', () => {
+    const code = scene(['  const el = React.createElement("div");']);
+    expect(only(checkDrawnScene(code, KIT))).toEqual([{ rule: "name", line: lineOf(code, "createElement") }]);
+  });
+
   // Review Focus 1: code that hides a name from the parser.
   it('globalThis["fe"+"tch"] is rejected (computed access on a rejected global)', () => {
     const code = scene(['  globalThis["fe" + "tch"]("x");']);
@@ -241,6 +249,29 @@ describe("checkDrawnScene: string", () => {
 
   it("a JSX attribute string is a string literal", () => {
     const code = scene([], '<div style={{ background: "url(x.png)" }} />');
+    expect(only(checkDrawnScene(code, KIT))).toEqual([{ rule: "string", line: lineOf(code, "url(") }]);
+  });
+
+  // A fragment reference cannot load anything, and it is the only way SVG
+  // uses the gradient, clip, mask and filter elements on the allow-list.
+  it.each([
+    ['<rect fill="url(#grad)" />'],
+    ['<g clipPath="url(#c)" />'],
+    ['<g filter="url(#f)" />'],
+    ['<rect fill="url( #g )" />'],
+    ["<rect fill=\"url('#g')\" />"],
+    ["<rect fill={`url(#${frame})`} />"],
+  ])("a local url(#…) passes: %s", (jsx) => {
+    expect(checkDrawnScene(scene([], jsx), KIT)).toEqual([]);
+  });
+
+  it.each([
+    ['<rect fill="url(x.png)" />'],
+    ["<rect fill='url(\"//a\")' />"],
+    ['<rect fill="url(#a) url(b)" />'],
+    ["<rect fill={`url(${frame})`} />"],
+  ])("any other url( fails: %s", (jsx) => {
+    const code = scene([], jsx);
     expect(only(checkDrawnScene(code, KIT))).toEqual([{ rule: "string", line: lineOf(code, "url(") }]);
   });
 
