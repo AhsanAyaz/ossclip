@@ -10,6 +10,11 @@
  * text as local types, not exports: types erase, a scene gets them by
  * inference from the hooks, and an `import { Theme }` would be a name the
  * static check has to allow for no gain.
+ *
+ * Also its own entry, `@ossclip/scenes/draw/reference`: a Node caller that
+ * only builds a prompt or runs the check needs these two values, and the
+ * `./draw` door would load React, Remotion and every part to hand them over.
+ * So this file imports nothing; keep it that way.
  */
 
 export const DRAW_KIT_EXPORTS = [

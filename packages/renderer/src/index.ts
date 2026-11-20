@@ -33,6 +33,24 @@ export {
 // Remotion this repo opens (2026-08-19 Ctrl-C fix).
 export { makeCancelSignal } from "@remotion/renderer";
 export type { CancelSignal } from "@remotion/renderer";
+// Drawn scenes (§167): their own bundle per scene, never STUDIO_ENTRY's, so
+// nothing above changes for a run that does not draw.
+export {
+  DRAWN_COMPOSITION_ID,
+  drawnEntrySource,
+  drawnSceneMetadata,
+  drawnStillFrames,
+  type DrawnRenderProps,
+} from "./drawn/entry-source";
+export { DRAW_CSP, injectCsp } from "./drawn/csp";
+export { isBlankRgba } from "./drawn/blank";
+export {
+  bundleDrawnScene,
+  renderDrawnClip,
+  renderDrawnPreview,
+  renderDrawnStills,
+  type DrawnBrowserLog,
+} from "./drawn/render";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
