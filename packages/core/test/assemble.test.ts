@@ -469,6 +469,14 @@ describe("assembleScenes — fixed clip duration and the shortened report (expla
     expect(shortened).toEqual([]);
   });
 
+  it("a 4s clip planned at speed 2 lasts 2s: its slot is the clip's played length", () => {
+    const fast: Scene = { ...clip("c", 4, 21, 4), props: { src: "clips/a.webm", durationSec: 4, speed: 2 } };
+    const { cues } = assembleScenes([fast], long, longMap);
+    expect(cues[0]!.endSec - cues[0]!.startSec).toBeCloseTo(2, 5);
+    // `durationSec` stays the file's own 1x length; only the slot changes.
+    expect(cues[0]!.props).toMatchObject({ durationSec: 4, speed: 2 });
+  });
+
   it("a 20s clip is cut at 15s and reported", () => {
     const { cues, shortened } = assembleScenes([clip("c", 4, 21, 20)], long, longMap);
     expect(cues[0]!.endSec).toBeCloseTo(17.0, 5);

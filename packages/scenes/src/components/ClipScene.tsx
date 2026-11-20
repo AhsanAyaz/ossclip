@@ -20,7 +20,7 @@ import { clipVolume } from "../clip-scene";
  * clip was framed by whoever made it, and `cover` would crop that framing
  * (the same reason `--source-fit contain` exists). It is self-fitting in
  * fit.ts, so the box is the slot itself, unscaled. No `data-edit-id`: a clip
- * has no text to edit, and its props (`muted`) are reached through the
+ * has no text to edit, and its props (`muted`, `speed`) are reached through the
  * Inspector's schema-derived controls instead.
  */
 export const ClipScene: React.FC<{
@@ -35,6 +35,11 @@ export const ClipScene: React.FC<{
       src={src}
       transparent
       volume={clipVolume(props.gainDb, props.muted)}
+      // The scene's window is `durationSec / speed` (`fixedDurationSec`), so
+      // at this rate the clip's last frame lands on the window's end. Cue
+      // props reach SceneLayer unparsed: a cue saved before `speed` existed
+      // passes undefined, which Remotion plays at 1x.
+      playbackRate={props.speed}
       style={{
         display: "block",
         width: widthPx ?? "100%",

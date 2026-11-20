@@ -224,6 +224,17 @@ export const ClipSceneProps = z.object({
   /** The clip's own length: the scene lasts this long, not its word span. */
   durationSec: z.number().positive(),
   /**
+   * How fast the clip plays, as a playback rate (1 = as made). The scene
+   * lasts `durationSec / speed` (`fixedDurationSec`): a faster clip's slot
+   * shrinks and the speaker shows after it, rather than the clip holding its
+   * last frame. `durationSec` stays the clip FILE's own length at 1x and is
+   * never rewritten by speed, so the kit and the clip import keep meaning
+   * the file. Bounded so §153's derived Inspector controls give it a slider
+   * (they skip an unbounded number). The default keeps every clip placed
+   * before this field playing exactly as it did.
+   */
+  speed: z.number().min(0.25).max(4).default(1),
+  /**
    * The clip's audio plays under the voice at this level; nothing is ducked
    * (spec 1.4). Bounded at 0 dB because a browser's media `volume` throws
    * above 1 (10^(dB/20) > 1 for any positive gain), which would take the
@@ -641,9 +652,23 @@ export const SCENE_REGISTRY: Record<SceneComponentId, SceneComponentMeta> = {
     scrim: false,
     fullFrame: true,
     fixedDurationSec: (props) =>
-      typeof props.durationSec === "number" ? props.durationSec : undefined,
+      typeof props.durationSec === "number" ? props.durationSec / clipSpeed(props) : undefined,
   },
 };
+
+/**
+ * A ClipScene's playback rate from props that may not have been through the
+ * schema: the producer asks `fixedDurationSec` on RAW plan props, before
+ * defaults (producer/index.ts), and a cue written before `speed` existed has
+ * none. Anything that is not a positive finite number is 1x — the clip as
+ * made — so a missing field can never turn a length into NaN or Infinity.
+ * Range is the schema's business, not this reader's: an out-of-range value
+ * still fails `ClipSceneProps` wherever the props are validated.
+ */
+export function clipSpeed(props: Record<string, unknown> | undefined): number {
+  const speed = props?.speed;
+  return typeof speed === "number" && Number.isFinite(speed) && speed > 0 ? speed : 1;
+}
 
 /**
  * The components the beat-sheet planner may offer, in registry order — the

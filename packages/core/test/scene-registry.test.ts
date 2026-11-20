@@ -114,6 +114,7 @@ describe("scene registry", () => {
       expect(resolveSceneProps("ClipScene", { src: "clips/a.webm", durationSec: 4.6 })).toEqual({
         src: "clips/a.webm",
         durationSec: 4.6,
+        speed: 1,
         gainDb: -13,
         muted: false,
       });
@@ -157,6 +158,27 @@ describe("scene registry", () => {
       for (const id of plannerComponentIds()) {
         expect(SCENE_REGISTRY[id].fixedDurationSec, id).toBeUndefined();
       }
+    });
+
+    it("a faster clip is shorter and a slower one longer: the length is durationSec / speed", () => {
+      const fixed = SCENE_REGISTRY.ClipScene.fixedDurationSec!;
+      expect(fixed({ src: "clips/a.webm", durationSec: 4, speed: 2 })).toBe(2);
+      expect(fixed({ src: "clips/a.webm", durationSec: 4, speed: 0.5 })).toBe(8);
+      // Raw props, no defaults applied (the producer calls it on these): a
+      // missing speed is 1x, not NaN.
+      expect(fixed({ src: "clips/a.webm", durationSec: 4 })).toBe(4);
+      expect(fixed({ src: "clips/a.webm", durationSec: 4, speed: "2" })).toBe(4);
+    });
+
+    it("the bounded speed gets an Inspector slider (§153)", () => {
+      expect(scalarPropControls("ClipScene")).toContainEqual({
+        key: "speed",
+        kind: "number",
+        min: 0.25,
+        max: 4,
+        step: 0.01,
+        fallback: 1,
+      });
     });
   });
   describe("script-only components (§161, plan Task 4)", () => {

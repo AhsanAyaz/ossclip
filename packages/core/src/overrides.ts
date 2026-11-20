@@ -24,7 +24,8 @@ import {
 } from "./schema";
 import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
-import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
+import { SCENE_REGISTRY, clipSpeed, resolveSceneProps } from "./scene-registry";
+import { MAX_SCENE_SEC } from "./assemble";
 import { revealItemTexts } from "./reveal-match";
 import { keepsBoxAcross } from "./framing";
 import {
@@ -1249,7 +1250,84 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     };
     return swapped ? withSwappedReveal(merged) : merged;
   });
-  return { cues: out, orphans };
+  // A clip's speed edit changes how long the clip plays, and the window has
+  // to follow it (a faster clip's slot shrinks, the speaker shows after it):
+  // the prop merge above runs AFTER assembly, so nothing else re-derives
+  // `endSec`. A second pass over `out` rather than inside the map, because
+  // the neighbour that limits a slowed clip is the neighbour as merged —
+  // a pin may just have moved it. Done here, once, so produce and the
+  // editor's memo get the same window.
+  const retimed = out.map((merged, i) => {
+    const cue = cues[i]!;
+    const o = effectiveOverride(doc.scenes, cue.id);
+    if (!o) return merged;
+    const nextStartSec = out
+      .filter((c) => c !== merged && c.startSec > merged.startSec)
+      .reduce<number | undefined>((lo, c) => (lo === undefined || c.startSec < lo ? c.startSec : lo), undefined);
+    const endSec = clipSpeedEndSec({
+      cue,
+      merged,
+      setsSpeed: "speed" in o.props,
+      // Any timing entry, a src one included: a pin is the author's own
+      // window and stays exactly as dragged. `cue.pinned` too — an earlier
+      // pass already applied that window.
+      pinned: o.timing !== undefined || cue.pinned === true,
+      nextStartSec,
+    });
+    return endSec === merged.endSec ? merged : { ...merged, endSec };
+  });
+  return { cues: retimed, orphans };
+}
+
+/**
+ * The window end a ClipScene's speed override gives it: `startSec` plus the
+ * clip's played length (`fixedDurationSec`, `durationSec / speed`), capped
+ * as `assembleScenes` caps a clip (`MAX_SCENE_SEC` from the start) and cut
+ * at the next scene's start less the gap the timing clamps keep
+ * (`PINNED_GAP_SEC`, `reclampPinnedTiming`). `merged.endSec` unchanged when
+ * the rule does not apply.
+ *
+ * Applies only when every one of these holds:
+ * - the cue is a ClipScene before and after the merge (a stray `speed` on a
+ *   card means nothing; ClipScene never swaps, `resolveSwappedProps`);
+ * - the override itself sets `speed` (a `muted` edit must not re-time);
+ * - nothing pins the window (`pinned`);
+ * - it is not a split half: a half's window is a piece of the clip, never
+ *   the clip's whole length;
+ * - the merged speed differs from the cue's own pre-override speed. This is
+ *   what keeps a no-op edit from re-lengthening a clip assembly already cut
+ *   at 15s or at the video's end, and what makes the second override pass
+ *   (produce.ts and App.tsx both run one) leave the first pass's window be:
+ *   by then the cue's own props carry the merged speed.
+ *
+ * The output's end is not applied: `applyOverrides` has no clock, and
+ * `resolveSrcTimingPins` documents why it takes no map. A slowed LAST clip
+ * can therefore run past the video's end; `fillPlainCues` adds no take past
+ * a cue, and no frame past the composition's end is ever rendered.
+ *
+ * The neighbour cut only limits growth: a slowed clip whose neighbour
+ * already overlaps it keeps the window it had, rather than being cut below
+ * it — or below its own start, which no window may be.
+ */
+export function clipSpeedEndSec(input: {
+  /** The cue before this override. */
+  cue: SceneCue;
+  /** The cue after the merge: its props carry the override's speed. */
+  merged: SceneCue;
+  setsSpeed: boolean;
+  pinned: boolean;
+  nextStartSec: number | undefined;
+}): number {
+  const { cue, merged } = input;
+  if (cue.component !== "ClipScene" || merged.component !== "ClipScene") return merged.endSec;
+  if (!input.setsSpeed || input.pinned || splitRootId(cue.id) !== cue.id) return merged.endSec;
+  if (merged.props === undefined || clipSpeed(merged.props) === clipSpeed(cue.props)) return merged.endSec;
+  const played = SCENE_REGISTRY.ClipScene.fixedDurationSec?.(merged.props);
+  if (played === undefined) return merged.endSec;
+  const wanted = Math.min(merged.startSec + played, merged.startSec + MAX_SCENE_SEC);
+  const hi =
+    input.nextStartSec === undefined ? Number.POSITIVE_INFINITY : input.nextStartSec - PINNED_GAP_SEC;
+  return Math.min(wanted, Math.max(hi, merged.endSec));
 }
 
 /**

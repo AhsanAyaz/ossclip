@@ -19,6 +19,7 @@ import {
   loadConfig,
   needsRender,
   probe,
+  sourceClipPlacement,
   stageBundledFonts,
   type KitClipPlan,
   type KitReport,
@@ -578,8 +579,11 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
         entry({ file: null, lengthSec: planLengthSec, reuseKey: null, status: "skipped" }, [...notes, why]);
         continue;
       }
-      // Trimmed to the scene's length, and never past the file's end.
-      const lengthSec = Math.min(planLengthSec, media.duration);
+      // Trimmed to the scene's length, and never past the file's end — unless
+      // the render plays it at another speed, which the kit cannot carry
+      // (`sourceClipPlacement`): then the whole original, and a warning.
+      const { lengthSec, warning: speedWarning } = sourceClipPlacement(plan, planLengthSec, media.duration);
+      if (speedWarning !== null) warnings.push(speedWarning);
       reused++;
       seams.log(`${head} ${basename(original)}  ${secs(lengthSec)}  your clip: file, not rendered`);
       entry({ file: original, lengthSec, reuseKey: null, status: "reused" }, notes);

@@ -4,6 +4,7 @@ import {
   applyOverrides,
   captionEditWas,
   clearGraphicRect,
+  clipSpeedEndSec,
   legacySplitId,
   mintSplitId,
   isParkedOverrideKey,
@@ -313,6 +314,97 @@ describe("component swaps refuse non-planner components (explainer plan Task 7)"
     const { cues } = applyOverrides([titleCue], doc);
     expect(cues[0]!.component).toBe("TitleCard");
     expect(cues[0]!.props).toEqual(titleCue.props);
+  });
+});
+
+describe("a clip's speed edit re-derives its window (clipSpeedEndSec)", () => {
+  // A 4s clip at 10s, assembled at 1x, with a card 5s after its start.
+  const clip: SceneCue = {
+    id: "shot-a",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4, speed: 1, gainDb: -13, muted: false },
+    startSec: 10,
+    endSec: 14,
+  };
+  const next: SceneCue = {
+    id: "scene-1",
+    layout: "pip-bubble",
+    component: "TitleCard",
+    props: { title: "SHIP IT" },
+    startSec: 15,
+    endSec: 18,
+  };
+
+  it("speed 2 on an unpinned 4s clip leaves a 2s window; the speaker shows after it", () => {
+    const { cues } = applyOverrides([clip, next], docWith({ "shot-a": { props: { speed: 2 } } }));
+    expect(cues[0]!.startSec).toBe(10);
+    expect(cues[0]!.endSec).toBeCloseTo(12, 9);
+    expect(cues[0]!.props).toMatchObject({ speed: 2, durationSec: 4 });
+    expect(cues[1]).toEqual(next);
+  });
+
+  it("speed 0.5 wants 8s but is cut at the next scene's start minus the gap", () => {
+    const { cues } = applyOverrides([clip, next], docWith({ "shot-a": { props: { speed: 0.5 } } }));
+    expect(cues[0]!.endSec).toBeCloseTo(15 - 0.05, 9);
+  });
+
+  it("speed 0.5 with nothing after it runs its full 8s", () => {
+    const { cues } = applyOverrides([clip], docWith({ "shot-a": { props: { speed: 0.5 } } }));
+    expect(cues[0]!.endSec).toBeCloseTo(18, 9);
+  });
+
+  it("a pinned window stays exactly as dragged; the speed still merges", () => {
+    const doc = docWith({
+      "shot-a": { props: { speed: 2 }, timing: { startSec: 10, endSec: 14.5 } },
+    });
+    const { cues } = applyOverrides([clip, next], doc);
+    expect(cues[0]!.startSec).toBe(10);
+    expect(cues[0]!.endSec).toBe(14.5);
+    expect(cues[0]!.props).toMatchObject({ speed: 2 });
+  });
+
+  it("a speed equal to the cue's own leaves a capped window as it was", () => {
+    // 20s at 1x, already cut to 15s by the ceiling: a no-op edit must not
+    // re-lengthen it (nor, with the cap, change it at all).
+    const long: SceneCue = { ...clip, props: { ...clip.props, durationSec: 20 }, endSec: 23 };
+    const { cues } = applyOverrides([long], docWith({ "shot-a": { props: { speed: 1 } } }));
+    expect(cues[0]!.endSec).toBe(23);
+    // A cue with no `speed` of its own is at 1x.
+    const legacy: SceneCue = { ...clip, props: { src: "clips/a.webm", durationSec: 4 }, endSec: 13 };
+    const again = applyOverrides([legacy], docWith({ "shot-a": { props: { speed: 1 } } }));
+    expect(again.cues[0]!.endSec).toBe(13);
+  });
+
+  it("a second pass over already-merged cues changes nothing (produce and the editor run two)", () => {
+    const doc = docWith({ "shot-a": { props: { speed: 2 } } });
+    const once = applyOverrides([clip, next], doc).cues;
+    expect(applyOverrides(once, doc).cues).toEqual(once);
+  });
+
+  it("a non-clip cue with a stray speed prop keeps its window", () => {
+    const { cues } = applyOverrides([next], docWith({ "scene-1": { props: { speed: 2 } } }));
+    expect(cues[0]!.startSec).toBe(15);
+    expect(cues[0]!.endSec).toBe(18);
+  });
+
+  it("an override that does not set speed leaves the window alone", () => {
+    const { cues } = applyOverrides([clip, next], docWith({ "shot-a": { props: { muted: true } } }));
+    expect(cues[0]!.endSec).toBe(14);
+  });
+
+  it("the 15s ceiling still applies to a slowed clip", () => {
+    const slow: SceneCue = { ...clip, props: { ...clip.props, durationSec: 10 }, endSec: 20 };
+    const { cues } = applyOverrides([slow], docWith({ "shot-a": { props: { speed: 0.5 } } }));
+    expect(cues[0]!.endSec).toBeCloseTo(25, 9);
+  });
+
+  it("the pure rule: a neighbour that already overlaps never shrinks the window below where it was", () => {
+    const merged: SceneCue = { ...clip, props: { ...clip.props, speed: 0.5 } };
+    expect(clipSpeedEndSec({ cue: clip, merged, setsSpeed: true, pinned: false, nextStartSec: 13 })).toBe(14);
+    // And a faster clip ends early even then.
+    const fast: SceneCue = { ...clip, props: { ...clip.props, speed: 4 } };
+    expect(clipSpeedEndSec({ cue: clip, merged: fast, setsSpeed: true, pinned: false, nextStartSec: 13 })).toBe(11);
   });
 });
 

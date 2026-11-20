@@ -8,6 +8,7 @@ import {
   kitClipPlans,
   kitFileName,
   needsRender,
+  sourceClipPlacement,
   type KitClipPlan,
   type KitReport,
 } from "../src/kit-plan";
@@ -409,5 +410,38 @@ describe("KitReportSchema", () => {
     expect(KitReportSchema.safeParse({ ...valid, captions: { srt: "captions.srt", lines: -1, skipped: 0 } }).success).toBe(false);
     expect(KitReportSchema.safeParse({ ...valid, captions: { srt: "captions.srt", lines: 1.5, skipped: 0 } }).success).toBe(false);
     expect(KitReportSchema.safeParse({ ...valid, captions: { lines: 1, skipped: 0 } }).success).toBe(false);
+  });
+});
+
+describe("sourceClipPlacement: a clip: original is placed at 1x", () => {
+  const plan = (props: Record<string, unknown>): Pick<KitClipPlan, "sceneId" | "cue"> => ({
+    sceneId: "shot-a",
+    cue: {
+      id: "shot-a",
+      layout: "full-bleed",
+      component: "ClipScene",
+      props: { src: "clips/a.webm", durationSec: 4, ...props },
+      startSec: 0,
+      endSec: 2,
+    },
+  });
+
+  it("at 1x it is trimmed to the slot and never past the file's end, with no warning", () => {
+    expect(sourceClipPlacement(plan({ speed: 1 }), 4.0333, 4)).toEqual({ lengthSec: 4, warning: null });
+    expect(sourceClipPlacement(plan({ speed: 1 }), 3, 4)).toEqual({ lengthSec: 3, warning: null });
+    // A cue saved before `speed` existed is 1x.
+    expect(sourceClipPlacement(plan({}), 3, 4)).toEqual({ lengthSec: 3, warning: null });
+  });
+
+  it("at another speed the whole original is placed, and the warning names the scene and the speed", () => {
+    const fast = sourceClipPlacement(plan({ speed: 2 }), 2, 4);
+    expect(fast.lengthSec).toBe(4);
+    expect(fast.warning).toContain("shot-a");
+    expect(fast.warning).toContain("2x");
+    expect(fast.warning).toContain("normal speed");
+    expect(fast.warning).toContain("finishing app");
+    const slow = sourceClipPlacement(plan({ speed: 0.5 }), 8, 4);
+    expect(slow).toMatchObject({ lengthSec: 4 });
+    expect(slow.warning).toContain("0.5x");
   });
 });
