@@ -8,7 +8,6 @@ import {
   isKeptRow,
   jobLine,
   jobResultLine,
-  jobStartedReplay,
   planChangesSummary,
   rowWarning,
   selectionSpan,
@@ -141,6 +140,13 @@ export interface StoryboardPanelProps {
    * production when it ends: produce, not this page, writes the clip scene.
    */
   onReplayStarted: () => void;
+  /**
+   * The server accepted a job (a 202). App follows it from there
+   * (`useStoryboardJobWatch`): this panel can close while the job runs, and
+   * the hand-off of an approve's sync run to the render poll must not close
+   * with it (§169).
+   */
+  onJobStarted: () => void;
   /** `/api/transcript`'s words: the index space a shot's `startWord`/`endWord` live in. Null when none loaded. */
   words: readonly { text: string; start: number; end: number }[] | null;
   /** The live clock (App's ruler map), source → output seconds. Null when the spans are unusable. */
@@ -155,6 +161,7 @@ export interface StoryboardPanelProps {
 export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
   dirty,
   onReplayStarted,
+  onJobStarted,
   words,
   map,
   selection,
@@ -212,9 +219,9 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
 
   /**
    * A job has ended: read the table again (the job wrote the shot's history,
-   * and an approve wrote `storyboard.json`), then, for an approve that ended
-   * ok, hand the sync run the server started to App's render poll. The job
-   * pair is set first, so the poll stops even when the read fails.
+   * and an approve wrote `storyboard.json`). The job pair is set first, so
+   * the poll stops even when the read fails. The sync run an approve starts
+   * is App's to follow (`onJobStarted`), not this panel's: it can be closed.
    */
   const jobEnded = useCallback(async (pair: StoryboardJobPair): Promise<void> => {
     setLoad((prev) => (prev === null ? prev : { ...prev, job: { job: null, last: pair.last } }));
@@ -225,7 +232,6 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-    if (jobStartedReplay(pair.last)) onReplayRef.current();
   }, []);
 
   /** The job's state now; the poll below takes over while it runs. */
@@ -474,6 +480,7 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
         setError(body.error ?? `${path} failed: ${res.status}`);
         return false;
       }
+      onJobStarted();
       await refreshJob();
       return true;
     } catch (err) {

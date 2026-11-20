@@ -271,6 +271,61 @@ test("Approve says Save first while the document has unsaved edits, and is enabl
   await expect(page.getByTestId("storyboard-approve-block")).toHaveCount(0);
 });
 
+test("an approve outlives the closed panel: the button shows the job and its end reaches the render poll (§169)", async ({
+  page,
+}) => {
+  // The job is the server's; this test owns only what the page does with it,
+  // so the three routes are answered here and nothing is rendered.
+  const jobState = {
+    kind: "approve",
+    shots: ["s1"],
+    current: "s1",
+    done: [] as { id: string; ok: boolean }[],
+    lines: [],
+    calls: 0,
+    startedAt: Date.now(),
+    stopping: false,
+  };
+  let phase: "idle" | "running" | "ended" = "idle";
+  await page.route("**/api/storyboard/approve", (route) => {
+    phase = "running";
+    return route.fulfill({ status: 202, json: { ok: true } });
+  });
+  await page.route("**/api/storyboard/job", (route) =>
+    route.fulfill({
+      json:
+        phase === "running"
+          ? { job: jobState, last: null }
+          : { job: null, last: phase === "ended" ? { ...jobState, current: null, done: [{ id: "s1", ok: true }] } : null },
+    }),
+  );
+  let statusAsked = 0;
+  await page.route("**/api/render/status", (route) => {
+    statusAsked += 1;
+    return route.fulfill({ json: { running: true, exitCode: null, lines: ["▸ updating the video"], startedAt: Date.now() } });
+  });
+
+  await load(page);
+  await expect(page.getByTestId("storyboard-open-busy")).toHaveCount(0);
+  await openPanel(page);
+  await page.getByTestId("storyboard-open-shot-s1").click();
+  await page.getByTestId("storyboard-approve").click();
+  await expect(page.getByTestId("storyboard-open-busy")).toBeVisible();
+  // Close the whole panel while the job runs: the author's real run.
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("storyboard-modal")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-open-busy")).toBeVisible();
+  await expect(page.getByTestId("storyboard-open")).toHaveAttribute("title", /Approving s1/);
+  const before = statusAsked;
+
+  phase = "ended";
+  await expect(page.getByTestId("storyboard-open-busy")).toHaveCount(0);
+  // The sync run the server started is now followed with no panel open.
+  await expect.poll(() => statusAsked).toBeGreaterThan(before);
+  await expect(page.getByTestId("render-status")).toBeVisible();
+});
+
 test("a project without storyboard.json has no Storyboard button", async ({ page }) => {
   await rm(STORYBOARD, { force: true });
   // The answer is awaited before the absence is read: a button not drawn YET

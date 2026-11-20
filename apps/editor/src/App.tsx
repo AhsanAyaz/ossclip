@@ -88,7 +88,8 @@ import { YoutubePanel } from "./YoutubePanel";
 import { CoverPanel } from "./CoverPanel";
 import { PublishPanel } from "./PublishPanel";
 import { StoryboardPanel } from "./StoryboardPanel";
-import { storyboardButtonState, type StoryboardButtonState } from "./storyboardModel";
+import { jobLine, storyboardButtonState, type StoryboardButtonState } from "./storyboardModel";
+import { useStoryboardJobWatch } from "./useStoryboardJobWatch";
 import {
   formatElapsed,
   pinnedInfoLines,
@@ -942,6 +943,11 @@ export const App: React.FC = () => {
     // harmless and this callback can stay referentially stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // The storyboard job is followed here, not in its panel: the panel can
+  // close while an approve runs, and the sync run that follows it must still
+  // reach the render poll so the timeline reloads (§169).
+  const storyboardJob = useStoryboardJobWatch(beginRenderPoll);
+
 
   // The production load, shared by mount and every project switch (R17 §83).
   const loadProduction = useCallback(async (): Promise<void> => {
@@ -2275,9 +2281,22 @@ export const App: React.FC = () => {
               title={
                 storyboardButton.kind === "error"
                   ? `storyboard.json could not be read: ${storyboardButton.message}`
-                  : "The planned shots: drop, reword, move or add them, or plan again"
+                  : storyboardJob.job !== null
+                    ? `${jobLine(storyboardJob.job) ?? "A job is running"}. Open to follow it or cancel`
+                    : "The planned shots: drop, reword, move or add them, or plan again"
               }
             >
+              {storyboardJob.job !== null ? (
+                // The job outlives the panel (§169): the button says so.
+                <>
+                  <style>{"@keyframes ossclip-spin { to { transform: rotate(360deg) } }"}</style>
+                  <span
+                    data-testid="storyboard-open-busy"
+                    style={{ ...spinner, display: "inline-block", verticalAlign: "-1px", marginRight: 6 }}
+                    aria-hidden
+                  />
+                </>
+              ) : null}
               Storyboard
             </button>
           ) : null}
@@ -2432,6 +2451,7 @@ export const App: React.FC = () => {
           // the clip scene produce writes is reloaded when it ends (§169).
           dirty={edits.dirty}
           onReplayStarted={beginRenderPoll}
+          onJobStarted={storyboardJob.watch}
           words={transcriptDoc?.words ?? null}
           // The ruler's clock, the one the player plays: a cut made in the
           // editor shows in the table before any render (§168).

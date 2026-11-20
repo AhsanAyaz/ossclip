@@ -258,6 +258,18 @@ export function jobStartedReplay(last: StoryboardJobState | null): boolean {
 }
 
 /**
+ * One look at the job by App's watcher (`useStoryboardJobWatch`). `armed`
+ * means a job's end is still owed a hand-off: set when the watcher saw a job
+ * running, or was told one started. `ended` is true exactly once per job, on
+ * the first look that finds no job while armed, so an old `last` read at page
+ * load (nothing armed) starts no reload.
+ */
+export function jobWatchStep(armed: boolean, pair: StoryboardJobPair): { armed: boolean; ended: boolean } {
+  if (pair.job !== null) return { armed: true, ended: false };
+  return { armed: false, ended: armed };
+}
+
+/**
  * Why Approve is disabled, or null. "Save first" comes first: the sync run
  * after an approval replays the SAVED overrides.json, and when it ends the
  * editor reloads that doc over the unsaved one (Review Focus 4), so an

@@ -9,6 +9,7 @@ import {
   jobLine,
   jobResultLine,
   jobStartedReplay,
+  jobWatchStep,
   planChangesSummary,
   rowWarning,
   selectionSpan,
@@ -469,5 +470,26 @@ describe("storyboardButtonState", () => {
       kind: "error",
       message: "storyboard.json: shots.0.idea: too long",
     });
+  });
+});
+
+describe("jobWatchStep: App's watcher reports a job's end once (§169)", () => {
+  const running = { job: job({ kind: "approve" }), last: null };
+  const ended = { job: null, last: job({ kind: "approve", done: [{ id: "s1", ok: true }] }) };
+
+  it("arms on a running job and reports the end on the first look after it", () => {
+    const a = jobWatchStep(false, running);
+    expect(a).toEqual({ armed: true, ended: false });
+    const b = jobWatchStep(a.armed, ended);
+    expect(b).toEqual({ armed: false, ended: true });
+    expect(jobWatchStep(b.armed, ended)).toEqual({ armed: false, ended: false });
+  });
+
+  it("reports the end of a job it was told started, even when it never saw it running", () => {
+    expect(jobWatchStep(true, ended)).toEqual({ armed: false, ended: true });
+  });
+
+  it("an old finished job read at page load is not an end: nothing was being followed", () => {
+    expect(jobWatchStep(false, ended)).toEqual({ armed: false, ended: false });
   });
 });
