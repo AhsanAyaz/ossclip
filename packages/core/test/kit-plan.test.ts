@@ -433,9 +433,9 @@ describe("sourceClipPlacement: a clip: original is placed at 1x", () => {
     expect(sourceClipPlacement(plan({}), 3, 4)).toEqual({ lengthSec: 3, warning: null });
   });
 
-  it("at another speed the whole original is placed, and the warning names the scene and the speed", () => {
+  it("at another speed it stays inside its slot (no overlap with the next kit clip), and the warning names the scene and the speed", () => {
     const fast = sourceClipPlacement(plan({ speed: 2 }), 2, 4);
-    expect(fast.lengthSec).toBe(4);
+    expect(fast.lengthSec).toBe(2);
     expect(fast.warning).toContain("shot-a");
     expect(fast.warning).toContain("2x");
     expect(fast.warning).toContain("normal speed");
