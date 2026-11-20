@@ -248,3 +248,14 @@ export { rebaseCue } from "./kit-rebase";
 // import is ./content-rect (above) — the rest are type imports. Only these
 // names are exposed: the planning half of framing is the pipeline's.
 export { BACKDROP_LAYOUTS, isBackdropLayout, keepsBoxAcross } from "./framing";
+
+// The storyboard's plan table (§168). The editor's table reads and edits
+// `storyboard.json` with the SAME schema the run writes it with, so a row the
+// editor accepts is one the next load accepts. Browser-safe: record.ts
+// imports zod and the draw record's two name schemas (shot-record.ts imports
+// zod only, not the static check or its compiler); limits.ts and merge.ts
+// import only record.ts. The planner call (./storyboard/plan) is the CLI's
+// and stays off this surface.
+export * from "./storyboard/record";
+export * from "./storyboard/limits";
+export * from "./storyboard/merge";

@@ -74,4 +74,10 @@ export * from "./draw/examples";
 // The shot record (§167) is the draw command's alone; the editor does not
 // read it in Phase A, so it sits with the rest of the draw modules.
 export * from "./draw/shot-record";
+// The storyboard's plan table (§168): the record, the plan limits and the
+// "Plan again" merge. All three are pure and browser-safe, so ./browser
+// carries them too; the planner call (./storyboard/plan) is this side only.
+export * from "./storyboard/record";
+export * from "./storyboard/limits";
+export * from "./storyboard/merge";
 export { run } from "./exec";
