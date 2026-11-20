@@ -3,8 +3,9 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockProvider } from "@ossclip/core";
+import { MockProvider, TimeMap } from "@ossclip/core";
 import { produce, type ProduceOptions } from "../src/produce";
+import { REVIEWED_SCENES_BASENAME, reviewedScenesText } from "../src/render-replay-args";
 import { setReplayArgv } from "../src/replay-argv";
 import { STORYBOARD_FILE, StoryboardFileError } from "../src/storyboard/storyboard-store";
 
@@ -229,6 +230,166 @@ describe.skipIf(!hasFfmpeg)("produce --storyboard, end to end with the mock prov
     expect(prompts.get("storyboard_plan")).toContain("- logo.png: 4 x 2 px, the channel logo");
     expect(existsSync(join(work, "storyboard-assets"))).toBe(false);
   }, 120_000);
+
+  /**
+   * Approved shots become clip scenes (plan B2a Task 3; §169; storyboard
+   * design §1 "Later runs", §8, §9). The approval is written onto the table by
+   * hand, as Approve will write it: the draw and the render are Task 2's and
+   * are not what is under test here; what produce does with the record is.
+   */
+  describe("approved shots", () => {
+    const CLIP_SRC = "clips/0123456789ab.webm";
+    const CLIP_SEC = 2.5;
+    let webm: string;
+
+    beforeAll(() => {
+      webm = join(dir, "approved-clip.webm");
+      execFileSync("ffmpeg", [
+        "-v", "error",
+        "-f", "lavfi", "-i", `color=c=red:s=64x64:rate=30:duration=${CLIP_SEC}`,
+        "-c:v", "libvpx", "-b:v", "50k", "-y", webm,
+      ]);
+    });
+
+    type Shot = { id: string; startWord: number; endWord: number; kept: boolean; approval?: unknown };
+    const readTable = (work: string) => JSON.parse(readFileSync(join(work, STORYBOARD_FILE), "utf8")) as { shots: Shot[] };
+    const writeTable = (work: string, sb: unknown) => writeFileSync(join(work, STORYBOARD_FILE), `${JSON.stringify(sb, null, 2)}\n`);
+    const production = (work: string) => JSON.parse(readFileSync(join(work, "production.json"), "utf8"));
+
+    /** A planned table in a fresh workdir, with s1 approved the way Approve records it. */
+    const approvedProject = async (name: string): Promise<{ root: string; work: string; s1: Shot }> => {
+      const root = join(dir, name);
+      await run(root, { storyboard: true });
+      const work = workdirOf(root);
+      mkdirSync(join(work, "clips"), { recursive: true });
+      copyFileSync(webm, join(work, CLIP_SRC));
+      mkdirSync(join(work, "storyboard", "s1"), { recursive: true });
+      // `clip` only has to name a file that exists: nothing in produce reads it.
+      copyFileSync(webm, join(work, "storyboard", "s1", "approved.mov"));
+      const sb = readTable(work);
+      const s1 = sb.shots.find((s) => s.id === "s1")!;
+      s1.approval = { version: 1, durationSec: CLIP_SEC, clipKey: "k1", clip: "storyboard/s1/approved.mov", src: CLIP_SRC };
+      writeTable(work, sb);
+      return { root, work, s1 };
+    };
+
+    const record = (s1: Shot) => ({
+      shots: [{ id: "s1", startWord: s1.startWord, endWord: s1.endWord, clip: "storyboard/s1/approved.mov", src: CLIP_SRC, durationSec: CLIP_SEC }],
+    });
+
+    it("a --storyboard run places the approved shot as a ClipScene, records it, and makes no plan call", async () => {
+      const { root, work, s1 } = await approvedProject("wd-approved");
+      schemaNames = [];
+      await run(root, { storyboard: true });
+
+      const p = production(work);
+      expect(p.scenes).toHaveLength(1);
+      expect(p.scenes[0]).toMatchObject({
+        id: "shot-s1",
+        component: "ClipScene",
+        anchor: { startWord: s1.startWord, endWord: s1.endWord },
+        props: { src: CLIP_SRC, durationSec: CLIP_SEC, muted: true },
+      });
+      expect(p.storyboard).toEqual(record(s1));
+      expect(schemaNames).not.toContain("storyboard_plan");
+      for (const n of ["beat_sheet", "script_plan"]) expect(schemaNames).not.toContain(n);
+      expect(schemaNames.some((n) => n.endsWith("_props"))).toBe(false);
+
+      // Through the one assembly every scene list goes through (design §8): it
+      // starts at the shot's first kept word and lasts the clip's own length.
+      const cutlist = new TimeMap(p.cutlist);
+      const firstKept = p.transcript.words
+        .slice(s1.startWord, s1.endWord + 1)
+        .map((w: { start: number; end: number; text: string }) => cutlist.mapWord(w))
+        .find((m: unknown) => m !== null) as { start: number };
+      const props = JSON.parse(readFileSync(join(work, "render-props.json"), "utf8"));
+      const cue = props.sceneCues.find((c: { id: string }) => c.id === "shot-s1");
+      expect(cue).toBeDefined();
+      expect(cue.startSec).toBeCloseTo(firstKept.start, 6);
+      expect(cue.endSec - cue.startSec).toBeCloseTo(CLIP_SEC, 6);
+    }, 240_000);
+
+    it("a pinned replay (the editor's Render) carries the storyboard record forward; a plain run drops it", async () => {
+      const { root, work, s1 } = await approvedProject("wd-approved-replay");
+      await run(root, { storyboard: true });
+      const reviewed = join(work, REVIEWED_SCENES_BASENAME);
+      writeFileSync(reviewed, reviewedScenesText(readFileSync(join(work, "production.json"), "utf8"))!);
+
+      schemaNames = [];
+      await run(root, { scenes: reviewed, produce: false });
+      const p = production(work);
+      expect(p.storyboard).toEqual(record(s1));
+      expect(p.scenes.map((s: { id: string }) => s.id)).toEqual(["shot-s1"]);
+      expect(schemaNames).not.toContain("storyboard_plan");
+
+      // Design §1 "Later runs": a plain --produce plans from nothing and the
+      // record is not written; storyboard.json stays on disk.
+      await run(root);
+      const plain = production(work);
+      expect(plain.storyboard).toBeUndefined();
+      expect(plain.scenes.some((s: { id: string }) => s.id === "shot-s1")).toBe(false);
+      expect(existsSync(join(work, STORYBOARD_FILE))).toBe(true);
+    }, 360_000);
+
+    it("a dropped shot leaves the video and the record at the next --storyboard run", async () => {
+      const { root, work } = await approvedProject("wd-approved-dropped");
+      const sb = readTable(work);
+      sb.shots.find((s) => s.id === "s1")!.kept = false;
+      writeTable(work, sb);
+      await run(root, { storyboard: true });
+      const p = production(work);
+      expect(p.scenes).toBeUndefined();
+      expect(p.storyboard).toBeUndefined();
+    }, 240_000);
+
+    it("Review Focus 1: approved, then every word of the shot cut: the scene leaves the video and nothing throws", async () => {
+      const { root, work, s1 } = await approvedProject("wd-approved-cut");
+      const words = production(work).transcript.words as { start: number; end: number }[];
+      const from = words[s1.startWord]!.start;
+      const to = words[s1.endWord]!.end;
+      // The editor's cut shape: source-anchored, so no prior frame is needed.
+      writeFileSync(
+        join(work, "overrides.json"),
+        JSON.stringify({ cuts: [{ startSec: 0, endSec: 0, src: { startSec: from, endSec: to } }] }),
+      );
+      lines = [];
+      await run(root, { storyboard: true });
+      // Assembly drops it, the existing rule for any scene (design §8), so it
+      // is not in the video: no cue in render-props.json, the drop named.
+      expect(lines).toContain("  ⚠ scene shot-s1 dropped: anchor words were entirely cut");
+      const props = JSON.parse(readFileSync(join(work, "render-props.json"), "utf8"));
+      expect(props.sceneCues.some((c: { id: string }) => c.id === "shot-s1")).toBe(false);
+      // production.json's `scenes` is the PLAN, word-anchored, as on every
+      // run: a scene whose words are cut stays planned, so restoring the cut
+      // brings the shot back. Likewise the approval is the author's work and
+      // stays (design §8, "All the shot's words are cut": the storyboard
+      // keeps its work), so the record still names the shot.
+      const p = production(work);
+      expect(p.scenes.map((s: { id: string }) => s.id)).toEqual(["shot-s1"]);
+      expect(p.storyboard).toEqual(record(s1));
+    }, 240_000);
+
+    it("Review Focus 5: an empty pinned plan on a storyboard project with no approval makes no planning call", async () => {
+      // What the editor's Render spawns for it (edit.ts /api/render, §169):
+      // `--storyboard` stripped, an empty `--scenes` file pinned.
+      const root = join(dir, "wd-empty-pin");
+      await run(root, { storyboard: true });
+      const work = workdirOf(root);
+      const pinned = join(work, REVIEWED_SCENES_BASENAME);
+      writeFileSync(pinned, "[]\n");
+      schemaNames = [];
+      lines = [];
+      await run(root, { scenes: pinned, produce: false });
+      expect(lines).toContain(`▸ scenes injected from ${pinned} (0)`);
+      for (const n of ["storyboard_plan", "beat_sheet", "clip_beat_sheet", "script_plan", "logo_flags"]) {
+        expect(schemaNames).not.toContain(n);
+      }
+      expect(schemaNames.some((n) => n.endsWith("_props"))).toBe(false);
+      const p = production(work);
+      expect(p.scenes).toBeUndefined();
+      expect(p.storyboard).toBeUndefined();
+    }, 240_000);
+  });
 
   it("a run without --storyboard is as before: no table, the beat sheet's scenes, no storyboard block", async () => {
     const root = join(dir, "wd-plain");

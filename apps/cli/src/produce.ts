@@ -291,6 +291,11 @@ import {
   type ResolvedScriptClip,
   type ScriptCue,
   type SkippedCue,
+  // Approved storyboard shots as clip scenes, and their production.json
+  // record (§169; storyboard design §8, §9).
+  approvedClipScenes,
+  productionStoryboardOf,
+  type ProductionStoryboard,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { clipImportLine, importClip } from "./clip-import";
@@ -315,6 +320,7 @@ import {
   scriptRetakesHonoured,
   scriptSourcePath,
   storedScriptFrom,
+  storedStoryboardFrom,
   type CueOutcome,
   type PlannedScriptClip,
 } from "./script-mode";
@@ -684,6 +690,24 @@ export function priorScript(work: string): ProductionScript | undefined {
     return undefined;
   }
   return storedScriptFrom(text);
+}
+
+/**
+ * The `storyboard` record the workdir's LAST run wrote, or undefined (§169;
+ * storyboard design §9). `priorScript`'s twin, for a `--scenes` replay: the
+ * editor's Render strips `--storyboard`, so the record it carries forward is
+ * the only thing that says the project's clip scenes are approved shots —
+ * for the §163 backdrop rule (`isScriptProject`) and for `ossclip kit`,
+ * which finds each clip's original through it.
+ */
+export function priorStoryboard(work: string): ProductionStoryboard | undefined {
+  let text: string;
+  try {
+    text = readFileSync(join(work, "production.json"), "utf8");
+  } catch {
+    return undefined;
+  }
+  return storedStoryboardFrom(text);
 }
 
 /**
@@ -3136,10 +3160,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // read and `scriptRecord`): they must agree on what counts as a replay.
   const scenesPinned = Boolean(opts.scenes);
   const storedScript = scenesPinned ? priorScript(work) : undefined;
+  // A storyboard project counts too (storyboard design §8; §169), by the same
+  // flag-or-stored-record rule, read here for the same reason.
+  const storedStoryboard = scenesPinned ? priorStoryboard(work) : undefined;
   const scriptProject = isScriptProject({
     scriptFlag: scriptRun !== undefined,
     scenesPinned,
     storedScript,
+    storyboardFlag: storyboardRun,
+    storedStoryboard,
   });
   // The script retake pass's cues (§166), from the same read and for the
   // same reason: a replay learns whether its scenes were planned with the
@@ -3972,6 +4001,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   /** A `--storyboard` run's "storyboard plan:" block for report.txt (§168),
    * built in the planning branch, where the effective cut's clock exists. */
   let storyboardReport: string | undefined;
+  /** A `--storyboard` run's production.json record of its approved shots
+   * (§169), built in the planning branch from the same table its clip scenes
+   * come from. Undefined when nothing is approved: no field is written. */
+  let storyboardRunRecord: ProductionStoryboard | undefined;
   /**
    * The `--sfx` plan: the level it was planned at and the placements that
    * survived `normalizeSfxPlan`, stored on production.json and resolved to
@@ -4230,10 +4263,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (storyboardRun) {
       // ---- Storyboard mode (storyboard design §1 step 2, §2; §168) ---------
       // FIRST, before the script branch and the beat sheet: a storyboard run
-      // makes no beat-sheet, script-plan or scene-props call, and `scenes`
-      // stays empty; the drawn shots are the editor's, later. Planned on the
-      // EFFECTIVE cut, the script branch's (§158): the automatic cutlist after
-      // the author's cleanup vetoes and editor cuts, by the same functions.
+      // makes no beat-sheet, script-plan or scene-props call. Its only scenes
+      // are the shots the author approved in the editor, set below (§169).
+      // Planned on the EFFECTIVE cut, the script branch's (§158): the
+      // automatic cutlist after the author's cleanup vetoes and editor cuts,
+      // by the same functions.
       const storyboardCutlist = scriptPlanCutlist({
         words: transcript.words,
         cutlist,
@@ -4266,6 +4300,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       );
       console.log(storyboardLine(result));
       storyboardReport = formatStoryboardReport(result, (i) => wordTimes[i] ?? null);
+      // One ClipScene per kept, approved shot of the table just loaded or
+      // planned (§169; storyboard design §8). Into `scenes` and nowhere else:
+      // from here they meet the one assembly every scene list meets, which
+      // starts each at its first kept word, pushes it past an overlap and
+      // drops it when all its words are cut. With nothing approved both are
+      // empty, as before: no scenes, no record.
+      scenes = approvedClipScenes(result.storyboard);
+      storyboardRunRecord = productionStoryboardOf(result.storyboard);
     } else if (scriptRun) {
       // ---- Script mode (explainer spec §1.2–1.3, §158) -------------------
       // Its own branch FIRST, and its own cache file, so the beat-sheet cache
@@ -4920,7 +4962,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // the face behind a transparent clip. Nor does it count as the previous
       // layout — the variety rule is about cards repeating, and a clip between
       // two cards is not one of them. ClipScene is the one `fullFrame`
-      // component, so no run without `--script` reaches this line.
+      // component, so only a `--script` or `--storyboard` run (an approved
+      // shot, §169) or a replay of one reaches this line.
       if (SCENE_REGISTRY[sc.component].fullFrame) continue;
       // A planned slot (the script placement above, or one a `--scenes`
       // replay carries in from production.json) is a full-bleed decision
@@ -6083,6 +6126,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     : opts.scenes
       ? priorScript(work)
       : undefined;
+  // The storyboard record (ProductionStoryboardSchema; §169, storyboard design
+  // §1 "Later runs", §9), by the script record's rule: this run's on a
+  // `--storyboard` run; on a `--scenes` replay, the last run's, carried
+  // forward, because the editor's Render and the kit refresh strip
+  // `--storyboard` and this record is then the only trace of the approved
+  // shots. Any other run writes none. Read BEFORE the write below.
+  const storyboardRecord: ProductionStoryboard | undefined = storyboardRun
+    ? storyboardRunRecord
+    : opts.scenes
+      ? priorStoryboard(work)
+      : undefined;
   const production: Production = {
     version: 1,
     // `originalInput`, not `input`: for a folder run `input` is by now
@@ -6140,6 +6194,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     ...(captionThemeRes.theme !== "default" ? { captionTheme: captionThemeRes.theme } : {}),
     ...(captionChoreography ? { captionChoreography } : {}),
     ...(scriptRecord ? { script: scriptRecord } : {}),
+    ...(storyboardRecord ? { storyboard: storyboardRecord } : {}),
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 

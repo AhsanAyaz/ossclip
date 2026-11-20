@@ -125,6 +125,7 @@ import { revealInFileManager } from "./open";
 import {
   REVIEWED_SCENES_BASENAME,
   healRecordedProduceArgs,
+  isStoryboardCommand,
   renderReplayArgs,
   reviewedScenesText,
 } from "./render-replay-args";
@@ -2003,9 +2004,16 @@ export async function startEditServer(
               const reviewed = reviewedScenesText(
                 await readFile(join(workdir!, "production.json"), "utf8"),
               );
-              if (reviewed !== undefined) {
+              // A storyboard project with no approved shot has no scenes, and
+              // replaying its recorded `--storyboard` would be a storyboard
+              // run: no video (plan B2a Review Focus 5, §169). An EMPTY plan
+              // is pinned instead, so the strip of `--storyboard` and
+              // `--assets` runs and the video renders with no graphics and no
+              // planning call. Any other command keeps the no-plan replay.
+              const pin = reviewed ?? (isStoryboardCommand(args) ? "[]\n" : undefined);
+              if (pin !== undefined) {
                 scenesPath = join(workdir!, REVIEWED_SCENES_BASENAME);
-                await writeFile(scenesPath, reviewed);
+                await writeFile(scenesPath, pin);
               }
             } catch {
               // No production.json, an old one without `scenes`, or an

@@ -34,6 +34,7 @@ import {
   scriptRetakesHonoured,
   scriptSourcePath,
   storedScriptFrom,
+  storedStoryboardFrom,
   type CueOutcome,
 } from "../src/script-mode";
 
@@ -119,23 +120,57 @@ describe("storedScriptFrom", () => {
 
 describe("isScriptProject (the stored script, not the flag)", () => {
   const stored = { text: "🎬 A", sourcePath: "/s.md" };
+  const noStoryboard = { storyboardFlag: false, storedStoryboard: undefined };
 
   it("a --script run is one, with or without a record from an earlier run", () => {
-    expect(isScriptProject({ scriptFlag: true, scenesPinned: false, storedScript: undefined })).toBe(true);
-    expect(isScriptProject({ scriptFlag: true, scenesPinned: false, storedScript: stored })).toBe(true);
+    expect(isScriptProject({ scriptFlag: true, scenesPinned: false, storedScript: undefined, ...noStoryboard })).toBe(true);
+    expect(isScriptProject({ scriptFlag: true, scenesPinned: false, storedScript: stored, ...noStoryboard })).toBe(true);
   });
 
   it("the editor's Render and the kit refresh (--scenes, no --script) are one when the record is stored", () => {
-    expect(isScriptProject({ scriptFlag: false, scenesPinned: true, storedScript: stored })).toBe(true);
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: true, storedScript: stored, ...noStoryboard })).toBe(true);
   });
 
   it("a --scenes replay of a project with no stored script is not", () => {
-    expect(isScriptProject({ scriptFlag: false, scenesPinned: true, storedScript: undefined })).toBe(false);
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: true, storedScript: undefined, ...noStoryboard })).toBe(false);
   });
 
   it("a run with neither flag is not, even over a stored record: it writes none, so it leaves no script project", () => {
-    expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: stored })).toBe(false);
-    expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: undefined })).toBe(false);
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: stored, ...noStoryboard })).toBe(false);
+    expect(isScriptProject({ scriptFlag: false, scenesPinned: false, storedScript: undefined, ...noStoryboard })).toBe(false);
+  });
+});
+
+describe("isScriptProject: storyboard projects are treated as script projects (§169; storyboard design §8, §9)", () => {
+  const shots = { shots: [{ id: "s1", startWord: 3, endWord: 9, clip: "storyboard/s1/approved.mov", src: "clips/0123456789ab.webm", durationSec: 4 }] };
+  const none = { scriptFlag: false, storedScript: undefined };
+
+  it("a --storyboard run is one, with or without a record from an earlier run", () => {
+    expect(isScriptProject({ ...none, scenesPinned: false, storyboardFlag: true, storedStoryboard: undefined })).toBe(true);
+    expect(isScriptProject({ ...none, scenesPinned: false, storyboardFlag: true, storedStoryboard: shots })).toBe(true);
+  });
+
+  it("a --scenes replay of a project whose production.json holds a storyboard record is one", () => {
+    expect(isScriptProject({ ...none, scenesPinned: true, storyboardFlag: false, storedStoryboard: shots })).toBe(true);
+  });
+
+  it("a run with neither flag is not, even over a stored storyboard record (design §1 'Later runs')", () => {
+    expect(isScriptProject({ ...none, scenesPinned: false, storyboardFlag: false, storedStoryboard: shots })).toBe(false);
+  });
+});
+
+describe("storedStoryboardFrom", () => {
+  const record = { shots: [{ id: "s1", startWord: 3, endWord: 9, clip: "storyboard/s1/approved.mov", src: "clips/0123456789ab.webm", durationSec: 4 }] };
+
+  it("reads the record, parsed", () => {
+    expect(storedStoryboardFrom(JSON.stringify({ version: 1, storyboard: record }))).toEqual(record);
+  });
+
+  it("no record, a malformed one, or unreadable JSON all mean none", () => {
+    expect(storedStoryboardFrom(JSON.stringify({ version: 1 }))).toBeUndefined();
+    expect(storedStoryboardFrom(JSON.stringify({ storyboard: { shots: [{ ...record.shots[0], durationSec: 0 }] } }))).toBeUndefined();
+    expect(storedStoryboardFrom("{not json")).toBeUndefined();
+    expect(storedStoryboardFrom("null")).toBeUndefined();
   });
 });
 

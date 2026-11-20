@@ -385,6 +385,43 @@ describe("edit server", () => {
     expect(existsSync(join(dir, "script.md"))).toBe(false);
   });
 
+  // Plan B2a Review Focus 5 (§169): Render on a storyboard project with no
+  // approved shot has no scenes to pin. Replaying the recorded `--storyboard`
+  // as it is would make a storyboard run (no video); an empty pin strips it.
+  it("Render of a storyboard command with no scenes pins an empty plan and drops --storyboard and --assets", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "production.json"), JSON.stringify({ version: 1 }));
+    await recordCommand(dir, "console.log(JSON.stringify(process.argv.slice(2)))", [
+      "produce",
+      "./take.mp4",
+      "--storyboard",
+      "--assets",
+      "/v/assets",
+      "--no-render",
+    ]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    const status = await awaitRenderExit(server.url);
+    expect(status.exitCode).toBe(0);
+    const argv = JSON.parse(status.lines.find((l) => l.startsWith("["))!) as string[];
+    expect(argv).toEqual(["produce", "./take.mp4", "--no-render", "--scenes", join(dir, "scenes-reviewed.json")]);
+    expect(JSON.parse(await readFile(join(dir, "scenes-reviewed.json"), "utf8"))).toEqual([]);
+  });
+
+  it("Render of a command without --storyboard and no scenes still replays the record untouched", async () => {
+    const dir = await fixtureWorkdir();
+    await writeFile(join(dir, "production.json"), JSON.stringify({ version: 1 }));
+    await recordCommand(dir, "console.log(JSON.stringify(process.argv.slice(2)))", ["produce", "./take.mp4", "--produce"]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    expect((await fetch(`${server.url}/api/render`, { method: "POST" })).status).toBe(202);
+    const status = await awaitRenderExit(server.url);
+    const argv = JSON.parse(status.lines.find((l) => l.startsWith("["))!) as string[];
+    expect(argv).toEqual(["produce", "./take.mp4", "--produce"]);
+    expect(existsSync(join(dir, "scenes-reviewed.json"))).toBe(false);
+  });
+
   it("serves a clip WebM over /media/ as video/webm", async () => {
     const dir = await fixtureWorkdir();
     await mkdir(join(dir, "clips"));

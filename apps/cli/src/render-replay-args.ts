@@ -67,6 +67,17 @@ export function renderReplayArgs(
 }
 
 /**
+ * True when the recorded argv holds `--storyboard` (§169). The edit server's
+ * Render asks it when there are no scenes to pin: `renderReplayArgs` strips
+ * `--storyboard` only when it pins, so a storyboard project with nothing
+ * approved would replay a storyboard run, which renders nothing. A token
+ * test, as the strip above is: `--storyboard` is a bare flag.
+ */
+export function isStoryboardCommand(recorded: readonly string[]): boolean {
+  return recorded.includes("--storyboard");
+}
+
+/**
  * The recorded args as the command that actually ran (§129). Before the fix,
  * wizard and bare-path runs recorded process.argv — the ORIGINAL
  * invocation, missing the `produce` literal the re-entered parse actually

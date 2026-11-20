@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { healRecordedProduceArgs, renderReplayArgs, reviewedScenesText } from "../src/render-replay-args";
+import {
+  healRecordedProduceArgs,
+  isStoryboardCommand,
+  renderReplayArgs,
+  reviewedScenesText,
+} from "../src/render-replay-args";
 
 /**
  * What the editor's Render button replays (2026-08-29).
@@ -136,6 +141,21 @@ describe("healRecordedProduceArgs (§129)", () => {
     const healed = healRecordedProduceArgs(recorded);
     expect(healed).toEqual(recorded);
     expect(healed).not.toBe(recorded);
+  });
+});
+
+describe("isStoryboardCommand (§169)", () => {
+  it("is true when the recorded argv holds --storyboard, wherever it sits", () => {
+    expect(isStoryboardCommand(["produce", "in.mp4", "--storyboard"])).toBe(true);
+    expect(isStoryboardCommand(["produce", "--storyboard", "in.mp4", "--assets", "/v/a"])).toBe(true);
+  });
+
+  it("is false for any other command, a pinned replay of a storyboard project included", () => {
+    expect(isStoryboardCommand(["produce", "in.mp4", "--produce"])).toBe(false);
+    expect(isStoryboardCommand(["produce", "in.mp4", "--script", "/v/s.md"])).toBe(false);
+    // What a Render records once it has pinned: `--storyboard` already stripped.
+    expect(isStoryboardCommand(["produce", "in.mp4", "--scenes", "/w/scenes-reviewed.json"])).toBe(false);
+    expect(isStoryboardCommand([])).toBe(false);
   });
 });
 

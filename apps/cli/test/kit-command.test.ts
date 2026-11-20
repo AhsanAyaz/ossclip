@@ -615,6 +615,41 @@ describe("runKit", () => {
     expect(report(world).clips[2]!.notes).toEqual(["no record of this clip's original file in production.json"]);
   });
 
+  it("an approved storyboard shot's clip, in the storyboard record only, is reused from its original in the workdir (§169)", async () => {
+    // The script record knows nothing of a drawn shot's clip; production.json's
+    // `storyboard` record does, with the original workdir-relative (design §9).
+    const world = makeWorld();
+    const cues = CUES.map((c) =>
+      c.id === "scene-2" ? { ...c, id: "shot-s1", props: { src: "clips/fedcba987654.webm" } } : c,
+    );
+    const { work } = project(world, { cues });
+    const production = JSON.parse(world.files.get(join(work, "production.json"))!.text);
+    production.storyboard = {
+      shots: [{ id: "s1", startWord: 3, endWord: 9, clip: "storyboard/s1/approved.mov", src: "clips/fedcba987654.webm", durationSec: 1 }],
+    };
+    await world.seams.writeFile(join(work, "production.json"), JSON.stringify(production));
+    await world.seams.writeFile(join(work, "storyboard", "s1", "approved.mov"), "MOV");
+
+    const result = await runKit(work, FLAGS, world.seams);
+    expect(result).toMatchObject({ rendered: 2, reused: 1, skipped: 0 });
+    const clip = report(world).clips.find((c) => c.sceneId === "shot-s1")!;
+    expect(clip).toMatchObject({ kind: "source", status: "reused", file: join(work, "storyboard/s1/approved.mov") });
+    expect(world.replays).toHaveLength(0);
+  });
+
+  it("a storyboard shot whose original is gone is skipped with the not-there note", async () => {
+    const world = makeWorld();
+    const cues = CUES.map((c) => (c.id === "scene-2" ? { ...c, props: { src: "clips/fedcba987654.webm" } } : c));
+    const { work } = project(world, { cues });
+    const production = JSON.parse(world.files.get(join(work, "production.json"))!.text);
+    production.storyboard = {
+      shots: [{ id: "s1", startWord: 3, endWord: 9, clip: "storyboard/s1/approved.mov", src: "clips/fedcba987654.webm", durationSec: 1 }],
+    };
+    await world.seams.writeFile(join(work, "production.json"), JSON.stringify(production));
+    await runKit(work, FLAGS, world.seams);
+    expect(report(world).clips[2]!.notes).toEqual([`the original clip ${join(work, "storyboard/s1/approved.mov")} is not there`]);
+  });
+
   it("a clip: scene is trimmed to the shorter of the scene and the file", async () => {
     // The scene is 1 s (30 frames) and the probed file 3 s: 1 s on the timeline.
     const world = makeWorld();

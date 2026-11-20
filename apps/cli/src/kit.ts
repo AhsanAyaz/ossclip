@@ -39,7 +39,7 @@ import {
   renderReplayArgs,
   reviewedScenesText,
 } from "./render-replay-args";
-import { storedScriptFrom } from "./script-mode";
+import { storedScriptFrom, storedStoryboardFrom } from "./script-mode";
 
 /**
  * `ossclip kit` (§162, design "Phase 3: clip kit"): one transparent ProRes
@@ -487,6 +487,7 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
   seams.stageFonts(theme, [work]);
 
   const script = storedScriptFrom(project.productionText);
+  const storyboard = storedStoryboardFrom(project.productionText);
   const clips: KitReportClip[] = [];
   const timelineClips: KitTimelineInput["clips"][number][] = [];
   const wsl = isWslEnv(seams.platform, seams.env, seams.procVersion);
@@ -538,9 +539,19 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
       // without one clip (Review Focus 5).
       const src = plan.cue.props?.src;
       const record = script?.clips?.find((c) => c.src === src);
+      // An approved storyboard shot's clip is in the storyboard record, not
+      // the script's (design §9, §169): its ProRes original sits in the
+      // workdir under the shot's folder, recorded workdir-relative. Asked
+      // only when the script record has no entry, so a script clip is found
+      // exactly as before.
+      const shot = record === undefined ? storyboard?.shots.find((s) => s.src === src) : undefined;
       let reason: string | null = null;
       let original: string | null = null;
-      if (record === undefined) reason = "no record of this clip's original file in production.json";
+      if (shot !== undefined) {
+        const named = join(work, shot.clip);
+        if (!seams.exists(named)) reason = `the original clip ${named} is not there`;
+        else original = real(named);
+      } else if (record === undefined) reason = "no record of this clip's original file in production.json";
       else if (script?.sourcePath === undefined) {
         reason = "the script's own path is not recorded, so its clip: paths cannot be resolved";
       } else {
