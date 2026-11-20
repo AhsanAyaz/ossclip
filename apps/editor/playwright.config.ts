@@ -150,7 +150,15 @@ export default defineConfig({
       // headless Chromium's autoplay policy would otherwise reject the
       // keyboard-initiated play() and the test would fail for a reason that
       // has nothing to do with the shortcut.
-      args: ["--autoplay-policy=no-user-gesture-required"],
+      //
+      // No real audio device (§168): after that test plays media and its
+      // page closes, WSLg's PulseAudio server stops answering for a while,
+      // and the next page's `new AudioContext()` (Remotion's shared context,
+      // made at Player mount) blocks the page thread 20 s per call — two
+      // calls, so the following test times out at "Loading production…".
+      // Measured with a wrapper around the constructor; `pactl info` timed
+      // out in the same window. No spec listens to the output.
+      args: ["--autoplay-policy=no-user-gesture-required", "--disable-audio-output"],
     },
   },
   webServer: [
