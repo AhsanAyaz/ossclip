@@ -51,6 +51,15 @@ export function renderReplayArgs(
       i++;
       continue;
     }
+    // `--storyboard` and its `--assets <dir>` go for the same reason (§168):
+    // a storyboard run plans, and produce refuses it beside `--scenes`.
+    // `--storyboard` is a bare flag, `--assets` takes its value with it. A
+    // replan keeps both (the early return above).
+    if (arg === "--storyboard") continue;
+    if (arg === "--assets") {
+      i++;
+      continue;
+    }
     out.push(arg);
   }
   out.push("--scenes", opts.scenesPath);

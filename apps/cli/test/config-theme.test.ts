@@ -93,6 +93,18 @@ describe("resolveLook", () => {
     expect(() => resolveLook(undefined, 3)).toThrow(/config look/);
   });
 
+  it("a storyboard run falls back to the explainer look; flag and config still win, and every other run is unchanged (§168)", () => {
+    expect(resolveLook(undefined, undefined, "explainer")).toBe("explainer");
+    expect(resolveLook("default", undefined, "explainer")).toBe("default");
+    expect(resolveLook(undefined, "default", "explainer")).toBe("default");
+    // The two-argument call every non-storyboard run makes, and the explicit
+    // "default" fallback produce now passes for them: the same answers.
+    for (const [flag, config] of [[undefined, undefined], [undefined, "explainer"], ["default", "explainer"], ["explainer", undefined]] as const) {
+      expect(resolveLook(flag, config, "default")).toBe(resolveLook(flag, config));
+    }
+    expect(resolveLook(undefined, undefined, "default")).toBe("default");
+  });
+
   it("a typed flag still wins over a broken config value", () => {
     // The flag is already a parsed Look; the config is only consulted when
     // the flag is absent, so a bad file key cannot block an explicit choice.

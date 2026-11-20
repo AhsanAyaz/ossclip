@@ -73,6 +73,19 @@ describe("renderReplayArgs", () => {
     ]);
   });
 
+  it("drops --storyboard and --assets with its value when it pins the reviewed plan, and keeps both on replan (§168)", () => {
+    const sb = ["produce", "in.mp4", "--produce", "--storyboard", "--assets", "/v/assets", "--aspect", "16:9"];
+    expect(renderReplayArgs(sb, { scenesPath: "/w/s.json" })).toEqual([
+      "produce",
+      "in.mp4",
+      "--aspect",
+      "16:9",
+      "--scenes",
+      "/w/s.json",
+    ]);
+    expect(renderReplayArgs(sb, { scenesPath: "/w/s.json", replan: true })).toEqual(sb);
+  });
+
   it("carries --sfx and its level through the --produce swap", () => {
     // Only --produce and --scenes are dropped, and this pins that: --sfx-level
     // is a VALUE option, so a filter that treated it as a bare flag would

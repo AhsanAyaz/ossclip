@@ -9,6 +9,7 @@ import {
   parseAssetNotes,
   parseImageProbe,
   saveShot,
+  listAssets,
   shotDir,
   stageAssets,
   versionPaths,
@@ -192,5 +193,24 @@ describe("stageAssets", () => {
     await expect(stageAssets(join(work, "nope"), join(work, "public"), async () => ({ width: 1, height: 1 }))).rejects.toThrow(
       /assets folder not found/,
     );
+  });
+});
+
+describe("listAssets", () => {
+  it("describes the folder's images with their source paths and copies nothing (§168: a plan stages no assets)", async () => {
+    const assets = join(work, "assets");
+    mkdirSync(assets, { recursive: true });
+    writeFileSync(join(assets, "logo.png"), "png-bytes");
+    writeFileSync(join(assets, "run.exe"), "MZ");
+    writeFileSync(join(assets, "assets.md"), "- logo.png: the EGM logo\n");
+    const before = readdirSync(work).sort();
+
+    const out = await listAssets(assets, async () => ({ width: 512, height: 256 }));
+
+    expect(out.assets).toEqual([{ name: "logo.png", width: 512, height: 256, note: "the EGM logo", src: join(assets, "logo.png") }]);
+    expect(out.warnings).toHaveLength(1);
+    expect(out.warnings[0]).toMatch(/^skipped asset "run.exe"/);
+    expect(readdirSync(work).sort()).toEqual(before);
+    expect(readdirSync(assets).sort()).toEqual(["assets.md", "logo.png", "run.exe"]);
   });
 });

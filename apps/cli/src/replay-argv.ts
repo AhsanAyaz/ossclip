@@ -86,6 +86,10 @@ export function recordedProduceArgs(pins: {
   choreographCaptions?: boolean;
   /** The script's SOURCE path, absolute (`--script`, explainer plan Task 8). */
   script?: string;
+  /** A `--storyboard` run (§168). */
+  storyboard?: boolean;
+  /** The `--assets` folder, absolute (§168). */
+  assets?: string;
 }): string[] {
   // --review and --no-render are stripped at record (cut-review step 1):
   // command.json exists for exactly one consumer — the editor's Render
@@ -264,6 +268,17 @@ export function recordedProduceArgs(pins: {
     const at = args.indexOf("--script");
     if (at !== -1) args.splice(at, 2);
     args.push("--script", pins.script);
+  }
+  // The storyboard pins (§168). `--storyboard` is a bare flag only ever
+  // typed, so the includes-guard is all it needs; `--assets` follows the
+  // script pin and REPLACES a typed value, because a relative folder typed in
+  // one cwd must replay from the edit server's, so the record names it
+  // absolute.
+  if (pins.storyboard === true && !args.includes("--storyboard")) args.push("--storyboard");
+  if (pins.assets !== undefined) {
+    const at = args.indexOf("--assets");
+    if (at !== -1) args.splice(at, 2);
+    args.push("--assets", pins.assets);
   }
   if (
     pins.choreographCaptions !== undefined &&

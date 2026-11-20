@@ -360,6 +360,12 @@ import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from 
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
+import { assertAssetsDir } from "./storyboard/storyboard-store";
+import {
+  formatStoryboardReport,
+  runStoryboardPlan,
+  storyboardLine,
+} from "./storyboard/storyboard-run";
 import {
   formatOverlayAccounting,
   priorOverlayPlan,
@@ -863,6 +869,13 @@ export interface ProduceOptions {
    * flag's parser; read and validated before any transcription.
    */
   script?: string;
+  /**
+   * `--storyboard` (storyboard design §1, §168): plan a table of drawn shots
+   * in one call, store it in `storyboard.json`, and stop before rendering.
+   */
+  storyboard?: boolean;
+  /** `--assets <dir>`, absolute: the images a storyboard shot may use. Only with `storyboard`. */
+  assets?: string;
   /** Run the producer brain to plan scenes. */
   produce?: boolean;
   intent?: string;
@@ -1771,16 +1784,17 @@ export function configuredBaseTheme(
 
 /**
  * The run's look: a typed `--look` beats the config's `look`, and neither
- * means "default". Unlike the config `theme` (one warning, then the
- * defaults), a bad config look THROWS naming the key (plan Task 1): a look is
+ * means `fallback`: "default", except in a `--storyboard` run, which passes
+ * "explainer" (storyboard design §1; §168). Unlike the config `theme` (one
+ * warning, then the defaults), a bad config look THROWS naming the key (plan Task 1): a look is
  * one deliberate choice, not a palette of independent tokens, and quietly
  * rendering the default look would spend a whole render on the video the
  * user configured away from. The config is only read when the flag is
  * absent, so a broken file key never blocks an explicit `--look`.
  */
-export function resolveLook(flag: Look | undefined, config: unknown): Look {
+export function resolveLook(flag: Look | undefined, config: unknown, fallback: Look = "default"): Look {
   if (flag !== undefined) return flag;
-  if (config === undefined) return "default";
+  if (config === undefined) return fallback;
   const parsed = LookSchema.safeParse(config);
   if (!parsed.success) {
     throw new Error(
@@ -2872,6 +2886,35 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     throw new Error("--clip-window replays a --clip run's plan — pass --produce or --scenes too.");
   }
 
+  // ---- `--storyboard` (storyboard design §1 "Flags", §168): checked where
+  // and for the reason the script checks below are — every one of these is
+  // the author's to fix, and finding it after transcription costs minutes.
+  // Before them, so `--storyboard --script x` names the conflict rather than
+  // whatever is wrong with x.
+  // Exclusive with `--script` and `--scenes` (each is the whole plan) and
+  // with `--clip` (its window is chosen by the beat-sheet call a storyboard
+  // run never makes). The editor's Render strips `--storyboard` when it pins
+  // `--scenes` (renderReplayArgs).
+  const storyboardRun = opts.storyboard === true;
+  if (storyboardRun) {
+    if (opts.script !== undefined) {
+      throw new Error("--storyboard and --script cannot be combined: each one is the whole plan.");
+    }
+    if (opts.scenes) {
+      throw new Error("--storyboard and --scenes cannot be combined: each one is the whole plan.");
+    }
+    if (opts.clip !== undefined) {
+      throw new Error("--storyboard and --clip cannot be combined: a storyboard plans the whole take.");
+    }
+  }
+  if (opts.assets !== undefined) {
+    if (!storyboardRun) {
+      throw new Error("--assets only means something with --storyboard: they are the images its shots may use.");
+    }
+    // Before the repair pass's LLM call as well as the planner's.
+    assertAssetsDir(opts.assets);
+  }
+
   // ---- `--script` (explainer spec §1.6, §158): read and checked FIRST ------
   // Before the hash, the audio extract and transcription: every error a
   // script can carry on its own — an unreadable file, more than 40 cues, an
@@ -3001,9 +3044,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // resolved once and used for BOTH resolveTheme's base and props.baseTheme
   // below — the editor's reset must land on the user's global colors and the
   // run's look, not the factory's.
-  const look = resolveLook(opts.look, cfg.look);
+  // A storyboard run defaults to the explainer look (storyboard design §1,
+  // "What else the run does"); a typed --look or the config's still wins.
+  const look = resolveLook(opts.look, cfg.look, storyboardRun ? "explainer" : "default");
   if (look !== "default") {
-    console.log(`▸ look: ${look}${opts.look === undefined ? " (from config; --look overrides)" : ""}`);
+    console.log(
+      `▸ look: ${look}${
+        opts.look !== undefined
+          ? ""
+          : cfg.look !== undefined
+            ? " (from config; --look overrides)"
+            : " (the storyboard default; --look overrides)"
+      }`,
+    );
   }
   const { theme: configBaseTheme, warning: themeWarning } = configuredBaseTheme(cfg.theme, look);
   if (themeWarning) console.log(themeWarning);
@@ -3916,6 +3969,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   /** The script-plan cache key this run's plan lives under — the `--sfx` call's
    * `beatKey` in script mode, where there is no beat-sheet key. */
   let scriptPlanKey: string | undefined;
+  /** A `--storyboard` run's "storyboard plan:" block for report.txt (§168),
+   * built in the planning branch, where the effective cut's clock exists. */
+  let storyboardReport: string | undefined;
   /**
    * The `--sfx` plan: the level it was planned at and the placements that
    * survived `normalizeSfxPlan`, stored on production.json and resolved to
@@ -4171,7 +4227,46 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // plan, and pairing a cached scene list with a different sheet's hook
     // would caption the video with copy for a plan it is not showing.
     const beatCache = join(work, `beatsheet-${hitKey}.json`);
-    if (scriptRun) {
+    if (storyboardRun) {
+      // ---- Storyboard mode (storyboard design §1 step 2, §2; §168) ---------
+      // FIRST, before the script branch and the beat sheet: a storyboard run
+      // makes no beat-sheet, script-plan or scene-props call, and `scenes`
+      // stays empty; the drawn shots are the editor's, later. Planned on the
+      // EFFECTIVE cut, the script branch's (§158): the automatic cutlist after
+      // the author's cleanup vetoes and editor cuts, by the same functions.
+      const storyboardCutlist = scriptPlanCutlist({
+        words: transcript.words,
+        cutlist,
+        doc: await readOverrideDoc(join(work, "overrides.json")),
+        priorMap: await readPriorMap(join(work, "render-props.json")),
+      });
+      const storyboardCut = cutWordIndices(transcript.words, storyboardCutlist);
+      // The shots' clock is the effective cut's, for the runtime as for the
+      // word times: the limits measure screen time in the video that renders.
+      const storyboardMap = new TimeMap(storyboardCutlist);
+      const wordTimes = keptWordTimes(transcript.words, storyboardCut, storyboardMap);
+      const result = await phases.time("llm", () =>
+        runStoryboardPlan(
+          {
+            workdir: work,
+            words: transcript.words,
+            cut: storyboardCut,
+            wordTimes,
+            outputDurationSec: storyboardMap.outputDuration,
+            frame,
+            intent: opts.intent,
+            assetsDir: opts.assets,
+            provider: provider!,
+            providerName,
+            fallbackName: llmFallbackName,
+            llmModel: opts.llmModel,
+          },
+          { answeredBy: actualProvider, log: (line) => console.log(line) },
+        ),
+      );
+      console.log(storyboardLine(result));
+      storyboardReport = formatStoryboardReport(result, (i) => wordTimes[i] ?? null);
+    } else if (scriptRun) {
       // ---- Script mode (explainer spec §1.2–1.3, §158) -------------------
       // Its own branch FIRST, and its own cache file, so the beat-sheet cache
       // above is never read or written by a script run (G6) — the keys are
@@ -5842,7 +5937,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const priorSuggestions = priorOverlayPlan(work)?.suggestions;
   let logoSuggestions: LogoSuggestion[] | undefined = priorSuggestions;
   let logoFinderLine: string;
-  if (provider && opts.produce === true && !opts.scenes) {
+  // Not in a storyboard run (storyboard design §1: it plans no template
+  // graphics, and logo chips are overlays on a plan it does not make).
+  if (provider && opts.produce === true && !opts.scenes && !storyboardRun) {
     // Where the LLM failed is the one thing the skip line has to say apart
     // from everything else, so the call is marked rather than guessed from
     // the error's text.
@@ -5927,7 +6024,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     logoFinderLine =
       priorSuggestions && priorSuggestions.length > 0
         ? formatLogoFinderLine({ suggestions: priorSuggestions })
-        : formatLogoFinderLine({ skipped: "no LLM provider" });
+        : formatLogoFinderLine({ skipped: storyboardRun ? "a storyboard run plans no overlays" : "no LLM provider" });
   }
   console.log(`▸ ${logoFinderLine}`);
   // Plan presence (plan ruling): `overlays` is written when there are
@@ -6159,6 +6256,9 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
 `)
         .join("");
   }
+  // A storyboard run's table (§168), in place of the graphics accounting it
+  // has no plan for: each kept shot and each change the limits made.
+  if (storyboardReport) report += storyboardReport;
   // The SFX accounting, the graphics block's contract exactly (§118b): ONE
   // formatter feeds the console line printed above and this one, so the two
   // can never say different things about the same run. The drops are listed
@@ -7254,6 +7354,10 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
     // The SOURCE script, even on a Re-plan from the workdir copy: its folder
     // is where `clip:` paths resolve (recordedProduceArgs has the why).
     script: scriptSource,
+    // §168. `--assets` is the absolute folder, the script pin's rule: the
+    // editor replays this argv from another cwd.
+    storyboard: storyboardRun,
+    assets: opts.assets,
   });
   // produce is the ONLY command that may write command.json — edit.ts's §129
   // heal prepends the "produce" literal to any record that doesn't start

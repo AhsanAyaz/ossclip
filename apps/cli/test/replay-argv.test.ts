@@ -326,6 +326,26 @@ describe("recordedProduceArgs (§129)", () => {
     expect(recordedProduceArgs({})).toEqual(["produce", "./a.mp4"]);
   });
 
+  it("records --storyboard once and --assets as the absolute folder, replacing a typed value (§168)", () => {
+    setReplayArgv(["produce", "./a.mp4", "--storyboard", "--assets", "assets", "--no-captions"]);
+    expect(recordedProduceArgs({ storyboard: true, assets: "/videos/assets" })).toEqual([
+      "produce",
+      "./a.mp4",
+      "--storyboard",
+      "--no-captions",
+      "--assets",
+      "/videos/assets",
+    ]);
+    // A replan replays the record, which already holds both: never doubled.
+    setReplayArgv(["produce", "./a.mp4", "--storyboard", "--assets", "/videos/assets"]);
+    const rec = recordedProduceArgs({ storyboard: true, assets: "/videos/assets" });
+    expect(rec.filter((a) => a === "--storyboard")).toHaveLength(1);
+    expect(rec.filter((a) => a === "--assets")).toHaveLength(1);
+    // No storyboard run, no pin.
+    setReplayArgv(["produce", "./a.mp4"]);
+    expect(recordedProduceArgs({ storyboard: false })).toEqual(["produce", "./a.mp4"]);
+  });
+
   it("pins a config-resolved --portrait, and never doubles a typed one", () => {
     setReplayArgv(["produce", "./a.mp4"]);
     expect(recordedProduceArgs({ portrait: "/me.jpg" })).toEqual([

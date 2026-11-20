@@ -152,6 +152,18 @@ describe("wizard argv survives the real commander parse", () => {
     await expect(parse(["produce", "./take.mp4", "--script", "  "])).rejects.toThrow();
   });
 
+  // --storyboard and --assets (§168): flags-only too (produce-wizard.ts), so
+  // the round trip that matters is again the recorded one.
+  it("--storyboard and --assets carry through the real parse; an empty --assets is refused", async () => {
+    const opts = await parse(["produce", "./take.mp4", "--storyboard", "--assets", "/videos/assets"]);
+    expect(opts.storyboard).toBe(true);
+    expect(opts.assets).toBe("/videos/assets");
+    const plain = await parse(["produce", "./take.mp4"]);
+    expect(plain.storyboard).toBeUndefined();
+    expect(plain.assets).toBeUndefined();
+    await expect(parse(["produce", "./take.mp4", "--storyboard", "--assets", " "])).rejects.toThrow();
+  });
+
   it("--collapse-retakes still parses as a legacy no-op for old recorded replays", async () => {
     const opts = await parse(["produce", "./take.mp4", "--collapse-retakes"]);
     expect(opts.collapseRetakes).toBe(true);

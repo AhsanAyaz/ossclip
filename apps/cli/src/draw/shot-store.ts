@@ -174,10 +174,23 @@ export async function ffprobeImageSize(path: string): Promise<{ width: number; h
   return parseImageProbe(stdout, path);
 }
 
+/** One image of an `--assets` folder as listed, before anything is copied. */
+export interface ListedAsset {
+  name: string;
+  width: number;
+  height: number;
+  note?: string;
+  /** The file's absolute path in the assets folder. */
+  src: string;
+}
+
 /**
- * Copies the author's `--assets` folder into a render's public dir and
- * describes each file for the draw call (design §4): name, pixel size and
- * the `assets.md` line, if any.
+ * Describes each file of the author's `--assets` folder (design §4): name,
+ * pixel size and the `assets.md` line, if any. Reads only; nothing is copied.
+ * Split from `stageAssets` because a storyboard plan (§168) needs the list
+ * for its prompt and its cache key long before any render's public dir
+ * exists, and copying the author's files at plan time would put them in a
+ * folder no render reads.
  *
  * A file whose name fails `AssetNameSchema`, or whose size ffprobe cannot
  * read, is skipped with a warning rather than failing the run: assets are
@@ -187,19 +200,17 @@ export async function ffprobeImageSize(path: string): Promise<{ width: number; h
  * Async, unlike the rest of this file, because the sizes come from ffprobe.
  * `probeSize` is injected so the tests need no ffprobe.
  */
-export async function stageAssets(
+export async function listAssets(
   assetsDir: string,
-  publicDir: string,
   probeSize: (path: string) => Promise<{ width: number; height: number }> = ffprobeImageSize,
-): Promise<{ assets: StagedAsset[]; warnings: string[] }> {
+): Promise<{ assets: ListedAsset[]; warnings: string[] }> {
   const dir = resolve(assetsDir);
   if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`assets folder not found: ${dir}`);
   const notesPath = join(dir, ASSET_NOTES_BASENAME);
   const notes = existsSync(notesPath) ? parseAssetNotes(readFileSync(notesPath, "utf8")) : new Map<string, string>();
 
-  const assets: StagedAsset[] = [];
+  const assets: ListedAsset[] = [];
   const warnings: string[] = [];
-  const outDir = join(publicDir, STAGED_ASSETS_DIRNAME);
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isFile() || entry.name === ASSET_NOTES_BASENAME) continue;
     const parsed = AssetNameSchema.safeParse(entry.name);
@@ -219,20 +230,33 @@ export async function stageAssets(
       warnings.push(`skipped asset ${name}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
       continue;
     }
-    mkdirSync(outDir, { recursive: true });
-    copyFileSync(src, join(outDir, name));
     const note = notes.get(name);
-    assets.push({
-      name,
-      width: size.width,
-      height: size.height,
-      ...(note !== undefined ? { note } : {}),
-      staticPath: `${STAGED_ASSETS_DIRNAME}/${name}`,
-    });
+    assets.push({ name, width: size.width, height: size.height, ...(note !== undefined ? { note } : {}), src });
   }
-  const staged = new Set(assets.map((a) => a.name));
+  const listed = new Set(assets.map((a) => a.name));
   for (const name of notes.keys()) {
-    if (!staged.has(name)) warnings.push(`${ASSET_NOTES_BASENAME} describes ${name}, which is not staged`);
+    if (!listed.has(name)) warnings.push(`${ASSET_NOTES_BASENAME} describes ${name}, which is not a usable asset in the folder`);
   }
   return { assets, warnings };
+}
+
+/**
+ * Copies the author's `--assets` folder into a render's public dir and
+ * describes each file for the draw call: `listAssets`, then a copy of each
+ * file it kept, so what is described and what is staged are one list.
+ */
+export async function stageAssets(
+  assetsDir: string,
+  publicDir: string,
+  probeSize: (path: string) => Promise<{ width: number; height: number }> = ffprobeImageSize,
+): Promise<{ assets: StagedAsset[]; warnings: string[] }> {
+  const listed = await listAssets(assetsDir, probeSize);
+  const outDir = join(publicDir, STAGED_ASSETS_DIRNAME);
+  const assets: StagedAsset[] = [];
+  for (const { src, ...a } of listed.assets) {
+    mkdirSync(outDir, { recursive: true });
+    copyFileSync(src, join(outDir, a.name));
+    assets.push({ ...a, staticPath: `${STAGED_ASSETS_DIRNAME}/${a.name}` });
+  }
+  return { assets, warnings: listed.warnings };
 }
