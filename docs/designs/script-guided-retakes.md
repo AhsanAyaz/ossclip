@@ -17,7 +17,7 @@ It answers the two retakes in the EGM render that no existing rule can catch (§
 
 Both are reworded, so the similarity detector (§128) scores them under its bar, and the speaker said no marker. Both are takes of a sentence that is in the script.
 
-**How strong the evidence is.** One recording. On it the pass makes three cuts, two of them new, and no wrong cut. Every limit below was chosen on that recording.
+**How strong the evidence is.** One recording. On it the built pass makes two cuts, both new, and no wrong cut. (The prototype made three; the third is now cut by the marker fix of §165 before this pass runs.) Every limit below was chosen on that recording.
 
 ## Terms
 
@@ -122,10 +122,12 @@ A prototype of sections 2 and 3 (without the similarity-group exclusion and the 
 *   Stopped: the two "One flag for…" units (twins, and one content token); "ossclip is open source and free." (0.67 for B, and minutes apart).
 *   Two kept takes sit at 0.75 against a bar of 0.7. The margin is small.
 
+**The built pass** runs on the raw transcript after the marker fix of §165. With the cue script it makes two cuts: the elephant pair and "So first off". The marker span now removes the earlier "Number two…" take, so its words are not candidates. With the full script it cuts the elephant pair only. FINDINGS §166 records this.
+
 ## Verification
 
 *   **Unit tests:** unit splitting; twins in both directions; the overlap order, with two adjacent takes; each limit pinned on both sides (0.6, 4 tokens, 2 content tokens, 0.7, B at least A, 25 words, half the words in silence); a different unit between takes, said again and not said again; both 3-word boundary moves; three takes; marker-cut words and similarity-group members are not candidates.
-*   **Recorded-transcript test:** the EGM transcript and analysis as a fixture, with the cue script. Expected cuts: the three above, no other.
+*   **Recorded-transcript test:** the EGM transcript and analysis as a fixture, with the cue script. Expected cuts: the elephant pair and "So first off", no other.
 *   **Unchanged output:** no script, same cutlist (existing tests). A script project with no repeated unit, same cutlist. A stored script record without the new field, same cutlist on replay.
 *   **Replay:** a `--scenes` replay of a project planned with the pass builds the same cutlist as its first run.
 *   **Real run:** a fresh EGM `--script` run; the author checks the two stretches.
