@@ -62,4 +62,8 @@ export * from "./resolution";
 export * from "./script/cues";
 export * from "./script/align";
 export * from "./script/retakes";
+// The drawn-scene static check (§167) pulls in the `typescript` compiler, so
+// it is exported here only and never from ./browser — the editor bundle must
+// not carry the compiler.
+export * from "./draw/static-check";
 export { run } from "./exec";
