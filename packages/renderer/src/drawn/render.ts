@@ -179,7 +179,38 @@ export async function renderDrawnStills(a: {
   } finally {
     // Every path, not only the timeout's: a browser handed in as
     // `puppeteerInstance` is the caller's to close, and Remotion leaves it.
+    await pagesClosed(browser);
     await browser.close({ silent: true });
+  }
+}
+
+/** How long a failed still's page is given to finish closing before the browser goes. */
+const PAGE_CLOSE_GRACE_MS = 3000;
+
+/**
+ * Waits until the browser has no page left, at most `PAGE_CLOSE_GRACE_MS`.
+ *
+ * Why (§168): when a scene throws, Remotion's still renderer rejects and, in
+ * the same tick, starts closing its page without awaiting or catching it
+ * (`cleanup()` in its render-still.js sends `Target.closeTarget`). Closing the
+ * browser while that is in flight makes the send reject with "Target closed"
+ * inside Remotion, where nothing can catch it: an unhandled rejection in the
+ * CLI process. It showed only when the machine was busy (the whole test suite
+ * with six produce runs beside it). Letting the page finish closing first
+ * removes the race. After a timeout the browser is already closed and there
+ * is nothing to wait for; a page that never closes is cut off at the grace.
+ */
+async function pagesClosed(browser: Awaited<ReturnType<typeof openBrowser>>): Promise<void> {
+  const openPages = (): number => {
+    try {
+      return browser.targets().filter((t) => t.type() === "page").length;
+    } catch {
+      return 0; // a browser that is already gone has no pages to wait for
+    }
+  };
+  const deadline = performance.now() + PAGE_CLOSE_GRACE_MS;
+  while (openPages() > 0 && performance.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25));
   }
 }
 
