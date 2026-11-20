@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   clampTiming,
   clampZoom,
+  clipSpeedTiming,
   moveTiming,
   pinTiming,
   sourceToOutputClamped,
   timeAtX,
   zoomedScrollLeft,
 } from "../src/timing";
-import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
+import { OverrideDocSchema, applyOverrides, type KeptSpan, type SceneCue } from "@ossclip/core/browser";
 
 const cues = [
   { id: "a", startSec: 0, endSec: 5 },
@@ -203,5 +204,83 @@ describe("pinTiming (source-anchored scene timing, 2026-08-26)", () => {
     // window inside removed material) would otherwise mint `srcEnd ===
     // srcStart`, which `SceneTimingSchema` rejects on the next load.
     expect(pinTiming(5, 9, () => 4)).toEqual({ startSec: 5, endSec: 9 });
+  });
+});
+
+describe("clipSpeedTiming (a clip's speed resizes its pinned block)", () => {
+  // A dragged (pinned) 4 s clip at 10..14, a card well after it at 30.
+  const clip = (over: Partial<SceneCue> = {}): SceneCue => ({
+    id: "clip-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4, speed: 1 },
+    startSec: 10,
+    endSec: 14,
+    ...over,
+  });
+  const card = (startSec: number): SceneCue =>
+    ({ id: "card", kind: "graphic", layout: "video-top", component: "TitleCard", startSec, endSec: startSec + 3 }) as SceneCue;
+
+  it("speed 2 on a pinned 4 s clip: the block runs start..start+2", () => {
+    expect(clipSpeedTiming([clip(), card(30)], "clip-1", 2, 60, true)).toEqual({ startSec: 10, endSec: 12 });
+  });
+
+  it("speed 0.5 that reaches the neighbour is cut at the neighbour less the gap", () => {
+    // 8 s wanted, the card starts 5 s after the clip.
+    const t = clipSpeedTiming([clip(), card(15)], "clip-1", 0.5, 60, true)!;
+    expect(t.startSec).toBe(10);
+    expect(t.endSec).toBeCloseTo(14.95, 9);
+  });
+
+  it("caps at MAX_SCENE_SEC (15 s) from the start", () => {
+    // 10 s at 0.5x is 20 s played.
+    const long = clip({ props: { src: "clips/a.webm", durationSec: 10, speed: 1 }, endSec: 20 });
+    expect(clipSpeedTiming([long], "clip-1", 0.5, 60, true)).toEqual({ startSec: 10, endSec: 25 });
+  });
+
+  it("stops at the video's end, like an edge drag", () => {
+    expect(clipSpeedTiming([clip()], "clip-1", 0.5, 16, true)).toEqual({ startSec: 10, endSec: 16 });
+  });
+
+  it("a plain take after the clip is not a neighbour — takes re-derive around it", () => {
+    const take = { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 14, endSec: 30 } as SceneCue;
+    expect(clipSpeedTiming([clip(), take], "clip-1", 0.5, 60, true)).toEqual({ startSec: 10, endSec: 18 });
+  });
+
+  it("keeps the 1.2 s floor a pin always has (produce re-clamps a pin to it too)", () => {
+    // 4 s at 4x is 1 s; `reclampPinnedTiming` would put it back to 1.2 s.
+    const t = clipSpeedTiming([clip()], "clip-1", 4, 60, true)!;
+    expect(t.endSec - t.startSec).toBeCloseTo(1.2, 9);
+  });
+
+  it("unpinned is null: applyOverrides re-derives that window from the speed prop", () => {
+    expect(clipSpeedTiming([clip()], "clip-1", 2, 60, false)).toBeNull();
+  });
+
+  it("is null for a card, a split half, a scene it cannot find, and no video length", () => {
+    const tc = { ...card(10), id: "clip-1" } as SceneCue;
+    expect(clipSpeedTiming([tc], "clip-1", 2, 60, true)).toBeNull();
+    expect(clipSpeedTiming([clip({ id: "clip-1@s1" })], "clip-1@s1", 2, 60, true)).toBeNull();
+    expect(clipSpeedTiming([clip()], "nope", 2, 60, true)).toBeNull();
+    expect(clipSpeedTiming([clip()], "clip-1", 2, 0, true)).toBeNull();
+  });
+
+  it("gives the window applyOverrides gives the same clip unpinned (cap and neighbour gap)", () => {
+    // The two paths a speed edit can take must not give one clip two
+    // lengths where both apply: the neighbour cut and the 15 s cap.
+    for (const [durationSec, speed, next] of [
+      [4, 0.5, 15],
+      [10, 0.5, 60],
+      [4, 2, 60],
+    ] as const) {
+      const base = clip({ props: { src: "clips/a.webm", durationSec, speed: 1 }, endSec: 10 + durationSec });
+      const cues = [base, card(next)];
+      const doc = OverrideDocSchema.parse({ scenes: { "clip-1": { props: { speed } } } });
+      const unpinned = applyOverrides(cues, doc).cues[0]!;
+      const pinned = clipSpeedTiming(cues, "clip-1", speed, 120, true)!;
+      expect(pinned.startSec).toBe(unpinned.startSec);
+      expect(pinned.endSec).toBeCloseTo(unpinned.endSec, 9);
+    }
   });
 });

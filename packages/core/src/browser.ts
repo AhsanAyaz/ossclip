@@ -16,8 +16,12 @@ export * from "./fill";
 // start" is how the editor's diamond and the render's cue would disagree.
 // `assemble.ts` is browser-safe (type imports plus `scene-registry`, already
 // on this surface), but only this one function is exposed: the rest of the
-// module is the pipeline's, not the bundle's.
-export { sceneStartSeconds } from "./assemble";
+// module is the pipeline's, not the bundle's. `MAX_SCENE_SEC` rides along
+// as the one constant the editor must share rather than restate: a speed
+// edit on a pinned clip caps its window in the editor (`clipSpeedTiming`)
+// where an unpinned one is capped in `clipSpeedEndSec`, and two copies of
+// the ceiling are how the two paths would give one clip two lengths.
+export { MAX_SCENE_SEC, sceneStartSeconds } from "./assemble";
 // The editor's live grade preview computes the SVG filter spec with the SAME
 // math produce bakes into render-props (`gradeToSvgFilterSpec`) — a browser
 // copy of the curve sampler is how the preview and the render would drift.

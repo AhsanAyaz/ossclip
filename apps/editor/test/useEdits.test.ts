@@ -60,6 +60,56 @@ describe("edit state", () => {
   });
 });
 
+describe("a clip's speed and its resized window are one undo step", () => {
+  // A pinned clip (dragged to 10..14), then a speed scrub that resizes it:
+  // undo must land on the dragged window AND the old speed together, or the
+  // clip plays at 1x in a block sized for 2x.
+  const pinned = () =>
+    editReducer(initialEditState(), {
+      type: "patchTiming", sceneId: "clip-1", timing: { srcStart: 10, srcEnd: 14 },
+    });
+  const speed = (value: number, srcEnd: number) =>
+    ({
+      type: "patchProps",
+      sceneId: "clip-1",
+      patch: { speed: value },
+      coalesce: "props:clip-1:speed",
+      timing: { srcStart: 10, srcEnd },
+    }) as const;
+
+  it("writes both, and one undo restores both", () => {
+    let s = editReducer(pinned(), speed(2, 12));
+    expect(s.doc.scenes["clip-1"]!.props.speed).toBe(2);
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 12 });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["clip-1"]!.props.speed).toBeUndefined();
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 14 });
+  });
+
+  it("a scrub coalesces like any slider: every tick's window, one step back", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    let s = editReducer(pinned(), speed(1.5, 12.667));
+    s = editReducer(s, speed(2, 12));
+    expect(s.past).toHaveLength(2);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["clip-1"]!.props.speed).toBeUndefined();
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 14 });
+    vi.restoreAllMocks();
+  });
+
+  it("a props patch without a window leaves the pin as it was", () => {
+    const s = editReducer(pinned(), { type: "patchProps", sceneId: "clip-1", patch: { muted: true } });
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 14 });
+    expect("timing" in editReducer(initialEditState(), speed(2, 12)).doc.scenes["clip-1"]!).toBe(true);
+    expect(
+      "timing" in
+        editReducer(initialEditState(), { type: "patchProps", sceneId: "clip-1", patch: { speed: 2 } }).doc.scenes[
+          "clip-1"
+        ]!,
+    ).toBe(false);
+  });
+});
+
 describe("redo (R17 §80)", () => {
   const patch = (value: string) =>
     ({ type: "patchProps", sceneId: "scene-0", patch: { value } }) as const;

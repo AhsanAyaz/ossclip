@@ -107,7 +107,7 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder|storyboard)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder|storyboard|clip-speed)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
@@ -135,6 +135,10 @@ export default defineConfig({
     // are rebuilt from it), edits storyboard.json and deletes it for the
     // no-button case, restoring all three after: a rewriter, serialized last.
     { name: "storyboard", testMatch: /storyboard\.spec\.ts/, dependencies: ["logo-finder"] },
+    // Adds a ClipScene to the shared render-props.json (no committed fixture
+    // has one) and starts from no overrides.json, restoring both after: a
+    // rewriter, serialized last like the others.
+    { name: "clip-speed", testMatch: /clip-speed\.spec\.ts/, dependencies: ["storyboard"] },
   ],
   use: {
     baseURL: `http://127.0.0.1:${VITE_PORT}`,

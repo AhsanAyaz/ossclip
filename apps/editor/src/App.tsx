@@ -3184,6 +3184,10 @@ export const App: React.FC = () => {
             // block is gone from the timeline, the take IS the selection).
             deletedScenes={ghostCues}
             playheadSec={() => (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps}
+            // The Timeline's own two props below: a clip's speed resizes a
+            // pinned block within the limits an edge drag has.
+            sceneCues={live.sceneCues}
+            outputDurationSec={live.outputDurationSec}
             sfxWordAtPlayhead={() => {
               // Read at the CLICK, off the player (the CoverPanel's
               // `playheadSec` idiom), and resolved through the same anchors

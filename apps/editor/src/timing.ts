@@ -1,4 +1,11 @@
-import type { KeptSpan, SceneCue, SceneTiming } from "@ossclip/core/browser";
+import {
+  MAX_SCENE_SEC,
+  SCENE_REGISTRY,
+  splitRootId,
+  type KeptSpan,
+  type SceneCue,
+  type SceneTiming,
+} from "@ossclip/core/browser";
 
 /** Same floor assembly uses, so a hand nudge cannot make an unrenderable cue. */
 const MIN_SCENE_SEC = 1.2;
@@ -139,6 +146,63 @@ export function clampTiming(
   let e = Math.max(Math.min(endSec, hi), s + MIN_SCENE_SEC);
   if (e > hi) { e = hi; s = Math.max(lo, e - MIN_SCENE_SEC); }
   return { startSec: s, endSec: e };
+}
+
+/**
+ * The window a speed change gives a PINNED ClipScene, or null when the
+ * editor must not rewrite the pin. The rule (decided after 493597a, once it
+ * was tried on a pinned storyboard shot): changing speed always sets the
+ * block to the clip's played length, and the edges afterwards are the
+ * author's — dragging the end past the clip holds its last frame, a shorter
+ * block trims it, and the NEXT speed change resizes again. Leaving a dragged
+ * block its old length was what made a sped-up shot end in a freeze and a
+ * slowed one cut off.
+ *
+ * Window: the current start to start + `durationSec / speed` (the registry's
+ * `fixedDurationSec`, so the length is the one assembly and the render
+ * mean), capped at `MAX_SCENE_SEC` and then limited exactly as an edge drag
+ * is (`clampTiming`: neighbours less the gap, the video's end, the floor) —
+ * a slowed clip that reaches its neighbour is cut there.
+ *
+ * Null, and why each one:
+ * - not pinned: `applyOverrides` re-derives an unpinned clip's window from
+ *   the speed prop itself (`clipSpeedEndSec`); writing a pin here would take
+ *   the window away from that path for good. Core's pinned rule is left as
+ *   it is on purpose: at produce time the pin is the source of truth, and
+ *   the editor is what rewrites it.
+ * - not a ClipScene: speed means nothing elsewhere.
+ * - not in `allCues`, or no video length (`duration` 0): there is no
+ *   timeline to limit the block against, and a guessed one could cut it to
+ *   nothing; the speed still lands, the window stays as dragged.
+ * - a split half: its window is a piece of the clip, never the whole clip's
+ *   length — `clipSpeedEndSec` skips halves for the same reason.
+ *
+ * Where both paths could apply they agree on the cap and the neighbour gap
+ * (`PINNED_GAP_SEC` and `GAP` are both 0.05). They cannot agree on the
+ * floor: a pin is re-clamped to 1.2 s at produce time
+ * (`reclampPinnedTiming`), so a pinned clip shorter than that at its new
+ * speed holds its last frame for the difference, where an unpinned one is
+ * never stretched (assembly's "there are no frames past its end").
+ */
+export function clipSpeedTiming(
+  allCues: readonly SceneCue[],
+  sceneId: string,
+  speed: number,
+  duration: number,
+  pinned: boolean,
+): { startSec: number; endSec: number } | null {
+  if (!pinned || !(duration > 0)) return null;
+  const cue = allCues.find((c) => c.id === sceneId);
+  if (!cue || cue.component !== "ClipScene" || splitRootId(cue.id) !== cue.id) return null;
+  const played = SCENE_REGISTRY.ClipScene.fixedDurationSec?.({ ...cue.props, speed });
+  if (played === undefined) return null;
+  return clampTiming(
+    allCues,
+    sceneId,
+    cue.startSec,
+    cue.startSec + Math.min(played, MAX_SCENE_SEC),
+    duration,
+  );
 }
 
 /**

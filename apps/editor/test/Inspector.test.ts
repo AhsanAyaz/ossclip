@@ -6,6 +6,7 @@ import {
   applyOverrides,
   defaultTheme,
   LayoutSchema,
+  OverrideDocSchema,
   scalarPropControls,
   livePreviewMap,
   plannerComponentIds,
@@ -16,7 +17,7 @@ import {
   type SceneCue,
   type Segment,
 } from "@ossclip/core/browser";
-import { Inspector, componentSwapOptions } from "../src/Inspector";
+import { Inspector, componentSwapOptions, propControlHint } from "../src/Inspector";
 import { useEdits } from "../src/useEdits";
 
 // Same one-time act() opt-in as project-picker.test.ts — this is the
@@ -1330,6 +1331,119 @@ describe("Inspector — an optional integer slider can return to unset (§161)",
  * cannot become a card or the reverse: neither has the other's props, and
  * ClipScene has no default clip to fall back to.
  */
+/**
+ * A clip's speed resizes its block (decided after 493597a): an unpinned clip
+ * through `applyOverrides`, a pinned (dragged) one through the Inspector
+ * rewriting its pin in the same commit as the speed. The harness merges the
+ * doc onto the base cues the way App's live memo does, so the slider reads
+ * back what it wrote and `sceneCues` carries the neighbour.
+ */
+function ClipSpeedHarness({
+  pin,
+  onEdits,
+}: {
+  pin?: { startSec: number; endSec: number };
+  onEdits: (edits: ReturnType<typeof useEdits>) => void;
+}) {
+  const edits = useEdits();
+  React.useEffect(() => {
+    if (pin) {
+      edits.load(
+        OverrideDocSchema.parse({ scenes: { "clip-1": { props: {}, timing: pin } } }),
+      );
+    }
+    // Mount-once load, the Harness above's shape.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const base = React.useMemo<SceneCue[]>(
+    () => [
+      {
+        id: "clip-1",
+        kind: "graphic",
+        layout: "full-bleed",
+        component: "ClipScene",
+        props: { src: "clips/a.webm", durationSec: 4, gainDb: -13, muted: false },
+        startSec: 10,
+        endSec: 14,
+      },
+      { id: "card", kind: "graphic", layout: "video-top", component: "TitleCard", props: { title: "NEXT" }, startSec: 30, endSec: 33 },
+    ],
+    [],
+  );
+  const cues = React.useMemo(() => applyOverrides(base, edits.doc).cues, [base, edits.doc]);
+  React.useEffect(() => {
+    onEdits(edits);
+  });
+  return React.createElement(Inspector, {
+    selection: { sceneId: "clip-1", elementId: null },
+    cue: cues[0]!,
+    frame: { width: 1080, height: 1920 },
+    allSceneIds: cues.map((c) => c.id),
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+    sceneCues: cues,
+    outputDurationSec: 60,
+  });
+}
+
+describe("Inspector — a clip's speed resizes its block", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let edits: ReturnType<typeof useEdits>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const mount = async (pin?: { startSec: number; endSec: number }) => {
+    await act(async () => {
+      root.render(React.createElement(ClipSpeedHarness, { pin, onEdits: (e) => (edits = e) }));
+    });
+  };
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`);
+
+  it("a PINNED clip: speed 2 rewrites the pin to the clip's new length, and one undo restores both", async () => {
+    // Dragged LONGER than the clip (a deliberate 2 s hold) before the edit.
+    await mount({ startSec: 10, endSec: 16 });
+    await act(async () => setControl(q<HTMLInputElement>("prop-speed")!, "2"));
+    expect(edits.doc.scenes["clip-1"]!.props.speed).toBe(2);
+    expect(edits.doc.scenes["clip-1"]!.timing).toEqual({ startSec: 10, endSec: 12 });
+    await act(async () => edits.undo());
+    expect(edits.doc.scenes["clip-1"]!.props.speed).toBeUndefined();
+    expect(edits.doc.scenes["clip-1"]!.timing).toEqual({ startSec: 10, endSec: 16 });
+  });
+
+  it("an UNPINNED clip writes no pin: applyOverrides re-derives its window", async () => {
+    await mount();
+    await act(async () => setControl(q<HTMLInputElement>("prop-speed")!, "2"));
+    expect(edits.doc.scenes["clip-1"]!.props.speed).toBe(2);
+    expect(edits.doc.scenes["clip-1"]!.timing).toBeUndefined();
+  });
+
+  it("says so under the slider; the label stays the key", async () => {
+    await mount();
+    expect(q("prop-speed-hint")!.textContent).toBe(
+      "Changing speed resizes the block to the clip's new length. Drag the end longer to hold the last frame.",
+    );
+    expect(q("prop-speed")!.parentElement!.firstElementChild!.textContent).toMatch(/^speed/);
+    // Only a clip's speed: the muted box beside it has no hint.
+    expect(q("prop-muted-hint")).toBeNull();
+    expect(propControlHint("FlowDiagram", "revealSpeed")).toBeNull();
+    expect(propControlHint("ClipScene", "gainDb")).toBeNull();
+  });
+});
+
 describe("Inspector — the component swap offers every card, script-only ones included", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;

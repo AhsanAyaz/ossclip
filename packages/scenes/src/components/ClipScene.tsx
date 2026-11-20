@@ -39,6 +39,19 @@ export const ClipScene: React.FC<{
       // at this rate the clip's last frame lands on the window's end. Cue
       // props reach SceneLayer unparsed: a cue saved before `speed` existed
       // passes undefined, which Remotion plays at 1x.
+      //
+      // A window LONGER than that (an author who dragged the end past the
+      // clip: the editor's `clipSpeedTiming` leaves the edges theirs) holds
+      // the clip's last frame, and nothing here does it: measured 2026-11-20
+      // on real `production` stills, a 4 s frame-numbered VP9-alpha clip in a
+      // 5 s window at 1x showed F60 at 2 s in and F119 (its last) at 4.4 s,
+      // and at 2x in a 4 s window F60 at 1 s in and F119 at 3 s — the
+      // compositor answers a time past the file's end with its last frame.
+      // The editor's `<video>` fallback holds as well: seeked or played past
+      // the end, the element sits `ended` at 4.0 s showing F119 until the
+      // window closes. No `<Freeze>`, so the hold costs nothing; if a
+      // Remotion upgrade ever shows black or loops past the end, that is
+      // where it goes.
       playbackRate={props.speed}
       style={{
         display: "block",

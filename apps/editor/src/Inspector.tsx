@@ -24,6 +24,7 @@ import {
   storedGraphicBox,
 } from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
+import { clipSpeedTiming, pinTiming } from "./timing";
 import {
   EMPTY_LUT_MENU,
   GRADE_PRESET_IDS,
@@ -242,6 +243,16 @@ interface InspectorProps {
    * like it did nothing until playback entered the window).
    */
   playheadSec?: () => number;
+  /**
+   * The timeline's own cues and length (`live.sceneCues`,
+   * `live.outputDurationSec` — exactly what Timeline clamps a drag against),
+   * so a speed edit on a pinned clip can resize its block within the same
+   * limits an edge drag has (`clipSpeedTiming`). Empty by default: no cues
+   * means no neighbours are known, and the resize is skipped rather than
+   * computed against a timeline that is not there — the speed still lands.
+   */
+  sceneCues?: readonly SceneCue[];
+  outputDurationSec?: number;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -658,6 +669,22 @@ export function componentSwapOptions(component: SceneComponentId): ScriptCompone
 }
 
 /**
+ * One line under a schema-derived control (§153) that does more than its
+ * label says, or null. The controls are derived from the schema and their
+ * label is the bare key, so a side effect has nowhere else to be stated: a
+ * clip's speed also resizes its block (`clipSpeedTiming`, `clipSpeedEndSec`),
+ * and the way to a deliberate freeze on the last frame is a drag, not this
+ * slider. Keyed by component AND key — another component's `speed` would not
+ * resize anything.
+ */
+export function propControlHint(component: SceneComponentId | undefined, key: string): string | null {
+  if (component === "ClipScene" && key === "speed") {
+    return "Changing speed resizes the block to the clip's new length. Drag the end longer to hold the last frame.";
+  }
+  return null;
+}
+
+/**
  * The author's names for the three backdrops (§163, design 5), in the order
  * the design lists them. Only the visible text: the option values stay the
  * layout ids, so the control writes the same override it always did and
@@ -705,6 +732,8 @@ export const Inspector: React.FC<InspectorProps> = ({
   deletedScenes = [],
   sfxWordAtPlayhead = (): number | null => null,
   playheadSec,
+  sceneCues = [],
+  outputDurationSec = 0,
 }) => {
   if (sfxMarker) {
     // The selected sound effect. FIRST branch on purpose: an SFX selection is
@@ -1438,6 +1467,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                 // number) reads as the whole number it is, not "2.00".
                 const integer = control.kind === "number" && control.step === 1;
                 const shown = (n: number) => (integer ? String(n) : n.toFixed(2));
+                const hint = propControlHint(cue.component, control.key);
                 return control.kind === "number" ? (
                   <div style={row} key={control.key}>
                     <span style={label}>
@@ -1468,14 +1498,39 @@ export const Inspector: React.FC<InspectorProps> = ({
                       max={control.max}
                       step={control.step}
                       value={setNumber ?? control.fallback}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        // A clip's speed resizes a PINNED block to the clip's
+                        // new played length (`clipSpeedTiming`); an unpinned
+                        // one is re-derived by `applyOverrides` and gets no
+                        // window here. The window rides in the SAME commit,
+                        // under the same coalesce key, so a scrub resizes
+                        // live and one undo takes back speed and window
+                        // together. Pinned through `pinTiming` like an edge
+                        // drag, on the mapper Timeline's drag uses.
+                        const resized =
+                          control.key === "speed"
+                            ? clipSpeedTiming(
+                                sceneCues,
+                                selection.sceneId,
+                                value,
+                                outputDurationSec,
+                                edits.doc.scenes[selection.sceneId]?.timing !== undefined,
+                              )
+                            : null;
                         edits.patchProps(
                           selection.sceneId,
-                          { [control.key]: Number(e.target.value) },
+                          { [control.key]: value },
                           `props:${selection.sceneId}:${control.key}`,
-                        )
-                      }
+                          resized ? pinTiming(resized.startSec, resized.endSec, toSourceSec) : undefined,
+                        );
+                      }}
                     />
+                    {hint ? (
+                      <div data-testid={`prop-${control.key}-hint`} style={{ fontSize: 12, color: "#9A9AA3" }}>
+                        {hint}
+                      </div>
+                    ) : null}
                     {control.optional ? (
                       // The slider has no position meaning "unset", so the way
                       // back to unset is a button — the enum's "default"

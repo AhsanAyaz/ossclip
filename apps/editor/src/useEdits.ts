@@ -64,7 +64,18 @@ export const COALESCE_MS = 600;
 
 export type EditAction =
   | { type: "load"; doc: OverrideDoc }
-  | { type: "patchProps"; sceneId: string; patch: Record<string, unknown>; coalesce?: string }
+  | {
+      type: "patchProps";
+      sceneId: string;
+      patch: Record<string, unknown>;
+      coalesce?: string;
+      /** A pinned window written in the SAME commit as the props, stored
+       * verbatim like `patchTiming`'s. A speed edit on a pinned clip resizes
+       * its block (`clipSpeedTiming`), and two dispatches would be two undo
+       * steps — one undo has to take back the speed and the window together,
+       * or it leaves a clip at its old speed in a block sized for the new one. */
+      timing?: SceneTiming;
+    }
   /** Take ONE prop out of the scene's override, back to absent. Not a
    * `patchProps` with `undefined`: an optional reveal prop's absence is a
    * state of its own — unset `pacing` keeps a legacy scene on its legacy
@@ -627,7 +638,11 @@ export function editReducer(state: EditState, action: EditAction): EditState {
           ...state.doc,
           scenes: {
             ...state.doc.scenes,
-            [action.sceneId]: { ...scene, props: { ...scene.props, ...action.patch } },
+            [action.sceneId]: {
+              ...scene,
+              props: { ...scene.props, ...action.patch },
+              ...(action.timing !== undefined ? { timing: action.timing } : {}),
+            },
           },
         },
         action.coalesce,
@@ -1769,8 +1784,12 @@ export function useEdits() {
     syncCues: (cues: readonly SceneCue[]) => {
       cuesRef.current = cues;
     },
-    patchProps: (sceneId: string, patch: Record<string, unknown>, coalesce?: string) =>
-      dispatch({ type: "patchProps", sceneId, patch, coalesce }),
+    patchProps: (
+      sceneId: string,
+      patch: Record<string, unknown>,
+      coalesce?: string,
+      timing?: SceneTiming,
+    ) => dispatch({ type: "patchProps", sceneId, patch, coalesce, timing }),
     clearProp: (sceneId: string, key: string) => dispatch({ type: "clearProp", sceneId, key }),
     patchElement: (sceneId: string, elementId: string, patch: ElementTransform, coalesce?: string) =>
       dispatch({ type: "patchElement", sceneId, elementId, patch, coalesce }),
