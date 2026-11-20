@@ -107,7 +107,7 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder|storyboard)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
@@ -130,6 +130,11 @@ export default defineConfig({
     // candidate files into the workdir and adds to the temp-HOME library —
     // a rewriter like `overlays`, so serialized behind it.
     { name: "logo-finder", testMatch: /logo-finder\.spec\.ts/, dependencies: ["overlays"] },
+    // Writes a transcript.json into the shared workdir (the storyboard's word
+    // space, which the committed fixture lacks so no other spec's captions
+    // are rebuilt from it), edits storyboard.json and deletes it for the
+    // no-button case, restoring all three after: a rewriter, serialized last.
+    { name: "storyboard", testMatch: /storyboard\.spec\.ts/, dependencies: ["logo-finder"] },
   ],
   use: {
     baseURL: `http://127.0.0.1:${VITE_PORT}`,

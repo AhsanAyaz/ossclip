@@ -500,6 +500,14 @@ export const TranscriptPanel: React.FC<{
    * Absent = no menu (every harness predating it).
    */
   onAddOverlayAt?: (playerSec: number) => void;
+  /**
+   * The selected words, reported whenever the selection changes; null when
+   * it is cleared (storyboard plan Task 5, §168). Only `srcStart` leaves the
+   * panel: the selection's indices are positional here, and the storyboard
+   * maps source starts to transcript indices (`selectionSpan`). Absent = no
+   * report (every harness predating it).
+   */
+  onSelectionChange?: (words: { srcStart: number }[] | null) => void;
 }> = ({
   baseLines,
   liveLines,
@@ -513,6 +521,7 @@ export const TranscriptPanel: React.FC<{
   toPlayerSec = (sec: number): number => sec,
   fromPlayerSec = (sec: number): number => sec,
   onAddOverlayAt,
+  onSelectionChange,
 }) => {
   const [query, setQuery] = useState("");
   /** The word right-click menu: where it opened and the word's player-clock start. */
@@ -1006,6 +1015,21 @@ export const TranscriptPanel: React.FC<{
   const selLo = sel === null ? null : Math.min(sel.anchor, sel.focus);
   const selHi = sel === null ? null : Math.max(sel.anchor, sel.focus);
   const selected = selLo === null || selHi === null ? [] : words.slice(selLo, selHi + 1);
+  // The selection leaves the panel by source start (`onSelectionChange`'s
+  // doc). Keyed on the range and the word list, not on `selected` (a new
+  // array every render) or the callback (App's may be a fresh closure), so a
+  // report fires once per actual change and never loops through App's state.
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  onSelectionChangeRef.current = onSelectionChange;
+  useEffect(() => {
+    const report = onSelectionChangeRef.current;
+    if (report === undefined) return;
+    report(
+      selLo === null || selHi === null
+        ? null
+        : words.slice(selLo, selHi + 1).map((w) => ({ srcStart: w.word.srcStart })),
+    );
+  }, [selLo, selHi, words]);
   // Restore is offered only when EVERY selected word is hidden — a mixed
   // selection reads as "hide the rest", which is what the hide action does.
   const allSelectedHidden = selected.length > 0 && selected.every(isHidden);

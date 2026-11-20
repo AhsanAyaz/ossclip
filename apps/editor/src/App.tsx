@@ -87,6 +87,8 @@ import { CleanupPanel } from "./CleanupPanel";
 import { YoutubePanel } from "./YoutubePanel";
 import { CoverPanel } from "./CoverPanel";
 import { PublishPanel } from "./PublishPanel";
+import { StoryboardPanel } from "./StoryboardPanel";
+import { storyboardButtonState, type StoryboardButtonState } from "./storyboardModel";
 import {
   formatElapsed,
   pinnedInfoLines,
@@ -709,6 +711,30 @@ export const App: React.FC = () => {
   // undo/redo/dirty/save all apply to its checkboxes; only the open/closed
   // state lives here.
   const [showCleanup, setShowCleanup] = useState(false);
+  // The storyboard's plan table (storyboard design §10; §168) — server-owned
+  // like the publish panel (storyboard.json, not overrides.json). Its button
+  // exists only for a project that has a storyboard (`storyboardButtonState`),
+  // fetched per project open.
+  const [showStoryboard, setShowStoryboard] = useState(false);
+  const [storyboardButton, setStoryboardButton] = useState<StoryboardButtonState>({ kind: "hidden" });
+  /**
+   * The last NON-NULL transcript selection, as source starts, for the
+   * storyboard's "Add shot from selection" and "Use selection". Not cleared
+   * when the transcript clears its own: pressing the Storyboard button is a
+   * click outside the transcript, which drops its selection (the click-away
+   * rule, field report 2026-08-31), so the selection the author made for the
+   * table would be gone by the time the table opens. Replaced by the next
+   * selection, and dropped on a project load with every other selection.
+   */
+  const [transcriptSelection, setTranscriptSelection] = useState<{ srcStart: number }[] | null>(null);
+  const onTranscriptSelection = useCallback((words: { srcStart: number }[] | null) => {
+    if (words === null || words.length === 0) return;
+    setTranscriptSelection((prev) =>
+      prev !== null && prev.length === words.length && prev.every((w, i) => w.srcStart === words[i]!.srcStart)
+        ? prev
+        : words,
+    );
+  }, []);
   useEffect(() => {
     if (!showYoutubeMenu) return;
     // Esc closes the menu the way it closes the panels (capture-phase, so
@@ -991,6 +1017,10 @@ export const App: React.FC = () => {
         );
       })
       .catch(() => setTranscriptDoc(null));
+    void fetch("/api/storyboard")
+      .then(async (r) => setStoryboardButton(storyboardButtonState(r.status, await r.json().catch(() => null))))
+      .catch(() => setStoryboardButton({ kind: "hidden" }));
+    setTranscriptSelection(null);
     // The SFX plan + its word space, and the sound library (Phase 4). The
     // /api/cleanup posture throughout: any failure degrades to "no lane, no
     // palette" — the server already answers `{sfx: null, words: null}` for a
@@ -2225,6 +2255,24 @@ export const App: React.FC = () => {
           >
             Cleanup
           </button>
+          {storyboardButton.kind !== "hidden" ? (
+            <button
+              data-testid="storyboard-open"
+              style={{
+                ...ghostButton,
+                ...(showStoryboard ? { borderColor: "#5b8cff" } : {}),
+                ...(storyboardButton.kind === "error" ? { borderColor: "#FF5C5C", color: "#FF5C5C" } : {}),
+              }}
+              onClick={() => setShowStoryboard(true)}
+              title={
+                storyboardButton.kind === "error"
+                  ? `storyboard.json could not be read: ${storyboardButton.message}`
+                  : "The planned shots: drop, reword, move or add them, or plan again"
+              }
+            >
+              Storyboard
+            </button>
+          ) : null}
           {/* One menu for the --youtube extras (2026-08-17): the thumbnail
               and the SEO pack are two panels over one feature, and two
               top-bar buttons were the bar's first scaling failure. */}
@@ -2369,6 +2417,17 @@ export const App: React.FC = () => {
       ) : null}
       {showYoutubeSeo ? <YoutubePanel onClose={() => setShowYoutubeSeo(false)} /> : null}
       {showPublish ? <PublishPanel onClose={() => setShowPublish(false)} /> : null}
+      {showStoryboard ? (
+        <StoryboardPanel
+          words={transcriptDoc?.words ?? null}
+          // The ruler's clock, the one the player plays: a cut made in the
+          // editor shows in the table before any render (§168).
+          map={rulerMap}
+          selection={transcriptSelection}
+          onSeek={seekToSec}
+          onClose={() => setShowStoryboard(false)}
+        />
+      ) : null}
       {showCover ? (
         <CoverPanel
           onClose={() => setShowCover(false)}
@@ -2833,6 +2892,7 @@ export const App: React.FC = () => {
               fromPlayerSec={liveTranscript ? identitySec : clock.fromLive}
               // Overlay adds need a word space to anchor to.
               onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
+              onSelectionChange={onTranscriptSelection}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}
@@ -3257,9 +3317,15 @@ const statusText: React.CSSProperties = {
   fontSize: 12,
   fontFamily: "ui-monospace, 'SF Mono', monospace",
   marginLeft: "auto",
+  // One line always (§168): "● Unsaved changes" wrapping made the bar 14 px
+  // taller, which shrank the stage mid-drag — the dragged element landed
+  // short of the pointer. The workdir label takes the squeeze instead.
+  whiteSpace: "nowrap",
 };
 
 const ghostButton: React.CSSProperties = {
+  // A label never wraps: a two-line button grows the top bar (see statusText).
+  whiteSpace: "nowrap",
   fontSize: 12,
   fontWeight: 600,
   color: "#EDEDF2",
