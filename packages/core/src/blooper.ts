@@ -182,7 +182,16 @@ export function findBloopSpans(
     // the scan starts at the word before it. Capped at MAX_WALKBACK_SEC of
     // source time (rationale on the constant); a capped span is flagged so
     // the report can shout about it.
-    let start = i;
+    //
+    // A marker that itself OPENS a sentence spoiled the sentence BEFORE it
+    // (FINDINGS §165, 2026-11-18): the speaker finished the line, paused, and
+    // only then said the word, so ASR closed the flubbed line with a period
+    // and the marker became a sentence of its own. Starting the scan on the
+    // marker stopped it at once and cut the one word; the flubbed take
+    // shipped next to its retake. So the scan steps over the marker first.
+    // When the word before is the previous attempt's marker, that step lands
+    // inside the previous span and the merge below joins the two.
+    let start = i > 0 && isSentenceStart(transcript, i) ? i - 1 : i;
     let truncated = false;
     while (start > 0 && !isSentenceStart(transcript, start)) {
       if (words[i]!.end - words[start - 1]!.start > MAX_WALKBACK_SEC) {

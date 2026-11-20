@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import { SPLIT_MIN_PIECE_SEC, type SceneCue } from "@ossclip/core/browser";
-import { clampGraphicRect, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
+import { graphicClampFor, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import { guideSnap, THRESHOLD_FRAC, type Guide } from "./guides";
 import { captionSrcFromAttribute } from "./captionAnchors";
@@ -213,8 +213,21 @@ const moveEdgeBase: React.CSSProperties = {
  * `ScreenshotFrame`, where `data-edit-id` names an actual top-level prop —
  * writes into one of these ids as a prop key nothing ever reads, silently
  * losing the retype.
+ *
+ * Exported as the ONE copy: the Inspector used to restate it, and a kind
+ * added here but not there (CardRow's `card-N`, §161) would route the panel's
+ * retype to a top-level prop nothing reads.
  */
-const DYNAMIC_ID = /^(line|node|message|window|item)-(\d+)$/;
+export const DYNAMIC_ID = /^(line|node|message|window|item|card|mock|word|pill)-(\d+)$/;
+
+/** CardRowProps' caps, mirrored for the commit-time truncation below. */
+const CARD_TEXT_MAX = 18;
+const CARD_SUB_MAX = 24;
+/** BugCardProps' `mockLines` cap, mirrored likewise. */
+const MOCK_LINE_MAX = 32;
+/** PhoneDemoProps' caption-word and pill caps, mirrored likewise. */
+const WORD_TEXT_MAX = 12;
+const PILL_TEXT_MAX = 22;
 
 /**
  * Map a `line-N`/`node-N`/`message-N` id back to the array field it actually
@@ -233,7 +246,7 @@ export function buildArrayPatch(
 ): Record<string, unknown> | null {
   const m = DYNAMIC_ID.exec(elementId);
   if (!m) return null;
-  const kind = m[1] as "line" | "node" | "message" | "item" | "window";
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card" | "mock" | "word" | "pill";
   const idx = Number(m[2]);
   // ChatMock's CTA mode (props.keyword set) renders exactly ONE synthetic
   // bubble showing the keyword and ignores `props.messages` entirely
@@ -262,7 +275,15 @@ export function buildArrayPatch(
           ? "items"
           : kind === "window"
             ? "windows"
-            : "messages";
+            : kind === "card"
+              ? "cards"
+              : kind === "mock"
+                ? "mockLines"
+                : kind === "word"
+                  ? "caption"
+                  : kind === "pill"
+                    ? "pills"
+                    : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const next = arr.slice();
@@ -271,6 +292,21 @@ export function buildArrayPatch(
     // FlowDiagram's `nodes` and BulletList's `items` are plain string[] —
     // the whole entry IS the text.
     next[idx] = text;
+  } else if (kind === "mock") {
+    // BugCard's `mockLines` (§161) is a plain string[] too — a caption word
+    // or a code line per entry — truncated to the schema's 32 at commit,
+    // for the window arm's reason below.
+    next[idx] = text.slice(0, MOCK_LINE_MAX);
+  } else if (kind === "word" || kind === "pill") {
+    // PhoneDemo's caption words and pills (§161) are objects whose `text`
+    // is the copy, beside an enum (`emphasis`, `state`) the retype never
+    // touches; truncated to the schema's caps at commit, for the window
+    // arm's reason below.
+    if (typeof item !== "object" || item === null) return null;
+    next[idx] = {
+      ...(item as Record<string, unknown>),
+      text: text.slice(0, kind === "word" ? WORD_TEXT_MAX : PILL_TEXT_MAX),
+    };
   } else if (kind === "window") {
     // A TerminalMock window's text is its `lines` array, and those lines
     // carry no per-line edit ids (only the window div is tagged), so the
@@ -289,6 +325,26 @@ export function buildArrayPatch(
       .slice(0, 6)
       .map((l) => l.slice(0, 40));
     next[idx] = { ...(item as Record<string, unknown>), lines };
+  } else if (kind === "card") {
+    // A CardRow card is two texts in one box (§161): the first line is its
+    // `text`, the second its `sub`. No second line removes `sub`; an EMPTY
+    // second line keeps `sub: ""`, which the card draws as no sub-line at
+    // all (CardRow and `cardRowMetrics` both test `sub` for truthiness). The
+    // "" is there for the typing, not the render: this textarea is
+    // controlled by `elementTextOf`, so dropping the key on Enter would echo
+    // back one line and swallow the newline — a card without a sub could
+    // never be given one. Truncated to the schema's caps at commit, for the
+    // window arm's reason above; extra lines are dropped; `icon` is never
+    // touched.
+    if (typeof item !== "object" || item === null) return null;
+    const [first = "", ...more] = text.split("\n");
+    const rest = { ...(item as Record<string, unknown>) };
+    delete rest.sub;
+    next[idx] = {
+      ...rest,
+      text: first.slice(0, CARD_TEXT_MAX),
+      ...(more.length > 0 ? { sub: more[0]!.slice(0, CARD_SUB_MAX) } : {}),
+    };
   } else {
     if (typeof item !== "object" || item === null) return null;
     next[idx] = { ...(item as Record<string, unknown>), text };
@@ -314,7 +370,7 @@ export function elementTextOf(
     const v = props[elementId];
     return typeof v === "string" ? v : null;
   }
-  const kind = m[1] as "line" | "node" | "message" | "item" | "window";
+  const kind = m[1] as "line" | "node" | "message" | "item" | "window" | "card" | "mock" | "word" | "pill";
   const idx = Number(m[2]);
   if (kind === "message" && idx === 0 && typeof props.keyword === "string" && props.keyword) {
     return props.keyword;
@@ -328,11 +384,19 @@ export function elementTextOf(
           ? "items"
           : kind === "window"
             ? "windows"
-            : "messages";
+            : kind === "card"
+              ? "cards"
+              : kind === "mock"
+                ? "mockLines"
+                : kind === "word"
+                  ? "caption"
+                  : kind === "pill"
+                    ? "pills"
+                    : "messages";
   const arr = props[field];
   if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return null;
   const item = arr[idx];
-  if (kind === "node" || kind === "item") return typeof item === "string" ? item : null;
+  if (kind === "node" || kind === "item" || kind === "mock") return typeof item === "string" ? item : null;
   if (kind === "window") {
     const lines = (item as Record<string, unknown> | null)?.lines;
     return Array.isArray(lines) && lines.every((l) => typeof l === "string")
@@ -340,6 +404,14 @@ export function elementTextOf(
       : null;
   }
   const text = (item as Record<string, unknown> | null)?.text;
+  if (kind === "card") {
+    // `buildArrayPatch`'s card arm, read direction: text, then sub on line
+    // two — an empty `sub` still gets its line, so a newline just typed
+    // survives the round trip.
+    const sub = (item as Record<string, unknown> | null)?.sub;
+    if (typeof text !== "string") return null;
+    return typeof sub === "string" ? `${text}\n${sub}` : text;
+  }
   return typeof text === "string" ? text : null;
 }
 
@@ -429,6 +501,12 @@ export const Overlay: React.FC<OverlayProps> = ({
     dx: number;
     dy: number;
     start: GraphicRect;
+    /**
+     * The clamp this scene's box takes (§163): the frame for a full-frame
+     * component, the caption-safe area otherwise. Chosen once at the press,
+     * so the preview and the commit cannot disagree mid-gesture.
+     */
+    clamp: (rect: GraphicRect) => GraphicRect;
   } | null>(null);
   const rectRafRef = useRef(0);
   /** The altKey state as of the LAST mousemove of the current rect drag, not
@@ -743,6 +821,10 @@ export const Overlay: React.FC<OverlayProps> = ({
               w: r.width / canvas.w,
               h: r.height / canvas.h,
             },
+            clamp: graphicClampFor(
+              cues.find((c) => c.id === handleSel.sceneId)?.component,
+              settings,
+            ),
           };
           setRectDragging(true);
         }
@@ -887,9 +969,8 @@ export const Overlay: React.FC<OverlayProps> = ({
             // Page px → frame FRACTIONS (the rect's own unit). Like the
             // video pan there is NO compensateEdits division — the slot
             // lives outside the fit-scaled wrapper.
-            const next = clampGraphicRect(
+            const next = drag.clamp(
               applyBoxHandle(drag.start, drag.handle, drag.dx / canvas.w, drag.dy / canvas.h),
-              settings,
             );
             // Overlay guides (spec): snap onto centre lines / safe-area
             // edges, AFTER applyBoxHandle + the clamp, before the preview
@@ -995,14 +1076,13 @@ export const Overlay: React.FC<OverlayProps> = ({
           const canvas = canvasBox();
           if (canvas) {
             // ONE patch per gesture — one undo step, like every other drag.
-            let final = clampGraphicRect(
+            let final = rectDrag.clamp(
               applyBoxHandle(
                 rectDrag.start,
                 rectDrag.handle,
                 rectDrag.dx / canvas.w,
                 rectDrag.dy / canvas.h,
               ),
-              settings,
             );
             // Same guide snap as the live preview, same Alt escape hatch —
             // the committed rect must match whatever the last preview frame

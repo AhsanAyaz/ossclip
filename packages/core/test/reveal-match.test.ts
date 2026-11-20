@@ -184,3 +184,81 @@ describe("entryTexts", () => {
     expect(entryTexts("BulletList", { title: "NEED", items: ["a", "b"] })).toEqual(["a", "b"]);
   });
 });
+
+describe("CardRow (§161, plan Task 4)", () => {
+  it("one item per card: its text or its sub-line, as alternatives (TerminalMock's shape)", () => {
+    expect(
+      revealItemTexts("CardRow", { cards: [{ text: "Draft", sub: "one" }, { text: "Review" }] }),
+    ).toEqual([["Draft", "one"], ["Review"]]);
+  });
+
+  it("an icon is never a text to match, and a malformed card keeps its position", () => {
+    expect(revealItemTexts("CardRow", { cards: [{ text: "Bot", icon: "robot" }, 7, { text: "C" }] })).toEqual([
+      ["Bot"],
+      [""],
+      ["C"],
+    ]);
+    expect(revealItemTexts("CardRow", {})).toEqual([]);
+  });
+
+  it("entry texts are every card's text and sub-line, empties skipped", () => {
+    expect(
+      entryTexts("CardRow", { cards: [{ text: "Draft", sub: "one" }, { text: "Review", icon: "doc" }] }),
+    ).toEqual(["Draft", "one", "Review"]);
+  });
+});
+
+describe("CtaCard (§161, plan Task 5)", () => {
+  it("has no reveal items: it is one card", () => {
+    expect(revealItemTexts("CtaCard", { action: "comment", text: "Want it?", keyword: "PROMPT" })).toBeNull();
+  });
+
+  it("enters on its headline or its keyword; the channel and the action are not texts to match", () => {
+    expect(
+      entryTexts("CtaCard", { action: "subscribe", text: "Subscribe for more", keyword: "AGENT", channel: "Ch" }),
+    ).toEqual(["Subscribe for more", "AGENT"]);
+    expect(entryTexts("CtaCard", { action: "link", text: "Grab it" })).toEqual(["Grab it"]);
+  });
+});
+
+describe("BugCard (§161, plan Task 6)", () => {
+  it("has no reveal items: it builds on its own timeline", () => {
+    expect(revealItemTexts("BugCard", { number: 1, headline: "Captions drift", mockLines: ["a", "b"] })).toBeNull();
+  });
+
+  it("enters on its headline or its sub; the sticker and the mock's words are not texts to match", () => {
+    expect(
+      entryTexts("BugCard", {
+        number: 2,
+        headline: "Captions drift",
+        sub: "out of sync",
+        mock: "caption",
+        mockLines: ["the", "raw", "tkae"],
+        sticker: "FIXED",
+      }),
+    ).toEqual(["Captions drift", "out of sync"]);
+    expect(entryTexts("BugCard", { number: 1, headline: "Only this", sub: "" })).toEqual(["Only this"]);
+  });
+});
+
+describe("PhoneDemo (§161, plan Task 7)", () => {
+  const props = {
+    caption: [{ text: "Captions" }, { text: "that", emphasis: "none" }, { text: "pop", emphasis: "yellow" }],
+    pills: [
+      { text: "Big and bold", state: "ok" },
+      { text: "Tiny grey text", state: "bad" },
+    ],
+  };
+
+  it("one reveal item per pill, in order; the caption is not an item", () => {
+    expect(revealItemTexts("PhoneDemo", props)).toEqual([["Big and bold"], ["Tiny grey text"]]);
+    expect(revealItemTexts("PhoneDemo", { caption: props.caption })).toEqual([]);
+    // A malformed pill keeps its place as "" rather than shifting the rest.
+    expect(revealItemTexts("PhoneDemo", { caption: [], pills: [7, { text: "B" }] })).toEqual([[""], ["B"]]);
+  });
+
+  it("enters on the caption, joined as the phrase it is, or on any pill; enum values are never texts", () => {
+    expect(entryTexts("PhoneDemo", props)).toEqual(["Captions that pop", "Big and bold", "Tiny grey text"]);
+    expect(entryTexts("PhoneDemo", { caption: [{ text: "Solo" }] })).toEqual(["Solo"]);
+  });
+});

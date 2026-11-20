@@ -4,6 +4,7 @@ import type { SceneCue, Theme } from "@ossclip/core/browser";
 import { graphicSlotFor } from "./stage";
 import { fitScale } from "./fit";
 import { frameWindow } from "./frames";
+import { slotBackdrop } from "./scrim";
 import { TitleCard } from "./components/TitleCard";
 import { StatCard } from "./components/StatCard";
 import { RuleCard } from "./components/RuleCard";
@@ -13,6 +14,11 @@ import { TerminalMock } from "./components/TerminalMock";
 import { ChatMock } from "./components/ChatMock";
 import { ScreenshotFrame } from "./components/ScreenshotFrame";
 import { BulletList } from "./components/BulletList";
+import { ClipScene } from "./components/ClipScene";
+import { CardRow } from "./components/CardRow";
+import { CtaCard } from "./components/CtaCard";
+import { BugCard } from "./components/BugCard";
+import { PhoneDemo } from "./components/PhoneDemo";
 import { compensateEdits, type ElementEdits } from "./editable";
 import { easeOutQuad, entranceExitSec } from "./motion";
 import type { RevealTiming } from "./reveal";
@@ -38,26 +44,31 @@ const COMPONENTS: Record<
   ChatMock,
   ScreenshotFrame,
   BulletList,
+  CardRow,
+  CtaCard,
+  BugCard,
+  PhoneDemo,
+  ClipScene,
 };
 
-/**
- * Layouts whose graphic slot sits over LIVE video (R20 §94). Everywhere else
- * the graphic lands on the stage background and the theme guarantees its
- * contrast; here the background is whatever pixels the footage happens to
- * show, and a typographic component (TitleCard, StrikethroughReveal) can land
- * white text on a bright wall. The slot gets a frosted scrim: theme-bg tint
- * over a backdrop blur. Slot-shaped rather than a broadcast bottom-gradient
- * so it FOLLOWS the box when the editor drags or resizes it.
- */
-const OVER_VIDEO_LAYOUTS = new Set<SceneCue["layout"]>(["lower-third", "full-bleed"]);
+/** Tint strength of the over-video scrim; which cues get one is
+ * `drawsScrim`'s call (./scrim, R20 §94). */
 const SCRIM_ALPHA = 0.55;
 
-const scrimColor = (themeBg: string): string => {
+/**
+ * Tint strength of the clip kit's flat panel (§162, plan decision 2). Denser
+ * than the scrim because it carries the contrast alone: the scrim's 0.55
+ * leans on the blur beneath it to quiet the footage, and a kit clip has no
+ * blur — Resolve composites it over sharp, arbitrary pixels.
+ */
+const KIT_PANEL_ALPHA = 0.85;
+
+const scrimColor = (themeBg: string, alpha: number): string => {
   const m = /^#([0-9a-fA-F]{6})$/.exec(themeBg.trim());
   const [r, g, b] = m
     ? [0, 2, 4].map((i) => Number.parseInt(m[1]!.slice(i, i + 2), 16))
     : [0, 0, 0];
-  return `rgba(${r}, ${g}, ${b}, ${SCRIM_ALPHA})`;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
 /**
@@ -117,12 +128,19 @@ const ExitFade: React.FC<{ durationInFrames: number; children: React.ReactNode }
  * the frost fades in WITH the tint. Positioned absolute so it stays out of
  * ExitFade's flex flow; painted before the content div in tree order, so
  * content keeps painting above it (R21 §100).
+ *
+ * `flat` is the clip kit's panel (§162): the same element, place and
+ * entrance, denser and with no backdrop-filter — a transparent clip has
+ * nothing behind it to blur, and the filter would only cost render time.
+ * The scrim's own keys are untouched, so its style is byte-for-byte what
+ * it was.
  */
-const Scrim: React.FC<{ durationInFrames: number; themeBg: string; radiusPx: number }> = ({
-  durationInFrames,
-  themeBg,
-  radiusPx,
-}) => {
+const Scrim: React.FC<{
+  durationInFrames: number;
+  themeBg: string;
+  radiusPx: number;
+  flat: boolean;
+}> = ({ durationInFrames, themeBg, radiusPx, flat }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const { enterSec } = entranceExitSec(durationInFrames / fps);
@@ -133,9 +151,17 @@ const Scrim: React.FC<{ durationInFrames: number; themeBg: string; radiusPx: num
       style={{
         position: "absolute",
         inset: 0,
-        background: scrimColor(themeBg),
-        backdropFilter: "blur(14px)",
-        WebkitBackdropFilter: "blur(14px)",
+        background: scrimColor(themeBg, flat ? KIT_PANEL_ALPHA : SCRIM_ALPHA),
+        // The panel gets its own compositing layer in place of the one the
+        // backdrop-filter gave the scrim. Without it, on a transparent page,
+        // Chrome painted the panel a second time under the content's box —
+        // a 0.98-alpha slab (1 − 0.15²) around the StatCard and its caption,
+        // invisible over an opaque page and plain to see once Resolve lays
+        // the clip on footage (§162, measured on the Task 2 check renders;
+        // the frosted scrim never showed it, and willChange alone removed it).
+        ...(flat
+          ? { willChange: "transform" }
+          : { backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)" }),
         borderRadius: radiusPx,
         opacity: ease,
         transform: ease < 1 ? `translateY(${(1 - ease) * 18}px)` : undefined,
@@ -144,8 +170,20 @@ const Scrim: React.FC<{ durationInFrames: number; themeBg: string; radiusPx: num
   );
 };
 
-/** Renders each cue's graphic into its layout's graphic slot, scene-local time. */
-export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues, theme }) => {
+/**
+ * Renders each cue's graphic into its layout's graphic slot, scene-local time.
+ *
+ * `flatPanel` is for the clip kit's one-scene composition only (§162): the
+ * scrim becomes a flat panel, drawn for every component that is not
+ * full-frame and keeps its scrim, in every layout but the two whose clip
+ * carries the solid background (`slotBackdrop`, §163). Absent —
+ * every produce, edit and cover render — nothing changes.
+ */
+export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme; flatPanel?: boolean }> = ({
+  cues,
+  theme,
+  flatPanel = false,
+}) => {
   const { fps, width, height } = useVideoConfig();
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
@@ -170,9 +208,13 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
         // Over-video bands keep breathing room (R21 §100): the scrim fills
         // the slot, the CONTENT solves against an inset box, so type never
         // touches the band's edge. Elsewhere padding stays 0 — those slots
-        // sit on the stage background and already carry their own air.
-        const overVideo = OVER_VIDEO_LAYOUTS.has(cue.layout);
-        const pad = overVideo ? Math.min(24, Math.round(slotH * 0.12)) : 0;
+        // sit on the stage background and already carry their own air. The
+        // inset follows the SCRIM, not the layout: it exists for the band's
+        // edge, so a component with no scrim (ClipScene) fills its slot.
+        // The kit's flat panel (§162) has the same edge, so the same inset.
+        const backdrop = slotBackdrop(cue.layout, cue.component, flatPanel);
+        const scrimmed = backdrop !== "none";
+        const pad = scrimmed ? Math.min(24, Math.round(slotH * 0.12)) : 0;
         const contentW = slotW - pad * 2;
         const contentH = slotH - pad * 2;
         // Fill the slot instead of floating at natural size in it (§23). The
@@ -217,11 +259,12 @@ export const SceneLayer: React.FC<{ cues: SceneCue[]; theme: Theme }> = ({ cues,
               }}
             >
               <ExitFade durationInFrames={durationInFrames}>
-                {overVideo ? (
+                {scrimmed ? (
                   <Scrim
                     durationInFrames={durationInFrames}
                     themeBg={theme.bg}
                     radiusPx={theme.radiusPx}
+                    flat={backdrop === "panel"}
                   />
                 ) : null}
                 {/* position:relative so the content paints (and hit-tests)

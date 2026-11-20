@@ -143,6 +143,15 @@ describe("wizard argv survives the real commander parse", () => {
   // parseable — recorded command.json replays from older releases carry it,
   // and a replay erroring on its own recorded command is the exact
   // compatibility break the inert flag exists to prevent.
+  // --script (explainer plan Task 8): flags-only (see produce-wizard.ts), so
+  // the round trip that matters is the RECORDED one — command.json carries
+  // `--script <source path>` and the editor replays it through this parse.
+  it("--script carries its path through the real parse; an empty one is refused", async () => {
+    expect((await parse(["produce", "./take.mp4", "--script", "/videos/egm.md"])).script).toBe("/videos/egm.md");
+    expect((await parse(["produce", "./take.mp4"])).script).toBeUndefined();
+    await expect(parse(["produce", "./take.mp4", "--script", "  "])).rejects.toThrow();
+  });
+
   it("--collapse-retakes still parses as a legacy no-op for old recorded replays", async () => {
     const opts = await parse(["produce", "./take.mp4", "--collapse-retakes"]);
     expect(opts.collapseRetakes).toBe(true);

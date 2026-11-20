@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Img, staticFile } from "remotion";
 import { defaultTheme, type Theme } from "@ossclip/core/browser";
-import { coverTextRect } from "@ossclip/scenes";
+import { BundledFonts, coverTextRect } from "@ossclip/scenes";
 
 /**
  * The cover image (FINDINGS §31): a frame from the take with a short,
@@ -91,6 +91,11 @@ export const CoverComposition: React.FC<CoverCompProps> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: theme.bg }}>
+      {/* The banner and byline are set in `theme.fontDisplay` at 900/800 —
+          exactly the Inter faces the explainer look bundles (§161) — so the
+          cover loads them like the video does. Only on the banner path: a
+          bannerless cover draws no text. Nothing without the look. */}
+      <BundledFonts theme={theme} />
       {frame}
       {/* A scrim keeps the banner legible over any frame. */}
       <AbsoluteFill

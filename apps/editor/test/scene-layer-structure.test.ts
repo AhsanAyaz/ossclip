@@ -2,7 +2,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { defaultTheme, type SceneCue } from "@ossclip/core/browser";
+import { SCENE_REGISTRY, defaultTheme, type SceneCue } from "@ossclip/core/browser";
 import { findEditableFrom } from "../src/hitTest";
 
 /**
@@ -35,6 +35,15 @@ vi.mock("remotion", () => ({
   interpolate: (_input: number, _inputRange: number[], outputRange: number[]) =>
     outputRange[outputRange.length - 1],
   staticFile: (path: string) => path,
+  // ClipScene's video (explainer plan Task 7). Its props surface as data
+  // attributes so the test can read what the component asked Remotion for.
+  OffthreadVideo: ({ src, transparent, volume, style }: any) =>
+    React.createElement("video", {
+      src,
+      style,
+      "data-transparent": String(transparent),
+      "data-volume": String(volume),
+    }),
 }));
 
 const { SceneLayer } = await import("../../../packages/scenes/src/SceneLayer");
@@ -140,5 +149,186 @@ describe("StrikethroughReveal — hiding a wrapped line hides EVERY fragment (PL
     rows.forEach((row) => {
       expect(row.style.display).toBe("none");
     });
+  });
+});
+
+describe("SceneLayer — ClipScene (explainer plan Task 7)", () => {
+  const clipCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false },
+    startSec: 0,
+    endSec: 4.6,
+  };
+  const render = (cue: SceneCue) => {
+    document.body.innerHTML = renderToStaticMarkup(
+      React.createElement(SceneLayer, { cues: [cue], theme: defaultTheme }),
+    );
+  };
+  /** The Scrim is the one element carrying the frosted backdrop. Read from the
+   * raw attribute: jsdom's CSSStyleDeclaration has no `backdropFilter`. */
+  const scrim = () =>
+    [...document.querySelectorAll<HTMLElement>("div")].find((d) =>
+      (d.getAttribute("style") ?? "").includes("backdrop-filter"),
+    );
+
+  it("plays the clip transparent, at its gain, filling the slot", () => {
+    render(clipCue);
+    const video = document.querySelector<HTMLVideoElement>("video")!;
+    expect(video).not.toBeNull();
+    // The mock's staticFile is the identity: the component handed it the
+    // public-dir-relative path the clip import wrote.
+    expect(video.getAttribute("src")).toBe("clips/a.webm");
+    expect(video.dataset.transparent).toBe("true");
+    expect(Number(video.dataset.volume)).toBeCloseTo(0.2239, 4);
+    expect(video.style.objectFit).toBe("contain");
+    // The whole frame (`fullFrame`, plan Task 8), not full-bleed's 0.77 × 0.36
+    // fallback band: the clip was authored at frame size. The over-video
+    // inset exists for the scrim's edge, so no scrim, no inset.
+    expect(Number.parseFloat(video.style.width)).toBeCloseTo(1080, 1);
+    expect(Number.parseFloat(video.style.height)).toBeCloseTo(1920, 1);
+  });
+
+  it("draws no scrim over the speaker, though full-bleed is an over-video layout", () => {
+    render(clipCue);
+    expect(scrim()).toBeUndefined();
+    // The control: the same layout with a card still gets its frost.
+    render({ ...clipCue, component: "TitleCard", props: { title: "SHIP IT" } });
+    expect(scrim()).toBeDefined();
+  });
+});
+
+describe("SceneLayer — a full-frame component in a graphic box (§163)", () => {
+  const bugCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "BugCard",
+    props: SCENE_REGISTRY.BugCard.propsSchema.parse({
+      number: 1,
+      headline: "Captions drift",
+      mock: "none",
+    }) as Record<string, unknown>,
+    startSec: 0,
+    endSec: 4,
+    graphicRect: { x: 0.04, y: 0.56, w: 0.92, h: 0.4 },
+  };
+  const sceneBox = () => document.querySelector<HTMLElement>('[data-edit-scene="scene-0"]')!;
+
+  it("wraps the BugCard in an element positioned and sized to the box, and sizes the card to it", () => {
+    document.body.innerHTML = renderToStaticMarkup(
+      React.createElement(SceneLayer, { cues: [bugCue], theme: defaultTheme }),
+    );
+    const box = sceneBox();
+    expect(Number.parseFloat(box.style.left)).toBeCloseTo(4, 6);
+    expect(Number.parseFloat(box.style.top)).toBeCloseTo(56, 6);
+    expect(Number.parseFloat(box.style.width)).toBeCloseTo(92, 6);
+    expect(Number.parseFloat(box.style.height)).toBeCloseTo(40, 6);
+    // Self-fitting at scale 1, no scrim, no inset: the card is handed the
+    // box's own pixels (0.92 × 1080, 0.4 × 1920), not the frame's.
+    const wrapper = box.querySelector<HTMLElement>("div[style*='scale(1)']")!;
+    expect(Number.parseFloat(wrapper.style.width)).toBeCloseTo(0.92 * 1080, 6);
+    const root = wrapper.firstElementChild as HTMLElement;
+    expect(Number.parseFloat(root.style.width)).toBeCloseTo(0.92 * 1080, 6);
+    expect(Number.parseFloat(root.style.height)).toBeCloseTo(0.4 * 1920, 6);
+  });
+
+  it("with no box it still fills the frame", () => {
+    const { graphicRect: _box, ...noBox } = bugCue;
+    document.body.innerHTML = renderToStaticMarkup(
+      React.createElement(SceneLayer, { cues: [noBox], theme: defaultTheme }),
+    );
+    const box = sceneBox();
+    expect(Number.parseFloat(box.style.width)).toBe(100);
+    expect(Number.parseFloat(box.style.height)).toBe(100);
+  });
+});
+
+describe("SceneLayer — flatPanel, the clip kit's panel (§162, explainer phase 3 Task 2)", () => {
+  const statCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "video-top",
+    component: "StatCard",
+    props: { label: "STARS", value: "4,494", caption: "in a month", inverted: false },
+    startSec: 0,
+    endSec: 4,
+  };
+  const cardRowCue: SceneCue = {
+    id: "scene-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    // Through the registry schema, as every planned cue's props are: the
+    // card defaults (icon among them) are filled there, not in the component.
+    props: SCENE_REGISTRY.CardRow.propsSchema.parse({
+      cards: [{ text: "ONE" }, { text: "TWO" }, { text: "THREE" }],
+    }) as Record<string, unknown>,
+    startSec: 0,
+    endSec: 4,
+  };
+  const render = (cue: SceneCue, flatPanel?: boolean) => {
+    const props =
+      flatPanel === undefined
+        ? { cues: [cue], theme: defaultTheme }
+        : { cues: [cue], theme: defaultTheme, flatPanel };
+    document.body.innerHTML = renderToStaticMarkup(React.createElement(SceneLayer, props));
+  };
+  const styles = () => [...document.querySelectorAll("div")].map((d) => d.getAttribute("style") ?? "");
+  /** The Scrim element, frosted or flat: the one absolutely-filled tint. */
+  const backdrops = () => styles().filter((s) => s.startsWith("position:absolute;inset:0;background:rgba("));
+
+  it("draws a flat panel behind a StatCard in video-top: denser tint, no backdrop-filter", () => {
+    render(statCue, true);
+    const found = backdrops();
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatch(/background:rgba\(\d+, \d+, \d+, 0\.85\)/);
+    expect(found[0]).not.toContain("backdrop-filter");
+    // Its own compositing layer: without it Chrome painted the panel twice
+    // under the content on a transparent page (§162 check renders).
+    expect(found[0]).toContain("will-change:transform");
+  });
+
+  it("draws nothing behind a CardRow: full-frame scenes sit straight on the speaker", () => {
+    render(cardRowCue, true);
+    expect(backdrops()).toHaveLength(0);
+  });
+
+  it("without the prop, today's output: no backdrop in video-top, the frosted scrim over video", () => {
+    render(statCue);
+    expect(backdrops()).toHaveLength(0);
+    const absent = document.body.innerHTML;
+    render(statCue, false);
+    expect(document.body.innerHTML).toBe(absent);
+
+    const titleCue: SceneCue = { ...cardRowCue, component: "TitleCard", props: { title: "SHIP IT" } };
+    render(titleCue);
+    const [scrim] = backdrops();
+    expect(scrim).toMatch(/background:rgba\(\d+, \d+, \d+, 0\.55\);backdrop-filter:blur\(14px\)/);
+  });
+
+  it("insets the content inside the panel exactly as the scrim insets it", () => {
+    // Same cue, two backdrops: lower-third's frost (no prop) and the kit's
+    // panel. The content width is the slot minus the inset either way.
+    const cue: SceneCue = { ...statCue, layout: "lower-third" };
+    const contentWidth = () =>
+      styles().find((s) => s.includes("transform:scale(") && s.includes("position:relative"));
+    render(cue);
+    const frosted = contentWidth();
+    render(cue, true);
+    expect(contentWidth()).toBe(frosted);
+
+    // And where the panel is new (video-top), the inset arrives with it: the
+    // rendered content width (layout width × fit scale) loses 24px a side.
+    const rendered = () => {
+      const m = /width:([\d.]+)px;transform:scale\(([\d.]+)\)/.exec(contentWidth() ?? "");
+      return Number(m![1]) * Number(m![2]);
+    };
+    render(statCue);
+    const bare = rendered();
+    render(statCue, true);
+    expect(bare - rendered()).toBeCloseTo(48, 6);
   });
 });

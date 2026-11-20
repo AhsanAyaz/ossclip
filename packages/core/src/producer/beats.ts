@@ -1,7 +1,7 @@
 import { z } from "zod/v4";
 import type { Transcript } from "../schema";
-import { LayoutSchema, SceneComponentIdSchema } from "../scene-schema";
-import { SCENE_REGISTRY } from "../scene-registry";
+import { LayoutSchema, PlannerComponentIdSchema, ScriptComponentIdSchema } from "../scene-schema";
+import { SCENE_REGISTRY, plannerComponentIds } from "../scene-registry";
 import { MAX_SCENE_SEC } from "../assemble";
 import { COVER_MAX_WORDS, coverHeadline } from "../cover";
 import type { LlmProvider } from "./provider";
@@ -48,8 +48,14 @@ export const MomentSchema = z.object({
   purpose: cappedText(100),
   /** Short on-screen copy for this beat — the fallback TitleCard title. */
   onScreenCopy: cappedText(60),
-  /** "none" = plain talking head with captions; otherwise a library component. */
-  sceneKind: z.union([SceneComponentIdSchema, z.literal("none")]),
+  /**
+   * "none" = plain talking head with captions; otherwise a library component.
+   * The PLANNER subset, never the full id enum (G6): this enum is part of the
+   * beat-sheet JSON schema every run sends, and a non-planner component
+   * (ClipScene) appearing in it would change the ask for runs that never
+   * touch the feature.
+   */
+  sceneKind: z.union([PlannerComponentIdSchema, z.literal("none")]),
   /**
    * Stage layout for this scene (PLAN Task B). Optional so an older cached
    * beat sheet still parses; omitted means the component's registry default.
@@ -102,6 +108,28 @@ export const BeatSheetSchema = z.object({
   moments: z.array(MomentSchema).min(1).max(24),
 });
 export type BeatSheet = z.infer<typeof BeatSheetSchema>;
+
+/**
+ * A moment planned from a script cue (plan Task 4): a `Moment` whose
+ * `sceneKind` may also be a script-only card (`ScriptComponentIdSchema`).
+ * A sibling schema, never a change to `MomentSchema`: that one is part of the
+ * frozen beat-sheet JSON schema (G6), and widening it is exactly how a
+ * CardRow would reach a run without `--script`. Every `Moment` is a
+ * `ScriptMoment`, so the shared downstream steps (layout repair, the props
+ * call) take this wider type and both modes pass through them.
+ *
+ * A schema rather than only a type because the script-plan cache parses its
+ * moments on read (`ScriptPlanCacheSchema`, cli script-mode.ts); parsed with
+ * `MomentSchema`, a cached plan holding a CardRow would fail and re-plan on
+ * every run.
+ */
+export const ScriptMomentSchema = MomentSchema.extend({
+  sceneKind: z.union([ScriptComponentIdSchema, z.literal("none")]),
+});
+export type ScriptMoment = z.infer<typeof ScriptMomentSchema>;
+
+/** A beat sheet whose moments came from a script (`normalizeBeatSheet`'s "script" mode). */
+export type ScriptBeatSheet = Omit<BeatSheet, "moments"> & { moments: ScriptMoment[] };
 
 /**
  * The `--clip` highlight request (R19 §93d): asked for IN THE SAME editorial
@@ -244,8 +272,10 @@ export function buildBeatsUserPrompt(
   const words = transcript.words
     .map((w, i) => (hasCut && cut.has(i) ? `[${i}]⟦${w.text}⟧` : `[${i}]${w.text}`))
     .join(" ");
-  const menu = Object.entries(SCENE_REGISTRY)
-    .map(([id, meta]) => `- ${id}: ${meta.whenToUse}`)
+  // `plannerComponentIds()`, not the registry's keys (G6): the registry also
+  // holds components no planner may offer, and the menu is prompt text.
+  const menu = plannerComponentIds()
+    .map((id) => `- ${id}: ${SCENE_REGISTRY[id].whenToUse}`)
     .join("\n");
   // §118: state the graphic COUNT explicitly. Everything else in this prompt
   // describes what a good graphic is; nothing said how many to plan, and the
@@ -404,13 +434,13 @@ export function formatGraphicsAccounting(
 }
 
 /** A moment's approximate seconds of speech, from the transcript word stamps. */
-function momentDuration(m: Moment, transcript: Transcript): number {
+function momentDuration(m: Pick<Moment, "startWord" | "endWord">, transcript: Transcript): number {
   const first = transcript.words[m.startWord];
   const last = transcript.words[m.endWord];
   return first && last ? Math.max(0, last.end - first.start) : 0;
 }
 
-function momentMidpoint(m: Moment, transcript: Transcript): number {
+function momentMidpoint(m: Pick<Moment, "startWord" | "endWord">, transcript: Transcript): number {
   const first = transcript.words[m.startWord];
   const last = transcript.words[m.endWord];
   return first && last ? (first.start + last.end) / 2 : 0;
@@ -427,16 +457,30 @@ function momentMidpoint(m: Moment, transcript: Transcript): number {
  * two passes reporting the same shortfall would say it twice). Omitted, the
  * ask is derived from the transcript's own span.
  */
-export function normalizeBeatSheet(
-  sheet: BeatSheet,
+export function normalizeBeatSheet<M extends ScriptMoment = Moment>(
+  /**
+   * Generic in the moment type so a script's sheet keeps its script-only
+   * kinds through the structural repairs, while a beat sheet's moments come
+   * back as `Moment`s — the type itself says an "auto" run cannot gain a
+   * CardRow here (nothing in this function invents a kind; it only demotes).
+   */
+  sheet: Omit<BeatSheet, "moments"> & { moments: readonly M[] },
   transcript: Transcript,
   askedGraphics?: number | null,
   /** Word indices the cutlist removes: a moment made only of them is dropped. */
   cut?: ReadonlySet<number>,
-): { sheet: BeatSheet; issues: BeatsValidationIssue[] } {
+  /**
+   * "script" (explainer spec §1.3): the moments are the author's cues, so
+   * only the structural repairs run — bounds, overlap, cut-only removal. The
+   * coverage budget, the §29 short-take floor and the same-kind demotion are
+   * short-form taste; applied to a script they would delete cues the author
+   * wrote (four bug cards nearly in a row, 60% coverage, in the EGM video).
+   */
+  mode: "auto" | "script" = "auto",
+): { sheet: Omit<BeatSheet, "moments"> & { moments: M[] }; issues: BeatsValidationIssue[] } {
   const wordCount = transcript.words.length;
   const issues: BeatsValidationIssue[] = [];
-  const moments: Moment[] = [];
+  const moments: M[] = [];
   const maxIndex = Math.max(0, wordCount - 1);
   for (let i = 0; i < sheet.moments.length; i++) {
     const m = { ...sheet.moments[i]! };
@@ -523,7 +567,8 @@ export function normalizeBeatSheet(
   // owes the user instead is to SAY so — see the shortfall issue below.
   const minGraphics = runtime < SHORT_TAKE_SEC ? SHORT_TAKE_MIN_GRAPHICS : 0;
 
-  for (;;) {
+  // Both scheduling loops below are the "auto" mode's alone — see `mode`.
+  while (mode === "auto") {
     const graphics = surviving();
     const shown = graphics.reduce((acc, i) => acc + estShow(i), 0);
     if (shown <= budget + 1e-6) break;
@@ -564,7 +609,7 @@ export function normalizeBeatSheet(
   // Variety pass independent of budget (§9): adjacent survivors must differ in
   // kind — demote the later of a same-kind pair (the earlier if the later is
   // the payoff; never the hook).
-  for (;;) {
+  while (mode === "auto") {
     const graphics = surviving();
     if (graphics.length <= minGraphics) break; // §29 floor outranks variety too
     const pair = graphics.findIndex(

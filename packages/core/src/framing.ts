@@ -1,7 +1,7 @@
 import type { Transcript } from "./schema";
 import { SCENE_REGISTRY } from "./scene-registry";
-import type { Layout } from "./scene-schema";
-import type { Moment } from "./producer/beats";
+import type { Layout, Scene } from "./scene-schema";
+import type { Moment, ScriptMoment } from "./producer/beats";
 import { headFracInSlot } from "./normalize";
 
 /**
@@ -195,11 +195,13 @@ export interface LayoutRepair {
  * candidate is taken and the issue says so, because a scene that trims a
  * little is still better than silently rendering the worst option.
  */
-export function repairMomentLayouts(
-  moments: readonly Moment[],
+export function repairMomentLayouts<M extends ScriptMoment = Moment>(
+  // Generic for `normalizeBeatSheet`'s reason: a script's moments keep their
+  // script-only kinds, a beat sheet's stay `Moment`s (plan Task 4).
+  moments: readonly M[],
   transcript: Transcript,
   ctx: FramingContext,
-): { moments: Moment[]; issues: LayoutRepair[] } {
+): { moments: M[]; issues: LayoutRepair[] } {
   const issues: LayoutRepair[] = [];
   const out = moments.map((m, idx) => {
     if (m.sceneKind === "none") return m;
@@ -274,4 +276,117 @@ export const LANDSCAPE_LAYOUTS: readonly Layout[] = [
 export function landscapeLayout(layout: Layout): Layout {
   if (LANDSCAPE_LAYOUTS.includes(layout)) return layout;
   return layout === "graphic-only" ? "blurred-behind" : "split-left";
+}
+
+/**
+ * The three layouts that ARE the three backdrops of a 16:9 script project
+ * (§163; scene-backdrop-choice design, Terms): the graphic over the speaker
+ * (`full-bleed`), on the look's background with the footage hidden
+ * (`graphic-only`), and on the background with the speaker as a small
+ * picture (`pip-bubble`). No new scene field: the layout the editor already
+ * stores is the choice, so there is no second field that has to agree with it.
+ */
+export const BACKDROP_LAYOUTS = ["full-bleed", "graphic-only", "pip-bubble"] as const;
+
+export function isBackdropLayout(layout: Layout): boolean {
+  return (BACKDROP_LAYOUTS as readonly Layout[]).includes(layout);
+}
+
+/**
+ * Whether a scene's graphic box survives its layout changing `from` → `to`:
+ * only between two backdrops (§163; scene-backdrop-choice design §2).
+ *
+ * Why: a box is normally geometry for ONE layout's slot, so a layout change
+ * dropped it (R13) — and changing the backdrop then threw away the large
+ * centred `SCRIPT_LANDSCAPE_RECT` a terminal was planned in, leaving it in
+ * the new layout's small slot. The three backdrops differ in what is behind
+ * the graphic, not in where it belongs, so a box placed under one is still
+ * the placement under the others (design G2). Any other layout splits or
+ * bands the frame, its slot is the point of choosing it, and it still drops
+ * the box. Not keyed on the project: the rule is about the two
+ * layouts. One predicate for `applyOverrides` and the editor's
+ * `patchLayout`, or the preview and the render would disagree.
+ */
+export function keepsBoxAcross(from: Layout, to: Layout): boolean {
+  return isBackdropLayout(from) && isBackdropLayout(to);
+}
+
+/**
+ * `landscapeLayout`, except that a script project keeps its backdrops (§163).
+ *
+ * Why: `landscapeLayout` rewrote `graphic-only` and `pip-bubble` on every
+ * 16:9 run, so a backdrop could only render when the editor set it (its
+ * overrides are applied after both remaps). A planned scene that carried one
+ * — and the editor's Render pins the planned scenes with `--scenes` — came
+ * back blurred or split. The R15 reasoning still holds for runs that never
+ * chose a backdrop, so `scriptProject: false` is exactly `landscapeLayout`,
+ * and `video-top` (not a backdrop) is remapped in both.
+ *
+ * `scriptProject` means the stored script record, not `--script`: the
+ * editor's Render and the kit refresh replay without the flag (design,
+ * Terms; `isScriptProject` in the CLI decides it).
+ */
+export function landscapeLayoutFor(layout: Layout, opts: { scriptProject: boolean }): Layout {
+  if (opts.scriptProject && isBackdropLayout(layout)) return layout;
+  return landscapeLayout(layout);
+}
+
+/**
+ * `landscapeLayoutFor` for the remap that runs AFTER source-text routing:
+ * a backdrop is kept only when the cue already had that same layout before
+ * routing (§163).
+ *
+ * Why: routing (`routeAroundSourceText`) may itself switch a scene to one of
+ * its component's `altLayouts` to dodge burned-in text, and those include
+ * `graphic-only` and `pip-bubble`. A layout routing chose is not a backdrop
+ * the author or the plan chose; keeping it would let a text dodge hide the
+ * speaker in a 16:9 script project. So it is remapped as R15 always did.
+ * `beforeRouting` is `undefined` when the cue has no pre-routing record,
+ * which counts as routed — the remap is the safe answer.
+ */
+export function landscapeLayoutAfterRouting(
+  layout: Layout,
+  beforeRouting: Layout | undefined,
+  opts: { scriptProject: boolean },
+): Layout {
+  return landscapeLayoutFor(layout, {
+    scriptProject: opts.scriptProject && beforeRouting === layout,
+  });
+}
+
+/**
+ * Where a slot component sits in a 16:9 script run (§161): centred, 72% × 68%
+ * of the frame. Inside `LANDSCAPE_SAFE_AREA` (5% sides, 6% top, 12% bottom)
+ * with room to spare, so the draw-time clamp (`clampGraphicRect`) leaves it
+ * as planned.
+ */
+export const SCRIPT_LANDSCAPE_RECT: Readonly<{ x: number; y: number; w: number; h: number }> = {
+  x: 0.14,
+  y: 0.16,
+  w: 0.72,
+  h: 0.68,
+};
+
+/**
+ * The 16:9 script placement (§161): a scene whose component is NOT
+ * `fullFrame` goes `full-bleed` with its graphic in `SCRIPT_LANDSCAPE_RECT`.
+ *
+ * Why: in the first real 16:9 script render, `TerminalMock` and `TitleCard`
+ * got `blurred-behind`, `split-right` and `split-left` from the landscape
+ * remap and the variety pass, so the terminal came out small in a corner or
+ * in a black half-screen, while the four script-only cards (`fullFrame`)
+ * drew centred over the speaker. `full-bleed` keeps the speaker whole, and
+ * its scrim (the frosted panel) sits behind the graphic; the rect is the
+ * cue's `graphicRect`, the field the editor's drag writes, so the user can
+ * still move or resize it and their rect wins.
+ *
+ * A `fullFrame` component is returned as is: it lays itself out against the
+ * whole frame, and a rect here would now shrink it into that box, since
+ * `graphicSlotFor` draws it in one (§163). Pure, scene in
+ * and scene out; the caller decides that the run is a script and the frame
+ * landscape — portrait and runs without `--script` never call it.
+ */
+export function scriptLandscapePlacement(scene: Scene): Scene {
+  if (SCENE_REGISTRY[scene.component].fullFrame) return scene;
+  return { ...scene, layout: "full-bleed", graphicRect: { ...SCRIPT_LANDSCAPE_RECT } };
 }

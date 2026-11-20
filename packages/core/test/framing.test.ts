@@ -9,7 +9,15 @@ import {
   worstFaceFrac,
   type FramingContext,
   landscapeLayout,
+  landscapeLayoutFor,
+  landscapeLayoutAfterRouting,
+  BACKDROP_LAYOUTS,
+  isBackdropLayout,
+  keepsBoxAcross,
+  SCRIPT_LANDSCAPE_RECT,
+  scriptLandscapePlacement,
 } from "../src/framing";
+import type { Scene } from "../src/scene-schema";
 import { headFracInSlot } from "../src/normalize";
 import type { Moment } from "../src/producer/beats";
 import type { Transcript } from "../src/schema";
@@ -226,5 +234,165 @@ describe("landscape layouts (R15)", () => {
     for (const l of LayoutSchema.options) {
       expect(landscapeLayout(landscapeLayout(l))).toBe(landscapeLayout(l));
     }
+  });
+});
+
+describe("backdrop layouts (scene-backdrop-choice design §1)", () => {
+  it("are the three layouts that are the three backdrops: speaker, solid, bubble", () => {
+    expect(BACKDROP_LAYOUTS).toEqual(["full-bleed", "graphic-only", "pip-bubble"]);
+    for (const l of LayoutSchema.options) {
+      expect(isBackdropLayout(l)).toBe((BACKDROP_LAYOUTS as readonly string[]).includes(l));
+    }
+  });
+
+  it("a script project keeps graphic-only and pip-bubble through the landscape remap", () => {
+    expect(landscapeLayoutFor("graphic-only", { scriptProject: true })).toBe("graphic-only");
+    expect(landscapeLayoutFor("pip-bubble", { scriptProject: true })).toBe("pip-bubble");
+  });
+
+  it("a project with no script is remapped exactly as before", () => {
+    expect(landscapeLayoutFor("graphic-only", { scriptProject: false })).toBe("blurred-behind");
+    expect(landscapeLayoutFor("pip-bubble", { scriptProject: false })).toBe("split-left");
+    for (const l of LayoutSchema.options) {
+      expect(landscapeLayoutFor(l, { scriptProject: false })).toBe(landscapeLayout(l));
+    }
+  });
+
+  it("video-top is not a backdrop: split-left in both; full-bleed is unchanged in both", () => {
+    for (const scriptProject of [true, false]) {
+      expect(landscapeLayoutFor("video-top", { scriptProject })).toBe("split-left");
+      expect(landscapeLayoutFor("full-bleed", { scriptProject })).toBe("full-bleed");
+    }
+  });
+
+  it("a script project remaps every non-backdrop layout as landscapeLayout does", () => {
+    for (const l of LayoutSchema.options) {
+      if (isBackdropLayout(l)) continue;
+      expect(landscapeLayoutFor(l, { scriptProject: true })).toBe(landscapeLayout(l));
+    }
+  });
+});
+
+describe("keepsBoxAcross (scene-backdrop-choice design §2)", () => {
+  it("is true exactly when both layouts are backdrops, for every pair", () => {
+    for (const from of LayoutSchema.options) {
+      for (const to of LayoutSchema.options) {
+        expect(keepsBoxAcross(from, to)).toBe(isBackdropLayout(from) && isBackdropLayout(to));
+      }
+    }
+  });
+
+  it("keeps the box between the three backdrops, both ways", () => {
+    expect(keepsBoxAcross("full-bleed", "graphic-only")).toBe(true);
+    expect(keepsBoxAcross("full-bleed", "pip-bubble")).toBe(true);
+    expect(keepsBoxAcross("graphic-only", "pip-bubble")).toBe(true);
+    expect(keepsBoxAcross("pip-bubble", "full-bleed")).toBe(true);
+  });
+
+  it("drops it to or from any other layout", () => {
+    expect(keepsBoxAcross("full-bleed", "split-left")).toBe(false);
+    expect(keepsBoxAcross("full-bleed", "lower-third")).toBe(false);
+    expect(keepsBoxAcross("blurred-behind", "graphic-only")).toBe(false);
+  });
+});
+
+describe("landscapeLayoutAfterRouting (§163: a layout text routing chose is still remapped)", () => {
+  it("a script project keeps a backdrop the cue already had before routing", () => {
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "graphic-only", { scriptProject: true }),
+    ).toBe("graphic-only");
+    expect(landscapeLayoutAfterRouting("pip-bubble", "pip-bubble", { scriptProject: true })).toBe(
+      "pip-bubble",
+    );
+  });
+
+  it("a backdrop that routing introduced is remapped even in a script project", () => {
+    // full-bleed dodged burned-in text into graphic-only: the author never
+    // chose to hide the speaker, so R15's remap applies as before.
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "full-bleed", { scriptProject: true }),
+    ).toBe("blurred-behind");
+    expect(landscapeLayoutAfterRouting("pip-bubble", "full-bleed", { scriptProject: true })).toBe(
+      "split-left",
+    );
+    // A backdrop routed into a DIFFERENT backdrop is still routing's choice.
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "pip-bubble", { scriptProject: true }),
+    ).toBe("blurred-behind");
+  });
+
+  it("a cue with no pre-routing layout on record counts as routed", () => {
+    expect(landscapeLayoutAfterRouting("graphic-only", undefined, { scriptProject: true })).toBe(
+      "blurred-behind",
+    );
+  });
+
+  it("no script project: remapped in both cases, exactly as landscapeLayout", () => {
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "graphic-only", { scriptProject: false }),
+    ).toBe("blurred-behind");
+    expect(
+      landscapeLayoutAfterRouting("graphic-only", "full-bleed", { scriptProject: false }),
+    ).toBe("blurred-behind");
+    for (const l of LayoutSchema.options) {
+      expect(landscapeLayoutAfterRouting(l, l, { scriptProject: false })).toBe(landscapeLayout(l));
+    }
+  });
+
+  it("full-bleed stays full-bleed whatever it was before", () => {
+    expect(landscapeLayoutAfterRouting("full-bleed", "graphic-only", { scriptProject: true })).toBe(
+      "full-bleed",
+    );
+  });
+});
+
+describe("scriptLandscapePlacement (§161: slot components centred in a 16:9 script run)", () => {
+  const scene = (component: Scene["component"], layout: Scene["layout"]): Scene => ({
+    id: "scene-0",
+    anchor: { startWord: 0, endWord: 3 },
+    layout,
+    component,
+    props: {},
+    overrides: {},
+  });
+
+  it("puts every slot component full-bleed in SCRIPT_LANDSCAPE_RECT, whatever layout it had", () => {
+    // The layouts the first real 16:9 script run gave them: a small terminal
+    // in a corner, or a black half-screen.
+    for (const [component, layout] of [
+      ["TerminalMock", "blurred-behind"],
+      ["TitleCard", "split-right"],
+      ["TitleCard", "split-left"],
+      ["StatCard", "lower-third"],
+    ] as const) {
+      const placed = scriptLandscapePlacement(scene(component, layout));
+      expect(placed.layout).toBe("full-bleed");
+      expect(placed.graphicRect).toEqual(SCRIPT_LANDSCAPE_RECT);
+      expect(placed.component).toBe(component);
+    }
+  });
+
+  it("leaves a fullFrame component exactly as it was: it lays itself out against the whole frame", () => {
+    for (const component of ["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"] as const) {
+      const s = scene(component, "full-bleed");
+      expect(scriptLandscapePlacement(s)).toBe(s);
+    }
+  });
+
+  it("returns a new scene and never writes to the one handed in", () => {
+    const s = scene("TitleCard", "split-left");
+    const placed = scriptLandscapePlacement(s);
+    expect(placed).not.toBe(s);
+    expect(s.layout).toBe("split-left");
+    expect("graphicRect" in s).toBe(false);
+    // Its own copy: an edit to one plan's rect cannot reach another's.
+    expect(placed.graphicRect).not.toBe(SCRIPT_LANDSCAPE_RECT);
+  });
+
+  it("the rect is centred in the frame", () => {
+    const { x, y, w, h } = SCRIPT_LANDSCAPE_RECT;
+    expect(x + w / 2).toBeCloseTo(0.5, 9);
+    expect(y + h / 2).toBeCloseTo(0.5, 9);
+    expect(SCRIPT_LANDSCAPE_RECT).toEqual({ x: 0.14, y: 0.16, w: 0.72, h: 0.68 });
   });
 });

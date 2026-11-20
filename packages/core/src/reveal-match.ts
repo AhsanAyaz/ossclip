@@ -218,6 +218,21 @@ export function revealItemTexts(
       });
     case "StrikethroughReveal":
       return arr(props.lines).map(textOf);
+    case "CardRow":
+      // One item per card — the card is what pops in — matching on its
+      // title OR its sub-line, as alternatives (TerminalMock's shape). An
+      // absent sub is left out rather than kept as "": an empty alternative
+      // never matches, but it is also not a text the card shows.
+      return arr(props.cards).map((c) => {
+        const card = c && typeof c === "object" ? (c as Record<string, unknown>) : {};
+        const sub = str(card.sub);
+        return sub ? [str(card.text), sub] : [str(card.text)];
+      });
+    case "PhoneDemo":
+      // One item per pill — the pill is what pops in (plan Task 7), in
+      // CardRow's alternatives shape with the one text a pill shows. The
+      // caption is not an item: it is on the phone from the entrance.
+      return arr(props.pills).map((p) => [textOf(p)]);
     default:
       return null;
   }
@@ -237,8 +252,10 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
     case "TerminalMock":
     case "StrikethroughReveal":
     case "ChatMock":
-      // A TerminalMock window's alternatives are each an entry text; ChatMock's
-      // keyword arrives through revealItemTexts' single-bubble case.
+    case "CardRow":
+      // A TerminalMock window's (or a CardRow card's) alternatives are each an
+      // entry text; ChatMock's keyword arrives through revealItemTexts'
+      // single-bubble case.
       texts = (revealItemTexts(component, props) ?? []).flatMap((item) =>
         typeof item === "string" ? [item] : [...item],
       );
@@ -249,6 +266,30 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
     case "ScreenshotFrame":
       texts = fields("label");
       break;
+    case "CtaCard":
+      // One card, no reveal items: it enters on the headline or the
+      // asked-for word, whichever is spoken first (plan Task 5). `channel`
+      // is left out — a channel name is said, if at all, as an aside.
+      texts = fields("text", "keyword");
+      break;
+    case "PhoneDemo":
+      // The caption is one phrase on screen, so its words are located as
+      // the phrase they are, joined; then each pill's text (plan Task 7).
+      // The scene enters on whichever is spoken first.
+      texts = [
+        arr(props.caption).map(textOf).filter((t) => t.length > 0).join(" "),
+        ...(revealItemTexts(component, props) ?? []).flatMap((item) =>
+          typeof item === "string" ? [item] : [...item],
+        ),
+      ];
+      break;
+    case "BugCard":
+      // One card on its own timeline, no reveal items (plan Task 6): it
+      // enters on the headline or its consequence, whichever is spoken
+      // first. The sticker is a closing aside, and the mock's words are the
+      // failure shown, so neither marks where the card starts.
+      texts = fields("headline", "sub");
+      break;
     case "StatCard":
       texts = fields("label", "value");
       break;
@@ -257,6 +298,11 @@ export function entryTexts(component: SceneComponentId, props: Record<string, un
       break;
     case "BulletList":
       texts = arr(props.items).map(str);
+      break;
+    case "ClipScene":
+      // No text to locate: a clip enters on its cue's first matched word,
+      // which is already the scene's start (spec 1.4).
+      texts = [];
       break;
   }
   return texts.filter((t) => t.length > 0);

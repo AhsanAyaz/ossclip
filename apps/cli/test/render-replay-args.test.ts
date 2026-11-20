@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderReplayArgs } from "../src/render-replay-args";
+import { healRecordedProduceArgs, renderReplayArgs, reviewedScenesText } from "../src/render-replay-args";
 
 /**
  * What the editor's Render button replays (2026-08-29).
@@ -59,6 +59,20 @@ describe("renderReplayArgs", () => {
     expect(args).toEqual(["produce", "in.mp4", "--captions", "--scenes", "/w/new.json"]);
   });
 
+  it("drops --script and its value when it pins the reviewed plan", () => {
+    // `--script` implies a fresh plan and produce refuses it beside --scenes;
+    // the script text rides production.json forward instead.
+    const withScript = ["produce", "in.mp4", "--script", "/v/egm.md", "--aspect", "16:9"];
+    expect(renderReplayArgs(withScript, { scenesPath: "/w/s.json" })).toEqual([
+      "produce",
+      "in.mp4",
+      "--aspect",
+      "16:9",
+      "--scenes",
+      "/w/s.json",
+    ]);
+  });
+
   it("carries --sfx and its level through the --produce swap", () => {
     // Only --produce and --scenes are dropped, and this pins that: --sfx-level
     // is a VALUE option, so a filter that treated it as a bare flag would
@@ -91,5 +105,40 @@ describe("renderReplayArgs: a --clip project (2026-11-08 audit)", () => {
       "produce", "in.mp4", "--clip", "60", "--clip-window", "12:340", "--llm", "mock",
       "--scenes", "/wd/scenes-reviewed.json",
     ]);
+  });
+});
+
+/**
+ * The two halves of a replay the edit server's Render and `ossclip kit`'s
+ * refresh share (§162): one heal and one pinned plan, so the kit can never
+ * refresh a project the editor could not render.
+ */
+describe("healRecordedProduceArgs (§129)", () => {
+  it("prepends the produce literal a legacy wizard record is missing", () => {
+    expect(healRecordedProduceArgs(["in.mp4", "--llm", "mock"])).toEqual(["produce", "in.mp4", "--llm", "mock"]);
+  });
+
+  it("leaves a modern record alone, as a copy", () => {
+    const recorded = ["produce", "in.mp4"];
+    const healed = healRecordedProduceArgs(recorded);
+    expect(healed).toEqual(recorded);
+    expect(healed).not.toBe(recorded);
+  });
+});
+
+describe("reviewedScenesText", () => {
+  it("is production.json's scenes, pretty-printed with a trailing newline", () => {
+    const scenes = [{ id: "scene-0", component: "CardRow" }];
+    expect(reviewedScenesText(JSON.stringify({ version: 1, scenes }))).toBe(
+      `${JSON.stringify(scenes, null, 2)}\n`,
+    );
+  });
+
+  it("is undefined when there is no plan to pin", () => {
+    expect(reviewedScenesText(JSON.stringify({ version: 1 }))).toBeUndefined();
+    expect(reviewedScenesText(JSON.stringify({ scenes: [] }))).toBeUndefined();
+    expect(reviewedScenesText(JSON.stringify({ scenes: "x" }))).toBeUndefined();
+    expect(reviewedScenesText("null")).toBeUndefined();
+    expect(reviewedScenesText("{ not json")).toBeUndefined();
   });
 });

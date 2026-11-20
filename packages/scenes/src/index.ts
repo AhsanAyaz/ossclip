@@ -13,6 +13,7 @@ export { VideoStage } from "./VideoStage";
 export { SceneLayer } from "./SceneLayer";
 export { Watermark } from "./Watermark";
 export { CoverInVideo } from "./CoverInVideo";
+export { BundledFonts, browserFontEnv, loadFontFaces, type FontEnv } from "./BundledFonts";
 export { SfxTrack } from "./SfxTrack";
 export { OverlayTrack, overlayCuesFor, type OverlayCueProps } from "./overlay-track";
 export * from "./stage";

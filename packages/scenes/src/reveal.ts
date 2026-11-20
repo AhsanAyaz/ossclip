@@ -93,6 +93,20 @@ export interface RevealTiming {
 }
 
 /**
+ * A pattern scene of unknown length (no `timing`: a bare mount) is timed as
+ * this long (§161). Shared by the scenes whose motion is a timeline of their
+ * own, CtaCard's press and BugCard's sticker, so the two cannot drift.
+ */
+export const PATTERN_DEFAULT_SCENE_SEC = 6;
+
+/** The cue's length in seconds, or `PATTERN_DEFAULT_SCENE_SEC` when it is not known. */
+export function patternSceneSec(fps: number, timing?: RevealTiming): number {
+  return timing !== undefined && timing.durationInFrames > 0
+    ? timing.durationInFrames / fps
+    : PATTERN_DEFAULT_SCENE_SEC;
+}
+
+/**
  * `revealFrames` for a component: the shape each of the four calls, so none
  * of them re-derives the "no timing → legacy" rule.
  */

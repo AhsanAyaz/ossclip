@@ -34,7 +34,9 @@ export class MockProvider implements LlmProvider {
                 req.schema.parse({ names: [] })
               : req.schemaName === "caption_choreography"
                 ? this.captionChoreography(req.user, req.schema)
-                : this.sceneProps(req.user, req.schema, req.schemaName);
+                : req.schemaName === "script_plan"
+                  ? this.scriptPlan(req.user, req.schema)
+                  : this.sceneProps(req.user, req.schema, req.schemaName);
     // Estimated, and costing exactly nothing — but recorded, because the
     // offline path is first-class and "how big are the prompts this pipeline
     // sends" is worth answering without spending anything to find out.
@@ -116,6 +118,30 @@ export class MockProvider implements LlmProvider {
     return schema.parse({ placements });
   }
 
+  /**
+   * A script-mode plan (`--script`): every cue the prompt lists becomes a
+   * TitleCard of its own cue text, or the component its `component: <Name>
+   * (fixed)` line names. Read off the prompt's `id:`/`cue:` lines, the way
+   * `beatSheet` reads `[n]` indices, so the offline path plans exactly the
+   * cues the real call is shown — and never answers "none", so a fixture run
+   * places every cue it aligned.
+   *
+   * The fixed line is honoured even though `planScriptMoments` keeps a hint
+   * whatever the reply says (§161): a reply that contradicted the prompt
+   * would make the offline fixture prove that override rather than the path
+   * a real planner takes when it follows the hint.
+   */
+  private scriptPlan<T>(user: string, schema: z.ZodType<T>): T {
+    const cues = [
+      ...user.matchAll(/^id: (.+)\ncue: (.*)\nspoken: .*(?:\ncomponent: (\S+) \(fixed\))?$/gm),
+    ].map((m) => ({
+      id: m[1]!,
+      sceneKind: m[3] ?? "TitleCard",
+      onScreenCopy: m[2]!.slice(0, 60),
+    }));
+    return schema.parse({ cues });
+  }
+
   private captionChoreography<T>(user: string, schema: z.ZodType<T>): T {
     const indices = [...user.matchAll(/\[(\d+)\|/g)].map((m) => Number.parseInt(m[1]!, 10));
     const n = indices.length;
@@ -152,6 +178,34 @@ export class MockProvider implements LlmProvider {
       },
       ChatMock_props: { messages: [{ from: "user", text: "can it cut my ums?" }, { from: "agent", text: "already did." }] },
       ScreenshotFrame_props: { label: "REVIEW STATUS: TODAY", kenBurns: true },
+      // Script-only (§161): reached only through a script cue's props call,
+      // since no beat sheet can name CardRow (its sceneKind is the planner
+      // enum) and `--force-component` parses planner ids only.
+      CardRow_props: {
+        cards: [
+          { text: "Transcribe", sub: "words + timings", icon: "doc" },
+          { text: "Cut", sub: "fillers removed", icon: "bolt" },
+          { text: "Produce", sub: "scenes planned", icon: "robot" },
+        ],
+        highlight: 2,
+      },
+      PhoneDemo_props: {
+        caption: [{ text: "CAPTIONS" }, { text: "THAT" }, { text: "POP", emphasis: "yellow" }],
+        pills: [
+          { text: "Big and bold", state: "ok" },
+          { text: "Tiny grey text", state: "bad" },
+        ],
+      },
+      CtaCard_props: { action: "comment", text: "Want the prompt?", keyword: "PROMPT" },
+      BugCard_props: {
+        number: 1,
+        headline: "Captions miss words",
+        sub: "and nobody notices",
+        mock: "caption",
+        mockLines: ["the", "raw", "tkae"],
+        mockWrong: 2,
+        sticker: "FIXED",
+      },
     };
     const props = canned[schemaName];
     if (!props) throw new Error(`mock provider: unknown schema ${schemaName}`);

@@ -1,5 +1,5 @@
 import type { Segment, Transcript } from "../schema";
-import type { Scene, SceneComponentId } from "../scene-schema";
+import type { PlannerComponentId, Scene } from "../scene-schema";
 import type { LlmProvider, ProviderName } from "./provider";
 import { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
 import { AntigravityProvider, type LlmEffort } from "./antigravity";
@@ -13,9 +13,19 @@ import {
   normalizeBeatSheet,
   type BeatSheet,
   type BeatsValidationIssue,
+  type Moment,
+  type ScriptMoment,
 } from "./beats";
-import { generateScenes, type ScenePropsFailure } from "./scene-props";
+import { generateScenes, momentSceneId, type ScenePropsFailure } from "./scene-props";
+import {
+  planScriptMoments,
+  scriptSceneEndWords,
+  type ScriptPlanInput,
+  type ScriptSceneShape,
+} from "./script-plan";
 import { buildFramingBrief, repairMomentLayouts, type FramingContext } from "../framing";
+import { SCENE_REGISTRY } from "../scene-registry";
+import { minSceneSec } from "../assemble";
 import {
   resolveClipWindow,
   sliceMoments,
@@ -32,6 +42,7 @@ export * from "./logo-finder";
 export * from "./caption-regen";
 export * from "./caption-choreography";
 export * from "./scene-props";
+export * from "./script-plan";
 export * from "./repair";
 export * from "./llm-sessions";
 export { AnthropicProvider, DEFAULT_CLAUDE_MODEL } from "./anthropic";
@@ -202,8 +213,9 @@ export function fallbackProviderName(
   return undefined;
 }
 
-export interface ProduceScenesResult {
-  beatSheet: BeatSheet;
+export interface ProduceScenesResult<M extends ScriptMoment = Moment> {
+  /** `Moment`s outside script mode; a script run's may name a script-only card. */
+  beatSheet: Omit<BeatSheet, "moments"> & { moments: M[] };
   beatIssues: BeatsValidationIssue[];
   /**
    * The graphics accounting (§118b): how many the prompt asked for and how
@@ -223,51 +235,88 @@ export interface ProduceScenesResult {
   clip?: { window: ClipWindow; transcript: Transcript; notes: string[] };
 }
 
-/** The full producer-brain pipeline: beat sheet → per-moment scene props. */
+/** What `produceScenes` is asked to do — one bag for both modes. */
+export interface ProduceScenesArgs {
+  transcript: Transcript;
+  outputDuration: number;
+  intent?: string;
+  /** Who is on camera — see `--speaker`. */
+  speaker?: string;
+  /**
+   * Debug: render every graphic moment with this component instead of the
+   * one the producer picked. Exists because a component the producer never
+   * chooses is a component never tested on real copy — FlowDiagram went
+   * three rounds unexercised (FINDINGS §20). A PLANNER id: the forced
+   * component goes through the props call, which would otherwise show an
+   * LLM the schema of a component no planner may offer (ClipScene, G6).
+   */
+  forceComponent?: PlannerComponentId;
+  /**
+   * Camera-framing constraints (PLAN Tasks A+B), present when the source
+   * went through normalization. Feeds the beat-sheet prompt (the brief) AND
+   * the repair pass that enforces it — ship both, trust neither alone.
+   */
+  framing?: FramingContext;
+  /**
+   * `--clip` (R19 §93): select ONE ~targetSec window and plan only inside
+   * it. The window request rides the beat-sheet call (§93d); the returned
+   * moments/scenes are re-anchored to the sliced transcript, and the caller
+   * slices the rest of its pipeline state to `clip.window`.
+   */
+  clip?: {
+    targetSec: number;
+    /** The take's cutlist, so the window's length is its CUT runtime
+     * (`resolveClipWindow`). Omitted = source seconds, as before. */
+    cutlist?: readonly Segment[];
+  };
+  /** Output frame shape (R21 §101) — landscape gets layout-variety
+   * guidance in the beat prompt. Omitted = portrait, no extra text. */
+  aspect?: "9:16" | "16:9";
+  /**
+   * Word indices (into `transcript`) the cutlist removes — `cutWordIndices`.
+   * Every call that writes on-screen copy is told, so a cut retake never
+   * comes back as a graphic (2026-11-08). Omitted = nothing marked.
+   */
+  cut?: ReadonlySet<number>;
+  /**
+   * `--script` (explainer spec §1.3): the moments come from the script's
+   * aligned cues instead of the beat-sheet call, which is not made at all.
+   * Everything after the moments — forceComponent, layout repair, the
+   * props call — is the path every run takes.
+   */
+  script?: ScriptPlanInput;
+}
+
+/**
+ * The full producer-brain pipeline: beat sheet → per-moment scene props.
+ *
+ * Overloaded on `script` so the TYPE carries G6: only a script run returns
+ * moments that may name a script-only card (`ScriptMoment`); a run without
+ * one gets `Moment`s, whose `sceneKind` is the frozen planner enum.
+ */
+export function produceScenes(
+  provider: LlmProvider,
+  args: ProduceScenesArgs & { script: ScriptPlanInput },
+): Promise<ProduceScenesResult<ScriptMoment>>;
+export function produceScenes(
+  provider: LlmProvider,
+  args: ProduceScenesArgs & { script?: undefined },
+): Promise<ProduceScenesResult>;
+/** A caller that does not know which mode it is in gets the wider answer. */
+export function produceScenes(
+  provider: LlmProvider,
+  args: ProduceScenesArgs,
+): Promise<ProduceScenesResult<ScriptMoment>>;
 export async function produceScenes(
   provider: LlmProvider,
-  args: {
-    transcript: Transcript;
-    outputDuration: number;
-    intent?: string;
-    /** Who is on camera — see `--speaker`. */
-    speaker?: string;
-    /**
-     * Debug: render every graphic moment with this component instead of the
-     * one the producer picked. Exists because a component the producer never
-     * chooses is a component never tested on real copy — FlowDiagram went
-     * three rounds unexercised (FINDINGS §20).
-     */
-    forceComponent?: SceneComponentId;
-    /**
-     * Camera-framing constraints (PLAN Tasks A+B), present when the source
-     * went through normalization. Feeds the beat-sheet prompt (the brief) AND
-     * the repair pass that enforces it — ship both, trust neither alone.
-     */
-    framing?: FramingContext;
-    /**
-     * `--clip` (R19 §93): select ONE ~targetSec window and plan only inside
-     * it. The window request rides the beat-sheet call (§93d); the returned
-     * moments/scenes are re-anchored to the sliced transcript, and the caller
-     * slices the rest of its pipeline state to `clip.window`.
-     */
-    clip?: {
-      targetSec: number;
-      /** The take's cutlist, so the window's length is its CUT runtime
-       * (`resolveClipWindow`). Omitted = source seconds, as before. */
-      cutlist?: readonly Segment[];
-    };
-    /** Output frame shape (R21 §101) — landscape gets layout-variety
-     * guidance in the beat prompt. Omitted = portrait, no extra text. */
-    aspect?: "9:16" | "16:9";
-    /**
-     * Word indices (into `transcript`) the cutlist removes — `cutWordIndices`.
-     * Every call that writes on-screen copy is told, so a cut retake never
-     * comes back as a graphic (2026-11-08). Omitted = nothing marked.
-     */
-    cut?: ReadonlySet<number>;
-  },
-): Promise<ProduceScenesResult> {
+  args: ProduceScenesArgs,
+): Promise<ProduceScenesResult<ScriptMoment>> {
+  if (args.script) {
+    // Exclusive: `--clip` picks its own window by asking the beat-sheet call
+    // for one, and a script has already decided where every scene goes.
+    if (args.clip) throw new Error("--clip and --script cannot be combined: a script plans the whole take");
+    return produceScriptScenes(provider, { ...args, script: args.script });
+  }
   const framingBrief = args.framing
     ? buildFramingBrief(args.framing, args.transcript)
     : undefined;
@@ -355,5 +404,136 @@ export async function produceScenes(
     scenes,
     failures,
     clip,
+  };
+}
+
+/**
+ * The script-mode half of `produceScenes` (explainer spec §1.3): moments from
+ * the aligned cues, then the same downstream steps in the same order.
+ */
+async function produceScriptScenes(
+  provider: LlmProvider,
+  args: Omit<ProduceScenesArgs, "script" | "clip"> & { script: ScriptPlanInput },
+): Promise<ProduceScenesResult<ScriptMoment>> {
+  const { transcript, cut } = args;
+  const planned = await planScriptMoments(provider, args.script, transcript);
+  const issues: BeatsValidationIssue[] = [...planned.issues];
+  const normalized = normalizeBeatSheet(
+    // The hook is what the cover banner falls back to; a script has no
+    // separate hook judgement, so its first cue's copy stands in.
+    { hook: planned.moments[0]?.onScreenCopy ?? "", moments: planned.moments },
+    transcript,
+    // No shortfall line: its "~1 per 9s" target means nothing here, and
+    // every cue that is not placed is reported per cue instead (Task 8).
+    null,
+    cut,
+    "script",
+  );
+  issues.push(...normalized.issues);
+
+  // Same order as the beat-sheet path, for the same reasons (see there).
+  let moments = args.forceComponent
+    ? normalized.sheet.moments.map((m) =>
+        m.sceneKind === "none" ? m : { ...m, sceneKind: args.forceComponent!, layout: undefined },
+      )
+    : normalized.sheet.moments;
+  // In 16:9 the planner's `layout` is ignored (§163): planned scenes start
+  // over the speaker, and the backdrop is the author's choice in the editor.
+  // Half-used before: a full-frame card that took `graphic-only` came out of
+  // the landscape remap as the speaker blurred and dimmed under the card, and
+  // now that a script project keeps its backdrops through that remap, the
+  // same reply would hide the speaker outright. Dropped HERE, on the read,
+  // rather than out of the schema or prompt, so no cached plan is invalidated
+  // and 9:16 script runs, which use the field, are untouched.
+  if (args.aspect === "16:9") {
+    moments = moments.map((m) => (m.layout === undefined ? m : { ...m, layout: undefined }));
+  }
+  if (args.framing) {
+    const repaired = repairMomentLayouts(moments, transcript, args.framing);
+    moments = repaired.moments;
+    issues.push(...repaired.issues);
+  }
+  const generated = await generateScenes(provider, moments, transcript, {
+    framing: args.framing,
+    cut,
+    // The one downstream difference: a script's props call is also offered
+    // the script-only props of the frozen components (§161, plan Task 8).
+    mode: "script",
+  });
+  const { failures } = generated;
+  let { scenes } = generated;
+
+  // The minimum scene length (§161, `SCRIPT_MIN_SCENE_SEC`), applied AFTER
+  // the props call on purpose: the props slice and `planCue` must see the
+  // line's own words. Held over the words after the line, the props call
+  // would write copy from speech the cue is not about, and `planCue` could
+  // match an item — or move the entry word — onto a later word, when the
+  // anti-goal is that items landing on spoken words keep landing on them.
+  // Only the END moves, so the plan-time `cue` stays inside the anchor and
+  // `plannedCue`'s clamp in assembly keeps every item where it was.
+  //
+  // Moments are matched to their cue by `endWord`, exact for the reason
+  // given for clip scenes below. Graphic moments only: a footage cue has no
+  // scene to hold, and its moment stays the span the cue report reads.
+  if (args.script.wordTimes) {
+    // What each cue became — its scene's entry word, a clip's length, or
+    // nothing on screen — matched by end word as below, so the four seconds
+    // count from where the scene will really start: its entry word, and
+    // past the scene before it (`scriptSceneEndWords`; EGM runs, 2026-11-17).
+    const shapes = args.script.aligned.map((a): ScriptSceneShape => {
+      if (a.cue.hint.kind === "clip") {
+        const clip = planned.clipScenes.find((s) => s.anchor.endWord === a.endWord);
+        if (!clip) return { kind: "none" };
+        const durationSec = SCENE_REGISTRY.ClipScene.fixedDurationSec?.(clip.props);
+        return durationSec === undefined ? { kind: "clip" } : { kind: "clip", durationSec };
+      }
+      const scene = scenes.find((s) => s.anchor.endWord === a.endWord);
+      if (!scene) return { kind: "none" };
+      const entryWord = scene.cue?.entryWord;
+      return entryWord === undefined ? { kind: "graphic" } : { kind: "graphic", entryWord };
+    });
+    const ends = scriptSceneEndWords(args.script.aligned, args.script.wordTimes, {
+      scenes: shapes,
+      sceneFloorSec: minSceneSec(args.outputDuration),
+    });
+    const lengthened = new Map<number, number>();
+    args.script.aligned.forEach((a, i) => {
+      if (ends[i] !== a.endWord) lengthened.set(a.endWord, ends[i]!);
+    });
+    moments = moments.map((m) =>
+      m.sceneKind === "none" ? m : { ...m, endWord: lengthened.get(m.endWord) ?? m.endWord },
+    );
+    scenes = scenes.map((s) => {
+      const endWord = lengthened.get(s.anchor.endWord);
+      return endWord === undefined ? s : { ...s, anchor: { ...s.anchor, endWord } };
+    });
+  }
+
+  // A clip scene follows its moment through normalization. Scene ids are
+  // indices into the RETURNED moments (`momentSceneId`; the sfx prompt
+  // relies on it), so a clip's id and anchor are re-read from where its
+  // moment landed. The moment is found by `endWord`: normalization drops
+  // moments and moves a `startWord` forward but never reorders or changes an
+  // `endWord` inside the transcript, and aligned cues have strictly
+  // increasing `endWord`s (cues cannot cross, §1.2), so the match is exact. A
+  // clip whose moment was dropped has no words left to anchor to and goes too.
+  const clipScenes = planned.clipScenes.flatMap((scene) => {
+    const k = moments.findIndex((m) => m.endWord === scene.anchor.endWord);
+    if (k === -1) return [];
+    const m = moments[k]!;
+    return [{ ...scene, id: momentSceneId(k), anchor: { startWord: m.startWord, endWord: m.endWord } }];
+  });
+
+  return {
+    beatSheet: { ...normalized.sheet, moments },
+    beatIssues: issues,
+    graphics: {
+      // Every placed cue was asked for something on screen; a clip counts
+      // as delivered, a footage cue left as talking head does not.
+      asked: args.script.aligned.length,
+      delivered: moments.filter((m) => m.sceneKind !== "none").length + clipScenes.length,
+    },
+    scenes: [...scenes, ...clipScenes],
+    failures,
   };
 }

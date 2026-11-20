@@ -11,7 +11,7 @@ import {
   type SceneCue,
   type Segment,
 } from "@ossclip/core/browser";
-import { Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
+import { DYNAMIC_ID, Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
 import { onSaveEffect } from "../src/save";
 
@@ -59,6 +59,102 @@ describe("BulletList items — the item-N id family (R16 §67)", () => {
   it("reads an item back for the panel's text field", () => {
     expect(elementTextOf("item-2", { items: ["A", "B", "C"] })).toBe("C");
     expect(elementTextOf("item-0", {})).toBeNull();
+  });
+});
+
+describe("CardRow cards — the card-N id family (§161, plan Task 4)", () => {
+  const props = {
+    cards: [
+      { text: "Draft", sub: "one", icon: "doc" },
+      { text: "Review", icon: "none" },
+    ],
+  };
+
+  it("is one of the dynamic ids — the single regex the Inspector imports", () => {
+    expect(DYNAMIC_ID.test("card-0")).toBe(true);
+    expect(DYNAMIC_ID.test("cards-0")).toBe(false);
+  });
+
+  it("reads text, then sub on a second line", () => {
+    expect(elementTextOf("card-0", props)).toBe("Draft\none");
+    expect(elementTextOf("card-1", props)).toBe("Review");
+    expect(elementTextOf("card-2", props)).toBeNull();
+  });
+
+  it("writes the first line to text and the second to sub, leaving the icon alone", () => {
+    expect(buildArrayPatch("card-1", props, "Ship\nnpm publish")).toEqual({
+      cards: [props.cards[0], { text: "Ship", sub: "npm publish", icon: "none" }],
+    });
+  });
+
+  it("no second line removes sub; an empty one keeps a newline the textarea can type into", () => {
+    expect(buildArrayPatch("card-0", props, "Draft")).toEqual({
+      cards: [{ text: "Draft", icon: "doc" }, props.cards[1]],
+    });
+    const typing = buildArrayPatch("card-1", props, "Review\n")!;
+    expect(typing).toEqual({ cards: [props.cards[0], { text: "Review", icon: "none", sub: "" }] });
+    // The round trip keeps the newline the author just typed.
+    expect(elementTextOf("card-1", typing)).toBe("Review\n");
+  });
+
+  it("truncates to the schema's 18 and 24 characters and drops extra lines", () => {
+    const patch = buildArrayPatch("card-0", props, `${"t".repeat(30)}\n${"s".repeat(30)}\nthird`)!;
+    expect((patch.cards as Array<Record<string, unknown>>)[0]).toEqual({
+      text: "t".repeat(18),
+      sub: "s".repeat(24),
+      icon: "doc",
+    });
+  });
+});
+
+describe("BugCard mock entries — the mock-N id family (§161, plan Task 6)", () => {
+  const props = { number: 1, headline: "Captions drift", mock: "caption", mockLines: ["the", "raw", "tkae"] };
+
+  it("is one of the dynamic ids; the top-level `mock` enum is not", () => {
+    expect(DYNAMIC_ID.test("mock-0")).toBe(true);
+    expect(DYNAMIC_ID.test("mock")).toBe(false);
+  });
+
+  it("reads and writes one entry of mockLines, leaving the rest alone", () => {
+    expect(elementTextOf("mock-2", props)).toBe("tkae");
+    expect(elementTextOf("mock-3", props)).toBeNull();
+    expect(buildArrayPatch("mock-2", props, "take")).toEqual({ mockLines: ["the", "raw", "take"] });
+    expect(buildArrayPatch("mock-3", props, "x")).toBeNull();
+  });
+
+  it("truncates to the schema's 32 characters", () => {
+    const patch = buildArrayPatch("mock-0", props, "m".repeat(40))!;
+    expect((patch.mockLines as string[])[0]).toBe("m".repeat(32));
+  });
+});
+
+describe("PhoneDemo words and pills — the word-N and pill-N id families (§161, plan Task 7)", () => {
+  const props = {
+    caption: [{ text: "YOUR", emphasis: "none" }, { text: "CAPTIONS", emphasis: "yellow" }],
+    pills: [{ text: "Big and bold", state: "ok" }],
+  };
+
+  it("are dynamic ids", () => {
+    expect(DYNAMIC_ID.test("word-0")).toBe(true);
+    expect(DYNAMIC_ID.test("pill-3")).toBe(true);
+  });
+
+  it("read and write one entry's text, leaving its enum and the rest alone", () => {
+    expect(elementTextOf("word-1", props)).toBe("CAPTIONS");
+    expect(elementTextOf("pill-0", props)).toBe("Big and bold");
+    expect(elementTextOf("word-2", props)).toBeNull();
+    expect(buildArrayPatch("word-1", props, "SUBTITLES")).toEqual({
+      caption: [{ text: "YOUR", emphasis: "none" }, { text: "SUBTITLES", emphasis: "yellow" }],
+    });
+    expect(buildArrayPatch("pill-0", props, "Huge")).toEqual({ pills: [{ text: "Huge", state: "ok" }] });
+    expect(buildArrayPatch("pill-1", props, "x")).toBeNull();
+  });
+
+  it("truncate to the schema's caps: 12 for a word, 22 for a pill", () => {
+    const word = buildArrayPatch("word-0", props, "w".repeat(20))!;
+    expect((word.caption as { text: string }[])[0]!.text).toBe("w".repeat(12));
+    const pill = buildArrayPatch("pill-0", props, "p".repeat(30))!;
+    expect((pill.pills as { text: string }[])[0]!.text).toBe("p".repeat(22));
   });
 });
 
@@ -826,5 +922,122 @@ describe("⌘B split under a live cleanup veto — old-clock write, revived-mate
     await cmdB();
     expect(doc!.splits).toEqual([]);
     area.remove();
+  });
+});
+
+/**
+ * The graphic box's handle drag on a full-frame component (§163, Review
+ * Focus 4). Mounted for real: the clamp is chosen at mousedown from the
+ * scene's component and applied at mouseup, two listeners apart, and a pure
+ * test of the clamp alone would pass with either call site still on
+ * `clampGraphicRect`. The stage is 960×540 page px at a Player scale of 0.5,
+ * so one page px is 1/960 of the frame's width.
+ */
+describe("dragging a graphic box (§163): a full-frame component is kept inside the frame, not the safe area", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let doc: OverrideDoc | null = null;
+  const START = { x: 0.5, y: 0.5, w: 0.4, h: 0.3 };
+
+  const cueOf = (component: "CardRow" | "TitleCard"): SceneCue => ({
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component,
+    props: component === "CardRow" ? { cards: [{ text: "ONE" }, { text: "TWO" }] } : { title: "X" },
+    startSec: 0,
+    endSec: 4,
+    graphicRect: START,
+  });
+
+  function Harness({ cue }: { cue: SceneCue }) {
+    const edits = useEdits();
+    doc = edits.doc;
+    const stageRef = useRef<HTMLDivElement>(null);
+    const playerRef = useRef({ getScale: () => 0.5 } as unknown as PlayerRef);
+    return React.createElement(
+      "div",
+      { ref: stageRef, "data-testid": "stage" },
+      React.createElement("div", { "data-edit-scene": "scene-0" }),
+      React.createElement(Overlay, {
+        stageRef,
+        selection: { sceneId: "scene-0", elementId: null },
+        onSelect: vi.fn(),
+        edits,
+        onSave: vi.fn(),
+        settings: { width: 1920, height: 1080, fps: 30 },
+        cues: [cue],
+        onToggleHelp: vi.fn(),
+        onRequestDelete: vi.fn(),
+        playerRef,
+        onTransport: vi.fn(),
+        onVideoPreview: vi.fn(),
+        onGraphicPreview: vi.fn(),
+        cue,
+      }),
+    );
+  }
+
+  const rectAt = (left: number, top: number, width: number, height: number) =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) }) as DOMRect;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    doc = null;
+    document.elementFromPoint = () => null;
+    // jsdom lays nothing out: the stage and the scene's box report where a
+    // real Player would put them.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === "stage") return rectAt(0, 0, 960, 540);
+      if (this.dataset.editScene === "scene-0") {
+        return rectAt(START.x * 960, START.y * 540, START.w * 960, START.h * 540);
+      }
+      return rectAt(0, 0, 0, 0);
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  /** Mount, let the selection box measure, then move the box by `dxPx` page px. */
+  async function dragBy(cue: SceneCue, dxPx: number) {
+    await act(async () => {
+      root.render(React.createElement(Harness, { cue }));
+    });
+    // The selection box is measured on an animation frame.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    const handle = container.querySelector<HTMLElement>('[data-testid="box-handle-move"]');
+    expect(handle, "the move handle renders for a scene-level selection").not.toBeNull();
+    act(() => {
+      handle!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 600, clientY: 300 }));
+    });
+    // Alt on the move: no guide snap, so the assertion is the clamp alone.
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 600 + dxPx, clientY: 300, altKey: true }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 600 + dxPx, clientY: 300 }));
+    });
+    return doc!.scenes["scene-0"]?.graphicRect;
+  }
+
+  it("a CardRow box dragged past the right edge stops at the edge at its own size", async () => {
+    // +0.3 of the width: x 0.8, right edge 1.2. Moved back to x 0.6.
+    const rect = await dragBy(cueOf("CardRow"), 288);
+    expect(rect).toEqual({ x: 0.6, y: 0.5, w: 0.4, h: 0.3 });
+  });
+
+  it("the same drag on a TitleCard stops at the caption-safe area (5% from the right in 16:9)", async () => {
+    const rect = await dragBy(cueOf("TitleCard"), 288);
+    expect(rect).toEqual({ x: 0.55, y: 0.5, w: 0.4, h: 0.3 });
   });
 });

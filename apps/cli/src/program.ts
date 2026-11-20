@@ -8,11 +8,14 @@ import {
   CaptionThemeIdSchema,
   CleanupLevelSchema,
   COVER_MAX_WORDS,
+  LOOK_IDS,
+  LookSchema,
   RESOLUTION_CHOICES,
   ResolutionChoiceSchema,
-  SceneComponentIdSchema,
+  PlannerComponentIdSchema,
   SfxLevelSchema,
   type CaptionThemeId,
+  type Look,
 } from "@ossclip/core";
 import { STUDIO_ENTRY } from "@ossclip/renderer";
 import { loadEnvFiles } from "./env";
@@ -37,6 +40,7 @@ import { accountsFlag, atFlag, deliveryFlag, platformsFlag, youtubePrivacyFlag }
 // test that notices is the buildProgram case in telemetry.test.ts.
 import { inputSourceUsed, resetInputSource } from "./interactive/ask-input";
 import { setReplayArgv } from "./replay-argv";
+import { ScriptFlagSchema } from "./script-mode";
 import {
   bootstrapTelemetry,
   durationBucket,
@@ -82,6 +86,19 @@ export function captionThemeFlag(v: string): CaptionThemeId {
     throw new InvalidArgumentError(
       `--caption-theme wants one of ${CAPTION_THEME_IDS.join(", ")}, got "${v}"`,
     );
+  }
+  return parsed.data;
+}
+
+/**
+ * `--look <name>` → a theme preset (design §2.2). `captionThemeFlag`'s
+ * shape: a typo'd `--look explainr` fails naming the looks instead of
+ * rendering the default look the user was trying to leave.
+ */
+export function lookFlag(v: string): Look {
+  const parsed = LookSchema.safeParse(v.trim());
+  if (!parsed.success) {
+    throw new InvalidArgumentError(`--look wants one of ${LOOK_IDS.join(", ")}, got "${v}"`);
   }
   return parsed.data;
 }
@@ -423,6 +440,19 @@ export function buildProgram(): Command {
     )
     .option("--scenes <path>", "hand-authored scenes JSON (Scene[]) — no LLM in the loop")
     .option(
+      "--script <file>",
+      "plan the graphics from your video script: each 🎬 cue becomes a scene on the words " +
+        "its 🗣️ lines are spoken at; `clip: <file>` cues place a transparent clip. Implies " +
+        "--produce; cannot be combined with --clip or --scenes",
+      (v: string) => {
+        // Parse, never coerce (CLAUDE.md): an empty value must die here
+        // naming the flag, not resolve to the current directory.
+        const parsed = ScriptFlagSchema.safeParse(v);
+        if (!parsed.success) throw new InvalidArgumentError(parsed.error.issues[0]!.message);
+        return parsed.data;
+      },
+    )
+    .option(
       "--no-repair",
       "skip the ASR mishearing repair pass (captions then show the raw transcription)",
     )
@@ -571,6 +601,14 @@ export function buildProgram(): Command {
       "visual caption preset: default | founder | punch | boxed | minimal (config key: \"captionTheme\")",
       captionThemeFlag,
     )
+    // No commander default: untyped stays undefined so the config's `look`
+    // can supply it (resolveLook in produce.ts).
+    .option(
+      "--look <name>",
+      "colours, fonts and motion preset: default | explainer (config key: \"look\"; " +
+        "the config's \"theme\" still wins key by key)",
+      lookFlag,
+    )
     .option(
       "--choreograph-captions",
       "use the fast LLM to group captions into semantic phrases and emphasize key words (config key: \"choreographCaptions\")",
@@ -689,8 +727,10 @@ export function buildProgram(): Command {
       const llmEffort = opts.llmEffort
         ? z.enum(["low", "medium", "high"]).parse(opts.llmEffort)
         : undefined;
+      // The planner subset (G6): forcing a component sends it through the
+      // props call, and ClipScene's props are a clip import, never an LLM's.
       const forceComponent = opts.forceComponent
-        ? SceneComponentIdSchema.parse(opts.forceComponent)
+        ? PlannerComponentIdSchema.parse(opts.forceComponent)
         : undefined;
       // Parsed, not coerced: a typo'd `--source-fit containn` silently falling
       // back to cover is exactly the crop the flag exists to prevent.
@@ -757,7 +797,12 @@ export function buildProgram(): Command {
           sortExplicit,
           aspect: opts.aspect === "16:9" ? "16:9" : "9:16",
           noiseDb: opts.noiseDb,
-          produce: opts.produce,
+          // `--script` implies `--produce` (the `--sfx-level` → `--sfx` shape):
+          // a script IS the request for a plan — typing it is the consent the
+          // `--produce` gate exists for, and the playbook's explainer command
+          // (`--script … --aspect 16:9 --no-captions`) does not repeat it.
+          produce: opts.produce || opts.script !== undefined,
+          script: opts.script,
           intent: opts.intent,
           // `--sfx-level` implies `--sfx` (sfxFlag), resolved HERE so the
           // implication is one pure function rather than a condition produce
@@ -820,6 +865,8 @@ export function buildProgram(): Command {
           // the pin site, not coerced in transit.
           captions: opts.captions,
           captionTheme: opts.captionTheme,
+          // Parsed by lookFlag; undefined = "not typed" so the config decides.
+          look: opts.look,
           choreographCaptions: opts.choreographCaptions,
           // The reunited tri-state (jumpCutsFlag above): undefined = "not
           // typed" = auto, the face-only default.
@@ -1217,6 +1264,67 @@ export function buildProgram(): Command {
         // anchor, so there is one site applying `expandHome` to the user half.
         outPath: flags.outPath,
       });
+    });
+
+  program
+    .command("kit")
+    .description(
+      "export a produced project for DaVinci Resolve: one transparent ProRes 4444 clip per " +
+        "visible scene, plus an FCPXML timeline with the cut source on track 1 and the clips above it",
+    )
+    // Optional like `cover`'s: no argument resolves the run under the
+    // CURRENT directory, through the same ladder `edit` uses (§162, design
+    // 3.4: "finds the project the same way `ossclip edit` does").
+    .argument("[workdir]", "a work directory, or the folder you produced in")
+    .option(
+      "--out <dir>",
+      "write the kit here (default: <video name>-kit beside the source video, so Resolve can reach it)",
+    )
+    .option("--clips-only", "write the clips and the report, no timeline file", false)
+    .option("--force", "render every clip again, even the ones the last export can reuse", false)
+    .option(
+      "--no-refresh",
+      "export the project as it was last produced, even when the editor changed it since " +
+        "(by default the kit first re-runs the recorded produce with --no-render)",
+    )
+    .action(async (workdir: string | undefined, opts) => {
+      const { KitCancelledError, KitExitError, liveKitSeams, parseKitFlags, runKit } = await import("./kit");
+      // Parsed before anything touches disk, the `cover` rule.
+      const flags = parseKitFlags(opts);
+      const target = await resolveWorkdirArgument(workdir ?? ".", "kit");
+      try {
+        const result = await runKit(target, flags, liveKitSeams());
+        // Counts and a boolean only (§134): nothing here names a scene, a
+        // file or a folder, and no key may contain `file`/`path`.
+        telemetry.record("kit_completed", {
+          clips: result.clips,
+          rendered: result.rendered,
+          reused: result.reused,
+          skipped: result.skipped,
+          timeline: result.timeline,
+        });
+      } catch (err) {
+        if (err instanceof KitCancelledError) {
+          // A deliberate stop, not a failure (R16 §60's distinction, as in
+          // produce): no kit_failed, and the 130/143 a script can tell apart.
+          // The signal listener already said so (KIT_CANCELLED_MESSAGE).
+          await telemetry.flush();
+          process.exit(err.exitCode);
+        }
+        // Constructor name only, like produce_failed: messages quote paths.
+        telemetry.record("kit_failed", {
+          error_class: err instanceof Error ? err.constructor.name : "NonError",
+        });
+        if (err instanceof KitExitError) {
+          // The refresh replay's own exit code, not a flattened 1.
+          await telemetry.flush();
+          console.error(`\n✗ ${err.message}`);
+          process.exit(err.exitCode);
+        }
+        throw err;
+      } finally {
+        await telemetry.flush();
+      }
     });
 
   program

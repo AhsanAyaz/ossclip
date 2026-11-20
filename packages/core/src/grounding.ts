@@ -40,6 +40,24 @@ const CHECKED_FIELDS: Record<string, string[]> = {
   StrikethroughReveal: ["lines"],
   FlowDiagram: ["nodes"],
   ScreenshotFrame: ["label"],
+  // A clip carries no copy at all — its props are a file and a length.
+  ClipScene: [],
+  // A pattern scene lists only its top-level PLAIN-STRING fields (§161,
+  // plan Task 4 checklist 5): `stringsOf` walks into objects and would read
+  // an enum value inside them — a CardRow card's `icon: "robot"` — as copy.
+  // So a component whose copy all lives inside objects (CardRow's `cards`)
+  // has no entry at all, and its copy goes unchecked rather than mis-checked.
+  // PhoneDemo is the same case (plan Task 7): its caption words and pill
+  // labels live inside objects beside the `emphasis` and `state` enums.
+  // CtaCard's `action` is an enum at the top level, so it is named out too;
+  // `channel` is a proper noun the speaker need not say.
+  CtaCard: ["text", "keyword"],
+  // BugCard's `mock` and `mockFault` are top-level enums, named out for the
+  // same reason. `mockLines` is left out although it is plain strings: the
+  // entry at `mockWrong` is wrong on purpose (a misheard caption word, the
+  // broken line of code), so checking it against what was said would flag
+  // the very bug the card is showing (plan Task 6).
+  BugCard: ["headline", "sub", "sticker"],
 };
 
 /**
@@ -123,10 +141,13 @@ export function ungroundedTokens(
   text: string,
   transcript: { words: ReadonlyArray<{ text: string }> },
   speaker?: string,
+  /** More text that counts as said — see `checkGrounding`'s `alsoAllowed`. */
+  alsoAllowed?: readonly string[],
 ): string[] {
   const spoken = new Set([
     ...transcript.words.flatMap((w) => tokenize(w.text)),
     ...(speaker ? tokenize(speaker) : []),
+    ...(alsoAllowed ?? []).flatMap(tokenize),
   ]);
   const supported = (token: string): boolean =>
     spoken.has(token) ||
@@ -145,6 +166,14 @@ export function checkGrounding(
    * pass, which is the §17 mistake in a new place.
    */
   speaker?: string,
+  /**
+   * Text that is legitimate on screen though nobody said it: on a `--script`
+   * run, every cue's text (explainer spec §1.3, "on-screen copy may come from
+   * the spoken text or the cue text"). A cue that writes "+1,568 lines" is the
+   * author's own copy, and warning about it would teach them to ignore the
+   * check. Omitted everywhere else, so the rule is unchanged without a script.
+   */
+  alsoAllowed?: readonly string[],
 ): GroundingIssue[] {
   const issues: GroundingIssue[] = [];
   for (const scene of scenes) {
@@ -152,7 +181,7 @@ export function checkGrounding(
     const merged = { ...scene.props, ...scene.overrides };
     for (const field of fields) {
       for (const text of stringsOf(merged[field])) {
-        for (const token of ungroundedTokens(text, transcript, speaker)) {
+        for (const token of ungroundedTokens(text, transcript, speaker, alsoAllowed)) {
           issues.push({ sceneId: scene.id, component: scene.component, field, token });
         }
       }

@@ -17,6 +17,7 @@ import {
   clearElementTransform,
   clearTiming,
   reclampPinnedTiming,
+  resolveSwappedProps,
   resolveTheme,
   restoreElement,
   setElementTransform,
@@ -255,6 +256,63 @@ describe("override document", () => {
     expect(cues[0]!.component).toBe("FlowDiagram");
     // Guaranteed-valid fallback: the registry's own defaults for the new component.
     expect(cues[0]!.props).toEqual({ nodes: ["A", "B"], emphasizeLast: true });
+  });
+});
+
+describe("component swaps refuse non-planner components (explainer plan Task 7)", () => {
+  const clipCue: SceneCue = {
+    id: "scene-0",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false },
+    startSec: 0,
+    endSec: 4.6,
+  };
+  const titleCue: SceneCue = {
+    id: "scene-0",
+    layout: "pip-bubble",
+    component: "TitleCard",
+    props: { title: "SHIP IT" },
+    startSec: 0,
+    endSec: 3,
+  };
+
+  it("leaves a ClipScene unchanged when asked to swap it", () => {
+    expect(resolveSwappedProps(clipCue, "TitleCard", {})).toEqual({
+      component: "ClipScene",
+      props: clipCue.props,
+    });
+  });
+
+  it("leaves a TitleCard unchanged when asked to become a ClipScene", () => {
+    // ClipScene's defaultProps are empty (no honest default clip), so the
+    // old "can never return null" fallback had nothing valid to land on.
+    expect(
+      resolveSwappedProps(titleCue, "ClipScene", { src: "clips/b.webm", durationSec: 2 }),
+    ).toEqual({ component: "TitleCard", props: titleCue.props });
+  });
+
+  it("still swaps between planner components", () => {
+    expect(resolveSwappedProps(titleCue, "FlowDiagram", {})).toEqual({
+      component: "FlowDiagram",
+      props: { nodes: ["A", "B"], emphasizeLast: true },
+    });
+  });
+
+  it("a hand-written swap on a clip keeps the clip and its other edits", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { component: "TitleCard", props: { muted: true } } },
+    });
+    const { cues } = applyOverrides([clipCue], doc);
+    expect(cues[0]!.component).toBe("ClipScene");
+    expect(cues[0]!.props).toEqual({ ...clipCue.props, muted: true });
+  });
+
+  it("a hand-written swap into a clip keeps the card", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { component: "ClipScene" } } });
+    const { cues } = applyOverrides([titleCue], doc);
+    expect(cues[0]!.component).toBe("TitleCard");
+    expect(cues[0]!.props).toEqual(titleCue.props);
   });
 });
 
@@ -756,6 +814,24 @@ describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
     expect(cues[0]!.graphicRect).toEqual(hand);
   });
 
+  it("a rect the script placement planned (§161) is the default the editor can still move or drop", () => {
+    const planned = {
+      ...cue("scene-0"),
+      layout: "full-bleed" as const,
+      graphicRect: { x: 0.14, y: 0.16, w: 0.72, h: 0.68 },
+    };
+    // No edit: the planned rect renders.
+    expect(applyOverrides([planned], OverrideDocSchema.parse({})).cues[0]!.graphicRect).toEqual(planned.graphicRect);
+    // A drag or resize in the editor wins.
+    const hand = { x: 0.3, y: 0.2, w: 0.4, h: 0.4 };
+    const dragged = OverrideDocSchema.parse({ scenes: { "scene-0": { graphicRect: hand } } });
+    expect(applyOverrides([planned], dragged).cues[0]!.graphicRect).toEqual(hand);
+    // A layout chosen in the editor gets that layout's own slot: the planned
+    // rect was for full-bleed.
+    const relaid = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "split-left" } } });
+    expect("graphicRect" in applyOverrides([planned], relaid).cues[0]!).toBe(false);
+  });
+
   it("rejects an off-frame or sub-minimum rect — hand-editable data is validated", () => {
     expect(
       OverrideDocSchema.safeParse({ scenes: { s: { graphicRect: { x: -0.1, y: 0, w: 0.5, h: 0.3 } } } })
@@ -804,6 +880,47 @@ describe("graphicRect override (PLAN 2026-07-31 Task 2)", () => {
     const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "video-top" } } });
     const { cues } = applyOverrides([routed], doc);
     expect(cues[0]!.graphicRect).toEqual(routed.graphicRect);
+  });
+});
+
+describe("a backdrop change keeps the graphic box (scene-backdrop-choice design §2)", () => {
+  // The §161 placement: a slot component full-bleed in SCRIPT_LANDSCAPE_RECT.
+  const planned: SceneCue = {
+    ...cue("scene-0"),
+    layout: "full-bleed",
+    graphicRect: { x: 0.14, y: 0.16, w: 0.72, h: 0.68 },
+  };
+  const relaid = (layout: SceneCue["layout"], extra: Record<string, unknown> = {}) =>
+    applyOverrides([planned], OverrideDocSchema.parse({ scenes: { "scene-0": { layout, ...extra } } }))
+      .cues[0]!;
+
+  it("full-bleed → graphic-only keeps the planned box", () => {
+    const out = relaid("graphic-only");
+    expect(out.layout).toBe("graphic-only");
+    expect(out.graphicRect).toEqual(planned.graphicRect);
+  });
+
+  it("full-bleed → pip-bubble keeps it, and graphic-only → pip-bubble does too", () => {
+    expect(relaid("pip-bubble").graphicRect).toEqual(planned.graphicRect);
+    const solid = { ...planned, layout: "graphic-only" as const };
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "pip-bubble" } } });
+    expect(applyOverrides([solid], doc).cues[0]!.graphicRect).toEqual(planned.graphicRect);
+  });
+
+  it("full-bleed → split-left drops it, as before: not a backdrop", () => {
+    expect("graphicRect" in relaid("split-left")).toBe(false);
+    expect("graphicRect" in relaid("lower-third")).toBe(false);
+  });
+
+  it("a hand-set rect still wins over the kept planned one", () => {
+    const hand = { x: 0.3, y: 0.2, w: 0.4, h: 0.4 };
+    expect(relaid("graphic-only", { graphicRect: hand }).graphicRect).toEqual(hand);
+  });
+
+  it("is idempotent under the second override pass", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { layout: "pip-bubble" } } });
+    const once = applyOverrides([planned], doc).cues;
+    expect(applyOverrides(once, doc).cues[0]).toEqual(once[0]);
   });
 });
 

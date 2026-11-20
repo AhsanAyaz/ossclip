@@ -11,6 +11,20 @@ import {
   defaultCoverProps,
   type CoverCompProps,
 } from "./CoverComposition";
+import {
+  SCENE_STILL_ID,
+  SceneStillComposition,
+  defaultSceneStillProps,
+  type SceneStillProps,
+} from "./SceneStillComposition";
+import { STILL_FPS } from "./scene-still";
+import {
+  SCENE_CLIP_ID,
+  SceneClipComposition,
+  defaultSceneClipProps,
+  type SceneClipProps,
+} from "./SceneClipComposition";
+import { sceneClipMetadata } from "./scene-clip";
 
 export const COMPOSITION_ID = "production";
 
@@ -54,6 +68,38 @@ export const RemotionRoot: React.FC = () => {
           height: p.settings.height,
         };
       }}
+    />
+    <Composition
+      id={SCENE_STILL_ID}
+      component={SceneStillComposition as unknown as React.FC<Record<string, unknown>>}
+      defaultProps={defaultSceneStillProps as unknown as Record<string, unknown>}
+      width={1080}
+      height={1920}
+      fps={STILL_FPS}
+      durationInFrames={90}
+      // Sized from the props like the other two: one bundle serves every
+      // aspect and every fixture's length, so `pnpm stills` bundles once.
+      calculateMetadata={({ props }) => {
+        const p = props as unknown as SceneStillProps;
+        return {
+          width: p.frame.width,
+          height: p.frame.height,
+          durationInFrames: Math.max(1, Math.round(p.durationSec * STILL_FPS)),
+        };
+      }}
+    />
+    <Composition
+      id={SCENE_CLIP_ID}
+      component={SceneClipComposition as unknown as React.FC<Record<string, unknown>>}
+      defaultProps={defaultSceneClipProps as unknown as Record<string, unknown>}
+      width={1920}
+      height={1080}
+      fps={30}
+      durationInFrames={90}
+      // A kit clip (§162) is one scene at the OUTPUT frame and rate, for
+      // exactly the scene's window — all from the props, so one bundle
+      // renders every clip of a kit.
+      calculateMetadata={({ props }) => sceneClipMetadata(props as unknown as SceneClipProps)}
     />
     </>
   );

@@ -3,7 +3,7 @@ import type { Transcript } from "../schema";
 import type { Layout, Scene, SceneComponentId } from "../scene-schema";
 import { SCENE_REGISTRY, llmPropsSchema } from "../scene-registry";
 import type { LlmProvider } from "./provider";
-import type { Moment } from "./beats";
+import type { Moment, ScriptMoment } from "./beats";
 import { entryTexts, locateSpoken, revealItemTexts } from "../reveal-match";
 import {
   layoutFeasible,
@@ -77,7 +77,7 @@ GROUNDING — hard rules:
 - The transcript is automatic speech recognition output and may contain mishearings. An unfamiliar proper noun is more likely a mistranscription of a common phrase than a real company or product — prefer the common-sense reading ("code churn", not "CodeChun") and never promote a suspected mishearing into a name or label.`;
 
 function buildPropsPrompt(
-  moment: Moment,
+  moment: Moment | ScriptMoment,
   transcript: Transcript,
   cut?: ReadonlySet<number>,
 ): string {
@@ -113,10 +113,11 @@ function buildPropsPrompt(
  */
 async function generateScenePropsBatch(
   provider: LlmProvider,
-  moments: readonly Moment[],
+  moments: readonly (Moment | ScriptMoment)[],
   indices: readonly number[],
   transcript: Transcript,
-  cut?: ReadonlySet<number>,
+  cut: ReadonlySet<number> | undefined,
+  mode: "auto" | "script",
 ): Promise<Map<number, Record<string, unknown>>> {
   const out = new Map<number, Record<string, unknown>>();
   if (indices.length < 2) return out; // nothing to amortise
@@ -126,8 +127,9 @@ async function generateScenePropsBatch(
   const blocks = indices.map((i) => {
     const moment = moments[i]!;
     // The LLM-facing copy: reveal props are the author's, never the model's
-    // (reveal-timing spec, "The LLM does not set").
-    const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId);
+    // (reveal-timing spec, "The LLM does not set"), and a script-only prop
+    // is shown only in a script run (G6).
+    const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId, mode);
     return (
       `--- moment ${i} ---\n` +
       `${buildPropsPrompt(moment, transcript, cut)}\n` +
@@ -160,7 +162,7 @@ async function generateScenePropsBatch(
     // the LLM must neither see nor set the reveal keys. The per-moment path
     // strips them the same way, because the provider parses with the schema
     // it was handed.
-    const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId);
+    const llmSchema = llmPropsSchema(moment.sceneKind as SceneComponentId, mode);
     const parsed = (llmSchema as z.ZodType<Record<string, unknown>>).safeParse(entry.props);
     if (parsed.success) out.set(entry.index, parsed.data);
   }
@@ -177,12 +179,25 @@ async function generateScenePropsBatch(
  */
 export async function generateScenes(
   provider: LlmProvider,
-  moments: readonly Moment[],
+  // A script's moments may name a script-only card (plan Task 4); the props
+  // call is the same for every component — `${component}_props` and its
+  // LLM-facing schema. The one thing the mode changes is that schema
+  // (`opts.mode`).
+  moments: readonly (Moment | ScriptMoment)[],
   transcript: Transcript,
   opts: {
     framing?: FramingContext;
     /** Word indices the cutlist removes (`cutWordIndices`), in `transcript`'s space. */
     cut?: ReadonlySet<number>;
+    /**
+     * `"script"` only from a `--script` run: its props schemas also offer
+     * `SCRIPT_ONLY_PROP_KEYS` (a TerminalMock `badge`, §161). Default
+     * `"auto"`, so every other caller's prompt is byte-identical to before
+     * (G6). Both reach their own cache file — `scriptplan-*` vs `scenes-*`
+     * in produce — so a reply written for one mode is never served to the
+     * other.
+     */
+    mode?: "auto" | "script";
   } = {},
 ): Promise<{ scenes: Scene[]; failures: ScenePropsFailure[] }> {
   // The cue matcher sees cut words as blank: a retake says the same words
@@ -207,7 +222,7 @@ export async function generateScenes(
    *      `repairMomentLayouts` would reach).
    */
   const seen = new Map<SceneComponentId, number>();
-  const layoutFor = (component: SceneComponentId, moment: Moment): Layout => {
+  const layoutFor = (component: SceneComponentId, moment: Moment | ScriptMoment): Layout => {
     const meta = SCENE_REGISTRY[component];
     const n = seen.get(component) ?? 0;
     seen.set(component, n + 1);
@@ -229,6 +244,7 @@ export async function generateScenes(
     return rotation.find((l) => layoutFeasible(framing, l, faceFrac)) ?? rotation[0]!;
   };
 
+  const mode = opts.mode ?? "auto";
   const graphicIndices = moments.flatMap((m, i) => (m.sceneKind === "none" ? [] : [i]));
   const batched = await generateScenePropsBatch(
     provider,
@@ -236,6 +252,7 @@ export async function generateScenes(
     graphicIndices,
     transcript,
     opts.cut,
+    mode,
   );
 
   for (let i = 0; i < moments.length; i++) {
@@ -246,7 +263,7 @@ export async function generateScenes(
     // with it, so the per-moment path must be handed the LLM-facing copy:
     // the reveal props stay out of the prompt (spec, "The LLM does not
     // set"), and a reply that invents one is stripped rather than kept.
-    const schema = llmPropsSchema(component) as z.ZodType<Record<string, unknown>>;
+    const schema = llmPropsSchema(component, mode) as z.ZodType<Record<string, unknown>>;
     const layout = layoutFor(component, moment);
 
     let props: Record<string, unknown> | null = batched.get(i) ?? null;

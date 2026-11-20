@@ -268,6 +268,39 @@ export const ProductionOverlaysSchema = z.object({
 });
 export type ProductionOverlays = z.infer<typeof ProductionOverlaysSchema>;
 
+/**
+ * The `--script` a production was planned from (explainer spec §1.6, §158).
+ *
+ * The TEXT, not just the path: the editor's Re-plan must work after the
+ * script file was moved or deleted (plan Review Focus 5), so the project
+ * carries its own copy and Re-plan plans from that. `sourcePath` is where
+ * the text came from — `clip:` paths are relative to ITS folder, and a
+ * re-plan resolves them there, not against the workdir copy. `clips` records
+ * which project WebM each `clip:` path was imported as, so a re-plan whose
+ * source clip has since gone keeps the WebM it already has instead of failing:
+ * the WebM's name hashes the source's size and mtime, which cannot be
+ * recomputed for a file that no longer exists.
+ *
+ * Optional with no default: a run without `--script` writes a production.json
+ * byte-identical to what it always wrote (G6).
+ */
+export const ProductionScriptSchema = z.object({
+  text: z.string(),
+  sourcePath: z.string().optional(),
+  clips: z
+    .array(
+      z.object({
+        /** The `clip:` path exactly as the script writes it. */
+        path: z.string().min(1),
+        /** The imported WebM, relative to the workdir (`clips/<hash>.webm`). */
+        src: z.string().min(1),
+        durationSec: z.number().positive(),
+      }),
+    )
+    .optional(),
+});
+export type ProductionScript = z.infer<typeof ProductionScriptSchema>;
+
 /** The single source of truth for a production. Every pipeline stage is a pure function over this. */
 export const ProductionSchema = z.object({
   version: z.literal(1),
@@ -414,6 +447,8 @@ export const ProductionSchema = z.object({
   theme: ThemeSchema.optional(),
   captionTheme: CaptionThemeIdSchema.optional(),
   captionChoreography: CaptionChoreographySchema.optional(),
+  /** Present on a `--script` run and carried by its replays (`ProductionScriptSchema`). */
+  script: ProductionScriptSchema.optional(),
   render: RenderSettingsSchema,
 });
 export type Production = z.infer<typeof ProductionSchema>;

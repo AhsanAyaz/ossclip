@@ -4,7 +4,9 @@ import {
   LayoutSchema,
   SceneAnchorSchema,
   SceneComponentIdSchema,
+  ThemeOverrideSchema,
   ThemeSchema,
+  defaultTheme,
   type SceneAnchor,
   type SceneCue,
   type SceneComponentId,
@@ -22,8 +24,9 @@ import {
 } from "./schema";
 import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
-import { resolveSceneProps } from "./scene-registry";
+import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
 import { revealItemTexts } from "./reveal-match";
+import { keepsBoxAcross } from "./framing";
 import {
   captionKeyFor,
   CaptionThemeIdSchema,
@@ -557,9 +560,67 @@ export const SfxAddedPlacementSchema = z.object({
 });
 export type SfxAddedPlacement = z.infer<typeof SfxAddedPlacementSchema>;
 
+/**
+ * The eleven tokens `ThemeSchema` had before the explainer roles. Every
+ * overrides.json saved before §161 carries ALL of them, because the old
+ * `ThemeSchema.partial()` filled each default in on parse and every save
+ * wrote the parsed doc back.
+ */
+const ORIGINAL_THEME_KEYS = [
+  "bg",
+  "fg",
+  "accent",
+  "muted",
+  "success",
+  "cardBg",
+  "cardBorder",
+  "danger",
+  "radiusPx",
+  "fontDisplay",
+  "fontMono",
+] as const satisfies readonly (keyof Theme)[];
+
+/**
+ * Heals a legacy default-filled overrides `theme` back to the keys the user
+ * set (§161). Those files hold the factory palette for every key, and laid
+ * over a configured base (the config theme, `--look explainer`) they replace
+ * it with the defaults on every run, so the fix to the schema alone would
+ * not reach a project that already has an overrides.json.
+ *
+ * The signature is "all eleven original keys present": the editor's theme
+ * panel only ever patches a handful, so a theme carrying every one of them
+ * was filled, not written. On a match, every key whose value equals the
+ * factory default is dropped (it was filled, or it is a no-op over a default
+ * base); a key that differs is the user's edit and stays. Below the
+ * signature the theme is returned untouched, defaults and all, because a
+ * hand-written `accent: "#FFE14D"` over an explainer base is a real choice.
+ *
+ * The one case this gets wrong: a user who set all eleven keys by hand, some
+ * to exactly the factory value, under a non-default base. Those keys now fall
+ * through to the base. Accepted because it needs every key written by hand
+ * (no tool writes that shape on purpose) and some of them chosen to equal the
+ * factory value precisely, while the alternative, leaving filled files alone,
+ * breaks the configured theme for every project saved before §161.
+ */
+export function stripFilledThemeDefaults(theme: Partial<Theme>): Partial<Theme> {
+  if (!ORIGINAL_THEME_KEYS.every((key) => Object.hasOwn(theme, key))) return theme;
+  return Object.fromEntries(
+    Object.entries(theme).filter(
+      ([key, value]) => value !== defaultTheme[key as keyof Theme],
+    ),
+  ) as Partial<Theme>;
+}
+
 export const OverrideDocSchema = z.object({
-  /** Global style tokens — the look is a system, so these are not per-element. */
-  theme: ThemeSchema.partial().default({}),
+  /**
+   * Global style tokens — the look is a system, so these are not per-element.
+   * Only the keys the user set (`ThemeOverrideSchema`, no defaults), so
+   * `resolveTheme` lays them over the configured base instead of replacing it
+   * (§161). The heal runs here, in the schema, because every reader of
+   * overrides.json (produce, the edit server, and through it the editor)
+   * parses with this schema, so none of them can see a filled legacy theme.
+   */
+  theme: ThemeOverrideSchema.transform(stripFilledThemeDefaults).default({}),
   /**
    * Optional per-project caption theme preset (`default`, `founder`, `punch`,
    * `boxed`, `minimal`). Wins over `--caption-theme` and `~/.ossclip/config.json`.
@@ -970,7 +1031,7 @@ export interface AppliedOverrides {
  * silence would make it look like the editor forgot them.
  */
 /**
- * Props for a scene whose COMPONENT the user just swapped.
+ * The component and props for a scene whose COMPONENT the user just swapped.
  *
  * The producer's `cue.props` were written for the OLD component and are not
  * merged in here at all — they were shaped for a different schema (a
@@ -978,26 +1039,45 @@ export interface AppliedOverrides {
  * them through would either fail validation or silently satisfy it with
  * garbage. Falling back to the NEW component's `defaultProps` — same base
  * `resolveSceneProps` always starts from — renders something coherent
- * instead. `resolveSceneProps` returning null (an override value that fits
- * no schema at all) still can't drop the scene: the registry's own
- * `defaultProps` are the floor every component is built to satisfy on their
- * own, so that's the guaranteed-valid fallback.
+ * instead.
+ *
+ * REFUSED, the scene's own component and props handed back, when either side
+ * is LLM-unfillable (`plannerSelectable: false` — ClipScene, explainer plan
+ * Task 7). The script-only cards are fillable and swap freely (§161, plan
+ * decision 5). A clip has a
+ * file and a length, a card has copy, and neither has the other's props:
+ * swapping a clip out throws the clip away for a default card, and swapping
+ * one in has nothing to play — ClipScene's `defaultProps` are empty because
+ * there is no honest default clip, so the fallback below would come back null
+ * (the old "can never return null" claim stopped being true the day the clip
+ * joined the registry). The editor never offers the swap (the Inspector hides
+ * the control on a clip and lists `scriptComponentIds()` only); this is the
+ * floor for a hand-edited overrides.json.
  */
-function resolveSwappedProps(
-  component: SceneComponentId,
+export function resolveSwappedProps(
+  cue: Pick<SceneCue, "component" | "props">,
+  to: SceneComponentId,
   propsOverride: Record<string, unknown>,
-): Record<string, unknown> {
-  return (
-    resolveSceneProps(component, {}, propsOverride) ??
-    // The override didn't fit the new schema at all — fall back to the
-    // registry's OWN defaults with nothing layered on top, run back through
-    // `resolveSceneProps` (rather than the raw `defaultProps` object) so
-    // zod-defaulted fields (e.g. `emphasizeLast`) are filled in the same way
-    // every other resolved cue's props are. `defaultProps` is guaranteed to
-    // validate on its own — every component in the registry is built on that
-    // invariant — so this can never itself return null.
-    resolveSceneProps(component, {}, {})!
-  );
+): Pick<SceneCue, "component" | "props"> {
+  const planner = (id: SceneComponentId) => SCENE_REGISTRY[id].plannerSelectable !== false;
+  if (!planner(to) || (cue.component !== undefined && !planner(cue.component))) {
+    return { component: cue.component, props: cue.props };
+  }
+  return {
+    component: to,
+    props:
+      resolveSceneProps(to, {}, propsOverride) ??
+      // The override didn't fit the new schema at all — fall back to the
+      // registry's OWN defaults with nothing layered on top, run back through
+      // `resolveSceneProps` (rather than the raw `defaultProps` object) so
+      // zod-defaulted fields (e.g. `emphasizeLast`) are filled in the same
+      // way every other resolved cue's props are. Every swappable component's
+      // `defaultProps` validate on their own — the planner nine and the
+      // script-only cards, which the swap offers too (plan decision 5); the
+      // registry is built on that invariant, by test, and the refusal above
+      // keeps ClipScene out — so this cannot itself return null.
+      resolveSceneProps(to, {}, {})!,
+  };
 }
 
 /**
@@ -1110,21 +1190,30 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
   const out = cues.map((cue) => {
     const o = effectiveOverride(doc.scenes, cue.id);
     if (!o) return cue;
-    const swapped = o.component !== undefined && o.component !== cue.component;
-    const component = o.component ?? cue.component;
-    const props =
-      o.component !== undefined && swapped
-        ? resolveSwappedProps(o.component, o.props)
-        : { ...cue.props, ...o.props };
-    // A rect `routeAroundSourceText` baked into the base cue was computed
-    // FOR that cue's original layout — under a layout override it would
-    // silently keep winning over the new layout's slot, parking the graphic
-    // where the OLD layout needed it. Same reason the editor's `patchLayout`
+    // A refused swap (a non-planner component on either side) comes back as
+    // the cue's own component: it is then no swap at all, and the entry's
+    // other edits — a clip's `muted`, its framing — still apply below.
+    const swap =
+      o.component !== undefined && o.component !== cue.component
+        ? resolveSwappedProps(cue, o.component, o.props)
+        : undefined;
+    const swapped = swap !== undefined && swap.component !== cue.component;
+    const component = swapped ? swap.component : cue.component;
+    const props = swapped ? swap.props : { ...cue.props, ...o.props };
+    // A rect `routeAroundSourceText` baked into the base cue (or the 16:9
+    // script placement planned, §161) was computed FOR that cue's original
+    // layout — under a layout override it would silently keep winning over
+    // the new layout's slot, parking the graphic where the OLD layout
+    // needed it. Same reason the editor's `patchLayout`
     // drops the override rect on a swap. A hand-set `o.graphicRect` is the
-    // user's own placement and still wins below.
-    const layoutSwapped = o.layout !== undefined && o.layout !== cue.layout;
+    // user's own placement and still wins below. Except between two
+    // backdrops (§163, `keepsBoxAcross`): there the box is where the graphic
+    // belongs whatever is behind it, and dropping it sent a §161 terminal
+    // from its large centred box to the backdrop's small slot.
+    const rectStale =
+      o.layout !== undefined && o.layout !== cue.layout && !keepsBoxAcross(cue.layout, o.layout);
     const { graphicRect: _staleRouted, ...cueSansRoutedRect } = cue;
-    const base: SceneCue = layoutSwapped ? cueSansRoutedRect : cue;
+    const base: SceneCue = rectStale ? cueSansRoutedRect : cue;
     // A pin is the user's absolute window and wins over the entry word
     // (reveal-timing final review I-3): the preview must not re-derive a
     // pinned start from `entryAtSec`. Same guard as the pin itself below.

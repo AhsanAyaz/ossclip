@@ -1,16 +1,28 @@
 import React from "react";
 import {
+  BACKDROP_LAYOUTS,
   CAPTION_THEME_IDS,
   cutRangeToOldClock,
+  isBackdropLayout,
   LayoutSchema,
+  scriptComponentIds,
   scalarPropControls,
-  SceneComponentIdSchema,
+  SCENE_REGISTRY,
   splitRootId,
   type CaptionThemeId,
+  type FaceCrop,
+  type ScriptComponentId,
+  type SceneComponentId,
   type SceneCue,
   type Theme,
 } from "@ossclip/core/browser";
-import { clampGraphicRect, graphicSlotFor, layoutSlots } from "@ossclip/renderer/composition";
+import {
+  belowFaceBox,
+  graphicBoundsFor,
+  graphicClampFor,
+  layoutSlots,
+  storedGraphicBox,
+} from "@ossclip/renderer/composition";
 import type { useEdits } from "./useEdits";
 import {
   EMPTY_LUT_MENU,
@@ -30,7 +42,7 @@ import {
   type OverlayTrayRequest,
 } from "./overlayLane";
 import { handPlacedStartRect } from "./overlayBox";
-import { buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
+import { DYNAMIC_ID, buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 
 /** What planned this video and what it cost (R21 §104) — `/api/usage`'s
  * shape, read straight off the workdir's own artefacts. */
@@ -99,6 +111,17 @@ interface InspectorProps {
    * on such a workdir.
    */
   captionsHiddenByFlag?: boolean;
+  /**
+   * production.json holds a stored script (`/api/production`'s
+   * `scriptProject`, §163). With a landscape frame it turns the layout select
+   * into the backdrop choice; the flag alone would not do, because the
+   * editor's Render replays without `--script`. Absent = not one, so every
+   * other project keeps today's control.
+   */
+  scriptProject?: boolean;
+  /** The measured face (render-props' `face`) — "Below the face" places the
+   * box under it, and is disabled without one. */
+  face?: FaceCrop | null;
   /** The project's baseline caption theme before `overrides.json` is applied (`renderProps.baseCaptionTheme ?? renderProps.captionTheme`). */
   baseCaptionTheme?: CaptionThemeId;
   /**
@@ -610,6 +633,36 @@ const ThemeField: React.FC<{
 );
 
 /**
+ * What the Component dropdown may swap a scene to, or null when it offers no
+ * swap at all (explainer plan Task 7).
+ *
+ * Every card, the script planner's list (`scriptComponentIds()`): the nine
+ * plus the script-only pattern scenes, offered in EVERY project, script or
+ * not (§161, plan decision 5) — the beat sheet never sees them, but an
+ * author may still pick one. ClipScene is in the scene-id enum, but a card
+ * cannot become a clip (there is no clip file to play) and a clip cannot
+ * become a card (the clip would be thrown away for default copy). So a clip
+ * shows no swap control, and a card's dropdown never lists the clip.
+ * `resolveSwappedProps` refuses the same swaps for a hand-edited
+ * overrides.json.
+ */
+export function componentSwapOptions(component: SceneComponentId): ScriptComponentId[] | null {
+  return SCENE_REGISTRY[component].plannerSelectable === false ? null : scriptComponentIds();
+}
+
+/**
+ * The author's names for the three backdrops (§163, design 5), in the order
+ * the design lists them. Only the visible text: the option values stay the
+ * layout ids, so the control writes the same override it always did and
+ * every selector keyed on a value still finds its option.
+ */
+const BACKDROP_NAMES: Record<(typeof BACKDROP_LAYOUTS)[number], string> = {
+  "full-bleed": "Over the speaker",
+  "graphic-only": "Full background",
+  "pip-bubble": "Background with speaker picture",
+};
+
+/**
  * Precision editing to complement the drag-and-drop overlay. Dragging is
  * imprecise; typing a value (including `0`, to cleanly undo a nudge) goes
  * straight to `patchElement`/`patchTheme` rather than waiting on a blur.
@@ -626,6 +679,8 @@ export const Inspector: React.FC<InspectorProps> = ({
   onVideoPreview,
   runInfo,
   captionsHiddenByFlag,
+  scriptProject = false,
+  face = null,
   baseCaptionTheme,
   fromLive = (sec: number): number => sec,
   hasOldClockPreimage = (): boolean => true,
@@ -974,7 +1029,8 @@ export const Inspector: React.FC<InspectorProps> = ({
     // own, so the single-line input left TerminalMock the one component
     // whose text could not be edited at all (field report 2026-08-07).
     const text = cue.props ? elementTextOf(elementId, cue.props) : null;
-    const multiline = /^window-\d+$/.test(elementId);
+    // A CardRow card (`card-N`, §161) edits as two lines too: text, then sub.
+    const multiline = /^(window|card)-\d+$/.test(elementId);
     return (
       <div>
         <div style={section}>
@@ -1039,7 +1095,9 @@ export const Inspector: React.FC<InspectorProps> = ({
                   // Top-level string props patch directly; array-backed ids
                   // need buildArrayPatch to rewrite the right entry — a bare
                   // { [elementId]: text } there writes a key nothing reads.
-                  const patch = /^(line|node|message|window|item)-\d+$/.test(elementId)
+                  // The Overlay's one regex, not a copy of it: a kind added
+                  // there is routed here with no second edit (§161).
+                  const patch = DYNAMIC_ID.test(elementId)
                     ? buildArrayPatch(elementId, props, value)
                     : { [elementId]: value };
                   if (patch) {
@@ -1171,6 +1229,7 @@ export const Inspector: React.FC<InspectorProps> = ({
 
   if (selection && cue) {
     const isPlain = cue.kind === "plain";
+    const swapOptions = !isPlain && cue.component ? componentSwapOptions(cue.component) : null;
     // Deleted scenes whose window this cue covers (field report 2026-08-31,
     // second round): a hidden scene is not selectable anywhere any more —
     // App remaps such a selection to the take `fillPlainCues` minted, which
@@ -1323,15 +1382,17 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         ) : null}
         <div style={section}>
-          {!isPlain && cue.component ? (
+          {swapOptions ? (
             <div style={row}>
               <span style={label}>Component</span>
               {/* Swapping the component re-resolves props against the NEW
                   component's defaults (see `applyOverrides`) — the producer's
                   old props were shaped for a different schema and don't carry
                   over, so the swap renders something coherent instead of an
-                  invalid scene. */}
+                  invalid scene. Planner components only, and none at all on
+                  a clip (`componentSwapOptions`). */}
               <select
+                data-testid="component-swap"
                 style={numberInput}
                 value={cue.component}
                 onChange={(e) =>
@@ -1341,7 +1402,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                   )
                 }
               >
-                {SceneComponentIdSchema.options.map((id) => (
+                {swapOptions.map((id) => (
                   <option key={id} value={id}>
                     {id}
                   </option>
@@ -1365,16 +1426,26 @@ export const Inspector: React.FC<InspectorProps> = ({
                   typeof cue.props?.[control.key] === "number"
                     ? (cue.props[control.key] as number)
                     : undefined;
+                // An integer prop (step 1: CardRow's highlight, BugCard's
+                // number) reads as the whole number it is, not "2.00".
+                const integer = control.kind === "number" && control.step === 1;
+                const shown = (n: number) => (integer ? String(n) : n.toFixed(2));
                 return control.kind === "number" ? (
                   <div style={row} key={control.key}>
                     <span style={label}>
                       {control.key}
                       {"  "}
-                      <span style={{ color: "#EDEDF2" }}>
-                        {setNumber !== undefined
-                          ? setNumber.toFixed(2)
-                          : `default (${control.fallback.toFixed(2)})`}
-                      </span>
+                      {setNumber === undefined && control.unsetIsNone ? (
+                        // Unset is no value at all (no card highlighted,
+                        // nothing marked), so it is not dressed as a
+                        // default: the slider resting at its minimum would
+                        // otherwise read as that minimum chosen (§161).
+                        <span data-testid={`prop-${control.key}-unset`}>not set</span>
+                      ) : (
+                        <span style={{ color: "#EDEDF2" }}>
+                          {setNumber !== undefined ? shown(setNumber) : `default (${shown(control.fallback)})`}
+                        </span>
+                      )}
                     </span>
                     {/* Unset shows the renderer's own default (`fallback`) but
                         never writes it: an unset revealSpeed and an explicit
@@ -1400,7 +1471,8 @@ export const Inspector: React.FC<InspectorProps> = ({
                     {control.optional ? (
                       // The slider has no position meaning "unset", so the way
                       // back to unset is a button — the enum's "default"
-                      // option, for a control that cannot hold one.
+                      // option, for a control that cannot hold one. Labelled
+                      // "clear" where unset is no value, not a default.
                       <button
                         data-testid={`prop-${control.key}-default`}
                         style={button}
@@ -1410,7 +1482,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                           edits.clearProp(selection.sceneId, control.key);
                         }}
                       >
-                        default
+                        {control.unsetIsNone ? "clear" : "default"}
                       </button>
                     ) : null}
                   </div>
@@ -1469,21 +1541,56 @@ export const Inspector: React.FC<InspectorProps> = ({
                 );
               })
             : null}
-          <div style={row}>
-            <span style={label}>Layout</span>
-            <select
-              style={numberInput}
-              data-testid="layout-select"
-              value={cue.layout}
-              onChange={(e) => edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"])}
-            >
-              {LayoutSchema.options.map((id) => (
-                <option key={id} value={id}>
-                  {id}
-                </option>
-              ))}
-            </select>
-          </div>
+          {(() => {
+            // The backdrop choice (§163, design 5) is the SAME control: the
+            // three backdrops are three existing layouts, so naming them is a
+            // relabel of the list, not a second field that must agree with
+            // it. Only in a 16:9 script project — the one place produce
+            // keeps them through the landscape remap (`landscapeLayoutFor`);
+            // elsewhere the names would promise a backdrop a Render undoes,
+            // so every other project keeps today's flat list (G6).
+            const backdrops = scriptProject && frame.width > frame.height;
+            return (
+              <div style={row}>
+                <span style={label}>{backdrops ? "Behind the graphic" : "Layout"}</span>
+                <select
+                  style={numberInput}
+                  data-testid="layout-select"
+                  value={cue.layout}
+                  onChange={(e) =>
+                    edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"], cue.layout)
+                  }
+                >
+                  {backdrops ? (
+                    <>
+                      <optgroup label="Backdrops">
+                        {BACKDROP_LAYOUTS.map((id) => (
+                          <option key={id} value={id}>
+                            {BACKDROP_NAMES[id]}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Other layouts">
+                        {LayoutSchema.options
+                          .filter((id) => !isBackdropLayout(id))
+                          .map((id) => (
+                            <option key={id} value={id}>
+                              {id}
+                            </option>
+                          ))}
+                      </optgroup>
+                    </>
+                  ) : (
+                    LayoutSchema.options.map((id) => (
+                      <option key={id} value={id}>
+                        {id}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+            );
+          })()}
         </div>
         <div style={section}>
           {/* Direct manipulation first (PLAN Task B4): a zoom slider with a
@@ -1703,13 +1810,32 @@ export const Inspector: React.FC<InspectorProps> = ({
           // stage handles. The effective rect is the hand-set override, the
           // routed rect the cue carries, the layout's own slot, or the
           // full-bleed fallback band (R13) — the same resolver SceneLayer
-          // draws from, so this box is always the one on screen.
+          // draws from, so this box is the one on screen everywhere but the
+          // 16:9 pip-bubble cut below.
+          // A full-frame component's box is held to the frame, not the
+          // caption-safe area (§163) — the stage's own rule, `graphicClampFor`.
+          // The fields show the STORED box (`storedGraphicBox`), not the
+          // drawn slot: in a 16:9 pip-bubble the stage cuts the box clear of
+          // the picture at draw time, and a field that showed the cut box
+          // would store it as the author's own on the first edit — still cut
+          // after the picture moved (§163). The note says what the stage does.
           if (isPlain) return null;
-          const eff = graphicSlotFor(cue, frame);
+          const eff = storedGraphicBox(cue, frame);
+          const clampBox = graphicClampFor(cue.component, frame);
+          const landscape = frame.width > frame.height;
+          const cutByPicture = landscape && cue.layout === "pip-bubble";
+          // "Below the face" (§163, design 3): 16:9 only — in 9:16 the face
+          // fills the frame's width and the layouts already own the band
+          // under it.
+          // Built inside the bounds the clamp enforces, so the clamp below
+          // cannot move it up onto the head (a slot component's safe rect).
+          const belowFace = landscape
+            ? belowFaceBox(face, frame, graphicBoundsFor(cue.component, frame))
+            : null;
           const boxPatch = (key: "x" | "y" | "w" | "h") => (v: number) =>
             edits.patchGraphicRect(
               selection.sceneId,
-              clampGraphicRect({ ...eff, [key]: v }, frame),
+              clampBox({ ...eff, [key]: v }),
               `box:${selection.sceneId}:${key}`,
             );
           return (
@@ -1726,6 +1852,36 @@ export const Inspector: React.FC<InspectorProps> = ({
                 <NumberField id="box-w" value={eff.w} min={0.08} max={1} dragStep={0.002} onCommit={boxPatch("w")} />
                 <NumberField id="box-h" value={eff.h} min={0.05} max={1} dragStep={0.002} onCommit={boxPatch("h")} />
               </div>
+              {cutByPicture ? (
+                <div data-testid="graphic-box-cut-note" style={{ fontSize: 12, color: "#9A9AA3" }}>
+                  Kept clear of the speaker picture when drawn.
+                </div>
+              ) : null}
+              {landscape ? (
+                <button
+                  data-testid="graphic-below-face"
+                  style={button}
+                  disabled={belowFace === null}
+                  title={
+                    !face
+                      ? "No face was measured in this video"
+                      : face.subject === "screen"
+                        ? "The measured face is a camera inset, not the speaker"
+                        : belowFace === null
+                          ? "No room below the face"
+                          : undefined
+                  }
+                  onClick={() => {
+                    if (belowFace === null) return;
+                    blurActive();
+                    // Through the component's clamp like every other write
+                    // here, so the box committed is the box the stage draws.
+                    edits.patchGraphicRect(selection.sceneId, clampBox(belowFace));
+                  }}
+                >
+                  Below the face
+                </button>
+              ) : null}
               {edits.doc.scenes[selection.sceneId]?.graphicRect ? (
                 <button
                   data-testid="reset-box"

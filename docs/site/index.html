@@ -115,6 +115,7 @@
   <a href="#flags">produce flags</a>
   <a href="#analyze">analyze</a>
   <a href="#publish">publish</a>
+  <a href="#kit">kit</a>
   <a href="#config">Configuration</a>
   <a href="#telemetry">Telemetry</a>
   <a href="#licensing">Licensing</a>
@@ -446,6 +447,25 @@ ossclip publish --youtube-privacy unlisted                 # private is the defa
   <li><strong>Size-capped platforms get their own fitted encode.</strong> Instagram's URL-fetch ingest rejected a 409&nbsp;MB file twice and then published the identical video at 88&nbsp;MB, so a capped platform gets a second encode with the bitrate fitted to <em>this</em> video's duration — one encode per distinct cap, everyone else riding the 10&nbsp;Mbps file. The encode reports percent and ETA, not a spinner. A video too long to fit its cap above the quality floor is refused by name before the confirm, not opaquely mid-upload.</li>
   <li><strong>Duration caps are checked before a byte moves</strong> — Threads 5:00, TikTok 10:00, Instagram 15:00. The violating channels are refused and named; the rest publish. The editor's Publish panel grays them out for the same reason.</li>
   <li><strong>YouTube ships private by default.</strong> <code>--youtube-privacy public | unlisted | private</code> (and a select in the editor's panel, which resets to private on every mount): making something public is an explicit per-publish choice, never a sticky preference, because an accidental <code>--all</code> must not blast a subscriber feed.</li>
+</ul>
+
+<h2 id="kit">kit — scene clips and a timeline for DaVinci Resolve</h2>
+<p>For finishing a video in Resolve with ossclip's scenes as editable pieces: <code>ossclip kit</code> takes a produced project (and whatever you changed in the editor) and writes a folder you import as a timeline. <strong>Track 1</strong> is your source footage, cut the way the editor shows it, pointing at the original file with its in and out points — nothing is re-encoded, and dragging a clip edge brings removed material back. <strong>The track above</strong> holds one transparent ProRes 4444 clip per visible scene, at the moment ossclip planned it; move, trim, hold or delete them with Resolve's own tools.</p>
+<pre><code>ossclip kit "&lt;work directory&gt;"                 # writes &lt;video name&gt;-kit/ beside the source video
+ossclip kit --out /mnt/c/Users/me/Videos/kit     # somewhere else; under WSL, written as C:/... for Resolve
+ossclip kit --force                              # render every clip again
+ossclip kit --clips-only                         # the clips and the report, no timeline</code></pre>
+<pre><code>&lt;video name&gt;-kit/
+  timeline.fcpxml        File → Import → Timeline…, then pick this
+  clips/
+    scene-3-CardRow.mov  one transparent clip per kept scene, named by scene
+  kit-report.json        what was rendered, reused and skipped, and why</code></pre>
+<ul>
+  <li><strong>Which scenes.</strong> Every scene that is not hidden in the editor — hiding a scene is how you leave it out. A <code>clip:</code> scene from a script is not rendered again: the timeline points at your original file, and if that file has moved the scene is skipped and the report says so.</li>
+  <li><strong>What a clip carries.</strong> The scene alone on a transparent background, in its layout's place, with its entry and exit animation, silent for now. A graphic that sat on the blurred footage gets a flat dark panel instead, and a split or bubble layout is exported as its graphic only (the speaker is not reframed) — the report notes both. Captions, zoom and punch-ins, loudness and music are finishing work and stay with Resolve.</li>
+  <li><strong>A second run is seconds.</strong> A clip re-renders only when its scene, the look or the frame size changed; a scene that only moved keeps its clip. Clips are named by scene, so hiding one renames nothing and Resolve keeps its links; a hidden scene's old clip is removed.</li>
+  <li><strong>Edited since the last produce?</strong> The kit first re-runs the recorded produce with <code>--no-render</code> — the same replay the editor's Render uses — so the kit matches the editor. <code>--no-refresh</code> exports the project as it was last produced.</li>
+  <li><strong>A folder of takes</strong> puts <code>source-concat.mp4</code>, the re-encoded join in the work directory, on track 1. Clips render two browser tabs at a time, about ten seconds for a four-second 1080p clip.</li>
 </ul>
 
 <h2 id="config">Configuration</h2>

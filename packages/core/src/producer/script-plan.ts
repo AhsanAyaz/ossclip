@@ -1,0 +1,442 @@
+/**
+ * Planning from the author's script (explainer design §1.3): each aligned cue
+ * becomes ONE moment on the words the alignment found, and a single LLM call
+ * only chooses the component and writes the copy for the cues that need it.
+ *
+ * Why a separate call and schema rather than the beat sheet with the cues
+ * pasted in: the beat-sheet call is the segmentation judgement — it picks the
+ * word spans — and here the spans are already decided by the script. Its
+ * schema also requires a hook and caps moments at 24, and its prompt carries
+ * the short-form virality grammar (alternate with talking head, ~45%
+ * coverage) that an explainer whose every line has a cue would fight. And the
+ * beat-sheet prompt and schema are frozen for runs without `--script` (G6),
+ * so script mode cannot extend them either.
+ */
+import { z } from "zod/v4";
+import type { Transcript } from "../schema";
+import { LayoutSchema, ScriptComponentIdSchema, type Scene } from "../scene-schema";
+import { SCENE_REGISTRY, scriptComponentIds } from "../scene-registry";
+import type { AlignedCue } from "../script/align";
+import { MAX_SCENE_SEC, SCENE_GAP_SEC, entryWordTime, minSceneSec, onCueStartSec } from "../assemble";
+import { cappedText, type BeatsValidationIssue, type ScriptMoment } from "./beats";
+import { momentSceneId } from "./scene-props";
+import type { LlmProvider } from "./provider";
+
+/**
+ * Part of the script-plan cache key (Task 8), bumped whenever the prompt or
+ * schema below changes what is asked. Its own version, not
+ * `PRODUCER_PROMPT_VERSION`: bumping that would re-plan every non-script take
+ * for a change that cannot affect them (spec, Compatibility).
+ *
+ * "s2": the menu, the `sceneKind` enum and the hint check grew the
+ * script-only cards (§161, plan Tasks 4-8 — one bump for the lot, since none
+ * of them ships alone). An "s1" plan was asked without them, so it must not
+ * be served to a script that now hints `[CardRow]` (plan Review Focus 4).
+ * Task 8's script-only props (`SCRIPT_ONLY_PROP_KEYS`: a TerminalMock
+ * `badge`) ride the same bump: the props call that offers them is cached
+ * inside the same `scriptplan-*` file, never in the beat-sheet cache.
+ *
+ * "s3": the minimum scene length (`SCRIPT_MIN_SCENE_SEC`, §161). The prompt
+ * did not change, but the cached plan stores the scenes' anchors and the
+ * moments' end words, and an "s2" plan holds every scene to its line's last
+ * word — served now, it would keep exactly the 1.2-2.3 s scenes the minimum
+ * exists to remove.
+ *
+ * "s4": the minimum counts from the scene's entry word, where assembly
+ * starts it, not from its line's first word (EGM run, 2026-11-17). An "s3"
+ * plan's end words were computed the old way, which left a scene entering
+ * late in its line at 2.0 s on screen.
+ *
+ * "s5": the minimum also counts from where the previous scene ends, since
+ * assembly pushes a scene past it (EGM plan-only run, 2026-11-17). An "s4"
+ * plan left a TitleCard after a still-playing clip at 2.2 s on screen.
+ */
+export const SCRIPT_PLAN_PROMPT_VERSION = "s5";
+
+/**
+ * Most cues one script may carry (§1.3). A ceiling on the one call that plans
+ * them all: past it the reply is long enough that a provider truncating it
+ * would silently drop the tail cues to the TitleCard fallback. A 4-minute
+ * explainer is ~24 cues; 40 leaves room without inviting a whole course.
+ */
+export const MAX_SCRIPT_CUES = 40;
+
+/**
+ * A `clip:` cue's imported clip (Task 6). `src` is relative to the render's
+ * public dir. Not `ResolvedClip`, which the plan named it: that name is already
+ * `@ossclip/core`'s resolved `--clip` window (clip.ts).
+ */
+export interface ResolvedScriptClip {
+  cueId: string;
+  src: string;
+  durationSec: number;
+}
+
+export interface ScriptPlanInput {
+  aligned: AlignedCue[];
+  clips: ResolvedScriptClip[];
+  /**
+   * Every transcript word's place on the OUTPUT clock, null where the cut
+   * removes it — what `scriptSceneEndWords` measures the minimum scene
+   * length against. Omitted, no scene is lengthened: the minimum is screen
+   * time, and without the cut's clock there is no screen time to measure.
+   */
+  wordTimes?: readonly WordOutputTime[];
+}
+
+/** A word's start and end on the output clock, or null where the cut removes it. */
+export type WordOutputTime = { start: number; end: number } | null;
+
+/**
+ * The shortest a script scene is held (seconds of output). A script scene
+ * used to last exactly as long as its spoken line, and the first real
+ * 4-minute render showed what that costs (§161): "Three steps. Brainstorm.
+ * Draft. Review." and "Design with an elephant. Review with a goldfish."
+ * gave scenes of 1.2 to 2.3 s — a three-card row cut before its third card
+ * landed, a bug card fading at 80% of its life. The hand-made clips those
+ * scenes replace ran 3.5 to 10 s. Four is the floor that lets a card build
+ * and be read; it is a floor, so a longer line keeps its own length.
+ */
+export const SCRIPT_MIN_SCENE_SEC = 4;
+
+/**
+ * Each aligned cue's end word once the minimum scene length is applied,
+ * `ends[i]` for `aligned[i]` (unchanged where no lengthening applies).
+ *
+ * The END moves, never the start: the scene still enters on its line, and
+ * is held over the words after it. It stays WORD-anchored — the new end is
+ * the last kept word that ends at or before `start + SCRIPT_MIN_SCENE_SEC` —
+ * so a later recut re-resolves it like any anchor (PHASE1 §5) instead of
+ * carrying a seconds figure the new cut makes wrong.
+ *
+ * `start` is where the scene will really START, not the line's first word.
+ * Assembly moves a cued scene's start to its entry word (`entryWords[i]`,
+ * the plan's `scene.cue.entryWord`) less the entry lead, and the first
+ * version counted from the line instead: on the EGM run a 3.68 s line whose
+ * graphic entered 1.97 s in looked long enough, was not extended, and was on
+ * screen for 2.0 s (2026-11-17). So the start is computed by assembly's own
+ * functions (`entryWordTime`, `onCueStartSec`), on the same times. Their
+ * `end − minScene` limit is left out: it can only move the start EARLIER,
+ * which lengthens the scene, so counting without it never falls short. An
+ * entry word outside the cue's span (a planner never writes one) counts
+ * from the line's first word.
+ *
+ * The start also waits for the previous scene: assembly pushes a scene to
+ * `previous end + SCENE_GAP_SEC`, and on the EGM plan-only run a TitleCard
+ * whose line was spoken while the 5.2 s clip before it still played started
+ * at 233.11 s, most of its line gone, while the count began at its entry
+ * word (about 231 s) and found nothing to extend: 2.2 s on screen with the
+ * next scene 12 s away. So the cues are walked in order carrying the
+ * previous scene's end the way assembly computes it: a clip's start plus
+ * its length (capped at `MAX_SCENE_SEC`); a graphic's end word's end, but
+ * at least `sceneFloorSec` after its pushed start (assembly's `minScene`
+ * floor); a cue with no scene (footage, or one that planned nothing) puts
+ * nothing on screen and pushes nothing.
+ *
+ * Limits, each the reason a scene may end sooner than the minimum:
+ * - never into the next scene: the walk stops at the word before the next
+ *   PLACED cue's `startWord` (placed = aligned; a footage cue that will show
+ *   no graphic still owns its words, and cues cannot cross, §1.2), so the
+ *   overlap repair in `normalizeBeatSheet(..., "script")` finds nothing;
+ * - never past the last kept word, and only ON kept words — a cut word has
+ *   no screen time to end on;
+ * - never beyond `MAX_SCENE_SEC`, which the 4 s target is far inside.
+ *
+ * `clip:` cues are left alone: a ClipScene lasts its clip's own length
+ * (`fixedDurationSec`), never its words'.
+ */
+export function scriptSceneEndWords(
+  aligned: readonly AlignedCue[],
+  wordTimes: readonly WordOutputTime[],
+  opts: {
+    /**
+     * Per cue, the scene it became. Absent entries default to a clip with no
+     * known length for a `clip:` cue and to a graphic with no entry word
+     * otherwise.
+     */
+    scenes?: readonly (ScriptSceneShape | undefined)[];
+    /** Assembly's `minScene` floor for this take (`minSceneSec`); defaults to the long-take 1.2 s. */
+    sceneFloorSec?: number;
+  } = {},
+): number[] {
+  // The float posture of beats.ts/assemble.ts: a word that ends at 4 s to
+  // the eye can be 4.0000001 s in the stamps.
+  const EPS = 1e-6;
+  const target = Math.min(SCRIPT_MIN_SCENE_SEC, MAX_SCENE_SEC);
+  const floor = opts.sceneFloorSec ?? minSceneSec(Infinity);
+  // Where the previous scene on screen ends, as assembly will end it.
+  let previousEnd = -Infinity;
+  return aligned.map((a, i) => {
+    const shape: ScriptSceneShape =
+      opts.scenes?.[i] ?? (a.cue.hint.kind === "clip" ? { kind: "clip" } : { kind: "graphic" });
+    // Alignment places cues on kept words only, so both ends have times; a
+    // caller whose times disagree gets the line as spoken, not a guess.
+    const start = wordTimes[a.startWord];
+    const end = wordTimes[a.endWord];
+    if (shape.kind === "none" || !start || !end) return a.endWord;
+    // Assembly's legacy start: the first word, pushed past the scene before.
+    const legacyStart = Math.max(start.start, previousEnd + SCENE_GAP_SEC);
+    // Assembly's end for a scene on [legacyStart, wordsEnd]: a fixed length
+    // (a clip) from its start, else its words with the floor; then the cap.
+    const endOnScreen = (wordsEnd: number, fixedSec?: number) =>
+      Math.min(
+        fixedSec !== undefined ? legacyStart + fixedSec : Math.max(wordsEnd, legacyStart + floor),
+        legacyStart + MAX_SCENE_SEC,
+      );
+    if (shape.kind === "clip") {
+      // A ClipScene keeps its own length and is never lengthened.
+      previousEnd = endOnScreen(end.end, shape.durationSec);
+      return a.endWord;
+    }
+    const entryWord = shape.entryWord;
+    const entry =
+      entryWord !== undefined && entryWord >= a.startWord && entryWord <= a.endWord
+        ? entryWordTime(entryWord, a.startWord, a.endWord, (w) => wordTimes[w] ?? null)
+        : null;
+    const startSec = entry ? onCueStartSec(legacyStart, entry.start, Infinity) : legacyStart;
+    const until = startSec + target;
+    let endWord = a.endWord;
+    if (end.end < until - EPS) {
+      const next = aligned[i + 1];
+      const last = Math.min(wordTimes.length, next ? next.startWord : wordTimes.length) - 1;
+      for (let w = a.endWord + 1; w <= last; w++) {
+        const t = wordTimes[w];
+        if (!t) continue;
+        if (t.end > until + EPS) break;
+        endWord = w;
+      }
+    }
+    previousEnd = endOnScreen(wordTimes[endWord]!.end);
+    return endWord;
+  });
+}
+
+/**
+ * What a script cue became, as far as its time on screen goes
+ * (`scriptSceneEndWords`): a graphic scene (with the word it enters on), a
+ * clip (with its length, `ClipScene`'s `fixedDurationSec`), or nothing on
+ * screen — a footage cue, or one whose scene was not planned.
+ */
+export type ScriptSceneShape =
+  | { kind: "graphic"; entryWord?: number }
+  | { kind: "clip"; durationSec?: number }
+  | { kind: "none" };
+
+/**
+ * A script that cannot be planned as written — too many cues, a `[Name]` hint
+ * that is no script component, a clip cue with no clip. Thrown before any LLM
+ * call, with a message written to be shown as-is: each of these is the
+ * author's to fix in the script, and degrading would place something they did
+ * not ask for.
+ */
+export class ScriptPlanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScriptPlanError";
+  }
+}
+
+/** One entry per non-clip cue, echoing the cue's id. */
+export const ScriptPlanSchema = z.object({
+  cues: z.array(
+    z.object({
+      id: z.string(),
+      // The script menu (the nine plus the script-only cards), never the
+      // full id enum: no LLM may place a ClipScene (G6 doctrine,
+      // scene-schema.ts). This schema is script mode's alone, so widening it
+      // changes no other run's ask.
+      sceneKind: z.union([ScriptComponentIdSchema, z.literal("none")]),
+      layout: LayoutSchema.optional(),
+      // Capped, never rejected (§123/§151, `cappedText`).
+      onScreenCopy: cappedText(60),
+    }),
+  ),
+});
+type ScriptPlanReply = z.infer<typeof ScriptPlanSchema>;
+
+const SCRIPT_PLAN_SYSTEM = `You are the producer for an explainer video. The author wrote a script before recording: each cue below is an on-screen instruction ("🎬") with the lines spoken while it is on screen. The cues are already placed on the spoken words; your job is to choose how each cue is shown and write its on-screen copy.
+
+Rules — follow these as hard policies:
+- The cue text is the instruction. Choose the component that shows what it describes; do not second-guess the author's intent.
+- On-screen copy may only use words and numbers that appear in the cue text or the spoken text. Never introduce a name, number or claim from anywhere else. Copy is SHORT: numbers over adjectives, never full sentences.
+- FOOTAGE: some cues describe footage, not a graphic ("Screen recording: …", "B-roll of …", "Back to your face", "GitHub page for …", "Browser: …"). For such a cue answer sceneKind "none": the speaker stays on screen and the cue is reported to the author.
+- A cue marked "component: <Name> (fixed)" has its component chosen by the author: answer that component and write only its copy. Never answer "none" for it.
+- Return one entry for EVERY cue, echoing its id exactly. You may set \`layout\`; omit it for the component's default.`;
+
+/**
+ * The fallback copy: the cue text, as the props call's TitleCard fallback
+ * uses a moment's copy. `cappedText` cuts at a word boundary when one keeps
+ * most of the budget — the same truncation the reply's copy gets.
+ */
+const fallbackCopy = (cueText: string): string => cappedText(60).parse(cueText);
+const capPurpose = (text: string): string => cappedText(100).parse(text);
+
+function buildScriptPlanUserPrompt(cues: ReadonlyArray<{ aligned: AlignedCue; fixed?: string }>): string {
+  // `id:` and `cue:` open their lines so the mock provider can read the ids
+  // back off the prompt (mock.ts), the way it reads `[n]` word indices.
+  const blocks = cues.map(({ aligned, fixed }) =>
+    `--- cue ---\n` +
+    `id: ${aligned.cue.id}\n` +
+    `cue: ${aligned.cue.cueText}\n` +
+    `spoken: ${aligned.cue.spoken.join(" ")}` +
+    (fixed ? `\ncomponent: ${fixed} (fixed)` : ""),
+  );
+  // `scriptComponentIds()`, never the registry's keys: ClipScene is placed
+  // by `clip:` cues only and must not be offered (G6). The script-only cards
+  // are offered HERE and nowhere else (plan Task 4).
+  const menu = scriptComponentIds()
+    .map((id) => `- ${id}: ${SCENE_REGISTRY[id].whenToUse}`)
+    .join("\n");
+  return (
+    `Cues (${cues.length}), in script order:\n\n${blocks.join("\n\n")}\n\n` +
+    `Scene components available (sceneKind values; "none" = footage, no graphic):\n${menu}`
+  );
+}
+
+/**
+ * Moments for the aligned cues of a script, `moments[i]` for `aligned[i]`.
+ *
+ * Spans come from the alignment and nothing the reply says can move them: the
+ * anti-goal is a cue placed on the wrong words (§1.2), and an LLM re-reading
+ * the transcript is exactly how that would happen.
+ *
+ * - `clip:` cues skip the LLM entirely: a talking-head moment plus a
+ *   ClipScene in `clipScenes`, which the caller appends after the props call
+ *   (the props call has nothing to write for a clip).
+ * - `[Component]` cues keep the author's component whatever the reply says,
+ *   including "none"; the reply still writes their copy.
+ * - A thrown call is retried once; after that, and for any cue the reply
+ *   leaves out, the cue falls back to a TitleCard of its own cue text and an
+ *   issue says so (§1.3) — one cue's miss never costs the others.
+ *
+ * The spoken text in the prompt is the SCRIPT's lines, not the transcript's:
+ * it is the author's spelling of what they meant to say, free of ASR
+ * mishearings, and the props call that follows already reads the transcript
+ * slice as heard. `transcript` is accepted so a later version can show both
+ * without changing the signature; this one does not read it.
+ */
+export async function planScriptMoments(
+  provider: LlmProvider,
+  input: ScriptPlanInput,
+  transcript: Transcript,
+): Promise<{ moments: ScriptMoment[]; clipScenes: Scene[]; issues: BeatsValidationIssue[] }> {
+  const { aligned } = input;
+  if (aligned.length > MAX_SCRIPT_CUES) {
+    throw new ScriptPlanError(
+      `the script has ${aligned.length} placed cues; at most ${MAX_SCRIPT_CUES} are supported — split the video or merge cues`,
+    );
+  }
+
+  // Every script error is found before the call, so a typo costs no tokens.
+  // The same list the menu offers, so a hint can name exactly what the
+  // planner could have chosen — and the CLI's pre-transcription check
+  // (`scriptCueProblems`) parses with the same schema.
+  const valid = scriptComponentIds();
+  const clipsByCue = new Map(input.clips.map((c) => [c.cueId, c]));
+  const fixedKinds = new Map<number, ScriptMoment["sceneKind"]>();
+  for (let i = 0; i < aligned.length; i++) {
+    const { cue } = aligned[i]!;
+    if (cue.hint.kind === "component") {
+      const parsed = ScriptComponentIdSchema.safeParse(cue.hint.component);
+      if (!parsed.success) {
+        throw new ScriptPlanError(
+          `unknown component [${cue.hint.component}] in the cue at script line ${cue.line}; valid names: ${valid.join(", ")}`,
+        );
+      }
+      fixedKinds.set(i, parsed.data);
+    }
+    if (cue.hint.kind === "clip" && !clipsByCue.has(cue.id)) {
+      throw new ScriptPlanError(
+        `the clip cue at script line ${cue.line} (${cue.hint.path}) has no imported clip`,
+      );
+    }
+  }
+
+  const planned = aligned.flatMap((a, i) =>
+    a.cue.hint.kind === "clip" ? [] : [{ aligned: a, index: i, fixed: fixedKinds.get(i) }],
+  );
+
+  const issues: BeatsValidationIssue[] = [];
+  let reply: ScriptPlanReply | null = null;
+  let lastError = "";
+  if (planned.length > 0) {
+    const user = buildScriptPlanUserPrompt(planned.map((p) => ({ aligned: p.aligned, fixed: p.fixed })));
+    for (let attempt = 0; attempt < 2 && reply === null; attempt++) {
+      try {
+        reply = await provider.complete({
+          system: SCRIPT_PLAN_SYSTEM,
+          user,
+          schema: ScriptPlanSchema,
+          schemaName: "script_plan",
+        });
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+  // First entry per id wins: a reply that repeats an id gets no second vote.
+  const byId = new Map<string, ScriptPlanReply["cues"][number]>();
+  for (const entry of reply?.cues ?? []) if (!byId.has(entry.id)) byId.set(entry.id, entry);
+
+  const moments: ScriptMoment[] = [];
+  const clipScenes: Scene[] = [];
+  for (let i = 0; i < aligned.length; i++) {
+    const a = aligned[i]!;
+    const { cue } = a;
+    const span = { startWord: a.startWord, endWord: a.endWord };
+    const purpose = capPurpose(cue.cueText);
+
+    if (cue.hint.kind === "clip") {
+      const clip = clipsByCue.get(cue.id)!;
+      // The cue text of a clip cue is its file path, which is no headline;
+      // the spoken line is the author's words and is what `hook` (the first
+      // moment's copy) would show on a cover if the script opens on a clip.
+      moments.push({ ...span, purpose, onScreenCopy: fallbackCopy(cue.spoken.join(" ")), sceneKind: "none" });
+      clipScenes.push({
+        id: momentSceneId(i),
+        anchor: span,
+        // Full frame over the speaker (spec 1.4); the props are the import's,
+        // and the registry fills gainDb and muted.
+        layout: SCENE_REGISTRY.ClipScene.defaultLayout,
+        component: "ClipScene",
+        props: { src: clip.src, durationSec: clip.durationSec },
+        overrides: {},
+        rationale: "script clip",
+      });
+      continue;
+    }
+
+    const fixed = fixedKinds.get(i);
+    const entry = byId.get(cue.id);
+    if (!entry) {
+      issues.push({
+        moment: i,
+        issue:
+          reply === null
+            ? `script_plan failed (${lastError.slice(0, 120)}); ${cue.id} falls back to ${fixed ?? "TitleCard"} from its cue text`
+            : `script_plan reply left out ${cue.id}; it falls back to ${fixed ?? "TitleCard"} from its cue text`,
+      });
+      // A hinted cue keeps the author's component even here: the hint is
+      // never overridden, and the props call can still fill it from the slice.
+      moments.push({ ...span, purpose, onScreenCopy: fallbackCopy(cue.cueText), sceneKind: fixed ?? "TitleCard" });
+      continue;
+    }
+
+    const sceneKind = fixed ?? entry.sceneKind;
+    if (sceneKind === "none") {
+      // Recorded so the report (Task 8) can list the cue as left to footage
+      // rather than silently showing nothing where the script asked for a shot.
+      issues.push({ moment: i, issue: `footage cue ${cue.id}: no graphic, stays talking head` });
+    }
+    moments.push({
+      ...span,
+      purpose,
+      onScreenCopy: entry.onScreenCopy,
+      sceneKind,
+      // A layout picked for a different component than the one shown may not
+      // be in its repertoire — dropped, as `forceComponent` drops it.
+      ...(entry.layout && entry.sceneKind === sceneKind ? { layout: entry.layout } : {}),
+    });
+  }
+  return { moments, clipScenes, issues };
+}

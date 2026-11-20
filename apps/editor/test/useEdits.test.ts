@@ -434,10 +434,42 @@ describe("graphic box editing (PLAN 2026-07-31 Task 2)", () => {
     });
     expect(s.doc.scenes["scene-0"]!.graphicRect).toEqual({ x: 0.1, y: 0.2, w: 0.5, h: 0.3 });
     // The rect belongs to the OLD layout's slot — a swap must not let it
-    // silently keep winning over the new layout at render time.
-    s = editReducer(s, { type: "patchLayout", sceneId: "scene-0", layout: "graphic-only" });
+    // silently keep winning over the new layout at render time. From a
+    // non-backdrop layout: between two backdrops the box is kept (below).
+    s = editReducer(s, {
+      type: "patchLayout", sceneId: "scene-0", layout: "graphic-only", from: "lower-third",
+    });
     expect(s.doc.scenes["scene-0"]!.graphicRect).toBeUndefined();
     expect(s.doc.scenes["scene-0"]!.layout).toBe("graphic-only");
+  });
+
+  describe("a backdrop change keeps the box (scene-backdrop-choice design §2)", () => {
+    const rect = { x: 0.14, y: 0.16, w: 0.72, h: 0.68 };
+    const withRect = () =>
+      editReducer(initialEditState(), { type: "patchGraphicRect", sceneId: "scene-0", rect });
+
+    it("full-bleed → pip-bubble keeps the hand-set rect", () => {
+      const s = editReducer(withRect(), {
+        type: "patchLayout", sceneId: "scene-0", layout: "pip-bubble", from: "full-bleed",
+      });
+      expect(s.doc.scenes["scene-0"]!.graphicRect).toEqual(rect);
+      expect(s.doc.scenes["scene-0"]!.layout).toBe("pip-bubble");
+    });
+
+    it("graphic-only → pip-bubble keeps it", () => {
+      const s = editReducer(withRect(), {
+        type: "patchLayout", sceneId: "scene-0", layout: "pip-bubble", from: "graphic-only",
+      });
+      expect(s.doc.scenes["scene-0"]!.graphicRect).toEqual(rect);
+    });
+
+    it("full-bleed → lower-third drops it: not a backdrop", () => {
+      const s = editReducer(withRect(), {
+        type: "patchLayout", sceneId: "scene-0", layout: "lower-third", from: "full-bleed",
+      });
+      expect(s.doc.scenes["scene-0"]!.graphicRect).toBeUndefined();
+      expect(s.doc.scenes["scene-0"]!.layout).toBe("lower-third");
+    });
   });
 
   it("clearGraphicRect deletes the key via the reducer", () => {
@@ -1486,7 +1518,9 @@ describe("pip bubble editing (R14 §52)", () => {
     let s = editReducer(initialEditState(), {
       type: "patchPip", sceneId: "scene-0", patch: { cornerRadius: 0.2 },
     });
-    s = editReducer(s, { type: "patchLayout", sceneId: "scene-0", layout: "video-top" });
+    s = editReducer(s, {
+      type: "patchLayout", sceneId: "scene-0", layout: "video-top", from: "pip-bubble",
+    });
     expect(s.doc.scenes["scene-0"]!.pip).toEqual({ cornerRadius: 0.2 });
   });
 });

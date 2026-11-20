@@ -79,6 +79,12 @@ export {
   type CaptionThemeId,
   type CaptionWord,
 } from "./captions";
+// The explainer look's bundled faces (§161), for the same reason the
+// Nastaliq trio rides here: the render's BundledFonts loader and the
+// editor's preview need the list at runtime, and `fontsToLoad` is the ONE
+// predicate they and produce's staging share. bundled-fonts.ts imports a
+// type only; the node half (`bundledFontFiles`) stays in fonts.ts.
+export { BUNDLED_FONTS, fontsToLoad, type BundledFont } from "./bundled-fonts";
 // `mapFromKeptSpans` is a VALUE export and browser-safe (timemap.ts imports
 // types only). The editor's load-path repair needs the MAP, not the raw span
 // array, to decide whether a repair is possible at all — see
@@ -224,3 +230,21 @@ export type {
 // bytes, so a "496 / 1500" caption was refused after the upload. Browser-safe:
 // publish/captions.ts imports only a type.
 export { CAPTION_CAPS, captionCap, captionLength } from "./publish/captions";
+
+// The clip kit (§162). `frameWindow` moved here from scenes so the kit's
+// plan (core) and the render (scenes) share ONE §115 window — scenes
+// re-exports it from its own `./frames`. `rebaseCue` is what the one-scene
+// composition draws. Both browser-safe: frames.ts imports nothing and
+// kit-rebase.ts only frames.ts plus a type; the kit's node half
+// (`kit-plan.ts`, which hashes with node:crypto) stays off this surface.
+export { frameWindow } from "./frames";
+export { rebaseCue } from "./kit-rebase";
+
+// The backdrop layouts (§163). The editor's `patchLayout` keeps or drops a
+// scene's box with the SAME `keepsBoxAcross` `applyOverrides` uses — two
+// rules is how the editor would drop a box the render keeps. framing.ts is
+// in this surface's runtime graph already (./overrides imports it); its own
+// runtime imports are ./scene-registry and ./normalize, whose only runtime
+// import is ./content-rect (above) — the rest are type imports. Only these
+// names are exposed: the planning half of framing is the pipeline's.
+export { BACKDROP_LAYOUTS, isBackdropLayout, keepsBoxAcross } from "./framing";

@@ -120,7 +120,13 @@ import { loadEnvFiles } from "./env";
 // is no cycle and nothing interactive rides in here).
 import { EDIT_HEALTH_PATH, editHealthBody } from "./edit-health";
 import { revealInFileManager } from "./open";
-import { REVIEWED_SCENES_BASENAME, renderReplayArgs } from "./render-replay-args";
+import {
+  REVIEWED_SCENES_BASENAME,
+  healRecordedProduceArgs,
+  renderReplayArgs,
+  reviewedScenesText,
+} from "./render-replay-args";
+import { STORED_SCRIPT_BASENAME, replanScriptArgs, storedScriptFrom } from "./script-mode";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
 // cover` needs the same out-resolution rule this server's thumbnail dest,
 // youtube markdown and reveal endpoint derive from, and two spellings of it
@@ -421,9 +427,17 @@ const MIME: Record<string, string> = {
   // `library/<id>.<ext>` copies over `/media/` are shown through `<img>` in the
   // tray and the Player, and an `<img>` handed an SVG as octet-stream does not
   // render it at all — sniffing never applies to SVG.
+  // A `--script` project's clips (`clips/<hash>.webm`): the Player plays them
+  // through a `<video>` over `/media/`, and a media element handed
+  // octet-stream is the sniffing-dependent preview the `.jpg` note refuses.
+  ".webm": "video/webm",
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".svg": "image/svg+xml",
+  // The explainer look's bundled faces (§161): produce stages them into the
+  // workdir and the editor's preview registers them from `/media/fonts/…`.
+  // Typed for the `.jpg` reason — a font load must not hinge on sniffing.
+  ".woff2": "font/woff2",
 };
 
 /**
@@ -1482,6 +1496,22 @@ export async function startEditServer(
               }
               return undefined;
             })(),
+            // Whether this is a script project (§163): the Inspector names
+            // the three backdrops only there. Keyed on the STORED script, not
+            // on `--script` in command.json — the editor's Render replays
+            // without the flag and carries the record forward, and produce
+            // writes the record only on a script-project run
+            // (`isScriptProject`), so its presence is the answer.
+            scriptProject: await (async () => {
+              try {
+                return (
+                  storedScriptFrom(await readFile(join(workdir!, "production.json"), "utf8")) !==
+                  undefined
+                );
+              } catch {
+                return false; // no production.json: nothing stored
+              }
+            })(),
             // Recents ride along here too, so the top bar's Open picker has
             // a list without a second endpoint.
             recent: await readRecentProjects(opts.recentDir),
@@ -1875,17 +1905,9 @@ export async function startEditServer(
           );
           if (!parsed.success) return send(500, { error: `command.json is not valid: ${parsed.error.message}` });
           const cmd = parsed.data;
-          // §129: heal legacy records at replay. Before the fix, wizard and
-          // bare-path runs recorded process.argv — the ORIGINAL invocation,
-          // missing the `produce` literal the re-entered parse actually ran —
-          // so replaying them verbatim dies at commander's front door with
-          // "error: unknown option '--llm'". produce is the ONLY command that
-          // ever writes command.json, so an args array not starting with
-          // "produce" can only be that bug: prepend the literal to
-          // reconstruct the command that ran. A modern record — and a legacy
-          // directly-typed `ossclip produce …` — already starts with it and
-          // is untouched.
-          let args = cmd.args[0] === "produce" ? [...cmd.args] : ["produce", ...cmd.args];
+          // §129: heal legacy records at replay (healRecordedProduceArgs has
+          // the why; shared with `ossclip kit`'s refresh, §162).
+          let args = healRecordedProduceArgs(cmd.args);
           // 2026-08-18 field cascade: mirror produce's own inside-the-input
           // refusal at this boundary, so the failure is a 400 the page can
           // show instead of a spawned child dying in the log tail. The input
@@ -1929,12 +1951,12 @@ export async function startEditServer(
           let scenesPath: string | undefined;
           if (!replan) {
             try {
-              const production = JSON.parse(
+              const reviewed = reviewedScenesText(
                 await readFile(join(workdir!, "production.json"), "utf8"),
-              ) as { scenes?: unknown };
-              if (Array.isArray(production.scenes) && production.scenes.length > 0) {
+              );
+              if (reviewed !== undefined) {
                 scenesPath = join(workdir!, REVIEWED_SCENES_BASENAME);
-                await writeFile(scenesPath, `${JSON.stringify(production.scenes, null, 2)}\n`);
+                await writeFile(scenesPath, reviewed);
               }
             } catch {
               // No production.json, an old one without `scenes`, or an
@@ -1944,6 +1966,26 @@ export async function startEditServer(
             }
           }
           args = renderReplayArgs(args, { scenesPath, replan });
+          // Re-plan of a `--script` project plans from the script text the
+          // PROJECT stored, not the file the recorded command names (plan
+          // Review Focus 5): that file may have moved or been deleted since,
+          // and a Render before this one recorded an argv without it at all.
+          // The copy is written into the workdir, where produce recognises it
+          // and still resolves `clip:` paths beside the original
+          // (`scriptSourcePath`).
+          if (replan) {
+            let stored: ReturnType<typeof storedScriptFrom>;
+            try {
+              stored = storedScriptFrom(await readFile(join(workdir!, "production.json"), "utf8"));
+            } catch {
+              stored = undefined; // no production.json: replay what was recorded
+            }
+            if (stored !== undefined) {
+              const copy = join(workdir!, STORED_SCRIPT_BASENAME);
+              await writeFile(copy, stored.text);
+              args = replanScriptArgs(args, copy);
+            }
+          }
           renderLines = [];
           renderExit = null;
           renderStartedAt = Date.now();

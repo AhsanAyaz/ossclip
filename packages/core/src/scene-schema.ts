@@ -20,7 +20,16 @@ export const LayoutSchema = z.enum([
 ]);
 export type Layout = z.infer<typeof LayoutSchema>;
 
-export const SceneComponentIdSchema = z.enum([
+/**
+ * The components an LLM may choose — the beat sheet's `sceneKind` enum. A
+ * frozen subset of `SceneComponentIdSchema`, not the whole of it (explainer
+ * spec G6): the beat-sheet JSON schema is built from THIS enum, so a
+ * component added to the scene library for one feature (ClipScene, which
+ * only a script's `clip:` cue can place) would otherwise reach every run's
+ * planner and change what it is asked. Order is today's, and part of the
+ * prompt.
+ */
+export const PlannerComponentIdSchema = z.enum([
   "TitleCard",
   "StatCard",
   "RuleCard",
@@ -30,6 +39,41 @@ export const SceneComponentIdSchema = z.enum([
   "ChatMock",
   "ScreenshotFrame",
   "BulletList",
+]);
+export type PlannerComponentId = z.infer<typeof PlannerComponentIdSchema>;
+
+/**
+ * The pattern scenes only a SCRIPT's planner may offer (§161, plan Task 4).
+ * A second list beside the frozen one, never an addition to it: the beat
+ * sheet's `sceneKind` enum is `PlannerComponentIdSchema`, so a card added
+ * there would change the ask of every run without `--script` (G6). Here it
+ * reaches only `ScriptPlanSchema` and the script menu, whose prompt version
+ * is its own (`SCRIPT_PLAN_PROMPT_VERSION`). Later pattern scenes append to
+ * this list; order is menu order after the nine.
+ */
+export const ScriptOnlyComponentIdSchema = z.enum(["CardRow", "CtaCard", "BugCard", "PhoneDemo"]);
+export type ScriptOnlyComponentId = z.infer<typeof ScriptOnlyComponentIdSchema>;
+
+/**
+ * What a script cue may be shown as: the nine, then the script-only cards.
+ * The script planner's `sceneKind` and the `[Name]` hint check both parse
+ * with this, so a hint can name a card the beat sheet never offers.
+ */
+export const ScriptComponentIdSchema = z.enum([
+  ...PlannerComponentIdSchema.options,
+  ...ScriptOnlyComponentIdSchema.options,
+]);
+export type ScriptComponentId = z.infer<typeof ScriptComponentIdSchema>;
+
+/**
+ * Every component a scene may render: the script planner's menu plus the
+ * ones no planner may pick. Stored in production.json and overrides, so a
+ * project that uses a new id cannot be opened by an older ossclip (spec,
+ * Compatibility) — already true whenever a component is added.
+ */
+export const SceneComponentIdSchema = z.enum([
+  ...ScriptComponentIdSchema.options,
+  "ClipScene",
 ]);
 export type SceneComponentId = z.infer<typeof SceneComponentIdSchema>;
 
@@ -70,6 +114,27 @@ export const SceneSchema = z.object({
       entryWord: z.number().int().nonnegative(),
       /** Per staggered item, the word index (`anchor`'s space) it is spoken on, or null. */
       itemWords: z.array(z.number().int().nonnegative().nullable()).optional(),
+    })
+    .optional(),
+  /**
+   * A PLANNED graphic slot, frame fractions — set only by the 16:9 script
+   * placement (`scriptLandscapePlacement`, §161), which centres a slot
+   * component instead of leaving it in a corner or a half-screen split.
+   * `assembleScenes` copies it to the cue's `graphicRect`, the field
+   * routing and the editor's drag already use, so the editor's own rect
+   * (`SceneOverrideSchema.graphicRect`) wins over it and a layout override
+   * drops it (`applyOverrides`). Stored here, on the plan, so the editor's
+   * Render — a `--scenes` replay, which runs without `--script` — renders
+   * the placement that was reviewed. Absent on every other run's scenes, so
+   * their production.json and cues are unchanged (G6). Bounded like the
+   * override's: it is read back from a file.
+   */
+  graphicRect: z
+    .object({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      w: z.number().min(0).max(1),
+      h: z.number().min(0).max(1),
     })
     .optional(),
 });
@@ -287,6 +352,84 @@ export const ThemeSchema = z.object({
     .string()
     .default("'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif"),
   fontMono: z.string().default("'SF Mono', 'Cascadia Code', Consolas, monospace"),
+  // The explainer look's extra roles (design §2.2). Each default is the
+  // colour that role is drawn with today — `accent2`/`highlight` the accent,
+  // `info` the muted grey, `ink` the background — so a theme without them
+  // (every render-props written before they existed, and every run without
+  // `--look`) renders the same pixels (plan G6). The terminal pair is the
+  // exception, below.
+  /** Second accent: the playbook's blue beside its orange `accent`. */
+  accent2: z.string().default("#FFE14D"),
+  /** The playbook's yellow, its own role because the explainer `accent` is
+   * orange and a yellow mark must not turn orange with it. */
+  highlight: z.string().default("#FFE14D"),
+  /** The playbook's cyan, distinct from the `muted` grey. */
+  info: z.string().default("#9A9AA3"),
+  /** The playbook's near-black ink, distinct from the slate `bg`. */
+  ink: z.string().default("#0B0B0E"),
+  /**
+   * The terminal window and its title bar. Optional with NO default (§161):
+   * the window has always been drawn in `cardBg`, and a fixed "#15151B"
+   * default painted a user's config `cardBg` over with the factory colour
+   * on every run without `--look`. Unset means "follow `cardBg`"; read them
+   * through `terminalColors`, never directly.
+   */
+  terminalBg: z.string().optional(),
+  terminalBar: z.string().optional(),
+  /**
+   * Gates loading the bundled font files. "system" (the default) loads
+   * nothing, so every other run keeps today's font resolution; only the
+   * explainer look turns it to "bundled". An enum, not a boolean, so a
+   * hand-edited typo fails the parse instead of reading as off.
+   */
+  fonts: z.enum(["system", "bundled"]).default("system"),
+  /**
+   * Gates the explainer motion (typed terminal lines, count-up numbers). On
+   * the theme rather than a component prop because a new prop on an
+   * existing component changes the frozen planner schema (plan G6, decision 4).
+   */
+  motion: z.enum(["classic", "explainer"]).default("classic"),
 });
 export type Theme = z.infer<typeof ThemeSchema>;
 export const defaultTheme: Theme = ThemeSchema.parse({});
+
+/**
+ * The colours a terminal-style surface is drawn in. `terminalBg` falls back
+ * to `cardBg` and `terminalBar` to the window's colour, so a theme that sets
+ * neither draws the window in its card colour, as before the roles existed
+ * (§161), and one that sets only `terminalBg` gets a bar that matches it.
+ */
+export function terminalColors(theme: Theme): { bg: string; bar: string } {
+  const bg = theme.terminalBg ?? theme.cardBg;
+  return { bg, bar: theme.terminalBar ?? bg };
+}
+
+type ThemeShape = typeof ThemeSchema.shape;
+/** Each field of `ThemeSchema` with its `.default(...)` wrapper peeled off. */
+type UndefaultedThemeShape = {
+  [K in keyof ThemeShape]: ThemeShape[K] extends z.ZodDefault<infer Inner> ? Inner : ThemeShape[K];
+};
+
+/**
+ * A theme LAYER: the keys someone actually set, each validated exactly as
+ * `ThemeSchema` validates it, and nothing filled in (§161). Not
+ * `ThemeSchema.partial()`: zod 4's `.partial()` keeps every field's
+ * `.default(...)`, so that parsed `{}` into the whole factory palette, and
+ * every layer built on it (overrides.json's `theme`, the config theme)
+ * silently overwrote whatever sat beneath it with the defaults.
+ *
+ * Derived from `ThemeSchema.shape` rather than hand-listed so a role added
+ * there later is a valid override key the moment it exists. Unknown keys are
+ * stripped (plain `z.object`), the same as the `.partial()` it replaces; a
+ * caller that wants them refused adds `.strict()`.
+ */
+export const ThemeOverrideSchema = z
+  .object(
+    Object.fromEntries(
+      Object.entries(ThemeSchema.shape).map(([key, field]) => [
+        key,
+        field instanceof z.ZodDefault ? field.unwrap() : field,
+      ]),
+    ) as UndefaultedThemeShape,
+  )
+  .partial();

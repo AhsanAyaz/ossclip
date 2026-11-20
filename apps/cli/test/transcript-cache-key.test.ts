@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { transcriptCacheReusable } from "../src/produce";
+import { TranscriptKeySchema, transcriptCacheReusable } from "../src/produce";
 
 /**
  * The transcript cache decision (review fix, Urdu field test 2026-08-05):
@@ -167,5 +167,20 @@ describe("transcriptCacheReusable", () => {
     expect(transcriptCacheReusable(null, REMOTE, DEFAULT).reuse).toBe(false);
     // …and a default local request against one still reuses, unchanged.
     expect(transcriptCacheReusable(null, { model: DEFAULT }, DEFAULT).reuse).toBe(true);
+  });
+
+  // §159: silence-compressed decoding changes HOW a transcription runs, not
+  // what the cache is keyed on. Editor edits are anchored to word indices,
+  // so a warm workdir silently re-transcribing without its silences would
+  // detach every one of them. The key has no compression field, and a key
+  // file written by a whole-file decode still answers today's request.
+  it("a transcript decoded whole before silence compression still reuses (§159)", () => {
+    expect(Object.keys(TranscriptKeySchema.shape).sort()).toEqual(
+      ["backend", "dictionary", "language", "model", "translate"],
+    );
+    // The field workdir's key file, verbatim.
+    const recorded = TranscriptKeySchema.parse({ model: "small.en" });
+    expect(transcriptCacheReusable(recorded, { model: "small.en" }, "small.en").reuse).toBe(true);
+    expect(transcriptCacheReusable(null, { model: "small.en" }, "small.en").reuse).toBe(true);
   });
 });

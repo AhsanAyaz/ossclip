@@ -59,6 +59,55 @@ describe("findBloopSpans", () => {
     expect(text).toBe("Fix at most three issues. That could be the exit condition.");
   });
 
+  // 2026-11-18 field case (FINDINGS §165): the speaker finished the line,
+  // paused, then said the marker. ASR punctuated the flubbed line as a
+  // complete sentence and gave the marker a sentence of its own, so the
+  // walk-back stopped on the marker itself and only the word was cut — the
+  // flubbed take shipped beside its retake, twice in one video.
+  it("a marker said as its own sentence cuts the sentence before it", () => {
+    const t = speak("This is fine. I said this whole line wrong. Blooper. This is the good take.");
+    const [span, ...rest] = findBloopSpans(t, "blooper");
+    expect(rest).toEqual([]);
+    expect(formatBloopSpan(t, span!)).toBe('"I said this whole line wrong. Blooper."');
+  });
+
+  it("a fuzzy marker said as its own sentence cuts the sentence before it too", () => {
+    const t = speak("This is fine. That is before the code in the first place. Looper. That is the good take.");
+    const [span] = findBloopSpans(t, "blooper");
+    expect(formatBloopSpan(t, span!)).toBe(
+      '"That is before the code in the first place. Looper." matched "looper" ~ "blooper"',
+    );
+  });
+
+  it("a marker that opens a sentence spoils the sentence before it, not the words after", () => {
+    const t = speak("This is fine. I said this line wrong. Blooper again from the top. Good take.");
+    const [span] = findBloopSpans(t, "blooper");
+    expect(formatBloopSpan(t, span!)).toBe('"I said this line wrong. Blooper"');
+  });
+
+  it("two lone markers after two flubbed sentences collapse into one cut", () => {
+    const t = speak("This is fine. First bad take. Blooper. Second bad take. Blooper. Good take.");
+    const spans = findBloopSpans(t, "blooper");
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.markers).toBe(2);
+    expect(formatBloopSpan(t, spans[0]!)).toBe(
+      '"First bad take. Blooper. Second bad take. Blooper." (2 attempts)',
+    );
+  });
+
+  it("a marker repeated as two lone sentences still cuts only one sentence back", () => {
+    const t = speak("This is fine. Bad take here. Blooper. Blooper. Good take.");
+    const spans = findBloopSpans(t, "blooper");
+    expect(spans).toHaveLength(1);
+    expect(formatBloopSpan(t, spans[0]!)).toBe('"Bad take here. Blooper. Blooper." (2 attempts)');
+  });
+
+  it("a lone marker as the very first word has nothing before it to cut", () => {
+    const t = speak("Blooper. This is the good take.");
+    const [span] = findBloopSpans(t, "blooper");
+    expect(formatBloopSpan(t, span!)).toBe('"Blooper."');
+  });
+
   it("is case- and punctuation-insensitive, like the filler detector", () => {
     const t = speak("Say it again. Wrong words Blooper! The right words.");
     expect(findBloopSpans(t, "blooper")).toHaveLength(1);

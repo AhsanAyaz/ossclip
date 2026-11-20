@@ -15,6 +15,7 @@ import {
   probe,
   readCoverProvenance,
   run,
+  stageBundledFonts,
   writeCoverProvenance,
   type CoverFace,
   type CoverProvenance,
@@ -815,6 +816,12 @@ export async function regenerateCover(
       seams.browserExecutable ??
       (seams.renderCover === undefined ? cfg().browserExecutable : undefined),
   });
+  // The banner draws in `theme.fontDisplay`, so an explainer-look cover needs
+  // the bundled faces in ITS public dir (§161). Produce already staged them
+  // into the workdir; staged again here, copy-if-missing, so a regenerate
+  // never depends on that copy having survived. `fontsToLoad` decides, the
+  // predicate the composition loads by — nothing for a run without the look.
+  stageBundledFonts(theme, [plan.opts.publicDir]);
   const render =
     seams.renderCover ??
     (async (props, o) => {

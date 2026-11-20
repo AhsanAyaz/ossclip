@@ -71,6 +71,8 @@ import { Overlay, type GraphicPreview, type Selection, type VideoPreview } from 
 import { OverlayImageBox, type OverlayImageBoxHandle, type OverlayRectPreview } from "./OverlayImageBox";
 import { Inspector, type RunInfo } from "./Inspector";
 import { EMPTY_LUT_MENU, liveGradeSpec, type LutMenu } from "./colorPanel";
+import { withMediaClipSrc } from "./clipMedia";
+import { useBundledFonts } from "./bundledFonts";
 import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
@@ -506,6 +508,10 @@ export const App: React.FC = () => {
   // Render-from-the-editor (R11 Task 4): whether the server has a recorded
   // invocation to replay, and the in-flight run's state while it does.
   const [canRender, setCanRender] = useState(false);
+  // A stored script in production.json (§163): the Inspector names the three
+  // backdrops only in a 16:9 script project. Server-derived, like canRender,
+  // because the record lives in production.json, which the page never reads.
+  const [scriptProject, setScriptProject] = useState(false);
   // The state shape lives in renderStatus.ts beside `resumeRenderState`,
   // which rebuilds it after a page reload — one definition, not a drifting
   // inline copy (2026-08-18).
@@ -800,10 +806,12 @@ export const App: React.FC = () => {
               renderProps: RawRenderProps;
               overrides?: OverrideDoc;
               canRender?: boolean;
+              scriptProject?: boolean;
             };
             const props = anchored(prod.renderProps);
             setRenderProps(props);
             setCanRender(Boolean(prod.canRender));
+            setScriptProject(prod.scriptProject === true);
             // Finding 2, PLAN 2026-08-04 Task 4c fix wave — see
             // `renderCompleteReload`'s own doc comment (renderStatus.ts) for
             // the full reasoning; this is the thin I/O wrapper around that
@@ -911,6 +919,7 @@ export const App: React.FC = () => {
       renderProps?: RawRenderProps;
       overrides?: OverrideDoc;
       canRender?: boolean;
+      scriptProject?: boolean;
       defaultOutPath?: string;
       workdir?: string;
       noWorkdir?: boolean;
@@ -934,6 +943,7 @@ export const App: React.FC = () => {
     loadedWorkdirRef.current = nextWorkdir;
     setWorkdirPath(nextWorkdir);
     setCanRender(Boolean(body.canRender));
+    setScriptProject(body.scriptProject === true);
     // §137: a doc saved before this change keys caption edits by POSITION,
     // which any cut shifts — every one of them would silently revert on
     // screen. Upgraded here, against the just-anchored lines, because this is
@@ -1754,11 +1764,20 @@ export const App: React.FC = () => {
   );
   const playerProps = useMemo<PlayerProductionProps | null>(() => {
     if (live === null) return null;
-    const { overlayCues: _baked, ...rest } = live;
+    const { overlayCues: _baked, ...baked } = live;
+    // Clip cues' `src` re-pointed at `/media/`, the `videoFileName` rewrite's
+    // reason — here, on the Player's props alone, so the Inspector and the
+    // timeline (which read `live`) keep the stored path (`withMediaClipSrc`).
+    const sceneCues = withMediaClipSrc(baked.sceneCues);
+    const rest = sceneCues === baked.sceneCues ? baked : { ...baked, sceneCues };
     const overlayCues = overlayCuesLive.filter((c) => !overlayNoRoom.has(c.id));
     if (overlayCues.length === 0) return rest;
     return { ...rest, overlayCues };
   }, [live, overlayCuesLive, overlayNoRoom]);
+  // The explainer look's faces for the Player, from the workdir over
+  // `/media/` (bundledFonts.ts has why the composition's own load cannot
+  // reach them here). Off the LIVE theme, so it follows what the stage draws.
+  useBundledFonts(live?.theme ?? {});
   /**
    * A lane click on an object (a sound diamond, an overlay chip) selects it
    * AND parks the playhead on it (overlay-transform field request): an
@@ -3032,6 +3051,8 @@ export const App: React.FC = () => {
             onVideoPreview={setVideoPreview}
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
+            scriptProject={scriptProject}
+            face={live.face ?? null}
             baseCaptionTheme={renderProps?.baseCaptionTheme ?? renderProps?.captionTheme}
             // "Delete this chunk"'s write boundary (step 4 follow-up): the
             // cue window is on the live clock, the entry's own seconds on the

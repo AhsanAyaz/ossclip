@@ -139,3 +139,60 @@ export function renderMediaOptions(args: {
       : undefined,
   };
 }
+
+/** What a scene-clip render takes from the caller (`renderSceneClip`). */
+export type ClipJobOptions = Pick<
+  RenderJobOptions,
+  "outPath" | "browserExecutable" | "concurrency" | "scale" | "cancelSignal" | "onProgress"
+>;
+
+/**
+ * The `renderMedia` options for one transparent scene clip (§162, design
+ * 3.2): ProRes 4444 with alpha, which is the format of the hand-made clips
+ * and what Resolve reads directly. Pure data, renderMediaOptions' split.
+ *
+ * Every alpha-carrying value is load-bearing, and losing one fails silently —
+ * the file renders, opaque or black-boxed:
+ * - `imageFormat: "png"`. Remotion screenshots each frame in this format
+ *   before encoding; renderMediaOptions' JPEG frames have no alpha channel,
+ *   so the transparency would be gone before ffmpeg ever saw it.
+ * - `pixelFormat: "yuva444p10le"` with `proResProfile: "4444"`: the only
+ *   alpha pixel format Remotion 4.0.499 offers for prores
+ *   (`validPixelFormatsForCodec`), and the profile that stores it.
+ * - `hardwareAcceleration: "disable"` on every platform. On darwin
+ *   "if-possible" would hand prores to VideoToolbox; the alpha path must go
+ *   through ffmpeg's software encoder, the one this format was checked with.
+ *
+ * `muted: true` (an option of renderMedia in 4.0.499, checked in its types):
+ * a clip is silent until phase 4's scene sound (plan decision 6), so no
+ * audio track is written whatever a component might mount.
+ * No `offthreadVideoCacheSizeInBytes`: the clip draws no footage, so there
+ * is no frame cache to bound.
+ */
+export function clipRenderOptions(args: {
+  composition: RenderMediaOptions["composition"];
+  serveUrl: string;
+  inputProps: Record<string, unknown>;
+  opts: ClipJobOptions;
+}): RenderMediaOptions {
+  const { composition, serveUrl, inputProps, opts } = args;
+  return {
+    composition,
+    serveUrl,
+    codec: "prores",
+    proResProfile: "4444",
+    pixelFormat: "yuva444p10le",
+    imageFormat: "png",
+    muted: true,
+    hardwareAcceleration: "disable",
+    outputLocation: opts.outPath,
+    inputProps,
+    browserExecutable: opts.browserExecutable,
+    concurrency: opts.concurrency,
+    ...(opts.scale !== undefined && opts.scale !== 1 ? { scale: opts.scale } : {}),
+    cancelSignal: opts.cancelSignal,
+    onProgress: opts.onProgress
+      ? ({ progress }) => opts.onProgress!(progress)
+      : undefined,
+  };
+}

@@ -29,6 +29,14 @@ describe("checkGrounding (FINDINGS §14a)", () => {
     expect(tokens).toEqual(["codechun", "revenue"]);
   });
 
+  it("a script's cue text counts as said (explainer spec §1.3), and only when passed", () => {
+    // The cue wrote the label; nobody said "lines" or "added".
+    const card = [scene("StatCard", { label: "LINES ADDED", value: "+1,568" })];
+    expect(checkGrounding(card, transcript).map((i) => i.token).sort()).toEqual(["added", "lines"]);
+    expect(checkGrounding(card, transcript, undefined, ["Stat: +1,568 lines added"])).toEqual([]);
+    expect(ungroundedTokens("LINES ADDED", transcript, undefined, ["lines added"])).toEqual([]);
+  });
+
   it("stops fighting the repair pass once the transcript is repaired (§17)", () => {
     // §17 was this check calling a correct repair a fabrication: the take was
     // transcribed as "coach and", the producer wrote "code churn", and both

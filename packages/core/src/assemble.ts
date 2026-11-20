@@ -1,7 +1,7 @@
 import type { Transcript } from "./schema";
 import type { Scene, SceneCue } from "./scene-schema";
 import { revealItemTexts } from "./reveal-match";
-import { resolveSceneProps } from "./scene-registry";
+import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
 import type { LoadedSfxSound } from "./sfx-pack";
 import type { SfxPlacement, SfxValidationIssue } from "./producer/sfx";
 import type { TimeMap } from "./timemap";
@@ -31,8 +31,12 @@ export const MAX_SCENE_SEC = 15;
 /** R20 §95's lower-third ceiling — now the universal one; kept as an alias
  * so published consumers of the old name keep compiling. */
 export const MAX_OVERLAY_SCENE_SEC = MAX_SCENE_SEC;
-/** Breathing room enforced between consecutive scenes. */
-const SCENE_GAP_SEC = 0.05;
+/**
+ * Breathing room enforced between consecutive scenes. Exported so the script
+ * minimum (`scriptSceneEndWords`, §161) pushes a scene past the one before it
+ * by exactly what assembly will.
+ */
+export const SCENE_GAP_SEC = 0.05;
 /**
  * How far ahead of its entry word a graphic comes up (reveal-timing spec §2,
  * "my call"): enough that the card is on screen as the word is heard, not a
@@ -62,6 +66,13 @@ export function minSceneSec(outputDurationSec: number): number {
 export interface AssembleResult {
   cues: SceneCue[];
   dropped: Array<{ id: string; reason: string }>;
+  /**
+   * Cues the 15s ceiling cut short (explainer spec 1.3/1.4): a script cue or
+   * a clip that ends early must be reported, not silently trimmed. Lengths
+   * in seconds — what the cue wanted from its (de-overlapped) start, and
+   * what it got. A cue shortened and then dropped is listed in `dropped`.
+   */
+  shortened: Array<{ id: string; fromSec: number; toSec: number }>;
 }
 
 /**
@@ -77,7 +88,13 @@ export function assembleScenes(
   map: TimeMap,
 ): AssembleResult {
   const dropped: AssembleResult["dropped"] = [];
+  const shortened: AssembleResult["shortened"] = [];
   const resolved: SceneCue[] = [];
+  // A clip's own length, keyed by cue like `planned` below. Applied in the
+  // exclusivity loop, AFTER the start is pushed past the previous cue, so the
+  // clip plays in full from wherever it lands and the NEXT cue is pushed past
+  // its real end (explainer plan, Review Focus 4: nothing overlaps).
+  const fixedSec = new Map<SceneCue, number>();
   // The plan-time cue answers for each cued scene, applied AFTER the legacy
   // pipeline below (keyed by cue object — the loops mutate cues in place).
   const planned = new Map<SceneCue, PlannedCue>();
@@ -110,8 +127,14 @@ export function assembleScenes(
       props,
       startSec: Math.min(...mapped.map((m) => m.start)),
       endSec: Math.max(...mapped.map((m) => m.end)),
+      // A planned slot (the 16:9 script placement, §161) rides onto the
+      // cue's own rect; a scene without one adds no key, so every other
+      // run's cue is field-for-field what it was.
+      ...(scene.graphicRect ? { graphicRect: scene.graphicRect } : {}),
     };
     resolved.push(cue);
+    const fixed = SCENE_REGISTRY[scene.component].fixedDurationSec?.(props);
+    if (fixed !== undefined) fixedSec.set(cue, fixed);
     // `scene.cue` is the gate (spec decision 1, "new plans only"): a scene
     // planned before reveal timing never enters the post-pass, so its cue is
     // byte-identical to the pre-cue assembler's.
@@ -129,13 +152,28 @@ export function assembleScenes(
     if (prev && cue.startSec < prev.endSec + SCENE_GAP_SEC) {
       cue.startSec = prev.endSec + SCENE_GAP_SEC;
     }
-    if (cue.endSec - cue.startSec < minScene) {
+    const fixed = fixedSec.get(cue);
+    if (fixed !== undefined) {
+      // A clip lasts its own length, not its words' (spec 1.4: "if the clip
+      // is shorter than the cue's span, the talking head simply resumes"),
+      // and is never stretched to the floor — there are no frames past its
+      // end to show. The ceiling and the output end below still apply.
+      cue.endSec = cue.startSec + fixed;
+    } else if (cue.endSec - cue.startSec < minScene) {
       cue.endSec = cue.startSec + minScene;
     }
+    const wantedSec = cue.endSec - cue.startSec;
     cue.endSec = Math.min(cue.endSec, cue.startSec + MAX_SCENE_SEC, map.outputDuration);
     if (cue.endSec - cue.startSec < DROP_BELOW_SEC) {
       dropped.push({ id: cue.id, reason: "too short after clamping" });
       continue;
+    }
+    // Only the 15s ceiling makes a cue "shortened": one under it that the
+    // video's end cuts was never going to fit, and is not a script problem.
+    // The epsilon is beats.ts's float posture — a span that is 15s to the
+    // eye can be 15.0000001s in the stamps.
+    if (wantedSec > MAX_SCENE_SEC + 1e-6) {
+      shortened.push({ id: cue.id, fromSec: wantedSec, toSec: cue.endSec - cue.startSec });
     }
     cues.push(cue);
   }
@@ -163,10 +201,7 @@ export function assembleScenes(
     const plan = planned.get(cue);
     if (!plan) continue;
     if (plan.entryAtSec !== null) {
-      const start = Math.max(
-        cue.startSec,
-        Math.min(plan.entryAtSec - ENTRY_LEAD_SEC, cue.endSec - minScene),
-      );
+      const start = onCueStartSec(cue.startSec, plan.entryAtSec, cue.endSec - minScene);
       // The entry word's own second rides along ONLY when it moved the
       // start: the editor's live preview re-times the start from the word,
       // not from `startSec`, whose lead can sit across a seam from the word
@@ -180,7 +215,47 @@ export function assembleScenes(
     if (plan.reveal) cue.reveal = plan.reveal;
   }
 
-  return { cues, dropped };
+  return { cues, dropped, shortened };
+}
+
+/**
+ * Where a cued scene starts once its entry word is known (reveal-timing spec
+ * §2): `ENTRY_LEAD_SEC` ahead of the word, never before the legacy start
+ * (the first anchor word, after de-overlap), and never later than
+ * `latestStartSec` — the assembler's `end − minScene`, so an entry near the
+ * end still leaves the floor on screen. Exported so the script minimum
+ * (`scriptSceneEndWords`, §161) counts its four seconds from this same
+ * start: counted from the line's first word, a scene entering 1.97 s into a
+ * 3.68 s line was left at 2.0 s on screen (EGM run, 2026-11-17).
+ */
+export function onCueStartSec(legacyStartSec: number, entryAtSec: number, latestStartSec: number): number {
+  return Math.max(legacyStartSec, Math.min(entryAtSec - ENTRY_LEAD_SEC, latestStartSec));
+}
+
+/**
+ * The output time of the word a cued scene enters on, or null (then the
+ * legacy start stands). Exported for the reason `onCueStartSec` is.
+ *
+ * Clamped into the scene's own words: the cue was matched inside the
+ * moment's window (spec §1), and an anchor edited after planning must not
+ * let a stale index start the graphic outside the words it belongs to. If
+ * the entry word was cut (Review Focus 1), the scene enters on the first word
+ * still spoken AFTER it within the scene — the moment the speaker reaches
+ * the entry point in the cut video — never on an earlier one the plan did
+ * not choose. Any transcript word, not only item words: a later item can be
+ * seconds past the cut, leaving the graphic up late over the words that led
+ * into it (final review I-2).
+ */
+export function entryWordTime<T extends { start: number }>(
+  entryWord: number,
+  startWord: number,
+  endWord: number,
+  timeAt: (word: number) => T | null,
+): T | null {
+  const entry = Math.min(Math.max(entryWord, startWord), endWord);
+  let at = timeAt(entry);
+  for (let w = entry + 1; at === null && w <= endWord; w++) at = timeAt(w);
+  return at;
 }
 
 /** A cued scene's plan-time answers, resolved into output time. */
@@ -212,19 +287,7 @@ function plannedCue(
     return w ? map.mapWord(w) : null;
   };
 
-  // Clamped into the scene's own words: the cue was matched inside the
-  // moment's window (spec §1), and an anchor edited after planning must not
-  // let a stale index start the graphic outside the words it belongs to.
-  const entry = Math.min(Math.max(entryWord, startWord), endWord);
-  let entryAt = mapAt(entry);
-  // The entry word was cut (Review Focus 1): enter on the first word still
-  // spoken AFTER it within the scene — the moment the speaker reaches the
-  // entry point in the cut video — never on an earlier one the plan did not
-  // choose, and failing that on the legacy start exactly as today. Any
-  // transcript word, not only item words: a later item can be seconds past
-  // the cut, leaving the graphic up late over the words that led into it
-  // (final review I-2).
-  for (let w = entry + 1; entryAt === null && w <= endWord; w++) entryAt = mapAt(w);
+  const entryAt = entryWordTime(entryWord, startWord, endWord, mapAt);
   const entryAtSec = entryAt === null ? null : entryAt.start;
 
   // Index i of `itemWords` must BE rendered item i. A prop edit since

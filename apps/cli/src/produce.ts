@@ -38,6 +38,7 @@ import {
   NASTALIQ_FONT_NAME,
   NASTALIQ_FONT_REL,
   nastaliqFontFile,
+  stageBundledFonts,
   buildZoomPlan,
   checkGrounding,
   rejectCtaKeyword,
@@ -67,6 +68,7 @@ import {
   dropHiddenCues,
   splitThenDropHidden,
   emptyOverrideDoc,
+  type OverrideDoc,
   extractAudio,
   encodeUploadAudio,
   REMOTE_UPLOAD_MAX_BYTES,
@@ -74,7 +76,9 @@ import {
   openaiTranscriptionsUrl,
   fillPlainCues,
   splitCues,
-  landscapeLayout,
+  landscapeLayoutFor,
+  landscapeLayoutAfterRouting,
+  scriptLandscapePlacement,
   formatCutReport,
   formatGraphicsAccounting,
   findBloopSpans,
@@ -158,14 +162,27 @@ import {
   resolveTheme,
   run,
   runWhisper,
+  alignRestamp,
+  compressArgs,
+  compressionLine,
+  type CompressionSegment,
+  parseSilences,
+  remapWords,
+  silenceDetectArgs,
   sliceWavArgs,
   stitchTakeTranscripts,
+  takeCompressionPlans,
   takeWindows,
   type TakeWindow,
   whisperPromptFor,
   scanSourceText,
+  ThemeOverrideSchema,
   ThemeSchema,
   type Theme,
+  LOOK_IDS,
+  LookSchema,
+  lookTheme,
+  type Look,
   appendUsageRun,
   OverrideDocSchema,
   CLIP_SNAP_TOLERANCE,
@@ -178,8 +195,9 @@ import {
   sliceTranscript,
   type Analysis,
   type AppliedRepair,
-  type BeatSheet,
   BeatSheetSchema,
+  type ProduceScenesResult,
+  type ScriptBeatSheet,
   type BeatsValidationIssue,
   type CleanupLevel,
   type ClipWindow,
@@ -242,11 +260,11 @@ import {
   type LoadedLibraryEntry,
   type OverlayCue,
   type OverlayIssue,
+  type PlannerComponentId,
   type ProductionOverlays,
   type ProviderName,
   type ResolutionChoice,
   type Scene,
-  type SceneComponentId,
   type Segment,
   type Transcript,
   CAPTION_CHOREOGRAPHY_PROMPT_VERSION,
@@ -257,8 +275,42 @@ import {
   type CaptionChoreography,
   type CaptionThemeId,
   type ChoreographyInputWord,
+  // `--script` (explainer phase 1, §158): the parser, the alignment, the
+  // prompt version that keys the script-plan cache, and the stored record.
+  parseScript,
+  alignCues,
+  SCRIPT_PLAN_PROMPT_VERSION,
+  SCENE_REGISTRY,
+  type AlignedCue,
+  type ProductionScript,
+  type ResolvedScriptClip,
+  type ScriptCue,
+  type SkippedCue,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
+import { clipImportLine, importClip } from "./clip-import";
+import {
+  SCRIPT_REPORT_BASENAME,
+  ScriptPlanCacheSchema,
+  cueOutcomes,
+  formatCueReport,
+  isFootageCueIssue,
+  isProjectClipSrc,
+  isScriptProject,
+  keptWordTimes,
+  keptWordsKey,
+  loadScriptText,
+  mergeClipRecords,
+  planScriptClips,
+  scriptCueProblems,
+  scriptPlanCacheKey,
+  scriptPlanCacheKeyCandidates,
+  scriptPlanCutlist,
+  scriptSourcePath,
+  storedScriptFrom,
+  type CueOutcome,
+  type PlannedScriptClip,
+} from "./script-mode";
 import { binOnPath, detectionLine, fallbackLine } from "./llm-detect";
 import {
   modelImpliedLanguage,
@@ -459,7 +511,7 @@ export function beatSheetCacheKey(parts: {
   llmEffort?: LlmEffort;
   intent?: string;
   cleanup: CleanupLevel;
-  forceComponent?: SceneComponentId;
+  forceComponent?: PlannerComponentId;
   /** Framing constraints steer layout choice, so a re-measure must replan. */
   framing?: FramingContext;
   clipTargetSec?: number;
@@ -599,6 +651,59 @@ export function priorCaptionChoreography(work: string): CaptionChoreography | un
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The `script` record the workdir's LAST run wrote, or undefined (explainer
+ * plan Task 8). Mirrors `priorSfxPlan`, for two readers:
+ *  - a `--scenes` replay (the editor's Render) carries it forward, so the
+ *    stored script text survives the render and a later Re-plan still has it;
+ *  - a `--script` run reads its `sourcePath` and clip records, so a Re-plan
+ *    from the workdir copy resolves clips beside the ORIGINAL script and keeps
+ *    a WebM whose source has gone (`planScriptClips`).
+ * Tolerant and parsed, never cast, for `priorSfxPlan`'s reasons.
+ */
+export function priorScript(work: string): ProductionScript | undefined {
+  let text: string;
+  try {
+    text = readFileSync(join(work, "production.json"), "utf8");
+  } catch {
+    return undefined;
+  }
+  return storedScriptFrom(text);
+}
+
+/**
+ * The workdir's `overrides.json`, parsed — or the empty doc when there is
+ * none. Hand-editable user data, so an invalid file is refused rather than
+ * silently reset. One reader for both callers: the cut application (the
+ * user's edit layer, below the plan) and script mode, which aligns against
+ * that same cut BEFORE planning (§158, 2026-11-16).
+ */
+async function readOverrideDoc(overridesPath: string): Promise<OverrideDoc> {
+  if (!existsSync(overridesPath)) return emptyOverrideDoc();
+  const parsed = OverrideDocSchema.safeParse(JSON.parse(await readFile(overridesPath, "utf8")));
+  if (!parsed.success) {
+    // Hand-editable user data: refuse rather than silently resetting it.
+    throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
+  }
+  return parsed.data;
+}
+
+/**
+ * The frame the user last looked at — the previous run's `render-props.json`
+ * spans — or null when there is no readable one. `applyUserCuts`' `priorMap`;
+ * the call site in produce carries the full why.
+ */
+async function readPriorMap(renderPropsPath: string): Promise<TimeMap | null> {
+  if (!existsSync(renderPropsPath)) return null;
+  try {
+    const prev = JSON.parse(await readFile(renderPropsPath, "utf8")) as { spans?: KeptSpan[] };
+    if (prev.spans) return mapFromKeptSpans(prev.spans);
+  } catch {
+    // Unreadable/corrupt — treated the same as no prior run.
+  }
+  return null;
 }
 
 /**
@@ -745,6 +850,12 @@ export interface ProduceOptions {
   noiseDb?: number;
   /** Hand-authored scenes JSON (Scene[]) — skips the LLM entirely. */
   scenes?: string;
+  /**
+   * `--script <file>` (explainer spec §1.6, §158): plan from the author's
+   * script cues instead of the beat sheet. Already checked non-empty by the
+   * flag's parser; read and validated before any transcription.
+   */
+  script?: string;
   /** Run the producer brain to plan scenes. */
   produce?: boolean;
   intent?: string;
@@ -797,7 +908,7 @@ export interface ProduceOptions {
    */
   dictionary?: string[];
   /** Debug: force every graphic moment to this component. */
-  forceComponent?: SceneComponentId;
+  forceComponent?: PlannerComponentId;
   /** Write a cover image beside the video (default on). */
   cover?: boolean;
   /** Explicit cover output path, overriding <out>.cover.jpg. */
@@ -942,6 +1053,12 @@ export interface ProduceOptions {
    * `--caption-theme <preset>`: visual caption preset (`default | founder | punch | boxed | minimal`).
    */
   captionTheme?: CaptionThemeId;
+  /**
+   * `--look <name>` (design §2.2): a theme preset under the config's
+   * `theme`. Undefined when not typed, so the config's `look` can supply it
+   * (`resolveLook`).
+   */
+  look?: Look;
   /**
    * `--choreograph-captions` / `--no-choreograph-captions` tri-state: true/false
    * when TYPED, undefined when not so the config's `choreographCaptions` key can supply the default.
@@ -1601,35 +1718,70 @@ export function resolveWhisperLanguage(
 }
 
 /**
- * The BASE theme a run starts from: the config's `theme` merged over
- * `defaultTheme` (F6, 2026-08-16). Precedence overall is overrides.json >
- * config theme > defaultTheme — this helper builds the bottom two layers,
- * and it must feed BOTH `resolveTheme`'s base and props.baseTheme: the
- * editor re-applies overrides onto `baseTheme`, so a reset there must fall
- * back to the user's global colors, not to factory defaults.
+ * The BASE theme a run starts from: the config's `theme` merged over the
+ * look over `defaultTheme` (F6, 2026-08-16; the look layer, design §2.2).
+ * Precedence overall is overrides.json > config theme > look > defaultTheme
+ * — this helper builds the bottom three layers, and it must feed BOTH
+ * `resolveTheme`'s base and props.baseTheme: the editor re-applies overrides
+ * onto `baseTheme`, so a reset there must fall back to the user's global
+ * colors and the run's look, not to factory defaults.
  *
- * All-or-nothing: `ThemeSchema.partial().safeParse` — one malformed key (a
+ * All-or-nothing: `ThemeOverrideSchema.strict().safeParse` — one malformed key (a
  * numeric `accent`, an unknown-shaped value) voids the WHOLE config theme
  * with a warning naming the issue, because half-applying a palette the
- * schema rejected would render colors the user never chose. The warning is
- * RETURNED, not printed — pure, so the precedence matrix is testable without
- * a config file or a captured console.
+ * schema rejected would render colors the user never chose. Only the config
+ * layer is voided: the look was asked for on its own and is already a parsed
+ * `Look`, so dropping it too would render a video nobody chose either. The
+ * warning is RETURNED, not printed — pure, so the precedence matrix is
+ * testable without a config file or a captured console.
  */
-export function configuredBaseTheme(cfgTheme: unknown): { theme: Theme; warning?: string } {
-  if (cfgTheme === undefined) return { theme: defaultTheme };
-  const parsed = ThemeSchema.partial().strict().safeParse(cfgTheme);
+export function configuredBaseTheme(
+  cfgTheme: unknown,
+  look: Look = "default",
+): { theme: Theme; warning?: string } {
+  // The default look is an empty layer, so this IS defaultTheme for a run
+  // without a look — the same object every pre-look run started from.
+  const lookBase: Theme =
+    look === "default" ? defaultTheme : ThemeSchema.parse({ ...defaultTheme, ...lookTheme(look) });
+  if (cfgTheme === undefined) return { theme: lookBase };
+  const parsed = ThemeOverrideSchema.strict().safeParse(cfgTheme);
   if (!parsed.success) {
     return {
-      theme: defaultTheme,
+      theme: lookBase,
       warning:
         `⚠ config theme ignored — ${parsed.error.issues
           .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
           .join("; ")}`,
     };
   }
-  // Re-parse the merge so zod's defaults fill anything the partial left out —
-  // the same construction defaultTheme itself uses.
-  return { theme: ThemeSchema.parse({ ...defaultTheme, ...parsed.data }) };
+  // `parsed.data` is only the keys the user WROTE: `ThemeOverrideSchema`
+  // carries no defaults (§161), so spreading it whole cannot put the factory
+  // `accent2`, `fonts`, `motion`… back over the look, which `.partial()`
+  // did. Re-parse the merge so zod's defaults fill anything left out — the
+  // same construction defaultTheme itself uses.
+  return { theme: ThemeSchema.parse({ ...lookBase, ...parsed.data }) };
+}
+
+/**
+ * The run's look: a typed `--look` beats the config's `look`, and neither
+ * means "default". Unlike the config `theme` (one warning, then the
+ * defaults), a bad config look THROWS naming the key (plan Task 1): a look is
+ * one deliberate choice, not a palette of independent tokens, and quietly
+ * rendering the default look would spend a whole render on the video the
+ * user configured away from. The config is only read when the flag is
+ * absent, so a broken file key never blocks an explicit `--look`.
+ */
+export function resolveLook(flag: Look | undefined, config: unknown): Look {
+  if (flag !== undefined) return flag;
+  if (config === undefined) return "default";
+  const parsed = LookSchema.safeParse(config);
+  if (!parsed.success) {
+    throw new Error(
+      `config look must be one of ${LOOK_IDS.join(", ")}, got ${JSON.stringify(config)} ` +
+        `— fix "look" in ~/.ossclip/config.json or pass --look`,
+    );
+  }
+  return parsed.data;
 }
 
 /**
@@ -2559,6 +2711,105 @@ async function preflight(bin: string, hint: string): Promise<void> {
   }
 }
 
+/**
+ * Per take, the compressed decode plan (FINDINGS §159), or null to decode
+ * that take exactly as today. Silence is detected once over audio.wav and
+ * split per take; a single file is one take.
+ */
+export async function planSilenceCompression(p: {
+  ffmpegPath: string;
+  audioPath: string;
+  takes: readonly TakeWindow[];
+}): Promise<Array<CompressionSegment[] | null>> {
+  const { stderr } = await run(p.ffmpegPath, silenceDetectArgs(p.audioPath), {
+    allowNonZero: true,
+  });
+  return takeCompressionPlans(
+    parseSilences(stderr, p.takes[p.takes.length - 1]!.endSec),
+    p.takes,
+  );
+}
+
+/**
+ * Decode audio.wav take by take (take-transcripts.ts, 2026-11-13 "AI And
+ * Coding": a seam resets whisper). A take with a plan (speech-windows.ts,
+ * FINDINGS §159) is decoded TWICE and joined:
+ *
+ *  - the TEXT comes from today's decode of the take, today's arguments, so a
+ *    new transcript reads exactly as it always would have;
+ *  - the TIMES come from a decode of the same take with its long silences
+ *    removed, mapped back to the take's clock — with no silence to smear
+ *    into, whisper's stamps land on the speech.
+ *
+ * Neither pass alone is enough. The whole-take pass put 31% of a 13-minute
+ * recording's words inside silence; the silence-removed pass fixed that
+ * (0.4%) but, with the pauses gone, wrote 488 words in stretches with no
+ * capital or punctuation, which the blooper walk-back, retake split and
+ * sentence snap all read. `alignRestamp` (restamp.ts) is the join: count-
+ * and text-preserving, so word indices are the whole-take decode's.
+ *
+ * A take without a plan, and a single file without one, decode exactly as
+ * before. `tag` keeps each pass's sidecar files apart; restamp reports land
+ * in `reports` for the caller to print once no spinner owns the TTY.
+ * Exported so the §159 measurement runs this exact path, not a copy of it.
+ */
+export async function decodeTakes(
+  p: {
+    ffmpegPath: string;
+    audioPath: string;
+    work: string;
+    /** The folder's take windows; null for a single file (one take, unsliced). */
+    takes: readonly TakeWindow[] | null;
+    plans: ReadonlyArray<CompressionSegment[] | null>;
+    reports?: string[];
+  },
+  decode: (wav: string, tag: string) => Promise<Transcript>,
+): Promise<Transcript> {
+  const decodeTwoPass = async (
+    src: string,
+    plan: CompressionSegment[],
+    base: string,
+    tag: string,
+  ): Promise<Transcript> => {
+    const text = await decode(src, tag);
+    const wav = join(p.work, `${base}-speech.wav`);
+    const { args, script } = compressArgs(src, wav, plan);
+    if (script) await writeFile(script.path, script.text);
+    try {
+      await run(p.ffmpegPath, args);
+      const timed = await decode(wav, `${tag}-speech`);
+      const joined = alignRestamp(text.words, remapWords(timed.words, plan), 0);
+      p.reports?.push(...joined.reports);
+      return { ...text, words: joined.words };
+    } finally {
+      await rm(wav, { force: true });
+      if (script) await rm(script.path, { force: true });
+    }
+  };
+  if (p.takes === null) {
+    const plan = p.plans[0] ?? null;
+    return plan === null
+      ? decode(p.audioPath, "")
+      : decodeTwoPass(p.audioPath, plan, "audio", "");
+  }
+  const parts: Array<{ window: TakeWindow; transcript: Transcript }> = [];
+  for (const [i, window] of p.takes.entries()) {
+    const wav = join(p.work, `audio-clip-${i + 1}.wav`);
+    await run(p.ffmpegPath, sliceWavArgs(p.audioPath, wav, window));
+    try {
+      const plan = p.plans[i] ?? null;
+      const transcript =
+        plan === null
+          ? await decode(wav, `-clip-${i + 1}`)
+          : await decodeTwoPass(wav, plan, `audio-clip-${i + 1}`, `-clip-${i + 1}`);
+      parts.push({ window, transcript });
+    } finally {
+      await rm(wav, { force: true });
+    }
+  }
+  return stitchTakeTranscripts(parts);
+}
+
 export async function produce(inputArg: string, opts: ProduceOptions): Promise<ProduceResult> {
   // First line on purpose: totalMs is the same wall clock program.ts wraps
   // around this call for duration_ms, so `other` in the printed breakdown is
@@ -2612,6 +2863,35 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // and the WHOLE take rendered under a --clip command.
   if (opts.clipWindow !== undefined && !opts.produce && !opts.scenes) {
     throw new Error("--clip-window replays a --clip run's plan — pass --produce or --scenes too.");
+  }
+
+  // ---- `--script` (explainer spec §1.6, §158): read and checked FIRST ------
+  // Before the hash, the audio extract and transcription: every error a
+  // script can carry on its own — an unreadable file, more than 40 cues, an
+  // unknown `[Name]`, a `clip:` path that leaves its folder — is the author's
+  // to fix, and finding it after a multi-minute transcription is the cost
+  // the check exists to avoid. Missing clip FILES wait for the workdir (a
+  // Re-plan may keep a WebM whose source is gone), still before transcription.
+  let scriptRun: { abs: string; text: string; cues: ScriptCue[] } | undefined;
+  if (opts.script !== undefined) {
+    // Exclusive, both: `--clip` picks its window through the beat-sheet call
+    // a script never makes, and `--scenes` IS a plan — a script would be
+    // silently ignored next to it. The editor's Render strips `--script`
+    // when it pins `--scenes` (renderReplayArgs).
+    if (opts.scenes) {
+      throw new Error("--script and --scenes cannot be combined: each one is the whole plan.");
+    }
+    if (opts.clip !== undefined) {
+      throw new Error("--script and --clip cannot be combined: a script plans the whole take.");
+    }
+    const abs = isAbsolute(opts.script) ? opts.script : resolve(baseCwd, expandHome(opts.script));
+    const text = loadScriptText(abs, (p) => readFileSync(p, "utf8"));
+    const cues = parseScript(text);
+    const problems = scriptCueProblems(cues, abs);
+    if (problems.length > 0) {
+      throw new Error(`the script ${abs} cannot be planned:\n  ${problems.join("\n  ")}`);
+    }
+    scriptRun = { abs, text, cues };
   }
 
   // Resolved HERE, not at the render section (2026-08-16 field incident): a
@@ -2710,10 +2990,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   );
   if (llmEffortWarning) console.log(llmEffortWarning);
 
-  // The run's base theme (F6): config theme over defaultTheme, resolved once
-  // and used for BOTH resolveTheme's base and props.baseTheme below — the
-  // editor's reset must land on the user's global colors, not the factory's.
-  const { theme: configBaseTheme, warning: themeWarning } = configuredBaseTheme(cfg.theme);
+  // The run's base theme (F6): config theme over the look over defaultTheme,
+  // resolved once and used for BOTH resolveTheme's base and props.baseTheme
+  // below — the editor's reset must land on the user's global colors and the
+  // run's look, not the factory's.
+  const look = resolveLook(opts.look, cfg.look);
+  if (look !== "default") {
+    console.log(`▸ look: ${look}${opts.look === undefined ? " (from config; --look overrides)" : ""}`);
+  }
+  const { theme: configBaseTheme, warning: themeWarning } = configuredBaseTheme(cfg.theme, look);
   if (themeWarning) console.log(themeWarning);
 
   // Folder input (folder-input-brief.md, 2026-08-05 field request). The
@@ -2760,6 +3045,41 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // spawn, so a terminal run never sees it.
   const replayWarning = replayWorkdirWarning(process.env.OSSCLIP_REPLAY_WORKDIR, work);
   if (replayWarning !== null) console.log(replayWarning);
+
+  // The `--script` checks that need the workdir, still before transcription:
+  // which folder `clip:` paths resolve in (the ORIGINAL script's, on a Re-plan
+  // from the stored copy) and whether every clip file is there — or, when its
+  // source is gone, whether the project already holds its WebM.
+  let scriptClips: Map<string, PlannedScriptClip> | undefined;
+  let scriptSource: string | undefined;
+  let scriptPrior: ProductionScript | undefined;
+  if (scriptRun) {
+    scriptPrior = priorScript(work);
+    scriptSource = scriptSourcePath(scriptRun.abs, work, scriptPrior);
+    const planned = planScriptClips(scriptRun.cues, scriptSource, work, scriptPrior?.clips ?? [], existsSync);
+    if (planned.problems.length > 0) {
+      throw new Error(`the script ${scriptRun.abs} cannot be planned:\n  ${planned.problems.join("\n  ")}`);
+    }
+    scriptClips = planned.clips;
+    console.log(
+      scriptSource !== scriptRun.abs
+        ? `▸ script: ${scriptRun.cues.length} cue(s) from the project's stored copy of ${scriptSource}`
+        : `▸ script: ${scriptRun.cues.length} cue(s) from ${scriptSource}`,
+    );
+  }
+  // A script project keeps its backdrops through the 16:9 remap (§163) —
+  // decided ONCE, here, because the editor's Render and the kit refresh
+  // replay with `--scenes` and no `--script`: the stored record is the only
+  // thing that says so on those runs, and it must be read before this run
+  // overwrites production.json. The same rule `scriptRecord` below writes by.
+  // Truthiness, as every other `opts.scenes` test in this file (the scenes
+  // read and `scriptRecord`): they must agree on what counts as a replay.
+  const scenesPinned = Boolean(opts.scenes);
+  const scriptProject = isScriptProject({
+    scriptFlag: scriptRun !== undefined,
+    scenesPinned,
+    storedScript: scenesPinned ? priorScript(work) : undefined,
+  });
 
   // §131 residue: a folder re-key (clips renamed/added/removed → new content
   // hash) correctly lands in a fresh workdir, but any editor edits saved in
@@ -2992,32 +3312,44 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           `re-transcribing with ${fmt(requestedKey)}`,
       );
     }
-    // Per-take decode for folder input (take-transcripts.ts, 2026-11-13
-    // "AI And Coding"): each take is sliced out of audio.wav and decoded on
-    // its own, so a seam resets whisper instead of letting one take's words
-    // drift into the next. A single file — or a one-take folder — decodes
-    // whole, exactly as before. `tag` keeps each take's sidecar files apart.
-    // Cached transcripts decoded whole are knowingly still reused (the
-    // `-mc 0` posture in whisperArgs): re-decoding under a user's edits would
-    // move every word their overrides are anchored to.
-    const decodeByTake = async (
+    // Silence-removed timing pass (FINDINGS §159; decodeTakes). Only a
+    // transcription that actually RUNS gets it: this branch is never reached
+    // on a cache hit, and the transcript key deliberately has no field for
+    // it, so every transcript.json decoded before §159 is still reused (the
+    // `-mc 0` posture in whisperArgs). Re-decoding under a user's edits would
+    // move every word their overrides are anchored to; delete a workdir's
+    // transcript.json to re-time it.
+    const takes =
+      folderClipDurations !== null && folderClipDurations.length >= 2
+        ? takeWindows(folderClipDurations)
+        : null;
+    const planTakes = takes ?? [{ startSec: 0, endSec: sourceProbe.duration }];
+    const plans = await planSilenceCompression({
+      ffmpegPath: tools.ffmpegPath,
+      audioPath,
+      takes: planTakes,
+    });
+    if (plans.some((pl) => pl !== null)) {
+      // Here, before either branch starts its spinner: a line printed while
+      // a StageAnimator owns the TTY is overwritten by its next frame.
+      const speechSec = planTakes.reduce((sum, take, i) => {
+        const pl = plans[i];
+        return (
+          sum +
+          (pl ? pl.reduce((s, g) => s + (g.srcEnd - g.srcStart), 0) : take.endSec - take.startSec)
+        );
+      }, 0);
+      console.log(compressionLine(speechSec, planTakes[planTakes.length - 1]!.endSec));
+    }
+    // Printed after the transcribe phase, once no spinner owns the TTY.
+    const restampReports: string[] = [];
+    const decodeByTake = (
       decode: (wav: string, tag: string) => Promise<Transcript>,
-    ): Promise<Transcript> => {
-      if (folderClipDurations === null || folderClipDurations.length < 2) {
-        return decode(audioPath, "");
-      }
-      const parts: Array<{ window: TakeWindow; transcript: Transcript }> = [];
-      for (const [i, window] of takeWindows(folderClipDurations).entries()) {
-        const wav = join(work, `audio-clip-${i + 1}.wav`);
-        await run(tools.ffmpegPath, sliceWavArgs(audioPath, wav, window));
-        try {
-          parts.push({ window, transcript: await decode(wav, `-clip-${i + 1}`) });
-        } finally {
-          await rm(wav, { force: true });
-        }
-      }
-      return stitchTakeTranscripts(parts);
-    };
+    ): Promise<Transcript> =>
+      decodeTakes(
+        { ffmpegPath: tools.ffmpegPath, audioPath, work, takes, plans, reports: restampReports },
+        decode,
+      );
     if (backend.kind === "remote") {
       // No whisper binary and no model file on this branch — the whole point
       // of remote is that neither is installed (2026-09-01 field report).
@@ -3115,6 +3447,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       if (whisperAnim) whisperAnim.stop();
     }
     console.log(`▸ transcribed ${transcript.words.length} words`);
+    for (const r of restampReports) console.log(`  ▸ ${r}`);
     await writeFile(transcriptKeyPath, JSON.stringify(requestedKey, null, 2));
   }
   await writeFile(transcriptCache, JSON.stringify(transcript, null, 2));
@@ -3528,13 +3861,22 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
    * `beatSheet` above, which is deliberately the cover's two fields: this one
    * exists only while a plan is in hand this run, and is undefined on the
    * paths that never had one (`--scenes`, a pre-`--sfx` scenes cache).
+   * `ScriptBeatSheet` because a script run's moments may name a script-only
+   * card (plan Task 4); every `BeatSheet` is one.
    */
-  let fullSheet: BeatSheet | undefined;
+  let fullSheet: ScriptBeatSheet | undefined;
   /** The graphics accounting line for report.txt (§118b), and the beat-sheet
    * issues that explain it. Cached alongside the beat sheet so a cached
    * re-run's report keeps the accounting instead of erasing it (§78). */
   let graphicsLine: string | undefined;
   let beatIssues: BeatsValidationIssue[] = [];
+  /** A `--script` run's alignment, read again by the cue report after assembly. */
+  let scriptAlignment: { aligned: AlignedCue[]; skipped: SkippedCue[] } | undefined;
+  /** The clips this run imported, as `production.json` records them. */
+  const scriptClipRecords: NonNullable<ProductionScript["clips"]> = [];
+  /** The script-plan cache key this run's plan lives under — the `--sfx` call's
+   * `beatKey` in script mode, where there is no beat-sheet key. */
+  let scriptPlanKey: string | undefined;
   /**
    * The `--sfx` plan: the level it was planned at and the placements that
    * survived `normalizeSfxPlan`, stored on production.json and resolved to
@@ -3670,7 +4012,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // replay the SAME window) > the workdir's window cache > ONE extended
     // beat-sheet call (§93d). Pin and cache both yield a window with zero LLM
     // calls; only a first run selects.
-    let clipFresh: Awaited<ReturnType<typeof produceScenes>> | null = null;
+    // The beat-sheet result type by name: `ReturnType` of the overloaded
+    // `produceScenes` is its last (widest, script-capable) overload, and a
+    // `--clip` run never plans from a script.
+    let clipFresh: ProduceScenesResult | null = null;
     if (clipTargetSec !== undefined) {
       // Parts split from the key so the WRITE below can re-key on the
       // provider that actually answered (§143) without restating them.
@@ -3745,7 +4090,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // AFTER any clip slice: `transcript` and `cutlist` are the window's now.
     // The automatic cutlist only — cleanup vetoes and editor cuts land later
     // (below) and are post-plan edits; keying on them would re-plan, and drop
-    // scene edits, every time the user trims a word in the editor.
+    // scene edits, every time the user trims a word in the editor. Script
+    // mode does not use it: it aligns on the cut as edited (§158, below).
     const planCut = cutWordIndices(transcript.words, cutlist);
     const beatKeyParts = {
       promptVersion: PRODUCER_PROMPT_VERSION,
@@ -3777,7 +4123,147 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // plan, and pairing a cached scene list with a different sheet's hook
     // would caption the video with copy for a plan it is not showing.
     const beatCache = join(work, `beatsheet-${hitKey}.json`);
-    if (clipFresh) {
+    if (scriptRun) {
+      // ---- Script mode (explainer spec §1.2–1.3, §158) -------------------
+      // Its own branch FIRST, and its own cache file, so the beat-sheet cache
+      // above is never read or written by a script run (G6) — the keys are
+      // computed above for every run, but only the branches below open them.
+      //
+      // Aligned against the EFFECTIVE cut — the automatic cutlist after the
+      // user's cleanup vetoes and editor cuts, the cut that will render — not
+      // `planCut` (§158, 2026-11-16): a line said in a blooper that was cut can
+      // only match the take that survived (§1.2), and in the cut-and-review-
+      // first workflow "survived" is the author's call. Against `planCut` the
+      // first real project placed 11 of 22 cues. The same files the edit
+      // layer reads below, read early here only; nothing writes either one
+      // in between, so the two see the same cut.
+      const scriptCutlist = scriptPlanCutlist({
+        words: transcript.words,
+        cutlist,
+        doc: await readOverrideDoc(join(work, "overrides.json")),
+        priorMap: await readPriorMap(join(work, "render-props.json")),
+      });
+      const scriptCut = cutWordIndices(transcript.words, scriptCutlist);
+      scriptAlignment = alignCues(scriptRun.cues, transcript, scriptCut);
+      const { aligned } = scriptAlignment;
+      // Clips are imported only for cues that aligned — a skipped cue would
+      // pay a transcode for nothing — and into the WORKDIR: the editor's
+      // server serves `/media/*` from there, and the render's public dir is
+      // copied to below once it is known (the ScreenshotFrame copy's spot).
+      const clipCues = aligned.filter((a) => a.cue.hint.kind === "clip");
+      const clips: ResolvedScriptClip[] = [];
+      for (const [k, a] of clipCues.entries()) {
+        const planned = scriptClips!.get(a.cue.id)!;
+        let imported: { src: string; durationSec: number };
+        if (planned.reuse) {
+          console.log(clipImportLine(k, clipCues.length, planned.path, "reuse"));
+          imported = planned.reuse;
+        } else {
+          imported = await phases.time("ffmpeg", () =>
+            importClip(planned.abs, work, {
+              ffmpegPath: cfg.ffmpegPath,
+              ffprobePath: cfg.ffprobePath,
+              onStep: (step) => console.log(clipImportLine(k, clipCues.length, planned.path, step)),
+            }),
+          );
+        }
+        clips.push({ cueId: a.cue.id, ...imported });
+        scriptClipRecords.push({ path: planned.path, ...imported });
+      }
+      const scriptKeyParts = {
+        promptVersion: SCRIPT_PLAN_PROMPT_VERSION,
+        scriptText: scriptRun.text,
+        // The effective cut, on purpose: unlike the beat-sheet key (which
+        // keys on `planCut` so scene edits survive a trim), a script plan
+        // re-runs when the user changes the cut — landing on the words
+        // actually kept matters more here than keeping edits across a
+        // re-cut (§158).
+        keptWords: keptWordsKey(transcript.words, scriptCut),
+        clipNames: clips.map((c) => c.src),
+        llmModel: opts.llmModel,
+        llmEffort,
+        forceComponent: opts.forceComponent,
+        framing: framingCtx,
+      };
+      // Primary then fallback provider, the §150 read rule.
+      const scriptKeys = scriptPlanCacheKeyCandidates(scriptKeyParts, providerName, llmFallbackName);
+      const scriptHit = scriptKeys.find((k) => existsSync(join(work, `scriptplan-${k}.json`)));
+      let plan: z.infer<typeof ScriptPlanCacheSchema> | undefined;
+      if (scriptHit) {
+        // Parsed, never trusted, like the sfx cache: a malformed file is a
+        // re-plan, not a crash.
+        try {
+          const parsed = ScriptPlanCacheSchema.safeParse(
+            JSON.parse(await readFile(join(work, `scriptplan-${scriptHit}.json`), "utf8")),
+          );
+          if (parsed.success) plan = parsed.data;
+        } catch {
+          plan = undefined;
+        }
+      }
+      if (plan) {
+        scriptPlanKey = scriptHit;
+        console.log(
+          scriptHit === scriptKeys[0]
+            ? `▸ script plan cached (${plan.scenes.length} scenes)`
+            : `▸ script plan cached (${plan.scenes.length} scenes) — planned by ${llmFallbackName}, which ${providerName} fell back to`,
+        );
+      } else {
+        console.log(`▸ planning ${aligned.length} aligned script cue(s) (${providerName})…`);
+        if (opts.forceComponent) console.log(`▸ forcing every graphic to ${opts.forceComponent}`);
+        const result = await phases.time("llm", () =>
+          produceScenes(provider!, {
+            transcript,
+            outputDuration: map.outputDuration,
+            intent: opts.intent,
+            speaker: opts.speaker ?? cfg.speaker,
+            forceComponent: opts.forceComponent,
+            framing: framingCtx,
+            aspect: landscape ? "16:9" : "9:16",
+            cut: scriptCut,
+            // The minimum scene length (§161) is screen time, so it is
+            // measured on the effective cut's clock — the one this video
+            // renders with. Not part of the cache key: the kept words are,
+            // and with the same words kept only a pause the cut trims or
+            // keeps can move these times, which can move a lengthened end
+            // by a word but never into the next scene (it is word-bounded).
+            script: {
+              aligned,
+              clips,
+              wordTimes: keptWordTimes(transcript.words, scriptCut, new TimeMap(scriptCutlist)),
+            },
+          }),
+        );
+        plan = {
+          hook: result.beatSheet.hook,
+          moments: result.beatSheet.moments,
+          scenes: result.scenes,
+          issues: result.beatIssues,
+          failures: result.failures.length,
+        };
+        // Written under the provider that answered the script_plan call
+        // (§143's write rule; reads stay primary-keyed above).
+        scriptPlanKey = scriptPlanCacheKey({
+          ...scriptKeyParts,
+          providerName: actualProvider(provider.usage, "script_plan", providerName),
+        });
+        await writeFile(join(work, `scriptplan-${scriptPlanKey}.json`), JSON.stringify(plan, null, 2));
+      }
+      scenes = plan.scenes;
+      beatSheet = { hook: plan.hook };
+      fullSheet = { hook: plan.hook, moments: plan.moments };
+      beatIssues = plan.issues;
+      // No `graphicsLine`: its "target is ~1 per 9s" means nothing when the
+      // author named every cue, and the cue report after assembly replaces it.
+      console.log(
+        `▸ planned ${plan.moments.length} script moment(s), ${scenes.length} scenes` +
+          (plan.failures > 0 ? ` (${plan.failures} fell back to TitleCard)` : ""),
+      );
+      // A footage cue is a `reported` outcome in the cue report, not a fault.
+      for (const issue of beatIssues) {
+        if (!isFootageCueIssue(issue)) console.log(`  ⚠ moment ${issue.moment}: ${issue.issue}`);
+      }
+    } else if (clipFresh) {
       // The selection call already planned the scenes (§93d: ONE editorial
       // call chooses the window and the beats inside it) — adopt them and
       // cache under the post-resolution key so re-runs and replays hit it.
@@ -3956,7 +4442,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
           promptVersion: SFX_PROMPT_VERSION,
           // The beat key, not its parts: the graphics plan is IN this prompt,
           // so a different sheet is a different question (see `sfxCacheKey`).
-          beatKey: hitKey,
+          beatKey: scriptPlanKey ?? hitKey,
           level: sfxLevel,
           libraryHash: sfxLibraryHash(library.sounds),
           words: beatKeyParts.words,
@@ -4236,14 +4722,36 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // vertical-format answers, and applying them to 16:9 crops the picture into
   // a letterbox for no gain. Remapped here — before assembly — so cues,
   // captions, the framing report and the editor all see one set of layouts.
+  // A script project's backdrops are exempt (§163): on the editor's Render
+  // these scenes are the reviewed plan, and remapping a stored `graphic-only`
+  // or `pip-bubble` here undid it on every replay.
   if (landscape) {
-    const remapped = scenes.filter((sc) => landscapeLayout(sc.layout) !== sc.layout);
+    const relaid = (layout: Scene["layout"]) => landscapeLayoutFor(layout, { scriptProject });
+    const remapped = scenes.filter((sc) => relaid(sc.layout) !== sc.layout);
     for (const sc of remapped) {
-      console.log(`  ▸ ${sc.id}: ${sc.layout} → ${landscapeLayout(sc.layout)} (landscape)`);
-      sc.layout = landscapeLayout(sc.layout);
+      console.log(`  ▸ ${sc.id}: ${sc.layout} → ${relaid(sc.layout)} (landscape)`);
+      sc.layout = relaid(sc.layout);
     }
     if (remapped.length > 0) {
       console.log(`▸ ${remapped.length} scene(s) re-laid out for the 16:9 frame`);
+    }
+
+    // The 16:9 script placement (§161): every slot component centred,
+    // full-bleed, in SCRIPT_LANDSCAPE_RECT. After the remap, and INSTEAD of
+    // the variety pass below for these scenes — that pass is what put the
+    // first real script render's terminal in a corner or a half-screen. The
+    // scene keeps the rect (production.json, then the editor's `--scenes`
+    // Render), so the placement that was reviewed is the one rendered.
+    // Portrait and runs without --script never reach this.
+    if (scriptRun) {
+      let centred = 0;
+      for (const [k, sc] of scenes.entries()) {
+        const placed = scriptLandscapePlacement(sc);
+        if (placed === sc) continue;
+        scenes[k] = placed;
+        centred++;
+      }
+      if (centred > 0) console.log(`▸ ${centred} script scene(s) centred in the 16:9 frame`);
     }
 
     // Layout VARIETY (R21 §101): the first real landscape run put nearly
@@ -4264,6 +4772,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     let prevLayout: Scene["layout"] | null = null;
     let varied = 0;
     for (const sc of scenes) {
+      // A full-frame clip keeps full-bleed (spec 1.4, "Full frame"): the layout
+      // places the SPEAKER under it, and cycling it to a split would shrink
+      // the face behind a transparent clip. Nor does it count as the previous
+      // layout — the variety rule is about cards repeating, and a clip between
+      // two cards is not one of them. ClipScene is the one `fullFrame`
+      // component, so no run without `--script` reaches this line.
+      if (SCENE_REGISTRY[sc.component].fullFrame) continue;
+      // A planned slot (the script placement above, or one a `--scenes`
+      // replay carries in from production.json) is a full-bleed decision
+      // with a rect made for it: cycling the layout would keep the centred
+      // rect over a split video. Skipped and not counted, like a clip. Only
+      // the script placement plans a rect, so no run without `--script` (or
+      // a replay of one) has a scene here.
+      if (sc.graphicRect) continue;
       let want = sc.layout;
       if (STACK_COMPONENTS.has(sc.component) && want === "lower-third") want = "split-right";
       if (want === prevLayout) {
@@ -4292,17 +4814,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // must see the POST-cut timeline, so the file has to be read and the cut
   // applied before any of that runs.
   const overridesPath = join(work, "overrides.json");
-  let overrideDoc = emptyOverrideDoc();
-  if (existsSync(overridesPath)) {
-    const parsed = OverrideDocSchema.safeParse(
-      JSON.parse(await readFile(overridesPath, "utf8")),
-    );
-    if (!parsed.success) {
-      // Hand-editable user data: refuse rather than silently resetting it.
-      throw new Error(`${overridesPath} is not valid: ${parsed.error.message}`);
-    }
-    overrideDoc = parsed.data;
-  }
+  let overrideDoc = await readOverrideDoc(overridesPath);
   // ---- Cleanup choices: the user's veto over the AUTOMATIC cutlist (cut
   // review step 3) ------------------------------------------------------
   // Applied here — the same load `cuts` rides, before `applyUserCuts` — and
@@ -4349,16 +4861,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // through as-is rather than defaulting to `map` — `applyUserCuts` needs to
   // tell "no prior frame to compare against" apart from "available and
   // happens to equal `map`" (finding 3's re-anchor gate depends on it).
-  const priorRenderProps = join(work, "render-props.json");
-  let priorMap: TimeMap | null = null;
-  if (existsSync(priorRenderProps)) {
-    try {
-      const prev = JSON.parse(await readFile(priorRenderProps, "utf8")) as { spans?: KeptSpan[] };
-      if (prev.spans) priorMap = mapFromKeptSpans(prev.spans);
-    } catch {
-      // Unreadable/corrupt — treated the same as no prior run.
-    }
-  }
+  const priorMap = await readPriorMap(join(work, "render-props.json"));
   const cutResult = applyUserCuts(overrideDoc, cutlist, map, priorMap);
   cutlist = cutResult.cutlist;
   map = cutResult.map;
@@ -4415,8 +4918,33 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
-  const { cues: assembled, dropped } = assembleScenes(scenes, transcript, map);
+  const { cues: assembled, dropped, shortened } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
+
+  // The cue report (explainer spec §1.6): what became of every cue in the
+  // script, against the plan as assembled on this run's final cut. Written
+  // here, where the times exist; printed with report.txt below, which every
+  // run prints before rendering, so `--review` shows it too.
+  let scriptOutcomes: CueOutcome[] | undefined;
+  if (scriptRun && scriptAlignment) {
+    scriptOutcomes = cueOutcomes({
+      cues: scriptRun.cues,
+      aligned: scriptAlignment.aligned,
+      skipped: scriptAlignment.skipped,
+      moments: fullSheet?.moments ?? [],
+      scenes,
+      timed: assembled,
+      dropped,
+      shortened,
+      // This run's final clock, the one `assembled` is timed on: a
+      // lengthened cue's line is reported in the seconds the viewer sees.
+      wordTimes: transcript.words.map((w) => map.mapWord(w)),
+    });
+    await writeFile(
+      join(work, SCRIPT_REPORT_BASENAME),
+      JSON.stringify({ outcomes: scriptOutcomes }, null, 2),
+    );
+  }
 
   // Re-key scene edits whose positional id no longer means the moment they
   // were made on (handoff-edit-anchoring; §137 is the caption precedent — in
@@ -4606,10 +5134,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // the vertical split layouts — so in landscape it can hand back exactly what
   // the remap above removed. Re-assert the constraint on its OUTPUT, and say
   // when that costs a text dodge: the graphic keeps whatever free-band rect
-  // routing gave it, but the frame stays whole (R15).
+  // routing gave it, but the frame stays whole (R15). The same exemption as
+  // the remap above (§163), or a backdrop it kept would be undone here: every
+  // cue, routed or not, passes through this loop. But only for a layout the
+  // cue had BEFORE routing: one routing chose to dodge text is remapped as
+  // always, or a text dodge could hide the speaker. Routing keeps ids and
+  // never mutates `assembled` (changed cues are copies), so its layouts are
+  // the pre-routing record.
   if (landscape) {
+    const beforeRouting = new Map(assembled.map((c) => [c.id, c.layout] as const));
     for (const c of routed.cues) {
-      const want = landscapeLayout(c.layout);
+      const want = landscapeLayoutAfterRouting(c.layout, beforeRouting.get(c.id), {
+        scriptProject,
+      });
       if (want === c.layout) continue;
       console.log(
         `  ▸ ${c.id}: ${c.layout} → ${want} (landscape; source-text routing had moved it)`,
@@ -4761,7 +5298,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       ? { ...s, overrides: { ...s.overrides, ...edit } }
       : s;
   });
-  const groundingIssues = checkGrounding(scenesAsRendered, transcript, opts.speaker ?? cfg.speaker);
+  // On a script project the cue text counts as said (spec §1.3): copy taken
+  // from "🎬 +1,568 lines" is the author's, not invented. A `--scenes` replay
+  // of one (the editor's Render) reads the carried-forward text, so the render
+  // does not warn about copy the planning run accepted.
+  const scriptForGrounding = scriptRun?.text ?? (opts.scenes ? priorScript(work)?.text : undefined);
+  const groundingIssues = checkGrounding(
+    scenesAsRendered,
+    transcript,
+    opts.speaker ?? cfg.speaker,
+    scriptForGrounding !== undefined ? parseScript(scriptForGrounding).map((c) => c.cueText) : undefined,
+  );
   for (const g of groundingIssues) {
     console.log(`  ⚠ grounding: ${g.component} ${g.sceneId} ${g.field} "${g.token}" — not in the take`);
   }
@@ -4845,6 +5392,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     work,
   });
   for (const holder of [...scenes, ...graphicCues]) {
+    // A clip's `src` is the clip import's own `clips/<hash>.webm`, not an
+    // LLM's guess at a filename, and it has a slash — the safe-src rule below
+    // would delete it and leave a clip with nothing to play. Clips are staged
+    // into the public dir by their own block after this loop.
+    if (holder.component === "ClipScene") continue;
     const src = holder.props?.src;
     if (typeof src !== "string" || src.length === 0) continue;
     // A remote URL is the renderer's job, not a file to look up or copy —
@@ -4913,6 +5465,34 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       `  ▸ note: rendering without a mezzanine serves images from the source's folder — ` +
         `created ${SIDE_IMAGE_SUBDIR}/ in ${renderPublicDirPath}`,
     );
+  }
+
+  // Clips into the render's public dir (plan Task 8, "Editor preview"). The
+  // import wrote each WebM into the workdir, which is what the editor serves
+  // over `/media/`; the render's `staticFile()` looks in ITS public dir, which
+  // is the workdir too unless the run has no mezzanine. Driven by the scenes,
+  // not the import, so a `--scenes` replay (the editor's Render) stages the
+  // clips its reviewed plan names exactly like the run that imported them.
+  // Only the import's own `clips/<hash>.webm` shape is copied: a hand-edited
+  // scenes file must not turn a `src` into a write anywhere on disk.
+  if (renderPublicDirPath !== work) {
+    let staged = 0;
+    for (const sc of scenes) {
+      const src = sc.component === "ClipScene" ? sc.props.src : undefined;
+      if (typeof src !== "string" || !isProjectClipSrc(src)) continue;
+      const from = join(work, ...src.split("/"));
+      const to = join(renderPublicDirPath, ...src.split("/"));
+      if (!existsSync(from) || existsSync(to)) continue;
+      mkdirSync(dirname(to), { recursive: true });
+      copyFileSync(from, to);
+      staged++;
+    }
+    if (staged > 0) {
+      console.log(
+        `  ▸ note: rendering without a mezzanine serves clips from the source's folder — ` +
+          `copied ${staged} clip(s) into ${join(renderPublicDirPath, "clips")}`,
+      );
+    }
   }
 
   // ---- Sound effects: word anchors → cues, and the files they name --------
@@ -5332,6 +5912,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // Read BEFORE production.json is overwritten below: a replay has no beat
   // sheet, and this is where its cover headline comes from.
   const plannedHeadline = plannedCoverHeadline(beatSheet, priorCoverHeadline(work));
+  // The script record (ProductionScriptSchema): this run's on a `--script`
+  // run; on a `--scenes` replay, the last run's, carried forward like the sfx
+  // plan — the editor's Render replays with `--scenes` and no `--script`, and
+  // dropping the record there would leave a later Re-plan with no text to
+  // plan from. Any other run writes none (G6). Read BEFORE the write below.
+  const scriptRecord: ProductionScript | undefined = scriptRun
+    ? (() => {
+        const clipPaths = scriptRun.cues.flatMap((c) => (c.hint.kind === "clip" ? [c.hint.path] : []));
+        const clips = mergeClipRecords(scriptPrior?.clips ?? [], scriptClipRecords, clipPaths);
+        return { text: scriptRun.text, sourcePath: scriptSource, ...(clips.length > 0 ? { clips } : {}) };
+      })()
+    : opts.scenes
+      ? priorScript(work)
+      : undefined;
   const production: Production = {
     version: 1,
     // `originalInput`, not `input`: for a folder run `input` is by now
@@ -5388,6 +5982,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     ...(plannedHeadline !== undefined ? { coverHeadline: plannedHeadline } : {}),
     ...(captionThemeRes.theme !== "default" ? { captionTheme: captionThemeRes.theme } : {}),
     ...(captionChoreography ? { captionChoreography } : {}),
+    ...(scriptRecord ? { script: scriptRecord } : {}),
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
@@ -5479,6 +6074,21 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       beatIssues
         .filter((i) => !i.issue.startsWith("graphics:"))
         .map((i) => `  ⚠ moment ${i.moment}: ${i.issue}\n`)
+        .join("");
+  }
+  // The cue report in place of the graphics accounting (script mode has no
+  // `graphicsLine`): the same formatter wrote nothing else, and the beat
+  // issues it does not already state are listed under it, as under the
+  // graphics line — footage cues are outcomes in the report, not warnings.
+  if (scriptOutcomes) {
+    report +=
+      `
+${formatCueReport(scriptOutcomes)} (FINDINGS §158)
+` +
+      beatIssues
+        .filter((i) => !isFootageCueIssue(i))
+        .map((i) => `  ⚠ moment ${i.moment}: ${i.issue}
+`)
         .join("");
   }
   // The SFX accounting, the graphics block's contract exactly (§118b): ONE
@@ -5907,6 +6517,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     console.log(
       `▸ captions: RTL lines detected — bundled ${NASTALIQ_FONT_NAME} staged as ${NASTALIQ_FONT_REL}`,
     );
+  }
+
+  // The explainer look's bundled faces (§161), for the Nastaliq reason above:
+  // a Linux render box has neither Inter nor DejaVu Sans Mono under those
+  // names. Keyed on the RENDERED theme through `fontsToLoad`, the predicate
+  // the composition's BundledFonts loads by, so a run without the look copies
+  // nothing. Into both dirs for the same two mounts; the workdir copy is also
+  // the cover's public dir (`buildCoverRender` below).
+  const stagedFonts = stageBundledFonts(theme, [renderPublicDirPath, work]);
+  if (stagedFonts.length > 0) {
+    console.log(`▸ look: bundled fonts staged as ${stagedFonts.join(", ")}`);
   }
 
   const ctaCue = [...graphicCues]
@@ -6558,7 +7179,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     sfx: sfxOn,
     sfxLevel,
     captionTheme: captionThemeRes.baseTheme,
+    // RESOLVED (flag or config): a look from config must replay as the same
+    // look after that config is edited — --caption-theme's pin, same reason.
+    look,
     choreographCaptions: choreographCaptionsOn,
+    // The SOURCE script, even on a Re-plan from the workdir copy: its folder
+    // is where `clip:` paths resolve (recordedProduceArgs has the why).
+    script: scriptSource,
   });
   // produce is the ONLY command that may write command.json — edit.ts's §129
   // heal prepends the "produce" literal to any record that doesn't start

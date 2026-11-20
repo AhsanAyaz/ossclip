@@ -1,9 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { SCENE_REGISTRY, SceneComponentIdSchema, type SceneComponentId } from "@ossclip/core";
 import {
+  BUG_PANEL_GAP_PX,
+  BUG_PEAK_SCALE,
+  BUG_STICKER_PEAK_SCALE,
+  BUG_STICKER_TILT_DEG,
+  CARD_PEAK_SCALE,
+  CTA_BUTTON_PEAK_SCALE,
+  CTA_PEAK_SCALE,
   FILL_TARGET,
   MAX_SCALE,
+  PATTERN_MARGIN_PX,
+  PHONE_BOB_PX,
+  PHONE_PEAK_SCALE,
+  TERMINAL_BADGE_RISE_PX,
   bulletMetrics,
+  bugAspect,
+  bugCardMetrics,
+  bugMockVisible,
+  cardRowMetrics,
+  ctaCardMetrics,
+  ctaContent,
   bulletStackHeightPx,
   chatBubbles,
   chatMetrics,
@@ -11,17 +28,27 @@ import {
   estimateMinWidthPx,
   fitScale,
   isSelfFitting,
+  patternMarginPx,
+  phoneDemoMetrics,
+  pillBoxPx,
   revealMetrics,
   revealRows,
 } from "../src/fit";
-import { layoutSlots } from "../src/stage";
+import { FULL_BLEED_GRAPHIC_SLOT, layoutSlots } from "../src/stage";
+import { bump, popScale } from "../src/motion";
 
 const FRAME_W = 1080;
 const FRAME_H = 1920;
 
 function slotOf(component: SceneComponentId) {
+  // A `fullFrame` component with no graphic box is drawn in the whole frame
+  // whatever its layout (`graphicSlotFor`), so that is the box its model
+  // must fit; in a box of its own it is the box (§163, tested below).
+  if (SCENE_REGISTRY[component].fullFrame) return { widthPx: FRAME_W, heightPx: FRAME_H };
   const layout = SCENE_REGISTRY[component].defaultLayout;
-  const g = layoutSlots(layout).graphic!;
+  // full-bleed (ClipScene's default) has no slot of its own; graphics there
+  // use the R13 fallback band, exactly as `graphicSlotFor` places them.
+  const g = layoutSlots(layout).graphic ?? FULL_BLEED_GRAPHIC_SLOT;
   return { widthPx: g.w * FRAME_W, heightPx: g.h * FRAME_H };
 }
 
@@ -47,6 +74,76 @@ function fittedHeight(component: SceneComponentId, props: Record<string, unknown
   };
 }
 
+/**
+ * CardRow at every cap (18-character text, 24-character sub, an icon) and
+ * the most cards (4). Capitals and wide letters on purpose: the width model
+ * charges them most, so this is the copy most likely to need a third line.
+ */
+const CARD_ROW_DENSE = [
+  { text: "WRITE THE TESTS OK", sub: "pnpm vitest run --watch!", icon: "check" },
+  { text: "MEASURE EVERY RUN!", sub: "tokens, seconds and cost", icon: "bolt" },
+  { text: "Review the diff ok", sub: "git diff main...HEAD -w!", icon: "code" },
+  { text: "Ship it on Monday!", sub: "npm publish --tag latest", icon: "terminal" },
+];
+
+/**
+ * CtaCard at every cap: a 40-character headline, a 16-character keyword and
+ * a 24-character channel, in capitals (the widest the model charges). The
+ * comment action is the DENSE entry because its row is the busiest — a box,
+ * a caret and a button on one line — and the suite below runs all three.
+ */
+const CTA_DENSE = {
+  action: "comment",
+  text: "WATCH THE WHOLE SERIES ON AGENTS TODAY!!",
+  keyword: "COMMENTPROMPTNOW",
+  channel: "THE MIDNIGHT COMPILER!!!",
+} as const;
+
+/**
+ * BugCard at every cap: headline and sub at 40, four mock entries at 32 (the
+ * most `mockLines` holds), the last one wrong, and a 14-character sticker —
+ * in capitals, the widest the model charges. `lines` is the DENSE entry; the
+ * suite below runs both caption faults at the same caps.
+ */
+const BUG_DENSE = {
+  number: 9,
+  headline: "WHISPER DROPS THE LAST WORD OF EVERY CUT",
+  sub: "AND THE ONE IT DROPS IS THE ONE YOU NEED",
+  mock: "lines",
+  mockLines: [
+    "CONST PLAN = AWAIT AGENT.PLAN();",
+    "FOR (CONST STEP OF PLAN.STEPS) {",
+    "  AWAIT RUN(STEP, { RETRY: 0 });",
+    "} // NO RETRY, NO LOG, NO TRACE!",
+  ],
+  mockWrong: 3,
+  mockFault: "struck",
+  sticker: "WATCH THE EDGE",
+} as const;
+
+/**
+ * PhoneDemo at every cap (plan author, 2026-11-16): six 12-character caption
+ * words, two emphasised, and four 22-character pills, in capitals. No word
+ * pair fits a row at 34 px in either phone, so this is the caption that
+ * overflows three rows.
+ */
+const PHONE_DENSE = {
+  caption: [
+    { text: "AUTOGENERATE", emphasis: "none" },
+    { text: "TRANSCRIBING", emphasis: "yellow" },
+    { text: "UNBELIEVABLE", emphasis: "none" },
+    { text: "INSTRUCTIONS", emphasis: "none" },
+    { text: "PROGRAMMATIC", emphasis: "orange" },
+    { text: "CONFIGURABLE", emphasis: "none" },
+  ],
+  pills: [
+    { text: "WORKS ON EVERY PHONE!!", state: "ok" },
+    { text: "NEVER COVERS THE FACE!", state: "ok" },
+    { text: "NO TINY GREY WORDS NOW", state: "bad" },
+    { text: "MAX TWO WORDS PER LINE", state: "plain" },
+  ],
+};
+
 /** Sparse content — the §23 complaint: a thin strip in a sea of black. */
 const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   TitleCard: { title: "SHIP IT" },
@@ -58,6 +155,12 @@ const SPARSE: Record<SceneComponentId, Record<string, unknown>> = {
   ChatMock: { messages: [{ from: "user", text: "can it cut my ums?" }] },
   ScreenshotFrame: { label: "REVIEW" },
   BulletList: { items: ["AI HARNESS", "CONTEXT ENGINEERING"] },
+  CardRow: { cards: [{ text: "Draft" }, { text: "Review" }] },
+  CtaCard: { action: "subscribe", text: "Subscribe" },
+  BugCard: { number: 1, headline: "Captions drift", mock: "none", mockLines: [], mockFault: "struck" },
+  PhoneDemo: { caption: [{ text: "YOUR" }, { text: "CAPTIONS", emphasis: "yellow" }], pills: [] },
+  // No copy to be sparse or dense with: a clip's props are a file and a length.
+  ClipScene: { src: "clips/a.webm", durationSec: 4.6 },
 };
 
 /** Schema maxima — the cases that silently overflowed the safe area. */
@@ -88,6 +191,8 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
       lines: Array.from({ length: 6 }, () => "a forty character terminal line here okay"),
     })),
     fanOut: "OUTPUT ×5",
+    // The script-only counter badge at its 16-character cap (plan Task 8).
+    badge: "+1,568,000 LINES",
   },
   ChatMock: {
     messages: Array.from({ length: 4 }, () => ({
@@ -100,6 +205,11 @@ const DENSE: Record<SceneComponentId, Record<string, unknown>> = {
     title: "TWENTY EIGHT CHARACTERS OKAY",
     items: Array.from({ length: 5 }, () => "THIRTY SIX CHARACTERS OF BULLET COPY"),
   },
+  CardRow: { cards: CARD_ROW_DENSE, highlight: 2 },
+  CtaCard: CTA_DENSE,
+  BugCard: BUG_DENSE,
+  PhoneDemo: PHONE_DENSE,
+  ClipScene: { src: "clips/a.webm", durationSec: 15 },
 };
 
 describe("fill contract (FINDINGS §23)", () => {
@@ -478,5 +588,746 @@ describe("BulletList fill (§121)", () => {
     const long = bulletMetrics(REAL, SLOT.w, SLOT.h, true, "A".repeat(90));
     const short = bulletMetrics(REAL, SLOT.w, SLOT.h, true, "LOOP INPUTS");
     expect(long).toBeLessThan(short);
+  });
+});
+
+describe("ClipScene fit (explainer plan Task 7)", () => {
+  it("is never scaled: the video fills whatever slot it is given", () => {
+    // `objectFit: contain` inside the slot does the fitting; a stage scale
+    // would only shrink the box the video letterboxes into.
+    expect(isSelfFitting("ClipScene")).toBe(true);
+    const props = { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false };
+    for (const slot of [
+      { widthPx: 1920, heightPx: 1080 },
+      { widthPx: 1080, heightPx: 1920 },
+      { widthPx: 831, heightPx: 691 },
+      { widthPx: 120, heightPx: 80 },
+    ]) {
+      expect(fitScale("ClipScene", props, slot)).toBe(1);
+    }
+  });
+});
+
+describe("CardRow metrics (§161, plan Task 4 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  const SETS = [
+    ["sparse", SPARSE.CardRow.cards],
+    ["dense", DENSE.CardRow.cards],
+    ["three", CARD_ROW_DENSE.slice(0, 3)],
+  ] as const;
+  type Cards = Parameters<typeof cardRowMetrics>[0];
+
+  it("one row in a landscape frame, one column in a portrait one", () => {
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1920, 1080).mode).toBe("row");
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1080, 1920).mode).toBe("column");
+  });
+
+  it("keeps 100 px clear on every side on EVERY frame — a card at its peak bump included", () => {
+    for (const f of FRAMES) {
+      for (const [label, cards] of SETS) {
+        const m = cardRowMetrics(cards as Cards, f.w, f.h);
+        expect(m.marginPx, f.name).toBe(PATTERN_MARGIN_PX);
+        // The block is centred; an edge card scaled about its centre reaches
+        // (peak - 1) / 2 of its own size past its box.
+        const growW = ((CARD_PEAK_SCALE - 1) / 2) * m.cardWidthPx;
+        const growH = ((CARD_PEAK_SCALE - 1) / 2) * m.cardHeightPx;
+        const side = (f.w - m.blockWidthPx) / 2 - growW;
+        const top = (f.h - m.blockHeightPx) / 2 - growH;
+        expect(side, `${f.name} ${label}: side margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(top, `${f.name} ${label}: top margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+      }
+    }
+  });
+
+  it("a card at its peak never reaches its settled neighbour", () => {
+    for (const f of FRAMES) {
+      for (const [label, cards] of SETS) {
+        const m = cardRowMetrics(cards as Cards, f.w, f.h);
+        const along = m.mode === "row" ? m.cardWidthPx : m.cardHeightPx;
+        expect(((CARD_PEAK_SCALE - 1) / 2) * along, `${f.name} ${label}`).toBeLessThan(m.gapPx);
+      }
+    }
+  });
+
+  it("never sets type under the 34 px floor, at schema-max copy in either aspect", () => {
+    for (const f of FRAMES) {
+      const m = cardRowMetrics(CARD_ROW_DENSE, f.w, f.h);
+      expect(m.titlePx, f.name).toBeGreaterThanOrEqual(34);
+      expect(m.subPx, f.name).toBeGreaterThanOrEqual(34);
+      // Schema-max titles still fit whole words at the solved size.
+      expect(m.titleWordsFit, f.name).toBe(true);
+    }
+  });
+
+  it("less copy reads bigger, and a sub-line never outgrows its title", () => {
+    const sparse = cardRowMetrics(SPARSE.CardRow.cards as Cards, 1920, 1080);
+    const dense = cardRowMetrics(CARD_ROW_DENSE, 1920, 1080);
+    expect(sparse.titlePx).toBeGreaterThan(dense.titlePx);
+    for (const m of [sparse, dense]) expect(m.subPx).toBeLessThanOrEqual(m.titlePx);
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("CardRow")).toBe(true);
+    expect(fitScale("CardRow", DENSE.CardRow, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+  });
+
+  it("an unbounded height still answers a finite estimate", () => {
+    expect(Number.isFinite(estimateHeightPx("CardRow", DENSE.CardRow, 1080))).toBe(true);
+  });
+});
+
+describe("CtaCard metrics (§161, plan Task 5 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  type Input = Parameters<typeof ctaCardMetrics>[0];
+  const SPARSE_CTA: Input[] = [
+    { action: "comment", text: "Want it?", keyword: "PROMPT" },
+    { action: "subscribe", text: "Subscribe for more" },
+    { action: "link", text: "Grab the template", keyword: "ossclip.dev" },
+  ];
+  const DENSE_CTA: Input[] = (["comment", "subscribe", "link"] as const).map((action) => ({
+    ...CTA_DENSE,
+    action,
+    keyword: action === "link" ? "ossclip.dev/tmpl" : CTA_DENSE.keyword,
+  }));
+  // A comment with no keyword types its 40-character headline into the box.
+  const BOX_HEADLINE: Input = { action: "comment", text: CTA_DENSE.text };
+  const ALL: [string, Input][] = [
+    ...SPARSE_CTA.map((p) => [`sparse ${p.action}`, p] as [string, Input]),
+    ...DENSE_CTA.map((p) => [`dense ${p.action}`, p] as [string, Input]),
+    ["dense comment, no keyword", BOX_HEADLINE],
+    ["subscribe, no channel", { ...DENSE_CTA[1]!, channel: undefined }],
+    ["link, no keyword", { action: "link", text: CTA_DENSE.text }],
+  ];
+
+  it("CTA_PEAK_SCALE covers popScale's overshoot, and the button peak is bump's", () => {
+    let peak = 0;
+    for (let t = 0; t <= 0.35; t += 0.0005) peak = Math.max(peak, popScale(t));
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(CTA_PEAK_SCALE);
+    expect(bump(0.15)).toBeCloseTo(CTA_BUTTON_PEAK_SCALE, 10);
+  });
+
+  it("keeps 100 px clear on every side on EVERY frame — the card at its pop peak included", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        expect(m.marginPx, f.name).toBe(PATTERN_MARGIN_PX);
+        // Centred, scaled about its centre: the box grows (peak - 1) / 2 of its size per side.
+        const side = (f.w - m.blockWidthPx * CTA_PEAK_SCALE) / 2;
+        const top = (f.h - m.blockHeightPx * CTA_PEAK_SCALE) / 2;
+        expect(side, `${f.name} ${label}: side margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(top, `${f.name} ${label}: top margin`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+      }
+    }
+  });
+
+  it("a pressed button stays inside the card's 40 px padding", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        const growX = ((CTA_BUTTON_PEAK_SCALE - 1) / 2) * m.buttonWidthPx;
+        const growY = ((CTA_BUTTON_PEAK_SCALE - 1) / 2) * m.buttonHeightPx;
+        expect(growX, `${f.name} ${label}`).toBeLessThan(40);
+        expect(growY, `${f.name} ${label}`).toBeLessThan(36);
+      }
+    }
+  });
+
+  it("never sets type under the floors (34 px, 26 px mono), and schema-max copy keeps whole words", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        expect(m.headPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.labelPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.actionPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(p.action === "link" ? 26 : 34);
+        expect(m.headWordsFit, `${f.name} ${label}: headline`).toBe(true);
+        expect(m.actionWordsFit, `${f.name} ${label}: row`).toBe(true);
+        expect(m.headLines, `${f.name} ${label}`).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it("a keyword or a URL takes one line; a comment that is the headline, or a channel, two at most", () => {
+    for (const f of FRAMES) {
+      for (const p of DENSE_CTA) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        if (p.action === "subscribe") expect(m.actionLines, `${f.name} channel`).toBeLessThanOrEqual(2);
+        else expect(m.actionLines, `${f.name} ${p.action}`).toBe(1);
+      }
+    }
+    // The headline typed into the box: two lines in 16:9; in 9:16 the floor
+    // binds first and it takes a third, which the box is held tall enough for.
+    expect(ctaCardMetrics(BOX_HEADLINE, 1920, 1080).actionLines).toBeLessThanOrEqual(2);
+    const portrait = ctaCardMetrics(BOX_HEADLINE, 1080, 1920);
+    expect(portrait.actionPx).toBe(34);
+    expect(portrait.actionLines).toBeLessThanOrEqual(3);
+  });
+
+  it("sizes the card to its content: a sparse card is narrower than a dense one, and less copy reads bigger", () => {
+    expect(ctaCardMetrics(SPARSE_CTA[1]!, 1920, 1080).cardWidthPx).toBeLessThan(
+      ctaCardMetrics(DENSE_CTA[1]!, 1920, 1080).cardWidthPx,
+    );
+    // In 16:9 both headlines fit two lines at the 72 px cap; 9:16 is where
+    // the 40 characters have to come down.
+    expect(ctaCardMetrics(SPARSE_CTA[1]!, 1080, 1920).headPx).toBeGreaterThan(
+      ctaCardMetrics(DENSE_CTA[1]!, 1080, 1920).headPx,
+    );
+  });
+
+  it("the action row never outgrows its headline", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = ctaCardMetrics(p, f.w, f.h);
+        if (m.headLines === 0) continue;
+        const floor = p.action === "link" ? 26 : 34;
+        expect(m.actionPx, `${f.name} ${label}`).toBeLessThanOrEqual(Math.max(floor, Math.round(m.headPx * 0.8)));
+      }
+    }
+  });
+
+  it("the Subscribe button is as wide as its Subscribed state, so the press does not move the row", () => {
+    const m = ctaCardMetrics(SPARSE_CTA[1]!, 1920, 1080);
+    // "Subscribed" plus a tick is the wider of the two labels.
+    expect(m.buttonWidthPx).toBeGreaterThan(m.labelPx * 6 + m.tickPx);
+  });
+
+  it("the channel sits beside the button in 16:9 and above it in 9:16", () => {
+    expect(ctaCardMetrics(DENSE_CTA[1]!, 1920, 1080).mode).toBe("row");
+    expect(ctaCardMetrics(DENSE_CTA[1]!, 1080, 1920).mode).toBe("column");
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("CtaCard")).toBe(true);
+    expect(fitScale("CtaCard", DENSE.CtaCard, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+    expect(Number.isFinite(estimateHeightPx("CtaCard", DENSE.CtaCard, 1080))).toBe(true);
+  });
+});
+
+describe("ctaContent (§161, plan Task 5)", () => {
+  it("a comment types its keyword under the headline, or the headline itself when there is none", () => {
+    expect(ctaContent({ action: "comment", text: "Want it?", keyword: "PROMPT" })).toEqual({
+      headline: "Want it?",
+      field: "PROMPT",
+      fieldId: "keyword",
+      channel: null,
+    });
+    expect(ctaContent({ action: "comment", text: "Comment AGENT", keyword: "" })).toEqual({
+      headline: null,
+      field: "Comment AGENT",
+      fieldId: "text",
+      channel: null,
+    });
+  });
+
+  it("subscribe shows the channel only when it has one, and never a keyword", () => {
+    expect(ctaContent({ action: "subscribe", text: "Sub", keyword: "X", channel: "Ch" })).toEqual({
+      headline: "Sub",
+      field: null,
+      fieldId: null,
+      channel: "Ch",
+    });
+    expect(ctaContent({ action: "subscribe", text: "Sub", channel: "" }).channel).toBeNull();
+  });
+
+  it("a link with no keyword is the headline alone; a channel on any other action is not drawn", () => {
+    expect(ctaContent({ action: "link", text: "Link below" })).toEqual({
+      headline: "Link below",
+      field: null,
+      fieldId: null,
+      channel: null,
+    });
+    expect(ctaContent({ action: "link", text: "L", keyword: "a.dev", channel: "Ch" })).toMatchObject({
+      field: "a.dev",
+      fieldId: "keyword",
+      channel: null,
+    });
+  });
+});
+
+describe("BugCard metrics (§161, plan Task 6 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  type Input = Parameters<typeof bugCardMetrics>[0];
+  const base: Input = { number: 1, headline: "Captions drift", mock: "none", mockLines: [], mockFault: "struck" };
+  const CAPTION_WORDS = ["Claude", "wrote", "the", "migration"];
+  const ALL: [string, Input][] = [
+    ["sparse, no mock", base],
+    ["sparse caption, struck", { ...base, mock: "caption", mockLines: ["Ask", "Cloud", "to", "refactor"], mockWrong: 1 }],
+    [
+      "caption, clipped",
+      { ...base, mock: "caption", mockLines: CAPTION_WORDS, mockWrong: 3, mockFault: "clipped", sticker: "WATCH THE EDGE" },
+    ],
+    ["dense lines", { ...BUG_DENSE, mockLines: [...BUG_DENSE.mockLines] }],
+    ["dense caption, struck", { ...BUG_DENSE, mock: "caption", mockLines: [...BUG_DENSE.mockLines] }],
+    [
+      "dense caption, clipped",
+      { ...BUG_DENSE, mock: "caption", mockLines: [...BUG_DENSE.mockLines], mockFault: "clipped" },
+    ],
+    [
+      "dense caption, clipped mid-row",
+      { ...BUG_DENSE, mock: "caption", mockLines: [...BUG_DENSE.mockLines], mockFault: "clipped", mockWrong: 1 },
+    ],
+    ["dense, no mock", { ...BUG_DENSE, mock: "none" }],
+    ["dense, no sticker", { ...BUG_DENSE, sticker: undefined }],
+  ];
+  const tilt = (Math.abs(BUG_STICKER_TILT_DEG) * Math.PI) / 180;
+  const stickerPeak = (s: { w: number; h: number }) => ({
+    w: (s.w * Math.cos(tilt) + s.h * Math.sin(tilt)) * BUG_STICKER_PEAK_SCALE,
+    h: (s.w * Math.sin(tilt) + s.h * Math.cos(tilt)) * BUG_STICKER_PEAK_SCALE,
+  });
+
+  it("BUG_PEAK_SCALE covers popScale's overshoot; the sticker's peak is bump's", () => {
+    let peak = 0;
+    for (let t = 0; t <= 0.35; t += 0.0005) peak = Math.max(peak, popScale(t));
+    expect(peak).toBeLessThanOrEqual(BUG_PEAK_SCALE);
+    expect(bump(0.15)).toBeCloseTo(BUG_STICKER_PEAK_SCALE, 10);
+  });
+
+  it("keeps 100 px clear on every side on EVERY frame: each panel at its pop peak, the sticker at its bump", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        expect(m.marginPx).toBe(PATTERN_MARGIN_PX);
+        for (const r of [m.textPanel, m.mockPanel]) {
+          if (r === null) continue;
+          const gx = ((BUG_PEAK_SCALE - 1) / 2) * r.w;
+          const gy = ((BUG_PEAK_SCALE - 1) / 2) * r.h;
+          expect(r.x - gx, `${f.name} ${label}: left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(r.x + r.w + gx, `${f.name} ${label}: right`).toBeLessThanOrEqual(f.w - PATTERN_MARGIN_PX);
+          expect(r.y - gy, `${f.name} ${label}: top`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(r.y + r.h + gy, `${f.name} ${label}: bottom`).toBeLessThanOrEqual(f.h - PATTERN_MARGIN_PX);
+        }
+        if (m.sticker !== null) {
+          const s = stickerPeak(m.sticker);
+          expect(m.sticker.cx - s.w / 2, `${f.name} ${label}: sticker left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(m.sticker.cx + s.w / 2, `${f.name} ${label}: sticker right`).toBeLessThanOrEqual(
+            f.w - PATTERN_MARGIN_PX,
+          );
+          expect(m.sticker.cy + s.h / 2, `${f.name} ${label}: sticker bottom`).toBeLessThanOrEqual(
+            f.h - PATTERN_MARGIN_PX,
+          );
+        }
+      }
+    }
+  });
+
+  it("the panels never touch, even with one at its pop peak", () => {
+    for (const [label, p] of ALL) {
+      const m = bugCardMetrics(p, 1920, 1080);
+      if (m.mockPanel === null) continue;
+      const gap = m.mockPanel.x - (m.textPanel.x + m.textPanel.w);
+      expect(gap).toBe(BUG_PANEL_GAP_PX);
+      expect(gap - ((BUG_PEAK_SCALE - 1) / 2) * m.mockPanel.w, label).toBeGreaterThan(0);
+    }
+  });
+
+  it("the sticker overlaps its panel's bottom edge but never its content, so the fault stays in view", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        if (m.sticker === null) continue;
+        const anchor = m.mockPanel ?? m.textPanel;
+        const content = m.mockPanel !== null ? m.mockContentPx : m.textContentPx;
+        const contentBottom = anchor.y + (anchor.h + content) / 2;
+        const s = stickerPeak(m.sticker);
+        expect(m.sticker.cy - s.h / 2, `${f.name} ${label}`).toBeGreaterThanOrEqual(contentBottom);
+        expect(m.sticker.cy - m.sticker.h / 2, `${f.name} ${label}: overlaps the edge`).toBeLessThan(
+          anchor.y + anchor.h,
+        );
+        // Over the right half of the panel: its lower right corner.
+        expect(m.sticker.cx, `${f.name} ${label}`).toBeGreaterThan(anchor.x + anchor.w / 2);
+      }
+    }
+  });
+
+  it("never sets type under the floors (34 px, 26 px mono), and schema-max copy keeps whole words", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        expect(m.headPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        if (p.sub) expect(m.subPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        // NumberBadge sets its numeral at 0.58 of the disc.
+        expect(Math.round(m.badgePx * 0.58), `${f.name} ${label}: badge`).toBeGreaterThanOrEqual(34);
+        if (m.sticker !== null) expect(m.sticker.sizePx).toBeGreaterThanOrEqual(34);
+        if (m.capPx > 0) expect(m.capPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        if (m.linePx > 0) expect(m.linePx, `${f.name} ${label}`).toBeGreaterThanOrEqual(26);
+        expect(m.headWordsFit, `${f.name} ${label}: headline`).toBe(true);
+        expect(m.subWordsFit, `${f.name} ${label}: sub`).toBe(true);
+        expect(m.headLines, `${f.name} ${label}`).toBeLessThanOrEqual(2);
+        expect(m.subLines, `${f.name} ${label}`).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
+  it("draws the mock in 16:9 only, beside the text panel at one height", () => {
+    const wide = bugCardMetrics(ALL[3]![1], 1920, 1080);
+    expect(wide.mode).toBe("split");
+    expect(wide.mockPanel!.h).toBe(wide.textPanel.h);
+    expect(wide.mockPanel!.x).toBeGreaterThan(wide.textPanel.x);
+    const tall = bugCardMetrics(ALL[3]![1], 1080, 1920);
+    expect(tall.mode).toBe("single");
+    expect(tall.mockPanel).toBeNull();
+    // Centred.
+    expect(tall.textPanel.x + tall.textPanel.w / 2).toBeCloseTo(540, 0);
+  });
+
+  it("schema-max code lines fit unwrapped, with the cross's gutter only when a line is marked", () => {
+    const m = bugCardMetrics(ALL[3]![1], 1920, 1080);
+    expect(m.lineFits).toEqual([true, true, true, true]);
+    expect(m.gutterPx).toBeGreaterThan(0);
+    expect(bugCardMetrics({ ...ALL[3]![1], mockWrong: undefined }, 1920, 1080).gutterPx).toBe(0);
+  });
+
+  it("a short caption stays on one row; schema-max entries take two at most above the floor", () => {
+    const sparse = bugCardMetrics(ALL[1]![1], 1920, 1080);
+    expect(sparse.capRows).toEqual([[0, 1, 2, 3]]);
+    // Above the one-row floor (40), and as big as one row allows.
+    expect(sparse.capPx).toBeGreaterThan(40);
+    expect(bugCardMetrics({ ...ALL[1]![1], mockLines: ["Ask", "Cloud"] }, 1920, 1080).capPx).toBe(64);
+    const dense = bugCardMetrics(ALL[4]![1], 1920, 1080);
+    expect(dense.capRows.length <= 2 || dense.capPx === 34, `${dense.capRows.length} rows at ${dense.capPx}`).toBe(
+      true,
+    );
+    expect(dense.capRows.flat()).toEqual([0, 1, 2, 3]);
+  });
+
+  it("a clipped caption fits whole before the fault, and its row is wider than the panel by half the word", () => {
+    const m = bugCardMetrics(ALL[2]![1], 1920, 1080);
+    expect(m.clipRow).toBe(0);
+    expect(m.capRows).toEqual([[0, 1, 2, 3]]);
+    const innerW = m.mockPanel!.w - 2 * (5 + 40);
+    // The row runs past the inner edge and the padding: the clip edge.
+    expect(m.clipRowWidthPx).toBeGreaterThan(innerW + 40);
+    // Struck captions have no such row.
+    expect(bugCardMetrics(ALL[1]![1], 1920, 1080).clipRow).toBe(-1);
+  });
+
+  it("marks nothing for an absent, out-of-range or blank mockWrong", () => {
+    const p = ALL[1]![1];
+    expect(bugCardMetrics({ ...p, mockWrong: undefined }, 1920, 1080).wrongIndex).toBeNull();
+    expect(bugCardMetrics({ ...p, mockLines: ["a", "b"], mockWrong: 3 }, 1920, 1080).wrongIndex).toBeNull();
+    expect(bugCardMetrics({ ...p, mockLines: ["a", " "], mockWrong: 1 }, 1920, 1080).wrongIndex).toBeNull();
+    expect(bugCardMetrics(p, 1920, 1080).wrongIndex).toBe(1);
+    // Not drawn, so nothing is marked either.
+    expect(bugCardMetrics(p, 1080, 1920).wrongIndex).toBeNull();
+  });
+
+  it("bugMockVisible agrees with the metric's mode", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = bugCardMetrics(p, f.w, f.h);
+        expect(m.mockPanel !== null, `${f.name} ${label}`).toBe(
+          bugMockVisible(p, f.w >= f.h ? "16:9" : "9:16"),
+        );
+      }
+    }
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("BugCard")).toBe(true);
+    expect(fitScale("BugCard", DENSE.BugCard, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+    expect(Number.isFinite(estimateHeightPx("BugCard", DENSE.BugCard, 1080))).toBe(true);
+  });
+});
+
+describe("PhoneDemo metrics (§161, plan Task 7 / Review Focus 3)", () => {
+  const FRAMES = [
+    { name: "16:9", w: 1920, h: 1080 },
+    { name: "9:16", w: 1080, h: 1920 },
+  ] as const;
+  type Input = Parameters<typeof phoneDemoMetrics>[0];
+  const TYPICAL: Input = {
+    caption: [
+      { text: "Captions" },
+      { text: "that" },
+      { text: "actually", emphasis: "orange" },
+      { text: "read" },
+      { text: "well" },
+    ],
+    pills: [
+      { text: "Big and bold", state: "ok" },
+      { text: "Tiny grey text", state: "bad" },
+      { text: "Two lines at most", state: "plain" },
+    ],
+  };
+  const ALL: [string, Input][] = [
+    ["sparse", SPARSE.PhoneDemo as unknown as Input],
+    ["typical", TYPICAL],
+    ["dense", PHONE_DENSE],
+    ["dense, no pills", { ...PHONE_DENSE, pills: [] }],
+    ["one word, one pill", { caption: [{ text: "HI" }], pills: [{ text: "OK", state: "plain" }] }],
+  ];
+
+  it("PHONE_PEAK_SCALE covers popScale's overshoot", () => {
+    let peak = 0;
+    for (let t = 0; t <= 0.35; t += 0.0005) peak = Math.max(peak, popScale(t));
+    expect(peak).toBeLessThanOrEqual(PHONE_PEAK_SCALE);
+  });
+
+  it("keeps 100 px clear on every frame: phone at its pop peak or bob, pills at theirs", () => {
+    const g = PHONE_PEAK_SCALE - 1;
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = phoneDemoMetrics(p, f.w, f.h);
+        const ph = m.phone;
+        const gy = Math.max((g / 2) * ph.h, PHONE_BOB_PX);
+        expect(ph.x - (g / 2) * ph.w, `${f.name} ${label}: phone left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(ph.x + ph.w + (g / 2) * ph.w, `${f.name} ${label}: phone right`).toBeLessThanOrEqual(
+          f.w - PATTERN_MARGIN_PX,
+        );
+        expect(ph.y - gy, `${f.name} ${label}: phone top`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(ph.y + ph.h + gy, `${f.name} ${label}: phone bottom`).toBeLessThanOrEqual(f.h - PATTERN_MARGIN_PX);
+        const col = m.pillColumn;
+        if (col === null) continue;
+        m.pillWidths.forEach((w, i) => {
+          // 16:9 pills sit on the column's left edge and pop from it; 9:16 ones are centred.
+          const left = m.pillAlign === "left" ? col.x : col.x + (col.w - w) / 2 - (g / 2) * w;
+          const right = m.pillAlign === "left" ? col.x + w * PHONE_PEAK_SCALE : col.x + (col.w + w) / 2 + (g / 2) * w;
+          expect(left, `${f.name} ${label}: pill ${i} left`).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+          expect(right, `${f.name} ${label}: pill ${i} right`).toBeLessThanOrEqual(f.w - PATTERN_MARGIN_PX);
+        });
+        expect(col.y - (g / 2) * m.pillHeightPx).toBeGreaterThanOrEqual(PATTERN_MARGIN_PX);
+        expect(col.y + col.h + (g / 2) * m.pillHeightPx).toBeLessThanOrEqual(f.h - PATTERN_MARGIN_PX);
+      }
+    }
+  });
+
+  it("the phone is 80% of a 16:9 frame where the margin allows it, never more; 50% of a 9:16 one", () => {
+    const wide = phoneDemoMetrics(PHONE_DENSE, 1920, 1080);
+    // 880 px free, the pop's 1.11 peak inside it: 792, not 864.
+    expect(wide.phone.h).toBe(Math.floor(880 / PHONE_PEAK_SCALE));
+    expect(wide.phone.h).toBeLessThan(0.8 * 1080);
+    expect(wide.phone.w).toBe(Math.round((wide.phone.h * 9) / 16));
+    expect(phoneDemoMetrics(PHONE_DENSE, 1080, 1920).phone.h).toBe(960);
+  });
+
+  it("16:9: phone and pills are one centred group with a clear gap, the pills centred on the phone", () => {
+    const m = phoneDemoMetrics(TYPICAL, 1920, 1080);
+    const col = m.pillColumn!;
+    expect(col.x - (m.phone.x + m.phone.w)).toBeGreaterThanOrEqual(80);
+    expect((m.phone.x + col.x + col.w) / 2).toBeCloseTo(960, -1);
+    expect(col.y + col.h / 2).toBeCloseTo(m.phone.y + m.phone.h / 2, -1);
+    // Pills never overlap the phone, even when the first pops with it.
+    expect(col.x).toBeGreaterThan(m.phone.x + m.phone.w + ((PHONE_PEAK_SCALE - 1) / 2) * m.phone.w);
+    // Alone, the phone is centred.
+    const alone = phoneDemoMetrics(SPARSE.PhoneDemo as unknown as Input, 1920, 1080);
+    expect(alone.pillColumn).toBeNull();
+    expect(alone.phone.x + alone.phone.w / 2).toBeCloseTo(960, 0);
+  });
+
+  it("9:16: phone at the top inside the margin, pills centred below it, never touching", () => {
+    const m = phoneDemoMetrics(TYPICAL, 1080, 1920);
+    const col = m.pillColumn!;
+    expect(m.phone.y).toBeLessThan(200);
+    expect(col.y).toBeGreaterThan(m.phone.y + m.phone.h * (1 + (PHONE_PEAK_SCALE - 1) / 2));
+    expect(col.x + col.w / 2).toBeCloseTo(540, 0);
+  });
+
+  it("type floors: pills 34 px or more; caption 34 px or more, every word whole", () => {
+    for (const f of FRAMES) {
+      for (const [label, p] of ALL) {
+        const m = phoneDemoMetrics(p, f.w, f.h);
+        expect(m.pillPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.capPx, `${f.name} ${label}`).toBeGreaterThanOrEqual(34);
+        expect(m.capWordsFit, `${f.name} ${label}`).toBe(true);
+        expect(m.capRows.flat(), `${f.name} ${label}`).toEqual(p.caption.map((_, i) => i));
+      }
+    }
+  });
+
+  it("caption: at most three rows in the lower third when the words allow it", () => {
+    for (const f of FRAMES) {
+      for (const p of [SPARSE.PhoneDemo as unknown as Input, TYPICAL]) {
+        const m = phoneDemoMetrics(p, f.w, f.h);
+        expect(m.capMode).toBe("lower-third");
+        expect(m.capRows.length).toBeLessThanOrEqual(3);
+        expect(m.capTopPx).toBeGreaterThanOrEqual((m.innerH * 2) / 3 - 1);
+      }
+    }
+    // The sparse caption reads big: far above the floor.
+    expect(phoneDemoMetrics(SPARSE.PhoneDemo as unknown as Input, 1920, 1080).capPx).toBeGreaterThan(50);
+  });
+
+  it("the dense caption overflows to a row a word, 34 px or more, inside the panel and below the face", () => {
+    for (const f of FRAMES) {
+      const m = phoneDemoMetrics(PHONE_DENSE, f.w, f.h);
+      expect(m.capMode, f.name).toBe("overflow");
+      // The largest size that still clears the face, never under the floor.
+      expect(m.capPx, f.name).toBeGreaterThanOrEqual(34);
+      expect(m.capRows, f.name).toEqual([[0], [1], [2], [3], [4], [5]]);
+      // Padding reduced first (2% of the panel rather than 7%).
+      expect(m.capPadXPx, f.name).toBeLessThan(Math.round(m.innerW * 0.07));
+      expect(m.capTopPx, `${f.name}: under the chin`).toBeGreaterThanOrEqual(m.faceBottomPx);
+      expect(m.capTopPx + m.capBlockPx + m.capBottomPx).toBe(m.innerH);
+      expect(m.capBottomPx, f.name).toBeGreaterThan(0);
+    }
+  });
+
+  it("a plain pill has no mark, so it is narrower than a marked one", () => {
+    expect(pillBoxPx("SAME", false, 34).w).toBeLessThan(pillBoxPx("SAME", true, 34).w);
+    expect(pillBoxPx("SAME", true, 34).h).toBe(pillBoxPx("SAME", false, 34).h);
+  });
+
+  it("is self-fitting: the stage leaves it at scale 1 in the whole frame", () => {
+    expect(isSelfFitting("PhoneDemo")).toBe(true);
+    expect(fitScale("PhoneDemo", DENSE.PhoneDemo, { widthPx: 1920, heightPx: 1080 })).toBe(1);
+    expect(Number.isFinite(estimateHeightPx("PhoneDemo", DENSE.PhoneDemo, 1080))).toBe(true);
+  });
+});
+
+describe("TerminalMock badge (§161, plan Task 8)", () => {
+  const terminal = {
+    windows: [
+      { title: "agent-01", lines: ["$ ossclip produce talk.mp4"] },
+      { title: "agent-02", lines: ["$ ls"] },
+    ],
+  };
+
+  it("changes nothing for a terminal without one, or with an empty one", () => {
+    for (const badge of [undefined, ""]) {
+      const props = badge === undefined ? terminal : { ...terminal, badge };
+      expect(estimateHeightPx("TerminalMock", props, 900)).toBe(
+        estimateHeightPx("TerminalMock", terminal, 900),
+      );
+      expect(estimateMinWidthPx("TerminalMock", props)).toBe(
+        estimateMinWidthPx("TerminalMock", terminal),
+      );
+    }
+  });
+
+  it("adds exactly the badge's rise to the height, the margin the component reserves", () => {
+    expect(TERMINAL_BADGE_RISE_PX).toBe(Math.ceil(pillBoxPx("", false, 34).h / 2));
+    expect(estimateHeightPx("TerminalMock", { ...terminal, badge: "+1,568 lines" }, 900)).toBe(
+      estimateHeightPx("TerminalMock", terminal, 900) + TERMINAL_BADGE_RISE_PX,
+    );
+  });
+
+  it("widens the floor to hold the last title and the badge side by side", () => {
+    const badge = "+1,568,000 LINES";
+    const longTitle = {
+      windows: [{ title: "a-twenty-four-char-title", lines: ["$ ls"] }],
+      badge,
+    };
+    const floor = estimateMinWidthPx("TerminalMock", longTitle);
+    expect(floor).toBeGreaterThan(estimateMinWidthPx("TerminalMock", { ...longTitle, badge: undefined }));
+    // At least the root padding, the 24-character title and the badge.
+    expect(floor).toBeGreaterThan(60 + 24 * 24 * 0.6 + pillBoxPx(badge, false, 34).w);
+  });
+});
+
+describe("the full-frame components in a graphic box (§163)", () => {
+  const LS = { width: 1920, height: 1080 };
+  const PT = { width: 1080, height: 1920 };
+  // A quarter of the 16:9 frame: half its width and half its height.
+  const BOX = { w: 960, h: 540 };
+
+  it("patternMarginPx: 100 px on the whole frame, the box's share of the frame in a smaller box", () => {
+    expect(patternMarginPx(1920, 1080, LS)).toBe(PATTERN_MARGIN_PX);
+    expect(patternMarginPx(1080, 1920, PT)).toBe(PATTERN_MARGIN_PX);
+    expect(patternMarginPx(960, 540, LS)).toBe(50);
+    expect(patternMarginPx(540, 960, PT)).toBe(50);
+    // The bubble box (0.72 × 0.88 of 16:9): the tighter share, the width's.
+    expect(patternMarginPx(1382, 950, LS)).toBe(72);
+    // The band (0.92 × 0.4): the height's.
+    expect(patternMarginPx(1766, 432, LS)).toBe(40);
+  });
+
+  it("with no frame given the box is the frame: today's margin, so existing callers are unchanged", () => {
+    // 100 px at the short edge of the box (round(100 × 950 / 1080)).
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1382, 950).marginPx).toBe(88);
+    expect(cardRowMetrics(CARD_ROW_DENSE, 1382, 950, LS).marginPx).toBe(72);
+    for (const [w, h] of [
+      [1920, 1080],
+      [1080, 1920],
+    ] as const) {
+      expect(cardRowMetrics(CARD_ROW_DENSE, w, h)).toEqual(
+        cardRowMetrics(CARD_ROW_DENSE, w, h, { width: w, height: h }),
+      );
+      expect(ctaCardMetrics(CTA_DENSE, w, h)).toEqual(ctaCardMetrics(CTA_DENSE, w, h, { width: w, height: h }));
+      const bug = { ...BUG_DENSE, mockLines: [...BUG_DENSE.mockLines] };
+      expect(bugCardMetrics(bug, w, h)).toEqual(bugCardMetrics(bug, w, h, { width: w, height: h }));
+      expect(phoneDemoMetrics(PHONE_DENSE, w, h)).toEqual(
+        phoneDemoMetrics(PHONE_DENSE, w, h, { width: w, height: h }),
+      );
+    }
+  });
+
+  // Typical copy, not the schema maxima: at the 34 px floor nothing shrinks
+  // further (each metric's rule), so four 18-character cards cannot fit a
+  // quarter of the frame and are not meant to. The stills record which boxes
+  // hold the dense copy (§163); no floor on the box is set here.
+  it("CardRow in a 960×540 box of a 1920×1080 frame: a 50 px margin, the row inside it at the peak bump", () => {
+    const three = [
+      { text: "Draft", sub: "one line", icon: "doc" },
+      { text: "Review", sub: "two", icon: "check" },
+      { text: "Ship", icon: "rocket" },
+    ];
+    const m = cardRowMetrics(three, BOX.w, BOX.h, LS);
+    expect(m.marginPx).toBe(50);
+    const side = (BOX.w - m.blockWidthPx) / 2 - ((CARD_PEAK_SCALE - 1) / 2) * m.cardWidthPx;
+    const top = (BOX.h - m.blockHeightPx) / 2 - ((CARD_PEAK_SCALE - 1) / 2) * m.cardHeightPx;
+    expect(side).toBeGreaterThanOrEqual(50);
+    expect(top).toBeGreaterThanOrEqual(50);
+  });
+
+  it("CtaCard in the same box: a 50 px margin, the card inside it at its pop peak", () => {
+    for (const action of ["comment", "subscribe", "link"] as const) {
+      const m = ctaCardMetrics({ ...CTA_DENSE, action }, BOX.w, BOX.h, LS);
+      expect(m.marginPx, action).toBe(50);
+      expect((BOX.w - m.blockWidthPx * CTA_PEAK_SCALE) / 2, action).toBeGreaterThanOrEqual(50);
+      expect((BOX.h - m.blockHeightPx * CTA_PEAK_SCALE) / 2, action).toBeGreaterThanOrEqual(50);
+    }
+  });
+
+  it("BugCard in the same box: a 50 px margin, both panels inside it at their pop peak", () => {
+    const m = bugCardMetrics(
+      { number: 2, headline: "Captions drift", mock: "caption", mockLines: ["Ask", "Cloud", "to", "refactor"], mockWrong: 1, mockFault: "struck" },
+      BOX.w,
+      BOX.h,
+      LS,
+    );
+    expect(m.marginPx).toBe(50);
+    expect(m.mockPanel, "a wide box draws the mock").not.toBeNull();
+    for (const r of [m.textPanel, m.mockPanel]) {
+      if (r === null) continue;
+      const gx = ((BUG_PEAK_SCALE - 1) / 2) * r.w;
+      const gy = ((BUG_PEAK_SCALE - 1) / 2) * r.h;
+      expect(r.x - gx).toBeGreaterThanOrEqual(50);
+      expect(r.x + r.w + gx).toBeLessThanOrEqual(BOX.w - 50);
+      expect(r.y - gy).toBeGreaterThanOrEqual(50);
+      expect(r.y + r.h + gy).toBeLessThanOrEqual(BOX.h - 50);
+    }
+  });
+
+  it("PhoneDemo in the same box: a 50 px margin, the phone inside it at its pop peak or bob", () => {
+    const m = phoneDemoMetrics(
+      { caption: [{ text: "YOUR" }, { text: "CAPTIONS", emphasis: "yellow" }], pills: [{ text: "Big and bold", state: "ok" }, { text: "Two lines", state: "plain" }] },
+      BOX.w,
+      BOX.h,
+      LS,
+    );
+    expect(m.marginPx).toBe(50);
+    const g = PHONE_PEAK_SCALE - 1;
+    const ph = m.phone;
+    const gy = Math.max((g / 2) * ph.h, PHONE_BOB_PX);
+    expect(ph.x - (g / 2) * ph.w).toBeGreaterThanOrEqual(50);
+    expect(ph.y - gy).toBeGreaterThanOrEqual(50);
+    expect(ph.y + ph.h + gy).toBeLessThanOrEqual(BOX.h - 50);
+    const col = m.pillColumn!;
+    m.pillWidths.forEach((w) => expect(col.x + w * PHONE_PEAK_SCALE).toBeLessThanOrEqual(BOX.w - 50));
+  });
+
+  it("bugAspect reads the box's shape: the band and the bubble box are both wide, so the mock is drawn", () => {
+    expect(bugAspect(1766, 432)).toBe("16:9");
+    expect(bugAspect(1382, 950)).toBe("16:9");
+    expect(bugAspect(540, 960)).toBe("9:16");
   });
 });

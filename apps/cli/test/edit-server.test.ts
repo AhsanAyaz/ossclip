@@ -90,6 +90,24 @@ describe("edit server", () => {
     });
   });
 
+  it("says whether the project is a script project, from production.json's stored script (§163)", async () => {
+    // The editor's backdrop names are keyed on the STORED script, not on
+    // --script: a Render replays without the flag and carries the record.
+    const dir = await fixtureWorkdir();
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const get = async () => (await (await fetch(`${server.url}/api/production`)).json()).scriptProject;
+    // No production.json at all.
+    expect(await get()).toBe(false);
+    await writeFile(join(dir, "production.json"), JSON.stringify({ scenes: [] }));
+    expect(await get()).toBe(false);
+    // A record that does not parse is no record (storedScriptFrom's rule).
+    await writeFile(join(dir, "production.json"), JSON.stringify({ script: { text: 7 } }));
+    expect(await get()).toBe(false);
+    await writeFile(join(dir, "production.json"), JSON.stringify({ script: { text: "# Intro\nhello" } }));
+    expect(await get()).toBe(true);
+  });
+
   it("identifies itself and its project on /api/health", async () => {
     // The contract the port-conflict flow attaches on (edit-health.ts): a
     // second `ossclip edit` on this same workdir must be able to recognise
@@ -314,6 +332,68 @@ describe("edit server", () => {
     const argvLine = status.lines.find((l) => l.startsWith("["));
     expect(argvLine).toBeDefined();
     expect(JSON.parse(argvLine!)).toEqual(["produce", "./folder", "--llm", "mock"]);
+  });
+
+  // Explainer plan Review Focus 5: Re-plan of a `--script` project after the
+  // script file was moved or deleted plans from the text the PROJECT stored.
+  it("Re-plan of a script project plans from the stored text, not the recorded file", async () => {
+    const dir = await fixtureWorkdir();
+    const text = "🎬 Title: hello\n🗣️ hello there";
+    await writeFile(
+      join(dir, "production.json"),
+      JSON.stringify({ script: { text, sourcePath: "/gone/script.md" } }),
+    );
+    // The record a previous editor Render left: --scenes pinned, no --script.
+    await recordCommand(dir, "console.log(JSON.stringify(process.argv.slice(2)))", [
+      "produce",
+      "./take.mp4",
+      "--scenes",
+      join(dir, "scenes-reviewed.json"),
+    ]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/api/render`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ replan: true }),
+    });
+    expect(res.status).toBe(202);
+    const status = await awaitRenderExit(server.url);
+    expect(status.exitCode).toBe(0);
+    const argv = JSON.parse(status.lines.find((l) => l.startsWith("["))!) as string[];
+    expect(argv).toEqual(["produce", "./take.mp4", "--script", join(dir, "script.md")]);
+    expect(await readFile(join(dir, "script.md"), "utf8")).toBe(text);
+  });
+
+  it("Re-plan of a project with no stored script replays the record untouched", async () => {
+    const dir = await fixtureWorkdir();
+    await recordCommand(dir, "console.log(JSON.stringify(process.argv.slice(2)))", [
+      "produce",
+      "./take.mp4",
+      "--produce",
+    ]);
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    await fetch(`${server.url}/api/render`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ replan: true }),
+    });
+    const status = await awaitRenderExit(server.url);
+    const argv = JSON.parse(status.lines.find((l) => l.startsWith("["))!) as string[];
+    expect(argv).toEqual(["produce", "./take.mp4", "--produce"]);
+    expect(existsSync(join(dir, "script.md"))).toBe(false);
+  });
+
+  it("serves a clip WebM over /media/ as video/webm", async () => {
+    const dir = await fixtureWorkdir();
+    await mkdir(join(dir, "clips"));
+    await writeFile(join(dir, "clips", "0123456789ab.webm"), "webm-bytes");
+    const server = await startEditServer(dir, { port: 0, recentDir: SHARED_RECENTS });
+    close = server.close;
+    const res = await fetch(`${server.url}/media/clips/0123456789ab.webm`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("video/webm");
   });
 
   it("§129: a modern record already starting with `produce` replays untouched", async () => {

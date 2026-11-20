@@ -1,18 +1,33 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundle } from "@remotion/bundler";
+import { rename, rm } from "node:fs/promises";
 import { renderMedia, renderStill, selectComposition } from "@remotion/renderer";
 import { COMPOSITION_ID } from "./Root";
 import { COVER_ID } from "./CoverComposition";
-import { renderMediaOptions } from "./render-options";
-import type { RenderJobOptions } from "./render-options";
+import { SCENE_STILL_ID } from "./SceneStillComposition";
+import { SCENE_CLIP_ID } from "./SceneClipComposition";
+import { partialClipPath } from "./scene-clip";
+import type { SceneClipProps } from "./scene-clip";
+import { stillFrame } from "./scene-still";
+import type { SceneStillProps } from "./scene-still";
+import { clipRenderOptions, renderMediaOptions } from "./render-options";
+import type { ClipJobOptions, RenderJobOptions } from "./render-options";
 import type { ProductionCompProps } from "./ProductionComposition";
 import type { CoverCompProps } from "./CoverComposition";
 
 export type { ProductionCompProps } from "./ProductionComposition";
 export type { CoverCompProps } from "./CoverComposition";
-export type { RenderJobOptions, RenderPhase } from "./render-options";
-export { DEFAULT_OFFTHREAD_VIDEO_CACHE_BYTES, renderMediaOptions } from "./render-options";
+export { SCENE_STILL_ID } from "./SceneStillComposition";
+export * from "./scene-still";
+export { SCENE_CLIP_ID } from "./SceneClipComposition";
+export * from "./scene-clip";
+export type { ClipJobOptions, RenderJobOptions, RenderPhase } from "./render-options";
+export {
+  DEFAULT_OFFTHREAD_VIDEO_CACHE_BYTES,
+  clipRenderOptions,
+  renderMediaOptions,
+} from "./render-options";
 // Re-exported so the CLI can build a cancel signal without depending on
 // @remotion/renderer directly — @ossclip/renderer is the only door onto
 // Remotion this repo opens (2026-08-19 Ctrl-C fix).
@@ -89,4 +104,90 @@ export async function renderCover(
     jpegQuality: 90,
     browserExecutable: opts.browserExecutable,
   });
+}
+
+/**
+ * Bundles the render entry once, serving `publicDir`. Exposed for
+ * `pnpm stills`, which renders dozens of stills from ONE bundle — bundling
+ * per still would cost tens of seconds each, and every still renders from
+ * the same entry anyway (the composition is chosen by id and props).
+ */
+export async function bundleRenderEntry(publicDir: string): Promise<string> {
+  return bundle({ entryPoint: STUDIO_ENTRY, publicDir });
+}
+
+/**
+ * Render one scene still as PNG (plan Task 3) — `renderCover`'s shape with a
+ * frame. `atSec` is seconds into the cue, which starts at 0, so it is also
+ * the frame time. Pass `serveUrl` from `bundleRenderEntry(publicDir)` to
+ * reuse a bundle; without it this bundles `publicDir` itself. PNG rather
+ * than the cover's JPEG: these are looked at for edges and type, and JPEG
+ * ringing around thin strokes is exactly what they are meant to show
+ * clearly.
+ */
+export async function renderSceneStill(
+  props: SceneStillProps,
+  opts: {
+    publicDir: string;
+    outPath: string;
+    atSec: number;
+    serveUrl?: string;
+    browserExecutable?: string;
+  },
+): Promise<void> {
+  const serveUrl = opts.serveUrl ?? (await bundleRenderEntry(opts.publicDir));
+  const inputProps = props as unknown as Record<string, unknown>;
+  const composition = await selectComposition({
+    serveUrl,
+    id: SCENE_STILL_ID,
+    inputProps,
+    browserExecutable: opts.browserExecutable,
+  });
+  await renderStill({
+    composition,
+    serveUrl,
+    output: opts.outPath,
+    inputProps,
+    frame: stillFrame(opts.atSec, composition.fps),
+    imageFormat: "png",
+    browserExecutable: opts.browserExecutable,
+  });
+}
+
+/**
+ * Render one kit scene clip (§162, design 3.2): ProRes 4444 with alpha, the
+ * scene alone (`SceneClipComposition`, options in `clipRenderOptions`).
+ * `renderSceneStill`'s shape: pass `serveUrl` from
+ * `bundleRenderEntry(publicDir)` to render a whole kit from one bundle;
+ * without it this bundles `publicDir` itself. The public dir must hold the
+ * bundled fonts (`stageBundledFonts`), or `<BundledFonts>` 404s to the
+ * fallback stack.
+ *
+ * Written to `partialClipPath(outPath)` and renamed on success, so a render
+ * that fails or is cancelled never leaves a file under the clip's own name —
+ * the kit reuses a clip whose file exists and whose key matches, and a
+ * truncated one must not pass for done. The partial is removed on failure.
+ */
+export async function renderSceneClip(
+  props: SceneClipProps,
+  opts: ClipJobOptions & { publicDir: string; serveUrl?: string },
+): Promise<void> {
+  const serveUrl = opts.serveUrl ?? (await bundleRenderEntry(opts.publicDir));
+  const inputProps = props as unknown as Record<string, unknown>;
+  const composition = await selectComposition({
+    serveUrl,
+    id: SCENE_CLIP_ID,
+    inputProps,
+    browserExecutable: opts.browserExecutable,
+  });
+  const partial = partialClipPath(opts.outPath);
+  try {
+    await renderMedia(
+      clipRenderOptions({ composition, serveUrl, inputProps, opts: { ...opts, outPath: partial } }),
+    );
+    await rename(partial, opts.outPath);
+  } catch (err) {
+    await rm(partial, { force: true });
+    throw err;
+  }
 }

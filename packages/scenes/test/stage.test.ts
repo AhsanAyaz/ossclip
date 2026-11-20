@@ -19,8 +19,11 @@ import {
   captionAnchorAt,
   captionFontSizeFor,
   clampGraphicRect,
+  clampToFrame,
+  graphicClampFor,
   contentTransformFor,
   FULL_BLEED_GRAPHIC_SLOT,
+  FULL_FRAME_SLOT,
   LANDSCAPE_FRAME,
   LANDSCAPE_SAFE_AREA,
   PORTRAIT_FRAME,
@@ -31,12 +34,24 @@ import {
   layoutSlots,
   objectPosYFor,
   videoSlotAt,
+  CONTENT_TRANSFORM_ORIGIN,
+  PIP_RECT,
+  clearOfPicture,
+  pictureZoomAt,
+  pictureZoomStateFor,
+  pipRectFor,
+  pipZoomFor,
+  placedPictureFor,
+  belowFaceBox,
+  graphicBoundsFor,
+  storedGraphicBox,
 } from "../src/stage";
 import { captionAnchorAvoiding } from "../src/source-fit";
 import {
   LANDSCAPE_LAYOUTS,
   LayoutSchema,
   SCENE_REGISTRY,
+  SCRIPT_LANDSCAPE_RECT,
   SceneComponentIdSchema,
   ZOOM_MAX_SCALE,
 } from "@ossclip/core";
@@ -264,6 +279,184 @@ describe("graphicSlotFor (R13 — layout never vetoes the component)", () => {
       if (layout === "full-bleed") continue;
       expect(graphicSlotFor({ layout })).toEqual(layoutSlots(layout).graphic);
     }
+  });
+});
+
+describe("SCRIPT_LANDSCAPE_RECT: the centred slot of a 16:9 script run (§161)", () => {
+  it("is inside the landscape safe area, so the draw-time clamp leaves it exactly as planned", () => {
+    expect(clampGraphicRect(SCRIPT_LANDSCAPE_RECT, LANDSCAPE_FRAME)).toEqual(SCRIPT_LANDSCAPE_RECT);
+    const { x, y, w, h } = SCRIPT_LANDSCAPE_RECT;
+    expect(x).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.left);
+    expect(1 - (x + w)).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.right);
+    expect(y).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.top);
+    expect(1 - (y + h)).toBeGreaterThanOrEqual(LANDSCAPE_SAFE_AREA.bottom);
+  });
+
+  it("is the slot a full-bleed TitleCard, TerminalMock or StatCard draws in", () => {
+    for (const component of ["TitleCard", "TerminalMock", "StatCard"] as const) {
+      expect(
+        graphicSlotFor({ layout: "full-bleed", component, graphicRect: SCRIPT_LANDSCAPE_RECT }, LANDSCAPE_FRAME),
+      ).toEqual(SCRIPT_LANDSCAPE_RECT);
+    }
+  });
+
+  // Replaced deliberately (§163): this case pinned "a CardRow still gets the
+  // frame" with the box set. A full-frame component now draws in its box;
+  // the placement never gives it one (`scriptLandscapePlacement` returns a
+  // full-frame scene as is), so a planned CardRow still gets the frame.
+  it("a CardRow given the same box by hand draws in it", () => {
+    expect(
+      graphicSlotFor({ layout: "full-bleed", component: "CardRow", graphicRect: SCRIPT_LANDSCAPE_RECT }, LANDSCAPE_FRAME),
+    ).toEqual(SCRIPT_LANDSCAPE_RECT);
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow" }, LANDSCAPE_FRAME)).toEqual(
+      FULL_FRAME_SLOT,
+    );
+  });
+});
+
+describe("graphicSlotFor: fullFrame components (explainer plan, Task 8)", () => {
+  // A clip is authored at frame size with its own margins; in the full-bleed
+  // band it played at 0.77 x 0.36 of the frame.
+  const frames = [PORTRAIT_FRAME, LANDSCAPE_FRAME];
+
+  // Narrowed deliberately (§163): this case was "for every layout" in both
+  // aspects. A 16:9 pip-bubble now cuts every box back to keep clear of the
+  // speaker picture, the whole frame included ("the speaker picture in
+  // 16:9" below); every other layout, and every portrait one, still fills
+  // the frame.
+  it("a ClipScene cue fills the whole frame in both aspects, for every layout but a 16:9 pip-bubble", () => {
+    expect(FULL_FRAME_SLOT).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+    for (const frame of frames) {
+      for (const layout of LayoutSchema.options) {
+        if (layout === "pip-bubble" && frame === LANDSCAPE_FRAME) continue;
+        expect(graphicSlotFor({ layout, component: "ClipScene" }, frame), layout).toEqual(
+          FULL_FRAME_SLOT,
+        );
+      }
+    }
+    const cut = graphicSlotFor({ layout: "pip-bubble", component: "ClipScene" }, LANDSCAPE_FRAME);
+    expect(cut.w).toBeCloseTo(pipRectFor(LANDSCAPE_FRAME).x - 0.03, 9);
+  });
+
+  // Replaced deliberately (§163): this case was "ignores a routed or
+  // hand-set rect and skips the safe-area clamp". The box is honoured now;
+  // what survives is the second half — no safe-area clamp — and routing no
+  // longer writes a box onto a full-frame cue (source-fit.test.ts).
+  it("draws in a hand-set rect and skips the safe-area clamp", () => {
+    const box = { x: 0.2, y: 0.2, w: 0.3, h: 0.3 };
+    const atEdge = { x: 0, y: 0.01, w: 0.5, h: 0.4 };
+    for (const frame of frames) {
+      expect(
+        graphicSlotFor({ layout: "full-bleed", component: "ClipScene", graphicRect: box }, frame),
+      ).toEqual(box);
+      // Outside every safe area (portrait's 0.04 left, landscape's 0.05 and
+      // 0.06 top), still inside the frame: kept exactly.
+      expect(
+        graphicSlotFor({ layout: "full-bleed", component: "ClipScene", graphicRect: atEdge }, frame),
+      ).toEqual(atEdge);
+    }
+  });
+
+  it("a TitleCard in full-bleed keeps the slot it had before the flag", () => {
+    for (const frame of frames) {
+      expect(graphicSlotFor({ layout: "full-bleed", component: "TitleCard" }, frame)).toEqual(
+        graphicSlotFor({ layout: "full-bleed" }, frame),
+      );
+    }
+    expect(graphicSlotFor({ layout: "full-bleed", component: "TitleCard" })).toEqual(
+      FULL_BLEED_GRAPHIC_SLOT,
+    );
+  });
+
+  it("only ClipScene and the script-only cards set the flag, so no planner component's geometry moves", () => {
+    const flagged = SceneComponentIdSchema.options.filter((id) => SCENE_REGISTRY[id].fullFrame);
+    expect(flagged).toEqual(["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"]);
+  });
+
+  // Narrowed deliberately (§163): "with no box". With one, see the next block.
+  it("a CardRow, a CtaCard, a BugCard or a PhoneDemo with no box gets the whole frame in every layout and aspect (plan decision 1)", () => {
+    for (const frame of frames) {
+      expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow" }, frame)).toEqual(FULL_FRAME_SLOT);
+      expect(graphicSlotFor({ layout: "full-bleed", component: "CtaCard" }, frame)).toEqual(FULL_FRAME_SLOT);
+      expect(graphicSlotFor({ layout: "full-bleed", component: "BugCard" }, frame)).toEqual(FULL_FRAME_SLOT);
+      expect(graphicSlotFor({ layout: "full-bleed", component: "PhoneDemo" }, frame)).toEqual(FULL_FRAME_SLOT);
+    }
+  });
+});
+
+describe("a full-frame component in a graphic box (§163)", () => {
+  const LS = LANDSCAPE_FRAME;
+
+  it("draws in its box when it has one, on the whole frame when it has none", () => {
+    const band = { x: 0.1, y: 0.5, w: 0.8, h: 0.4 };
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow", graphicRect: band }, LS)).toEqual(band);
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow" }, LS)).toEqual(FULL_FRAME_SLOT);
+    expect(graphicSlotFor({ layout: "full-bleed", component: "CardRow", graphicRect: null }, LS)).toEqual(
+      FULL_FRAME_SLOT,
+    );
+  });
+
+  it("a box hanging off the right edge is moved inside the frame at the same size (Review Focus 4)", () => {
+    const off = { x: 0.7, y: 0.5, w: 0.4, h: 0.3 };
+    const slot = graphicSlotFor({ layout: "graphic-only", component: "CardRow", graphicRect: off }, LS);
+    expect(slot.x).toBeCloseTo(0.6, 9);
+    expect(slot.y).toBe(0.5);
+    expect(slot.w).toBe(0.4);
+    expect(slot.h).toBe(0.3);
+  });
+
+  it("a box the size of the whole safe area is NOT shrunk to it", () => {
+    const big = { x: 0, y: 0, w: 1, h: 0.95 };
+    expect(graphicSlotFor({ layout: "full-bleed", component: "BugCard", graphicRect: big }, LS)).toEqual(big);
+    // The control: a slot component's box is held to the caption-safe area.
+    const safe = safeRectFor(LS);
+    const slotted = graphicSlotFor({ layout: "full-bleed", component: "TitleCard", graphicRect: big }, LS);
+    expect(slotted.w).toBeCloseTo(safe.w, 9);
+    expect(slotted.h).toBeCloseTo(safe.h, 9);
+  });
+});
+
+describe("clampToFrame (§163)", () => {
+  it("keeps a rect inside the frame: moved first, shrunk only when bigger than the frame", () => {
+    expect(clampToFrame({ x: 0.8, y: 0.9, w: 0.4, h: 0.3 })).toEqual({ x: 0.6, y: 0.7, w: 0.4, h: 0.3 });
+    expect(clampToFrame({ x: -0.2, y: -0.1, w: 0.5, h: 0.5 })).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(clampToFrame({ x: -0.5, y: 0.3, w: 3, h: 2 })).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+  });
+
+  it("enforces the schema's minimum size (w 0.08, h 0.05)", () => {
+    expect(clampToFrame({ x: 0.99, y: 0.99, w: 0.01, h: 0.001 })).toEqual({
+      x: 0.92,
+      y: 0.95,
+      w: 0.08,
+      h: 0.05,
+    });
+  });
+
+  it("is the identity on the whole frame and on any rect already inside it", () => {
+    expect(clampToFrame(FULL_FRAME_SLOT)).toEqual(FULL_FRAME_SLOT);
+    const inside = { x: 0.04, y: 0.56, w: 0.92, h: 0.4 };
+    expect(clampToFrame(inside)).toEqual(inside);
+  });
+});
+
+describe("graphicClampFor: the editor's one clamp for a drag, a resize and the Inspector (§163)", () => {
+  const off = { x: 0.7, y: 0.02, w: 0.4, h: 0.3 };
+
+  it("is clampToFrame for every full-frame component", () => {
+    for (const component of ["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"] as const) {
+      for (const frame of [PORTRAIT_FRAME, LANDSCAPE_FRAME]) {
+        expect(graphicClampFor(component, frame)(off), component).toEqual(clampToFrame(off));
+      }
+    }
+  });
+
+  it("is clampGraphicRect, in the given frame, for a slot component and for no component", () => {
+    for (const frame of [PORTRAIT_FRAME, LANDSCAPE_FRAME]) {
+      expect(graphicClampFor("TitleCard", frame)(off)).toEqual(clampGraphicRect(off, frame));
+      expect(graphicClampFor(undefined, frame)(off)).toEqual(clampGraphicRect(off, frame));
+    }
+    // The default frame is portrait, as clampGraphicRect's is.
+    expect(graphicClampFor("StatCard")(off)).toEqual(clampGraphicRect(off));
   });
 });
 
@@ -892,5 +1085,482 @@ describe("contentTransformFor (user override composes ON TOP of the framing crop
 
   it("a pure translate does not emit a redundant scale(1)", () => {
     expect(contentTransformFor(1, 1, 5, 0)).toBe("translate(5px, 0px)");
+  });
+});
+
+describe("the speaker picture in 16:9 (§163)", () => {
+  const LS = LANDSCAPE_FRAME;
+  const PT = PORTRAIT_FRAME;
+  // Today's portrait bubble, as a literal so a regression cannot hide behind
+  // "the function agrees with itself": Ø 0.30 of the width at y 0.66.
+  const TODAYS_PIP = { x: 0.35, y: 0.66, w: 0.3, h: (0.3 * 1080) / 1920 };
+  const picture = pipRectFor(LS);
+  const near = (a: { x: number; y: number; w: number; h: number }, b: typeof a) => {
+    expect(a.x).toBeCloseTo(b.x, 6);
+    expect(a.y).toBeCloseTo(b.y, 6);
+    expect(a.w).toBeCloseTo(b.w, 6);
+    expect(a.h).toBeCloseTo(b.h, 6);
+  };
+
+  describe("pipRectFor", () => {
+    it("is exactly today's PIP_RECT in a portrait frame, and PIP_RECT keeps today's value", () => {
+      expect(PIP_RECT).toEqual(TODAYS_PIP);
+      expect(pipRectFor(PT)).toEqual(PIP_RECT);
+      // A square frame is not landscape: it keeps the portrait numbers.
+      expect(pipRectFor({ width: 1080, height: 1080 })).toEqual(PIP_RECT);
+    });
+
+    it("is a 302.4 px circle 4% of the width from the right and 6% of the height from the bottom in 1920x1080", () => {
+      near(pipRectFor(LS), {
+        x: (1920 - 76.8 - 302.4) / 1920,
+        y: (1080 - 64.8 - 302.4) / 1080,
+        w: 302.4 / 1920,
+        h: 302.4 / 1080,
+      });
+      // Square in pixels, so corner radius 1 draws a circle.
+      expect(picture.w * LS.width).toBeCloseTo(picture.h * LS.height, 9);
+    });
+  });
+
+  describe("layoutSlots", () => {
+    it("pip-bubble draws the picture as a circle in 16:9, and today's bubble in 9:16", () => {
+      const land = layoutSlots("pip-bubble", DEFAULT_FACE, [], LS).video;
+      expect(land.rect).toEqual(picture);
+      expect(land.cornerRadius).toBe(1);
+      expect(land.opacity).toBe(1);
+      const port = layoutSlots("pip-bubble", DEFAULT_FACE, [], PT).video;
+      expect(port.rect).toEqual(TODAYS_PIP);
+      expect(port.cornerRadius).toBe(1);
+      expect(layoutSlots("pip-bubble")).toEqual(layoutSlots("pip-bubble", DEFAULT_FACE, [], PT));
+    });
+
+    it("graphic-only parks its hidden footage in the same picture: the new one in 16:9, today's in 9:16", () => {
+      const land = layoutSlots("graphic-only", DEFAULT_FACE, [], LS);
+      expect(land.video.rect).toEqual(picture);
+      expect(land.video.opacity).toBe(0);
+      const port = layoutSlots("graphic-only", DEFAULT_FACE, [], PT);
+      expect(port.video.rect).toEqual(TODAYS_PIP);
+      expect(port.video.opacity).toBe(0);
+      expect(port.graphic).toEqual({ x: 0.04, y: 0.14, w: 0.8, h: 0.54 });
+    });
+  });
+
+  describe("pipZoomFor", () => {
+    // sizeFrac is the face box's height (pico's square edge) as a fraction of
+    // the SOURCE height (FaceCropSchema, face.ts FaceBox). A 16:9 source
+    // under `object-fit: cover` in a square picture is height-constrained:
+    // displayed height = max(pictureH, pictureW / (16/9)) = pictureH, so the
+    // picture shows the source's full height and sourceHeightPx = 302.4.
+    // zoom = 0.55 × pictureHeightPx / (sizeFrac × sourceHeightPx)
+    //      = 0.55 × 302.4 / (0.3 × 302.4) = 1.8333…
+    const side = picture.h * LS.height;
+    const shownSourceH = Math.max(side, (picture.w * LS.width) / (16 / 9));
+
+    it("makes the face 55% of the picture's height", () => {
+      expect(shownSourceH).toBeCloseTo(302.4, 9);
+      const face = { centerYFrac: 0.38, sizeFrac: 0.3, sourceAspect: 16 / 9 };
+      expect(pipZoomFor(face, side, shownSourceH)).toBeCloseTo(0.55 / 0.3, 9);
+      expect(pipZoomFor(face, side, shownSourceH)).toBeCloseTo(1.8333, 4);
+    });
+
+    it("is 1 with no face, no size, or a face that is not the frame's subject", () => {
+      expect(pipZoomFor(null, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor(undefined, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor({ centerYFrac: 0.38 }, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor({ centerYFrac: 0.38, sizeFrac: 0.3, subject: "screen" }, side, shownSourceH)).toBe(1);
+    });
+
+    it("never zooms out, and never past 4", () => {
+      expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0.8 }, side, shownSourceH)).toBe(1);
+      expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0.05 }, side, shownSourceH)).toBe(4);
+      expect(pipZoomFor({ centerYFrac: 0.4, sizeFrac: 0 }, side, shownSourceH)).toBe(1);
+    });
+  });
+
+  describe("placedPictureFor: where the picture is drawn, for the kit's note (§163)", () => {
+    it("is the frame's picture with no override, in either frame", () => {
+      expect(placedPictureFor({}, LS)).toEqual(picture);
+      expect(placedPictureFor({ pip: null }, PT)).toEqual(PIP_RECT);
+    });
+
+    it("moves to the cue's pip.x/y, held on-frame by the picture's own size", () => {
+      near(placedPictureFor({ pip: { x: 0.04, y: 0.1 } }, LS), { ...picture, x: 0.04, y: 0.1 });
+      near(placedPictureFor({ pip: { x: 1, y: 1 } }, LS), { ...picture, x: 1 - picture.w, y: 1 - picture.h });
+      // A partial override keeps the layout's value for the other axis.
+      near(placedPictureFor({ pip: { y: 0.2 } }, LS), { ...picture, y: 0.2 });
+    });
+
+    it("is the rectangle VideoStage draws mid-cue, moved or not", () => {
+      for (const pip of [undefined, { x: 0.05, y: 0.3 }, { x: 0.99 }]) {
+        const c = { ...cue("pip-bubble", 2, 6), pip };
+        expect(placedPictureFor(c, LS)).toEqual(videoSlotAt([c], 4, DEFAULT_FACE, [], LS).rect);
+      }
+    });
+  });
+
+  describe("the kit clip's background fade (backdropOpacityAt on one rebased cue)", () => {
+    it("is 0 on frame 0, part-way through the 0.35 s ease, opaque mid-clip and fading at the end", () => {
+      for (const layout of ["graphic-only", "pip-bubble"] as const) {
+        const one = [cue(layout, 0, 4)];
+        expect(backdropOpacityAt(one, 0), layout).toBe(0);
+        const at02 = backdropOpacityAt(one, 0.2);
+        expect(at02).toBeGreaterThan(0);
+        expect(at02).toBeLessThan(1);
+        expect(backdropOpacityAt(one, LAYOUT_TRANSITION_SEC)).toBe(1);
+        expect(backdropOpacityAt(one, 2)).toBe(1);
+        expect(backdropOpacityAt(one, 4 - 1 / 30)).toBeLessThan(1);
+      }
+      expect(backdropOpacityAt([cue("full-bleed", 0, 4)], 2)).toBe(0);
+    });
+  });
+
+  describe("clearOfPicture (Review Focus 5)", () => {
+    const leftPicture = { ...picture, x: 0.04 };
+
+    it("a picture on the right cuts the box's right edge to 3% of the width left of the picture", () => {
+      near(clearOfPicture(FULL_FRAME_SLOT, picture), { x: 0, y: 0, w: picture.x - 0.03, h: 1 });
+      const cut = clearOfPicture(SCRIPT_LANDSCAPE_RECT, picture);
+      // 0.86 → picture.x − 0.03 (0.7425); x, y and h untouched.
+      expect(SCRIPT_LANDSCAPE_RECT.x + SCRIPT_LANDSCAPE_RECT.w).toBeCloseTo(0.86, 9);
+      near(cut, { ...SCRIPT_LANDSCAPE_RECT, w: picture.x - 0.03 - SCRIPT_LANDSCAPE_RECT.x });
+    });
+
+    it("a picture moved to the left half cuts the box's LEFT edge instead", () => {
+      const edge = leftPicture.x + leftPicture.w + 0.03;
+      near(clearOfPicture(FULL_FRAME_SLOT, leftPicture), { x: edge, y: 0, w: 1 - edge, h: 1 });
+      near(clearOfPicture(SCRIPT_LANDSCAPE_RECT, leftPicture), {
+        ...SCRIPT_LANDSCAPE_RECT,
+        x: edge,
+        w: 0.86 - edge,
+      });
+    });
+
+    it("a box that would be narrower than 0.08 keeps 0.08, anchored at the cut edge", () => {
+      const right = clearOfPicture({ x: 0.72, y: 0.2, w: 0.2, h: 0.3 }, picture);
+      near(right, { x: picture.x - 0.03 - 0.08, y: 0.2, w: 0.08, h: 0.3 });
+      const edge = leftPicture.x + leftPicture.w + 0.03;
+      const left = clearOfPicture({ x: 0.05, y: 0.2, w: 0.15, h: 0.3 }, leftPicture);
+      near(left, { x: edge, y: 0.2, w: 0.08, h: 0.3 });
+    });
+
+    it("leaves a box already clear of the picture's strip exactly as it was", () => {
+      const clear = { x: 0.05, y: 0.1, w: 0.5, h: 0.8 };
+      expect(clearOfPicture(clear, picture)).toEqual(clear);
+      const clearRight = { x: 0.7, y: 0.1, w: 0.25, h: 0.8 };
+      expect(clearOfPicture(clearRight, leftPicture)).toEqual(clearRight);
+    });
+  });
+
+  describe("graphicSlotFor keeps the graphic clear of the picture", () => {
+    it("is unchanged in a portrait frame, box or no box, picture moved or not", () => {
+      const box = { x: 0.1, y: 0.2, w: 0.7, h: 0.3 };
+      for (const pip of [undefined, { x: 0.02, y: 0.1 }]) {
+        expect(graphicSlotFor({ layout: "pip-bubble", component: "TitleCard", pip }, PT)).toEqual({
+          x: 0.06, y: 0.14, w: 0.78, h: 0.42,
+        });
+        expect(graphicSlotFor({ layout: "pip-bubble", component: "TitleCard", graphicRect: box, pip }, PT)).toEqual(
+          clampGraphicRect(box, PT),
+        );
+        expect(graphicSlotFor({ layout: "pip-bubble", component: "CardRow", pip }, PT)).toEqual(FULL_FRAME_SLOT);
+      }
+      expect(graphicSlotFor({ layout: "pip-bubble" })).toEqual({ x: 0.06, y: 0.14, w: 0.78, h: 0.42 });
+    });
+
+    it("cuts a planned box, a hand-set box and the whole frame back in a 16:9 pip-bubble", () => {
+      const edge = picture.x - 0.03;
+      near(graphicSlotFor({ layout: "pip-bubble", component: "CardRow" }, LS), { x: 0, y: 0, w: edge, h: 1 });
+      near(
+        graphicSlotFor({ layout: "pip-bubble", component: "TitleCard", graphicRect: SCRIPT_LANDSCAPE_RECT }, LS),
+        { ...SCRIPT_LANDSCAPE_RECT, w: edge - SCRIPT_LANDSCAPE_RECT.x },
+      );
+      // The layout's own slot (0.06..0.84) is cut too.
+      near(graphicSlotFor({ layout: "pip-bubble", component: "TitleCard" }, LS), {
+        x: 0.06, y: 0.14, w: edge - 0.06, h: 0.42,
+      });
+    });
+
+    it("follows the picture when the author moves it to the left half", () => {
+      const pip = { x: 0.05, y: 0.1 };
+      const edge = 0.05 + picture.w + 0.03;
+      near(graphicSlotFor({ layout: "pip-bubble", component: "CardRow", pip }, LS), {
+        x: edge, y: 0, w: 1 - edge, h: 1,
+      });
+    });
+
+    it("uses the picture as drawn: a placement off the frame is clamped first", () => {
+      // pip.x 1 draws the picture at 1 − w (cueVideoSlot's clamp), so the cut
+      // edge is that picture's left edge, not 1.
+      const slot = graphicSlotFor({ layout: "pip-bubble", component: "CardRow", pip: { x: 1 } }, LS);
+      near(slot, { x: 0, y: 0, w: 1 - picture.w - 0.03, h: 1 });
+    });
+
+    it("does not cut any other layout, and a stale pip on one is ignored", () => {
+      for (const layout of ["graphic-only", "full-bleed"] as const) {
+        expect(graphicSlotFor({ layout, component: "CardRow", pip: { x: 0.05 } }, LS)).toEqual(FULL_FRAME_SLOT);
+        expect(
+          graphicSlotFor({ layout, component: "TitleCard", graphicRect: SCRIPT_LANDSCAPE_RECT }, LS),
+        ).toEqual(SCRIPT_LANDSCAPE_RECT);
+      }
+    });
+  });
+
+  describe("cueVideoSlot clamps the picture's placement against its real size", () => {
+    it("pip {x: 1, y: 1} in 16:9 puts the circle in the bottom-right corner, whole", () => {
+      const mid = videoSlotAt([{ ...cue("pip-bubble", 2, 6), pip: { x: 1, y: 1 } }], 4, DEFAULT_FACE, [], LS);
+      expect(mid.rect.w).toBe(picture.w);
+      expect(mid.rect.h).toBe(picture.h);
+      expect(mid.rect.x).toBeCloseTo(1 - picture.w, 12);
+      expect(mid.rect.y).toBeCloseTo(1 - picture.h, 12);
+    });
+  });
+
+  describe("the head zoom inside the picture", () => {
+    const face = { centerYFrac: 0.38, centerXFrac: 0.52, sizeFrac: 0.3, sourceAspect: 16 / 9 };
+    const pipCues = [cue("pip-bubble", 2, 6)];
+
+    it("eases in with the picture and settles at pipZoomFor in a 16:9 pip-bubble", () => {
+      const side = picture.h * LS.height;
+      expect(pictureZoomAt(pipCues, 4, face, LS)).toBeCloseTo(pipZoomFor(face, side, side), 9);
+      expect(pictureZoomAt(pipCues, 1, face, LS)).toBe(1);
+      expect(pictureZoomAt(pipCues, 2, face, LS)).toBe(1);
+      const entering = pictureZoomAt(pipCues, 2 + LAYOUT_TRANSITION_SEC / 2, face, LS);
+      expect(entering).toBeGreaterThan(1);
+      expect(entering).toBeLessThan(pipZoomFor(face, side, side));
+      expect(pictureZoomAt(pipCues, 6 - 1e-6, face, LS)).toBeCloseTo(1, 3);
+    });
+
+    it("is 1 with no measured face, in any other layout, and in every portrait frame", () => {
+      expect(pictureZoomAt(pipCues, 4, null, LS)).toBe(1);
+      expect(pictureZoomAt(pipCues, 4, undefined, LS)).toBe(1);
+      expect(pictureZoomAt([cue("graphic-only", 2, 6)], 4, face, LS)).toBe(1);
+      for (let t = 0; t <= 7; t += 0.05) {
+        expect(pictureZoomAt(pipCues, t, face, PT)).toBe(1);
+      }
+    });
+
+    it("centres the face in the picture when the source has room around it", () => {
+      const slot = videoSlotAt(pipCues, 4, face, [], LS);
+      const scale = pictureZoomAt(pipCues, 4, face, LS);
+      const state = pictureZoomStateFor(slot, face, scale, LS)!;
+      expect(state.scale).toBe(scale);
+      const w = slot.rect.w * LS.width;
+      const h = slot.rect.h * LS.height;
+      // Where the face is in the picture before the zoom: the 16:9 source
+      // is height-constrained (dispH = h), and objectPosX centres it.
+      const dispW = h * (16 / 9);
+      const px = -slot.objectPosX * (dispW - w) + face.centerXFrac * dispW;
+      const py = face.centerYFrac * h;
+      // The zoom is about the content origin (50% 40%) + (dx, dy).
+      const ox = CONTENT_TRANSFORM_ORIGIN.x * w + state.dx;
+      const oy = CONTENT_TRANSFORM_ORIGIN.y * h + state.dy;
+      expect(ox + scale * (px - ox)).toBeCloseTo(w / 2, 6);
+      expect(oy + scale * (py - oy)).toBeCloseTo(h / 2, 6);
+    });
+
+    it("never pulls the zoom origin outside the picture, so the footage still covers it, and the face stays in", () => {
+      const high = { ...face, centerYFrac: 0.08, centerXFrac: 0.02 };
+      const slot = videoSlotAt(pipCues, 4, high, [], LS);
+      const scale = pictureZoomAt(pipCues, 4, high, LS);
+      const state = pictureZoomStateFor(slot, high, scale, LS)!;
+      const w = slot.rect.w * LS.width;
+      const h = slot.rect.h * LS.height;
+      const ox = CONTENT_TRANSFORM_ORIGIN.x * w + state.dx;
+      const oy = CONTENT_TRANSFORM_ORIGIN.y * h + state.dy;
+      expect(ox).toBeGreaterThanOrEqual(0);
+      expect(ox).toBeLessThanOrEqual(w);
+      expect(oy).toBeGreaterThanOrEqual(0);
+      expect(oy).toBeLessThanOrEqual(h);
+      const py = high.centerYFrac * h;
+      const landed = oy + scale * (py - oy);
+      expect(landed).toBeGreaterThanOrEqual(py - 1e-9);
+      expect(landed).toBeLessThanOrEqual(h / 2 + 1e-9);
+    });
+
+    it("has no state at scale 1, so the transform is exactly today's", () => {
+      const slot = videoSlotAt(pipCues, 4, face, [], PT);
+      expect(pictureZoomStateFor(slot, face, 1, PT)).toBeNull();
+    });
+
+    it("a portrait pip-bubble cue's content transform equals today's at every moment", () => {
+      // Today: contentTransformFor(zoom, scale, dx, dy) alone. The picture
+      // term must add nothing in 9:16, through the transition and settled.
+      for (let t = 1.9; t <= 6.1; t += 0.05) {
+        const slot = videoSlotAt(pipCues, t, face, [], PT);
+        const state = pictureZoomStateFor(slot, face, pictureZoomAt(pipCues, t, face, PT), PT);
+        for (const [z, s, dx, dy] of [[1, 1, 0, 0], [1.04, 1, 0, 0], [1.02, 1.3, 6, -4]] as const) {
+          expect(contentTransformFor(z, s, dx, dy, state)).toBe(contentTransformFor(z, s, dx, dy));
+        }
+      }
+    });
+
+    it("adds the head zoom after the existing transform, about its own origin", () => {
+      expect(contentTransformFor(1, 1, 0, 0, { scale: 2, dx: 10, dy: -5 })).toBe(
+        "translate(10px, -5px) scale(2) translate(-10px, 5px)",
+      );
+      expect(contentTransformFor(1.05, 1, 3, 0, { scale: 1.5, dx: 0, dy: 0 })).toBe(
+        "translate(3px, 0px) scale(1.05) scale(1.5)",
+      );
+    });
+  });
+});
+
+describe("storedGraphicBox: the box a scene keeps, before the picture cuts it (§163)", () => {
+  const LS = LANDSCAPE_FRAME;
+  const PT = PORTRAIT_FRAME;
+
+  it("a full-frame component: its own box limited to the frame, or the whole frame", () => {
+    const band = { x: 0.04, y: 0.56, w: 0.92, h: 0.4 };
+    expect(storedGraphicBox({ layout: "full-bleed", component: "CardRow", graphicRect: band }, LS)).toEqual(band);
+    const offRight = { x: 0.5, y: 0.1, w: 0.7, h: 0.3 };
+    expect(storedGraphicBox({ layout: "full-bleed", component: "CardRow", graphicRect: offRight }, LS)).toEqual(
+      clampToFrame(offRight),
+    );
+    expect(storedGraphicBox({ layout: "full-bleed", component: "CardRow" }, LS)).toEqual(FULL_FRAME_SLOT);
+    expect(storedGraphicBox({ layout: "graphic-only", component: "BugCard", graphicRect: null }, LS)).toEqual(
+      FULL_FRAME_SLOT,
+    );
+  });
+
+  it("a slot component: its box in the caption-safe area, else the layout's slot, else the full-bleed band", () => {
+    const box = { x: 0.1, y: 0.2, w: 0.7, h: 0.3 };
+    for (const frame of [LS, PT]) {
+      expect(storedGraphicBox({ layout: "lower-third", component: "TitleCard", graphicRect: box }, frame)).toEqual(
+        clampGraphicRect(box, frame),
+      );
+      expect(storedGraphicBox({ layout: "lower-third", component: "TitleCard" }, frame)).toEqual(
+        layoutSlots("lower-third", DEFAULT_FACE, [], frame).graphic,
+      );
+      expect(storedGraphicBox({ layout: "full-bleed", component: "TitleCard" }, frame)).toEqual(
+        FULL_BLEED_GRAPHIC_SLOT,
+      );
+    }
+  });
+
+  it("a 16:9 pip-bubble scene keeps its UNCUT box; graphicSlotFor is that box cut clear of the picture", () => {
+    const picture = pipRectFor(LS);
+    const cues = [
+      { layout: "pip-bubble" as const, component: "CardRow" as const },
+      { layout: "pip-bubble" as const, component: "TitleCard" as const, graphicRect: SCRIPT_LANDSCAPE_RECT },
+      { layout: "pip-bubble" as const, component: "TitleCard" as const },
+      { layout: "pip-bubble" as const, component: "CardRow" as const, pip: { x: 0.05, y: 0.1 } },
+    ];
+    expect(storedGraphicBox(cues[0]!, LS)).toEqual(FULL_FRAME_SLOT);
+    expect(storedGraphicBox(cues[1]!, LS)).toEqual(SCRIPT_LANDSCAPE_RECT);
+    expect(storedGraphicBox(cues[2]!, LS)).toEqual({ x: 0.06, y: 0.14, w: 0.78, h: 0.42 });
+    expect(storedGraphicBox(cues[3]!, LS)).toEqual(FULL_FRAME_SLOT);
+    // One resolver under both: the drawn slot is the stored box, cut.
+    expect(graphicSlotFor(cues[0]!, LS)).toEqual(clearOfPicture(FULL_FRAME_SLOT, picture));
+    expect(graphicSlotFor(cues[1]!, LS)).toEqual(clearOfPicture(SCRIPT_LANDSCAPE_RECT, picture));
+    expect(graphicSlotFor(cues[1]!, LS)).not.toEqual(storedGraphicBox(cues[1]!, LS));
+  });
+
+  it("equals graphicSlotFor everywhere the picture does not cut", () => {
+    const box = { x: 0.1, y: 0.2, w: 0.7, h: 0.3 };
+    for (const frame of [LS, PT]) {
+      for (const layout of LayoutSchema.options) {
+        if (layout === "pip-bubble" && frame === LS) continue;
+        for (const component of ["CardRow", "TitleCard"] as const) {
+          for (const graphicRect of [undefined, box]) {
+            const c = { layout, component, graphicRect };
+            expect(storedGraphicBox(c, frame), `${layout} ${component}`).toEqual(graphicSlotFor(c, frame));
+          }
+        }
+      }
+    }
+  });
+});
+
+describe("belowFaceBox: the band under the speaker's head (§163, design 3)", () => {
+  const LS = LANDSCAPE_FRAME;
+  const near = (a: { x: number; y: number; w: number; h: number } | null, b: NonNullable<typeof a>) => {
+    expect(a).not.toBeNull();
+    expect(a!.x).toBeCloseTo(b.x, 9);
+    expect(a!.y).toBeCloseTo(b.y, 9);
+    expect(a!.w).toBeCloseTo(b.w, 9);
+    expect(a!.h).toBeCloseTo(b.h, 9);
+  };
+
+  it("a face at centre y 0.38, size 0.3: the head ends at 0.59, so the box is y 0.62 to 0.96 across 0.92", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    // headBand: 0.38 + 0.3 × (0.5 + 0.2) = 0.59, in fractions of SOURCE
+    // height — the frame's own when the full-bleed cover shows the source's
+    // whole height (a 16:9 source, or one that never said its shape).
+    expect(headBand(face).end).toBeCloseTo(0.59, 12);
+    near(belowFaceBox(face, LS), { x: 0.04, y: 0.62, w: 0.92, h: 0.34 });
+    near(belowFaceBox({ ...face, centerXFrac: 0.52, sourceAspect: 16 / 9 }, LS), {
+      x: 0.04, y: 0.62, w: 0.92, h: 0.34,
+    });
+  });
+
+  it("an unsized face takes the default size, the stage's rule everywhere else", () => {
+    // 0.38 + 0.22 × 0.7 = 0.534 → y 0.564.
+    near(belowFaceBox({ centerYFrac: 0.38 }, LS), { x: 0.04, y: 0.564, w: 0.92, h: 0.396 });
+  });
+
+  it("maps the head through the full-bleed crop when the source is narrower than the frame", () => {
+    // A 4:3 source in 16:9 is width-constrained: shown 1440 px tall in a
+    // 1080 px frame and windowed by objectPosYFor, so source fractions are
+    // NOT frame fractions and the band must be moved with the crop.
+    const face = { centerYFrac: 0.3, sizeFrac: 0.15, sourceAspect: 4 / 3 };
+    const shownH = 1920 / (4 / 3);
+    const overflow = shownH - 1080;
+    const top = objectPosYFor({ x: 0, y: 0, w: 1, h: 1 }, face, LS) * overflow;
+    const headEnd = (headBand(face).end * shownH - top) / 1080;
+    expect(headEnd).not.toBeCloseTo(headBand(face).end, 3);
+    near(belowFaceBox(face, LS), { x: 0.04, y: headEnd + 0.03, w: 0.92, h: 0.96 - headEnd - 0.03 });
+  });
+
+  it("graphicBoundsFor: the frame for a full-frame component, the caption-safe rect otherwise", () => {
+    for (const frame of [LS, PORTRAIT_FRAME]) {
+      for (const component of ["CardRow", "CtaCard", "BugCard", "PhoneDemo", "ClipScene"] as const) {
+        expect(graphicBoundsFor(component, frame), component).toEqual(FULL_FRAME_SLOT);
+      }
+      expect(graphicBoundsFor("TitleCard", frame)).toEqual(safeRectFor(frame));
+      expect(graphicBoundsFor(undefined, frame)).toEqual(safeRectFor(frame));
+    }
+  });
+
+  it("the test face in 1920×1080: a full-frame box and a slot box, each one its clamp leaves alone", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    const full = belowFaceBox(face, LS, graphicBoundsFor("CardRow", LS));
+    near(full, { x: 0.04, y: 0.62, w: 0.92, h: 0.34 });
+    expect(graphicClampFor("CardRow", LS)(full!)).toEqual(full);
+    // The landscape safe rect is x 0.05..0.95, y 0.06..0.88: the top stays
+    // under the head (0.62), the bottom and sides come in to the rect.
+    const slot = belowFaceBox(face, LS, graphicBoundsFor("TitleCard", LS));
+    near(slot, { x: 0.05, y: 0.62, w: 0.9, h: 0.26 });
+    // The clamp is a no-op, so it cannot move the box up onto the chin —
+    // which moving the 0.34-tall full-frame box into this rect did (y 0.54).
+    expect(graphicClampFor("TitleCard", LS)(slot!)).toEqual(slot);
+    expect(slot!.y).toBeGreaterThanOrEqual(headBand(face).end + 0.03 - 1e-12);
+  });
+
+  it("stays inside any bounds: a top below the head is floored at the bounds' top", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    near(belowFaceBox(face, LS, { x: 0.1, y: 0.7, w: 0.6, h: 0.25 }), { x: 0.1, y: 0.7, w: 0.6, h: 0.25 });
+  });
+
+  it("is null when the bounds leave under 0.2 of height or under 0.3 of width", () => {
+    const face = { centerYFrac: 0.38, sizeFrac: 0.3 };
+    // Bottom 0.8: 0.62..0.8 is 0.18 tall.
+    expect(belowFaceBox(face, LS, { x: 0, y: 0, w: 1, h: 0.8 })).toBeNull();
+    // 0.25 wide.
+    expect(belowFaceBox(face, LS, { x: 0.5, y: 0, w: 0.25, h: 1 })).toBeNull();
+    // 0.3 wide is enough.
+    near(belowFaceBox(face, LS, { x: 0.5, y: 0, w: 0.3, h: 1 }), { x: 0.5, y: 0.62, w: 0.3, h: 0.34 });
+  });
+
+  it("is null for a screen recording's face: it is a camera inset, not the speaker", () => {
+    expect(belowFaceBox({ centerYFrac: 0.38, sizeFrac: 0.3, subject: "screen" }, LS)).toBeNull();
+    expect(belowFaceBox({ centerYFrac: 0.38, sizeFrac: 0.3, subject: "face" }, LS)).not.toBeNull();
+  });
+
+  it("is null with no face, and when less than 0.2 of the height is left below the head", () => {
+    expect(belowFaceBox(null, LS)).toBeNull();
+    expect(belowFaceBox(undefined, LS)).toBeNull();
+    // 0.55 + 0.3 × 0.7 = 0.76 → y 0.79, h 0.17.
+    expect(belowFaceBox({ centerYFrac: 0.55, sizeFrac: 0.3 }, LS)).toBeNull();
+    // 0.5 + 0.3 × 0.7 = 0.71 → y 0.74, h 0.22: still room.
+    near(belowFaceBox({ centerYFrac: 0.5, sizeFrac: 0.3 }, LS), { x: 0.04, y: 0.74, w: 0.92, h: 0.22 });
   });
 });

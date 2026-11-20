@@ -5,15 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyOverrides,
   defaultTheme,
+  LayoutSchema,
   scalarPropControls,
   livePreviewMap,
+  plannerComponentIds,
+  scriptComponentIds,
   previewClockMappers,
   type KeptSpan,
   type OverrideDoc,
   type SceneCue,
   type Segment,
 } from "@ossclip/core/browser";
-import { Inspector } from "../src/Inspector";
+import { Inspector, componentSwapOptions } from "../src/Inspector";
 import { useEdits } from "../src/useEdits";
 
 // Same one-time act() opt-in as project-picker.test.ts — this is the
@@ -229,6 +232,70 @@ describe("Inspector — TerminalMock window-N text edits via a textarea (field r
     const field = container.querySelector<HTMLInputElement>('[data-testid="element-text"]')!;
     expect(field.tagName).toBe("INPUT");
     expect(field.value).toBe("SHIP IT");
+  });
+});
+
+/**
+ * CardRow (§161, plan Task 4): a card is two texts in one box, edited as two
+ * lines of one textarea — and through the Overlay's single DYNAMIC_ID, which
+ * the Inspector imports rather than restates (a copy without `card` would
+ * have written the retype to a `card-0` prop nothing reads).
+ */
+describe("Inspector — CardRow card-N edits as two lines", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  const cardCue: SceneCue = {
+    id: "scene-0",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    props: { cards: [{ text: "Draft", sub: "one", icon: "doc" }, { text: "Review", icon: "none" }] },
+    startSec: 0,
+    endSec: 30,
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("shows text and sub in a TEXTAREA and commits both through buildArrayPatch", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: "card-0" },
+          cue: cardCue,
+          onDocChange: (d) => {
+            doc = d;
+          },
+        }),
+      );
+    });
+    const field = container.querySelector<HTMLTextAreaElement>('[data-testid="element-text"]')!;
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field.value).toBe("Draft\none");
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    await act(async () => {
+      setValue.call(field, "Write\ntests first");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(doc?.scenes["scene-0"]?.props?.cards).toEqual([
+      { text: "Write", sub: "tests first", icon: "doc" },
+      { text: "Review", icon: "none" },
+    ]);
   });
 });
 
@@ -1166,5 +1233,408 @@ describe("Inspector — reveal controls: unset is its own state (reveal-timing T
     expect(reset.disabled).toBe(false);
     await act(async () => reset.click());
     expect("revealSpeed" in props()).toBe(false);
+  });
+});
+
+/**
+ * §161: an optional integer prop's slider. CardRow's `highlight` unset means
+ * NO card highlighted, so the control must say "not set" while unset (the
+ * slider resting at 0 would otherwise read as card 0) and must be able to
+ * get back there — the optional-number "default" button, labelled "clear".
+ */
+function HighlightHarness({ onDocChange }: { onDocChange: (doc: OverrideDoc) => void }) {
+  const edits = useEdits();
+  const base: SceneCue = {
+    id: "scene-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    props: { cards: [{ text: "Draft" }, { text: "Review" }, { text: "Ship" }] },
+    startSec: 0,
+    endSec: 6,
+  };
+  const cue = React.useMemo(() => applyOverrides([base], edits.doc).cues[0]!, [edits.doc]);
+  React.useEffect(() => {
+    onDocChange(edits.doc);
+  });
+  return React.createElement(Inspector, {
+    selection: { sceneId: "scene-1", elementId: null },
+    cue,
+    frame: { width: 1920, height: 1080 },
+    allSceneIds: ["scene-1"],
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+  });
+}
+
+describe("Inspector — an optional integer slider can return to unset (§161)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let doc: OverrideDoc;
+
+  beforeEach(async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(HighlightHarness, { onDocChange: (d) => (doc = d) }));
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`);
+  const props = () => doc.scenes["scene-1"]?.props ?? {};
+
+  it("unset reads 'not set' with the slider at its minimum, a whole-number step, and writes nothing", () => {
+    const slider = q<HTMLInputElement>("prop-highlight")!;
+    expect(slider.min).toBe("0");
+    expect(slider.max).toBe("3");
+    expect(slider.step).toBe("1");
+    expect(slider.value).toBe("0");
+    expect(q("prop-highlight-unset")!.textContent).toBe("not set");
+    const clear = q<HTMLButtonElement>("prop-highlight-default")!;
+    expect(clear.textContent).toBe("clear");
+    expect(clear.disabled).toBe(true);
+    expect("highlight" in props()).toBe(false);
+  });
+
+  it("writes an integer, shows it whole, and clear deletes the key", async () => {
+    await act(async () => setControl(q<HTMLInputElement>("prop-highlight")!, "2"));
+    expect(props().highlight).toBe(2);
+    expect(q("prop-highlight-unset")).toBeNull();
+    expect(q("prop-highlight")!.parentElement!.textContent).toContain("highlight  2");
+    const clear = q<HTMLButtonElement>("prop-highlight-default")!;
+    expect(clear.disabled).toBe(false);
+    await act(async () => clear.click());
+    expect("highlight" in props()).toBe(false);
+    expect(q("prop-highlight-unset")!.textContent).toBe("not set");
+  });
+
+  it("revealSpeed beside it keeps its 'default (0.66)' readout and its 'default' button", () => {
+    const speedRow = q("prop-revealSpeed")!.parentElement!;
+    expect(speedRow.textContent).toContain("default (0.66)");
+    expect(q("prop-revealSpeed-default")!.textContent).toBe("default");
+  });
+});
+
+/**
+ * The swap control (explainer plan Task 7, "Editor decisions"). A clip
+ * cannot become a card or the reverse: neither has the other's props, and
+ * ClipScene has no default clip to fall back to.
+ */
+describe("Inspector — the component swap offers every card, script-only ones included", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("componentSwapOptions is scriptComponentIds() for a card, and nothing for a clip", () => {
+    // Plan decision 5: the script-only cards are offered in every project,
+    // though the beat sheet never sees them.
+    expect(componentSwapOptions("TitleCard")).toEqual(scriptComponentIds());
+    expect(componentSwapOptions("TitleCard")).toEqual([
+      ...plannerComponentIds(),
+      "CardRow",
+      "CtaCard",
+      "BugCard",
+      "PhoneDemo",
+    ]);
+    expect(componentSwapOptions("CardRow")).toEqual(scriptComponentIds());
+    expect(componentSwapOptions("TitleCard")).not.toContain("ClipScene");
+    expect(componentSwapOptions("ClipScene")).toBeNull();
+  });
+
+  it("a card's dropdown lists exactly the script components", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, { selection: { sceneId: "scene-0", elementId: null } }),
+      );
+    });
+    const select = container.querySelector<HTMLSelectElement>('[data-testid="component-swap"]')!;
+    expect(select).not.toBeNull();
+    expect([...select.options].map((o) => o.value)).toEqual(scriptComponentIds());
+  });
+
+  it("a clip shows no swap control at all", async () => {
+    const clipCue: SceneCue = {
+      id: "scene-0",
+      kind: "graphic",
+      layout: "full-bleed",
+      component: "ClipScene",
+      props: { src: "clips/a.webm", durationSec: 4.6, gainDb: -13, muted: false },
+      startSec: 0,
+      endSec: 4.6,
+    };
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "scene-0", elementId: null },
+          cue: clipCue,
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="component-swap"]')).toBeNull();
+  });
+});
+
+/**
+ * Backdrop choice, Task 5 (§163, design 5). The layout select speaks the
+ * author's three backdrops only in a 16:9 script project; everywhere else
+ * it is the flat list it always was. The graphic box gains "Below the face"
+ * in 16:9, and a 16:9 pip-bubble scene's fields edit the STORED box, not the
+ * one the picture cuts at draw time.
+ */
+function BackdropHarness({
+  base,
+  frame,
+  scriptProject,
+  face,
+  onDocChange,
+  onPatchLayout,
+}: {
+  base: SceneCue;
+  frame: { width: number; height: number };
+  scriptProject?: boolean;
+  face?: { centerYFrac: number; sizeFrac?: number; subject?: "face" | "screen" } | null;
+  onDocChange?: (doc: OverrideDoc) => void;
+  onPatchLayout?: (...args: unknown[]) => void;
+}) {
+  const real = useEdits();
+  const edits = React.useMemo(
+    () =>
+      onPatchLayout
+        ? {
+            ...real,
+            patchLayout: (...args: Parameters<typeof real.patchLayout>) => {
+              onPatchLayout(...args);
+              real.patchLayout(...args);
+            },
+          }
+        : real,
+    [real, onPatchLayout],
+  );
+  const cue = React.useMemo(() => applyOverrides([base], real.doc).cues[0]!, [real.doc, base]);
+  React.useEffect(() => {
+    onDocChange?.(real.doc);
+  });
+  return React.createElement(Inspector, {
+    selection: { sceneId: base.id, elementId: null },
+    cue,
+    frame,
+    allSceneIds: [base.id],
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+    scriptProject,
+    face,
+  });
+}
+
+describe("Inspector — backdrop names and a below-the-face box (§163, Task 5)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  const LS = { width: 1920, height: 1080 };
+  const PT = { width: 1080, height: 1920 };
+  const FACE = { centerYFrac: 0.38, sizeFrac: 0.3 };
+  // Today's flat list, literally: LayoutSchema's order, each under its id.
+  const FLAT = [
+    "full-bleed",
+    "video-top",
+    "pip-bubble",
+    "graphic-only",
+    "blurred-behind",
+    "lower-third",
+    "split-left",
+    "split-right",
+  ];
+  const card: SceneCue = {
+    id: "scene-7",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "CardRow",
+    props: { cards: [{ text: "Draft" }, { text: "Review" }] },
+    startSec: 0,
+    endSec: 6,
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`);
+  const mount = async (props: Parameters<typeof BackdropHarness>[0]) => {
+    await act(async () => {
+      root.render(React.createElement(BackdropHarness, props));
+    });
+  };
+  const select = () => q<HTMLSelectElement>("layout-select")!;
+  const selectLabel = () => select().parentElement!.querySelector("span")!.textContent;
+
+  it("pins today's flat list as LayoutSchema's own order", () => {
+    expect([...LayoutSchema.options]).toEqual(FLAT);
+  });
+
+  it("a 16:9 script project: 'Behind the graphic', the three backdrops by name, then the other five", async () => {
+    await mount({ base: card, frame: LS, scriptProject: true });
+    expect(selectLabel()).toBe("Behind the graphic");
+    const groups = [...select().querySelectorAll("optgroup")];
+    expect(groups.map((g) => g.label)).toEqual(["Backdrops", "Other layouts"]);
+    expect([...groups[0]!.querySelectorAll("option")].map((o) => [o.value, o.textContent])).toEqual([
+      ["full-bleed", "Over the speaker"],
+      ["graphic-only", "Full background"],
+      ["pip-bubble", "Background with speaker picture"],
+    ]);
+    expect([...groups[1]!.querySelectorAll("option")].map((o) => [o.value, o.textContent])).toEqual([
+      ["video-top", "video-top"],
+      ["blurred-behind", "blurred-behind"],
+      ["lower-third", "lower-third"],
+      ["split-left", "split-left"],
+      ["split-right", "split-right"],
+    ]);
+    expect(select().value).toBe("full-bleed");
+  });
+
+  it("a scene on one of the other layouts shows it selected under 'Other layouts'", async () => {
+    await mount({ base: { ...card, component: "TitleCard", props: { title: "X" }, layout: "lower-third" }, frame: LS, scriptProject: true });
+    const chosen = select().selectedOptions[0]!;
+    expect(chosen.value).toBe("lower-third");
+    expect((chosen.parentElement as HTMLOptGroupElement).label).toBe("Other layouts");
+  });
+
+  it("choosing 'Full background' calls patchLayout(sceneId, 'graphic-only', the current layout)", async () => {
+    const spy = vi.fn();
+    let doc: OverrideDoc | undefined;
+    await mount({ base: card, frame: LS, scriptProject: true, onPatchLayout: spy, onDocChange: (d) => (doc = d) });
+    await act(async () => setControl(select(), "graphic-only"));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith("scene-7", "graphic-only", "full-bleed");
+    expect(doc!.scenes["scene-7"]?.layout).toBe("graphic-only");
+  });
+
+  for (const [name, frame, scriptProject] of [
+    ["a 9:16 script project", PT, true],
+    ["a 16:9 project without a script", LS, false],
+    ["a 16:9 project that never said", LS, undefined],
+  ] as const) {
+    it(`${name}: exactly today's control — 'Layout', no groups, the flat list under its ids`, async () => {
+      await mount({ base: card, frame, scriptProject });
+      expect(selectLabel()).toBe("Layout");
+      expect(select().querySelectorAll("optgroup")).toHaveLength(0);
+      expect([...select().options].map((o) => o.value)).toEqual(FLAT);
+      expect([...select().options].map((o) => o.textContent)).toEqual(FLAT);
+    });
+  }
+
+  it("'Below the face' writes belowFaceBox through patchGraphicRect on a 16:9 full-frame scene", async () => {
+    let doc: OverrideDoc | undefined;
+    await mount({ base: card, frame: LS, face: FACE, onDocChange: (d) => (doc = d) });
+    const btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.textContent).toBe("Below the face");
+    expect(btn.disabled).toBe(false);
+    await act(async () => btn.click());
+    const rect = doc!.scenes["scene-7"]!.graphicRect!;
+    // headBand(0.38, 0.3).end = 0.59 → y 0.62, h 0.34 (stage.test.ts).
+    expect(rect.x).toBeCloseTo(0.04, 9);
+    expect(rect.y).toBeCloseTo(0.62, 9);
+    expect(rect.w).toBeCloseTo(0.92, 9);
+    expect(rect.h).toBeCloseTo(0.34, 9);
+    expect(Number(q<HTMLInputElement>("field-box-y")!.value)).toBeCloseTo(0.62, 3);
+  });
+
+  it("on a slot component the box stays inside the caption-safe rect AND under the head", async () => {
+    let doc: OverrideDoc | undefined;
+    await mount({
+      base: { ...card, component: "TitleCard", props: { title: "X" }, layout: "lower-third" },
+      frame: LS,
+      face: FACE,
+      onDocChange: (d) => (doc = d),
+    });
+    await act(async () => q<HTMLButtonElement>("graphic-below-face")!.click());
+    const rect = doc!.scenes["scene-7"]!.graphicRect!;
+    // Landscape safe rect x 0.05..0.95, y 0.06..0.88; head ends at 0.59.
+    expect(rect.x).toBeCloseTo(0.05, 9);
+    expect(rect.y).toBeCloseTo(0.62, 9);
+    expect(rect.w).toBeCloseTo(0.9, 9);
+    expect(rect.h).toBeCloseTo(0.26, 9);
+  });
+
+  it("is disabled for a screen recording's face, saying it is a camera inset", async () => {
+    await mount({ base: card, frame: LS, face: { ...FACE, subject: "screen" } });
+    const btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe("The measured face is a camera inset, not the speaker");
+  });
+
+  it("is shown in any 16:9 project, script or not, and on a slot component too", async () => {
+    await mount({ base: { ...card, component: "TitleCard", props: { title: "X" }, layout: "lower-third" }, frame: LS, face: FACE, scriptProject: false });
+    expect(q("graphic-below-face")).not.toBeNull();
+  });
+
+  it("is disabled, saying why, with no measured face and with no room below it", async () => {
+    await mount({ base: card, frame: LS, face: null });
+    let btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe("No face was measured in this video");
+    await mount({ base: card, frame: LS, face: { centerYFrac: 0.6, sizeFrac: 0.3 } });
+    btn = q<HTMLButtonElement>("graphic-below-face")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe("No room below the face");
+  });
+
+  it("is not offered in a 9:16 frame, nor on a plain take", async () => {
+    await mount({ base: card, frame: PT, face: FACE });
+    expect(q("graphic-below-face")).toBeNull();
+    await mount({ base: { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 4 }, frame: LS, face: FACE });
+    expect(q("graphic-below-face")).toBeNull();
+  });
+
+  it("a 16:9 pip-bubble scene's fields show and edit the STORED box, with a note that it is cut when drawn", async () => {
+    let doc: OverrideDoc | undefined;
+    await mount({ base: { ...card, layout: "pip-bubble" }, frame: LS, onDocChange: (d) => (doc = d) });
+    // No box yet: the whole frame, not the frame cut back from the picture.
+    expect(q<HTMLInputElement>("field-box-x")!.value).toBe("0");
+    expect(q<HTMLInputElement>("field-box-w")!.value).toBe("1");
+    expect(q("graphic-box-cut-note")!.textContent).toBe("Kept clear of the speaker picture when drawn.");
+    await act(async () => setControl(q<HTMLInputElement>("field-box-h")!, "0.5"));
+    // Editing one field stores the uncut box with that field changed.
+    expect(doc!.scenes["scene-7"]!.graphicRect).toEqual({ x: 0, y: 0, w: 1, h: 0.5 });
+  });
+
+  it("no cut note outside a 16:9 pip-bubble", async () => {
+    await mount({ base: { ...card, layout: "pip-bubble" }, frame: PT });
+    expect(q("graphic-box-cut-note")).toBeNull();
+    await mount({ base: { ...card, layout: "graphic-only" }, frame: LS });
+    expect(q("graphic-box-cut-note")).toBeNull();
+    await mount({ base: card, frame: LS });
+    expect(q("graphic-box-cut-note")).toBeNull();
   });
 });
