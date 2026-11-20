@@ -66,4 +66,9 @@ export * from "./script/retakes";
 // it is exported here only and never from ./browser — the editor bundle must
 // not carry the compiler.
 export * from "./draw/static-check";
+// The draw call (§167) imports the static check's constants, so it stays on
+// this side of the line too.
+export * from "./draw/prompt";
+export * from "./draw/draw-shot";
+export * from "./draw/examples";
 export { run } from "./exec";

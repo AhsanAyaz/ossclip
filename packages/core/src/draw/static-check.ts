@@ -112,8 +112,12 @@ export const DRAW_ALLOWED_ELEMENTS = [
  * Known gap: a concatenated key on an ordinary value
  * (`[]["con"+"structor"]`) passes; the check is a filter, and the render
  * bundle's content security policy is the guard (§167).
+ *
+ * Exported so the draw prompt (prompt.ts) states this exact list to the LLM:
+ * a name the prompt left out would be a repair the LLM could not have
+ * avoided.
  */
-const FORBIDDEN_NAMES: ReadonlySet<string> = new Set([
+export const DRAW_FORBIDDEN_NAMES = [
   "fetch",
   "XMLHttpRequest",
   "WebSocket",
@@ -138,7 +142,8 @@ const FORBIDDEN_NAMES: ReadonlySet<string> = new Set([
   "setTimeout",
   "setInterval",
   "createElement",
-]);
+] as const;
+const FORBIDDEN_NAMES: ReadonlySet<string> = new Set(DRAW_FORBIDDEN_NAMES);
 
 /**
  * Substrings that mean a string can name a resource (§167). Matched without

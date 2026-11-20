@@ -2,6 +2,7 @@ import type { z } from "zod/v4";
 import type { LlmProvider } from "./provider";
 import { estimateTokens, type LlmUsage } from "./usage";
 import { BeatSheetSchema } from "./beats";
+import { DRAW_EXAMPLE_CHARACTER } from "../draw/examples";
 
 /**
  * Deterministic offline producer: segments the transcript into fixed-size
@@ -36,7 +37,16 @@ export class MockProvider implements LlmProvider {
                 ? this.captionChoreography(req.user, req.schema)
                 : req.schemaName === "script_plan"
                   ? this.scriptPlan(req.user, req.schema)
-                  : this.sceneProps(req.user, req.schema, req.schemaName);
+                  : req.schemaName === "drawn_scene"
+                    ? // The character example (§167): it passes every check
+                      // and draws SVG shapes rather than kit cards, so the
+                      // offline path exercises the still render on real
+                      // drawing, whatever idea the prompt carries.
+                      req.schema.parse({
+                        code: DRAW_EXAMPLE_CHARACTER,
+                        said: "mock: the worked example, a goldfish swimming in with a speech bubble",
+                      })
+                    : this.sceneProps(req.user, req.schema, req.schemaName);
     // Estimated, and costing exactly nothing — but recorded, because the
     // offline path is first-class and "how big are the prompts this pipeline
     // sends" is worth answering without spending anything to find out.
