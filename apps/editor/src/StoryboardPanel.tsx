@@ -368,6 +368,16 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
 
   /** Drop, restore and span: their errors go to the panel's one error line. */
   const rowAction = async (edit: StoryboardEditBody): Promise<void> => {
+    // A drop, restore or unapprove of an APPROVED shot starts the sync run,
+    // and the reload after it puts the saved overrides.json over whatever is
+    // unsaved on screen (§169, the rule Approve already has): refuse it the
+    // same way, before any request.
+    const changesVideo = edit.op === "drop" || edit.op === "restore" || edit.op === "unapprove";
+    const target = changesVideo ? load?.storyboard.shots.find((s) => s.id === edit.id) : undefined;
+    if (dirty && target?.approval !== undefined) {
+      setError("Save first: this changes the video, and the reload would discard your unsaved edits.");
+      return;
+    }
     setError(null);
     const err = await sendEdit(edit);
     if (err !== null) setError(err);
