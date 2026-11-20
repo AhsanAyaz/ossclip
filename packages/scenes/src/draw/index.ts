@@ -9,9 +9,6 @@
  * removed: an approved scene names them in its code.
  */
 
-/** Recorded with every drawn version, so a scene can be matched to the kit it was written for. */
-export const DRAW_KIT_VERSION = 1;
-
 export {
   DrawProvider,
   useFrameSize,
@@ -36,4 +33,5 @@ export {
   typedChars,
 } from "../motion";
 export { Asset, Card, Icon, NumberBadge, PhoneFrame, Pill, Sticker } from "./parts";
-export { DRAW_KIT_EXPORTS, DRAW_KIT_REFERENCE } from "./reference";
+// The version lives in reference.ts so Node can read it without React (§167).
+export { DRAW_KIT_EXPORTS, DRAW_KIT_REFERENCE, DRAW_KIT_VERSION } from "./reference";

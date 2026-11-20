@@ -17,6 +17,14 @@
  * So this file imports nothing; keep it that way.
  */
 
+/**
+ * Recorded with every drawn version, so a scene can be matched to the kit it
+ * was written for. Here rather than in index.ts (which re-exports it) for the
+ * reason above: `ossclip draw` writes it into each version's record in Node
+ * and must not load React to read a number (§167).
+ */
+export const DRAW_KIT_VERSION = 1;
+
 export const DRAW_KIT_EXPORTS = [
   "useSceneTime",
   "useTheme",

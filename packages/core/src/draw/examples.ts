@@ -146,10 +146,11 @@ export default function Scene({ durationSec }: { durationSec: number }) {
   const swimSec = 0.35 * durationSec;
   const bubbleStart = 0.5 * durationSec;
 
-  // The drawing is 380 x 260 units (the viewBox) and is scaled to fit the
-  // safe area in either orientation.
+  // The drawing is 390 x 260 units (the viewBox) and is scaled to fit the
+  // safe area in either orientation. The viewBox leaves room for the tail at
+  // its widest swing: an SVG clips what falls outside it.
   const width = Math.min(area.width * 0.8, area.height * 0.5);
-  const height = (width * 260) / 380;
+  const height = (width * 260) / 390;
   const unit = Math.min(area.width, area.height);
   const centerX = area.x + area.width / 2;
   const centerY = area.y + area.height * 0.62;
@@ -170,7 +171,7 @@ export default function Scene({ durationSec }: { durationSec: number }) {
       <svg
         width={width}
         height={height}
-        viewBox="-220 -130 380 260"
+        viewBox="-230 -130 390 260"
         style={{ position: "absolute", left: fishLeft, top: fishTop, opacity: fadeIn(t, 0, 0.25) }}
       >
         <defs>

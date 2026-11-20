@@ -1330,6 +1330,37 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("draw")
+    // Experimental (storyboard Phase A, §167): the gate decides whether drawn
+    // shots become a `produce --storyboard` feature, so this stays its own
+    // command, records no telemetry and leaves the project's video alone.
+    .description(
+      "experimental: draw one shot as LLM-written animation code, check it and render three " +
+        "stills; redraw it from a note, or render a small preview of the draft",
+    )
+    // The `kit` ladder, so `ossclip draw <video folder>` finds the same run.
+    .argument("[workdir]", "a work directory, or the folder you produced in")
+    .option("--shot <id>", "the shot's name (lower-case letters, digits and dashes); its files go in storyboard/<id>/")
+    .option("--idea <text>", "draw a new shot from this one-sentence idea")
+    .option("--note <text>", "redraw the shot's draft with this change")
+    .option("--preview", "render the draft at a quarter of the frame size to v<n>/preview.webm (no LLM call)")
+    .option("--line <text>", "with --idea: what the speaker says while the shot is on screen")
+    .option("--duration <sec>", "with --idea: the shot's length in seconds, 2 to 15 (default 4)")
+    .option("--assets <dir>", "with --idea: a folder of images (png, jpg, svg, webp) the shot may show; assets.md describes them")
+    .option("--llm <provider>", "antigravity | claude | claude-cli | gemini | mock. Default: as for produce")
+    .option("--llm-model <id>", "override the provider's default model")
+    .action(async (workdir: string | undefined, opts) => {
+      const { liveDrawDeps, parseDrawFlags, runDraw } = await import("./draw/draw-command");
+      // Parsed before anything touches disk, the `cover` rule.
+      const flags = parseDrawFlags(opts);
+      const target = await resolveWorkdirArgument(workdir ?? ".", "draw");
+      const result = await runDraw({ ...flags, workdir: target }, liveDrawDeps());
+      // A shot that failed its checks is a finished run, not a crash: the
+      // version and its errors are recorded, and the exit code says so.
+      if (!result.ok) process.exitCode = 1;
+    });
+
+  program
     .command("publish")
     .description(
       "push the finished render to your social accounts through your own self-hosted " +
