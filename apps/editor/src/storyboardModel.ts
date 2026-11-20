@@ -23,6 +23,53 @@ const LINE_MAX_CHARS = 140;
 /** `GET /api/storyboard`'s `drawn` value: a shot's draft and how many versions finished. */
 export type DrawnMap = Record<string, { draft: number | null; versions: number }>;
 
+/**
+ * The server's shapes for the shot view and the job (plan B2a Task 4; §169),
+ * declared again here rather than imported: the editor never imports from
+ * apps/cli (that package is Node, and its draw half evaluates LLM-written
+ * code). They mirror apps/cli/src/storyboard/shot-detail.ts and jobs.ts.
+ */
+export interface ShotDetail {
+  versions: {
+    n: number;
+    ok: boolean;
+    error?: string;
+    said?: string;
+    kitVersion: number;
+    /** `/media/storyboard/<id>/v<n>/still-<k>.png`, only files that exist. */
+    stills: string[];
+    preview: string | null;
+  }[];
+  draft: number | null;
+  notes: { onVersion: number; text: string }[];
+  /** The idea the draft was drawn from; null with no draft. */
+  drawnIdea: string | null;
+}
+
+/** `GET /api/storyboard`'s `detail`: only shots that have a history. */
+export type DetailMap = Record<string, ShotDetail>;
+
+export type StoryboardJobKind = "draw" | "redraw" | "preview" | "approve";
+
+export interface StoryboardJobState {
+  kind: StoryboardJobKind;
+  shots: string[];
+  current: string | null;
+  done: { id: string; ok: boolean; error?: string }[];
+  lines: string[];
+  calls: number;
+  startedAt: number;
+  stopping: boolean;
+}
+
+/** `GET /api/storyboard/job`, and `GET /api/storyboard`'s `job`. */
+export interface StoryboardJobPair {
+  job: StoryboardJobState | null;
+  last: StoryboardJobState | null;
+}
+
+export type StoryboardRowState = "dropped" | "cut away" | "planned" | "drawing" | "failed" | "drawn" | "in the video";
+
 export interface StoryboardRow {
   id: string;
   /** Output seconds on the clock the panel was given, null for a cut-away row. */
@@ -33,9 +80,13 @@ export interface StoryboardRow {
   idea: string;
   why: string;
   priority: 1 | 2 | 3;
-  state: "planned" | "dropped" | "drawn" | "cut away";
+  state: StoryboardRowState;
   touched: boolean;
-  /** The draft version, set exactly when `state` is "drawn". */
+  /**
+   * The draft version of a row on screen (`isKeptRow`), else null. Not only
+   * "drawn" rows have one: a shot being redrawn, or one in the video, still
+   * has the draft the author looks at, and the table's Draw rule reads it.
+   */
   draft: number | null;
 }
 
@@ -51,19 +102,32 @@ export interface StoryboardRow {
  * Shots are sorted by `startWord`, not by `startSec`: a cut-away row has no
  * time, and word order is time order for every row that has one.
  *
- * The state, first match wins:
+ * The state, first match wins (design §9: what the storyboard shows is
+ * computed from the record, the running job and the cut on every load, never
+ * stored; §169):
  *  - "dropped": the author refused the shot; that holds whatever else is true.
  *  - "cut away": no word of the shot survives the cut, so there is nothing to
- *    lay a drawing over, even one already drawn.
+ *    lay a drawing over, even one already drawn or approved (design §8: the
+ *    scene leaves the video and the shot keeps its work).
+ *  - "drawing": the running job's current shot, or one of its shots not done
+ *    yet. Before "in the video", so a redraw of an approved shot reads as the
+ *    work it is.
+ *  - "in the video": the shot has an approval (design §8).
+ *  - "failed": no draft, and the newest version failed. A failed redraw
+ *    beside a draft is not this: the draft is still there to look at.
  *  - "drawn": the shot has a draft the author is looking at (design §9
  *    `draft`). Versions without a draft are not "drawn": nothing is chosen.
  *  - "planned": everything else.
+ *
+ * `detail` and `job` default to none, the B1 table's inputs.
  */
 export function storyboardRows(
   sb: Storyboard,
   words: readonly { text: string }[],
   outputTimeOf: (i: number) => { start: number; end: number } | null,
   drawn: DrawnMap,
+  detail: DetailMap = {},
+  job: StoryboardJobState | null = null,
 ): StoryboardRow[] {
   const shots = [...sb.shots].sort((a, b) => a.startWord - b.startWord);
   return shots.map((s) => {
@@ -80,14 +144,23 @@ export function storyboardRows(
     const joined = kept.join(" ");
     const line = joined.length > LINE_MAX_CHARS ? `${joined.slice(0, LINE_MAX_CHARS - 1)}…` : joined;
     const draft = drawn[s.id]?.draft ?? null;
-    const state: StoryboardRow["state"] = !s.kept
+    const inJob = job !== null && (job.current === s.id || (job.shots.includes(s.id) && !job.done.some((d) => d.id === s.id)));
+    const versions = detail[s.id]?.versions ?? [];
+    const newest = versions.reduce<ShotDetail["versions"][number] | null>((a, v) => (a === null || v.n > a.n ? v : a), null);
+    const state: StoryboardRowState = !s.kept
       ? "dropped"
       : startSec === null
         ? "cut away"
-        : draft !== null
-          ? "drawn"
-          : "planned";
-    return {
+        : inJob
+          ? "drawing"
+          : s.approval !== undefined
+            ? "in the video"
+            : draft === null && newest !== null && !newest.ok
+              ? "failed"
+              : draft !== null
+                ? "drawn"
+                : "planned";
+    const row: StoryboardRow = {
       id: s.id,
       startSec,
       endSec,
@@ -97,14 +170,104 @@ export function storyboardRows(
       priority: s.priority,
       state,
       touched: s.touched,
-      draft: state === "drawn" ? draft : null,
+      draft: null,
     };
+    return { ...row, draft: isKeptRow(row) ? draft : null };
   });
 }
 
 /** A row that will be on screen: neither dropped nor cut away. */
 export function isKeptRow(row: StoryboardRow): boolean {
-  return row.state === "planned" || row.state === "drawn";
+  return row.state !== "dropped" && row.state !== "cut away";
+}
+
+/**
+ * True when the shot has a draft drawn from another idea than the shot's
+ * own: the author reworded the shot after it was drawn, and design §10 says
+ * that does not redraw it; the panel marks it and offers "Draw again".
+ */
+export function draftIsStale(shot: { idea: string }, detail: ShotDetail | null): boolean {
+  return detail !== null && detail.draft !== null && detail.drawnIdea !== null && detail.drawnIdea !== shot.idea;
+}
+
+const JOB_VERB: Record<StoryboardJobKind, string> = {
+  draw: "Drawing",
+  redraw: "Redrawing",
+  preview: "Previewing",
+  approve: "Approving",
+};
+
+/**
+ * The running job's line (design §10 "Progress and cost": which shot runs,
+ * and the calls used so far), or null when no job runs. A stopping job says
+ * only that: Cancel ends it after the shot it is on, and a count that keeps
+ * moving would read as Cancel not having worked. `current` is null for the
+ * moment between the last shot and the job's end (the usage append).
+ */
+export function jobLine(job: StoryboardJobState | null): string | null {
+  if (job === null) return null;
+  if (job.stopping) return job.current !== null ? `Stopping after ${job.current}…` : "Stopping…";
+  const calls = `${job.calls} call${job.calls === 1 ? "" : "s"}`;
+  const at = job.current !== null ? job.shots.indexOf(job.current) + 1 : job.done.length;
+  return `${JOB_VERB[job.kind]}${job.current !== null ? ` ${job.current}` : ""} (${at} of ${job.shots.length}) · ${calls}`;
+}
+
+/** The server's error for a shot Cancel interrupted (runDraw's `stopped`, edit.ts). */
+const STOPPED_ERROR = "stopped before it finished";
+
+const JOB_DONE: Record<StoryboardJobKind, string> = {
+  draw: "drawn",
+  redraw: "redrawn",
+  preview: "preview ready",
+  approve: "approved",
+};
+
+/**
+ * One line for a finished job: "5 drawn" / "4 drawn, 1 failed: s2: <error>".
+ *
+ * A shot Cancel interrupted, and one the job never started because of it,
+ * is "stopped", not "failed": the author asked for it, and a failure would
+ * send them looking for a fault that is not there (§169). Each failure is
+ * named with its first line, the job log's rule, so one long checker
+ * message cannot push the others off the line.
+ */
+export function jobResultLine(last: StoryboardJobState | null): string | null {
+  if (last === null) return null;
+  const ok = last.done.filter((d) => d.ok).length;
+  const stopped =
+    last.done.filter((d) => !d.ok && d.error === STOPPED_ERROR).length + Math.max(0, last.shots.length - last.done.length);
+  const failed = last.done.filter((d) => !d.ok && d.error !== STOPPED_ERROR);
+  const parts = [`${ok} ${JOB_DONE[last.kind]}`];
+  if (stopped > 0) parts.push(`${stopped} stopped`);
+  if (failed.length > 0) {
+    const named = failed.map((d) => `${d.id}: ${(d.error ?? "failed").split("\n")[0]}`).join("; ");
+    parts.push(`${failed.length} failed: ${named}`);
+  }
+  return parts.join(", ");
+}
+
+/**
+ * Whether a finished job started the sync run of the video: an approve that
+ * ended ok (plan B2a Task 4: the server spawns the recorded command after it
+ * saves the approval; an approve it could not follow with that run is
+ * `ok: false`). The panel then hands the run to App's render poll, which
+ * reloads the production when it ends.
+ */
+export function jobStartedReplay(last: StoryboardJobState | null): boolean {
+  return last !== null && last.kind === "approve" && last.done.length > 0 && last.done.every((d) => d.ok);
+}
+
+/**
+ * Why Approve is disabled, or null. "Save first" comes first: the sync run
+ * after an approval replays the SAVED overrides.json, and when it ends the
+ * editor reloads that doc over the unsaved one (Review Focus 4), so an
+ * approve with unsaved edits would throw them away.
+ */
+export function approveBlock(a: { dirty: boolean; draft: number | null; jobRunning: boolean }): string | null {
+  if (a.dirty) return "Save first";
+  if (a.draft === null) return "no draft";
+  if (a.jobRunning) return "a job is running";
+  return null;
 }
 
 /**

@@ -514,6 +514,10 @@ export const App: React.FC = () => {
   // backdrops only in a 16:9 script project. Server-derived, like canRender,
   // because the record lives in production.json, which the page never reads.
   const [scriptProject, setScriptProject] = useState(false);
+  // A storyboard project (`/api/production`'s `storyboardProject`, §169):
+  // its approved shots are clip scenes, and the §163 backdrop choice is
+  // offered for them as for a script project's (design §8).
+  const [storyboardProject, setStoryboardProject] = useState(false);
   // The state shape lives in renderStatus.ts beside `resumeRenderState`,
   // which rebuilds it after a page reload — one definition, not a drifting
   // inline copy (2026-08-18).
@@ -833,11 +837,13 @@ export const App: React.FC = () => {
               overrides?: OverrideDoc;
               canRender?: boolean;
               scriptProject?: boolean;
+              storyboardProject?: boolean;
             };
             const props = anchored(prod.renderProps);
             setRenderProps(props);
             setCanRender(Boolean(prod.canRender));
             setScriptProject(prod.scriptProject === true);
+            setStoryboardProject(prod.storyboardProject === true);
             // Finding 2, PLAN 2026-08-04 Task 4c fix wave — see
             // `renderCompleteReload`'s own doc comment (renderStatus.ts) for
             // the full reasoning; this is the thin I/O wrapper around that
@@ -946,6 +952,7 @@ export const App: React.FC = () => {
       overrides?: OverrideDoc;
       canRender?: boolean;
       scriptProject?: boolean;
+      storyboardProject?: boolean;
       defaultOutPath?: string;
       workdir?: string;
       noWorkdir?: boolean;
@@ -970,6 +977,7 @@ export const App: React.FC = () => {
     setWorkdirPath(nextWorkdir);
     setCanRender(Boolean(body.canRender));
     setScriptProject(body.scriptProject === true);
+    setStoryboardProject(body.storyboardProject === true);
     // §137: a doc saved before this change keys caption edits by POSITION,
     // which any cut shifts — every one of them would silently revert on
     // screen. Upgraded here, against the just-anchored lines, because this is
@@ -2419,6 +2427,11 @@ export const App: React.FC = () => {
       {showPublish ? <PublishPanel onClose={() => setShowPublish(false)} /> : null}
       {showStoryboard ? (
         <StoryboardPanel
+          // Approve is refused while the doc is unsaved (Review Focus 4), and
+          // a sync run the server starts is followed by the render poll, so
+          // the clip scene produce writes is reloaded when it ends (§169).
+          dirty={edits.dirty}
+          onReplayStarted={beginRenderPoll}
           words={transcriptDoc?.words ?? null}
           // The ruler's clock, the one the player plays: a cut made in the
           // editor shows in the table before any render (§168).
@@ -3112,6 +3125,7 @@ export const App: React.FC = () => {
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
             scriptProject={scriptProject}
+            storyboardProject={storyboardProject}
             face={live.face ?? null}
             baseCaptionTheme={renderProps?.baseCaptionTheme ?? renderProps?.captionTheme}
             // "Delete this chunk"'s write boundary (step 4 follow-up): the

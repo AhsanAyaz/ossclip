@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { Storyboard, StoryboardShot } from "@ossclip/core/browser";
 import {
+  approveBlock,
   coverage,
   coverageOverLimit,
+  draftIsStale,
   formatRange,
+  jobLine,
+  jobResultLine,
+  jobStartedReplay,
   planChangesSummary,
   rowWarning,
   selectionSpan,
@@ -11,6 +16,8 @@ import {
   storyboardButtonState,
   storyboardRows,
   wordIndexAtSourceTime,
+  type ShotDetail,
+  type StoryboardJobState,
   type StoryboardRow,
 } from "../src/storyboardModel";
 
@@ -125,6 +132,200 @@ describe("storyboardRows", () => {
   });
 });
 
+/** A shot's detail: versions `[n, ok]` in order, the draft, and the idea the draft was drawn from. */
+const detailOf = (versions: [number, boolean][], draft: number | null, drawnIdea: string | null = null): ShotDetail => ({
+  versions: versions.map(([n, ok]) => ({
+    n,
+    ok,
+    ...(ok ? {} : { error: `v${n} failed its checks` }),
+    kitVersion: 1,
+    stills: ok ? [1, 2, 3].map((k) => `/media/storyboard/s1/v${n}/still-${k}.png`) : [],
+    preview: null,
+  })),
+  draft,
+  notes: [],
+  drawnIdea,
+});
+
+const job = (over: Partial<StoryboardJobState>): StoryboardJobState => ({
+  kind: "draw",
+  shots: ["s1"],
+  current: null,
+  done: [],
+  lines: [],
+  calls: 0,
+  startedAt: 1000,
+  stopping: false,
+  ...over,
+});
+
+const approval = { version: 1, durationSec: 3.5, clipKey: "k", clip: "storyboard/s1/approved.mov", src: "clips/x.webm" };
+
+describe("storyboardRows: the B2a states, first match wins (§169)", () => {
+  const one = (
+    over: Partial<StoryboardShot>,
+    drawn: Record<string, { draft: number | null; versions: number }>,
+    detail: Record<string, ShotDetail>,
+    j: StoryboardJobState | null,
+  ) => storyboardRows(board([shot({ id: "s1", startWord: 0, endWord: 1, ...over })]), words, timeOf, drawn, detail, j)[0]!;
+  const running = job({ shots: ["s1"], current: "s1" });
+
+  it("dropped beats a running job and an approval", () => {
+    expect(one({ kept: false, approval }, { s1: { draft: 1, versions: 1 } }, {}, running).state).toBe("dropped");
+  });
+
+  it("cut away beats a running job, and an approved shot whose words are all cut reads cut away", () => {
+    const r = storyboardRows(
+      board([shot({ id: "s1", startWord: 4, endWord: 5, approval })]),
+      words,
+      timeOf,
+      { s1: { draft: 1, versions: 1 } },
+      { s1: detailOf([[1, true]], 1) },
+      running,
+    )[0]!;
+    expect(r.state).toBe("cut away");
+  });
+
+  it("drawing: the job's current shot, and a shot of the job not done yet, even when approved", () => {
+    expect(one({ approval }, { s1: { draft: 1, versions: 1 } }, {}, running).state).toBe("drawing");
+    const queued = job({ shots: ["s0", "s1"], current: "s0" });
+    expect(one({}, {}, {}, queued).state).toBe("drawing");
+    // Done already: no longer drawing, whatever the job does next.
+    const past = job({ shots: ["s1", "s2"], current: "s2", done: [{ id: "s1", ok: true }] });
+    expect(one({}, { s1: { draft: 1, versions: 1 } }, {}, past).state).toBe("drawn");
+  });
+
+  it("in the video: an approved shot, carrying its draft", () => {
+    const r = one({ approval }, { s1: { draft: 2, versions: 2 } }, { s1: detailOf([[1, true], [2, true]], 2) }, null);
+    expect(r.state).toBe("in the video");
+    expect(r.draft).toBe(2);
+  });
+
+  it("failed: no draft and the newest version failed", () => {
+    const r = one({}, { s1: { draft: null, versions: 1 } }, { s1: detailOf([[1, false]], null) }, null);
+    expect(r.state).toBe("failed");
+  });
+
+  it("a failed redraw beside a draft is still drawn: the draft is what the author looks at", () => {
+    const r = one({}, { s1: { draft: 1, versions: 2 } }, { s1: detailOf([[1, true], [2, false]], 1) }, null);
+    expect(r.state).toBe("drawn");
+  });
+
+  it("drawn: a draft, no job and no approval", () => {
+    const r = one({}, { s1: { draft: 1, versions: 1 } }, { s1: detailOf([[1, true]], 1) }, null);
+    expect(r.state).toBe("drawn");
+    expect(r.draft).toBe(1);
+  });
+
+  it("planned: nothing drawn, and a job about other shots does not change that", () => {
+    expect(one({}, {}, {}, null).state).toBe("planned");
+    // A job that is about other shots does not touch this one.
+    expect(one({}, {}, {}, job({ shots: ["s9"], current: "s9" })).state).toBe("planned");
+  });
+});
+
+describe("draftIsStale", () => {
+  it("is true when the draft was drawn from another idea (design §10 'Draw again')", () => {
+    expect(draftIsStale({ idea: "new idea" }, detailOf([[1, true]], 1, "old idea"))).toBe(true);
+  });
+
+  it("is false for a draft of the shot's own idea, no draft, or no history", () => {
+    expect(draftIsStale({ idea: "same" }, detailOf([[1, true]], 1, "same"))).toBe(false);
+    expect(draftIsStale({ idea: "x" }, detailOf([[1, false]], null, null))).toBe(false);
+    expect(draftIsStale({ idea: "x" }, null)).toBe(false);
+  });
+});
+
+describe("jobLine", () => {
+  it("names the shot, its place in the job and the calls so far", () => {
+    expect(jobLine(job({ shots: ["s1", "s3", "s4", "s5", "s6"], current: "s3", calls: 4 }))).toBe(
+      "Drawing s3 (2 of 5) · 4 calls",
+    );
+    expect(jobLine(job({ kind: "redraw", shots: ["s2"], current: "s2", calls: 1 }))).toBe("Redrawing s2 (1 of 1) · 1 call");
+  });
+
+  it("says the job is stopping after the shot it is on", () => {
+    expect(jobLine(job({ shots: ["s1", "s3"], current: "s3", stopping: true }))).toBe("Stopping after s3…");
+  });
+
+  it("is null with no job", () => {
+    expect(jobLine(null)).toBeNull();
+  });
+});
+
+describe("jobResultLine", () => {
+  it("counts an all-ok job", () => {
+    const done = ["s1", "s2", "s3", "s4", "s5"].map((id) => ({ id, ok: true }));
+    expect(jobResultLine(job({ shots: done.map((d) => d.id), done }))).toBe("5 drawn");
+  });
+
+  it("names a failed shot and its error", () => {
+    const done = [
+      { id: "s1", ok: true },
+      { id: "s2", ok: false, error: "the code did not type-check" },
+      { id: "s3", ok: true },
+      { id: "s4", ok: true },
+      { id: "s5", ok: true },
+    ];
+    expect(jobResultLine(job({ shots: done.map((d) => d.id), done }))).toBe("4 drawn, 1 failed: s2: the code did not type-check");
+  });
+
+  it("counts a shot the stop interrupted, and one it never started, as stopped, not failed", () => {
+    const done = [
+      { id: "s1", ok: true },
+      { id: "s2", ok: true },
+      { id: "s3", ok: true },
+      { id: "s4", ok: false, error: "stopped before it finished" },
+    ];
+    expect(jobResultLine(job({ shots: ["s1", "s2", "s3", "s4"], done, stopping: true }))).toBe("3 drawn, 1 stopped");
+    expect(jobResultLine(job({ shots: ["s1", "s2", "s3"], done: [{ id: "s1", ok: true }], stopping: true }))).toBe(
+      "1 drawn, 2 stopped",
+    );
+  });
+
+  it("says what the other kinds of job did", () => {
+    const ok = [{ id: "s1", ok: true }];
+    expect(jobResultLine(job({ kind: "redraw", done: ok }))).toBe("1 redrawn");
+    expect(jobResultLine(job({ kind: "preview", done: ok }))).toBe("1 preview ready");
+    expect(jobResultLine(job({ kind: "approve", done: ok }))).toBe("1 approved");
+  });
+
+  it("is null with no finished job", () => {
+    expect(jobResultLine(null)).toBeNull();
+  });
+});
+
+describe("jobStartedReplay", () => {
+  it("is true for an approve job that ended ok: the server started the sync run", () => {
+    expect(jobStartedReplay(job({ kind: "approve", done: [{ id: "s1", ok: true }] }))).toBe(true);
+  });
+
+  it("is false for a failed or stopped approve, any other kind, and no job", () => {
+    expect(jobStartedReplay(job({ kind: "approve", done: [{ id: "s1", ok: false, error: "x" }] }))).toBe(false);
+    expect(jobStartedReplay(job({ kind: "approve", done: [] }))).toBe(false);
+    expect(jobStartedReplay(job({ kind: "draw", done: [{ id: "s1", ok: true }] }))).toBe(false);
+    expect(jobStartedReplay(null)).toBe(false);
+  });
+});
+
+describe("approveBlock", () => {
+  it("asks for a save first while the document is dirty (Review Focus 4)", () => {
+    expect(approveBlock({ dirty: true, draft: 1, jobRunning: false })).toBe("Save first");
+  });
+
+  it("refuses with no draft", () => {
+    expect(approveBlock({ dirty: false, draft: null, jobRunning: false })).toBe("no draft");
+  });
+
+  it("refuses while a job runs", () => {
+    expect(approveBlock({ dirty: false, draft: 1, jobRunning: true })).toBe("a job is running");
+  });
+
+  it("is null when Approve can run", () => {
+    expect(approveBlock({ dirty: false, draft: 1, jobRunning: false })).toBeNull();
+  });
+});
+
 describe("coverage", () => {
   it("adds the kept rows' lengths over the runtime and ignores dropped and cut-away rows", () => {
     const rows = [
@@ -134,6 +335,15 @@ describe("coverage", () => {
       row({ id: "d", startSec: null, endSec: null, state: "cut away" }),
     ];
     expect(coverage(rows, 40)).toBeCloseTo(10 / 40);
+  });
+
+  it("counts drawing, failed and in-the-video rows: each is still a shot on screen (§169)", () => {
+    const rows = [
+      row({ id: "a", startSec: 0, endSec: 2, state: "drawing" }),
+      row({ id: "b", startSec: 10, endSec: 12, state: "failed" }),
+      row({ id: "c", startSec: 20, endSec: 22, state: "in the video", draft: 1 }),
+    ];
+    expect(coverage(rows, 40)).toBeCloseTo(6 / 40);
   });
 
   it("is 0 on a zero runtime rather than infinity", () => {

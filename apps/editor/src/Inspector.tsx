@@ -119,6 +119,13 @@ interface InspectorProps {
    * other project keeps today's control.
    */
   scriptProject?: boolean;
+  /**
+   * `/api/production`'s `storyboardProject` (§169): `storyboard.json` in the
+   * workdir, or a storyboard record in production.json. Its approved shots
+   * are clip scenes, and design §8 gives them the backdrop choice as a
+   * script project's clips have it. Absent = not one.
+   */
+  storyboardProject?: boolean;
   /** The measured face (render-props' `face`) — "Below the face" places the
    * box under it, and is disabled without one. */
   face?: FaceCrop | null;
@@ -680,6 +687,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   runInfo,
   captionsHiddenByFlag,
   scriptProject = false,
+  storyboardProject = false,
   face = null,
   baseCaptionTheme,
   fromLive = (sec: number): number => sec,
@@ -1548,8 +1556,10 @@ export const Inspector: React.FC<InspectorProps> = ({
             // it. Only in a 16:9 script project — the one place produce
             // keeps them through the landscape remap (`landscapeLayoutFor`);
             // elsewhere the names would promise a backdrop a Render undoes,
-            // so every other project keeps today's flat list (G6).
-            const backdrops = scriptProject && frame.width > frame.height;
+            // so every other project keeps today's flat list (G6). A
+            // storyboard project is treated as a script project here
+            // (design §8; §169).
+            const backdrops = (scriptProject || storyboardProject) && frame.width > frame.height;
             return (
               <div style={row}>
                 <span style={label}>{backdrops ? "Behind the graphic" : "Layout"}</span>

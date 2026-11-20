@@ -147,7 +147,8 @@ test("Drop then Restore round-trips", async ({ page }) => {
   expect((await shotOnDisk("s1"))?.kept).toBe(false);
   await page.getByTestId("storyboard-restore-s1").click();
   await expect(page.getByTestId("storyboard-drop-s1")).toBeVisible();
-  await expect(page.getByTestId("storyboard-state-s1")).toHaveText("planned");
+  // s1 is drawn in the fixture (B2a, §169): restored, it is drawn again.
+  await expect(page.getByTestId("storyboard-state-s1")).toHaveText("drawn (v1)");
   expect((await shotOnDisk("s1"))?.kept).toBe(true);
 });
 
@@ -186,6 +187,88 @@ test("Plan again asks in the panel before it spends a call", async ({ page }) =>
   await expect(page.getByTestId("storyboard-plan-confirm")).toBeVisible();
   await page.getByTestId("storyboard-plan-cancel").click();
   await expect(page.getByTestId("storyboard-plan-confirm-box")).toHaveCount(0);
+});
+
+/**
+ * B2a: drawing from the panel (plan Task 5; §169). The fixture's s1 is drawn:
+ * `storyboard/s1/history.json` holds one ok version, the draft, drawn from
+ * s1's idea as `storyboard.json` has it, beside `v1.tsx` and three stills.
+ *
+ * These tests NEVER press Draw, Draw all, Redraw, Preview, Approve or Remove
+ * from video: the e2e server has no mock provider, so each would be a real
+ * LLM call or a render. They read labels and enabled state only.
+ */
+test("a drawn shot reads drawn, s2 offers Draw, and s1 opens the shot view with its stills", async ({ page }, testInfo) => {
+  await load(page);
+  await openPanel(page);
+  await expect(page.getByTestId("storyboard-state-s1")).toHaveText("drawn (v1)");
+  // Drawn from its own idea: no Draw, no "Draw again".
+  await expect(page.getByTestId("storyboard-draw-s1")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-stale-s1")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-draw-s2")).toHaveText("Draw");
+  await expect(page.getByTestId("storyboard-draw-s2")).toBeEnabled();
+  // A dropped shot is not drawn.
+  await expect(page.getByTestId("storyboard-draw-s3")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-draw-all")).toHaveText("Draw all");
+  await expect(page.getByTestId("storyboard-draw-all")).toBeEnabled();
+  // No job has run on this server.
+  await expect(page.getByTestId("storyboard-job")).toHaveCount(0);
+  await page.getByTestId("storyboard-modal").screenshot({ path: testInfo.outputPath("storyboard-table-draw.png") });
+
+  await page.getByTestId("storyboard-open-shot-s1").click();
+  await expect(page.getByTestId("storyboard-shot-view")).toBeVisible();
+  for (const k of [1, 2, 3]) {
+    const still = page.getByTestId(`storyboard-still-${k}`);
+    await expect(still).toBeVisible();
+    // Served, not a broken image: the URL is the server's `/media/` one.
+    await expect.poll(() => still.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  }
+  await expect(page.getByTestId("storyboard-still-4")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-version-1")).toContainText("ok");
+  await expect(page.getByTestId("storyboard-version-1")).toContainText("the draft");
+  await expect(page.getByTestId("storyboard-make-draft-1")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-preview")).toBeEnabled();
+  await expect(page.getByTestId("storyboard-preview-video")).toHaveCount(0);
+  // The note box and Redraw: Redraw waits for a note.
+  await expect(page.getByTestId("storyboard-note-input")).toBeVisible();
+  await expect(page.getByTestId("storyboard-redraw")).toBeDisabled();
+  await page.getByTestId("storyboard-note-input").fill("Make the answer bubbles pop back one after another.");
+  await expect(page.getByTestId("storyboard-redraw")).toBeEnabled();
+  // A clean document: Approve can run, and nothing is in the video yet.
+  await expect(page.getByTestId("storyboard-approve")).toBeEnabled();
+  await expect(page.getByTestId("storyboard-approve-block")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-unapprove")).toHaveCount(0);
+  await page.getByTestId("storyboard-modal").screenshot({ path: testInfo.outputPath("storyboard-shot-view.png") });
+
+  await page.getByTestId("storyboard-shot-back").click();
+  await expect(page.getByTestId("storyboard-shot-view")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-row-s1")).toBeVisible();
+});
+
+test("Approve says Save first while the document has unsaved edits, and is enabled once saved (Review Focus 4)", async ({
+  page,
+}) => {
+  await load(page);
+  await page.locator('[data-testid^="timeline-block-"]').first().click();
+  await page.getByTestId("field-scale").fill("0.62");
+  await expect(page.getByTestId("dirty")).toBeVisible();
+  await openPanel(page);
+  await page.getByTestId("storyboard-open-shot-s1").click();
+  await expect(page.getByTestId("storyboard-approve")).toBeDisabled();
+  await expect(page.getByTestId("storyboard-approve-block")).toContainText("Save first");
+  // Escape backs out of the shot view first, then closes the panel.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("storyboard-shot-view")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("storyboard-modal")).toHaveCount(0);
+
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+  await openPanel(page);
+  await page.getByTestId("storyboard-open-shot-s1").click();
+  await expect(page.getByTestId("storyboard-approve")).toBeEnabled();
+  await expect(page.getByTestId("storyboard-approve-block")).toHaveCount(0);
 });
 
 test("a project without storyboard.json has no Storyboard button", async ({ page }) => {

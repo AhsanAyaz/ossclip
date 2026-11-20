@@ -3,22 +3,69 @@ import type { Storyboard, TimeMap } from "@ossclip/core/browser";
 import {
   coverage,
   coverageOverLimit,
+  draftIsStale,
   formatRange,
   isKeptRow,
+  jobLine,
+  jobResultLine,
+  jobStartedReplay,
   planChangesSummary,
   rowWarning,
   selectionSpan,
   spanPreview,
   storyboardRows,
+  type DetailMap,
   type DrawnMap,
+  type StoryboardJobPair,
+  type StoryboardJobState,
   type StoryboardRow,
 } from "./storyboardModel";
+import { StoryboardShotView } from "./StoryboardShotView";
+import {
+  PRIORITY_BADGE,
+  STATE_COLOR,
+  WARN,
+  actionBtn,
+  backdrop,
+  badge,
+  closeBtn,
+  errorText,
+  footNote,
+  formBox,
+  formButtons,
+  formLabel,
+  header,
+  ideaArea,
+  ideaBtn,
+  lineText,
+  off,
+  panel,
+  primaryBtn,
+  rowBox,
+  rowHead,
+  rowLabel,
+  stateText,
+  subtitle,
+  timeBtn,
+  timeText,
+  title,
+  toolBtn,
+  toolbar,
+  whyText,
+} from "./storyboardStyles";
 
 /**
  * The storyboard's plan table (storyboard design §10 "Table view"; plan Task
  * 5; §168): one row per shot of `storyboard.json`, where the author drops,
- * rewords, moves and adds shots and can plan again. Drawing is not part of
- * this phase, so a drawn shot only shows its draft number.
+ * rewords, moves and adds shots and can plan again.
+ *
+ * B2a (plan Task 5; §169) adds drawing: "Draw" per row and "Draw all", the
+ * running job's line with Cancel, the last job's result, and the shot view
+ * (StoryboardShotView.tsx), opened from a row's state, where the author
+ * previews, notes, redraws and approves. A job runs on the server and is
+ * followed by polling `GET /api/storyboard/job` once a second, only while
+ * one runs; when it ends the table is read again, because a job writes the
+ * shot's history (and an approve, `storyboard.json`), not this page.
  *
  * Server-owned state, the PublishPanel posture: the table lives in the
  * workdir's `storyboard.json`, not in the overrides doc, so there is no
@@ -37,6 +84,33 @@ import {
 interface StoryboardLoad {
   storyboard: Storyboard;
   drawn: DrawnMap;
+  detail: DetailMap;
+  job: StoryboardJobPair;
+}
+
+/** `GET /api/storyboard`, read: the table, or the message to show instead of it. */
+async function fetchStoryboard(): Promise<{ ok: true; load: StoryboardLoad } | { ok: false; error: string }> {
+  const res = await fetch("/api/storyboard");
+  const body = (await res.json()) as {
+    storyboard?: Storyboard | null;
+    drawn?: DrawnMap;
+    detail?: DetailMap;
+    job?: StoryboardJobPair;
+    error?: string;
+  };
+  if (!res.ok) return { ok: false, error: body.error ?? `GET /api/storyboard failed: ${res.status}` };
+  if (!body.storyboard) {
+    return { ok: false, error: "This project has no storyboard.json. Plan one with `ossclip produce <video> --storyboard`." };
+  }
+  return {
+    ok: true,
+    load: {
+      storyboard: body.storyboard,
+      drawn: body.drawn ?? {},
+      detail: body.detail ?? {},
+      job: body.job ?? { job: null, last: null },
+    },
+  };
 }
 
 interface LimitChangeView {
@@ -50,9 +124,23 @@ type StoryboardEditBody =
   | { op: "restore"; id: string }
   | { op: "idea"; id: string; idea: string }
   | { op: "span"; id: string; startWord: number; endWord: number }
-  | { op: "add"; startWord: number; endWord: number; idea: string };
+  | { op: "add"; startWord: number; endWord: number; idea: string }
+  | { op: "unapprove"; id: string };
 
 export interface StoryboardPanelProps {
+  /**
+   * App's `edits.dirty`. Approve is refused while it is true: the sync run
+   * after an approval replays the SAVED overrides.json, and the reload when
+   * it ends puts that doc over the unsaved one (Review Focus 4).
+   */
+  dirty: boolean;
+  /**
+   * The server started the sync run of the video (an approve that ended ok,
+   * or a drop, restore or unapprove of an approved shot). App hands it to
+   * its render poll (`beginRenderPoll`), which shows the run and reloads the
+   * production when it ends: produce, not this page, writes the clip scene.
+   */
+  onReplayStarted: () => void;
   /** `/api/transcript`'s words: the index space a shot's `startWord`/`endWord` live in. Null when none loaded. */
   words: readonly { text: string; start: number; end: number }[] | null;
   /** The live clock (App's ruler map), source → output seconds. Null when the spans are unusable. */
@@ -64,10 +152,23 @@ export interface StoryboardPanelProps {
   onClose: () => void;
 }
 
-export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, selection, onSeek, onClose }) => {
+export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
+  dirty,
+  onReplayStarted,
+  words,
+  map,
+  selection,
+  onSeek,
+  onClose,
+}) => {
   const [load, setLoad] = useState<StoryboardLoad | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<null | "edit" | "plan">(null);
+  const [busy, setBusy] = useState<null | "edit" | "plan" | "job">(null);
+  /** The shot the shot view shows; null is the table. */
+  const [shotView, setShotView] = useState<string | null>(null);
+  // Read through a ref by the job poll, whose interval outlives renders.
+  const onReplayRef = useRef(onReplayStarted);
+  onReplayRef.current = onReplayStarted;
   // The ref is the gate, the state is the display: two clicks inside one
   // frame both see the state's old value, and the second would be a second
   // request (the `planBusy` double-click rule, server side).
@@ -96,22 +197,10 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
     let live = true;
     void (async () => {
       try {
-        const res = await fetch("/api/storyboard");
-        const body = (await res.json()) as {
-          storyboard?: Storyboard | null;
-          drawn?: DrawnMap;
-          error?: string;
-        };
+        const got = await fetchStoryboard();
         if (!live) return;
-        if (!res.ok) {
-          setLoadError(body.error ?? `GET /api/storyboard failed: ${res.status}`);
-          return;
-        }
-        if (!body.storyboard) {
-          setLoadError("This project has no storyboard.json. Plan one with `ossclip produce <video> --storyboard`.");
-          return;
-        }
-        setLoad({ storyboard: body.storyboard, drawn: body.drawn ?? {} });
+        if (got.ok) setLoad(got.load);
+        else setLoadError(got.error);
       } catch (err) {
         if (live) setLoadError(err instanceof Error ? err.message : String(err));
       }
@@ -121,22 +210,91 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
     };
   }, []);
 
-  // Escape backs out of the innermost thing open: a field being edited, the
-  // add form, the plan confirm, and only then the panel. Capture phase, the
-  // other panels' rule, so the app's shortcuts under the modal never see it;
-  // that also means the field's own handler never does, so the cancel is here.
+  /**
+   * A job has ended: read the table again (the job wrote the shot's history,
+   * and an approve wrote `storyboard.json`), then, for an approve that ended
+   * ok, hand the sync run the server started to App's render poll. The job
+   * pair is set first, so the poll stops even when the read fails.
+   */
+  const jobEnded = useCallback(async (pair: StoryboardJobPair): Promise<void> => {
+    setLoad((prev) => (prev === null ? prev : { ...prev, job: { job: null, last: pair.last } }));
+    try {
+      const got = await fetchStoryboard();
+      if (got.ok) setLoad(got.load);
+      else setError(got.error);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    if (jobStartedReplay(pair.last)) onReplayRef.current();
+  }, []);
+
+  /** The job's state now; the poll below takes over while it runs. */
+  const refreshJob = useCallback(async (): Promise<void> => {
+    const res = await fetch("/api/storyboard/job");
+    if (!res.ok) return;
+    const pair = (await res.json()) as StoryboardJobPair;
+    // A job that ended before this first look (a skipped draw is quick)
+    // never reaches the poll, so its end is handled here.
+    if (pair.job === null) await jobEnded(pair);
+    else setLoad((prev) => (prev === null ? prev : { ...prev, job: pair }));
+  }, [jobEnded]);
+
+  const jobRunning = load !== null && load.job.job !== null;
+
+  // Once a second, only while a job runs (design §10 "Progress and cost").
+  // One request at a time: a tick that finds the last one still out skips.
+  useEffect(() => {
+    if (!jobRunning) return;
+    let live = true;
+    let inFlight = false;
+    const timer = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void (async () => {
+        try {
+          const res = await fetch("/api/storyboard/job");
+          if (!res.ok || !live) return;
+          const pair = (await res.json()) as StoryboardJobPair;
+          if (!live) return;
+          if (pair.job === null) {
+            live = false;
+            window.clearInterval(timer);
+            await jobEnded(pair);
+          } else {
+            setLoad((prev) => (prev === null ? prev : { ...prev, job: pair }));
+          }
+        } catch {
+          // The next tick asks again.
+        } finally {
+          inFlight = false;
+        }
+      })();
+    }, 1000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [jobRunning, jobEnded]);
+
+  // Escape backs out of the innermost thing open: the shot view, a field
+  // being edited, the add form, the plan confirm, and only then the panel.
+  // Capture phase, the other panels' rule, so the app's shortcuts under the
+  // modal never see it; that also means the field's own handler never does,
+  // so the cancel is here. The shot view first: the table's forms are
+  // hidden behind it.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
-      if (editRef.current !== null) setEditing(null);
+      if (shotView !== null) setShotView(null);
+      else if (editRef.current !== null) setEditing(null);
       else if (adding !== null) setAdding(null);
       else if (confirmPlan) setConfirmPlan(false);
       else onClose();
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onClose, adding, confirmPlan]);
+  }, [onClose, adding, confirmPlan, shotView]);
 
   const outputTimeOf = useCallback(
     (i: number) => {
@@ -146,10 +304,28 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
     [words, map],
   );
   const rows = useMemo<StoryboardRow[]>(
-    () => (load === null || words === null ? [] : storyboardRows(load.storyboard, words, outputTimeOf, load.drawn)),
+    () =>
+      load === null || words === null
+        ? []
+        : storyboardRows(load.storyboard, words, outputTimeOf, load.drawn, load.detail, load.job.job),
     [load, words, outputTimeOf],
   );
   const keptRows = rows.filter(isKeptRow);
+  /** Whether a row's draft was drawn from an older idea (design §10 "Draw again"). */
+  const staleOf = (row: StoryboardRow): boolean => {
+    const shot = load?.storyboard.shots.find((s) => s.id === row.id);
+    return shot !== undefined && draftIsStale(shot, load?.detail[row.id] ?? null);
+  };
+  /** A kept row the table offers to draw: no draft yet, or a draft of an older idea. */
+  const drawable = (row: StoryboardRow): boolean =>
+    isKeptRow(row) && row.state !== "drawing" && (row.draft === null || staleOf(row));
+  // "Draw all" is the rows with no draft only: a stale draft is the author's
+  // to replace one shot at a time, and each draw spends LLM calls (AG3).
+  const drawAllIds = keptRows.filter((r) => r.state !== "drawing" && r.draft === null).map((r) => r.id);
+  // Not the running job's: Approve renders the draft's stills again under the
+  // same names DURING the job, and a URL keyed to it would cache the old
+  // ones. The finished job's stamp changes the URL once the job has ended.
+  const cacheKey = load?.job.last?.startedAt ?? 0;
   const share = coverage(rows, map?.outputDuration ?? 0);
   const span = useMemo(
     () => (words === null || selection === null ? null : selectionSpan(words, selection)),
@@ -174,10 +350,13 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
         headers: { "content-type": "application/json" },
         body: JSON.stringify(edit),
       });
-      const body = (await res.json()) as { ok?: boolean; storyboard?: Storyboard; error?: string };
+      const body = (await res.json()) as { ok?: boolean; storyboard?: Storyboard; replay?: boolean; error?: string };
       if (!res.ok || body.ok !== true || !body.storyboard) return body.error ?? `edit failed: ${res.status}`;
       const next = body.storyboard;
       setLoad((prev) => (prev === null ? prev : { ...prev, storyboard: next }));
+      // A drop, restore or unapprove of an approved shot: the server started
+      // the sync run, so the scene leaves or returns (plan B2a Task 4).
+      if (body.replay === true) onReplayRef.current();
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
@@ -263,7 +442,116 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
     }
   };
 
+  /**
+   * POST a job's start (draw, note, preview, approve). The answer is a 202,
+   * or `{ok:false, error}` (409 busy, 412 a missing input, 400 a refused
+   * body) shown in the error line, never thrown: a refusal is an answer.
+   * Resolves true when the job started.
+   */
+  const startJob = async (path: string, payload: unknown): Promise<boolean> => {
+    if (busyRef.current) return false;
+    busyRef.current = true;
+    setBusy("job");
+    setError(null);
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = (await res.json()) as { ok?: boolean; error?: string };
+      if (res.status !== 202 || body.ok !== true) {
+        setError(body.error ?? `${path} failed: ${res.status}`);
+        return false;
+      }
+      await refreshJob();
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    } finally {
+      busyRef.current = false;
+      setBusy(null);
+    }
+  };
+
+  /** Cancel is not behind the request gate: it must reach a job whatever else is out. */
+  const cancelJob = async (): Promise<void> => {
+    try {
+      const res = await fetch("/api/storyboard/cancel", { method: "POST" });
+      const body = (await res.json()) as { ok?: boolean; error?: string };
+      if (res.status !== 202 || body.ok !== true) setError(body.error ?? `Cancel failed: ${res.status}`);
+      await refreshJob();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /** "Make draft": a plain 200, no job; the table is read again for the new draft's stills. */
+  const makeDraft = async (id: string, version: number): Promise<void> => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy("edit");
+    setError(null);
+    try {
+      const res = await fetch("/api/storyboard/draft", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, version }),
+      });
+      const body = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok !== true) {
+        setError(body.error ?? `Make draft failed: ${res.status}`);
+        return;
+      }
+      const got = await fetchStoryboard();
+      if (got.ok) setLoad(got.load);
+      else setError(got.error);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      busyRef.current = false;
+      setBusy(null);
+    }
+  };
+
   const disabled = busy !== null;
+  const job: StoryboardJobState | null = load?.job.job ?? null;
+  const resultLine = jobRunning ? null : jobResultLine(load?.job.last ?? null);
+  // Shown in both views: a job started from the shot view is followed there.
+  const jobBlock = (
+    <>
+      {job !== null ? (
+        <div data-testid="storyboard-job" style={{ ...formBox, ...rowHead }}>
+          <span style={{ ...rowLabel, color: STATE_COLOR.drawing }}>{jobLine(job)}</span>
+          <span style={{ flex: 1 }} />
+          <button
+            type="button"
+            data-testid="storyboard-job-cancel"
+            style={off(actionBtn, job.stopping)}
+            disabled={job.stopping}
+            title="Stop after the shot that is running; a draw also stops before its next LLM call"
+            onClick={() => void cancelJob()}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : null}
+      {resultLine !== null ? (
+        <div data-testid="storyboard-job-result" style={{ ...footNote, marginTop: 8 }}>
+          Last job: {resultLine}
+        </div>
+      ) : null}
+      {error !== null ? (
+        <div data-testid="storyboard-error" style={errorText}>
+          {error}
+        </div>
+      ) : null}
+    </>
+  );
+  const viewedShot = shotView === null ? undefined : load?.storyboard.shots.find((s) => s.id === shotView);
+  const viewedRow = shotView === null ? undefined : rows.find((r) => r.id === shotView);
+
   const ideaKeyDown =
     (submit: () => void) =>
     (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -304,6 +592,30 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
             The editor could not load this project&apos;s transcript and timing, so the table cannot show
             its shots. Re-run `ossclip produce` to rebuild them.
           </div>
+        ) : viewedShot !== undefined && viewedRow !== undefined ? (
+          <>
+            {jobBlock}
+            <StoryboardShotView
+              // Keyed by shot so the note box starts empty for each shot.
+              key={viewedShot.id}
+              shot={viewedShot}
+              row={viewedRow}
+              detail={load.detail[viewedShot.id] ?? null}
+              dirty={dirty}
+              jobRunning={jobRunning}
+              busy={disabled}
+              cacheKey={cacheKey}
+              onBack={() => {
+                setError(null);
+                setShotView(null);
+              }}
+              onPreview={() => void startJob("/api/storyboard/preview", { id: viewedShot.id })}
+              onRedraw={(text) => startJob("/api/storyboard/note", { id: viewedShot.id, text })}
+              onMakeDraft={(version) => void makeDraft(viewedShot.id, version)}
+              onApprove={() => void startJob("/api/storyboard/approve", { id: viewedShot.id })}
+              onUnapprove={() => void rowAction({ op: "unapprove", id: viewedShot.id })}
+            />
+          </>
         ) : (
           <>
             <div
@@ -346,6 +658,20 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
                 }}
               >
                 {busy === "plan" ? "Planning again… (one LLM call)" : "Plan again (one LLM call)"}
+              </button>
+              <button
+                type="button"
+                data-testid="storyboard-draw-all"
+                style={off(toolBtn, disabled || jobRunning || drawAllIds.length === 0)}
+                disabled={disabled || jobRunning || drawAllIds.length === 0}
+                title={
+                  drawAllIds.length === 0
+                    ? "Every kept shot has a draft"
+                    : `Draw the ${drawAllIds.length} kept shot${drawAllIds.length === 1 ? "" : "s"} with no draft, one after another (LLM calls for each)`
+                }
+                onClick={() => void startJob("/api/storyboard/draw", { ids: drawAllIds })}
+              >
+                Draw all
               </button>
             </div>
 
@@ -446,11 +772,7 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
               </div>
             ) : null}
 
-            {error !== null ? (
-              <div data-testid="storyboard-error" style={errorText}>
-                {error}
-              </div>
-            ) : null}
+            {jobBlock}
 
             <div style={{ marginTop: 16 }}>
               {rows.length === 0 ? (
@@ -462,6 +784,12 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
                 const warning = rowWarning(row);
                 const isEditing = editing !== null && editing.id === row.id;
                 const editable = isKeptRow(row);
+                const rowDetail = load.detail[row.id];
+                const thumb = rowDetail?.versions.find((v) => v.n === rowDetail.draft)?.stills[0];
+                const stale = isKeptRow(row) && staleOf(row);
+                // The newest version's error is the one "failed" is about (storyboardRows' rule).
+                const failedError =
+                  row.state === "failed" ? [...(rowDetail?.versions ?? [])].sort((a, b) => b.n - a.n)[0]?.error : undefined;
                 return (
                   <div
                     key={row.id}
@@ -493,9 +821,36 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
                       >
                         {row.priority}
                       </span>
-                      <span data-testid={`storyboard-state-${row.id}`} style={{ ...stateText, color: STATE_COLOR[row.state] }}>
-                        {row.state === "drawn" ? `drawn (v${row.draft})` : row.state}
-                      </span>
+                      <button
+                        type="button"
+                        data-testid={`storyboard-open-shot-${row.id}`}
+                        style={openShotBtn}
+                        title="Open the shot: its stills, versions, notes and Approve"
+                        onClick={() => {
+                          setError(null);
+                          setShotView(row.id);
+                        }}
+                      >
+                        {thumb !== undefined ? (
+                          <img src={`${thumb}?v=${cacheKey}`} alt={`Shot ${row.id}, draft still`} style={thumbImg} />
+                        ) : null}
+                        <span
+                          data-testid={`storyboard-state-${row.id}`}
+                          style={{ ...stateText, color: STATE_COLOR[row.state] }}
+                          {...(failedError !== undefined ? { title: failedError } : {})}
+                        >
+                          {row.state === "drawn" ? `drawn (v${row.draft})` : row.state}
+                        </span>
+                      </button>
+                      {stale ? (
+                        <span
+                          data-testid={`storyboard-stale-${row.id}`}
+                          style={{ ...stateText, color: WARN }}
+                          title="The idea changed after this shot was drawn; Draw again draws the new idea"
+                        >
+                          · drawn from an older idea
+                        </span>
+                      ) : null}
                       {row.touched && row.state !== "dropped" ? (
                         <span style={stateText} title="You changed this shot, so Plan again keeps it">
                           · edited
@@ -519,6 +874,22 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
                         </button>
                       ) : (
                         <>
+                          {drawable(row) ? (
+                            <button
+                              type="button"
+                              data-testid={`storyboard-draw-${row.id}`}
+                              style={off(actionBtn, disabled || jobRunning)}
+                              disabled={disabled || jobRunning}
+                              title={
+                                stale
+                                  ? "Draw this shot again from its new idea; the earlier versions stay (LLM calls)"
+                                  : "Draw this shot (LLM calls)"
+                              }
+                              onClick={() => void startJob("/api/storyboard/draw", { ids: [row.id] })}
+                            >
+                              {stale ? "Draw again" : "Draw"}
+                            </button>
+                          ) : null}
                           {row.state !== "cut away" ? (
                             <button
                               type="button"
@@ -600,254 +971,22 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({ words, map, se
   );
 };
 
-// The editor's warning yellow (CleanupPanel's `declinedNote`, the dirty dot).
-const WARN = "#FFE14D";
-
-const STATE_COLOR: Record<StoryboardRow["state"], string> = {
-  planned: "#8B8B9E",
-  drawn: "#5FBF77",
-  dropped: "#8B8B9E",
-  "cut away": WARN,
-};
-
-const PRIORITY_BADGE: Record<1 | 2 | 3, React.CSSProperties> = {
-  1: { background: "#5b8cff", color: "#0b0b0f" },
-  2: { background: "#2A2A33", color: "#C9C9D4" },
-  3: { background: "transparent", color: "#8B8B9E", border: "1px solid #2A2A33" },
-};
-
-// Modal chrome matches CleanupPanel's (itself ThumbnailPanel's and
-// RenderModal's): the editor's one dialog vocabulary. Wider, because a row
-// carries a line, an idea and its actions side by side.
-const backdrop: React.CSSProperties = {
-  position: "fixed",
-  inset: 0,
-  zIndex: 40,
-  background: "rgba(5,5,8,0.75)",
-  backdropFilter: "blur(4px)",
-  display: "flex",
+// A row's state as the shot view's door (§169): the state text keeps its own
+// look, with the draft's first still beside it once there is one.
+const openShotBtn: React.CSSProperties = {
+  display: "inline-flex",
   alignItems: "center",
-  justifyContent: "center",
-};
-
-const panel: React.CSSProperties = {
-  width: 720,
-  maxWidth: "92vw",
-  maxHeight: "90vh",
-  overflowY: "auto",
-  background: "#12121A",
-  border: "1px solid #3A3A48",
-  borderRadius: 10,
-  padding: "24px 28px",
-  boxShadow: "0 20px 40px rgba(0,0,0,0.6)",
-  fontFamily:
-    "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-};
-
-const header: React.CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-};
-
-const title: React.CSSProperties = {
-  fontSize: 18,
-  fontWeight: 700,
-  color: "#EDEDF2",
-  letterSpacing: "-0.01em",
-};
-
-const closeBtn: React.CSSProperties = {
-  background: "transparent",
-  border: "none",
-  color: "#8B8B9E",
-  fontSize: 16,
-  cursor: "pointer",
-  padding: "4px 8px",
-  borderRadius: 4,
-};
-
-const subtitle: React.CSSProperties = {
-  fontSize: 13,
-  color: "#8B8B9E",
-  marginTop: 6,
-  lineHeight: 1.4,
-};
-
-const toolbar: React.CSSProperties = {
-  display: "flex",
-  gap: 8,
-  marginTop: 14,
-  marginBottom: 8,
-};
-
-// CleanupPanel's `restoreBtn`: the modal palette's secondary button.
-const toolBtn: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "#C9C9D4",
-  background: "#1A1A21",
-  border: "1px solid #2A2A33",
-  borderRadius: 6,
-  padding: "5px 10px",
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
-
-const actionBtn: React.CSSProperties = { ...toolBtn, padding: "3px 8px", fontSize: 11 };
-
-/** A disabled button reads as one: PublishPanel's `chipOverCapStyle` dimming. */
-const off = (style: React.CSSProperties, isDisabled: boolean): React.CSSProperties =>
-  isDisabled ? { ...style, opacity: 0.45, cursor: "not-allowed" } : style;
-
-// PublishPanel's `confirmBtn`, sized to sit beside a secondary button.
-const primaryBtn: React.CSSProperties = {
-  background: "#00E5A3",
-  border: "none",
-  borderRadius: 6,
-  color: "#051A13",
-  padding: "5px 14px",
-  fontSize: 12,
-  fontWeight: 700,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
-
-const formBox: React.CSSProperties = {
-  border: "1px solid #2C2C38",
-  borderRadius: 6,
-  background: "#09090D",
-  padding: "10px 14px",
-  marginTop: 10,
-};
-
-const formLabel: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "#C9C9D4",
-  marginBottom: 6,
-};
-
-const formButtons: React.CSSProperties = {
-  display: "flex",
-  gap: 8,
-  marginTop: 8,
-};
-
-const rowBox: React.CSSProperties = {
-  padding: "8px 10px",
-  border: "1px solid #2C2C38",
-  borderRadius: 6,
-  background: "#09090D",
-  marginBottom: 8,
-};
-
-const rowHead: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-};
-
-const rowLabel: React.CSSProperties = {
-  fontSize: 13,
-  color: "#EDEDF2",
-  lineHeight: 1.4,
-};
-
-const monoFont = "ui-monospace, 'SF Mono', Consolas, monospace";
-
-const timeText: React.CSSProperties = {
-  fontSize: 12,
-  color: "#C9C9D4",
-  fontFamily: monoFont,
-  whiteSpace: "nowrap",
-};
-
-const timeBtn: React.CSSProperties = {
-  ...timeText,
+  gap: 6,
   background: "transparent",
   border: "none",
   padding: 0,
   cursor: "pointer",
   textDecoration: "underline dotted",
+  color: "inherit",
 };
 
-const badge: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 700,
-  borderRadius: 999,
-  minWidth: 16,
-  height: 16,
-  lineHeight: "16px",
-  textAlign: "center",
-  boxSizing: "border-box",
-  flexShrink: 0,
-};
-
-const stateText: React.CSSProperties = {
-  fontSize: 11,
-  color: "#8B8B9E",
-  whiteSpace: "nowrap",
-};
-
-const lineText: React.CSSProperties = {
-  fontSize: 12,
-  color: "#8B8B9E",
-  marginTop: 6,
-  lineHeight: 1.4,
-  fontStyle: "italic",
-};
-
-const ideaBtn: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  textAlign: "left",
-  background: "transparent",
-  border: "none",
-  padding: 0,
-  marginTop: 6,
-  fontSize: 13,
-  color: "#EDEDF2",
-  lineHeight: 1.4,
-  cursor: "text",
-  fontFamily: "inherit",
-  whiteSpace: "pre-wrap",
-};
-
-// PublishPanel's `captionArea`: the modal palette's multi-line field.
-const ideaArea: React.CSSProperties = {
-  width: "100%",
-  boxSizing: "border-box",
-  marginTop: 6,
-  background: "#121218",
+const thumbImg: React.CSSProperties = {
+  height: 32,
+  borderRadius: 3,
   border: "1px solid #2C2C38",
-  borderRadius: 6,
-  padding: "8px 12px",
-  color: "#EDEDF2",
-  fontSize: 13,
-  fontFamily: "inherit",
-  outline: "none",
-  resize: "vertical",
-};
-
-const whyText: React.CSSProperties = {
-  fontSize: 11,
-  color: "#8B8B9E",
-  marginTop: 4,
-  lineHeight: 1.4,
-};
-
-const footNote: React.CSSProperties = {
-  fontSize: 12,
-  color: "#8B8B9E",
-  lineHeight: 1.4,
-};
-
-// PublishPanel's `errorText`: server messages verbatim, line breaks kept.
-const errorText: React.CSSProperties = {
-  marginTop: 8,
-  color: "#FF5C5C",
-  fontSize: 13,
-  fontFamily: monoFont,
-  whiteSpace: "pre-wrap",
 };
