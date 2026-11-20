@@ -80,6 +80,10 @@ export * from "./draw/shot-record";
 export * from "./storyboard/record";
 export * from "./storyboard/limits";
 export * from "./storyboard/merge";
+// The approval rules (§169): which approved shots become clip scenes, their
+// production.json record, the render length and the clip key. Pure and
+// browser-safe (the hash is passed in), so ./browser carries them too.
+export * from "./storyboard/approval";
 // The planner call (§168) is the run's and the editor server's, never the
 // editor page's, so it is exported here only.
 export * from "./storyboard/plan";

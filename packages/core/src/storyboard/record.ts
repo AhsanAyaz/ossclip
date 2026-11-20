@@ -28,6 +28,29 @@ export const STORYBOARD_COVERAGE = 0.6;
 export const STORYBOARD_MIN_SHOT_SEC = 2;
 
 /**
+ * The author's approval of one drawn version (storyboard design §8, §9;
+ * §169): which version, the length its clip was rendered at, the clip key
+ * that rendering answers to, and the clip's two files. Both paths are
+ * workdir-relative, so a moved workdir keeps its approvals: `clip` is the
+ * ProRes original under the shot's folder (what `ossclip kit` hands out),
+ * `src` the VP9 preview copy the clip import wrote under `clips/` (what the
+ * editor and the render play).
+ *
+ * `durationSec` is the clip's own length, not the span's: after approval the
+ * cut may change the span, and the clip keeps its length as a hand-made clip
+ * does (design §8, "After approval"). Positive, because a clip scene with no
+ * length has nothing to play (ClipSceneProps).
+ */
+export const ShotApprovalSchema = z.object({
+  version: z.number().int().positive(),
+  durationSec: z.number().positive(),
+  clipKey: z.string().min(1),
+  clip: z.string().min(1),
+  src: z.string().min(1),
+});
+export type ShotApproval = z.infer<typeof ShotApprovalSchema>;
+
+/**
  * One shot. Word indices are raw transcript indices (design §2,
  * "Anchoring"), so a cut edit never moves a shot to other words; a shot whose
  * words the author later cuts is shown as cut away, not re-anchored.
@@ -49,6 +72,12 @@ export const StoryboardShotSchema = z
     kept: z.boolean(),
     origin: z.enum(["planner", "author"]),
     touched: z.boolean(),
+    /**
+     * Absent until the author approves a version. Optional rather than
+     * nullable, and `version` stays 1, so every B1 `storyboard.json` still
+     * parses as it was written (§169).
+     */
+    approval: ShotApprovalSchema.optional(),
   })
   .refine((s) => s.endWord >= s.startWord, { message: "endWord is before startWord", path: ["endWord"] });
 export type StoryboardShot = z.infer<typeof StoryboardShotSchema>;

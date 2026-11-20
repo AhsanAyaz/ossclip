@@ -259,3 +259,8 @@ export { BACKDROP_LAYOUTS, isBackdropLayout, keepsBoxAcross } from "./framing";
 export * from "./storyboard/record";
 export * from "./storyboard/limits";
 export * from "./storyboard/merge";
+// The approval rules (§169), beside the record they read. approval.ts's
+// runtime imports are record.ts, ./scene-registry and ./assemble (type
+// imports plus ./scene-registry, both on this surface already); `clipKey`
+// takes its hash as an argument so node:crypto stays off this surface.
+export * from "./storyboard/approval";
