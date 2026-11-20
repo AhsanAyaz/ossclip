@@ -171,15 +171,24 @@ function srtTime(sec: number): string {
  * Captions as SRT, in output (sequence) time so the file drops straight onto
  * the exported timeline. Word-level karaoke timing does not survive SRT —
  * the format has no word granularity — so a line is its words joined.
+ *
+ * `eol` exists for the clip kit's `captions.srt`, which is written with
+ * Windows line endings for Resolve (kit-captions.ts). The default is the
+ * `\n` the premiere-project export has always written, byte for byte, and a
+ * test pins it: that sidecar has shipped, and nothing asked for it to change.
  */
-export function srtFromCaptionLines(lines: readonly SrtLine[]): string {
+export function srtFromCaptionLines(
+  lines: readonly SrtLine[],
+  opts: { eol?: "\n" | "\r\n" } = {},
+): string {
+  const eol = opts.eol ?? "\n";
   return lines
     .map(
       (line, i) =>
-        `${i + 1}\n${srtTime(line.start)} --> ${srtTime(line.end)}\n` +
-        `${line.words.map((w) => w.text).join(" ")}\n`,
+        `${i + 1}${eol}${srtTime(line.start)} --> ${srtTime(line.end)}${eol}` +
+        `${line.words.map((w) => w.text).join(" ")}${eol}`,
     )
-    .join("\n");
+    .join(eol);
 }
 
 /** Keyframes numeric noise-floor: 4 decimals is sub-0.001% of scale. */

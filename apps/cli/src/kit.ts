@@ -13,6 +13,7 @@ import {
   ThemeSchema,
   buildFcpxmlKit,
   isWslEnv,
+  kitCaptionsSrt,
   kitClipPlans,
   kitFileUrl,
   loadConfig,
@@ -55,11 +56,16 @@ import { storedScriptFrom } from "./script-mode";
 export const KIT_REPORT_BASENAME = "kit-report.json";
 export const KIT_TIMELINE_BASENAME = "timeline.fcpxml";
 export const KIT_CLIPS_DIRNAME = "clips";
+export const KIT_SRT_BASENAME = "captions.srt";
 /** What `produce` writes into the workdir for a folder of takes: the re-encoded join. */
 const SOURCE_CONCAT_BASENAME = "source-concat.mp4";
 
 /** The one line the summary ends on (design 3.1). */
 export const KIT_RESOLVE_HINT = "File → Import → Timeline…, then pick timeline.fcpxml";
+/** Printed after it whenever captions.srt was written (design kit-captions-layer.md, Part 1). */
+export const KIT_SUBTITLES_HINT = "File → Import → Subtitle…, pick captions.srt, then drag it onto the timeline";
+/** Printed when the project has no line to write. */
+export const KIT_NO_CAPTIONS_MESSAGE = "▸ no captions in this project; captions.srt not written";
 
 // ---- The user's flags ------------------------------------------------------
 
@@ -132,6 +138,23 @@ export const KitRenderPropsSchema = z.object({
     fps: z.number().positive(),
   }),
   outputDurationSec: z.number().nonnegative(),
+  // For captions.srt (design kit-captions-layer.md, Part 1): only what an SRT
+  // entry needs, the `RenderPropsExportSchema` slice (analyze.ts) restated so
+  // the kit does not import the export command. Always present in a project
+  // produce wrote, with the author's caption edits applied, and present too
+  // under --no-captions or the editor's hide setting, which only stop the
+  // render drawing them. Optional so a project from before the field reads
+  // as one with no lines; a line that is there but malformed fails the parse
+  // like any other field, rather than shortening the SRT unseen.
+  captionLines: z
+    .array(
+      z.object({
+        words: z.array(z.object({ text: z.string() })),
+        start: z.number(),
+        end: z.number(),
+      }),
+    )
+    .optional(),
 });
 export type KitRenderProps = z.infer<typeof KitRenderPropsSchema>;
 
@@ -325,6 +348,8 @@ export interface KitResult {
   timeline: boolean;
   /** `.mov` files removed from `clips/` because no scene names them any more. */
   removed: string[];
+  /** Entries written to captions.srt; 0 when none was written. A count only (telemetry). */
+  captions: number;
 }
 
 async function readProject(work: string, seams: KitSeams): Promise<KitProject> {
@@ -669,6 +694,22 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
     await seams.writeFile(join(kitDir, KIT_TIMELINE_BASENAME), xml);
     timeline = KIT_TIMELINE_BASENAME;
   }
+
+  // captions.srt on every run, --clips-only included, whatever the render did
+  // with captions: the subtitle track is for Resolve, where the author
+  // decides (design kit-captions-layer.md, Part 1). Written directly, like
+  // the timeline: it is rewritten whole on every run, and no later run
+  // trusts it for anything. With no line to write, an older file is removed,
+  // so the folder never offers subtitles the project no longer has.
+  const srtPath = join(kitDir, KIT_SRT_BASENAME);
+  const srt = kitCaptionsSrt(props.captionLines ?? []);
+  if (srt.text !== null) {
+    await seams.writeFile(srtPath, srt.text);
+  } else {
+    if (seams.exists(srtPath)) await seams.remove(srtPath);
+    seams.log(KIT_NO_CAPTIONS_MESSAGE);
+  }
+
   // Every Linux-side path stays in the report, but a kit made in the Linux
   // filesystem names one per clip, and a screenful of the same warning hides
   // the summary under it: printed once, with the count and the first path.
@@ -692,6 +733,7 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
     timeline,
     clips,
     warnings,
+    captions: { srt: srt.text !== null ? KIT_SRT_BASENAME : null, lines: srt.lines, skipped: srt.skipped },
   };
   await seams.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 
@@ -701,7 +743,18 @@ export async function runKit(workdir: string, flags: KitFlags, seams: KitSeams):
   );
   seams.log(`  folder: ${kitDir}`);
   if (timeline !== null) seams.log(`  In Resolve: ${KIT_RESOLVE_HINT}`);
-  return { kitDir, report, clips: plans.length, rendered, reused, skipped, timeline: timeline !== null, removed };
+  if (srt.text !== null) seams.log(`  Subtitles: ${KIT_SUBTITLES_HINT}`);
+  return {
+    kitDir,
+    report,
+    clips: plans.length,
+    rendered,
+    reused,
+    skipped,
+    timeline: timeline !== null,
+    removed,
+    captions: srt.lines,
+  };
 }
 
 // ---- The live seams -----------------------------------------------------------

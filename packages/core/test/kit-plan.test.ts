@@ -388,4 +388,26 @@ describe("KitReportSchema", () => {
     expect(KitReportSchema.safeParse(badKind).success).toBe(false);
     expect(KitReportSchema.safeParse({ ...valid, version: 2 }).success).toBe(false);
   });
+
+  it("carries the captions.srt summary, and a report written before it existed still parses", () => {
+    const withCaptions = { ...valid, captions: { srt: "captions.srt", lines: 12, skipped: 1 } };
+    expect(KitReportSchema.parse(withCaptions)).toEqual(withCaptions);
+    const none = { ...valid, captions: { srt: null, lines: 0, skipped: 0 } };
+    expect(KitReportSchema.parse(none)).toEqual(none);
+    // The shape every kit made before captions.srt wrote, as a literal: it
+    // must parse, or every existing kit re-renders all its clips once.
+    const old = JSON.parse(
+      '{"version":1,"createdAt":"2026-11-17T00:00:00.000Z","kitVersion":1,"timeline":"timeline.fcpxml",' +
+        '"clips":[{"sceneId":"scene-0","component":"CardRow","kind":"render","file":"clips/scene-0-CardRow.mov",' +
+        '"startSec":0.5,"lengthSec":2,"reuseKey":"abc","status":"rendered","notes":[]}],"warnings":[]}',
+    );
+    expect(KitReportSchema.safeParse(old).success).toBe(true);
+    expect(KitReportSchema.parse(old).captions).toBeUndefined();
+  });
+
+  it("refuses a captions summary that is not one", () => {
+    expect(KitReportSchema.safeParse({ ...valid, captions: { srt: "captions.srt", lines: -1, skipped: 0 } }).success).toBe(false);
+    expect(KitReportSchema.safeParse({ ...valid, captions: { srt: "captions.srt", lines: 1.5, skipped: 0 } }).success).toBe(false);
+    expect(KitReportSchema.safeParse({ ...valid, captions: { lines: 1, skipped: 0 } }).success).toBe(false);
+  });
 });

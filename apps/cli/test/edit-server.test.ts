@@ -3027,7 +3027,7 @@ describe("publish caption regenerate (2026-08-29)", () => {
         const caption = await answer();
         usage.push({
           provider: "gemini",
-          model: "gemini-2.5-flash",
+          model: "gemini-3.5-flash-lite",
           schemaName: req.schemaName,
           inputTokens: 1000,
           outputTokens: 100,
@@ -3063,7 +3063,7 @@ describe("publish caption regenerate (2026-08-29)", () => {
           {
             at: "2026-08-28T00:00:00.000Z",
             provider: "gemini",
-            models: ["gemini-2.5-flash"],
+            models: ["gemini-3.5-flash-lite"],
             cached: false,
             records: [],
             totals: {},
@@ -3177,14 +3177,14 @@ describe("publish caption regenerate (2026-08-29)", () => {
       publishEnv: {},
       makeLlmProvider: (() =>
         fakeProvider(async () => {
-          throw new Error("quota exceeded for gemini-2.5-flash");
+          throw new Error("quota exceeded for gemini-3.5-flash-lite");
         })) as never,
     });
     close = server.close;
     const res = await post(server.url, { network: "x", instruction: "i", currentCaption: "c" });
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body).toEqual({ ok: false, error: "quota exceeded for gemini-2.5-flash" });
+    expect(body).toEqual({ ok: false, error: "quota exceeded for gemini-3.5-flash-lite" });
   });
 
   it("a malformed body is a 400, never a paid call", async () => {
@@ -3316,7 +3316,7 @@ describe("on-demand youtube pack generate (2026-08-29)", () => {
         const pack = await answer();
         usage.push({
           provider: "gemini",
-          model: "gemini-2.5-flash",
+          model: "gemini-3.5-flash-lite",
           schemaName: req.schemaName,
           inputTokens: 1000,
           outputTokens: 100,
@@ -3374,7 +3374,7 @@ describe("on-demand youtube pack generate (2026-08-29)", () => {
           {
             at: "2026-08-28T00:00:00.000Z",
             provider: "gemini",
-            models: ["gemini-2.5-flash"],
+            models: ["gemini-3.5-flash-lite"],
             cached: false,
             records: [],
             totals: {},
@@ -3459,14 +3459,14 @@ describe("on-demand youtube pack generate (2026-08-29)", () => {
       publishEnv: {},
       makeLlmProvider: (() =>
         packProvider(async () => {
-          throw new Error("quota exceeded for gemini-2.5-flash");
+          throw new Error("quota exceeded for gemini-3.5-flash-lite");
         })) as never,
     });
     close = server.close;
     const res = await generate(server.url);
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body).toEqual({ ok: false, error: "quota exceeded for gemini-2.5-flash" });
+    expect(body).toEqual({ ok: false, error: "quota exceeded for gemini-3.5-flash-lite" });
     expect(await packFiles(dir)).toEqual([]);
   });
 
