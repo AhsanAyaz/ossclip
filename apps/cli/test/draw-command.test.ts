@@ -513,6 +513,65 @@ describe("runDraw --idea", () => {
   });
 });
 
+describe("runDraw for the editor's job runner (§169)", () => {
+  it("a draw stopped after its first call leaves no version without a result, and the shot can be drawn again", async () => {
+    const provider = new ScriptedProvider([{ code: BAD_STATIC, said: "a" }]);
+    world.provider = () => provider;
+    const result = await runDraw({ ...idea(), shouldStop: () => provider.requests.length >= 1 }, world.deps);
+
+    expect(result).toMatchObject({ ok: false, stopped: true, version: null, stills: [], calls: 1 });
+    // The stopped version is gone from the file itself, not only from a load.
+    expect(rawRecord().versions).toEqual([]);
+    expect(rawRecord().draft).toBeNull();
+    expect(existsSync(versionPaths(work, "probe", 1).code)).toBe(false);
+    expect(existsSync(versionPaths(work, "probe", 1).stillsDir)).toBe(false);
+    // Its number may be spent, but what is stored is what a fresh load uses.
+    expect(onDisk()!.nextVersion).toBe(rawRecord().nextVersion);
+    expect(onDisk()!.versions.every((v) => v.result !== undefined)).toBe(true);
+
+    world.provider = () => new MockProvider();
+    const again = await runDraw(idea(), world.deps);
+    expect(again.ok).toBe(true);
+    expect(onDisk()!.versions.map((v) => v.n)).toEqual([again.version]);
+  });
+
+  it("a redraw stopped before any call keeps the draft, its code and the notes as they were", async () => {
+    await runDraw(idea(), world.deps);
+    const before = rawRecord();
+    const provider = new ScriptedProvider([]);
+    world.provider = () => provider;
+    const result = await runDraw({ ...note("make it orange"), shouldStop: () => true }, world.deps);
+
+    expect(result).toMatchObject({ ok: false, stopped: true, calls: 0, usage: [] });
+    expect(provider.requests).toEqual([]);
+    const after = rawRecord();
+    expect(after).toMatchObject({ draft: 1, notes: [], versions: before.versions, runs: before.runs });
+    expect(readFileSync(versionPaths(work, "probe", 1).code, "utf8")).toBe(GOOD);
+  });
+
+  it("a project given is drawn for, and production.json is not read", async () => {
+    rmSync(join(work, "production.json"));
+    const project = { width: 720, height: 1280, fps: 25, theme: { ...defaultTheme, accent: "#00ff00" } };
+    const result = await runDraw({ ...idea(), project }, world.deps);
+    expect(result.ok).toBe(true);
+    expect(world.calls.stills[0]!.props).toMatchObject({ width: 720, height: 1280, fps: 25 });
+    expect(world.calls.stills[0]!.props.theme.accent).toBe("#00ff00");
+  });
+
+  it("usage holds one record per provider call, so each lands in usage.json", async () => {
+    const provider = new ScriptedProvider([
+      { code: BAD_STATIC, said: "a" },
+      { code: GOOD, said: "b" },
+    ]);
+    world.provider = () => provider;
+    const result = await runDraw(idea(), world.deps);
+    expect(result).toMatchObject({ ok: true, calls: 2 });
+    expect(result.usage).toHaveLength(2);
+    expect(result.usage).toEqual(provider.usage);
+    expect(result.usage.every((u) => u.schemaName === "drawn_scene")).toBe(true);
+  });
+});
+
 describe("runDraw --note", () => {
   it("writes v2.tsx, keeps v1.tsx, records the note on version 1 and sets draft 2", async () => {
     await runDraw(idea(), world.deps);

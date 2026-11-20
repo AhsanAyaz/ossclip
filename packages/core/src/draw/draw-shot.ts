@@ -39,6 +39,8 @@ export interface DrawResult {
   code: string | null;
   said: string | null;
   attempts: DrawAttempt[];
+  /** Set when `shouldStop` ended the draw before its next call; `ok` is then false (§169). */
+  stopped?: true;
 }
 
 /** Every check a version goes through, in order (static, type, stills); returns the first failing stage's issues, or []. */
@@ -53,17 +55,26 @@ export type DrawCheck = (code: string) => Promise<DrawIssue[]>;
  * one bad shot never fails the run (G8). A `check` that throws is different:
  * that is ossclip failing (a missing kit, a broken install), not the
  * scene, and sending it to the LLM as a repair would hide it. It propagates.
+ *
+ * `shouldStop` is asked before every call, never during one (§169): the
+ * editor's Stop must not pay for another minute-long call once the author
+ * has asked, but a call already sent is cheaper to let finish than to tear
+ * out of a provider mid-reply. A stopped draw is `ok: false` with
+ * `stopped: true` and what it had so far; the caller decides what a stopped
+ * version leaves on disk.
  */
 export async function drawShot(a: {
   provider: LlmProvider;
   req: DrawRequest;
   check: DrawCheck;
   redraw?: DrawRedraw;
+  shouldStop?: () => boolean;
 }): Promise<DrawResult> {
   const attempts: DrawAttempt[] = [];
   let prompt = a.redraw ? redrawPrompt(a.req, a.redraw) : drawPrompt(a.req);
 
   for (let n = 0; n <= DRAW_MAX_REPAIRS; n++) {
+    if (a.shouldStop?.() === true) return { ...lastCode(attempts), ok: false, attempts, stopped: true };
     let reply: { code: string; said: string };
     try {
       reply = await a.provider.complete({
@@ -88,9 +99,15 @@ export async function drawShot(a: {
     prompt = repairPrompt(a.req, { code: reply.code, issues, redraw: a.redraw });
   }
 
-  // The last code, not the first: it is the one that had every repair, and
-  // the failed version written to disk is the one the author can read.
-  // (A reversed copy: `findLast` is ES2023 and the workspace's lib is ES2022.)
+  return { ...lastCode(attempts), ok: false, attempts };
+}
+
+/**
+ * The last code, not the first: it is the one that had every repair, and
+ * the failed version written to disk is the one the author can read.
+ * (A reversed copy: `findLast` is ES2023 and the workspace's lib is ES2022.)
+ */
+function lastCode(attempts: readonly DrawAttempt[]): { code: string | null; said: string | null } {
   const last = [...attempts].reverse().find((t) => t.code !== null);
-  return { ok: false, code: last?.code ?? null, said: last?.said ?? null, attempts };
+  return { code: last?.code ?? null, said: last?.said ?? null };
 }

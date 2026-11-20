@@ -37,6 +37,7 @@ import {
   type DrawIssue,
   type DrawRequest,
   type LlmProvider,
+  type LlmUsage,
   type ProviderName,
   type ShotHistory,
   type Theme,
@@ -79,6 +80,19 @@ export interface DrawArgs {
   /** Undefined: auto-detected, as produce does (`defaultProviderName`). */
   llm?: ProviderName;
   llmModel?: string;
+  /**
+   * Asked before every LLM call; true ends the draw (§169). The editor's job
+   * runner passes its Stop here. The command line never does: Ctrl-C is its
+   * stop, and leaves the version for the next load to discard.
+   */
+  shouldStop?: () => boolean;
+  /**
+   * The frame and theme to draw for, in place of production.json's (§169).
+   * The editor server passes the live one (`liveDrawProject`): a shot drawn
+   * in the editor must match the theme the author is looking at, which may
+   * hold edits the last produce run has not seen.
+   */
+  project?: DrawProject;
 }
 
 /**
@@ -272,11 +286,19 @@ export interface DrawDeps {
 
 export interface DrawRunResult {
   ok: boolean;
-  /** The version drawn, or the draft previewed. */
+  /** The version drawn, or the draft previewed. Null for a stopped draw: its version was removed. */
   version: number | null;
   stills: string[];
   calls: number;
   seconds: number;
+  /** Set when `shouldStop` ended the draw; `ok` is then false (§169). */
+  stopped?: true;
+  /**
+   * The provider's usage records for this run, one per call that reported
+   * one, for the caller to append to usage.json (plan B2a Global
+   * Constraints: each LLM call lands there). Empty for a preview.
+   */
+  usage: LlmUsage[];
 }
 
 function readProject(workdir: string, deps: DrawDeps): DrawProject {
@@ -308,12 +330,16 @@ function requireAssetsDir(h: Pick<ShotHistory, "id" | "assetsDir">): void {
   }
 }
 
-/** Fonts and assets into a fresh render directory, the caller half of `bundleDrawnScene`'s contract. */
-async function stageRender(
+/**
+ * Fonts and assets into a fresh render directory, the caller half of
+ * `bundleDrawnScene`'s contract. Exported for Approve (storyboard/approve.ts),
+ * which renders the same version again and must stage it the same way.
+ */
+export async function stageRender(
   h: Pick<ShotHistory, "assetsDir">,
   project: DrawProject,
   publicDir: string,
-  deps: DrawDeps,
+  deps: Pick<DrawDeps, "stageFonts" | "probeImageSize" | "log">,
 ): Promise<StagedAsset[]> {
   deps.stageFonts(project.theme, [publicDir]);
   if (h.assetsDir === undefined) return [];
@@ -322,20 +348,33 @@ async function stageRender(
   return staged.assets;
 }
 
-function renderProps(h: Pick<ShotHistory, "durationSec">, project: DrawProject, assets: StagedAsset[]): DrawnRenderProps {
+/** Each staged asset's name to the path the kit's `Asset` hands to `staticFile`. */
+export function stagedAssetPaths(assets: readonly StagedAsset[]): Record<string, string> {
+  return Object.fromEntries(assets.map((a) => [a.name, a.staticPath]));
+}
+
+/**
+ * The props every render of a drawn version gets. Exported for Approve, which
+ * passes the approved length as `durationSec` in place of the drawn one.
+ */
+export function renderProps(
+  h: Pick<ShotHistory, "durationSec">,
+  project: DrawProject,
+  assets: Record<string, string>,
+): DrawnRenderProps {
   return {
     durationSec: h.durationSec,
     width: project.width,
     height: project.height,
     fps: project.fps,
     theme: project.theme,
-    assets: Object.fromEntries(assets.map((a) => [a.name, a.staticPath])),
+    assets,
   };
 }
 
 export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunResult> {
   const started = deps.now();
-  const project = readProject(args.workdir, deps);
+  const project = args.project ?? readProject(args.workdir, deps);
   const existing = loadShot(args.workdir, args.shot);
   if (args.mode.kind === "preview") return runPreview(args, existing, project, deps, started);
 
@@ -414,7 +453,7 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
     };
     saveShot(args.workdir, h);
     const paths = versionPaths(args.workdir, args.shot, n);
-    const props = renderProps(h, project, assets);
+    const props = renderProps(h, project, stagedAssetPaths(assets));
     deps.log(`▸ drawing shot ${args.shot} v${n} with ${providerName}${args.llmModel ? ` (${args.llmModel})` : ""}`);
 
     // The attempt lines are printed as they happen, from these two wrappers,
@@ -513,12 +552,38 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
       kitReference: DRAW_KIT_REFERENCE,
       assets: assets.map(({ name, width, height, note }) => ({ name, width, height, ...(note !== undefined ? { note } : {}) })),
     };
-    const result = await drawShot({ provider: timedProvider, req, check: timedCheck, ...(redraw ? { redraw } : {}) });
+    const result = await drawShot({
+      provider: timedProvider,
+      req,
+      check: timedCheck,
+      ...(redraw ? { redraw } : {}),
+      ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
+    });
 
     // ---- The version's result, and the run, recorded ----
     const last = result.attempts[result.attempts.length - 1];
     const totalMs = deps.now() - started;
     const said = result.said ?? undefined;
+    const usage = [...provider.usage];
+    if (result.stopped) {
+      // A stop is the author's, not the scene's: the version is neither ok
+      // nor failed, so it leaves no version at all (§169). It is removed
+      // here rather than left for the next `loadShot`: a version without a
+      // result on disk means "a run is drawing this or died mid-draw", and
+      // this run did neither. The editor reads with `peekShot`, which never
+      // cleans up, so the debris would sit in the record and its files until
+      // the next draw of this shot. Its number stays spent (design §9),
+      // the draft and the notes are as they were, and no run is recorded:
+      // a run names its version, and this one is gone. Its calls are still
+      // paid for, so they go back in `usage`.
+      rmSync(paths.code, { force: true });
+      rmSync(paths.stillsDir, { recursive: true, force: true });
+      h = { ...h, versions: h.versions.filter((v) => v.n !== n) };
+      saveShot(args.workdir, h);
+      deps.log(`■ shot ${args.shot} v${n} stopped after ${result.attempts.length} call${result.attempts.length === 1 ? "" : "s"}; no version kept`);
+      deps.log(costLine(result.attempts.length, { total: totalMs, ...ms }));
+      return { ok: false, stopped: true, version: null, stills: [], calls: result.attempts.length, seconds: totalMs / 1000, usage };
+    }
     if (result.ok) {
       h = {
         ...h,
@@ -571,7 +636,7 @@ export async function runDraw(args: DrawArgs, deps: DrawDeps): Promise<DrawRunRe
       if (result.code !== null) deps.log(`  its code: ${paths.code}`);
     }
     deps.log(costLine(result.attempts.length, { total: totalMs, ...ms }));
-    return { ok: result.ok, version: n, stills, calls: result.attempts.length, seconds: totalMs / 1000 };
+    return { ok: result.ok, version: n, stills, calls: result.attempts.length, seconds: totalMs / 1000, usage };
   } finally {
     deps.removeDir(publicDir);
   }
@@ -597,7 +662,7 @@ async function runPreview(
     const serveUrl = await deps.bundle({ scenePath: paths.code, workDir: args.workdir, publicDir });
     try {
       mkdirSync(paths.stillsDir, { recursive: true });
-      await deps.renderPreview({ serveUrl, props: renderProps(h, project, assets), outPath: paths.preview });
+      await deps.renderPreview({ serveUrl, props: renderProps(h, project, stagedAssetPaths(assets)), outPath: paths.preview });
     } finally {
       deps.removeDir(serveUrl);
     }
@@ -608,7 +673,7 @@ async function runPreview(
   deps.log(`✓ preview of shot ${args.shot} v${h.draft}`);
   deps.log(`  ${paths.preview}`);
   deps.log(`${(totalMs / 1000).toFixed(1)} s`);
-  return { ok: true, version: h.draft, stills: [], calls: 0, seconds: totalMs / 1000 };
+  return { ok: true, version: h.draft, stills: [], calls: 0, seconds: totalMs / 1000, usage: [] };
 }
 
 // ---- The live dependencies ---------------------------------------------------

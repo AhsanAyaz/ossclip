@@ -61,6 +61,17 @@ export function versionPaths(workdir: string, id: string, n: number): { code: st
 }
 
 /**
+ * The clip of the shot's approved version (design §8, §9): one per shot,
+ * because only the approved version keeps a ProRes clip (design §9, "Disk").
+ * Approve renders beside it under another name and renames over it only once
+ * the new clip is imported (storyboard/approve.ts, §169), so a failed render
+ * never takes the clip already in the video with it.
+ */
+export function approvedClipPath(workdir: string, id: string): string {
+  return join(shotDir(workdir, id), "approved.mov");
+}
+
+/**
  * The shot's record, or null when the shot has never been drawn.
  *
  * Applies `discardUnfinished` (an interrupted draw leaves a version with no

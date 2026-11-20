@@ -180,6 +180,36 @@ describe("drawShot: the repair loop", () => {
     expect(c).toBeGreaterThan(b!);
   });
 
+  it("a stop asked for before the first call makes no call: ok false, stopped (§169)", async () => {
+    const { provider, calls } = scripted([{ code: GOOD, said: "never" }]);
+    const result = await drawShot({ provider, req: REQ, check: checkFailing(BAD), shouldStop: () => true });
+    expect(calls).toHaveLength(0);
+    expect(result).toMatchObject({ ok: false, stopped: true, attempts: [] });
+  });
+
+  it("a stop asked for after the first failed check ends the draw before the repair call (§169)", async () => {
+    const { provider, calls } = scripted([
+      { code: BAD, said: "one" },
+      { code: GOOD, said: "two" },
+    ]);
+    let checked = 0;
+    const check: DrawCheck = async (code) => {
+      checked += 1;
+      return checkFailing(BAD)(code);
+    };
+    const result = await drawShot({ provider, req: REQ, check, shouldStop: () => checked > 0 });
+    expect(calls).toHaveLength(1);
+    expect(result).toMatchObject({ ok: false, stopped: true, code: BAD, said: "one" });
+    expect(result.attempts).toHaveLength(1);
+  });
+
+  it("a draw never told to stop has no stopped field", async () => {
+    const { provider } = scripted([{ code: GOOD, said: "a fish" }]);
+    const result = await drawShot({ provider, req: REQ, check: checkFailing(BAD), shouldStop: () => false });
+    expect(result.ok).toBe(true);
+    expect("stopped" in result).toBe(false);
+  });
+
   it("a redraw whose reply is cut off keeps the note and the current code in the repair", async () => {
     const { provider, calls } = scripted([new Error("claude output truncated at max_tokens"), { code: GOOD, said: "ok" }]);
     const redraw = { code: "// CURRENT CODE SENTINEL", notes: [], note: { text: "add a speech bubble" } };
