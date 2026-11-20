@@ -80,4 +80,7 @@ export * from "./draw/shot-record";
 export * from "./storyboard/record";
 export * from "./storyboard/limits";
 export * from "./storyboard/merge";
+// The planner call (§168) is the run's and the editor server's, never the
+// editor page's, so it is exported here only.
+export * from "./storyboard/plan";
 export { run } from "./exec";
