@@ -109,6 +109,8 @@ import {
   userLibraryDir,
   type LoadedLibraryEntry,
   type Word,
+  type Storyboard,
+  type WordOutputTime,
 } from "@ossclip/core";
 // Static, unlike the picker's `await import` above its call site: the picker
 // drags in @ossclip/core's process runner and llm-detect, worth deferring off
@@ -127,6 +129,11 @@ import {
   reviewedScenesText,
 } from "./render-replay-args";
 import { STORED_SCRIPT_BASENAME, replanScriptArgs, storedScriptFrom } from "./script-mode";
+// The plan table's rules (§168), kept out of this file so they are tested
+// without a server; the storyboard routes below only gather their inputs.
+import { loadStoryboard, saveStoryboard } from "./storyboard/storyboard-store";
+import { StoryboardEditError, StoryboardEditSchema, applyStoryboardEdit } from "./storyboard/storyboard-edit";
+import { drawnShots, liveCut, planAgain, type DrawnShot } from "./storyboard/plan-again";
 // The recorded-invocation reads live in cover.ts (2026-08-19): `ossclip
 // cover` needs the same out-resolution rule this server's thumbnail dest,
 // youtube markdown and reveal endpoint derive from, and two spellings of it
@@ -1219,6 +1226,48 @@ export async function startEditServer(
       });
     } catch {
       return [];
+    }
+  };
+  /**
+   * The live cut as indices into `words`, on `heardWords`' clock
+   * (`heardMap`), with each kept word's output time and the runtime: "Plan
+   * again" plans on the cut as the author edited it (storyboard design §2
+   * "Which cut", §158; §168). Indices, not the kept words, because a shot is
+   * anchored to transcript indices; the word-side rule is `liveCut`'s
+   * (midpoint inside a kept span). Null when nothing ever rendered: with no
+   * clock there are no output times for the limits to measure a shot by.
+   */
+  const heardCut = async (
+    dir: string,
+    words: readonly { start: number; end: number }[],
+  ): Promise<{ cut: Set<number>; wordTimes: WordOutputTime[]; outputDurationSec: number } | null> => {
+    const map = await heardMap(dir);
+    return map === null ? null : { ...liveCut(words, map), outputDurationSec: map.outputDuration };
+  };
+  // ---- Storyboard state (plan Task 4; §168) -------------------------------
+  /**
+   * One "Plan again" at a time: an LLM call costs money, and a double-click
+   * must not buy two (Review Focus 5). Its own flag, `packGenBusy`'s rule.
+   * Also refuses table edits while set, because the plan saves the table it
+   * loaded plus the merge: an edit saved during the call would be
+   * overwritten by it.
+   */
+  let storyboardPlanBusy = false;
+  /**
+   * The words `/api/transcript` serves, parsed, so a shot's indices are
+   * checked and planned against the list the editor's table reads them from.
+   * For a storyboard project (no `--clip`) this is produce's planning word
+   * space: the repaired words (`withStoredRepairs`). Null when there is no
+   * usable transcript.
+   */
+  const servedWords = async (dir: string): Promise<Word[] | null> => {
+    try {
+      const raw = JSON.parse(await readFile(join(dir, "transcript.json"), "utf8")) as { words?: unknown };
+      if (!Array.isArray(raw.words)) return null;
+      const parsed = TranscriptSchema.safeParse(await withStoredRepairs(dir, raw));
+      return parsed.success ? parsed.data.words : null;
+    } catch {
+      return null;
     }
   };
   // ---- Overlay library (overlay-library spec §Server endpoints) -----------
@@ -2594,6 +2643,158 @@ export async function startEditServer(
             return send(200, { ok: true, usage: formatUsageLine(provider.usage, pricing) });
           } finally {
             packGenBusy = false;
+          }
+        }
+
+        // ---- Storyboard (storyboard design §10; plan Task 4; §168) ---------
+        // The plan table's three endpoints: read it, apply one author edit,
+        // and "Plan again". The rules are in apps/cli/src/storyboard/ and
+        // tested there; these routes only gather what the server alone can
+        // derive (the served words, the live clock, the provider). A
+        // `storyboard.json` that fails its schema is a 500 with
+        // `StoryboardFileError`'s message, naming the file and the first
+        // problem, and is never rewritten (Review Focus 4).
+        if (url.pathname === "/api/storyboard" && req.method === "GET") {
+          if (!workdir) return send(409, { error: "no workdir open" });
+          let sb: Storyboard | null;
+          let drawn: Record<string, DrawnShot> = {};
+          try {
+            sb = loadStoryboard(workdir);
+            // A history that does not parse is an error here too, not "not
+            // drawn": the table would show a drawn shot as a plain row.
+            if (sb !== null) drawn = drawnShots(workdir, sb);
+          } catch (err) {
+            return send(500, { error: err instanceof Error ? err.message : String(err) });
+          }
+          return send(200, { storyboard: sb, drawn });
+        }
+
+        if (url.pathname === "/api/storyboard/edit" && req.method === "POST") {
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          const dir = workdir;
+          const body = await readJsonBody(req, 64 * 1024);
+          if (!body.ok) return send(400, { ok: false, error: body.error });
+          const parsed = StoryboardEditSchema.safeParse(body.value);
+          if (!parsed.success) return send(400, { ok: false, error: zodMessage(parsed.error) });
+          // The count the editor's table indexes; no transcript is 0 words,
+          // so a span edit is refused with that count in its message.
+          const wordCount = (await servedWords(dir))?.length ?? 0;
+          // From the busy check to the save nothing awaits, so a plan either
+          // starts after this edit is on disk or this edit sees it running.
+          if (storyboardPlanBusy) {
+            return send(409, { ok: false, error: "Plan again is running: edit the table once it has finished" });
+          }
+          let sb: Storyboard | null;
+          try {
+            sb = loadStoryboard(dir);
+          } catch (err) {
+            return send(500, { ok: false, error: err instanceof Error ? err.message : String(err) });
+          }
+          if (sb === null) return send(409, { ok: false, error: "this project has no storyboard.json to edit" });
+          let next: Storyboard;
+          try {
+            next = applyStoryboardEdit(sb, parsed.data, wordCount);
+          } catch (err) {
+            if (err instanceof StoryboardEditError) return send(400, { ok: false, error: err.message });
+            throw err;
+          }
+          saveStoryboard(dir, next);
+          return send(200, { ok: true, storyboard: next });
+        }
+
+        if (url.pathname === "/api/storyboard/plan" && req.method === "POST") {
+          // `/api/youtube/generate`'s shape: 409 busy, 412 when an input or
+          // the provider is missing, 200 `ok:false` when the call fails,
+          // usage appended. The flag is set before the first await, so two
+          // presses can never both pass the check.
+          if (!workdir) return send(409, { ok: false, error: "no workdir open" });
+          if (storyboardPlanBusy) return send(409, { ok: false, error: "Plan again is already running" });
+          storyboardPlanBusy = true;
+          try {
+            // Held for the whole call: a project switched from the page
+            // mid-call must not receive this project's plan.
+            const dir = workdir;
+            let sb: Storyboard | null;
+            try {
+              sb = loadStoryboard(dir);
+            } catch (err) {
+              return send(500, { ok: false, error: err instanceof Error ? err.message : String(err) });
+            }
+            if (sb === null) {
+              return send(409, {
+                ok: false,
+                error: "this project has no storyboard.json: plan one with `ossclip produce <video> --storyboard`",
+              });
+            }
+            const words = await servedWords(dir);
+            if (words === null || words.length === 0) {
+              return send(412, { ok: false, error: "no transcript in this workdir — re-run `ossclip produce`." });
+            }
+            const clock = await heardCut(dir, words);
+            if (clock === null) {
+              return send(412, {
+                ok: false,
+                error: "render-props.json has no kept spans to measure shots on — re-run `ossclip produce`.",
+              });
+            }
+            const frame = z
+              .object({ settings: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }) })
+              .safeParse(JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")));
+            if (!frame.success) {
+              return send(412, { ok: false, error: "render-props.json has no frame size — re-run `ossclip produce`." });
+            }
+            // The pack generate's provider resolution, verbatim.
+            if (opts.publishEnv === undefined) loadEnvFiles();
+            const env = opts.publishEnv ?? process.env;
+            const usagePath = join(dir, "usage.json");
+            let usageLog: unknown = null;
+            try {
+              usageLog = JSON.parse(await readFile(usagePath, "utf8"));
+            } catch {
+              // no log yet — the resolution falls through to the pin/detection
+            }
+            const cmd = await readRecordedCommand(dir);
+            const resolved = captionRegenProvider({
+              usageLog,
+              commandArgs: cmd?.args ?? null,
+              env,
+              hasBin: (bin) => binOnPath(bin, env),
+            });
+            if (resolved.status === "unavailable") return send(412, { ok: false, error: resolved.reason });
+            const provider = (opts.makeLlmProvider ?? createProvider)(resolved.provider);
+            let result: Awaited<ReturnType<typeof planAgain>>;
+            try {
+              result = await planAgain(
+                {
+                  workdir: dir,
+                  storyboard: sb,
+                  words,
+                  cut: clock.cut,
+                  wordTimes: clock.wordTimes,
+                  outputDurationSec: clock.outputDurationSec,
+                  frame: frame.data.settings,
+                  provider,
+                },
+                { log: (line) => console.log(line) },
+              );
+            } catch (err) {
+              // The panel shows it verbatim; `planAgain` saves last, so
+              // storyboard.json is as it was.
+              return send(200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+            }
+            const pricing = (opts.loadCfg ?? loadConfig)().pricing ?? {};
+            const nextLog = appendUsageRun(usageLog, { at: new Date().toISOString(), records: provider.usage }, pricing);
+            const usageTmp = `${usagePath}.tmp`;
+            await writeFile(usageTmp, JSON.stringify(nextLog, null, 2));
+            await rename(usageTmp, usagePath);
+            return send(200, {
+              ok: true,
+              storyboard: result.storyboard,
+              changes: result.changes,
+              usage: formatUsageLine(provider.usage, pricing),
+            });
+          } finally {
+            storyboardPlanBusy = false;
           }
         }
 

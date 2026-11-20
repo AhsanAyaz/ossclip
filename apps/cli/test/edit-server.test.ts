@@ -4140,3 +4140,305 @@ describe("GET /api/sfx/plan", () => {
     expect(res.status).toBe(409);
   });
 });
+
+describe("storyboard endpoints (plan Task 4; §168)", () => {
+  // 160 words, one every 0.4 s, on a render that kept the whole 64 s take.
+  const WORDS = Array.from({ length: 160 }, (_, i) => ({ text: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.3 }));
+  const shot = (over: Record<string, unknown> & { id: string; startWord: number; endWord: number }) => ({
+    idea: `the idea of ${over.id}`,
+    why: "",
+    priority: 2,
+    assets: [],
+    kept: true,
+    origin: "planner",
+    touched: false,
+    ...over,
+  });
+  /** s1 and s6 untouched planner rows; s2 reworded; s3 the author's; s4 drawn when a test writes its history. */
+  const STORYBOARD = {
+    version: 1,
+    intent: "teach the idea",
+    nextShot: 7,
+    shots: [
+      shot({ id: "s1", startWord: 0, endWord: 9 }),
+      shot({ id: "s2", startWord: 20, endWord: 34, touched: true, idea: "a reworded idea" }),
+      shot({ id: "s3", startWord: 50, endWord: 64, origin: "author", touched: true, priority: 1 }),
+      shot({ id: "s4", startWord: 80, endWord: 94 }),
+      shot({ id: "s6", startWord: 130, endWord: 140 }),
+    ],
+  };
+
+  /** A storyboard project: render props with spans and a frame, the transcript, a gemini usage log. */
+  async function storyboardWorkdir(opts: { storyboard?: boolean } = {}): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "ossclip-edit-"));
+    await writeFile(
+      join(dir, "render-props.json"),
+      JSON.stringify({
+        videoFileName: "clip.mp4",
+        sceneCues: [],
+        captionLines: [],
+        spans: [{ srcIn: 0, srcOut: 64, outIn: 0, outOut: 64 }],
+        settings: { width: 1080, height: 1920, fps: 30 },
+        outputDurationSec: 64,
+      }),
+    );
+    await writeFile(join(dir, "clip.mp4"), CLIP_CONTENT);
+    await writeFile(join(dir, "transcript.json"), JSON.stringify({ language: "en", words: WORDS }));
+    await writeFile(
+      join(dir, "usage.json"),
+      JSON.stringify({
+        runs: [{ at: "2026-11-20T00:00:00.000Z", provider: "gemini", models: [], cached: false, records: [], totals: {} }],
+        records: [],
+        totals: {},
+      }),
+    );
+    if (opts.storyboard !== false) await writeFile(join(dir, "storyboard.json"), JSON.stringify(STORYBOARD, null, 2));
+    return dir;
+  }
+
+  /** A minimal valid draw history with one finished version: the shot is drawn. */
+  async function drawnHistory(dir: string, id: string): Promise<void> {
+    await mkdir(join(dir, "storyboard", id), { recursive: true });
+    await writeFile(
+      join(dir, "storyboard", id, "history.json"),
+      JSON.stringify({
+        id,
+        idea: "x",
+        spokenLine: "x",
+        durationSec: 4,
+        versions: [{ n: 1, result: "ok", kitVersion: 1 }],
+        draft: 1,
+        nextVersion: 2,
+        notes: [],
+        runs: [],
+      }),
+    );
+  }
+
+  /** The planner seam: records each prompt, answers `reply` (or what `answer` does). */
+  const planProvider = (
+    users: string[],
+    answer: () => Promise<Record<string, unknown>> = async () => ({
+      shots: [
+        { startWord: 2, endWord: 12, idea: "fresh early", why: "w", priority: 2, assets: [] },
+        { startWord: 142, endWord: 152, idea: "fresh late", why: "w", priority: 2, assets: [] },
+      ],
+    }),
+  ): import("@ossclip/core").LlmProvider & { usage: import("@ossclip/core").LlmUsage[] } => {
+    const usage: import("@ossclip/core").LlmUsage[] = [];
+    return {
+      name: "gemini",
+      usage,
+      async complete(req) {
+        users.push(req.user);
+        const reply = await answer();
+        usage.push({
+          provider: "gemini",
+          model: "gemini-3.5-flash",
+          schemaName: req.schemaName,
+          inputTokens: 1000,
+          outputTokens: 100,
+          exact: true,
+          billed: true,
+          ms: 5,
+        });
+        return req.schema.parse(reply);
+      },
+    };
+  };
+
+  const start = async (dir: string | undefined, provider?: () => unknown) => {
+    const server = await startEditServer(dir, {
+      port: 0,
+      recentDir: SHARED_RECENTS,
+      loadCfg: () => ({}),
+      publishEnv: {},
+      ...(provider ? { makeLlmProvider: provider as never } : {}),
+    });
+    close = server.close;
+    return server.url;
+  };
+  const edit = (url: string, body: unknown): Promise<Response> =>
+    fetch(`${url}/api/storyboard/edit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const plan = (url: string): Promise<Response> => fetch(`${url}/api/storyboard/plan`, { method: "POST" });
+  const onDisk = async (dir: string) => JSON.parse(await readFile(join(dir, "storyboard.json"), "utf8"));
+
+  it("GET with no storyboard.json is a null storyboard, not an error", async () => {
+    const url = await start(await storyboardWorkdir({ storyboard: false }));
+    const res = await fetch(`${url}/api/storyboard`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ storyboard: null, drawn: {} });
+  });
+
+  it("GET serves the table and the draw state of every shot that has a history", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnHistory(dir, "s4");
+    const url = await start(dir);
+    const body = await (await fetch(`${url}/api/storyboard`)).json();
+    expect(body.storyboard).toEqual(STORYBOARD);
+    expect(body.drawn).toEqual({ s4: { draft: 1, versions: 1 } });
+  });
+
+  it("GET with a storyboard.json that fails its schema is a 500 naming the problem, and the file is left", async () => {
+    const dir = await storyboardWorkdir({ storyboard: false });
+    const broken = JSON.stringify({ ...STORYBOARD, shots: [{ ...STORYBOARD.shots[0], endWord: -1 }] });
+    await writeFile(join(dir, "storyboard.json"), broken);
+    const url = await start(dir);
+    const res = await fetch(`${url}/api/storyboard`);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toContain("storyboard.json");
+    expect(body.error).toContain("shots.0.endWord");
+    expect(await readFile(join(dir, "storyboard.json"), "utf8")).toBe(broken);
+  });
+
+  it("an edit is saved and returned", async () => {
+    const dir = await storyboardWorkdir();
+    const url = await start(dir);
+    const res = await edit(url, { op: "idea", id: "s1", idea: "  a hand draws a box  " });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.storyboard.shots[0]).toMatchObject({ id: "s1", idea: "a hand draws a box", touched: true });
+    expect(await onDisk(dir)).toEqual(body.storyboard);
+  });
+
+  it("a bad edit is a 400 with the reason, and the file is left byte for byte", async () => {
+    const dir = await storyboardWorkdir();
+    const before = await readFile(join(dir, "storyboard.json"), "utf8");
+    const url = await start(dir);
+    const overlap = await edit(url, { op: "span", id: "s1", startWord: 5, endWord: 25 });
+    expect(overlap.status).toBe(400);
+    const body = await overlap.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("s2");
+    // Past the transcript the server serves (160 words).
+    const past = await edit(url, { op: "add", startWord: 150, endWord: 160, idea: "x" });
+    expect(past.status).toBe(400);
+    expect((await past.json()).error).toContain("160 words");
+    // An op that does not exist is the schema's 400, never some other edit.
+    const unknown = await edit(url, { op: "explode", id: "s1" });
+    expect(unknown.status).toBe(400);
+    expect((await unknown.json()).ok).toBe(false);
+    expect(await readFile(join(dir, "storyboard.json"), "utf8")).toBe(before);
+  });
+
+  it("edit is a 409 with no storyboard file or no workdir", async () => {
+    const url = await start(await storyboardWorkdir({ storyboard: false }));
+    expect((await edit(url, { op: "drop", id: "s1" })).status).toBe(409);
+    close?.();
+    const bare = await start(undefined);
+    expect((await edit(bare, { op: "drop", id: "s1" })).status).toBe(409);
+    expect((await plan(bare)).status).toBe(409);
+  });
+
+  it("plan: one call on the edited cut; keeps the touched, the author's and the drawn shots; replaces the rest", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnHistory(dir, "s4");
+    // The author cut word 100 (40.0-40.3 s) in the editor since the last render.
+    await writeFile(
+      join(dir, "overrides.json"),
+      JSON.stringify({ cuts: [{ startSec: 40.0, endSec: 40.35, src: { startSec: 40.0, endSec: 40.35 } }] }),
+    );
+    const users: string[] = [];
+    const url = await start(dir, () => planProvider(users));
+    const res = await plan(url);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(users).toHaveLength(1);
+
+    // The live cut, not the last render's: word 100 is shown as cut.
+    expect(users[0]).toContain("[100]⟦w100⟧");
+    expect(users[0]).toContain("[99]w99 ");
+    // The protected kept shots are listed as taken.
+    expect(users[0]).toContain("Already taken");
+    expect(users[0]).toContain('words 20 to 34, "a reworded idea": do not plan here');
+    expect(users[0]).toContain('words 50 to 64, "the idea of s3": do not plan here');
+    expect(users[0]).toContain('words 80 to 94, "the idea of s4": do not plan here');
+    expect(users[0]).not.toContain('"the idea of s1"');
+
+    const rows = body.storyboard.shots.map((s: { id: string; startWord: number; idea: string }) => [s.id, s.startWord, s.idea]);
+    expect(rows).toEqual([
+      ["s7", 2, "fresh early"],
+      ["s2", 20, "a reworded idea"],
+      ["s3", 50, "the idea of s3"],
+      ["s4", 80, "the idea of s4"],
+      ["s8", 142, "fresh late"],
+    ]);
+    expect(body.changes).toEqual([]);
+    expect(body.usage).toContain("▸ llm: 1 calls");
+    expect(await onDisk(dir)).toEqual(body.storyboard);
+    const log = JSON.parse(await readFile(join(dir, "usage.json"), "utf8"));
+    expect(log.runs).toHaveLength(2);
+    expect(log.runs[1].records[0].schemaName).toBe("storyboard_plan");
+    // No plan cache: the author asked for a fresh plan.
+    expect((await readdir(dir)).filter((n) => n.startsWith("storyboardplan-"))).toEqual([]);
+  });
+
+  it("plan: a provider failure is 200 ok:false with the message, and the file is left byte for byte", async () => {
+    const dir = await storyboardWorkdir();
+    const before = await readFile(join(dir, "storyboard.json"), "utf8");
+    const url = await start(dir, () =>
+      planProvider([], async () => {
+        throw new Error("quota exceeded for gemini-3.5-flash");
+      }),
+    );
+    const res = await plan(url);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: false, error: "quota exceeded for gemini-3.5-flash" });
+    expect(await readFile(join(dir, "storyboard.json"), "utf8")).toBe(before);
+  });
+
+  it("plan: a second request while one runs is a 409 (Review Focus 5)", async () => {
+    const dir = await storyboardWorkdir();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const startedP = new Promise<void>((r) => (started = r));
+    const url = await start(dir, () =>
+      planProvider([], async () => {
+        started();
+        await gate;
+        return { shots: [] };
+      }),
+    );
+    const first = plan(url);
+    await startedP;
+    const second = await plan(url);
+    expect(second.status).toBe(409);
+    // And an edit would be overwritten by the plan's save, so it waits too.
+    expect((await edit(url, { op: "drop", id: "s1" })).status).toBe(409);
+    release();
+    expect((await (await first).json()).ok).toBe(true);
+  });
+
+  it("plan: 409 with no storyboard, 412 with no provider", async () => {
+    const url = await start(await storyboardWorkdir({ storyboard: false }), () => planProvider([]));
+    expect((await plan(url)).status).toBe(409);
+    close?.();
+    const dir = await storyboardWorkdir();
+    await unlink(join(dir, "usage.json"));
+    const bare = await start(dir);
+    const res = await plan(bare);
+    expect(res.status).toBe(412);
+    expect((await res.json()).error).toContain("no LLM provider available");
+  });
+
+  it("plan: a stored assets folder that is gone is ok:false before any call", async () => {
+    const dir = await storyboardWorkdir({ storyboard: false });
+    await writeFile(join(dir, "storyboard.json"), JSON.stringify({ ...STORYBOARD, assetsDir: join(dir, "gone") }));
+    const users: string[] = [];
+    const url = await start(dir, () => planProvider(users));
+    const res = await plan(url);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/assets folder .* no longer exists/);
+    expect(users).toEqual([]);
+  });
+});

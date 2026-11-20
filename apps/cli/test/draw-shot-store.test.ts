@@ -8,6 +8,7 @@ import {
   loadShot,
   parseAssetNotes,
   parseImageProbe,
+  peekShot,
   saveShot,
   listAssets,
   shotDir,
@@ -120,6 +121,41 @@ describe("saveShot and loadShot", () => {
       readFileSync(join(shotDir(work, "other"), SHOT_HISTORY_BASENAME)),
     );
     expect(() => loadShot(work, "probe")).toThrow(/not "probe"/);
+  });
+});
+
+describe("peekShot", () => {
+  it("reads the record as loadShot would see it, and deletes and writes nothing (§168: the editor's GET is a read)", () => {
+    const h = record({
+      versions: [
+        { n: 1, result: "ok", kitVersion: 1 },
+        { n: 2, kitVersion: 1 },
+      ],
+      draft: 2,
+      nextVersion: 3,
+    });
+    saveShot(work, h);
+    const v2 = versionPaths(work, "probe", 2);
+    writeFileSync(v2.code, "export default () => null;\n");
+    const before = readFileSync(join(shotDir(work, "probe"), SHOT_HISTORY_BASENAME), "utf8");
+
+    const peeked = peekShot(work, "probe");
+    expect(peeked?.versions.map((v) => v.n)).toEqual([1]);
+    expect(peeked?.draft).toBe(1);
+    expect(peeked?.nextVersion).toBe(3);
+    // The unfinished version's file and the record on disk are as they were.
+    expect(existsSync(v2.code)).toBe(true);
+    expect(readFileSync(join(shotDir(work, "probe"), SHOT_HISTORY_BASENAME), "utf8")).toBe(before);
+    // And it is what the next load returns.
+    expect(loadShot(work, "probe")).toEqual(peeked);
+  });
+
+  it("returns null for a shot never drawn and refuses what loadShot refuses", () => {
+    expect(peekShot(work, "probe")).toBeNull();
+    expect(() => peekShot(work, "../x")).toThrow(/shot id/);
+    mkdirSync(shotDir(work, "probe"), { recursive: true });
+    writeFileSync(join(shotDir(work, "probe"), SHOT_HISTORY_BASENAME), JSON.stringify({ id: "probe" }));
+    expect(() => peekShot(work, "probe")).toThrow(/not a valid shot record/);
   });
 });
 

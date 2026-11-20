@@ -16,6 +16,7 @@ import {
   newShotId,
   planStoryboard,
   type LimitChange,
+  type LimitContext,
   type LlmProvider,
   type LlmUsage,
   type PlannedShot,
@@ -82,15 +83,8 @@ export async function runStoryboardPlan(a: StoryboardRunArgs, deps: StoryboardRu
   const stored = loadStoryboard(a.workdir);
   if (stored !== null) return { storyboard: stored, planned: false, changes: [] };
 
-  // Listed, never copied (plan Task 3 Step 1): staging belongs to the draw,
-  // which knows the render's public dir. The planner sees what the draw
-  // will be able to use, so a file the draw would skip is skipped here too.
   const assetsDir = a.assetsDir !== undefined ? resolve(a.assetsDir) : undefined;
-  const listed = assetsDir !== undefined
-    ? await listAssets(assetsDir, deps.probeImageSize ?? ffprobeImageSize)
-    : { assets: [], warnings: [] };
-  for (const w of listed.warnings) log(`  ⚠ storyboard: ${w}`);
-  const assets = listed.assets.map(({ src: _src, ...rest }) => rest);
+  const assets = await plannerAssets(assetsDir, deps.probeImageSize, log);
 
   const keyParts = {
     promptVersion: STORYBOARD_PLAN_PROMPT_VERSION,
@@ -127,19 +121,9 @@ export async function runStoryboardPlan(a: StoryboardRunArgs, deps: StoryboardRu
     );
   }
 
-  // The limits scenes have today (design §2 "Limits"): `MAX_SCENE_SEC` and
-  // the gap assembly keeps between scenes. Nothing is blocked on a first
-  // plan; "Plan again" passes the protected shots here (Task 4).
-  const limited = enforcePlanLimits(raw, {
-    wordCount: a.words.length,
-    cut: a.cut,
-    outputTimeOf: (i) => a.wordTimes[i] ?? null,
-    outputDurationSec: a.outputDurationSec,
-    maxShotSec: MAX_SCENE_SEC,
-    gapSec: SCENE_GAP_SEC,
-    assetNames: assets.map((x) => x.name),
-    blocked: [],
-  });
+  // Nothing is blocked on a first plan; "Plan again" passes the protected
+  // shots here (plan-again.ts).
+  const limited = enforcePlanLimits(raw, planLimitContext({ ...a, assets, blocked: [] }));
 
   let sb: Storyboard = {
     version: 1,
@@ -157,6 +141,54 @@ export async function runStoryboardPlan(a: StoryboardRunArgs, deps: StoryboardRu
   }
   saveStoryboard(a.workdir, sb);
   return { storyboard: sb, planned: true, changes: limited.changes };
+}
+
+/** An asset as the planner is told of it: no source path, which the prompt never names. */
+export type PlannerAsset = { name: string; width: number; height: number; note?: string };
+
+/**
+ * The `--assets` folder as the planner sees it, shared by the first plan and
+ * "Plan again" (plan-again.ts) so both describe one folder alike. Listed,
+ * never copied (plan Task 3 Step 1): staging belongs to the draw, which
+ * knows the render's public dir. The planner sees what the draw will be
+ * able to use, so a file the draw would skip is skipped here too, with a
+ * warning. No folder, no assets.
+ */
+export async function plannerAssets(
+  assetsDir: string | undefined,
+  probeImageSize: ((path: string) => Promise<{ width: number; height: number }>) | undefined,
+  log: (line: string) => void,
+): Promise<PlannerAsset[]> {
+  if (assetsDir === undefined) return [];
+  const listed = await listAssets(assetsDir, probeImageSize ?? ffprobeImageSize);
+  for (const w of listed.warnings) log(`  ⚠ storyboard: ${w}`);
+  return listed.assets.map(({ src: _src, ...rest }) => rest);
+}
+
+/**
+ * The limits' context, shared by the first plan and "Plan again", so a
+ * re-plan is held to exactly the limits the first one was: the limits scenes
+ * have today (design §2 "Limits"), `MAX_SCENE_SEC` and the gap assembly
+ * keeps between scenes, on the clock of the cut the plan was made on.
+ */
+export function planLimitContext(a: {
+  words: readonly unknown[];
+  cut: ReadonlySet<number>;
+  wordTimes: readonly WordOutputTime[];
+  outputDurationSec: number;
+  assets: readonly PlannerAsset[];
+  blocked: readonly { startWord: number; endWord: number }[];
+}): LimitContext {
+  return {
+    wordCount: a.words.length,
+    cut: a.cut,
+    outputTimeOf: (i) => a.wordTimes[i] ?? null,
+    outputDurationSec: a.outputDurationSec,
+    maxShotSec: MAX_SCENE_SEC,
+    gapSec: SCENE_GAP_SEC,
+    assetNames: a.assets.map((x) => x.name),
+    blocked: a.blocked,
+  };
 }
 
 /**

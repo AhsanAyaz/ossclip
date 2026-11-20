@@ -72,6 +72,36 @@ export function versionPaths(workdir: string, id: string, n: number): { code: st
  * missing would let the next `--idea` overwrite the author's versions.
  */
 export function loadShot(workdir: string, id: string): ShotHistory | null {
+  const stored = readShotRecord(workdir, id);
+  if (stored === null) return null;
+  const kept = discardUnfinished(stored);
+  const keptNumbers = new Set(kept.versions.map((v) => v.n));
+  const dropped = stored.versions.filter((v) => !keptNumbers.has(v.n));
+  for (const v of dropped) {
+    const files = versionPaths(workdir, id, v.n);
+    rmSync(files.code, { force: true });
+    rmSync(files.stillsDir, { recursive: true, force: true });
+  }
+  if (dropped.length > 0 || kept.draft !== stored.draft) saveShot(workdir, kept);
+  return kept;
+}
+
+/**
+ * The record as `loadShot` would return it, read without touching the disk:
+ * `discardUnfinished` is applied in memory only, so no version file is
+ * deleted and nothing is written. For readers that only look (the editor's
+ * `GET /api/storyboard`, the protection test of "Plan again"; §168): a draw
+ * may be running in another process, and its version without a result is
+ * work in progress, not debris, until that run ends or dies. The cleanup
+ * stays with the next `loadShot`, which a draw makes before it writes.
+ */
+export function peekShot(workdir: string, id: string): ShotHistory | null {
+  const stored = readShotRecord(workdir, id);
+  return stored === null ? null : discardUnfinished(stored);
+}
+
+/** `history.json` parsed and checked against its folder, as stored; null when absent. */
+function readShotRecord(workdir: string, id: string): ShotHistory | null {
   const path = join(shotDir(workdir, id), SHOT_HISTORY_BASENAME);
   if (!existsSync(path)) return null;
   let raw: unknown;
@@ -85,16 +115,7 @@ export function loadShot(workdir: string, id: string): ShotHistory | null {
   if (parsed.data.id !== id) {
     throw new Error(`${path} is the record of shot ${JSON.stringify(parsed.data.id)}, not ${JSON.stringify(id)}`);
   }
-  const kept = discardUnfinished(parsed.data);
-  const keptNumbers = new Set(kept.versions.map((v) => v.n));
-  const dropped = parsed.data.versions.filter((v) => !keptNumbers.has(v.n));
-  for (const v of dropped) {
-    const files = versionPaths(workdir, id, v.n);
-    rmSync(files.code, { force: true });
-    rmSync(files.stillsDir, { recursive: true, force: true });
-  }
-  if (dropped.length > 0 || kept.draft !== parsed.data.draft) saveShot(workdir, kept);
-  return kept;
+  return parsed.data;
 }
 
 /**
