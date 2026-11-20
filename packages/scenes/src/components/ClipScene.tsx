@@ -40,11 +40,13 @@ export const ClipScene: React.FC<{
       // props reach SceneLayer unparsed: a cue saved before `speed` existed
       // passes undefined, which Remotion plays at 1x.
       //
-      // A window LONGER than that (an author who dragged the end past the
-      // clip: the editor's `clipSpeedTiming` leaves the edges theirs) holds
-      // the clip's last frame, and nothing here does it: measured 2026-11-20
-      // on real `production` stills, a 4 s frame-numbered VP9-alpha clip in a
-      // 5 s window at 1x showed F60 at 2 s in and F119 (its last) at 4.4 s,
+      // No window can now reach past the clip's end except by frame rounding:
+      // a block is capped at its played length everywhere it is decided
+      // (`maxCueSec` in core — the pin read, the editor's drag, the live
+      // retime), and only trimmed shorter. Should a window still outrun the
+      // file by a frame, the render holds the clip's last frame, and nothing
+      // here does it: measured 2026-11-20 on real `production` stills, a 4 s
+      // frame-numbered VP9-alpha clip in a 5 s window at 1x showed F60 at 2 s in and F119 (its last) at 4.4 s,
       // and at 2x in a 4 s window F60 at 1 s in and F119 at 3 s — the
       // compositor answers a time past the file's end with its last frame.
       // The editor's `<video>` fallback holds as well: seeked or played past

@@ -25,7 +25,7 @@ import {
 import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
 import { SCENE_REGISTRY, clipSpeed, resolveSceneProps } from "./scene-registry";
-import { MAX_SCENE_SEC } from "./assemble";
+import { maxCueSec } from "./assemble";
 import { revealItemTexts } from "./reveal-match";
 import { keepsBoxAcross } from "./framing";
 import {
@@ -1244,8 +1244,17 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       // this branch with a src entry means no pre-pass ran, and doing nothing
       // is the only honest answer available (guessing an output window from a
       // source second is exactly the old-clock lie this arm removes).
+      // A clip's pin is read capped at its played length (`maxCueSec`, on the
+      // MERGED props so a speed edit in the same entry counts): a pin an older
+      // edge drag stored longer than the clip is the window the live retime
+      // already drew, so produce renders what the preview showed. The stored
+      // doc keeps the author's numbers; only the read is capped.
       ...(pins && o.timing && !isSrcTiming(o.timing)
-        ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true }
+        ? {
+            startSec: o.timing.startSec,
+            endSec: cappedEndSec({ component, props }, o.timing.startSec, o.timing.endSec),
+            pinned: true,
+          }
         : {}),
     };
     return swapped ? withSwappedReveal(merged) : merged;
@@ -1269,8 +1278,9 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       merged,
       setsSpeed: "speed" in o.props,
       // Any timing entry, a src one included: a pin is the author's own
-      // window and stays exactly as dragged. `cue.pinned` too — an earlier
-      // pass already applied that window.
+      // window and stays as dragged (read capped at the clip's length,
+      // above). `cue.pinned` too — an earlier pass already applied that
+      // window.
       pinned: o.timing !== undefined || cue.pinned === true,
       nextStartSec,
     });
@@ -1279,10 +1289,21 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
   return { cues: retimed, orphans };
 }
 
+/** `endSec`, held to `startSec` plus the cue's longest length (`maxCueSec`);
+ * unchanged for a cue with no fixed length. */
+function cappedEndSec(
+  cue: Pick<SceneCue, "component" | "props">,
+  startSec: number,
+  endSec: number,
+): number {
+  const max = maxCueSec(cue);
+  return max === undefined ? endSec : Math.min(endSec, startSec + max);
+}
+
 /**
  * The window end a ClipScene's speed override gives it: `startSec` plus the
- * clip's played length (`fixedDurationSec`, `durationSec / speed`), capped
- * as `assembleScenes` caps a clip (`MAX_SCENE_SEC` from the start) and cut
+ * clip's longest length (`maxCueSec`: `durationSec / speed`, capped as
+ * `assembleScenes` caps a clip at `MAX_SCENE_SEC` from the start) and cut
  * at the next scene's start less the gap the timing clamps keep
  * (`PINNED_GAP_SEC`, `reclampPinnedTiming`). `merged.endSec` unchanged when
  * the rule does not apply.
@@ -1322,9 +1343,9 @@ export function clipSpeedEndSec(input: {
   if (cue.component !== "ClipScene" || merged.component !== "ClipScene") return merged.endSec;
   if (!input.setsSpeed || input.pinned || splitRootId(cue.id) !== cue.id) return merged.endSec;
   if (merged.props === undefined || clipSpeed(merged.props) === clipSpeed(cue.props)) return merged.endSec;
-  const played = SCENE_REGISTRY.ClipScene.fixedDurationSec?.(merged.props);
-  if (played === undefined) return merged.endSec;
-  const wanted = Math.min(merged.startSec + played, merged.startSec + MAX_SCENE_SEC);
+  const max = maxCueSec(merged);
+  if (max === undefined) return merged.endSec;
+  const wanted = merged.startSec + max;
   const hi =
     input.nextStartSec === undefined ? Number.POSITIVE_INFINITY : input.nextStartSec - PINNED_GAP_SEC;
   return Math.min(wanted, Math.max(hi, merged.endSec));
@@ -3004,11 +3025,18 @@ export function reclampPinnedTiming(cues: readonly SceneCue[]): ReclampResult {
     const hi = next
       ? next.startSec - (nextIsSibling ? 0 : PINNED_GAP_SEC)
       : Number.POSITIVE_INFINITY;
-    let s = Math.min(Math.max(cue.startSec, lo), Math.max(lo, hi - MIN_PINNED_SCENE_SEC));
-    let e = Math.max(Math.min(cue.endSec, hi), s + MIN_PINNED_SCENE_SEC);
+    // The floor never makes a clip longer than it plays (`maxCueSec`): 4 s at
+    // 4x is 1 s, and flooring it to 1.2 s was a held last frame the editor
+    // does not draw. The clip wins, as it does in assembly. No cap is needed
+    // here beyond that — `applyOverrides` already read the pin capped, and
+    // nothing below lengthens a window except the floor.
+    const max = maxCueSec(cue);
+    const floor = max === undefined ? MIN_PINNED_SCENE_SEC : Math.min(MIN_PINNED_SCENE_SEC, max);
+    let s = Math.min(Math.max(cue.startSec, lo), Math.max(lo, hi - floor));
+    let e = Math.max(Math.min(cue.endSec, hi), s + floor);
     if (e > hi) {
       e = hi;
-      s = Math.max(lo, e - MIN_PINNED_SCENE_SEC);
+      s = Math.max(lo, e - floor);
     }
     if (s !== cue.startSec || e !== cue.endSec) {
       out[i] = { ...cue, startSec: s, endSec: e };

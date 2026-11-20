@@ -18,6 +18,7 @@ import {
   clearElementTransform,
   clearTiming,
   reclampPinnedTiming,
+  resolveSrcTimingPins,
   resolveSwappedProps,
   resolveTheme,
   restoreElement,
@@ -25,6 +26,7 @@ import {
   type OverrideDoc,
 } from "../src/overrides";
 import { fillPlainCues } from "../src/fill";
+import { TimeMap } from "../src/timemap";
 import { defaultTheme, type SceneCue } from "../src/scene-schema";
 
 const cue = (id: string): SceneCue => ({
@@ -354,14 +356,26 @@ describe("a clip's speed edit re-derives its window (clipSpeedEndSec)", () => {
     expect(cues[0]!.endSec).toBeCloseTo(18, 9);
   });
 
-  it("a pinned window stays exactly as dragged; the speed still merges", () => {
+  it("a pinned window shorter than the clip stays exactly as dragged; the speed still merges", () => {
+    const doc = docWith({
+      "shot-a": { props: { speed: 2 }, timing: { startSec: 10, endSec: 11.5 } },
+    });
+    const { cues } = applyOverrides([clip, next], doc);
+    expect(cues[0]!.startSec).toBe(10);
+    expect(cues[0]!.endSec).toBe(11.5);
+    expect(cues[0]!.props).toMatchObject({ speed: 2 });
+  });
+
+  it("a pinned window longer than the clip is read as capped at its played length", () => {
+    // 4 s at 2x plays 2 s; the stored 4.5 s pin is capped, not honoured as a
+    // held last frame (the preview caps it too, `retimeForPreview`).
     const doc = docWith({
       "shot-a": { props: { speed: 2 }, timing: { startSec: 10, endSec: 14.5 } },
     });
     const { cues } = applyOverrides([clip, next], doc);
     expect(cues[0]!.startSec).toBe(10);
-    expect(cues[0]!.endSec).toBe(14.5);
-    expect(cues[0]!.props).toMatchObject({ speed: 2 });
+    expect(cues[0]!.endSec).toBeCloseTo(12, 9);
+    expect(cues[0]!.pinned).toBe(true);
   });
 
   it("a speed equal to the cue's own leaves a capped window as it was", () => {
@@ -736,7 +750,69 @@ describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
   });
 });
 
+describe("a stored clip pin is capped at the clip's played length (the author's shot)", () => {
+  // The field case: `shot-s2`, a 4.64 s clip at 2.98x (1.557 s played),
+  // pinned by an edge drag to a 4.721 s source window. Identity clock, so
+  // the source seconds are the output seconds.
+  const shot: SceneCue = {
+    id: "shot-s2",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/s2.webm", durationSec: 4.64, speed: 1, gainDb: -13, muted: false },
+    startSec: 22.9,
+    endSec: 27.54,
+  };
+  const map = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+  const merge = (timing: Record<string, number>) => {
+    const doc = docWith({ "shot-s2": { props: { speed: 2.98 }, timing } });
+    const resolved = resolveSrcTimingPins(doc, map).doc;
+    return { doc, cue: applyOverrides([shot], resolved).cues[0]! };
+  };
+
+  it("the long pin is read as start + 4.64 / 2.98; the doc is not rewritten", () => {
+    const { doc, cue } = merge({ srcStart: 22.977, srcEnd: 27.698 });
+    expect(cue.startSec).toBeCloseTo(22.977, 9);
+    expect(cue.endSec).toBeCloseTo(22.977 + 4.64 / 2.98, 9);
+    expect(doc.scenes["shot-s2"]!.timing).toEqual({ srcStart: 22.977, srcEnd: 27.698 });
+  });
+
+  it("a pin shorter than the played length is left alone", () => {
+    const { cue } = merge({ srcStart: 22.977, srcEnd: 23.9 });
+    expect(cue.startSec).toBeCloseTo(22.977, 9);
+    expect(cue.endSec).toBeCloseTo(23.9, 9);
+  });
+
+  it("a second pass over the capped cue changes nothing", () => {
+    const doc = docWith({ "shot-s2": { props: { speed: 2.98 }, timing: { startSec: 22.977, endSec: 27.698 } } });
+    const once = applyOverrides([shot], doc).cues;
+    expect(applyOverrides(once, doc).cues).toEqual(once);
+  });
+
+  it("a pinned card is not capped", () => {
+    const card: SceneCue = { ...shot, component: "TitleCard", props: { title: "HI" } };
+    const doc = docWith({ "shot-s2": { timing: { startSec: 22.977, endSec: 27.698 } } });
+    expect(applyOverrides([card], doc).cues[0]!.endSec).toBe(27.698);
+  });
+});
+
 describe("reclampPinnedTiming (produce-side re-clamp after a re-plan)", () => {
+  it("does not floor a pinned clip past its played length (4 s at 4x plays 1 s)", () => {
+    // The 1.2 s floor and the clip's 1 s conflict: the clip wins, as in
+    // assembly — there are no frames past its end to stretch to.
+    const shot: SceneCue = {
+      id: "shot-a",
+      layout: "full-bleed",
+      component: "ClipScene",
+      props: { src: "clips/a.webm", durationSec: 4, speed: 4 },
+      startSec: 10,
+      endSec: 11,
+      pinned: true,
+    };
+    const { cues: out, adjusted } = reclampPinnedTiming([shot]);
+    expect(adjusted).toEqual([]);
+    expect(out[0]!.endSec).toBe(11);
+  });
+
   it("leaves a pinned cue alone when it still fits between its neighbours", () => {
     const cues: SceneCue[] = [
       { ...cue("scene-0"), startSec: 0, endSec: 4 },

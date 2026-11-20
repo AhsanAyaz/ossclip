@@ -673,13 +673,14 @@ export function componentSwapOptions(component: SceneComponentId): ScriptCompone
  * label says, or null. The controls are derived from the schema and their
  * label is the bare key, so a side effect has nowhere else to be stated: a
  * clip's speed also resizes its block (`clipSpeedTiming`, `clipSpeedEndSec`),
- * and the way to a deliberate freeze on the last frame is a drag, not this
- * slider. Keyed by component AND key — another component's `speed` would not
- * resize anything.
+ * and an edge drag can trim the block but stops at the clip's length
+ * (`maxCueSec`), which the author would otherwise learn by a drag that will
+ * not go. Keyed by component AND key — another component's `speed` would
+ * not resize anything.
  */
 export function propControlHint(component: SceneComponentId | undefined, key: string): string | null {
   if (component === "ClipScene" && key === "speed") {
-    return "Changing speed resizes the block to the clip's new length. Drag the end longer to hold the last frame.";
+    return "Changing speed resizes the block to the clip's new length. A block can be trimmed, not made longer than its clip.";
   }
   return null;
 }

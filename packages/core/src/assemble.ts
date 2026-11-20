@@ -31,6 +31,32 @@ export const MAX_SCENE_SEC = 15;
 /** R20 §95's lower-third ceiling — now the universal one; kept as an alias
  * so published consumers of the old name keep compiling. */
 export const MAX_OVERLAY_SCENE_SEC = MAX_SCENE_SEC;
+
+/**
+ * The longest a cue may be on screen, or undefined for a cue with no fixed
+ * length (every component but ClipScene). For a clip that is its played
+ * length, `durationSec / speed` (`fixedDurationSec`), under the same 15 s
+ * ceiling assembly cuts a clip to.
+ *
+ * One rule for every place a clip's window is decided after assembly (which
+ * computes the same length inline, below): a pin read in `applyOverrides`,
+ * the floor in `reclampPinnedTiming`, the live retime (`retimeForPreview`),
+ * the editor's edge drag (`clampTiming`) and both speed resizes
+ * (`clipSpeedEndSec`, `clipSpeedTiming`). An edge drag
+ * once wrote a pin longer than the clip while the live retime drew the clip
+ * at its own length: the block snapped back on release, and the plain take
+ * after it, filled against the stored pin, moved away from it. A block can
+ * be trimmed shorter than this, never made longer.
+ *
+ * A split half is bounded by the WHOLE clip's length: loose for a half, but
+ * never wrong, and the speed resizes already keep halves out of their rule.
+ */
+export function maxCueSec(cue: Pick<SceneCue, "component" | "props">): number | undefined {
+  if (cue.component === undefined || cue.props === undefined) return undefined;
+  const fixed = SCENE_REGISTRY[cue.component].fixedDurationSec?.(cue.props);
+  return fixed === undefined ? undefined : Math.min(fixed, MAX_SCENE_SEC);
+}
+
 /**
  * Breathing room enforced between consecutive scenes. Exported so the script
  * minimum (`scriptSceneEndWords`, §161) pushes a scene past the one before it

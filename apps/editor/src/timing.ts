@@ -1,6 +1,5 @@
 import {
-  MAX_SCENE_SEC,
-  SCENE_REGISTRY,
+  maxCueSec,
   splitRootId,
   type KeptSpan,
   type SceneCue,
@@ -129,6 +128,20 @@ export function pinTiming(
   return { srcStart, srcEnd };
 }
 
+/**
+ * The window an edge drag (or a speed resize) may give `sceneId`: inside the
+ * video, clear of its graphic neighbours by `GAP`, at least the floor long,
+ * and — for a clip — never longer than the clip plays (`maxCueSec`, core's
+ * one rule). A drag past that stops there rather than writing a longer pin:
+ * the live retime and the render cap a clip block at its length, so a longer
+ * pin snapped back on release, and the plain take after it moved.
+ *
+ * Which edge gives way to the clip's length is read from which edge the
+ * caller kept where the block already is: the END edge's drag (start held)
+ * stops at start + length; the START edge's (end held) stops where the
+ * block would outgrow the clip, the end staying put. The floor gives way to
+ * the clip too: 4 s at 4x is 1 s, and 1.2 s would be frames it does not have.
+ */
 export function clampTiming(
   allCues: readonly SceneCue[],
   sceneId: string,
@@ -138,13 +151,21 @@ export function clampTiming(
 ): { startSec: number; endSec: number } {
   const cues = stored(allCues);
   const i = cues.findIndex((c) => c.id === sceneId);
+  const cue = cues[i];
   const prev = i > 0 ? cues[i - 1] : undefined;
   const next = i >= 0 && i < cues.length - 1 ? cues[i + 1] : undefined;
   const lo = prev ? prev.endSec + GAP : 0;
   const hi = next ? next.startSec - GAP : duration;
-  let s = Math.min(Math.max(startSec, lo), Math.max(lo, hi - MIN_SCENE_SEC));
-  let e = Math.max(Math.min(endSec, hi), s + MIN_SCENE_SEC);
-  if (e > hi) { e = hi; s = Math.max(lo, e - MIN_SCENE_SEC); }
+  const max = cue ? maxCueSec(cue) : undefined;
+  const floor = max === undefined ? MIN_SCENE_SEC : Math.min(MIN_SCENE_SEC, max);
+  let s = Math.min(Math.max(startSec, lo), Math.max(lo, hi - floor));
+  let e = Math.max(Math.min(endSec, hi), s + floor);
+  if (e > hi) { e = hi; s = Math.max(lo, e - floor); }
+  if (max !== undefined && e - s > max) {
+    const startEdge = cue !== undefined && endSec === cue.endSec && startSec !== cue.startSec;
+    if (startEdge) s = e - max;
+    else e = s + max;
+  }
   return { startSec: s, endSec: e };
 }
 
@@ -153,16 +174,16 @@ export function clampTiming(
  * editor must not rewrite the pin. The rule (decided after 493597a, once it
  * was tried on a pinned storyboard shot): changing speed always sets the
  * block to the clip's played length, and the edges afterwards are the
- * author's — dragging the end past the clip holds its last frame, a shorter
- * block trims it, and the NEXT speed change resizes again. Leaving a dragged
- * block its old length was what made a sped-up shot end in a freeze and a
- * slowed one cut off.
+ * author's — a shorter block trims the clip, no block is longer than it
+ * (`clampTiming`), and the NEXT speed change resizes again. Leaving a
+ * dragged block its old length was what made a sped-up shot end in a
+ * freeze and a slowed one cut off.
  *
- * Window: the current start to start + `durationSec / speed` (the registry's
- * `fixedDurationSec`, so the length is the one assembly and the render
- * mean), capped at `MAX_SCENE_SEC` and then limited exactly as an edge drag
- * is (`clampTiming`: neighbours less the gap, the video's end, the floor) —
- * a slowed clip that reaches its neighbour is cut there.
+ * Window: the current start to start + the clip's longest length at the new
+ * speed (`maxCueSec`: `durationSec / speed` under `MAX_SCENE_SEC`, the length
+ * assembly and the render mean), then limited exactly as an edge drag is
+ * (`clampTiming`: neighbours less the gap, the video's end) — a slowed clip
+ * that reaches its neighbour is cut there.
  *
  * Null, and why each one:
  * - not pinned: `applyOverrides` re-derives an unpinned clip's window from
@@ -177,12 +198,11 @@ export function clampTiming(
  * - a split half: its window is a piece of the clip, never the whole clip's
  *   length — `clipSpeedEndSec` skips halves for the same reason.
  *
- * Where both paths could apply they agree on the cap and the neighbour gap
- * (`PINNED_GAP_SEC` and `GAP` are both 0.05). They cannot agree on the
- * floor: a pin is re-clamped to 1.2 s at produce time
- * (`reclampPinnedTiming`), so a pinned clip shorter than that at its new
- * speed holds its last frame for the difference, where an unpinned one is
- * never stretched (assembly's "there are no frames past its end").
+ * Where both paths could apply they give the same window: one length rule
+ * (`maxCueSec`), the same neighbour gap (`PINNED_GAP_SEC` and `GAP` are both
+ * 0.05), and a 1.2 s floor that gives way to the clip on both sides
+ * (`clampTiming` here, `reclampPinnedTiming` at produce time), so a 4 s clip
+ * at 4x is 1 s pinned or not.
  */
 export function clipSpeedTiming(
   allCues: readonly SceneCue[],
@@ -194,13 +214,16 @@ export function clipSpeedTiming(
   if (!pinned || !(duration > 0)) return null;
   const cue = allCues.find((c) => c.id === sceneId);
   if (!cue || cue.component !== "ClipScene" || splitRootId(cue.id) !== cue.id) return null;
-  const played = SCENE_REGISTRY.ClipScene.fixedDurationSec?.({ ...cue.props, speed });
-  if (played === undefined) return null;
+  // The cue at its NEW speed, so `clampTiming`'s own limit is the new
+  // length and not the old one (a slowed clip would stop at its old end).
+  const resped: SceneCue = { ...cue, props: { ...cue.props, speed } };
+  const max = maxCueSec(resped);
+  if (max === undefined) return null;
   return clampTiming(
-    allCues,
+    allCues.map((c) => (c.id === sceneId ? resped : c)),
     sceneId,
     cue.startSec,
-    cue.startSec + Math.min(played, MAX_SCENE_SEC),
+    cue.startSec + max,
     duration,
   );
 }

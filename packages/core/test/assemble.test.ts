@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleScenes, ENTRY_LEAD_SEC, ITEM_LEAD_SEC } from "../src/assemble";
+import { assembleScenes, ENTRY_LEAD_SEC, ITEM_LEAD_SEC, MAX_SCENE_SEC, maxCueSec } from "../src/assemble";
 import { fillPlainCues } from "../src/fill";
 import { TimeMap } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
@@ -519,5 +519,26 @@ describe("assembleScenes — fixed clip duration and the shortened report (expla
       ).shortened,
     ).toEqual([]);
     expect(assembleScenes([scene("a", 2, 5)], transcript, identity).shortened).toEqual([]);
+  });
+});
+
+describe("maxCueSec (a clip block is never longer than its clip)", () => {
+  const clip = (props: Record<string, unknown>) => ({ component: "ClipScene" as const, props });
+
+  it("a clip's is its played length, durationSec / speed", () => {
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 4 }))).toBe(4);
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 4, speed: 2 }))).toBe(2);
+    // The field case: 4.64 s at 2.98x.
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 4.64, speed: 2.98 }))).toBeCloseTo(1.557, 3);
+  });
+
+  it("is held to the 15 s ceiling assembly cuts a clip to", () => {
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 10, speed: 0.5 }))).toBe(MAX_SCENE_SEC);
+  });
+
+  it("is undefined for a card, a plain take, and a clip with no length", () => {
+    expect(maxCueSec({ component: "TitleCard", props: { title: "HI" } })).toBeUndefined();
+    expect(maxCueSec({})).toBeUndefined();
+    expect(maxCueSec(clip({ src: "a.webm" }))).toBeUndefined();
   });
 });

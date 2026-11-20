@@ -1434,7 +1434,7 @@ describe("Inspector — a clip's speed resizes its block", () => {
   it("says so under the slider; the label stays the key", async () => {
     await mount();
     expect(q("prop-speed-hint")!.textContent).toBe(
-      "Changing speed resizes the block to the clip's new length. Drag the end longer to hold the last frame.",
+      "Changing speed resizes the block to the clip's new length. A block can be trimmed, not made longer than its clip.",
     );
     expect(q("prop-speed")!.parentElement!.firstElementChild!.textContent).toMatch(/^speed/);
     // Only a clip's speed: the muted box beside it has no hint.

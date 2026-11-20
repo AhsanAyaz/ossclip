@@ -227,10 +227,12 @@ export const ClipSceneProps = z.object({
    * How fast the clip plays, as a playback rate (1 = as made). The scene
    * lasts `durationSec / speed` (`fixedDurationSec`): a faster clip's slot
    * shrinks and the speaker shows after it, rather than the clip holding its
-   * last frame. `durationSec` stays the clip FILE's own length at 1x and is
-   * never rewritten by speed, so the kit and the clip import keep meaning
-   * the file. Bounded so §153's derived Inspector controls give it a slider
-   * (they skip an unbounded number). The default keeps every clip placed
+   * last frame. That is also the longest its block may be (`maxCueSec`): a
+   * pin or a drag can trim it, never lengthen it past the clip.
+   * `durationSec` stays the clip FILE's own length at 1x and is never
+   * rewritten by speed, so the kit and the clip import keep meaning the file.
+   * Bounded so §153's derived Inspector controls give it a slider (they skip
+   * an unbounded number). The default keeps every clip placed
    * before this field playing exactly as it did.
    */
   speed: z.number().min(0.25).max(4).default(1),

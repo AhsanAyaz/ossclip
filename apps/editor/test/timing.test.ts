@@ -248,10 +248,15 @@ describe("clipSpeedTiming (a clip's speed resizes its pinned block)", () => {
     expect(clipSpeedTiming([clip(), take], "clip-1", 0.5, 60, true)).toEqual({ startSec: 10, endSec: 18 });
   });
 
-  it("keeps the 1.2 s floor a pin always has (produce re-clamps a pin to it too)", () => {
-    // 4 s at 4x is 1 s; `reclampPinnedTiming` would put it back to 1.2 s.
-    const t = clipSpeedTiming([clip()], "clip-1", 4, 60, true)!;
-    expect(t.endSec - t.startSec).toBeCloseTo(1.2, 9);
+  it("4 s at 4x plays 1 s: the clip's length wins over the 1.2 s floor, pinned or not", () => {
+    // The floor used to stretch a pinned one to 1.2 s (a held last frame)
+    // while an unpinned one played 1 s; a block is never longer than its clip.
+    const pinned = clipSpeedTiming([clip(), card(30)], "clip-1", 4, 60, true)!;
+    const doc = OverrideDocSchema.parse({ scenes: { "clip-1": { props: { speed: 4 } } } });
+    const unpinned = applyOverrides([clip(), card(30)], doc).cues[0]!;
+    expect(pinned).toEqual({ startSec: 10, endSec: 11 });
+    expect(unpinned.startSec).toBe(10);
+    expect(unpinned.endSec).toBeCloseTo(11, 9);
   });
 
   it("unpinned is null: applyOverrides re-derives that window from the speed prop", () => {
@@ -282,5 +287,48 @@ describe("clipSpeedTiming (a clip's speed resizes its pinned block)", () => {
       expect(pinned.startSec).toBe(unpinned.startSec);
       expect(pinned.endSec).toBeCloseTo(unpinned.endSec, 9);
     }
+  });
+});
+
+describe("clampTiming: a clip block is never longer than its clip", () => {
+  // A 4 s clip at 2x (2 s played) at 10..12, a card at 20, a 60 s video.
+  const clip: SceneCue = {
+    id: "clip-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4, speed: 2 },
+    startSec: 10,
+    endSec: 12,
+  };
+  const before = { id: "card-0", kind: "graphic", layout: "video-top", component: "TitleCard", startSec: 2, endSec: 5 } as SceneCue;
+  const after = { id: "card-1", kind: "graphic", layout: "video-top", component: "TitleCard", startSec: 20, endSec: 23 } as SceneCue;
+  const cues = [before, clip, after];
+
+  it("an end-edge drag past the played length stops there", () => {
+    expect(clampTiming(cues, "clip-1", 10, 18, 60)).toEqual({ startSec: 10, endSec: 12 });
+  });
+
+  it("a start-edge drag earlier stops where the block would outgrow the clip; the end stays", () => {
+    // Trimmed to 10.5..12 first, then the start dragged to 7.
+    const trimmed = [before, { ...clip, startSec: 10.5 }, after];
+    expect(clampTiming(trimmed, "clip-1", 7, 12, 60)).toEqual({ startSec: 10, endSec: 12 });
+  });
+
+  it("a drag shorter than the played length is allowed", () => {
+    expect(clampTiming(cues, "clip-1", 10, 11.5, 60)).toEqual({ startSec: 10, endSec: 11.5 });
+    expect(clampTiming(cues, "clip-1", 10.4, 12, 60)).toEqual({ startSec: 10.4, endSec: 12 });
+  });
+
+  it("a card is unaffected", () => {
+    const card = { ...clip, component: "TitleCard", props: { title: "HI" } } as SceneCue;
+    expect(clampTiming([before, card, after], "clip-1", 10, 18, 60)).toEqual({ startSec: 10, endSec: 18 });
+  });
+
+  it("the floor never pushes a clip past its played length", () => {
+    // 4 s at 4x plays 1 s: a drag to 0.6 s is floored at 1 s, not 1.2.
+    const fast = { ...clip, props: { ...clip.props, speed: 4 }, endSec: 11 } as SceneCue;
+    expect(clampTiming([before, fast, after], "clip-1", 10, 10.6, 60)).toEqual({ startSec: 10, endSec: 11 });
+    expect(clampTiming([before, fast, after], "clip-1", 10, 14, 60)).toEqual({ startSec: 10, endSec: 11 });
   });
 });

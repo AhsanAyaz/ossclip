@@ -21,7 +21,10 @@ export * from "./fill";
 // edit on a pinned clip caps its window in the editor (`clipSpeedTiming`)
 // where an unpinned one is capped in `clipSpeedEndSec`, and two copies of
 // the ceiling are how the two paths would give one clip two lengths.
-export { MAX_SCENE_SEC, sceneStartSeconds } from "./assemble";
+// `maxCueSec` for the same reason: the editor's edge drag stops where the
+// pin read, the live retime and the render stop a clip block, and a second
+// copy of that limit is how a released drag snapped back.
+export { MAX_SCENE_SEC, maxCueSec, sceneStartSeconds } from "./assemble";
 // The editor's live grade preview computes the SVG filter spec with the SAME
 // math produce bakes into render-props (`gradeToSvgFilterSpec`) — a browser
 // copy of the curve sampler is how the preview and the render would drift.
