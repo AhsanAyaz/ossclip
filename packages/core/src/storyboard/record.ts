@@ -58,14 +58,30 @@ export type StoryboardShot = z.infer<typeof StoryboardShotSchema>;
  * removed (plan Global Constraints): a later shot named `s3` must not inherit
  * the drawn versions under `storyboard/s3/` of the shot that had it before.
  * `assetsDir` is the `--assets` folder, absolute, as the draw record stores it.
+ *
+ * Two rows with one id are refused, not repaired: an id names a folder of
+ * drawings (`storyboard/<id>/`), so a hand-edited file holding `s3` twice
+ * would give both rows the same versions, and an edit addressed to `s3`
+ * would have two targets (§168). Which row the author meant is not ours to
+ * guess, so the load stops and the message names the id.
  */
-export const StoryboardSchema = z.object({
-  version: z.literal(1),
-  intent: z.string().optional(),
-  assetsDir: z.string().optional(),
-  nextShot: z.number().int().positive(),
-  shots: z.array(StoryboardShotSchema),
-});
+export const StoryboardSchema = z
+  .object({
+    version: z.literal(1),
+    intent: z.string().optional(),
+    assetsDir: z.string().optional(),
+    nextShot: z.number().int().positive(),
+    shots: z.array(StoryboardShotSchema),
+  })
+  .superRefine((sb, ctx) => {
+    const seen = new Set<string>();
+    sb.shots.forEach((s, i) => {
+      if (seen.has(s.id)) {
+        ctx.addIssue({ code: "custom", message: `shot id "${s.id}" is used by more than one shot`, path: ["shots", i, "id"] });
+      }
+      seen.add(s.id);
+    });
+  });
 export type Storyboard = z.infer<typeof StoryboardSchema>;
 
 /**

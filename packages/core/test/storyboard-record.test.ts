@@ -47,6 +47,14 @@ describe("StoryboardSchema", () => {
     expect(StoryboardShotSchema.safeParse({ ...shot(), priority: 4 }).success).toBe(false);
     expect(StoryboardSchema.safeParse({ ...board([shot()]), version: 2 }).success).toBe(false);
   });
+
+  it("fails two shots with one id, naming the id and the second row", () => {
+    // An id names a folder of drawings: two rows sharing it would share them.
+    const r = StoryboardSchema.safeParse(board([shot(), shot({ id: "s2", startWord: 10, endWord: 12 }), shot({ startWord: 20, endWord: 22 })]));
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.message).toContain('"s1"');
+    expect(r.error?.issues[0]?.path).toEqual(["shots", 2, "id"]);
+  });
 });
 
 describe("newShotId", () => {
