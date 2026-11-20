@@ -62,8 +62,8 @@
   - `import`: `import fs from "node:fs"`; `import { Img } from "remotion"`; `import * as R from "remotion"`; a kit name not in `kitExports`;
   - `dynamic-import`: `import("x")`;
   - `element`: each of `image`, `foreignObject`, `script`, `a`, `use`, `style`, `iframe`, `img`, `video`, `audio`, `link`, `object`, `embed`; an unknown capitalised component that is neither imported from the kit or `remotion` nor declared in the file. A component declared in the file is allowed;
-  - `name`: each of `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `eval`, `Function`, `constructor`, `window`, `document`, `globalThis`, `self`, `top`, `parent`, `frames`, `location`, `open`, `localStorage`, `sessionStorage`, `navigator`, `process`, `require`, as an identifier and as a property name (`x.constructor`, `x["constructor"]`). A local variable or prop named `top` used as an object key in a style (`{ top: 10 }`) is allowed;
-  - `string`: literals and template parts containing `url(`, `http:`, `https:`, `//`, `data:`. `"M0 0 L10 10"` and `"#fff"` are allowed;
+  - `name`: each of `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `eval`, `Function`, `constructor`, `window`, `document`, `globalThis`, `self`, `top`, `parent`, `frames`, `location`, `open`, `localStorage`, `sessionStorage`, `navigator`, `process`, `require`, `setTimeout`, `setInterval`, `createElement`, as an identifier and as a property name (`x.constructor`, `x["constructor"]`). A local variable or prop named `top` used as an object key in a style (`{ top: 10 }`) is allowed;
+  - `string`: literals and template parts containing `url(`, `http:`, `https:`, `//`, `data:`. `"M0 0 L10 10"`, `"#fff"` and a local reference `"url(#grad)"` are allowed;
   - `size`: 401 lines; `fence`: three backticks anywhere;
   - `syntax`: unbalanced JSX returns one issue with the parser's line;
   - `export`: no default export.
@@ -88,7 +88,7 @@
   export function useSceneTime(): number;            // seconds: useCurrentFrame() / fps
   export function useTheme(): Theme;
   export function useFrameSize(): { width: number; height: number };
-  export function useSafeArea(): { left: number; top: number; right: number; bottom: number }; // px, from safeAreaFor
+  export function useSafeArea(): { x: number; y: number; width: number; height: number }; // px rect, from safeAreaFor. Not left/top/right/bottom: `top` is a rejected name in the static check
   export { popScale, easeInOut, typedChars, caretOn, bobPx, bump, beatStarts, parseCount, countAt, fadeIn, riseIn } from "../motion";
   export const Card, Pill, Sticker, NumberBadge, PhoneFrame, Icon; // same props as the primitives, minus `theme`
   export const Asset: React.FC<{ name: string; width?: number; height?: number; style?: React.CSSProperties }>;

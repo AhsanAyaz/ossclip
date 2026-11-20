@@ -161,8 +161,8 @@ In order, for every version:
     *   any import other than `react`, `@ossclip/scenes/draw`, and these names from `remotion`: `useCurrentFrame`, `useVideoConfig`, `interpolate`, `interpolateColors`, `spring`, `Easing`, `AbsoluteFill`, `Sequence`. (`Img`, `IFrame`, `staticFile`, `delayRender` and the media components can load from the network.)
     *   dynamic `import()`;
     *   any JSX element that is not `div`, `span`, a kit part, an allowed `remotion` component, or an SVG drawing element. `image`, `foreignObject`, `script`, `a`, `use`, `style`, `iframe`, `img`, `video`, `audio`, `link`, `object` and `embed` are rejected;
-    *   these names: `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `eval`, `Function`, `constructor`, `window`, `document`, `globalThis`, `self`, `top`, `parent`, `frames`, `localStorage`, `sessionStorage`, `navigator`, `process`, `require`;
-    *   string literals that contain `url(`, `http:`, `https:`, `//` or `data:`.
+    *   these names: `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `eval`, `Function`, `constructor`, `window`, `document`, `globalThis`, `self`, `top`, `parent`, `frames`, `localStorage`, `sessionStorage`, `navigator`, `process`, `require`, `location`, `open`, `setTimeout`, `setInterval`, `createElement`;
+    *   string literals that contain `http:`, `https:`, `//`, `data:`, or a `url(` that is not a local reference such as `url(#gradient)`.
 2.  **Type check** against the kit's types. A wrong prop name is the most likely mistake, and the compiler's message is the best repair hint. `typescript` becomes a runtime dependency of the CLI for this; packages ship their source, so the types are there.
 3.  **Render stills.** Three frames: at 25% and 60% of the duration, and the last frame. Each still has a time limit; a render that exceeds it fails.
 4.  **Still checks, no AI.** Reject a version whose render throws, or whose three frames are all fully transparent.
