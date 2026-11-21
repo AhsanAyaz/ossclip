@@ -70,7 +70,7 @@ This design adds one gesture: select words in the transcript, pick a graphic typ
 addedScenes: z.array(AddedSceneSchema).optional()
 
 AddedSceneSchema = z.object({
-  id: z.string(),                          // "added-<base36>", minted by the reducer
+  id: z.string(),                          // "added-<n>", minted by the reducer
   component: z.string(),                   // validated at conversion, not here
   props: z.record(z.string(), z.unknown()),
   srcStart: z.number().finite().nonnegative(),
@@ -89,7 +89,7 @@ AddedSceneSchema = z.object({
 
 `addedSceneToScene(entry, words) → { scene } | { skipped: string }` in a new `packages/core/src/added-scenes.ts`, exported through `browser.ts`:
 
-1.  `component` must be in `ScriptComponentIdSchema` (`scene-schema.ts:62`) and not `ScreenshotFrame`; else skipped ("graphic type X no longer exists").
+1.  `component` must be in `ScriptComponentIdSchema` (`scene-schema.ts:62`); else skipped ("graphic type X no longer exists"). `ScreenshotFrame` is skipped with its own reason ("cannot be added in the editor").
 2.  `SCENE_REGISTRY[component].propsSchema.safeParse(props)` must succeed; else skipped with the first issue's message. (`resolveSceneProps`, `scene-registry.ts:750-758`, returns only null and loses the reason.)
 3.  `srcEnd > srcStart`; else skipped.
 4.  The anchor is the words of the given list whose source start lies in `[srcStart, srcEnd)`: first and last index. None found: skipped ("its words are no longer in the transcript"). The index space is the caller's list: produce passes `transcript.words` as it stands at the insertion point (on a `--clip` project, the clip's slice, `produce.ts:4066`); the editor passes its full repaired list (`App.tsx:340-349`). The editor's anchor is display-only; only produce's anchor reaches the render.
