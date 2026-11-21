@@ -1,6 +1,9 @@
 import { z } from "zod/v4";
 import { REVEAL_SPEED_DEFAULT, SCENE_REGISTRY } from "./scene-registry";
 import type { SceneComponentId } from "./scene-schema";
+// Type-only: added-scenes imports assemble and scene-registry at runtime, and
+// this module needs nothing from it but the offered-type union.
+import type { AddedOffered } from "./added-scenes";
 
 /**
  * The Inspector's controls for a scene's non-text props, derived from the
@@ -138,4 +141,180 @@ export function scalarPropControls(component: SceneComponentId): PropControl[] {
     // same prop is how two sources of truth start disagreeing.
   }
   return controls;
+}
+
+/**
+ * One field of the add gesture's short form (editor-added-graphics §5, step
+ * 2). The add form is the one place strings and arrays DO get a control:
+ * there is no element to select yet, so the Text field cannot own them —
+ * which is why this is a function of its own and `scalarPropControls` keeps
+ * its skip above.
+ *
+ * - `list` is an array of short texts. `item: "text-object"` means each entry
+ *   is stored as `{ text }` (StrikethroughReveal's lines, CardRow's cards,
+ *   PhoneDemo's caption words) and the schema's `.default()`s fill the rest;
+ *   the form itself deals only in strings.
+ * - `messages` is ChatMock's alone: each entry is a text AND who sends it.
+ */
+export type AddFormField =
+  | { kind: "text"; key: string; label: string; max: number }
+  | {
+      kind: "list";
+      key: string;
+      label: string;
+      min: number;
+      max: number;
+      itemMax: number;
+      item: "string" | "text-object";
+    }
+  | { kind: "messages"; key: "messages"; min: number; max: number; itemMax: number; from: readonly string[] }
+  | { kind: "choice"; key: string; label: string; options: readonly string[] }
+  | { kind: "number"; key: string; label: string; min: number; max: number };
+
+/** A field as the table states it: which prop, what to call it, what shape.
+ * Bounds and options are deliberately absent — they are read from the schema. */
+type AddFieldSpec =
+  | { kind: "text" | "choice" | "number"; key: string; label: string }
+  | { kind: "list"; key: string; label: string; item: "string" | "text-object" }
+  | { kind: "messages"; key: "messages" };
+
+/**
+ * The spec §5 table as data, in its order. Keyed by `AddedOffered` so a type
+ * joining the menu without a row here fails the typecheck. Only the keys and
+ * labels live here: every cap, item count and option list is read from the
+ * schema in `addFormFields`, because a hand-copied `max: 48` is the
+ * UI/schema drift §153 derives controls to avoid — a form that allowed 50
+ * characters would let Add store props that conversion then skips.
+ *
+ * Each row covers its schema's every required field with no `.default()`:
+ * conversion parses the stored props RAW (`addedSceneToScene`, §2), with no
+ * registry `defaultProps` merged in, so a field missing from the form could
+ * never be filled at all.
+ */
+const ADD_FORM: Record<AddedOffered, readonly AddFieldSpec[]> = {
+  TitleCard: [{ kind: "text", key: "title", label: "Title" }],
+  StatCard: [
+    { kind: "text", key: "value", label: "Value" },
+    { kind: "text", key: "label", label: "Label" },
+  ],
+  RuleCard: [
+    { kind: "text", key: "kicker", label: "Kicker" },
+    { kind: "text", key: "text", label: "Text" },
+  ],
+  StrikethroughReveal: [{ kind: "list", key: "lines", label: "Lines", item: "text-object" }],
+  BulletList: [{ kind: "list", key: "items", label: "Items", item: "string" }],
+  FlowDiagram: [{ kind: "list", key: "nodes", label: "Steps", item: "string" }],
+  ChatMock: [{ kind: "messages", key: "messages" }],
+  CardRow: [{ kind: "list", key: "cards", label: "Cards", item: "text-object" }],
+  CtaCard: [
+    { kind: "choice", key: "action", label: "Action" },
+    { kind: "text", key: "text", label: "Text" },
+  ],
+  BugCard: [
+    { kind: "number", key: "number", label: "Number" },
+    { kind: "text", key: "headline", label: "Headline" },
+  ],
+  PhoneDemo: [{ kind: "list", key: "caption", label: "Caption words", item: "text-object" }],
+};
+
+type JsonSchemaNode = {
+  type?: string;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  maxLength?: number;
+  minItems?: number;
+  maxItems?: number;
+  items?: JsonSchemaNode;
+  properties?: Record<string, JsonSchemaNode>;
+};
+
+/**
+ * A bound the table relies on, or a throw. Loud on purpose: a schema that
+ * lost a cap (or a renamed key) would otherwise hand the editor a form with
+ * no limit, and the per-type test runs this for every offered type, so the
+ * throw fails the suite long before it could reach an author.
+ */
+function bound<T>(value: T | undefined, where: string): T {
+  if (value === undefined) throw new Error(`add form: ${where} has no bound in its schema`);
+  return value;
+}
+
+/** The fields of the add form for one offered type, in the §5 table's order. */
+export function addFormFields(component: AddedOffered): AddFormField[] {
+  const schema = z.toJSONSchema(SCENE_REGISTRY[component].propsSchema as unknown as z.ZodType) as {
+    properties?: Record<string, JsonSchemaNode>;
+  };
+  const props = schema.properties ?? {};
+  return ADD_FORM[component].map((spec): AddFormField => {
+    const at = `${component}.${spec.key}`;
+    const prop = bound(props[spec.key], at);
+    switch (spec.kind) {
+      case "text":
+        return { kind: "text", key: spec.key, label: spec.label, max: bound(prop.maxLength, at) };
+      case "choice": {
+        const options = bound(prop.enum, at);
+        if (!options.every((o) => typeof o === "string")) throw new Error(`add form: ${at} is not a string enum`);
+        return { kind: "choice", key: spec.key, label: spec.label, options: options as string[] };
+      }
+      case "number":
+        return {
+          kind: "number",
+          key: spec.key,
+          label: spec.label,
+          min: bound(prop.minimum, at),
+          max: bound(prop.maximum, at),
+        };
+      case "list": {
+        const item = bound(prop.items, at);
+        const text = spec.item === "text-object" ? bound(item.properties?.text, `${at}[].text`) : item;
+        return {
+          kind: "list",
+          key: spec.key,
+          label: spec.label,
+          min: bound(prop.minItems, at),
+          max: bound(prop.maxItems, at),
+          itemMax: bound(text.maxLength, `${at}[]`),
+          item: spec.item,
+        };
+      }
+      case "messages": {
+        const item = bound(prop.items, at);
+        const from = bound(item.properties?.from?.enum, `${at}[].from`);
+        return {
+          kind: "messages",
+          key: "messages",
+          min: bound(prop.minItems, at),
+          max: bound(prop.maxItems, at),
+          itemMax: bound(item.properties?.text?.maxLength, `${at}[].text`),
+          from: from as string[],
+        };
+      }
+    }
+  });
+}
+
+/**
+ * The form's values as the props object `addScene` stores (§5, step 2):
+ * `values` is keyed by field key, a `text-object` list holding plain strings.
+ *
+ * Shaping only, never repair. Nothing is trimmed, clamped or defaulted, and a
+ * value of the wrong shape passes through as it is: the Add button is enabled
+ * by the schema parsing this output, so a malformed value must reach that
+ * parse and keep the button off rather than be coerced into props the author
+ * never wrote (the zod-not-coerce rule). Only the form's own keys are
+ * written, and only those given — a value left from another type, when the
+ * author switched type mid-form, must not ride into the stored entry.
+ */
+export function addFormProps(component: AddedOffered, values: Record<string, unknown>): Record<string, unknown> {
+  const props: Record<string, unknown> = {};
+  for (const spec of ADD_FORM[component]) {
+    const value = values[spec.key];
+    if (value === undefined) continue;
+    props[spec.key] =
+      spec.kind === "list" && spec.item === "text-object" && Array.isArray(value)
+        ? value.map((v) => (typeof v === "string" ? { text: v } : v))
+        : value;
+  }
+  return props;
 }

@@ -76,6 +76,9 @@ export const ADDED_OFFERED = [
   "BugCard",
   "PhoneDemo",
 ] as const satisfies readonly ScriptComponentId[];
+/** One offered type — what the add form (`addFormFields`) is keyed by, so a
+ * type joining the menu without a form row fails the typecheck. */
+export type AddedOffered = (typeof ADDED_OFFERED)[number];
 
 /** The overrides.ts park suffix (`PARKED_SUFFIX`), restated so this module
  * needs no runtime import from there (see the header). */
