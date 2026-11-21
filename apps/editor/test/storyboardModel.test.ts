@@ -222,6 +222,9 @@ describe("storyboardRows: the B2a states, first match wins (§169)", () => {
     expect(one({}, {}, {}, null).state).toBe("planned");
     // A job that is about other shots does not touch this one.
     expect(one({}, {}, {}, job({ shots: ["s9"], current: "s9" })).state).toBe("planned");
+    // A plan's unit is named "plan"; a shot of that id is not being drawn (§169).
+    const r = storyboardRows(board([shot({ id: "plan", startWord: 0, endWord: 1 })]), words, timeOf, {}, {}, job({ kind: "plan", shots: ["plan"], current: "plan" }))[0]!;
+    expect(r.state).toBe("planned");
   });
 });
 
@@ -247,6 +250,14 @@ describe("jobLine", () => {
 
   it("says the job is stopping after the shot it is on", () => {
     expect(jobLine(job({ shots: ["s1", "s3"], current: "s3", stopping: true }))).toBe("Stopping after s3…");
+  });
+
+  it("a plan says what it is and the calls, never a shot or a place: it is one call (§169)", () => {
+    const plan = job({ kind: "plan", shots: ["plan"], current: "plan", calls: 1 });
+    expect(jobLine(plan)).toBe("Planning again (one LLM call) · 1 call");
+    // After the call, while the usage is appended, the line does not change.
+    expect(jobLine({ ...plan, current: null, done: [{ id: "plan", ok: true }] })).toBe("Planning again (one LLM call) · 1 call");
+    expect(jobLine({ ...plan, calls: 0 })).toBe("Planning again (one LLM call) · 0 calls");
   });
 
   it("is null with no job", () => {
@@ -291,6 +302,14 @@ describe("jobResultLine", () => {
     expect(jobResultLine(job({ kind: "approve", done: ok }))).toBe("1 approved");
   });
 
+  it("a plan reads planned again, or failed with the error's first line (§169)", () => {
+    const plan = (done: { id: string; ok: boolean; error?: string }[]) => job({ kind: "plan", shots: ["plan"], done });
+    expect(jobResultLine(plan([{ id: "plan", ok: true }]))).toBe("Planned again");
+    expect(jobResultLine(plan([{ id: "plan", ok: false, error: "quota exceeded\nretry later" }]))).toBe(
+      "Plan again failed: quota exceeded",
+    );
+  });
+
   it("is null with no finished job", () => {
     expect(jobResultLine(null)).toBeNull();
   });
@@ -305,6 +324,8 @@ describe("jobStartedReplay", () => {
     expect(jobStartedReplay(job({ kind: "approve", done: [{ id: "s1", ok: false, error: "x" }] }))).toBe(false);
     expect(jobStartedReplay(job({ kind: "approve", done: [] }))).toBe(false);
     expect(jobStartedReplay(job({ kind: "draw", done: [{ id: "s1", ok: true }] }))).toBe(false);
+    // A plan writes storyboard.json, not the video.
+    expect(jobStartedReplay(job({ kind: "plan", shots: ["plan"], done: [{ id: "plan", ok: true }] }))).toBe(false);
     expect(jobStartedReplay(null)).toBe(false);
   });
 });

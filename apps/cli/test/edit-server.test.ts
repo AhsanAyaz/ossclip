@@ -4373,7 +4373,28 @@ describe("storyboard endpoints (plan Task 4; §168)", () => {
     expect((await plan(bare)).status).toBe(409);
   });
 
-  it("plan: one call on the edited cut; keeps the touched, the author's and the drawn shots; replaces the rest", async () => {
+  type PlanJob = {
+    kind: string;
+    shots: string[];
+    current: string | null;
+    done: { id: string; ok: boolean; error?: string }[];
+    calls: number;
+    stopping: boolean;
+    plan?: { changes: { index: number; kind: string; reason: string }[]; usage: string | null };
+  };
+  const jobPair = async (url: string): Promise<{ job: PlanJob | null; last: PlanJob | null }> =>
+    (await fetch(`${url}/api/storyboard/job`)).json();
+  /** Polls the job until it has ended, and returns the finished job. */
+  const planEnd = async (url: string): Promise<PlanJob> => {
+    for (let i = 0; i < 100; i++) {
+      const s = await jobPair(url);
+      if (s.job === null && s.last !== null) return s.last;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error("the plan job did not end");
+  };
+
+  it("plan: a 202, then one call on the edited cut as a job; keeps the touched, the author's and the drawn shots; replaces the rest", async () => {
     const dir = await storyboardWorkdir();
     await drawnHistory(dir, "s4");
     // The author cut word 100 (40.0-40.3 s) in the editor since the last render.
@@ -4384,9 +4405,10 @@ describe("storyboard endpoints (plan Task 4; §168)", () => {
     const users: string[] = [];
     const url = await start(dir, () => planProvider(users));
     const res = await plan(url);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.ok).toBe(true);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ ok: true });
+    const last = await planEnd(url);
+    expect(last).toMatchObject({ kind: "plan", shots: ["plan"], done: [{ id: "plan", ok: true }], calls: 1, stopping: false });
     expect(users).toHaveLength(1);
 
     // The live cut, not the last render's: word 100 is shown as cut.
@@ -4399,7 +4421,8 @@ describe("storyboard endpoints (plan Task 4; §168)", () => {
     expect(users[0]).toContain('words 80 to 94, "the idea of s4": do not plan here');
     expect(users[0]).not.toContain('"the idea of s1"');
 
-    const rows = body.storyboard.shots.map((s: { id: string; startWord: number; idea: string }) => [s.id, s.startWord, s.idea]);
+    const saved = await onDisk(dir);
+    const rows = saved.shots.map((s: { id: string; startWord: number; idea: string }) => [s.id, s.startWord, s.idea]);
     expect(rows).toEqual([
       ["s7", 2, "fresh early"],
       ["s2", 20, "a reworded idea"],
@@ -4407,17 +4430,20 @@ describe("storyboard endpoints (plan Task 4; §168)", () => {
       ["s4", 80, "the idea of s4"],
       ["s8", 142, "fresh late"],
     ]);
-    expect(body.changes).toEqual([]);
-    expect(body.usage).toContain("▸ llm: 1 calls");
-    expect(await onDisk(dir)).toEqual(body.storyboard);
+    // The table GET serves is the one saved: the panel reads it when the job ends.
+    expect((await (await fetch(`${url}/api/storyboard`)).json()).storyboard).toEqual(saved);
+    expect(last.plan!.changes).toEqual([]);
+    expect(last.plan!.usage).toContain("▸ llm: 1 calls");
+    // Exactly one run appended, by the job's end.
     const log = JSON.parse(await readFile(join(dir, "usage.json"), "utf8"));
     expect(log.runs).toHaveLength(2);
+    expect(log.runs[1].records).toHaveLength(1);
     expect(log.runs[1].records[0].schemaName).toBe("storyboard_plan");
     // No plan cache: the author asked for a fresh plan.
     expect((await readdir(dir)).filter((n) => n.startsWith("storyboardplan-"))).toEqual([]);
   });
 
-  it("plan: a provider failure is 200 ok:false with the message, and the file is left byte for byte", async () => {
+  it("plan: a provider failure is the job's ok:false with the message, no plan, and the file is left byte for byte", async () => {
     const dir = await storyboardWorkdir();
     const before = await readFile(join(dir, "storyboard.json"), "utf8");
     const url = await start(dir, () =>
@@ -4426,12 +4452,14 @@ describe("storyboard endpoints (plan Task 4; §168)", () => {
       }),
     );
     const res = await plan(url);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: false, error: "quota exceeded for gemini-3.5-flash" });
+    expect(res.status).toBe(202);
+    const last = await planEnd(url);
+    expect(last.done).toEqual([{ id: "plan", ok: false, error: "quota exceeded for gemini-3.5-flash" }]);
+    expect(last.plan).toBeUndefined();
     expect(await readFile(join(dir, "storyboard.json"), "utf8")).toBe(before);
   });
 
-  it("plan: a second request while one runs is a 409 (Review Focus 5)", async () => {
+  it("plan: while one runs it is the running job; a second plan, a draw, an edit and Cancel are 409 (Review Focus 5)", async () => {
     const dir = await storyboardWorkdir();
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
@@ -4444,38 +4472,96 @@ describe("storyboard endpoints (plan Task 4; §168)", () => {
         return { shots: [] };
       }),
     );
-    const first = plan(url);
+    expect((await plan(url)).status).toBe(202);
     await startedP;
+    expect((await jobPair(url)).job).toMatchObject({ kind: "plan", shots: ["plan"], current: "plan", calls: 1 });
     const second = await plan(url);
     expect(second.status).toBe(409);
+    expect((await second.json()).error).toBe("a storyboard job is running");
+    const draw = await fetch(`${url}/api/storyboard/draw`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: ["s1"] }),
+    });
+    expect(draw.status).toBe(409);
     // And an edit would be overwritten by the plan's save, so it waits too.
-    expect((await edit(url, { op: "drop", id: "s1" })).status).toBe(409);
+    const during = await edit(url, { op: "drop", id: "s1" });
+    expect(during.status).toBe(409);
+    expect((await during.json()).error).toContain("Plan again is running");
+    // One call cannot be stopped halfway: Cancel is refused and nothing is marked stopping.
+    const cancel = await fetch(`${url}/api/storyboard/cancel`, { method: "POST" });
+    expect(cancel.status).toBe(409);
+    expect(await cancel.json()).toEqual({ ok: false, error: "Plan again is one call and cannot be stopped" });
+    expect((await jobPair(url)).job!.stopping).toBe(false);
     release();
-    expect((await (await first).json()).ok).toBe(true);
+    const last = await planEnd(url);
+    expect(last.done).toEqual([{ id: "plan", ok: true }]);
+    expect(last.stopping).toBe(false);
+    // Edits are open again once the plan has ended (s2 is reworded, so the empty plan kept it).
+    expect((await edit(url, { op: "drop", id: "s2" })).status).toBe(200);
   });
 
-  it("plan: 409 with no storyboard, 412 with no provider", async () => {
-    const url = await start(await storyboardWorkdir({ storyboard: false }), () => planProvider([]));
-    expect((await plan(url)).status).toBe(409);
+  it("plan: every refusal is answered before a job starts (409 no storyboard, 500 a broken one, 412 no transcript, no kept spans, no frame, no provider)", async () => {
+    const noJob = async (url: string) => expect(await jobPair(url)).toEqual({ job: null, last: null });
+
+    const noTable = await start(await storyboardWorkdir({ storyboard: false }), () => planProvider([]));
+    expect((await plan(noTable)).status).toBe(409);
+    await noJob(noTable);
     close?.();
+
+    const brokenDir = await storyboardWorkdir();
+    await writeFile(join(brokenDir, "storyboard.json"), JSON.stringify({ ...STORYBOARD, shots: [{ ...STORYBOARD.shots[0], endWord: -1 }] }));
+    const broken = await start(brokenDir, () => planProvider([]));
+    expect((await plan(broken)).status).toBe(500);
+    await noJob(broken);
+    close?.();
+
+    const noWordsDir = await storyboardWorkdir();
+    await unlink(join(noWordsDir, "transcript.json"));
+    const noWords = await start(noWordsDir, () => planProvider([]));
+    const w = await plan(noWords);
+    expect(w.status).toBe(412);
+    expect((await w.json()).error).toContain("no transcript");
+    await noJob(noWords);
+    close?.();
+
+    const props = JSON.parse(await readFile(join(noWordsDir, "render-props.json"), "utf8"));
+    const noSpansDir = await storyboardWorkdir();
+    await writeFile(join(noSpansDir, "render-props.json"), JSON.stringify({ ...props, spans: [] }));
+    const noSpans = await start(noSpansDir, () => planProvider([]));
+    const sp = await plan(noSpans);
+    expect(sp.status).toBe(412);
+    expect((await sp.json()).error).toContain("no kept spans");
+    await noJob(noSpans);
+    close?.();
+
+    const noFrameDir = await storyboardWorkdir();
+    await writeFile(join(noFrameDir, "render-props.json"), JSON.stringify({ ...props, settings: { fps: 30 } }));
+    const noFrame = await start(noFrameDir, () => planProvider([]));
+    const fr = await plan(noFrame);
+    expect(fr.status).toBe(412);
+    expect((await fr.json()).error).toContain("no frame size");
+    await noJob(noFrame);
+    close?.();
+
     const dir = await storyboardWorkdir();
     await unlink(join(dir, "usage.json"));
     const bare = await start(dir);
     const res = await plan(bare);
     expect(res.status).toBe(412);
     expect((await res.json()).error).toContain("no LLM provider available");
+    await noJob(bare);
   });
 
-  it("plan: a stored assets folder that is gone is ok:false before any call", async () => {
+  it("plan: a stored assets folder that is gone is the job's ok:false before any call", async () => {
     const dir = await storyboardWorkdir({ storyboard: false });
     await writeFile(join(dir, "storyboard.json"), JSON.stringify({ ...STORYBOARD, assetsDir: join(dir, "gone") }));
     const users: string[] = [];
     const url = await start(dir, () => planProvider(users));
-    const res = await plan(url);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.ok).toBe(false);
-    expect(body.error).toMatch(/assets folder .* no longer exists/);
+    expect((await plan(url)).status).toBe(202);
+    const last = await planEnd(url);
+    expect(last.done[0]!.ok).toBe(false);
+    expect(last.done[0]!.error).toMatch(/assets folder .* no longer exists/);
     expect(users).toEqual([]);
   });
 });

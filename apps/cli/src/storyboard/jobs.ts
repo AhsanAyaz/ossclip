@@ -1,7 +1,13 @@
 /**
  * The editor's storyboard jobs (storyboard design §10 "Progress and cost";
- * plan B2a Task 4; §169): draw, redraw, preview and approve, one job at a
- * time, over one or more shots in order.
+ * plan B2a Task 4; §169): draw, redraw, preview, approve and Plan again, one
+ * job at a time, over one or more shots in order.
+ *
+ * Plan again is a job too, one unit named "plan" (§169): as a request held
+ * open for the whole call it lived only in the panel that sent it, so a
+ * closed panel lost its loader and its result, the approve bug again. As a
+ * job it is the server's to report, and the runner's one-job rule keeps it
+ * from overlapping a draw or an approve that saves into the same table.
  *
  * Pure state and the batch loop, no HTTP and no draw: the endpoints in
  * edit.ts pass the per-shot work in as `each`, so the rules that matter
@@ -14,7 +20,9 @@
  * next `loadShot` (Review Focus 2).
  */
 
-export type StoryboardJobKind = "draw" | "redraw" | "preview" | "approve";
+import type { LimitChange } from "@ossclip/core";
+
+export type StoryboardJobKind = "draw" | "redraw" | "preview" | "approve" | "plan";
 
 export interface StoryboardJobState {
   kind: StoryboardJobKind;
@@ -29,6 +37,12 @@ export interface StoryboardJobState {
   calls: number;
   startedAt: number;
   stopping: boolean;
+  /**
+   * A Plan again that ended ok: what the limits changed and the usage line,
+   * which the panel shows under the table. On the job, not in a response,
+   * so a panel reopened after the plan ended still shows them (§169).
+   */
+  plan?: { changes: LimitChange[]; usage: string | null };
 }
 
 /** The `/api/render` log tail's reason: enough to read what happened, never a growing heap. */
@@ -39,6 +53,8 @@ export interface JobContext {
   shouldStop(): boolean;
   log(line: string): void;
   addCalls(n: number): void;
+  /** A Plan again's result, stored on the job (`StoryboardJobState.plan`). */
+  setPlan(p: { changes: LimitChange[]; usage: string | null }): void;
 }
 
 export interface JobRunner {
@@ -73,7 +89,15 @@ export class JobBusyError extends Error {
 }
 
 const copy = (s: StoryboardJobState | null): StoryboardJobState | null =>
-  s === null ? null : { ...s, shots: [...s.shots], done: s.done.map((d) => ({ ...d })), lines: [...s.lines] };
+  s === null
+    ? null
+    : {
+        ...s,
+        shots: [...s.shots],
+        done: s.done.map((d) => ({ ...d })),
+        lines: [...s.lines],
+        ...(s.plan !== undefined ? { plan: { ...s.plan, changes: s.plan.changes.map((c) => ({ ...c })) } } : {}),
+      };
 
 export function createJobRunner(now: () => number): JobRunner {
   let job: StoryboardJobState | null = null;
@@ -106,6 +130,9 @@ export function createJobRunner(now: () => number): JobRunner {
         log,
         addCalls: (n) => {
           state.calls += n;
+        },
+        setPlan: (p) => {
+          state.plan = { changes: p.changes.map((c) => ({ ...c })), usage: p.usage };
         },
       };
       return (async () => {

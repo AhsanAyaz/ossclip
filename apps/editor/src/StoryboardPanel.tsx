@@ -64,13 +64,14 @@ import {
  * previews, notes, redraws and approves. A job runs on the server and is
  * followed by polling `GET /api/storyboard/job` once a second, only while
  * one runs; when it ends the table is read again, because a job writes the
- * shot's history (and an approve, `storyboard.json`), not this page.
+ * shot's history (and an approve or a plan, `storyboard.json`), not this
+ * page. Plan again is such a job (§169), so it outlives a closed panel.
  *
  * Server-owned state, the PublishPanel posture: the table lives in the
  * workdir's `storyboard.json`, not in the overrides doc, so there is no
- * undo, dirty or Save here; every action is one request to
- * `/api/storyboard/edit` or `/api/storyboard/plan` and the table shown is
- * the one the server answered with. Requests run one at a time: the server
+ * undo, dirty or Save here; every edit is one request to
+ * `/api/storyboard/edit` and the table shown is the one the server answered
+ * with, or read again after a job. Requests run one at a time: the server
  * refuses edits while a plan runs (409), and a second request racing the
  * first could save over it. The server's messages are shown verbatim; they
  * are written for the author to act on.
@@ -110,12 +111,6 @@ async function fetchStoryboard(): Promise<{ ok: true; load: StoryboardLoad } | {
       job: body.job ?? { job: null, last: null },
     },
   };
-}
-
-interface LimitChangeView {
-  index: number;
-  kind: string;
-  reason: string;
 }
 
 type StoryboardEditBody =
@@ -170,7 +165,7 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
 }) => {
   const [load, setLoad] = useState<StoryboardLoad | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<null | "edit" | "plan" | "job">(null);
+  const [busy, setBusy] = useState<null | "edit" | "job">(null);
   /** The shot the shot view shows; null is the table. */
   const [shotView, setShotView] = useState<string | null>(null);
   // Read through a ref by the job poll, whose interval outlives renders.
@@ -191,7 +186,6 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
   const editRef = useRef<{ id: string; draft: string; saving: boolean } | null>(null);
   const [adding, setAdding] = useState<{ draft: string; error: string | null } | null>(null);
   const [confirmPlan, setConfirmPlan] = useState(false);
-  const [planResult, setPlanResult] = useState<{ usage: string | null; changes: LimitChangeView[] } | null>(null);
 
   const setEditing = (next: { id: string; draft: string; error: string | null } | null): void => {
     // A fresh ref object per change: `commitIdea` holds the one it started
@@ -425,41 +419,19 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
     else setAdding({ draft, error: err });
   };
 
+  /**
+   * Plan again is a server job (§169), started like the others: App's
+   * watcher follows it, so the Storyboard button shows it with the panel
+   * closed, and its result is the job's, read again when the panel reopens.
+   * The new table arrives through `jobEnded`'s read.
+   */
   const runPlanAgain = async (): Promise<void> => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy("plan");
     setConfirmPlan(false);
-    setError(null);
-    setPlanResult(null);
-    try {
-      const res = await fetch("/api/storyboard/plan", { method: "POST" });
-      const body = (await res.json()) as {
-        ok?: boolean;
-        storyboard?: Storyboard;
-        changes?: LimitChangeView[];
-        usage?: string;
-        error?: string;
-      };
-      if (!res.ok || body.ok !== true || !body.storyboard) {
-        setError(body.error ?? `Plan again failed: ${res.status}`);
-        return;
-      }
-      const next = body.storyboard;
-      // `drawn` is kept: the plan keeps every drawn shot with its id, and a
-      // new shot has an id no folder of drawings has ever had.
-      setLoad((prev) => (prev === null ? prev : { ...prev, storyboard: next }));
-      setPlanResult({ usage: body.usage ?? null, changes: body.changes ?? [] });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      busyRef.current = false;
-      setBusy(null);
-    }
+    await startJob("/api/storyboard/plan", {});
   };
 
   /**
-   * POST a job's start (draw, note, preview, approve). The answer is a 202,
+   * POST a job's start (draw, note, preview, approve, plan). The answer is a 202,
    * or `{ok:false, error}` (409 busy, 412 a missing input, 400 a refused
    * body) shown in the error line, never thrown: a refusal is an answer.
    * Resolves true when the job started.
@@ -534,7 +506,12 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
 
   const disabled = busy !== null;
   const job: StoryboardJobState | null = load?.job.job ?? null;
+  const planRunning = job?.kind === "plan";
   const resultLine = jobRunning ? null : jobResultLine(load?.job.last ?? null);
+  // The last job's, not this panel's: a plan that ended while the panel was
+  // closed still shows what it changed when the panel opens again (§169).
+  const lastJob = load?.job.last ?? null;
+  const planResult = !jobRunning && lastJob?.kind === "plan" && lastJob.plan !== undefined ? lastJob.plan : null;
   // Shown in both views: a job started from the shot view is followed there.
   const jobBlock = (
     <>
@@ -542,16 +519,19 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
         <div data-testid="storyboard-job" style={{ ...formBox, ...rowHead }}>
           <span style={{ ...rowLabel, color: STATE_COLOR.drawing }}>{jobLine(job)}</span>
           <span style={{ flex: 1 }} />
-          <button
-            type="button"
-            data-testid="storyboard-job-cancel"
-            style={off(actionBtn, job.stopping)}
-            disabled={job.stopping}
-            title="Stop after the shot that is running; a draw also stops before its next LLM call"
-            onClick={() => void cancelJob()}
-          >
-            Cancel
-          </button>
+          {/* A plan is one call, which nothing stops midway: the server refuses its Cancel (§169). */}
+          {job.kind !== "plan" ? (
+            <button
+              type="button"
+              data-testid="storyboard-job-cancel"
+              style={off(actionBtn, job.stopping)}
+              disabled={job.stopping}
+              title="Stop after the shot that is running; a draw also stops before its next LLM call"
+              onClick={() => void cancelJob()}
+            >
+              Cancel
+            </button>
+          ) : null}
         </div>
       ) : null}
       {resultLine !== null ? (
@@ -665,16 +645,15 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
               <button
                 type="button"
                 data-testid="storyboard-plan-again"
-                style={off(toolBtn, disabled || confirmPlan)}
-                disabled={disabled || confirmPlan}
+                style={off(toolBtn, disabled || jobRunning || confirmPlan)}
+                disabled={disabled || jobRunning || confirmPlan}
                 title="Plan the shots again from the transcript. Shots you reworded, added or drew are kept."
                 onClick={() => {
                   setError(null);
-                  setPlanResult(null);
                   setConfirmPlan(true);
                 }}
               >
-                {busy === "plan" ? "Planning again… (one LLM call)" : "Plan again (one LLM call)"}
+                {planRunning ? "Planning again… (one LLM call)" : "Plan again (one LLM call)"}
               </button>
               <button
                 type="button"
@@ -752,8 +731,8 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
                   <button
                     type="button"
                     data-testid="storyboard-plan-confirm"
-                    style={off(primaryBtn, disabled)}
-                    disabled={disabled}
+                    style={off(primaryBtn, disabled || jobRunning)}
+                    disabled={disabled || jobRunning}
                     onClick={() => void runPlanAgain()}
                   >
                     Plan again

@@ -1307,14 +1307,6 @@ export async function startEditServer(
   };
   // ---- Storyboard state (plan Task 4; §168) -------------------------------
   /**
-   * One "Plan again" at a time: an LLM call costs money, and a double-click
-   * must not buy two (Review Focus 5). Its own flag, `packGenBusy`'s rule.
-   * Also refuses table edits while set, because the plan saves the table it
-   * loaded plus the merge: an edit saved during the call would be
-   * overwritten by it.
-   */
-  let storyboardPlanBusy = false;
-  /**
    * The words `/api/transcript` serves, parsed, so a shot's indices are
    * checked and planned against the list the editor's table reads them from.
    * For a storyboard project (no `--clip`) this is produce's planning word
@@ -1571,13 +1563,12 @@ export async function startEditServer(
    */
   const storyboardJobs = createJobRunner(() => Date.now());
   const storyboardJobRunning = (): boolean => storyboardJobs.state().job !== null;
-  /** Why a new storyboard job cannot start now, or null. Plan again saves the table it loaded, so the two never overlap. */
-  const storyboardBusy = (): string | null =>
-    storyboardJobRunning()
-      ? STORYBOARD_JOB_BUSY
-      : storyboardPlanBusy
-        ? "Plan again is running: start this once it has finished"
-        : null;
+  /**
+   * Why a new storyboard job cannot start now, or null. Plan again is a job
+   * (§169), so the runner's one-job rule is the whole answer: a plan saves
+   * the table it loaded, and never overlaps a draw or an approve.
+   */
+  const storyboardBusy = (): string | null => (storyboardJobRunning() ? STORYBOARD_JOB_BUSY : null);
   /** A gathered input, or the status and sentence the route answers instead. */
   type Gathered<T> = { ok: true; value: T } | { ok: false; code: number; error: string };
   const refused = (code: number, error: string): { ok: false; code: number; error: string } => ({ ok: false, code, error });
@@ -1685,7 +1676,7 @@ export async function startEditServer(
         },
       };
     };
-  /** One run entry per job (Global Constraints: each LLM call lands in usage.json), as `/api/storyboard/plan` appends its call. */
+  /** One run entry per job (Global Constraints: each LLM call lands in usage.json), Plan again's one call included. */
   const appendJobUsage = async (dir: string, made: readonly LlmProvider[]): Promise<void> => {
     if (made.length === 0) return;
     const usagePath = join(dir, "usage.json");
@@ -2991,7 +2982,11 @@ export async function startEditServer(
           const cmd = await readRecordedCommand(dir);
           // From the busy check to the save nothing awaits, so a plan either
           // starts after this edit is on disk or this edit sees it running.
-          if (storyboardPlanBusy) {
+          // A plan job only: the plan saves the table it loaded plus the
+          // merge, and an edit saved during the call would be overwritten by
+          // it. A draw reads the table per shot, so the author may still
+          // reword or drop a later shot while earlier ones draw.
+          if (storyboardJobs.state().job?.kind === "plan") {
             return send(409, { ok: false, error: "Plan again is running: edit the table once it has finished" });
           }
           let sb: Storyboard | null;
@@ -3041,103 +3036,90 @@ export async function startEditServer(
         }
 
         if (url.pathname === "/api/storyboard/plan" && req.method === "POST") {
-          // `/api/youtube/generate`'s shape: 409 busy, 412 when an input or
-          // the provider is missing, 200 `ok:false` when the call fails,
-          // usage appended. The flag is set before the first await, so two
-          // presses can never both pass the check.
+          // A storyboard job of one unit (§169): 409 busy and 412 when an
+          // input or the provider is missing, all answered before the job
+          // starts; then a 202, and the call, its failure, its result and
+          // its usage are the job's (`GET /api/storyboard/job`). As a
+          // request held open for the call it lived in the panel, and a
+          // closed panel lost both the loader and the result.
           if (!workdir) return send(409, { ok: false, error: "no workdir open" });
-          if (storyboardPlanBusy) return send(409, { ok: false, error: "Plan again is already running" });
-          // Not during a draw or an approve (§169): the plan saves the table
-          // it loaded, and a job saves an approval into it.
+          // Not during a draw or an approve, nor a second plan (§169;
+          // Review Focus 5: a double-click must not buy two calls): the plan
+          // saves the table it loaded, and a job saves an approval into it.
           if (storyboardJobRunning()) return send(409, { ok: false, error: STORYBOARD_JOB_BUSY });
-          storyboardPlanBusy = true;
-          try {
-            // Held for the whole call: a project switched from the page
-            // mid-call must not receive this project's plan.
-            const dir = workdir;
-            let sb: Storyboard | null;
-            try {
-              sb = loadStoryboard(dir);
-            } catch (err) {
-              return send(500, { ok: false, error: err instanceof Error ? err.message : String(err) });
-            }
-            if (sb === null) {
-              return send(409, {
-                ok: false,
-                error: "this project has no storyboard.json: plan one with `ossclip produce <video> --storyboard`",
-              });
-            }
-            const words = await servedWords(dir);
-            if (words === null || words.length === 0) {
-              return send(412, { ok: false, error: "no transcript in this workdir — re-run `ossclip produce`." });
-            }
-            const clock = await heardCut(dir, words);
-            if (clock === null) {
-              return send(412, {
-                ok: false,
-                error: "render-props.json has no kept spans to measure shots on — re-run `ossclip produce`.",
-              });
-            }
-            const frame = z
-              .object({ settings: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }) })
-              .safeParse(JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")));
-            if (!frame.success) {
-              return send(412, { ok: false, error: "render-props.json has no frame size — re-run `ossclip produce`." });
-            }
-            // The pack generate's provider resolution, verbatim.
-            if (opts.publishEnv === undefined) loadEnvFiles();
-            const env = opts.publishEnv ?? process.env;
-            const usagePath = join(dir, "usage.json");
-            let usageLog: unknown = null;
-            try {
-              usageLog = JSON.parse(await readFile(usagePath, "utf8"));
-            } catch {
-              // no log yet — the resolution falls through to the pin/detection
-            }
-            const cmd = await readRecordedCommand(dir);
-            const resolved = captionRegenProvider({
-              usageLog,
-              commandArgs: cmd?.args ?? null,
-              env,
-              hasBin: (bin) => binOnPath(bin, env),
-            });
-            if (resolved.status === "unavailable") return send(412, { ok: false, error: resolved.reason });
-            // The recorded `--llm-model`, so a plan and its drawings share a model (§169).
-            const provider = (opts.makeLlmProvider ?? createProvider)(resolved.provider, recordedLlmModel(cmd?.args ?? null));
-            let result: Awaited<ReturnType<typeof planAgain>>;
-            try {
-              result = await planAgain(
-                {
-                  workdir: dir,
-                  storyboard: sb,
-                  words,
-                  cut: clock.cut,
-                  wordTimes: clock.wordTimes,
-                  outputDurationSec: clock.outputDurationSec,
-                  frame: frame.data.settings,
-                  provider,
-                },
-                { log: (line) => console.log(line) },
-              );
-            } catch (err) {
-              // The panel shows it verbatim; `planAgain` saves last, so
-              // storyboard.json is as it was.
-              return send(200, { ok: false, error: err instanceof Error ? err.message : String(err) });
-            }
-            const pricing = (opts.loadCfg ?? loadConfig)().pricing ?? {};
-            const nextLog = appendUsageRun(usageLog, { at: new Date().toISOString(), records: provider.usage }, pricing);
-            const usageTmp = `${usagePath}.tmp`;
-            await writeFile(usageTmp, JSON.stringify(nextLog, null, 2));
-            await rename(usageTmp, usagePath);
-            return send(200, {
-              ok: true,
-              storyboard: result.storyboard,
-              changes: result.changes,
-              usage: formatUsageLine(provider.usage, pricing),
-            });
-          } finally {
-            storyboardPlanBusy = false;
+          // Held for the whole job: a project switched from the page
+          // mid-call must not receive this project's plan.
+          const dir = workdir;
+          const table = storyboardTable(dir);
+          if (!table.ok) return send(table.code, { ok: false, error: table.error });
+          const words = await servedWords(dir);
+          if (words === null || words.length === 0) {
+            return send(412, { ok: false, error: "no transcript in this workdir — re-run `ossclip produce`." });
           }
+          const clock = await heardCut(dir, words);
+          if (clock === null) {
+            return send(412, {
+              ok: false,
+              error: "render-props.json has no kept spans to measure shots on — re-run `ossclip produce`.",
+            });
+          }
+          const frame = z
+            .object({ settings: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }) })
+            .safeParse(JSON.parse(await readFile(join(dir, "render-props.json"), "utf8")));
+          if (!frame.success) {
+            return send(412, { ok: false, error: "render-props.json has no frame size — re-run `ossclip produce`." });
+          }
+          // The pack generate's provider resolution, verbatim.
+          if (opts.publishEnv === undefined) loadEnvFiles();
+          const env = opts.publishEnv ?? process.env;
+          let usageLog: unknown = null;
+          try {
+            usageLog = JSON.parse(await readFile(join(dir, "usage.json"), "utf8"));
+          } catch {
+            // no log yet — the resolution falls through to the pin/detection
+          }
+          const cmd = await readRecordedCommand(dir);
+          const resolved = captionRegenProvider({
+            usageLog,
+            commandArgs: cmd?.args ?? null,
+            env,
+            hasBin: (bin) => binOnPath(bin, env),
+          });
+          if (resolved.status === "unavailable") return send(412, { ok: false, error: resolved.reason });
+          // The recorded `--llm-model`, so a plan and its drawings share a model (§169).
+          const model = recordedLlmModel(cmd?.args ?? null);
+          const started = startStoryboardJob(dir, "plan", ["plan"], async (_id, ctx, made) => {
+            // The table as it is when the job starts, not as the checks above
+            // read it: they awaited, and an edit saved meanwhile would be
+            // overwritten by the plan's save. Nothing awaits between the
+            // job's start and this read, and from the start every edit is
+            // refused, so the plan merges into exactly what is on disk.
+            const current = storyboardTable(dir);
+            if (!current.ok) return { ok: false, error: current.error };
+            // Counted on the job's line and kept in `made`, so the job's end
+            // appends this call's usage (`appendJobUsage`), as a draw's.
+            const provider = jobProviderFactory(ctx, made)(resolved.provider, model);
+            // A throw is the job's ok:false with its message (the runner
+            // records it); `planAgain` saves last, so storyboard.json is as
+            // it was.
+            const result = await planAgain(
+              {
+                workdir: dir,
+                storyboard: current.value,
+                words,
+                cut: clock.cut,
+                wordTimes: clock.wordTimes,
+                outputDurationSec: clock.outputDurationSec,
+                frame: frame.data.settings,
+                provider,
+              },
+              { log: ctx.log },
+            );
+            const pricing = (opts.loadCfg ?? loadConfig)().pricing ?? {};
+            ctx.setPlan({ changes: result.changes, usage: formatUsageLine(provider.usage, pricing) });
+            return { ok: true };
+          });
+          return send(started.code, started.body);
         }
 
         // ---- Storyboard jobs (storyboard design §6-§10; plan B2a Task 4; §169)
@@ -3158,6 +3140,12 @@ export async function startEditServer(
           // Ends the job after the shot it is on; a draw also stops before its
           // next LLM call (runDraw's `shouldStop`), and an approve's clip
           // render is cancelled.
+          // Not a plan (§169): it is one call, which nothing can stop midway,
+          // and `stopping` set under it would read as a stop that never came
+          // while the plan still saves its table.
+          if (storyboardJobs.state().job?.kind === "plan") {
+            return send(409, { ok: false, error: "Plan again is one call and cannot be stopped" });
+          }
           if (!storyboardJobs.stop()) return send(409, { ok: false, error: "no storyboard job is running" });
           return send(202, { ok: true });
         }

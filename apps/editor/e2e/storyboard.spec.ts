@@ -27,9 +27,10 @@ const PROPS = join(WORKDIR, "render-props.json");
  * 70–74 ("It's serving 5000 plus developers").
  *
  * SERIAL: each test edits the table the next one reads, the way an author
- * would. "Plan again" is only opened, never confirmed: the e2e server has no
- * mock provider, and on a machine with `claude` on its PATH a confirm would
- * be a real, billed call.
+ * would. "Plan again" is never confirmed against the real server: the e2e
+ * server has no mock provider, and on a machine with `claude` on its PATH a
+ * confirm would be a real, billed call. The one test that confirms it
+ * answers `/api/storyboard/plan` itself.
  */
 
 test.describe.configure({ mode: "serial" });
@@ -324,6 +325,103 @@ test("an approve outlives the closed panel: the button shows the job and its end
   // The sync run the server started is now followed with no panel open.
   await expect.poll(() => statusAsked).toBeGreaterThan(before);
   await expect(page.getByTestId("render-status")).toBeVisible();
+});
+
+test("a plan outlives the closed panel: the button shows it, a reopened panel says Planning again, and its end shows the new table and what changed (§169)", async ({
+  page,
+}) => {
+  // The job is the server's and a real plan is a billed call (this file's
+  // header), so the plan, the job and the table read are answered here.
+  const planJob = {
+    kind: "plan",
+    shots: ["plan"],
+    current: "plan",
+    done: [] as { id: string; ok: boolean }[],
+    lines: [],
+    calls: 1,
+    startedAt: Date.now(),
+    stopping: false,
+  };
+  const ended = {
+    ...planJob,
+    current: null,
+    done: [{ id: "plan", ok: true }],
+    plan: {
+      changes: [{ index: 1, kind: "dropped", reason: "the plan covered more than 60% of the video" }],
+      usage: "▸ llm: 1 calls · 1,000 in / 100 out",
+    },
+  };
+  let phase: "idle" | "running" | "ended" = "idle";
+  const pair = () =>
+    phase === "running" ? { job: planJob, last: null } : { job: null, last: phase === "ended" ? ended : null };
+  let planPosts = 0;
+  await page.route("**/api/storyboard/plan", (route) => {
+    planPosts += 1;
+    phase = "running";
+    return route.fulfill({ status: 202, json: { ok: true } });
+  });
+  await page.route("**/api/storyboard/job", (route) => route.fulfill({ json: pair() }));
+  // The real table, with this test's job; once the plan has ended, the table
+  // the plan saved: s2 replaced by a new planner shot on the same words.
+  await page.route(
+    (url) => url.pathname === "/api/storyboard",
+    async (route) => {
+      const real = (await (await route.fetch()).json()) as { storyboard: { shots: { id: string; idea: string }[] } };
+      const storyboard =
+        phase === "ended"
+          ? {
+              ...real.storyboard,
+              shots: real.storyboard.shots.map((s) =>
+                s.id === "s2" ? { ...s, id: "s9", idea: "a freshly planned shot", touched: false } : s,
+              ),
+            }
+          : real.storyboard;
+      return route.fulfill({ json: { ...real, storyboard, job: pair() } });
+    },
+  );
+
+  await load(page);
+  await expect(page.getByTestId("storyboard-open-busy")).toHaveCount(0);
+  await openPanel(page);
+  await page.getByTestId("storyboard-plan-again").click();
+  await page.getByTestId("storyboard-plan-confirm").click();
+  await expect(page.getByTestId("storyboard-open-busy")).toBeVisible();
+  await expect(page.getByTestId("storyboard-job")).toContainText("Planning again (one LLM call) · 1 call");
+  // One call cannot be stopped halfway: no Cancel.
+  await expect(page.getByTestId("storyboard-job-cancel")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-plan-again")).toHaveText("Planning again… (one LLM call)");
+  await expect(page.getByTestId("storyboard-plan-again")).toBeDisabled();
+
+  // Close the panel while the plan runs: the author's real run.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("storyboard-modal")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-open-busy")).toBeVisible();
+  await expect(page.getByTestId("storyboard-open")).toHaveAttribute("title", /Planning again \(one LLM call\)/);
+
+  // Reopened while it runs: the panel says so, from the server's job.
+  await openPanel(page);
+  await expect(page.getByTestId("storyboard-plan-again")).toHaveText("Planning again… (one LLM call)");
+  await expect(page.getByTestId("storyboard-plan-again")).toBeDisabled();
+  await expect(page.getByTestId("storyboard-plan-result")).toHaveCount(0);
+
+  phase = "ended";
+  await expect(page.getByTestId("storyboard-row-s9")).toBeVisible();
+  await expect(page.getByTestId("storyboard-row-s9")).toContainText("a freshly planned shot");
+  await expect(page.getByTestId("storyboard-row-s2")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-plan-result")).toContainText("▸ llm: 1 calls · 1,000 in / 100 out");
+  await expect(page.getByTestId("storyboard-plan-result")).toContainText("1 planner shot was changed by the limits.");
+  await expect(page.getByTestId("storyboard-job-result")).toHaveText("Last job: Planned again");
+  await expect(page.getByTestId("storyboard-open-busy")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-plan-again")).toHaveText("Plan again (one LLM call)");
+  await expect(page.getByTestId("storyboard-plan-again")).toBeEnabled();
+
+  // Reopened after it ended: the result is the job's, so it is still there.
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("storyboard-modal")).toHaveCount(0);
+  await openPanel(page);
+  await expect(page.getByTestId("storyboard-row-s9")).toBeVisible();
+  await expect(page.getByTestId("storyboard-plan-result")).toContainText("1 planner shot was changed by the limits.");
+  expect(planPosts).toBe(1);
 });
 
 test("a project without storyboard.json has no Storyboard button", async ({ page }) => {

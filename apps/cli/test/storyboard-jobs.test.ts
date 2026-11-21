@@ -117,3 +117,38 @@ describe("createJobRunner finish", () => {
     expect(runner.state().last!.lines).toContain("✗ usage.json is read-only");
   });
 });
+
+describe("createJobRunner plan (§169)", () => {
+  it("a plan job is one unit, and what setPlan stores lands on last.plan, copied", async () => {
+    const runner = createJobRunner(() => 0);
+    const ran: string[] = [];
+    const g = gate();
+    const job = runner.start("plan", ["plan"], async (id, ctx) => {
+      ran.push(id);
+      await g.wait;
+      ctx.setPlan({ changes: [{ index: 1, kind: "dropped", reason: "over the coverage limit" }], usage: "▸ llm: 1 calls" });
+      return { ok: true };
+    });
+    expect(runner.state().job).toMatchObject({ kind: "plan", shots: ["plan"], current: "plan" });
+    expect(runner.state().job!.plan).toBeUndefined();
+    g.open();
+    await job;
+    expect(ran).toEqual(["plan"]);
+    const { last } = runner.state();
+    expect(last!.done).toEqual([{ id: "plan", ok: true }]);
+    expect(last!.plan).toEqual({ changes: [{ index: 1, kind: "dropped", reason: "over the coverage limit" }], usage: "▸ llm: 1 calls" });
+    // A copy: a caller cannot change what the next look serves.
+    last!.plan!.changes.push({ index: 2, kind: "dropped", reason: "x" });
+    expect(runner.state().last!.plan!.changes).toHaveLength(1);
+  });
+
+  it("a plan that throws records ok false with its message and no plan", async () => {
+    const runner = createJobRunner(() => 0);
+    await runner.start("plan", ["plan"], async () => {
+      throw new Error("quota exceeded");
+    });
+    const { last } = runner.state();
+    expect(last!.done).toEqual([{ id: "plan", ok: false, error: "quota exceeded" }]);
+    expect(last!.plan).toBeUndefined();
+  });
+});

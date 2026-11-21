@@ -49,7 +49,8 @@ export interface ShotDetail {
 /** `GET /api/storyboard`'s `detail`: only shots that have a history. */
 export type DetailMap = Record<string, ShotDetail>;
 
-export type StoryboardJobKind = "draw" | "redraw" | "preview" | "approve";
+/** "plan" is Plan again, one unit named "plan" (§169): a job so it outlives a closed panel. */
+export type StoryboardJobKind = "draw" | "redraw" | "preview" | "approve" | "plan";
 
 export interface StoryboardJobState {
   kind: StoryboardJobKind;
@@ -60,6 +61,8 @@ export interface StoryboardJobState {
   calls: number;
   startedAt: number;
   stopping: boolean;
+  /** A Plan again that ended ok: what the limits changed, and the usage line. */
+  plan?: { changes: { index: number; kind: string; reason: string }[]; usage: string | null };
 }
 
 /** `GET /api/storyboard/job`, and `GET /api/storyboard`'s `job`. */
@@ -144,7 +147,12 @@ export function storyboardRows(
     const joined = kept.join(" ");
     const line = joined.length > LINE_MAX_CHARS ? `${joined.slice(0, LINE_MAX_CHARS - 1)}…` : joined;
     const draft = drawn[s.id]?.draft ?? null;
-    const inJob = job !== null && (job.current === s.id || (job.shots.includes(s.id) && !job.done.some((d) => d.id === s.id)));
+    // A plan's one unit is named "plan", not a shot: a shot that happens to
+    // have that id is not being drawn (§169).
+    const inJob =
+      job !== null &&
+      job.kind !== "plan" &&
+      (job.current === s.id || (job.shots.includes(s.id) && !job.done.some((d) => d.id === s.id)));
     const versions = detail[s.id]?.versions ?? [];
     const newest = versions.reduce<ShotDetail["versions"][number] | null>((a, v) => (a === null || v.n > a.n ? v : a), null);
     const state: StoryboardRowState = !s.kept
@@ -195,6 +203,7 @@ const JOB_VERB: Record<StoryboardJobKind, string> = {
   redraw: "Redrawing",
   preview: "Previewing",
   approve: "Approving",
+  plan: "Planning again",
 };
 
 /**
@@ -203,9 +212,13 @@ const JOB_VERB: Record<StoryboardJobKind, string> = {
  * only that: Cancel ends it after the shot it is on, and a count that keeps
  * moving would read as Cancel not having worked. `current` is null for the
  * moment between the last shot and the job's end (the usage append).
+ *
+ * A plan names no shot and no "1 of 1": its one unit is the call, not a shot
+ * of the table, and the server refuses its Cancel, so it never stops (§169).
  */
 export function jobLine(job: StoryboardJobState | null): string | null {
   if (job === null) return null;
+  if (job.kind === "plan") return `${JOB_VERB.plan} (one LLM call) · ${job.calls} call${job.calls === 1 ? "" : "s"}`;
   if (job.stopping) return job.current !== null ? `Stopping after ${job.current}…` : "Stopping…";
   const calls = `${job.calls} call${job.calls === 1 ? "" : "s"}`;
   const at = job.current !== null ? job.shots.indexOf(job.current) + 1 : job.done.length;
@@ -220,6 +233,7 @@ const JOB_DONE: Record<StoryboardJobKind, string> = {
   redraw: "redrawn",
   preview: "preview ready",
   approve: "approved",
+  plan: "planned again",
 };
 
 /**
@@ -230,9 +244,17 @@ const JOB_DONE: Record<StoryboardJobKind, string> = {
  * send them looking for a fault that is not there (§169). Each failure is
  * named with its first line, the job log's rule, so one long checker
  * message cannot push the others off the line.
+ *
+ * A plan has no shots to count: it planned again, or it failed, and the
+ * error is the reason the table did not change (§169).
  */
 export function jobResultLine(last: StoryboardJobState | null): string | null {
   if (last === null) return null;
+  if (last.kind === "plan") {
+    const unit = last.done[0];
+    if (unit?.ok === true) return "Planned again";
+    return `Plan again failed: ${(unit?.error ?? "it did not finish").split("\n")[0]}`;
+  }
   const ok = last.done.filter((d) => d.ok).length;
   const stopped =
     last.done.filter((d) => !d.ok && d.error === STOPPED_ERROR).length + Math.max(0, last.shots.length - last.done.length);

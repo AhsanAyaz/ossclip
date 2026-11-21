@@ -311,7 +311,7 @@ describe("storyboard draw jobs (plan B2a Task 4; §169)", () => {
     await renderEnd(s.url);
   });
 
-  it("while Plan again runs, the job routes are 409", async () => {
+  it("while Plan again runs, the job routes are 409: the plan is the running job (§169)", async () => {
     const dir = await storyboardWorkdir();
     await drawnShot(dir, "s1");
     let release!: () => void;
@@ -324,7 +324,7 @@ describe("storyboard draw jobs (plan B2a Task 4; §169)", () => {
       return { shots: [] };
     });
     const s = await start(dir, { provider: provider.make });
-    const plan = post(s.url, "/api/storyboard/plan");
+    expect((await post(s.url, "/api/storyboard/plan")).status).toBe(202);
     await startedP;
     for (const [path, body] of [
       ["/api/storyboard/draw", { ids: ["s2"] }],
@@ -334,10 +334,10 @@ describe("storyboard draw jobs (plan B2a Task 4; §169)", () => {
     ] as const) {
       const res = await post(s.url, path, body);
       expect(res.status, path).toBe(409);
-      expect((await res.json()).error, path).toContain("Plan again is running");
+      expect((await res.json()).error, path).toBe("a storyboard job is running");
     }
     release();
-    expect((await (await plan).json()).ok).toBe(true);
+    expect((await jobEnd(s.url)).done).toEqual([{ id: "plan", ok: true }]);
   });
 
   it("a provider that throws: 202 on the POST, and the job ends with ok false for that shot and its error (never a 500)", async () => {
