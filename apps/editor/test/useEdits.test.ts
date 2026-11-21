@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { OverrideDocSchema, atSplitPoints, splitCues, type SceneCue } from "@ossclip/core/browser";
-import { COALESCE_MS, editReducer, initialEditState, useEdits } from "../src/useEdits";
+import { COALESCE_MS, editReducer, initialEditState, mintAddedSceneId, useEdits } from "../src/useEdits";
 
 describe("edit state", () => {
   it("starts clean", () => {
@@ -1892,5 +1892,109 @@ describe("rekeyCaptionKeys — caption anchors after a range re-transcription (P
     });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("addScene / removeAddedScene (editor-added-graphics §6)", () => {
+  const add = {
+    component: "TitleCard",
+    props: { title: "HELLO" },
+    srcStart: 1,
+    srcEnd: 2.4,
+    baseIds: [] as string[],
+  };
+
+  it("addScene appends a minted entry in ONE undo step, and undo restores the doc", () => {
+    const before = initialEditState();
+    const s = editReducer(before, { type: "addScene", ...add });
+    expect(s.doc.addedScenes).toEqual([
+      { id: "added-1", component: "TitleCard", props: { title: "HELLO" }, srcStart: 1, srcEnd: 2.4 },
+    ]);
+    expect(s.past).toHaveLength(1);
+    expect(s.dirty).toBe(true);
+    const undone = editReducer(s, { type: "undo" });
+    expect(undone.doc).toEqual(before.doc);
+    // The emptied list is not left behind as `addedScenes: []` (§1).
+    expect("addedScenes" in undone.doc).toBe(false);
+  });
+
+  it("mints one past the highest id in the doc, the scenes keys AND the base cues", () => {
+    let s = editReducer(initialEditState(), { type: "addScene", ...add });
+    s = editReducer(s, { type: "addScene", ...add });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-1", "added-2"]);
+    // `added-7` lives only in the base cues (a past run baked it, the entry
+    // is gone): reusing it would preview that old cue (§1).
+    const fromBase = editReducer(initialEditState(), { type: "addScene", ...add, baseIds: ["scene-0", "added-7"] });
+    expect(fromBase.doc.addedScenes!.map((e) => e.id)).toEqual(["added-8"]);
+    // A leftover split-half edit names its root too.
+    const fromKeys = editReducer(
+      { ...initialEditState(), doc: OverrideDocSchema.parse({ scenes: { "added-4@s1#orphaned": { hidden: true } } }) },
+      { type: "addScene", ...add },
+    );
+    expect(fromKeys.doc.addedScenes!.map((e) => e.id)).toEqual(["added-5"]);
+  });
+
+  it("mintAddedSceneId is the reducer's own mint", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "added-2": { props: { title: "X" } } } });
+    expect(mintAddedSceneId(doc, ["added-3"])).toBe("added-4");
+    const s = editReducer({ ...initialEditState(), doc }, { type: "addScene", ...add, baseIds: ["added-3"] });
+    expect(s.doc.addedScenes!.at(-1)!.id).toBe("added-4");
+  });
+
+  it("removeAddedScene removes the entry and every key rooted at it, not added-10, and leaves splits", () => {
+    const doc = OverrideDocSchema.parse({
+      addedScenes: [
+        { id: "added-1", component: "TitleCard", props: { title: "A" }, srcStart: 1, srcEnd: 2 },
+        { id: "added-10", component: "TitleCard", props: { title: "B" }, srcStart: 5, srcEnd: 6 },
+      ],
+      scenes: {
+        "added-1": { props: { title: "EDITED" } },
+        "added-1@3": { hidden: true },
+        "added-1#orphaned": { props: { title: "OLD" } },
+        "added-10": { props: { title: "KEEP" } },
+        "scene-0": { props: { value: "9" } },
+      },
+      splits: [{ id: "3", at: 1.5 }],
+    });
+    const s = editReducer({ ...initialEditState(), doc }, { type: "removeAddedScene", id: "added-1" });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-10"]);
+    expect(Object.keys(s.doc.scenes).sort()).toEqual(["added-10", "scene-0"]);
+    // A split is a time point, not tied to an id (§6).
+    expect(s.doc.splits).toEqual(doc.splits);
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(doc);
+  });
+
+  it("removing the last entry removes the key; an unknown id is a no-op", () => {
+    let s = editReducer(initialEditState(), { type: "addScene", ...add });
+    s = editReducer(s, { type: "removeAddedScene", id: "added-1" });
+    expect("addedScenes" in s.doc).toBe(false);
+    expect(editReducer(s, { type: "removeAddedScene", id: "added-9" })).toBe(s);
+  });
+
+  it("the hook's addScene returns the id the reducer minted", () => {
+    let api!: ReturnType<typeof useEdits>;
+    const Harness = (): null => {
+      api = useEdits();
+      return null;
+    };
+    const root = createRoot(document.createElement("div"));
+    act(() => {
+      root.render(React.createElement(Harness));
+    });
+    let first = "";
+    act(() => {
+      first = api.addScene({ ...add, baseIds: ["added-2"] });
+    });
+    expect(first).toBe("added-3");
+    expect(api.doc.addedScenes!.map((e) => e.id)).toEqual(["added-3"]);
+    let second = "";
+    act(() => {
+      second = api.addScene(add);
+    });
+    expect(second).toBe("added-4");
+    act(() => api.removeAddedScene("added-3"));
+    expect(api.doc.addedScenes!.map((e) => e.id)).toEqual(["added-4"]);
+    act(() => root.unmount());
   });
 });

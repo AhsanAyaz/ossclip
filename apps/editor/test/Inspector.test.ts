@@ -1752,3 +1752,145 @@ describe("Inspector — backdrop names and a below-the-face box (§163, Task 5)"
     expect(q("graphic-box-cut-note")).toBeNull();
   });
 });
+
+/**
+ * Editor-added graphics (editor-added-graphics §6, §7): Delete on an added
+ * ROOT removes its entry; on a split half it hides that half, as for a plan
+ * graphic. The no-selection view lists entries that are not shown, each with
+ * Remove. Its own harness because these need `addedScenes` preloaded, which
+ * `Harness` above has no slot for.
+ */
+describe("Inspector — added graphics", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const seeded = OverrideDocSchema.parse({
+    addedScenes: [
+      { id: "added-1", component: "TitleCard", props: { title: "HELLO" }, srcStart: 1, srcEnd: 2 },
+      { id: "added-2", component: "OldCard", props: {}, srcStart: 5, srcEnd: 6 },
+    ],
+    scenes: { "added-1": { props: { title: "EDITED" } } },
+  });
+
+  function AddedHarness({
+    selection,
+    cue,
+    addedSkipped,
+    onDocChange,
+  }: {
+    selection: { sceneId: string; elementId: string | null } | null;
+    cue: SceneCue | null;
+    addedSkipped?: { id: string; component: string; reason: string }[];
+    onDocChange: (doc: OverrideDoc) => void;
+  }) {
+    const edits = useEdits();
+    React.useEffect(() => {
+      edits.load(seeded);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    React.useEffect(() => {
+      onDocChange(edits.doc);
+    });
+    return React.createElement(Inspector, {
+      selection,
+      cue,
+      frame: { width: 1080, height: 1920 },
+      allSceneIds: cue ? [cue.id] : [],
+      edits,
+      onSelect: () => {},
+      resolvedTheme: defaultTheme,
+      onVideoPreview: vi.fn(),
+      addedSkipped,
+    });
+  }
+
+  const addedCue = (id: string): SceneCue => ({
+    id,
+    kind: "graphic",
+    layout: "lower-third",
+    component: "TitleCard",
+    props: { title: "EDITED" },
+    startSec: 1,
+    endSec: 3,
+  });
+
+  it("Delete on the ROOT removes the entry and its edits", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(AddedHarness, {
+          selection: { sceneId: "added-1", elementId: null },
+          cue: addedCue("added-1"),
+          onDocChange: (d) => (doc = d),
+        }),
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-scene"]')!.click();
+    });
+    expect(doc!.addedScenes!.map((e) => e.id)).toEqual(["added-2"]);
+    expect(doc!.scenes["added-1"]).toBeUndefined();
+  });
+
+  it("Delete on a split HALF hides that half and keeps the entry", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(AddedHarness, {
+          selection: { sceneId: "added-1@k1", elementId: null },
+          cue: addedCue("added-1@k1"),
+          onDocChange: (d) => (doc = d),
+        }),
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="delete-scene"]')!.click();
+    });
+    expect(doc!.addedScenes!.map((e) => e.id)).toEqual(["added-1", "added-2"]);
+    expect(doc!.scenes["added-1@k1"]?.hidden).toBe(true);
+  });
+
+  it("the no-selection view lists entries not shown, and Remove removes one", async () => {
+    let doc: OverrideDoc | undefined;
+    await act(async () => {
+      root.render(
+        React.createElement(AddedHarness, {
+          selection: null,
+          cue: null,
+          addedSkipped: [{ id: "added-2", component: "OldCard", reason: "graphic type OldCard no longer exists" }],
+          onDocChange: (d) => (doc = d),
+        }),
+      );
+    });
+    const list = container.querySelector('[data-testid="added-skipped"]')!;
+    expect(list).not.toBeNull();
+    expect(list.textContent).toContain("1 added graphic is not shown");
+    expect(list.textContent).toContain("added-2 · OldCard · graphic type OldCard no longer exists");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="added-skipped-remove-added-2"]')!.click();
+    });
+    expect(doc!.addedScenes!.map((e) => e.id)).toEqual(["added-1"]);
+  });
+
+  it("no list at all when nothing is skipped", async () => {
+    await act(async () => {
+      root.render(
+        React.createElement(AddedHarness, { selection: null, cue: null, onDocChange: () => {} }),
+      );
+    });
+    expect(container.querySelector('[data-testid="added-skipped"]')).toBeNull();
+  });
+});

@@ -77,7 +77,8 @@ import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { DeleteSceneModal } from "./DeleteSceneModal";
-import type { DeletePlan } from "./deleteScene";
+import { graphicDeleteFor, type DeletePlan } from "./deleteScene";
+import { addedSkippedRows, previewBaseCues } from "./addedGraphics";
 import { DeleteWordsModal } from "./DeleteWordsModal";
 import type { DeleteWordsPlan } from "./deleteWords";
 import { ProjectPicker } from "./ProjectPicker";
@@ -165,6 +166,11 @@ type RawRenderProps = PlayerProductionProps & {
    * stays hidden in the preview exactly as the command.json pin will render
    * it. */
   captionsHiddenByFlag?: boolean;
+  /** Added graphics the last produce run skipped or dropped, with the reason
+   * (editor-added-graphics §2) — omitted when there are none. The preview
+   * leaves these out (they have no cue to build) and the Inspector lists
+   * them with Remove (§7). */
+  addedSceneIssues?: { id: string; reason: string }[];
 };
 
 /**
@@ -1338,6 +1344,9 @@ export const App: React.FC = () => {
     props: PlayerProductionProps;
     reports: string[];
     transcript?: LiveCaptionTrack;
+    /** New added graphics the preview could not show (§7) — the Inspector's
+     * list joins these with render-props' `addedSceneIssues`. */
+    addedSkipped: { id: string; reason: string }[];
   } | null>(() => {
     if (!renderProps) return null;
     // The LAST RENDER's clock, from its own spans. Declared here (it used to
@@ -1362,12 +1371,26 @@ export const App: React.FC = () => {
     // an already-filled list back in would treat the old takes as occupied
     // windows. Old workdirs' `sceneCues` fallback predates the fill, so it
     // is graphic-only too.
-    const baseCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
+    const producedCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
       (c) => c.kind !== "plain",
     );
     const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
-    // The clock THESE cues are on — one derivation, three uses below.
+    // The clock THESE cues are on — one derivation, four uses below.
     const oldClockMap = spansMap();
+    // Added graphics reconciled into the base BEFORE any override pass
+    // (editor-added-graphics §4): a baked `added-` cue whose entry was undone
+    // or deleted leaves, and an add made since the last run joins, timed on
+    // this same old clock — so the pins, overrides, splits and fill below
+    // treat it exactly as they will after the next run makes it a base cue.
+    // Graphic-only in, graphic-only out: the fill still runs after.
+    const addedPreview = previewBaseCues({
+      baseCues: producedCues,
+      added: edits.doc.addedScenes ?? [],
+      issueIds: new Set((renderProps.addedSceneIssues ?? []).map((i) => i.id)),
+      words: sfxPlan.words,
+      map: oldClockMap,
+    });
+    const baseCues = addedPreview.cues;
     // Src-anchored pins resolved onto that clock BEFORE the merge
     // (`resolveSrcTimingPins` owns why this is a pre-pass and not a `map`
     // argument on `applyOverrides`). Old-clock here, deliberately: these two
@@ -1612,10 +1635,11 @@ export const App: React.FC = () => {
         transcript,
       };
     };
-    if (!liveRecut) return finishOnClock(base, [], oldClockMap);
+    const addedSkipped = addedPreview.skipped;
+    if (!liveRecut) return { ...finishOnClock(base, [], oldClockMap), addedSkipped };
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
-    return finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap);
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc]);
+    return { ...finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap), addedSkipped };
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc, sfxPlan.words]);
   const live = liveRetimed === null ? null : liveRetimed.props;
   // ONE boolean for the two surfaces that must agree about which clock the
   // Transcript panel speaks (cut-review rework phase 2): the panel wiring
@@ -1624,6 +1648,18 @@ export const App: React.FC = () => {
   // the plan's window was never measured in — off by exactly the revived (or
   // cut) seconds, silently, since nothing downstream can tell.
   const liveTranscript = liveRetimed?.transcript;
+  // The Inspector's "not shown" list (editor-added-graphics §7): what produce
+  // reported plus what the preview just skipped, filtered to the doc so a
+  // Remove takes its row away before any run rewrites render-props.
+  const addedSkipped = useMemo(
+    () =>
+      addedSkippedRows(
+        edits.doc.addedScenes ?? [],
+        renderProps?.addedSceneIssues ?? [],
+        liveRetimed?.addedSkipped ?? [],
+      ),
+    [edits.doc.addedScenes, renderProps, liveRetimed],
+  );
 
   // BELOW the live memo since phase 2, not above with the caption layers it
   // mostly reads: the REBUILT track's timing layer reports here too, and a
@@ -2548,7 +2584,11 @@ export const App: React.FC = () => {
             // Both arms are ordinary reducer commits, so ⌘Z takes either
             // back — the modal adds friction, not a second edit mechanism.
             if (target === "graphic") {
-              edits.hideScene(deletePlan.sceneId);
+              // The Inspector button's routing (`graphicDeleteFor`): an added
+              // graphic's root is removed, a half is hidden (§6).
+              const del = graphicDeleteFor(deletePlan.sceneId);
+              if (del.kind === "removeAdded") edits.removeAddedScene(del.id);
+              else edits.hideScene(del.sceneId);
             } else {
               // The plan's window came off a retimed cue — the LIVE clock —
               // but a `cuts[]` entry's `startSec`/`endSec` speak the LAST
@@ -3192,6 +3232,7 @@ export const App: React.FC = () => {
             // one offers its Restore (field report 2026-08-31 — the ghost
             // block is gone from the timeline, the take IS the selection).
             deletedScenes={ghostCues}
+            addedSkipped={addedSkipped}
             playheadSec={() => (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps}
             // The Timeline's own two props below: a clip's speed resizes a
             // pinned block within the limits an edge drag has.

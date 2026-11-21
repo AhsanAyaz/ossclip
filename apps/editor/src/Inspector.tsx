@@ -44,6 +44,8 @@ import {
 } from "./overlayLane";
 import { handPlacedStartRect } from "./overlayBox";
 import { DYNAMIC_ID, buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
+import { addedSkippedHeading, type AddedSkippedRow } from "./addedGraphics";
+import { graphicDeleteFor } from "./deleteScene";
 
 /** What planned this video and what it cost (R21 §104) — `/api/usage`'s
  * shape, read straight off the workdir's own artefacts. */
@@ -253,6 +255,15 @@ interface InspectorProps {
    */
   sceneCues?: readonly SceneCue[];
   outputDurationSec?: number;
+  /**
+   * Added graphics with no block to select (editor-added-graphics §7): an
+   * entry produce skipped or assembly dropped (`addedSceneIssues`), or one
+   * added since the last run that the preview could not convert. App joins
+   * the two (`addedSkippedRows`); the no-selection view lists them with
+   * Remove, the only way to reach such an entry short of hand-editing
+   * overrides.json (AG3). Empty by default: nothing listed.
+   */
+  addedSkipped?: readonly AddedSkippedRow[];
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -735,6 +746,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   playheadSec,
   sceneCues = [],
   outputDurationSec = 0,
+  addedSkipped = [],
 }) => {
   if (sfxMarker) {
     // The selected sound effect. FIRST branch on purpose: an SFX selection is
@@ -2119,13 +2131,17 @@ export const Inspector: React.FC<InspectorProps> = ({
             {/* Soft delete (PLAN Task C): the block goes ghost, the window
                 becomes a plain take, and Restore undoes it — so this is
                 danger-styled but not destructive. Delete/Backspace does the
-                same from the keyboard. */}
+                same from the keyboard. The root of an added graphic is
+                removed instead (⌘Z brings it back) — `graphicDeleteFor`
+                owns why, and the modal routes through it too. */}
             <button
               data-testid="delete-scene"
               style={button}
               onClick={() => {
                 blurActive();
-                edits.hideScene(selection.sceneId);
+                const del = graphicDeleteFor(selection.sceneId);
+                if (del.kind === "removeAdded") edits.removeAddedScene(del.id);
+                else edits.hideScene(del.sceneId);
               }}
             >
               Delete scene
@@ -2257,6 +2273,35 @@ export const Inspector: React.FC<InspectorProps> = ({
   const clip = runInfo?.production?.clip ?? null;
   return (
     <div>
+      {addedSkipped.length > 0 ? (
+        <div style={section} data-testid="added-skipped">
+          {/* First on the panel: these are graphics the author made that the
+              video is silently missing, and a skipped entry has no block to
+              select (editor-added-graphics §7). The reason is the one the
+              author can act on — Remove, or fix the words or type it names. */}
+          <span style={{ ...label, color: "#FFE14D" }}>{addedSkippedHeading(addedSkipped.length)}</span>
+          {addedSkipped.map((r) => (
+            <div
+              key={r.id}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+            >
+              <span style={{ fontSize: 12, color: "#C9C9D4" }}>
+                {r.id} · {r.component} · {r.reason}
+              </span>
+              <button
+                data-testid={`added-skipped-remove-${r.id}`}
+                style={{ ...button, padding: "4px 8px" }}
+                onClick={() => {
+                  blurActive();
+                  edits.removeAddedScene(r.id);
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div style={section}>
         <span style={label}>Theme</span>
         <div style={{ fontSize: 12, color: "#9A9AA3" }}>Nothing selected — global tokens.</div>

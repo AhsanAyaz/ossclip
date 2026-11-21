@@ -1,4 +1,4 @@
-import { splitRootId, type OverrideDoc, type SceneCue } from "@ossclip/core/browser";
+import { isAddedKey, splitRootId, type OverrideDoc, type SceneCue } from "@ossclip/core/browser";
 
 /**
  * The two things "delete this scene" can mean, and they are genuinely
@@ -72,4 +72,25 @@ export function deletePlanFor(cue: SceneCue | undefined | null, doc: OverrideDoc
     endSec: cue.endSec,
     targets,
   };
+}
+
+/** What "just the graphic" dispatches for one cue id. */
+export type GraphicDelete = { kind: "removeAdded"; id: string } | { kind: "hide"; sceneId: string };
+
+/**
+ * The graphic delete, routed (editor-added-graphics §6). One function for
+ * every entry point — the Inspector's button and the Delete/Backspace modal —
+ * so the two cannot disagree about which gesture an added block gets.
+ *
+ * The ROOT of an added graphic is removed outright (`removeAddedScene`):
+ * hiding it would leave the entry in `overrides.json` for every future run
+ * to rebuild, only to hide it again — and a hidden root of a block nothing
+ * plans has no plan to fall back to. A SPLIT HALF (`added-1@k3`) is hidden
+ * like any plan graphic's half: removing the entry would take the other half
+ * with it. `isAddedKey` judges the ROOT, so `scene-2@added-1` is a plan
+ * graphic's half.
+ */
+export function graphicDeleteFor(sceneId: string): GraphicDelete {
+  if (isAddedKey(sceneId) && splitRootId(sceneId) === sceneId) return { kind: "removeAdded", id: sceneId };
+  return { kind: "hide", sceneId };
 }

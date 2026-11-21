@@ -6,6 +6,9 @@ import {
   isLegacyCaptionKey,
   keepsBoxAcross,
   clearElementTransform,
+  nextAddedId,
+  sceneKeyRoot,
+  withAddedScenes,
   clearGraphicRect,
   clearTiming,
   emptyOverrideDoc,
@@ -419,10 +422,28 @@ export type EditAction =
    * A re-pick of the same entry still upserts, because staging re-copied its
    * art and the snapshot's `ext` may have changed with it. */
   | { type: "swapOverlay"; id: string; entry: OverlayEntrySnapshot }
+  /** An added template graphic (editor-added-graphics §6): the reducer mints
+   * the id (`mintAddedSceneId`) and appends the entry. One undo step.
+   * `baseIds` are the base cues' ids — the one id source the doc cannot see,
+   * passed in so a graphic a past run baked is never re-minted (§1). */
+  | AddScene
+  /** Delete an added graphic (§6): its entry AND every `scenes` key rooted at
+   * it, in one undo step. Splits stay — a split is a time point, not tied to
+   * an id, exactly as Delete on a plan graphic leaves them. */
+  | { type: "removeAddedScene"; id: string }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "saved" };
+
+export type AddScene = {
+  type: "addScene";
+  component: string;
+  props: Record<string, unknown>;
+  srcStart: number;
+  srcEnd: number;
+  baseIds: readonly string[];
+};
 
 export const initialEditState = (): EditState => ({
   doc: emptyOverrideDoc(),
@@ -567,6 +588,23 @@ export function mintOverlayAddedId(
     const candidate = `${base}-${n}`;
     if (!taken.has(candidate)) return candidate;
   }
+}
+
+/**
+ * The id the next `addScene` gets (editor-added-graphics §1): one past the
+ * highest `added-<n>` among the doc's entries, the ROOTS of its `scenes` keys
+ * and the base cues. All three, because each can still name a block: a
+ * leftover `added-4@s1` edit would land on a new `added-4`, and a base cue a
+ * past run baked would preview its old look under the new id. Exported, and
+ * shared by the reducer and the hook's `addScene`, so the id the hook hands
+ * back is by construction the one the reducer stores.
+ */
+export function mintAddedSceneId(doc: OverrideDoc, baseIds: readonly string[]): string {
+  return nextAddedId([
+    ...(doc.addedScenes ?? []).map((e) => e.id),
+    ...Object.keys(doc.scenes).map(sceneKeyRoot),
+    ...baseIds,
+  ]);
 }
 
 /**
@@ -1704,6 +1742,34 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         }),
       );
     }
+    case "addScene": {
+      // The `addOverlay` shape: the entry is written once here and never
+      // changed — every later edit (props, swap, timing, hide) lives in
+      // `scenes[id]` like any block's (§1).
+      const entry = {
+        id: mintAddedSceneId(state.doc, action.baseIds),
+        component: action.component,
+        props: action.props,
+        srcStart: action.srcStart,
+        srcEnd: action.srcEnd,
+      };
+      return commit(withAddedScenes(state.doc, [...(state.doc.addedScenes ?? []), entry]));
+    }
+    case "removeAddedScene": {
+      const list = state.doc.addedScenes ?? [];
+      const kept = list.filter((e) => e.id !== action.id);
+      // By ROOT, not prefix: `added-1@3` and `added-1#orphaned` (a pre-guard
+      // park, §3) go with `added-1`, while `added-10` is another graphic.
+      // Left behind, the edits would wait for a block that cannot return —
+      // and the mint skips their root, so nothing would ever reuse it.
+      const scenes = Object.fromEntries(
+        Object.entries(state.doc.scenes).filter(([key]) => sceneKeyRoot(key) !== action.id),
+      );
+      const keysGone = Object.keys(scenes).length !== Object.keys(state.doc.scenes).length;
+      // Nothing to remove is not an undo step (the `removeSfxAdded` rule).
+      if (kept.length === list.length && !keysGone) return state;
+      return commit(withAddedScenes({ ...state.doc, scenes }, kept));
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -1919,6 +1985,17 @@ export function useEdits() {
     addOverlayMatches: (placements: OverlayPlacement[], entries: OverlayEntrySnapshot[]) =>
       dispatch({ type: "addOverlayMatches", placements, entries }),
     swapOverlay: (id: string, entry: OverlayEntrySnapshot) => dispatch({ type: "swapOverlay", id, entry }),
+    /** Returns the minted id so App can select the new block — the reducer
+     * holds no selection (§5). Computed here from the RENDERED doc with the
+     * reducer's own `mintAddedSceneId`, so the two agree as long as no other
+     * edit is queued in the same tick; one add per gesture, with a render
+     * between, is the only caller shape. */
+    addScene: (input: Omit<AddScene, "type">): string => {
+      const id = mintAddedSceneId(state.doc, input.baseIds);
+      dispatch({ type: "addScene", ...input });
+      return id;
+    },
+    removeAddedScene: (id: string) => dispatch({ type: "removeAddedScene", id }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }
