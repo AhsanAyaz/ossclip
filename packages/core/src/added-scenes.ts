@@ -7,9 +7,9 @@
  *
  * Browser-safe on purpose, as storyboard/approval.ts is: the editor previews
  * an add with the SAME conversion produce renders with, so the runtime
- * imports are zod, ./scene-schema, ./scene-registry and ./assemble (type
- * imports plus ./scene-registry and ./reveal-match), all already on the
- * browser surface. ./overrides is a type import only — overrides.ts imports
+ * imports are zod, ./scene-schema, ./scene-registry and ./assemble, whose
+ * own runtime imports are ./scene-registry and ./reveal-match — all already
+ * on the browser surface. ./overrides is a type import only — overrides.ts imports
  * `AddedSceneSchema` from here, and a runtime import back would be a cycle.
  */
 import { z } from "zod/v4";

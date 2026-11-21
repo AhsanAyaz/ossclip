@@ -12,7 +12,7 @@ import {
   wordSrcEnd,
   type AddedScene,
 } from "../src/added-scenes";
-import { SCENE_GAP_SEC } from "../src/assemble";
+import { SCENE_GAP_SEC, minSceneSec } from "../src/assemble";
 import { OverrideDocSchema, emptyOverrideDoc } from "../src/overrides";
 import { SCENE_REGISTRY } from "../src/scene-registry";
 import { ScriptComponentIdSchema, type SceneCue } from "../src/scene-schema";
@@ -152,8 +152,12 @@ describe("addedSceneToScene (§2)", () => {
   });
 
   it("skips a span that does not end after it starts", () => {
-    expect(skipped(addedSceneToScene(entry({ srcStart: 2, srcEnd: 2 }), words))).toBeTruthy();
-    expect(skipped(addedSceneToScene(entry({ srcStart: 3, srcEnd: 2 }), words))).toBeTruthy();
+    expect(skipped(addedSceneToScene(entry({ srcStart: 2, srcEnd: 2 }), words))).toBe(
+      "its span ends before it starts",
+    );
+    expect(skipped(addedSceneToScene(entry({ srcStart: 3, srcEnd: 2 }), words))).toBe(
+      "its span ends before it starts",
+    );
   });
 
   it("skips a span with no word in it", () => {
@@ -229,8 +233,10 @@ describe("previewAddedScenes (§4)", () => {
     expect(added.component).toBe("TitleCard");
     expect(added.anchor).toEqual({ startWord: 2, endWord: 4 });
     expect(added.startSec).toBeCloseTo(1.0, 9);
-    // The floor (3 s on a 10 s video) applies, as in a full run.
-    expect(added.endSec - added.startSec).toBeGreaterThanOrEqual(1.4);
+    // The words span 1.4 s (1.0 to 2.4); the floor on a 10 s video is
+    // minSceneSec(10) = 1.5 s, so the cue is extended to it, as in a full run.
+    expect(minSceneSec(identity.outputDuration)).toBeGreaterThan(2.4 - 1.0);
+    expect(added.endSec - added.startSec).toBeCloseTo(minSceneSec(identity.outputDuration), 9);
   });
 
   it("does not preview an entry produce reported as an issue", () => {
@@ -244,7 +250,8 @@ describe("previewAddedScenes (§4)", () => {
     expect(cues).toEqual([]);
     expect(skipped).toHaveLength(1);
     expect(skipped[0]!.id).toBe("added-5");
-    expect(skipped[0]!.reason).toBeTruthy();
+    const parsed = SCENE_REGISTRY.TitleCard.propsSchema.safeParse({ title: "" });
+    expect(skipped[0]!.reason).toBe(parsed.success ? "" : parsed.error.issues[0]!.message);
   });
 
   it("reports a new entry that assembly drops", () => {
