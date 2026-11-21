@@ -1686,13 +1686,16 @@ export const App: React.FC = () => {
   const liveTranscript = liveRetimed?.transcript;
   // The Inspector's "not shown" list (editor-added-graphics §7): what produce
   // reported plus what the preview just skipped, filtered to the doc so a
-  // Remove takes its row away before any run rewrites render-props.
+  // Remove takes its row away before any run rewrites render-props — and a
+  // reported row whose graphic the preview now shows leaves too (the author
+  // fixed it live; the live preview wins, fix-wave ruling 5).
   const addedSkipped = useMemo(
     () =>
       addedSkippedRows(
         edits.doc.addedScenes ?? [],
         renderProps?.addedSceneIssues ?? [],
         liveRetimed?.addedSkipped ?? [],
+        (liveRetimed?.props.sceneCues ?? []).map((c) => c.id),
       ),
     [edits.doc.addedScenes, renderProps, liveRetimed],
   );

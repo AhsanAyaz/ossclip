@@ -137,6 +137,18 @@ describe("addedSkippedRows (§7)", () => {
     ]);
   });
 
+  it("drops a reported row once the live preview shows that graphic (fixed live), and keeps one it does not show", () => {
+    const issues = [
+      { id: "added-1", reason: "overlaps the graphic \u2018StatCard\u2019 at 0:01: move or remove it" },
+      { id: "added-2", reason: "graphic type OldCard no longer exists" },
+    ];
+    // added-1 shows as a split half: the root counts.
+    const rows = addedSkippedRows(doc, issues, [], ["scene-0", "added-1@s1", "take-1"]);
+    expect(rows.map((r) => r.id)).toEqual(["added-2"]);
+    // Not shown live: the run's reason stays.
+    expect(addedSkippedRows(doc, issues, [], ["scene-0"]).map((r) => r.id)).toEqual(["added-1", "added-2"]);
+  });
+
   it("lists only ids still in the doc — a removed entry leaves the list at once", () => {
     const rows = addedSkippedRows(doc.slice(0, 1), [{ id: "added-2", reason: "x" }], []);
     expect(rows).toEqual([]);

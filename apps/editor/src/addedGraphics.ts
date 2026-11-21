@@ -122,14 +122,26 @@ export function addBaseIds(
  * a removed entry leaves the list at once, before the next run rewrites
  * render-props. Produce's reason wins a tie: it is what the next run will say
  * again. Doc order, so the list reads in the order the author added them.
+ *
+ * `liveIds` is what the live preview is drawing (its cue ids). A reported
+ * row whose graphic the preview DOES show leaves the list: the author fixed
+ * it live — moved the plan block that covered it, revived its words — and
+ * "not shown" beside a block on the timeline would be false until the next
+ * run rewrites render-props (fix-wave ruling 5: the live preview wins).
+ * Judged by root, so a shown split half counts. The preview's own skips are
+ * never filtered: they are the live verdict already.
  */
 export function addedSkippedRows(
   added: readonly AddedScene[],
   issues: readonly { id: string; reason: string }[],
   skipped: readonly { id: string; reason: string }[],
+  liveIds: Iterable<string> = [],
 ): AddedSkippedRow[] {
+  const shown = new Set([...liveIds].map(sceneKeyRoot));
   const reasons = new Map<string, string>();
-  for (const r of [...issues, ...skipped]) if (!reasons.has(r.id)) reasons.set(r.id, r.reason);
+  for (const r of [...issues.filter((i) => !shown.has(i.id)), ...skipped]) {
+    if (!reasons.has(r.id)) reasons.set(r.id, r.reason);
+  }
   return added.flatMap((e) => {
     const reason = reasons.get(e.id);
     return reason === undefined ? [] : [{ id: e.id, component: e.component, reason }];
