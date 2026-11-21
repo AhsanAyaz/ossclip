@@ -28,6 +28,7 @@ import { SCENE_REGISTRY, clipSpeed, resolveSceneProps } from "./scene-registry";
 import { maxCueSec } from "./assemble";
 import { revealItemTexts } from "./reveal-match";
 import { keepsBoxAcross } from "./framing";
+import { AddedSceneSchema } from "./added-scenes";
 import {
   captionKeyFor,
   CaptionThemeIdSchema,
@@ -1013,6 +1014,21 @@ export const OverrideDocSchema = z.object({
       skippedSuggestions: z.array(z.string()).optional(),
     })
     .optional(),
+  /**
+   * Template graphics the author added in the editor (editor-added-graphics
+   * §1). Produce converts them to scenes before assembly on every run
+   * (`addedSceneToScene`), so no sync run or Render can lose them (AG1).
+   * The entry shape is loose on purpose — see `AddedSceneSchema`: one stale
+   * entry must not fail the parse every reader of this file makes (AG3).
+   *
+   * Optional with NO default (the `sfx` / `captionsHidden` rule), and the
+   * editor writes it through `withAddedScenes`, which deletes an empty
+   * list, so a project that never added a graphic grows no key.
+   *
+   * Recut-immune by construction: source seconds only, which a re-cut does
+   * not move, so it has no entry in `remapOverridesThroughRecut`.
+   */
+  addedScenes: z.array(AddedSceneSchema).optional(),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 

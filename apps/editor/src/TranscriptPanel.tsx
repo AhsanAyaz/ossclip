@@ -6,6 +6,7 @@ import {
   lineDirection,
   NASTALIQ_FONT_NAME,
   NASTALIQ_FONT_REL,
+  wordSrcEnd,
   type CaptionLine,
   type CaptionWord,
 } from "@ossclip/core/browser";
@@ -360,8 +361,10 @@ export const timingLineAt = (lines: readonly CaptionLine[], i: number): TimingLi
     // range rewrite interpolates `srcStart`, and `captionAnchorOf` only
     // vouches for the FIRST word) falls back to the line's output duration,
     // which is the right order of magnitude for a decorative strip.
+    // `wordSrcEnd` is shared with the add-graphic span (editor-added-graphics
+    // §1), so the strip and a graphic over the same words end together.
     srcEnd: Number.isFinite(last.srcStart)
-      ? last.srcStart + (last.end - last.start)
+      ? wordSrcEnd(last)
       : first.srcStart + (line.end - line.start),
   };
 };

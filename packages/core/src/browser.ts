@@ -271,3 +271,11 @@ export * from "./storyboard/merge";
 // imports plus ./scene-registry, both on this surface already); `clipKey`
 // takes its hash as an argument so node:crypto stays off this surface.
 export * from "./storyboard/approval";
+
+// Editor-added template graphics (editor-added-graphics §2, §4). The editor
+// previews an add with the SAME conversion produce renders with, and its
+// reducer mints ids and its panel measures spans with the same helpers —
+// a browser copy is how the preview and the next run would disagree.
+// Browser-safe: added-scenes.ts's runtime imports are zod, ./scene-schema,
+// ./scene-registry and ./assemble, all already in this surface's graph.
+export * from "./added-scenes";
