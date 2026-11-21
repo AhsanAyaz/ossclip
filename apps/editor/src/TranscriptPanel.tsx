@@ -1460,6 +1460,11 @@ export const TranscriptPanel: React.FC<{
    * every other bar action: an anchorless word has no source time, so the
    * span could not be stored.
    */
+  /** Focus back on the body when the add popover closes — it held focus,
+   * and an element that unmounts drops it on <body>, outside this panel,
+   * where a second Escape no longer reaches the clear-selection branch. */
+  const focusBody = (): void => bodyRef.current?.focus({ preventScroll: true });
+
   const openAddGraphic = (): void => {
     if (onAddGraphic === undefined || selected.length === 0 || anySelectedAnchorless) return;
     const request = onAddGraphic(
@@ -2639,8 +2644,12 @@ export const TranscriptPanel: React.FC<{
               addGraphic.request.add(component, props);
               setAddGraphic(null);
               setSel(null);
+              focusBody();
             }}
-            onClose={() => setAddGraphic(null)}
+            onClose={() => {
+              setAddGraphic(null);
+              focusBody();
+            }}
             onLayout={() => setAddGraphicLayout((n) => n + 1)}
           />
         ) : null}

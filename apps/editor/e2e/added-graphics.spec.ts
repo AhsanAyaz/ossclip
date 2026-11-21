@@ -87,6 +87,11 @@ test("select words, Graphic…, TitleCard, type, Add: a block on the timeline an
   await page.getByTestId("transcript-add-graphic").click();
   const popover = page.getByTestId("transcript-add-graphic-popover");
   await expect(popover).toBeVisible();
+  // Inside the pane: the width is capped at the body less its margins.
+  const pop = (await popover.boundingBox())!;
+  const pane = (await page.getByTestId("transcript-body").boundingBox())!;
+  expect(pop.x).toBeGreaterThanOrEqual(pane.x);
+  expect(pop.x + pop.width).toBeLessThanOrEqual(pane.x + pane.width + 0.5);
   await expect(page.getByTestId("add-graphic-words")).toContainText("people use AI very regularly.");
   // A fresh add with a clock and a word list previews at once: no deferral note.
   await expect(page.getByTestId("add-graphic-note")).toHaveCount(0);

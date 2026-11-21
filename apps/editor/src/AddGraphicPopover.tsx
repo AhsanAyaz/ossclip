@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useState } from "react";
 import {
   ADDED_OFFERED,
   SCENE_REGISTRY,
@@ -161,8 +161,11 @@ export const AddGraphicPopover: React.FC<{
         flexDirection: "column",
         alignItems: "stretch",
         gap: 6,
-        // Room for the longest type line (49 characters) on one row.
-        width: 320,
+        // 320 px, or the pane less the two 8 px margins `menuPlacement`
+        // keeps, whichever is narrower: a narrow transcript pane must not
+        // push the popover past its edge (the type lines wrap instead).
+        width: "min(320px, calc(100% - 16px))",
+        boxSizing: "border-box",
         padding: "8px 8px",
         outline: "none",
       }}
@@ -170,6 +173,20 @@ export const AddGraphicPopover: React.FC<{
         if (e.key === "Escape") {
           e.stopPropagation();
           onClose();
+          return;
+        }
+        // Enter in a one-line field adds, the range editor's convention
+        // (plain Enter commits). Only from an <input>: Enter on a button
+        // already presses it, and on a <select> it opens the choices.
+        if (
+          e.key === "Enter" &&
+          e.target instanceof HTMLInputElement &&
+          component !== null &&
+          issue === null
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onAdd(component, addFormProps(component, values));
         }
       }}
     >
@@ -190,7 +207,9 @@ export const AddGraphicPopover: React.FC<{
       ) : component === null ? (
         <>
           {noteRows}
-          <div style={typeList}>
+          {/* The menuitems' parent role — without it a screen reader meets
+              eleven orphaned menuitems with no menu to belong to. */}
+          <div role="menu" aria-label="Graphic types" style={typeList}>
             {ADDED_OFFERED.map((c) => (
               <MenuItem key={c} data-testid={`add-graphic-type-${c}`} onClick={() => pick(c)} style={typeRow}>
                 <span style={typeName}>{ADD_TYPE_COPY[c].name}</span>
@@ -246,42 +265,56 @@ export const AddGraphicPopover: React.FC<{
 
 /** One field of the form. Values stay in the shapes `addFormProps` takes —
  * strings, string lists, `{from, text}` messages, a number — and nothing is
- * trimmed or clamped here: the Add gate judges what the author typed. */
+ * trimmed or clamped here: the Add gate judges what the author typed.
+ *
+ * Labels are real `<label htmlFor>`s and the counts and ranges hang off
+ * `aria-describedby`, so a screen reader names the field "Title" and reads
+ * "12/48" as its description — inside the label, the count was part of the
+ * name. Row controls name their row ("Item 2", "Remove item 2"): five inputs
+ * all called "Items" cannot be told apart by ear. */
 const AddField: React.FC<{
   field: AddFormField;
   value: unknown;
   autoFocus: boolean;
   onChange: (value: unknown) => void;
 }> = ({ field: f, value, autoFocus, onChange }) => {
-  const id = `add-graphic-field-${f.key}`;
+  const testid = `add-graphic-field-${f.key}`;
+  // DOM ids from `useId`: the testids are fixed strings, and an id must be
+  // unique in the document whatever else is mounted.
+  const id = useId();
+  const hintId = `${id}-hint`;
+  const labelId = `${id}-label`;
   switch (f.kind) {
     case "text": {
       const text = typeof value === "string" ? value : "";
       return (
-        <label style={fieldLabel}>
+        <div style={fieldLabel}>
           <span style={labelRow}>
-            {f.label}
-            <span style={text.length > f.max ? overCount : count}>
+            <label htmlFor={id}>{f.label}</label>
+            <span id={hintId} style={text.length > f.max ? overCount : count}>
               {text.length}/{f.max}
             </span>
           </span>
           <input
-            data-testid={id}
+            id={id}
+            data-testid={testid}
+            aria-describedby={hintId}
             autoFocus={autoFocus}
             dir="auto"
             style={fieldInput}
             value={text}
             onChange={(e) => onChange(e.target.value)}
           />
-        </label>
+        </div>
       );
     }
     case "choice":
       return (
-        <label style={fieldLabel}>
-          {f.label}
+        <div style={fieldLabel}>
+          <label htmlFor={id}>{f.label}</label>
           <select
-            data-testid={id}
+            id={id}
+            data-testid={testid}
             autoFocus={autoFocus}
             style={fieldInput}
             value={typeof value === "string" ? value : ""}
@@ -294,19 +327,21 @@ const AddField: React.FC<{
               </option>
             ))}
           </select>
-        </label>
+        </div>
       );
     case "number":
       return (
-        <label style={fieldLabel}>
+        <div style={fieldLabel}>
           <span style={labelRow}>
-            {f.label}
-            <span style={count}>
+            <label htmlFor={id}>{f.label}</label>
+            <span id={hintId} style={count}>
               {f.min} to {f.max}
             </span>
           </span>
           <input
-            data-testid={id}
+            id={id}
+            data-testid={testid}
+            aria-describedby={hintId}
             autoFocus={autoFocus}
             type="number"
             min={f.min}
@@ -317,22 +352,23 @@ const AddField: React.FC<{
             // Empty is unset, not 0; anything else goes to the schema as typed.
             onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
           />
-        </label>
+        </div>
       );
     case "list": {
       const items = Array.isArray(value) ? (value as string[]) : [];
       return (
-        <div style={fieldLabel}>
+        <div role="group" aria-labelledby={labelId} aria-describedby={hintId} style={fieldLabel}>
           <span style={labelRow}>
-            {f.label}
-            <span style={count}>
+            <span id={labelId}>{f.label}</span>
+            <span id={hintId} style={count}>
               {f.min} to {f.max}
             </span>
           </span>
           {items.map((item, i) => (
             <span key={i} style={listRow}>
               <input
-                data-testid={`${id}-${i}`}
+                data-testid={`${testid}-${i}`}
+                aria-label={`Item ${i + 1}`}
                 dir="auto"
                 style={{ ...fieldInput, flex: 1 }}
                 value={item}
@@ -340,7 +376,7 @@ const AddField: React.FC<{
               />
               <button
                 data-testid={`add-graphic-remove-${f.key}-${i}`}
-                aria-label="Remove"
+                aria-label={`Remove item ${i + 1}`}
                 style={toolbarButton}
                 onClick={() => onChange(items.filter((_, j) => j !== i))}
               >
@@ -365,17 +401,18 @@ const AddField: React.FC<{
       const patch = (i: number, next: Partial<{ from: string; text: string }>): void =>
         onChange(messages.map((m, j) => (j === i ? { ...m, ...next } : m)));
       return (
-        <div style={fieldLabel}>
+        <div role="group" aria-labelledby={labelId} aria-describedby={hintId} style={fieldLabel}>
           <span style={labelRow}>
-            Messages
-            <span style={count}>
+            <span id={labelId}>Messages</span>
+            <span id={hintId} style={count}>
               {f.min} to {f.max}
             </span>
           </span>
           {messages.map((m, i) => (
             <span key={i} style={listRow}>
               <select
-                data-testid={`${id}-${i}-from`}
+                data-testid={`${testid}-${i}-from`}
+                aria-label={`Message ${i + 1} sender`}
                 style={fieldInput}
                 value={m.from}
                 onChange={(e) => patch(i, { from: e.target.value })}
@@ -387,7 +424,8 @@ const AddField: React.FC<{
                 ))}
               </select>
               <input
-                data-testid={`${id}-${i}`}
+                data-testid={`${testid}-${i}`}
+                aria-label={`Message ${i + 1} text`}
                 dir="auto"
                 style={{ ...fieldInput, flex: 1 }}
                 value={m.text}
@@ -395,7 +433,7 @@ const AddField: React.FC<{
               />
               <button
                 data-testid={`add-graphic-remove-${f.key}-${i}`}
-                aria-label="Remove"
+                aria-label={`Remove message ${i + 1}`}
                 style={toolbarButton}
                 onClick={() => onChange(messages.filter((_, j) => j !== i))}
               >
@@ -453,6 +491,9 @@ const typeList: React.CSSProperties = {
 
 /** A type row: the bar's chip, stacked as name over line. */
 const typeRow: React.CSSProperties = {
+  // The chip's `nowrap` is for one-word bar labels; a description line must
+  // wrap in a narrow pane rather than run past the popover's edge.
+  whiteSpace: "normal",
   display: "flex",
   flexDirection: "column",
   alignItems: "flex-start",

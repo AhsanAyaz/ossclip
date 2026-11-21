@@ -295,6 +295,71 @@ describe("TranscriptPanel — add a graphic from the selection", () => {
     expect(doc!.addedScenes).toBeUndefined();
   });
 
+  it("Escape and Cancel hand focus back to the panel body, so a second Escape clears the selection", async () => {
+    await render({ lines: [line(["a", "b"])] });
+    const body = q("transcript-body")!;
+    await click(word(0));
+    await click(q("transcript-add-graphic")!);
+    // Focus is inside the popover while it is open.
+    expect(q("transcript-add-graphic-popover")!.contains(document.activeElement)).toBe(true);
+    await key(document.activeElement as HTMLElement, "Escape");
+    expect(q("transcript-add-graphic-popover")).toBeNull();
+    expect(document.activeElement).toBe(body);
+    await key(document.activeElement as HTMLElement, "Escape");
+    expect(q("transcript-selection-menu")).toBeNull();
+
+    await click(word(1));
+    await click(q("transcript-add-graphic")!);
+    await click(q("add-graphic-cancel")!);
+    expect(document.activeElement).toBe(body);
+  });
+
+  it("Enter in a one-line field adds when Add is enabled, and does nothing when it is not", async () => {
+    await render({ lines: [line(["Agents"])] });
+    await click(word(0));
+    await click(q("transcript-add-graphic")!);
+    await click(q("add-graphic-type-TitleCard")!);
+    const title = q("add-graphic-field-title") as HTMLInputElement;
+    await type(title, "");
+    await key(title, "Enter");
+    expect(doc!.addedScenes).toBeUndefined();
+    expect(q("transcript-add-graphic-popover")).not.toBeNull();
+    await type(title, "Agents");
+    await key(title, "Enter");
+    expect(doc!.addedScenes!.map((e) => e.props)).toEqual([{ title: "Agents" }]);
+    expect(q("transcript-add-graphic-popover")).toBeNull();
+    expect(document.activeElement).toBe(q("transcript-body"));
+  });
+
+  it("names its controls: a menu around the types, labelled fields, counts as descriptions, rows by number", async () => {
+    await render({ lines: [line(["a"])] });
+    await click(word(0));
+    await click(q("transcript-add-graphic")!);
+    const menu = q("add-graphic-type-TitleCard")!.parentElement!;
+    expect(menu.getAttribute("role")).toBe("menu");
+    expect(menu.getAttribute("aria-label")).toBe("Graphic types");
+
+    await click(q("add-graphic-type-TitleCard")!);
+    const title = q("add-graphic-field-title") as HTMLInputElement;
+    // The label names it; the 1/48 count describes it, outside the name.
+    expect(container.querySelector(`label[for="${title.id}"]`)!.textContent).toBe("Title");
+    expect(document.getElementById(title.getAttribute("aria-describedby")!)!.textContent).toBe("1/48");
+    await click(q("add-graphic-back")!);
+
+    await click(q("add-graphic-type-BulletList")!);
+    await click(q("add-graphic-add-item-items")!);
+    await click(q("add-graphic-add-item-items")!);
+    expect(q("add-graphic-field-items-1")!.getAttribute("aria-label")).toBe("Item 2");
+    expect(q("add-graphic-remove-items-1")!.getAttribute("aria-label")).toBe("Remove item 2");
+    await click(q("add-graphic-back")!);
+
+    await click(q("add-graphic-type-ChatMock")!);
+    await click(q("add-graphic-add-item-messages")!);
+    expect(q("add-graphic-field-messages-0")!.getAttribute("aria-label")).toBe("Message 1 text");
+    expect(q("add-graphic-field-messages-0-from")!.getAttribute("aria-label")).toBe("Message 1 sender");
+    expect(q("add-graphic-remove-messages-0")!.getAttribute("aria-label")).toBe("Remove message 1");
+  });
+
   it("a word with no source anchor disables Graphic…, with the panel's reason", async () => {
     const legacy: CaptionLine = {
       words: [{ text: "old", start: 6, end: 6.4 } as CaptionLine["words"][number]],
