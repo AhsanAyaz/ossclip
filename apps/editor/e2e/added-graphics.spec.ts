@@ -35,9 +35,11 @@ const TITLE = "Agents in a loop";
 
 let originalProduction: string | null = null;
 let originalOverrides: string | null = null;
+let originalProps: string | null = null;
 
 test.beforeAll(async () => {
   originalProduction = await readFile(PRODUCTION, "utf8");
+  originalProps = await readFile(PROPS, "utf8");
   originalOverrides = await readFile(OVERRIDES, "utf8").catch(() => null);
   const props = JSON.parse(await readFile(PROPS, "utf8")) as {
     captionLines: { words: { text: string; start: number; end: number }[] }[];
@@ -52,6 +54,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (originalProduction !== null) await writeFile(PRODUCTION, originalProduction);
+  if (originalProps !== null) await writeFile(PROPS, originalProps);
   if (originalOverrides !== null) await writeFile(OVERRIDES, originalOverrides);
   else await rm(OVERRIDES, { force: true });
 });
@@ -191,4 +194,49 @@ test("the transcript's own gestures still work with Graphic… on the bar", asyn
   await expect(edit).toBeVisible();
   await edit.press("Escape");
   await expect(edit).toHaveCount(0);
+});
+
+test("an entry the run reported is listed as not shown with its reason; Remove takes it out and Save writes the doc without it", async ({
+  page,
+}) => {
+  // What a run that could not show an entry leaves behind (§2 "Issues", §7):
+  // the entry in the doc, its reason in render-props' `addedSceneIssues`,
+  // and no cue for it. The server reads both files per request, so writing
+  // them before the load is the run having happened.
+  const reason = "graphic type OldCard no longer exists";
+  const props = JSON.parse(originalProps!) as Record<string, unknown>;
+  await writeFile(PROPS, JSON.stringify({ ...props, addedSceneIssues: [{ id: "added-9", reason }] }));
+  const doc = JSON.parse((await readFile(OVERRIDES, "utf8").catch(() => null)) ?? "{}") as {
+    addedScenes?: { id: string }[];
+  };
+  const kept = (doc.addedScenes ?? []).map((e) => e.id);
+  await writeFile(
+    OVERRIDES,
+    JSON.stringify({
+      ...doc,
+      addedScenes: [
+        ...(doc.addedScenes ?? []),
+        { id: "added-9", component: "OldCard", props: {}, srcStart: 20, srcEnd: 21 },
+      ],
+    }),
+  );
+  try {
+    await page.goto("/");
+    await page.waitForSelector('[data-testid^="timeline-block-"]');
+    // Nothing selected: the Inspector's no-selection view, where the list lives.
+    const list = page.getByTestId("added-skipped");
+    await expect(list).toContainText("1 added graphic is not shown");
+    await expect(list).toContainText(`added-9 · OldCard · ${reason}`);
+    await expect(page.getByTestId("timeline-block-added-9")).toHaveCount(0);
+
+    await page.getByTestId("added-skipped-remove-added-9").click();
+    // Gone at once, before any run rewrites render-props (addedSkippedRows
+    // reads the doc).
+    await expect(list).toHaveCount(0);
+    await page.keyboard.press("Control+s");
+    await expect(page.getByTestId("dirty")).toHaveCount(0);
+    expect(((await addedDoc()) ?? []).map((e) => e.id)).toEqual(kept);
+  } finally {
+    await writeFile(PROPS, originalProps!);
+  }
 });
