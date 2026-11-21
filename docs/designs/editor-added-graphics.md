@@ -100,7 +100,7 @@ Cut words are not checked here. Assembly already starts a scene at its first kep
 **Produce** (`produce.ts`), in every run kind (planner, script, storyboard, and the `--scenes` replay at `:4103-4120`):
 
 1.  **The doc is the only source.** First remove every scene whose id starts with `added-` from `scenes`, whatever put it there. The replay parses `scenes-reviewed.json`, which is written from `production.json` (`edit.ts:2310-2324`, `render-replay-args.ts:110-114`), and `production.json` holds every scene of the last run (`produce.ts:6173`). Without this step a deleted or undone graphic would come back on the next Render.
-2.  **Then append** the converted entries of `overrideDoc.addedScenes`.
+2.  **Then append** the converted entries of `overrideDoc.addedScenes`. At assembly they are split off again: plan scenes go through `assembleScenes` without them, and the added scenes go through their own `assembleScenes` call, so a hidden or retimed plan scene never pushes an added graphic off its words (final review I1, ruling 2026-11-21). Their cues are merged into the time-sorted list before routing and fill.
 3.  **Where:** after the transcript rewrites (`:4891`, `:4904`) and before the landscape remap and variety pass (`:4913-4990`). So the anchors index the final transcript, and the landscape remap applies to added graphics as to any scene.
 4.  **Variety pass:** skip `added-` scenes, as it skips `graphicRect` scenes (`:4974`). Otherwise an added graphic would change its neighbours' layouts (AG2), and its preview layout would differ from the next run's.
 5.  **Other passes that read `scenes`:** the grounding post-check (`:5481-5497`) and `cueOutcomes` (`:5121`) filter out `added-` ids. The grounding check compares text with the transcript; an added graphic's text is the author's.
@@ -127,7 +127,7 @@ The editor builds the preview from base cues plus the doc (`App.tsx:1365-1414`).
 
 An entry in `addedSceneIssues` is not previewed; it is listed (section 7).
 
-The client never pushes other blocks. The add gesture refused overlaps (AG2), so the preview needs no push. If a later run's assembly moves the block (a new storyboard shot over the same words), that is assembly's ordinary push, reported in `report.txt` like any other.
+The client never pushes other blocks. The add gesture refused overlaps (AG2), so the preview needs no push. If an added graphic later overlaps a visible plan graphic (a storyboard shot approved over the same words, a plan block dragged onto it), `dropOverlappingAdded` drops the added one, never the plan one, with the reason "overlaps the graphic ‘X’ at m:ss: move or remove it". Produce runs it after overrides and the hidden drop and writes the drop into `addedSceneIssues`; the preview runs the same function after its own merge, so both agree. A not-shown row from the last run clears once the live preview shows that graphic again.
 
 ### 5. The add gesture
 
