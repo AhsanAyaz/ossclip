@@ -2062,3 +2062,26 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   One video and one provider. The table was judged by reading it; no shot from it is drawn yet.
 *   "Plan again" has run only with a stand-in provider.
 *   The editor's clock counts a word as kept if its start, middle or end is kept; the server's counts the middle only. A word on a cut edge can differ between the two.
+
+## 170. Adding a template graphic from the editor (2026-11-21)
+
+**What.** The author selects words in the transcript, presses **Graphic…**, picks one of 11 template types, types its text and presses Add. The entry is stored in `overrides.json` `addedScenes` (design: `docs/designs/editor-added-graphics.md`). Produce converts every entry into a `Scene` on every run kind, so Render, a storyboard sync run and a re-plan all keep it.
+
+**Real run.** On a copy of the author's EGM short (four approved storyboard shots), one TitleCard entry over the opening words was rendered through the editor's Render. The cue landed at 0–1.7 s in `pip-bubble` with the author's title, no `addedSceneIssues`, and the frame at 1.0 s shows the card over the speaker bubble. The first 1.7 s of source were a cleanup cut, so the card started at the first kept word, as a plan graphic would.
+
+**Decisions worth keeping.**
+
+*   **The doc is the only source.** Produce drops every `added-` scene from the scene list before it appends the doc's entries, because the Render replay reads `scenes-reviewed.json`, which holds the last run's scenes. Without the drop, a deleted graphic came back on the next Render.
+*   **Placed on their own words.** Added scenes go through their own `assembleScenes` call. In one shared call, a hidden plan scene or a plan block's unpinned window pushed an added graphic off its words on Render while the preview showed it in place (final review I1).
+*   **Give way, never push.** After overrides and the hidden drop, `dropOverlappingAdded` drops an added cue that overlaps a visible plan graphic and reports it in `render-props.json` `addedSceneIssues`. The editor runs the same function, so preview and Render agree. A storyboard shot approved over an added graphic's words therefore wins, and the added graphic appears in the Inspector's not-shown list with Remove.
+*   **Loose schema.** `addedScenes` entries are validated one by one at conversion, not by `OverrideDocSchema`, so a stale entry cannot make `overrides.json` fail to parse for every reader.
+*   **Raw props check.** Conversion parses props with the component's schema directly, without registry defaults; the add form's Add button uses the same check, so a graphic Add accepts is never skipped later.
+*   **Ids never reused.** The mint skips ids in the doc, in `baseSceneCues` and in `addedSceneIssues`; a reused id would preview a stale cue or inherit an old reason.
+
+**Limits.**
+
+*   A build without this feature strips `addedScenes` on its next produce run (a plain `z.object` drops unknown keys, and produce writes `overrides.json`).
+*   Adding a graphic splits a plain take and renumbers later takes of that clip, so a framing edit on a later take can move to a neighbour. A storyboard approve already does this.
+*   With no clock (no kept spans), the add-time overlap check uses the words' own span without the duration floor.
+*   `TerminalMock` and `ScreenshotFrame` are not offered in the picker.
+*   When one half of a split added graphic is covered, the not-shown list names the whole entry.
