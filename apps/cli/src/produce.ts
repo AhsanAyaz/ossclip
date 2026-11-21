@@ -7355,8 +7355,9 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
       ? { baseCaptionTheme: captionThemeRes.baseTheme }
       : {}),
     ...(captionChoreography ? { captionChoreography } : {}),
-    // Editor-added graphics this run did not show — skipped at conversion
-    // or dropped by assembly — with the reason (editor-added-graphics §2
+    // Editor-added graphics this run did not show — skipped at conversion,
+    // dropped by assembly, or dropped for overlapping a visible graphic
+    // (`dropOverlappingAdded`) — with the reason (editor-added-graphics §2
     // "Issues"). The editor lists them for removal (§7) and does not
     // preview them (§4). Written only when non-empty, the absent-means-none
     // contract of the keys above: a project with no added graphic keeps a

@@ -105,7 +105,7 @@ Cut words are not checked here. Assembly already starts a scene at its first kep
 4.  **Variety pass:** skip `added-` scenes, as it skips `graphicRect` scenes (`:4974`). Otherwise an added graphic would change its neighbours' layouts (AG2), and its preview layout would differ from the next run's.
 5.  **Other passes that read `scenes`:** the grounding post-check (`:5481-5497`) and `cueOutcomes` (`:5121`) filter out `added-` ids. The grounding check compares text with the transcript; an added graphic's text is the author's.
 
-**Issues.** Produce writes `addedSceneIssues: [{ id, reason }]` into `render-props.json` for every entry that conversion skipped or assembly dropped (assembly's drops only reach the console today, `produce.ts:5108`), and prints one line each. The editor reads this list (sections 4 and 7). An empty list is omitted.
+**Issues.** Produce writes `addedSceneIssues: [{ id, reason }]` into `render-props.json` for every entry that conversion skipped, assembly dropped (assembly's drops only reach the console otherwise), or `dropOverlappingAdded` dropped because it overlaps a visible graphic (§4), and prints one line each. The editor reads this list (sections 4 and 7). An empty list is omitted.
 
 **Invariant:** after any produce run, `baseSceneCues` holds a cue for every entry not in `addedSceneIssues`, and no `added-` cue whose entry is gone. Tested, including after a replay.
 

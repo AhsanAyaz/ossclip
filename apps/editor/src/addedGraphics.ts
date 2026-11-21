@@ -125,7 +125,7 @@ export function addBaseIds(
  *
  * `liveIds` is what the live preview is drawing (its cue ids). A reported
  * row whose graphic the preview DOES show leaves the list: the author fixed
- * it live — moved the plan block that covered it, revived its words — and
+ * it live — moved the plan block that covered it — and
  * "not shown" beside a block on the timeline would be false until the next
  * run rewrites render-props (fix-wave ruling 5: the live preview wins).
  * Judged by root, so a shown split half counts. The preview's own skips are
