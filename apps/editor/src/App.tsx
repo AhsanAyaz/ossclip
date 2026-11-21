@@ -1347,6 +1347,9 @@ export const App: React.FC = () => {
     /** New added graphics the preview could not show (§7) — the Inspector's
      * list joins these with render-props' `addedSceneIssues`. */
     addedSkipped: { id: string; reason: string }[];
+    /** The graphic-only base AFTER the added-graphics reconcile — what
+     * `ghostCues` below must read too (editor-added-graphics §4). */
+    previewBase: SceneCue[];
   } | null>(() => {
     if (!renderProps) return null;
     // The LAST RENDER's clock, from its own spans. Declared here (it used to
@@ -1635,10 +1638,10 @@ export const App: React.FC = () => {
         transcript,
       };
     };
-    const addedSkipped = addedPreview.skipped;
-    if (!liveRecut) return { ...finishOnClock(base, [], oldClockMap), addedSkipped };
+    const added = { addedSkipped: addedPreview.skipped, previewBase: baseCues };
+    if (!liveRecut) return { ...finishOnClock(base, [], oldClockMap), ...added };
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
-    return { ...finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap), addedSkipped };
+    return { ...finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap), ...added };
   }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc, sfxPlan.words]);
   const live = liveRetimed === null ? null : liveRetimed.props;
   // ONE boolean for the two surfaces that must agree about which clock the
@@ -2122,10 +2125,13 @@ export const App: React.FC = () => {
   // this list so the Inspector can offer Restore even though the live cues
   // no longer contain it.
   const ghostCues = useMemo<SceneCue[]>(() => {
-    if (!renderProps) return [];
-    const baseCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
-      (c) => c.kind !== "plain",
-    );
+    if (!renderProps || !liveRetimed) return [];
+    // The live memo's base, added graphics reconciled (editor-added-graphics
+    // §4), never the raw `baseSceneCues`: an added graphic no run has baked
+    // yet exists only there, so a hidden half of it found no cue to ghost and
+    // its take showed no Restore — ⌘Z was the only way back. Same list the
+    // preview merges onto, so a ghost and the block it restores agree.
+    const baseCues = liveRetimed.previewBase;
     // Finding 2, PLAN 2026-08-04 fix wave final review: `ghostCues`'s own
     // doc comment (ghosts.ts) has the full reasoning — this used to filter
     // for `hidden` on the PRE-split cues, so a hidden `id@<split id>` half (a
@@ -2136,7 +2142,7 @@ export const App: React.FC = () => {
     // timeline — unmapped, every ghost past a revived pause sat the revived
     // seconds off its true window.
     return computeGhostCues(baseCues, edits.doc, clock.toLive);
-  }, [renderProps, edits.doc, clock]);
+  }, [renderProps, liveRetimed, edits.doc, clock]);
 
   const selectedCue = useMemo(
     () =>

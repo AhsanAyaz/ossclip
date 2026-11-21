@@ -9,6 +9,7 @@ import {
   OverrideDocSchema,
   scalarPropControls,
   livePreviewMap,
+  mapFromKeptSpans,
   plannerComponentIds,
   scriptComponentIds,
   previewClockMappers,
@@ -18,6 +19,8 @@ import {
   type Segment,
 } from "@ossclip/core/browser";
 import { Inspector, componentSwapOptions, propControlHint } from "../src/Inspector";
+import { previewBaseCues } from "../src/addedGraphics";
+import { ghostCues } from "../src/ghosts";
 import { useEdits } from "../src/useEdits";
 
 // Same one-time act() opt-in as project-picker.test.ts — this is the
@@ -64,6 +67,7 @@ function Harness({
   hasOldClockPreimage,
   toSourceSec,
   onClockRefused,
+  deletedScenes,
 }: {
   selection: { sceneId: string; elementId: string | null };
   cue?: SceneCue;
@@ -104,6 +108,8 @@ function Harness({
   hasOldClockPreimage?: (sec: number) => boolean;
   toSourceSec?: ((sec: number) => number) | null;
   onClockRefused?: (message: string) => void;
+  /** App's ghost list, passed through — the take's Restore chips read it. */
+  deletedScenes?: readonly SceneCue[];
 }) {
   const edits = useEdits();
   React.useEffect(() => {
@@ -142,6 +148,7 @@ function Harness({
     hasOldClockPreimage,
     toSourceSec,
     onClockRefused,
+    deletedScenes,
   });
 }
 
@@ -1892,5 +1899,63 @@ describe("Inspector — added graphics", () => {
       );
     });
     expect(container.querySelector('[data-testid="added-skipped"]')).toBeNull();
+  });
+});
+
+/**
+ * A hidden half of an added graphic no run has baked yet (editor-added-
+ * graphics §4): its cue exists only in the reconciled preview base, so the
+ * ghost list must be built from that base or the half's take has no Restore.
+ */
+describe("Inspector — Restore for a hidden half of an unrendered added graphic", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const words = Array.from({ length: 20 }, (_, i) => ({ text: `w${i}`, start: i * 0.5, end: i * 0.5 + 0.4 }));
+  const map = mapFromKeptSpans([{ srcIn: 0, srcOut: 10, outIn: 0, outOut: 10 }]);
+  // Added since the last run (no base cue), split at 1.8 s, second half deleted.
+  const doc = OverrideDocSchema.parse({
+    addedScenes: [{ id: "added-1", component: "TitleCard", props: { title: "HELLO" }, srcStart: 1, srcEnd: 2.4 }],
+    splits: [{ id: "k1", at: 1.8 }],
+    scenes: { "added-1@k1": { hidden: true } },
+  });
+
+  it("ghosts the hidden half from the reconciled base, and its take offers Restore", async () => {
+    const { cues: base } = previewBaseCues({
+      baseCues: [],
+      added: doc.addedScenes!,
+      issueIds: new Set(),
+      words,
+      map,
+    });
+    // The raw base cues hold nothing for it — the list the ghosts used to read.
+    expect(ghostCues([], doc)).toEqual([]);
+    const ghosts = ghostCues(base, doc);
+    expect(ghosts.map((g) => g.id)).toEqual(["added-1@k1"]);
+    const half = ghosts[0]!;
+    const take: SceneCue = { id: "take-1", kind: "plain", layout: "video-top", startSec: half.startSec, endSec: half.endSec };
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          selection: { sceneId: "take-1", elementId: null },
+          cue: take,
+          deletedScenes: ghosts,
+        }),
+      );
+    });
+    expect(container.querySelector('[data-testid="restore-scene-added-1@k1"]')).not.toBeNull();
   });
 });
