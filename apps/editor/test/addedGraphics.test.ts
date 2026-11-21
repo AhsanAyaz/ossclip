@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { mapFromKeptSpans, type SceneCue } from "@ossclip/core/browser";
-import { addedSkippedHeading, addedSkippedRows, previewBaseCues } from "../src/addedGraphics";
+import {
+  addGraphicCheck,
+  addOverlapRefusal,
+  addSpan,
+  addedSkippedHeading,
+  addedSkippedRows,
+  previewBaseCues,
+  type AddGraphicWord,
+} from "../src/addedGraphics";
 import { editReducer, initialEditState } from "../src/useEdits";
 
 /** 20 words, 0.5 s apart, 0.4 s long — source-timed, the repaired list's shape. */
@@ -119,5 +127,109 @@ describe("addedSkippedHeading (§7)", () => {
   it("says 'graphic is' for one and 'graphics are' for more", () => {
     expect(addedSkippedHeading(1)).toBe("1 added graphic is not shown");
     expect(addedSkippedHeading(2)).toBe("2 added graphics are not shown");
+  });
+});
+
+/** A selected panel word whose output time IS its source time (identity clock). */
+const sw = (srcStart: number, len = 0.4, text = "w"): AddGraphicWord => ({
+  srcStart,
+  start: srcStart,
+  end: srcStart + len,
+  text,
+});
+const same = (sec: number): number => sec;
+
+describe("addSpan (editor-added-graphics §1)", () => {
+  it("runs from the first word's source start to the LAST word's source end", () => {
+    // The last word's end is its source start plus its spoken length — not
+    // the max of anything, and not an output second.
+    const span = addSpan([sw(2), { srcStart: 2.5, start: 7.5, end: 7.9, text: "b" }]);
+    expect(span.srcStart).toBe(2);
+    expect(span.srcEnd).toBeCloseTo(2.9, 9);
+  });
+});
+
+describe("addGraphicCheck (editor-added-graphics §5)", () => {
+  // `identity` runs 10 s, so a one-scene assembly floors a cue at 1.5 s
+  // (`minSceneSec`): one 0.4 s word at 2.0 gets the window [2.0, 3.5].
+  it("refuses with the cue's type and time when the FLOORED window meets a graphic", () => {
+    const check = addGraphicCheck({
+      words: [sw(2)],
+      // 3.52 is clear of the word's own end (2.4 + gap) but not of the floor.
+      cues: [cue("scene-1", 3.52, 5)],
+      clock: identity,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(check.refusal).toBe(
+      "These words overlap the graphic \u2018StatCard\u2019 at 0:03. Trim that block or pick other words.",
+    );
+  });
+
+  it("lets the add through one gap past the floored window, and ignores plain takes", () => {
+    const check = addGraphicCheck({
+      words: [sw(2)],
+      cues: [cue("scene-1", 3.6, 5), cue("take-1", 0, 10, { kind: "plain" })],
+      clock: identity,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(check.refusal).toBeNull();
+    expect(check.span).toEqual({ srcStart: 2, srcEnd: 2.4 });
+    expect(check.notes).toEqual([]);
+  });
+
+  it("with no clock, checks the words' own times on the player's clock", () => {
+    // +1 s stands in for a live re-cut's mapping: the window is [3.0, 3.4],
+    // with no floor (nothing to assemble on).
+    const shifted = (sec: number): number => sec + 1;
+    const hit = addGraphicCheck({
+      words: [sw(2)],
+      cues: [cue("scene-1", 3.42, 5)],
+      clock: null,
+      toPlayerSec: shifted,
+      deferred: true,
+    });
+    expect(hit.refusal).toMatch(/^These words overlap the graphic/);
+    const clear = addGraphicCheck({
+      words: [sw(2)],
+      cues: [cue("scene-1", 3.5, 5)],
+      clock: null,
+      toPlayerSec: shifted,
+      deferred: true,
+    });
+    expect(clear.refusal).toBeNull();
+  });
+
+  it("notes a preview that must wait for the next Render", () => {
+    const check = addGraphicCheck({ words: [sw(2)], cues: [], clock: null, toPlayerSec: same, deferred: true });
+    expect(check.notes).toEqual(["This graphic will show after the next Render."]);
+  });
+
+  it("notes a span longer than the 15 s ceiling, and not one exactly at it", () => {
+    const long = addGraphicCheck({
+      words: [sw(0), sw(15.5)],
+      cues: [],
+      clock: null,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(long.notes).toEqual(["Shown for the first 15 s of these words."]);
+    const atCap = addGraphicCheck({
+      words: [sw(0), sw(14.6)],
+      cues: [],
+      clock: null,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(atCap.notes).toEqual([]);
+  });
+});
+
+describe("addOverlapRefusal", () => {
+  it("writes the time as m:ss, rounded down like the timeline's", () => {
+    expect(addOverlapRefusal(cue("scene-9", 72.9, 80, { component: "BulletList" }))).toBe(
+      "These words overlap the graphic \u2018BulletList\u2019 at 1:12. Trim that block or pick other words.",
+    );
   });
 });

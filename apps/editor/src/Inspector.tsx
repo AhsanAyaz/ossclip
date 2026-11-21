@@ -2140,8 +2140,13 @@ export const Inspector: React.FC<InspectorProps> = ({
               onClick={() => {
                 blurActive();
                 const del = graphicDeleteFor(selection.sceneId);
-                if (del.kind === "removeAdded") edits.removeAddedScene(del.id);
-                else edits.hideScene(del.sceneId);
+                if (del.kind === "removeAdded") {
+                  edits.removeAddedScene(del.id);
+                  // Removed, not ghosted: no take inherits the id (App's
+                  // hidden-scene remap only follows `hidden`), so a selection
+                  // left on it would name nothing (editor-added-graphics §6).
+                  onSelect(null);
+                } else edits.hideScene(del.sceneId);
               }}
             >
               Delete scene

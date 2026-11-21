@@ -1797,11 +1797,13 @@ describe("Inspector — added graphics", () => {
     cue,
     addedSkipped,
     onDocChange,
+    onSelect = () => {},
   }: {
     selection: { sceneId: string; elementId: string | null } | null;
     cue: SceneCue | null;
     addedSkipped?: { id: string; component: string; reason: string }[];
     onDocChange: (doc: OverrideDoc) => void;
+    onSelect?: (s: { sceneId: string; elementId: string | null } | null) => void;
   }) {
     const edits = useEdits();
     React.useEffect(() => {
@@ -1817,7 +1819,7 @@ describe("Inspector — added graphics", () => {
       frame: { width: 1080, height: 1920 },
       allSceneIds: cue ? [cue.id] : [],
       edits,
-      onSelect: () => {},
+      onSelect,
       resolvedTheme: defaultTheme,
       onVideoPreview: vi.fn(),
       addedSkipped,
@@ -1834,14 +1836,16 @@ describe("Inspector — added graphics", () => {
     endSec: 3,
   });
 
-  it("Delete on the ROOT removes the entry and its edits", async () => {
+  it("Delete on the ROOT removes the entry and its edits, and clears the selection", async () => {
     let doc: OverrideDoc | undefined;
+    const onSelect = vi.fn();
     await act(async () => {
       root.render(
         React.createElement(AddedHarness, {
           selection: { sceneId: "added-1", elementId: null },
           cue: addedCue("added-1"),
           onDocChange: (d) => (doc = d),
+          onSelect,
         }),
       );
     });
@@ -1850,16 +1854,23 @@ describe("Inspector — added graphics", () => {
     });
     expect(doc!.addedScenes!.map((e) => e.id)).toEqual(["added-2"]);
     expect(doc!.scenes["added-1"]).toBeUndefined();
+    // The block is gone, not ghosted: a selection left on its id would name
+    // nothing (editor-added-graphics §6).
+    expect(onSelect).toHaveBeenCalledWith(null);
   });
 
   it("Delete on a split HALF hides that half and keeps the entry", async () => {
     let doc: OverrideDoc | undefined;
+    // A hidden half is App's ghost-remap's to re-select (the take), not this
+    // button's to clear.
+    const halfSelect = vi.fn();
     await act(async () => {
       root.render(
         React.createElement(AddedHarness, {
           selection: { sceneId: "added-1@k1", elementId: null },
           cue: addedCue("added-1@k1"),
           onDocChange: (d) => (doc = d),
+          onSelect: halfSelect,
         }),
       );
     });
@@ -1868,6 +1879,7 @@ describe("Inspector — added graphics", () => {
     });
     expect(doc!.addedScenes!.map((e) => e.id)).toEqual(["added-1", "added-2"]);
     expect(doc!.scenes["added-1@k1"]?.hidden).toBe(true);
+    expect(halfSelect).not.toHaveBeenCalled();
   });
 
   it("the no-selection view lists entries not shown, and Remove removes one", async () => {

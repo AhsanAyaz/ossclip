@@ -15,6 +15,9 @@ import { deleteWordsPlanFor, type DeleteWordsPlan } from "./deleteWords";
 import { emptyBodyClickClears, findOccurrences, plainWordClick } from "./transcriptSelection";
 import { peaksForWindow } from "./waveform";
 import { ContextMenu } from "./ContextMenu";
+import { MenuItem, floatingMenu, menuLabel, toolbarButton } from "./selectionMenuChrome";
+import { AddGraphicPopover } from "./AddGraphicPopover";
+import type { AddGraphicRequest, AddGraphicWord } from "./addedGraphics";
 
 /** The timing widget's waveform strip, in CSS px — also the canvas bitmap
  * size, so the handle-drag px→seconds conversion needs no rect measure.
@@ -521,6 +524,15 @@ export const TranscriptPanel: React.FC<{
    * a remount must not wipe what App holds.
    */
   onSelectionChange?: (words: { srcStart: number }[] | null, reason?: "away") => void;
+  /**
+   * The bar's Graphic… (editor-added-graphics §5): called once at the press
+   * with the selected words, and App answers with its verdict (the overlap
+   * refusal, the notes) and the commit. App's, not the panel's, because both
+   * need what only App holds — the live preview cues, their clock, the base
+   * ids the reducer mints against, and the block selection the add ends in.
+   * Absent = no Graphic… (every harness predating it).
+   */
+  onAddGraphic?: (words: AddGraphicWord[]) => AddGraphicRequest;
 }> = ({
   baseLines,
   liveLines,
@@ -535,6 +547,7 @@ export const TranscriptPanel: React.FC<{
   fromPlayerSec = (sec: number): number => sec,
   onAddOverlayAt,
   onSelectionChange,
+  onAddGraphic,
 }) => {
   const [query, setQuery] = useState("");
   /** The word right-click menu: where it opened and the word's player-clock start. */
@@ -668,6 +681,18 @@ export const TranscriptPanel: React.FC<{
    * "does this land on the right words?", which is asked by listening to the
    * same two seconds repeatedly rather than by pressing Play again. */
   const [timingLoop, setTimingLoop] = useState(false);
+  /**
+   * The open add-graphic popover (editor-added-graphics §5), in the bar's
+   * place like the range editor. `request` is App's answer, CAPTURED at the
+   * press (the `rangeEditing` rule): the span and the overlap verdict belong
+   * to the words selected then, so every path that moves the selection
+   * closes it — the `[selLo, selHi]` sweep below, the word click (a click on
+   * the same word moves nothing), the click-away and the clear.
+   */
+  const [addGraphic, setAddGraphic] = useState<{ request: AddGraphicRequest; text: string } | null>(null);
+  /** Bumped when the popover's height changes (step, list rows), so the
+   * placement effect re-measures it — its own state is inside the popover. */
+  const [addGraphicLayout, setAddGraphicLayout] = useState(0);
 
   // Click-away clears the panel's transient state (field report 2026-08-31,
   // the same gesture that deselects a timeline block): a press anywhere
@@ -689,6 +714,7 @@ export const TranscriptPanel: React.FC<{
       if (rangeEditing !== null) setRangeEditing(null);
       if (editing !== null) setEditing(null);
       if (timing !== null) setTiming(null);
+      if (addGraphic !== null) setAddGraphic(null);
       const native = window.getSelection();
       if (native && native.anchorNode && root.contains(native.anchorNode)) {
         native.removeAllRanges();
@@ -696,7 +722,7 @@ export const TranscriptPanel: React.FC<{
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [sel, rangeEditing, editing, timing]);
+  }, [sel, rangeEditing, editing, timing, addGraphic]);
   /** Where the widget's own audio element is, SOURCE seconds — the playhead
    * line, and null when nothing is playing. */
   const [timingPlayhead, setTimingPlayhead] = useState<number | null>(null);
@@ -760,9 +786,10 @@ export const TranscriptPanel: React.FC<{
   const bodyRef = useRef<HTMLDivElement | null>(null);
   /** The panel's outermost element — the outside-click boundary below. */
   const rootRef = useRef<HTMLDivElement | null>(null);
-  /** Whichever of the three anchored surfaces is currently mounted — the bar,
-   * the range editor or the timing popover. They share one anchor and one
-   * `menuPos`, so they share the ref the layout effect measures. */
+  /** Whichever of the anchored surfaces is currently mounted — the bar, the
+   * range editor, the timing popover or the add-graphic popover. They share
+   * one anchor and one `menuPos`, so they share the ref the layout effect
+   * measures. */
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   // The base texts each ANCHOR carries, IN ORDER — positional pairing broke
@@ -1112,7 +1139,7 @@ export const TranscriptPanel: React.FC<{
     // range editor's textarea is the user selecting TEXT TO RETYPE, and
     // re-selecting words underneath it would close the very box being typed
     // into (the `rangeEditing.selLo` sweep).
-    if (editing !== null || rangeEditing !== null || timing !== null) return;
+    if (editing !== null || rangeEditing !== null || timing !== null || addGraphic !== null) return;
     const bodyEl = bodyRef.current;
     if (!bodyEl) return;
     // Optional-chained end to end: jsdom's Document may expose no
@@ -1153,6 +1180,7 @@ export const TranscriptPanel: React.FC<{
     setSel(null);
     setRangeEditing(null);
     setDeleteOpen(false);
+    setAddGraphic(null);
   };
 
   // The empty-space click's inputs that only the press and the release know
@@ -1257,7 +1285,7 @@ export const TranscriptPanel: React.FC<{
     setMenuPos((prev) =>
       prev !== null && prev.top === next.top && prev.left === next.left ? prev : next,
     );
-  }, [selLo, selHi, width, editing, rangeEditing, timing, menuPos]);
+  }, [selLo, selHi, width, editing, rangeEditing, timing, addGraphic, addGraphicLayout, menuPos]);
 
   // The Delete ▾ flyout never outlives the selection it was opened for — a
   // flyout that survived a selection change would offer its rows for words
@@ -1269,6 +1297,8 @@ export const TranscriptPanel: React.FC<{
   useEffect(() => {
     setDeleteOpen(false);
     setTiming(null);
+    // The add popover too: its span and verdict are the old words'.
+    setAddGraphic(null);
   }, [selLo, selHi]);
 
   // Belt-and-braces behind the word click handlers' explicit close (the
@@ -1422,6 +1452,21 @@ export const TranscriptPanel: React.FC<{
       selLo: selLo!,
       selHi: selHi!,
     });
+  };
+
+  /**
+   * Graphic… — ask App for its verdict on these words and open the popover
+   * (editor-added-graphics §5). The §137 refusal stays at the gesture like
+   * every other bar action: an anchorless word has no source time, so the
+   * span could not be stored.
+   */
+  const openAddGraphic = (): void => {
+    if (onAddGraphic === undefined || selected.length === 0 || anySelectedAnchorless) return;
+    const request = onAddGraphic(
+      selected.map((w) => ({ srcStart: w.word.srcStart, start: w.start, end: w.end, text: w.live })),
+    );
+    setDeleteOpen(false);
+    setAddGraphic({ request, text: selected.map((w) => w.live).join(" ") });
   };
 
   const commitRange = (open: NonNullable<typeof rangeEditing>): void => {
@@ -2106,6 +2151,10 @@ export const TranscriptPanel: React.FC<{
           // Backspace typed into the textarea would fire the word-delete
           // gesture on the live selection underneath it.
           if (editing !== null || rangeEditing !== null) return;
+          // The add popover owns the keys the same way: its fields are text
+          // inputs (a Backspace there is not a word delete), and Escape is
+          // its close — handled, and stopped, on the popover itself.
+          if (addGraphic !== null) return;
           // The timing popover owns Escape as CANCEL — the selection stays,
           // and the bar returns at the same anchor (a second Escape then
           // clears the selection via the branch below). No other key is
@@ -2224,6 +2273,7 @@ export const TranscriptPanel: React.FC<{
                     // selection-change sweep never fires.
                     if (rangeEditing !== null) setRangeEditing(null);
                     if (timing !== null) setTiming(null);
+                    if (addGraphic !== null) setAddGraphic(null);
                     if (e.shiftKey) {
                       // Extend the selection (create one if none) and SUPPRESS
                       // the seek: extending a range is a selection gesture, and
@@ -2327,7 +2377,7 @@ export const TranscriptPanel: React.FC<{
           );
         })}
         {/* The selection bar (2026-08-18 round 3) — a compact HORIZONTAL
-            row (Edit · Timing · Delete ▾ · count), rendered INSIDE the
+            row (Edit · Timing · Graphic… · Delete ▾ · count · ✕), rendered INSIDE the
             scrollable body and absolutely positioned at the anchor word's
             content coords, so it scrolls with the words instead of closing
             on every scroll (the layout effect above has the full why).
@@ -2339,7 +2389,8 @@ export const TranscriptPanel: React.FC<{
         menuPos !== null &&
         editing === null &&
         rangeEditing === null &&
-        timing === null ? (
+        timing === null &&
+        addGraphic === null ? (
           <div
             data-testid="transcript-selection-menu"
             role="menu"
@@ -2395,6 +2446,24 @@ export const TranscriptPanel: React.FC<{
             >
               Timing
             </MenuItem>
+            {onAddGraphic !== undefined ? (
+              // Between Timing and Delete (editor-added-graphics §5): the
+              // edits that keep the words come first, the one that removes
+              // them last.
+              <MenuItem
+                data-testid="transcript-add-graphic"
+                onClick={openAddGraphic}
+                disabled={selected.length === 0 || anySelectedAnchorless}
+                title={
+                  anySelectedAnchorless
+                    ? // The §137 refusal: the span is stored in source seconds.
+                      "A selected word has no source anchor (this project predates them) — re-run produce first"
+                    : "Add a graphic over these words"
+                }
+              >
+                Graphic…
+              </MenuItem>
+            ) : null}
             {allSelectedHidden ? (
               // Restore REPLACES the Delete ▾ button on an all-hidden
               // selection (the old toolbar's swap): the only delete left to
@@ -2554,6 +2623,27 @@ export const TranscriptPanel: React.FC<{
           </div>
         </div>
       ) : null}
+        {/* The add-graphic popover, in the bar's place on the bar's anchor
+            (editor-added-graphics §5). Add consumes the selection like the
+            range editor's Apply: the words now carry a block, and the bar
+            reopening over them would offer the same add again. */}
+        {addGraphic !== null && menuPos !== null ? (
+          <AddGraphicPopover
+            menuRef={menuRef}
+            top={menuPos.top}
+            left={menuPos.left}
+            text={addGraphic.text}
+            refusal={addGraphic.request.refusal}
+            notes={addGraphic.request.notes}
+            onAdd={(component, props) => {
+              addGraphic.request.add(component, props);
+              setAddGraphic(null);
+              setSel(null);
+            }}
+            onClose={() => setAddGraphic(null)}
+            onLayout={() => setAddGraphicLayout((n) => n + 1)}
+          />
+        ) : null}
         {/* The widget's OWN transport (`toggleTimingPlay` owns the why).
             SOURCE seconds, the same clock as everything else here; the server
             serves this file with Range support (edit.ts's `/media/` handler),
@@ -2746,44 +2836,6 @@ export const TranscriptPanel: React.FC<{
         ) : null}
       </div>
     </div>
-  );
-};
-
-/** A menu row: full-width ghost button with a hover highlight. Hover via
- * local state rather than a stylesheet class (§138 put the picker rows'
- * states in index.css because inline styles cannot express `:hover`) — these
- * rows are the panel's only hover consumers, and the state keeps the menu
- * self-contained. */
-const MenuItem: React.FC<
-  {
-    children: React.ReactNode;
-  } & Pick<
-    React.ButtonHTMLAttributes<HTMLButtonElement>,
-    "onClick" | "disabled" | "title" | "aria-label"
-  > & {
-      "data-testid": string;
-      /** Layered over `menuItem`, under the hover/disabled states. */
-      style?: React.CSSProperties;
-    }
-> = ({ children, style, ...rest }) => {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      role="menuitem"
-      {...rest}
-      style={{
-        ...menuItem,
-        ...style,
-        // One step LIGHTER than the surface it sits on (#262630) — the old
-        // #23232E was a step DARKER, so hover read as a hole in the bar.
-        ...(hover && !rest.disabled ? { background: "#34343F" } : {}),
-        ...(rest.disabled ? { opacity: 0.5, cursor: "default" } : {}),
-      }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-    >
-      {children}
-    </button>
   );
 };
 
@@ -3083,39 +3135,6 @@ const helpToggle: React.CSSProperties = {
   flexShrink: 0,
 };
 
-/**
- * The shared surface of every anchored thing: the bar, the delete flyout,
- * the range editor and the timing popover all spread this and override only
- * layout, so one edit moves the whole family together.
- *
- * ABSOLUTE, not fixed (2026-08-18 round 3): the anchor is a positioned parent
- * (the body is `position: relative`), so the bar scrolls with the content.
- * zIndex above the word spans, below the modal backdrops (40) — same ordering
- * argument as App's menu.
- *
- * Lifted off the panel in round 5: at #1A1A21 on the panel's #111116 the bar
- * read as a patch of background with buttons on it, and it sits beside a
- * SATURATED yellow selection band that out-shouts everything. A lighter
- * surface (#262630) with a visible edge (#3A3A47) and a real drop shadow puts
- * it convincingly ABOVE the page without adding a second bright element —
- * the depth does the work the colour must not.
- */
-const floatingMenu: React.CSSProperties = {
-  position: "absolute",
-  zIndex: 31,
-  background: "#262630",
-  border: "1px solid #3A3A47",
-  borderRadius: 10,
-  padding: "4px 6px",
-  // Two shadows: a long soft one for the lift off the page, a tight one to
-  // seat the edge — a single large blur alone reads as a smudge on a dark UI.
-  boxShadow: "0 14px 34px rgba(0,0,0,0.66), 0 2px 6px rgba(0,0,0,0.4)",
-  display: "flex",
-  flexDirection: "row",
-  alignItems: "center",
-  gap: 2,
-};
-
 /** The Delete ▾ options — two rows under the bar's Delete slot. The bar's own
  * surface, a level above it so it paints over the words below the bar. */
 const deleteFlyout: React.CSSProperties = {
@@ -3127,33 +3146,6 @@ const deleteFlyout: React.CSSProperties = {
   minWidth: 170,
   flexDirection: "column",
   alignItems: "stretch",
-};
-
-const menuLabel: React.CSSProperties = {
-  fontSize: 11,
-  color: "#9A9AA3",
-  // LOGICAL, not the physical `0 8px 0 6px` it was: the count sits at the
-  // END of the row, and under an rtl base the physical padding put its
-  // breathing room on the wrong side of the label.
-  paddingInline: "6px 8px",
-  whiteSpace: "nowrap",
-};
-
-/** App.tsx's menuItem, compacted into a bar chip — nowrap so the row never
- * folds mid-label. Roomier than round 3's `6px 8px`: on the lifted surface
- * the labels sat tight against each other with nothing to separate them, and
- * padding is the separator that costs no ink. */
-const menuItem: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "#EDEDF2",
-  background: "transparent",
-  border: "none",
-  borderRadius: 6,
-  padding: "6px 10px",
-  cursor: "pointer",
-  textAlign: "left",
-  whiteSpace: "nowrap",
 };
 
 /** The hairline before the bar's ✕ — the bar's own border colour, so it reads
@@ -3190,20 +3182,6 @@ const rangeTextarea: React.CSSProperties = {
   color: "#fff",
   padding: "4px 6px",
   resize: "vertical",
-};
-
-/** The popovers' Apply/Cancel/Play row. Its fill and border are a step
- * LIGHTER than the surface (`floatingMenu`) — at the old #1A1A21/#2A2A33 the
- * buttons matched the popover they sat on and read as flat labels, which on
- * the Apply of a destructive-ish edit is the wrong thing to be invisible. */
-const toolbarButton: React.CSSProperties = {
-  fontSize: 11,
-  color: "#EDEDF2",
-  background: "#34343F",
-  border: "1px solid #45454F",
-  borderRadius: 6,
-  cursor: "pointer",
-  padding: "4px 8px",
 };
 
 /** A toolbar button that is ON — the Loop toggle. Spread OVER `toolbarButton`

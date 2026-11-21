@@ -28,6 +28,7 @@ import {
   mapsClose,
   previewClockMappers,
   retimeForPreview,
+  sceneKeyRoot,
   sceneStartSeconds,
   type AppliedCaptionEdits,
   type LivePreviewClocks,
@@ -78,7 +79,13 @@ import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { DeleteSceneModal } from "./DeleteSceneModal";
 import { graphicDeleteFor, type DeletePlan } from "./deleteScene";
-import { addedSkippedRows, previewBaseCues } from "./addedGraphics";
+import {
+  addGraphicCheck,
+  addedSkippedRows,
+  previewBaseCues,
+  type AddGraphicRequest,
+  type AddGraphicWord,
+} from "./addedGraphics";
 import { DeleteWordsModal } from "./DeleteWordsModal";
 import type { DeleteWordsPlan } from "./deleteWords";
 import { ProjectPicker } from "./ProjectPicker";
@@ -1350,6 +1357,13 @@ export const App: React.FC = () => {
     /** The graphic-only base AFTER the added-graphics reconcile — what
      * `ghostCues` below must read too (editor-added-graphics §4). */
     previewBase: SceneCue[];
+    /** The last render's clock, the one the preview times a fresh add on —
+     * null means a new add cannot preview yet (§4). */
+    oldClock: TimeMap | null;
+    /** The clock `props.sceneCues` ends up on: the live re-cut's when a
+     * cleanup veto is live, else the old one. The add gesture measures its
+     * window here, against those cues (§5). */
+    cueClock: TimeMap | null;
   } | null>(() => {
     if (!renderProps) return null;
     // The LAST RENDER's clock, from its own spans. Declared here (it used to
@@ -1638,7 +1652,12 @@ export const App: React.FC = () => {
         transcript,
       };
     };
-    const added = { addedSkipped: addedPreview.skipped, previewBase: baseCues };
+    const added = {
+      addedSkipped: addedPreview.skipped,
+      previewBase: baseCues,
+      oldClock: oldClockMap,
+      cueClock: liveRecut ? liveRecut.newMap : oldClockMap,
+    };
     if (!liveRecut) return { ...finishOnClock(base, [], oldClockMap), ...added };
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
     return { ...finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap), ...added };
@@ -1662,6 +1681,47 @@ export const App: React.FC = () => {
         liveRetimed?.addedSkipped ?? [],
       ),
     [edits.doc.addedScenes, renderProps, liveRetimed],
+  );
+
+  /**
+   * The transcript bar's Graphic… (editor-added-graphics §5): the overlap
+   * verdict against what the author sees, and the commit.
+   *
+   * The cues are `live.sceneCues` — overrides, hides and pins applied, the
+   * list on screen — and the window is measured on THEIR clock (`cueClock`).
+   * The panel's word times are on the lines' clock, which is the old one
+   * unless the track was rebuilt live, so the no-clock fallback maps them
+   * with the panel's own seek mapping (the `toPlayerSec` it is handed below).
+   *
+   * "After the next Render" when either input `previewBaseCues` needs is
+   * missing — the clock or the repaired word list — since then the add is
+   * stored but no block can appear yet.
+   *
+   * `baseIds` is the base the live memo reconciles (`baseSceneCues`, or the
+   * old `sceneCues` fallback): an id a past run baked in must never be
+   * minted again, or the add would preview that old cue (§1). The new block
+   * is selected at once (the reducer holds no selection); when it cannot
+   * preview yet the Inspector shows its no-selection view until it can.
+   */
+  const requestAddGraphic = useCallback(
+    (words: AddGraphicWord[]): AddGraphicRequest => {
+      const check = addGraphicCheck({
+        words,
+        cues: liveRetimed?.props.sceneCues ?? [],
+        clock: liveRetimed?.cueClock ?? null,
+        toPlayerSec: liveRetimed?.transcript ? identitySec : clock.toLive,
+        deferred: (liveRetimed?.oldClock ?? null) === null || sfxPlan.words === null,
+      });
+      const baseIds = (renderProps?.baseSceneCues ?? renderProps?.sceneCues ?? []).map((c) => c.id);
+      return {
+        ...check,
+        add: (component, props) => {
+          const id = edits.addScene({ component, props, ...check.span, baseIds });
+          selectScene({ sceneId: id, elementId: null });
+        },
+      };
+    },
+    [liveRetimed, clock, sfxPlan.words, renderProps, edits, selectScene],
   );
 
   // BELOW the live memo since phase 2, not above with the caption layers it
@@ -2593,8 +2653,13 @@ export const App: React.FC = () => {
               // The Inspector button's routing (`graphicDeleteFor`): an added
               // graphic's root is removed, a half is hidden (§6).
               const del = graphicDeleteFor(deletePlan.sceneId);
-              if (del.kind === "removeAdded") edits.removeAddedScene(del.id);
-              else edits.hideScene(del.sceneId);
+              if (del.kind === "removeAdded") {
+                edits.removeAddedScene(del.id);
+                // Removed, not ghosted — the hidden-scene remap never fires
+                // for it, so a selection on the block (or a half of it) would
+                // be left naming nothing (§6).
+                if (selection !== null && sceneKeyRoot(selection.sceneId) === del.id) selectScene(null);
+              } else edits.hideScene(del.sceneId);
             } else {
               // The plan's window came off a retimed cue — the LIVE clock —
               // but a `cuts[]` entry's `startSec`/`endSec` speak the LAST
@@ -2981,6 +3046,7 @@ export const App: React.FC = () => {
               // Overlay adds need a word space to anchor to.
               onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
               onSelectionChange={onTranscriptSelection}
+              onAddGraphic={requestAddGraphic}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}

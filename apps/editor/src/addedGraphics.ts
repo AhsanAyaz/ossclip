@@ -1,7 +1,12 @@
 import {
+  ADDED_ID_PREFIX,
+  MAX_SCENE_SEC,
+  graphicOverlap,
   isAddedKey,
   previewAddedScenes,
   sceneKeyRoot,
+  wordSrcEnd,
+  type AddedOffered,
   type AddedScene,
   type SceneCue,
   type TimeMap,
@@ -73,4 +78,129 @@ export function addedSkippedRows(
 /** The list's heading (plan Global Constraints): singular "graphic is" for one. */
 export function addedSkippedHeading(n: number): string {
   return n === 1 ? "1 added graphic is not shown" : `${n} added graphics are not shown`;
+}
+
+/**
+ * One selected transcript word as the add gesture needs it (§5): its §137
+ * source anchor, its own start/end as the panel holds them (the lines' clock,
+ * which is where its spoken length is read), and its text for the prefill.
+ */
+export interface AddGraphicWord {
+  srcStart: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * The span an add stores, in SOURCE seconds (§1): the first word's source
+ * start to the last word's source end. The last word's END, not the max of
+ * anything — `wordSrcEnd` is the one definition the timing strip shares.
+ */
+export function addSpan(words: readonly AddGraphicWord[]): { srcStart: number; srcEnd: number } {
+  const first = words[0]!;
+  const last = words[words.length - 1]!;
+  return { srcStart: first.srcStart, srcEnd: wordSrcEnd(last) };
+}
+
+/**
+ * Where the add would sit on `map`'s clock, or null when it would not sit at
+ * all (every word cut on that clock). The preview's own timing (§4 rule 2),
+ * reached through `previewAddedScenes` with a stand-in entry rather than
+ * restated, so the overlap check and the block that then appears cannot
+ * disagree about the duration floor or the 15 s ceiling.
+ *
+ * The transcript is the selection itself, source-timed: a one-scene assembly
+ * reads only its anchor's words, so the full list adds nothing — and this way
+ * the check does not wait on `/api/sfx/plan` the way the preview must. The
+ * stand-in is a TitleCard because no offered type has a length of its own
+ * (`fixedDurationSec` is ClipScene's alone), so the type cannot move the
+ * window and is not known yet anyway: the check runs before the type list.
+ */
+function addWindow(
+  words: readonly AddGraphicWord[],
+  map: TimeMap,
+): { startSec: number; endSec: number } | null {
+  const span = addSpan(words);
+  const { cues } = previewAddedScenes({
+    baseCues: [],
+    added: [{ id: `${ADDED_ID_PREFIX}window`, component: "TitleCard", props: { title: "window" }, ...span }],
+    issueIds: new Set(),
+    transcript: {
+      language: "en",
+      words: words.map((w) => ({ text: w.text, start: w.srcStart, end: wordSrcEnd(w) })),
+    },
+    map,
+  });
+  const cue = cues[0];
+  return cue ? { startSec: cue.startSec, endSec: cue.endSec } : null;
+}
+
+/** m:ss, rounded down — how the timeline's ruler reads a second. */
+const clockLabel = (sec: number): string => {
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+/** The refusal the popover shows instead of the type list (§5, AG2). */
+export function addOverlapRefusal(cue: SceneCue): string {
+  return `These words overlap the graphic \u2018${cue.component ?? cue.id}\u2019 at ${clockLabel(cue.startSec)}. Trim that block or pick other words.`;
+}
+
+/** What App hands the panel when Graphic… is pressed: the span, the verdict
+ * and the notes, worked out once at the press. */
+export interface AddGraphicCheck {
+  span: { srcStart: number; srcEnd: number };
+  /** Non-null: the add is refused, and this is why. */
+  refusal: string | null;
+  /** Shown in the popover above Add; empty for an ordinary add. */
+  notes: string[];
+}
+
+/** The check plus the commit — App's closure over `addScene` and the
+ * selection, which the panel cannot reach. */
+export interface AddGraphicRequest extends AddGraphicCheck {
+  add: (component: AddedOffered, props: Record<string, unknown>) => void;
+}
+
+/**
+ * Graphic…'s decision, before the type list opens (§5).
+ *
+ * `cues` is what the author SEES (the live preview: overrides applied,
+ * hidden cues dropped, pins applied) and `clock` the clock those cues are on,
+ * so the window is measured where they are. The window is a one-scene
+ * assembly (`addWindow`), padded by the gap inside `graphicOverlap`: a short
+ * add the floor stretches can never trim the next block.
+ *
+ * With no clock, or none of the words left on it, there is nothing to
+ * assemble on, and the words' own on-screen span is the best measure there
+ * is — mapped to the player's clock (`toPlayerSec`, the panel's own seek
+ * mapping) because that is the clock `cues` speak. It misses the floor; the
+ * next run's assembly then pushes, as it does for any block (§4).
+ *
+ * `deferred` is App's "the preview cannot place it" (no clock or no repaired
+ * word list, the two inputs `previewBaseCues` needs). The long-span note
+ * compares the SOURCE span with the ceiling under assemble's own float
+ * epsilon: a span that is 15 s to the eye can be 15.000000000000002.
+ */
+export function addGraphicCheck(args: {
+  words: readonly AddGraphicWord[];
+  cues: readonly SceneCue[];
+  clock: TimeMap | null;
+  toPlayerSec: (sec: number) => number;
+  deferred: boolean;
+}): AddGraphicCheck {
+  const { words, cues, clock, toPlayerSec, deferred } = args;
+  const span = addSpan(words);
+  const at = (clock !== null ? addWindow(words, clock) : null) ?? {
+    startSec: toPlayerSec(words[0]!.start),
+    endSec: toPlayerSec(words[words.length - 1]!.end),
+  };
+  const hit = graphicOverlap(cues, at.startSec, at.endSec);
+  const notes: string[] = [];
+  if (deferred) notes.push("This graphic will show after the next Render.");
+  if (span.srcEnd - span.srcStart > MAX_SCENE_SEC + 1e-6) {
+    notes.push(`Shown for the first ${MAX_SCENE_SEC} s of these words.`);
+  }
+  return { span, refusal: hit === null ? null : addOverlapRefusal(hit), notes };
 }
