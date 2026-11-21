@@ -11,7 +11,7 @@ import {
 } from "@ossclip/core/browser";
 import type { useEdits } from "./useEdits";
 import { deleteWordsPlanFor, type DeleteWordsPlan } from "./deleteWords";
-import { findOccurrences } from "./transcriptSelection";
+import { emptyBodyClickClears, findOccurrences, plainWordClick } from "./transcriptSelection";
 import { peaksForWindow } from "./waveform";
 import { ContextMenu } from "./ContextMenu";
 
@@ -506,8 +506,18 @@ export const TranscriptPanel: React.FC<{
    * panel: the selection's indices are positional here, and the storyboard
    * maps source starts to transcript indices (`selectionSpan`). Absent = no
    * report (every harness predating it).
+   *
+   * A null carries WHY (2026-11-21). `"away"` is a clear the author did not
+   * ask for: the click-away (the Storyboard button is a click outside this
+   * panel, and App must still hold the selection when the table opens) and
+   * the word-count staleness clear (a render landing; App's copy is
+   * source-keyed and survives it). No reason is the author dropping it —
+   * Escape, the bar's ✕, a click on empty space, clicking the one selected
+   * word again, or a gesture that consumed it (Delete, Edit, Restore) — and
+   * App forgets its copy too. A null is reported once, never null after null:
+   * a remount must not wipe what App holds.
    */
-  onSelectionChange?: (words: { srcStart: number }[] | null) => void;
+  onSelectionChange?: (words: { srcStart: number }[] | null, reason?: "away") => void;
 }> = ({
   baseLines,
   liveLines,
@@ -556,6 +566,13 @@ export const TranscriptPanel: React.FC<{
    * the word count changes rather than letting it drift onto other words.
    */
   const [sel, setSel] = useState<{ anchor: number; focus: number } | null>(null);
+  /**
+   * Why the NEXT null report happens — set just before a `setSel(null)` that
+   * is not the author's clear (`onSelectionChange`'s `"away"`), consumed by
+   * the reporting effect. A ref, not state: the report fires from an effect
+   * keyed on the range, a render after the gesture that knew the reason.
+   */
+  const clearReasonRef = useRef<"away" | undefined>(undefined);
   /**
    * The open RANGE editor (free-text rewrite, 2026-08-18). Everything the
    * commit needs is CAPTURED at open, the `editing` rule above: the endpoint
@@ -661,7 +678,11 @@ export const TranscriptPanel: React.FC<{
     const onDown = (e: MouseEvent): void => {
       const root = rootRef.current;
       if (!root || root.contains(e.target as Node)) return;
-      if (sel !== null) setSel(null);
+      if (sel !== null) {
+        // Not a clear App acts on: this press may be the Storyboard button.
+        clearReasonRef.current = "away";
+        setSel(null);
+      }
       if (rangeEditing !== null) setRangeEditing(null);
       if (editing !== null) setEditing(null);
       if (timing !== null) setTiming(null);
@@ -836,11 +857,19 @@ export const TranscriptPanel: React.FC<{
   // user selected. Cleared rather than remapped: no anchor survives here to
   // remap through.
   useEffect(() => {
+    // A render landing is not the author clearing anything: App's copy is
+    // source-keyed and still names the words they chose (`onSelectionChange`).
+    // Only with a selection up — a stray reason would ride along on the next
+    // real clear (an Escape reported as a click-away).
+    if (sel !== null) clearReasonRef.current = "away";
     setSel(null);
     // The anchored popover goes with it (the Escape branch's rule below):
     // without a selection it has no anchor, and an invisible open editor
     // would resurface, stale draft and all, at the next selection.
     setRangeEditing(null);
+    // Keyed on the COUNT alone, the comment above; `sel` is read only for
+    // the reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [words.length]);
 
   // The hide layer's keys, derived from the doc each render so undo/redo and
@@ -1021,14 +1050,30 @@ export const TranscriptPanel: React.FC<{
   // report fires once per actual change and never loops through App's state.
   const onSelectionChangeRef = useRef(onSelectionChange);
   onSelectionChangeRef.current = onSelectionChange;
+  // Whether the last report was a selection — a null after a null is no
+  // change, and App now ACTS on a null (it forgets its copy), so the mount's
+  // null and every word-list refresh with nothing selected must not reach it.
+  const reportedSelectionRef = useRef(false);
+  const reportedLengthRef = useRef(words.length);
   useEffect(() => {
+    const lengthChanged = reportedLengthRef.current !== words.length;
+    reportedLengthRef.current = words.length;
     const report = onSelectionChangeRef.current;
+    if (selLo === null || selHi === null) {
+      const reason = clearReasonRef.current;
+      clearReasonRef.current = undefined;
+      if (report === undefined || !reportedSelectionRef.current) return;
+      reportedSelectionRef.current = false;
+      report(null, reason);
+      return;
+    }
+    // The word COUNT changed under a live range: the staleness effect above is
+    // clearing it this same commit, and these positional indices into the NEW
+    // list are words nobody selected — reported, App would keep them.
+    if (lengthChanged) return;
     if (report === undefined) return;
-    report(
-      selLo === null || selHi === null
-        ? null
-        : words.slice(selLo, selHi + 1).map((w) => ({ srcStart: w.word.srcStart })),
-    );
+    reportedSelectionRef.current = true;
+    report(words.slice(selLo, selHi + 1).map((w) => ({ srcStart: w.word.srcStart })));
   }, [selLo, selHi, words]);
   // Restore is offered only when EVERY selected word is hidden — a mixed
   // selection reads as "hide the rest", which is what the hide action does.
@@ -1091,6 +1136,50 @@ export const TranscriptPanel: React.FC<{
     if (e.detail >= 2 && from === to) return;
     setSel({ anchor: Math.min(from, to), focus: Math.max(from, to) });
     selection.removeAllRanges?.();
+    // The click this release fires lands on the body when the drag began in
+    // a gap — it must not read as an empty-space clear (`emptyBodyClickClears`).
+    dragSelectedRef.current = true;
+  };
+
+  /** Drop the selection the way the author asked to — Escape, the bar's ✕,
+   * a click on empty space. The anchored surfaces go with it: the range
+   * editor would otherwise resurface, stale draft and all, at the NEXT
+   * selection's anchor (the Escape branch's original rule), and the Delete ▾
+   * flyout belongs to the selection it was opened for. */
+  const clearSelection = (): void => {
+    setSel(null);
+    setRangeEditing(null);
+    setDeleteOpen(false);
+  };
+
+  // The empty-space click's inputs that only the press and the release know
+  // (`emptyBodyClickClears` owns the rule).
+  const pressedOnBodyRef = useRef(false);
+  const dragSelectedRef = useRef(false);
+  const onBodyMouseDown = (e: React.MouseEvent<HTMLDivElement>): void => {
+    pressedOnBodyRef.current = e.target === e.currentTarget;
+    // A drag that began outside the body ended with no body click to consume
+    // the flag; a fresh press starts clean.
+    dragSelectedRef.current = false;
+  };
+  const onBodyClick = (e: React.MouseEvent<HTMLDivElement>): void => {
+    const dragJustSelected = dragSelectedRef.current;
+    dragSelectedRef.current = false;
+    const native = document.getSelection?.();
+    if (
+      emptyBodyClickClears({
+        hasSelection: sel !== null,
+        pressedOnBody: pressedOnBodyRef.current,
+        // A click on the body ITSELF is a click on no word: the gaps are
+        // bare text nodes (the §65 spaces), whose clicks target their parent.
+        releasedOnBody: e.target === e.currentTarget,
+        modified: e.shiftKey || e.metaKey || e.ctrlKey || e.altKey,
+        nativeCollapsed: !native || native.isCollapsed,
+        dragJustSelected,
+      })
+    ) {
+      clearSelection();
+    }
   };
 
   // Capture the bar's anchor when the selection changes — a LAYOUT effect so
@@ -1993,6 +2082,10 @@ export const TranscriptPanel: React.FC<{
         // — see `onBodyMouseUp`. `mouseup`, not `pointerup`: the native
         // selection is only final by the time the mouse event fires.
         onMouseUp={onBodyMouseUp}
+        // A click on empty space clears the selection (2026-11-21) —
+        // `emptyBodyClickClears` lists the gestures that share the click.
+        onMouseDown={onBodyMouseDown}
+        onClick={onBodyClick}
         // Panel-scoped keyboard handling, NEVER a window listener — but the
         // scoping alone is NOT what keeps Overlay's global Delete (delete-
         // scene) and Escape (deselect) from double-firing: the keydown still
@@ -2024,11 +2117,11 @@ export const TranscriptPanel: React.FC<{
           if (e.key === "Escape") {
             if (sel === null) return;
             e.stopPropagation();
-            setSel(null);
             // The popover is ANCHORED to the selection now: clearing `sel`
             // alone would leave an invisible open editor that pops back up,
-            // stale draft and all, at the NEXT selection's anchor.
-            setRangeEditing(null);
+            // stale draft and all, at the NEXT selection's anchor — which is
+            // why the clear is one function the ✕ shares.
+            clearSelection();
             return;
           }
           if ((e.key === "Delete" || e.key === "Backspace") && sel !== null) {
@@ -2154,7 +2247,9 @@ export const TranscriptPanel: React.FC<{
                     // and the unmapped seek landed exactly the revived
                     // seconds early for every word past a kept pause.
                     playerRef.current?.seekTo(Math.ceil(toPlayerSec(w.start) * fps));
-                    setSel({ anchor: w.index, focus: w.index });
+                    // Clicking the one selected word again drops it — the
+                    // seek above still happens (`plainWordClick`).
+                    setSel((prev) => plainWordClick(prev, w.index, e.detail));
                   }}
                   onDoubleClick={() => openRetype(w)}
                   {...(onAddOverlayAt
@@ -2365,6 +2460,20 @@ export const TranscriptPanel: React.FC<{
             <span style={menuLabel}>
               {selected.length} word{selected.length === 1 ? "" : "s"}
             </span>
+            {/* The visible way out (2026-11-21): Escape was the only one, and
+                every click-to-seek makes a selection. Last, after the count,
+                set off by a divider so it reads as dismissing the bar rather
+                than as one more action on the words. */}
+            <span aria-hidden style={menuDivider} />
+            <MenuItem
+              data-testid="transcript-selection-clear"
+              aria-label="Clear selection"
+              title="Clear selection (Esc)"
+              onClick={clearSelection}
+              style={menuIconItem}
+            >
+              ✕
+            </MenuItem>
           </div>
         ) : null}
         {/* The free-text run editor, in the bar's place (same anchor): it is
@@ -2645,10 +2754,15 @@ export const TranscriptPanel: React.FC<{
 const MenuItem: React.FC<
   {
     children: React.ReactNode;
-  } & Pick<React.ButtonHTMLAttributes<HTMLButtonElement>, "onClick" | "disabled" | "title"> & {
+  } & Pick<
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
+    "onClick" | "disabled" | "title" | "aria-label"
+  > & {
       "data-testid": string;
+      /** Layered over `menuItem`, under the hover/disabled states. */
+      style?: React.CSSProperties;
     }
-> = ({ children, ...rest }) => {
+> = ({ children, style, ...rest }) => {
   const [hover, setHover] = useState(false);
   return (
     <button
@@ -2656,6 +2770,7 @@ const MenuItem: React.FC<
       {...rest}
       style={{
         ...menuItem,
+        ...style,
         // One step LIGHTER than the surface it sits on (#262630) — the old
         // #23232E was a step DARKER, so hover read as a hole in the bar.
         ...(hover && !rest.disabled ? { background: "#34343F" } : {}),
@@ -3036,6 +3151,28 @@ const menuItem: React.CSSProperties = {
   cursor: "pointer",
   textAlign: "left",
   whiteSpace: "nowrap",
+};
+
+/** The hairline before the bar's ✕ — the bar's own border colour, so it reads
+ * as part of the surface rather than a new element. */
+const menuDivider: React.CSSProperties = {
+  width: 1,
+  height: 16,
+  background: "#3A3A47",
+  marginInline: 4,
+  flexShrink: 0,
+};
+
+/** The ✕: `menuItem` squared to a 24px hit area — a one-glyph label with the
+ * text chips' padding was a sliver to aim at. */
+const menuIconItem: React.CSSProperties = {
+  width: 24,
+  height: 24,
+  padding: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  color: "#9A9AA3",
 };
 
 const rangeTextarea: React.CSSProperties = {

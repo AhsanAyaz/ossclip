@@ -14,6 +14,7 @@ import {
   rowWarning,
   selectionSpan,
   spanPreview,
+  storyboardBusyTitle,
   storyboardButtonState,
   storyboardRows,
   wordIndexAtSourceTime,
@@ -262,6 +263,20 @@ describe("jobLine", () => {
 
   it("is null with no job", () => {
     expect(jobLine(null)).toBeNull();
+  });
+});
+
+describe("storyboardBusyTitle", () => {
+  it("offers Cancel for a job that can be stopped", () => {
+    expect(storyboardBusyTitle(job({ shots: ["s1"], current: "s1", calls: 1 }))).toBe(
+      "Drawing s1 (1 of 1) · 1 call. Open to follow it or cancel",
+    );
+  });
+
+  it("never offers Cancel for a plan: the server refuses it (§169)", () => {
+    expect(storyboardBusyTitle(job({ kind: "plan", shots: ["plan"], current: "plan", calls: 1 }))).toBe(
+      "Planning again (one LLM call) · 1 call. Open to follow it",
+    );
   });
 });
 

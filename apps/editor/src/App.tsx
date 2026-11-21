@@ -88,7 +88,7 @@ import { YoutubePanel } from "./YoutubePanel";
 import { CoverPanel } from "./CoverPanel";
 import { PublishPanel } from "./PublishPanel";
 import { StoryboardPanel } from "./StoryboardPanel";
-import { jobLine, storyboardButtonState, type StoryboardButtonState } from "./storyboardModel";
+import { storyboardBusyTitle, storyboardButtonState, type StoryboardButtonState } from "./storyboardModel";
 import { useStoryboardJobWatch } from "./useStoryboardJobWatch";
 import {
   formatElapsed,
@@ -723,17 +723,25 @@ export const App: React.FC = () => {
   const [showStoryboard, setShowStoryboard] = useState(false);
   const [storyboardButton, setStoryboardButton] = useState<StoryboardButtonState>({ kind: "hidden" });
   /**
-   * The last NON-NULL transcript selection, as source starts, for the
-   * storyboard's "Add shot from selection" and "Use selection". Not cleared
-   * when the transcript clears its own: pressing the Storyboard button is a
-   * click outside the transcript, which drops its selection (the click-away
-   * rule, field report 2026-08-31), so the selection the author made for the
-   * table would be gone by the time the table opens. Replaced by the next
+   * The last transcript selection, as source starts, for the storyboard's
+   * "Add shot from selection" and "Use selection". Not cleared when the
+   * transcript drops its own on a click-away (`reason === "away"`): pressing
+   * the Storyboard button is a click outside the transcript, which drops its
+   * selection (the click-away rule, field report 2026-08-31), so the
+   * selection the author made for the table would be gone by the time the
+   * table opens. Cleared when the author clears it — Escape, the bar's ✕, a
+   * click on empty transcript space, clicking the one selected word again,
+   * the storyboard's own Clear — because a selection that only a project load
+   * could drop held the table on a word clicked once to seek, for good
+   * (2026-11-21: "Selected in the transcript: “has”"). Replaced by the next
    * selection, and dropped on a project load with every other selection.
    */
   const [transcriptSelection, setTranscriptSelection] = useState<{ srcStart: number }[] | null>(null);
-  const onTranscriptSelection = useCallback((words: { srcStart: number }[] | null) => {
-    if (words === null || words.length === 0) return;
+  const onTranscriptSelection = useCallback((words: { srcStart: number }[] | null, reason?: "away") => {
+    if (words === null || words.length === 0) {
+      if (reason !== "away") setTranscriptSelection(null);
+      return;
+    }
     setTranscriptSelection((prev) =>
       prev !== null && prev.length === words.length && prev.every((w, i) => w.srcStart === words[i]!.srcStart)
         ? prev
@@ -2282,7 +2290,7 @@ export const App: React.FC = () => {
                 storyboardButton.kind === "error"
                   ? `storyboard.json could not be read: ${storyboardButton.message}`
                   : storyboardJob.job !== null
-                    ? `${jobLine(storyboardJob.job) ?? "A job is running"}. Open to follow it or cancel`
+                    ? storyboardBusyTitle(storyboardJob.job)
                     : "The planned shots: drop, reword, move or add them, or plan again"
               }
             >
@@ -2457,6 +2465,7 @@ export const App: React.FC = () => {
           // editor shows in the table before any render (§168).
           map={rulerMap}
           selection={transcriptSelection}
+          onClearSelection={() => setTranscriptSelection(null)}
           onSeek={seekToSec}
           onClose={() => setShowStoryboard(false)}
         />

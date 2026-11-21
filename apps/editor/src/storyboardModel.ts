@@ -225,6 +225,18 @@ export function jobLine(job: StoryboardJobState | null): string | null {
   return `${JOB_VERB[job.kind]}${job.current !== null ? ` ${job.current}` : ""} (${at} of ${job.shots.length}) · ${calls}`;
 }
 
+/**
+ * The Storyboard button's title while a job runs (§169: the job outlives the
+ * panel, and the button is where a closed panel says so). Cancel is offered
+ * only where it exists: the server refuses a plan's Cancel (`jobLine`'s
+ * note), and a title promising one sent the author to a button that is not
+ * there.
+ */
+export function storyboardBusyTitle(job: StoryboardJobState): string {
+  const line = jobLine(job) ?? "A job is running";
+  return job.kind === "plan" ? `${line}. Open to follow it` : `${line}. Open to follow it or cancel`;
+}
+
 /** The server's error for a shot Cancel interrupted (runDraw's `stopped`, edit.ts). */
 const STOPPED_ERROR = "stopped before it finished";
 

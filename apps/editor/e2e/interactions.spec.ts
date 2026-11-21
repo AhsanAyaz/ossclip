@@ -1649,6 +1649,61 @@ test("click-away also clears the transcript selection and its menu (field report
   await expect(page.getByTestId("transcript-selection-menu")).toHaveCount(0);
 });
 
+test("a transcript selection clears from inside the panel: ✕, the selected word again, empty space, Escape (2026-11-21)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("transcript-toggle").click();
+  await expect(page.getByTestId("transcript-panel")).toBeVisible();
+  const bar = page.getByTestId("transcript-selection-menu");
+
+  // ✕ on the bar.
+  await page.getByTestId("transcript-word-3").click();
+  await expect(bar).toBeVisible();
+  const clear = page.getByTestId("transcript-selection-clear");
+  await expect(clear).toHaveAttribute("aria-label", "Clear selection");
+  await expect(clear).toHaveAttribute("title", "Clear selection (Esc)");
+  const hit = (await clear.boundingBox())!;
+  expect(Math.min(hit.width, hit.height)).toBeGreaterThanOrEqual(24);
+  await clear.click();
+  await expect(bar).toHaveCount(0);
+
+  // The one selected word again: cleared, and the click still seeks. The
+  // arrows walk the playhead off the word first, so the second click's seek
+  // is visible as the playhead coming back.
+  const target = page.getByTestId("transcript-word-40");
+  await target.click();
+  await expect(bar).toBeVisible();
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(0.05);
+  const atWord = await playheadFrac(page);
+  for (let i = 0; i < 30; i++) await page.keyboard.press("ArrowRight");
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(atWord + 0.015);
+  await target.click();
+  await expect(bar).toHaveCount(0);
+  await expect.poll(async () => Math.abs((await playheadFrac(page)) - atWord)).toBeLessThan(0.005);
+
+  // A click on the body's empty space — its padding, which is no word.
+  await page.getByTestId("transcript-word-3").click();
+  await expect(bar).toBeVisible();
+  const body = (await page.getByTestId("transcript-body").boundingBox())!;
+  await page.mouse.click(body.x + 5, body.y + 5);
+  await expect(bar).toHaveCount(0);
+
+  // A drag-select still selects (the click that ends it lands on the body).
+  const from = (await page.getByTestId("transcript-word-3").boundingBox())!;
+  const to = (await page.getByTestId("transcript-word-5").boundingBox())!;
+  await page.mouse.move(from.x + 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width - 2, to.y + to.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect(bar).toContainText("3 words");
+
+  // Escape.
+  await page.keyboard.press("Escape");
+  await expect(bar).toHaveCount(0);
+});
+
 test("per-take volume: the Audio slider writes video.volume and badges the block (2026-08-31)", async ({
   page,
 }) => {

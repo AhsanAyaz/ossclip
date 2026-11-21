@@ -177,6 +177,34 @@ test("a transcript selection survives opening the panel and adds a shot", async 
   expect(added).toMatchObject({ startWord: ADD_FROM, endWord: ADD_TO, origin: "author", kept: true });
 });
 
+test("a selection the author clears is forgotten by the table; the table's own Clear forgets it too (2026-11-21)", async ({
+  page,
+}) => {
+  await load(page);
+  await page.getByTestId("transcript-toggle").click();
+  await page.getByTestId(`transcript-word-${ADD_FROM}`).click();
+  await page.getByTestId(`transcript-word-${ADD_TO}`).click({ modifiers: ["Shift"] });
+  await page.getByTestId("transcript-selection-clear").click();
+  await expect(page.getByTestId("transcript-selection-menu")).toHaveCount(0);
+  await openPanel(page);
+  await expect(page.getByTestId("storyboard-selection")).toHaveText(/^Select words in the transcript first/);
+  await expect(page.getByTestId("storyboard-add")).toBeDisabled();
+  await expect(page.getByTestId("storyboard-selection-clear")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("storyboard-modal")).toHaveCount(0);
+
+  // A word clicked once to seek is a selection the table holds…
+  await page.getByTestId(`transcript-word-${ADD_FROM}`).click();
+  await openPanel(page);
+  await expect(page.getByTestId("storyboard-selection")).toContainText(`(words ${ADD_FROM}–${ADD_FROM})`);
+  await expect(page.getByTestId("storyboard-add")).toBeEnabled();
+  // …until the table's Clear drops it.
+  await page.getByTestId("storyboard-selection-clear").click();
+  await expect(page.getByTestId("storyboard-selection")).toHaveText(/^Select words in the transcript first/);
+  await expect(page.getByTestId("storyboard-selection-clear")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-add")).toBeDisabled();
+});
+
 test("Plan again asks in the panel before it spends a call", async ({ page }) => {
   await load(page);
   await openPanel(page);

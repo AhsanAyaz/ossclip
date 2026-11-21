@@ -148,6 +148,12 @@ export interface StoryboardPanelProps {
   map: TimeMap | null;
   /** The last transcript selection App holds, as source starts; null when none was made. */
   selection: readonly { srcStart: number }[] | null;
+  /**
+   * Forget App's remembered selection (2026-11-21). App keeps the last one
+   * across the transcript's click-away so the table can use it, which also
+   * means nothing in the table could drop it. Absent = no Clear button.
+   */
+  onClearSelection?: () => void;
   /** Moves the player to an output second on the live clock. Absent = the time is not clickable. */
   onSeek?: (sec: number) => void;
   onClose: () => void;
@@ -160,6 +166,7 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
   words,
   map,
   selection,
+  onClearSelection,
   onSeek,
   onClose,
 }) => {
@@ -675,6 +682,26 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
               {span !== null
                 ? `Selected in the transcript: “${spanPreview(words, span)}” (words ${span.startWord}–${span.endWord})`
                 : selectionBlocked}
+              {/* Whenever App holds a selection, misaligned ones included:
+                  "select them again" is advice, and Clear is how to stop the
+                  line reading a span the author is done with. */}
+              {onClearSelection !== undefined && selection !== null && selection.length > 0 ? (
+                <button
+                  type="button"
+                  data-testid="storyboard-selection-clear"
+                  style={{ ...actionBtn, marginLeft: 8 }}
+                  title="Forget this selection: Add shot and Use selection need a new one"
+                  onClick={() => {
+                    // The add form is anchored to the span: left open, it
+                    // would come back with its stale draft on the NEXT
+                    // selection, over words it was not written for.
+                    setAdding(null);
+                    onClearSelection();
+                  }}
+                >
+                  Clear
+                </button>
+              ) : null}
             </div>
 
             {adding !== null && span !== null ? (
