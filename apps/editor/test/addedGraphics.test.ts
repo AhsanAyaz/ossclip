@@ -179,6 +179,14 @@ describe("addGraphicCheck (editor-added-graphics §5)", () => {
     expect(check.notes).toEqual([]);
   });
 
+  it("refuses when EVERY word is cut, but not when one still plays", () => {
+    const keptTo3 = mapFromKeptSpans([{ srcIn: 0, srcOut: 3, outIn: 0, outOut: 3 }]);
+    const cut = addGraphicCheck({ words: [sw(4), sw(5)], cues: [], clock: keptTo3, toPlayerSec: same, deferred: false });
+    expect(cut.refusal).toBe("These words are cut from the video. Pick words that are still in it.");
+    const partly = addGraphicCheck({ words: [sw(2), sw(5)], cues: [], clock: keptTo3, toPlayerSec: same, deferred: false });
+    expect(partly.refusal).toBeNull();
+  });
+
   it("with no clock, checks the words' own times on the player's clock", () => {
     // +1 s stands in for a live re-cut's mapping: the window is [3.0, 3.4],
     // with no floor (nothing to assemble on).

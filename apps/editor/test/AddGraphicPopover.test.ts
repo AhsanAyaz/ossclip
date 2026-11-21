@@ -111,10 +111,12 @@ describe("TranscriptPanel — add a graphic from the selection", () => {
     lines,
     cues = [],
     withGraphic = true,
+    clockOverride,
   }: {
     lines: CaptionLine[];
     cues?: SceneCue[];
     withGraphic?: boolean;
+    clockOverride?: ReturnType<typeof mapFromKeptSpans>;
   }) {
     const edits = useEdits();
     doc = edits.doc;
@@ -125,7 +127,7 @@ describe("TranscriptPanel — add a graphic from the selection", () => {
     } as unknown as PlayerRef);
     const onAddGraphic = (words: AddGraphicWord[]): AddGraphicRequest => {
       asked = words;
-      const check = addGraphicCheck({ words, cues, clock, toPlayerSec: (s) => s, deferred: false });
+      const check = addGraphicCheck({ words, cues, clock: clockOverride ?? clock, toPlayerSec: (s) => s, deferred: false });
       return {
         ...check,
         add: (component, props) => {
@@ -215,6 +217,19 @@ describe("TranscriptPanel — add a graphic from the selection", () => {
     await click(q("transcript-add-graphic")!);
     expect(q("add-graphic-refusal")!.textContent).toBe(
       "These words overlap the graphic ‘StatCard’ at 0:06. Trim that block or pick other words.",
+    );
+    expect(container.querySelector('[data-testid^="add-graphic-type-"]')).toBeNull();
+  });
+
+  it("refuses a selection whose every word is cut from the video, before any type list", async () => {
+    // Words at 6–7.4 s; the kept span stops at 5 s, so none of them plays.
+    const cutClock = mapFromKeptSpans([{ srcIn: 0, srcOut: 5, outIn: 0, outOut: 5 }]);
+    await render({ lines: [line(["gone", "too"])], clockOverride: cutClock });
+    await click(word(0));
+    await click(word(1), true);
+    await click(q("transcript-add-graphic")!);
+    expect(q("add-graphic-refusal")!.textContent).toBe(
+      "These words are cut from the video. Pick words that are still in it.",
     );
     expect(container.querySelector('[data-testid^="add-graphic-type-"]')).toBeNull();
   });

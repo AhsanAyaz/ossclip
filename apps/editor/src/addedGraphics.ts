@@ -147,6 +147,9 @@ export function addOverlapRefusal(cue: SceneCue): string {
   return `These words overlap the graphic \u2018${cue.component ?? cue.id}\u2019 at ${clockLabel(cue.startSec)}. Trim that block or pick other words.`;
 }
 
+/** The refusal for a selection the video no longer contains (§5). */
+export const ADD_CUT_REFUSAL = "These words are cut from the video. Pick words that are still in it.";
+
 /** What App hands the panel when Graphic… is pressed: the span, the verdict
  * and the notes, worked out once at the press. */
 export interface AddGraphicCheck {
@@ -172,9 +175,14 @@ export interface AddGraphicRequest extends AddGraphicCheck {
  * assembly (`addWindow`), padded by the gap inside `graphicOverlap`: a short
  * add the floor stretches can never trim the next block.
  *
- * With no clock, or none of the words left on it, there is nothing to
- * assemble on, and the words' own on-screen span is the best measure there
- * is — mapped to the player's clock (`toPlayerSec`, the panel's own seek
+ * Every word cut on that clock is refused outright, with its own copy:
+ * assembly drops a scene whose words are all cut ("anchor words were
+ * entirely cut"), so the add could only ever land in the not-shown list
+ * (§7). Judged with the clock's own `mapWord`, the test assembly applies.
+ *
+ * With no clock, or a window the assembly would not give for some other
+ * reason, there is nothing to assemble on, and the words' own on-screen span
+ * is the best measure there is — mapped to the player's clock (`toPlayerSec`, the panel's own seek
  * mapping) because that is the clock `cues` speak. It misses the floor; the
  * next run's assembly then pushes, as it does for any block (§4).
  *
@@ -192,6 +200,9 @@ export function addGraphicCheck(args: {
 }): AddGraphicCheck {
   const { words, cues, clock, toPlayerSec, deferred } = args;
   const span = addSpan(words);
+  if (clock !== null && words.every((w) => clock.mapWord({ text: w.text, start: w.srcStart, end: wordSrcEnd(w) }) === null)) {
+    return { span, refusal: ADD_CUT_REFUSAL, notes: [] };
+  }
   const at = (clock !== null ? addWindow(words, clock) : null) ?? {
     startSec: toPlayerSec(words[0]!.start),
     endSec: toPlayerSec(words[words.length - 1]!.end),
