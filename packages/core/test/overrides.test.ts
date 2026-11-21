@@ -684,6 +684,71 @@ describe("remapSceneOverrides (handoff-edit-anchoring — the produce-side misap
     expect(out.scenes["scene-3"]).toBeUndefined(); // still never left on the impostor
     expect(notes.some((n) => n.includes("dropped"))).toBe(true);
   });
+
+  // editor-added-graphics §3: an added graphic's id is minted once by the
+  // editor and never renumbered, so its key IS its identity — the anchor
+  // logic above exists for positional planned ids and must not touch it.
+  describe("added graphics (editor-added-graphics §3)", () => {
+    it("an added key whose cue is missing stays put — never moved onto a plan cue sharing its words", () => {
+      // added-2 was skipped or dropped this run (no cue), but its stamped
+      // words are now planned scene-1. Its edits wait for it; scene-1 keeps
+      // its own (none) rather than inheriting a graphic it never showed.
+      const doc = docWith({
+        "added-2": { props: { title: "mine" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [cueFixture({ id: "scene-1", anchor: { startWord: 40, endWord: 50 } })];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toEqual(doc.scenes["added-2"]);
+      expect(out.scenes["scene-1"]).toBeUndefined();
+      expect(notes).toEqual([]);
+    });
+
+    it("an added key whose cue exists but whose words moved stays put — not parked", () => {
+      // The case planned ids park (words gone, id now a different moment):
+      // for an added id the cue IS the same graphic, re-anchored to wherever
+      // the transcript put its span.
+      const doc = docWith({
+        "added-2": { props: { title: "mine" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+        "added-2@abc": { props: { title: "half" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [cueFixture({ id: "added-2", anchor: { startWord: 80, endWord: 90 } })];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toEqual(doc.scenes["added-2"]);
+      expect(out.scenes["added-2@abc"]).toEqual(doc.scenes["added-2@abc"]);
+      expect(out.scenes["added-2#orphaned"]).toBeUndefined();
+      expect(out.scenes["added-2@abc#orphaned"]).toBeUndefined();
+      expect(notes).toEqual([]);
+    });
+
+    it("a planned key's orphaned edits never land on an added graphic — parked as without it", () => {
+      // scene-5's words (40..50) are now covered only by added-2; scene-5
+      // itself shows a different moment. Re-keying onto added-2 would dress
+      // the author's graphic in a planned scene's edits.
+      const doc = docWith({
+        "scene-5": { props: { title: "planned" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [
+        cueFixture({ id: "added-2", anchor: { startWord: 40, endWord: 50 } }),
+        cueFixture({ id: "scene-5", anchor: { startWord: 80, endWord: 90 } }),
+      ];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toBeUndefined();
+      expect(out.scenes["scene-5"]).toBeUndefined();
+      expect(out.scenes["scene-5#orphaned"]!.props.title).toBe("planned");
+      expect(notes.some((n) => n.includes("added-2"))).toBe(false);
+    });
+
+    it("an already-parked planned entry is never rescued onto an added graphic", () => {
+      const doc = docWith({
+        "scene-7#orphaned": { props: { title: "old" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [cueFixture({ id: "added-2", anchor: { startWord: 40, endWord: 50 } })];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toBeUndefined();
+      expect(out.scenes["scene-7#orphaned"]).toEqual(doc.scenes["scene-7#orphaned"]);
+      expect(notes).toEqual([]);
+    });
+  });
 });
 
 describe("isParkedOverrideKey / parkedOverrideBaseKey", () => {

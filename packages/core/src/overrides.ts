@@ -28,7 +28,7 @@ import { SCENE_REGISTRY, clipSpeed, resolveSceneProps } from "./scene-registry";
 import { maxCueSec } from "./assemble";
 import { revealItemTexts } from "./reveal-match";
 import { keepsBoxAcross } from "./framing";
-import { AddedSceneSchema } from "./added-scenes";
+import { AddedSceneSchema, isAddedKey } from "./added-scenes";
 import {
   captionKeyFor,
   CaptionThemeIdSchema,
@@ -1607,9 +1607,14 @@ export function remapSceneOverrides(
   // POST-split list — a half carries its root's anchor verbatim
   // (`splitCues` spreads the root cue), and matching a half's id here would
   // mint double-suffixed keys like `scene-1@2000@abc`.
+  //
+  // Added graphics are never a TARGET (editor-added-graphics §3): an added
+  // cue sits on words the plan also spoke over, so a planned id's orphaned
+  // edits would otherwise re-key onto the author's graphic — another scene's
+  // props and timing dressing a block it never was.
   const anchored = cues.filter(
     (c): c is SceneCue & { anchor: SceneAnchor } =>
-      c.anchor !== undefined && !c.id.includes("@"),
+      c.anchor !== undefined && !c.id.includes("@") && !isAddedKey(c.id),
   );
   const notes: string[] = [];
   const scenes: Record<string, SceneOverride> = {};
@@ -1626,6 +1631,17 @@ export function remapSceneOverrides(
   const rekeys = new Map<string, Claim[]>();
 
   for (const [key, entry] of Object.entries(doc.scenes)) {
+    if (isAddedKey(key)) {
+      // Never MOVED either (editor-added-graphics §3). The anchor logic below
+      // exists because planned ids are positional and a re-plan renumbers
+      // them; an added id is minted once by the editor and never reused, so
+      // the key itself is the identity. A missing cue means the entry was
+      // skipped or dropped this run and its edits wait for it; a cue whose
+      // words moved is still the same graphic, re-anchored from its source
+      // span — parking it would strand every edit the author made to it.
+      scenes[key] = entry;
+      continue;
+    }
     const stored = entry.anchor;
     if (!stored) {
       // Pre-migration entry: exactly today's id-only behaviour, silently.
