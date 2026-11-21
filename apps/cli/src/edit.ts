@@ -551,6 +551,20 @@ const StoryboardDrawBodySchema = z.object({
 /** 1 to 1000 characters once trimmed (plan B2a Task 4): every redraw of the idea carries every earlier note, so a note stays short. */
 const StoryboardNoteBodySchema = z.object({ id: ShotIdSchema, text: z.string().trim().min(1).max(1000) });
 const StoryboardShotBodySchema = z.object({ id: ShotIdSchema });
+/**
+ * Approve all, or a chosen few (2026-11-21): 1 to 50 shots, each listed once.
+ * Strict, so a body carrying `id` beside `ids` is refused rather than read as
+ * one of the two: which shots get approved must not be a guess.
+ */
+const StoryboardApproveIdsBodySchema = z
+  .object({
+    ids: z
+      .array(ShotIdSchema)
+      .min(1)
+      .max(50)
+      .refine((ids) => new Set(ids).size === ids.length, { message: "a shot is listed twice" }),
+  })
+  .strict();
 const StoryboardDraftBodySchema = z.object({ id: ShotIdSchema, version: z.number().int().positive() });
 
 /** A zod failure as one readable sentence for a 400 body. */
@@ -1729,12 +1743,21 @@ export async function startEditServer(
     const v = result.version === null ? undefined : peekShot(dir, id)?.versions.find((x) => x.n === result.version);
     return typeof v?.result === "object" ? v.result.failed : "the draw failed";
   };
-  /** The job's start, answered: a 202, or the 409 of a job that won the race. */
+  /**
+   * The job's start, answered: a 202, or the 409 of a job that won the race.
+   *
+   * `after` runs once after the last shot, inside the runner's `finish`, so
+   * it is done before the job reads as ended: Approve all's one sync run
+   * (2026-11-21) is spawned after its last save and is the render child by
+   * the time the editor sees the job end and hands off to its render poll.
+   * Its throw is logged and the usage append still runs.
+   */
   const startStoryboardJob = (
     dir: string,
     kind: StoryboardJobKind,
     ids: string[],
     each: (id: string, ctx: JobContext, made: LlmProvider[]) => Promise<{ ok: boolean; error?: string }>,
+    after?: (ctx: JobContext) => Promise<void>,
   ): { code: number; body: unknown } => {
     const made: LlmProvider[] = [];
     let job: Promise<void>;
@@ -1743,7 +1766,16 @@ export async function startEditServer(
         kind,
         ids,
         (id, ctx) => each(id, ctx, made),
-        () => appendJobUsage(dir, made),
+        async (ctx) => {
+          if (after) {
+            try {
+              await after(ctx);
+            } catch (err) {
+              ctx.log(`✗ ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          await appendJobUsage(dir, made);
+        },
       );
     } catch (err) {
       if (err instanceof JobBusyError) return { code: 409, body: { ok: false, error: STORYBOARD_JOB_BUSY } };
@@ -1752,6 +1784,94 @@ export async function startEditServer(
     // The runner records every failure on the job; nothing is left to throw.
     void job.catch((err: unknown) => console.error(`storyboard job: ${err instanceof Error ? err.message : String(err)}`));
     return { code: 202, body: { ok: true } };
+  };
+
+  /**
+   * Approve all, or the shots the author ticked (2026-11-21): one approve job
+   * over `ids`, in order, then the sync run ONCE.
+   *
+   * The checks every shot shares (busy, render, table, cut, project,
+   * command.json) answer before the job starts, as the one-shot route's do.
+   * What is about one shot (kept, drawn, not all cut) is checked at its turn
+   * and is that shot's `ok: false` (design G8: a bad shot never stops the
+   * batch), against the table as it is then: the author may edit a later
+   * shot while an earlier one renders, as during Draw all.
+   *
+   * Each shot saves its approval and starts NO run: a sync run per shot
+   * would replay produce N times for one result, and Render cannot start
+   * while the job holds the render child's turn anyway. The run is spawned
+   * in `after`, past the last save, when at least one shot was approved,
+   * Cancel included: a shot already approved is in storyboard.json, and a
+   * video not updated for it would disagree with the table until a Render.
+   */
+  const startApproveShots = async (dir: string, ids: string[]): Promise<{ code: number; body: unknown }> => {
+    const no = (code: number, error: string): { code: number; body: unknown } => ({ code, body: { ok: false, error } });
+    const busy = storyboardBusy();
+    if (busy !== null) return no(409, busy);
+    if (renderChild) return no(409, "a render is running: approve once it has finished");
+    const table = storyboardTable(dir);
+    if (!table.ok) return no(table.code, table.error);
+    const cut = await storyboardCut(dir);
+    if (!cut.ok) return no(cut.code, cut.error);
+    const project = await storyboardProject(dir);
+    if (!project.ok) return no(project.code, project.error);
+    if ((await readRecordedCommand(dir)) === null) {
+      return no(412, "no usable command.json in this workdir, so the video cannot be updated — run `ossclip produce` once from the terminal");
+    }
+    const busyNow = storyboardBusy();
+    if (busyNow !== null) return no(409, busyNow);
+    if (renderChild) return no(409, "a render is running: approve once it has finished");
+    const wordCount = cut.value.words.length;
+    let approved = 0;
+    return startStoryboardJob(
+      dir,
+      "approve",
+      ids,
+      async (id, ctx) => {
+        const sb = loadStoryboard(dir);
+        if (sb === null) return { ok: false, error: "storyboard.json is gone" };
+        const shot = keptShot(sb, id);
+        if (!shot.ok) return { ok: false, error: shot.error };
+        const h = peekShot(dir, id);
+        if (h === null || h.draft === null) return { ok: false, error: `shot ${id} has no draft to approve: draw it first` };
+        // The length the cut gives the shot now (design §8 step 1).
+        const durationSec = shotLengthSec(shot.value, cut.value.clock.wordTimes);
+        if (durationSec === null) return { ok: false, error: `every word of shot ${id} is cut: there is no moment to put its clip on` };
+        // The assets folder the draft was drawn with, as the one-shot path.
+        const approval = await storyboardApprove(
+          {
+            workdir: dir,
+            shotId: id,
+            durationSec,
+            project: project.value,
+            ...(h.assetsDir !== undefined ? { assetsDir: h.assetsDir } : {}),
+          },
+          { shouldStop: ctx.shouldStop, log: ctx.log },
+        );
+        // Read again after the render: an edit saved during it is kept.
+        const current = loadStoryboard(dir);
+        if (current === null) return { ok: false, error: "storyboard.json is gone: the approval was not saved" };
+        saveStoryboard(dir, applyStoryboardEdit(current, { op: "approve", id, approval }, wordCount));
+        approved += 1;
+        ctx.log(`✓ ${id} approved: v${approval.version} at ${approval.durationSec} s`);
+        return { ok: true };
+      },
+      async (ctx) => {
+        if (approved === 0) return;
+        const cmd = await readRecordedCommand(dir);
+        // From the load to the spawn nothing awaits: the run replays the
+        // table with every approval this job saved.
+        const sb = loadStoryboard(dir);
+        if (cmd === null || renderChild || sb === null) {
+          const why = cmd === null ? "command.json is gone" : renderChild ? "a render is running" : "storyboard.json is gone";
+          ctx.log(`✗ approved, but the video was not updated: ${why}; press Render`);
+          return;
+        }
+        spawnRecordedRun(cmd, storyboardSyncArgs(healRecordedProduceArgs(cmd.args), sb.assetsDir), dir);
+        ctx.setSynced();
+        ctx.log("▸ updating the video");
+      },
+    );
   };
 
   const server = createServer((req, res) => {
@@ -3323,6 +3443,14 @@ export async function startEditServer(
           const dir = workdir;
           const body = await readJsonBody(req, 64 * 1024);
           if (!body.ok) return send(400, { ok: false, error: body.error });
+          // `{ids}` is Approve all (2026-11-21), its own route body below;
+          // anything else is the one-shot `{id}` path, parsed as it always was.
+          if (typeof body.value === "object" && body.value !== null && "ids" in body.value) {
+            const many = StoryboardApproveIdsBodySchema.safeParse(body.value);
+            if (!many.success) return send(400, { ok: false, error: zodMessage(many.error) });
+            const answer = await startApproveShots(dir, many.data.ids);
+            return send(answer.code, answer.body);
+          }
           const parsed = StoryboardShotBodySchema.safeParse(body.value);
           if (!parsed.success) return send(400, { ok: false, error: zodMessage(parsed.error) });
           const busy = storyboardBusy();
@@ -3385,6 +3513,7 @@ export async function startEditServer(
               };
             }
             spawnRecordedRun(cmd, storyboardSyncArgs(healRecordedProduceArgs(cmd.args), next.assetsDir), dir);
+            ctx.setSynced();
             ctx.log("▸ updating the video");
             return { ok: true };
           });

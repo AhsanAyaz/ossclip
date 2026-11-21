@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Storyboard, TimeMap } from "@ossclip/core/browser";
 import {
+  approveAllIds,
+  approvePickState,
+  approveTargets,
   coverage,
   coverageOverLimit,
   draftIsStale,
@@ -9,6 +12,7 @@ import {
   jobLine,
   jobResultLine,
   planChangesSummary,
+  prunePicked,
   rowWarning,
   selectionSpan,
   spanPreview,
@@ -193,6 +197,12 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
   const editRef = useRef<{ id: string; draft: string; saving: boolean } | null>(null);
   const [adding, setAdding] = useState<{ draft: string; error: string | null } | null>(null);
   const [confirmPlan, setConfirmPlan] = useState(false);
+  /**
+   * The shots ticked for "Approve selected" (2026-11-21). The panel's own:
+   * a pick is a choice for the next press, not a property of the shot, so it
+   * is not saved and does not outlive the panel.
+   */
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
 
   const setEditing = (next: { id: string; draft: string; error: string | null } | null): void => {
     // A fresh ref object per change: `commitIdea` holds the one it started
@@ -329,6 +339,39 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
   // "Draw all" is the rows with no draft only: a stale draft is the author's
   // to replace one shot at a time, and each draw spends LLM calls (AG3).
   const drawAllIds = keptRows.filter((r) => r.state !== "drawing" && r.draft === null).map((r) => r.id);
+  // The drawn shots waiting for approval (`approveAllIds`), and of them the
+  // ones the button approves: the ticked ones, or all when none is ticked.
+  const approveEligible = useMemo(
+    () => (load === null ? [] : approveAllIds(rows, load.storyboard, load.detail)),
+    [rows, load],
+  );
+  const eligibleKey = approveEligible.join(",");
+  // A pick whose row stopped being eligible (approved, redrawn, dropped,
+  // reworded) is let go: kept, it would come back ticked once the row is
+  // eligible again, a choice the author made about another drawing.
+  useEffect(() => {
+    setPicked((prev) => prunePicked(prev, approveEligible));
+    // Keyed on the ids, not the array, which is a new one on every load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eligibleKey]);
+  const approveSet = new Set(approveEligible);
+  const approveTarget = approveTargets(approveEligible, picked);
+  const pickState = approvePickState(approveEligible, picked);
+  // "Save first" leads, `approveBlock`'s order: the one sync run at the end
+  // replays the SAVED overrides.json, and the reload after it would put that
+  // doc over the unsaved one (Review Focus 4). Whether a render runs is the
+  // server's to answer (a 409 in the error line): the panel is not told.
+  const approveAllBlock = dirty
+    ? "Save first: the video update at the end reloads the saved edits, and would discard your unsaved ones"
+    : approveTarget.ids.length === 0
+      ? "No drawn shots waiting for approval"
+      : jobRunning
+        ? "A job is running"
+        : null;
+  const approveCount = approveTarget.ids.length;
+  const approveAllTitle =
+    approveAllBlock ??
+    `Approve the ${approveCount} ${approveTarget.selected ? "selected" : "drawn"} shot${approveCount === 1 ? "" : "s"}, one after another: each renders its clip, then the video updates once`;
   // Not the running job's: Approve renders the draft's stills again under the
   // same names DURING the job, and a URL keyed to it would cache the old
   // ones. The finished job's stamp changes the URL once the job has ended.
@@ -676,6 +719,24 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
               >
                 Draw all
               </button>
+              {/* No confirm, as Draw all has none: Cancel stops it between
+                  shots, and nothing it does spends an LLM call. */}
+              <button
+                type="button"
+                data-testid="storyboard-approve-all"
+                style={off(toolBtn, disabled || approveAllBlock !== null)}
+                disabled={disabled || approveAllBlock !== null}
+                title={approveAllTitle}
+                onClick={() => {
+                  const ids = approveTarget.ids;
+                  void startJob("/api/storyboard/approve", { ids }).then((started) => {
+                    // The picks are spent: the job owns those shots now.
+                    if (started) setPicked(new Set());
+                  });
+                }}
+              >
+                {approveTarget.selected ? `Approve selected (${approveCount})` : `Approve all (${approveCount})`}
+              </button>
             </div>
 
             <div data-testid="storyboard-selection" style={footNote}>
@@ -803,6 +864,25 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
                   The storyboard has no shots. Add one from a transcript selection, or plan again.
                 </div>
               ) : null}
+              {approveEligible.length > 0 ? (
+                <label style={{ ...footNote, ...rowHead, marginBottom: 8, cursor: "pointer" }}>
+                  <span style={pickSlot}>
+                    <input
+                      type="checkbox"
+                      data-testid="storyboard-approve-pick-all"
+                      aria-label="Select every drawn shot for approval"
+                      style={pickBox}
+                      checked={pickState === "all"}
+                      // Indeterminate is a DOM property with no attribute.
+                      ref={(el) => {
+                        if (el !== null) el.indeterminate = pickState === "some";
+                      }}
+                      onChange={() => setPicked(pickState === "all" ? new Set() : new Set(approveEligible))}
+                    />
+                  </span>
+                  Select drawn shots to approve; none selected approves them all
+                </label>
+              ) : null}
               {rows.map((row) => {
                 const warning = rowWarning(row);
                 const isEditing = editing !== null && editing.id === row.id;
@@ -820,6 +900,30 @@ export const StoryboardPanel: React.FC<StoryboardPanelProps> = ({
                     style={{ ...rowBox, ...(row.state === "dropped" ? { opacity: 0.5 } : {}) }}
                   >
                     <div style={rowHead}>
+                      {/* An empty slot on a row that cannot be approved
+                          keeps every row's time in one column. */}
+                      {approveEligible.length > 0 ? (
+                        <span style={pickSlot}>
+                          {approveSet.has(row.id) ? (
+                            <input
+                              type="checkbox"
+                              data-testid={`storyboard-approve-pick-${row.id}`}
+                              aria-label={`Select ${row.id} for approval`}
+                              style={pickBox}
+                              checked={picked.has(row.id)}
+                              onChange={(e) => {
+                                const on = e.target.checked;
+                                setPicked((prev) => {
+                                  const next = new Set(prev);
+                                  if (on) next.add(row.id);
+                                  else next.delete(row.id);
+                                  return next;
+                                });
+                              }}
+                            />
+                          ) : null}
+                        </span>
+                      ) : null}
                       {row.startSec !== null && row.endSec !== null ? (
                         onSeek !== undefined ? (
                           <button
@@ -1007,6 +1111,18 @@ const openShotBtn: React.CSSProperties = {
   textDecoration: "underline dotted",
   color: "inherit",
 };
+
+// The approval pick's column: a fixed width so a row with no box lines up
+// with one that has it. The box itself is the browser's, as in CleanupPanel.
+const pickSlot: React.CSSProperties = {
+  flex: "0 0 16px",
+  width: 16,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+
+const pickBox: React.CSSProperties = { margin: 0, cursor: "pointer" };
 
 const thumbImg: React.CSSProperties = {
   height: 32,

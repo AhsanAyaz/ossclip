@@ -118,6 +118,38 @@ describe("createJobRunner finish", () => {
   });
 });
 
+describe("createJobRunner synced (Approve all, 2026-11-21)", () => {
+  it("a job starts unsynced, and setSynced from a shot or from finish lands on last.synced", async () => {
+    const runner = createJobRunner(() => 0);
+    await runner.start("draw", ["s1"], async () => ({ ok: true }));
+    expect(runner.state().last!.synced).toBe(false);
+
+    await runner.start("approve", ["s1"], async (_id, ctx) => {
+      ctx.setSynced();
+      return { ok: true };
+    });
+    expect(runner.state().last!.synced).toBe(true);
+
+    // Approve all: the run is started once, by finish, after the last shot.
+    let syncedDuringShot: boolean | undefined;
+    await runner.start(
+      "approve",
+      ["s1", "s2"],
+      async () => {
+        syncedDuringShot = runner.state().job!.synced;
+        return { ok: true };
+      },
+      async (ctx) => {
+        ctx.log("▸ updating the video");
+        ctx.setSynced();
+      },
+    );
+    expect(syncedDuringShot).toBe(false);
+    expect(runner.state().last).toMatchObject({ synced: true, done: [{ id: "s1", ok: true }, { id: "s2", ok: true }] });
+    expect(runner.state().last!.lines.at(-1)).toBe("▸ updating the video");
+  });
+});
+
 describe("createJobRunner plan (§169)", () => {
   it("a plan job is one unit, and what setPlan stores lands on last.plan, copied", async () => {
     const runner = createJobRunner(() => 0);

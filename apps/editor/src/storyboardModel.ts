@@ -61,6 +61,13 @@ export interface StoryboardJobState {
   calls: number;
   startedAt: number;
   stopping: boolean;
+  /**
+   * The server started the sync run of the video for this job (an approve
+   * that saved at least one approval and spawned the recorded command). Set
+   * by the server, not inferred from `done`: an Approve all with one failed
+   * shot still updated the video for the others (2026-11-21).
+   */
+  synced: boolean;
   /** A Plan again that ended ok: what the limits changed, and the usage line. */
   plan?: { changes: { index: number; kind: string; reason: string }[]; usage: string | null };
 }
@@ -272,6 +279,11 @@ export function jobResultLine(last: StoryboardJobState | null): string | null {
     last.done.filter((d) => !d.ok && d.error === STOPPED_ERROR).length + Math.max(0, last.shots.length - last.done.length);
   const failed = last.done.filter((d) => !d.ok && d.error !== STOPPED_ERROR);
   const parts = [`${ok} ${JOB_DONE[last.kind]}`];
+  // Approve all saves every approval first and starts the one sync run at
+  // the end (2026-11-21), so each shot is ok and only the job knows the run
+  // never started; without this the line would read as a video updated. A
+  // single approve that could not start it is its shot's ok false instead.
+  if (last.kind === "approve" && ok > 0 && !last.synced) parts[0] += ", but the video was not updated: press Render";
   if (stopped > 0) parts.push(`${stopped} stopped`);
   if (failed.length > 0) {
     const named = failed.map((d) => `${d.id}: ${(d.error ?? "failed").split("\n")[0]}`).join("; ");
@@ -281,14 +293,66 @@ export function jobResultLine(last: StoryboardJobState | null): string | null {
 }
 
 /**
- * Whether a finished job started the sync run of the video: an approve that
- * ended ok (plan B2a Task 4: the server spawns the recorded command after it
- * saves the approval; an approve it could not follow with that run is
- * `ok: false`). The panel then hands the run to App's render poll, which
+ * Whether a finished job started the sync run of the video: an approve the
+ * server marked `synced` (plan B2a Task 4: it spawns the recorded command
+ * after it saves the approvals). Read from the flag, not from `done`: an
+ * Approve all with one failed shot approved the others and updated the
+ * video once, and every-shot-ok would leave that run unfollowed
+ * (2026-11-21). The panel then hands the run to App's render poll, which
  * reloads the production when it ends.
  */
 export function jobStartedReplay(last: StoryboardJobState | null): boolean {
-  return last !== null && last.kind === "approve" && last.done.length > 0 && last.done.every((d) => d.ok);
+  return last !== null && last.kind === "approve" && last.synced === true;
+}
+
+/**
+ * The shots "Approve all" approves (2026-11-21), in table order: every row
+ * on screen (`isKeptRow`: a dropped shot is not approved, design AG3, and a
+ * cut-away one has no moment for its clip) that has a draft, whose draft was
+ * drawn from the shot's idea as it is now (`draftIsStale`: approving a
+ * drawing of an idea the author has since reworded would put the old idea in
+ * the video), and that is not already approved at that draft. An approval of
+ * an older version, with a newer draft since, is included: that draft is
+ * what the author is now looking at. A row the running job is on is left out,
+ * the Draw all rule: its draft is about to change.
+ */
+export function approveAllIds(rows: readonly StoryboardRow[], storyboard: Storyboard, detail: DetailMap): string[] {
+  return rows
+    .filter((row) => {
+      if (!isKeptRow(row) || row.state === "drawing" || row.draft === null) return false;
+      const shot = storyboard.shots.find((s) => s.id === row.id);
+      if (shot === undefined || draftIsStale(shot, detail[row.id] ?? null)) return false;
+      return shot.approval?.version !== row.draft;
+    })
+    .map((row) => row.id);
+}
+
+/**
+ * What the Approve button approves: the picked shots that are still eligible,
+ * in table order (the order the job runs them, whatever order they were
+ * ticked in), or every eligible shot when none is picked. `selected` says
+ * which, for the button's label.
+ */
+export function approveTargets(eligible: readonly string[], picked: ReadonlySet<string>): { ids: string[]; selected: boolean } {
+  const ids = eligible.filter((id) => picked.has(id));
+  return ids.length > 0 ? { ids, selected: true } : { ids: [...eligible], selected: false };
+}
+
+/**
+ * The picks still eligible. The same set when nothing was dropped, so the
+ * panel's prune on every row change does not re-render forever.
+ */
+export function prunePicked(picked: ReadonlySet<string>, eligible: readonly string[]): ReadonlySet<string> {
+  const allowed = new Set(eligible);
+  if ([...picked].every((id) => allowed.has(id))) return picked;
+  return new Set([...picked].filter((id) => allowed.has(id)));
+}
+
+/** The header checkbox: none, some (indeterminate) or all of the eligible shots picked. */
+export function approvePickState(eligible: readonly string[], picked: ReadonlySet<string>): "none" | "some" | "all" {
+  const n = eligible.filter((id) => picked.has(id)).length;
+  if (n === 0) return "none";
+  return n === eligible.length ? "all" : "some";
 }
 
 /**

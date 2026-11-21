@@ -282,6 +282,9 @@ test("Approve says Save first while the document has unsaved edits, and is enabl
   await page.getByTestId("field-scale").fill("0.62");
   await expect(page.getByTestId("dirty")).toBeVisible();
   await openPanel(page);
+  // Approve all is refused the same way, from the table (2026-11-21).
+  await expect(page.getByTestId("storyboard-approve-all")).toBeDisabled();
+  await expect(page.getByTestId("storyboard-approve-all")).toHaveAttribute("title", /^Save first/);
   await page.getByTestId("storyboard-open-shot-s1").click();
   await expect(page.getByTestId("storyboard-approve")).toBeDisabled();
   await expect(page.getByTestId("storyboard-approve-block")).toContainText("Save first");
@@ -295,6 +298,17 @@ test("Approve says Save first while the document has unsaved edits, and is enabl
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
   await openPanel(page);
+  // Saved: Approve all offers the one drawn shot, s1. s2 has no draft and s3
+  // is dropped, so neither has a box to tick.
+  await expect(page.getByTestId("storyboard-approve-all")).toBeEnabled();
+  await expect(page.getByTestId("storyboard-approve-all")).toHaveText("Approve all (1)");
+  await expect(page.getByTestId("storyboard-approve-all")).toHaveAttribute(
+    "title",
+    "Approve the 1 drawn shot, one after another: each renders its clip, then the video updates once",
+  );
+  await expect(page.getByTestId("storyboard-approve-pick-s1")).toBeVisible();
+  await expect(page.getByTestId("storyboard-approve-pick-s2")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-approve-pick-s3")).toHaveCount(0);
   await page.getByTestId("storyboard-open-shot-s1").click();
   await expect(page.getByTestId("storyboard-approve")).toBeEnabled();
   await expect(page.getByTestId("storyboard-approve-block")).toHaveCount(0);
@@ -314,6 +328,7 @@ test("an approve outlives the closed panel: the button shows the job and its end
     calls: 0,
     startedAt: Date.now(),
     stopping: false,
+    synced: false,
   };
   let phase: "idle" | "running" | "ended" = "idle";
   await page.route("**/api/storyboard/approve", (route) => {
@@ -325,7 +340,7 @@ test("an approve outlives the closed panel: the button shows the job and its end
       json:
         phase === "running"
           ? { job: jobState, last: null }
-          : { job: null, last: phase === "ended" ? { ...jobState, current: null, done: [{ id: "s1", ok: true }] } : null },
+          : { job: null, last: phase === "ended" ? { ...jobState, current: null, done: [{ id: "s1", ok: true }], synced: true } : null },
     }),
   );
   let statusAsked = 0;
@@ -353,6 +368,104 @@ test("an approve outlives the closed panel: the button shows the job and its end
   // The sync run the server started is now followed with no panel open.
   await expect.poll(() => statusAsked).toBeGreaterThan(before);
   await expect(page.getByTestId("render-status")).toBeVisible();
+});
+
+test("Approve all and Approve selected: the picks, the ids posted in table order, and the video hand-off once the job ends (2026-11-21)", async ({
+  page,
+}) => {
+  // s2 and s4 read as drawn here (the fixture draws s1 only), so three shots
+  // wait for approval; s3 is dropped. The approve, the job and the render
+  // status are answered here: a real approve renders a clip per shot.
+  const running = {
+    kind: "approve",
+    shots: ["s1", "s4"],
+    current: "s1",
+    done: [] as { id: string; ok: boolean }[],
+    lines: [],
+    calls: 0,
+    startedAt: Date.now(),
+    stopping: false,
+    synced: false,
+  };
+  const ended = { ...running, current: null, done: [{ id: "s1", ok: true }, { id: "s4", ok: true }], synced: true };
+  let phase: "idle" | "running" | "ended" = "idle";
+  const pair = () =>
+    phase === "running" ? { job: running, last: null } : { job: null, last: phase === "ended" ? ended : null };
+  const posted: unknown[] = [];
+  await page.route("**/api/storyboard/approve", (route) => {
+    posted.push(route.request().postDataJSON());
+    phase = "running";
+    return route.fulfill({ status: 202, json: { ok: true } });
+  });
+  await page.route("**/api/storyboard/job", (route) => route.fulfill({ json: pair() }));
+  await page.route(
+    (url) => url.pathname === "/api/storyboard",
+    async (route) => {
+      const real = (await (await route.fetch()).json()) as { drawn: Record<string, unknown> };
+      const drawn = { ...real.drawn, s2: { draft: 1, versions: 1 }, s4: { draft: 1, versions: 1 } };
+      return route.fulfill({ json: { ...real, drawn, job: pair() } });
+    },
+  );
+  let statusAsked = 0;
+  await page.route("**/api/render/status", (route) => {
+    statusAsked += 1;
+    return route.fulfill({ json: { running: true, exitCode: null, lines: ["▸ updating the video"], startedAt: Date.now() } });
+  });
+
+  await load(page);
+  await openPanel(page);
+  // The author-added s4 is the earlier test's (SERIAL): this table has four rows.
+  await expect(page.getByTestId("storyboard-row-s4")).toBeVisible();
+  const button = page.getByTestId("storyboard-approve-all");
+  const all = page.getByTestId("storyboard-approve-pick-all");
+  const indeterminate = () => all.evaluate((el) => (el as HTMLInputElement).indeterminate);
+  await expect(button).toHaveText("Approve all (3)");
+  await expect(button).toHaveAttribute("title", /^Approve the 3 drawn shots, one after another/);
+  await expect(page.getByTestId("storyboard-approve-pick-s3")).toHaveCount(0);
+
+  // Two of three, ticked out of order.
+  await page.getByTestId("storyboard-approve-pick-s4").check();
+  await page.getByTestId("storyboard-approve-pick-s1").check();
+  await expect(button).toHaveText("Approve selected (2)");
+  await expect(button).toHaveAttribute("title", /^Approve the 2 selected shots/);
+  await expect(all).not.toBeChecked();
+  expect(await indeterminate()).toBe(true);
+
+  // Untick both: back to all of them.
+  await page.getByTestId("storyboard-approve-pick-s4").uncheck();
+  await page.getByTestId("storyboard-approve-pick-s1").uncheck();
+  await expect(button).toHaveText("Approve all (3)");
+  expect(await indeterminate()).toBe(false);
+
+  // The header box ticks every eligible row, and unticks them.
+  await all.check();
+  for (const id of ["s1", "s2", "s4"]) await expect(page.getByTestId(`storyboard-approve-pick-${id}`)).toBeChecked();
+  await expect(button).toHaveText("Approve selected (3)");
+  await all.uncheck();
+  await expect(page.getByTestId("storyboard-approve-pick-s2")).not.toBeChecked();
+  await expect(button).toHaveText("Approve all (3)");
+
+  // Pressed with two picked: exactly those, in table order.
+  await page.getByTestId("storyboard-approve-pick-s4").check();
+  await page.getByTestId("storyboard-approve-pick-s1").check();
+  await button.click();
+  await expect(page.getByTestId("storyboard-open-busy")).toBeVisible();
+  await expect(page.getByTestId("storyboard-job")).toContainText("Approving s1 (1 of 2)");
+  expect(posted).toEqual([{ ids: ["s1", "s4"] }]);
+  await expect(button).toBeDisabled();
+  // The picks are spent; s2, the one shot not in the job, is offered again.
+  await expect(button).toHaveText("Approve all (1)");
+  await expect(button).toHaveAttribute("title", "A job is running");
+  await expect(page.getByTestId("storyboard-approve-pick-s1")).toHaveCount(0);
+  const before = statusAsked;
+
+  phase = "ended";
+  await expect(page.getByTestId("storyboard-open-busy")).toHaveCount(0);
+  await expect(page.getByTestId("storyboard-job-result")).toHaveText("Last job: 2 approved");
+  // The one sync run is followed by App's render poll.
+  await expect.poll(() => statusAsked).toBeGreaterThan(before);
+  await expect(page.getByTestId("render-status")).toBeVisible();
+  expect(posted).toHaveLength(1);
 });
 
 test("a plan outlives the closed panel: the button shows it, a reopened panel says Planning again, and its end shows the new table and what changed (§169)", async ({

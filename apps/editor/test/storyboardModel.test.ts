@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Storyboard, StoryboardShot } from "@ossclip/core/browser";
 import {
+  approveAllIds,
   approveBlock,
+  approvePickState,
+  approveTargets,
   coverage,
   coverageOverLimit,
   draftIsStale,
@@ -11,6 +14,7 @@ import {
   jobStartedReplay,
   jobWatchStep,
   planChangesSummary,
+  prunePicked,
   rowWarning,
   selectionSpan,
   spanPreview,
@@ -158,6 +162,7 @@ const job = (over: Partial<StoryboardJobState>): StoryboardJobState => ({
   calls: 0,
   startedAt: 1000,
   stopping: false,
+  synced: false,
   ...over,
 });
 
@@ -314,7 +319,19 @@ describe("jobResultLine", () => {
     const ok = [{ id: "s1", ok: true }];
     expect(jobResultLine(job({ kind: "redraw", done: ok }))).toBe("1 redrawn");
     expect(jobResultLine(job({ kind: "preview", done: ok }))).toBe("1 preview ready");
-    expect(jobResultLine(job({ kind: "approve", done: ok }))).toBe("1 approved");
+    expect(jobResultLine(job({ kind: "approve", done: ok, synced: true }))).toBe("1 approved");
+  });
+
+  it("an approve that saved its shots but could not update the video says so (Approve all, 2026-11-21)", () => {
+    const done = [
+      { id: "s1", ok: true },
+      { id: "s2", ok: true },
+    ];
+    expect(jobResultLine(job({ kind: "approve", shots: ["s1", "s2"], done, synced: false }))).toBe(
+      "2 approved, but the video was not updated: press Render",
+    );
+    // Nothing approved: there is nothing the video lacks.
+    expect(jobResultLine(job({ kind: "approve", done: [{ id: "s1", ok: false, error: "x" }] }))).toBe("0 approved, 1 failed: s1: x");
   });
 
   it("a plan reads planned again, or failed with the error's first line (§169)", () => {
@@ -331,17 +348,113 @@ describe("jobResultLine", () => {
 });
 
 describe("jobStartedReplay", () => {
-  it("is true for an approve job that ended ok: the server started the sync run", () => {
-    expect(jobStartedReplay(job({ kind: "approve", done: [{ id: "s1", ok: true }] }))).toBe(true);
+  it("is true for an approve job the server says started the sync run", () => {
+    expect(jobStartedReplay(job({ kind: "approve", done: [{ id: "s1", ok: true }], synced: true }))).toBe(true);
   });
 
-  it("is false for a failed or stopped approve, any other kind, and no job", () => {
+  it("is true for an Approve all with a failed shot: the others were approved and the video updated once", () => {
+    const last = job({
+      kind: "approve",
+      shots: ["s1", "s2"],
+      done: [
+        { id: "s1", ok: true },
+        { id: "s2", ok: false, error: "shot s2 has no draft to approve: draw it first" },
+      ],
+      synced: true,
+    });
+    expect(jobStartedReplay(last)).toBe(true);
+  });
+
+  it("is false when the server did not start the run, even with every shot ok, and for any other kind or no job", () => {
+    // An Approve all whose run could not start (command.json gone): every
+    // shot saved, nothing for the render poll to follow.
+    expect(jobStartedReplay(job({ kind: "approve", done: [{ id: "s1", ok: true }], synced: false }))).toBe(false);
+    // The single approve that saved but could not spawn is ok false and unsynced.
     expect(jobStartedReplay(job({ kind: "approve", done: [{ id: "s1", ok: false, error: "x" }] }))).toBe(false);
     expect(jobStartedReplay(job({ kind: "approve", done: [] }))).toBe(false);
-    expect(jobStartedReplay(job({ kind: "draw", done: [{ id: "s1", ok: true }] }))).toBe(false);
+    expect(jobStartedReplay(job({ kind: "draw", done: [{ id: "s1", ok: true }], synced: true }))).toBe(false);
     // A plan writes storyboard.json, not the video.
     expect(jobStartedReplay(job({ kind: "plan", shots: ["plan"], done: [{ id: "plan", ok: true }] }))).toBe(false);
     expect(jobStartedReplay(null)).toBe(false);
+  });
+});
+
+describe("approveAllIds (Approve all, 2026-11-21)", () => {
+  // One row per case, all kept and timed, drafts from the drawn map.
+  const sb = board([
+    shot({ id: "s1", startWord: 0, endWord: 1 }),
+    shot({ id: "s2", startWord: 2, endWord: 3 }),
+    shot({ id: "s3", startWord: 6, endWord: 7, idea: "the new idea" }),
+    shot({ id: "s4", startWord: 8, endWord: 8, approval }),
+    shot({ id: "s5", startWord: 9, endWord: 9, approval }),
+    shot({ id: "s6", startWord: 4, endWord: 5 }),
+  ]);
+  const drawn = {
+    s1: { draft: 1, versions: 1 },
+    s3: { draft: 1, versions: 1 },
+    s4: { draft: 1, versions: 1 },
+    s5: { draft: 2, versions: 2 },
+    s6: { draft: 1, versions: 1 },
+  };
+  const detail = {
+    s1: detailOf([[1, true]], 1, "idea s1"),
+    s3: detailOf([[1, true]], 1, "the old idea"),
+    s4: detailOf([[1, true]], 1, "idea s4"),
+    s5: detailOf([[1, true], [2, true]], 2, "idea s5"),
+    s6: detailOf([[1, true]], 1, "idea s6"),
+  };
+  const rows = storyboardRows(sb, words, timeOf, drawn, detail);
+
+  it("takes a drawn shot, and an approved shot whose draft is newer than its approval, in table order", () => {
+    expect(approveAllIds(rows, sb, detail)).toEqual(["s1", "s5"]);
+  });
+
+  it("skips a shot with no draft, a stale draft, one approved at its draft, and a cut-away shot", () => {
+    const ids = approveAllIds(rows, sb, detail);
+    expect(ids).not.toContain("s2"); // no draft
+    expect(ids).not.toContain("s3"); // drawn from an older idea
+    expect(ids).not.toContain("s4"); // approved at v1, the draft is v1
+    expect(ids).not.toContain("s6"); // every word cut: no moment for the clip
+  });
+
+  it("skips a dropped shot, even one with a draft", () => {
+    const dropped = board([shot({ id: "s1", startWord: 0, endWord: 1, kept: false })]);
+    const r = storyboardRows(dropped, words, timeOf, { s1: { draft: 1, versions: 1 } }, { s1: detail.s1 });
+    expect(approveAllIds(r, dropped, { s1: detail.s1 })).toEqual([]);
+  });
+
+  it("skips a shot the running job is on: its draft is about to change", () => {
+    const r = storyboardRows(sb, words, timeOf, drawn, detail, job({ kind: "redraw", shots: ["s1"], current: "s1" }));
+    expect(approveAllIds(r, sb, detail)).toEqual(["s5"]);
+  });
+});
+
+describe("approve selection (2026-11-21)", () => {
+  const eligible = ["s1", "s2", "s4"];
+
+  it("nothing picked approves every eligible shot", () => {
+    expect(approveTargets(eligible, new Set())).toEqual({ ids: eligible, selected: false });
+  });
+
+  it("a pick approves only the picked shots, in table order whatever order they were picked in", () => {
+    expect(approveTargets(eligible, new Set(["s4", "s1"]))).toEqual({ ids: ["s1", "s4"], selected: true });
+  });
+
+  it("a pick that is no longer eligible does not count", () => {
+    expect(approveTargets(eligible, new Set(["s9"]))).toEqual({ ids: eligible, selected: false });
+  });
+
+  it("prunes picks to the eligible ids, and hands back the same set when nothing changed", () => {
+    const kept = new Set(["s1", "s4"]);
+    expect(prunePicked(kept, eligible)).toBe(kept);
+    expect([...prunePicked(new Set(["s1", "s3"]), eligible)]).toEqual(["s1"]);
+  });
+
+  it("the header box reads none, some or all of the eligible shots", () => {
+    expect(approvePickState(eligible, new Set())).toBe("none");
+    expect(approvePickState(eligible, new Set(["s2"]))).toBe("some");
+    expect(approvePickState(eligible, new Set(eligible))).toBe("all");
+    expect(approvePickState([], new Set())).toBe("none");
   });
 });
 

@@ -593,6 +593,167 @@ describe("storyboard approve and the sync run (plan B2a Task 4; §169)", () => {
     expect((await cut.json()).error).toContain("every word of shot s1 is cut");
   });
 
+  /**
+   * A recorded command that appends, per spawn, the shots storyboard.json
+   * holds approved at that moment: the count is the number of sync runs, and
+   * the content proves each one started after the last save.
+   */
+  const SPAWN_LOG = `const fs = require("fs"); const sb = JSON.parse(fs.readFileSync("storyboard.json", "utf8")); fs.appendFileSync("spawns.log", JSON.stringify(sb.shots.filter((s) => s.approval).map((s) => s.id)) + "\\n");`;
+  const spawns = (dir: string): string[][] =>
+    existsSync(join(dir, "spawns.log"))
+      ? readFileSync(join(dir, "spawns.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[])
+      : [];
+  const approvalOf = async (a: ApproveArgs): Promise<ShotApproval> => ({
+    ...APPROVAL,
+    clip: `storyboard/${a.shotId}/approved.mov`,
+    src: `clips/${a.shotId}.webm`,
+  });
+  type SyncedJob = JobState & { synced: boolean };
+
+  it("approve {ids}: each shot approved in order, then ONE sync run after the last save, and the job is synced", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnShot(dir, "s1");
+    await drawnShot(dir, "s2");
+    await recordCommand(dir, ["produce", "./take.mp4"], SPAWN_LOG);
+    const s = await start(dir, { approve: approvalOf });
+    const res = await post(s.url, "/api/storyboard/approve", { ids: ["s1", "s2"] });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ ok: true });
+    const job = (await jobEnd(s.url)) as SyncedJob;
+    expect(job).toMatchObject({ kind: "approve", shots: ["s1", "s2"], synced: true, done: [{ id: "s1", ok: true }, { id: "s2", ok: true }] });
+    expect(s.approveArgs.map((a) => [a.shotId, a.durationSec])).toEqual([["s1", S1_LENGTH], ["s2", expect.any(Number)]]);
+    expect(table(dir).shots[0].approval.src).toBe("clips/s1.webm");
+    expect(table(dir).shots[1].approval.src).toBe("clips/s2.webm");
+    expect((await renderEnd(s.url)).exitCode).toBe(0);
+    expect(spawns(dir)).toEqual([["s1", "s2"]]);
+    expect(job.lines.at(-1)).toBe("▸ updating the video");
+  });
+
+  it("approve {ids}: a shot with no draft, a dropped one and an unknown one fail alone; the others are approved and the video updates once", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnShot(dir, "s1");
+    await recordCommand(dir, ["produce", "./take.mp4"], SPAWN_LOG);
+    const s = await start(dir, { approve: approvalOf });
+    expect((await post(s.url, "/api/storyboard/approve", { ids: ["s2", "s1", "s3", "s9"] })).status).toBe(202);
+    const job = (await jobEnd(s.url)) as SyncedJob;
+    expect(job.done).toEqual([
+      { id: "s2", ok: false, error: "shot s2 has no draft to approve: draw it first" },
+      { id: "s1", ok: true },
+      { id: "s3", ok: false, error: "shot s3 is dropped: restore it first" },
+      { id: "s9", ok: false, error: "there is no shot s9 in the storyboard" },
+    ]);
+    expect(job.synced).toBe(true);
+    expect(s.approveArgs.map((a) => a.shotId)).toEqual(["s1"]);
+    await renderEnd(s.url);
+    expect(spawns(dir)).toEqual([["s1"]]);
+  });
+
+  it("approve {ids}: every shot failing starts no sync run and leaves the job unsynced", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnShot(dir, "s1");
+    await recordCommand(dir, ["produce", "./take.mp4"], SPAWN_LOG);
+    const s = await start(dir, {
+      approve: async () => {
+        throw new Error("the clip render failed: browser crashed");
+      },
+    });
+    expect((await post(s.url, "/api/storyboard/approve", { ids: ["s1", "s2"] })).status).toBe(202);
+    const job = (await jobEnd(s.url)) as SyncedJob;
+    expect(job.done.map((d) => d.ok)).toEqual([false, false]);
+    expect(job.synced).toBe(false);
+    expect(table(dir).shots[0].approval).toBeUndefined();
+    expect((await (await fetch(`${s.url}/api/render/status`)).json()).startedAt).toBeNull();
+    expect(spawns(dir)).toEqual([]);
+  });
+
+  it("approve {ids}: Cancel during the first shot keeps it approved, never starts the second, and still updates the video for the first", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnShot(dir, "s1");
+    await drawnShot(dir, "s2");
+    await recordCommand(dir, ["produce", "./take.mp4"], SPAWN_LOG);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const inFirst = new Promise<void>((r) => (started = r));
+    const s = await start(dir, {
+      approve: async (a) => {
+        started();
+        await gate;
+        return approvalOf(a);
+      },
+    });
+    expect((await post(s.url, "/api/storyboard/approve", { ids: ["s1", "s2"] })).status).toBe(202);
+    await inFirst;
+    expect((await post(s.url, "/api/storyboard/cancel")).status).toBe(202);
+    release();
+    const job = (await jobEnd(s.url)) as SyncedJob;
+    expect(job).toMatchObject({ stopping: true, synced: true, done: [{ id: "s1", ok: true }] });
+    expect(s.approveArgs.map((a) => a.shotId)).toEqual(["s1"]);
+    expect(table(dir).shots[1].approval).toBeUndefined();
+    await renderEnd(s.url);
+    expect(spawns(dir)).toEqual([["s1"]]);
+  });
+
+  it("approve {ids}: approved, but with command.json gone by the end, the job says the video was not updated and is unsynced", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnShot(dir, "s1");
+    await recordCommand(dir, ["produce", "./take.mp4"], SPAWN_LOG);
+    const s = await start(dir, {
+      approve: async (a) => {
+        rmSync(join(dir, "command.json"));
+        return approvalOf(a);
+      },
+    });
+    expect((await post(s.url, "/api/storyboard/approve", { ids: ["s1"] })).status).toBe(202);
+    const job = (await jobEnd(s.url)) as SyncedJob;
+    expect(job).toMatchObject({ synced: false, done: [{ id: "s1", ok: true }] });
+    expect(job.lines.at(-1)).toBe("✗ approved, but the video was not updated: command.json is gone; press Render");
+    expect(table(dir).shots[0].approval.src).toBe("clips/s1.webm");
+    expect(spawns(dir)).toEqual([]);
+  });
+
+  it("approve {id}: the job is synced once the run starts, and unsynced when it saved but could not start it", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnShot(dir, "s1");
+    await recordCommand(dir, ["produce", "./take.mp4"], SPAWN_LOG);
+    let removeCommand = false;
+    const s = await start(dir, {
+      approve: async (a) => {
+        if (removeCommand) rmSync(join(dir, "command.json"));
+        return approvalOf(a);
+      },
+    });
+    expect((await post(s.url, "/api/storyboard/approve", { id: "s1" })).status).toBe(202);
+    expect(((await jobEnd(s.url)) as SyncedJob).synced).toBe(true);
+    await renderEnd(s.url);
+    expect(spawns(dir)).toEqual([["s1"]]);
+
+    removeCommand = true;
+    expect((await post(s.url, "/api/storyboard/approve", { id: "s1" })).status).toBe(202);
+    const job = (await jobEnd(s.url)) as SyncedJob;
+    expect(job.synced).toBe(false);
+    expect(job.done[0]).toMatchObject({ ok: false, error: expect.stringContaining("approved, but the video was not updated") });
+  });
+
+  it("approve {ids}: 400 for no ids, a repeated id, more than 50, a bad id, and id beside ids; 409 while a render runs", async () => {
+    const dir = await storyboardWorkdir();
+    await drawnShot(dir, "s1");
+    await recordCommand(dir, ["produce", "./take.mp4"], "setTimeout(() => {}, 1500)");
+    const s = await start(dir, { approve: approvalOf });
+    const many = Array.from({ length: 51 }, (_, i) => `s${i + 1}`);
+    for (const body of [{ ids: [] }, { ids: ["s1", "s1"] }, { ids: many }, { ids: ["../etc"] }, { id: "s1", ids: ["s1"] }]) {
+      const res = await post(s.url, "/api/storyboard/approve", body);
+      expect(res.status, JSON.stringify(body).slice(0, 40)).toBe(400);
+      expect((await res.json()).ok).toBe(false);
+    }
+    expect(s.approveArgs).toHaveLength(0);
+    expect((await post(s.url, "/api/render")).status).toBe(202);
+    const during = await post(s.url, "/api/storyboard/approve", { ids: ["s1"] });
+    expect(during.status).toBe(409);
+    expect((await during.json()).error).toContain("render is running");
+    await renderEnd(s.url);
+  });
+
   it("the edit route refuses op approve: an approval is only the server's to make", async () => {
     const dir = await storyboardWorkdir();
     const s = await start(dir);

@@ -38,6 +38,15 @@ export interface StoryboardJobState {
   startedAt: number;
   stopping: boolean;
   /**
+   * The job started the sync run of the video (an approve that saved its
+   * approvals and spawned the recorded command; 2026-11-21). Set by the
+   * endpoint when the spawn happens, never inferred from `done`: Approve all
+   * spawns once after its last shot, so a batch with a failed shot still
+   * updated the video for the others, and the editor's hand-off to its
+   * render poll (`jobStartedReplay`) must follow that run.
+   */
+  synced: boolean;
+  /**
    * A Plan again that ended ok: what the limits changed and the usage line,
    * which the panel shows under the table. On the job, not in a response,
    * so a panel reopened after the plan ended still shows them (§169).
@@ -55,6 +64,8 @@ export interface JobContext {
   addCalls(n: number): void;
   /** A Plan again's result, stored on the job (`StoryboardJobState.plan`). */
   setPlan(p: { changes: LimitChange[]; usage: string | null }): void;
+  /** The sync run of the video was spawned for this job (`StoryboardJobState.synced`). */
+  setSynced(): void;
 }
 
 export interface JobRunner {
@@ -70,12 +81,14 @@ export interface JobRunner {
    * the server appends the job's usage there, so a panel that sees the job
    * end sees its spend in usage.json, and the next job's append cannot
    * overlap this one's. A throw from it is logged on the job, not raised.
+   * It gets the job's context, so a post-loop step (Approve all's one sync
+   * run, 2026-11-21) can log and mark the job synced before it ends.
    */
   start(
     kind: StoryboardJobKind,
     shots: string[],
     each: (id: string, ctx: JobContext) => Promise<{ ok: boolean; error?: string }>,
-    finish?: () => Promise<void>,
+    finish?: (ctx: JobContext) => Promise<void>,
   ): Promise<void>;
   /** False when nothing runs. */
   stop(): boolean;
@@ -119,6 +132,7 @@ export function createJobRunner(now: () => number): JobRunner {
         calls: 0,
         startedAt: now(),
         stopping: false,
+        synced: false,
       };
       job = state;
       const log = (line: string): void => {
@@ -133,6 +147,9 @@ export function createJobRunner(now: () => number): JobRunner {
         },
         setPlan: (p) => {
           state.plan = { changes: p.changes.map((c) => ({ ...c })), usage: p.usage };
+        },
+        setSynced: () => {
+          state.synced = true;
         },
       };
       return (async () => {
@@ -155,7 +172,7 @@ export function createJobRunner(now: () => number): JobRunner {
           state.current = null;
           if (finish) {
             try {
-              await finish();
+              await finish(ctx);
             } catch (err) {
               log(`✗ ${err instanceof Error ? err.message : String(err)}`);
             }
