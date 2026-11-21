@@ -296,6 +296,10 @@ import {
   approvedClipScenes,
   productionStoryboardOf,
   type ProductionStoryboard,
+  // Editor-added graphics (editor-added-graphics §2): the doc's entries as
+  // scenes, and the id rule every scene pass below uses to step around them.
+  addedSceneToScene,
+  isAddedKey,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { clipImportLine, importClip } from "./clip-import";
@@ -4886,6 +4890,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // this catches the residue where the producer read through a mishearing the
   // repair pass missed ("Orchestration Tax" over a caption reading "text").
   // Word count and timings are untouched, so scene anchors stay valid.
+  //
+  // Editor-added graphics leave the list FIRST, whatever put them there
+  // (editor-added-graphics §2, produce step 1): the doc is their only
+  // source, and they are appended from it below. A `--scenes` replay parses
+  // scenes-reviewed.json, written from production.json, which holds every
+  // scene of the last run — kept, a deleted or undone graphic would come
+  // back on the next Render. Stripped HERE rather than at the append so the
+  // replay's stale copy never reaches `reconcileCopy` either: a planning run
+  // has no added scene at this point, and a caption re-spelled from the
+  // author's own text on Render alone would differ from what the editor
+  // showed (an added graphic's text is the author's, §2 step 5).
+  scenes = scenes.filter((s) => !isAddedKey(s.id));
   if (scenes.length > 0) {
     const reconciled = reconcileCopy(transcript, scenes);
     transcript = reconciled.transcript;
@@ -4902,6 +4918,39 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // see dictionary.ts). `rawTranscript` stays untouched on purpose:
   // production.json stores the RAW words that `analysis`/`cutlist` index.
   transcript = canonicalizeDictionaryCasing(transcript, dictionary);
+
+  // ---- The user's edit layer: loaded here, before the landscape remap ----
+  // Read for `addedScenes` just below and for `cuts` further down (see the
+  // comment there). Hoisted from that spot: nothing between here and the
+  // cut application reads or writes overrides.json, so both see one doc.
+  const overridesPath = join(work, "overrides.json");
+  let overrideDoc = await readOverrideDoc(overridesPath);
+
+  // Editor-added graphics (editor-added-graphics §2, produce steps 2-3),
+  // appended in every run kind — planner, script, storyboard and the
+  // `--scenes` replay — exactly as a storyboard run appends its approved
+  // shots: from here they meet the one assembly every scene meets, so it
+  // starts each at its first kept word, pushes it past an overlap and drops
+  // it when every word is cut. AFTER the transcript rewrites above, so the
+  // anchors index the final words; BEFORE the landscape remap, so it applies
+  // to them as to any scene. `transcript.words` is this run's index space
+  // (a `--clip` run's slice, which keeps source stamps: `sliceTranscript`),
+  // and its `start` is source seconds — the clock the entry's span is in.
+  // A skipped entry is reported, never thrown (AG3): one stale graphic must
+  // not take the run down with it.
+  const addedSceneIssues: { id: string; reason: string }[] = [];
+  const addedEntries = overrideDoc.addedScenes ?? [];
+  if (addedEntries.length > 0) {
+    const sourceWords = transcript.words.map((w) => ({ srcStart: w.start }));
+    for (const entry of addedEntries) {
+      const converted = addedSceneToScene(entry, sourceWords);
+      if ("scene" in converted) scenes.push(converted.scene);
+      else addedSceneIssues.push({ id: entry.id, reason: converted.skipped });
+    }
+    for (const issue of addedSceneIssues) {
+      console.log(`  ⚠ added graphic ${issue.id} not shown: ${issue.reason}`);
+    }
+  }
 
   // Landscape keeps the frame whole (R15): the split-screen layouts are
   // vertical-format answers, and applying them to 16:9 crops the picture into
@@ -4972,6 +5021,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // the script placement plans a rect, so no run without `--script` (or
       // a replay of one) has a scene here.
       if (sc.graphicRect) continue;
+      // An editor-added graphic keeps its layout and is not counted either
+      // (editor-added-graphics §2 step 4): counted, it would change its plan
+      // neighbours' layouts, which the add gesture promises never to touch
+      // (AG2); cycled, its preview layout would differ from the next run's.
+      if (isAddedKey(sc.id)) continue;
       let want = sc.layout;
       if (STACK_COMPONENTS.has(sc.component) && want === "lower-third") want = "split-right";
       if (want === prevLayout) {
@@ -4998,9 +5052,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // exception: it changes `map` itself, and every downstream consumer of
   // `map` below this point (assembly, captions, the zoom plan, render-props)
   // must see the POST-cut timeline, so the file has to be read and the cut
-  // applied before any of that runs.
-  const overridesPath = join(work, "overrides.json");
-  let overrideDoc = await readOverrideDoc(overridesPath);
+  // applied before any of that runs. (Read above, before the landscape
+  // remap, where the editor-added graphics join the scene list.)
   // ---- Cleanup choices: the user's veto over the AUTOMATIC cutlist (cut
   // review step 3) ------------------------------------------------------
   // Applied here — the same load `cuts` rides, before `applyUserCuts` — and
@@ -5106,6 +5159,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   const { cues: assembled, dropped, shortened } = assembleScenes(scenes, transcript, map);
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
+  // An added graphic assembly dropped (every word cut, too short after the
+  // clamp) has no block for the editor to select, so it joins the issues
+  // with assembly's own reason (editor-added-graphics §2 "Issues", §7) —
+  // the drop line above reaches only the console.
+  for (const d of dropped) {
+    if (!isAddedKey(d.id)) continue;
+    addedSceneIssues.push({ id: d.id, reason: d.reason });
+    console.log(`  ⚠ added graphic ${d.id} not shown: ${d.reason}`);
+  }
 
   // The cue report (explainer spec §1.6): what became of every cue in the
   // script, against the plan as assembled on this run's final cut. Written
@@ -5118,7 +5180,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       aligned: scriptAlignment.aligned,
       skipped: scriptAlignment.skipped,
       moments: fullSheet?.moments ?? [],
-      scenes,
+      // The script's own scenes: an editor-added graphic answers for no cue
+      // (editor-added-graphics §2 step 5), and one holding a cue's last
+      // word would report that cue placed with the author's card.
+      scenes: scenes.filter((s) => !isAddedKey(s.id)),
       timed: assembled,
       dropped,
       shortened,
@@ -5478,7 +5543,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // ignore warnings — and it never looked at copy the user typed themselves.
   // `checkGrounding` already merges a scene's `overrides` slot; nothing was
   // filling it from `overrides.json`.
-  const scenesAsRendered = scenes.map((s) => {
+  //
+  // Editor-added graphics are left out (editor-added-graphics §2 step 5):
+  // the check catches copy the PLANNER invented, and an added graphic's
+  // text is the author's own, typed in the editor.
+  const scenesAsRendered = scenes.filter((s) => !isAddedKey(s.id)).map((s) => {
     const edit = overrideDoc.scenes[s.id]?.props;
     return edit && Object.keys(edit).length > 0
       ? { ...s, overrides: { ...s.overrides, ...edit } }
@@ -7224,6 +7293,13 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
       ? { baseCaptionTheme: captionThemeRes.baseTheme }
       : {}),
     ...(captionChoreography ? { captionChoreography } : {}),
+    // Editor-added graphics this run did not show — skipped at conversion
+    // or dropped by assembly — with the reason (editor-added-graphics §2
+    // "Issues"). The editor lists them for removal (§7) and does not
+    // preview them (§4). Written only when non-empty, the absent-means-none
+    // contract of the keys above: a project with no added graphic keeps a
+    // render-props.json byte-identical to a pre-feature one.
+    ...(addedSceneIssues.length > 0 ? { addedSceneIssues } : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 

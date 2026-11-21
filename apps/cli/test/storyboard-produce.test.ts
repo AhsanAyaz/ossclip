@@ -369,6 +369,38 @@ describe.skipIf(!hasFfmpeg)("produce --storyboard, end to end with the mock prov
       expect(p.storyboard).toEqual(record(s1));
     }, 240_000);
 
+    it("an editor-added graphic over the approved shot's words: the sync run keeps both (editor-added-graphics §2)", async () => {
+      // A storyboard run plans no template graphics, so an added one is the
+      // only way a title card reaches the video. Approving a shot over the
+      // same words later must not lose either: assembly pushes one past the
+      // other, as it does any two scenes (AG1).
+      const { root, work, s1 } = await approvedProject("wd-approved-added");
+      const words = production(work).transcript.words as { start: number; end: number }[];
+      writeFileSync(
+        join(work, "overrides.json"),
+        JSON.stringify({
+          addedScenes: [
+            {
+              id: "added-1",
+              component: "TitleCard",
+              props: { title: "Over the shot" },
+              srcStart: words[s1.startWord]!.start,
+              srcEnd: words[s1.endWord]!.end,
+            },
+          ],
+        }),
+      );
+      lines = [];
+      await run(root, { storyboard: true });
+      const props = JSON.parse(readFileSync(join(work, "render-props.json"), "utf8"));
+      const ids = (props.baseSceneCues as { id: string }[]).map((c) => c.id);
+      expect(ids).toContain("shot-s1");
+      expect(ids).toContain("added-1");
+      expect("addedSceneIssues" in props).toBe(false);
+      expect(lines.some((l) => l.includes("dropped"))).toBe(false);
+      expect(production(work).scenes.map((s: { id: string }) => s.id)).toEqual(["shot-s1", "added-1"]);
+    }, 240_000);
+
     it("Review Focus 5: an empty pinned plan on a storyboard project with no approval makes no planning call", async () => {
       // What the editor's Render spawns for it (edit.ts /api/render, §169):
       // `--storyboard` stripped, an empty `--scenes` file pinned.

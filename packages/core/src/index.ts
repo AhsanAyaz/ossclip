@@ -84,6 +84,9 @@ export * from "./storyboard/merge";
 // production.json record, the render length and the clip key. Pure and
 // browser-safe (the hash is passed in), so ./browser carries them too.
 export * from "./storyboard/approval";
+// Editor-added graphics (editor-added-graphics §2): produce converts the
+// doc's entries with the same pure rules the editor previews them with.
+export * from "./added-scenes";
 // The planner call (§168) is the run's and the editor server's, never the
 // editor page's, so it is exported here only.
 export * from "./storyboard/plan";

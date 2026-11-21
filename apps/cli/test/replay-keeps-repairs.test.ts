@@ -163,6 +163,34 @@ describe.skipIf(!hasFfmpeg)("produce: the editor's Render replay keeps what the 
     vi.restoreAllMocks();
   }, 180_000);
 
+  it("a --clip project anchors an editor-added graphic in the clip's words (editor-added-graphics §2 step 4)", async () => {
+    // The entry's span is SOURCE seconds; the anchor is an index into the
+    // transcript as it stands at the insertion point — the window's slice.
+    // "agents today" are words 6-7 of the take and 1-2 of the 5:9 window.
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const workdir = join(dir, "wd-clip-added");
+    const clip = { clip: 3, clipWindow: "5:9" };
+    const planned = await produce(join(dir, "take.mp4"), { ...base(), workdir, ...clip, produce: true, provider: "mock" });
+    writeFileSync(
+      join(planned.workdir, "overrides.json"),
+      JSON.stringify({
+        addedScenes: [
+          { id: "added-1", component: "TitleCard", props: { title: "Agents" }, srcStart: 0.3 + 6 * 0.6, srcEnd: 0.7 + 7 * 0.6 },
+        ],
+      }),
+    );
+    const anchorOfAdded = () =>
+      (read(planned.workdir).scenes as { id: string; anchor: unknown }[]).find((s) => s.id === "added-1")?.anchor;
+    await produce(join(dir, "take.mp4"), { ...base(), workdir, ...clip, produce: true, provider: "mock" });
+    expect(anchorOfAdded()).toEqual({ startWord: 1, endWord: 2 });
+    // And on the editor's Render of it, which slices by the recorded pin.
+    const scenesPath = join(dir, "scenes-clip-added.json");
+    writeFileSync(scenesPath, JSON.stringify(read(planned.workdir).scenes ?? []));
+    await produce(join(dir, "take.mp4"), { ...base(), workdir, ...clip, scenes: scenesPath, provider: "mock" });
+    expect(anchorOfAdded()).toEqual({ startWord: 1, endWord: 2 });
+    vi.restoreAllMocks();
+  }, 240_000);
+
   it("--clip-window with neither --produce nor --scenes is refused, not silently ignored", async () => {
     await expect(
       produce(join(dir, "take.mp4"), { ...base(), workdir: join(dir, "wd-bad"), clip: 3, clipWindow: "5:9" }),

@@ -307,6 +307,49 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     expect(reportTxt).toContain("placed 3 of 3 (1 lengthened) · skipped 0 · reported 0");
   }, 120_000);
 
+  it("an editor-added graphic is a cue on a script run and is no cue's outcome (editor-added-graphics §2)", async () => {
+    // An added card over "to show you" (8-10), words no cue's line names.
+    // The cue report answers for the script's own cues only: the same
+    // outcome for each, whatever assembly does to their times.
+    const root = join(dir, "wd-script-added");
+    const scriptPath = join(dir, "script", "added.script.md");
+    writeFileSync(
+      scriptPath,
+      [
+        "🎬 Title card: welcome back",
+        "🗣️ Hello everyone, welcome back.",
+        "",
+        "🎬 [StatCard] One number: the clean edit",
+        "🗣️ This raw take becomes a clean edit automatically.",
+        "",
+      ].join("\n"),
+    );
+    await run(root, scriptPath);
+    const work = workdirOf(root);
+    const reportOf = () =>
+      (JSON.parse(readFileSync(join(work, "script-report.json"), "utf8")).outcomes as {
+        cueId: string;
+        status: string;
+        component?: string;
+      }[]).map((o) => [o.cueId, o.status, o.component]);
+    const before = reportOf();
+    expect(before.map((o) => o[1])).toEqual(["placed", "placed"]);
+
+    writeFileSync(
+      join(work, "overrides.json"),
+      JSON.stringify({
+        addedScenes: [
+          { id: "added-1", component: "TitleCard", props: { title: "Something cool" }, srcStart: 6.7278, srcEnd: 7.8954 },
+        ],
+      }),
+    );
+    await run(root, scriptPath);
+    const props = JSON.parse(readFileSync(join(work, "render-props.json"), "utf8"));
+    expect((props.baseSceneCues as { id: string }[]).some((c) => c.id === "added-1")).toBe(true);
+    expect("addedSceneIssues" in props).toBe(false);
+    expect(reportOf()).toEqual(before);
+  }, 240_000);
+
   it("G6: without --script, no script code runs and nothing script-shaped is written", async () => {
     const root = join(dir, "wd-plain");
     await run(root);
