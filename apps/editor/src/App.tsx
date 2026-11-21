@@ -81,8 +81,10 @@ import { DeleteSceneModal } from "./DeleteSceneModal";
 import { graphicDeleteFor, type DeletePlan } from "./deleteScene";
 import {
   addGraphicCheck,
+  addBaseIds,
   addedSkippedRows,
   previewBaseCues,
+  previewDropCovered,
   type AddGraphicRequest,
   type AddGraphicWord,
 } from "./addedGraphics";
@@ -1406,6 +1408,10 @@ export const App: React.FC = () => {
       issueIds: new Set((renderProps.addedSceneIssues ?? []).map((i) => i.id)),
       words: sfxPlan.words,
       map: oldClockMap,
+      // The frame produce lays the add out for (fix-wave I2) — the same
+      // width/height test `finishOnClock`'s caption rebuild reads below.
+      landscape: (renderProps.settings?.width ?? 1080) > (renderProps.settings?.height ?? 1920),
+      scriptProject,
     });
     const baseCues = addedPreview.cues;
     // Src-anchored pins resolved onto that clock BEFORE the merge
@@ -1434,7 +1440,15 @@ export const App: React.FC = () => {
     // instead of erasing the whole pre-split window — including the half a
     // split was about to carve off — before the split ever ran (PLAN
     // 2026-08-04 Task 1, bug 3: deleting one split half used to delete both).
-    const { cues: visibleCues } = splitThenDropHidden(graphicCues, edits.doc);
+    const { cues: shownCues } = splitThenDropHidden(graphicCues, edits.doc);
+    // An added graphic a visible plan graphic now covers gives way, here at
+    // the hidden drop as in produce (fix-wave I1, AG2), so the preview drops
+    // the block the render will — and lists it as not shown, with the reason.
+    // The one spot: the `dropHiddenCues` after the fill only catches TAKE
+    // halves, and `finishOnClock`'s post-retime pass re-applies pins and
+    // splits with no hidden drop at all.
+    const covered = previewDropCovered(shownCues);
+    const visibleCues = covered.cues;
     const filled = fillPlainCues(visibleCues, {
       outputDurationSec: renderProps.outputDurationSec,
       clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
@@ -1653,7 +1667,7 @@ export const App: React.FC = () => {
       };
     };
     const added = {
-      addedSkipped: addedPreview.skipped,
+      addedSkipped: [...addedPreview.skipped, ...covered.skipped],
       previewBase: baseCues,
       oldClock: oldClockMap,
       cueClock: liveRecut ? liveRecut.newMap : oldClockMap,
@@ -1661,7 +1675,7 @@ export const App: React.FC = () => {
     if (!liveRecut) return { ...finishOnClock(base, [], oldClockMap), ...added };
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
     return { ...finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap), ...added };
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc, sfxPlan.words]);
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc, sfxPlan.words, scriptProject]);
   const live = liveRetimed === null ? null : liveRetimed.props;
   // ONE boolean for the two surfaces that must agree about which clock the
   // Transcript panel speaks (cut-review rework phase 2): the panel wiring
@@ -1698,8 +1712,10 @@ export const App: React.FC = () => {
    * stored but no block can appear yet.
    *
    * `baseIds` is the base the live memo reconciles (`baseSceneCues`, or the
-   * old `sceneCues` fallback): an id a past run baked in must never be
-   * minted again, or the add would preview that old cue (§1). The new block
+   * old `sceneCues` fallback) plus the ids the run reported in
+   * `addedSceneIssues` (`addBaseIds`): an id a past run baked in or reported
+   * must never be minted again, or the add would preview that old cue or
+   * inherit that old reason (§1, fix-wave I3). The new block
    * is selected at once (the reducer holds no selection); when it cannot
    * preview yet the Inspector shows its no-selection view until it can.
    */
@@ -1712,7 +1728,7 @@ export const App: React.FC = () => {
         toPlayerSec: liveRetimed?.transcript ? identitySec : clock.toLive,
         deferred: (liveRetimed?.oldClock ?? null) === null || sfxPlan.words === null,
       });
-      const baseIds = (renderProps?.baseSceneCues ?? renderProps?.sceneCues ?? []).map((c) => c.id);
+      const baseIds = addBaseIds(renderProps);
       return {
         ...check,
         add: (component, props) => {

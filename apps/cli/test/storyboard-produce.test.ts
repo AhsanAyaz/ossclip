@@ -369,11 +369,14 @@ describe.skipIf(!hasFfmpeg)("produce --storyboard, end to end with the mock prov
       expect(p.storyboard).toEqual(record(s1));
     }, 240_000);
 
-    it("an editor-added graphic over the approved shot's words: the sync run keeps both (editor-added-graphics §2)", async () => {
+    it("an editor-added graphic over the approved shot's words: the shot shows, the added one is reported and kept in the doc (editor-added-graphics §2, fix-wave I1)", async () => {
       // A storyboard run plans no template graphics, so an added one is the
       // only way a title card reaches the video. Approving a shot over the
-      // same words later must not lose either: assembly pushes one past the
-      // other, as it does any two scenes (AG1).
+      // same words later loses neither (AG1): the shot is a plan graphic and
+      // is never moved (AG2), and the added one is assembled on its own, so
+      // nothing pushes it — it gives way, listed in the editor's not-shown
+      // list with the reason, and stays in overrides.json for the author to
+      // move or remove.
       const { root, work, s1 } = await approvedProject("wd-approved-added");
       const words = production(work).transcript.words as { start: number; end: number }[];
       writeFileSync(
@@ -396,9 +399,18 @@ describe.skipIf(!hasFfmpeg)("produce --storyboard, end to end with the mock prov
       const ids = (props.baseSceneCues as { id: string }[]).map((c) => c.id);
       expect(ids).toContain("shot-s1");
       expect(ids).toContain("added-1");
-      expect("addedSceneIssues" in props).toBe(false);
+      const shown = props.sceneCues as { id: string; startSec: number }[];
+      expect(shown.map((c) => c.id)).toContain("shot-s1");
+      expect(shown.map((c) => c.id)).not.toContain("added-1");
+      const shot = shown.find((c) => c.id === "shot-s1")!;
+      const at = `${Math.floor(shot.startSec / 60)}:${String(Math.floor(shot.startSec) % 60).padStart(2, "0")}`;
+      const reason = `overlaps the graphic \u2018ClipScene\u2019 at ${at}: move or remove it`;
+      expect(props.addedSceneIssues).toEqual([{ id: "added-1", reason }]);
+      expect(lines).toContain(`  \u26a0 added graphic added-1 not shown: ${reason}`);
+      // Assembly dropped nothing: the give-way is the edit layer's, not a cut.
       expect(lines.some((l) => l.includes("dropped"))).toBe(false);
       expect(production(work).scenes.map((s: { id: string }) => s.id)).toEqual(["shot-s1", "added-1"]);
+      expect(JSON.parse(readFileSync(join(work, "overrides.json"), "utf8")).addedScenes).toHaveLength(1);
     }, 240_000);
 
     it("Review Focus 5: an empty pinned plan on a storyboard project with no approval makes no planning call", async () => {

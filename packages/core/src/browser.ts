@@ -255,6 +255,10 @@ export { rebaseCue } from "./kit-rebase";
 // import is ./content-rect (above) — the rest are type imports. Only these
 // names are exposed: the planning half of framing is the pipeline's.
 export { BACKDROP_LAYOUTS, isBackdropLayout, keepsBoxAcross } from "./framing";
+// The 16:9 remap produce runs on every scene before assembly (R15, §163):
+// the editor lays a fresh added graphic out with it, so a 16:9 add previews
+// in the layout it will render in (editor-added-graphics fix-wave I2).
+export { landscapeLayoutFor } from "./framing";
 
 // The storyboard's plan table (§168). The editor's table reads and edits
 // `storyboard.json` with the SAME schema the run writes it with, so a row the

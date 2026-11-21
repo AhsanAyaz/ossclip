@@ -3,6 +3,7 @@ import {
   ADDED_ID_PREFIX,
   ADDED_OFFERED,
   addedSceneToScene,
+  dropOverlappingAdded,
   graphicOverlap,
   isAddedKey,
   nextAddedId,
@@ -180,6 +181,20 @@ describe("addedSceneToScene (§2)", () => {
     });
   });
 
+  it("skips an entry whose id is not an added-graphic id (M1): produce strips and the remap guard freezes by that id", () => {
+    for (const id of ["scene-3", "added-", "added-x", "added-1@s1", " added-1"]) {
+      expect(skipped(addedSceneToScene(entry({ id }), words))).toBe("its id is not an added-graphic id");
+    }
+  });
+
+  it("copies the props (M2): mutating the scene's props leaves the stored entry as it was", () => {
+    const stored = entry({ props: { title: "HELLO" } });
+    const r = addedSceneToScene(stored, words);
+    if (!("scene" in r)) throw new Error(r.skipped);
+    (r.scene.props as Record<string, unknown>).title = "REWRITTEN";
+    expect(stored.props).toEqual({ title: "HELLO" });
+  });
+
   it("converts a script-only card", () => {
     const r = addedSceneToScene(
       entry({ component: "BugCard", props: { number: 2, headline: "It broke" } }),
@@ -239,6 +254,15 @@ describe("previewAddedScenes (§4)", () => {
     expect(added.endSec - added.startSec).toBeCloseTo(minSceneSec(identity.outputDuration), 9);
   });
 
+  it("previews a repeated id once, the first entry, and reports the repeat as produce does (fix-wave M1)", () => {
+    const { cues, skipped } = run(
+      [],
+      [entry({ id: "added-1" }), entry({ id: "added-1", props: { title: "SECOND" }, srcStart: 6, srcEnd: 7 })],
+    );
+    expect(cues.map((c) => [c.id, c.props])).toEqual([["added-1", { title: "HELLO" }]]);
+    expect(skipped).toEqual([{ id: "added-1", reason: "duplicate id" }]);
+  });
+
   it("does not preview an entry produce reported as an issue", () => {
     const { cues, skipped } = run([], [entry({ id: "added-3" })], ["added-3"]);
     expect(cues).toEqual([]);
@@ -268,5 +292,71 @@ describe("previewAddedScenes (§4)", () => {
     });
     expect(r.cues).toEqual([]);
     expect(r.skipped.map((s) => s.id)).toEqual(["added-6"]);
+  });
+});
+
+describe("dropOverlappingAdded (editor-added-graphics §2, AG2; fix-wave I1)", () => {
+  const added = (id: string, startSec: number, endSec: number) =>
+    cue(id, startSec, endSec, { component: "TitleCard", props: { title: "T" } });
+
+  it("drops an added cue that overlaps a planned graphic, naming it and its m:ss, and leaves the plan cue alone", () => {
+    const plan = cue("scene-2", 61.4, 66);
+    const { cues, dropped } = dropOverlappingAdded([plan, added("added-1", 63, 65)]);
+    expect(cues).toEqual([plan]);
+    expect(dropped).toEqual([
+      { id: "added-1", reason: "overlaps the graphic \u2018StatCard\u2019 at 1:01: move or remove it" },
+    ]);
+  });
+
+  it("counts the gap padding as graphicOverlap does, and keeps a cue exactly one gap away", () => {
+    const near = dropOverlappingAdded([cue("scene-0", 0, 2 - SCENE_GAP_SEC / 2), added("added-1", 2, 4)]);
+    expect(near.dropped.map((d) => d.id)).toEqual(["added-1"]);
+    // The timeline's drag clamp leaves exactly the gap, and pins are kept to
+    // the millisecond: 3.954 + 0.05 is 4.004000000000001 in floats, which a
+    // bare `<` reads as touching. A block the author placed flush stays.
+    expect(3.954 + SCENE_GAP_SEC).toBeGreaterThan(4.004);
+    const flush = dropOverlappingAdded([cue("scene-0", 0, 3.954), added("added-1", 4.004, 5)]);
+    expect(flush.dropped).toEqual([]);
+    expect(flush.cues.map((c) => c.id)).toEqual(["scene-0", "added-1"]);
+  });
+
+  it("ignores plain takes", () => {
+    const { cues, dropped } = dropOverlappingAdded([cue("take-0", 0, 10, { kind: "plain" }), added("added-1", 2, 4)]);
+    expect(dropped).toEqual([]);
+    expect(cues).toHaveLength(2);
+  });
+
+  it("of two overlapping added cues drops the later-starting one, whatever the array order", () => {
+    const { cues, dropped } = dropOverlappingAdded([added("added-2", 3, 5), added("added-1", 2, 4)]);
+    expect(cues.map((c) => c.id)).toEqual(["added-1"]);
+    expect(dropped).toEqual([
+      { id: "added-2", reason: "overlaps the graphic \u2018TitleCard\u2019 at 0:02: move or remove it" },
+    ]);
+  });
+
+  it("an added cue dropped for a plan overlap does not count against another added cue", () => {
+    const { cues, dropped } = dropOverlappingAdded([
+      cue("scene-0", 0, 2.5),
+      added("added-1", 2, 4),
+      added("added-2", 3.5, 6),
+    ]);
+    expect(cues.map((c) => c.id)).toEqual(["scene-0", "added-2"]);
+    expect(dropped.map((d) => d.id)).toEqual(["added-1"]);
+  });
+
+  it("keeps the two halves of one split added graphic, which meet with no gap", () => {
+    const { cues, dropped } = dropOverlappingAdded([added("added-1@s1", 2, 3), added("added-1@s2", 3, 4)]);
+    expect(dropped).toEqual([]);
+    expect(cues).toHaveLength(2);
+  });
+
+  it("never drops or moves a plan cue, even when two plan cues overlap", () => {
+    const list = [cue("scene-0", 0, 3), cue("scene-1", 2, 4)];
+    expect(dropOverlappingAdded(list)).toEqual({ cues: list, dropped: [] });
+  });
+
+  it("names a cue with no component by its id", () => {
+    const { dropped } = dropOverlappingAdded([cue("scene-0", 0, 3, { component: undefined }), added("added-1", 1, 2)]);
+    expect(dropped[0]!.reason).toBe("overlaps the graphic \u2018scene-0\u2019 at 0:00: move or remove it");
   });
 });

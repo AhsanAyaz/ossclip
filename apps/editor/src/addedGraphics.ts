@@ -1,8 +1,10 @@
 import {
   ADDED_ID_PREFIX,
   MAX_SCENE_SEC,
+  dropOverlappingAdded,
   graphicOverlap,
   isAddedKey,
+  landscapeLayoutFor,
   previewAddedScenes,
   sceneKeyRoot,
   wordSrcEnd,
@@ -35,6 +37,13 @@ export interface AddedSkippedRow {
  * `words` is the REPAIRED list produce counted scenes in (`/api/sfx/plan`'s
  * `words`, spec §2 step 4): the index space of the base cues' anchors, so the
  * anchor an added cue gets here is the one `save()` stamps beside theirs.
+ *
+ * `landscape` (the frame is wider than tall) and `scriptProject` (the stored
+ * script record, App's state) lay a FRESH add out as produce will: produce
+ * remaps every scene through `landscapeLayoutFor` before assembly (R15,
+ * §163), so a 16:9 add previewed in its portrait default — a `pip-bubble`
+ * TitleCard — rendered `split-left` (fix-wave I2). Base cues are left alone:
+ * produce already laid them out, baked added ones included.
  */
 export function previewBaseCues(args: {
   baseCues: readonly SceneCue[];
@@ -42,8 +51,10 @@ export function previewBaseCues(args: {
   issueIds: ReadonlySet<string>;
   words: readonly Word[] | null;
   map: TimeMap | null;
+  landscape: boolean;
+  scriptProject: boolean;
 }): { cues: SceneCue[]; skipped: { id: string; reason: string }[] } {
-  const { baseCues, added, issueIds, words, map } = args;
+  const { baseCues, added, issueIds, words, map, landscape, scriptProject } = args;
   if (map === null || words === null) {
     const entryIds = new Set(added.map((e) => e.id));
     return {
@@ -52,7 +63,57 @@ export function previewBaseCues(args: {
     };
   }
   // `language` is unread by assembly; the transcript is only its word list.
-  return previewAddedScenes({ baseCues, added, issueIds, transcript: { language: "en", words: [...words] }, map });
+  const preview = previewAddedScenes({ baseCues, added, issueIds, transcript: { language: "en", words: [...words] }, map });
+  if (!landscape) return preview;
+  const baseIds = new Set(baseCues.map((c) => c.id));
+  return {
+    ...preview,
+    cues: preview.cues.map((c) =>
+      isAddedKey(c.id) && !baseIds.has(c.id) ? { ...c, layout: landscapeLayoutFor(c.layout, { scriptProject }) } : c,
+    ),
+  };
+}
+
+/**
+ * The preview's half of produce's give-way (fix-wave I1, AG2): core's
+ * `dropOverlappingAdded` on the list the author sees — run by App right
+ * after its hidden drop, the step produce runs it at — with each drop
+ * reported under its ENTRY's id (a split half's root), once, since the
+ * not-shown list (`addedSkippedRows`) and its Remove are keyed by entry.
+ */
+export function previewDropCovered(cues: readonly SceneCue[]): {
+  cues: SceneCue[];
+  skipped: { id: string; reason: string }[];
+} {
+  const { cues: kept, dropped } = dropOverlappingAdded(cues);
+  const skipped: { id: string; reason: string }[] = [];
+  for (const d of dropped) {
+    const id = sceneKeyRoot(d.id);
+    if (!skipped.some((r) => r.id === id)) skipped.push({ id, reason: d.reason });
+  }
+  return { cues: kept, skipped };
+}
+
+/**
+ * Every id `addScene` must not mint again (§1), from render-props: the base
+ * cues (`baseSceneCues`, or the old `sceneCues` fallback the live memo also
+ * reads) and the entries the run reported in `addedSceneIssues`. The issues
+ * count because a reported entry has no base cue: Removed from the not-shown
+ * list and then re-added, its id would come back with the reason the next
+ * run no longer has — and with its stale `scenes` edits (fix-wave I3).
+ */
+export function addBaseIds(
+  renderProps: {
+    baseSceneCues?: readonly { id: string }[];
+    sceneCues?: readonly { id: string }[];
+    addedSceneIssues?: readonly { id: string }[];
+  } | null,
+): string[] {
+  if (renderProps === null) return [];
+  return [
+    ...(renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).map((c) => c.id),
+    ...(renderProps.addedSceneIssues ?? []).map((i) => i.id),
+  ];
 }
 
 /**
@@ -124,7 +185,10 @@ function addWindow(
   const span = addSpan(words);
   const { cues } = previewAddedScenes({
     baseCues: [],
-    added: [{ id: `${ADDED_ID_PREFIX}window`, component: "TitleCard", props: { title: "window" }, ...span }],
+    // `added-0`: a real `added-<n>` shape, which conversion now demands
+    // (fix-wave M1), and one `nextAddedId` never mints (it starts at 1) —
+    // not that it could collide, with no base cues beside it.
+    added: [{ id: `${ADDED_ID_PREFIX}0`, component: "TitleCard", props: { title: "window" }, ...span }],
     issueIds: new Set(),
     transcript: {
       language: "en",

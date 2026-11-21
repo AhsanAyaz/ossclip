@@ -299,7 +299,9 @@ import {
   // Editor-added graphics (editor-added-graphics §2): the doc's entries as
   // scenes, and the id rule every scene pass below uses to step around them.
   addedSceneToScene,
+  dropOverlappingAdded,
   isAddedKey,
+  sceneKeyRoot,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { clipImportLine, importClip } from "./clip-import";
@@ -4928,21 +4930,29 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
 
   // Editor-added graphics (editor-added-graphics §2, produce steps 2-3),
   // appended in every run kind — planner, script, storyboard and the
-  // `--scenes` replay — exactly as a storyboard run appends its approved
-  // shots: from here they meet the one assembly every scene meets, so it
-  // starts each at its first kept word, pushes it past an overlap and drops
-  // it when every word is cut. AFTER the transcript rewrites above, so the
-  // anchors index the final words; BEFORE the landscape remap, so it applies
-  // to them as to any scene. `transcript.words` is this run's index space
-  // (a `--clip` run's slice, which keeps source stamps: `sliceTranscript`),
-  // and its `start` is source seconds — the clock the entry's span is in.
-  // A skipped entry is reported, never thrown (AG3): one stale graphic must
-  // not take the run down with it.
+  // `--scenes` replay — as a storyboard run appends its approved shots, so
+  // the landscape remap, production.json and every pass that reads `scenes`
+  // see them. They are ASSEMBLED apart from the plan scenes, though (see
+  // the assembly below, fix-wave I1). AFTER the transcript rewrites above,
+  // so the anchors index the final words; BEFORE the landscape remap, so it
+  // applies to them as to any scene. `transcript.words` is this run's index
+  // space (a `--clip` run's slice, which keeps source stamps:
+  // `sliceTranscript`), and its `start` is source seconds — the clock the
+  // entry's span is in. A skipped entry is reported, never thrown (AG3):
+  // one stale graphic must not take the run down with it. A repeated id
+  // (only a hand edit makes one) keeps its first entry: two scenes under one
+  // id would share every edit and every cue lookup (fix-wave M1).
   const addedSceneIssues: { id: string; reason: string }[] = [];
   const addedEntries = overrideDoc.addedScenes ?? [];
   if (addedEntries.length > 0) {
     const sourceWords = transcript.words.map((w) => ({ srcStart: w.start }));
+    const seenAddedIds = new Set<string>();
     for (const entry of addedEntries) {
+      if (seenAddedIds.has(entry.id)) {
+        addedSceneIssues.push({ id: entry.id, reason: "duplicate id" });
+        continue;
+      }
+      seenAddedIds.add(entry.id);
       const converted = addedSceneToScene(entry, sourceWords);
       if ("scene" in converted) scenes.push(converted.scene);
       else addedSceneIssues.push({ id: entry.id, reason: converted.skipped });
@@ -5029,9 +5039,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // a replay of one) has a scene here.
       if (sc.graphicRect) continue;
       // An editor-added graphic keeps its layout and is not counted either
-      // (editor-added-graphics §2 step 4): counted, it would change its plan
-      // neighbours' layouts, which the add gesture promises never to touch
-      // (AG2); cycled, its preview layout would differ from the next run's.
+      // (editor-added-graphics §2 step 4). Added scenes are appended after
+      // every plan scene, so they come LAST in this array-order walk: the
+      // skip keeps the added graphic's own layout stable — cycled, its
+      // preview layout would differ from the next run's. It does not protect
+      // its plan neighbours; they are visited before it and never see it.
       if (isAddedKey(sc.id)) continue;
       let want = sc.layout;
       if (STACK_COMPONENTS.has(sc.component) && want === "lower-third") want = "split-right";
@@ -5164,7 +5176,35 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
-  const { cues: assembled, dropped, shortened } = assembleScenes(scenes, transcript, map);
+  // Two assemblies (fix-wave I1): the plan scenes exactly as before added
+  // graphics existed, and the added graphics on their own. Assembled
+  // together, assembly pushed an added graphic past a HIDDEN plan scene or
+  // past a plan block's planned window that a pin had since moved — the
+  // edits are applied after assembly — while the editor's add check, which
+  // reads the cues the author sees (hidden dropped, pins applied), had let
+  // it through: the render put it somewhere the preview never showed.
+  // Alone, each gets the window the editor's one-scene preview gives it
+  // (§4). One call for all of them: the add check refused any overlap among
+  // them, so it is the same as one call each. What a later change made
+  // overlap (a shot approved over the same words, an unhide) is settled
+  // after the edit layer, where `dropOverlappingAdded` drops the added one
+  // and never moves the plan one (AG2). Merged in time order — assembly's
+  // own output order, which routing, the fill and the overrides expect.
+  const planAssembly = assembleScenes(
+    scenes.filter((s) => !isAddedKey(s.id)),
+    transcript,
+    map,
+  );
+  const addedAssembly = assembleScenes(
+    scenes.filter((s) => isAddedKey(s.id)),
+    transcript,
+    map,
+  );
+  // `sort` is stable: a plan cue keeps its place ahead of an added one that
+  // starts on the same second, as the old single assembly ordered them.
+  const assembled = [...planAssembly.cues, ...addedAssembly.cues].sort((a, b) => a.startSec - b.startSec);
+  const dropped = [...planAssembly.dropped, ...addedAssembly.dropped];
+  const shortened = [...planAssembly.shortened, ...addedAssembly.shortened];
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
   // An added graphic assembly dropped (every word cut, too short after the
   // clamp) has no block for the editor to select, so it joins the issues
@@ -5435,9 +5475,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // whole pre-split window — both the half it names and the half a stored
   // split (R16 §61) had already carved off — before that split ever got a
   // chance to separate them (PLAN 2026-08-04 Task 1, bug 3).
-  const { cues: visibleCues, hidden: hiddenIds } = splitThenDropHidden(editedCues, overrideDoc);
+  const { cues: shownCues, hidden: hiddenIds } = splitThenDropHidden(editedCues, overrideDoc);
   if (hiddenIds.length > 0) {
     console.log(`▸ ${hiddenIds.length} scene(s) hidden by the edit layer: ${hiddenIds.join(", ")}`);
+  }
+  // An added graphic a visible plan graphic now covers gives way (fix-wave
+  // I1, AG2): assembled apart from the plan (above), nothing pushed it, so a
+  // later change — a storyboard shot approved over the same words, an
+  // unhide, a drag — can leave the two overlapping. HERE, on the list the
+  // author sees (edits and pins applied, hidden cues gone), the editor's
+  // preview runs the same function at the same step, so the render drops
+  // exactly the blocks the preview did. Before the pinned re-clamp, as the
+  // preview has none. Reported by entry id (a split half's root), once.
+  const overlapDrop = dropOverlappingAdded(shownCues);
+  const visibleCues = overlapDrop.cues;
+  for (const d of overlapDrop.dropped) {
+    const id = sceneKeyRoot(d.id);
+    if (!addedSceneIssues.some((i) => i.id === id)) addedSceneIssues.push({ id, reason: d.reason });
+    console.log(`  ⚠ added graphic ${id} not shown: ${d.reason}`);
   }
   // Config theme as the BASE (F6): overrides.json > config theme >
   // defaultTheme. The same `configBaseTheme` feeds props.baseTheme below.

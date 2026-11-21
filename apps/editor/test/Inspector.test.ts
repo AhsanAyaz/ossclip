@@ -1952,6 +1952,8 @@ describe("Inspector — Restore for a hidden half of an unrendered added graphic
       issueIds: new Set(),
       words,
       map,
+      landscape: false,
+      scriptProject: false,
     });
     // The raw base cues hold nothing for it — the list the ghosts used to read.
     expect(ghostCues([], doc)).toEqual([]);

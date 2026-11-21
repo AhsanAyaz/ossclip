@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { mapFromKeptSpans, type SceneCue } from "@ossclip/core/browser";
 import {
+  OverrideDocSchema,
+  SCENE_REGISTRY,
+  applyOverrides,
+  emptyOverrideDoc,
+  mapFromKeptSpans,
+  splitThenDropHidden,
+  type Layout,
+  type OverrideDoc,
+  type SceneCue,
+} from "@ossclip/core/browser";
+import {
+  addBaseIds,
   addGraphicCheck,
   addOverlapRefusal,
   addSpan,
   addedSkippedHeading,
   addedSkippedRows,
   previewBaseCues,
+  previewDropCovered,
   type AddGraphicWord,
 } from "../src/addedGraphics";
 import { editReducer, initialEditState } from "../src/useEdits";
@@ -41,6 +53,8 @@ describe("previewBaseCues (editor-added-graphics §4)", () => {
       issueIds: new Set(),
       words,
       map: identity,
+      landscape: false,
+      scriptProject: false,
     });
     expect(cues.map((c) => c.id)).toEqual(["scene-0"]);
   });
@@ -60,6 +74,8 @@ describe("previewBaseCues (editor-added-graphics §4)", () => {
       issueIds: new Set(),
       words,
       map: identity,
+      landscape: false,
+      scriptProject: false,
     });
     expect(cues.map((c) => c.id)).toEqual(["added-2", "scene-0"]);
     // The new add's own props, never the old baked look.
@@ -73,6 +89,8 @@ describe("previewBaseCues (editor-added-graphics §4)", () => {
       issueIds: new Set(),
       words,
       map: null,
+      landscape: false,
+      scriptProject: false,
     });
     expect(cues.map((c) => c.id)).toEqual(["scene-0"]);
     expect(skipped).toEqual([]);
@@ -85,6 +103,8 @@ describe("previewBaseCues (editor-added-graphics §4)", () => {
       issueIds: new Set(),
       words: null,
       map: identity,
+      landscape: false,
+      scriptProject: false,
     });
     expect(cues.map((c) => c.id)).toEqual(["added-1"]);
   });
@@ -239,5 +259,151 @@ describe("addOverlapRefusal", () => {
     expect(addOverlapRefusal(cue("scene-9", 72.9, 80, { component: "BulletList" }))).toBe(
       "These words overlap the graphic \u2018BulletList\u2019 at 1:12. Trim that block or pick other words.",
     );
+  });
+});
+
+describe("previewBaseCues in a 16:9 frame (fix-wave I2)", () => {
+  // One component per default layout the add menu can produce. Produce
+  // remaps every scene through `landscapeLayoutFor` before assembly, so a
+  // fresh add must preview in that layout, not its portrait default.
+  const byLayout: [string, Layout][] = [
+    ["TitleCard", "pip-bubble"],
+    ["StatCard", "video-top"],
+    ["FlowDiagram", "graphic-only"],
+    ["BulletList", "blurred-behind"],
+    ["CardRow", "full-bleed"],
+  ];
+  // What `landscapeLayoutFor` answers: a script project keeps its three
+  // backdrops (§163); every other run takes R15's remap.
+  const want: Record<Layout, { script: Layout; plain: Layout }> = {
+    "pip-bubble": { script: "pip-bubble", plain: "split-left" },
+    "video-top": { script: "split-left", plain: "split-left" },
+    "graphic-only": { script: "graphic-only", plain: "blurred-behind" },
+    "blurred-behind": { script: "blurred-behind", plain: "blurred-behind" },
+    "full-bleed": { script: "full-bleed", plain: "full-bleed" },
+  } as Record<Layout, { script: Layout; plain: Layout }>;
+
+  for (const [component, layout] of byLayout) {
+    for (const scriptProject of [false, true]) {
+      it(`${component} (${layout}) previews as ${want[layout]![scriptProject ? "script" : "plain"]} in a ${scriptProject ? "script" : "non-script"} project`, () => {
+        const meta = SCENE_REGISTRY[component as keyof typeof SCENE_REGISTRY];
+        expect(meta.defaultLayout).toBe(layout);
+        const { cues } = previewBaseCues({
+          baseCues: [],
+          added: [{ id: "added-1", component, props: meta.defaultProps, srcStart: 1, srcEnd: 2.4 }],
+          issueIds: new Set(),
+          words,
+          map: identity,
+          landscape: true,
+          scriptProject,
+        });
+        expect(cues.map((c) => c.layout)).toEqual([want[layout]![scriptProject ? "script" : "plain"]]);
+      });
+    }
+  }
+
+  it("leaves a portrait frame's add, and every base cue, as they are", () => {
+    const base = [cue("scene-0", 6, 8, { layout: "video-top" }), { ...baked, layout: "pip-bubble" as Layout }];
+    const added = [
+      { id: "added-1", ...add },
+      { id: "added-2", ...add, srcStart: 4, srcEnd: 4.4 },
+    ];
+    const portrait = previewBaseCues({ baseCues: base, added, issueIds: new Set(), words, map: identity, landscape: false, scriptProject: false });
+    expect(portrait.cues.map((c) => [c.id, c.layout])).toEqual([
+      ["added-1", "pip-bubble"],
+      ["added-2", "pip-bubble"],
+      ["scene-0", "video-top"],
+    ]);
+    // Landscape: only the FRESH add is remapped — a base cue is what produce
+    // already laid out (and remapped), baked added ones included.
+    const wide = previewBaseCues({ baseCues: base, added, issueIds: new Set(), words, map: identity, landscape: true, scriptProject: false });
+    expect(wide.cues.map((c) => [c.id, c.layout])).toEqual([
+      ["added-1", "pip-bubble"],
+      ["added-2", "split-left"],
+      ["scene-0", "video-top"],
+    ]);
+  });
+});
+
+describe("previewDropCovered (fix-wave I1)", () => {
+  /** The live memo's steps up to the hidden drop: reconcile, overrides, hide. */
+  const visible = (baseCues: SceneCue[], doc: OverrideDoc) => {
+    const preview = previewBaseCues({
+      baseCues,
+      added: doc.addedScenes ?? [],
+      issueIds: new Set(),
+      words,
+      map: identity,
+      landscape: false,
+      scriptProject: false,
+    });
+    const { cues } = splitThenDropHidden(applyOverrides(preview.cues, doc).cues, doc);
+    return { preview, cues };
+  };
+  // A StatCard on 1.0-3.0 s and an add over words 2-4 (1.0-2.4 s): the
+  // drift case, a plan block that arrived over the added one's words.
+  const plan = cue("scene-2", 1, 3);
+  const doc: OverrideDoc = { ...emptyOverrideDoc(), addedScenes: [{ id: "added-1", ...add }] };
+
+  it("drops an added graphic a visible plan graphic covers, and the not-shown list carries the reason", () => {
+    const { preview, cues } = visible([plan], doc);
+    expect(cues.map((c) => c.id)).toEqual(["scene-2", "added-1"]);
+    const covered = previewDropCovered(cues);
+    expect(covered.cues.map((c) => c.id)).toEqual(["scene-2"]);
+    const rows = addedSkippedRows(doc.addedScenes!, [], [...preview.skipped, ...covered.skipped]);
+    expect(rows).toEqual([
+      {
+        id: "added-1",
+        component: "TitleCard",
+        reason: "overlaps the graphic \u2018StatCard\u2019 at 0:01: move or remove it",
+      },
+    ]);
+  });
+
+  it("keeps it when the plan graphic over its words is hidden", () => {
+    // Parsed, so the scene entry carries the schema's defaults as a loaded doc does.
+    const hidden = OverrideDocSchema.parse({ ...doc, scenes: { "scene-2": { hidden: true } } });
+    const { cues } = visible([plan], hidden);
+    const covered = previewDropCovered(cues);
+    expect(covered.cues.map((c) => c.id)).toEqual(["added-1"]);
+    expect(covered.skipped).toEqual([]);
+  });
+
+  it("reports a covered split half under its entry's id, once", () => {
+    const halves = [
+      cue("added-1@s1", 1, 2, { component: "TitleCard" }),
+      cue("added-1@s2", 2, 3, { component: "TitleCard" }),
+      cue("scene-2", 1.5, 2.5),
+    ];
+    const covered = previewDropCovered(halves);
+    expect(covered.cues.map((c) => c.id)).toEqual(["scene-2"]);
+    expect(covered.skipped.map((r) => r.id)).toEqual(["added-1"]);
+  });
+});
+
+describe("addBaseIds (fix-wave I3)", () => {
+  it("Remove an entry the run reported, then add: the new id is one past the reported one", () => {
+    const renderProps = {
+      baseSceneCues: [cue("scene-0", 6, 8), baked],
+      addedSceneIssues: [{ id: "added-2", reason: "graphic type OldCard no longer exists" }],
+    };
+    let s = {
+      ...initialEditState(),
+      doc: {
+        ...emptyOverrideDoc(),
+        addedScenes: [
+          { id: "added-1", ...add },
+          { id: "added-2", ...add, component: "OldCard" },
+        ],
+      },
+    };
+    s = editReducer(s, { type: "removeAddedScene", id: "added-2" });
+    s = editReducer(s, { type: "addScene", ...add, srcStart: 4, srcEnd: 4.4, baseIds: addBaseIds(renderProps) });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-1", "added-3"]);
+  });
+
+  it("falls back to the old sceneCues when there are no base cues", () => {
+    expect(addBaseIds({ sceneCues: [cue("scene-0", 0, 1)] })).toEqual(["scene-0"]);
+    expect(addBaseIds(null)).toEqual([]);
   });
 });

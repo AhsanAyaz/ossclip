@@ -38,10 +38,23 @@ const TITLE = {
   srcStart: 5.2727,
   srcEnd: 7.012,
 };
+// The mock plan leaves no gap a floored cue fits in (its StatCard, scene-2,
+// starts on word 8), and the add gesture refuses an overlap (AG2): the doc
+// that carries TITLE hides scene-2, as an author would to make room. Without
+// the hide, the run drops TITLE as covered (the drift test below).
+const ROOM = { "scene-2": { hidden: true } };
 // A component this build does not know: the entry must not fail the run (AG3).
 const UNKNOWN = { id: "added-2", component: "Nope", props: {}, srcStart: 11.2811, srcEnd: 12.088 };
 
-type Cue = { id: string; kind?: string; component?: string; layout: string; props?: Record<string, unknown> };
+type Cue = {
+  id: string;
+  kind?: string;
+  component?: string;
+  layout: string;
+  props?: Record<string, unknown>;
+  startSec: number;
+  endSec: number;
+};
 type Scene = { id: string; component: string; layout: string; anchor: { startWord: number; endWord: number } };
 
 describe.skipIf(!hasFfmpeg)("produce: editor-added graphics from overrides.json", () => {
@@ -113,7 +126,7 @@ describe.skipIf(!hasFfmpeg)("produce: editor-added graphics from overrides.json"
     // No `addedScenes` in the doc: no key in render-props (absent-means-none).
     expect("addedSceneIssues" in renderProps(work)).toBe(false);
 
-    writeDoc(work, { addedScenes: [TITLE, UNKNOWN] });
+    writeDoc(work, { scenes: ROOM, addedScenes: [TITLE, UNKNOWN] });
     lines = [];
     await run(root);
     let props = renderProps(work);
@@ -192,5 +205,82 @@ describe.skipIf(!hasFfmpeg)("produce: editor-added graphics from overrides.json"
     await run(root, { aspect: "16:9" });
     expect(layouts()).toEqual(without);
     expect(production(work).scenes!.find((s) => s.id === "added-1")!.layout).toBe("blurred-behind");
+  }, 240_000);
+
+  // The mock plan on this fixture: scene-2 is a StatCard on words 8-11
+  // ("to show you something", output 6.31-8.91 s). Words 8-10 run from
+  // "to" (6.7278) to the end of "you" (7.57 + 0.3254).
+  const OVER_SCENE_2 = { srcStart: 6.7278, srcEnd: 7.8954 };
+
+  it("over a HIDDEN plan scene's words: the added graphic sits on its own words, not pushed past the hidden one (fix-wave I1)", async () => {
+    const root = join(dir, "wd-hidden");
+    await run(root);
+    const work = workdirOf(root);
+    const before = renderProps(work).sceneCues.find((c) => c.id === "scene-2")!;
+    expect(before.component).toBe("StatCard");
+
+    // What the editor allowed: scene-2 is hidden, so the add check (live
+    // cues, hidden dropped) saw free words.
+    writeDoc(work, {
+      scenes: { "scene-2": { hidden: true } },
+      addedScenes: [{ id: "added-1", component: "TitleCard", props: { title: "Shown here" }, ...OVER_SCENE_2 }],
+    });
+    lines = [];
+    await run(root);
+    const props = renderProps(work);
+    expect(props.sceneCues.map((c) => c.id)).not.toContain("scene-2");
+    const added = props.sceneCues.find((c) => c.id === "added-1")!;
+    // Word 8's own output start — the window a one-scene assembly gives, the
+    // editor's preview. Assembled with the plan it was pushed past 8.9 s.
+    expect(added.startSec).toBeCloseTo(before.startSec, 6);
+    expect(added.startSec).toBeLessThan(before.endSec);
+    expect(props.baseSceneCues.find((c) => c.id === "added-1")!.startSec).toBeCloseTo(before.startSec, 6);
+    expect("addedSceneIssues" in props).toBe(false);
+  }, 240_000);
+
+  it("a VISIBLE plan graphic over an added one (drift): the added one is dropped with the reason, the plan one untouched (fix-wave I1)", async () => {
+    const root = join(dir, "wd-drift");
+    await run(root);
+    const work = workdirOf(root);
+    const before = renderProps(work).sceneCues.find((c) => c.id === "scene-2")!;
+
+    // A doc the add gesture would have refused — the state a later change
+    // (a storyboard shot approved, an unhide) leaves behind.
+    writeDoc(work, {
+      addedScenes: [{ id: "added-1", component: "TitleCard", props: { title: "Covered" }, ...OVER_SCENE_2 }],
+    });
+    lines = [];
+    await run(root);
+    const props = renderProps(work);
+    expect(addedIds(props.sceneCues)).toEqual([]);
+    const after = props.sceneCues.find((c) => c.id === "scene-2")!;
+    expect([after.startSec, after.endSec, after.component]).toEqual([before.startSec, before.endSec, "StatCard"]);
+    const reason = "overlaps the graphic \u2018StatCard\u2019 at 0:06: move or remove it";
+    expect(props.addedSceneIssues).toEqual([{ id: "added-1", reason }]);
+    expect(lines).toContain(`  \u26a0 added graphic added-1 not shown: ${reason}`);
+  }, 240_000);
+
+  it("a repeated id and an id that is not added-<n> are skipped, the first occurrence kept (fix-wave M1)", async () => {
+    const root = join(dir, "wd-ids");
+    await run(root);
+    const work = workdirOf(root);
+    writeDoc(work, {
+      scenes: ROOM,
+      addedScenes: [
+        TITLE,
+        { ...TITLE, props: { title: "Second" }, srcStart: 11.2811, srcEnd: 12.088 },
+        { ...TITLE, id: "scene-9", srcStart: 13.6519, srcEnd: 14.5633 },
+      ],
+    });
+    lines = [];
+    await run(root);
+    const props = renderProps(work);
+    expect(addedIds(props.sceneCues)).toEqual(["added-1"]);
+    expect(props.sceneCues.find((c) => c.id === "added-1")!.props?.title).toBe("Today's demo");
+    expect(props.sceneCues.map((c) => c.id)).not.toContain("scene-9");
+    expect(props.addedSceneIssues).toEqual([
+      { id: "added-1", reason: "duplicate id" },
+      { id: "scene-9", reason: "its id is not an added-graphic id" },
+    ]);
   }, 240_000);
 });

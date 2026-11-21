@@ -165,6 +165,12 @@ export function addedSceneToScene(
   entry: AddedScene,
   words: readonly { srcStart: number }[],
 ): AddedConversion {
+  // The id first: produce strips every `added-` scene and the §3 remap guard
+  // freezes every `added-` key by this prefix, so an entry whose id is not
+  // `added-<n>` (only a hand edit makes one) would either be stripped as a
+  // plan scene's double or let a planned id's edits ride on the author's
+  // card. `nextAddedId` mints exactly this shape (fix-wave M1).
+  if (!/^added-\d+$/.test(entry.id)) return { skipped: "its id is not an added-graphic id" };
   const component = ScriptComponentIdSchema.safeParse(entry.component);
   if (!component.success) return { skipped: `graphic type ${entry.component} no longer exists` };
   // A script component, but one the editor has no way to fill: its prop is
@@ -197,7 +203,11 @@ export function addedSceneToScene(
       anchor: { startWord, endWord },
       layout: SCENE_REGISTRY[c].defaultLayout,
       component: c,
-      props: entry.props,
+      // A copy: produce rewrites scene props in place after this (the CTA
+      // keyword post-check), and the entry is the doc's own object — written
+      // once and never changed (§1), so it must not change by aliasing
+      // either (fix-wave M2).
+      props: { ...entry.props },
       overrides: {},
       rationale: "added in the editor",
     },
@@ -223,6 +233,77 @@ export function graphicOverlap(
     if (cue.startSec < endSec + SCENE_GAP_SEC && startSec < cue.endSec + SCENE_GAP_SEC) return cue;
   }
   return null;
+}
+
+/** m:ss, rounded down — the editor's `clockLabel` (addedGraphics.ts), so a
+ * drop reason and the add gesture's refusal name the same second. */
+const clockLabel = (sec: number): string => {
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+/**
+ * Float slack on the overlap test below. The timeline's drag clamp leaves
+ * exactly `SCENE_GAP_SEC` between blocks and pins are kept to the
+ * millisecond, and `3.954 + 0.05` is `4.004000000000001`: a bare `<` reads a
+ * block the author placed flush as touching, and drops it. A microsecond is
+ * far below a frame, and far above the noise.
+ */
+const OVERLAP_EPS_SEC = 1e-6;
+
+/**
+ * The added graphics that may not be shown because they would cover another
+ * block, and the list without them (editor-added-graphics AG2, fix-wave I1).
+ *
+ * Added graphics are assembled on their own (produce assembles them apart
+ * from the plan scenes, as the editor's one-scene preview does), so nothing
+ * pushes them: an add over words a hidden plan scene or a pin vacated lands
+ * where the author saw it. The price is that a LATER change can put a
+ * visible plan graphic over one (a storyboard shot approved over the same
+ * words, an unhidden scene). Then the added graphic gives way — it is
+ * dropped with a reason the author can act on — and the plan graphic is
+ * never moved or dropped by this, as the add gesture promised (AG2).
+ *
+ * Run on the list as the author sees it — overrides applied, pins applied,
+ * hidden cues gone — by produce and by the editor's preview alike, so the
+ * render and the preview drop the same blocks. The overlap test is
+ * `graphicOverlap`'s, gap padding included, so a block the add gesture would
+ * refuse is the block this drops. Two added cues that overlap (only a later
+ * drag makes that) keep the earlier-starting one; the two halves of one
+ * split added graphic meet with no gap by construction and are one block.
+ * `dropped[].id` is the cue's own id (a split half's included); input order
+ * is kept for the survivors.
+ */
+export function dropOverlappingAdded(cues: readonly SceneCue[]): {
+  cues: SceneCue[];
+  dropped: { id: string; reason: string }[];
+} {
+  const others = cues.filter((c) => !isAddedKey(c.id));
+  const reason = (hit: SceneCue): string =>
+    `overlaps the graphic \u2018${hit.component ?? hit.id}\u2019 at ${clockLabel(hit.startSec)}: move or remove it`;
+  // Shrunk by the slack on both ends: the same test as `graphicOverlap`,
+  // minus the float noise (OVERLAP_EPS_SEC).
+  const overlapIn = (list: readonly SceneCue[], c: SceneCue): SceneCue | null =>
+    graphicOverlap(list, c.startSec + OVERLAP_EPS_SEC, c.endSec - OVERLAP_EPS_SEC);
+  const droppedIds = new Map<string, string>();
+  // Earliest first, so of two overlapping added cues the later one goes;
+  // `sort` is stable, so equal starts keep their array order.
+  const added = cues.filter((c) => isAddedKey(c.id)).sort((a, b) => a.startSec - b.startSec);
+  const keptAdded: SceneCue[] = [];
+  for (const c of added) {
+    const hit =
+      overlapIn(others, c) ??
+      overlapIn(
+        keptAdded.filter((k) => sceneKeyRoot(k.id) !== sceneKeyRoot(c.id)),
+        c,
+      );
+    if (hit === null) keptAdded.push(c);
+    else droppedIds.set(c.id, reason(hit));
+  }
+  return {
+    cues: cues.filter((c) => !droppedIds.has(c.id)),
+    dropped: [...droppedIds].map(([id, r]) => ({ id, reason: r })),
+  };
 }
 
 /**
@@ -262,7 +343,15 @@ export function previewAddedScenes(args: {
   const words = transcript.words.map((w) => ({ srcStart: w.start }));
   const fresh: SceneCue[] = [];
   const skipped: { id: string; reason: string }[] = [];
+  // A repeated id keeps its first entry, produce's rule (fix-wave M1): two
+  // fresh cues under one id would share every edit and every lookup.
+  const seen = new Set<string>();
   for (const entry of added) {
+    if (seen.has(entry.id)) {
+      skipped.push({ id: entry.id, reason: "duplicate id" });
+      continue;
+    }
+    seen.add(entry.id);
     if (baseIds.has(entry.id) || issueIds.has(entry.id)) continue;
     const converted = addedSceneToScene(entry, words);
     if ("skipped" in converted) {
