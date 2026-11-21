@@ -4980,6 +4980,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (scriptRun) {
       let centred = 0;
       for (const [k, sc] of scenes.entries()) {
+        // Not an editor-added graphic (editor-added-graphics §2: the preview
+        // and the replay must agree). This runs only with --script, which
+        // the editor's Render strips; a plan scene keeps its rect through
+        // production.json, but an added one is rebuilt from the doc on every
+        // run, so placed here it was centred on the planning run and not on
+        // the Render. It gets the ordinary landscape remap above, every run.
+        if (isAddedKey(sc.id)) continue;
         const placed = scriptLandscapePlacement(sc);
         if (placed === sc) continue;
         scenes[k] = placed;
