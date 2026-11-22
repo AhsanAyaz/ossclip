@@ -15,9 +15,9 @@ export * from "./fill";
 // resolves their cues from (`resolveSfxCues`) — a second "where does scene-3
 // start" is how the editor's diamond and the render's cue would disagree.
 // `assemble.ts` is browser-safe (type imports plus `scene-registry`, already
-// on this surface), but only this one function is exposed: the rest of the
-// module is the pipeline's, not the bundle's. `MAX_SCENE_SEC` rides along
-// as the one constant the editor must share rather than restate: a speed
+// on this surface), but only what the editor must share is exposed: the rest
+// of the module is the pipeline's, not the bundle's. `MAX_SCENE_SEC` is a
+// constant the editor must share rather than restate: a speed
 // edit on a pinned clip caps its window in the editor (`clipSpeedTiming`)
 // where an unpinned one is capped in `clipSpeedEndSec`, and two copies of
 // the ceiling are how the two paths would give one clip two lengths.
@@ -27,8 +27,16 @@ export * from "./fill";
 // `wordOutputStart` for the same reason (graphic-editor-modal Terms, "Word
 // time"): the modal shows an item's time from the planner's own conversion,
 // and a second rule is how a clipped word would be timed in the render and
-// "cut" in the modal.
-export { MAX_SCENE_SEC, maxCueSec, sceneStartSeconds, wordOutputStart } from "./assemble";
+// "cut" in the modal. `ITEM_LEAD_SEC` with it: the modal shows an item's time
+// as its word time minus the lead (graphic-editor-modal Terms), and a
+// restated 0.15 is how the modal and the render would disagree by a frame.
+export {
+  ITEM_LEAD_SEC,
+  MAX_SCENE_SEC,
+  maxCueSec,
+  sceneStartSeconds,
+  wordOutputStart,
+} from "./assemble";
 // The editor's live grade preview computes the SVG filter spec with the SAME
 // math produce bakes into render-props (`gradeToSvgFilterSpec`) — a browser
 // copy of the curve sampler is how the preview and the render would drift.

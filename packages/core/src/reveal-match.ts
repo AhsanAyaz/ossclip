@@ -191,23 +191,38 @@ export function syncDecision(matches: readonly (number | null)[]): "synced" | "p
  * the item on a word the author did not choose (AG2).
  */
 const PIN_TOLERANCE_SEC = 0.05;
+/**
+ * Float slack on that tolerance: a pin 0.05 s off in decimal is not 0.05 in
+ * binary (1.05 − 1.0 = 0.050000000000000044), and "within 0.05 s" must not
+ * turn on which way the rounding went.
+ */
+const PIN_TOLERANCE_EPS = 1e-9;
 
 /**
  * One item's resolved word (graphic-editor-modal Terms, item states). A word
  * index is into the caller's whole transcript list. "cut" is a pin whose word
  * has no time on the live clock: no time of its own, but it still bounds its
  * neighbours (§3 row 4). "unmatched" is left to the renderer to place.
+ *
+ * `note` is that item's §3 note, unprefixed ("its word moved"), present only
+ * when its pin was turned auto or is cut. An addition to the planned
+ * signature: the modal shows notes beside each item row (§5), and parsing
+ * them back out of the prefixed log lines in `notes` would be a format
+ * contract nobody wrote down.
  */
 export type ItemWordState =
-  | { word: number; state: "pinned" | "auto" }
-  | { word: null; state: "cut" | "unmatched" };
+  | { word: number; state: "pinned" | "auto"; note?: string }
+  | { word: null; state: "cut" | "unmatched"; note?: string };
 
 /**
  * Every item's word for one block, from the author's pins and the matcher
  * (graphic-editor-modal §3). `allWords` is the WHOLE transcript list, so a pin
  * can be found even when it has slid out of the block (row 2 then names why);
- * `window` is the block window in source seconds, half-open like an added
- * entry's span (`addedSceneToScene`); `isSpoken(i)` says whether word i has a
+ * `window` is the block window in source seconds, half-open
+ * `[srcStart, srcEnd)` like an added entry's span (`addedSceneToScene`): a
+ * word is in it when its source start is at or after `srcStart` and before
+ * `srcEnd`. A plan cue's window ends at its last word's END, so that word is
+ * in and the next word, which may start exactly there, is out. `isSpoken(i)` says whether word i has a
  * word time on the live clock.
  *
  * Pins are checked in item order against the §3 table's rows in its order,
@@ -236,10 +251,14 @@ export function resolveItemWords(
   };
   const items: (ItemWordState | undefined)[] = texts.map(() => undefined);
   const notes: string[] = [];
+  // Per item, for the modal's rows (§5); `notes` keeps the prefixed lines
+  // for the produce console.
+  const itemNotes: (string | undefined)[] = texts.map(() => undefined);
   // Item numbers are 1-based: the notes are read by the author, in the
   // produce console and beside the modal's rows (§4).
   const note = (k: number, why: string): void => {
     notes.push(`item ${k + 1}: ${why}`);
+    itemNotes[k] = why;
   };
   // Pinned and cut pins, in item order and (by row 3) strictly increasing word.
   const bounds: { item: number; word: number }[] = [];
@@ -290,7 +309,13 @@ export function resolveItemWords(
     lowWord = bound.word;
     firstItem = bound.item + 1;
   }
-  return { items: items as ItemWordState[], notes };
+  return {
+    items: (items as ItemWordState[]).map((item, k) => {
+      const why = itemNotes[k];
+      return why === undefined ? item : { ...item, note: why };
+    }),
+    notes,
+  };
 }
 
 /**
@@ -303,7 +328,7 @@ function nearestWord(words: readonly { srcStart: number }[], src: number): numbe
   let bestDist = Infinity;
   words.forEach((w, i) => {
     const dist = Math.abs(w.srcStart - src);
-    if (dist <= PIN_TOLERANCE_SEC && dist < bestDist) {
+    if (dist <= PIN_TOLERANCE_SEC + PIN_TOLERANCE_EPS && dist < bestDist) {
       best = i;
       bestDist = dist;
     }

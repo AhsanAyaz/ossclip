@@ -326,7 +326,7 @@ describe("resolveItemWords (graphic-editor-modal §3)", () => {
     // Turned auto, it is matched like any auto item.
     expect(items).toEqual([
       { word: 1, state: "auto" },
-      { word: 3, state: "auto" },
+      { word: 3, state: "auto", note: "its word moved" },
     ]);
     expect(notes).toEqual(["item 2: its word moved"]);
   });
@@ -347,6 +347,19 @@ describe("resolveItemWords (graphic-editor-modal §3)", () => {
     ]);
   });
 
+  it("row 1 tolerance: a word exactly 0.05 s off is found despite float rounding", () => {
+    // 1.05 − 1.0 is 0.050000000000000044 in binary; "within 0.05 s" holds.
+    const words = [{ text: "one", srcStart: 1.05 }];
+    const window = { srcStart: 0, srcEnd: 2 };
+    expect(resolveItemWords(["X"], words, window, allSpoken, [{ src: 1.0, text: "X" }]).items).toEqual([
+      { word: 0, state: "pinned" },
+    ]);
+    // Clearly past it, the word moved.
+    expect(resolveItemWords(["X"], words, window, allSpoken, [{ src: 0.99, text: "X" }]).notes).toEqual([
+      "item 1: its word moved",
+    ]);
+  });
+
   it("row 2: a word outside the block window → auto, 'its word is outside this block'", () => {
     // The window holds words 0–9 (source starts in [0, 5)): word 10 "code"
     // at 5.0 s is outside — half-open, as an added entry's span.
@@ -358,7 +371,7 @@ describe("resolveItemWords (graphic-editor-modal §3)", () => {
     // Auto, it searches only the window: "review" is there, "code" is not.
     expect(items).toEqual([
       { word: 3, state: "auto" },
-      { word: null, state: "unmatched" },
+      { word: null, state: "unmatched", note: "its word is outside this block" },
     ]);
     expect(notes).toEqual(["item 2: its word is outside this block"]);
   });
@@ -376,9 +389,9 @@ describe("resolveItemWords (graphic-editor-modal §3)", () => {
     // on item 3's own word is not STRICTLY after it.
     expect(items).toEqual([
       { word: 13, state: "pinned" },
-      { word: null, state: "unmatched" },
+      { word: null, state: "unmatched", note: "out of order" },
       { word: 14, state: "pinned" },
-      { word: null, state: "unmatched" },
+      { word: null, state: "unmatched", note: "out of order" },
     ]);
     expect(notes).toEqual(["item 2: out of order", "item 4: out of order"]);
   });
@@ -394,9 +407,10 @@ describe("resolveItemWords (graphic-editor-modal §3)", () => {
     );
     expect(items).toEqual([
       { word: 1, state: "auto" },
-      { word: null, state: "cut" },
+      { word: null, state: "cut", note: "its word was cut" },
       { word: 8, state: "auto" },
     ]);
+    // The log lines are prefixed with the 1-based item; the row note is not.
     expect(notes).toEqual(["item 2: its word was cut"]);
   });
 
@@ -408,7 +422,7 @@ describe("resolveItemWords (graphic-editor-modal §3)", () => {
     ).toEqual(["item 2: its word is outside this block"]);
     // Out of order AND cut: out of order (row 3) wins, so it is auto, not cut.
     const r = resolveItemWords(["A", "B"], WORDS, whole, spoken, [pin(8), pin(3)]);
-    expect(r.items[1]).toEqual({ word: null, state: "unmatched" });
+    expect(r.items[1]).toEqual({ word: null, state: "unmatched", note: "out of order" });
     expect(r.notes).toEqual(["item 2: out of order"]);
   });
 
@@ -417,7 +431,7 @@ describe("resolveItemWords (graphic-editor-modal §3)", () => {
     const spoken = (i: number) => i !== 10;
     const { items } = resolveItemWords(["CODE", "FORGET"], WORDS, whole, spoken, [pin(10), null]);
     expect(items).toEqual([
-      { word: null, state: "cut" },
+      { word: null, state: "cut", note: "its word was cut" },
       { word: null, state: "unmatched" },
     ]);
     // The same item with no pin before it does match.
