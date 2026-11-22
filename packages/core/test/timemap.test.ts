@@ -129,6 +129,66 @@ describe("TimeMap invariants (property-based)", () => {
   });
 });
 
+/**
+ * `spanOf`: the one kept-span lookup `toOutput` and the editor's When row
+ * floor share (graphic-editor-modal §5), in toOutput's order.
+ */
+describe("TimeMap.spanOf", () => {
+  // Kept 0–3 and 3.4–10; 3.0–3.4 removed. A zero-length removal at 5
+  // makes 5 the exact end of one span and the exact start of the next.
+  const map = new TimeMap([
+    { srcIn: 0, srcOut: 3, kind: "keep" },
+    { srcIn: 3, srcOut: 3.4, kind: "remove" },
+    { srcIn: 3.4, srcOut: 5, kind: "keep" },
+    { srcIn: 5, srcOut: 10, kind: "keep" },
+  ]);
+  const [a, b, c] = map.spans;
+
+  it("exact containment first, the earlier span on a shared edge", () => {
+    expect(map.spanOf(1)).toBe(a);
+    expect(map.spanOf(3)).toBe(a);
+    expect(map.spanOf(4)).toBe(b);
+    expect(map.spanOf(5)).toBe(b);
+    expect(map.spanOf(7)).toBe(c);
+  });
+
+  it("then the nearest span within EPS of an edge", () => {
+    expect(map.spanOf(3 + 1e-10)).toBe(a);
+    expect(map.spanOf(3.4 - 1e-10)).toBe(b);
+    expect(map.spanOf(10 + 1e-10)).toBe(c);
+  });
+
+  it("then the next span for an instant in a removed region, null past the last", () => {
+    expect(map.spanOf(3 + 1e-6)).toBe(b);
+    expect(map.spanOf(3.2)).toBe(b);
+    expect(map.spanOf(11)).toBeNull();
+    expect(new TimeMap([]).spanOf(1)).toBeNull();
+  });
+
+  it("toOutput maps exactly the instants spanOf finds by containment or EPS, and nothing in a cut", () => {
+    expect(map.toOutput(3 + 1e-10)).toBeCloseTo(3, 12);
+    expect(map.toOutput(3.4 - 1e-10)).toBeCloseTo(3, 12);
+    expect(map.toOutput(3.2)).toBeNull();
+    expect(map.toOutput(3 + 1e-6)).toBeNull();
+    expect(map.toOutput(11)).toBeNull();
+  });
+
+  it("agrees with toOutput on every instant (property)", () => {
+    fc.assert(
+      fc.property(partitionArb, fc.double({ min: -1, max: 120, noNaN: true }), ({ segments }, t) => {
+        const m = new TimeMap(segments);
+        const sp = m.spanOf(t);
+        const out = m.toOutput(t);
+        if (out === null) return;
+        // A mapped instant maps through the span spanOf names.
+        expect(sp).not.toBeNull();
+        expect(out).toBeGreaterThanOrEqual(sp!.outIn);
+        expect(out).toBeLessThanOrEqual(sp!.outOut);
+      }),
+    );
+  });
+});
+
 describe("mapFromKeptSpans", () => {
   it("reconstructs an identical map from another map's own spans", () => {
     fc.assert(

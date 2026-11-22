@@ -296,10 +296,11 @@ const BAKED_MATCH_SEC = 1e-6;
  * the block's window words first, then the whole transcript: two words can
  * share an item time (both floored to 0 near the top of the output, or
  * clamped to one seam), and the one outside the block is never the word the
- * planner meant when one inside it fits. Auto, with no note: the planner matched it, not the
- * author. No time, or no word at that time (a time remapped off every
- * word), is unmatched, placed by the renderer. Estimates are `revealFrames`
- * over the live cue as it is, null on the legacy stagger (see `ModalRow`).
+ * planner meant when one inside it fits. Auto, with no note: the planner
+ * matched it, not the author. No time, or no word at that time (a time
+ * remapped off every word), is unmatched, placed by the renderer. Estimates
+ * are `revealFrames` over the live cue as it is, null on the legacy stagger
+ * (see `ModalRow`).
  */
 function liveRows(
   component: ItemTimingComponent,
@@ -648,32 +649,14 @@ function same(a: unknown, b: unknown): boolean {
  * row's floor (§5), or null when the word is cut. A word whose start a cut
  * clips plays from the next span's start, where `mapWord` clamps it.
  *
- * The span is found as `toOutput` finds it, which is what `mapWord` times
- * the start by: exact containment first, then the nearest span within
- * `SPAN_EDGE_EPS` (float-ulp overshoot at an edge). Without the second step
- * a start a hair past a span's `srcOut` would be timed in that span and
- * floored at the next one's start.
+ * The span is `TimeMap.spanOf`'s, the lookup `toOutput` (and so `mapWord`)
+ * times the start by: a start a hair past a span's `srcOut` is timed in
+ * that span, so it is floored there, not at the next one's start.
  */
 export function keptSpanStartOf(word: Word, map: TimeMap): number | null {
   if (wordOutputStart(word, map) === null) return null;
-  const inside = map.spans.find((sp) => word.start >= sp.srcIn && word.start <= sp.srcOut);
-  if (inside !== undefined) return inside.srcIn;
-  let near: (typeof map.spans)[number] | undefined;
-  let nearDist = Infinity;
-  for (const sp of map.spans) {
-    const dist = word.start < sp.srcIn ? sp.srcIn - word.start : word.start - sp.srcOut;
-    if (dist < nearDist) {
-      near = sp;
-      nearDist = dist;
-    }
-  }
-  if (near !== undefined && nearDist <= SPAN_EDGE_EPS) return near.srcIn;
-  return map.spans.find((sp) => sp.srcIn > word.start)?.srcIn ?? null;
+  return map.spanOf(word.start)?.srcIn ?? null;
 }
-
-/** `TimeMap.toOutput`'s edge tolerance (timemap.ts), restated because the
- * class keeps it local; the keptSpanStartOf test pins the two together. */
-const SPAN_EDGE_EPS = 1e-9;
 
 /**
  * The When row's timing pin (§5): the graphic enters `ENTRY_LEAD_SEC` ahead
