@@ -1,93 +1,11 @@
 import React, { useEffect, useId, useLayoutEffect, useState } from "react";
-import {
-  ADDED_OFFERED,
-  SCENE_REGISTRY,
-  addFormFields,
-  addFormProps,
-  type AddFormField,
-  type AddedOffered,
-} from "@ossclip/core/browser";
+import { ADDED_OFFERED, addFormProps, type AddFormField, type AddedOffered } from "@ossclip/core/browser";
+import { ADD_TYPE_COPY, addFormFieldsFor, addFormIssue, initialAddValues } from "./graphicEditorModel";
 import { MenuItem, floatingMenu, menuLabel, toolbarButton } from "./selectionMenuChrome";
 
-/**
- * Step 1's list (editor-added-graphics §5): a plain name and one line on what
- * each type shows. Written for the author, not the planner — `whenToUse` in
- * the registry is LLM-facing and says how to fill the props. Keyed by
- * `AddedOffered`, so a type joining the menu without copy fails the
- * typecheck. Each line stays under 60 characters so the list never wraps in
- * the popover's width.
- */
-export const ADD_TYPE_COPY: Record<AddedOffered, { name: string; line: string }> = {
-  TitleCard: { name: "Title card", line: "One big line of text" },
-  StatCard: { name: "Stat", line: "A number with a short label" },
-  RuleCard: { name: "Rule", line: "A short heading over the rule it introduces" },
-  StrikethroughReveal: { name: "Struck lines", line: "Up to four short lines that can be crossed out" },
-  BulletList: { name: "Bullet list", line: "Two to five short points" },
-  FlowDiagram: { name: "Flow", line: "Two to five steps joined in a chain" },
-  ChatMock: { name: "Chat", line: "Chat bubbles from a user and an agent" },
-  CardRow: { name: "Card row", line: "Two to four named cards side by side" },
-  CtaCard: { name: "Call to action", line: "Asks viewers to comment, subscribe or open a link" },
-  BugCard: { name: "Numbered problem", line: "A numbered problem with a short headline" },
-  PhoneDemo: { name: "Phone captions", line: "Caption words shown on a phone screen" },
-};
-
-/** One form per type, built on first use. `addFormFields` walks the props
- * schema through `z.toJSONSchema` on every call, and the form re-reads its
- * fields on every keystroke. */
-const FIELDS = new Map<AddedOffered, AddFormField[]>();
-export function addFormFieldsFor(component: AddedOffered): AddFormField[] {
-  let fields = FIELDS.get(component);
-  if (fields === undefined) {
-    fields = addFormFields(component);
-    FIELDS.set(component, fields);
-  }
-  return fields;
-}
-
-/**
- * The form's starting values (§5 "Prefill"): the FIRST text field holds the
- * selected words when they fit its cap — G2, the author types the main text
- * in the same step and never sees a placeholder. Too long and it starts
- * empty rather than cut: a title clipped mid-word is a worse start than a
- * blank one. Lists start with no rows; a choice or a number starts unset, so
- * the author picks it rather than inheriting a guess.
- */
-export function initialAddValues(component: AddedOffered, selectedText: string): Record<string, unknown> {
-  let prefilled = false;
-  const values: Record<string, unknown> = {};
-  for (const f of addFormFieldsFor(component)) {
-    switch (f.kind) {
-      case "text":
-        values[f.key] = !prefilled && selectedText.length <= f.max ? selectedText : "";
-        prefilled = true;
-        break;
-      case "list":
-      case "messages":
-        values[f.key] = [];
-        break;
-      case "choice":
-      case "number":
-        values[f.key] = undefined;
-        break;
-    }
-  }
-  return values;
-}
-
-/**
- * Why Add is off, or null when it may be pressed. The RAW registry schema,
- * not `resolveSceneProps`: that merges the registry's `defaultProps` first,
- * so an empty TitleCard would pass as "TITLE" — and the conversion that
- * renders the entry parses it raw and would skip it (§2 step 2). The Add
- * gate and the conversion must say the same thing.
- */
-export function addFormIssue(component: AddedOffered, values: Record<string, unknown>): string | null {
-  const parsed = SCENE_REGISTRY[component].propsSchema.safeParse(addFormProps(component, values));
-  if (parsed.success) return null;
-  const issue = parsed.error.issues[0];
-  if (issue === undefined) return "invalid";
-  return issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message;
-}
+// Moved to the modal's model (graphic-editor-modal §5); re-exported until
+// the modal replaces this popover and this file goes.
+export { ADD_TYPE_COPY, addFormFieldsFor, addFormIssue, initialAddValues };
 
 /**
  * The add-graphic popover (editor-added-graphics §5), in the selection bar's

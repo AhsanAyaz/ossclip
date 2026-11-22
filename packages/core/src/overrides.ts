@@ -1546,8 +1546,12 @@ export function itemTimingRoots(
 }
 
 /** An item's text as a pin stores it (Terms, "Item"): CardRow's `[text,
- * sub]` alternatives joined with " · ", the one line the modal shows. */
-function itemText(item: RevealItem): string {
+ * sub]` alternatives joined with " · ", the one line the modal shows.
+ * Exported for the modal, whose Save writes each pinned row's current text
+ * (§6): the stale-text check below compares against exactly this join, so
+ * a second copy that joined differently would turn every saved CardRow pin
+ * auto on the next resolve. */
+export function itemPinText(item: RevealItem): string {
   return typeof item === "string" ? item : item.join(" · ");
 }
 
@@ -1634,7 +1638,7 @@ export function resolveItemTimings(
       pins = texts.map(() => null);
     } else {
       pins = stored.pins.map((p, k) => {
-        if (p === null || p.text === itemText(texts[k]!)) return p;
+        if (p === null || p.text === itemPinText(texts[k]!)) return p;
         notes.push(`scene "${id}" item ${k + 1}: its text changed since it was pinned`);
         return null;
       });

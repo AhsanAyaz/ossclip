@@ -25,3 +25,8 @@ export * from "./overlay-room";
 export * from "./punch-plan";
 export * from "./color-grade";
 export * from "./caption-visibility";
+// The graphic editor's item rows (graphic-editor-modal §5) show each item's
+// time from the renderer's own schedule: an unmatched item is placed by
+// `revealFrames`, and a second placement rule in the editor is how the
+// modal's estimate and the render would disagree.
+export { revealFrames, type RevealInput } from "./reveal";

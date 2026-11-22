@@ -5,85 +5,17 @@ import type { PlayerRef } from "@remotion/player";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADDED_OFFERED,
-  SCENE_REGISTRY,
   mapFromKeptSpans,
-  resolveSceneProps,
   type CaptionLine,
   type OverrideDoc,
   type SceneCue,
 } from "@ossclip/core/browser";
-import {
-  ADD_TYPE_COPY,
-  addFormFieldsFor,
-  addFormIssue,
-  initialAddValues,
-} from "../src/AddGraphicPopover";
 import { addGraphicCheck, type AddGraphicRequest, type AddGraphicWord } from "../src/addedGraphics";
 import { TranscriptPanel } from "../src/TranscriptPanel";
 import { useEdits } from "../src/useEdits";
 
 // Same one-time act() opt-in as TranscriptPanel.test.ts.
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-describe("ADD_TYPE_COPY (editor-added-graphics §5, step 1)", () => {
-  it("names every offered type with one plain line under 60 characters", () => {
-    expect(Object.keys(ADD_TYPE_COPY).sort()).toEqual([...ADDED_OFFERED].sort());
-    for (const c of ADDED_OFFERED) {
-      const { name, line } = ADD_TYPE_COPY[c];
-      expect(line.length, c).toBeLessThan(60);
-      // Plain names: no shouted labels, no arrows tacked on.
-      for (const text of [name, line]) {
-        expect(text, c).not.toMatch(/\b[A-Z]{3,}\b/);
-        expect(text, c).not.toMatch(/[→›»>]/);
-      }
-    }
-  });
-});
-
-describe("addFormFieldsFor", () => {
-  it("builds each type's fields once — the JSON-schema walk is not per render", () => {
-    expect(addFormFieldsFor("StatCard")).toBe(addFormFieldsFor("StatCard"));
-    expect(addFormFieldsFor("StatCard").map((f) => f.key)).toEqual(["value", "label"]);
-  });
-});
-
-describe("initialAddValues (§5 prefill)", () => {
-  it("prefills the FIRST text field with the selected words when they fit", () => {
-    expect(initialAddValues("StatCard", "two words")).toEqual({ value: "two words", label: "" });
-  });
-
-  it("leaves it empty when the words exceed that field's max", () => {
-    // StatCard.value is capped at 12.
-    expect(initialAddValues("StatCard", "thirteen char")).toEqual({ value: "", label: "" });
-  });
-
-  it("skips a leading choice and number for the first TEXT field, and starts lists empty", () => {
-    expect(initialAddValues("CtaCard", "follow me")).toEqual({ action: undefined, text: "follow me" });
-    expect(initialAddValues("BugCard", "it breaks")).toEqual({ number: undefined, headline: "it breaks" });
-    expect(initialAddValues("BulletList", "a b")).toEqual({ items: [] });
-    expect(initialAddValues("ChatMock", "hi")).toEqual({ messages: [] });
-  });
-});
-
-describe("addFormIssue — the Add gate", () => {
-  it("is null for a form that parses RAW", () => {
-    expect(addFormIssue("TitleCard", { title: "Hello" })).toBeNull();
-  });
-
-  it("gates on the RAW schema, not resolveSceneProps — registry defaults would mask an empty title", () => {
-    // resolveSceneProps fills TitleCard's default "TITLE" and passes; the
-    // conversion parses raw and would skip the entry (editor-added-graphics §2).
-    expect(resolveSceneProps("TitleCard", {})).not.toBeNull();
-    expect(SCENE_REGISTRY.TitleCard.propsSchema.safeParse({}).success).toBe(false);
-    expect(addFormIssue("TitleCard", { title: "" })).not.toBeNull();
-    expect(addFormIssue("TitleCard", {})).not.toBeNull();
-  });
-
-  it("holds a list below its minimum, and opens at it", () => {
-    expect(addFormIssue("BulletList", { items: ["one"] })).not.toBeNull();
-    expect(addFormIssue("BulletList", { items: ["one", "two"] })).toBeNull();
-  });
-});
 
 /**
  * The gesture through the real panel: the bar's Graphic… button, the overlap

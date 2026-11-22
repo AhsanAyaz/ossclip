@@ -34,9 +34,16 @@ export * from "./fill";
 // "cut" in the modal. `ITEM_LEAD_SEC` with it: the modal shows an item's time
 // as its word time minus the lead (graphic-editor-modal Terms), and a
 // restated 0.15 is how the modal and the render would disagree by a frame.
+// `ENTRY_LEAD_SEC` and `SCENE_GAP_SEC` for the modal's When row
+// (graphic-editor-modal §5): its timing pin starts the entry lead ahead of
+// the word and never before the previous graphic's end plus the gap, the
+// numbers assembly places a block with; restated, a pin the modal wrote
+// would start a block assembly then shifts.
 export {
+  ENTRY_LEAD_SEC,
   ITEM_LEAD_SEC,
   MAX_SCENE_SEC,
+  SCENE_GAP_SEC,
   maxCueSec,
   sceneStartSeconds,
   wordOutputStart,
