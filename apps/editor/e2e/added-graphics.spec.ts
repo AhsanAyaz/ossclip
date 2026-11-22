@@ -9,7 +9,8 @@ const PROPS = join(WORKDIR, "render-props.json");
 
 /**
  * Adding a template graphic from a transcript selection, end to end
- * (editor-added-graphics §5): the bar's Graphic…, the type list, the form,
+ * (editor-added-graphics §5, through the graphic editor of
+ * graphic-editor-modal §5): the bar's Graphic…, the type list, the form,
  * Add, the block on the timeline and on stage, undo, Save and reload, and
  * the overlap refusal — through the real edit server and reducer.
  *
@@ -88,23 +89,19 @@ test("select words, Graphic…, TitleCard, type, Add: a block on the timeline an
   await open(page);
   await selectRun(page, FROM, TO);
   await page.getByTestId("transcript-add-graphic").click();
-  const popover = page.getByTestId("transcript-add-graphic-popover");
-  await expect(popover).toBeVisible();
-  // Inside the pane: the width is capped at the body less its margins.
-  const pop = (await popover.boundingBox())!;
-  const pane = (await page.getByTestId("transcript-body").boundingBox())!;
-  expect(pop.x).toBeGreaterThanOrEqual(pane.x);
-  expect(pop.x + pop.width).toBeLessThanOrEqual(pane.x + pane.width + 0.5);
-  await expect(page.getByTestId("add-graphic-words")).toContainText("people use AI very regularly.");
+  const modal = page.getByTestId("graphic-editor");
+  await expect(modal).toBeVisible();
   // A fresh add with a clock and a word list previews at once: no deferral note.
-  await expect(page.getByTestId("add-graphic-note")).toHaveCount(0);
-  await page.getByTestId("add-graphic-type-TitleCard").click();
+  await expect(page.getByTestId("graphic-editor-note")).toHaveCount(0);
+  await page.getByTestId("graphic-editor-type-TitleCard").click();
+  // The strip holds the selected words, as the transcript list has them.
+  await expect(page.getByTestId("graphic-editor-strip")).toHaveText(/people\s*use\s*AI\s*very\s*regularly\./);
   // Prefilled with the selection — it fits TitleCard's 48.
-  const title = page.getByTestId("add-graphic-field-title");
+  const title = page.getByTestId("graphic-editor-field-title");
   await expect(title).toHaveValue("people use AI very regularly.");
   await title.fill(TITLE);
-  await page.getByTestId("add-graphic-add").click();
-  await expect(popover).toHaveCount(0);
+  await page.getByTestId("graphic-editor-save").click();
+  await expect(modal).toHaveCount(0);
 
   const block = page.getByTestId("timeline-block-added-1");
   await expect(block).toBeVisible();
@@ -120,9 +117,9 @@ test("Save and reload: the added block is still there", async ({ page }) => {
   await open(page);
   await selectRun(page, FROM, TO);
   await page.getByTestId("transcript-add-graphic").click();
-  await page.getByTestId("add-graphic-type-TitleCard").click();
-  await page.getByTestId("add-graphic-field-title").fill(TITLE);
-  await page.getByTestId("add-graphic-add").click();
+  await page.getByTestId("graphic-editor-type-TitleCard").click();
+  await page.getByTestId("graphic-editor-field-title").fill(TITLE);
+  await page.getByTestId("graphic-editor-save").click();
   await expect(page.getByTestId("timeline-block-added-1")).toBeVisible();
   await page.keyboard.press("Control+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
@@ -144,17 +141,17 @@ test("an overlapping selection is refused with the reason — a planned block an
   page,
 }) => {
   await open(page);
-  const refusal = page.getByTestId("add-graphic-refusal");
+  const refusal = page.getByTestId("graphic-editor-refusal");
 
   await page.getByTestId("transcript-word-0").click();
   await page.getByTestId("transcript-add-graphic").click();
   await expect(refusal).toHaveText(
     "These words overlap the graphic ‘StatCard’ at 0:00. Trim that block or pick other words.",
   );
-  await expect(page.locator('[data-testid^="add-graphic-type-"]')).toHaveCount(0);
-  // Escape closes the popover and keeps the selection: the bar is back.
+  await expect(page.locator('[data-testid^="graphic-editor-type-"]')).toHaveCount(0);
+  // Escape closes the modal and keeps the selection: the bar is still there.
   await page.keyboard.press("Escape");
-  await expect(page.getByTestId("transcript-add-graphic-popover")).toHaveCount(0);
+  await expect(page.getByTestId("graphic-editor")).toHaveCount(0);
   await expect(page.getByTestId("transcript-selection-menu")).toContainText("1 word");
 
   // The block the previous test saved counts like any other.

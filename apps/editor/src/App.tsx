@@ -82,12 +82,15 @@ import { graphicDeleteFor, type DeletePlan } from "./deleteScene";
 import {
   addGraphicCheck,
   addBaseIds,
+  addPreviewCue,
   addedSkippedRows,
   previewBaseCues,
   previewDropCovered,
-  type AddGraphicRequest,
+  type AddGraphicCheck,
   type AddGraphicWord,
 } from "./addedGraphics";
+import { GraphicEditorModal } from "./GraphicEditorModal";
+import { editModalInput, previousGraphicEndSec } from "./graphicEditorModel";
 import { previewItemRoots, previewItemTimings } from "./itemTimingPreview";
 import { DeleteWordsModal } from "./DeleteWordsModal";
 import type { DeleteWordsPlan } from "./deleteWords";
@@ -737,6 +740,25 @@ export const App: React.FC = () => {
   // exists only for a project that has a storyboard (`storyboardButtonState`),
   // fetched per project open.
   const [showStoryboard, setShowStoryboard] = useState(false);
+  /**
+   * The open graphic editor (graphic-editor-modal §5). An add carries what
+   * the press captured — the words, App's verdict on them (the overlap
+   * refusal is decided once, there) and the panel's `done` — and an edit the
+   * root id it opened (a split half opens its root). Everything else the
+   * modal reads is derived live from the memo below, so a word list that
+   * arrives while it is open places its items.
+   */
+  const [graphicModal, setGraphicModal] = useState<
+    | {
+        mode: "add";
+        words: AddGraphicWord[];
+        check: AddGraphicCheck;
+        baseIds: string[];
+        done: (added: boolean) => void;
+      }
+    | { mode: "edit"; rootId: string; opener: HTMLElement | null }
+    | null
+  >(null);
   const [storyboardButton, setStoryboardButton] = useState<StoryboardButtonState>({ kind: "hidden" });
   /**
    * The last transcript selection, as source starts, for the storyboard's
@@ -1733,8 +1755,9 @@ export const App: React.FC = () => {
   );
 
   /**
-   * The transcript bar's Graphic… (editor-added-graphics §5): the overlap
-   * verdict against what the author sees, and the commit.
+   * The transcript bar's Graphic… (editor-added-graphics §5,
+   * graphic-editor-modal §5): the overlap verdict against what the author
+   * sees, taken once at the press, and the graphic editor opened over it.
    *
    * The cues are `live.sceneCues` — overrides, hides and pins applied, the
    * list on screen — and the window is measured on THEIR clock (`cueClock`).
@@ -1750,12 +1773,10 @@ export const App: React.FC = () => {
    * old `sceneCues` fallback) plus the ids the run reported in
    * `addedSceneIssues` (`addBaseIds`): an id a past run baked in or reported
    * must never be minted again, or the add would preview that old cue or
-   * inherit that old reason (§1, fix-wave I3). The new block
-   * is selected at once (the reducer holds no selection); when it cannot
-   * preview yet the Inspector shows its no-selection view until it can.
+   * inherit that old reason (§1, fix-wave I3).
    */
   const requestAddGraphic = useCallback(
-    (words: AddGraphicWord[]): AddGraphicRequest => {
+    (words: AddGraphicWord[], done: (added: boolean) => void): void => {
       const check = addGraphicCheck({
         words,
         cues: liveRetimed?.props.sceneCues ?? [],
@@ -1763,16 +1784,35 @@ export const App: React.FC = () => {
         toPlayerSec: liveRetimed?.transcript ? identitySec : clock.toLive,
         deferred: (liveRetimed?.oldClock ?? null) === null || sfxPlan.words === null,
       });
-      const baseIds = addBaseIds(renderProps);
-      return {
-        ...check,
-        add: (component, props) => {
-          const id = edits.addScene({ component, props, ...check.span, baseIds });
-          selectScene({ sceneId: id, elementId: null });
-        },
-      };
+      setGraphicModal({ mode: "add", words, check, baseIds: addBaseIds(renderProps), done });
     },
-    [liveRetimed, clock, sfxPlan.words, renderProps, edits, selectScene],
+    [liveRetimed, clock, sfxPlan.words, renderProps],
+  );
+
+  /** The Inspector's "Edit text & timing…" (§5): the ROOT opens, so a split
+   * half edits the graphic both halves draw. Focus goes back to the button
+   * that opened it when the modal closes. */
+  const openGraphicEditor = useCallback((sceneId: string) => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setGraphicModal({ mode: "edit", rootId: sceneKeyRoot(sceneId), opener });
+  }, []);
+  // An edit's inputs, derived from the live memo (`editModalInput`), so the
+  // modal opens on what the stage draws. Memoized: the modal's rows and
+  // preview re-derive from these, and App re-renders for unrelated state.
+  const graphicEditInput = useMemo(
+    () =>
+      graphicModal?.mode === "edit" && liveRetimed !== null
+        ? editModalInput({
+            rootId: graphicModal.rootId,
+            cues: liveRetimed.props.sceneCues ?? [],
+            base: liveRetimed.previewBase,
+            doc: edits.doc,
+            words: sfxPlan.words,
+            pinMap: liveRetimed.oldClock,
+            liveMap: liveRetimed.cueClock,
+          })
+        : null,
+    [graphicModal, liveRetimed, edits.doc, sfxPlan.words],
   );
 
   // BELOW the live memo since phase 2, not above with the caption layers it
@@ -2354,6 +2394,109 @@ export const App: React.FC = () => {
     </button>
   );
 
+  // The graphic editor (graphic-editor-modal §5), wired to the live memo:
+  // its words and clock are the stage's (`sfxPlan.words`, `cueClock`), its
+  // preview a second Player playing the one cue (G5), and its commit one
+  // reducer step — `addScene` with its `scenes` patch, or `patchProps` with
+  // the Save's timing, pins and cleared keys — or nothing at all when Save
+  // has nothing to say (§6).
+  let graphicEditor: React.ReactNode = null;
+  if (graphicModal !== null && liveRetimed !== null) {
+    const liveMap = liveRetimed.cueClock;
+    const fps = live.settings.fps;
+    const previewBase = playerProps ?? live;
+    const renderPreview = (args: { cue: SceneCue; playerRef: React.RefObject<PlayerRef> }): React.ReactNode => (
+      <GraphicPreviewPlayer cue={args.cue} base={previewBase} playerRef={args.playerRef} />
+    );
+    if (graphicModal.mode === "add") {
+      const { check, words, baseIds, done } = graphicModal;
+      const close = (added: boolean): void => {
+        setGraphicModal(null);
+        done(added);
+      };
+      graphicEditor = (
+        <GraphicEditorModal
+          key="add"
+          mode="add"
+          words={sfxPlan.words}
+          liveMap={liveMap}
+          // The selection's source span, the span the entry will store (§5):
+          // the modal, the timeline and produce time items in one window.
+          window={check.span}
+          fps={fps}
+          prevGraphicEndSec={previousGraphicEndSec(live.sceneCues, check.at.startSec, null)}
+          renderPreview={renderPreview}
+          selectionText={words.map((w) => w.text).join(" ")}
+          selectionWordCount={words.length}
+          check={check}
+          previewFor={(component, props) =>
+            addPreviewCue({
+              component,
+              props,
+              span: check.span,
+              words: sfxPlan.words,
+              map: liveMap,
+              landscape: live.settings.width > live.settings.height,
+              scriptProject,
+            })
+          }
+          onAdd={(component, save) => {
+            const id = edits.addScene({
+              component,
+              props: save.props,
+              ...check.span,
+              baseIds,
+              scenePatch: {
+                ...(save.itemPins !== undefined ? { itemPins: save.itemPins } : {}),
+                ...(save.timing !== undefined ? { timing: save.timing } : {}),
+              },
+            });
+            // The new block is selected at once (the reducer holds no
+            // selection); when it cannot preview yet the Inspector shows its
+            // no-selection view until it can.
+            selectScene({ sceneId: id, elementId: null });
+            close(true);
+          }}
+          onClose={() => close(false)}
+        />
+      );
+    } else if (graphicEditInput !== null) {
+      const { rootId, opener } = graphicModal;
+      const close = (): void => {
+        setGraphicModal(null);
+        opener?.focus({ preventScroll: true });
+      };
+      graphicEditor = (
+        <GraphicEditorModal
+          key={`edit-${rootId}`}
+          mode="edit"
+          sceneId={rootId}
+          component={graphicEditInput.component}
+          props={graphicEditInput.props}
+          itemPins={graphicEditInput.itemPins}
+          timing={graphicEditInput.timing}
+          ownReveal={graphicEditInput.ownReveal}
+          liveCue={graphicEditInput.liveCue}
+          words={sfxPlan.words}
+          liveMap={liveMap}
+          window={graphicEditInput.window}
+          fps={fps}
+          prevGraphicEndSec={previousGraphicEndSec(live.sceneCues, graphicEditInput.liveCue.startSec, rootId)}
+          renderPreview={renderPreview}
+          onSave={(save) => {
+            edits.patchProps(rootId, save.props, {
+              clearKeys: save.clearKeys,
+              ...(save.itemPins !== undefined ? { itemPins: save.itemPins } : {}),
+              ...(save.timing !== undefined ? { timing: save.timing } : {}),
+            });
+            close();
+          }}
+          onClose={close}
+        />
+      );
+    }
+  }
+
   return (
     <div style={shell}>
       <div style={topBar}>
@@ -2693,6 +2836,7 @@ export const App: React.FC = () => {
           onClose={closeLogoPopover}
         />
       ) : null}
+      {graphicEditor}
       {deletePlan ? (
         <DeleteSceneModal
           plan={deletePlan}
@@ -3356,6 +3500,7 @@ export const App: React.FC = () => {
             // block is gone from the timeline, the take IS the selection).
             deletedScenes={ghostCues}
             addedSkipped={addedSkipped}
+            onEditGraphic={openGraphicEditor}
             playheadSec={() => (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps}
             // The Timeline's own two props below: a clip's speed resizes a
             // pinned block within the limits an edge drag has.
@@ -3434,6 +3579,49 @@ export const App: React.FC = () => {
         }}
       />
     </div>
+  );
+};
+
+/**
+ * The graphic editor's preview (graphic-editor-modal §5, G5): a second
+ * Player, the stage's composition with ONE cue — the modal's — over the stage
+ * background and captions, limited to the block and looping. The stage's own
+ * props (`playerProps`, clip sources already on `/media/`) minus every other
+ * graphic and the overlay images, so what plays is the block alone, as the
+ * render will draw it.
+ */
+const GraphicPreviewPlayer: React.FC<{
+  cue: SceneCue;
+  base: PlayerProductionProps;
+  playerRef: React.RefObject<PlayerRef>;
+}> = ({ cue, base, playerRef }) => {
+  const fps = base.settings.fps;
+  const total = Math.max(2, Math.round(base.outputDurationSec * fps));
+  // In and out inside the composition, in before out: the Player throws on
+  // anything else, and a block flush with the video's end rounds past it.
+  const inFrame = Math.min(Math.max(0, Math.floor(cue.startSec * fps)), total - 2);
+  const outFrame = Math.min(Math.max(inFrame + 1, Math.ceil(cue.endSec * fps)), total - 1);
+  const inputProps = useMemo<PlayerProductionProps>(() => {
+    const { overlayCues: _images, ...rest } = base;
+    return { ...rest, sceneCues: withMediaClipSrc([cue]) };
+  }, [base, cue]);
+  return (
+    <Player<AnyZodObject, PlayerProductionProps>
+      ref={playerRef}
+      component={ProductionComposition}
+      inputProps={inputProps}
+      durationInFrames={total}
+      fps={fps}
+      compositionWidth={base.settings.width}
+      compositionHeight={base.settings.height}
+      style={{ width: "100%" }}
+      controls
+      loop
+      inFrame={inFrame}
+      outFrame={outFrame}
+      initialFrame={inFrame}
+      clickToPlay={false}
+    />
   );
 };
 

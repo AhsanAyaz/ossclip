@@ -16,8 +16,7 @@ import { emptyBodyClickClears, findOccurrences, plainWordClick } from "./transcr
 import { peaksForWindow } from "./waveform";
 import { ContextMenu } from "./ContextMenu";
 import { MenuItem, floatingMenu, menuLabel, toolbarButton } from "./selectionMenuChrome";
-import { AddGraphicPopover } from "./AddGraphicPopover";
-import type { AddGraphicRequest, AddGraphicWord } from "./addedGraphics";
+import type { AddGraphicWord } from "./addedGraphics";
 
 /** The timing widget's waveform strip, in CSS px — also the canvas bitmap
  * size, so the handle-drag px→seconds conversion needs no rect measure.
@@ -525,14 +524,18 @@ export const TranscriptPanel: React.FC<{
    */
   onSelectionChange?: (words: { srcStart: number }[] | null, reason?: "away") => void;
   /**
-   * The bar's Graphic… (editor-added-graphics §5): called once at the press
-   * with the selected words, and App answers with its verdict (the overlap
-   * refusal, the notes) and the commit. App's, not the panel's, because both
-   * need what only App holds — the live preview cues, their clock, the base
-   * ids the reducer mints against, and the block selection the add ends in.
-   * Absent = no Graphic… (every harness predating it).
+   * The bar's Graphic… (editor-added-graphics §5, graphic-editor-modal §5):
+   * called once at the press with the selected words, and App opens the
+   * graphic editor over them with its verdict (the overlap refusal, the
+   * notes). App's, not the panel's, because the modal needs what only App
+   * holds — the live preview cues, their clock, the word list, the base ids
+   * the reducer mints against, and the block selection the add ends in.
+   * `done` is App's word back when the modal closes: an add consumes the
+   * selection (the words now carry a block, and a bar over them would offer
+   * the same add again); a cancel keeps it. Absent = no Graphic… (every
+   * harness predating it).
    */
-  onAddGraphic?: (words: AddGraphicWord[]) => AddGraphicRequest;
+  onAddGraphic?: (words: AddGraphicWord[], done: (added: boolean) => void) => void;
 }> = ({
   baseLines,
   liveLines,
@@ -682,17 +685,13 @@ export const TranscriptPanel: React.FC<{
    * same two seconds repeatedly rather than by pressing Play again. */
   const [timingLoop, setTimingLoop] = useState(false);
   /**
-   * The open add-graphic popover (editor-added-graphics §5), in the bar's
-   * place like the range editor. `request` is App's answer, CAPTURED at the
-   * press (the `rangeEditing` rule): the span and the overlap verdict belong
-   * to the words selected then, so every path that moves the selection
-   * closes it — the `[selLo, selHi]` sweep below, the word click (a click on
-   * the same word moves nothing), the click-away and the clear.
+   * The graphic editor is open over this selection (graphic-editor-modal
+   * §5). App's modal holds the words it was opened with, captured at the
+   * press; this flag only keeps the panel's own click-away and drag-select
+   * from moving the selection underneath it, since a press inside the modal
+   * is a press outside this panel.
    */
-  const [addGraphic, setAddGraphic] = useState<{ request: AddGraphicRequest; text: string } | null>(null);
-  /** Bumped when the popover's height changes (step, list rows), so the
-   * placement effect re-measures it — its own state is inside the popover. */
-  const [addGraphicLayout, setAddGraphicLayout] = useState(0);
+  const [addGraphicOpen, setAddGraphicOpen] = useState(false);
 
   // Click-away clears the panel's transient state (field report 2026-08-31,
   // the same gesture that deselects a timeline block): a press anywhere
@@ -706,6 +705,9 @@ export const TranscriptPanel: React.FC<{
     const onDown = (e: MouseEvent): void => {
       const root = rootRef.current;
       if (!root || root.contains(e.target as Node)) return;
+      // The graphic editor's own presses: its words were captured at the
+      // press, and a Cancel keeps the selection it was opened over.
+      if (addGraphicOpen) return;
       if (sel !== null) {
         // Not a clear App acts on: this press may be the Storyboard button.
         clearReasonRef.current = "away";
@@ -714,7 +716,6 @@ export const TranscriptPanel: React.FC<{
       if (rangeEditing !== null) setRangeEditing(null);
       if (editing !== null) setEditing(null);
       if (timing !== null) setTiming(null);
-      if (addGraphic !== null) setAddGraphic(null);
       const native = window.getSelection();
       if (native && native.anchorNode && root.contains(native.anchorNode)) {
         native.removeAllRanges();
@@ -722,7 +723,7 @@ export const TranscriptPanel: React.FC<{
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [sel, rangeEditing, editing, timing, addGraphic]);
+  }, [sel, rangeEditing, editing, timing, addGraphicOpen]);
   /** Where the widget's own audio element is, SOURCE seconds — the playhead
    * line, and null when nothing is playing. */
   const [timingPlayhead, setTimingPlayhead] = useState<number | null>(null);
@@ -787,7 +788,7 @@ export const TranscriptPanel: React.FC<{
   /** The panel's outermost element — the outside-click boundary below. */
   const rootRef = useRef<HTMLDivElement | null>(null);
   /** Whichever of the anchored surfaces is currently mounted — the bar, the
-   * range editor, the timing popover or the add-graphic popover. They share
+   * range editor or the timing popover. They share
    * one anchor and one `menuPos`, so they share the ref the layout effect
    * measures. */
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -1139,7 +1140,7 @@ export const TranscriptPanel: React.FC<{
     // range editor's textarea is the user selecting TEXT TO RETYPE, and
     // re-selecting words underneath it would close the very box being typed
     // into (the `rangeEditing.selLo` sweep).
-    if (editing !== null || rangeEditing !== null || timing !== null || addGraphic !== null) return;
+    if (editing !== null || rangeEditing !== null || timing !== null || addGraphicOpen) return;
     const bodyEl = bodyRef.current;
     if (!bodyEl) return;
     // Optional-chained end to end: jsdom's Document may expose no
@@ -1180,7 +1181,6 @@ export const TranscriptPanel: React.FC<{
     setSel(null);
     setRangeEditing(null);
     setDeleteOpen(false);
-    setAddGraphic(null);
   };
 
   // The empty-space click's inputs that only the press and the release know
@@ -1285,7 +1285,7 @@ export const TranscriptPanel: React.FC<{
     setMenuPos((prev) =>
       prev !== null && prev.top === next.top && prev.left === next.left ? prev : next,
     );
-  }, [selLo, selHi, width, editing, rangeEditing, timing, addGraphic, addGraphicLayout, menuPos]);
+  }, [selLo, selHi, width, editing, rangeEditing, timing, menuPos]);
 
   // The Delete ▾ flyout never outlives the selection it was opened for — a
   // flyout that survived a selection change would offer its rows for words
@@ -1297,8 +1297,6 @@ export const TranscriptPanel: React.FC<{
   useEffect(() => {
     setDeleteOpen(false);
     setTiming(null);
-    // The add popover too: its span and verdict are the old words'.
-    setAddGraphic(null);
   }, [selLo, selHi]);
 
   // Belt-and-braces behind the word click handlers' explicit close (the
@@ -1454,24 +1452,29 @@ export const TranscriptPanel: React.FC<{
     });
   };
 
+  /** Focus back on the body when the graphic editor closes — it held focus,
+   * and focus left on <body>, outside this panel, would no longer reach the
+   * clear-selection branch with a second Escape. */
+  const focusBody = (): void => bodyRef.current?.focus({ preventScroll: true });
+
   /**
-   * Graphic… — ask App for its verdict on these words and open the popover
-   * (editor-added-graphics §5). The §137 refusal stays at the gesture like
+   * Graphic… — hand App these words; it opens the graphic editor over them
+   * (graphic-editor-modal §5). The §137 refusal stays at the gesture like
    * every other bar action: an anchorless word has no source time, so the
    * span could not be stored.
    */
-  /** Focus back on the body when the add popover closes — it held focus,
-   * and an element that unmounts drops it on <body>, outside this panel,
-   * where a second Escape no longer reaches the clear-selection branch. */
-  const focusBody = (): void => bodyRef.current?.focus({ preventScroll: true });
-
   const openAddGraphic = (): void => {
     if (onAddGraphic === undefined || selected.length === 0 || anySelectedAnchorless) return;
-    const request = onAddGraphic(
-      selected.map((w) => ({ srcStart: w.word.srcStart, start: w.start, end: w.end, text: w.live })),
-    );
     setDeleteOpen(false);
-    setAddGraphic({ request, text: selected.map((w) => w.live).join(" ") });
+    setAddGraphicOpen(true);
+    onAddGraphic(
+      selected.map((w) => ({ srcStart: w.word.srcStart, start: w.start, end: w.end, text: w.live })),
+      (added) => {
+        setAddGraphicOpen(false);
+        if (added) setSel(null);
+        focusBody();
+      },
+    );
   };
 
   const commitRange = (open: NonNullable<typeof rangeEditing>): void => {
@@ -2156,10 +2159,6 @@ export const TranscriptPanel: React.FC<{
           // Backspace typed into the textarea would fire the word-delete
           // gesture on the live selection underneath it.
           if (editing !== null || rangeEditing !== null) return;
-          // The add popover owns the keys the same way: its fields are text
-          // inputs (a Backspace there is not a word delete), and Escape is
-          // its close — handled, and stopped, on the popover itself.
-          if (addGraphic !== null) return;
           // The timing popover owns Escape as CANCEL — the selection stays,
           // and the bar returns at the same anchor (a second Escape then
           // clears the selection via the branch below). No other key is
@@ -2278,7 +2277,6 @@ export const TranscriptPanel: React.FC<{
                     // selection-change sweep never fires.
                     if (rangeEditing !== null) setRangeEditing(null);
                     if (timing !== null) setTiming(null);
-                    if (addGraphic !== null) setAddGraphic(null);
                     if (e.shiftKey) {
                       // Extend the selection (create one if none) and SUPPRESS
                       // the seek: extending a range is a selection gesture, and
@@ -2394,8 +2392,7 @@ export const TranscriptPanel: React.FC<{
         menuPos !== null &&
         editing === null &&
         rangeEditing === null &&
-        timing === null &&
-        addGraphic === null ? (
+        timing === null ? (
           <div
             data-testid="transcript-selection-menu"
             role="menu"
@@ -2628,31 +2625,6 @@ export const TranscriptPanel: React.FC<{
           </div>
         </div>
       ) : null}
-        {/* The add-graphic popover, in the bar's place on the bar's anchor
-            (editor-added-graphics §5). Add consumes the selection like the
-            range editor's Apply: the words now carry a block, and the bar
-            reopening over them would offer the same add again. */}
-        {addGraphic !== null && menuPos !== null ? (
-          <AddGraphicPopover
-            menuRef={menuRef}
-            top={menuPos.top}
-            left={menuPos.left}
-            text={addGraphic.text}
-            refusal={addGraphic.request.refusal}
-            notes={addGraphic.request.notes}
-            onAdd={(component, props) => {
-              addGraphic.request.add(component, props);
-              setAddGraphic(null);
-              setSel(null);
-              focusBody();
-            }}
-            onClose={() => {
-              setAddGraphic(null);
-              focusBody();
-            }}
-            onLayout={() => setAddGraphicLayout((n) => n + 1)}
-          />
-        ) : null}
         {/* The widget's OWN transport (`toggleTimingPlay` owns the why).
             SOURCE seconds, the same clock as everything else here; the server
             serves this file with Range support (edit.ts's `/media/` handler),

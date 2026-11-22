@@ -107,7 +107,7 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder|storyboard|clip-speed|added-graphics)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder|storyboard|clip-speed|added-graphics|graphic-editor)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
@@ -143,6 +143,10 @@ export default defineConfig({
     // on, editor-added-graphics §4) and starts from no overrides.json,
     // restoring both after: a rewriter, serialized last like the others.
     { name: "added-graphics", testMatch: /added-graphics\.spec\.ts/, dependencies: ["clip-speed"] },
+    // Gives production.json a transcript (the words items land on,
+    // graphic-editor-modal §5) and starts from an overrides.json that hides
+    // one plan graphic, restoring both after: a rewriter, serialized last.
+    { name: "graphic-editor", testMatch: /graphic-editor\.spec\.ts/, dependencies: ["added-graphics"] },
   ],
   use: {
     baseURL: `http://127.0.0.1:${VITE_PORT}`,

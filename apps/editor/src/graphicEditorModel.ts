@@ -1,4 +1,5 @@
 import {
+  ADDED_OFFERED,
   ENTRY_LEAD_SEC,
   ITEM_LEAD_SEC,
   ITEM_TIMING_COMPONENTS,
@@ -6,13 +7,22 @@ import {
   SCENE_REGISTRY,
   addFormFields,
   addFormProps,
+  applyOverrides,
+  blockWindow,
+  emptyOverrideDoc,
   frameWindow,
   itemPinText,
+  resolveItemTimings,
   resolveItemWords,
+  resolveSceneProps,
+  resolveTimingPin,
   revealItemTexts,
+  sceneKeyRoot,
   wordOutputStart,
   type AddFormField,
   type AddedOffered,
+  type OverrideDoc,
+  type SceneComponentId,
   type SceneCue,
   type SceneTiming,
   type TimeMap,
@@ -28,8 +38,8 @@ import type { ItemPins } from "./useEdits";
  * `allowedWords`, and dispatches whatever `saveFor` returns, or nothing when
  * it returns null.
  *
- * The add form's helpers moved here from AddGraphicPopover.tsx (§5), which
- * re-exports them until the modal replaces it.
+ * The add form's helpers moved here from the add popover the modal
+ * replaced (§5).
  */
 
 /**
@@ -38,7 +48,7 @@ import type { ItemPins } from "./useEdits";
  * the registry is LLM-facing and says how to fill the props. Keyed by
  * `AddedOffered`, so a type joining the menu without copy fails the
  * typecheck. Each line stays under 60 characters so the list never wraps in
- * the popover's width.
+ * the modal's type column.
  */
 export const ADD_TYPE_COPY: Record<AddedOffered, { name: string; line: string }> = {
   TitleCard: { name: "Title card", line: "One big line of text" },
@@ -105,7 +115,14 @@ export function initialAddValues(component: AddedOffered, selectedText: string):
  * gate and the conversion must say the same thing.
  */
 export function addFormIssue(component: AddedOffered, values: Record<string, unknown>): string | null {
-  const parsed = SCENE_REGISTRY[component].propsSchema.safeParse(addFormProps(component, values));
+  return propsIssue(component, addFormProps(component, values));
+}
+
+/** `addFormIssue` on props already in the doc's shape: the modal holds its
+ * state as scene props (`ModalState`), not as form values, so it asks the
+ * same RAW parse of those. */
+export function propsIssue(component: AddedOffered, props: Record<string, unknown>): string | null {
+  const parsed = SCENE_REGISTRY[component].propsSchema.safeParse(props);
   if (parsed.success) return null;
   const issue = parsed.error.issues[0];
   if (issue === undefined) return "invalid";
@@ -119,7 +136,7 @@ type ItemPin = NonNullable<ItemPins["pins"][number]>;
  * offered types without item timing (§5) get fields and the When row only,
  * and never an `itemPins` marker. PhoneDemo has revealed pills but is not
  * one of them (NG2), so this is the core list, not "has reveal items". */
-function hasItemTiming(component: string): component is ItemTimingComponent {
+export function hasItemTiming(component: string): component is ItemTimingComponent {
   return (ITEM_TIMING_COMPONENTS as readonly string[]).includes(component);
 }
 
@@ -537,7 +554,7 @@ export function removeItem(state: ModalState, k: number): ModalState {
 }
 
 /** Add an empty row at the end, auto (§6: `null` for a new row). A new
- * bubble answers the last one, the popover's rule. */
+ * bubble answers the last one, the add form's rule. */
 export function appendItem(state: ModalState): ModalState {
   const { field, list } = itemList(state);
   const blank =
@@ -695,4 +712,310 @@ export function whenRowPin(
   const srcStart = Math.max(liveMap.toSource(outStart), keptSpanStart);
   const srcEnd = liveMap.toSource(cueEndSec);
   return srcEnd > srcStart ? { srcStart, srcEnd } : null;
+}
+
+/** The list field a type's item rows edit (the add form's own, so a row is
+ * the shape the form makes), or null for a type without one. */
+export function listFieldOf(component: string): (AddFormField & { kind: "list" | "messages" }) | null {
+  if (!(ADDED_OFFERED as readonly string[]).includes(component)) return null;
+  return (
+    addFormFieldsFor(component as AddedOffered).find(
+      (f): f is AddFormField & { kind: "list" | "messages" } => f.kind === "list" || f.kind === "messages",
+    ) ?? null
+  );
+}
+
+/** A list entry's text as its row shows it: a string item itself, a card's,
+ * line's or bubble's own `text` (CardRow's sub-line is not typed here). */
+export function entryText(entry: unknown): string {
+  if (typeof entry === "string") return entry;
+  if (entry !== null && typeof entry === "object") return str((entry as Record<string, unknown>).text) ?? "";
+  return "";
+}
+
+/** The entry with its text replaced and every other key kept: a card's
+ * `sub`, a line's `struck`, a bubble's `from` are not the row's to drop. */
+export function withEntryText(entry: unknown, text: string): unknown {
+  if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) return { ...entry, text };
+  return text;
+}
+
+/**
+ * Whether the rows may be added to or deleted (§5: counts within the
+ * schema's own min and max, which the buttons gate). Not for a ChatMock
+ * whose `keyword` collapses it to one item (`revealItemTexts`): its message
+ * rows are not its items, and `appendItem`/`removeItem` refuse it rather
+ * than put one row's pin on another's item. A type without item timing
+ * (PhoneDemo's caption words) has no pins to keep in step, so it may.
+ */
+export function rowsResizable(component: string, props: Record<string, unknown>): boolean {
+  const field = listFieldOf(component);
+  if (field === null) return false;
+  if (!hasItemTiming(component)) return true;
+  const list = props[field.key];
+  return itemTexts(component, props).length === (Array.isArray(list) ? list.length : 0);
+}
+
+/**
+ * Why the primary button is off, said the way the author fixes it, or null
+ * when it may be pressed (§5 "Needs text", the footer reason). The checks
+ * read the form's own fields, in the form's order; anything they do not
+ * name falls back to the schema's own first complaint (`propsIssue`), so the
+ * gate is never looser than the parse the entry must pass.
+ */
+export function saveBlocker(component: AddedOffered, props: Record<string, unknown>): string | null {
+  for (const f of addFormFieldsFor(component)) {
+    const value = props[f.key];
+    switch (f.kind) {
+      case "text": {
+        const text = typeof value === "string" ? value : "";
+        if (text.trim() === "") return `${f.label} needs text.`;
+        if (text.length > f.max) return `${f.label} is too long (${text.length}/${f.max}).`;
+        break;
+      }
+      case "choice":
+        if (typeof value !== "string" || !f.options.includes(value)) return `Choose the ${f.label.toLowerCase()}.`;
+        break;
+      case "number":
+        if (typeof value !== "number" || !Number.isInteger(value) || value < f.min || value > f.max) {
+          return `${f.label} needs a whole number from ${f.min} to ${f.max}.`;
+        }
+        break;
+      case "list":
+      case "messages": {
+        const list = Array.isArray(value) ? value : [];
+        const plural = f.kind === "messages" ? "messages" : f.label.toLowerCase();
+        const one = plural.replace(/s$/, "");
+        const empty = list.filter((e) => entryText(e).trim() === "").length;
+        if (empty > 0) {
+          return `${empty} ${empty === 1 ? `${one} needs` : `${plural} need`} text. Type it or delete the row.`;
+        }
+        const long = list.findIndex((e) => entryText(e).length > f.itemMax);
+        if (long !== -1) return `${one[0]!.toUpperCase()}${one.slice(1)} ${long + 1} is too long (${entryText(list[long]).length}/${f.itemMax}).`;
+        if (list.length < f.min) return `Add at least ${f.min} ${plural}.`;
+        if (list.length > f.max) return `${f.max} ${plural} is the most this graphic holds.`;
+        break;
+      }
+    }
+  }
+  return propsIssue(component, props);
+}
+
+/**
+ * The one cue the modal's preview plays (§4 "The modal's preview", G5): the
+ * cue as the stage would assemble it (`base`: on an add the selection's
+ * one-scene assembly on the live clock, on an edit the root's live cue),
+ * carrying the modal's props, its When-row pin and its items timed by the
+ * very pass the stage runs (`resolveItemTimings` on this one cue, on the
+ * live clock), so what the preview shows is what Save makes the stage show.
+ *
+ * Props go through `resolveSceneProps` (the registry's defaults under the
+ * author's, what assembly hands a component): the modal holds the RAW props
+ * an add stores, and a component drawn from them alone would miss its
+ * defaulted fields. Props that do not parse give `base` back whole, its own
+ * component and props: the preview keeps the last graphic that could render
+ * while the author is mid-edit, and never draws a component over props of
+ * another shape (a scene reading `items` off a TitleCard's props throws).
+ *
+ * `pins` is `shownItemPins`. Undefined (an unmarked graphic, before any item
+ * change) leaves `base`'s own item times, the baked timing the stage draws
+ * (`modalRows`' live rows read the same). `ownReveal` is the root's own
+ * override `reveal`, which keeps a bounding pin from forcing `synced` (§3
+ * step 5); the resolver tests its presence in the doc, so it rides in a
+ * one-entry doc beside the pins.
+ */
+export function previewCue(
+  base: SceneCue,
+  now: ModalState,
+  pins: ItemPins | undefined,
+  ctx: {
+    words: readonly Word[] | null;
+    window: { srcStart: number; srcEnd: number } | null;
+    liveMap: TimeMap | null;
+    ownReveal: unknown;
+  },
+): SceneCue {
+  const component = now.component as SceneComponentId;
+  const props = component in SCENE_REGISTRY ? resolveSceneProps(component, now.props) : null;
+  if (props === null) return base;
+  let cue: SceneCue = { ...base, component, props };
+  if (now.timing !== undefined && ctx.liveMap !== null) {
+    const at = resolveTimingPin(now.timing, ctx.liveMap);
+    if (at !== null) {
+      // A pin is the author's absolute window and wins over the entry word,
+      // `applyOverrides`' rule (reveal-timing final review I-3).
+      const { entryAtSec: _entry, ...rest } = cue;
+      cue = { ...rest, startSec: at.startSec, endSec: at.endSec };
+    }
+  }
+  const { words, window, liveMap } = ctx;
+  if (pins === undefined || !hasItemTiming(now.component) || words === null || window === null || liveMap === null) {
+    return cue;
+  }
+  const doc: OverrideDoc = {
+    ...emptyOverrideDoc(),
+    scenes: {
+      [cue.id]: {
+        props: ctx.ownReveal === undefined ? {} : { reveal: ctx.ownReveal },
+        elements: {},
+        itemPins: pins,
+      },
+    },
+  };
+  const roots = new Map([[cue.id, { component: now.component, props: now.props, window }]]);
+  return resolveItemTimings([cue], doc, words, liveMap, roots).cues[0] ?? cue;
+}
+
+/**
+ * The previous graphic's end on the live clock (§5 When row: a start is
+ * never before it plus `SCENE_GAP_SEC`): the latest end among the graphic
+ * cues that start before `startSec`, the block's own halves left out
+ * (`ownRoot`, its root id; null on an add, which has no cue yet). Plain takes
+ * do not count: the fill re-derives them around whatever graphics exist.
+ */
+export function previousGraphicEndSec(
+  cues: readonly SceneCue[],
+  startSec: number,
+  ownRoot: string | null,
+): number | null {
+  let end: number | null = null;
+  for (const c of cues) {
+    if (c.kind === "plain" || c.startSec >= startSec) continue;
+    if (ownRoot !== null && sceneKeyRoot(c.id) === ownRoot) continue;
+    if (end === null || c.endSec > end) end = c.endSec;
+  }
+  return end;
+}
+
+/** Float noise between a start and the word time it was led from. */
+const START_EPS = 1e-6;
+
+/**
+ * The word the block starts on, for the When row and the strip's start
+ * flag (§5): the first block word timed at or after the cue's start on the
+ * live clock. A start led `ENTRY_LEAD_SEC` ahead of a word (`whenRowPin`,
+ * assembly's entry lead) names that word; a start floored onto a word (an
+ * add's own first word) names it too. Null when no block word is.
+ */
+export function startWordOf(
+  blockWords: readonly number[],
+  words: readonly Word[],
+  liveMap: TimeMap,
+  startSec: number,
+): number | null {
+  for (const i of blockWords) {
+    const t = wordOutputStart(words[i]!, liveMap);
+    if (t !== null && t >= startSec - START_EPS) return i;
+  }
+  return null;
+}
+
+/**
+ * The word an unmatched item's marker sits on in the strip: the last block
+ * word whose item time (word time less `ITEM_LEAD_SEC`) is at or before the
+ * renderer's estimate, so the dashed marker stands where the item comes in.
+ * The first block word when the estimate is before them all; null with no
+ * block words or no estimate.
+ */
+export function wordAtSec(
+  blockWords: readonly number[],
+  words: readonly Word[],
+  liveMap: TimeMap,
+  sec: number | null,
+): number | null {
+  if (sec === null || blockWords.length === 0) return null;
+  let at: number = blockWords[0]!;
+  for (const i of blockWords) {
+    const t = wordOutputStart(words[i]!, liveMap);
+    if (t !== null && t - ITEM_LEAD_SEC <= sec + START_EPS) at = i;
+  }
+  return at;
+}
+
+/** The word being said at `sec` on the live clock (the strip's playhead,
+ * orange text), or null between words: its own `mapWord` span, half-open. */
+export function spokenWordAt(
+  windowWords: readonly number[],
+  words: readonly Word[],
+  liveMap: TimeMap,
+  sec: number,
+): number | null {
+  for (const i of windowWords) {
+    const span = liveMap.mapWord(words[i]!);
+    if (span !== null && sec >= span.start && sec < span.end) return i;
+  }
+  return null;
+}
+
+/** m:ss.s — the modal's times, a tenth finer than the ruler's m:ss because
+ * an item lands on one word of several in a second. */
+export function clockText(sec: number): string {
+  const tenths = Math.max(0, Math.round(sec * 10));
+  const m = Math.floor(tenths / 600);
+  const s = (tenths - m * 600) / 10;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
+/** What the modal opens an edit with (§5 "Edit"). */
+export type EditModalInput = {
+  component: AddedOffered;
+  /** The root's merged props, as the first override pass leaves them:
+   * before the item pass, whose forced `synced` is not the author's. */
+  props: Record<string, unknown>;
+  itemPins: ItemPins | undefined;
+  timing: SceneTiming | undefined;
+  /** The root's own override `reveal` (§3 step 5), undefined when unset. */
+  ownReveal: unknown;
+  /** The root as the stage draws it, its halves joined into one window. */
+  liveCue: SceneCue;
+  /** The block window (Terms), null without words, clocks or an anchor. */
+  window: { srcStart: number; srcEnd: number } | null;
+};
+
+/**
+ * An edit's inputs for the root `rootId` (§5: a split half opens its root),
+ * or null when there is nothing the modal can edit: no block on the stage
+ * under that root, or a type the add menu does not offer (the modal's form is
+ * the add form; a clip, a terminal or a screenshot has none).
+ *
+ * `base` is the graphic-only base the live memo merges onto (`previewBase`,
+ * added graphics reconciled), so the props are the root's merged props from
+ * one `applyOverrides` (its own component swap included), the very list the
+ * item pass takes its roots from (`itemTimingRoots`), and the window is
+ * `blockWindow` on that cue, the window the stage resolves on. `cues` are the
+ * live stage cues (`live.sceneCues`), for what the root looks like now.
+ */
+export function editModalInput(args: {
+  rootId: string;
+  cues: readonly SceneCue[];
+  base: readonly SceneCue[];
+  doc: OverrideDoc;
+  words: readonly Word[] | null;
+  pinMap: TimeMap | null;
+  liveMap: TimeMap | null;
+}): EditModalInput | null {
+  const { rootId, cues, base, doc, words, pinMap, liveMap } = args;
+  const halves = cues.filter((c) => c.kind !== "plain" && sceneKeyRoot(c.id) === rootId);
+  const shown = halves.find((c) => c.id === rootId) ?? halves[0];
+  if (shown === undefined) return null;
+  const liveCue: SceneCue = {
+    ...shown,
+    startSec: Math.min(...halves.map((c) => c.startSec)),
+    endSec: Math.max(...halves.map((c) => c.endSec)),
+  };
+  const baseCue = base.find((c) => c.id === rootId);
+  const merged = baseCue === undefined ? shown : (applyOverrides([baseCue], doc).cues[0] ?? shown);
+  const component = merged.component;
+  if (component === undefined || !(ADDED_OFFERED as readonly string[]).includes(component)) return null;
+  const own = doc.scenes[rootId];
+  return {
+    component: component as AddedOffered,
+    props: merged.props ?? {},
+    itemPins: own?.itemPins,
+    timing: own?.timing,
+    ownReveal: own?.props.reveal,
+    liveCue,
+    window:
+      words === null || pinMap === null || liveMap === null ? null : blockWindow(merged, doc, words, pinMap, liveMap),
+  };
 }

@@ -2050,3 +2050,59 @@ describe("Inspector — Restore for a hidden half of an unrendered added graphic
     expect(container.querySelector('[data-testid="restore-scene-added-1@k1"]')).not.toBeNull();
   });
 });
+
+describe("Inspector — Edit text & timing… (graphic-editor-modal §5)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  function EditHarness({ cue, onEditGraphic }: { cue: SceneCue; onEditGraphic?: (id: string) => void }) {
+    const edits = useEdits();
+    return React.createElement(Inspector, {
+      selection: { sceneId: cue.id, elementId: null },
+      cue,
+      frame: { width: 1080, height: 1920 },
+      allSceneIds: [cue.id],
+      edits,
+      onSelect: () => {},
+      resolvedTheme: defaultTheme,
+      onVideoPreview: vi.fn(),
+      ...(onEditGraphic ? { onEditGraphic } : {}),
+    });
+  }
+  const render = async (cue: SceneCue, onEditGraphic?: (id: string) => void) => {
+    await act(async () => {
+      root.render(React.createElement(EditHarness, { cue, ...(onEditGraphic ? { onEditGraphic } : {}) }));
+    });
+  };
+  const button = () => container.querySelector<HTMLButtonElement>('[data-testid="edit-graphic"]');
+
+  it("on a graphic of an offered type, hands App the selected id (a half's too: App opens its root)", async () => {
+    const onEdit = vi.fn();
+    await render({ ...graphicCue, id: "scene-0@s1" }, onEdit);
+    expect(button()!.textContent).toBe("Edit text & timing…");
+    await act(async () => button()!.click());
+    expect(onEdit).toHaveBeenCalledWith("scene-0@s1");
+  });
+
+  it("not on a plain take, nor a type the add menu does not offer, nor without App's callback", async () => {
+    await render(takeCue, vi.fn());
+    expect(button()).toBeNull();
+    await render({ ...graphicCue, component: "TerminalMock", props: { windows: [] } }, vi.fn());
+    expect(button()).toBeNull();
+    await render(graphicCue);
+    expect(button()).toBeNull();
+  });
+});

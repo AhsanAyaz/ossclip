@@ -25,17 +25,30 @@ import {
   appendItem,
   blockWords,
   initialAddValues,
+  clockText,
+  editModalInput,
+  entryText,
   keptSpanStartOf,
+  listFieldOf,
   modalRows,
   openModal,
   pinItem,
+  previewCue,
+  previousGraphicEndSec,
+  propsIssue,
   removeItem,
+  rowsResizable,
+  saveBlocker,
   saveFor,
   shownItemPins,
+  spokenWordAt,
+  startWordOf,
   unpinItem,
   whenRowPin,
   windowWords,
+  withEntryText,
   withProps,
+  wordAtSec,
   type ModalRow,
   type ModalState,
   type RowContext,
@@ -688,5 +701,206 @@ describe("modalRows from the live cue (no marker)", () => {
       ["unmatched", null, null],
       ["unmatched", null, null],
     ]);
+  });
+});
+
+describe("the modal's form helpers (§5)", () => {
+  it("propsIssue is addFormIssue on props already in the doc's shape", () => {
+    expect(propsIssue("CardRow", { cards: [{ text: "a" }, { text: "b" }] })).toBeNull();
+    expect(addFormIssue("CardRow", { cards: ["a", "b"] })).toBeNull();
+    // A text-object list holding bare strings is the form's shape, not the doc's.
+    expect(propsIssue("CardRow", { cards: ["a", "b"] })).not.toBeNull();
+  });
+
+  it("listFieldOf names the item list of a type, none for a type without one", () => {
+    expect(listFieldOf("BulletList")?.key).toBe("items");
+    expect(listFieldOf("ChatMock")?.kind).toBe("messages");
+    expect(listFieldOf("TitleCard")).toBeNull();
+    // Not an offered type: no form, no list.
+    expect(listFieldOf("TerminalMock")).toBeNull();
+  });
+
+  it("entryText / withEntryText read and set a row's text, keeping the entry's other keys", () => {
+    expect(entryText("plain")).toBe("plain");
+    expect(entryText({ text: "Card", sub: "line" })).toBe("Card");
+    expect(entryText(42)).toBe("");
+    expect(withEntryText("old", "new")).toBe("new");
+    expect(withEntryText({ text: "Card", sub: "line" }, "New")).toEqual({ text: "New", sub: "line" });
+    expect(withEntryText({ from: "user", text: "hi" }, "yo")).toEqual({ from: "user", text: "yo" });
+  });
+
+  it("rowsResizable: not for a ChatMock whose keyword is its one item; yes for item lists and PhoneDemo", () => {
+    const messages = [
+      { from: "user", text: "a" },
+      { from: "agent", text: "b" },
+    ];
+    expect(rowsResizable("ChatMock", { messages })).toBe(true);
+    expect(rowsResizable("ChatMock", { messages, keyword: "b" })).toBe(false);
+    expect(rowsResizable("BulletList", { items: ["a", "b"] })).toBe(true);
+    expect(rowsResizable("PhoneDemo", { caption: [{ text: "a" }], pills: [] })).toBe(true);
+    expect(rowsResizable("TitleCard", { title: "x" })).toBe(false);
+  });
+
+  it("saveBlocker says what to fix, in the form's order, falling back to the schema", () => {
+    expect(saveBlocker("TitleCard", { title: "Hi" })).toBeNull();
+    expect(saveBlocker("TitleCard", { title: "  " })).toBe("Title needs text.");
+    expect(saveBlocker("TitleCard", { title: "x".repeat(60) })).toBe("Title is too long (60/48).");
+    expect(saveBlocker("CtaCard", { text: "go" })).toBe("Choose the action.");
+    expect(saveBlocker("BugCard", { headline: "h" })).toBe("Number needs a whole number from 1 to 9.");
+    expect(saveBlocker("BulletList", { items: [] })).toBe("Add at least 2 items.");
+    expect(saveBlocker("BulletList", { items: ["a", ""] })).toBe("1 item needs text. Type it or delete the row.");
+    expect(saveBlocker("BulletList", { items: ["", " "] })).toBe("2 items need text. Type it or delete the row.");
+    expect(saveBlocker("FlowDiagram", { nodes: ["a", ""] })).toBe("1 step needs text. Type it or delete the row.");
+    expect(saveBlocker("ChatMock", { messages: [{ from: "user", text: "" }] })).toBe(
+      "1 message needs text. Type it or delete the row.",
+    );
+    expect(saveBlocker("BulletList", { items: ["a", "b"] })).toBeNull();
+    // Every blocker agrees with the RAW parse the entry must pass.
+    for (const props of [{ items: ["a", "b"] }, { items: ["a"] }, { items: ["a", ""] }]) {
+      expect(saveBlocker("BulletList", props) === null).toBe(propsIssue("BulletList", props) === null);
+    }
+  });
+
+  it("clockText reads m:ss.s, a tenth finer than the ruler", () => {
+    expect(clockText(0)).toBe("0:00.0");
+    expect(clockText(6.36)).toBe("0:06.4");
+    expect(clockText(75.04)).toBe("1:15.0");
+    expect(clockText(59.96)).toBe("1:00.0");
+  });
+});
+
+describe("previewCue (§4, the modal's preview)", () => {
+  const base: SceneCue = {
+    id: "added-0",
+    layout: "video-top",
+    component: "BulletList",
+    props: { items: ITEMS },
+    startSec: 1.25,
+    endSec: 6.625,
+  };
+  const pctx = { words, window: WINDOW, liveMap: identity, ownReveal: undefined };
+  const add = (props: Record<string, unknown>) => openModal({ mode: "add", component: "BulletList", props });
+
+  it("times the items with the stage's own pass, on the live clock", () => {
+    const now = pinItem(add({ items: ITEMS }), 1, words[4]!);
+    const cue = previewCue(base, now, shownItemPins(now, now), pctx);
+    const doc = OverrideDocSchema.parse({ scenes: { "added-0": { itemPins: shownItemPins(now, now) } } });
+    const roots = new Map([["added-0", { component: "BulletList", props: { items: ITEMS }, window: WINDOW }]]);
+    expect(cue.reveal).toEqual(resolveItemTimings([base], doc, words, identity, roots).cues[0]!.reveal);
+    // A bounding pin, no reveal of the author's own: forced synced (§3 step 5).
+    expect(cue.props?.reveal).toBe("synced");
+  });
+
+  it("the author's own reveal keeps a pin from forcing synced", () => {
+    const now = pinItem(add({ items: ITEMS, reveal: "paced" }), 1, words[4]!);
+    const cue = previewCue(base, now, shownItemPins(now, now), { ...pctx, ownReveal: "paced" });
+    expect(cue.props?.reveal).toBe("paced");
+  });
+
+  it("carries the props with the registry's defaults, and gives base back whole when they cannot parse", () => {
+    const now = add({ items: ["One", "Two"] });
+    expect(previewCue(base, now, undefined, pctx).props).toEqual(resolveSceneProps("BulletList", { items: ["One", "Two"] }));
+    const empty = add({ items: [] });
+    expect(previewCue(base, empty, shownItemPins(empty, empty), pctx)).toBe(base);
+    // Never one component over another's props.
+    const title = openModal({ mode: "add", component: "TitleCard", props: { title: "" } });
+    expect(previewCue(base, title, undefined, pctx)).toBe(base);
+  });
+
+  it("a When-row pin moves the window, and no item pass runs without the marker", () => {
+    const now = { ...add({ items: ITEMS }), timing: { srcStart: 3.0, srcEnd: 6.625 } };
+    const cue = previewCue({ ...base, entryAtSec: 1.5, reveal: { itemAtSec: [9, 9, 9] } }, now, undefined, pctx);
+    expect([cue.startSec, cue.endSec]).toEqual([3.0, 6.625]);
+    expect(cue.entryAtSec).toBeUndefined();
+    // Unmarked (an edit before any item change): the baked times stand.
+    expect(cue.reveal?.itemAtSec).toEqual([9, 9, 9]);
+  });
+
+  it("without words, a window or a clock it places nothing", () => {
+    const now = add({ items: ITEMS });
+    expect(previewCue(base, now, shownItemPins(now, now), { ...pctx, words: null }).reveal).toBeUndefined();
+    expect(previewCue(base, now, shownItemPins(now, now), { ...pctx, window: null }).reveal).toBeUndefined();
+  });
+});
+
+describe("the strip's word lookups (§5)", () => {
+  const block = blockWords(words, WINDOW, identity);
+
+  it("previousGraphicEndSec: the latest end before the start, the block's own halves and takes left out", () => {
+    const cue = (id: string, startSec: number, endSec: number, kind?: "plain"): SceneCue => ({
+      id,
+      layout: "video-top",
+      component: "TitleCard",
+      props: {},
+      startSec,
+      endSec,
+      ...(kind ? { kind } : {}),
+    });
+    const cues = [cue("scene-0", 0, 2), cue("take-0", 2, 5, "plain"), cue("scene-1", 3, 4), cue("scene-2@s1", 4.5, 6), cue("scene-3", 7, 9)];
+    expect(previousGraphicEndSec(cues, 5, null)).toBe(6);
+    expect(previousGraphicEndSec(cues, 5, "scene-2")).toBe(4);
+    expect(previousGraphicEndSec(cues, 0, null)).toBeNull();
+  });
+
+  it("startWordOf: the first block word at or after the start, a led start naming its word", () => {
+    expect(startWordOf(block, words, identity, 1.25)).toBe(1);
+    expect(startWordOf(block, words, identity, 3.875 - ENTRY_LEAD_SEC)).toBe(4);
+    expect(startWordOf(block, words, identity, 99)).toBeNull();
+  });
+
+  it("wordAtSec: the last block word whose item time is at or before the estimate", () => {
+    expect(wordAtSec(block, words, identity, 3.6)).toBe(3);
+    expect(wordAtSec(block, words, identity, 0)).toBe(1);
+    expect(wordAtSec(block, words, identity, null)).toBeNull();
+    expect(wordAtSec([], words, identity, 3)).toBeNull();
+  });
+
+  it("spokenWordAt: the word being said, null between words", () => {
+    const all = windowWords(words, WINDOW);
+    expect(spokenWordAt(all, words, identity, 1.7)).toBe(2);
+    expect(spokenWordAt(all, words, identity, 2.5)).toBeNull();
+  });
+});
+
+describe("editModalInput (§5, Edit)", () => {
+  const plan: SceneCue = {
+    id: "scene-0",
+    layout: "video-top",
+    component: "FlowDiagram",
+    props: { nodes: ["A", "B"] },
+    startSec: 1.25,
+    endSec: 6.625,
+    anchor: { startWord: 1, endWord: 6 },
+  };
+  const doc = OverrideDocSchema.parse({
+    scenes: {
+      "scene-0": { props: { nodes: ["A", "C"], reveal: "paced" }, itemPins: { component: "FlowDiagram", pins: [null, null] } },
+    },
+  });
+  const halves: SceneCue[] = [
+    { ...plan, props: { nodes: ["A", "C"], reveal: "synced" }, endSec: 3 },
+    { ...plan, id: "scene-0@s1", props: { nodes: ["A", "C"] }, startSec: 3, endSec: 6.625 },
+  ];
+  const input = (over: Partial<Parameters<typeof editModalInput>[0]> = {}) =>
+    editModalInput({ rootId: "scene-0", cues: halves, base: [plan], doc, words, pinMap: identity, liveMap: identity, ...over });
+
+  it("opens the root: its merged props, its own marker, reveal and window, the halves' joined span", () => {
+    const got = input()!;
+    expect(got.component).toBe("FlowDiagram");
+    // The first override pass's props: the author's text, not the item
+    // pass's forced reveal.
+    expect(got.props.nodes).toEqual(["A", "C"]);
+    expect(got.props.reveal).toBe("paced");
+    expect(got.itemPins).toEqual(doc.scenes["scene-0"]!.itemPins);
+    expect(got.ownReveal).toBe("paced");
+    expect([got.liveCue.startSec, got.liveCue.endSec]).toEqual([1.25, 6.625]);
+    expect(got.window).toEqual({ srcStart: 1.25, srcEnd: 6.625 });
+  });
+
+  it("no window without words or clocks; null for a type the add menu does not offer, or no block", () => {
+    expect(input({ words: null })!.window).toBeNull();
+    const terminal = { ...plan, component: "TerminalMock" as const, props: { windows: [] } };
+    expect(input({ cues: [terminal], base: [terminal], doc: OverrideDocSchema.parse({}) })).toBeNull();
+    expect(input({ rootId: "scene-9" })).toBeNull();
   });
 });

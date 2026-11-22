@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  ADDED_OFFERED,
   BACKDROP_LAYOUTS,
   CAPTION_THEME_IDS,
   cutRangeToOldClock,
@@ -264,6 +265,13 @@ interface InspectorProps {
    * overrides.json (AG3). Empty by default: nothing listed.
    */
   addedSkipped?: readonly AddedSkippedRow[];
+  /**
+   * "Edit text & timing…" (graphic-editor-modal §5): opens the graphic
+   * editor on this block. App opens the ROOT, so a split half edits the
+   * graphic both halves draw. Absent hides the button (every harness
+   * predating it).
+   */
+  onEditGraphic?: (sceneId: string) => void;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -747,6 +755,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   sceneCues = [],
   outputDurationSec = 0,
   addedSkipped = [],
+  onEditGraphic,
 }) => {
   if (sfxMarker) {
     // The selected sound effect. FIRST branch on purpose: an SFX selection is
@@ -1430,6 +1439,23 @@ export const Inspector: React.FC<InspectorProps> = ({
           </div>
         ) : null}
         <div style={section}>
+          {/* The graphic editor (§5): a type the add menu offers, plan or
+              added alike — its form is the add form, so a clip, a terminal
+              or a screenshot has none. Keyed on the cue's own component, a
+              half's swap included: the root it opens is judged again there. */}
+          {onEditGraphic !== undefined &&
+          !isPlain &&
+          cue.component !== undefined &&
+          (ADDED_OFFERED as readonly string[]).includes(cue.component) ? (
+            <button
+              data-testid="edit-graphic"
+              style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}
+              title="Edit this graphic's text, and the words its items land on"
+              onClick={() => onEditGraphic(selection.sceneId)}
+            >
+              Edit text &amp; timing…
+            </button>
+          ) : null}
           {swapOptions ? (
             <div style={row}>
               <span style={label}>Component</span>

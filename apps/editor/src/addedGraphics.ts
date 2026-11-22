@@ -8,7 +8,6 @@ import {
   previewAddedScenes,
   sceneKeyRoot,
   wordSrcEnd,
-  type AddedOffered,
   type AddedScene,
   type SceneCue,
   type TimeMap,
@@ -30,7 +29,7 @@ export interface AddedSkippedRow {
  * Then only rule 1 runs. A baked `added-` cue whose entry is gone (an undone
  * or deleted add) must still leave the preview, since nothing about that
  * needs a clock; an add made since the last run just has no window yet and
- * previews after the next run (the add popover says so). Rule 1 is restated
+ * previews after the next run (the add modal says so). Rule 1 is restated
  * here rather than reached through `previewAddedScenes` with a fake map,
  * which would be a clock the cues are not on.
  *
@@ -218,7 +217,8 @@ const clockLabel = (sec: number): string => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
-/** The refusal the popover shows instead of the type list (§5, AG2). */
+/** The refusal the modal shows in place of its form (§5, AG2;
+ * graphic-editor-modal §5). */
 export function addOverlapRefusal(cue: SceneCue): string {
   return `These words overlap the graphic \u2018${cue.component ?? cue.id}\u2019 at ${clockLabel(cue.startSec)}. Trim that block or pick other words.`;
 }
@@ -226,20 +226,19 @@ export function addOverlapRefusal(cue: SceneCue): string {
 /** The refusal for a selection the video no longer contains (§5). */
 export const ADD_CUT_REFUSAL = "These words are cut from the video. Pick words that are still in it.";
 
-/** What App hands the panel when Graphic… is pressed: the span, the verdict
- * and the notes, worked out once at the press. */
+/** App's verdict when Graphic… is pressed: the span, the verdict and the
+ * notes, worked out once at the press, which the modal opens with. */
 export interface AddGraphicCheck {
   span: { srcStart: number; srcEnd: number };
   /** Non-null: the add is refused, and this is why. */
   refusal: string | null;
-  /** Shown in the popover above Add; empty for an ordinary add. */
+  /** Shown in the modal's footer; empty for an ordinary add. */
   notes: string[];
-}
-
-/** The check plus the commit — App's closure over `addScene` and the
- * selection, which the panel cannot reach. */
-export interface AddGraphicRequest extends AddGraphicCheck {
-  add: (component: AddedOffered, props: Record<string, unknown>) => void;
+  /** The window the overlap was measured over, in the cues' own seconds
+   * (`addWindow`, or the fallback below): the modal's header says where the
+   * block will sit before any type is chosen, and a refusal and a header
+   * can then never disagree about it. */
+  at: { startSec: number; endSec: number };
 }
 
 /**
@@ -276,18 +275,51 @@ export function addGraphicCheck(args: {
 }): AddGraphicCheck {
   const { words, cues, clock, toPlayerSec, deferred } = args;
   const span = addSpan(words);
-  if (clock !== null && words.every((w) => clock.mapWord({ text: w.text, start: w.srcStart, end: wordSrcEnd(w) }) === null)) {
-    return { span, refusal: ADD_CUT_REFUSAL, notes: [] };
-  }
-  const at = (clock !== null ? addWindow(words, clock) : null) ?? {
+  const onScreen = {
     startSec: toPlayerSec(words[0]!.start),
     endSec: toPlayerSec(words[words.length - 1]!.end),
   };
+  if (clock !== null && words.every((w) => clock.mapWord({ text: w.text, start: w.srcStart, end: wordSrcEnd(w) }) === null)) {
+    return { span, refusal: ADD_CUT_REFUSAL, notes: [], at: onScreen };
+  }
+  const at = (clock !== null ? addWindow(words, clock) : null) ?? onScreen;
   const hit = graphicOverlap(cues, at.startSec, at.endSec);
   const notes: string[] = [];
   if (deferred) notes.push("This graphic will show after the next Render.");
   if (span.srcEnd - span.srcStart > MAX_SCENE_SEC + 1e-6) {
     notes.push(`Shown for the first ${MAX_SCENE_SEC} s of these words.`);
   }
-  return { span, refusal: hit === null ? null : addOverlapRefusal(hit), notes };
+  return { span, refusal: hit === null ? null : addOverlapRefusal(hit), notes, at };
+}
+
+/**
+ * The cue an add would preview as, on `map` (graphic-editor-modal §5, the
+ * modal's preview): `previewBaseCues` on the one entry, so its window, its
+ * layout (landscape remap included) and its resolved props are the ones the
+ * stage gives the block once it is added — one conversion, not a second
+ * copy of it. Null when it would not show: no clock or word list yet, props
+ * the RAW schema refuses (the modal keeps its last preview then), or words
+ * all cut. `added-0` is the stand-in `addWindow` uses, one `nextAddedId`
+ * never mints.
+ */
+export function addPreviewCue(args: {
+  component: string;
+  props: Record<string, unknown>;
+  span: { srcStart: number; srcEnd: number };
+  words: readonly Word[] | null;
+  map: TimeMap | null;
+  landscape: boolean;
+  scriptProject: boolean;
+}): SceneCue | null {
+  const { component, props, span, words, map, landscape, scriptProject } = args;
+  const { cues } = previewBaseCues({
+    baseCues: [],
+    added: [{ id: `${ADDED_ID_PREFIX}0`, component, props, ...span }],
+    issueIds: new Set(),
+    words,
+    map,
+    landscape,
+    scriptProject,
+  });
+  return cues[0] ?? null;
 }

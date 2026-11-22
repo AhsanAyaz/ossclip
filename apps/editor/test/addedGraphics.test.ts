@@ -14,6 +14,7 @@ import {
   addBaseIds,
   addGraphicCheck,
   addOverlapRefusal,
+  addPreviewCue,
   addSpan,
   addedSkippedHeading,
   addedSkippedRows,
@@ -209,6 +210,17 @@ describe("addGraphicCheck (editor-added-graphics §5)", () => {
     expect(check.refusal).toBeNull();
     expect(check.span).toEqual({ srcStart: 2, srcEnd: 2.4 });
     expect(check.notes).toEqual([]);
+    // The window it measured: the floored one-scene assembly, which the
+    // graphic editor's header shows (graphic-editor-modal §5).
+    expect(check.at).toEqual({ startSec: 2, endSec: 3.5 });
+  });
+
+  it("carries the words' own window with a refusal for cut words, or with no clock", () => {
+    const keptTo3 = mapFromKeptSpans([{ srcIn: 0, srcOut: 3, outIn: 0, outOut: 3 }]);
+    const cut = addGraphicCheck({ words: [sw(4), sw(5)], cues: [], clock: keptTo3, toPlayerSec: same, deferred: false });
+    expect(cut.at).toEqual({ startSec: 4, endSec: 5.4 });
+    const noClock = addGraphicCheck({ words: [sw(2)], cues: [], clock: null, toPlayerSec: (t) => t + 1, deferred: true });
+    expect(noClock.at).toEqual({ startSec: 3, endSec: 3.4 });
   });
 
   it("refuses when EVERY word is cut, but not when one still plays", () => {
@@ -417,5 +429,49 @@ describe("addBaseIds (fix-wave I3)", () => {
   it("falls back to the old sceneCues when there are no base cues", () => {
     expect(addBaseIds({ sceneCues: [cue("scene-0", 0, 1)] })).toEqual(["scene-0"]);
     expect(addBaseIds(null)).toEqual([]);
+  });
+});
+
+describe("addPreviewCue (graphic-editor-modal §5, the modal's preview)", () => {
+  const words = [
+    { text: "agents", start: 2, end: 2.4 },
+    { text: "in", start: 2.5, end: 2.7 },
+    { text: "loops", start: 2.8, end: 3.2 },
+  ];
+  const args = {
+    component: "TitleCard",
+    props: { title: "Agents" },
+    span: { srcStart: 2, srcEnd: 3.2 },
+    words,
+    map: identity,
+    landscape: false,
+    scriptProject: false,
+  };
+
+  it("is the cue the stage gives the add: its window, layout and resolved props", () => {
+    const cue = addPreviewCue(args)!;
+    const stage = previewBaseCues({
+      baseCues: [],
+      added: [{ id: "added-0", component: "TitleCard", props: { title: "Agents" }, srcStart: 2, srcEnd: 3.2 }],
+      issueIds: new Set(),
+      words,
+      map: identity,
+      landscape: false,
+      scriptProject: false,
+    }).cues[0]!;
+    expect(cue).toEqual(stage);
+    expect(cue.startSec).toBe(2);
+  });
+
+  it("lays a 16:9 add out as produce will", () => {
+    const portrait = addPreviewCue(args)!;
+    const wide = addPreviewCue({ ...args, landscape: true })!;
+    expect(wide.layout).not.toBe(portrait.layout);
+  });
+
+  it("is null for props the raw schema refuses, and with no clock or words", () => {
+    expect(addPreviewCue({ ...args, props: { title: "" } })).toBeNull();
+    expect(addPreviewCue({ ...args, map: null })).toBeNull();
+    expect(addPreviewCue({ ...args, words: null })).toBeNull();
   });
 });
