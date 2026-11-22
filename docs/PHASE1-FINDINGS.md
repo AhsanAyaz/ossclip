@@ -2085,3 +2085,34 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   With no clock (no kept spans), the add-time overlap check uses the words' own span without the duration floor.
 *   `TerminalMock` and `ScreenshotFrame` are not offered in the picker.
 *   When one half of a split added graphic is covered, the not-shown list names the whole entry.
+
+## 171. The graphic editor: list items that land on their words (2026-11-22)
+
+**What.** A bullet list (and a flow, strikethrough, chat or card row) brings each item in when its word is spoken. Design: `docs/designs/graphic-editor-modal.md`. Two parts:
+
+*   **BulletList joined the reveal system.** It used a fixed 7-frame stagger and had no `revealItemTexts` case, so the matcher never timed its items (the author's screenshot: three bullets within half a second). New plans time them on their words. Two guards keep every stored BulletList on the old stagger (AG1): `plannedCue` emits `reveal` only with `itemWords`, and a swap to BulletList returns no `reveal`.
+*   **The graphic editor modal** replaces the add popover and opens from the Inspector ("Edit text & timing…"). Per item: pinned (the author chose the word), auto (matched from the item's text on every resolve), or unplaced. Pins are stored as `scenes[id].itemPins` in source seconds with the item's text; the start is the existing timing pin.
+
+**Decisions worth keeping.**
+
+*   **One resolve, one clock, one shape.** `resolveItemTimings` runs on the live clock in both pipelines, with roots built from the unsplit cues after the first `applyOverrides` and the resolve after the last. Resolving before the split (draft 4) let a split half with its own component swap inherit a `reveal` the editor never gave it; produce now has the editor's shape. A pure parity harness (`apps/editor/test/item-timing-parity.test.ts`) runs both orderings, including under a veto.
+*   **This reverses reveal-timing §7** ("edits do not re-run the matcher") for graphics with the `itemPins` marker only.
+*   **Block window from stored source data** (timing pin by form, added entry span, anchor words), never from a cue's output times: output limits such as `minScene`, the 15 s cap and seams differ between clocks.
+*   **The modal shows what renders.** An unedited plan graphic's rows come from its baked `itemAtSec`; estimates come from the renderer's own `revealFrames`.
+
+**Real run.** On a copy of the author's EGM short, a bullet list over "biggest issues with AI … they forget the context" was added through the modal with item 2 pinned to "context", saved and rendered. render-props: `itemAtSec [null, 7.72]`, `reveal: synced`. Frames: at 7.4 s ("they forget the") only "Hallucination" shows; at 7.9 s ("context") "Forgetting context" has entered. Item 1 matched no word and was placed by the renderer from the block start.
+
+**Bugs found on the way.**
+
+*   **Clip-edge word list off by one.** A split repair straddling a `--clip` start made produce's `transcript.words` one word shorter than the server's replayed list, so every anchor index (and the sound-effect lane) was one word off. `captionWordsDiffer` now compares word stamps too, so produce records its own list. Workdirs produced before the fix keep the shifted list until their next produce run. The comment at `packages/core/src/added-scenes.ts:31-33` saying the two index spaces differ on `--clip` is stale.
+*   **Right-edge drag at the cut's start did nothing.** `pinTiming` rounded a pin edge to the millisecond into the removed head (first kept span at source 1.69919 s → 1.699), and the pin was dropped as inert. Edges now round toward kept material. `splits[].src` (⌘B) and `cuts[].src` round the same way and are not fixed.
+*   **Backward shift-click collapsed the transcript selection to one word** (real mouse only: the native selection made by the shift-click was converted as a drag, then the click moved the focus onto the anchor). Found in the real run below.
+*   **The author's false overlap refusal** (a later selection refused as overlapping an early bullet list) was not reproduced; regression tests cover the reported sequence.
+
+**Limits.**
+
+*   The matcher's light stemming does not join "Hallucination" to the spoken "hallucinate", so that item shows unplaced until pinned.
+*   Edit shows the add form's fields only: a planner bullet list's `title` and a ChatMock `keyword` are not editable in the modal; a ChatMock with a keyword offers no add or delete.
+*   Clearing an optional field on a plan graphic brings back the planner's value.
+*   Older builds strip `itemPins` when they save.
+*   Editor tests are not typechecked by `pnpm typecheck` (the editor tsconfig includes `src` only); the full suite needs `--maxWorkers=2` on a 7 GB machine.
