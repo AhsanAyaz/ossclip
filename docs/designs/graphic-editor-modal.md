@@ -110,7 +110,7 @@ itemPins: z.object({
 
 ### 3. Resolving items (core, pure)
 
-**`resolveItemWords(texts, allWords, window, isSpoken, pins) → { items: ({ word: number; state: "pinned" | "auto" } | { word: null; state: "cut" | "unmatched" })[]; notes: string[] }`** in `packages/core/src/reveal-match.ts`. `allWords` is the whole transcript word list, `window` the block window, `isSpoken(i)` whether word i has a word time on the live clock. Each pin is checked in item order, against these rows in this order; the first that applies wins:
+**`resolveItemWords(texts, allWords, window, isSpoken, pins) → { items: ({ word: number; state: "pinned" | "auto"; note?: string } | { word: null; state: "cut" | "unmatched"; note?: string })[]; notes: string[] }`** in `packages/core/src/reveal-match.ts`. `allWords` is the whole transcript word list, `window` the block window, `isSpoken(i)` whether word i has a word time on the live clock. Each pin is checked in item order, against these rows in this order; the first that applies wins:
 
 | Order | Case | Result |
 |---|---|---|
