@@ -4172,9 +4172,15 @@ export async function startEditServer(
           // produce reads them in the other space. So the derivation happens
           // HERE, once, on the server that has the pieces.
           //
-          // The derivation is `ProductionSchema.repairs`' own stated contract:
-          // `applyRepairs(transcript, repairs.filter(r => r.applied))`
-          // reconstructs exactly what was rendered. No clip windowing on top:
+          // `captionWords`, when recorded, is served verbatim and takes
+          // precedence (`repairedWords`): it IS produce's list. The replay
+          // below is only the fallback for projects without it, and it is
+          // not exact for a `--clip` window starting inside a split repair —
+          // the time-sliced raw list re-splits the word, one index off
+          // (clip-edge-repair.test.ts; produce now records `captionWords`
+          // there). Otherwise the replay follows `ProductionSchema.repairs`'
+          // contract: `applyRepairs(transcript, repairs.filter(r =>
+          // r.applied))` reconstructs what was rendered. No clip windowing on top:
           // production.json's `transcript` is ALREADY the sliced raw one and
           // its `repairs` were re-indexed with it (produce.ts's `--clip`
           // block: `rawTranscript = rawSlice.transcript` / `repairs =

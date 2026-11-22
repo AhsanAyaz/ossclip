@@ -220,13 +220,15 @@ describe.skipIf(!hasFfmpeg)("produce: list items on their pinned and matched wor
     expect(cue.props?.reveal).toBe("synced");
   }, 360_000);
 
-  // Byte-equal to the build before the wiring (AG1): captured on 3a1edd5
-  // with this harness and this doc — edits, a component swap to BulletList,
-  // a split, a hide and an added list, none with `itemPins`. If an unrelated
-  // change (the mock plan, assembly) moves these bytes, re-capture from the
-  // parent of the change; the point is that the marker's absence costs
+  // Byte-equal to the build before the wiring (AG1): the whole
+  // render-props.json, captured on 3a1edd5 with this harness and this doc —
+  // edits, a component swap to BulletList, a split, a hide and an added
+  // list, none with `itemPins` — with the run's tmp paths taken out, as the
+  // clip-edge-repair production.json fixtures are. If an unrelated change
+  // (the mock plan, assembly, the theme) moves these bytes, re-capture from
+  // the parent of the change; the point is that the marker's absence costs
   // nothing.
-  it("a project with overrides and no itemPins: sceneCues byte-equal to before", async () => {
+  it("a project with overrides and no itemPins: render-props.json byte-equal to before", async () => {
     const root = join(dir, "wd-unmarked");
     await run(root);
     const work = workdirOf(root);
@@ -240,9 +242,7 @@ describe.skipIf(!hasFfmpeg)("produce: list items on their pinned and matched wor
       addedScenes: [{ id: "added-1", component: "BulletList", props: { items: ["show you", "something"] }, srcStart: 6.7278, srcEnd: 8.5681 }],
     });
     await run(root);
-    const props = JSON.parse(renderPropsText(work)) as { sceneCues: Cue[]; baseSceneCues: Cue[] };
-    expect(JSON.stringify({ sceneCues: props.sceneCues, baseSceneCues: props.baseSceneCues }, null, 1) + "\n").toBe(
-      readFileSync(join(GOLDEN, "unmarked.cues.json"), "utf8"),
-    );
+    const normalized = renderPropsText(work).split(libraryDir).join("<LIB>").split(dir).join("<DIR>");
+    expect(normalized).toBe(readFileSync(join(GOLDEN, "unmarked.render-props.json"), "utf8"));
   }, 360_000);
 });
