@@ -26,7 +26,9 @@ import {
   captionWordsDiffer,
   saveConfigPatch,
   isParkedOverrideKey,
+  isPlainTakeKey,
   parkedOverrideBaseKey,
+  rekeyTakeHalves,
   remapSceneOverrides,
   assembleScenes,
   buildCaptionLines,
@@ -75,7 +77,7 @@ import {
   createOpenAiCompatibleProvider,
   openaiTranscriptionsUrl,
   fillPlainCues,
-  splitCues,
+  splitCuesWithLanding,
   landscapeLayoutFor,
   landscapeLayoutAfterRouting,
   scriptLandscapePlacement,
@@ -2747,9 +2749,15 @@ export function layoutSlotAspects(frame: {
  * without a produce run.
  */
 export function orphanEditLine(id: string): string {
-  return isParkedOverrideKey(id)
-    ? `  ⚠ edit for ${parkedOverrideBaseKey(id)} is parked — its words are not in this plan`
-    : `  ⚠ edit for ${id} dropped — the plan no longer has that scene`;
+  if (!isParkedOverrideKey(id)) return `  ⚠ edit for ${id} dropped — the plan no longer has that scene`;
+  const base = parkedOverrideBaseKey(id);
+  // A parked TAKE HALF was parked by `rekeyTakeHalves`, not the scene remap
+  // (take-framing-identity P2): its words never left the plan — its split
+  // landed in a piece that already had its own edit. Saying "its words are
+  // not in this plan" would send the author looking for the wrong problem.
+  return base.includes("@") && isPlainTakeKey(base)
+    ? `  ⚠ edit for ${base} is parked — its split moved to a piece that already has an edit`
+    : `  ⚠ edit for ${base} is parked — its words are not in this plan`;
 }
 
 async function preflight(bin: string, hint: string): Promise<void> {
@@ -5467,7 +5475,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // are now output seconds, and letting one of those reach the sanctioned
   // overrides.json write would spend the source anchor and put the pin back
   // on a clock the next re-cut moves.
-  const pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
+  // `let` (take-framing-identity P2): rebuilt below once `rekeyTakeHalves`
+  // has re-keyed take halves, so the final override pass reads the new keys.
+  let pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
   for (const r of pinnedDoc.reports) console.log(`  ⚠ ${r}`);
   const { cues: editedCues } = applyOverrides(routed.cues, pinnedDoc.doc);
   // Word-timed list items (graphic-editor-modal §4 "Produce"): each marked
@@ -5574,7 +5584,37 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // doc owns the posture).
   const resolvedSplits = resolveSplitPoints(overrideDoc.splits, map);
   for (const r of resolvedSplits.reports) console.log(`  ⚠ ${r}`);
-  const split = splitCues(filled, resolvedSplits.points);
+  // `splitLanded`, not the spec's `landed`: this function already binds
+  // `landed` further down (the transcript repairs that applied).
+  const { cues: split, landed: splitLanded } = splitCuesWithLanding(filled, resolvedSplits.points);
+  // Take halves re-keyed by where their split LANDED (take-framing-identity
+  // P2): a cut in front renumbers the root, so the half above may carry a
+  // different root than its edit's key — the FE Loop half rendered as
+  // `take-3@66055` while its framing sat orphaned on `take-2@66055`. Legacy
+  // take splits migrate to own framing here, and a landed take split's
+  // `at` is refreshed to this clock (R5-B1). The graphic windows are pass
+  // 1's, BEFORE hidden ones drop — the list `splitThenDropHidden` received —
+  // so no refreshed `at` moves into or out of any graphic (R6-B1, R7-B1).
+  //
+  // This late position is safe: pass 1's `remapSceneOverrides` reads only
+  // anchored graphic cues, and the first `applyOverrides` and
+  // `splitThenDropHidden` run on graphic cues, where a plain-take key
+  // matches nothing — so nothing above read the keys this moves.
+  const takeRekey = rekeyTakeHalves(
+    overrideDoc,
+    splitLanded,
+    resolvedSplits.points,
+    editedCues.map((c) => ({ startSec: c.startSec, endSec: c.endSec })),
+  );
+  for (const n of takeRekey.notes) console.log(`  ▸ ${n}`);
+  overrideDoc = takeRekey.doc;
+  const splitHalvesChanged = takeRekey.changed;
+  // Rebuilt from the re-keyed doc so the final override pass below joins on
+  // the new keys (`resolveItemTimings` and `dropHiddenCues` read
+  // `overrideDoc`, reassigned just above). Its reports already printed: the
+  // re-key moves entries whole but changes no `timing` value, so they would
+  // only repeat.
+  pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
   if (overrideDoc.splits.length > 0) {
     console.log(`▸ ${overrideDoc.splits.length} scene split(s) from the edit layer`);
   }
@@ -7454,7 +7494,18 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
   // re-resolve (and re-announce) it every run. It does NOT spend the `.bak`
   // — backfilling adds an anchor, it rewrites no value a user would need to
   // recover.
-  if (cutResult.changed || captionKeysReanchored || hidesPruned || sceneKeysRemapped || splitSrcResolved) {
+  // `splitHalvesChanged` joins for the same reason (take-framing-identity
+  // P2): a re-keyed, parked or migrated take half and a refreshed split
+  // `at` are right in memory and wrong on disk. It does NOT spend the
+  // `.bak` — the move rewrites keys and copies framing, nothing to recover.
+  if (
+    cutResult.changed ||
+    captionKeysReanchored ||
+    hidesPruned ||
+    sceneKeysRemapped ||
+    splitSrcResolved ||
+    splitHalvesChanged
+  ) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
     console.log(overridesWriteLine(cutResult.changed));
   }

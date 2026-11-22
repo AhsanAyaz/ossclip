@@ -2,6 +2,8 @@ export * from "./schema";
 export * from "./scene-schema";
 export * from "./look";
 export * from "./overrides";
+// Produce's take-half re-keying (take-framing-identity P2).
+export * from "./take-halves";
 export * from "./scene-registry";
 export * from "./assemble";
 export * from "./fill";

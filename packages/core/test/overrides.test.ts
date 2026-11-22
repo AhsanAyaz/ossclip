@@ -11,6 +11,8 @@ import {
   parkedOverrideBaseKey,
   remapSceneOverrides,
   splitCues,
+  splitCuesWithLanding,
+  SPLIT_MIN_PIECE_SEC,
   atSplitPoints,
   splitThenDropHidden,
   stampSceneAnchors,
@@ -1251,6 +1253,58 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
     expect(cues[1]!.video?.scale).toBe(0.8);
     // The first half is untouched — the halves are independent scenes now.
     expect(cues[0]!.video).toBeUndefined();
+  });
+});
+
+describe("splitCuesWithLanding (take-framing-identity P2)", () => {
+  const take = (id: string, startSec: number, endSec: number): SceneCue => ({
+    id,
+    kind: "plain",
+    layout: "full-bleed",
+    startSec,
+    endSec,
+  });
+
+  it("maps a split that lands on a root to that root's id", () => {
+    const { landed } = splitCuesWithLanding(
+      [take("take-0", 0, 10), take("take-1", 10, 20)],
+      [{ at: 14, id: "s" }],
+    );
+    expect([...landed]).toEqual([["s", "take-1"]]);
+  });
+
+  it("a second split inside an existing half maps to the ROOT id, never the half's", () => {
+    // The re-key target is `${root}@${sid}` — what `splitCues` names the
+    // piece — so the landing must speak the root, not `take-0@3000`.
+    const { cues, landed } = splitCuesWithLanding(
+      [take("take-0", 0, 10)],
+      [{ at: 6, id: "6000" }, { at: 3, id: "3000" }],
+    );
+    expect(cues.map((c) => c.id)).toEqual(["take-0", "take-0@3000", "take-0@6000"]);
+    expect(landed.get("3000")).toBe("take-0");
+    expect(landed.get("6000")).toBe("take-0");
+  });
+
+  it("a split skipped by the margin, or missing every cue, is absent", () => {
+    const { landed } = splitCuesWithLanding(
+      [take("take-0", 0, 10)],
+      [
+        { at: 10 - (SPLIT_MIN_PIECE_SEC - 0.1), id: "edge" },
+        { at: 99, id: "nowhere" },
+      ],
+    );
+    expect(landed.size).toBe(0);
+  });
+
+  it("`.cues` is exactly what `splitCues` returns for the same input", () => {
+    const cues = [take("take-0", 0, 10), { ...cue("scene-1"), startSec: 10, endSec: 15 }, take("take-1", 15, 30)];
+    const points = [
+      { at: 20, id: "b" },
+      { at: 4, id: "a" },
+      { at: 12, id: "g" },
+      { at: 10.1, id: "thin" },
+    ];
+    expect(splitCuesWithLanding(cues, points).cues).toEqual(splitCues(cues, points));
   });
 });
 

@@ -134,6 +134,25 @@ describe("orphanEditLine", () => {
     expect(line).not.toContain("dropped");
   });
 
+  it("a parked take half says its split moved, not that its words left (take-framing-identity P2)", () => {
+    // `rekeyTakeHalves` parks a half whose split landed in a piece that
+    // already had an edit; its words are still in the plan.
+    expect(orphanEditLine("take-2@66055#orphaned")).toBe(
+      "  ⚠ edit for take-2@66055 is parked — its split moved to a piece that already has an edit",
+    );
+    expect(orphanEditLine("scene-3#orphaned")).toBe(
+      "  ⚠ edit for scene-3 is parked — its words are not in this plan",
+    );
+    // A parked whole take (no `@`) and a parked kept-block half are not
+    // `rekeyTakeHalves`' parks, so they keep the remap's sentence.
+    expect(orphanEditLine("take-2#orphaned")).toContain("its words are not in this plan");
+    expect(orphanEditLine("take-kept-1@s#orphaned")).toContain("its words are not in this plan");
+    // Never parked: still the dropped sentence.
+    expect(orphanEditLine("take-2@66055")).toBe(
+      "  ⚠ edit for take-2@66055 dropped — the plan no longer has that scene",
+    );
+  });
+
   it("a parked entry in the doc reaches the warning loop as its parked key", () => {
     // End-to-end through applyOverrides: the parked key IS what the loop
     // receives, so the special case above is reachable, not decorative.
@@ -173,7 +192,7 @@ describe("produce's remap wiring (source-text guard)", () => {
     const remapAt = src.indexOf("remapSceneOverrides(overrideDoc, assembled)");
     const firstApplyAt = src.indexOf("applyOverrides(routed.cues");
     const dropHiddenAt = src.indexOf("splitThenDropHidden(editedCues");
-    const splitAt = src.indexOf("splitCues(filled");
+    const splitAt = src.indexOf("splitCuesWithLanding(filled");
     const applyAt = src.indexOf("applyOverrides(split");
     expect(remapAt).toBeGreaterThan(-1);
     expect(remapAt).toBeLessThan(firstApplyAt);
@@ -184,6 +203,30 @@ describe("produce's remap wiring (source-text guard)", () => {
 
   it("the orphan loop speaks through orphanEditLine — parked keys must not read as dropped", () => {
     expect(src).toMatch(/console\.log\(orphanEditLine\(id\)\)/);
+  });
+
+  it("re-keys take halves on the split's landing and adopts the doc before the final join (take-framing-identity P2)", () => {
+    // Three ways to compute the re-key and still render the stale keys: drop
+    // `takeRekey.doc`, keep the pre-rekey `pinnedDoc` the final pass reads,
+    // or run either after `applyOverrides(split`. Each typechecks and prints
+    // truthful notes. `splitLanded` is the landing map (`landed` was taken).
+    const splitAt = src.indexOf("splitCuesWithLanding(filled");
+    const rekeyAt = src.search(/rekeyTakeHalves\(\s*overrideDoc,\s*splitLanded,/);
+    const adoptAt = src.indexOf("overrideDoc = takeRekey.doc");
+    const pinAt = src.indexOf("pinnedDoc = resolveSrcTimingPins(overrideDoc", adoptAt);
+    const applyAt = src.indexOf("applyOverrides(split");
+    expect(splitAt).toBeGreaterThan(-1);
+    expect(rekeyAt).toBeGreaterThan(splitAt);
+    expect(adoptAt).toBeGreaterThan(rekeyAt);
+    expect(pinAt).toBeGreaterThan(adoptAt);
+    expect(applyAt).toBeGreaterThan(pinAt);
+  });
+
+  it("a take-half re-key earns the sanctioned write without spending the `.bak`", () => {
+    expect(src).toMatch(/const splitHalvesChanged = takeRekey\.changed/);
+    const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);
+    expect(gate).not.toBeNull();
+    expect(gate![1]).toContain("splitHalvesChanged");
   });
 
   it("the sanctioned write persists the `overrideDoc` binding the remap reassigned, not a snapshot", () => {

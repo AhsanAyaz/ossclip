@@ -1759,13 +1759,33 @@ export function splitCues(
   cues: readonly SceneCue[],
   splits: readonly ResolvedSplitPoint[],
 ): SceneCue[] {
+  return splitCuesWithLanding(cues, splits).cues;
+}
+
+/**
+ * `splitCues`, also reporting where each split LANDED (take-framing-identity
+ * P2): split id → the root id of the cue it actually cut. A take half's key
+ * follows its root's ordinal, so after a cut in front the half the render
+ * makes can sit under a different root than the one its edit was keyed to;
+ * `rekeyTakeHalves` reads this map to move the edit onto the piece the
+ * render really has. The root, never the host cue's own id — a second split
+ * inside `take-0@3000` still names its piece `take-0@<id>`. A split the
+ * margin test skips or that misses every cue is absent: it made no piece, so
+ * there is nothing to re-key it to.
+ */
+export function splitCuesWithLanding(
+  cues: readonly SceneCue[],
+  splits: readonly ResolvedSplitPoint[],
+): { cues: SceneCue[]; landed: Map<string, string> } {
   const out = [...cues];
+  const landed = new Map<string, string>();
   for (const s of [...splits].sort((a, b) => a.at - b.at)) {
     const i = out.findIndex(
       (c) => s.at >= c.startSec + SPLIT_MIN_PIECE_SEC && s.at <= c.endSec - SPLIT_MIN_PIECE_SEC,
     );
     if (i === -1) continue;
     const cue = out[i]!;
+    landed.set(s.id, splitRootId(cue.id));
     // Derive from the ROOT id, not the (possibly already-split) cue id:
     // `take-0@6000`, never `take-0@3000@6000` — so a half's id depends only
     // on the original cue and the split that made it, and adding an EARLIER
@@ -1782,7 +1802,7 @@ export function splitCues(
       { ...secondHalfBase(cue), id: `${cue.id.split("@")[0]}@${s.id}`, startSec: s.at },
     );
   }
-  return out;
+  return { cues: out, landed };
 }
 
 function secondHalfBase(cue: SceneCue): SceneCue {
