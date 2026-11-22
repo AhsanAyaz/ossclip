@@ -1882,6 +1882,14 @@ export const App: React.FC = () => {
       return null;
     }
   }, [liveRecut, renderProps]);
+  // "Is this source second played" on the clock `clock.toSourceSec` inverts
+  // (the live map under a veto, the spans' without one: `rulerMap`'s two
+  // arms are exactly `previewClockMappers`'), so a pin a drag or a speed
+  // resize writes is rounded onto the kept side and resolves (`pinTiming`).
+  const pinKeptSrc = useMemo(
+    () => (rulerMap === null ? undefined : (src: number): boolean => rulerMap.toOutput(src) !== null),
+    [rulerMap],
+  );
   const sfxWords = useMemo<SfxWordAnchor[]>(() => {
     const words = sfxPlan.words;
     if (words === null || words.length === 0) return [];
@@ -3472,6 +3480,7 @@ export const App: React.FC = () => {
             fromLive={clock.fromLive}
             hasOldClockPreimage={clock.hasOldClockPreimage}
             toSourceSec={clock.toSourceSec}
+            sourceKept={pinKeptSrc}
             onClockRefused={setClockRefusedNotice}
             // The SFX panel (Phase 4). `sfxEnabled` is the lane's own
             // visibility signal — a production with no plan gets no palette,
@@ -3549,6 +3558,7 @@ export const App: React.FC = () => {
         // dropped across the next re-cut. Same mapper ⌘B's `splits[].src`
         // resolves through — one clock, both anchors.
         pinSourceSec={clock.toSourceSec}
+        pinKeptSrc={pinKeptSrc}
         // The sound lane (Phase 4): NULL when this production has no plan, so
         // the row is not drawn at all — an empty array would draw an empty
         // lane, which is a different (and real) state (the prop's doc).

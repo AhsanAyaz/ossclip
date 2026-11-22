@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyOverrides,
   livePreviewMap,
+  mapFromKeptSpans,
   previewClockMappers,
   resolveSrcTimingPins,
   type OverrideDoc,
@@ -1029,5 +1030,94 @@ describe("Timeline — a drag commit is source-anchored under a live veto", () =
     const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-scene-0"]')!;
     await drag(block, 1100, 1400);
     expect(docRef.current.scenes["scene-0"]!.timing).toEqual({ startSec: 13, endSec: 17 });
+  });
+});
+
+/**
+ * A right-edge drag on a block at the cut's start (EGM short, 2026-11-22):
+ * the first kept span starts at source 1.69919 s, so the block's start at
+ * output 0 converted to 1.69919 and rounded to 1.699 — cut material. The
+ * pin resolved to nothing and the block stayed put. App hands the Timeline
+ * the clock's kept test (`pinKeptSrc`), and the pin rounds onto the kept side.
+ */
+describe("Timeline — an edge drag on a block at the cut's start keeps its pin", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let realRect: () => DOMRect;
+  const egm = mapFromKeptSpans([
+    { srcIn: 1.69919, srcOut: 5.999, outIn: 0, outOut: 4.29981 },
+    { srcIn: 8.14719, srcOut: 46.5958, outIn: 4.29981, outOut: 42.74842 },
+  ]);
+  const DURATION = 42.74842;
+  const PX_PER_SEC = 100;
+  const head: SceneCue = { ...cue, id: "added-2", component: "BulletList", props: { items: ["a", "b"] }, startSec: 0, endSec: 3 };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    realRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (): DOMRect {
+      return {
+        left: 0, top: 0, right: DURATION * PX_PER_SEC, bottom: 40,
+        width: DURATION * PX_PER_SEC, height: 40, x: 0, y: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    };
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    Element.prototype.getBoundingClientRect = realRect;
+  });
+
+  it("the pin resolves on the clock and the block moves to where its edge was dropped", async () => {
+    const docRef = { current: null as unknown as OverrideDoc };
+    function EgmHarness() {
+      const edits = useEdits();
+      docRef.current = edits.doc;
+      return React.createElement(Timeline, {
+        cues: [head],
+        ghosts: [],
+        cuts: edits.doc.cuts,
+        durationSec: DURATION,
+        fps: 30,
+        playerRef: { current: null } as never,
+        selection: null,
+        onSelect: vi.fn(),
+        edits,
+        // App's wiring: the spans' conversion and the same map's kept test.
+        pinSourceSec: (sec: number) => egm.toSource(sec),
+        pinKeptSrc: (src: number) => egm.toOutput(src) !== null,
+      });
+    }
+    await act(async () => {
+      root.render(React.createElement(EgmHarness));
+    });
+    const block = container.querySelector<HTMLElement>('[data-testid="timeline-block-added-2"]')!;
+    const handles = block.querySelectorAll<HTMLElement>(":scope > div");
+    const endHandle = handles[handles.length - 1]!;
+    // Pull the END edge from 3 s to 5 s.
+    await act(async () => {
+      endHandle.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 300 }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 500 }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 500 }));
+    });
+
+    const timing = docRef.current.scenes["added-2"]!.timing as { srcStart: number; srcEnd: number };
+    expect(timing.srcStart).toBe(1.7);
+    const resolved = resolveSrcTimingPins(docRef.current, egm);
+    expect(resolved.reports).toEqual([]);
+    const moved = applyOverrides([head], resolved.doc).cues[0]!;
+    expect(moved.pinned).toBe(true);
+    expect(moved.startSec).toBeLessThan(0.001);
+    expect(Math.abs(moved.endSec - 5)).toBeLessThan(0.001);
   });
 });

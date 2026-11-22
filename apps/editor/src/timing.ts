@@ -96,6 +96,14 @@ export function moveTiming(
  * reason: float noise from the clock arithmetic is not user intent. */
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
 
+/** `src` to the millisecond on the kept side (`pinTiming`'s `keptSrc`). */
+function keptMs(src: number, keptSrc: ((src: number) => boolean) | undefined): number {
+  const near = round3(src);
+  if (keptSrc === undefined || keptSrc(near)) return near;
+  const other = near > src ? Math.floor(src * 1000) / 1000 : Math.ceil(src * 1000) / 1000;
+  return keptSrc(other) ? other : src;
+}
+
 /**
  * The `timing` entry a completed drag stores (source-anchoring audit,
  * 2026-08-26). `startSec`/`endSec` are the PREVIEW's numbers, which speak
@@ -110,16 +118,30 @@ const round3 = (v: number): number => Math.round(v * 1000) / 1000;
  * is worse than a source-anchored one but far better than a fabricated
  * source second, and `remapOverridesThroughRecut` still looks after it.
  *
+ * `keptSrc` is the same clock's "is this source second played" test
+ * (`toOutput(src) !== null` on the map `toSourceSec` inverts). The ms
+ * rounding must never carry an edge out of the kept span it sits in: a block
+ * at output 0 whose first span starts at source 1.69919 s converted to
+ * 1.69919, rounded to 1.699 — inside the removed head — and the pin resolved
+ * to nothing ("not in this cut — pin inert"), so a right-edge drag on it
+ * silently did nothing (EGM short, 2026-11-22). A seam does the same from
+ * the other side: `toSource` answers the earlier span's `srcOut` there, and
+ * rounding up leaves it. With `keptSrc`, an edge the nearest millisecond
+ * would cut takes the other millisecond (the kept side), and keeps its exact
+ * source second when neither is kept (a span under a millisecond). Absent,
+ * the plain nearest-ms rounding stands.
+ *
  * Pure (and exported) so the clock decision is testable without a DOM.
  */
 export function pinTiming(
   startSec: number,
   endSec: number,
   toSourceSec: ((sec: number) => number) | null | undefined,
+  keptSrc?: (src: number) => boolean,
 ): SceneTiming {
   if (!toSourceSec) return { startSec, endSec };
-  const srcStart = round3(toSourceSec(startSec));
-  const srcEnd = round3(toSourceSec(endSec));
+  const srcStart = keptMs(toSourceSec(startSec), keptSrc);
+  const srcEnd = keptMs(toSourceSec(endSec), keptSrc);
   // An ordered pair is the src arm's schema refinement: a clock that answered
   // the same source second for both edges (a window entirely inside removed
   // material, or a rounding tie on a sub-millisecond block) would write a doc

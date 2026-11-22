@@ -100,6 +100,10 @@ interface TimelineProps {
    * legacy old-clock write when this is absent).
    */
   pinSourceSec?: ((sec: number) => number) | null;
+  /** Whether a SOURCE second plays on the clock `pinSourceSec` inverts, so
+   * the pin's ms rounding never lands an edge in removed material
+   * (`pinTiming`'s `keptSrc`). Absent: plain rounding. */
+  pinKeptSrc?: (src: number) => boolean;
   /**
    * OLD-clock output seconds → the live (player) clock this ruler draws
    * (cut review step 4 follow-up, the struck band's DISPLAY half): a
@@ -462,6 +466,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   videoSrc,
   toSourceSec,
   pinSourceSec = null,
+  pinKeptSrc,
   toLive = (sec: number): number => sec,
   onRevived,
   sfxMarkers = null,
@@ -960,7 +965,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               // a dragged block landed seconds away and snapped back).
               edits.patchTiming(
                 press.sceneId,
-                pinTiming(preview.startSec, preview.endSec, pinSourceSec),
+                pinTiming(preview.startSec, preview.endSec, pinSourceSec, pinKeptSrc),
               );
             }
             return null;
@@ -989,7 +994,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           // Source-anchored like the body-drag commit above, same reasoning.
           edits.patchTiming(
             drag.sceneId,
-            pinTiming(preview.startSec, preview.endSec, pinSourceSec),
+            pinTiming(preview.startSec, preview.endSec, pinSourceSec, pinKeptSrc),
           );
         }
         return null;
@@ -1002,7 +1007,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec, sfxWords, overlayWords]);
+  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec, pinKeptSrc, sfxWords, overlayWords]);
 
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 

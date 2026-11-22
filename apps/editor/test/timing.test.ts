@@ -9,7 +9,14 @@ import {
   timeAtX,
   zoomedScrollLeft,
 } from "../src/timing";
-import { OverrideDocSchema, applyOverrides, type KeptSpan, type SceneCue } from "@ossclip/core/browser";
+import {
+  OverrideDocSchema,
+  applyOverrides,
+  mapFromKeptSpans,
+  resolveTimingPin,
+  type KeptSpan,
+  type SceneCue,
+} from "@ossclip/core/browser";
 
 const cues = [
   { id: "a", startSec: 0, endSec: 5 },
@@ -204,6 +211,75 @@ describe("pinTiming (source-anchored scene timing, 2026-08-26)", () => {
     // window inside removed material) would otherwise mint `srcEnd ===
     // srcStart`, which `SceneTimingSchema` rejects on the next load.
     expect(pinTiming(5, 9, () => 4)).toEqual({ startSec: 5, endSec: 9 });
+  });
+});
+
+describe("pinTiming never rounds an edge into removed material (EGM short, 2026-11-22)", () => {
+  // The author's project: the first kept span starts at source 1.69919 s,
+  // so output 0 IS source 1.69919, and 1.699 (its nearest ms) was cut.
+  const egm = mapFromKeptSpans([
+    { srcIn: 1.69919, srcOut: 5.999, outIn: 0, outOut: 4.29981 },
+    { srcIn: 8.14719, srcOut: 19.6976, outIn: 4.29981, outOut: 15.85022 },
+  ]);
+  const kept = (src: number): boolean => egm.toOutput(src) !== null;
+  const toSource = (sec: number): number => egm.toSource(sec);
+
+  it("a block at output 0: the start rounds onto the kept side, and the pin resolves", () => {
+    // What a right-edge drag from 0–3 to 0–5.77 wrote: 1.699, inert.
+    const plain = pinTiming(0, 5.77, toSource) as { srcStart: number; srcEnd: number };
+    expect(plain.srcStart).toBe(1.699);
+    expect(resolveTimingPin(plain, egm)).toBeNull();
+    const pin = pinTiming(0, 5.77, toSource, kept) as { srcStart: number; srcEnd: number };
+    expect(pin.srcStart).toBe(1.7);
+    const at = resolveTimingPin(pin, egm)!;
+    // Within a millisecond of the drag, on the kept side.
+    expect(at.startSec).toBeGreaterThanOrEqual(0);
+    expect(at.startSec).toBeLessThan(0.001);
+    expect(Math.abs(at.endSec - 5.77)).toBeLessThan(0.001);
+  });
+
+  it("an edge on a seam: toSource's earlier preimage rounds back into its span", () => {
+    // Output 4.29981 is the seam; toSource answers 5.999 (the earlier
+    // span's end, an exact ms) — kept. Its neighbour seam on the other
+    // span starts at 8.14719, which rounds DOWN into the cut.
+    const pin = pinTiming(4.29981, 6, toSource, kept) as { srcStart: number; srcEnd: number };
+    expect(resolveTimingPin(pin, egm)).not.toBeNull();
+    const second = mapFromKeptSpans([
+      { srcIn: 0, srcOut: 2.0004, outIn: 0, outOut: 2.0004 },
+      { srcIn: 3, srcOut: 9, outIn: 2.0004, outOut: 8.0004 },
+    ]);
+    const end = pinTiming(1, 2.0004, (t) => second.toSource(t), (src) => second.toOutput(src) !== null) as {
+      srcStart: number;
+      srcEnd: number;
+    };
+    // 2.0004 rounds to 2.0 (kept); 2.0006 would round up past the span.
+    expect(resolveTimingPin(end, second)).not.toBeNull();
+    const up = mapFromKeptSpans([
+      { srcIn: 0, srcOut: 2.0006, outIn: 0, outOut: 2.0006 },
+      { srcIn: 3, srcOut: 9, outIn: 2.0006, outOut: 8.0006 },
+    ]);
+    const upPin = pinTiming(1, 2.0006, (t) => up.toSource(t), (src) => up.toOutput(src) !== null) as {
+      srcStart: number;
+      srcEnd: number;
+    };
+    expect(upPin.srcEnd).toBe(2);
+    expect(resolveTimingPin(upPin, up)).not.toBeNull();
+  });
+
+  it("keeps the exact source second when neither millisecond is kept (a span under 1 ms)", () => {
+    const sliver = mapFromKeptSpans([{ srcIn: 4.0002, srcOut: 4.0008, outIn: 0, outOut: 0.0006 }]);
+    const keptSliver = (src: number): boolean => sliver.toOutput(src) !== null;
+    const pin = pinTiming(0, 0.0006, (t) => sliver.toSource(t), keptSliver) as { srcStart: number; srcEnd: number };
+    expect(pin.srcStart).toBeCloseTo(4.0002, 9);
+    expect(pin.srcEnd).toBeCloseTo(4.0008, 9);
+    expect(resolveTimingPin(pin, sliver)).not.toBeNull();
+  });
+
+  it("an interior edge rounds to the nearest ms as before", () => {
+    expect(pinTiming(1.00004, 3.00051, toSource, kept)).toEqual({
+      srcStart: Math.round((1.69919 + 1.00004) * 1000) / 1000,
+      srcEnd: Math.round((1.69919 + 3.00051) * 1000) / 1000,
+    });
   });
 });
 

@@ -163,6 +163,10 @@ interface InspectorProps {
    * guessed. Defaults to null so every existing harness pins that path.
    */
   toSourceSec?: ((sec: number) => number) | null;
+  /** Whether a SOURCE second plays on the clock `toSourceSec` inverts — a
+   * speed resize's pin rounds onto the kept side with it (`pinTiming`'s
+   * `keptSrc`), as Timeline's drag does. Absent: plain rounding. */
+  sourceKept?: (src: number) => boolean;
   /** Visible refusal channel for a cut window with NO old-clock extent at
    * all (`cutRangeToOldClock`'s degenerate verdict) and NO `toSourceSec` to
    * anchor it with instead — App's dismissible notice, the same non-fatal
@@ -740,6 +744,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   fromLive = (sec: number): number => sec,
   hasOldClockPreimage = (): boolean => true,
   toSourceSec = null,
+  sourceKept,
   onClockRefused = (): void => {},
   sfxMarker = null,
   overlayMarker = null,
@@ -1560,7 +1565,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                           { [control.key]: value },
                           {
                             coalesce: `props:${selection.sceneId}:${control.key}`,
-                            timing: resized ? pinTiming(resized.startSec, resized.endSec, toSourceSec) : undefined,
+                            timing: resized ? pinTiming(resized.startSec, resized.endSec, toSourceSec, sourceKept) : undefined,
                           },
                         );
                       }}
