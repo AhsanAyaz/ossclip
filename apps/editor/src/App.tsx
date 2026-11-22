@@ -115,6 +115,7 @@ import {
 } from "./renderStatus";
 import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
+import { editorTakeClipStarts } from "./takeClipStarts";
 import {
   anchorCaptionLines,
   droppedEditNotices,
@@ -184,6 +185,11 @@ type RawRenderProps = PlayerProductionProps & {
    * leaves these out (they have no cue to build) and the Inspector lists
    * them with Remove (§7). */
   addedSceneIssues?: { id: string; reason: string }[];
+  /** The clip starts produce's take fill numbered `take-N` from — span
+   * starts plus kept cleanup ranges' output edges (take-framing-identity
+   * P0). Always written by an upgraded produce; absent on older props, where
+   * `editorTakeClipStarts` falls back to the span starts. */
+  takeClipStarts?: number[];
 };
 
 /**
@@ -1492,7 +1498,9 @@ export const App: React.FC = () => {
     const visibleCues = covered.cues;
     const filled = fillPlainCues(visibleCues, {
       outputDurationSec: renderProps.outputDurationSec,
-      clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
+      // Produce's own list when it wrote one (take-framing-identity P0), so
+      // the editor's take ids are the render's once a range is kept.
+      clipStarts: editorTakeClipStarts(renderProps),
     });
     // User splits (R16 §61) — after the fill so TAKES split like scenes did
     // above; a no-op here for scene ids, already split by

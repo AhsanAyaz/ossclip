@@ -1382,7 +1382,10 @@ export const Overlay: React.FC<OverlayProps> = ({
           );
           return;
         }
-        edits.addSplit({ at, src });
+        // `targetId` lets the reducer copy a take piece's framing onto the
+        // new half (take-framing-identity P1) — the same cue `splitCues`
+        // will cut at this point.
+        edits.addSplit({ at, src, targetId: target.id });
       } else if (!mod && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         // ⌥+arrows move the SELECTION to the neighbouring scene (R16 §62) —
         // the playhead stays put; this is "select", not "navigate". With

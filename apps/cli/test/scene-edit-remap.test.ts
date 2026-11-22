@@ -189,4 +189,19 @@ describe("produce's remap wiring (source-text guard)", () => {
   it("the sanctioned write persists the `overrideDoc` binding the remap reassigned, not a snapshot", () => {
     expect(src).toMatch(/writeOverrideDoc\(overridesPath,\s*overrideDoc,/);
   });
+
+  it("the take fill's clip starts are the ones written to render-props (take-framing-identity P0, R5-S5)", () => {
+    // Two halves of one claim: the fill numbers takes from `takeClipStarts`,
+    // and the editor reads that same binding back. An inlined list at either
+    // site typechecks and lets the editor's `take-N` drift from the render's.
+    expect(src).toContain("clipStarts: takeClipStarts");
+    const propsAt = src.indexOf("const props = {");
+    const spansAt = src.indexOf("spans: [...map.spans]", propsAt);
+    const propsEnd = src.indexOf("\n  };", spansAt);
+    const keyAt = src.indexOf("takeClipStarts,", spansAt);
+    expect(propsAt).toBeGreaterThan(-1);
+    expect(spansAt).toBeGreaterThan(propsAt);
+    expect(keyAt).toBeGreaterThan(spansAt);
+    expect(keyAt).toBeLessThan(propsEnd);
+  });
 });

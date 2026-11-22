@@ -5545,9 +5545,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const b = map.toOutput(r.srcOut);
     return [...(a !== null ? [a] : []), ...(b !== null ? [b] : [])];
   });
+  // Bound, not inlined (take-framing-identity P0): the same list goes into
+  // render-props below, so the editor numbers its takes from exactly the
+  // starts this fill used — span starts alone would give a different
+  // `take-N` to the same footage once a range is kept.
+  const takeClipStarts = [...map.spans.map((s) => s.outIn), ...keptEdgeStarts];
   const filled0 = fillPlainCues(reclamped, {
     outputDurationSec: map.outputDuration,
-    clipStarts: [...map.spans.map((s) => s.outIn), ...keptEdgeStarts],
+    clipStarts: takeClipStarts,
   });
   // Revived material as a first-class block — same carve the editor previews
   // with (`carveKeptTakes`'s one-implementation-two-callers doc), so
@@ -7219,6 +7224,10 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
   const props = {
     videoFileName: basename(renderVideo),
     spans: [...map.spans],
+    // The take fill's clip starts (take-framing-identity P0) — written
+    // ALWAYS, even with no kept edges, so presence tells the editor an
+    // upgraded produce wrote these props (`editorTakeClipStarts`).
+    takeClipStarts,
     captionLines,
     sceneCues,
     theme,

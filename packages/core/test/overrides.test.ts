@@ -23,8 +23,13 @@ import {
   resolveTheme,
   restoreElement,
   setElementTransform,
+  SplitSchema,
+  effectiveOverride,
+  isPlainTakeKey,
+  ownFramingSplitIds,
   type OverrideDoc,
 } from "../src/overrides";
+import { remapOverridesThroughRecut } from "../src/recut";
 import { fillPlainCues } from "../src/fill";
 import { TimeMap } from "../src/timemap";
 import { defaultTheme, type SceneCue } from "../src/scene-schema";
@@ -1317,6 +1322,90 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
     expect(cues[0]!.endSec).toBe(2);
     expect(cues[1]!.startSec).toBe(2);
     expect(cues[0]!.pinned).toBe(true);
+  });
+});
+
+describe("split take pieces own their framing (take-framing-identity P1)", () => {
+  const take = (id: string, startSec: number, endSec: number): SceneCue => ({
+    id,
+    kind: "plain",
+    layout: "full-bleed",
+    startSec,
+    endSec,
+  });
+
+  it("isPlainTakeKey: plain takes and their halves only", () => {
+    for (const k of ["take-2", "take-2-1", "take-2@s"]) expect(isPlainTakeKey(k), k).toBe(true);
+    // A kept-cleanup block, a graphic, an added scene and a parked edit are
+    // never take halves — every rule in the design keys on this predicate.
+    for (const k of ["take-kept-1@s", "scene-1", "added-1", "take-2#orphaned"]) {
+      expect(isPlainTakeKey(k), k).toBe(false);
+    }
+  });
+
+  it("ownFramingSplitIds collects only the flagged splits", () => {
+    expect(ownFramingSplitIds([{ id: "a", at: 1, src: undefined, ownFraming: true }, { id: "b", at: 2, src: undefined, ownFraming: undefined }])).toEqual(
+      new Set(["a"]),
+    );
+  });
+
+  it("the schema keeps `ownFraming` on the object arm; the legacy number arm gives undefined", () => {
+    expect(SplitSchema.parse({ at: 1, src: 2, id: "x", ownFraming: true }).ownFraming).toBe(true);
+    expect(SplitSchema.parse(1.5).ownFraming).toBeUndefined();
+  });
+
+  it("remapOverridesThroughRecut keeps `ownFraming` on both src and legacy splits", () => {
+    const map = new TimeMap([{ srcIn: 0, srcOut: 20, kind: "keep" }]);
+    const doc = OverrideDocSchema.parse({
+      splits: [
+        { at: 4, src: 4, id: "s", ownFraming: true },
+        { at: 8, id: "t", ownFraming: true },
+      ],
+    });
+    const { doc: out } = remapOverridesThroughRecut(doc, map, map);
+    expect(out.splits.map((s) => s.ownFraming)).toEqual([true, true]);
+  });
+
+  const rootFramed = {
+    "take-0": { layout: "pip-bubble" as const, video: { scale: 2 }, pip: { x: 0.3 } },
+    "take-0@s": { captionY: 0.2 },
+  };
+  const halfOf = (doc: OverrideDoc, cues: SceneCue[]) => {
+    const split = splitCues(cues, [{ at: 4, id: "s" }]);
+    return applyOverrides(split, doc).cues.find((c) => c.id.endsWith("@s"))!;
+  };
+
+  it("a flagged take half inherits neither `video` nor `pip`, and still inherits the rest", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: rootFramed,
+      splits: [{ at: 4, id: "s", ownFraming: true }],
+    });
+    const half = halfOf(doc, [take("take-0", 0, 10)]);
+    expect(half.video).toBeUndefined();
+    expect(half.pip).toBeUndefined();
+    expect(half.captionY).toBe(0.2);
+    // R16 §68 still holds for everything that is not framing.
+    expect(half.layout).toBe("pip-bubble");
+    expect(
+      effectiveOverride(doc.scenes, "take-0@s", ownFramingSplitIds(doc.splits))?.video,
+    ).toBeUndefined();
+  });
+
+  it("an unflagged take half still inherits its root's framing", () => {
+    const doc = OverrideDocSchema.parse({ scenes: rootFramed, splits: [{ at: 4, id: "s" }] });
+    const half = halfOf(doc, [take("take-0", 0, 10)]);
+    expect(half.video?.scale).toBe(2);
+    expect(half.pip?.x).toBe(0.3);
+  });
+
+  it("the flag is ignored on a graphic half", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-1": { video: { scale: 2 } } },
+      splits: [{ at: 2, id: "s", ownFraming: true }],
+    });
+    const half = halfOf(doc, [{ ...cue("scene-1"), startSec: 0, endSec: 5 }]);
+    expect(half.id).toBe("scene-1@s");
+    expect(half.video?.scale).toBe(2);
   });
 });
 

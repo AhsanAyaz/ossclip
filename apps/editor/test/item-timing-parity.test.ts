@@ -43,6 +43,7 @@ import {
 // below that runs the editor path through it rather than through core's
 // calls written out here.
 import { previewItemRoots, previewItemTimings } from "../src/itemTimingPreview";
+import { editorTakeClipStarts } from "../src/takeClipStarts";
 
 /**
  * Preview equals render (graphic-editor-modal G7, Test plan "Parity"): for
@@ -193,7 +194,9 @@ function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early"
   const visibleCues = dropOverlappingAdded(shownCues).cues;
   const filled = fillPlainCues(visibleCues, {
     outputDurationSec: oldMap.outputDuration,
-    clipStarts: oldMap.spans.map((s) => s.outIn),
+    // The memo's call (take-framing-identity P0), on the spans the old map
+    // was built from — no `takeClipStarts`, so the span-start fallback.
+    clipStarts: editorTakeClipStarts({ spans: oldMap.spans }),
   });
   const splitted = splitCues(filled, atSplitPoints(doc.splits));
   const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);

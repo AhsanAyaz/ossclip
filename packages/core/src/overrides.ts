@@ -414,6 +414,14 @@ export const SplitSchema = z.union([
       at: z.number().finite().nonnegative().optional(),
       src: z.number().finite().nonnegative().optional(),
       id: z.string().min(1),
+      // The take half this split makes OWNS its framing (take-framing-identity
+      // P1): `effectiveOverride` stops layering the root's `video`/`pip` under
+      // it, so reframing one piece of a split take never moves another. Set
+      // by the editor's ⌘B on a plain take, which copies the framing the
+      // piece had at that moment onto it first, so the flag changes nothing
+      // on screen when it is written. Absent on every older split, which
+      // keeps inheriting exactly as before. Ignored on graphic halves.
+      ownFraming: z.boolean().optional(),
     })
     .refine((s) => s.at !== undefined || s.src !== undefined, {
       message: "a split needs `at` or `src`",
@@ -426,7 +434,15 @@ export const SplitSchema = z.union([
     .nonnegative()
     // `src: undefined` spelled out so both union arms share one output
     // shape — consumers read `s.src` without narrowing the arm first.
-    .transform((at) => ({ at: at as number | undefined, src: undefined as number | undefined, id: legacySplitId(at) })),
+    // `ownFraming` likewise (take-framing-identity P1): a pre-§137 split
+    // predates the flag, so its half inherits its root's framing as it
+    // always did.
+    .transform((at) => ({
+      at: at as number | undefined,
+      src: undefined as number | undefined,
+      id: legacySplitId(at),
+      ownFraming: undefined as boolean | undefined,
+    })),
 ]);
 export type Split = z.infer<typeof SplitSchema>;
 
@@ -1129,6 +1145,24 @@ export function resolveSwappedProps(
 }
 
 /**
+ * A plain take, or a piece of one: the key every take-framing-identity rule
+ * keys on. `take-N` and `take-N-k` are what `fillPlainCues` mints; a kept
+ * cleanup block (`take-kept-*`) is out of scope (its pieces are a different
+ * ordinal space), and a parked key (`#orphaned`) is bookkeeping that matches
+ * no cue, so it is never a half.
+ */
+export function isPlainTakeKey(key: string): boolean {
+  return !isParkedOverrideKey(key) && /^take-\d+(-\d+)?$/.test(splitRootId(key));
+}
+
+/** The ids of the splits whose take halves own their framing
+ * (take-framing-identity P1) — built once per `applyOverrides` call and
+ * handed to `effectiveOverride`. */
+export function ownFramingSplitIds(splits: readonly Split[]): Set<string> {
+  return new Set(splits.filter((s) => s.ownFraming === true).map((s) => s.id));
+}
+
+/**
  * The override entry a cue resolves against: its own, layered over its split
  * ROOT's (R16 §68). A split half is still the same scene — captions scaled
  * on the original must render scaled on both halves — so `id@<split id>`
@@ -1139,17 +1173,36 @@ export function resolveSwappedProps(
  * The half's OWN entry wins key by key, and the record-shaped keys merge
  * field-wise so nudging one field on a half doesn't drop the rest of what it
  * inherited.
+ *
+ * A third exception, for take halves only (take-framing-identity P1): when
+ * `id` is a plain take key and its split's id is in `ownFraming`, the half
+ * inherits neither `video` nor `pip` — as whole objects, `volume` and
+ * `autoZoom` included. Framing is the one edit that is about a PIECE of a
+ * take, not the scene: inheriting it is what made reframing the first piece
+ * move every later half that had no value of its own. The editor's ⌘B
+ * copies the piece's framing onto the half before flagging it, so the
+ * resolved framing is unchanged at the moment the flag is written. Graphic
+ * halves ignore the flag: their framing is the scene's, and overrides apply
+ * to them before their split (`produce.ts`'s first pass). Everything else
+ * still inherits (R16 §68).
+ *
+ * Exported (take-framing-identity P1) for the editor's ⌘B, which copies a
+ * piece's framing from this layer — never from the cue's resolved `video`.
  */
-function effectiveOverride(
+export function effectiveOverride(
   scenes: Record<string, SceneOverride>,
   id: string,
+  ownFraming?: ReadonlySet<string>,
 ): SceneOverride | undefined {
   const own = scenes[id];
   const at = id.indexOf("@");
   if (at === -1) return own;
   const root = scenes[id.slice(0, at)];
   if (!root) return own;
-  const { timing: _timing, hidden: _hidden, ...base } = root;
+  const ownsFraming = ownFraming !== undefined && isPlainTakeKey(id) && ownFraming.has(id.slice(at + 1));
+  const { timing: _timing, hidden: _hidden, ...inherited } = root;
+  const { video: _video, pip: _pip, ...unframed } = inherited;
+  const base: Omit<SceneOverride, "timing" | "hidden"> = ownsFraming ? unframed : inherited;
   if (!own) return { ...base, props: { ...base.props }, elements: { ...base.elements } };
   return {
     ...base,
@@ -1235,8 +1288,12 @@ export function resolveSrcTimingPins(
 export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): AppliedOverrides {
   const ids = new Set(cues.map((c) => c.id));
   const orphans = Object.keys(doc.scenes).filter((id) => !ids.has(id));
+  // Once per call, for both merges below (take-framing-identity P1): the two
+  // must agree on which halves own their framing, or the speed retime would
+  // read a different entry from the one the merge applied.
+  const ownFraming = ownFramingSplitIds(doc.splits);
   const out = cues.map((cue) => {
-    const o = effectiveOverride(doc.scenes, cue.id);
+    const o = effectiveOverride(doc.scenes, cue.id, ownFraming);
     if (!o) return cue;
     // A refused swap (a non-planner component on either side) comes back as
     // the cue's own component: it is then no swap at all, and the entry's
@@ -1315,7 +1372,7 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
   // editor's memo get the same window.
   const retimed = out.map((merged, i) => {
     const cue = cues[i]!;
-    const o = effectiveOverride(doc.scenes, cue.id);
+    const o = effectiveOverride(doc.scenes, cue.id, ownFraming);
     if (!o) return merged;
     const nextStartSec = out
       .filter((c) => c !== merged && c.startSec > merged.startSec)
@@ -1557,9 +1614,11 @@ export function itemPinText(item: RevealItem): string {
 
 /**
  * Every item's time on the live clock for each root with word timing on
- * (graphic-editor-modal §3). List-level because the override merge
- * (`effectiveOverride`) is private to this module and step 5 needs it per
- * cue.
+ * (graphic-editor-modal §3). List-level because step 5 needs the override
+ * merge (`effectiveOverride`) per cue, which was private to this module
+ * when this was written (it is exported since take-framing-identity P1, for
+ * the editor's ⌘B framing copy). It reads only `props` there, so the
+ * split's `ownFraming` set is not needed.
  *
  * For each root id whose own entry has `itemPins` and whose root component
  * is covered:

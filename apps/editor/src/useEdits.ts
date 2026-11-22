@@ -11,8 +11,12 @@ import {
   withAddedScenes,
   clearGraphicRect,
   clearTiming,
+  effectiveOverride,
   emptyOverrideDoc,
+  isPlainTakeKey,
   mintSplitId,
+  ownFramingSplitIds,
+  splitRootId,
   rekeyCaptionRecords,
   restoreElement,
   setElementTransform,
@@ -136,7 +140,10 @@ export type EditAction =
    * style to every listed scene — "the captions are too low for this whole
    * video". R16 §64 rides along: scale fans out with position. */
   | { type: "patchCaptionStyleAll"; sceneIds: string[]; y?: number; scale?: number }
-  | { type: "addSplit"; at?: number; src?: number }
+  /** `targetId` is the cue the playhead split (take-framing-identity P1):
+   * on a plain take its framing is copied onto the new half and the split
+   * flagged `ownFraming`. Absent, or any other target, splits as before. */
+  | { type: "addSplit"; at?: number; src?: number; targetId?: string }
   | { type: "clearTiming"; sceneId: string }
   /** The global Captions switch (doc-global `captionsHidden`) — one action
    * for both directions rather than a hide/restore pair, because the UI is
@@ -477,6 +484,16 @@ export const initialEditState = (): EditState => ({
 
 const withScene = (doc: OverrideDoc, id: string) =>
   doc.scenes[id] ?? { props: {}, elements: {} };
+
+/** No keys but an empty `props` and an empty `elements`
+ * (take-framing-identity's definition, R4-S6) — an override with nothing to
+ * say, which `addSplit`'s framing copy does not store. */
+const isEmptyEntry = (entry: SceneOverride): boolean =>
+  Object.entries(entry).every(
+    ([k, v]) =>
+      v === undefined ||
+      ((k === "props" || k === "elements") && Object.keys(v as object).length === 0),
+  );
 
 /** The sfx slot as a value, for reducers that have to read it before it
  * exists — the doc's own key stays ABSENT until something is actually stored
@@ -873,14 +890,52 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // The id is minted HERE, once, and never recomputed (§137). Minted
       // from the SOURCE ms when available — the stable anchor — else the
       // old-clock at; `mintSplitId` checks the ids themselves either way.
+      const id = mintSplitId(action.src ?? action.at!, state.doc.splits);
+      // A take split makes a piece that OWNS its framing
+      // (take-framing-identity P1): the new half gets the framing the piece
+      // was showing, and the flag stops it inheriting the root's from here
+      // on — so reframing either piece never moves the other, and nothing
+      // moves on screen at the moment of the split. Graphic and kept-block
+      // targets split as they always did.
+      const ownsFraming = action.targetId !== undefined && isPlainTakeKey(action.targetId);
+      let scenes = state.doc.scenes;
+      if (ownsFraming) {
+        // `splitCues`' name for the piece after the point: root, never the
+        // target's own `@` suffix, so a split of a half is a sibling.
+        const halfKey = `${splitRootId(action.targetId!)}@${id}`;
+        // The override LAYER, never the cue's resolved `video`
+        // (take-framing-identity P1): the live cue also carries App's
+        // uncommitted framing preview, and only the doc is what the
+        // render will resolve — the copy must be exactly that.
+        const from = effectiveOverride(scenes, action.targetId!, ownFramingSplitIds(state.doc.splits));
+        // A reused id can find a stale entry here; only its framing is
+        // replaced (field for field: what `from` lacks is deleted), its
+        // other edits stay.
+        const { video: _staleVideo, pip: _stalePip, ...kept } = scenes[halfKey] ?? {
+          props: {},
+          elements: {},
+        };
+        const half: SceneOverride = {
+          ...kept,
+          ...(from?.video ? { video: { ...from.video } } : {}),
+          ...(from?.pip ? { pip: { ...from.pip } } : {}),
+        };
+        const { [halfKey]: _old, ...others } = scenes;
+        // An empty entry is not stored (take-framing-identity: no keys but
+        // an empty `props` and `elements`) — an unframed root's half needs
+        // nothing, the flag alone keeps it unframed.
+        scenes = isEmptyEntry(half) ? others : { ...scenes, [halfKey]: half };
+      }
       return commit({
         ...state.doc,
+        scenes,
         splits: [
           ...state.doc.splits,
           {
             ...(action.at !== undefined ? { at: action.at } : {}),
             ...(action.src !== undefined ? { src: action.src } : {}),
-            id: mintSplitId(action.src ?? action.at!, state.doc.splits),
+            id,
+            ...(ownsFraming ? { ownFraming: true } : {}),
           },
         ].sort((a, b) => (a.at ?? a.src ?? 0) - (b.at ?? b.src ?? 0)),
       });
@@ -1934,8 +1989,8 @@ export function useEdits() {
     clearCaptionStyle: (sceneId: string) => dispatch({ type: "clearCaptionStyle", sceneId }),
     patchCaptionStyleAll: (sceneIds: string[], style: { y?: number; scale?: number }) =>
       dispatch({ type: "patchCaptionStyleAll", sceneIds, ...style }),
-    addSplit: (split: { at?: number; src?: number }) =>
-      dispatch({ type: "addSplit", at: split.at, src: split.src }),
+    addSplit: (split: { at?: number; src?: number; targetId?: string }) =>
+      dispatch({ type: "addSplit", at: split.at, src: split.src, targetId: split.targetId }),
     setCaptionsHidden: (hidden: boolean) => dispatch({ type: "setCaptionsHidden", hidden }),
     setCaptionTheme: (value: CaptionThemeId | undefined) =>
       dispatch({ type: "setCaptionTheme", value }),

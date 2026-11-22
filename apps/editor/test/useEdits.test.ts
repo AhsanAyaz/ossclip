@@ -6,7 +6,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { OverrideDocSchema, atSplitPoints, splitCues, type SceneCue } from "@ossclip/core/browser";
+import {
+  OverrideDocSchema,
+  applyOverrides,
+  atSplitPoints,
+  splitCues,
+  type SceneCue,
+} from "@ossclip/core/browser";
 import { COALESCE_MS, editReducer, initialEditState, mintAddedSceneId, useEdits } from "../src/useEdits";
 
 describe("edit state", () => {
@@ -680,6 +686,102 @@ describe("scene splits (R16 §61)", () => {
     let s = editReducer(initialEditState(), { type: "addSplit", at: 7.5 });
     s = editReducer(s, { type: "undo" });
     expect(s.doc.splits).toEqual([]);
+  });
+});
+
+describe("a ⌘B on a take copies the piece's framing (take-framing-identity P1)", () => {
+  const take = (): SceneCue =>
+    ({ id: "take-1", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10 }) as SceneCue;
+  const loaded = (doc: unknown) =>
+    editReducer(initialEditState(), { type: "load", doc: OverrideDocSchema.parse(doc) });
+  /** The split the last ⌘B minted — found by its anchor, so the tests never
+   * restate `mintSplitId`'s derivation. */
+  const minted = (s: ReturnType<typeof loaded>, src: number) => s.doc.splits.find((x) => x.src === src)!;
+
+  it("17: splitting a root take copies its framing onto the new half, flags the split, and undoes in one step", () => {
+    const before = loaded({ scenes: { "take-1": { video: { scale: 2, dx: 10 } } } });
+    const s = editReducer(before, { type: "addSplit", at: 5, src: 5, targetId: "take-1" });
+    const split = minted(s, 5);
+    expect(s.doc.scenes[`take-1@${split.id}`]!.video).toEqual({ scale: 2, dx: 10 });
+    expect(split.ownFraming).toBe(true);
+    // One commit: the copy and the flag are one decision.
+    expect(s.past).toHaveLength(before.past.length + 1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(before.doc);
+  });
+
+  it("18: splitting a flagged half copies that half's OWN framing, not its root's", () => {
+    const s0 = loaded({
+      scenes: { "take-1": { video: { scale: 2, dx: 10 } }, "take-1@s1": { video: { dx: -5 } } },
+      splits: [{ at: 2, src: 2, id: "s1", ownFraming: true }],
+    });
+    const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId: "take-1@s1" });
+    expect(s.doc.scenes[`take-1@${minted(s, 5).id}`]!.video).toEqual({ dx: -5 });
+  });
+
+  it("19: splitting an unflagged legacy half copies the framing it was showing (its root's)", () => {
+    const s0 = loaded({
+      scenes: { "take-1": { video: { scale: 2, dx: 10 } } },
+      splits: [{ at: 2, src: 2, id: "s1" }],
+    });
+    const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId: "take-1@s1" });
+    expect(s.doc.scenes[`take-1@${minted(s, 5).id}`]!.video).toEqual({ scale: 2, dx: 10 });
+  });
+
+  it("20: a root with no framing stores no half entry, still flags the split, and a later root reframe leaves the half alone", () => {
+    let s = editReducer(initialEditState(), { type: "addSplit", at: 5, src: 5, targetId: "take-1" });
+    const split = minted(s, 5);
+    expect(s.doc.scenes[`take-1@${split.id}`]).toBeUndefined();
+    expect(split.ownFraming).toBe(true);
+    s = editReducer(s, { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    const { cues } = applyOverrides(splitCues([take()], atSplitPoints(s.doc.splits)), s.doc);
+    expect(cues.find((c) => c.id === "take-1")!.video).toEqual({ scale: 3 });
+    expect(cues.find((c) => c.id === `take-1@${split.id}`)!.video).toBeUndefined();
+  });
+
+  it("21: clearing either piece's framing leaves the other's", () => {
+    const s0 = editReducer(loaded({ scenes: { "take-1": { video: { scale: 2 } } } }), {
+      type: "addSplit", at: 5, src: 5, targetId: "take-1",
+    });
+    const half = `take-1@${minted(s0, 5).id}`;
+    const halfCleared = editReducer(s0, { type: "clearVideo", sceneId: half });
+    expect(halfCleared.doc.scenes["take-1"]!.video).toEqual({ scale: 2 });
+    const rootCleared = editReducer(s0, { type: "clearVideo", sceneId: "take-1" });
+    expect(rootCleared.doc.scenes[half]!.video).toEqual({ scale: 2 });
+  });
+
+  it("22: a duplicate ⌘B within a millisecond copies nothing", () => {
+    const s0 = loaded({
+      scenes: { "take-1": { video: { scale: 2 } } },
+      splits: [{ at: 5, src: 5, id: "5000" }],
+    });
+    expect(editReducer(s0, { type: "addSplit", at: 5.0004, src: 5.0004, targetId: "take-1" })).toBe(s0);
+  });
+
+  it("23: a graphic or kept-block target behaves exactly as before — no copy, no flag", () => {
+    for (const targetId of ["scene-2", "take-kept-5000"]) {
+      const s0 = loaded({ scenes: { [targetId]: { video: { scale: 2 } } } });
+      const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId });
+      const split = minted(s, 5);
+      expect(s.doc.scenes[`${targetId}@${split.id}`], targetId).toBeUndefined();
+      expect(split.ownFraming, targetId).toBeUndefined();
+    }
+  });
+
+  it("24: a stale entry under a reused half key has its framing replaced and its other fields kept", () => {
+    const s0 = loaded({
+      scenes: {
+        "take-1": { video: { scale: 2 } },
+        "take-1@5000": { captionY: 0.3, video: { dx: 1 }, pip: { x: 0.4 } },
+      },
+    });
+    const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId: "take-1" });
+    expect(minted(s, 5).id).toBe("5000");
+    const half = s.doc.scenes["take-1@5000"]!;
+    expect(half.video).toEqual({ scale: 2 });
+    // The root has no pip, so the stale one goes: the copy is the framing
+    // the piece was showing, field for field.
+    expect(half.pip).toBeUndefined();
+    expect(half.captionY).toBe(0.3);
   });
 });
 
