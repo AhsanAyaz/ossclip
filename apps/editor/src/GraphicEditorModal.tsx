@@ -2,7 +2,6 @@ import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import {
   ADDED_OFFERED,
-  addFormProps,
   isSrcTiming,
   resolveTimingPin,
   wordOutputStart,
@@ -23,13 +22,13 @@ import {
   clockText,
   entryText,
   hasItemTiming,
-  initialAddValues,
   keptSpanStartOf,
   listFieldOf,
   modalRows,
   openModal,
   pinItem,
   previewCue,
+  propsForType,
   removeItem,
   rowsResizable,
   saveBlocker,
@@ -333,7 +332,10 @@ export const GraphicEditorModal: React.FC<GraphicEditorModalProps> = (p) => {
 
   const chooseType = (c: AddedOffered): void => {
     if (p.mode !== "add") return;
-    const st = openModal({ mode: "add", component: c, props: addFormProps(c, initialAddValues(c, p.selectionText)) });
+    // Typed rows carry to a type with the same kind of list (`propsForType`):
+    // arrowing through the types must not throw them away.
+    const from = now === null ? null : { component: now.component, props: now.props };
+    const st = openModal({ mode: "add", component: c, props: propsForType(c, p.selectionText, from) });
     // The last preview was another type's: never the base of this one's.
     lastAddCue.current = null;
     setOpened(st);
@@ -461,9 +463,13 @@ export const GraphicEditorModal: React.FC<GraphicEditorModalProps> = (p) => {
       let j = at + step;
       while (allowed !== null && j >= 0 && j < windowW.length && !allowed.has(windowW[j]!)) j += step;
       if (j >= 0 && j < windowW.length) to = j;
-    } else if (e.key === "Home") to = 0;
-    else if (e.key === "End") to = windowW.length - 1;
-    else return;
+    } else if (e.key === "Home" || e.key === "End") {
+      // The first or last word a pick may take, while picking: Home and End
+      // never land the stop on a word the pick refuses.
+      const order = windowW.map((_, j) => j);
+      if (e.key === "End") order.reverse();
+      to = order.find((j) => allowed === null || allowed.has(windowW[j]!)) ?? null;
+    } else return;
     e.preventDefault();
     if (to === null) return;
     const i = windowW[to]!;
@@ -795,6 +801,8 @@ export const GraphicEditorModal: React.FC<GraphicEditorModalProps> = (p) => {
                               </>
                             )}
                           </button>
+                          {/* A reset glyph, not the rows' delete ×: an × here
+                              read as "remove the start" (mockup v3's reset). */}
                           {covered && item1 !== null && !startIsItem1 ? (
                             <button
                               data-testid="graphic-editor-start-item1"
@@ -805,7 +813,7 @@ export const GraphicEditorModal: React.FC<GraphicEditorModalProps> = (p) => {
                                 if (startAt(item1)) focusAfter.current = pickSelector("start");
                               }}
                             >
-                              <Icon d={ICONS.x} />
+                              <Icon d={ICONS.reset} />
                             </button>
                           ) : (
                             <span />
@@ -1249,6 +1257,7 @@ const ICONS = {
   even: ["M4 12h16", "M8 9v6M16 9v6M12 9v6"],
   start: ["M6 21V4", "M6 4h11l-3 4 3 4H6"],
   x: ["M6 6l12 12M18 6L6 18"],
+  reset: ["M3 12a9 9 0 1 0 3-6.7", "M3 4v4.5h4.5"],
   plus: ["M12 5v14M5 12h14"],
 } as const;
 

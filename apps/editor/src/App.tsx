@@ -90,7 +90,7 @@ import {
   type AddGraphicWord,
 } from "./addedGraphics";
 import { GraphicEditorModal } from "./GraphicEditorModal";
-import { editModalInput, previousGraphicEndSec } from "./graphicEditorModel";
+import { editModalInput, graphicModalStale, previousGraphicEndSec } from "./graphicEditorModel";
 import { previewItemRoots, previewItemTimings } from "./itemTimingPreview";
 import { DeleteWordsModal } from "./DeleteWordsModal";
 import type { DeleteWordsPlan } from "./deleteWords";
@@ -1784,6 +1784,9 @@ export const App: React.FC = () => {
         toPlayerSec: liveRetimed?.transcript ? identitySec : clock.toLive,
         deferred: (liveRetimed?.oldClock ?? null) === null || sfxPlan.words === null,
       });
+      // The stage stops while the modal is open: its preview plays the
+      // block on its own Player, with sound, and two voices at once is noise.
+      playerRef.current?.pause();
       setGraphicModal({ mode: "add", words, check, baseIds: addBaseIds(renderProps), done });
     },
     [liveRetimed, clock, sfxPlan.words, renderProps],
@@ -1794,6 +1797,8 @@ export const App: React.FC = () => {
    * that opened it when the modal closes. */
   const openGraphicEditor = useCallback((sceneId: string) => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // Paused, as for an add: the preview carries the sound now.
+    playerRef.current?.pause();
     setGraphicModal({ mode: "edit", rootId: sceneKeyRoot(sceneId), opener });
   }, []);
   // An edit's inputs, derived from the live memo (`editModalInput`), so the
@@ -1813,6 +1818,33 @@ export const App: React.FC = () => {
           })
         : null,
     [graphicModal, liveRetimed, edits.doc, sfxPlan.words],
+  );
+  // A modal with nothing to show closes itself (`graphicModalStale`): no
+  // live memo, or an edit whose root is gone or has no form. An add tells
+  // the panel (`done(false)`), so its hold on the selection is released and
+  // nothing pops up later when the memo arrives.
+  useEffect(() => {
+    if (graphicModal === null) return;
+    if (!graphicModalStale(graphicModal.mode, liveRetimed !== null, graphicEditInput !== null)) return;
+    setGraphicModal(null);
+    if (graphicModal.mode === "add") graphicModal.done(false);
+  }, [graphicModal, liveRetimed, graphicEditInput]);
+  /** The Inspector's "Edit text & timing…" shows only when the ROOT it opens
+   * is one the modal can edit — a half swapped to a card over a terminal
+   * root is not (`editModalInput`, the very test the open makes). */
+  const canEditGraphic = useCallback(
+    (sceneId: string): boolean =>
+      liveRetimed !== null &&
+      editModalInput({
+        rootId: sceneKeyRoot(sceneId),
+        cues: liveRetimed.props.sceneCues ?? [],
+        base: liveRetimed.previewBase,
+        doc: edits.doc,
+        words: null,
+        pinMap: null,
+        liveMap: null,
+      }) !== null,
+    [liveRetimed, edits.doc],
   );
 
   // BELOW the live memo since phase 2, not above with the caption layers it
@@ -3510,6 +3542,7 @@ export const App: React.FC = () => {
             deletedScenes={ghostCues}
             addedSkipped={addedSkipped}
             onEditGraphic={openGraphicEditor}
+            canEditGraphic={canEditGraphic}
             playheadSec={() => (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps}
             // The Timeline's own two props below: a clip's speed resizes a
             // pinned block within the limits an edge drag has.

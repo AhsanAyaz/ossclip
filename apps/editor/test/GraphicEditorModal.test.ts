@@ -514,11 +514,12 @@ describe("picking (§5)", () => {
     expect(document.activeElement).toBe(stripWord(5));
     await key(stripWord(5), "ArrowRight");
     expect(document.activeElement).toBe(stripWord(6));
+    // Home and End go to the first and last word the pick may take, the
+    // neighbouring pins' words (1 and 12) excluded.
     await key(stripWord(6), "End");
-    expect(document.activeElement).toBe(stripWord(12));
-    // Not picking any more after Enter-equivalent click on an allowed word.
-    await key(stripWord(12), "Home");
-    expect(document.activeElement).toBe(stripWord(1));
+    expect(document.activeElement).toBe(stripWord(11));
+    await key(stripWord(11), "Home");
+    expect(document.activeElement).toBe(stripWord(2));
   });
 
   it("Escape cancels the pick first, then closes the modal", async () => {
@@ -561,7 +562,27 @@ describe("picking (§5)", () => {
     // Now item 1 is on word 2 and the block still starts on word 1.
     expect(stripWord(1).querySelector('[data-mark="start"]')).not.toBeNull();
     expect(q("graphic-editor-start")!.textContent).toContain("“they”");
-    expect(q("graphic-editor-start-item1")).not.toBeNull();
+    // A reset, not the rows' delete ×: its own label and glyph.
+    const reset = q("graphic-editor-start-item1")!;
+    expect(reset.getAttribute("aria-label")).toBe("Start with item 1");
+    expect(reset.innerHTML).not.toBe(q("graphic-editor-delete-0")!.innerHTML);
+    await click(reset);
+    expect(q("graphic-editor-start")!.textContent).toContain("With item 1");
+    expect(q("graphic-editor-start-item1")).toBeNull();
+  });
+
+  it("switching type keeps typed rows when the new type keeps its items in a list too", async () => {
+    await mount(React.createElement(AddHost));
+    await openOver(1, 12);
+    await bulletList(["Hallucinate", "Forget the context"]);
+    await key(q("graphic-editor-type-BulletList")!, "ArrowDown");
+    expect(q("graphic-editor-type-FlowDiagram")!.getAttribute("aria-checked")).toBe("true");
+    expect((q("graphic-editor-item-0") as HTMLInputElement).value).toBe("Hallucinate");
+    expect((q("graphic-editor-item-1") as HTMLInputElement).value).toBe("Forget the context");
+    await click(q("graphic-editor-type-TitleCard")!);
+    await click(q("graphic-editor-type-BulletList")!);
+    // Through a type with no list, they are gone: nothing to carry them.
+    expect(q("graphic-editor-item-0")).toBeNull();
   });
 });
 

@@ -276,6 +276,11 @@ interface InspectorProps {
    * predating it).
    */
   onEditGraphic?: (sceneId: string) => void;
+  /** Whether the ROOT `onEditGraphic` would open is one the modal can edit
+   * (App's `editModalInput`): the selected cue's own component is not the
+   * test, since a half may be swapped away from its root. Absent: judged by
+   * the selected cue's component. */
+  canEditGraphic?: (sceneId: string) => boolean;
 }
 
 const row: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 6 };
@@ -761,6 +766,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   outputDurationSec = 0,
   addedSkipped = [],
   onEditGraphic,
+  canEditGraphic,
 }) => {
   if (sfxMarker) {
     // The selected sound effect. FIRST branch on purpose: an SFX selection is
@@ -1446,12 +1452,14 @@ export const Inspector: React.FC<InspectorProps> = ({
         <div style={section}>
           {/* The graphic editor (§5): a type the add menu offers, plan or
               added alike — its form is the add form, so a clip, a terminal
-              or a screenshot has none. Keyed on the cue's own component, a
-              half's swap included: the root it opens is judged again there. */}
+              or a screenshot has none. Judged on the ROOT the button opens
+              (App's `canEditGraphic`), not on a half's own swap. */}
           {onEditGraphic !== undefined &&
           !isPlain &&
           cue.component !== undefined &&
-          (ADDED_OFFERED as readonly string[]).includes(cue.component) ? (
+          (canEditGraphic !== undefined
+            ? canEditGraphic(selection.sceneId)
+            : (ADDED_OFFERED as readonly string[]).includes(cue.component)) ? (
             <button
               data-testid="edit-graphic"
               style={{ ...button, color: "#EDEDF2", borderColor: "#2A2A33" }}

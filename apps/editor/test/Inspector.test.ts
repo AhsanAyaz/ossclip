@@ -2068,7 +2068,15 @@ describe("Inspector — Edit text & timing… (graphic-editor-modal §5)", () =>
     container.remove();
   });
 
-  function EditHarness({ cue, onEditGraphic }: { cue: SceneCue; onEditGraphic?: (id: string) => void }) {
+  function EditHarness({
+    cue,
+    onEditGraphic,
+    canEditGraphic,
+  }: {
+    cue: SceneCue;
+    onEditGraphic?: (id: string) => void;
+    canEditGraphic?: (id: string) => boolean;
+  }) {
     const edits = useEdits();
     return React.createElement(Inspector, {
       selection: { sceneId: cue.id, elementId: null },
@@ -2080,6 +2088,7 @@ describe("Inspector — Edit text & timing… (graphic-editor-modal §5)", () =>
       resolvedTheme: defaultTheme,
       onVideoPreview: vi.fn(),
       ...(onEditGraphic ? { onEditGraphic } : {}),
+      ...(canEditGraphic ? { canEditGraphic } : {}),
     });
   }
   const render = async (cue: SceneCue, onEditGraphic?: (id: string) => void) => {
@@ -2104,5 +2113,49 @@ describe("Inspector — Edit text & timing… (graphic-editor-modal §5)", () =>
     expect(button()).toBeNull();
     await render(graphicCue);
     expect(button()).toBeNull();
+  });
+});
+
+describe("Inspector — Edit text & timing… judges the ROOT (graphic-editor-modal §5)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("a half swapped to a card over a root the modal cannot edit shows no button", async () => {
+    const asked: string[] = [];
+    function Host({ editable }: { editable: boolean }) {
+      const edits = useEdits();
+      return React.createElement(Inspector, {
+        selection: { sceneId: "scene-0@s1", elementId: null },
+        cue: { ...graphicCue, id: "scene-0@s1" },
+        frame: { width: 1080, height: 1920 },
+        allSceneIds: ["scene-0@s1"],
+        edits,
+        onSelect: () => {},
+        resolvedTheme: defaultTheme,
+        onVideoPreview: vi.fn(),
+        onEditGraphic: vi.fn(),
+        canEditGraphic: (id: string) => {
+          asked.push(id);
+          return editable;
+        },
+      });
+    }
+    await act(async () => root.render(React.createElement(Host, { editable: false })));
+    expect(container.querySelector('[data-testid="edit-graphic"]')).toBeNull();
+    // Asked about the selected half: App resolves its root.
+    expect(asked).toContain("scene-0@s1");
+    await act(async () => root.render(React.createElement(Host, { editable: true })));
+    expect(container.querySelector('[data-testid="edit-graphic"]')).not.toBeNull();
   });
 });

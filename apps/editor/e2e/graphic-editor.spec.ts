@@ -239,3 +239,27 @@ test("a planner graphic saved without changes leaves overrides.json as it was", 
   await page.keyboard.press("Control+s");
   expect(await readFile(OVERRIDES, "utf8")).toBe(before);
 });
+
+test("opening the modal pauses the stage, from Graphic… and from the Inspector", async ({ page }) => {
+  await open(page);
+  const playing = () => page.getByTestId("stage").getAttribute("data-playing");
+  // From the Inspector: a block selected, the stage playing.
+  await page.getByTestId("timeline-block-scene-2").click();
+  await page.keyboard.press("Space");
+  await expect.poll(playing).toBe("true");
+  await page.getByTestId("edit-graphic").click();
+  await expect(page.getByTestId("graphic-editor")).toBeVisible();
+  await expect.poll(playing).toBe("false");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("graphic-editor")).toHaveCount(0);
+
+  // From the transcript's Graphic….
+  // Space with the selection up still drives the transport (the panel
+  // claims no Space).
+  await selectRun(page, 75, 78);
+  await page.keyboard.press("Space");
+  await expect.poll(playing).toBe("true");
+  await page.getByTestId("transcript-add-graphic").click();
+  await expect(page.getByTestId("graphic-editor")).toBeVisible();
+  await expect.poll(playing).toBe("false");
+});

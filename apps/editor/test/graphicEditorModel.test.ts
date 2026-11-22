@@ -28,6 +28,8 @@ import {
   clockText,
   editModalInput,
   entryText,
+  graphicModalStale,
+  propsForType,
   keptSpanStartOf,
   listFieldOf,
   modalRows,
@@ -902,5 +904,60 @@ describe("editModalInput (§5, Edit)", () => {
     const terminal = { ...plan, component: "TerminalMock" as const, props: { windows: [] } };
     expect(input({ cues: [terminal], base: [terminal], doc: OverrideDocSchema.parse({}) })).toBeNull();
     expect(input({ rootId: "scene-9" })).toBeNull();
+  });
+});
+
+describe("propsForType (§5, switching type on an add)", () => {
+  it("carries typed rows between list types, in the new type's shape and up to its maximum", () => {
+    const bullets = { component: "BulletList", props: { items: ["one", "two", "three", "four", "five"] } };
+    expect(propsForType("FlowDiagram", "sel", bullets)).toEqual({ nodes: ["one", "two", "three", "four", "five"] });
+    expect(propsForType("StrikethroughReveal", "sel", bullets)).toEqual({
+      lines: [{ text: "one" }, { text: "two" }, { text: "three" }, { text: "four" }],
+    });
+    const cards = { component: "CardRow", props: { cards: [{ text: "A", sub: "a" }, { text: "B" }] } };
+    expect(propsForType("BulletList", "sel", cards)).toEqual({ items: ["A", "B"] });
+  });
+
+  it("starts fresh for a type without a list, from no type, and across bubbles", () => {
+    const bullets = { component: "BulletList", props: { items: ["one", "two"] } };
+    expect(propsForType("TitleCard", "sel", bullets)).toEqual({ title: "sel" });
+    expect(propsForType("BulletList", "sel", null)).toEqual({ items: [] });
+    const chat = { component: "ChatMock", props: { messages: [{ from: "user", text: "hi" }] } };
+    expect(propsForType("BulletList", "sel", chat)).toEqual({ items: [] });
+    expect(propsForType("ChatMock", "sel", bullets)).toEqual({ messages: [] });
+  });
+});
+
+describe("graphicModalStale (§5)", () => {
+  it("closes a modal with no live memo, or an edit with nothing to edit; an add needs no root", () => {
+    expect(graphicModalStale("add", false, false)).toBe(true);
+    expect(graphicModalStale("add", true, false)).toBe(false);
+    expect(graphicModalStale("edit", true, false)).toBe(true);
+    expect(graphicModalStale("edit", true, true)).toBe(false);
+    expect(graphicModalStale("edit", false, true)).toBe(true);
+  });
+});
+
+describe("editModalInput judges the ROOT's component", () => {
+  it("a half swapped to an offered type does not make a terminal root editable", () => {
+    const terminal: SceneCue = {
+      id: "scene-0",
+      layout: "video-top",
+      component: "TerminalMock",
+      props: { windows: [] },
+      startSec: 0,
+      endSec: 4,
+    };
+    const half: SceneCue = { ...terminal, id: "scene-0@s1", component: "TitleCard", props: { title: "x" }, startSec: 2 };
+    const got = editModalInput({
+      rootId: "scene-0",
+      cues: [{ ...terminal, endSec: 2 }, half],
+      base: [terminal],
+      doc: OverrideDocSchema.parse({}),
+      words,
+      pinMap: identity,
+      liveMap: identity,
+    });
+    expect(got).toBeNull();
   });
 });

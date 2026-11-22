@@ -1019,3 +1019,38 @@ export function editModalInput(args: {
       words === null || pinMap === null || liveMap === null ? null : blockWindow(merged, doc, words, pinMap, liveMap),
   };
 }
+
+/**
+ * The props an add starts with when the author switches type (§5, the type
+ * column): the new type's own starting values (`initialAddValues`), except
+ * that items already typed carry over when both types keep their items in a
+ * plain list (BulletList's items, FlowDiagram's steps, StrikethroughReveal's
+ * lines, CardRow's cards — the text each row shows), up to the new type's
+ * maximum. Arrowing through the type list must not throw typed rows away.
+ * Bubbles (ChatMock) carry a sender each and do not cross.
+ */
+export function propsForType(
+  to: AddedOffered,
+  selectionText: string,
+  from: { component: string; props: Record<string, unknown> } | null,
+): Record<string, unknown> {
+  const props = addFormProps(to, initialAddValues(to, selectionText));
+  const target = listFieldOf(to);
+  const source = from === null ? null : listFieldOf(from.component);
+  if (target?.kind !== "list" || source?.kind !== "list" || from === null) return props;
+  const list = from.props[source.key];
+  if (!Array.isArray(list)) return props;
+  const texts = list.map(entryText).slice(0, target.max);
+  return { ...props, [target.key]: texts.map((t) => (target.item === "string" ? t : { text: t })) };
+}
+
+/**
+ * Whether the open graphic editor has nothing to show and must be closed
+ * (§5): no live memo to time it on, or an edit whose root is gone or of a
+ * type the modal has no form for. Closing it is what releases the
+ * transcript's hold on its selection (`done(false)`), so a modal that could
+ * not render never leaves the panel stuck, nor pops up later.
+ */
+export function graphicModalStale(mode: "add" | "edit", hasLive: boolean, editable: boolean): boolean {
+  return !hasLive || (mode === "edit" && !editable);
+}
