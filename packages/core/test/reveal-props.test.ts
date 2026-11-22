@@ -43,7 +43,7 @@ const SCHEMAS = {
   BulletList: BulletListProps,
 } as const;
 
-describe("reveal props on the four item-revealing components", () => {
+describe("reveal props on the item-revealing components (FlowDiagram, ChatMock, TerminalMock, StrikethroughReveal, BulletList)", () => {
   for (const [id, schema] of Object.entries(SCHEMAS)) {
     const valid = VALID[id as keyof typeof VALID];
 

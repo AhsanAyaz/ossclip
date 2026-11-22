@@ -558,9 +558,16 @@ describe("scalarPropControls is untouched by the add form (editor-added-graphics
 
   // The one deliberate change since the capture: BulletList joined the
   // reveal system (graphic-editor-modal §1), so its schema gained the reveal
-  // props and it now gets ChatMock's four reveal controls. Left out of the
-  // recorded file so the file stays the add form's before-image.
-  const after: Record<string, unknown> = { ...before, BulletList: before.ChatMock };
+  // props and it now gets the four reveal controls, spelled out here rather
+  // than borrowed from another component's entry. Left out of the recorded
+  // file so the file stays the add form's before-image.
+  const revealControls = [
+    { key: "reveal", kind: "enum", options: ["auto", "synced", "paced"], optional: true },
+    { key: "pacing", kind: "enum", options: ["even", "accelerate", "decelerate", "ease-in-out"], optional: true },
+    { key: "revealSpeed", kind: "number", min: 0.1, max: 1, step: 0.01, fallback: 0.66, optional: true },
+    { key: "entrance", kind: "enum", options: ["pop", "fade", "rise", "bounce"], optional: true },
+  ];
+  const after: Record<string, unknown> = { ...before, BulletList: revealControls };
 
   it("matches the pre-change output for every component", () => {
     expect(Object.keys(before).sort()).toEqual([...SceneComponentIdSchema.options].sort());

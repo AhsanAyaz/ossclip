@@ -22,10 +22,12 @@ import {
 export const REVEAL_SPEED_DEFAULT = 0.66;
 
 /**
- * Author-only reveal controls for the four item-revealing components (spec
- * §5). Every one is OPTIONAL with no `.default()` on purpose: absence is how
- * the renderer tells "the author never touched this" from an explicit choice,
- * and a legacy scene must keep its legacy stagger until someone does (plan
+ * Author-only reveal controls for the item-revealing components (spec §5):
+ * FlowDiagram, ChatMock, TerminalMock, StrikethroughReveal, CardRow,
+ * PhoneDemo and BulletList (graphic-editor-modal §1). Every one is
+ * OPTIONAL with no `.default()` on purpose: absence is how the renderer
+ * tells "the author never touched this" from an explicit choice, and a
+ * legacy scene must keep its legacy stagger until someone does (plan
  * Review Focus 5). A default here would flip every old scene onto the paced
  * path the moment it re-parsed.
  *

@@ -4,8 +4,9 @@ import { enterFrames, enterProgress } from "./anim";
 
 /**
  * One reveal schedule for every staggered graphic (reveal-timing spec §4):
- * FlowDiagram, ChatMock, TerminalMock and StrikethroughReveal all ask this
- * when item i enters instead of hand-writing `i * 6`. Pure — frames in,
+ * FlowDiagram, ChatMock, TerminalMock, StrikethroughReveal, CardRow,
+ * PhoneDemo and BulletList all ask this when item i enters instead of
+ * hand-writing `i * 6`. Pure — frames in,
  * frames out — so every mode and curve is tested without a React tree;
  * `useReveal` below is the only part that touches Remotion.
  */
@@ -107,8 +108,8 @@ export function patternSceneSec(fps: number, timing?: RevealTiming): number {
 }
 
 /**
- * `revealFrames` for a component: the shape each of the four calls, so none
- * of them re-derives the "no timing → legacy" rule.
+ * `revealFrames` for a component: the shape each staggered component calls,
+ * so none of them re-derives the "no timing → legacy" rule.
  */
 export function componentRevealFrames(
   count: number,
