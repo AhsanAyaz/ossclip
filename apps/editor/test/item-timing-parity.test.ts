@@ -1,34 +1,48 @@
 import { describe, expect, it } from "vitest";
+// Core through its package entry, not its source paths: this harness lives
+// with the editor (its claim is "the editor's item step equals produce's"),
+// and core must never reach into apps, tests included. The full entry, not
+// `./browser`, because produce's half needs pipeline-only functions
+// (`assembleScenes`, `applyUserCuts`) the bundle surface does not carry.
 import {
   OverrideDocSchema,
+  addedSceneToScene,
+  applyCleanupChoices,
   applyOverrides,
+  applyUserCuts,
+  assembleScenes,
   atSplitPoints,
+  carveKeptTakes,
+  dismissedRemovals,
   dropHiddenCues,
+  dropOverlappingAdded,
+  fillPlainCues,
+  isAddedKey,
   itemTimingRoots,
+  livePreviewMap,
+  mapFromKeptSpans,
+  previewAddedScenes,
   reclampPinnedTiming,
   resolveItemTimings,
   resolveSplitPoints,
   resolveSrcTimingPins,
+  retimeForPreview,
   splitCues,
   splitThenDropHidden,
+  TimeMap,
+  vetoedRemovals,
+  type CaptionLine,
   type OverrideDoc,
-} from "../src/overrides";
-import { addedSceneToScene, dropOverlappingAdded, isAddedKey, previewAddedScenes } from "../src/added-scenes";
-import { assembleScenes } from "../src/assemble";
-import type { CaptionLine } from "../src/captions";
-import { applyCleanupChoices, dismissedRemovals, vetoedRemovals } from "../src/cutlist";
-import { fillPlainCues } from "../src/fill";
-import { carveKeptTakes } from "../src/kept-takes";
-import { applyUserCuts } from "../src/recut";
-import { livePreviewMap, retimeForPreview } from "../src/retime-preview";
-import type { Scene, SceneCue } from "../src/scene-schema";
-import type { Segment, Transcript, Word } from "../src/schema";
-import { mapFromKeptSpans, TimeMap } from "../src/timemap";
+  type Scene,
+  type SceneCue,
+  type Segment,
+  type Transcript,
+  type Word,
+} from "@ossclip/core";
 // The editor's own item step (graphic-editor-modal §4), for the one case
 // below that runs the editor path through it rather than through core's
-// calls written out here: an app import in a core test, because the claim
-// is that App's wiring is THIS harness's editor path, and App calls these.
-import { previewItemRoots, previewItemTimings } from "../../../apps/editor/src/itemTimingPreview";
+// calls written out here.
+import { previewItemRoots, previewItemTimings } from "../src/itemTimingPreview";
 
 /**
  * Preview equals render (graphic-editor-modal G7, Test plan "Parity"): for
@@ -151,7 +165,7 @@ function producePipeline(run: Run): Outcome {
 }
 
 /** `viaPreview`: the item step through the editor's extracted helpers
- * (`apps/editor/src/itemTimingPreview.ts`), as App calls them, instead of
+ * (`../src/itemTimingPreview.ts`), the calls App makes, instead of
  * the core calls written out. Everything else is the same path. */
 function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early" | "main" } {
   const oldMap = lastRenderMap(run);

@@ -1435,8 +1435,10 @@ export const App: React.FC = () => {
     // clock; a legacy timing pin read through the old clock it was written
     // on, a src pin tested on the live one. The raw `edits.doc`, not
     // `oldClockDoc`, whose src pins already read as output seconds.
-    // item-timing-parity.test.ts runs these same two helpers against
-    // produce's ordering.
+    // item-timing-parity.test.ts proves these two helpers match produce on
+    // its model of this memo; that the calls sit HERE and on both exits of
+    // `finishOnClock` is kept by hand-mirroring that model (the memo itself
+    // is not under test), so move one, move the other.
     const itemRoots = previewItemRoots(
       graphicCues,
       edits.doc,

@@ -12,8 +12,11 @@ import {
  * The live preview's item step (graphic-editor-modal §4), pure so it is
  * tested without App's memo: the two calls App makes, with the null guards
  * that keep a project without the marker on the byte-identical path.
- * item-timing-parity.test.ts runs a case through exactly these, so App's
- * wiring and the harness's editor path are one code path, not two copies.
+ * item-timing-parity.test.ts runs a case through exactly these against
+ * produce's ordering, which proves the HELPERS match produce. That App calls
+ * them at the same points as the harness's editor path is kept by hand: the
+ * memo itself is not under test, so a move of either call site in App.tsx
+ * has to be mirrored in the harness (and the other way round).
  */
 
 /**

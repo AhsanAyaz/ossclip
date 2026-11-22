@@ -12,8 +12,8 @@ import { previewItemRoots, previewItemTimings } from "../src/itemTimingPreview";
 /**
  * The live preview's item step (graphic-editor-modal §4), without App: the
  * roots taken at the memo's first `applyOverrides`, and the resolve on
- * either exit of `finishOnClock`. Parity with produce is the core harness's
- * job (item-timing-parity.test.ts runs one case through these two); here,
+ * either exit of `finishOnClock`. Parity with produce is the harness's job
+ * (item-timing-parity.test.ts runs one case through these two); here,
  * the guards that keep a project without the marker on the byte-identical
  * path, and the ordinary session's resolve.
  */

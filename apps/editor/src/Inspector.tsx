@@ -1591,8 +1591,8 @@ export const Inspector: React.FC<InspectorProps> = ({
                       // `options[0]`: showing "even" for an unset pacing both
                       // misdescribes a legacy scene and makes picking "even"
                       // a no-op change event (Review Focus 5).
-                      // `reveal` from the OVERRIDE, not the live cue
-                      // (graphic-editor-modal §4): with word timing on, the
+                      // `reveal` from the OVERRIDE only, deliberately, never
+                      // the live cue (graphic-editor-modal §4): with word timing on, the
                       // preview forces `synced` onto the cue whenever a pin
                       // bounds the list and the author set no reveal, and
                       // read off the cue that forced value would show as the
