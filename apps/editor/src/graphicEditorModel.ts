@@ -13,11 +13,12 @@ import {
   wordOutputStart,
   type AddFormField,
   type AddedOffered,
+  type SceneCue,
   type SceneTiming,
   type TimeMap,
   type Word,
 } from "@ossclip/core/browser";
-import { revealFrames } from "@ossclip/scenes";
+import { isLegacyReveal, revealFrames } from "@ossclip/scenes";
 import type { ItemPins } from "./useEdits";
 
 /**
@@ -138,12 +139,16 @@ function itemTexts(component: string, props: Record<string, unknown>): string[] 
  * neighbours' picks (§3). Null for an unmatched item.
  *
  * `estSec` is the renderer's own entry time for the item, output seconds on
- * the live clock, for EVERY row: `revealFrames` over the resolved cue, the
- * schedule the render runs. An unmatched or cut item has no word time of its
- * own, so this is its estimate; a pinned or auto one can still be clamped by
- * the cue (a word said before its final start enters on frame 0), and the
- * box should say when it enters, not when its word is said. Narrower than
- * the planned `number | null`: there is no row the renderer does not place.
+ * the live clock: `revealFrames` over the cue, the schedule the render runs.
+ * An unmatched or cut item has no word time of its own, so this is its
+ * estimate; a pinned or auto one can still be clamped by the cue (a word
+ * said before its final start enters on frame 0), and the box should say
+ * when it enters, not when its word is said. Null only for a graphic
+ * without the marker whose live cue is on its component's legacy stagger
+ * (no item times, no timing prop: a stored BulletList, an older added
+ * graphic). That stagger is each component's own (CardRow's beats,
+ * StrikethroughReveal's wrapped rows) and not an item time, so there is
+ * nothing honest to show.
  *
  * `note` is the reason a stored pin is not honoured (§3's table, a stale
  * text, or a component or count mismatch), else null.
@@ -152,7 +157,7 @@ export type ModalRow = {
   text: string;
   state: "pinned" | "auto" | "cut" | "unmatched";
   word: number | null;
-  estSec: number;
+  estSec: number | null;
   note: string | null;
 };
 
@@ -163,6 +168,9 @@ export type ModalRow = {
  * the preview cue's final window in output seconds on that clock, and
  * `ownReveal` whether the root's own override sets `reveal`: without one, a
  * bounding pin forces `synced` (§3 step 5), and the estimates must follow.
+ * `liveCue` is the root's cue as the stage renders it now (an edit; absent
+ * on an add): with no marker in effect, the rows read it rather than
+ * resolve (`modalRows`).
  *
  * No null clock or words here: without them the modal does not place items
  * at all (§4, "the preview cannot place items yet"), which is the modal's
@@ -175,12 +183,18 @@ export type RowContext = {
   cue: { startSec: number; endSec: number };
   fps: number;
   ownReveal: boolean;
+  liveCue?: Pick<SceneCue, "startSec" | "endSec" | "props" | "reveal"> | undefined;
 };
 
 /**
- * The item rows for one graphic, as the render will time it (§3, §5).
- * `itemPins` is the marker in effect, `shownItemPins` in the modal; absent,
- * every item is auto, which is what the first item change will store.
+ * The item rows for one graphic, as the render times it (§3, §5).
+ * `itemPins` is the marker in effect, `shownItemPins` in the modal.
+ *
+ * Absent, with a `liveCue`, the graphic is not on word timing yet (an
+ * unmarked plan graphic, before any item change) and the modal shows what
+ * renders now (G5, G7), not what word timing would do: `liveRows`. The
+ * first item change puts the marker in effect, and the rows switch to the
+ * live resolution below. Absent with no `liveCue`, every item is auto.
  *
  * Step 2 of `resolveItemTimings` (stale pins become auto) is restated here
  * because the modal needs per-row reasons, and that function reports them
@@ -196,6 +210,7 @@ export function modalRows(
   ctx: RowContext,
 ): ModalRow[] {
   if (!hasItemTiming(component)) return [];
+  if (itemPins === undefined && ctx.liveCue !== undefined) return liveRows(component, props, ctx, ctx.liveCue);
   const items = revealItemTexts(component, props) ?? [];
   const texts = items.map(itemPinText);
   const notes: (string | null)[] = texts.map(() => null);
@@ -245,11 +260,7 @@ export function modalRows(
     // SceneLayer's `timing`: the cue's unrounded start, frameWindow's length.
     cueStartSec: cue.startSec,
     itemAtSec,
-    props: {
-      reveal: bounded && !ctx.ownReveal ? "synced" : str(props.reveal),
-      pacing: str(props.pacing),
-      revealSpeed: typeof props.revealSpeed === "number" ? props.revealSpeed : undefined,
-    },
+    props: { ...revealPropsOf(props), ...(bounded && !ctx.ownReveal ? { reveal: "synced" } : {}) },
   });
 
   return resolved.items.map((it, k) => ({
@@ -262,6 +273,67 @@ export function modalRows(
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/** The reveal props as the renderer reads them off a cue's props. */
+const revealPropsOf = (props: Record<string, unknown>) => ({
+  reveal: str(props.reveal),
+  pacing: str(props.pacing),
+  revealSpeed: typeof props.revealSpeed === "number" ? props.revealSpeed : undefined,
+});
+
+/** How close a baked item time must be to a word's to name that word:
+ * float noise only, since both are the same `mapWord` start less the lead. */
+const BAKED_MATCH_SEC = 1e-6;
+
+/**
+ * Rows for a graphic without the marker, from its live cue (coordinator
+ * ruling on Task 6 concern 3): each item's word is the one whose item time
+ * on the live map (`wordOutputStart` − `ITEM_LEAD_SEC`, floored at 0 as
+ * assembly bakes it) is the cue's `reveal.itemAtSec[k]`, the first such in
+ * transcript order. Auto, with no note: the planner matched it, not the
+ * author. No time, or no word at that time (a time remapped off every
+ * word), is unmatched, placed by the renderer. Estimates are `revealFrames`
+ * over the live cue as it is, null on the legacy stagger (see `ModalRow`).
+ */
+function liveRows(
+  component: ItemTimingComponent,
+  props: Record<string, unknown>,
+  ctx: RowContext,
+  live: NonNullable<RowContext["liveCue"]>,
+): ModalRow[] {
+  const texts = (revealItemTexts(component, props) ?? []).map(itemPinText);
+  const itemAtSec = live.reveal?.itemAtSec;
+  const liveProps = revealPropsOf(live.props ?? {});
+  const itemTimes = ctx.words.map((w) => {
+    const at = wordOutputStart(w, ctx.liveMap);
+    return at === null ? null : Math.max(0, at - ITEM_LEAD_SEC);
+  });
+  const legacy = isLegacyReveal(itemAtSec, liveProps);
+  const { durationInFrames } = frameWindow(live.startSec, live.endSec, ctx.fps);
+  const frames = legacy
+    ? null
+    : revealFrames({
+        count: texts.length,
+        // Not legacy (checked above), so the step is never read.
+        legacyStepFrames: 0,
+        fps: ctx.fps,
+        durationInFrames,
+        cueStartSec: live.startSec,
+        itemAtSec,
+        props: liveProps,
+      });
+  return texts.map((text, k) => {
+    const at = itemAtSec?.[k] ?? null;
+    const hit = at === null ? -1 : itemTimes.findIndex((t) => t !== null && Math.abs(t - at) <= BAKED_MATCH_SEC);
+    return {
+      text,
+      state: hit === -1 ? "unmatched" : "auto",
+      word: hit === -1 ? null : hit,
+      estSec: frames === null ? null : live.startSec + frames[k]! / ctx.fps,
+      note: null,
+    };
+  });
+}
 
 /** Window words (Terms): every transcript word whose source start lies in
  * the block window, cut or not, half-open as `resolveItemWords` reads it.
@@ -586,6 +658,11 @@ export function keptSpanStartOf(word: Word, map: TimeMap): number | null {
  * graphic would enter inside it (`resolveTimingPin` resolves the src pin as
  * stored). A one-time set: it does not follow item 1 later.
  *
+ * Null when the pin would end at or before it starts (a word at or after
+ * the cue's end): `SceneTimingSchema` refuses an inverted src pin and
+ * `patchProps` stores it verbatim, so the caller refuses that word instead
+ * (coordinator ruling on Task 6 concern 6).
+ *
  * Throws for a word with no time on the live clock: only block words are
  * offered (`blockWords`), so that is a caller bug, not a state.
  */
@@ -595,12 +672,11 @@ export function whenRowPin(
   keptSpanStart: number,
   prevGraphicEndSec: number | null,
   cueEndSec: number,
-): { srcStart: number; srcEnd: number } {
+): { srcStart: number; srcEnd: number } | null {
   const at = wordOutputStart(word, liveMap);
   if (at === null) throw new Error(`graphic editor: "${word.text}" is cut, so nothing can start on it`);
   const outStart = Math.max(at - ENTRY_LEAD_SEC, prevGraphicEndSec === null ? -Infinity : prevGraphicEndSec + SCENE_GAP_SEC);
-  return {
-    srcStart: Math.max(liveMap.toSource(outStart), keptSpanStart),
-    srcEnd: liveMap.toSource(cueEndSec),
-  };
+  const srcStart = Math.max(liveMap.toSource(outStart), keptSpanStart);
+  const srcEnd = liveMap.toSource(cueEndSec);
+  return srcEnd > srcStart ? { srcStart, srcEnd } : null;
 }

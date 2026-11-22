@@ -28,5 +28,6 @@ export * from "./caption-visibility";
 // The graphic editor's item rows (graphic-editor-modal §5) show each item's
 // time from the renderer's own schedule: an unmatched item is placed by
 // `revealFrames`, and a second placement rule in the editor is how the
-// modal's estimate and the render would disagree.
-export { revealFrames, type RevealInput } from "./reveal";
+// modal's estimate and the render would disagree. `isLegacyReveal` with it:
+// a graphic on its component's own legacy stagger has no item time to show.
+export { isLegacyReveal, revealFrames, type RevealInput } from "./reveal";

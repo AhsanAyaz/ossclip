@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ADDED_OFFERED,
   ENTRY_LEAD_SEC,
+  ITEM_LEAD_SEC,
   OverrideDocSchema,
   SCENE_GAP_SEC,
   SCENE_REGISTRY,
@@ -501,7 +502,7 @@ describe("whenRowPin (graphic-editor-modal §5, When row)", () => {
 
   it("at a seam, the pin starts in the word's kept span and resolves on the live clock", () => {
     expect(wordOutputStart(clipped, seam)).toBe(3.0);
-    const pin = whenRowPin(clipped, seam, keptSpanStartOf(clipped, seam)!, null, 8);
+    const pin = whenRowPin(clipped, seam, keptSpanStartOf(clipped, seam)!, null, 8)!;
     // Unfloored, 3.0 − ENTRY_LEAD_SEC maps to 2.7 s, before the cut pause:
     // on a clock that revives the pause, the graphic would start in it.
     expect(seam.toSource(3.0 - ENTRY_LEAD_SEC)).toBeLessThan(3.0);
@@ -512,18 +513,102 @@ describe("whenRowPin (graphic-editor-modal §5, When row)", () => {
 
   it("starts ENTRY_LEAD_SEC ahead of the word inside a kept span", () => {
     const w = words[4]!; // forget, 3.875
-    const pin = whenRowPin(w, identity, 0, null, 6.625);
+    const pin = whenRowPin(w, identity, 0, null, 6.625)!;
     expect(pin.srcStart).toBeCloseTo(3.875 - ENTRY_LEAD_SEC, 9);
     expect(pin.srcEnd).toBe(6.625);
   });
 
   it("never starts before the previous graphic's end plus SCENE_GAP_SEC", () => {
     const w = words[4]!;
-    const pin = whenRowPin(w, identity, 0, 3.7, 6.625);
+    const pin = whenRowPin(w, identity, 0, 3.7, 6.625)!;
     expect(pin.srcStart).toBeCloseTo(3.7 + SCENE_GAP_SEC, 9);
+  });
+
+  it("is null when the pin would end at or before it starts, so the caller refuses that word", () => {
+    const w = words[6]!; // code, 6.125: starts 5.825 with the lead
+    expect(whenRowPin(w, identity, 0, null, 5.825)).toBeNull();
+    expect(whenRowPin(w, identity, 0, null, 5.0)).toBeNull();
+    // A previous graphic's floor can push the start past the cue's end too.
+    expect(whenRowPin(words[4]!, identity, 0, 6.5, 6.5)).toBeNull();
+    expect(whenRowPin(w, identity, 0, null, 6.625)).not.toBeNull();
   });
 
   it("refuses a word with no time on the live clock: only block words are offered", () => {
     expect(() => whenRowPin(words[4]!, forgetCut, 0, null, 6)).toThrow();
+  });
+});
+
+/**
+ * A graphic without the marker shows what renders now (G5, G7;
+ * coordinator ruling on Task 6 concern 3): its rows read the live cue's
+ * baked item times, until an item change puts word timing in effect.
+ */
+describe("modalRows from the live cue (no marker)", () => {
+  const at = (i: number) => Math.max(0, wordOutputStart(words[i]!, identity)! - ITEM_LEAD_SEC);
+  const NODES = ["HALLUCINATE", "FORGET", "CODE"];
+  // A planned FlowDiagram whose planner put item 2 on "they" (3), not on
+  // "forget" (4) where the live matcher would: the rows must say 3.
+  const planned: SceneCue = {
+    id: "scene-0",
+    layout: "video-top",
+    component: "FlowDiagram",
+    props: { nodes: NODES },
+    startSec: 1.25,
+    endSec: 6.625,
+    reveal: { itemAtSec: [at(2), at(3), at(6)] },
+  };
+  const ctx: RowContext = { ...ctxOn(identity), liveCue: planned };
+
+  it("a planned FlowDiagram shows its planned words, auto with no note, timed as it renders", () => {
+    const rows = modalRows("FlowDiagram", planned.props!, undefined, ctx);
+    expect(pick(rows)).toEqual([
+      ["auto", 2, null],
+      ["auto", 3, null],
+      ["auto", 6, null],
+    ]);
+    const frames = revealFrames({
+      count: 3,
+      legacyStepFrames: 6,
+      fps: 30,
+      durationInFrames: frameWindow(1.25, 6.625, 30).durationInFrames,
+      cueStartSec: 1.25,
+      itemAtSec: planned.reveal!.itemAtSec,
+      props: {},
+    });
+    expect(rows.map((r) => r.estSec)).toEqual(frames.map((f) => 1.25 + f / 30));
+  });
+
+  it("after an item's text is edited, the rows switch to the live resolution and that row re-matches", () => {
+    const opened = openModal({ mode: "edit", component: "FlowDiagram", props: planned.props! });
+    const before = modalRows("FlowDiagram", opened.props, shownItemPins(opened, opened), ctx);
+    expect(before[1]!.word).toBe(3);
+    const now = withProps(opened, { nodes: ["HALLUCINATE", "REVIEW", "CODE"] }, before);
+    const after = modalRows("FlowDiagram", now.props, shownItemPins(opened, now), ctx);
+    expect(pick(after)).toEqual([
+      ["auto", 2, null],
+      ["auto", 5, null],
+      ["auto", 6, null],
+    ]);
+  });
+
+  it("a null baked time, or one on no word, is unmatched with the renderer's estimate", () => {
+    const cue = { ...planned, reveal: { itemAtSec: [at(2), null, 4.0] } };
+    const rows = modalRows("FlowDiagram", planned.props!, undefined, { ...ctx, liveCue: cue });
+    expect(pick(rows)).toEqual([
+      ["auto", 2, null],
+      ["unmatched", null, null],
+      ["unmatched", null, null],
+    ]);
+    expect(rows.every((r) => typeof r.estSec === "number")).toBe(true);
+  });
+
+  it("a live cue on its component's legacy stagger has no item time to show", () => {
+    const stored: SceneCue = { ...planned, component: "BulletList", props: { items: NODES }, reveal: undefined };
+    const rows = modalRows("BulletList", stored.props!, undefined, { ...ctx, liveCue: stored });
+    expect(rows.map((r) => [r.state, r.word, r.estSec])).toEqual([
+      ["unmatched", null, null],
+      ["unmatched", null, null],
+      ["unmatched", null, null],
+    ]);
   });
 });
