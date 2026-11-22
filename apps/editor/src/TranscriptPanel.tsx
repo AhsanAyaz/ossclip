@@ -1149,6 +1149,18 @@ export const TranscriptPanel: React.FC<{
     // path (the `scrollIntoView` posture above).
     const selection = document.getSelection?.();
     if (!selection || selection.isCollapsed) return;
+    // A SHIFT-click is the word's own gesture (extend from the anchor), not
+    // a drag, though the browser leaves a native range for it too: the caret
+    // of the last click extended to this word. Converted here it became
+    // {lo, hi} with the anchor reset to the lower end, and the click branch
+    // then moved the focus to the clicked word — so a BACKWARD shift-click
+    // (27, then shift 16) collapsed to the one word clicked (real-run bug,
+    // 2026-11-22; jsdom's dispatched clicks leave no range, so no test saw
+    // it). The native highlight still goes: one selection on screen.
+    if (e.shiftKey) {
+      selection.removeAllRanges?.();
+      return;
+    }
     const { anchorNode, focusNode } = selection;
     // Both endpoints must resolve inside THIS body — a selection that started
     // in the header or another pane says nothing about which words to mark.

@@ -2646,6 +2646,30 @@ describe("TranscriptPanel native drag-select", () => {
     expect(word(2).style.background).toBe("");
   });
 
+  it("a BACKWARD shift-click extends from the anchor, though the browser leaves a native range for it", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c", "d", "e"])] }));
+    });
+    // Click word 3: the selection's anchor.
+    await act(async () => {
+      word(3).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    // Shift-click word 1 as Chromium does it: the caret of the last click
+    // extended back to word 1 (anchor at 3, focus at 1), a shift mouseup on
+    // the body, then the word's shift click.
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.setBaseAndExtent(word(3).firstChild!, 0, word(1).firstChild!, 0);
+    await act(async () => {
+      body().dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, detail: 1, shiftKey: true }));
+    });
+    await act(async () => {
+      word(1).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }));
+    });
+    expect(menu()!.textContent).toContain("3 words");
+    expect(document.getSelection()!.rangeCount).toBe(0);
+  });
+
   it("a drag that ends where it started (COLLAPSED) changes nothing — the click path seeks", async () => {
     await act(async () => {
       root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])] }));

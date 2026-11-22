@@ -263,3 +263,58 @@ test("opening the modal pauses the stage, from Graphic… and from the Inspector
   await expect(page.getByTestId("graphic-editor")).toBeVisible();
   await expect.poll(playing).toBe("false");
 });
+
+/** A REAL mouse click on transcript word `i` (Shift held for a shift-click):
+ * Chromium's own native selection comes with it, which a dispatched click
+ * never makes — the backward shift-click bug lived exactly there. */
+const realClick = async (page: Page, i: number, shift = false) => {
+  const w = page.getByTestId(`transcript-word-${i}`);
+  await w.scrollIntoViewIfNeeded();
+  const box = (await w.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  // The bar hangs under the selection: a word under it is not clickable.
+  expect(await page.evaluate(([px, py]) => document.elementFromPoint(px!, py!)?.closest("[data-testid]")?.getAttribute("data-testid"), [x, y])).toBe(
+    `transcript-word-${i}`,
+  );
+  if (shift) await page.keyboard.down("Shift");
+  await page.mouse.click(x, y);
+  if (shift) await page.keyboard.up("Shift");
+};
+
+test("real shift-clicks extend the transcript selection, backward and forward — and after an add over early words select only the later ones", async ({
+  page,
+}) => {
+  await open(page);
+  const bar = page.getByTestId("transcript-selection-menu");
+  // Backward: 27, then shift 16 → 16–27.
+  await realClick(page, 27);
+  await realClick(page, 16, true);
+  await expect(bar).toContainText("12 words");
+  await page.getByTestId("transcript-selection-clear").click();
+  // Forward: 20, then shift 24 → 20–24.
+  await realClick(page, 20);
+  await realClick(page, 24, true);
+  await expect(bar).toContainText("5 words");
+  await page.getByTestId("transcript-selection-clear").click();
+
+  // A bullet list over the first words, through the modal, not rendered.
+  await graphicOver(page, 0, 11);
+  await bulletList(page, ["Claude gave me", "the max plan"]);
+  await page.getByTestId("graphic-editor-save").click();
+  await expect(page.getByTestId("timeline-block-added-1")).toBeVisible();
+  // Then a later run, backward: only the later words, and no refusal.
+  await realClick(page, 78);
+  await realClick(page, 75, true);
+  await expect(bar).toContainText("4 words");
+  await page.getByTestId("transcript-add-graphic").click();
+  await expect(page.getByTestId("graphic-editor")).toBeVisible();
+  await expect(page.getByTestId("graphic-editor-refusal")).toHaveCount(0);
+  // The strip (shown once a type is chosen) holds exactly words 75–78.
+  await page.getByTestId("graphic-editor-type-TitleCard").click();
+  await expect(page.locator('[data-testid^="graphic-editor-word-"]')).toHaveCount(4);
+  await expect(page.locator('[data-testid^="graphic-editor-word-"]').first()).toHaveAttribute(
+    "data-testid",
+    "graphic-editor-word-75",
+  );
+});
