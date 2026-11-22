@@ -120,6 +120,8 @@ import {
   carveKeptTakes,
   resolveSplitPoints,
   resolveSrcTimingPins,
+  itemTimingRoots,
+  resolveItemTimings,
   applyUserCuts,
   pruneHidesInsideCuts,
   loadConfig,
@@ -5468,6 +5470,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
   for (const r of pinnedDoc.reports) console.log(`  ⚠ ${r}`);
   const { cues: editedCues } = applyOverrides(routed.cues, pinnedDoc.doc);
+  // Word-timed list items (graphic-editor-modal §4 "Produce"): each marked
+  // root's component, merged props and block window, read HERE off the
+  // unsplit list — the editor builds its roots with the same function at
+  // the same step — and resolved after the second override pass below.
+  // `overrideDoc`, the raw re-anchored doc, never `pinnedDoc.doc`: there a
+  // src timing pin is already output seconds and would read as a legacy
+  // pin (`blockWindow`). `transcript.words` is the word list the editor
+  // serves as `sfxPlan.words`, `--clip` slice included (clip-edge-repair).
+  const itemRoots = itemTimingRoots(editedCues, overrideDoc, transcript.words, map, map);
   // Scenes the user deleted in the editor drop here — their windows become
   // plain takes in the fill below, which is Task C's payoff for Task A.
   // `splitThenDropHidden`, not a bare `dropHiddenCues`: this runs before
@@ -5565,7 +5576,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // `pinnedDoc.doc` again, not `overrideDoc`: this pass is on the SAME clock
   // as the first (the split above does not move time), and a src pin that
   // reached here unresolved would be ignored rather than applied.
-  const { cues: mergedCues, orphans: rawOrphans } = applyOverrides(split, pinnedDoc.doc);
+  const { cues: overriddenCues, orphans: rawOrphans } = applyOverrides(split, pinnedDoc.doc);
+  // After this LAST override pass, as the editor resolves after its own: a
+  // split half's own component swap has happened, so `withSwappedReveal`
+  // met the same cue in both pipelines. Resolved before the split, a
+  // reveal-less root's swapped half inherited a resolved `reveal` here and
+  // none in the preview (build ruling 2026-11-22, item-timing-parity).
+  // Reclamp, fill, carve and split above never touch `reveal`. A project
+  // without `itemPins` gets the very same list back (AG1).
+  const itemTimed = resolveItemTimings(overriddenCues, overrideDoc, transcript.words, map, itemRoots);
+  // One line per note, as override orphans print: a pin that turned auto,
+  // a graphic with no block to time.
+  for (const n of itemTimed.notes) console.log(`  ⚠ ${n}`);
+  const mergedCues = itemTimed.cues;
   // Halves of a TAKE the user deleted after splitting: a take id only exists
   // once the fill above runs, so its `id@<split id>` half couldn't have been seen by
   // `splitThenDropHidden` earlier (that pass only ever saw graphic scenes).

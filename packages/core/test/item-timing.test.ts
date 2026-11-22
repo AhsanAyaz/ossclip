@@ -175,13 +175,20 @@ describe("blockWindow (graphic-editor-modal Terms, 'Block window')", () => {
   });
 });
 
+/** `resolveItemTimings` on a list that is not split, its roots taken from
+ * that list on the one map: produce's two calls collapsed, for the cases
+ * that are about the resolve itself rather than the split (§4). */
+function resolveUnsplit(cues: SceneCue[], doc: OverrideDoc, words: readonly Word[], map: TimeMap) {
+  return resolveItemTimings(cues, doc, words, map, itemTimingRoots(cues, doc, words, map, map));
+}
+
 describe("resolveItemTimings (graphic-editor-modal §3)", () => {
   const pinForget = { src: at(3), text: "FORGET CONTEXT" };
 
   it("gate: a doc with no itemPins returns the very same list", () => {
     const cues = [listCue()];
     const doc = docWith({ "scene-0": { props: { items: ["A", "B"] } } });
-    const out = resolveItemTimings(cues, doc, WORDS, IDENTITY);
+    const out = resolveUnsplit(cues, doc, WORDS, IDENTITY);
     expect(out.cues).toBe(cues);
     expect(out.notes).toEqual([]);
   });
@@ -194,10 +201,10 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
       }),
     ];
     const doc = docWith({ "scene-0": marker([null], "TerminalMock") });
-    expect(resolveItemTimings(cues, doc, WORDS, IDENTITY).cues).toBe(cues);
+    expect(resolveUnsplit(cues, doc, WORDS, IDENTITY).cues).toBe(cues);
     // A marker only on a split half's own key is not a root's (§3: per root id).
     const halfOnly = docWith({ "scene-0@s1": marker([null, null, null]) });
-    expect(resolveItemTimings([listCue()], halfOnly, WORDS, IDENTITY).cues).toEqual([listCue()]);
+    expect(resolveUnsplit([listCue()], halfOnly, WORDS, IDENTITY).cues).toEqual([listCue()]);
   });
 
   it("covers exactly the five list components (Terms)", () => {
@@ -208,7 +215,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
 
   it("pins an item to its word and matches the rest by text, on the given map", () => {
     const doc = docWith({ "scene-0": marker([null, pinForget, null]) });
-    const { cues, notes } = resolveItemTimings([listCue()], doc, WORDS, IDENTITY);
+    const { cues, notes } = resolveUnsplit([listCue()], doc, WORDS, IDENTITY);
     expect(cues[0]!.reveal).toEqual({ itemAtSec: [itemAt(1), itemAt(3), itemAt(6)] });
     expect(notes).toEqual([]);
   });
@@ -216,12 +223,12 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
   it("an item on the first word is floored at 0, as assembly floors it", () => {
     const cue = listCue({ props: { items: ["AGENTS", "HALLUCINATE"] } });
     const doc = docWith({ "scene-0": marker([{ src: 0, text: "AGENTS" }, null]) });
-    expect(resolveItemTimings([cue], doc, WORDS, IDENTITY).cues[0]!.reveal!.itemAtSec[0]).toBe(0);
+    expect(resolveUnsplit([cue], doc, WORDS, IDENTITY).cues[0]!.reveal!.itemAtSec[0]).toBe(0);
   });
 
   it("component mismatch: every pin is auto, with a note; the marker is left in the doc", () => {
     const doc = docWith({ "scene-0": marker([null, { src: at(4), text: "FORGET CONTEXT" }, null], "FlowDiagram") });
-    const { cues, notes } = resolveItemTimings([listCue()], doc, WORDS, IDENTITY);
+    const { cues, notes } = resolveUnsplit([listCue()], doc, WORDS, IDENTITY);
     // Auto: item 2 matches "forget" (word 3), not the pinned "context".
     expect(cues[0]!.reveal).toEqual({ itemAtSec: [itemAt(1), itemAt(3), itemAt(6)] });
     expect(notes).toEqual([
@@ -232,14 +239,14 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
 
   it("count mismatch: every pin is auto, with a note", () => {
     const doc = docWith({ "scene-0": marker([null, { src: at(4), text: "FORGET CONTEXT" }]) });
-    const { cues, notes } = resolveItemTimings([listCue()], doc, WORDS, IDENTITY);
+    const { cues, notes } = resolveUnsplit([listCue()], doc, WORDS, IDENTITY);
     expect(cues[0]!.reveal).toEqual({ itemAtSec: [itemAt(1), itemAt(3), itemAt(6)] });
     expect(notes).toEqual(['scene "scene-0": 2 item pins for 3 items — every item is matched by its text']);
   });
 
   it("a mismatch with no pin to lose says nothing: every entry was auto already", () => {
     const doc = docWith({ "scene-0": marker([null, null], "FlowDiagram") });
-    expect(resolveItemTimings([listCue()], doc, WORDS, IDENTITY).notes).toEqual([]);
+    expect(resolveUnsplit([listCue()], doc, WORDS, IDENTITY).notes).toEqual([]);
   });
 
   it("per-pin text mismatch: only that pin is auto, with a note", () => {
@@ -247,7 +254,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
     const doc = docWith({
       "scene-0": marker([{ src: at(1), text: "HALLUCINATE" }, null, { src: at(7), text: "REVIEW THE CODE" }]),
     });
-    const { cues, notes } = resolveItemTimings([listCue()], doc, WORDS, IDENTITY);
+    const { cues, notes } = resolveUnsplit([listCue()], doc, WORDS, IDENTITY);
     // Item 3 auto: "REVIEW CODE" first lands on "review" (word 6), not "code".
     expect(cues[0]!.reveal).toEqual({ itemAtSec: [itemAt(1), itemAt(3), itemAt(6)] });
     expect(notes).toEqual(['scene "scene-0" item 3: its text changed since it was pinned']);
@@ -255,7 +262,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
 
   it("resolveItemWords' own notes come through, named by scene", () => {
     const doc = docWith({ "scene-0": marker([null, { src: 1.7, text: "FORGET CONTEXT" }, null]) });
-    expect(resolveItemTimings([listCue()], doc, WORDS, IDENTITY).notes).toEqual([
+    expect(resolveUnsplit([listCue()], doc, WORDS, IDENTITY).notes).toEqual([
       'scene "scene-0" item 2: its word moved',
     ]);
   });
@@ -271,7 +278,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
         "CardRow",
       ),
     });
-    const { cues, notes } = resolveItemTimings([cue], doc, WORDS, IDENTITY);
+    const { cues, notes } = resolveUnsplit([cue], doc, WORDS, IDENTITY);
     expect(notes).toEqual([]);
     // Item 2 is pinned to "code" (word 7): a text match would have said "review".
     expect(cues[0]!.reveal).toEqual({ itemAtSec: [itemAt(1), itemAt(7)] });
@@ -280,12 +287,12 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
   describe("synced (§3 step 5)", () => {
     it("a pinned item forces props.reveal synced", () => {
       const doc = docWith({ "scene-0": marker([null, pinForget, null]) });
-      expect(resolveItemTimings([listCue()], doc, WORDS, IDENTITY).cues[0]!.props!.reveal).toBe("synced");
+      expect(resolveUnsplit([listCue()], doc, WORDS, IDENTITY).cues[0]!.props!.reveal).toBe("synced");
     });
 
     it("a cut pin counts: no time of its own, still synced", () => {
       const doc = docWith({ "scene-0": marker([null, pinForget, null]) });
-      const { cues, notes } = resolveItemTimings([listCue()], doc, WORDS, FORGET_CUT);
+      const { cues, notes } = resolveUnsplit([listCue()], doc, WORDS, FORGET_CUT);
       expect(cues[0]!.reveal!.itemAtSec[1]).toBeNull();
       expect(cues[0]!.props!.reveal).toBe("synced");
       expect(notes).toEqual(['scene "scene-0" item 2: its word was cut']);
@@ -293,7 +300,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
 
     it("auto items only leave reveal to the renderer: no props.reveal is written", () => {
       const doc = docWith({ "scene-0": marker([null, null, null]) });
-      const cue = resolveItemTimings([listCue()], doc, WORDS, IDENTITY).cues[0]!;
+      const cue = resolveUnsplit([listCue()], doc, WORDS, IDENTITY).cues[0]!;
       expect(cue.reveal).toEqual({ itemAtSec: [itemAt(1), itemAt(3), itemAt(6)] });
       expect("reveal" in cue.props!).toBe(false);
     });
@@ -301,7 +308,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
     it("the author's own reveal choice in the cue's effective override is never overwritten", () => {
       const doc = docWith({ "scene-0": { ...marker([null, pinForget, null]), props: { reveal: "paced" } } });
       const [merged] = applyOverrides([listCue()], doc).cues;
-      const out = resolveItemTimings([merged!], doc, WORDS, IDENTITY).cues[0]!;
+      const out = resolveUnsplit([merged!], doc, WORDS, IDENTITY).cues[0]!;
       expect(out.props!.reveal).toBe("paced");
       expect(out.reveal!.itemAtSec[1]).toBe(itemAt(3));
     });
@@ -376,7 +383,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
         timing: { srcStart: 0.5, srcEnd: 3.75 },
       },
     });
-    const { cues, notes } = resolveItemTimings([listCue()], doc, WORDS, IDENTITY);
+    const { cues, notes } = resolveUnsplit([listCue()], doc, WORDS, IDENTITY);
     expect(cues[0]!.reveal).toEqual({ itemAtSec: [itemAt(1), itemAt(3), itemAt(6)] });
     expect(notes).toEqual(['scene "scene-0" item 3: its word is outside this block']);
   });
@@ -386,7 +393,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
     // is outside, so item 2 ("FORGET CONTEXT") finds nothing and item 3 lands.
     const cue = listCue({ props: { items: ["CONTEXT", "REVIEW CODE"] } });
     const doc = docWith({ "scene-0": { ...marker([null, null]), timing: { startSec: 2.0, endSec: 3.25 } } });
-    const out = resolveItemTimings([cue], doc, WORDS, FORGET_CUT).cues[0]!;
+    const out = resolveUnsplit([cue], doc, WORDS, FORGET_CUT).cues[0]!;
     expect(out.reveal).toEqual({ itemAtSec: [null, itemAt(6, FORGET_CUT)] });
   });
 
@@ -394,7 +401,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
     const { anchor: _a, ...bare } = listCue();
     const cues = [bare];
     const doc = docWith({ "scene-0": marker([null, pinForget, null]) });
-    const out = resolveItemTimings(cues, doc, WORDS, IDENTITY);
+    const out = resolveUnsplit(cues, doc, WORDS, IDENTITY);
     expect(out.cues).toBe(cues);
     expect(out.notes).toEqual(['scene "scene-0": no block window to time its items in — item timing skipped']);
   });
@@ -403,7 +410,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
     const cue = listCue({ startSec: 0.25, endSec: 3.9, entryAtSec: 0.55, pinned: true });
     const other = listCue({ id: "scene-1", startSec: 5, endSec: 6, anchor: { startWord: 8, endWord: 9 } });
     const doc = docWith({ "scene-0": marker([null, pinForget, null]) });
-    const out = resolveItemTimings([cue, other], doc, WORDS, IDENTITY).cues;
+    const out = resolveUnsplit([cue, other], doc, WORDS, IDENTITY).cues;
     expect(out[0]).toMatchObject({ startSec: 0.25, endSec: 3.9, entryAtSec: 0.55, pinned: true });
     expect(out[1]).toBe(other);
   });
@@ -411,7 +418,7 @@ describe("resolveItemTimings (graphic-editor-modal §3)", () => {
   it("an earlier reveal (the planner's, or a retime's) is overwritten for a marked root", () => {
     const cue = listCue({ component: "FlowDiagram", props: { nodes: [...ITEMS] }, reveal: { itemAtSec: [9, 9, 9] } });
     const doc = docWith({ "scene-0": marker([null, null, null], "FlowDiagram") });
-    expect(resolveItemTimings([cue], doc, WORDS, IDENTITY).cues[0]!.reveal).toEqual({
+    expect(resolveUnsplit([cue], doc, WORDS, IDENTITY).cues[0]!.reveal).toEqual({
       itemAtSec: [itemAt(1), itemAt(3), itemAt(6)],
     });
   });
@@ -449,7 +456,7 @@ describe("BulletList invariant (graphic-editor-modal Test plan)", () => {
     const assembled = assembleScenes([scene], { language: "en", words: WORDS }, IDENTITY).cues;
     const doc = docWith({ "scene-0": { props: { items: ["A", "B", "C"] } } });
     const merged = applyOverrides(assembled, doc).cues;
-    const out = resolveItemTimings(merged, doc, WORDS, IDENTITY).cues;
+    const out = resolveUnsplit(merged, doc, WORDS, IDENTITY).cues;
     expect(out).toBe(merged);
     expect("reveal" in out[0]!).toBe(false);
   });

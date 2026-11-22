@@ -1520,7 +1520,7 @@ function itemTimingRootIds(doc: OverrideDoc): string[] {
 /**
  * The `roots` argument of `resolveItemTimings`, taken from an UNSPLIT cue
  * list (§4): one entry per marked root id present in `cues`, with that
- * cue's component and merged props and its `blockWindow`. Produce's default
+ * cue's component and merged props and its `blockWindow`. Produce's call
  * (both maps the run's) and the editor's call at its first `applyOverrides`
  * (`pinMap` the old clock, `liveMap` the live one) are this one function, so
  * the two cannot build their roots differently.
@@ -1579,8 +1579,11 @@ function itemText(item: RevealItem): string {
  * the editor alike (§4). Resolved before the split, a half's own swap met a
  * resolved `reveal` in produce and none in the editor, so a reveal-less
  * root's swapped half rendered paced in one and staggered in the other
- * (item-timing-parity.test.ts). Absent, the roots are the cues themselves:
- * right only for a list that is not split. `doc` is the RAW doc (see
+ * (item-timing-parity.test.ts). Required, with no derive-from-`cues`
+ * default: both real callers pass a list that is already split, where a
+ * default would read the root off its first half, and a hide on the root
+ * id (`splitThenDropHidden`) removes that half while the other still needs
+ * the root's times. `doc` is the RAW doc (see
  * `blockWindow`); `map` is the live clock the cues are on.
  *
  * A doc with no marker, or nothing to write, returns the very same `cues`
@@ -1592,11 +1595,10 @@ export function resolveItemTimings(
   doc: OverrideDoc,
   words: readonly Word[],
   map: TimeMap,
-  roots?: ReadonlyMap<string, ItemTimingRoot>,
+  roots: ReadonlyMap<string, ItemTimingRoot>,
 ): { cues: SceneCue[]; notes: string[] } {
   const ids = itemTimingRootIds(doc);
   if (ids.length === 0) return { cues, notes: [] };
-  const rootOf = roots ?? itemTimingRoots(cues, doc, words, map, map);
   const notes: string[] = [];
   const allWords = words.map((w) => ({ text: w.text, srcStart: w.start }));
   // Once per call, not per root: `mapWord` walks the spans.
@@ -1604,7 +1606,7 @@ export function resolveItemTimings(
   const timed = new Map<string, { component: string; itemAtSec: (number | null)[]; bounded: boolean }>();
 
   for (const id of ids) {
-    const root = rootOf.get(id);
+    const root = roots.get(id);
     if (root === undefined || !isItemTimingComponent(root.component)) continue;
     if (root.window === null) {
       notes.push(`scene "${id}": no block window to time its items in — item timing skipped`);

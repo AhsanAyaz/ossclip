@@ -46,7 +46,10 @@ import { mapFromKeptSpans, TimeMap } from "../src/timemap";
  * caption edit layers, the stage previews, and the editor's landscape
  * layout remap (portrait here). `previewBaseCues` and `previewDropCovered`
  * are App's thin wrappers over `previewAddedScenes` and
- * `dropOverlappingAdded`, called directly.
+ * `dropOverlappingAdded`, called directly. Produce's one-time `splits[].src`
+ * backfill (produce.ts, after `applyUserCuts`) is not modelled either: it
+ * only fills a src-less legacy split, and every fixture here dual-writes
+ * `{at, src}`, as the editor's split gesture does.
  *
  * The LAST render is part of the input: the editor's base cues are what it
  * baked (`baseSceneCues` = produce's `routed.cues` on its clock), and its

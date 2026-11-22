@@ -1,0 +1,206 @@
+{
+ "sceneCues": [
+  {
+   "id": "take-0",
+   "kind": "plain",
+   "layout": "full-bleed",
+   "startSec": 0,
+   "endSec": 2
+  },
+  {
+   "id": "scene-0",
+   "anchor": {
+    "startWord": 0,
+    "endWord": 3
+   },
+   "layout": "pip-bubble",
+   "component": "BulletList",
+   "props": {
+    "items": [
+     "Hello",
+     "welcome back"
+    ]
+   },
+   "startSec": 2,
+   "endSec": 4.590725000000001
+  },
+  {
+   "id": "take-1",
+   "kind": "plain",
+   "layout": "full-bleed",
+   "startSec": 4.5994,
+   "endSec": 6.314500000000001
+  },
+  {
+   "id": "added-1",
+   "anchor": {
+    "startWord": 8,
+    "endWord": 11
+   },
+   "layout": "blurred-behind",
+   "component": "BulletList",
+   "props": {
+    "items": [
+     "show you",
+     "something"
+    ]
+   },
+   "startSec": 6.314500000000001,
+   "endSec": 8.905225000000002
+  },
+  {
+   "id": "take-1-1",
+   "kind": "plain",
+   "layout": "full-bleed",
+   "startSec": 8.905225000000002,
+   "endSec": 10.342600000000001
+  },
+  {
+   "id": "take-2",
+   "kind": "plain",
+   "layout": "full-bleed",
+   "startSec": 10.342600000000001,
+   "endSec": 11.4395
+  },
+  {
+   "id": "scene-4",
+   "anchor": {
+    "startWord": 16,
+    "endWord": 19
+   },
+   "layout": "graphic-only",
+   "component": "FlowDiagram",
+   "props": {
+    "nodes": [
+     "RAW TAKE",
+     "CUT",
+     "PRODUCED",
+     "SHIPPED"
+    ],
+    "emphasizeLast": true
+   },
+   "startSec": 11.4395,
+   "endSec": 12.554300000000001,
+   "reveal": {
+    "itemAtSec": [
+     null,
+     null,
+     null
+    ]
+   }
+  },
+  {
+   "id": "scene-4@s1",
+   "anchor": {
+    "startWord": 16,
+    "endWord": 19
+   },
+   "layout": "graphic-only",
+   "component": "FlowDiagram",
+   "props": {
+    "nodes": [
+     "RAW TAKE",
+     "CUT",
+     "PRODUCED",
+     "SHIPPED"
+    ],
+    "emphasizeLast": true
+   },
+   "startSec": 12.554300000000001,
+   "endSec": 14.030225000000002,
+   "reveal": {
+    "itemAtSec": [
+     null,
+     null,
+     null
+    ]
+   }
+  },
+  {
+   "id": "take-2-1",
+   "kind": "plain",
+   "layout": "full-bleed",
+   "startSec": 14.030225000000002,
+   "endSec": 17.271500000000003
+  }
+ ],
+ "baseSceneCues": [
+  {
+   "id": "scene-0",
+   "anchor": {
+    "startWord": 0,
+    "endWord": 3
+   },
+   "layout": "pip-bubble",
+   "component": "TitleCard",
+   "props": {
+    "eyebrow": "MOCK",
+    "title": "THE RAW TAKE",
+    "emphasis": "861%",
+    "sub": "becomes a clean edit"
+   },
+   "startSec": 2,
+   "endSec": 4.590725000000001
+  },
+  {
+   "id": "scene-2",
+   "anchor": {
+    "startWord": 8,
+    "endWord": 11
+   },
+   "layout": "video-top",
+   "component": "StatCard",
+   "props": {
+    "label": "FILLERS REMOVED",
+    "value": "+100%",
+    "caption": "MORE SIGNAL. LESS UM.",
+    "inverted": true
+   },
+   "startSec": 6.314500000000001,
+   "endSec": 8.905225000000002
+  },
+  {
+   "id": "added-1",
+   "anchor": {
+    "startWord": 8,
+    "endWord": 11
+   },
+   "layout": "blurred-behind",
+   "component": "BulletList",
+   "props": {
+    "items": [
+     "show you",
+     "something"
+    ]
+   },
+   "startSec": 6.314500000000001,
+   "endSec": 8.905225000000002
+  },
+  {
+   "id": "scene-4",
+   "anchor": {
+    "startWord": 16,
+    "endWord": 19
+   },
+   "layout": "graphic-only",
+   "component": "FlowDiagram",
+   "props": {
+    "nodes": [
+     "RAW TAKE",
+     "CUT",
+     "PRODUCED"
+    ],
+    "emphasizeLast": true
+   },
+   "startSec": 11.4395,
+   "endSec": 14.030225000000002,
+   "reveal": {
+    "itemAtSec": [
+     null,
+     null,
+     null
+    ]
+   }
+  }
+ ]
+}
