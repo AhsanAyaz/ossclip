@@ -7,6 +7,10 @@
 export * from "./scene-schema";
 export * from "./scene-registry";
 export * from "./scene-props-controls";
+// Carries `resolveItemTimings`, `itemTimingRoots`, `blockWindow` and
+// `ITEM_TIMING_COMPONENTS` to the editor (graphic-editor-modal §4): its
+// preview resolves items with the very pass produce runs, and their runtime
+// imports (./assemble, ./reveal-match) are already on this surface.
 export * from "./overrides";
 // The editor derives its plain takes with the SAME function the pipeline
 // uses — a copy would drift and the two timelines would disagree.

@@ -25,8 +25,8 @@ import {
 import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
 import { SCENE_REGISTRY, clipSpeed, resolveSceneProps } from "./scene-registry";
-import { maxCueSec } from "./assemble";
-import { revealItemTexts } from "./reveal-match";
+import { ITEM_LEAD_SEC, maxCueSec, wordOutputStart } from "./assemble";
+import { resolveItemWords, revealItemTexts, type RevealItem } from "./reveal-match";
 import { keepsBoxAcross } from "./framing";
 import { AddedSceneSchema, isAddedKey } from "./added-scenes";
 import {
@@ -240,6 +240,37 @@ export const SceneOverrideSchema = z.object({
    * an override with nothing to say.
    */
   hidden: z.boolean().optional(),
+  /**
+   * Word timing for a list graphic's items (graphic-editor-modal §2).
+   * PRESENT is the switch, even with every pin null: absent, the graphic
+   * renders exactly as before this key existed (AG1). One entry per item,
+   * in item order: null is auto (matched from its text on every resolve,
+   * never stored, so an edited text re-finds its word, G3); a pin is the
+   * chosen word's SOURCE start, recut-immune like `splits[].src`, plus the
+   * item's text when pinned, so a pin whose item has since changed is
+   * recognised and dropped to auto instead of landing on the wrong item.
+   * `component` names what the pins were made for: a swap turns them all
+   * auto, and the marker stays so swapping back restores them (§3 step 2).
+   * A plain string, not the component enum, `AddedSceneSchema`'s reasoning:
+   * a component that leaves the registry must not fail the parse of the
+   * whole doc. Resolved by `resolveItemTimings`. Named apart from
+   * BulletList's own `props.items`.
+   */
+  itemPins: z
+    .object({
+      component: z.string(),
+      pins: z.array(
+        z.union([
+          z.null(),
+          z.object({
+            // `.finite()` stated, `SplitSchema`'s reasoning (`1e400`).
+            src: z.number().finite().nonnegative(),
+            text: z.string(),
+          }),
+        ]),
+      ),
+    })
+    .optional(),
 });
 export type SceneOverride = z.infer<typeof SceneOverrideSchema>;
 
@@ -1389,6 +1420,248 @@ function withSwappedReveal(cue: SceneCue): SceneCue {
   const count = revealItemTexts(cue.component, cue.props)?.length ?? 0;
   if (count === 0) return rest;
   return { ...rest, reveal: { itemAtSec: Array.from({ length: count }, () => null) } };
+}
+
+/**
+ * The components whose items can land on words (graphic-editor-modal
+ * Terms, "Covered components"). Not TerminalMock: it reveals per window,
+ * and windows are not editable in the modal. Not PhoneDemo: its pills are
+ * not in the add form. Exported for the modal, which writes `itemPins`
+ * only for these (§6).
+ */
+export const ITEM_TIMING_COMPONENTS = [
+  "BulletList",
+  "FlowDiagram",
+  "StrikethroughReveal",
+  "ChatMock",
+  "CardRow",
+] as const satisfies readonly SceneComponentId[];
+type ItemTimingComponent = (typeof ITEM_TIMING_COMPONENTS)[number];
+
+function isItemTimingComponent(component: string): component is ItemTimingComponent {
+  return (ITEM_TIMING_COMPONENTS as readonly string[]).includes(component);
+}
+
+/**
+ * What `resolveItemTimings` needs to know about one root (§3, §4): its
+ * component and merged props as the UNSPLIT list has them, and its block
+ * window. `window` null is rule 4 of the window: the graphic is skipped
+ * with a note.
+ */
+export type ItemTimingRoot = {
+  component: string;
+  props: Record<string, unknown>;
+  window: { srcStart: number; srcEnd: number } | null;
+};
+
+/**
+ * A root's block window in SOURCE seconds (graphic-editor-modal Terms,
+ * "Block window"), from stored source data only, never from the cue's
+ * output times: `minScene`, the 15 s cap, gaps and seams put a cue's ends
+ * in different places on different clocks, and a window read off them would
+ * hand the editor and produce different words. In this order:
+ *
+ * 1. The root's timing pin, by form. A src pin is its stored span, but only
+ *    where `resolveTimingPin(pin, liveMap)` is non-null: an inert pin does
+ *    not move the graphic on that clock, so it must not narrow its words
+ *    either. A legacy pin's numbers are output seconds on the clock they
+ *    were written for (the editor's old clock; produce's run map once
+ *    `remapOverridesThroughRecut` has re-anchored them), so they convert
+ *    with THAT clock's `toSource`, passed as `pinMap`. Read from the raw
+ *    doc, never a `resolveSrcTimingPins` result: there a src pin has
+ *    already become output seconds and would read as a legacy one.
+ * 2. An added graphic: its entry's span, the one the add stored.
+ * 3. A plan cue: its first anchor word's source start to its last anchor
+ *    word's source end. Indices are into `words`, the run's transcript list
+ *    in both pipelines (Terms).
+ * 4. Otherwise none.
+ *
+ * Half-open `[srcStart, srcEnd)`, as `resolveItemWords` reads it.
+ */
+export function blockWindow(
+  rootCue: SceneCue,
+  doc: OverrideDoc,
+  words: readonly Word[],
+  pinMap: TimeMap,
+  liveMap: TimeMap,
+): { srcStart: number; srcEnd: number } | null {
+  const timing = doc.scenes[rootCue.id]?.timing;
+  if (timing !== undefined) {
+    if (!isSrcTiming(timing)) {
+      // Produce converts the re-anchored numbers through the run map, the
+      // editor the stored ones through its old clock: the same source second
+      // up to float noise, which matters only for a word starting exactly on
+      // a pin edge.
+      return { srcStart: pinMap.toSource(timing.startSec), srcEnd: pinMap.toSource(timing.endSec) };
+    }
+    if (resolveTimingPin(timing, liveMap) !== null) {
+      return { srcStart: timing.srcStart, srcEnd: timing.srcEnd };
+    }
+  }
+  // The first entry with the id, produce's rule for a repeated id (fix-wave M1).
+  const added = doc.addedScenes?.find((e) => e.id === rootCue.id);
+  if (added !== undefined) return { srcStart: added.srcStart, srcEnd: added.srcEnd };
+  const anchor = rootCue.anchor;
+  const first = anchor ? words[anchor.startWord] : undefined;
+  const last = anchor ? words[anchor.endWord] : undefined;
+  if (first === undefined || last === undefined) return null;
+  return { srcStart: first.start, srcEnd: last.end };
+}
+
+/** The root ids whose own entry carries the marker. A split half's own
+ * `itemPins` is not a root's (§3 works per root; the modal opens the root
+ * from a half, §5). */
+function itemTimingRootIds(doc: OverrideDoc): string[] {
+  return Object.keys(doc.scenes).filter(
+    (id) => doc.scenes[id]?.itemPins !== undefined && splitRootId(id) === id,
+  );
+}
+
+/**
+ * The `roots` argument of `resolveItemTimings`, taken from an UNSPLIT cue
+ * list (§4): one entry per marked root id present in `cues`, with that
+ * cue's component and merged props and its `blockWindow`. Produce's default
+ * (both maps the run's) and the editor's call at its first `applyOverrides`
+ * (`pinMap` the old clock, `liveMap` the live one) are this one function, so
+ * the two cannot build their roots differently.
+ */
+export function itemTimingRoots(
+  cues: readonly SceneCue[],
+  doc: OverrideDoc,
+  words: readonly Word[],
+  pinMap: TimeMap,
+  liveMap: TimeMap,
+): Map<string, ItemTimingRoot> {
+  const roots = new Map<string, ItemTimingRoot>();
+  for (const id of itemTimingRootIds(doc)) {
+    const cue = cues.find((c) => c.id === id);
+    if (cue === undefined || cue.component === undefined) continue;
+    roots.set(id, {
+      component: cue.component,
+      props: cue.props ?? {},
+      window: blockWindow(cue, doc, words, pinMap, liveMap),
+    });
+  }
+  return roots;
+}
+
+/** An item's text as a pin stores it (Terms, "Item"): CardRow's `[text,
+ * sub]` alternatives joined with " · ", the one line the modal shows. */
+function itemText(item: RevealItem): string {
+  return typeof item === "string" ? item : item.join(" · ");
+}
+
+/**
+ * Every item's time on the live clock for each root with word timing on
+ * (graphic-editor-modal §3). List-level because the override merge
+ * (`effectiveOverride`) is private to this module and step 5 needs it per
+ * cue.
+ *
+ * For each root id whose own entry has `itemPins` and whose root component
+ * is covered:
+ * 1. texts from the root's merged props (a split half's own text edit does
+ *    not re-time items, call 5);
+ * 2. stale pins become auto with a note: all of them when the component or
+ *    the count differs, one when its stored text differs. Only a pin that
+ *    was set is reported: an all-auto marker has nothing to lose;
+ * 3. `resolveItemWords` over the block words on `map`;
+ * 4. every cue with that root id AND the root's component gets
+ *    `reveal.itemAtSec`, the word time less `ITEM_LEAD_SEC` floored at 0
+ *    (assembly's rule, `plannedCue`). A half its own override swapped is
+ *    left as `withSwappedReveal` made it;
+ * 5. `props.reveal = "synced"` only with a bounding pin (pinned or cut) and
+ *    no `reveal` in that cue's own effective override, so the author's own
+ *    choice always wins and auto-only lists keep the renderer's decision;
+ * 6. nothing else: `startSec`, `endSec` and `entryAtSec` are the cue's.
+ *
+ * `roots`: built by `itemTimingRoots` from the UNSPLIT list at the first
+ * `applyOverrides`, and the resolve run after the LAST one, in produce and
+ * the editor alike (§4). Resolved before the split, a half's own swap met a
+ * resolved `reveal` in produce and none in the editor, so a reveal-less
+ * root's swapped half rendered paced in one and staggered in the other
+ * (item-timing-parity.test.ts). Absent, the roots are the cues themselves:
+ * right only for a list that is not split. `doc` is the RAW doc (see
+ * `blockWindow`); `map` is the live clock the cues are on.
+ *
+ * A doc with no marker, or nothing to write, returns the very same `cues`
+ * array: a project without `itemPins` costs nothing and renders byte-equal
+ * (AG1).
+ */
+export function resolveItemTimings(
+  cues: SceneCue[],
+  doc: OverrideDoc,
+  words: readonly Word[],
+  map: TimeMap,
+  roots?: ReadonlyMap<string, ItemTimingRoot>,
+): { cues: SceneCue[]; notes: string[] } {
+  const ids = itemTimingRootIds(doc);
+  if (ids.length === 0) return { cues, notes: [] };
+  const rootOf = roots ?? itemTimingRoots(cues, doc, words, map, map);
+  const notes: string[] = [];
+  const allWords = words.map((w) => ({ text: w.text, srcStart: w.start }));
+  // Once per call, not per root: `mapWord` walks the spans.
+  const wordTimes = words.map((w) => wordOutputStart(w, map));
+  const timed = new Map<string, { component: string; itemAtSec: (number | null)[]; bounded: boolean }>();
+
+  for (const id of ids) {
+    const root = rootOf.get(id);
+    if (root === undefined || !isItemTimingComponent(root.component)) continue;
+    if (root.window === null) {
+      notes.push(`scene "${id}": no block window to time its items in — item timing skipped`);
+      continue;
+    }
+    const texts = revealItemTexts(root.component, root.props) ?? [];
+    const stored = doc.scenes[id]!.itemPins!;
+    const anyPin = stored.pins.some((p) => p !== null);
+    let pins: ({ src: number; text: string } | null)[];
+    if (stored.component !== root.component) {
+      if (anyPin) {
+        notes.push(
+          `scene "${id}": its item pins were made for ${stored.component}, not ${root.component} — ` +
+            `every item is matched by its text`,
+        );
+      }
+      pins = texts.map(() => null);
+    } else if (stored.pins.length !== texts.length) {
+      if (anyPin) {
+        notes.push(
+          `scene "${id}": ${stored.pins.length} item pins for ${texts.length} items — ` +
+            `every item is matched by its text`,
+        );
+      }
+      pins = texts.map(() => null);
+    } else {
+      pins = stored.pins.map((p, k) => {
+        if (p === null || p.text === itemText(texts[k]!)) return p;
+        notes.push(`scene "${id}" item ${k + 1}: its text changed since it was pinned`);
+        return null;
+      });
+    }
+    const resolved = resolveItemWords(texts, allWords, root.window, (i) => wordTimes[i] !== null, pins);
+    notes.push(...resolved.notes.map((n) => `scene "${id}" ${n}`));
+    timed.set(id, {
+      component: root.component,
+      itemAtSec: resolved.items.map((item) => {
+        const at = item.word === null ? null : (wordTimes[item.word] ?? null);
+        return at === null ? null : Math.max(0, at - ITEM_LEAD_SEC);
+      }),
+      bounded: resolved.items.some((item) => item.state === "pinned" || item.state === "cut"),
+    });
+  }
+
+  if (timed.size === 0) return { cues, notes };
+  const out = cues.map((cue) => {
+    const t = timed.get(splitRootId(cue.id));
+    if (t === undefined || cue.component !== t.component) return cue;
+    const ownProps = effectiveOverride(doc.scenes, cue.id)?.props ?? {};
+    const synced = t.bounded && !("reveal" in ownProps);
+    return {
+      ...cue,
+      ...(synced ? { props: { ...cue.props, reveal: "synced" } } : {}),
+      reveal: { ...cue.reveal, itemAtSec: t.itemAtSec },
+    };
+  });
+  return { cues: out, notes };
 }
 
 /**
