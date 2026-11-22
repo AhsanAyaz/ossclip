@@ -24,6 +24,11 @@ import { livePreviewMap, retimeForPreview } from "../src/retime-preview";
 import type { Scene, SceneCue } from "../src/scene-schema";
 import type { Segment, Transcript, Word } from "../src/schema";
 import { mapFromKeptSpans, TimeMap } from "../src/timemap";
+// The editor's own item step (graphic-editor-modal §4), for the one case
+// below that runs the editor path through it rather than through core's
+// calls written out here: an app import in a core test, because the claim
+// is that App's wiring is THIS harness's editor path, and App calls these.
+import { previewItemRoots, previewItemTimings } from "../../../apps/editor/src/itemTimingPreview";
 
 /**
  * Preview equals render (graphic-editor-modal G7, Test plan "Parity"): for
@@ -145,7 +150,10 @@ function producePipeline(run: Run): Outcome {
   return { cues: dropHiddenCues(timed.cues, doc).cues, notes: timed.notes };
 }
 
-function editorPipeline(run: Run): Outcome & { exit: "early" | "main" } {
+/** `viaPreview`: the item step through the editor's extracted helpers
+ * (`apps/editor/src/itemTimingPreview.ts`), as App calls them, instead of
+ * the core calls written out. Everything else is the same path. */
+function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early" | "main" } {
   const oldMap = lastRenderMap(run);
   const doc = run.doc;
   const producedCues = assembleRun(run, oldMap).filter((c) => c.kind !== "plain");
@@ -164,7 +172,9 @@ function editorPipeline(run: Run): Outcome & { exit: "early" | "main" } {
   const { cues: graphicCues } = applyOverrides(baseCues, oldClockDoc);
   // §4: the roots, from this unsplit list; windows from stored source data,
   // a legacy pin through the old clock it was written on.
-  const roots = itemTimingRoots(graphicCues, doc, run.words, oldClockMap, liveMap);
+  const roots = viaPreview
+    ? previewItemRoots(graphicCues, doc, run.words, oldClockMap, liveMap)
+    : itemTimingRoots(graphicCues, doc, run.words, oldClockMap, liveMap);
   const { cues: shownCues } = splitThenDropHidden(graphicCues, doc);
   const visibleCues = dropOverlappingAdded(shownCues).cues;
   const filled = fillPlainCues(visibleCues, {
@@ -190,7 +200,11 @@ function editorPipeline(run: Run): Outcome & { exit: "early" | "main" } {
   const srcOnly = doc.splits.filter((s) => s.at === undefined && s.src !== undefined);
   const rebuildCaptions = ranges.length > 0 || liveRecut !== null;
   if (ranges.length === 0 && srcOnly.length === 0 && !rebuildCaptions) {
-    const timed = resolveItemTimings(props.sceneCues, doc, run.words, clockMap, roots);
+    if (viaPreview) {
+      const timed = previewItemTimings(props, doc, roots, run.words, clockMap);
+      return { cues: timed.props.sceneCues, notes: timed.notes, exit: "early" };
+    }
+    const timed = resolveItemTimings(props.sceneCues, doc, run.words, clockMap, roots!);
     return { ...timed, exit: "early" };
   }
   const carved = carveKeptTakes(props.sceneCues, ranges, clockMap);
@@ -198,7 +212,11 @@ function editorPipeline(run: Run): Outcome & { exit: "early" | "main" } {
   const splitted2 = splitCues(carved.cues, resolved.points);
   const pinned = resolveSrcTimingPins(doc, clockMap);
   const { cues: merged } = applyOverrides(splitted2, pinned.doc);
-  const timed = resolveItemTimings(merged, doc, run.words, clockMap, roots);
+  if (viaPreview) {
+    const timed = previewItemTimings({ sceneCues: merged }, doc, roots, run.words, clockMap);
+    return { cues: timed.props.sceneCues, notes: timed.notes, exit: "main" };
+  }
+  const timed = resolveItemTimings(merged, doc, run.words, clockMap, roots!);
   return { ...timed, exit: "main" };
 }
 
@@ -213,9 +231,9 @@ const itemState = (cues: readonly SceneCue[]) =>
 
 /** Both pipelines, asserted equal; produce's outcome returned so each case
  * can also show it exercised what it names. */
-function expectParity(run: Run, exit: "early" | "main") {
+function expectParity(run: Run, exit: "early" | "main", viaPreview = false) {
   const produce = producePipeline(run);
-  const editor = editorPipeline(run);
+  const editor = editorPipeline(run, viaPreview);
   expect(editor.exit).toBe(exit);
   expect(itemState(editor.cues)).toEqual(itemState(produce.cues));
   expect(editor.notes).toEqual(produce.notes);
@@ -474,6 +492,34 @@ describe("item timing parity: produce and the editor preview (graphic-editor-mod
       const out = expectParity(run, "early");
       expect(out["scene-0@s1"]!.component).toBe("StrikethroughReveal");
     });
+  });
+
+  it("through the editor's own helpers (App's wiring): both exits equal the render", () => {
+    // The no-veto case and the veto case above, re-run with the item step
+    // App actually calls: the early exit, then the main path with a pinned
+    // word the live clock cuts.
+    const early: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets()],
+      doc: docOf({ scenes: { "scene-0": pins([null, { src: src(5), text: "FORGET THE CONTEXT" }, null]) } }),
+    };
+    const atEarly = expectParity(early, "early", true);
+    expect(atEarly["scene-0"]!.itemAtSec!.every((t) => t !== null)).toBe(true);
+    expect(atEarly["scene-0"]!.reveal).toBe("synced");
+    const main: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets({ props: { items: ["HALLUCINATE", "THEY FORGOT", "REVIEW THE CODE"] } })],
+      doc: docOf({
+        scenes: { "scene-0": pins([null, { src: src(9), text: "THEY FORGOT" }, null]) },
+        cleanup: keep(PAUSE_1),
+      }),
+      rendered: keep(PAUSE_1, RETAKE),
+    };
+    const atMain = expectParity(main, "main", true);
+    expect(atMain["scene-0"]!.itemAtSec![1]).toBeNull();
+    expect(atMain["scene-0"]!.itemAtSec![2]).not.toBeNull();
   });
 
   it("invariant: a BulletList with neither itemWords nor itemPins has no reveal after both pipelines", () => {

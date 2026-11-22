@@ -27,6 +27,7 @@ import {
   type RemovalReason,
   type SceneComponentId,
   type SceneCue,
+  type SceneOverride,
   type SceneTiming,
   type SfxAddedPlacement,
   type SfxPlacementEdit,
@@ -78,6 +79,16 @@ export type EditAction =
        * steps — one undo has to take back the speed and the window together,
        * or it leaves a clip at its old speed in a block sized for the new one. */
       timing?: SceneTiming;
+      /** The graphic editor's Save (graphic-editor-modal §6): the item pins
+       * and the props the author cleared, in the SAME commit as the props,
+       * so one undo takes back the whole Save. Absent `itemPins` leaves the
+       * stored marker as it was, never removes it: a Save that changed no
+       * item must not turn word timing off (or on). */
+      itemPins?: ItemPins;
+      /** Props to take out of the override, applied after the merge, so a
+       * key named here ends absent whatever `patch` says — the `clearProp`
+       * rule (absent is its own state) without a second undo step. */
+      clearKeys?: readonly string[];
     }
   /** Take ONE prop out of the scene's override, back to absent. Not a
    * `patchProps` with `undefined`: an optional reveal prop's absence is a
@@ -443,7 +454,17 @@ export type AddScene = {
   srcStart: number;
   srcEnd: number;
   baseIds: readonly string[];
+  /** `scenes[newId]`, written in the SAME commit as the entry
+   * (graphic-editor-modal §6): an add of a covered list carries its
+   * `itemPins` marker so its auto items are timed from the first preview
+   * (G2), and the modal's When row its timing pin. The entry itself stays
+   * write-once (§1); these live where every later edit of the block does. */
+  scenePatch?: { itemPins?: ItemPins; timing?: SceneTiming };
 };
+
+/** A graphic's word-timing marker (graphic-editor-modal §2), as the doc
+ * stores it. */
+export type ItemPins = NonNullable<SceneOverride["itemPins"]>;
 
 export const initialEditState = (): EditState => ({
   doc: emptyOverrideDoc(),
@@ -671,6 +692,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       };
     case "patchProps": {
       const scene = withScene(state.doc, action.sceneId);
+      const props = { ...scene.props, ...action.patch };
+      for (const key of action.clearKeys ?? []) delete props[key];
       return commit(
         {
           ...state.doc,
@@ -678,8 +701,9 @@ export function editReducer(state: EditState, action: EditAction): EditState {
             ...state.doc.scenes,
             [action.sceneId]: {
               ...scene,
-              props: { ...scene.props, ...action.patch },
+              props,
               ...(action.timing !== undefined ? { timing: action.timing } : {}),
+              ...(action.itemPins !== undefined ? { itemPins: action.itemPins } : {}),
             },
           },
         },
@@ -1753,7 +1777,24 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         srcStart: action.srcStart,
         srcEnd: action.srcEnd,
       };
-      return commit(withAddedScenes(state.doc, [...(state.doc.addedScenes ?? []), entry]));
+      const withEntry = withAddedScenes(state.doc, [...(state.doc.addedScenes ?? []), entry]);
+      const { itemPins, timing } = action.scenePatch ?? {};
+      // Nothing to say → no `scenes` key: an empty override is not written
+      // for an add any more than for anything else. No merge with an
+      // existing `scenes[newId]`: the mint skips every root a key names.
+      if (itemPins === undefined && timing === undefined) return commit(withEntry);
+      return commit({
+        ...withEntry,
+        scenes: {
+          ...withEntry.scenes,
+          [entry.id]: {
+            props: {},
+            elements: {},
+            ...(itemPins !== undefined ? { itemPins } : {}),
+            ...(timing !== undefined ? { timing } : {}),
+          },
+        },
+      });
     }
     case "removeAddedScene": {
       const list = state.doc.addedScenes ?? [];
@@ -1850,12 +1891,18 @@ export function useEdits() {
     syncCues: (cues: readonly SceneCue[]) => {
       cuesRef.current = cues;
     },
+    /** Options, not positions: the graphic editor's Save adds `itemPins`
+     * and `clearKeys` beside the speed edit's `timing`, all one undo step. */
     patchProps: (
       sceneId: string,
       patch: Record<string, unknown>,
-      coalesce?: string,
-      timing?: SceneTiming,
-    ) => dispatch({ type: "patchProps", sceneId, patch, coalesce, timing }),
+      opts: {
+        coalesce?: string;
+        timing?: SceneTiming;
+        itemPins?: ItemPins;
+        clearKeys?: readonly string[];
+      } = {},
+    ) => dispatch({ type: "patchProps", sceneId, patch, ...opts }),
     clearProp: (sceneId: string, key: string) => dispatch({ type: "clearProp", sceneId, key }),
     patchElement: (sceneId: string, elementId: string, patch: ElementTransform, coalesce?: string) =>
       dispatch({ type: "patchElement", sceneId, elementId, patch, coalesce }),

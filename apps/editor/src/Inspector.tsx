@@ -1151,11 +1151,9 @@ export const Inspector: React.FC<InspectorProps> = ({
                     ? buildArrayPatch(elementId, props, value)
                     : { [elementId]: value };
                   if (patch) {
-                    edits.patchProps(
-                      selection.sceneId,
-                      patch,
-                      `text:${selection.sceneId}:${elementId}`,
-                    );
+                    edits.patchProps(selection.sceneId, patch, {
+                      coalesce: `text:${selection.sceneId}:${elementId}`,
+                    });
                   }
                 };
                 return multiline ? (
@@ -1534,8 +1532,10 @@ export const Inspector: React.FC<InspectorProps> = ({
                         edits.patchProps(
                           selection.sceneId,
                           { [control.key]: value },
-                          `props:${selection.sceneId}:${control.key}`,
-                          resized ? pinTiming(resized.startSec, resized.endSec, toSourceSec) : undefined,
+                          {
+                            coalesce: `props:${selection.sceneId}:${control.key}`,
+                            timing: resized ? pinTiming(resized.startSec, resized.endSec, toSourceSec) : undefined,
+                          },
                         );
                       }}
                     />
@@ -1591,8 +1591,19 @@ export const Inspector: React.FC<InspectorProps> = ({
                       // `options[0]`: showing "even" for an unset pacing both
                       // misdescribes a legacy scene and makes picking "even"
                       // a no-op change event (Review Focus 5).
+                      // `reveal` from the OVERRIDE, not the live cue
+                      // (graphic-editor-modal §4): with word timing on, the
+                      // preview forces `synced` onto the cue whenever a pin
+                      // bounds the list and the author set no reveal, and
+                      // read off the cue that forced value would show as the
+                      // author's choice. A half's own entry, then its root's:
+                      // the merge `effectiveOverride` makes, which is what
+                      // the resolve itself tests before forcing.
                       value={String(
-                        cue.props?.[control.key] ??
+                        (control.key === "reveal"
+                          ? (edits.doc.scenes[selection.sceneId]?.props.reveal ??
+                            edits.doc.scenes[splitRootId(selection.sceneId)]?.props.reveal)
+                          : cue.props?.[control.key]) ??
                           (control.optional ? "" : (control.options?.[0] ?? "")),
                       )}
                       onChange={(e) =>

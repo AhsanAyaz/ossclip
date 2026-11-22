@@ -88,6 +88,7 @@ import {
   type AddGraphicRequest,
   type AddGraphicWord,
 } from "./addedGraphics";
+import { previewItemRoots, previewItemTimings } from "./itemTimingPreview";
 import { DeleteWordsModal } from "./DeleteWordsModal";
 import type { DeleteWordsPlan } from "./deleteWords";
 import { ProjectPicker } from "./ProjectPicker";
@@ -1427,6 +1428,22 @@ export const App: React.FC = () => {
     // frame the user is looking at.
     const oldClockDoc = oldClockMap ? resolveSrcTimingPins(edits.doc, oldClockMap).doc : edits.doc;
     const { cues: graphicCues } = applyOverrides(baseCues, oldClockDoc);
+    // Word-timed list items (graphic-editor-modal §4): the roots come from
+    // THIS list, the last one before the split — `finishOnClock` resolves on
+    // split cues, where a root may be two halves or (a hidden root half)
+    // only its second. Windows from stored source data, the same on any
+    // clock; a legacy timing pin read through the old clock it was written
+    // on, a src pin tested on the live one. The raw `edits.doc`, not
+    // `oldClockDoc`, whose src pins already read as output seconds.
+    // item-timing-parity.test.ts runs these same two helpers against
+    // produce's ordering.
+    const itemRoots = previewItemRoots(
+      graphicCues,
+      edits.doc,
+      sfxPlan.words,
+      oldClockMap,
+      liveRecut?.newMap ?? oldClockMap,
+    );
     // Same sequence as `produce.ts`: overrides → split, then drop the deleted
     // scenes → fill the gaps with plain takes (a deleted scene's window
     // becomes an editable take — Task C's payoff for doing A first) → a
@@ -1611,7 +1628,15 @@ export const App: React.FC = () => {
       // one this function has always taken.
       const rebuildCaptions = transcriptDoc !== null && (ranges.length > 0 || liveRecut !== null);
       if (clockMap === null || (ranges.length === 0 && srcOnly.length === 0 && !rebuildCaptions)) {
-        return { props, reports: priorReports };
+        // The ordinary session lands here too (no veto, no live-only split),
+        // so list items resolve on this exit as well as the main one (§4) —
+        // G2 before any veto. No marked root, or no clock or word list, hands
+        // back the SAME `props`: this exit's byte-identical promise above.
+        const items = previewItemTimings(props, edits.doc, itemRoots, sfxPlan.words, clockMap);
+        return {
+          props: items.props,
+          reports: items.notes.length > 0 ? [...priorReports, ...items.notes] : priorReports,
+        };
       }
       const carved = carveKeptTakes(props.sceneCues ?? [], ranges, clockMap);
       const resolved = resolveSplitPoints(srcOnly, clockMap);
@@ -1629,9 +1654,14 @@ export const App: React.FC = () => {
       // reports DO surface: this clock is the one the user is watching.
       const pinned = resolveSrcTimingPins(edits.doc, clockMap);
       const { cues: merged } = applyOverrides(splitted2, pinned.doc);
+      // Item times AFTER that pass (§4), so a src timing pin that resolves
+      // only on this clock has applied and a half's own swap has happened —
+      // produce resolves after its second pass for the same reason — and
+      // before the stage previews, which only ever patch framing.
+      const items = previewItemTimings({ sceneCues: merged }, edits.doc, itemRoots, sfxPlan.words, clockMap);
       // The stage preview, re-applied on the cues the Inspector actually
       // reads — see `withStagePreviews` for the slider that died without it.
-      const finalCues = withStagePreviews(merged);
+      const finalCues = withStagePreviews(items.props.sceneCues);
       // Captions over the REVIVED material (field report 2026-08-26): the
       // retimed captionLines only cover words the LAST RENDER kept — the
       // revived stretch's words exist nowhere in render-props. Rebuild the
@@ -1662,7 +1692,7 @@ export const App: React.FC = () => {
       }
       return {
         props: { ...props, sceneCues: finalCues, captionLines },
-        reports: [...priorReports, ...carved.reports, ...resolved.reports, ...pinned.reports],
+        reports: [...priorReports, ...carved.reports, ...resolved.reports, ...pinned.reports, ...items.notes],
         transcript,
       };
     };

@@ -1245,6 +1245,83 @@ describe("Inspector — reveal controls: unset is its own state (reveal-timing T
 });
 
 /**
+ * graphic-editor-modal §4: with word timing on, the preview resolve forces
+ * `props.reveal = "synced"` onto the LIVE cue whenever a pin bounds the list
+ * and the author set no reveal. The select reads the override instead, so
+ * the forced value never shows as the author's choice — and picking
+ * "synced" for real stays a change, not a no-op on an already-"synced" box.
+ */
+function ForcedRevealHarness({ sceneId, doc, cue }: { sceneId: string; doc: OverrideDoc; cue: SceneCue }) {
+  const edits = useEdits();
+  const { load } = edits;
+  React.useEffect(() => load(doc), []);
+  return React.createElement(Inspector, {
+    selection: { sceneId, elementId: null },
+    cue,
+    frame: { width: 1080, height: 1920 },
+    allSceneIds: [sceneId],
+    edits,
+    onSelect: () => {},
+    resolvedTheme: defaultTheme,
+    onVideoPreview: vi.fn(),
+  });
+}
+
+describe("Inspector — the reveal select reads the override, not a forced synced (graphic-editor-modal §4)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const itemPins = { component: "BulletList", pins: [{ src: 1.5, text: "A" }, null] };
+  /** What the preview hands the Inspector after the resolve: synced, forced. */
+  const forced = (id: string): SceneCue => ({
+    id,
+    kind: "graphic",
+    layout: "video-top",
+    component: "BulletList",
+    props: { items: ["A", "B"], reveal: "synced" },
+    reveal: { itemAtSec: [1.35, 2.85] },
+    startSec: 1,
+    endSec: 5,
+  });
+  const mount = async (sceneId: string, raw: Record<string, unknown>) => {
+    await act(async () => {
+      root.render(
+        React.createElement(ForcedRevealHarness, { sceneId, doc: OverrideDocSchema.parse(raw), cue: forced(sceneId) }),
+      );
+    });
+    return container.querySelector<HTMLSelectElement>('[data-testid="prop-reveal"]')!;
+  };
+
+  it("no reveal in the override: shows default, though the live cue says synced", async () => {
+    const select = await mount("scene-0", { scenes: { "scene-0": { itemPins } } });
+    expect(select.value).toBe("");
+  });
+
+  it("the author's own reveal shows as set", async () => {
+    const select = await mount("scene-0", { scenes: { "scene-0": { props: { reveal: "paced" }, itemPins } } });
+    expect(select.value).toBe("paced");
+  });
+
+  it("a split half shows its root's reveal, the override the resolve itself reads", async () => {
+    const select = await mount("scene-0@s1", { scenes: { "scene-0": { props: { reveal: "auto" }, itemPins } } });
+    expect(select.value).toBe("auto");
+  });
+});
+
+/**
  * §161: an optional integer prop's slider. CardRow's `highlight` unset means
  * NO card highlighted, so the control must say "not set" while unset (the
  * slider resting at 0 would otherwise read as card 0) and must be able to

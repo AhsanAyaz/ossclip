@@ -110,6 +110,74 @@ describe("a clip's speed and its resized window are one undo step", () => {
   });
 });
 
+describe("patchProps carries item pins and cleared props in the same step (graphic-editor-modal §6)", () => {
+  const listDoc = () =>
+    OverrideDocSchema.parse({
+      scenes: {
+        "scene-2": {
+          props: { title: "OLD", items: ["A", "B"], kicker: "GONE SOON" },
+          itemPins: { component: "BulletList", pins: [null, { src: 3.5, text: "B" }] },
+        },
+      },
+    });
+  const save = {
+    type: "patchProps",
+    sceneId: "scene-2",
+    patch: { items: ["A", "B", "C"] },
+    itemPins: { component: "BulletList", pins: [null, { src: 3.5, text: "B" }, null] },
+    clearKeys: ["kicker"],
+  } as const;
+
+  it("writes the props, the pins and the removal as ONE undo step", () => {
+    const before = { ...initialEditState(), doc: listDoc() };
+    const s = editReducer(before, save);
+    const scene = s.doc.scenes["scene-2"]!;
+    expect(scene.props).toEqual({ title: "OLD", items: ["A", "B", "C"] });
+    expect(scene.itemPins).toEqual(save.itemPins);
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(before.doc);
+  });
+
+  it("a key both patched and cleared ends absent: clearKeys names what the save leaves unset", () => {
+    const s = editReducer(
+      { ...initialEditState(), doc: listDoc() },
+      { type: "patchProps", sceneId: "scene-2", patch: { kicker: "X" }, clearKeys: ["kicker"] },
+    );
+    expect("kicker" in s.doc.scenes["scene-2"]!.props).toBe(false);
+  });
+
+  it("without itemPins the stored marker is left as it was; with timing, the pin rides the same step", () => {
+    const s = editReducer(
+      { ...initialEditState(), doc: listDoc() },
+      { type: "patchProps", sceneId: "scene-2", patch: { title: "NEW" }, timing: { srcStart: 3, srcEnd: 6 } },
+    );
+    expect(s.doc.scenes["scene-2"]!.itemPins).toEqual(listDoc().scenes["scene-2"]!.itemPins);
+    expect(s.doc.scenes["scene-2"]!.timing).toEqual({ srcStart: 3, srcEnd: 6 });
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("the hook takes them as an options object, one undo step", () => {
+    let api!: ReturnType<typeof useEdits>;
+    const Harness = (): null => {
+      api = useEdits();
+      return null;
+    };
+    const root = createRoot(document.createElement("div"));
+    act(() => {
+      root.render(React.createElement(Harness));
+    });
+    act(() => api.load(listDoc()));
+    act(() =>
+      api.patchProps("scene-2", save.patch, { itemPins: save.itemPins, clearKeys: [...save.clearKeys] }),
+    );
+    expect(api.doc.scenes["scene-2"]!.props).toEqual({ title: "OLD", items: ["A", "B", "C"] });
+    expect(api.doc.scenes["scene-2"]!.itemPins).toEqual(save.itemPins);
+    act(() => api.undo());
+    expect(api.doc).toEqual(listDoc());
+    act(() => root.unmount());
+  });
+});
+
 describe("redo (R17 §80)", () => {
   const patch = (value: string) =>
     ({ type: "patchProps", sceneId: "scene-0", patch: { value } }) as const;
@@ -1963,6 +2031,30 @@ describe("addScene / removeAddedScene (editor-added-graphics §6)", () => {
     expect(s.doc.splits).toEqual(doc.splits);
     expect(s.past).toHaveLength(1);
     expect(editReducer(s, { type: "undo" }).doc).toEqual(doc);
+  });
+
+  it("addScene writes the entry and scenes[newId] (item pins, timing) in ONE commit (graphic-editor-modal §6)", () => {
+    const before = initialEditState();
+    const scenePatch = {
+      itemPins: { component: "BulletList", pins: [null, null] },
+      timing: { srcStart: 1.1, srcEnd: 2.4 },
+    };
+    const s = editReducer(before, {
+      type: "addScene",
+      ...add,
+      component: "BulletList",
+      props: { items: ["A", "B"] },
+      scenePatch,
+    });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-1"]);
+    expect(s.doc.scenes["added-1"]).toEqual({ props: {}, elements: {}, ...scenePatch });
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(before.doc);
+  });
+
+  it("addScene with an empty or absent scenePatch leaves scenes untouched", () => {
+    expect(editReducer(initialEditState(), { type: "addScene", ...add }).doc.scenes).toEqual({});
+    expect(editReducer(initialEditState(), { type: "addScene", ...add, scenePatch: {} }).doc.scenes).toEqual({});
   });
 
   it("removing the last entry removes the key; an unknown id is a no-op", () => {
