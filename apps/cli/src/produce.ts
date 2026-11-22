@@ -5140,8 +5140,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // (remapped when the frames differed), so `map.toSource(at)` is exact.
   // Gated on `priorMap` like the cuts resolution: with no prior render-props
   // the frame `at` was drawn against is unknowable, and a guessed src would
-  // be a wrong anchor forever. `at` stays verbatim — the historical record,
-  // per SplitSchema.
+  // be a wrong anchor forever. `at` stays verbatim HERE — the old-clock
+  // record, per SplitSchema; the one pass that rewrites it is
+  // `rekeyTakeHalves` step 7 below, for a landed take split only.
   let splitSrcResolved = false;
   if (priorMap !== null) {
     const withSrc = overrideDoc.splits.map((s) => {

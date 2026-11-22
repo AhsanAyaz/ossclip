@@ -172,7 +172,11 @@ export const SceneOverrideSchema = z.object({
        * 2026-08-31: one concatenated clip was recorded quieter than the
        * rest). Lives inside `video` on purpose — it is a property of this
        * window's playback, and the key already merges per scene, inherits
-       * across split halves, and has patch/clear plumbing. 0 mutes. Above 1
+       * across split halves, and has patch/clear plumbing. Except a flagged
+       * take half (take-framing-identity P1): it inherits no `video` at all,
+       * `volume` included — the piece's `volume` is copied onto the half when
+       * the split is flagged instead (⌘B, or produce's legacy migration), so
+       * muting the root afterwards leaves the other pieces audible. 0 mutes. Above 1
        * amplifies — in the render via allowAmplificationDuringRender, and in
        * the preview via the Player's own WebAudio gain (Remotion ≥4.0.5xx,
        * use-amplification). Max 4: a field clip arrived quiet enough that 2x
@@ -396,8 +400,14 @@ export const SplitSchema = z.union([
   // applied to splits, the way `cuts[].src`, `cleanup.kept` and the caption
   // keys already anchor. When present it is AUTHORITATIVE and the split is
   // recut-immune (`remapOverridesThroughRecut` passes it through untouched);
-  // `at` then survives only as the historical old-clock record, the
-  // `cuts[].startSec` posture. Three shapes, all meaningful:
+  // `at` then survives as the old-clock record, the `cuts[].startSec`
+  // posture — with one writer that refreshes it: produce's `rekeyTakeHalves`
+  // step 7 (take-framing-identity P2, R5-B1) moves a LANDED take split's `at`
+  // onto the clock that render split on, so the editor (which splits
+  // `{at, src}` at `at`) previews the piece where the render cut it. Never
+  // when either the old or the new `at` lies inside a graphic window
+  // (R6-B1, R7-B1), and never on a src-only split. Three shapes, all
+  // meaningful:
   //   {at}       — legacy doc; produce backfills `src` once via priorMap.
   //   {at, src}  — a normal ⌘B: the editor dual-writes both.
   //   {src}      — ⌘B INSIDE revived material (a kept cleanup removal): no
@@ -1178,6 +1188,15 @@ export function ownFramingSplitIds(splits: readonly Split[]): Set<string> {
   return new Set(splits.filter((s) => s.ownFraming === true).map((s) => s.id));
 }
 
+/** A plain take HALF whose split owns its framing (take-framing-identity
+ * P1) — the one predicate `effectiveOverride` and `applyOverrides` both ask,
+ * so the layer that stops inheriting framing and the merge that stops
+ * keeping a carried copy of it cannot disagree about which cues they mean. */
+function ownsTakeFraming(id: string, ownFraming: ReadonlySet<string> | undefined): boolean {
+  const at = id.indexOf("@");
+  return ownFraming !== undefined && at !== -1 && isPlainTakeKey(id) && ownFraming.has(id.slice(at + 1));
+}
+
 /**
  * The override entry a cue resolves against: its own, layered over its split
  * ROOT's (R16 §68). A split half is still the same scene — captions scaled
@@ -1215,7 +1234,7 @@ export function effectiveOverride(
   if (at === -1) return own;
   const root = scenes[id.slice(0, at)];
   if (!root) return own;
-  const ownsFraming = ownFraming !== undefined && isPlainTakeKey(id) && ownFraming.has(id.slice(at + 1));
+  const ownsFraming = ownsTakeFraming(id, ownFraming);
   const { timing: _timing, hidden: _hidden, ...inherited } = root;
   const { video: _video, pip: _pip, ...unframed } = inherited;
   const base: Omit<SceneOverride, "timing" | "hidden"> = ownsFraming ? unframed : inherited;
@@ -1310,7 +1329,17 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
   const ownFraming = ownFramingSplitIds(doc.splits);
   const out = cues.map((cue) => {
     const o = effectiveOverride(doc.scenes, cue.id, ownFraming);
-    if (!o) return cue;
+    // A flagged take half's `video`/`pip` come ONLY from its own entry — a
+    // copy the cue arrived carrying is dropped, not kept (take-framing-identity
+    // P1; final review I-1). The editor's post-carve pass (`finishOnClock`)
+    // splits src-only splits on cues this function already merged, so the
+    // new half arrives as a copy of its FRAMED root; keeping that copy when
+    // the half has no framing of its own previewed the root's framing on a
+    // piece produce renders unframed — produce splits the unmerged fill cues.
+    // Plain fill takes carry no `video`/`pip` of their own (`fill.ts`), so
+    // in produce this drops nothing and its output is unchanged.
+    const ownsFraming = ownsTakeFraming(cue.id, ownFraming);
+    if (!o) return ownsFraming ? withoutFraming(cue) : cue;
     // A refused swap (a non-planner component on either side) comes back as
     // the cue's own component: it is then no swap at all, and the entry's
     // other edits — a clip's `muted`, its framing — still apply below.
@@ -1340,8 +1369,9 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     // pinned start from `entryAtSec`. Same guard as the pin itself below.
     const pins = o.timing !== undefined && !isSrcTiming(o.timing) && !cue.pinned;
     const { entryAtSec: _pinnedEntry, ...baseSansEntry } = base;
+    const spreadBase = pins ? baseSansEntry : base;
     const merged: SceneCue = {
-      ...(pins ? baseSansEntry : base),
+      ...(ownsFraming ? withoutFraming(spreadBase) : spreadBase),
       component,
       layout: o.layout ?? cue.layout,
       props,
@@ -1407,6 +1437,14 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     return endSec === merged.endSec ? merged : { ...merged, endSec };
   });
   return { cues: retimed, orphans };
+}
+
+/** `cue` minus its `video`/`pip` — the SAME object when it has neither, so
+ * produce's unframed fill halves pass through `applyOverrides` untouched. */
+function withoutFraming<T extends Pick<SceneCue, "video" | "pip">>(cue: T): T {
+  if (cue.video === undefined && cue.pip === undefined) return cue;
+  const { video: _video, pip: _pip, ...rest } = cue;
+  return rest as T;
 }
 
 /** `endSec`, held to `startSec` plus the cue's longest length (`maxCueSec`);

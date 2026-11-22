@@ -539,6 +539,37 @@ describe("item timing parity: produce and the editor preview (graphic-editor-mod
     expect(atMain["scene-0"]!.itemAtSec![2]).not.toBeNull();
   });
 
+  it("a src-only flagged take half resolves the same framing in both when its root is framed after the split (final review I-1)", () => {
+    // ⌘B in revived material no `take-kept-*` block covers: a src-only split
+    // on a plain take, flagged, the root unframed then so no copy stored.
+    // The author frames the root afterwards. The editor splits src-only
+    // splits in `finishOnClock`, on cues its first pass already merged, so
+    // the half arrives carrying the root's framing; produce splits the
+    // unmerged fill cues. Both must show the half's OWN framing only.
+    const framingOf = (cues: readonly SceneCue[]) =>
+      Object.fromEntries(cues.filter((c) => c.kind === "plain").map((c) => [c.id, { video: c.video, pip: c.pip }]));
+    const root = { video: { scale: 2 }, pip: { x: 0.3 } };
+    for (const half of [undefined, { video: { dx: 3 } }]) {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [],
+        doc: docOf({
+          scenes: { "take-3": root, ...(half ? { "take-3@s": half } : {}) },
+          splits: [{ src: src(15) + 1, id: "s", ownFraming: true }],
+        }),
+      };
+      const produce = framingOf(producePipeline(run).cues);
+      const editor = editorPipeline(run);
+      // The post-carve pass, not the early exit: the src-only split is what
+      // routes the editor through it.
+      expect(editor.exit).toBe("main");
+      expect(framingOf(editor.cues)).toEqual(produce);
+      expect(produce["take-3"]).toEqual(root);
+      expect(produce["take-3@s"]).toEqual({ video: half?.video, pip: undefined });
+    }
+  });
+
   it("invariant: a BulletList with neither itemWords nor itemPins has no reveal after both pipelines", () => {
     const run: Run = {
       words: WORDS,

@@ -44,8 +44,10 @@ function byTakeOrder(a: string, b: string): number {
 }
 
 /** The `video`/`pip` a key resolves to through its OWN root with no
- * own-framing set — what a legacy half rendered with — as fresh copies, so
- * the output never aliases the input doc. Undefined when there is neither. */
+ * own-framing set — what a legacy half rendered with. The two objects are
+ * fresh copies, so writing them onto a half never shares a record with the
+ * root it came from; `rekeyTakeHalves`' unchanged and moved entries are still
+ * the input doc's own objects. Undefined when there is neither. */
 function mergedFraming(
   scenes: Record<string, SceneOverride>,
   key: string,

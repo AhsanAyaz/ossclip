@@ -1482,6 +1482,49 @@ describe("split take pieces own their framing (take-framing-identity P1)", () =>
     expect(half.id).toBe("scene-1@s");
     expect(half.video?.scale).toBe(2);
   });
+
+  describe("a flagged take half that arrives carrying its root's framing (final review I-1)", () => {
+    // The editor's post-carve pass splits src-only splits on cues already
+    // merged, so the half is a copy of its framed root — `video` and `pip`
+    // included. Its framing must come only from its own entry.
+    const carried = (): SceneCue => ({ ...take("take-1@s", 5, 10), video: { scale: 2 }, pip: { x: 0.3 } });
+    const docWith = (scenes: Record<string, unknown>, ownFraming?: true) =>
+      OverrideDocSchema.parse({
+        scenes: { "take-1": { video: { scale: 2 }, pip: { x: 0.3 } }, ...scenes },
+        splits: [{ src: 5, id: "s", ...(ownFraming ? { ownFraming } : {}) }],
+      });
+
+    it("with no own framing, the carried copy is dropped", () => {
+      const [half] = applyOverrides([carried()], docWith({}, true)).cues;
+      expect(half!.video).toBeUndefined();
+      expect(half!.pip).toBeUndefined();
+    });
+
+    it("with no entry at all on root or half, the carried copy is still dropped", () => {
+      const doc = OverrideDocSchema.parse({ splits: [{ src: 5, id: "s", ownFraming: true }] });
+      const [half] = applyOverrides([carried()], doc).cues;
+      expect(half!.video).toBeUndefined();
+      expect(half!.pip).toBeUndefined();
+    });
+
+    it("with own `video`, it is exactly that — nothing of the carried copy merged in", () => {
+      const [half] = applyOverrides([carried()], docWith({ "take-1@s": { video: { dx: 3 } } }, true)).cues;
+      expect(half!.video).toEqual({ dx: 3 });
+      expect(half!.pip).toBeUndefined();
+    });
+
+    it("unflagged, behaviour is unchanged: the inherited root framing applies", () => {
+      const [half] = applyOverrides([carried()], docWith({})).cues;
+      expect(half!.video).toEqual({ scale: 2 });
+      expect(half!.pip).toEqual({ x: 0.3 });
+    });
+
+    it("an unframed fill half passes through as the same object (produce's case)", () => {
+      const doc = OverrideDocSchema.parse({ splits: [{ src: 5, id: "s", ownFraming: true }] });
+      const half = take("take-1@s", 5, 10);
+      expect(applyOverrides([half], doc).cues[0]).toBe(half);
+    });
+  });
 });
 
 describe("the produce.ts / editor pipeline order (PLAN 2026-08-04 Task 1, bug 3)", () => {
