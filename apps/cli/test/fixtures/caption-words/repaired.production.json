@@ -1,0 +1,295 @@
+{
+  "version": 1,
+  "source": {
+    "path": "<DIR>/take.mp4",
+    "probe": {
+      "duration": 8,
+      "width": 320,
+      "height": 240,
+      "fps": 30,
+      "hasAudio": true,
+      "audioSampleRate": 44100
+    },
+    "audioPath": "<DIR>/wd-ordinary/take-78f7ac6b/audio.wav",
+    "face": null
+  },
+  "cleanup": "standard",
+  "transcript": {
+    "language": "en",
+    "words": [
+      {
+        "text": "use",
+        "start": 0.3,
+        "end": 0.7
+      },
+      {
+        "text": "Versal",
+        "start": 0.8999999999999999,
+        "end": 1.2999999999999998
+      },
+      {
+        "text": "or",
+        "start": 1.5,
+        "end": 1.9
+      },
+      {
+        "text": "Etan",
+        "start": 2.0999999999999996,
+        "end": 2.5
+      },
+      {
+        "text": "to",
+        "start": 2.6999999999999997,
+        "end": 3.0999999999999996
+      },
+      {
+        "text": "build",
+        "start": 3.3,
+        "end": 3.7
+      },
+      {
+        "text": "agents",
+        "start": 3.8999999999999995,
+        "end": 4.3
+      },
+      {
+        "text": "today",
+        "start": 4.5,
+        "end": 4.9
+      },
+      {
+        "text": "with",
+        "start": 5.1,
+        "end": 5.5
+      },
+      {
+        "text": "no",
+        "start": 5.699999999999999,
+        "end": 6.1
+      },
+      {
+        "text": "code",
+        "start": 6.3,
+        "end": 6.7
+      }
+    ]
+  },
+  "repairs": [
+    {
+      "startWord": 1,
+      "endWord": 1,
+      "heard": "Versal",
+      "correction": "Vercel",
+      "applied": true,
+      "byUser": true
+    },
+    {
+      "startWord": 3,
+      "endWord": 3,
+      "heard": "Etan",
+      "correction": "n8n",
+      "applied": true,
+      "byUser": true
+    }
+  ],
+  "captionWords": [
+    {
+      "text": "use",
+      "start": 0.3,
+      "end": 0.7
+    },
+    {
+      "text": "Vercel",
+      "start": 0.8999999999999999,
+      "end": 1.2999999999999998
+    },
+    {
+      "text": "or",
+      "start": 1.5,
+      "end": 1.9
+    },
+    {
+      "text": "n8n",
+      "start": 2.0999999999999996,
+      "end": 2.5
+    },
+    {
+      "text": "to",
+      "start": 2.6999999999999997,
+      "end": 3.0999999999999996
+    },
+    {
+      "text": "build",
+      "start": 3.3,
+      "end": 3.7
+    },
+    {
+      "text": "agents",
+      "start": 3.8999999999999995,
+      "end": 4.3
+    },
+    {
+      "text": "today",
+      "start": 4.5,
+      "end": 4.9
+    },
+    {
+      "text": "with",
+      "start": 5.1,
+      "end": 5.5
+    },
+    {
+      "text": "no",
+      "start": 5.699999999999999,
+      "end": 6.1
+    },
+    {
+      "text": "code",
+      "start": 6.3,
+      "end": 6.7
+    }
+  ],
+  "analysis": {
+    "silences": [],
+    "gaps": [
+      {
+        "start": 0,
+        "end": 0.3
+      },
+      {
+        "start": 0.7,
+        "end": 0.8999999999999999
+      },
+      {
+        "start": 1.2999999999999998,
+        "end": 1.5
+      },
+      {
+        "start": 1.9,
+        "end": 2.0999999999999996
+      },
+      {
+        "start": 2.5,
+        "end": 2.6999999999999997
+      },
+      {
+        "start": 3.0999999999999996,
+        "end": 3.3
+      },
+      {
+        "start": 3.7,
+        "end": 3.8999999999999995
+      },
+      {
+        "start": 4.3,
+        "end": 4.5
+      },
+      {
+        "start": 4.9,
+        "end": 5.1
+      },
+      {
+        "start": 5.5,
+        "end": 5.699999999999999
+      },
+      {
+        "start": 6.1,
+        "end": 6.3
+      },
+      {
+        "start": 6.7,
+        "end": 8
+      }
+    ],
+    "cuttable": [],
+    "breaths": [],
+    "fillers": []
+  },
+  "cutlist": [
+    {
+      "srcIn": 0,
+      "srcOut": 8,
+      "kind": "keep"
+    }
+  ],
+  "cutlistProposed": [
+    {
+      "srcIn": 0,
+      "srcOut": 8,
+      "kind": "keep"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "scene-0",
+      "anchor": {
+        "startWord": 0,
+        "endWord": 2
+      },
+      "layout": "pip-bubble",
+      "component": "TitleCard",
+      "props": {
+        "eyebrow": "MOCK",
+        "title": "THE RAW TAKE",
+        "emphasis": "861%",
+        "sub": "becomes a clean edit"
+      },
+      "overrides": {},
+      "rationale": "beat 1",
+      "cue": {
+        "entryWord": 0
+      }
+    },
+    {
+      "id": "scene-2",
+      "anchor": {
+        "startWord": 6,
+        "endWord": 8
+      },
+      "layout": "video-top",
+      "component": "StatCard",
+      "props": {
+        "label": "FILLERS REMOVED",
+        "value": "+100%",
+        "caption": "MORE SIGNAL. LESS UM.",
+        "inverted": true
+      },
+      "overrides": {},
+      "rationale": "beat 3",
+      "cue": {
+        "entryWord": 6
+      }
+    }
+  ],
+  "producer": {
+    "provider": "mock",
+    "models": [],
+    "cached": false,
+    "at": "<AT>"
+  },
+  "theme": {
+    "bg": "#0B0B0E",
+    "fg": "#FFFFFF",
+    "accent": "#FFE14D",
+    "muted": "#9A9AA3",
+    "success": "#5FBF77",
+    "cardBg": "#15151B",
+    "cardBorder": "#2A2A33",
+    "danger": "#FF5C5C",
+    "radiusPx": 24,
+    "fontDisplay": "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
+    "fontMono": "'SF Mono', 'Cascadia Code', Consolas, monospace",
+    "accent2": "#FFE14D",
+    "highlight": "#FFE14D",
+    "info": "#9A9AA3",
+    "ink": "#0B0B0E",
+    "fonts": "system",
+    "motion": "classic"
+  },
+  "render": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30
+  },
+  "coverHeadline": "MOCK HOOK"
+}
