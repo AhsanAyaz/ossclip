@@ -2116,3 +2116,32 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   Clearing an optional field on a plan graphic brings back the planner's value.
 *   Older builds strip `itemPins` when they save.
 *   Editor tests are not typechecked by `pnpm typecheck` (the editor tsconfig includes `src` only); the full suite needs `--maxWorkers=2` on a 7 GB machine.
+
+## 172. Split take pieces keep their own framing (2026-11-23)
+
+**Field report.** After ⌘B on a take, reframing one piece sometimes moved another, and a framing set earlier sometimes vanished or landed on other footage after a re-render. The FE Loop short (published 2026-11-22) shipped with output 58.5–60.8 s at 1× although the author had framed it at 2.2×.
+
+**Causes** (design: `docs/designs/take-framing-identity.md`, seven review rounds):
+
+*   A split half is keyed `${root}@${splitId}`, and plain take roots are ordinals of the take clip starts. A cut in front renamed the half and orphaned its edit (`take-2@66055` became `take-3@66055`).
+*   A half inherited its root's `video`/`pip` field by field (R16 §68), so reframing the first piece moved every piece without its own value.
+*   The editor numbered takes from span starts only; produce also counts kept/dismissed cleanup edges. With a baked veto the two disagreed (FE Loop: produce's `take-10` starts at 161.291, the editor's did not).
+*   A src-anchored split's `at` was never refreshed, so the editor split 0.317 s away from the render.
+
+**Fix.**
+
+*   Produce writes `takeClipStarts` into render-props; the editor numbers takes from it (`editorTakeClipStarts`), falling back to span starts for older render-props.
+*   ⌘B on a plain take copies the target's own framing into the new half and flags the split `ownFraming`; a flagged take half no longer inherits `video`/`pip`.
+*   Produce re-keys take-half entries to the root their split actually landed in (`splitCuesWithLanding` → `rekeyTakeHalves`), materializes legacy take splits' framing and flags them (output unchanged), and refreshes a landed take split's `at` unless the old or new point lies in a graphic window.
+
+**Field check** on a copy of FE Loop (`~/ossclip-work/fe-loop/work-framing-test`, `produce --no-render`):
+
+*   notes: `split 66055 now owns its framing`, `edit for take-2@66055 re-keyed to take-3@66055 — its split now falls in take-3`, `split 66055 moved to 58.467s on this cut`; no dropped or parked lines;
+*   `take-3@66055` (58.467–60.764) resolves to `{scale 2.2, dx -664.8}`; `take-2` (17.95–21.716) unchanged at `{scale 2.2, dx 814.4}`;
+*   splits 20752, 24518, 167648, 176577 untouched; `takeClipStarts` includes 161.291 and `take-10` starts there.
+
+**Limits** (phase 2, `docs/designs/take-framing-phase-2.md`):
+
+*   A framed whole take (not a half) still drifts after a cut in front — phase 2 R1–R4 (source-span re-key).
+*   Graphic splits still render at a stale `at` after a cut in front (produce's first pass uses `atSplitPoints`); skipped and inert splits can still preview differently in the editor; graphic halves still inherit framing. All three change output in more cases than the bug and are left for the author.
+*   An older build strips `ownFraming` and `takeClipStarts`.
