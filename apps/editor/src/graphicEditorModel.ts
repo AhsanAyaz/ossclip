@@ -18,6 +18,7 @@ import {
   resolveTimingPin,
   revealItemTexts,
   sceneKeyRoot,
+  splitRootId,
   wordOutputStart,
   type AddFormField,
   type AddedOffered,
@@ -852,17 +853,22 @@ export function previewCue(
   if (pins === undefined || !hasItemTiming(now.component) || words === null || window === null || liveMap === null) {
     return cue;
   }
+  // Keyed by the ROOT id: the resolver reads pins off the root's own entry
+  // and times every cue whose root it is (`splitRootId`). The cue `base`
+  // gives may be a half — an edit's root whose first half is hidden has
+  // only `id@split` on the stage — and keyed by that, no pin would apply.
+  const rootId = splitRootId(cue.id);
   const doc: OverrideDoc = {
     ...emptyOverrideDoc(),
     scenes: {
-      [cue.id]: {
+      [rootId]: {
         props: ctx.ownReveal === undefined ? {} : { reveal: ctx.ownReveal },
         elements: {},
         itemPins: pins,
       },
     },
   };
-  const roots = new Map([[cue.id, { component: now.component, props: now.props, window }]]);
+  const roots = new Map([[rootId, { component: now.component, props: now.props, window }]]);
   return resolveItemTimings([cue], doc, words, liveMap, roots).cues[0] ?? cue;
 }
 

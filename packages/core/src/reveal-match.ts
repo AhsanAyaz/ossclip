@@ -222,8 +222,8 @@ export type ItemWordState =
  * `[srcStart, srcEnd)` like an added entry's span (`addedSceneToScene`): a
  * word is in it when its source start is at or after `srcStart` and before
  * `srcEnd`. A plan cue's window ends at its last word's END, so that word is
- * in and the next word, which may start exactly there, is out. `isSpoken(i)` says whether word i has a
- * word time on the live clock.
+ * in and the next word, which may start exactly there, is out. `isSpoken(i)`
+ * says whether word i has a word time on the live clock.
  *
  * Pins are checked in item order against the §3 table's rows in its order,
  * first match wins. The pin's `text` is not looked at here: the stale-text

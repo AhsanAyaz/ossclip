@@ -228,7 +228,20 @@ export const GraphicEditorModal: React.FC<GraphicEditorModalProps> = (p) => {
     [words, window, liveMap],
   );
   const blockSet = useMemo(() => new Set(blockW), [blockW]);
-  const allowed = picking === null || !placeable ? null : allowedWords(rows, picking, blockW);
+  // An item may only land on a word of the window its items resolve in:
+  // after an unsaved When-row pin that is the pin's span (`itemWindow`), and
+  // a word before the new start would come back "outside this block". The
+  // start itself picks from the window the modal opened over, so it can
+  // still move back earlier.
+  const itemBlockW = useMemo(
+    () =>
+      words !== null && itemWindow !== null && liveMap !== null ? blockWordsOf(words, itemWindow, liveMap) : [],
+    [words, itemWindow, liveMap],
+  );
+  const allowed =
+    picking === null || !placeable
+      ? null
+      : allowedWords(rows, picking, picking === "start" ? blockW : itemBlockW);
 
   const item1 = rows[0] !== undefined && (rows[0].state === "pinned" || rows[0].state === "auto") ? rows[0].word : null;
   const startWord =
@@ -545,8 +558,14 @@ export const GraphicEditorModal: React.FC<GraphicEditorModalProps> = (p) => {
         aria-labelledby={titleId}
         style={modal}
         // Every key stays in here: Overlay's window shortcuts (Space plays,
-        // Delete removes the selected block, the arrows step frames) belong
-        // to the editor behind the backdrop, not to a word or a field here.
+        // Delete removes the selected block, the arrows step frames, ⌘Z
+        // undoes) belong to the editor behind the backdrop, not to a word or
+        // a field here. This works only because the modal renders INSIDE the
+        // React root: React's stopPropagation stops the native event at the
+        // root container, before it bubbles to the window where Overlay
+        // listens. Portalled to document.body it would bubble past the root
+        // and Overlay would see every key again (Space starting the stage
+        // under the preview's audio, ⌘Z undoing under the open modal).
         onKeyDown={(e) => {
           e.stopPropagation();
           // Enter in a one-line field commits, the popover's convention it

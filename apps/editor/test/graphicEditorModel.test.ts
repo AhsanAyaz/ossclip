@@ -793,6 +793,15 @@ describe("previewCue (§4, the modal's preview)", () => {
     expect(cue.props?.reveal).toBe("synced");
   });
 
+  it("a half standing for its root (the first half hidden) still gets the pins", () => {
+    const now = pinItem(add({ items: ITEMS }), 1, words[4]!);
+    const half = { ...base, id: "added-0@s1" };
+    const cue = previewCue(half, now, shownItemPins(now, now), pctx);
+    expect(cue.id).toBe("added-0@s1");
+    expect(cue.reveal).toEqual(previewCue(base, now, shownItemPins(now, now), pctx).reveal);
+    expect(cue.props?.reveal).toBe("synced");
+  });
+
   it("the author's own reveal keeps a pin from forcing synced", () => {
     const now = pinItem(add({ items: ITEMS, reveal: "paced" }), 1, words[4]!);
     const cue = previewCue(base, now, shownItemPins(now, now), { ...pctx, ownReveal: "paced" });

@@ -571,6 +571,24 @@ describe("picking (§5)", () => {
     expect(q("graphic-editor-start-item1")).toBeNull();
   });
 
+  it("after the start moves later, a word before it is not offered for an item", async () => {
+    await mount(React.createElement(AddHost));
+    await openOver(1, 12);
+    await bulletList(["Context", "Review the code"]);
+    // Item 1 is on "context" (7); the block starts on "they" (1). Start on 5.
+    await click(q("graphic-editor-start")!);
+    await click(stripWord(5));
+    expect(q("graphic-editor-start")!.textContent).toContain("“forget”");
+    await click(q("graphic-editor-lands-0")!);
+    // Words before the new start are not offered to an item…
+    for (const i of [1, 2, 3, 4]) expect(stripWord(i).getAttribute("aria-disabled"), `word ${i}`).toBe("true");
+    expect(stripWord(6).getAttribute("aria-disabled")).toBeNull();
+    // …while the start may still move back to them.
+    await key(document.activeElement as HTMLElement, "Escape");
+    await click(q("graphic-editor-start")!);
+    expect(stripWord(1).getAttribute("aria-disabled")).toBeNull();
+  });
+
   it("switching type keeps typed rows when the new type keeps its items in a list too", async () => {
     await mount(React.createElement(AddHost));
     await openOver(1, 12);
