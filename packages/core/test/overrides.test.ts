@@ -2219,6 +2219,19 @@ describe("reveal timing across edits (reveal-timing final review I-3, M-2)", () 
     expect("reveal" in applyOverrides([cued()], doc).cues[0]!).toBe(false);
   });
 
+  it("a swap to BulletList drops reveal: it stays on its 7-frame stagger (graphic-editor-modal §1, AG1)", () => {
+    // Before Part 1 BulletList had no reveal items, so this swap already
+    // dropped `reveal`; now that it has them, an all-null reveal would put
+    // the swapped list on the paced path. Recorded from the pre-Part-1
+    // overrides.ts (2026-11-22).
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { component: "BulletList", props: { items: ["A", "B", "C"] } } },
+    });
+    expect(JSON.stringify(applyOverrides([cued()], doc))).toBe(
+      '{"cues":[{"id":"scene-0","layout":"graphic-only","component":"BulletList","props":{"items":["A","B","C"]},"startSec":6.7,"endSec":9.9,"entryAtSec":7}],"orphans":[]}',
+    );
+  });
+
   it("no swap (same component, prop edit) keeps the matched item times", () => {
     const doc = OverrideDocSchema.parse({
       scenes: { "scene-0": { component: "FlowDiagram", props: { emphasizeLast: false } } },

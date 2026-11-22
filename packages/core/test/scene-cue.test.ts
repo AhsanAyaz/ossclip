@@ -38,6 +38,20 @@ describe("planCue (spec §2, §7)", () => {
     expect(cue.itemWords).toEqual([null, idx("framework"), null]);
   });
 
+  it("records each bullet's word, so a re-planned BulletList lands on its words (graphic-editor-modal §1)", () => {
+    const words = speak("they hallucinate they forget the context and they review the code").words;
+    const at = (w: string) => words.findIndex((x) => x.text === w);
+    const cue = planCue(
+      "BulletList",
+      { items: ["HALLUCINATE", "FORGET CONTEXT", "REVIEW CODE"] },
+      { startWord: 0, endWord: words.length - 1 },
+      words,
+    );
+    expect(cue.itemWords).toEqual([at("hallucinate"), at("forget"), at("review")]);
+    // The entrance is still the first item said, as it was from entryTexts.
+    expect(cue.entryWord).toBe(at("hallucinate"));
+  });
+
   it("falls back to the producer's cueWord when the label is never said", () => {
     // Field scene-12: "matter" is never spoken, so the label must NOT match
     // (the matcher is not loosened for it) and the entrance rides cueWord.

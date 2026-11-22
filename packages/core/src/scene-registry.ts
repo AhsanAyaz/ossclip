@@ -125,6 +125,9 @@ export const BulletListProps = z.object({
   /** Small kicker above the list ("WHAT YOU NEED"). */
   title: z.string().max(28).optional(),
   items: z.array(z.string().min(1).max(36)).min(2).max(5),
+  // In the reveal system since graphic-editor-modal §1. An unset `entrance`
+  // is BulletList's own `rise`, not the shared `pop` (`BulletList.tsx`).
+  ...RevealPropsShape,
 });
 
 export const FlowDiagramProps = z.object({

@@ -441,6 +441,69 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
   });
 });
 
+describe("assembleScenes — BulletList in the reveal system (graphic-editor-modal §1, AG1)", () => {
+  const long: Transcript = {
+    language: "en",
+    words: Array.from({ length: 100 }, (_, i) => ({
+      text: `w${i}`,
+      start: i * 0.5,
+      end: i * 0.5 + 0.4,
+    })),
+  };
+  // Removes source 6.9–7.5, all of word 14 (7.0–7.4): the entry word falls
+  // to word 15, and everything after shifts 0.6 s earlier.
+  const cutMap = new TimeMap([
+    { srcIn: 0, srcOut: 6.9, kind: "keep" },
+    { srcIn: 6.9, srcOut: 7.5, kind: "remove", reason: "pause" },
+    { srcIn: 7.5, srcOut: 50, kind: "keep" },
+  ]);
+  const bullets = (cue?: Scene["cue"]): Scene => ({
+    id: "scene-0",
+    anchor: { startWord: 0, endWord: 19 },
+    layout: "blurred-behind",
+    component: "BulletList",
+    props: { title: "NEED", items: ["AI HARNESS", "CONTEXT"] },
+    overrides: {},
+    ...(cue ? { cue } : {}),
+  });
+
+  it("a stored {entryWord}-only BulletList assembles byte-equal to before Part 1", () => {
+    // Recorded from the pre-Part-1 assemble.ts (2026-11-22). Every stored
+    // BulletList cue holds `entryWord` only (the planner wrote no itemWords
+    // while `revealItemTexts` had no BulletList case), so this is every
+    // existing project's bullet list: it must not gain an all-null `reveal`,
+    // which would move it from the 7-frame stagger onto the paced path.
+    expect(JSON.stringify(assembleScenes([bullets({ entryWord: 14 })], long, cutMap))).toBe(
+      '{"cues":[{"id":"scene-0","anchor":{"startWord":0,"endWord":19},"layout":"blurred-behind","component":"BulletList","props":{"title":"NEED","items":["AI HARNESS","CONTEXT"]},"startSec":6.6000000000000005,"endSec":9.3,"entryAtSec":6.9}],"dropped":[],"shortened":[]}',
+    );
+    // And a plan from before reveal timing (no cue at all), likewise.
+    expect(JSON.stringify(assembleScenes([bullets()], long, cutMap))).toBe(
+      '{"cues":[{"id":"scene-0","anchor":{"startWord":0,"endWord":19},"layout":"blurred-behind","component":"BulletList","props":{"title":"NEED","items":["AI HARNESS","CONTEXT"]},"startSec":0,"endSec":9.3}],"dropped":[],"shortened":[]}',
+    );
+  });
+
+  it("with itemWords, each item lands on its word's output start minus the item lead", () => {
+    // Word 16 (src 8.0) and word 18 (src 9.0) are after the cut: output 7.4
+    // and 8.4.
+    const [cue] = assembleScenes([bullets({ entryWord: 14, itemWords: [16, 18] })], long, cutMap).cues;
+    expect(cue!.reveal!.itemAtSec).toHaveLength(2);
+    expect(cue!.reveal!.itemAtSec[0]).toBeCloseTo(7.4 - ITEM_LEAD_SEC, 9);
+    expect(cue!.reveal!.itemAtSec[1]).toBeCloseTo(8.4 - ITEM_LEAD_SEC, 9);
+  });
+
+  it("with itemWords of the wrong count, the items pace like any other new plan", () => {
+    const [cue] = assembleScenes([bullets({ entryWord: 14, itemWords: [16] })], long, cutMap).cues;
+    expect(cue!.reveal).toEqual({ itemAtSec: [null, null] });
+  });
+
+  it("invariant: a BulletList with no itemWords never carries a reveal", () => {
+    for (const cue of [undefined, { entryWord: 14 }, { entryWord: 0 }]) {
+      const [out] = assembleScenes([bullets(cue)], long, cutMap).cues;
+      expect("reveal" in out!).toBe(false);
+    }
+  });
+});
+
 describe("assembleScenes — fixed clip duration and the shortened report (explainer spec 1.4)", () => {
   /** 100 words, 0.5s apart: a 50s take, so the floor is the plain 1.2s. */
   const long: Transcript = {

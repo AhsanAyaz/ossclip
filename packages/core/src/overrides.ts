@@ -1376,10 +1376,16 @@ export function clipSpeedEndSec(input: {
  * the same rule `assembleScenes` applies. A legacy cue (no `reveal`) stays
  * legacy. `entryAtSec` is kept: the swap does not move where the graphic
  * enters, and the start is still that word's.
+ *
+ * A swap TO BulletList drops `reveal` (graphic-editor-modal §1, AG1): before
+ * BulletList had reveal items this swap already came out without one, so
+ * the swapped list rendered on its 7-frame stagger, and an all-null reveal
+ * would now put it on the paced path instead.
  */
 function withSwappedReveal(cue: SceneCue): SceneCue {
   if (!cue.reveal || cue.component === undefined || cue.props === undefined) return cue;
   const { reveal: _stale, ...rest } = cue;
+  if (cue.component === "BulletList") return rest;
   const count = revealItemTexts(cue.component, cue.props)?.length ?? 0;
   if (count === 0) return rest;
   return { ...rest, reveal: { itemAtSec: Array.from({ length: count }, () => null) } };

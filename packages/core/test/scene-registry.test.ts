@@ -556,8 +556,15 @@ describe("scalarPropControls is untouched by the add form (editor-added-graphics
     readFileSync(new URL("./fixtures/scalar-prop-controls.pre-add-form.json", import.meta.url), "utf8"),
   ) as Record<string, unknown>;
 
+  // The one deliberate change since the capture: BulletList joined the
+  // reveal system (graphic-editor-modal §1), so its schema gained the reveal
+  // props and it now gets ChatMock's four reveal controls. Left out of the
+  // recorded file so the file stays the add form's before-image.
+  const after: Record<string, unknown> = { ...before, BulletList: before.ChatMock };
+
   it("matches the pre-change output for every component", () => {
     expect(Object.keys(before).sort()).toEqual([...SceneComponentIdSchema.options].sort());
-    for (const c of SceneComponentIdSchema.options) expect(scalarPropControls(c), c).toEqual(before[c]);
+    expect(before.BulletList).toEqual([]);
+    for (const c of SceneComponentIdSchema.options) expect(scalarPropControls(c), c).toEqual(after[c]);
   });
 });

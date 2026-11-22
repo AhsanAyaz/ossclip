@@ -327,6 +327,12 @@ function plannedCue(
   // stagger (null / no items) carries no reveal at all.
   const rendered = revealItemTexts(scene.component, props)?.length ?? 0;
   if (rendered === 0) return { entryAtSec };
+  // A BulletList without `itemWords` stays legacy (graphic-editor-modal §1,
+  // AG1). It joined the reveal system after plans had stored its cues, and
+  // every one of those holds `entryWord` only: the all-null reveal below
+  // would move each of them from the 7-frame stagger onto the paced path.
+  // Only a re-plan, which writes `itemWords`, opts a list in.
+  if (scene.component === "BulletList" && itemWords === undefined) return { entryAtSec };
   if (itemWords === undefined || itemWords.length !== rendered) {
     return { entryAtSec, reveal: { itemAtSec: Array.from({ length: rendered }, () => null) } };
   }

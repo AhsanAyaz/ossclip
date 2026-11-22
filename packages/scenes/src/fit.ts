@@ -337,7 +337,7 @@ const BULLET_MAX_FONT = 120;
 const BULLET_ROW_H = 1.6;
 /**
  * The kicker title's real height (R27 §121). It renders at `fontSize * 0.36`
- * (`BulletList.tsx:75`) plus the column's `0.45em` gap — 0.36x1.2 + 0.45 ≈
+ * (`BulletList.tsx:109`) plus the column's `0.45em` gap — 0.36x1.2 + 0.45 ≈
  * 0.88em, not the 1.1em this used to charge. Over-charging the title shrinks
  * `heightFit`, so a titled list was solved against a budget ~0.2em smaller
  * than the one it actually occupies.

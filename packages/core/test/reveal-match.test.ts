@@ -150,8 +150,15 @@ describe("revealItemTexts", () => {
 
   it("is null for every non-staggered component", () => {
     expect(revealItemTexts("StatCard", { label: "CHURN", value: "861%" })).toBeNull();
-    expect(revealItemTexts("BulletList", { items: ["a", "b"] })).toBeNull();
     expect(revealItemTexts("TitleCard", { title: "x" })).toBeNull();
+  });
+
+  it("reads a BulletList's items as its reveal items (graphic-editor-modal §1)", () => {
+    // One bullet row per item, so the item list IS the row list the render
+    // staggers; the kicker title is not an item (it enters with the card).
+    expect(revealItemTexts("BulletList", { items: ["A", "B"] })).toEqual(["A", "B"]);
+    expect(revealItemTexts("BulletList", { title: "NEED", items: ["A", 7, "C"] })).toEqual(["A", "", "C"]);
+    expect(revealItemTexts("BulletList", {})).toEqual([]);
   });
 
   it("keeps item positions when an entry is malformed", () => {

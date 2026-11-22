@@ -218,6 +218,12 @@ export function revealItemTexts(
       });
     case "StrikethroughReveal":
       return arr(props.lines).map(textOf);
+    case "BulletList":
+      // One item per bullet row (graphic-editor-modal §1). Its stored cues
+      // carry no item times, so two guards keep them on the 7-frame stagger
+      // (AG1): `plannedCue` emits `reveal` for a BulletList only from
+      // `itemWords`, and `withSwappedReveal` drops it on a swap to one.
+      return arr(props.items).map(str);
     case "CardRow":
       // One item per card — the card is what pops in — matching on its
       // title OR its sub-line, as alternatives (TerminalMock's shape). An

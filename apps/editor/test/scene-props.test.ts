@@ -137,7 +137,9 @@ describe("scalarPropControls", () => {
       TerminalMock: revealCtl,
       ChatMock: revealCtl,
       ScreenshotFrame: [{ key: "kenBurns", kind: "boolean", fallback: true }],
-      BulletList: [],
+      // Joined the reveal system (graphic-editor-modal §1): its schema now
+      // carries the reveal props, so it gets the same four controls.
+      BulletList: revealCtl,
       CtaCard: [{ key: "action", kind: "enum", options: ["comment", "subscribe", "link"] }],
       ClipScene: [
         { key: "speed", kind: "number", min: 0.25, max: 4, step: 0.01, fallback: 1 },
