@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   entryTexts,
   locateSpoken,
+  resolveItemWords,
   revealItemTexts,
   SYNC_MIN_SHARE,
   syncDecision,
@@ -267,5 +268,198 @@ describe("PhoneDemo (§161, plan Task 7)", () => {
   it("enters on the caption, joined as the phrase it is, or on any pill; enum values are never texts", () => {
     expect(entryTexts("PhoneDemo", props)).toEqual(["Captions that pop", "Big and bold", "Tiny grey text"]);
     expect(entryTexts("PhoneDemo", { caption: [{ text: "Solo" }] })).toEqual(["Solo"]);
+  });
+});
+
+describe("resolveItemWords (graphic-editor-modal §3)", () => {
+  // The EGM short's list (Overview), one word every 0.5 s of source.
+  const SAID =
+    "they hallucinate they forget the context and they review the code then they hallucinate again";
+  const timed = (text: string) => text.split(" ").map((t, i) => ({ text: t, srcStart: i * 0.5 }));
+  const WORDS = timed(SAID);
+  const at = (i: number) => WORDS[i]!.srcStart;
+  const whole = { srcStart: 0, srcEnd: WORDS.length * 0.5 };
+  const allSpoken = () => true;
+  const pin = (i: number, text = "") => ({ src: at(i), text });
+
+  it("all-null pins give the same words as locateSpoken over the spoken window", () => {
+    const texts = ["HALLUCINATE", "FORGET CONTEXT", "REVIEW CODE"];
+    const { items, notes } = resolveItemWords(texts, WORDS, whole, allSpoken, [null, null, null]);
+    expect(items).toEqual([
+      { word: 1, state: "auto" },
+      { word: 3, state: "auto" },
+      { word: 8, state: "auto" },
+    ]);
+    expect(notes).toEqual([]);
+    // With a cut word, the search runs over the SPOKEN window words only,
+    // and the answer is in transcript indices.
+    const spoken = (i: number) => i !== 1;
+    const kept = WORDS.map((_, i) => i).filter(spoken);
+    const direct = locateSpoken(texts, kept.map((i) => WORDS[i]!), {
+      startWord: 0,
+      endWord: kept.length - 1,
+    }).map((j) => (j === null ? null : kept[j]!));
+    expect(direct).toEqual([13, null, null]);
+    const resolved = resolveItemWords(texts, WORDS, whole, spoken, [null, null, null]).items;
+    expect(resolved.map((r) => r.word)).toEqual(direct);
+    expect(resolved.map((r) => r.state)).toEqual(["auto", "unmatched", "unmatched"]);
+  });
+
+  it("row 5: a pin on a spoken word in order is pinned on that word", () => {
+    const { items, notes } = resolveItemWords(["A", "B"], WORDS, whole, allSpoken, [pin(2), pin(10)]);
+    expect(items).toEqual([
+      { word: 2, state: "pinned" },
+      { word: 10, state: "pinned" },
+    ]);
+    expect(notes).toEqual([]);
+  });
+
+  it("row 1: no transcript word within 0.05 s of the pin → auto, 'its word moved'", () => {
+    // Word 3 is at 1.5 s; a pin stored at 1.6 s (a re-transcribe shifted it).
+    const { items, notes } = resolveItemWords(
+      ["HALLUCINATE", "FORGET"],
+      WORDS,
+      whole,
+      allSpoken,
+      [null, { src: 1.6, text: "FORGET" }],
+    );
+    // Turned auto, it is matched like any auto item.
+    expect(items).toEqual([
+      { word: 1, state: "auto" },
+      { word: 3, state: "auto" },
+    ]);
+    expect(notes).toEqual(["item 2: its word moved"]);
+  });
+
+  it("row 1 tie-break: the nearer word wins; at equal distance, the earlier word", () => {
+    const close = [
+      { text: "one", srcStart: 1.0 },
+      { text: "two", srcStart: 1.0625 },
+    ];
+    const window = { srcStart: 0, srcEnd: 2 };
+    // Both within 0.05 s of 1.05; "two" is nearer (0.0125 vs 0.05).
+    expect(resolveItemWords(["X"], close, window, allSpoken, [{ src: 1.05, text: "X" }]).items).toEqual([
+      { word: 1, state: "pinned" },
+    ]);
+    // 1.03125 is exactly 0.03125 from each (binary-exact): the earlier wins.
+    expect(resolveItemWords(["X"], close, window, allSpoken, [{ src: 1.03125, text: "X" }]).items).toEqual([
+      { word: 0, state: "pinned" },
+    ]);
+  });
+
+  it("row 2: a word outside the block window → auto, 'its word is outside this block'", () => {
+    // The window holds words 0–9 (source starts in [0, 5)): word 10 "code"
+    // at 5.0 s is outside — half-open, as an added entry's span.
+    const window = { srcStart: 0, srcEnd: 5 };
+    const { items, notes } = resolveItemWords(["FORGET", "REVIEW CODE"], WORDS, window, allSpoken, [
+      null,
+      pin(10),
+    ]);
+    // Auto, it searches only the window: "review" is there, "code" is not.
+    expect(items).toEqual([
+      { word: 3, state: "auto" },
+      { word: null, state: "unmatched" },
+    ]);
+    expect(notes).toEqual(["item 2: its word is outside this block"]);
+  });
+
+  it("row 3: a word not strictly after the previous bounding pin → auto, 'out of order'", () => {
+    const { items, notes } = resolveItemWords(["A", "FORGET", "B", "C"], WORDS, whole, allSpoken, [
+      pin(13),
+      pin(3),
+      pin(14),
+      pin(14),
+    ]);
+    // Item 2 cannot sit before item 1's word, and as auto it can only search
+    // after it — where "forget" is never said. An out-of-order pin is not a
+    // bounding pin, so item 3 is checked against item 1, not item 2. Item 4
+    // on item 3's own word is not STRICTLY after it.
+    expect(items).toEqual([
+      { word: 13, state: "pinned" },
+      { word: null, state: "unmatched" },
+      { word: 14, state: "pinned" },
+      { word: null, state: "unmatched" },
+    ]);
+    expect(notes).toEqual(["item 2: out of order", "item 4: out of order"]);
+  });
+
+  it("row 4: a word not spoken on the live clock → cut, 'its word was cut'", () => {
+    const spoken = (i: number) => i !== 3;
+    const { items, notes } = resolveItemWords(
+      ["HALLUCINATE", "FORGET", "REVIEW"],
+      WORDS,
+      whole,
+      spoken,
+      [null, pin(3), null],
+    );
+    expect(items).toEqual([
+      { word: 1, state: "auto" },
+      { word: null, state: "cut" },
+      { word: 8, state: "auto" },
+    ]);
+    expect(notes).toEqual(["item 2: its word was cut"]);
+  });
+
+  it("rows apply in the table's order; the first that applies wins", () => {
+    const spoken = (i: number) => i !== 3;
+    // Outside the window AND out of order: outside (row 2) wins.
+    expect(
+      resolveItemWords(["A", "B"], WORDS, { srcStart: 0, srcEnd: 5 }, allSpoken, [pin(8), pin(12)]).notes,
+    ).toEqual(["item 2: its word is outside this block"]);
+    // Out of order AND cut: out of order (row 3) wins, so it is auto, not cut.
+    const r = resolveItemWords(["A", "B"], WORDS, whole, spoken, [pin(8), pin(3)]);
+    expect(r.items[1]).toEqual({ word: null, state: "unmatched" });
+    expect(r.notes).toEqual(["item 2: out of order"]);
+  });
+
+  it("a cut pin bounds segments: an auto item after it cannot match before it", () => {
+    // "forget" is said only at word 3, before the cut pin's word 10.
+    const spoken = (i: number) => i !== 10;
+    const { items } = resolveItemWords(["CODE", "FORGET"], WORDS, whole, spoken, [pin(10), null]);
+    expect(items).toEqual([
+      { word: null, state: "cut" },
+      { word: null, state: "unmatched" },
+    ]);
+    // The same item with no pin before it does match.
+    expect(resolveItemWords(["FORGET"], WORDS, whole, spoken, [null]).items).toEqual([
+      { word: 3, state: "auto" },
+    ]);
+  });
+
+  it("auto items never cross a pinned word", () => {
+    // "review" is said only at word 8, after item 2's pin on word 3: item 1
+    // searches words 0–2 and stays unmatched rather than land past item 2.
+    const { items } = resolveItemWords(["REVIEW", "FORGET"], WORDS, whole, allSpoken, [null, pin(3)]);
+    expect(items).toEqual([
+      { word: null, state: "unmatched" },
+      { word: 3, state: "pinned" },
+    ]);
+  });
+
+  it("no two items share a word", () => {
+    // Auto before a pin: strictly before the pinned word.
+    expect(
+      resolveItemWords(["HALLUCINATE", "HALLUCINATE"], WORDS, whole, allSpoken, [null, pin(1)]).items,
+    ).toEqual([
+      { word: null, state: "unmatched" },
+      { word: 1, state: "pinned" },
+    ]);
+    // Auto after a pin: strictly after it.
+    expect(resolveItemWords(["CONTEXT", "CONTEXT"], WORDS, whole, allSpoken, [pin(5), null]).items).toEqual([
+      { word: 5, state: "pinned" },
+      { word: null, state: "unmatched" },
+    ]);
+    // Two auto items: locateSpoken's strict monotonicity within a segment.
+    expect(resolveItemWords(["CONTEXT", "CONTEXT"], WORDS, whole, allSpoken, [null, null]).items).toEqual([
+      { word: 5, state: "auto" },
+      { word: null, state: "unmatched" },
+    ]);
+  });
+
+  it("an item with no pin entry at all is auto", () => {
+    expect(resolveItemWords(["FORGET", "REVIEW"], WORDS, whole, allSpoken, [pin(3)]).items).toEqual([
+      { word: 3, state: "pinned" },
+      { word: 8, state: "auto" },
+    ]);
   });
 });

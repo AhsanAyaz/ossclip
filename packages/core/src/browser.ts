@@ -24,7 +24,11 @@ export * from "./fill";
 // `maxCueSec` for the same reason: the editor's edge drag stops where the
 // pin read, the live retime and the render stop a clip block, and a second
 // copy of that limit is how a released drag snapped back.
-export { MAX_SCENE_SEC, maxCueSec, sceneStartSeconds } from "./assemble";
+// `wordOutputStart` for the same reason (graphic-editor-modal Terms, "Word
+// time"): the modal shows an item's time from the planner's own conversion,
+// and a second rule is how a clipped word would be timed in the render and
+// "cut" in the modal.
+export { MAX_SCENE_SEC, maxCueSec, sceneStartSeconds, wordOutputStart } from "./assemble";
 // The editor's live grade preview computes the SVG filter spec with the SAME
 // math produce bakes into render-props (`gradeToSvgFilterSpec`) — a browser
 // copy of the curve sampler is how the preview and the render would drift.
@@ -168,9 +172,13 @@ export { rekeyCaptionRecords, type RekeyResult, type StampMove } from "./restamp
 // paced" for an author-chosen reveal with the SAME `syncDecision` /
 // `SYNC_MIN_SHARE` plan time used — a restated 2/3 threshold is how the plan
 // and the render would disagree about which scenes are synced.
+// `resolveItemWords` (graphic-editor-modal §3) rides along: the modal's rows
+// and the preview resolve pins with the SAME function produce does.
 export {
   entryTexts,
+  type ItemWordState,
   locateSpoken,
+  resolveItemWords,
   revealItemTexts,
   type RevealItem,
   SYNC_MIN_SHARE,

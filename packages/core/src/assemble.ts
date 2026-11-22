@@ -1,4 +1,4 @@
-import type { Transcript } from "./schema";
+import type { Transcript, Word } from "./schema";
 import type { Scene, SceneCue } from "./scene-schema";
 import { revealItemTexts } from "./reveal-match";
 import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
@@ -284,6 +284,19 @@ export function entryWordTime<T extends { start: number }>(
   return at;
 }
 
+/**
+ * A word's output start on `map`, or null when the word is cut there
+ * (graphic-editor-modal Terms, "Word time"). The planner's own conversion,
+ * extracted from `plannedCue` so the item-timing resolve and the editor's
+ * modal time a word exactly as assembly does: `mapWord`, which keeps a word
+ * whose start a cut clips (its start clamps to the kept edge) and drops only
+ * a word cut entirely. A second rule (say, `toOutput(w.start)`) would call
+ * that clipped word cut in one place and timed in the other.
+ */
+export function wordOutputStart(w: Word, map: TimeMap): number | null {
+  return map.mapWord(w)?.start ?? null;
+}
+
 /** A cued scene's plan-time answers, resolved into output time. */
 interface PlannedCue {
   /** Output second of the entry word (or its fallback), lead-free; null → legacy start. */
@@ -308,12 +321,15 @@ function plannedCue(
   const { entryWord, itemWords } = cue;
   // Plan-time indices, so a missing word (a stale cue past the transcript)
   // and a cut word are the same answer: no time to land on.
-  const mapAt = (i: number) => {
+  const startAt = (i: number): number | null => {
     const w = transcript.words[i];
-    return w ? map.mapWord(w) : null;
+    return w ? wordOutputStart(w, map) : null;
   };
 
-  const entryAt = entryWordTime(entryWord, startWord, endWord, mapAt);
+  const entryAt = entryWordTime(entryWord, startWord, endWord, (i) => {
+    const at = startAt(i);
+    return at === null ? null : { start: at };
+  });
   const entryAtSec = entryAt === null ? null : entryAt.start;
 
   // Index i of `itemWords` must BE rendered item i. A prop edit since
@@ -343,10 +359,10 @@ function plannedCue(
         // Outside the scene's words is a stale index (same reasoning as
         // the entry clamp); cut is unspoken. Both pace rather than guess.
         if (w === null || w < startWord || w > endWord) return null;
-        const at = mapAt(w);
+        const at = startAt(w);
         // Floored at 0: a word at the very top of the output cannot enter
         // before the video does (the schema's nonnegative).
-        return at === null ? null : Math.max(0, at.start - ITEM_LEAD_SEC);
+        return at === null ? null : Math.max(0, at - ITEM_LEAD_SEC);
       }),
     },
   };

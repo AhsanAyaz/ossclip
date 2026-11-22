@@ -182,6 +182,135 @@ export function syncDecision(matches: readonly (number | null)[]): "synced" | "p
   return matched / matches.length >= SYNC_MIN_SHARE ? "synced" : "paced";
 }
 
+/**
+ * How far a pin's stored source second may be from its word's source start
+ * and still find it (graphic-editor-modal §3, row 1). A pin stores the chosen
+ * word's exact start, so on the same transcript the distance is 0; the
+ * tolerance only absorbs a re-transcribe nudging starts by a few
+ * hundredths. Past it the word "moved", and guessing a neighbour would land
+ * the item on a word the author did not choose (AG2).
+ */
+const PIN_TOLERANCE_SEC = 0.05;
+
+/**
+ * One item's resolved word (graphic-editor-modal Terms, item states). A word
+ * index is into the caller's whole transcript list. "cut" is a pin whose word
+ * has no time on the live clock: no time of its own, but it still bounds its
+ * neighbours (§3 row 4). "unmatched" is left to the renderer to place.
+ */
+export type ItemWordState =
+  | { word: number; state: "pinned" | "auto" }
+  | { word: null; state: "cut" | "unmatched" };
+
+/**
+ * Every item's word for one block, from the author's pins and the matcher
+ * (graphic-editor-modal §3). `allWords` is the WHOLE transcript list, so a pin
+ * can be found even when it has slid out of the block (row 2 then names why);
+ * `window` is the block window in source seconds, half-open like an added
+ * entry's span (`addedSceneToScene`); `isSpoken(i)` says whether word i has a
+ * word time on the live clock.
+ *
+ * Pins are checked in item order against the §3 table's rows in its order,
+ * first match wins. The pin's `text` is not looked at here: the stale-text
+ * check is `resolveItemTimings`'s (§3 step 2), which hands this a null for a
+ * pin whose item changed. A missing entry (fewer pins than items) is null.
+ *
+ * Auto items are then matched one segment at a time, each segment searching
+ * only the spoken window words strictly between its two bounding pins'
+ * words. That is what keeps G4 and AG2 without a second check: an auto item
+ * can neither cross a pin nor take a pinned (or cut-pinned) word, and
+ * `locateSpoken`'s strict monotonicity keeps two auto items off one word.
+ * Spoken words only, compacted: the matcher sees the words as the cut video
+ * says them, so a cut word can never be an auto item's answer.
+ */
+export function resolveItemWords(
+  texts: RevealItem[],
+  allWords: readonly { text: string; srcStart: number }[],
+  window: { srcStart: number; srcEnd: number },
+  isSpoken: (i: number) => boolean,
+  pins: readonly ({ src: number; text: string } | null)[],
+): { items: ItemWordState[]; notes: string[] } {
+  const inWindow = (i: number): boolean => {
+    const s = allWords[i]!.srcStart;
+    return s >= window.srcStart && s < window.srcEnd;
+  };
+  const items: (ItemWordState | undefined)[] = texts.map(() => undefined);
+  const notes: string[] = [];
+  // Item numbers are 1-based: the notes are read by the author, in the
+  // produce console and beside the modal's rows (§4).
+  const note = (k: number, why: string): void => {
+    notes.push(`item ${k + 1}: ${why}`);
+  };
+  // Pinned and cut pins, in item order and (by row 3) strictly increasing word.
+  const bounds: { item: number; word: number }[] = [];
+
+  texts.forEach((_, k) => {
+    const pin = pins[k] ?? null;
+    if (pin === null) return;
+    const word = nearestWord(allWords, pin.src);
+    if (word === null) return note(k, "its word moved");
+    if (!inWindow(word)) return note(k, "its word is outside this block");
+    // Against the previous BOUNDING pin, not the previous pin: a pin already
+    // turned auto above holds no word, so it cannot order anything.
+    const prev = bounds[bounds.length - 1];
+    if (prev !== undefined && word <= prev.word) return note(k, "out of order");
+    // Checked after order on purpose: a cut pin still bounds its neighbours,
+    // so an out-of-order one must not be let in as a bound by being cut.
+    bounds.push({ item: k, word });
+    if (!isSpoken(word)) {
+      items[k] = { word: null, state: "cut" };
+      return note(k, "its word was cut");
+    }
+    items[k] = { word, state: "pinned" };
+  });
+
+  const spokenWindow: number[] = [];
+  for (let i = 0; i < allWords.length; i++) if (inWindow(i) && isSpoken(i)) spokenWindow.push(i);
+
+  let lowWord = -1;
+  let firstItem = 0;
+  for (const bound of [...bounds, { item: texts.length, word: Infinity }]) {
+    const auto: number[] = [];
+    for (let k = firstItem; k < bound.item; k++) auto.push(k);
+    if (auto.length > 0) {
+      const pool = spokenWindow.filter((i) => i > lowWord && i < bound.word);
+      const hits = locateSpoken(
+        auto.map((k) => texts[k]!),
+        pool.map((i) => allWords[i]!),
+        { startWord: 0, endWord: pool.length - 1 },
+      );
+      auto.forEach((k, j) => {
+        const hit = hits[j];
+        items[k] =
+          hit === null || hit === undefined
+            ? { word: null, state: "unmatched" }
+            : { word: pool[hit]!, state: "auto" };
+      });
+    }
+    lowWord = bound.word;
+    firstItem = bound.item + 1;
+  }
+  return { items: items as ItemWordState[], notes };
+}
+
+/**
+ * The word whose source start is nearest `src` within `PIN_TOLERANCE_SEC`,
+ * or null. On a tie the earlier word (§3 row 1): only a strictly nearer word
+ * replaces the one found first.
+ */
+function nearestWord(words: readonly { srcStart: number }[], src: number): number | null {
+  let best: number | null = null;
+  let bestDist = Infinity;
+  words.forEach((w, i) => {
+    const dist = Math.abs(w.srcStart - src);
+    if (dist <= PIN_TOLERANCE_SEC && dist < bestDist) {
+      best = i;
+      bestDist = dist;
+    }
+  });
+  return best;
+}
+
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const textOf = (v: unknown): string =>

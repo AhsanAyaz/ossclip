@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { assembleScenes, ENTRY_LEAD_SEC, ITEM_LEAD_SEC, MAX_SCENE_SEC, maxCueSec } from "../src/assemble";
+import {
+  assembleScenes,
+  ENTRY_LEAD_SEC,
+  ITEM_LEAD_SEC,
+  MAX_SCENE_SEC,
+  maxCueSec,
+  wordOutputStart,
+} from "../src/assemble";
 import { fillPlainCues } from "../src/fill";
 import { TimeMap } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
@@ -501,6 +508,62 @@ describe("assembleScenes — BulletList in the reveal system (graphic-editor-mod
       const [out] = assembleScenes([bullets(cue)], long, cutMap).cues;
       expect("reveal" in out!).toBe(false);
     }
+  });
+});
+
+describe("wordOutputStart (graphic-editor-modal Terms, \"Word time\")", () => {
+  const long: Transcript = {
+    language: "en",
+    words: Array.from({ length: 100 }, (_, i) => ({
+      text: `w${i}`,
+      start: i * 0.5,
+      end: i * 0.5 + 0.4,
+    })),
+  };
+  // Removes source 6.9–7.1: word 14 (7.0–7.4) loses its first 0.1 s but its
+  // middle survives, so it is still spoken — its start clamps to the kept
+  // edge (output 6.9). Word 13 (6.5–6.9) ends exactly on the cut.
+  const clipMap = new TimeMap([
+    { srcIn: 0, srcOut: 6.9, kind: "keep" },
+    { srcIn: 6.9, srcOut: 7.1, kind: "remove", reason: "pause" },
+    { srcIn: 7.1, srcOut: 50, kind: "keep" },
+  ]);
+  // Removes source 6.9–7.5, all of word 14.
+  const cutMap = new TimeMap([
+    { srcIn: 0, srcOut: 6.9, kind: "keep" },
+    { srcIn: 6.9, srcOut: 7.5, kind: "remove", reason: "user" },
+    { srcIn: 7.5, srcOut: 50, kind: "keep" },
+  ]);
+
+  it("is the planner's own conversion: mapWord's start, null when the word is cut", () => {
+    for (const map of [clipMap, cutMap]) {
+      for (const w of long.words) expect(wordOutputStart(w, map)).toBe(map.mapWord(w)?.start ?? null);
+    }
+    expect(wordOutputStart(long.words[14]!, cutMap)).toBeNull();
+  });
+
+  it("a word whose start is clipped by a cut is still timed, at the kept edge", () => {
+    expect(wordOutputStart(long.words[14]!, clipMap)).toBeCloseTo(6.9, 9);
+    expect(wordOutputStart(long.words[17]!, clipMap)).toBeCloseTo(8.3, 9);
+  });
+
+  it("plannedCue's entry and item times are byte-equal to before the extraction", () => {
+    // Recorded from assemble.ts before `wordOutputStart` was extracted
+    // (2026-11-22): the clipped word 14 is both the entry (6.9) and item 0
+    // (6.9 − 0.15), so the extraction must keep a clipped start timed rather
+    // than treat it as cut.
+    const flow: Scene = {
+      id: "scene-0",
+      anchor: { startWord: 0, endWord: 19 },
+      layout: "graphic-only",
+      component: "FlowDiagram",
+      props: { nodes: ["IDEA", "BUILD", "SHIP"] },
+      overrides: {},
+      cue: { entryWord: 14, itemWords: [14, 17, 12] },
+    };
+    expect(JSON.stringify(assembleScenes([flow], long, clipMap))).toBe(
+      '{"cues":[{"id":"scene-0","anchor":{"startWord":0,"endWord":19},"layout":"graphic-only","component":"FlowDiagram","props":{"nodes":["IDEA","BUILD","SHIP"],"emphasizeLast":true},"startSec":6.6000000000000005,"endSec":9.700000000000001,"entryAtSec":6.9,"reveal":{"itemAtSec":[6.75,8.15,5.85]}}],"dropped":[],"shortened":[]}',
+    );
   });
 });
 
