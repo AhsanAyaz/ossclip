@@ -1152,7 +1152,23 @@ export function resolveSwappedProps(
  * no cue, so it is never a half.
  */
 export function isPlainTakeKey(key: string): boolean {
-  return !isParkedOverrideKey(key) && /^take-\d+(-\d+)?$/.test(splitRootId(key));
+  return plainTakeOrdinal(key) !== null;
+}
+
+/**
+ * The one parse of a plain take key (take-framing-identity): the root's clip
+ * index `n` and its per-clip piece `k`, read from the text before the first
+ * `@`. `k` is 0 for a bare `take-N` — `fillPlainCues`' own per-clip ordinal,
+ * whose first piece keeps the bare name — so ordering by `(n, k)` puts
+ * `take-2` before `take-2-1` before `take-2-10`, and `take-2` before
+ * `take-10`. Null for anything `isPlainTakeKey` rejects; that predicate is
+ * this function's non-null, so the two cannot drift.
+ */
+export function plainTakeOrdinal(key: string): { n: number; k: number } | null {
+  if (isParkedOverrideKey(key)) return null;
+  const m = /^take-(\d+)(?:-(\d+))?$/.exec(splitRootId(key));
+  if (!m) return null;
+  return { n: Number(m[1]), k: m[2] === undefined ? 0 : Number(m[2]) };
 }
 
 /** The ids of the splits whose take halves own their framing
@@ -1920,6 +1936,13 @@ export function isParkedOverrideKey(key: string): boolean {
  * name, since the suffix is bookkeeping, not something they ever typed. */
 export function parkedOverrideBaseKey(key: string): string {
   return isParkedOverrideKey(key) ? key.slice(0, -PARKED_SUFFIX.length) : key;
+}
+
+/** The key an entry parks under — the builder half of the same convention,
+ * for callers outside this file (`rekeyTakeHalves`), so the suffix has one
+ * spelling. `parkedOverrideBaseKey(parkedOverrideKey(k)) === k`. */
+export function parkedOverrideKey(base: string): string {
+  return `${base}${PARKED_SUFFIX}`;
 }
 
 export interface SceneRemapResult {

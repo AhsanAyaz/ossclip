@@ -28,6 +28,8 @@ import {
   SplitSchema,
   effectiveOverride,
   isPlainTakeKey,
+  plainTakeOrdinal,
+  parkedOverrideKey,
   ownFramingSplitIds,
   type OverrideDoc,
 } from "../src/overrides";
@@ -1395,6 +1397,25 @@ describe("split take pieces own their framing (take-framing-identity P1)", () =>
     for (const k of ["take-kept-1@s", "scene-1", "added-1", "take-2#orphaned"]) {
       expect(isPlainTakeKey(k), k).toBe(false);
     }
+  });
+
+  it("plainTakeOrdinal: one parse of the root, null exactly where isPlainTakeKey is false", () => {
+    expect(plainTakeOrdinal("take-2")).toEqual({ n: 2, k: 0 });
+    expect(plainTakeOrdinal("take-2-1")).toEqual({ n: 2, k: 1 });
+    expect(plainTakeOrdinal("take-10-3@s")).toEqual({ n: 10, k: 3 });
+    for (const k of ["take-kept-1@s", "scene-1", "added-1", "take-2#orphaned", "take-2@s#orphaned"]) {
+      expect(plainTakeOrdinal(k), k).toBeNull();
+    }
+    for (const k of ["take-2", "take-2-1", "take-2@s", "take-kept-1@s", "scene-1", "take-2#orphaned"]) {
+      expect(isPlainTakeKey(k), k).toBe(plainTakeOrdinal(k) !== null);
+    }
+  });
+
+  it("parkedOverrideKey builds the key isParkedOverrideKey and parkedOverrideBaseKey read", () => {
+    const parked = parkedOverrideKey("take-2@s");
+    expect(parked).toBe("take-2@s#orphaned");
+    expect(isParkedOverrideKey(parked)).toBe(true);
+    expect(parkedOverrideBaseKey(parked)).toBe("take-2@s");
   });
 
   it("ownFramingSplitIds collects only the flagged splits", () => {

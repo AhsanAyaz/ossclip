@@ -121,7 +121,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       video: { scale: 1.5, dx: 5 },
       captionY: 0.3,
     });
-    // take-halves.ts restates the park suffix; this pins it to overrides.ts's.
+    // Parked through overrides.ts's own builder, so the warning loop sees it.
     const parked = Object.keys(out.doc.scenes).filter(isParkedOverrideKey);
     expect(parked.map(parkedOverrideBaseKey)).toEqual(["take-2@s"]);
     expect(out.notes).toContain("edit for take-2@s parked — take-3@s already has its own edit");

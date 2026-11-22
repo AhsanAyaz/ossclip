@@ -1,7 +1,8 @@
 import {
   effectiveOverride,
   isPlainTakeKey,
-  splitRootId,
+  parkedOverrideKey,
+  plainTakeOrdinal,
   type OverrideDoc,
   type ResolvedSplitPoint,
   type SceneOverride,
@@ -32,25 +33,14 @@ export interface TakeRekeyResult {
   changed: boolean;
 }
 
-/** overrides.ts's park suffix (`PARKED_SUFFIX`), restated as
- * `added-scenes.ts` does — the test pins it against `isParkedOverrideKey`
- * so the two spellings cannot drift. */
-const PARKED_SUFFIX = "#orphaned";
-
-const TAKE_ROOT = /^take-(\d+)(?:-(\d+))?$/;
-
-/** The mover's sort key (P2 step 3): the take index numerically, so `take-2`
- * beats `take-10`; then a bare `take-N` (k = -1) before its own `take-N-k`
- * pieces, which sort by k. */
-function takeOrder(key: string): [number, number] {
-  const m = TAKE_ROOT.exec(splitRootId(key))!;
-  return [Number(m[1]), m[2] === undefined ? -1 : Number(m[2])];
-}
-
+/** The mover's order (P2 step 3): by `plainTakeOrdinal`, the same parse
+ * `isPlainTakeKey` is, so `take-2` beats `take-10` and a bare `take-N`
+ * comes before its own `take-N-k` pieces. Only ever called on candidates,
+ * which passed `isPlainTakeKey`, so neither side is null. */
 function byTakeOrder(a: string, b: string): number {
-  const [an, ak] = takeOrder(a);
-  const [bn, bk] = takeOrder(b);
-  return an - bn || ak - bk;
+  const x = plainTakeOrdinal(a)!;
+  const y = plainTakeOrdinal(b)!;
+  return x.n - y.n || x.k - y.k;
 }
 
 /** The `video`/`pip` a key resolves to through its OWN root with no
@@ -161,7 +151,7 @@ export function rekeyTakeHalves(
     // incumbent and the entry stays put as an orphan `applyOverrides`
     // reports — today's posture, and no write, so `changed` stays false.
     for (const k of others) {
-      const parkKey = `${k}${PARKED_SUFFIX}`;
+      const parkKey = parkedOverrideKey(k);
       if (Object.prototype.hasOwnProperty.call(input, parkKey)) {
         notes.push(`edit for ${k} left as an orphan — its park slot is taken`);
         continue;
