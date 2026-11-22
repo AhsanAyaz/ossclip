@@ -48,6 +48,17 @@ describe("loadEnvFiles (R16 §77)", () => {
     expect(process.env.OSSCLIP_TEST_A).toBe("from-shell");
   });
 
+  it("an EMPTY environment variable does not block the file", () => {
+    // A parent process that exports `KEY=` (empty) is not choosing a value:
+    // the editor launched from such a shell read OSSCLIP_POSTIZ_API_KEY as
+    // "" and showed "not configured" with the key sitting in ~/.ossclip/.env
+    // (2026-11-22).
+    process.env.OSSCLIP_TEST_A = "";
+    const dir = dirWithEnv("OSSCLIP_TEST_A=from-file\n");
+    loadEnvFiles(dir);
+    expect(process.env.OSSCLIP_TEST_A).toBe("from-file");
+  });
+
   it("skips comments and blanks, strips `export` and quotes", () => {
     delete process.env.OSSCLIP_TEST_A;
     delete process.env.OSSCLIP_TEST_B;

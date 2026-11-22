@@ -58,8 +58,12 @@ export function loadEnvFiles(cwd: string = process.cwd()): string[] {
       if (eq === -1) continue;
       const key = line.slice(0, eq).replace(/^export\s+/, "").trim();
       if (!key) continue;
-      // The real environment wins: never clobber what the caller set.
-      if (process.env[key] !== undefined) continue;
+      // The real environment wins: never clobber what the caller set. An
+      // empty value is not a choice, though — a shell exporting `KEY=` left
+      // the editor "not configured" with the Postiz key in ~/.ossclip/.env
+      // (2026-11-22) — so it falls through to the files.
+      const current = process.env[key];
+      if (current !== undefined && current !== "") continue;
       const value = line.slice(eq + 1).trim().replace(/^(['"])(.*)\1$/, "$2");
       process.env[key] = value;
       applied++;
