@@ -223,7 +223,8 @@ describe("modalRows (graphic-editor-modal §3 states, §5 rows)", () => {
 
   /** What the render does for one cue: the very pass the preview runs, then
    * the renderer's schedule over the cue's frame window. */
-  const rendered = (doc: OverrideDoc, items: string[], map: TimeMap): number[] => {
+  const rendered = (doc: OverrideDoc, items: string[], map: TimeMap): number[] => renderedCue(doc, items, map).est;
+  const renderedCue = (doc: OverrideDoc, items: string[], map: TimeMap) => {
     const cue: SceneCue = {
       id: "scene-0",
       layout: "video-top",
@@ -244,8 +245,59 @@ describe("modalRows (graphic-editor-modal §3 states, §5 rows)", () => {
       itemAtSec: out.reveal?.itemAtSec,
       props: out.props as { reveal?: string },
     });
-    return frames.map((f) => out.startSec + f / 30);
+    return { est: frames.map((f) => out.startSec + f / 30), out };
   };
+
+  /** The drift cases for §3 step 2, which modalRows restates: the rows'
+   * times, their timed-or-not states and the forced `synced` must be the
+   * real pass's, for a stale pin as for a fitting one. */
+  const sameAsRender = (itemPins: ItemPins) => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { itemPins } } });
+    const rows = modalRows("BulletList", { items: ITEMS }, itemPins, ctxOn(identity));
+    const { est, out } = renderedCue(doc, ITEMS, identity);
+    expect(rows.map((r) => r.estSec)).toEqual(est);
+    // A row has a time of its own exactly when the pass gave it one.
+    expect(rows.map((r) => r.state === "pinned" || r.state === "auto")).toEqual(
+      out.reveal!.itemAtSec.map((t) => t !== null),
+    );
+    // And it is that word's time.
+    rows.forEach((r, k) => {
+      if (r.word === null || r.state === "cut") return;
+      expect(Math.max(0, wordOutputStart(words[r.word]!, identity)! - ITEM_LEAD_SEC)).toBe(out.reveal!.itemAtSec[k]);
+    });
+    const bounded = rows.some((r) => r.state === "pinned" || r.state === "cut");
+    expect(out.props?.reveal === "synced").toBe(bounded);
+    return rows;
+  };
+
+  // Each pin is on "they" (3.5 s), where honouring it would put item 2 on
+  // word 3 and force synced; stale, the pass matches "FORGET" on word 4.
+  const THEY = (text: string) => ({ src: 3.5, text });
+
+  it("drift: a stale-text pin is auto in the rows as in the render", () => {
+    const rows = sameAsRender(pinsOf([null, THEY("OLD"), null]));
+    expect(pick(rows)[1]).toEqual(["auto", 4, "its text changed since it was pinned"]);
+    // The fitting pin, for contrast: honoured in both.
+    expect(pick(sameAsRender(pinsOf([null, THEY("FORGET"), null])))[1]).toEqual(["pinned", 3, null]);
+  });
+
+  it("drift: a count mismatch with a pin set is all auto in the rows as in the render", () => {
+    const rows = sameAsRender(pinsOf([null, THEY("FORGET")]));
+    expect(rows.map((r) => [r.state, r.word])).toEqual([
+      ["auto", 2],
+      ["auto", 4],
+      ["auto", 5],
+    ]);
+  });
+
+  it("drift: a component mismatch is all auto in the rows as in the render", () => {
+    const rows = sameAsRender(pinsOf([null, THEY("FORGET"), null], "FlowDiagram"));
+    expect(rows.map((r) => [r.state, r.word])).toEqual([
+      ["auto", 2],
+      ["auto", 4],
+      ["auto", 5],
+    ]);
+  });
 
   it("estimates are the renderer's own times for every row (revealFrames over the resolved cue)", () => {
     const items = ["HALLUCINATE", "ZEBRA", "REVIEW THE CODE"];
@@ -314,7 +366,8 @@ describe("allowedWords (§5 picking)", () => {
 
   it("enables only block words strictly between the neighbouring bounding pins", () => {
     expect([...allowedWords(rows, 1, block)]).toEqual([3, 4]);
-    // An auto neighbour does not bound: item 4 may cross item 4's own auto word and beyond.
+    // An auto neighbour does not bound: item 4 (auto, on word 7) may be
+    // picked anywhere after the cut pin on 5, on either side of word 7.
     expect([...allowedWords(rows, 3, block)]).toEqual([6, 7, 8, 9]);
     expect([...allowedWords(rows, 4, block)]).toEqual([6, 7, 8, 9]);
     // The row being picked is not its own bound.
@@ -500,6 +553,17 @@ describe("whenRowPin (graphic-editor-modal §5, When row)", () => {
     expect(keptSpanStartOf({ text: "gone", start: 3.1, end: 3.2 }, seam)).toBeNull();
   });
 
+  it("keptSpanStartOf snaps a start a hair past a span's end into that span, as toOutput does", () => {
+    const hair = { text: "they", start: 3.0 + 1e-10, end: 3.6 };
+    // toOutput times the start in the first span (its EPS), at the seam...
+    expect(seam.toOutput(hair.start)).toBeCloseTo(3.0, 9);
+    expect(wordOutputStart(hair, seam)).toBeCloseTo(3.0, 9);
+    // ...so the floor is that span's start, not the next one's.
+    expect(keptSpanStartOf(hair, seam)).toBe(0);
+    // Past the tolerance, the next span (where mapWord clamps it).
+    expect(keptSpanStartOf({ text: "they", start: 3.0 + 1e-6, end: 3.6 }, seam)).toBe(3.4);
+  });
+
   it("at a seam, the pin starts in the word's kept span and resolves on the live clock", () => {
     expect(wordOutputStart(clipped, seam)).toBe(3.0);
     const pin = whenRowPin(clipped, seam, keptSpanStartOf(clipped, seam)!, null, 8)!;
@@ -539,9 +603,9 @@ describe("whenRowPin (graphic-editor-modal §5, When row)", () => {
 });
 
 /**
- * A graphic without the marker shows what renders now (G5, G7;
- * coordinator ruling on Task 6 concern 3): its rows read the live cue's
- * baked item times, until an item change puts word timing in effect.
+ * A graphic without the marker shows what renders now (graphic-editor-modal
+ * §5 with G5, G7): its rows read the live cue's baked item times, until an
+ * item change puts word timing in effect (§6).
  */
 describe("modalRows from the live cue (no marker)", () => {
   const at = (i: number) => Math.max(0, wordOutputStart(words[i]!, identity)! - ITEM_LEAD_SEC);
@@ -600,6 +664,20 @@ describe("modalRows from the live cue (no marker)", () => {
       ["unmatched", null, null],
     ]);
     expect(rows.every((r) => typeof r.estSec === "number")).toBe(true);
+  });
+
+  it("a baked time two words share names the one inside the block", () => {
+    // Output starts at 0 for "so" (0 s, kept) and 0.1 for "they" (1.25 s,
+    // after a cut): both item times floor to 0. "so" is first in the
+    // transcript but outside the block window (from 1.25 s).
+    const topCut = mapFromKeptSpans([
+      { srcIn: 0, srcOut: 0.1, outIn: 0, outOut: 0.1 },
+      { srcIn: 1.25, srcOut: 10, outIn: 0.1, outOut: 8.85 },
+    ]);
+    expect(wordOutputStart(words[0]!, topCut)).toBe(0);
+    const cue = { ...planned, reveal: { itemAtSec: [0, null, null] } };
+    const rows = modalRows("FlowDiagram", planned.props!, undefined, { ...ctxOn(topCut), liveCue: cue });
+    expect(rows[0]!.word).toBe(1);
   });
 
   it("a live cue on its component's legacy stagger has no item time to show", () => {

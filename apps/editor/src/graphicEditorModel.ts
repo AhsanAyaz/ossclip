@@ -200,7 +200,9 @@ export type RowContext = {
  * because the modal needs per-row reasons, and that function reports them
  * only as prefixed log lines. Its three tests are the same three: component,
  * count (only noted when a pin was set), and each pin's text against
- * `itemPinText`. The estimates test runs both and compares, so the copy
+ * `itemPinText`. The "drift:" tests run each of the three through both
+ * this and the real pass (`resolveItemTimings`, then `revealFrames`) and
+ * compare the times, the timed rows and the forced `synced`, so the copy
  * cannot drift unnoticed.
  */
 export function modalRows(
@@ -286,11 +288,15 @@ const revealPropsOf = (props: Record<string, unknown>) => ({
 const BAKED_MATCH_SEC = 1e-6;
 
 /**
- * Rows for a graphic without the marker, from its live cue (coordinator
- * ruling on Task 6 concern 3): each item's word is the one whose item time
- * on the live map (`wordOutputStart` − `ITEM_LEAD_SEC`, floored at 0 as
- * assembly bakes it) is the cue's `reveal.itemAtSec[k]`, the first such in
- * transcript order. Auto, with no note: the planner matched it, not the
+ * Rows for a graphic without the marker, from its live cue (§5 with G5 and
+ * G7: the modal shows what renders, and until an item change writes the
+ * marker (§6) that is the baked timing): each item's word is the one whose
+ * item time on the live map (`wordOutputStart` − `ITEM_LEAD_SEC`, floored at
+ * 0 as assembly bakes it) is the cue's `reveal.itemAtSec[k]`. Looked up in
+ * the block's window words first, then the whole transcript: two words can
+ * share an item time (both floored to 0 near the top of the output, or
+ * clamped to one seam), and the one outside the block is never the word the
+ * planner meant when one inside it fits. Auto, with no note: the planner matched it, not the
  * author. No time, or no word at that time (a time remapped off every
  * word), is unmatched, placed by the renderer. Estimates are `revealFrames`
  * over the live cue as it is, null on the legacy stagger (see `ModalRow`).
@@ -308,6 +314,7 @@ function liveRows(
     const at = wordOutputStart(w, ctx.liveMap);
     return at === null ? null : Math.max(0, at - ITEM_LEAD_SEC);
   });
+  const inBlock = windowWords(ctx.words, ctx.window);
   const legacy = isLegacyReveal(itemAtSec, liveProps);
   const { durationInFrames } = frameWindow(live.startSec, live.endSec, ctx.fps);
   const frames = legacy
@@ -324,7 +331,11 @@ function liveRows(
       });
   return texts.map((text, k) => {
     const at = itemAtSec?.[k] ?? null;
-    const hit = at === null ? -1 : itemTimes.findIndex((t) => t !== null && Math.abs(t - at) <= BAKED_MATCH_SEC);
+    const fits = (i: number): boolean => {
+      const t = itemTimes[i];
+      return at !== null && t !== null && t !== undefined && Math.abs(t - at) <= BAKED_MATCH_SEC;
+    };
+    const hit = at === null ? -1 : (inBlock.find(fits) ?? itemTimes.findIndex((_, i) => fits(i)));
     return {
       text,
       state: hit === -1 ? "unmatched" : "auto",
@@ -368,7 +379,9 @@ export function blockWords(
  *
  * The start: up to the first item that has a word (pinned or auto) and on
  * it, the mockup's rule, so the graphic is on screen when its first item
- * lands; every block word when no item has one.
+ * lands; every block word when no item has one. A cut item 1 does not
+ * limit it (nor does an unmatched one): it has no time to be on screen
+ * for, so the limit is the first item that does, as in the mockup.
  */
 export function allowedWords(rows: ModalRow[], picking: number | "start", blockWords: number[]): Set<number> {
   if (picking === "start") {
@@ -634,13 +647,33 @@ function same(a: unknown, b: unknown): boolean {
  * The source start of the kept span `word` plays in on `map`, the When
  * row's floor (§5), or null when the word is cut. A word whose start a cut
  * clips plays from the next span's start, where `mapWord` clamps it.
+ *
+ * The span is found as `toOutput` finds it, which is what `mapWord` times
+ * the start by: exact containment first, then the nearest span within
+ * `SPAN_EDGE_EPS` (float-ulp overshoot at an edge). Without the second step
+ * a start a hair past a span's `srcOut` would be timed in that span and
+ * floored at the next one's start.
  */
 export function keptSpanStartOf(word: Word, map: TimeMap): number | null {
   if (wordOutputStart(word, map) === null) return null;
   const inside = map.spans.find((sp) => word.start >= sp.srcIn && word.start <= sp.srcOut);
   if (inside !== undefined) return inside.srcIn;
+  let near: (typeof map.spans)[number] | undefined;
+  let nearDist = Infinity;
+  for (const sp of map.spans) {
+    const dist = word.start < sp.srcIn ? sp.srcIn - word.start : word.start - sp.srcOut;
+    if (dist < nearDist) {
+      near = sp;
+      nearDist = dist;
+    }
+  }
+  if (near !== undefined && nearDist <= SPAN_EDGE_EPS) return near.srcIn;
   return map.spans.find((sp) => sp.srcIn > word.start)?.srcIn ?? null;
 }
+
+/** `TimeMap.toOutput`'s edge tolerance (timemap.ts), restated because the
+ * class keeps it local; the keptSpanStartOf test pins the two together. */
+const SPAN_EDGE_EPS = 1e-9;
 
 /**
  * The When row's timing pin (§5): the graphic enters `ENTRY_LEAD_SEC` ahead
@@ -661,7 +694,7 @@ export function keptSpanStartOf(word: Word, map: TimeMap): number | null {
  * Null when the pin would end at or before it starts (a word at or after
  * the cue's end): `SceneTimingSchema` refuses an inverted src pin and
  * `patchProps` stores it verbatim, so the caller refuses that word instead
- * (coordinator ruling on Task 6 concern 6).
+ * (§5, When row: the pin it writes must be one the doc can hold).
  *
  * Throws for a word with no time on the live clock: only block words are
  * offered (`blockWords`), so that is a caller bug, not a state.
