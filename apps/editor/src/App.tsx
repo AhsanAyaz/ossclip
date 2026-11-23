@@ -1557,8 +1557,9 @@ export const App: React.FC = () => {
       clipStarts: editorTakeClipStarts(renderProps),
     });
     // User splits (R16 §61) — after the fill so TAKES split like scenes did
-    // above; a no-op here for scene ids, already split by
-    // `splitThenDropHidden`. Before the final pass so edits on the
+    // above. Graphic-pass landings are excluded from this set outright
+    // (split-positions-by-source D2), so a split cuts here only if it did
+    // not cut a graphic above. Before the final pass so edits on the
     // `id@<split id>` halves land (the suffix is the split's minted id, §137).
     // The extra dropHiddenCues below catches halves of a TAKE
     // the user deleted, whose id did not exist until the fill just ran.

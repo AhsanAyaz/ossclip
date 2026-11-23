@@ -2170,3 +2170,39 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   An older build drops `takeLooks`; with the take fields already stripped, takes render unframed after a downgrade.
 *   `scale`, `dx` and `dy` are one undo/coalesce unit.
 *   Still deferred: graphic splits render at a stale `at` after a cut in front; editor parity for skipped and inert splits (FE Loop 20752 still previews as a piece); graphic halves owning their speaker inset framing.
+
+## 174. Each split cuts once, in one place (2026-11-24)
+
+**Why.** A ⌘B split stores `{at, src}`. `at` (output time) went stale after any cut in front, because only legacy splits were re-anchored. Produce's pass 1 cut graphics at that stale `at`, and pass 2 then cut the same split again at `toOutput(src)`: a drifted split was cut twice, and today's code even made two cues named `shot-s1@fc2`. The editor's take pass also used `at`, so it showed splits the render skips (FE Loop 20752). Design: `docs/designs/split-positions-by-source.md` (eight review rounds; the exact-preservation route was abandoned for this simpler one, with the author accepting a one-time change).
+
+**What.**
+
+*   `at` follows cuts for every split (three branches: `src` cut → `at` kept; `src` restored → `at = toOutput(src)`; else remapped).
+*   Pass 1 skips splits whose `src` is cut; a landing counts only if a piece of the host survives the hidden and overlap drops; pass 2 takes only the splits that did not land.
+*   After both passes, each split's two anchors are reconciled to where it cut (a graphic split gets `src` from `at`; a take split gets `at` from its source point, never into a graphic window). Phase 1's step 7 is gone.
+*   The editor follows the same rules on the last render's clock; `finishOnClock` also drops hidden halves.
+
+**Field check** (`~/ossclip-work/fe-loop/splits-field-check.sh`, copy `work-splits-test`), 0 failures:
+
+*   run 1 with splits fc1 `{14.015, 16.5}` and drifted fc2 `{16.0, 14.0}` in `shot-s1`: `shot-s1` [10.085, 14.015], `@fc1` [14.015, 16.000], exactly one `@fc2` [16.000, 17.950]; notes `split fc2 cuts only shot-s1 now (it used to cut shot-s1 too)` and `split 66055 anchors reconciled`; fc2 `src` 18.485, 66055 `at` 58.467;
+*   run 2 with no edit: `overrides.json` byte-identical, same cues, no notes;
+*   run 3 after a 2 s source cut in front: fc1 `at` 12.015, fc2 `at` 14.000, cues there;
+*   headless editor: all 18 Timeline blocks match render-props ids and starts; no `@20752` block.
+*   `looks-field-check.sh` still passes, updated for reconciliation and for the author's own `take-3` framing (2.104× / dx 687.2, set 2026-11-23), which migrated onto source 29.304–66.055.
+
+**Usage context** (PostHog, project OSSClip): of 500 first runs since 2026-08-11, 293 came from CI and about 150 from the author's machines. Over the last 30 days, about 12 outside installs ran `produce`, rendering roughly 90 videos. That is why a one-time output change was accepted and this ships as 0.2.0.
+
+**Release note (0.2.0).** Splits and take looks now follow source time. The first render of an existing project can change once, and every change is named in the log:
+
+*   a drifted graphic split is cut once instead of twice;
+*   a take split whose old position sat inside a graphic stops splitting its take;
+*   take looks move onto source ranges;
+*   split anchors are reconciled.
+
+Older ossclip versions cannot read migrated projects (`takeLooks`, split anchors).
+
+**Limits.**
+
+*   `reclampPinnedTiming` is produce-only, as before.
+*   A user cut made live but not yet rendered previews on the old clock.
+*   Ghosts of hidden take halves still use `at`, so they can sit at a slightly wrong window before the first upgraded render.

@@ -1876,6 +1876,10 @@ export function resolveItemTimings(
  */
 export const SPLIT_MIN_PIECE_SEC = 0.3;
 
+/** How far a split's would-be second cut must sit from its pass-1 cut before
+ * produce names it in a `cuts only … now` note (split-positions-by-source D5). */
+export const DOUBLE_CUT_NOTE_SEC = 0.3;
+
 /**
  * Cut cues at the stored split points (R16 §61).
  *
@@ -2088,7 +2092,9 @@ export function doubleCutNotes(
     const wouldHave = dry.landed.get(s.id);
     const point = points.find((p) => p.id === s.id);
     if (host === undefined || wouldHave === undefined || point === undefined || s.at === undefined) continue;
-    if (Math.abs(point.at - s.at) <= SPLIT_MIN_PIECE_SEC) continue;
+    // Same 0.3 s as the landing margin, but named on its own: the note's
+    // threshold must not move if the margin does (split-positions review M2).
+    if (Math.abs(point.at - s.at) <= DOUBLE_CUT_NOTE_SEC) continue;
     notes.push(`split ${s.id} cuts only ${splitRootId(host)} now (it used to cut ${wouldHave} too)`);
   }
   return notes;
