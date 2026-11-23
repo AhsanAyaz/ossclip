@@ -190,6 +190,25 @@ describe("migrateTakeLooks (take-looks-by-source L3)", () => {
     expect(out.notes).toEqual(["moved the look of 1 take piece(s) onto source time"]);
   });
 
+  it("3c: a piece with a look but no source ranges keeps its key, and the note names it (Task 2 review, Minor 1)", () => {
+    // Near-unreachable in produce (a non-zero plain window on this run's
+    // map always plays source), so called directly: a window past the
+    // map's end plays nothing. Stripping before the write would lose the
+    // look silently — gone from the key, never on source time, unlisted.
+    const map = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const doc = parse({ scenes: { "take-1": { captionY: 0.3 }, "take-4": { video: { scale: 2 } } } });
+    const onMap: SceneCue = { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10 };
+    const offMap: SceneCue = { id: "take-4", kind: "plain", layout: "full-bleed", startSec: 20, endSec: 30 };
+    const out = migrateTakeLooks(doc, [onMap, offMap], map, new Set());
+    expect(out.doc.takeLooks).toEqual([{ srcIn: 0, srcOut: 10, look: { captionY: 0.3 } }]);
+    expect(out.doc.scenes["take-1"]).toBeUndefined();
+    expect(out.doc.scenes["take-4"]).toEqual(doc.scenes["take-4"]);
+    expect(out.notes).toEqual([
+      "moved the look of 1 take piece(s) onto source time",
+      "left 1 look edit(s) on takes not in this cut: take-4",
+    ]);
+  });
+
   it("4: the marker stops a second migration — the doc comes back untouched", () => {
     const first = run(fixtureA());
     const again = migrateTakeLooks(first.doc, first.overridden, feMap(), ownFramingSplitIds(first.doc.splits));

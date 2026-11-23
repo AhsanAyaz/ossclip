@@ -71,6 +71,22 @@ export function inScope(o?: SceneOverride | TakeLook): TakeLook {
   return out;
 }
 
+/**
+ * No keys but an empty `props` and an empty `elements`
+ * (take-framing-identity's definition, R4-S6): an override with nothing to
+ * say. ONE copy (take-looks-by-source R6-8, R7-7), because two writers drop
+ * such an entry rather than store it — the editor's legacy `addSplit`
+ * framing copy and the migration's strip (L3 rule 3) — and the two must
+ * agree on what "empty" means, or one would keep `{}` the other dropped.
+ * Pure and types-only towards overrides.ts, so it can live here.
+ */
+export const isEmptyEntry = (entry: SceneOverride): boolean =>
+  Object.entries(entry).every(
+    ([k, v]) =>
+      v === undefined ||
+      ((k === "props" || k === "elements") && Object.keys(v as object).length === 0),
+  );
+
 const isEmptyLook = (look: TakeLook): boolean => Object.keys(look).length === 0;
 // `inScope` fixes the key order, so equal looks serialize identically.
 const lookKey = (look: TakeLook): string => JSON.stringify(inScope(look));

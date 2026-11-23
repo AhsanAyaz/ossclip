@@ -6,7 +6,14 @@ import {
   type SceneOverride,
 } from "./overrides";
 import type { SceneCue } from "./scene-schema";
-import { inScope, pieceSourceRanges, setTakeLook, type TakeLook, type TakeLookEntry } from "./take-looks";
+import {
+  inScope,
+  isEmptyEntry,
+  pieceSourceRanges,
+  setTakeLook,
+  type TakeLook,
+  type TakeLookEntry,
+} from "./take-looks";
 import type { TimeMap } from "./timemap";
 
 /**
@@ -27,16 +34,6 @@ export interface TakeLookMigration {
 }
 
 const LOOK_FIELDS = ["video", "pip", "layout", "captionY", "captionScale"] as const satisfies readonly (keyof TakeLook)[];
-
-/** No keys but an empty `props` and an empty `elements` — the same test as
- * the editor's `isEmptyEntry` (take-framing-identity R4-S6), which R7-7
- * moves into core in the editor task. An entry left like this by the strip
- * has nothing to say, so it is dropped rather than written as dead weight. */
-const isEmptyEntry = (entry: SceneOverride): boolean =>
-  Object.entries(entry).every(
-    ([k, v]) =>
-      v === undefined || ((k === "props" || k === "elements") && Object.keys(v as object).length === 0),
-  );
 
 /**
  * Move every current take piece's id-keyed look onto the source range it
@@ -74,8 +71,6 @@ export function migrateTakeLooks(
   const resolvedThrough = new Set<string>();
   for (const piece of cues) {
     if (piece.kind !== "plain" || !isLookPieceKey(piece.id)) continue;
-    resolvedThrough.add(piece.id);
-    resolvedThrough.add(splitRootId(piece.id));
     // Id-keyed values only, never the cue's own: a plan value is not an
     // edit, and `inScope` over a schema-parsed entry is what keeps the look
     // values validated (`normalizeTakeLooks` checks structure only).
@@ -85,10 +80,23 @@ export function migrateTakeLooks(
     // mode the base is `"full-bleed"` (L2), so without this it would change
     // on screen — the only piece whose base layout is not the fill's.
     if (values.layout === undefined && piece.layout !== "full-bleed") values.layout = piece.layout;
-    if (Object.keys(values).length === 0) continue;
+    // A key is marked for the strip only once its look has a home: after
+    // the write, or when the piece has nothing in scope to move (Task 2
+    // review, Minor 1). A piece with values but no source ranges on this
+    // map would otherwise lose them silently — stripped, never written, and
+    // missing from the "left" note, which lists exactly the unmarked keys.
+    const markResolved = () => {
+      resolvedThrough.add(piece.id);
+      resolvedThrough.add(splitRootId(piece.id));
+    };
+    if (Object.keys(values).length === 0) {
+      markResolved();
+      continue;
+    }
     const ranges = pieceSourceRanges(piece, map);
     if (ranges.length === 0) continue;
     takeLooks = setTakeLook(takeLooks, ranges, values);
+    markResolved();
     moved++;
   }
 
